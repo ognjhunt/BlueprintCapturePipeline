@@ -54,6 +54,7 @@ def execute_scene_configuration_stage_chain(
     producer_registry: SceneConfigurationStageProducerRegistry | None = None,
     parent_deadline_epoch: float | None = None,
     clock: Callable[[], float] = time.time,
+    checkpoint_callback: Callable[..., None] | None = None,
 ) -> dict[str, Any]:
     """Execute all six stages once without any nested paid mutation."""
 
@@ -102,6 +103,8 @@ def execute_scene_configuration_stage_chain(
             completed = load_completed_stage(stage_output, stage, astra_resume, results)
             if completed is not None:
                 results.append(completed)
+                if checkpoint_callback is not None:
+                    checkpoint_callback(tuple(results))
                 print(f"BLUEPRINT_SCENE_CONFIGURATION_STAGE_ADOPTED: stage_id={stage_id}", flush=True)
                 continue
         print(
@@ -188,6 +191,8 @@ def execute_scene_configuration_stage_chain(
             from .task_evaluation_astra_stage_resume import save_completed_stage
             save_completed_stage(stage_output, stage, astra_resume, results, result)
         results.append(result)
+        if checkpoint_callback is not None:
+            checkpoint_callback(tuple(results))
         print(
             "BLUEPRINT_SCENE_CONFIGURATION_STAGE_COMPLETED:"
             f" index={index + 1}/{len(stages)} stage_id={stage_id}",

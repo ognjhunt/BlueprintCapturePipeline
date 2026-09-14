@@ -1,8 +1,8 @@
 """Bounded last-chance recovery of a completed Vast provider archive.
 
 The primary transport is the immutable object-store PUT.  This module exists
-only for the narrow case where the remote worker has sealed the output zip but
-that PUT failed: recover the exact file over strict pinned SSH before teardown
+for a sealed archive whose PUT failed, or a bounded scene-configuration
+archive left by interrupted packaging: recover the exact file over strict pinned SSH before teardown
 can make the evidence permanently unavailable.
 """
 
@@ -16,6 +16,7 @@ import shlex
 import shutil
 import subprocess
 import time
+import zipfile
 from typing import Any, Mapping
 
 from .gpu_render_providers import (
@@ -29,6 +30,7 @@ DEFAULT_VAST_SSH_IDENTITY_FILE = "~/.ssh/id_ed25519"
 MAX_RECOVERY_SECONDS = 900.0
 
 _REMOTE_ARCHIVE_BY_BUNDLE_KIND = {
+    "task_evaluation_scene_configuration": "/workspace/task_evaluation_scene_configuration_provider_output.zip",
     "sam31_source_tracks": "/work/sam31_source_track_result.json",
     "adp_retained_scene_render": "/workspace/adp_retained_scene_render_provider_runtime_output.zip",
     "adp_arena": "/workspace/adp_arena_provider_runtime_output.zip",
@@ -104,11 +106,17 @@ def recover_provider_output_before_teardown(
     maximum_size_bytes: int | None = None,
     minimum_free_bytes: int = 0,
     timeout_seconds: float = MAX_RECOVERY_SECONDS,
+    stage_checkpoint: bool = False,
 ) -> dict[str, Any]:
     """Stream one sealed remote archive to local disk before provider teardown."""
 
     recovery_started = time.monotonic()
     remote_path = _REMOTE_ARCHIVE_BY_BUNDLE_KIND.get(provider_bundle_kind)
+    if stage_checkpoint:
+        if provider_bundle_kind != "task_evaluation_scene_configuration":
+            return {"status": "blocked", "blockers": ["stage_checkpoint_recovery_kind_invalid"],
+                    "raw_secret_values_recorded": False}
+        remote_path = "/workspace/task_evaluation_scene_configuration_stage_checkpoint.zip"
     if remote_path is None:
         return {
             "status": "not_supported",
@@ -126,7 +134,7 @@ def recover_provider_output_before_teardown(
             "blockers": ["provider_output_ssh_recovery_endpoint_invalid"],
             "raw_secret_values_recorded": False,
         }
-    if (expected_size_bytes is None and (provider_bundle_kind != 'sam31_source_tracks'
+    if (expected_size_bytes is None and (provider_bundle_kind not in {'sam31_source_tracks', 'task_evaluation_scene_configuration'}
             or type(maximum_size_bytes) is not int or maximum_size_bytes <= 0)
             or expected_size_bytes is not None and (type(expected_size_bytes) is not int or expected_size_bytes <= 0)
             or maximum_size_bytes is not None and (type(maximum_size_bytes) is not int or maximum_size_bytes <= 0)):
@@ -273,10 +281,15 @@ def recover_provider_output_before_teardown(
             "known_hosts_sha256": known_hosts_sha256,
             "raw_secret_values_recorded": False,
         }
+    if provider_bundle_kind == "task_evaluation_scene_configuration" and not zipfile.is_zipfile(partial):
+        partial.unlink(missing_ok=True)
+        return {"status": "blocked", "blockers": ["provider_output_ssh_recovery_archive_invalid"],
+                "raw_secret_values_recorded": False}
     os.replace(partial, destination)
     return {
         "status": "completed",
         "recovery_attempted": True,
+        "completed_stage_checkpoint_recovered": stage_checkpoint,
         "recovered_size_bytes": remote_size,
         "recovered_sha256": f"sha256:{remote_sha256}",
         "known_hosts_sha256": known_hosts_sha256,

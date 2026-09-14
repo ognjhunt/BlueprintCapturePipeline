@@ -310,3 +310,18 @@ def test_backend_dispatch_is_explicit_and_legacy_remains_default(tmp_path, monke
     with pytest.raises(legacy.TaskEvaluationSceneConfigurationContentAgentsError, match="environment_missing"):
         legacy.execute_content_agents_component(environment={driver._INPUT_ENV: str(path)})
     assert len(seen) == 1
+
+
+def test_runtime_preflight_uses_same_bootstrap_without_model_calls(tmp_path, monkeypatch):
+    package = tmp_path/'package'
+    package.mkdir()
+    for name in driver._CAD_PACKAGE_FILES:
+        (package/name).write_bytes(b'sealed-input')
+    observed = []
+    monkeypatch.setattr(driver, 'prepare_astra_execution_runtime', lambda **kwargs: observed.append(kwargs))
+    monkeypatch.setattr(driver, 'budgeted_invoker', lambda **_: pytest.fail('model call during runtime preflight'))
+    output = tmp_path/'preflight'
+    driver.preflight_astra_execution_runtime(package=package, output_root=output, environment={})
+    assert len(observed) == 1 and observed[0]['package'] == package
+    assert all((output/name).read_bytes() == b'sealed-input' for name in driver._CAD_PACKAGE_FILES)
+    assert json.loads((output/'runtime_preflight.json').read_text())['model_calls_performed'] == 0

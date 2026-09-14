@@ -157,7 +157,7 @@ from .vast_scene_configuration_warm_readiness import (
     scene_configuration_warm_validation_fields,
 )
 from .vast_provider_transfer_upload import provider_output_upload_shell_fragment
-from .vast_provider_output_recovery import recover_provider_output_before_teardown
+from .vast_provider_output_recovery import MAX_RECOVERY_SECONDS, recover_provider_output_before_teardown
 from .vast_args_payload_transport import args_mode_command, onstart_mode_script
 from .vast_provider_bundle_digest_guard import provider_bundle_digest_guard
 
@@ -4618,6 +4618,7 @@ def _probe_shell_script(
                 "else "
                 'export BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT="$WORK_DIR/task_evaluation_scene_configuration_provider_bundle/provider_runtime"; '
                 'export BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_ROOT="$WORK_DIR/task_evaluation_scene_configuration_provider_bundle/runtime_output"; '
+                'export BLUEPRINT_SCENE_CONFIGURATION_STAGE_CHECKPOINT_PATH="$WORK_DIR/task_evaluation_scene_configuration_stage_checkpoint.zip"; '
                 'mkdir -p "$BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_ROOT"; '
                 "echo BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_STARTED; "
                 'bash "$BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT/run_task_evaluation_scene_configuration_provider.sh"; provider_rc=$?; '
@@ -4634,20 +4635,11 @@ def _probe_shell_script(
                 "output_dir = Path(os.environ.get('BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_ROOT', '/workspace/task_evaluation_scene_configuration_provider_bundle/runtime_output'))\n"
                 "work_dir = Path(os.environ.get('BLUEPRINT_VAST_WORK_DIR', '/tmp/blueprint_vast_work'))\n"
                 "output_zip = work_dir / 'task_evaluation_scene_configuration_provider_output.zip'\n"
-                "excluded_parts = {'.artifixer-venv', '.hf_home', '.venv', '.ovrtx_venv', '.ovrtx_native_venv', '.ovphysx_venv', '.git', '__pycache__', 'artifixer_bundle', 'artifixer_execution', 'artifixer_output', 'content_agents_source'}\n"
-                "with zipfile.ZipFile(output_zip, 'w', compression=zipfile.ZIP_DEFLATED, allowZip64=True) as archive:\n"
-                "    if output_dir.is_dir():\n"
-                "        archive.writestr('provider_output_zip_exclusions.json', json.dumps({'schema_version': 'task_evaluation_scene_configuration_provider_output_zip_exclusions.v1', 'excluded_directory_names': sorted(excluded_parts)}, sort_keys=True))\n"
-                "        for path in sorted(output_dir.rglob('*')):\n"
-                "            relative = path.relative_to(output_dir)\n"
-                "            if not excluded_parts.isdisjoint(relative.parts):\n"
-                "                continue\n"
-                "            if path.is_symlink():\n"
-                "                raise RuntimeError('scene_configuration_provider_output_symlink_forbidden:' + relative.as_posix())\n"
-                "            if path.is_file():\n"
-                "                archive.write(path, relative.as_posix())\n"
-                "    else:\n"
-                "        archive.writestr('runtime_output_missing.json', json.dumps({'status': 'blocked', 'blockers': ['runtime_output_directory_missing']}, sort_keys=True))\n"
+                "import sys\n"
+                "if os.environ.get('BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT'):\n"
+                "    sys.path.insert(0, os.environ['BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT'])\n"
+                "from blueprint_pipeline.task_evaluation_scene_configuration_output_archive import write_output_archive\n"
+                "write_output_archive(output_dir, output_zip)\n"
                 "print('BLUEPRINT_VAST_PROVIDER_OUTPUT_ZIP_WRITTEN:%d' % output_zip.stat().st_size)\n"
                 "PY\n"
                 "zip_rc=$?; "
@@ -9552,7 +9544,12 @@ def run_vast_provider_adapter(
                     r"BLUEPRINT_VAST_PROVIDER_OUTPUT_ZIP_WRITTEN:([0-9]+)",
                     heartbeat_text,
                 )
-                if output_size_match is not None:
+                recover_unmarked_scene_output = (
+                    provider_bundle_kind == "task_evaluation_scene_configuration"
+                    and expected_provider_upload_bytes > 0
+                )
+                if output_size_match is not None or recover_unmarked_scene_output:
+                    recovery_started = time.monotonic()
                     recovery = recover_provider_output_before_teardown(
                         connection={
                             "ssh_host": onstart_logs.get("instance_ssh_host"),
@@ -9561,9 +9558,28 @@ def run_vast_provider_adapter(
                         provider_bundle_kind=provider_bundle_kind,
                         output_path=output_zip_path,
                         attempt_dir=resolved_job_dir / "provider_output_ssh_recovery",
-                        expected_size_bytes=int(output_size_match.group(1)),
+                        expected_size_bytes=(int(output_size_match.group(1))
+                                             if output_size_match is not None else None),
+                        **({"maximum_size_bytes": int(expected_provider_upload_bytes)}
+                           if recover_unmarked_scene_output else {}),
                         minimum_free_bytes=provider_output_minimum_free_bytes,
                     )
+                    remaining_recovery = MAX_RECOVERY_SECONDS - (time.monotonic() - recovery_started)
+                    if (recovery.get("status") != "completed" and recover_unmarked_scene_output
+                            and remaining_recovery > 0):
+                        recovery = recover_provider_output_before_teardown(
+                            connection={"ssh_host": onstart_logs.get("instance_ssh_host"),
+                                        "ssh_port": onstart_logs.get("instance_ssh_port")},
+                            provider_bundle_kind=provider_bundle_kind,
+                            output_path=output_zip_path,
+                            attempt_dir=resolved_job_dir / "provider_checkpoint_ssh_recovery",
+                            expected_size_bytes=None,
+                            maximum_size_bytes=int(expected_provider_upload_bytes),
+                            minimum_free_bytes=provider_output_minimum_free_bytes,
+                            stage_checkpoint=True, timeout_seconds=remaining_recovery,
+                        )
+                    recovery["successful_zip_marker_observed"] = output_size_match is not None
+                    recovery["artifact_recovery_does_not_grant_success"] = True
                     output_download_manifest["ssh_recovery"] = recovery
                     if recovery.get("status") == "completed":
                         output_download_manifest.update(

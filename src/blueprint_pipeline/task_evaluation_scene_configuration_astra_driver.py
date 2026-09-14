@@ -250,6 +250,74 @@ def _locked_component(function):
     return execute
 
 
+def prepare_astra_execution_runtime(*, runtime, package, authored_root, values,
+                                    runner=subprocess.run, sandbox_factory=SandboxedAssetRunner,
+                                    blender_validator=validate_runtime):
+    """The real no-inference CAD/Blender boundary, shared by preflight and stage3."""
+    cad_runtime = _materialize_cad_skill_runtime(runtime)
+    cad_root = Path(cad_runtime["root"])
+    verified_sources = {}
+    for name, folder, source_id in (("mac", "Multi-Agent-CAD", "multi-agent-cad"),
+                                    ("cad", "text-to-cad", "text-to-cad")):
+        source_root = cad_root / folder
+        archive = runtime / ("multi_agent_cad_source.zip" if name == "mac" else "text_to_cad_skills_source.zip")
+        verified_sources[name] = {"root": str(source_root), "commit": cad_runtime["source_commits"][source_id],
+            "tracked_file_sha256": {str(path.relative_to(source_root)): hashlib.sha256(path.read_bytes()).hexdigest()
+                                    for path in source_root.rglob("*") if path.is_file()},
+            "source_diff": "", "source_receipt_digest": cad_runtime["receipt_digest"],
+            "source_receipt_path": str(runtime / "cad_skill_source_receipt.json"),
+            "archive_path": str(archive), "archive_sha256": _sha256(archive)}
+    if "verified_sources" not in inspect.signature(execute_mac_candidate).parameters:
+        raise AstraStageError("astra_mac_archive_admission_unavailable")
+    verify_cad_sources(cad_root / "Multi-Agent-CAD", cad_root / "text-to-cad", verified_sources)
+    if str(values.get(BLENDER_ROOT_ENV) or "").strip():
+        blender_root = _required_path(values, BLENDER_ROOT_ENV)
+        blender = blender_validator(blender_root, runner=runner)
+    else:
+        from .task_evaluation_scene_configuration_astra_runtime import materialize_packaged_blender_runtime
+        blender_root = runtime / "packaged_blender"
+        blender = materialize_packaged_blender_runtime(package, blender_root, runner=runner)
+    for dependency in ("build123d", "langgraph", "agents"):
+        if importlib.util.find_spec(dependency) is None:
+            raise AstraStageError(f"astra_runtime_dependency_missing:{dependency}")
+    runtime_loader = [Path(value).resolve() for value in os.environ.get("PYTHONPATH", "").split(os.pathsep)
+                      if value and Path(value).is_dir()]
+    roots = [Path(sys.prefix).resolve(), Path(sys.base_prefix).resolve(), cad_root,
+             blender_root, Path(__file__).resolve().parent.parent, *runtime_loader]
+    roots = list(dict.fromkeys(roots))
+    sandbox = sandbox_factory(read_roots=roots, write_root=authored_root,
+        executable_roots=[Path(sys.prefix).resolve(), Path(sys.base_prefix).resolve(), blender_root])
+    sandbox.preflight()
+    cad_probe = sandbox([sys.executable, "-c", "import build123d; from langgraph.graph import StateGraph; "
+                         "from cadpy.generation import run_script_generator; "
+                         "assert abs(build123d.Box(1,2,3).volume - 6) < 1e-8"],
+        cwd=authored_root, env={"PYTHONPATH": os.pathsep.join(dict.fromkeys([
+            str(cad_root / "Multi-Agent-CAD/packages/cadpy/src"),
+            str(cad_root / "text-to-cad/packages/cadpy/src"), *map(str, runtime_loader)]))},
+        capture_output=True, text=True, check=False, timeout=60)
+    if cad_probe.returncode:
+        _write(runtime / "cad_runtime_preflight_failure.json", {"returncode": cad_probe.returncode,
+            "stdout": cad_probe.stdout[-4000:], "stderr": cad_probe.stderr[-4000:]})
+        raise AstraStageError("astra_sandboxed_cad_runtime_preflight_failed")
+    return cad_runtime, cad_root, verified_sources, blender, sandbox
+
+
+def preflight_astra_execution_runtime(*, package, output_root, environment=None):
+    """Discover runtime refusals before paying for ArtiFixer training."""
+    output_root.mkdir(parents=True, exist_ok=False)
+    authored = output_root / "authoring"
+    authored.mkdir()
+    for name in _CAD_PACKAGE_FILES:
+        source = package / name
+        if source.is_symlink() or not source.is_file():
+            raise AstraStageError("astra_cad_package_incomplete")
+        shutil.copyfile(source, output_root / name)
+    prepare_astra_execution_runtime(runtime=output_root, package=package,
+                                   authored_root=authored, values=dict(os.environ if environment is None else environment))
+    _write(output_root / "runtime_preflight.json", {
+        "status": "passed", "model_calls_performed": 0, "provider_allocations_performed": 0})
+
+
 @_locked_component
 def execute_astra_component(*, environment=None, runner=subprocess.run,
                             cost_gate_factory=scene_configuration_openai_stage_gate,
@@ -331,51 +399,9 @@ def execute_astra_component(*, environment=None, runner=subprocess.run,
             output=delivery_output, physics_bounds=physics_bounds, configuration=configuration,
             source_record=source_record, stage_input=stage_input, rights_record=rights_record,
             cad_runtime=retained_runtime, blender=retained_runtime, authored_root=authored_root, result_path=result_path)
-    cad_runtime = _materialize_cad_skill_runtime(runtime)
-    cad_root = Path(cad_runtime["root"])
-    verified_sources = {}
-    for name, folder, source_id in (("mac", "Multi-Agent-CAD", "multi-agent-cad"),
-                                    ("cad", "text-to-cad", "text-to-cad")):
-        source_root = cad_root / folder
-        archive = runtime / ("multi_agent_cad_source.zip" if name == "mac" else "text_to_cad_skills_source.zip")
-        verified_sources[name] = {"root": str(source_root), "commit": cad_runtime["source_commits"][source_id],
-            "tracked_file_sha256": {str(path.relative_to(source_root)): hashlib.sha256(path.read_bytes()).hexdigest()
-                                    for path in source_root.rglob("*") if path.is_file()},
-            "source_diff": "", "source_receipt_digest": cad_runtime["receipt_digest"],
-            "source_receipt_path": str(runtime / "cad_skill_source_receipt.json"),
-            "archive_path": str(archive), "archive_sha256": _sha256(archive)}
-    if "verified_sources" not in inspect.signature(execute_mac_candidate).parameters:
-        raise AstraStageError("astra_mac_archive_admission_unavailable")
-    verify_cad_sources(cad_root / "Multi-Agent-CAD", cad_root / "text-to-cad", verified_sources)
-    if str(values.get(BLENDER_ROOT_ENV) or "").strip():
-        blender_root = _required_path(values, BLENDER_ROOT_ENV)
-        blender = blender_validator(blender_root, runner=runner)
-    else:
-        from .task_evaluation_scene_configuration_astra_runtime import materialize_packaged_blender_runtime
-        blender_root = runtime / "packaged_blender"
-        blender = materialize_packaged_blender_runtime(package, blender_root, runner=runner)
-    for dependency in ("build123d", "langgraph", "agents"):
-        if importlib.util.find_spec(dependency) is None:
-            raise AstraStageError(f"astra_runtime_dependency_missing:{dependency}")
-    runtime_loader = [Path(value).resolve() for value in os.environ.get("PYTHONPATH", "").split(os.pathsep)
-                      if value and Path(value).is_dir()]
-    roots = [Path(sys.prefix).resolve(), Path(sys.base_prefix).resolve(), cad_root,
-             blender_root, Path(__file__).resolve().parent.parent, *runtime_loader]
-    roots = list(dict.fromkeys(roots))
-    sandbox = sandbox_factory(read_roots=roots, write_root=authored_root,
-        executable_roots=[Path(sys.prefix).resolve(), Path(sys.base_prefix).resolve(), blender_root])
-    sandbox.preflight()
-    cad_probe = sandbox([sys.executable, "-c", "import build123d; from langgraph.graph import StateGraph; "
-                         "from cadpy.generation import run_script_generator; "
-                         "assert abs(build123d.Box(1,2,3).volume - 6) < 1e-8"],
-        cwd=authored_root, env={"PYTHONPATH": os.pathsep.join(dict.fromkeys([
-            str(cad_root / "Multi-Agent-CAD/packages/cadpy/src"),
-            str(cad_root / "text-to-cad/packages/cadpy/src"), *map(str, runtime_loader)]))},
-        capture_output=True, text=True, check=False, timeout=60)
-    if cad_probe.returncode:
-        _write(runtime / "cad_runtime_preflight_failure.json", {"returncode": cad_probe.returncode,
-            "stdout": cad_probe.stdout[-4000:], "stderr": cad_probe.stderr[-4000:]})
-        raise AstraStageError("astra_sandboxed_cad_runtime_preflight_failed")
+    cad_runtime, cad_root, verified_sources, blender, sandbox = prepare_astra_execution_runtime(
+        runtime=runtime, package=package, authored_root=authored_root, values=values,
+        runner=runner, sandbox_factory=sandbox_factory, blender_validator=blender_validator)
     scope = scene_configuration_openai_stage_scope(values, stage="content_agents")
     key_path = Path(scope["api_key_file"]).expanduser()
     if key_path.is_symlink() or not key_path.is_file() or key_path.stat().st_mode & 0o077 or not key_path.read_text().strip():

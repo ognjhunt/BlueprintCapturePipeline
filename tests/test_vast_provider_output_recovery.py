@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+import io
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from blueprint_pipeline import vast_provider_output_recovery as recovery
 
@@ -119,3 +123,43 @@ def test_metadata_and_transfer_share_one_recovery_deadline(monkeypatch, tmp_path
         timeout_seconds=12)
     assert result['status'] == 'completed'
     assert timeouts == [8., 4.]
+
+
+
+@pytest.mark.parametrize("stage_checkpoint", [False, True])
+def test_scene_configuration_recovers_unmarked_partial_archive_with_bound(monkeypatch, tmp_path, stage_checkpoint):
+    _install_identity(monkeypatch, tmp_path)
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("stages/stage-1/checkpoint.pt", b"completed-training")
+    payload = buffer.getvalue()
+    digest = hashlib.sha256(payload).hexdigest()
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        if kwargs.get("text"):
+            return SimpleNamespace(returncode=0, stdout=f"{len(payload)} {digest}\n")
+        kwargs["stdout"].write(payload)
+        return SimpleNamespace(returncode=0, stderr=b"")
+
+    monkeypatch.setattr(recovery.subprocess, "run", run)
+    output = tmp_path / "partial.zip"
+    result = recovery.recover_provider_output_before_teardown(
+        connection={"ssh_host": "example.invalid", "ssh_port": 2222},
+        provider_bundle_kind="task_evaluation_scene_configuration", output_path=output,
+        attempt_dir=tmp_path / "attempt", expected_size_bytes=None, maximum_size_bytes=1024, stage_checkpoint=stage_checkpoint,
+    )
+    assert result["status"] == "completed" and output.read_bytes() == payload
+    filename = ("task_evaluation_scene_configuration_stage_checkpoint.zip" if stage_checkpoint
+                else "task_evaluation_scene_configuration_provider_output.zip")
+    assert all(filename in c[-1] for c in calls)
+
+
+def test_scene_configuration_unknown_size_cannot_be_unbounded(tmp_path):
+    result = recovery.recover_provider_output_before_teardown(
+        connection={"ssh_host": "example.invalid", "ssh_port": 2222},
+        provider_bundle_kind="task_evaluation_scene_configuration", output_path=tmp_path / "result.zip",
+        attempt_dir=tmp_path / "attempt", expected_size_bytes=None,
+    )
+    assert result["blockers"] == ["provider_output_ssh_recovery_expected_size_invalid"]
