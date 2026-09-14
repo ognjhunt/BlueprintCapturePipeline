@@ -34,6 +34,7 @@ def test_veto_refuses_changed_or_unknown_frame(exclusions):
 
 
 def test_veto_refuses_changed_source_receipt():
-    original = _review(); original['decision'] = 'rejected'
+    original = _review()
+    original['decision'] = 'rejected'
     with pytest.raises(ValueError, match='source_review'):
         apply_user_exclusions(review=original, excluded_frames={'source-07':'sha256:'+'b'*64}, authorization_reference='user')
