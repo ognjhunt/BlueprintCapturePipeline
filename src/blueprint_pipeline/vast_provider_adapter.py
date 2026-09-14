@@ -1734,6 +1734,8 @@ SCENE_CONFIGURATION_HOST_COMPILER_MAJOR = "11"
 SCENE_CONFIGURATION_PROVISIONED_COMMANDS: dict[str, tuple[str, ...]] = {
     "coreutils": ("timeout",),
     "bubblewrap": ("bwrap",),
+    "libseccomp2": (),
+    "python3": ("python3",),
     "util-linux": ("setpriv",),
     "curl": ("curl",),
     "wget": ("wget",),

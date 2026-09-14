@@ -174,8 +174,14 @@ def component(retained, monkeypatch):
         def __init__(self, **kw): seen["sandbox"] = kw
         def preflight(self): events.append("sandbox")
         def __call__(self, *args, **kw):
-            events.append("cad_preflight")
-            seen["cad_probe"] = kw
+            if "--python-expr" in args[0]:
+                events.append("blender_preflight")
+                seen["blender_probe"] = kw
+                (kw["cwd"] / "runtime_probe.blend").write_bytes(b"BLENDER-fixture")
+                (kw["cwd"] / "runtime_probe.png").write_bytes(b"\x89PNG\r\n\x1a\nfixture")
+            else:
+                events.append("cad_preflight")
+                seen["cad_probe"] = kw
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     class Gate:
@@ -219,7 +225,7 @@ def component(retained, monkeypatch):
 def test_stage_reserves_parent_gate_then_seals_existing_roles_without_nvidia_claims(component):
     previous = os.environ.get("OPENAI_API_KEY_FILE")
     result = driver.execute_astra_component(**component.kwargs)
-    assert component.events == ["sandbox", "cad_preflight", "reserve", "sdk", "complete", "package"]
+    assert component.events == ["sandbox", "cad_preflight", "blender_preflight", "reserve", "sdk", "complete", "package"]
     assert component.seen["budget"]["maximum_cost_usd"] == 9
     assert component.seen["gate"]["stage"] == "content_agents"
     assert component.seen["budget"]["run_id"] == component.seen["request"]["run_id"] == "shared-stage-run"
@@ -247,9 +253,27 @@ def test_authoring_failure_closes_parent_cost_receipt(component):
     component.kwargs["authoring_executor"] = failure
     with pytest.raises(RuntimeError, match="fixture failure"):
         driver.execute_astra_component(**component.kwargs)
-    assert component.events == ["sandbox", "cad_preflight", "reserve", "complete"]
+    assert component.events == ["sandbox", "cad_preflight", "blender_preflight", "reserve", "complete"]
     assert component.seen["completion"] == {"provider_call_performed": False, "runtime_result_digest": None,
                                              "runtime_exception_type": "RuntimeError"}
+
+
+def test_real_authoring_accepts_root_after_runtime_probes(component):
+    from blueprint_pipeline.task_object_astra_authoring import execute_asset_authoring
+
+    def authoring(**kwargs):
+        root = kwargs['output_root']
+        assert {p.name for p in root.iterdir()} <= {'tmp', 'xdg', 'cache'}
+        assert not (root / 'tmp' / 'runtime-probe').exists()
+        class StopBeforeModel:
+            def invoke(self, *args, **kw):
+                raise RuntimeError('reached_first_model_boundary')
+        kwargs['invoker'] = StopBeforeModel()
+        return execute_asset_authoring(**kwargs)
+
+    component.kwargs['authoring_executor'] = authoring
+    with pytest.raises(RuntimeError, match='reached_first_model_boundary'):
+        driver.execute_astra_component(**component.kwargs)
 
 
 def test_cad_import_failure_refuses_before_reservation_or_model(component):
@@ -325,3 +349,16 @@ def test_runtime_preflight_uses_same_bootstrap_without_model_calls(tmp_path, mon
     assert len(observed) == 1 and observed[0]['package'] == package
     assert all((output/name).read_bytes() == b'sealed-input' for name in driver._CAD_PACKAGE_FILES)
     assert json.loads((output/'runtime_preflight.json').read_text())['model_calls_performed'] == 0
+
+
+def test_missing_sandboxed_blender_output_refuses_before_model_reservation(component):
+    original = component.kwargs["sandbox_factory"]
+    class MissingOutput(original):
+        def __call__(self, argv, **kwargs):
+            if "--python-expr" in argv:
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            return super().__call__(argv, **kwargs)
+    component.kwargs["sandbox_factory"] = MissingOutput
+    with pytest.raises(driver.AstraStageError, match="sandboxed_blender_runtime_preflight_failed"):
+        driver.execute_astra_component(**component.kwargs)
+    assert "reserve" not in component.events

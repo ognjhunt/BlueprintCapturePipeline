@@ -288,10 +288,12 @@ def prepare_astra_execution_runtime(*, runtime, package, authored_root, values,
     sandbox = sandbox_factory(read_roots=roots, write_root=authored_root,
         executable_roots=[Path(sys.prefix).resolve(), Path(sys.base_prefix).resolve(), blender_root])
     sandbox.preflight()
+    probe_root = authored_root / 'tmp' / 'runtime-probe'
+    probe_root.mkdir(parents=True, exist_ok=True)
     cad_probe = sandbox([sys.executable, "-c", "import build123d; from langgraph.graph import StateGraph; "
                          "from cadpy.generation import run_script_generator; "
                          "assert abs(build123d.Box(1,2,3).volume - 6) < 1e-8"],
-        cwd=authored_root, env={"PYTHONPATH": os.pathsep.join(dict.fromkeys([
+        cwd=probe_root, env={"HOME": str(probe_root), "PYTHONPATH": os.pathsep.join(dict.fromkeys([
             str(cad_root / "Multi-Agent-CAD/packages/cadpy/src"),
             str(cad_root / "text-to-cad/packages/cadpy/src"), *map(str, runtime_loader)]))},
         capture_output=True, text=True, check=False, timeout=60)
@@ -299,6 +301,33 @@ def prepare_astra_execution_runtime(*, runtime, package, authored_root, values,
         _write(runtime / "cad_runtime_preflight_failure.json", {"returncode": cad_probe.returncode,
             "stdout": cad_probe.stdout[-4000:], "stderr": cad_probe.stderr[-4000:]})
         raise AstraStageError("astra_sandboxed_cad_runtime_preflight_failed")
+    # Exercise the real writer/renderer under the chosen kernel boundary before
+    # training, not just Blender --version outside the sandbox.
+    probe_blend = probe_root / "runtime_probe.blend"
+    probe_png = probe_root / "runtime_probe.png"
+    expression = (
+        "import bpy; "
+        f"bpy.ops.wm.save_as_mainfile(filepath={str(probe_blend)!r}); "
+        "s=bpy.context.scene; s.render.engine='CYCLES'; s.cycles.device='CPU'; "
+        "s.cycles.samples=1; s.render.resolution_x=32; s.render.resolution_y=32; "
+        "s.render.resolution_percentage=100; "
+        f"s.render.filepath={str(probe_png)!r}; bpy.ops.render.render(write_still=True)"
+    )
+    blender_probe = sandbox([blender["executable"], "--background", "--factory-startup",
+        "--threads", "2", "--python-exit-code", "1", "--python-expr", expression],
+        cwd=probe_root, env={"HOME": str(probe_root)},
+        capture_output=True, text=True, check=False, timeout=90)
+    if (blender_probe.returncode or not probe_blend.is_file() or probe_blend.is_symlink()
+            or not probe_png.is_file() or probe_png.is_symlink()
+            or probe_png.read_bytes()[:8] != b"\x89PNG\r\n\x1a\n"):
+        _write(runtime / "blender_sandbox_preflight_failure.json", {
+            "returncode": blender_probe.returncode, "stdout": blender_probe.stdout[-4000:],
+            "stderr": blender_probe.stderr[-4000:], "synthetic_runtime_probe_only": True})
+        raise AstraStageError("astra_sandboxed_blender_runtime_preflight_failed")
+    _write(runtime / "blender_sandbox_preflight.json", {
+        "status": "passed", "render_sha256": _sha256(probe_png),
+        "synthetic_runtime_probe_only": True})
+    shutil.rmtree(probe_root)  # Trusted cleanup; the real authoring root stays fresh.
     return cad_runtime, cad_root, verified_sources, blender, sandbox
 
 
