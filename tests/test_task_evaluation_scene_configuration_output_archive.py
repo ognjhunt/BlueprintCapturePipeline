@@ -22,8 +22,16 @@ def test_declared_completed_weights_survive_scratch_exclusion(tmp_path):
     write_output_archive(output, destination)
     with zipfile.ZipFile(destination) as archive:
         assert archive.read(weights.relative_to(output).as_posix()) == weights.read_bytes()
+        assert archive.read(receipt.relative_to(output).as_posix()) == receipt.read_bytes()
         assert not any(p.endswith('disposable.bin') for p in archive.namelist())
         assert len(json.loads(archive.read('retained_training_checkpoints.json'))['checkpoints']) == 1
+    saved = scratch/'saved-result.json'
+    receipt.rename(saved)
+    receipt.symlink_to(saved)
+    with pytest.raises(RuntimeError, match='training_result_symlink_forbidden'):
+        write_output_archive(output, destination)
+    receipt.unlink()
+    saved.rename(receipt)
     weights.write_bytes(b'tampered')
     with pytest.raises(RuntimeError, match='training_checkpoint_path_invalid'):
         write_output_archive(output, destination)

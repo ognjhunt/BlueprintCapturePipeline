@@ -14,6 +14,7 @@ import os
 import re
 import shutil
 import subprocess  # nosec B404 - executable is full-byte toolchain-bound
+import time
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,7 @@ from .task_evaluation_scene_configuration_component_package import (
 )
 from .task_evaluation_scene_configuration_runtime_budget import (
     GPU_STAGE_TIMEOUT_SECONDS,
+    STAGE_DEADLINE_EPOCH_ENV,
 )
 from .task_evaluation_scene_configuration_stage_producers import (
     ADMITTED_PRODUCER_IDENTITIES,
@@ -436,6 +438,7 @@ def _handler(
         secrets = _secret_values(run_environment)
         log_path = output_root / "stage_producer.log"
         timeout_seconds = _STAGE_TIMEOUTS_SECONDS[identity.adapter_id]
+        run_environment[STAGE_DEADLINE_EPOCH_ENV] = str(time.time() + timeout_seconds)
         try:
             completed = runner(
                 [str(executable)],

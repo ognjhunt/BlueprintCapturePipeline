@@ -14,7 +14,7 @@ import json
 import os
 import shutil
 import sys
-import subprocess  # nosec B404 - package and entrypoint are digest-bound
+import time
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
@@ -23,6 +23,8 @@ from typing import Any
 from PIL import Image
 
 from .core.common import redacted_failure_text
+from .scene_component_process import run_component_process
+from .task_evaluation_scene_configuration_runtime_budget import artifixer_training_timeout_seconds
 from .task_evaluation_scene_configuration_artifixer_artifacts import (
     PAUSED_RECEIPT_SCHEMA_VERSION as PAUSED_RECEIPT_SCHEMA_VERSION,
     VISUAL_REVIEW_EXECUTION_SCHEMA_VERSION as VISUAL_REVIEW_EXECUTION_SCHEMA_VERSION,
@@ -937,7 +939,7 @@ def _run_artifixer_training_round(
             capture_output=True,
             text=True,
             check=False,
-            timeout=7_000,
+            timeout=artifixer_training_timeout_seconds(environment, now_epoch=time.time()),
         )
         runtime_result_path = (
             artifixer_output / "public_scene_artifixer3d_runtime_result.json"
@@ -1669,7 +1671,7 @@ def _prepare_semantic_prefix(*, values, stage_input_path, stage_input, envelope,
 def execute_artifixer_component(
     *,
     environment: Mapping[str, str] | None = None,
-    runner: Any = subprocess.run,
+    runner: Any = run_component_process,
 ) -> dict[str, Any]:
     """Run the released production chain once inside its parent GPU."""
 
