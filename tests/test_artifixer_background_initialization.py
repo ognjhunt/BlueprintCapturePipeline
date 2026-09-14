@@ -353,8 +353,11 @@ def test_completed_checkpoint_survives_post_training_guard_refusal(tmp_path, mon
     package = ModuleType("data_processing")
     package.artifixer3d = SimpleNamespace(artifixer3d_checkpoint=lambda *_: checkpoint)
     package.threedgrut_training = SimpleNamespace(
-        train_3dgrut=train, DEFAULT_THREEDGRUT_CONFIG_DIR=tmp_path
+        train_3dgrut=train, DEFAULT_THREEDGRUT_CONFIG_DIR=tmp_path,
+        Trainer3DGRUT=type("Trainer3DGRUT", (), {"get_losses": lambda self: None}),
     )
+    from importlib.metadata import version
+    monkeypatch.setattr("importlib.metadata.version", lambda name: "1.9.0" if name == "torchmetrics" else version(name))
     monkeypatch.setitem(sys.modules, "data_processing", package)
     monkeypatch.setattr(runner, "_prepare_dual_target_distillation_replay", prepare)
     request = {
