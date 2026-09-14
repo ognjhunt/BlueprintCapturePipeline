@@ -120,3 +120,19 @@ def test_unknown_training_policy_refuses_before_image_calls():
     )
     with pytest.raises(TaskEvaluationSceneConfigurationArtifixerError, match="training_policy_invalid"):
         _artifixer_tuning({"artifixer_training_policy": "typo"})
+
+
+def test_corrected_only_requires_pixel_and_perceptual_loss():
+    from blueprint_pipeline.artifixer_appearance_freeze import CORRECTED_ONLY_LOSS_OVERRIDES
+    from tests.test_public_scene_artifixer3d_dual_target_runner import _request
+    runner = _runner_module()
+    request = _request(runner)
+    assert runner._dual_target_request_is_bound(request)
+    request["artifixer3d"]["training_supervision"] = "corrected_only"
+    # The old teacher setting disabled reconstruction loss, relying on originals.
+    assert not runner._dual_target_request_is_bound(request)
+    request["artifixer3d"]["loss_overrides"] = dict(CORRECTED_ONLY_LOSS_OVERRIDES)
+    assert runner._dual_target_request_is_bound(request)
+    assert CORRECTED_ONLY_LOSS_OVERRIDES["loss.lambda_reconlosses_override"] == 1.0
+    request["artifixer3d"]["loss_overrides"]["loss.lambda_reconlosses_override"] = 0.0
+    assert not runner._dual_target_request_is_bound(request)

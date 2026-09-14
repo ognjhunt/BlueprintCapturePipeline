@@ -1270,6 +1270,8 @@ def build_artifixer3d_bundle(
             partition = candidate["appearance_initialization"]["parameter_partition"]
             if partition.get("local_appearance_policy") is not None:
                 runtime_request["artifixer3d"]["training_supervision"] = "corrected_only"
+                from .artifixer_appearance_freeze import CORRECTED_ONLY_LOSS_OVERRIDES
+                runtime_request["artifixer3d"]["loss_overrides"] = dict(CORRECTED_ONLY_LOSS_OVERRIDES)
                 runtime_request["repair_target"] = "approved_corrected_images_with_local_3d_appearance_repair"
 
         if render_only:

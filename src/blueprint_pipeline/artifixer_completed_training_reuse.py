@@ -132,6 +132,11 @@ def training_identity(
         "shared_initialization": _file_identity(candidate["shared_retained_scene"]),
         "parameter_partition": initialization["parameter_partition"],
         "geometry_mode": initialization["geometry_mode"],
+        "training_loss_contract": (
+            "corrected_l1_1_lpips_0.1_v1"
+            if initialization["parameter_partition"].get("local_appearance_policy") is not None
+            else "legacy_paired_loss_v1"
+        ),
         "transforms": _file_identity(task["transforms"]),
         "camera_index": _file_identity(task["camera_index"]),
         "source_frames": _portable(task["frames"]),
@@ -255,6 +260,11 @@ def stage_completed_training(
         == admitted_teacher_training_images(old_teacher),
         "runtime_training_lineage_changed",
     )
+    if actual["training_loss_contract"] == "corrected_l1_1_lpips_0.1_v1":
+        from .artifixer_appearance_freeze import CORRECTED_ONLY_LOSS_OVERRIDES
+        _require(runtime_task.get("training_supervision") == "corrected_only"
+                 and runtime_task.get("loss_overrides") == CORRECTED_ONLY_LOSS_OVERRIDES,
+                 "completed_training_loss_contract_changed")
     _require(
         geometry_protection_is_qualified(protection)
         and protection.get("mode") == "freeze_declared_appearance_initialization"

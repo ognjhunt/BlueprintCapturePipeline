@@ -27,6 +27,13 @@ def validate_partition(partition, total_count):
 
 TRAINING_POLICY = "corrected_only_local_appearance"
 LEGACY_TRAINING_POLICY = "masked_original_anchors"
+CORRECTED_ONLY_LOSS_OVERRIDES = {
+    "loss.use_l1": True, "loss.lambda_l1": 1.0,
+    "loss.use_l2": False, "loss.use_ssim": False,
+    "loss.use_lpips_override": True, "loss.lambda_lpips_override": 0.1,
+    "loss.lambda_reconlosses_override": 1.0,
+}
+
 
 
 def local_appearance_mask(reference, partition):
