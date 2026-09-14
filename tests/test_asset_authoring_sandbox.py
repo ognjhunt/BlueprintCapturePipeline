@@ -30,3 +30,46 @@ def test_linux_deep_mount_ancestors_are_empty_traversable_namespace_dirs(tmp_pat
     assert str(read_root.parent) not in bound
     assert '--no-new-privs' in command and '--unshare-net' in command
     assert '--chmod' not in command
+
+
+def test_unavailable_kernel_backends_never_run_candidate(tmp_path, monkeypatch):
+    import pytest
+    from blueprint_pipeline import asset_landlock
+    monkeypatch.setattr(sandbox.platform, 'system', lambda: 'Linux')
+    monkeypatch.setattr(sandbox.shutil, 'which', lambda name: None)
+    monkeypatch.setattr(asset_landlock, 'run_with_landlock', lambda *args, **kwargs:
+        SimpleNamespace(returncode=126, stderr='kernel unavailable', stdout=''))
+    runner = sandbox.SandboxedAssetRunner(read_roots=[], write_root=tmp_path)
+    with pytest.raises(sandbox.AssetSandboxError, match='asset_sandbox_unavailable'):
+        runner.preflight()
+
+
+def test_repeated_preflight_preserves_backend_and_original_attempts(tmp_path, monkeypatch):
+    import json
+    monkeypatch.setattr(sandbox.platform, 'system', lambda: 'Linux')
+    monkeypatch.setattr(sandbox.shutil, 'which', lambda name: '/usr/bin/bwrap')
+    calls = []
+    def invoke(self, *args, **kwargs):
+        calls.append(self.backend)
+        return SimpleNamespace(returncode=0 if self.backend else 1, stderr='namespace denied')
+    monkeypatch.setattr(sandbox.SandboxedAssetRunner, '__call__', invoke)
+    output = tmp_path / 'output'
+    output.mkdir()
+    runner = sandbox.SandboxedAssetRunner(read_roots=[], write_root=output)
+    runner.preflight()
+    receipt = (tmp_path / 'output.sandbox_preflight.json').read_bytes()
+    runner.preflight()
+    assert calls == [None, 'landlock_seccomp']
+    assert runner.backend == 'landlock_seccomp'
+    assert (tmp_path / 'output.sandbox_preflight.json').read_bytes() == receipt
+    assert [r['backend'] for r in json.loads(receipt)['attempts']] == ['namespace', 'landlock_seccomp']
+
+
+def test_home_override_cannot_escape_attempt(tmp_path, monkeypatch):
+    import pytest
+    monkeypatch.setattr(sandbox.shutil, 'which', lambda name: '/usr/bin/bwrap')
+    output = tmp_path / 'output'
+    output.mkdir()
+    runner = sandbox.SandboxedAssetRunner(read_roots=[], write_root=output)
+    with pytest.raises(sandbox.AssetSandboxError, match='home_outside_attempt'):
+        runner(['/usr/bin/true'], env={'HOME': str(tmp_path)})

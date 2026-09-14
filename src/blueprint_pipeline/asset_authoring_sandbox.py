@@ -29,20 +29,54 @@ class SandboxedAssetRunner:
         forbidden = (Path.home(), Path('/'), Path('/etc'), Path('/Users'), Path('/var'))
         if self.write_root in forbidden or any(p in forbidden for p in self.read_roots):
             raise AssetSandboxError('asset_sandbox_root_too_broad')
+        self.backend = None
+        self._preflight_passed = False
         self.system = platform.system()
         self.launcher = shutil.which('sandbox-exec' if self.system == 'Darwin' else 'bwrap')
 
     def preflight(self) -> None:
-        if self.system not in {'Darwin', 'Linux'} or not self.launcher:
+        if self._preflight_passed:
+            return
+        self.backend = None
+        attempts = []
+        if self.system not in {'Darwin', 'Linux'} or (self.system == 'Darwin' and not self.launcher):
             raise AssetSandboxError('asset_sandbox_runtime_missing')
-        result = self(['/usr/bin/true'], cwd=self.write_root, timeout=15,
-                      capture_output=True, text=True, check=False)
-        if result.returncode:
-            raise AssetSandboxError('asset_sandbox_unavailable')
+        if self.launcher:
+            result = self(['/usr/bin/true'], cwd=self.write_root, timeout=15,
+                          capture_output=True, text=True, check=False)
+            attempts.append({'backend': 'namespace' if self.system == 'Linux' else 'sandbox-exec',
+                             'returncode': result.returncode, 'stderr': result.stderr[-2000:]})
+            if result.returncode == 0:
+                self._record_preflight(attempts, 'passed')
+                return
+        if self.system == 'Linux':
+            # Default provider containers intentionally lack namespace privileges.
+            # Select a different kernel boundary, never unsandboxed execution.
+            self.backend = 'landlock_seccomp'
+            for folder in (self.write_root, self.write_root / 'tmp',
+                           self.write_root / 'xdg', self.write_root / 'cache'):
+                folder.mkdir(exist_ok=True)
+                if os.geteuid() == 0:
+                    os.chown(folder, os.getuid(), os.getgid())
+            result = self(['/usr/bin/true'], cwd=self.write_root, timeout=15,
+                          capture_output=True, text=True, check=False)
+            attempts.append({'backend': self.backend, 'returncode': result.returncode,
+                             'stderr': result.stderr[-2000:]})
+            if result.returncode == 0:
+                self._record_preflight(attempts, 'passed')
+                return
+        self._record_preflight(attempts, 'blocked')
+        raise AssetSandboxError('asset_sandbox_unavailable')
+
+    def _record_preflight(self, attempts, status):
+        path = self.write_root.parent / (self.write_root.name + '.sandbox_preflight.json')
+        path.write_text(json.dumps({'status': status, 'attempts': attempts,
+                                    'unsandboxed_execution_allowed': False}) + '\n')
+        self._preflight_passed = status == 'passed'
 
     def __call__(self, argv, *, cwd=None, env=None, timeout=300, check=False,
                  capture_output=True, text=True, **kwargs):
-        if not self.launcher:
+        if not self.launcher and self.backend != 'landlock_seccomp':
             raise AssetSandboxError('asset_sandbox_runtime_missing')
         directory = Path(cwd or self.write_root).resolve(strict=True)
         if not directory.is_relative_to(self.write_root):
@@ -60,6 +94,11 @@ class SandboxedAssetRunner:
             'XDG_CACHE_HOME': str(self.write_root / 'cache'),
             'PYTHONDONTWRITEBYTECODE': '1', 'PYTHONNOUSERSITE': '1',
         }
+        if env and 'HOME' in env:
+            home = Path(env['HOME']).resolve(strict=True)
+            if not home.is_dir() or not home.is_relative_to(self.write_root):
+                raise AssetSandboxError('asset_sandbox_home_outside_attempt')
+            environment['HOME'] = str(home)
         # Only loader settings needed for the explicitly mounted CAD closure.
         for name in ('PYTHONPATH', 'LD_LIBRARY_PATH', 'DYLD_LIBRARY_PATH'):
             if env and name in env:
@@ -71,6 +110,13 @@ class SandboxedAssetRunner:
         (self.write_root / 'tmp').mkdir(exist_ok=True)
         (self.write_root / 'xdg').mkdir(exist_ok=True, mode=0o700)
         (self.write_root / 'cache').mkdir(exist_ok=True)
+        if kwargs:
+            raise AssetSandboxError('asset_sandbox_subprocess_option_not_admitted')
+        if self.backend == 'landlock_seccomp':
+            from .asset_landlock import run_with_landlock
+            return run_with_landlock(argv, roots=roots, write_root=self.write_root,
+                cwd=directory, env=environment, timeout=min(float(timeout), 900),
+                check=check, capture_output=capture_output, text=text)
         if self.system == 'Darwin':
             readable = ['/System', '/usr', '/bin', '/sbin', '/Library/Fonts',
                         '/Library/Apple', '/private/etc/fonts', '/private/etc/localtime',
@@ -125,7 +171,7 @@ class SandboxedAssetRunner:
                     account = pwd.getpwnam('blueprint')
                 except KeyError:
                     account = pwd.getpwnam('nobody')
-                for folder in {self.write_root, directory, self.write_root / 'tmp',
+                for folder in {self.write_root, directory, Path(environment['HOME']), self.write_root / 'tmp',
                                self.write_root / 'xdg', self.write_root / 'cache',
                                *[p for p in directory.parents if p.is_relative_to(self.write_root)]}:
                     os.chown(folder, account.pw_uid, account.pw_gid)
