@@ -9550,6 +9550,7 @@ def run_vast_provider_adapter(
                 )
                 if output_size_match is not None or recover_unmarked_scene_output:
                     recovery_started = time.monotonic()
+                    prefer_checkpoint = recover_unmarked_scene_output and output_size_match is None
                     recovery = recover_provider_output_before_teardown(
                         connection={
                             "ssh_host": onstart_logs.get("instance_ssh_host"),
@@ -9560,7 +9561,8 @@ def run_vast_provider_adapter(
                         attempt_dir=resolved_job_dir / "provider_output_ssh_recovery",
                         expected_size_bytes=(int(output_size_match.group(1))
                                              if output_size_match is not None else None),
-                        **({"maximum_size_bytes": int(expected_provider_upload_bytes)}
+                        **({"maximum_size_bytes": int(expected_provider_upload_bytes),
+                            "stage_checkpoint": prefer_checkpoint}
                            if recover_unmarked_scene_output else {}),
                         minimum_free_bytes=provider_output_minimum_free_bytes,
                     )
@@ -9576,7 +9578,7 @@ def run_vast_provider_adapter(
                             expected_size_bytes=None,
                             maximum_size_bytes=int(expected_provider_upload_bytes),
                             minimum_free_bytes=provider_output_minimum_free_bytes,
-                            stage_checkpoint=True, timeout_seconds=remaining_recovery,
+                            stage_checkpoint=not prefer_checkpoint, timeout_seconds=remaining_recovery,
                         )
                     recovery["successful_zip_marker_observed"] = output_size_match is not None
                     recovery["artifact_recovery_does_not_grant_success"] = True
