@@ -285,6 +285,8 @@ def prepare_astra_execution_runtime(*, runtime, package, authored_root, values,
     roots = [Path(sys.prefix).resolve(), Path(sys.base_prefix).resolve(), cad_root,
              blender_root, Path(__file__).resolve().parent.parent, *runtime_loader]
     roots = list(dict.fromkeys(roots))
+    from .asset_runtime_permissions import prepare_runtime_code_access
+    _write(runtime / 'runtime_code_access.json', prepare_runtime_code_access(roots))
     sandbox = sandbox_factory(read_roots=roots, write_root=authored_root,
         executable_roots=[Path(sys.prefix).resolve(), Path(sys.base_prefix).resolve(), blender_root])
     sandbox.preflight()

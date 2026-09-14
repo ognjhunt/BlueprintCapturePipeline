@@ -13,6 +13,7 @@ SCHEMA = 'task_evaluation_scene_execution_budget_extension.v1'
 DIRECTORY = 'execution-budget-extensions'
 ACK = 'extend-scene-execution-budget'
 LIMIT_FIELDS = {'max_total_spend_usd', 'max_paid_attempts'}
+MAX_EXTENDED_PAID_ATTEMPTS = 64  # Explicit owner grant; original intake stays capped at 32.
 ATTEMPT_GRANT_FIELD = 'execution_budget_extension_digest'
 
 
@@ -30,7 +31,7 @@ def _limits(value: Mapping[str, Any]) -> dict[str, Any]:
     from .task_evaluation_scene_intake import _number
     spend, count = value.get('max_total_spend_usd'), value.get('max_paid_attempts')
     _require(_number(spend) and 0 < spend <= 1000
-             and type(count) is int and 1 <= count <= 32, 'limits_invalid')
+             and type(count) is int and 1 <= count <= MAX_EXTENDED_PAID_ATTEMPTS, 'limits_invalid')
     return {'max_total_spend_usd': spend, 'max_paid_attempts': count}
 
 

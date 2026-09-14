@@ -80,6 +80,27 @@ def test_original_exposure_and_per_action_limit_are_not_reset(tmp_path):
         attempt(tmp_path, owner, 'a3', cost=5, now=201)
 
 
+def test_explicit_grant_can_extend_an_exhausted_32_attempt_history(tmp_path):
+    payload = request()
+    payload['execution'].update(max_total_spend_usd=100, max_paid_attempts=32)
+    owner = stage(tmp_path, payload)
+    directory, _ = loaded(tmp_path, owner)
+    for index in range(32):
+        attempt(tmp_path, owner, f'old-{index}', cost=1)
+    before = {p: p.read_bytes() for p in (directory / 'attempts').iterdir()}
+    with pytest.raises(ValueError, match='attempt_cap_exhausted'):
+        attempt(tmp_path, owner, 'next', cost=1)
+    grant = extend(tmp_path, owner, max_total_spend_usd=100, max_paid_attempts=40)
+    row = attempt(tmp_path, owner, 'next', cost=1, now=201)
+    assert row[budget.ATTEMPT_GRANT_FIELD] == grant['extension_digest']
+    assert all(p.read_bytes() == b for p, b in before.items())
+    assert intake.scene_intent_status(queue_root=tmp_path, intent_id=owner['intent_id'], now=202)[
+        'effective_execution_budget']['max_total_spend_usd'] == 100
+    payload['execution']['max_paid_attempts'] = 40
+    with pytest.raises(ValueError, match='attempt_bounds_invalid'):
+        stage(tmp_path, payload)  # A fresh intake cannot silently opt into the extension bound.
+
+
 def test_chain_is_monotonic_idempotent_and_old_grants_stay_valid(tmp_path):
     owner = stage(tmp_path)
     first = extend(tmp_path, owner, max_total_spend_usd=10, max_paid_attempts=4)
@@ -100,7 +121,7 @@ def test_chain_is_monotonic_idempotent_and_old_grants_stay_valid(tmp_path):
     dict(owner={'user_id': 'other', 'organization_id': 'org1'}), dict(authorization_reference=''),
     dict(max_total_spend_usd=True), dict(max_total_spend_usd=float('nan')),
     dict(max_total_spend_usd=float('inf')), dict(max_total_spend_usd=1001),
-    dict(max_paid_attempts=True), dict(max_paid_attempts=1.5), dict(max_paid_attempts=33),
+    dict(max_paid_attempts=True), dict(max_paid_attempts=1.5), dict(max_paid_attempts=65),
     dict(max_paid_attempts=0), dict(now=1000), dict(now=99)])
 def test_invalid_or_unapproved_extensions_do_not_write(tmp_path, change):
     owner = stage(tmp_path)

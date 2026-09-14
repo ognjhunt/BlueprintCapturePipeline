@@ -52,3 +52,21 @@ The [Linux Landlock API documentation](https://docs.kernel.org/userspace-api/lan
 defines versioned filesystem rights and their inheritance. Seccomp compensates
 for the older ABI's truncation gap; unsupported features are not silently
 accepted as protection.
+
+A second live preflight on instance 51035345 identified a distinct DAC boundary:
+clearing capabilities made `/isaac-sim/kit/python` inaccessible. Trusted setup
+now prepares the explicitly declared runtime-code roots before isolation. It adds
+only the read/search bits the existing UID needs without DAC capabilities;
+contents, ownership and write permissions stay unchanged. Root paths are canonicalized; symlinks within those trees are not
+followed, broad system roots are not recursively broadened, and changes are
+recorded in `runtime_code_access.json`. Candidate execution still has zero
+capabilities and the same Landlock/seccomp restrictions. The Docker regression
+first reproduces refusal on a foreign-owned private Python tree, then proves
+file access and executable startup while outside reads remain denied.
+
+The already-authorized long-running rehearsal also exhausted its original 32
+source-attempt slots. The append-only owner budget-extension API permits an
+explicit grant up to 64 attempts; initial intake still permits at most 32.
+Historical attempts and exposure are never refunded, per-action limits are
+unchanged, and the cumulative dollar ceiling remains $1,000. No extra attempts
+are granted merely by deploying the code.
