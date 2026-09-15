@@ -594,3 +594,34 @@ def test_large_readback_refuses_incomplete_changed_or_unpinned_ranges(tmp_path, 
             path=source, artifact_kind="provider-bundle", client=client, bucket="inputs"
         )
     assert all(body.closed for body in client.bodies)
+
+
+def test_large_readback_accepts_fragmented_stream_without_accepting_truncation(tmp_path, monkeypatch):
+    _small_range_limits(monkeypatch)
+    class FragmentedBody(io.BytesIO):
+        def read(self, amount=-1):
+            return super().read(min(amount, 1))
+    class FragmentedClient(_RangedClient):
+        def get_object(self, **kwargs):
+            response = super().get_object(**kwargs)
+            old_body = response["Body"]
+            body = FragmentedBody(old_body.getvalue())
+            old_body.close()
+            response["Body"] = body
+            self.bodies.append(body)
+            return response
+    source = tmp_path / "capsule.zip"
+    source.write_bytes(b"abcdefghijk")
+    for fault in ["", "short", "overflow"]:
+        client = FragmentedClient(fault=fault)
+        if fault:
+            with pytest.raises(store.TaskEvaluationConfiguredSceneObjectStoreError,
+                               match="range_size_mismatch"):
+                store.publish_configured_scene_artifact(path=source,
+                    artifact_kind="provider-output", client=client, bucket="inputs")
+        else:
+            result = store.publish_configured_scene_artifact(path=source,
+                artifact_kind="provider-output", client=client, bucket="inputs")
+            assert result["readback_digest"] == "sha256:" + hashlib.sha256(source.read_bytes()).hexdigest()
+            assert result["readback_size_bytes"] == len(source.read_bytes())
+        assert all(body.closed for body in client.bodies)
