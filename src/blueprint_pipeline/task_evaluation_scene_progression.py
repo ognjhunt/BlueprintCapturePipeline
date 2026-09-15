@@ -299,7 +299,7 @@ def _activation(*, intent, link, config, output, now, provisioner):
 # source_analysis, release_predecessors, recovery_predecessors) survive.
 ATTEMPT_STATE_KEYS = ("attempt_id", "attempt_commit", "attempt", "factory", "publication", "submission",
                       "preparation_state", "preparation_link", "preparation_result", "activation_link",
-                      "activation", "failure", "preparation_failure")
+                      "activation", "failure", "preparation_failure", "configuration_failure", "capacity_recovery_admission")
 
 
 def _clear_attempt(state):
@@ -403,6 +403,51 @@ def _recover(*, directory, intent, state, attempt, link, config, release, machin
     state.update(attempt_id=successor_id, attempt_commit=release["source_commit"],
                  attempt=record(directory / "attempts" / (successor["attempt_id"] + ".json")))
     return True
+
+
+def _recover_configuration_capacity(*, directory, intent, state, attempt, link_path, preparation_path,
+                                    config, release, machinery, output, now):
+    from .task_evaluation_scene_capacity_recovery import observe_failure, capacity_admission, retain_failure, KIND
+    from .task_evaluation_scene_progression_recovery import reconcile_ownership
+    observed = observe_failure(attempt=attempt, link_path=link_path, preparation_path=preparation_path,
+                               factory_path=_reference(state["factory"]), config=config)
+    if observed is None:
+        return None
+    state["configuration_failure"] = observed["result"]
+    if not observed["recoverable"]:
+        return {"status": "blocked", "phase": "scene_configuration_failed", "blockers": observed["blockers"]}
+    admission = capacity_admission(observed, config, now)
+    state["capacity_recovery_admission"] = admission
+    if admission["status"] != "admitted":
+        return {"status": "blocked", "phase": "configuration_capacity", "blockers": ["preallocation_capacity_not_recovered"]}
+    require(intent["request"]["execution"]["max_retries"] > 0, "retry_cap_exhausted")
+    successor_id = "source-" + canonical_digest({"prior_attempt_digest": attempt["attempt_digest"],
+        "source_commit": release["source_commit"], "intent_digest": intent["intent_digest"],
+        "failure_result_digest": observed["values"]["result"]["result_digest"], "kind": KIND})[7:31]
+    successor_path = directory / "attempts" / (successor_id + ".json")
+    prior_reservation = intake._read(successor_path, "attempt_digest") if successor_path.exists() else None
+    if prior_reservation is not None:
+        require(prior_reservation.get("recovery", {}).get("prior_attempt_digest") == attempt["attempt_digest"]
+                and prior_reservation["recovery"]["budget"] == KIND, "capacity_successor_binding_changed")
+        evidence = prior_reservation["recovery"]["evidence"]
+        failure_path = _reference(evidence["failure"])
+    else:
+        failure_path = retain_failure(observation=observed, attempt=attempt,
+            output_root=output / "capacity-recovery", admission=admission)
+    reconciled = reconcile_ownership(attempt=attempt, failure_path=failure_path, config=config,
+        output_root=output / "capacity-recovery/reconciliations", now=now)
+    if prior_reservation is None:
+        evidence = reconciled
+    successor = intake.reserve_scene_attempt(queue_root=config["intent_root"], intent_id=intent["intent_id"],
+        attempt_id=successor_id, source_commit=release["source_commit"], runtime_digest=release["runtime_digest"],
+        input_digest=state["binding_digest"], provider=attempt["provider"],
+        maximum_spend_usd=machinery["maximum_preparation_spend_usd"], now=now,
+        recovery_from_attempt_id=attempt["attempt_id"], recovery_evidence=evidence)
+    state.setdefault("recovery_predecessors", []).append({"attempt": state["attempt"], "evidence": evidence})
+    _clear_attempt(state)
+    state.update(attempt_id=successor_id, attempt_commit=release["source_commit"], attempt=record(successor_path))
+    require(successor["attempt_id"] == successor_id, "capacity_successor_invalid")
+    return {"status": "preparing", "phase": "capacity_recovery_reserved", "blockers": []}
 
 
 def _advance_intent(directory, intent, config, release, *, resolver, publisher, submitter, status_reader,
@@ -637,6 +682,11 @@ def _advance_intent(directory, intent, config, release, *, resolver, publisher, 
             emit("preparing", "activation")
         state["activation"] = _activation(intent=intent, link=link, config=config, output=output,
                                            now=now, provisioner=activation_provisioner)
+        recovery = _recover_configuration_capacity(directory=directory, intent=intent, state=state, attempt=attempt,
+            link_path=_reference(state["activation_link"]), preparation_path=request_path, config=config, release=release,
+            machinery=machinery, output=output, now=now)
+        if recovery is not None:
+            return emit(recovery["status"], recovery["phase"], recovery["blockers"])
         return emit("awaiting_execution", "scene_configuration")
     return emit("awaiting_execution", "preparation_complete")
 
