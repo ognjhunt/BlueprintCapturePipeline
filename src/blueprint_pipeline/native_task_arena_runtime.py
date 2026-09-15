@@ -396,7 +396,7 @@ def _rotation_matrix_to_xyzw(matrix: Sequence[Sequence[float]]) -> list[float]:
     return quaternion
 
 
-def camera_runtime_parameters(camera: Mapping[str, Any]) -> dict[str, Any]:
+def camera_runtime_parameters(camera: Mapping[str, Any], *, robot_id: str = "franka_panda") -> dict[str, Any]:
     """Convert one calibrated OpenCV pose/intrinsics row to Isaac CameraCfg data."""
 
     role = str(camera.get("role") or "")
@@ -428,7 +428,12 @@ def camera_runtime_parameters(camera: Mapping[str, Any]) -> dict[str, Any]:
     rotation = [matrix[0:3], matrix[4:7], matrix[8:11]]
     pose_frame = str(camera.get("pose_frame") or "")
     parent = str(camera.get("parent_prim_path") or "")
-    expected_frame = "robot_body" if role == "wrist" else "world"
+    from .native_task_robot_registry import native_robot_adapter
+
+    camera_roles = {key: (name, frame) for key, name, frame in native_robot_adapter(robot_id).camera_roles}
+    if role not in camera_roles:
+        raise NativeTaskArenaRuntimeError([f"native_task_arena_camera_role_invalid:{role}"])
+    runtime_name, expected_frame = camera_roles[role]
     if (
         pose_frame != expected_frame
         or not parent
@@ -440,15 +445,6 @@ def camera_runtime_parameters(camera: Mapping[str, Any]) -> dict[str, Any]:
     ):
         raise NativeTaskArenaRuntimeError(
             [f"native_task_arena_camera_parent_invalid:{role}"]
-        )
-    runtime_name = {
-        "external": "external_camera",
-        "wrist": "wrist_camera",
-        "overview": "external_camera_2",
-    }.get(role)
-    if runtime_name is None:
-        raise NativeTaskArenaRuntimeError(
-            [f"native_task_arena_camera_role_invalid:{role}"]
         )
     return {
         "role": role,
@@ -865,9 +861,11 @@ def validate_native_task_arena_runtime_plan(
     """
 
     plan = _validated_plan(scene_plan)
+    from .native_task_robot_registry import validate_native_robot_plan
+    validate_native_robot_plan(plan["robot"])
     _resolve_portable_assets(plan, bundle_root=bundle_root)
     for camera in plan.get("cameras") or []:
-        camera_runtime_parameters(camera)
+        camera_runtime_parameters(camera, robot_id=str(plan["robot"]["robot_id"]))
     validate_contact_sensor_plan(plan)
     _validate_articulation_adaptability(plan, bundle_root=bundle_root)
     return plan
@@ -1033,9 +1031,7 @@ def build_native_task_arena_environment(
     from isaaclab_arena.assets.asset import Asset
     from isaaclab_arena.assets.object import Object
     from isaaclab_arena.assets.object_base import ObjectType
-    from isaaclab_arena.embodiments.droid.droid import (
-        DroidAbsoluteJointPositionEmbodiment,
-    )
+    from blueprint_pipeline.native_task_robot_registry import build_native_robot_embodiment
     from isaaclab_arena.environments.arena_env_builder import ArenaEnvBuilder
     from isaaclab_arena.environments.arena_env_builder_cfg import (
         ArenaEnvBuilderCfg,
@@ -1122,22 +1118,8 @@ def build_native_task_arena_environment(
 
     robot = plan["robot"]
     robot_pose = robot["base_pose_world"]
-    embodiment = DroidAbsoluteJointPositionEmbodiment(
-        enable_cameras=enable_cameras,
-        initial_pose=Pose(
-            position_xyz=tuple(robot_pose["position_world_m"]),
-            rotation_xyzw=tuple(robot_pose["orientation_xyzw"]),
-        ),
-        initial_joint_pose=list(robot["joint_reset_positions_rad"].values()),
-    )
+    embodiment = build_native_robot_embodiment(robot, enable_cameras=enable_cameras, pose_class=Pose)
     exact_robot_reset = dict(robot["joint_reset_positions_rad"])
-    embodiment.event_config.init_franka_arm_pose.params["default_pose"] = list(
-        exact_robot_reset.values()
-    )
-    embodiment.event_config.randomize_franka_joint_state.params["mean"] = 0.0
-    embodiment.event_config.randomize_franka_joint_state.params["std"] = 0.0
-    embodiment.get_scene_cfg()
-    embodiment.scene_config.stand = None
     embodiment.initial_pose = None
     # Beta2's AssetBaseCfg.InitialStateCfg.rot, articulation root/body pose
     # buffers, and DifferentialIK pose commands are all documented XYZW.  The
@@ -1167,7 +1149,7 @@ def build_native_task_arena_environment(
     camera_names: dict[str, str] = {}
     camera_configuration_readback: dict[str, dict[str, Any]] = {}
     for camera in plan["cameras"] if enable_cameras else ():
-        parameters = camera_runtime_parameters(camera)
+        parameters = camera_runtime_parameters(camera, robot_id=str(robot["robot_id"]))
         camera_cfg = getattr(embodiment.camera_config, parameters["runtime_name"])
         official_policy_camera = (
             preserve_policy_cameras and parameters["role"] in policy_camera_roles

@@ -1,0 +1,110 @@
+{
+  "schema_version": "g1_humanoidarena_checkpoint_inventory.v1",
+  "observed_on": "2026-09-15",
+  "repository": "Twang2026/HumanoidArena_models",
+  "inventory_source": "https://modelscope.cn/api/v1/models/Twang2026/HumanoidArena_models/repo/files?Recursive=true&Revision=master",
+  "source_repository": "https://github.com/William-wAng618/HumanoidArena",
+  "source_revision": "68479287a784a69be9ce6ad739311d2f11f75ef9",
+  "model_card_sha256": "a73f173c817051ff7a0cbd81c9864e58962c2e1a0b9e4eec6c06b497aa563026",
+  "publisher_declared_license": "Apache License 2.0",
+  "inherited_model_terms_still_apply": true,
+  "checkpoint_bytes_downloaded": false,
+  "candidates": [
+    {
+      "candidate_id": "humanoidarena_dp_g1_dex3_sonic",
+      "subdirectory": "small/HOI_pp_box/diffusion_sonic_ppbox_0529/pretrained_model",
+      "files": [
+        {
+          "path": "config.json",
+          "sha256": "9854a226d08820fa643b9506b3ddd339d1131ce6edb9959e696aaa8dfc448b04",
+          "size_bytes": 2073
+        },
+        {
+          "path": "model.safetensors",
+          "sha256": "dd8ef67ab42249a849dc290894bae029b3b7e8309972ad29b180c8c2c76ac6ef",
+          "size_bytes": 1050993432
+        },
+        {
+          "path": "policy_postprocessor.json",
+          "sha256": "e1fd7102586d641b414a4876672fe9954a061cdaccc2e9e6966ac7ef751dc3c5",
+          "size_bytes": 659
+        },
+        {
+          "path": "policy_postprocessor_step_0_unnormalizer_processor.safetensors",
+          "sha256": "e377e3fedde9e9863311bb58a3e60562e8cdb9b27bf1a1f643df28893aae01d9",
+          "size_bytes": 10040
+        },
+        {
+          "path": "policy_preprocessor.json",
+          "sha256": "b21d0eb9d6a97956b248b8fb6ab7b104697a4942c177a815955e56da73fd6016",
+          "size_bytes": 1154
+        },
+        {
+          "path": "policy_preprocessor_step_3_normalizer_processor.safetensors",
+          "sha256": "e377e3fedde9e9863311bb58a3e60562e8cdb9b27bf1a1f643df28893aae01d9",
+          "size_bytes": 10040
+        }
+      ],
+      "inventory_digest": "sha256:0cb71830d1ff4ac5e6db73c558656de50a0a8cae44ead94c741e44f6688d6da1",
+      "input_image_shape_hwc": [
+        480,
+        640,
+        3
+      ],
+      "input_state_width": 64,
+      "output_action_width": 40,
+      "action_interface": "humanoidarena_semantic_v3",
+      "task_checkpoint": "HOI_pp_box",
+      "hand_interface": "binary_grasp_to_dex3",
+      "lower_body_controller": "GEAR-SONIC matching HumanoidArena release"
+    },
+    {
+      "candidate_id": "humanoidarena_pi05_g1_dex3_sonic",
+      "subdirectory": "pi/HOI_pp_box/pi05_sonic_ppbox_0529/100000/pretrained_model",
+      "files": [
+        {
+          "path": "config.json",
+          "sha256": "8adc714c9e5aab70939e5bfbc5cec6d6e100b9b817e810ca6aec6088ec466a63",
+          "size_bytes": 3912
+        },
+        {
+          "path": "model.safetensors",
+          "sha256": "a4e94d0eec988673705d5ca128a2aca4fb35da86205eaf630d929c7475029378",
+          "size_bytes": 9354116320
+        },
+        {
+          "path": "policy_postprocessor.json",
+          "sha256": "021ed08c42597fa0d5dc413bda37a82ec2f3f92f666c133a96133ef5d5bc296e",
+          "size_bytes": 663
+        },
+        {
+          "path": "policy_postprocessor_step_0_unnormalizer_processor.safetensors",
+          "sha256": "e377e3fedde9e9863311bb58a3e60562e8cdb9b27bf1a1f643df28893aae01d9",
+          "size_bytes": 10040
+        },
+        {
+          "path": "policy_preprocessor.json",
+          "sha256": "ea3af20114153bf2622b8808f6d10575204c2419b46bc3c4555e2ff741499544",
+          "size_bytes": 1577
+        },
+        {
+          "path": "policy_preprocessor_step_2_normalizer_processor.safetensors",
+          "sha256": "e377e3fedde9e9863311bb58a3e60562e8cdb9b27bf1a1f643df28893aae01d9",
+          "size_bytes": 10040
+        }
+      ],
+      "inventory_digest": "sha256:aa6ae0c8ab888c264a002bc6474b2b3a3f8b898d72cf427428aa0b374d9e706f",
+      "input_image_shape_hwc": [
+        480,
+        640,
+        3
+      ],
+      "input_state_width": 64,
+      "output_action_width": 40,
+      "action_interface": "humanoidarena_semantic_v3",
+      "task_checkpoint": "HOI_pp_box",
+      "hand_interface": "binary_grasp_to_dex3",
+      "lower_body_controller": "GEAR-SONIC matching HumanoidArena release"
+    }
+  ]
+}
