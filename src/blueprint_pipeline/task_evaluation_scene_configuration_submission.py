@@ -50,6 +50,17 @@ from .task_evaluation_scene_configuration_submission_inputs import (
 from .task_evaluation_scene_construction_recipe import validate_scene_construction_recipe
 
 
+def _authoring_spend_request(authoring_backend: str) -> float | None:
+    """Ask for the cap this backend's stage actually needs; None keeps the quote."""
+    from .task_evaluation_scene_configuration_runtime_budget import (
+        scene_configuration_budget_profile,
+    )
+
+    if authoring_backend != "astra_cad_blender_v1":
+        return None
+    return scene_configuration_budget_profile(authoring_backend).content_agents_maximum
+
+
 def _validate_task(task: dict[str, Any]) -> None:
     require(task.get("schema_version") == "task_evaluation_minimal_task_request.v1"
             and task.get("strategy") == "pick_and_place", "task_request_invalid")
@@ -483,7 +494,22 @@ def materialize_scene_configuration_submission(
         "execution_adapter": {"kind": "scene_configuration_pipeline", "version": "v1",
                               "runtime_source_bundle": release_ref},
         "publication": {"input_namespace": namespace, "service_account_readback_required": True},
-        "spend": records.spend_block(configs[2].get("authoring_backend", "content_agents")),
+        # Inference reservations are worst case: every request reserves
+        # `input + max_output_tokens * price` before it runs, and the astra authoring
+        # stage makes many -- source analysis, planner, architect, coder, repair,
+        # physical review, then one independent visual review per appearance candidate.
+        # Scene 840938 object 219, 2026-09-15: CAD produced a valid STEP/STL passing
+        # dimensional readback, then the stage died on
+        # `agents_sdk_inference_budget_ceiling_exceeded` at independent_visual_review,
+        # projecting $11.47 against the quoted $5.00 default while its observed cost was
+        # $1.744056 -- a whole GPU rental lost to a reservation never spent. The profile
+        # already sanctions the maximum; ask for it rather than for the floor.
+        "spend": records.spend_block(
+            configs[2].get("authoring_backend", "content_agents"),
+            authoring_max_cost_usd=_authoring_spend_request(
+                configs[2].get("authoring_backend", "content_agents")
+            ),
+        ),
     }
     if configs[2].get("authoring_backend", "content_agents") != "content_agents":
         request["replacement_authoring_backend"] = configs[2]["authoring_backend"]

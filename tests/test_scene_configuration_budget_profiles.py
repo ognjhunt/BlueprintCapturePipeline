@@ -127,3 +127,34 @@ def test_paid_authority_materialization_and_reopen_use_the_bound_backend(tmp_pat
         legacy_receipt = {**receipt, "replacement_authoring_backend": "content_agents"}
         with pytest.raises(module.TaskEvaluationSceneConfigurationAuthorityError, match="authority_contract_invalid"):
             module.validate_scene_configuration_paid_authority(result, bundle_receipt=legacy_receipt)
+
+
+def test_scene_configuration_submission_requests_the_astra_authoring_ceiling():
+    """The astra stage must not be quoted its floor; its reservations are worst case.
+
+    Scene 840938 object 219, 2026-09-15: CAD produced a valid STEP/STL passing
+    dimensional readback, then the stage died on
+    `agents_sdk_inference_budget_ceiling_exceeded` inside independent_visual_review,
+    projecting $11.47 against the quoted $5.00 while its observed cost was $1.744056.
+    """
+
+    from blueprint_pipeline.task_evaluation_scene_configuration_submission import (
+        _authoring_spend_request,
+    )
+
+    profile = scene_configuration_budget_profile("astra_cad_blender_v1")
+    requested = _authoring_spend_request("astra_cad_blender_v1")
+
+    assert requested == profile.content_agents_maximum == 15.0
+    # Comfortably above the projection that actually blocked the run.
+    assert requested > 11.475
+    quote = spend_block("astra_cad_blender_v1", authoring_max_cost_usd=requested)
+    assert quote["external_service_caps"]["openai"]["stage_max_cost_usd"]["content_agents"] == 15.0
+    assert quote["hard_cap_usd"] == 26.76
+
+    # Other backends keep their own quote; only astra asks for more.
+    assert _authoring_spend_request("content_agents") is None
+    assert spend_block("content_agents")["hard_cap_usd"] == 12
+
+    # The shared default quote is deliberately unchanged, so the pinned schema holds.
+    assert spend_block("astra_cad_blender_v1")["hard_cap_usd"] == 16.76
