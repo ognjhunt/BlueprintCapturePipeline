@@ -1,5 +1,6 @@
 """Protect exact dimensions, image delivery, visual abstention, and Astra spend."""
 import base64
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -82,38 +83,59 @@ def test_budget_cannot_be_raised_by_caller(tmp_path):
         author.budgeted_invoker(root=tmp_path, run_id='test', maximum_cost_usd=16)
 
 
-def test_cad_handoff_states_the_real_evidence_scope():
-    """The CAD graph gets TEXT only; say so, or it refuses to emit geometry.
+def test_cad_handoff_states_real_evidence_scope_and_preserves_nominal_dimensions():
+    """Replay the unavailable-mesh instruction from the retained 2026-09-15 brief.
 
-    Scene 840938 object 219, 2026-09-15: the brief said "recover section profiles
-    from the retained source geometry", which the graph cannot open — the analysis
-    agent read those sources to write the brief and nothing carries them forward.
-    The coder emitted a script whose only statement raised "provide the retained
-    mesh or STEP … Envelope dimensions alone cannot define this solid", exported no
-    STEP/STL, and the stage failed `cad_graph_missing_exports` after a GPU rental.
+    Source analysis inspected images and envelope metadata, not the referenced mesh.
+    The CAD graph receives text and must distinguish provisional fitting from source
+    recovery while retaining legitimate contradictory-constraint and identity failures.
     """
-
     request = SimpleNamespace(
         object_id="interiorgs-840938-object-219",
         owner_description="bottle-shaped ornament",
-        dimensions_m=(0.08142562, 0.06046583, 0.143437244),
+        dimensions_m=(0.08142562000000009, 0.060465830000000054, 0.14343724400000002),
         maximum_export_error_m=0.00001,
-        construction_constraints=("single solid",),
+        construction_constraints="single solid; exact nominal envelope; no movable contents",
     )
-    brief = SimpleNamespace(cad_brief_markdown=(
-        "# CAD brief\nRecover section profiles and feature dimensions from the "
-        "retained source geometry before finalizing a parametric loft.\n"
+    # Verbatim excerpts from source-84b's retained source_analysis CAD brief. In
+    # particular, its recovery instruction conflicts with the available input scope.
+    retained_geometry = (
+        "Inspection here covers the supplied images and envelope metadata; the referenced "
+        "mesh was not directly inspected. Render observations are not physical truth.\n"
+        "| X | 81.42562000000009 mm |\n"
+        "| Y | 60.465830000000054 mm |\n"
+        "| Z | 143.43724400000002 mm |\n"
+        "Recover section profiles and feature dimensions from the retained source geometry "
+        "before finalizing a parametric loft or equivalent surface construction. "
+        "Preserve the broad lower body, rounded heel, continuous shoulder-to-neck transition, "
+        "and plain narrow termination. Do not force circular symmetry or assume elliptical "
+        "sections solely from the unequal X/Y bounds.\n"
+        "Any provisional blind recess, hidden closure, wall thickness, or base treatment "
+        "must be documented as an assumption.\n"
+    )
+    brief = SimpleNamespace(cad_brief_markdown=retained_geometry + (
         "## Estimated physical properties\nmass: unknown\n"
     ))
 
     handoff = author.compact_cad_handoff(request, brief)
-
-    # The physical-properties packet still belongs to its own agent.
+    geometry, raw_binding = handoff.split("\nBINDING GEOMETRY CONSTRAINTS\n")
+    binding = json.loads(raw_binding)
+    assert geometry == retained_geometry
     assert "Estimated physical properties" not in handoff
-    # The graph is told what it actually has, and that refusing is not an option.
-    assert "COMPLETE evidence set" in handoff
-    assert "not an input you can open" in handoff
-    assert "NOT a valid" in handoff
-    assert "documented assumption" in handoff
-    # Exact geometry is still carried through without rounding.
-    assert "81.42562" in handoff
+    assert binding["dimensions_mm"] == [81.4256200000001, 60.465830000000054, 143.43724400000002]
+    assert binding["maximum_export_error_mm"] == 0.01
+    assert binding["construction_constraints"] == request.construction_constraints
+    assert (binding["origin"], binding["up_axis"], binding["units"]) == (
+        "center_XY_bottom_Z", "Z", "millimetres")
+
+    scope = binding["evidence_scope"]
+    assert "source-derived images and envelope metadata only" in scope
+    assert "source mesh bytes were not inspected" in scope
+    assert "unavailable work, not completed source recovery" in scope
+    assert "matching the observed description and exact envelope" in scope
+    assert "hidden-region geometry, as a documented assumption" in scope
+    assert "Do not present inferred profiles as measured or recovered source geometry" in scope
+    assert "Fail with the specific unresolved constraint if binding constraints contradict" in scope
+    assert "or object identity is unresolved" in scope
+    assert "do not invent a different object or relax the exact envelope" in scope
+    assert "NOT a valid" not in scope

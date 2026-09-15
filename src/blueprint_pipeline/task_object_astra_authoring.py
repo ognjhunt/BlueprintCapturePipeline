@@ -542,7 +542,7 @@ def blender_author_prompt(request: AuthoringRequest, brief: VisualBrief, feedbac
 
 
 def compact_cad_handoff(request: AuthoringRequest, brief: VisualBrief) -> str:
-    """CAD receives geometry facts; source/billing/physics packets stay with their agents.
+    """CAD receives image-derived interpretation and binding dimensions as text.
 
     The upstream planner copies user_request_raw into its JSON, so sending the
     complete nested evidence packet consumes its entire output on duplicated
@@ -558,25 +558,24 @@ def compact_cad_handoff(request: AuthoringRequest, brief: VisualBrief) -> str:
         'maximum_export_error_mm': request.maximum_export_error_m * 1000,
         'construction_constraints': request.construction_constraints,
         'manufacturing_method': 'unspecified',
-        # The CAD graph is handed TEXT only: this brief plus these dimensions. It cannot
-        # open the source mesh, the USD, or the source-derived views -- the analysis agent
-        # read those to WRITE the brief, and nothing carries them forward. Scene 840938
-        # object 219 (2026-09-15) died on exactly that gap: the brief said "recover section
-        # profiles from the retained source geometry", so the coder emitted a script whose
-        # only statement raised "provide the retained mesh or STEP ... Envelope dimensions
-        # alone cannot define this solid", no STEP/STL was written, and the stage failed
-        # `cad_graph_missing_exports` after a full GPU rental. Say what is actually in
-        # scope, so the graph builds a documented provisional solid instead of refusing.
+        # Source analysis receives derived images and envelope metadata, not mesh bytes.
+        # CAD receives the textual interpretation. Keep inferred profiles provisional and
+        # preserve legitimate failures instead of implying source recovery was completed.
         'evidence_scope': (
-            'The brief above and these binding dimensions are the COMPLETE evidence set for '
-            'this stage. The source mesh, STEP, USD and the source-derived views are NOT '
-            'readable here and will not be supplied. Any instruction above to recover '
-            'profiles or features from retained source geometry describes how the brief was '
-            'written; it is not an input you can open. Build the solid from the brief text '
-            'and the exact envelope, and record every unmeasured choice as a documented '
-            'assumption. Emitting no geometry pending source recovery is NOT a valid '
-            'outcome: a development_only provisional solid honouring the exact envelope is '
-            'the required deliverable.'
+            'The brief above and these binding dimensions are the complete evidence set '
+            'supplied to the CAD graph. The analysis agent inspected source-derived images '
+            'and envelope metadata only; source mesh bytes were not inspected. The source '
+            'mesh, STEP, USD and source-derived images are not readable by this graph. '
+            'Any instruction above to recover profiles from retained source geometry '
+            'describes unavailable work, not completed source recovery. Construct a '
+            'development_only provisional solid matching the observed description and exact '
+            'envelope; infer needed profiles from that description and record every '
+            'unmeasured choice, including hidden-region geometry, as a documented assumption. '
+            'Do not present inferred profiles as measured or recovered source geometry. '
+            'Missing mesh access alone need not block this provisional construction. '
+            'Fail with the specific unresolved constraint if binding constraints contradict '
+            'each other or object identity is unresolved; do not invent a different object '
+            'or relax the exact envelope to produce an export.'
         ),
         'output_discipline': 'Do not copy the full prompt into user_request_raw. Use a concise one-line object description; the harness restores the exact request.',
     })
