@@ -68,6 +68,7 @@ CONTENT_STORE_ROOTS_ENV = "BLUEPRINT_CONTROL_PLANE_GC_CONTENT_STORE_ROOTS"
 DERIVED_ROOTS_ENV = "BLUEPRINT_CONTROL_PLANE_GC_DERIVED_ROOTS"
 QUEUE_ROOTS_ENV = "BLUEPRINT_CONTROL_PLANE_GC_QUEUE_ROOTS"
 EVIDENCE_ROOTS_ENV = "BLUEPRINT_CONTROL_PLANE_GC_EVIDENCE_ROOTS"
+SETTLEMENT_ROOTS_ENV = "BLUEPRINT_CONTROL_PLANE_GC_SETTLEMENT_ROOTS"
 EVIDENCE_OFFLOAD_ENV = "BLUEPRINT_CONTROL_PLANE_EVIDENCE_OFFLOAD"
 EVIDENCE_HOT_WINDOW_ENV = "BLUEPRINT_CONTROL_PLANE_EVIDENCE_HOT_WINDOW_SECONDS"
 EVIDENCE_ABANDONED_AFTER_ENV = "BLUEPRINT_CONTROL_PLANE_EVIDENCE_ABANDONED_AFTER_SECONDS"
@@ -284,6 +285,53 @@ def _queue_reference_text(queue_roots: Sequence[str | Path]) -> str:
                 except (OSError, UnicodeDecodeError):
                     continue
     return "\n".join(chunks)
+
+
+# A settled scene attempt keeps reopening the local ``launch_receipt.json`` of the
+# launch it settled against.  Offloading that launch run leaves the accounting and
+# controls readers permanently unable to validate the attempt, which strands the
+# whole intent.  Retention therefore has to read the settlement records too, not
+# just the queues.
+SETTLEMENT_RECORD_GLOBS = (
+    "*/attempts/*.json",
+    "*/cancelled-unstarted-controls/*.json",
+    "*/preparations/*.json",
+)
+
+
+def _settlement_reference_text(settlement_roots: Sequence[str | Path]) -> tuple[str, int]:
+    """Concatenate every settlement record; a directory named in it is still read.
+
+    The second element counts records that exist but could not be read.  A
+    configured root that cannot be enumerated must never be silently treated as
+    "nothing is referenced", so the caller protects all evidence for that tick.
+    """
+
+    chunks: list[str] = []
+    unreadable = 0
+    for raw_root in settlement_roots:
+        root = Path(raw_root).expanduser()
+        if root.is_symlink() or not root.is_dir():
+            unreadable += 1
+            continue
+        for pattern in SETTLEMENT_RECORD_GLOBS:
+            try:
+                paths = sorted(root.glob(pattern))
+            except OSError:
+                unreadable += 1
+                continue
+            for path in paths:
+                try:
+                    if path.is_symlink() or path.stat().st_size > _MAX_QUEUE_MESSAGE_BYTES:
+                        # A record we decline to read is a record whose references
+                        # we do not know.  Count it rather than skipping it, or a
+                        # symlinked or oversized record silently unprotects its run.
+                        unreadable += 1
+                        continue
+                    chunks.append(path.read_text(encoding="utf-8"))
+                except (OSError, UnicodeDecodeError):
+                    unreadable += 1
+    return "\n".join(chunks), unreadable
 
 
 def _tree_snapshot(directory: Path) -> tuple[float, int]:
@@ -973,6 +1021,7 @@ def run_storage_gc(
     queue_roots: Sequence[str | Path],
     pins_root: str | Path,
     evidence_roots: Sequence[str | Path] = (),
+    settlement_roots: Sequence[str | Path] = (),
     offload_enabled: bool = False,
     apply: bool = False,
     ack: str = "",
@@ -1064,12 +1113,32 @@ def run_storage_gc(
     evidence_present, absent = _existing(evidence_roots)
     report["skipped_roots"].extend(absent)
     if evidence_present:
+        observed_text, observed_unreadable = _settlement_reference_text(settlement_roots)
+        report["evidence_settlement_reference"] = {
+            "roots": [str(Path(root).expanduser()) for root in settlement_roots],
+            "unreadable_count": observed_unreadable,
+            "protect_all": bool(observed_unreadable),
+        }
+        del observed_text
+
         def evidence_protected(directory: Path) -> bool:
+            # Re-read the records on every check, exactly as the queue text is.
+            # ``apply_evidence_offload`` re-checks protection immediately before it
+            # evicts each candidate; a settlement written after the manifest was
+            # built must protect its launch run at that final check too.
+            settlement_text, settlement_unreadable = _settlement_reference_text(
+                settlement_roots
+            )
+            # Fail closed: an unreadable settlement root proves nothing is unreferenced.
+            if settlement_unreadable:
+                return True
             from .completed_replay_cache_retention import active_reference
             if active_reference(directory, ignored_process_ids=(os.getpid(),)):
                 return True
             pinned = live_pinned_paths(pins_root, now=clock)
             if any(Path(p) == directory or directory in Path(p).parents or Path(p) in directory.parents for p in pinned):
+                return True
+            if directory.name in settlement_text:
                 return True
             return directory.name in _queue_reference_text(queue_roots)
         # Keep authenticated downloads usable after cold evidence reclamation.
@@ -1169,6 +1238,7 @@ def _run_main(argv: list[str]) -> int:
     parser.add_argument("--derived-root", action="append", default=None)
     parser.add_argument("--queue-root", action="append", default=None)
     parser.add_argument("--evidence-root", action="append", default=None)
+    parser.add_argument("--settlement-root", action="append", default=None)
     parser.add_argument("--pins-root", default=os.getenv(PINS_ROOT_ENV) or None)
     parser.add_argument("--scratch-root", action="append", default=None)
     parser.add_argument("--workspace-bundle-root", action="append", default=None)
@@ -1209,6 +1279,7 @@ def _run_main(argv: list[str]) -> int:
         queue_roots=args.queue_root or _split_env(QUEUE_ROOTS_ENV),
         pins_root=pins_root,
         evidence_roots=args.evidence_root or _split_env(EVIDENCE_ROOTS_ENV),
+        settlement_roots=args.settlement_root or _split_env(SETTLEMENT_ROOTS_ENV),
         offload_enabled=str(os.getenv(EVIDENCE_OFFLOAD_ENV) or "").strip().lower()
         in {"1", "true", "yes"},
         apply=args.apply,

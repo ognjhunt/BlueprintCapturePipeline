@@ -622,3 +622,233 @@ def test_gc_unit_can_write_every_workspace_bundle_root_it_names() -> None:
 @pytest.fixture(autouse=True)
 def known_process_inventory(monkeypatch):
     monkeypatch.setattr(gc_module, "workspace_process_active", lambda workspace: False)
+
+
+def _settlement_scene(root, *, scene: str, launch_run_name: str):
+    """One settled attempt whose receipt reopens ``launch_run_name``'s receipt."""
+    directory = root / scene / "cancelled-unstarted-controls"
+    directory.mkdir(parents=True)
+    (directory / "controls-1.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "task_evaluation_terminal_scene_attempt_settlement.v1",
+                "execution_terminal": {
+                    "launch_id": launch_run_name,
+                    "launch_receipt": {
+                        "path": f"/var/lib/blueprint/launch-runs/{launch_run_name}/launch_receipt.json",
+                        "digest": "sha256:" + "0" * 64,
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    return directory
+
+
+def _cold_evidence_run(evidence, name, now):
+    run = evidence / name
+    run.mkdir(parents=True)
+    (run / "launch_receipt.json").write_text("{}", encoding="utf-8")
+    old = now - 30 * 86400
+    for path in (run / "launch_receipt.json", run):
+        os.utime(path, (old, old))
+    return run
+
+
+def test_offload_retains_evidence_a_settlement_record_still_reopens(tmp_path) -> None:
+    """Retention must not archive a launch run a settled attempt still reads.
+
+    Offloading it leaves the spend/controls readers raising
+    ``unstarted_controls_evidence_unsafe`` forever, which strands the intent.
+    """
+
+    now = 30_000_000.0
+    evidence = tmp_path / "launch-runs"
+    referenced = _cold_evidence_run(evidence, "run-referenced", now)
+    orphan = _cold_evidence_run(evidence, "run-orphan", now)
+    settlement = tmp_path / "scene-intents"
+    _settlement_scene(settlement, scene="scene-abc", launch_run_name="run-referenced")
+    queue = tmp_path / "queue"
+    (queue / "pending").mkdir(parents=True)
+    common = dict(
+        content_store_roots=[],
+        derived_roots=[],
+        queue_roots=[queue],
+        pins_root=tmp_path / "pins",
+        evidence_roots=[evidence],
+        settlement_roots=[settlement],
+        now=lambda: now,
+        classifier=_noclass,
+    )
+
+    client = _ContentAddressedClient()
+    report = run_storage_gc(
+        **common,
+        apply=True,
+        ack=RUN_ACK,
+        offload_enabled=True,
+        publisher=functools.partial(
+            store.publish_configured_scene_artifact,
+            client=client,
+            bucket="blueprint-production-inputs",
+        ),
+    )
+
+    assert report["evidence_settlement_reference"]["unreadable_count"] == 0
+    assert report["evidence_settlement_reference"]["protect_all"] is False
+    # The referenced run stays readable; only the unreferenced one is archived.
+    assert referenced.is_dir()
+    assert (referenced / "launch_receipt.json").is_file()
+    assert not orphan.exists()
+    assert [row["name"] for row in report["evidence_offload"]["offloaded"]] == ["run-orphan"]
+
+
+def test_offload_protects_every_run_when_a_settlement_root_is_unreadable(tmp_path) -> None:
+    """A settlement root that cannot be read is never read as "nothing referenced"."""
+
+    now = 30_000_000.0
+    evidence = tmp_path / "launch-runs"
+    cold = _cold_evidence_run(evidence, "run-cold", now)
+    queue = tmp_path / "queue"
+    (queue / "pending").mkdir(parents=True)
+
+    report = run_storage_gc(
+        content_store_roots=[],
+        derived_roots=[],
+        queue_roots=[queue],
+        pins_root=tmp_path / "pins",
+        evidence_roots=[evidence],
+        settlement_roots=[tmp_path / "scene-intents-that-do-not-exist"],
+        now=lambda: now,
+        classifier=_noclass,
+        apply=True,
+        ack=RUN_ACK,
+        offload_enabled=True,
+    )
+
+    assert report["evidence_settlement_reference"]["unreadable_count"] == 1
+    assert report["evidence_settlement_reference"]["protect_all"] is True
+    assert report["evidence_offload"]["offloaded_count"] == 0
+    assert cold.is_dir()
+
+
+def test_run_cli_reads_settlement_roots_from_the_unit_environment(tmp_path, monkeypatch, capsys) -> None:
+    now = 30_000_000.0
+    evidence = tmp_path / "launch-runs"
+    referenced = _cold_evidence_run(evidence, "run-referenced", now)
+    settlement = tmp_path / "scene-intents"
+    _settlement_scene(settlement, scene="scene-abc", launch_run_name="run-referenced")
+    queue = tmp_path / "queue"
+    (queue / "pending").mkdir(parents=True)
+    monkeypatch.setenv("BLUEPRINT_CONTROL_PLANE_GC_EVIDENCE_ROOTS", str(evidence))
+    monkeypatch.setenv("BLUEPRINT_CONTROL_PLANE_GC_SETTLEMENT_ROOTS", str(settlement))
+    monkeypatch.setenv("BLUEPRINT_CONTROL_PLANE_GC_QUEUE_ROOTS", str(queue))
+    monkeypatch.setattr(gc_module, "require_storage_class", _noclass)
+
+    assert gc_module.main(["run", "--pins-root", str(tmp_path / "pins")]) == 0
+
+    report = json.loads(capsys.readouterr().out)
+    assert report["evidence_settlement_reference"]["roots"] == [str(settlement)]
+    assert report["evidence_offload"]["candidate_count"] == 0
+    assert referenced.is_dir()
+
+
+@pytest.mark.parametrize("damage", ["symlink", "oversized"])
+def test_offload_protects_when_a_settlement_record_cannot_be_read(tmp_path, damage) -> None:
+    """A record we decline to read must protect, never silently unprotect its run.
+
+    A symlinked or oversized settlement record used to be skipped like an
+    uninteresting queue message, so the launch run it names looked unreferenced
+    and was archived.
+    """
+
+    now = 30_000_000.0
+    evidence = tmp_path / "launch-runs"
+    referenced = _cold_evidence_run(evidence, "run-referenced", now)
+    settlement = tmp_path / "scene-intents"
+    directory = _settlement_scene(
+        settlement, scene="scene-abc", launch_run_name="run-referenced"
+    )
+    record = directory / "controls-1.json"
+    if damage == "symlink":
+        payload = record.read_text(encoding="utf-8")
+        target = directory / "controls-1.actual.json"
+        target.write_text(payload, encoding="utf-8")
+        record.unlink()
+        record.symlink_to(target)
+    else:
+        record.write_text(
+            json.dumps({"pad": "x" * (gc_module._MAX_QUEUE_MESSAGE_BYTES + 1)}),
+            encoding="utf-8",
+        )
+    queue = tmp_path / "queue"
+    (queue / "pending").mkdir(parents=True)
+
+    report = run_storage_gc(
+        content_store_roots=[],
+        derived_roots=[],
+        queue_roots=[queue],
+        pins_root=tmp_path / "pins",
+        evidence_roots=[evidence],
+        settlement_roots=[settlement],
+        now=lambda: now,
+        classifier=_noclass,
+        apply=True,
+        ack=RUN_ACK,
+        offload_enabled=True,
+    )
+
+    assert report["evidence_settlement_reference"]["unreadable_count"] >= 1
+    assert report["evidence_settlement_reference"]["protect_all"] is True
+    assert report["evidence_offload"]["offloaded_count"] == 0
+    assert referenced.is_dir()
+
+
+def test_offload_rereads_settlement_records_before_each_eviction(tmp_path) -> None:
+    """A settlement written after the manifest was built still protects its run.
+
+    ``apply_evidence_offload`` re-checks protection immediately before evicting
+    each candidate, so the check must re-read the records rather than reuse the
+    text captured when the manifest was built.
+    """
+
+    now = 30_000_000.0
+    evidence = tmp_path / "launch-runs"
+    first = _cold_evidence_run(evidence, "run-a", now)
+    late = _cold_evidence_run(evidence, "run-b", now)
+    settlement = tmp_path / "scene-intents"
+    (settlement / "scene-abc").mkdir(parents=True)
+    queue = tmp_path / "queue"
+    (queue / "pending").mkdir(parents=True)
+
+    client = _ContentAddressedClient()
+
+    def publisher(*args, **kwargs):
+        # Between building the manifest and evicting "run-b", a settlement lands
+        # that names it. The pre-eviction check has to see it.
+        if not (settlement / "scene-abc" / "cancelled-unstarted-controls").exists():
+            _settlement_scene(settlement, scene="scene-abc", launch_run_name="run-b")
+        return store.publish_configured_scene_artifact(
+            *args, client=client, bucket="blueprint-production-inputs", **kwargs
+        )
+
+    report = run_storage_gc(
+        content_store_roots=[],
+        derived_roots=[],
+        queue_roots=[queue],
+        pins_root=tmp_path / "pins",
+        evidence_roots=[evidence],
+        settlement_roots=[settlement],
+        now=lambda: now,
+        classifier=_noclass,
+        apply=True,
+        ack=RUN_ACK,
+        offload_enabled=True,
+        publisher=publisher,
+    )
+
+    offloaded = {row["name"] for row in report["evidence_offload"]["offloaded"]}
+    assert "run-b" not in offloaded, "a settlement written mid-apply must still protect"
+    assert late.is_dir()
+    assert not first.exists()
