@@ -194,6 +194,23 @@ def build_authoring_request(stage_input: Mapping[str, Any], source_record: Mappi
     return request
 
 
+#: The geometric architect emits every section sketch and build step in ONE reply,
+#: and reasoning tokens are drawn from the same budget. Scene 840938 object 219
+#: (2026-09-15) planned 13 loft sections; the reply was cut mid-string inside the
+#: LAST step's notes and failed to parse, so the coder node never ran and the
+#: graph exported no STEP/STL -- `cad_graph_missing_exports`, after a full GPU
+#: rental. It was within roughly a thousand tokens of finishing.
+#:
+#: The ceiling is bounded on BOTH sides. The runtime refuses a budget over 32000,
+#: and the stage reserves `projected_max_cost = input + tokens * $0.00005` per
+#: request against `..._CONTENT_AGENTS_MAX_COST_USD`. That run reserved three
+#: requests with $0.827/$0.540/$0.316 of input against a $5.00 cap, so the cap
+#: allows about `(5.00 - 1.682) / 3 / 0.00005` ~= 22000 tokens. 20000 clears the
+#: observed shortfall many times over and still leaves the reservation total near
+#: $4.68 -- raise the stage cap before raising this much further.
+CAD_MAX_OUTPUT_TOKENS = 20000
+
+
 class _StageInvoker:
     def __init__(self, invoker, run_id: str, maximum_calls: int, prior_calls: int = 0):
         self.invoker, self.run_id, self.maximum_calls, self.calls = invoker, run_id, maximum_calls, 0
@@ -201,7 +218,8 @@ class _StageInvoker:
 
     def invoke(self, spec, input_value):
         if (self.calls + self.prior_calls >= self.maximum_calls or spec.run_id != self.run_id or spec.model != "gpt-6-astra"
-                or spec.max_turns != 1 or spec.tool_bindings or spec.max_output_tokens > 12000
+                or spec.max_turns != 1 or spec.tool_bindings
+                or spec.max_output_tokens > CAD_MAX_OUTPUT_TOKENS
                 or spec.max_input_tokens is None or spec.max_input_tokens > 80000
                 or spec.reasoning_effort not in {"medium", "high"}):
             raise AstraStageError("astra_stage_inference_boundary_refused")
@@ -475,7 +493,8 @@ def execute_astra_component(*, environment=None, runner=subprocess.run,
         result = execute_mac_candidate(brief, output_root, cad_root / "Multi-Agent-CAD", cad_root / "text-to-cad",
             invoker, expected_dimensions_mm=tuple(value * 1000 for value in dimensions_m),
             subprocess_runner=sandbox, run_id=request.run_id, object_label=request.object_id,
-            max_input_tokens=80000, max_output_tokens=12000, max_calls=maximum_calls, repair_budget=2,
+            max_input_tokens=80000, max_output_tokens=CAD_MAX_OUTPUT_TOKENS,
+            max_calls=maximum_calls, repair_budget=2,
             dimension_tolerance_mm=request.maximum_export_error_m * 1000,
             verified_sources=verified_sources, **adoption["cad_kwargs"])
         return {**result, "stl": file_record(Path(result["stl_path"])),
