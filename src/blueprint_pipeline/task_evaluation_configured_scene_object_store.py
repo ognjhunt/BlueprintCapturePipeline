@@ -9,6 +9,7 @@ import os
 import re
 import stat
 import tempfile
+import time
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
@@ -254,7 +255,7 @@ def _ranged_readback(
             "configured_scene_artifact_range_identity_missing"
         )
 
-    def read_range(start: int) -> bytes:
+    def read_range_once(start: int) -> bytes:
         end = min(start + _RANGE_READBACK_CHUNK_BYTES, size) - 1
         response = client.get_object(
             Bucket=bucket, Key=key, Range=f"bytes={start}-{end}", IfMatch=etag
@@ -287,6 +288,18 @@ def _ranged_readback(
         finally:
             body.close()
 
+    def read_range(start: int) -> bytes:
+        for attempt in range(3):
+            try:
+                return read_range_once(start)
+            except TaskEvaluationConfiguredSceneObjectStoreError:
+                raise  # Identity, size and content refusals must not become transient success.
+            except Exception:
+                if attempt == 2:
+                    raise
+                time.sleep(0.25 * (attempt + 1))
+        raise AssertionError("unreachable range retry state")
+
     digest = hashlib.sha256()
     read_size = 0
     batch_bytes = _RANGE_READBACK_CHUNK_BYTES * _RANGE_READBACK_CONCURRENCY
@@ -306,7 +319,7 @@ def _ranged_readback(
         raise
     except Exception as exc:  # noqa: BLE001 - S3-compatible clients vary
         raise TaskEvaluationConfiguredSceneObjectStoreError(
-            "configured_scene_artifact_readback_failed"
+            f"configured_scene_artifact_readback_failed:{type(exc).__name__}"
         ) from exc
     return "sha256:" + digest.hexdigest(), read_size
 
