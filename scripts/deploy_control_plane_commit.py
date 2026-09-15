@@ -1930,16 +1930,22 @@ def _activate_agent_execution(*, expected_commit: str, config_path: str | Path =
             "release_cleanup": cleanup}
 
 
-def _require_terminal_controls_quiescence() -> None:
-    """Refuse a live materializer before moving any release surface."""
-    for suffix in ('service', 'path', 'timer'):
+def _require_terminal_controls_quiescence(*, wait_seconds: float = 0) -> None:
+    """With triggers stopped, allow an existing materializer to finish naturally."""
+    deadline = time.monotonic() + wait_seconds
+    for suffix in ('path', 'timer', 'service'):
         unit = 'blueprint-task-evaluation-configured-controls-progression.' + suffix
-        observed = subprocess.run(['systemctl', 'show', unit, '-p', 'LoadState', '-p', 'ActiveState', '-p', 'MainPID'],
-                                  check=True, capture_output=True, text=True, timeout=10)
-        fields = dict(line.split('=', 1) for line in observed.stdout.splitlines() if '=' in line)
-        if (fields.get('LoadState') != 'loaded' or fields.get('ActiveState') not in {'inactive', 'failed'}
-                or fields.get('MainPID', '0') != '0'):
-            raise ControlPlaneDeployError('deploy_terminal_controls_worker_not_quiescent')
+        while True:
+            observed = subprocess.run(['systemctl', 'show', unit, '-p', 'LoadState', '-p', 'ActiveState', '-p', 'MainPID'],
+                                      check=True, capture_output=True, text=True, timeout=10)
+            fields = dict(line.split('=', 1) for line in observed.stdout.splitlines() if '=' in line)
+            if (fields.get('LoadState') == 'loaded' and fields.get('ActiveState') in {'inactive', 'failed'}
+                    and fields.get('MainPID', '0') == '0'):
+                break
+            remaining = deadline - time.monotonic()
+            if suffix != 'service' or fields.get('LoadState') != 'loaded' or remaining <= 0:
+                raise ControlPlaneDeployError('deploy_terminal_controls_worker_not_quiescent')
+            time.sleep(min(2, remaining))
         if fields['ActiveState'] == 'failed':
             subprocess.run(['systemctl', 'reset-failed', unit], check=True, capture_output=True, text=True, timeout=10)
 
@@ -2382,7 +2388,7 @@ def deploy_control_plane_commit(
         ),
     ):
         if Path(controls_autoprovision_bootstrap_file).expanduser().exists():
-            _require_terminal_controls_quiescence()
+            _require_terminal_controls_quiescence(wait_seconds=600)
         installed_provenance = _install_release_provenance(
             payload=provenance_payload,
             state_root=state,

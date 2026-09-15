@@ -70,6 +70,39 @@ def test_terminal_controls_deploy_refuses_a_worker_race(monkeypatch, tmp_path, a
     assert len(calls) == 1
 
 
+@pytest.mark.parametrize("finishes", [True, False])
+def test_terminal_controls_drain_is_bounded_and_never_kills_worker(monkeypatch, finishes):
+    elapsed = [0.0]
+    calls = []
+    monkeypatch.setattr(deploy.time, "monotonic", lambda: elapsed[0])
+    monkeypatch.setattr(deploy.time, "sleep", lambda seconds: elapsed.__setitem__(0, elapsed[0] + seconds))
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        assert argv[:2] == ["systemctl", "show"]
+        busy = argv[2].endswith(".service") and not (finishes and elapsed[0] >= 2)
+        return SimpleNamespace(stdout="LoadState=loaded\nActiveState=" +
+            ("activating\nMainPID=123\n" if busy else "inactive\nMainPID=0\n"))
+
+    monkeypatch.setattr(deploy.subprocess, "run", run)
+    if finishes:
+        deploy._require_terminal_controls_quiescence(wait_seconds=4)
+        assert elapsed[0] == 2
+    else:
+        with pytest.raises(deploy.ControlPlaneDeployError, match="worker_not_quiescent"):
+            deploy._require_terminal_controls_quiescence(wait_seconds=4)
+        assert elapsed[0] == 4
+    assert calls[0][2].endswith(".path") and calls[1][2].endswith(".timer")
+
+
+def test_terminal_controls_drain_refuses_armed_trigger_without_waiting(monkeypatch):
+    monkeypatch.setattr(deploy.subprocess, "run", lambda *a, **kw:
+        SimpleNamespace(stdout="LoadState=loaded\nActiveState=active\nMainPID=0\n"))
+    monkeypatch.setattr(deploy.time, "sleep", lambda _: pytest.fail("must not wait with trigger armed"))
+    with pytest.raises(deploy.ControlPlaneDeployError, match="worker_not_quiescent"):
+        deploy._require_terminal_controls_quiescence(wait_seconds=600)
+
+
 def test_retention_reader_repair_preserves_owner_and_private_file_modes(tmp_path):
     root = tmp_path / "release-retention"
     root.mkdir(mode=0o700)
