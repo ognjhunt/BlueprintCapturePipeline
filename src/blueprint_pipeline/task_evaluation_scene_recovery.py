@@ -12,7 +12,7 @@ from .decision_evidence_contracts import canonical_digest
 from .task_evaluation_scene_configuration_submission_inputs import checked_file, read, require
 
 
-RECOVERABLE_FAILURE_KINDS = frozenset({"create_refused", "create_null", "create_ambiguous", "provider_null"})
+RECOVERABLE_FAILURE_KINDS = frozenset({"create_refused", "create_null", "create_ambiguous", "provider_null", "preallocation_capacity"})
 #: A provider-null failure that never created an instance (no offer, a stale ask refused
 #: at create, an offer-API HTTP error) is a marketplace miss: $0, nothing scientific, no
 #: resource. Scene 840938, 2026-09-12: two such misses inside 70 minutes consumed the
@@ -20,10 +20,13 @@ RECOVERABLE_FAILURE_KINDS = frozenset({"create_refused", "create_null", "create_
 #: next thin minute. Misses draw on their own bounded budget instead; a provider-null
 #: failure that did create an instance still consumes an ordinary retry.
 MAX_MARKET_MISS_RECOVERIES = 6
+MAX_PREALLOCATION_CAPACITY_RECOVERIES = 6
 
 
 def recovery_budget(failure_kind: str, producer) -> str:
     """Which bounded budget a successor draws on: an ordinary retry or a marketplace miss."""
+    if failure_kind == "preallocation_capacity":
+        return "preallocation_capacity"
     if failure_kind != "provider_null" or not isinstance(producer, dict):
         return "retry"
     created = (producer.get("allocation_created") is True
@@ -134,7 +137,10 @@ def validate_recovery_evidence(evidence, *, prior_attempt, provider, now):
                        or any(marker in blocker for blocker in blockers for marker in (
                            "create_outcome_ambiguous", "create_refused", "create_rejected",
                            "create_returned_null", "started_without_terminal_reconciliation")))
-    if failure["failure_kind"] == "provider_null":
+    if failure["failure_kind"] == "preallocation_capacity":
+        from .task_evaluation_scene_capacity_recovery import validate_capacity_failure
+        validate_capacity_failure(failure, producer, prior_attempt, now)
+    elif failure["failure_kind"] == "provider_null":
         # The label alone proves nothing: the producer must carry the adapter's own classification.
         require(provider_null_evidence(producer), "scene_recovery_provider_null_evidence_missing")
     else:

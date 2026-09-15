@@ -289,7 +289,9 @@ def reserve_scene_attempt(*, queue_root: str | Path, intent_id: str, attempt_id:
             rows = [_read(p, "attempt_digest") for p in attempts.glob("*.json")]
             _require(not any(row.get("recovery", {}).get("prior_attempt_id") == recovery_from_attempt_id
                              for row in rows), "recovery_successor_already_reserved")
-            from .task_evaluation_scene_recovery import MAX_MARKET_MISS_RECOVERIES, validate_recovery_evidence
+            from .task_evaluation_scene_recovery import (
+                MAX_MARKET_MISS_RECOVERIES, MAX_PREALLOCATION_CAPACITY_RECOVERIES, validate_recovery_evidence,
+            )
             recovery = validate_recovery_evidence(recovery_evidence,
                 prior_attempt=prior, provider=provider, now=moment)
             # `max_retries` is the owner's consent to automatic retries at all, and its
@@ -298,7 +300,10 @@ def reserve_scene_attempt(*, queue_root: str | Path, intent_id: str, attempt_id:
             # before budgets existed count as ordinary retries.
             _require(execution["max_retries"] > 0, "retry_cap_exhausted")
             budgets = [(row.get("recovery") or {}).get("budget", "retry") for row in rows if "recovery" in row]
-            if recovery["budget"] == "market_miss":
+            if recovery["budget"] == "preallocation_capacity":
+                _require(budgets.count("preallocation_capacity") < MAX_PREALLOCATION_CAPACITY_RECOVERIES,
+                         "preallocation_capacity_recovery_cap_exhausted")
+            elif recovery["budget"] == "market_miss":
                 _require(budgets.count("market_miss") < MAX_MARKET_MISS_RECOVERIES,
                          "market_miss_recovery_cap_exhausted")
             else:
