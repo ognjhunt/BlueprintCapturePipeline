@@ -140,6 +140,13 @@ def validate_configured_scene_revision(
             raise TaskEvaluationConfiguredSceneRevisionError(
                 "configured_scene_revision_appearance_review_binding_invalid"
             )
+        if review_status != "human_accepted_with_known_artifacts" and any(
+            key in row for row in (presentation, appearance, selection)
+            for key in ("ai_visual_review_status", "human_approval_digest", "human_reviewer_identity",
+                        "known_artifacts", "thumbnail_selector")
+        ):
+            raise TaskEvaluationConfiguredSceneRevisionError(
+                "configured_scene_revision_human_metadata_status_conflict")
         if review_status == "paused_ungraded":
             if (
                 presentation.get("selected_from_exact_reviewed_frame_count") != 0

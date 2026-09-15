@@ -105,6 +105,7 @@
       "type": "object",
       "required": ["observed_source", "object_removal_result", "configured_representation", "appearance_truth_source"],
       "additionalProperties": false,
+      "allOf": [{"if":{"required":["visual_review_status"],"properties":{"visual_review_status":{"const":"human_accepted_with_known_artifacts"}}},"then":{"required":["ai_visual_review_status","human_approval_digest","human_reviewer_identity","known_artifacts"]},"else":{"not":{"anyOf":[{"required":["ai_visual_review_status"]},{"required":["human_approval_digest"]},{"required":["human_reviewer_identity"]},{"required":["known_artifacts"]},{"required":["thumbnail_selector"]}]}}}],
       "properties": {
         "observed_source": {"$ref": "#/$defs/reference"},
         "object_removal_result": {"$ref": "#/$defs/reference"},
@@ -216,6 +217,7 @@
         "image_bytes_modified_after_selection"
       ],
       "additionalProperties": false,
+      "allOf": [{"if":{"required":["appearance_review_status"],"properties":{"appearance_review_status":{"const":"human_accepted_with_known_artifacts"}}},"then":{"required":["ai_visual_review_status","human_approval_digest","human_reviewer_identity","known_artifacts"]},"else":{"not":{"anyOf":[{"required":["ai_visual_review_status"]},{"required":["human_approval_digest"]},{"required":["human_reviewer_identity"]},{"required":["known_artifacts"]},{"required":["thumbnail_selector"]}]}}}],
       "properties": {
         "task_thumbnail": {
           "allOf": [
@@ -228,6 +230,7 @@
           "type": "object",
           "required": ["camera_id", "frame_digest", "rationale", "reviewer"],
           "additionalProperties": false,
+          "allOf": [{"if":{"required":["appearance_review_status"],"properties":{"appearance_review_status":{"const":"human_accepted_with_known_artifacts"}}},"then":{"required":["ai_visual_review_status","human_approval_digest","human_reviewer_identity","known_artifacts","thumbnail_selector"]},"else":{"not":{"anyOf":[{"required":["ai_visual_review_status"]},{"required":["human_approval_digest"]},{"required":["human_reviewer_identity"]},{"required":["known_artifacts"]},{"required":["thumbnail_selector"]}]}}}],
           "properties": {
             "camera_id": {"$ref": "#/$defs/identifier"},
             "frame_digest": {"$ref": "#/$defs/digest"},

@@ -257,8 +257,9 @@ def test_static_gate_keeps_external_asset_identifier_fail_closed(
 
 
 @pytest.mark.parametrize("provider_render", [True, False])
+@pytest.mark.parametrize("human_accepted", [False, True])
 def test_artifixer_handler_admits_only_qualified_generated_appearance(
-    tmp_path: Path, provider_render: bool,
+    tmp_path: Path, provider_render: bool, human_accepted: bool,
 ) -> None:
     runtime = tmp_path / "runtime"
     runtime.mkdir()
@@ -375,6 +376,24 @@ def test_artifixer_handler_admits_only_qualified_generated_appearance(
         },
         "output_requirements": {"generated_pixels_labeled": True},
     }
+    if human_accepted:
+        from tests.test_artifixer_human_appearance_acceptance import human_case, seal
+        from blueprint_pipeline import task_evaluation_scene_configuration_appearance_review as human
+        from blueprint_pipeline.task_evaluation_scene_configuration_artifixer_artifacts import _materialize_selected_task_thumbnail
+        human_root = tmp_path / "human"
+        human_input, _, human_reference, human_frames = human_case(human_root)
+        reviewed = human.reuse_human_approval(reference=human_reference, current_input_path=human_input,
+            output_root=human_root, publisher_instance_id="104", minimum_frame_count=16)
+        review = json.loads(Path(reviewed["review"]["review_receipt"]["path"]).read_text())
+        review_path.write_text(json.dumps(review))
+        _materialize_selected_task_thumbnail(review_receipt=review, review_frames=human_frames, destination=thumbnail_path)
+        receipt.update(status=human.HUMAN_REMOVAL_STATUS, human_visual_approval_passed=True,
+            ai_visual_review_accepted=False, semantic_object_free_visual_review_passed=False,
+            multiview_consistency_review_passed=False, visual_review_receipt_digest=review["receipt_digest"],
+            visual_review_receipt_sha256=sha256(review_path))
+        seal(receipt, "result_digest")
+        receipt_path.write_text(json.dumps(receipt))
+        configuration["human_authority"] = {"accepted_by":"owner"}
     configuration_path = tmp_path / "appearance-configuration.json"
     configuration_path.write_text(json.dumps(configuration), encoding="utf-8")
     output = tmp_path / "appearance-output"
