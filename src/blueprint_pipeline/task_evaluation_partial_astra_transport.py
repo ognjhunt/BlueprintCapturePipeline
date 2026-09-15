@@ -13,7 +13,11 @@ import shutil
 import stat
 import zipfile
 
-from .decision_evidence_contracts import canonical_digest, canonical_json
+from .decision_evidence_contracts import (
+    canonical_digest,
+    canonical_json,
+    cross_runtime_canonical_digest,
+)
 from .control_plane_disk_budget import reserve_control_plane_disk
 from . import task_evaluation_scene_intake as intake
 from .task_evaluation_scene_attempt_binding import require_scene_execution_binding
@@ -53,7 +57,21 @@ def _read(path, field=None):
     value = json.loads(path.read_text())
     _require(isinstance(value, dict), "record_invalid")
     if field:
-        _require(value.get(field) == canonical_digest(value, digest_field=field), "record_digest_invalid")
+        # Records reach this module sealed under BOTH canonical forms. Intake seals the
+        # scene intent and owner attempts with the rfc8785 cross-runtime digest -- it
+        # imports that function under the bare name `canonical_digest`
+        # (task_evaluation_scene_intake.py:22) -- while this module seals its own
+        # descriptor and selection with the plain one. Verifying only the plain form made
+        # every real scene intent fail `record_digest_invalid`, so the reuse path could
+        # never run on live data (scene 840938, 2026-09-15: stored sha256:01ede5c4...,
+        # plain sha256:a551825e...). Both are canonical digests over the actual value, so
+        # accepting either identifies the record without weakening it: a tampered record
+        # still matches neither.
+        _require(
+            value.get(field) in (canonical_digest(value, digest_field=field),
+                                 cross_runtime_canonical_digest(value, digest_field=field)),
+            "record_digest_invalid",
+        )
     return value
 
 
