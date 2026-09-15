@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+import pytest
+
+from blueprint_pipeline import (
+    task_evaluation_scene_configuration_runtime_budget as budget,
+)
+
 from blueprint_pipeline.task_evaluation_artifixer_ai_visual_review import (
     AI_REVIEW_MAX_INPUT_TOKENS,
     AI_REVIEW_MAX_OUTPUT_TOKENS,
@@ -114,3 +120,37 @@ def test_diagnostic_runtime_budget_refuses_short_remaining_lease_or_cap() -> Non
         "scene_configuration_diagnostic_provider_compute_budget_insufficient:"
         "2.133333:2.120000"
     ]
+
+
+def test_astra_authoring_defaults_to_its_sanctioned_ceiling_not_its_floor():
+    """Reservations are worst case, so defaulting to the floor throws away runs.
+
+    Scene 840938 object 219, 2026-09-15: CAD finally produced a valid STEP/STL
+    passing dimensional readback, and the stage then died on
+    `agents_sdk_inference_budget_ceiling_exceeded` at independent_visual_review —
+    projecting $11.47 against a $5.00 default while having actually spent $1.74.
+    """
+
+    astra = budget.scene_configuration_budget_profile("astra_cad_blender_v1")
+
+    assert astra.default_content_agents_cap == astra.content_agents_maximum == 15.0
+    caps = astra.stage_caps()
+    assert caps["content_agents"] == 15.0
+    # Comfortably covers the worst-case projection that actually blocked the run.
+    assert caps["content_agents"] > 11.475
+    # The profile still has to fit inside its own external ceiling.
+    assert sum(caps.values()) <= astra.external_maximum + 1e-9
+    # An explicit lower request is still honoured, and the floor still binds.
+    assert astra.stage_caps(6.0)["content_agents"] == 6.0
+    with pytest.raises(ValueError):
+        astra.stage_caps(astra.content_agents_minimum - 0.01)
+    with pytest.raises(ValueError):
+        astra.stage_caps(astra.content_agents_maximum + 0.01)
+
+
+def test_legacy_content_agents_backend_budget_is_unchanged():
+    """Only the astra CAD path moves; the legacy backend keeps its own default."""
+
+    legacy = budget.scene_configuration_budget_profile("content_agents")
+    assert legacy.content_agents_maximum == 5.0
+    assert legacy.stage_caps()["content_agents"] == 0.24

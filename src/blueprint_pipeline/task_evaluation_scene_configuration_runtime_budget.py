@@ -95,9 +95,19 @@ def scene_configuration_budget_profile(backend: str = "content_agents") -> Scene
         raise ValueError("scene_configuration_authoring_backend_invalid")
     maximum_external = round(MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD
                              + MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD + MAX_ASTRA_AUTHORING_SPEND_USD, 6)
+    # The default is the CEILING, not the floor. Reservations are worst case: every
+    # request reserves `input + max_output_tokens * price` before it runs, and the
+    # authoring stage makes many (source analysis, planner, architect, coder, repair,
+    # physical review, then one independent visual review per appearance candidate).
+    # Scene 840938 object 219, 2026-09-15: CAD finally succeeded -- a valid STEP/STL
+    # passing dimensional readback to 2e-7 mm -- and the stage then died on
+    # `agents_sdk_inference_budget_ceiling_exceeded` at independent_visual_review,
+    # because it projected 11.47 against a 5.00 default while having actually spent
+    # only 1.74. Defaulting to the minimum guarantees the tightest possible budget
+    # and throws away a whole GPU rental to a reservation that was never spent.
     return SceneConfigurationBudgetProfile(backend, MIN_ASTRA_AUTHORING_SPEND_USD,
         MAX_ASTRA_AUTHORING_SPEND_USD, maximum_external,
-        round(MAX_PROVIDER_COMPUTE_SPEND_USD + maximum_external, 6), MIN_ASTRA_AUTHORING_SPEND_USD)
+        round(MAX_PROVIDER_COMPUTE_SPEND_USD + maximum_external, 6), MAX_ASTRA_AUTHORING_SPEND_USD)
 
 
 def scene_configuration_budget_profile_contract() -> dict[str, Any]:
