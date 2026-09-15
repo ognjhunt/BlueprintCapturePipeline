@@ -135,6 +135,10 @@ evidence retains the pin. Reading an existing terminal receipt retries this
 metadata-only release; an already released pin requires no repeated hashing.
 The dispatcher never deletes files or changes the launch outcome during release.
 The normal reclaim timer still enforces queue references and its idle window.
+The launch reconciler retries release after creating or validating a retained
+post-teardown provider-zero receipt, so launches that never allocated a GPU can
+release their pins once that later closure evidence exists. Cleanup failures
+are reported separately and never invalidate proven resource closure.
 
 ## Reclaim timer
 

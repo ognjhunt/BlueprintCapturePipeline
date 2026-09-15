@@ -1926,7 +1926,15 @@ def test_reconciler_closes_stale_processing_only_after_fresh_provider_zero(
 @pytest.mark.parametrize("unrelated_inventory_failure", [False, True])
 def test_reconciler_retains_post_teardown_provider_zero_for_paid_terminal(
     tmp_path: Path, cross_runtime_receipt: bool, unrelated_inventory_failure: bool,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    release_calls = []
+    def observe_cache_release(*, run_root, receipt):
+        closure = json.loads((run_root / "post_teardown_provider_zero_receipt.json").read_text())
+        assert closure["receipt_digest"] == receipt["receipt_digest"]
+        release_calls.append(run_root)
+        return {"status": "observed", "evidence_removed": False}
+    monkeypatch.setattr("blueprint_pipeline.task_evaluation_scene_storage_release.release_terminal_scene_activation_pin", observe_cache_release)
     profile = _profile(tmp_path)
     request = _request(profile)
     run_root = tmp_path / "state" / request["launch_id"]
@@ -1984,6 +1992,9 @@ def test_reconciler_retains_post_teardown_provider_zero_for_paid_terminal(
     )
 
     assert first["status"] == "passed"
+    assert release_calls == [run_root, run_root]
+    assert first["terminal_provider_zero"][0]["activation_cache_release"]["status"] == "observed"
+    assert second["terminal_provider_zero"][0]["activation_cache_release"]["status"] == "observed"
     assert first["terminal_provider_zero"][0]["status"] == "provider_zero_confirmed"
     assert first["terminal_provider_zero"][0]["provider_mutation_performed"] is False
     assert second["terminal_provider_zero"][0]["status"] == "provider_zero_receipt_retained"
