@@ -6,6 +6,8 @@ import os
 import zipfile
 from pathlib import Path
 
+import pytest
+
 from blueprint_pipeline import task_evaluation_artifixer_pretraining as pretraining
 from blueprint_pipeline.artifixer_completed_training_reuse import CANDIDATES_ENV, SOURCE_ENV
 
@@ -14,7 +16,8 @@ FOREIGN = "sha256:" + "2" * 64
 
 
 def _launch(root: Path, name: str, *, intent: str = INTENT, closed: bool = True, terminal: bool = True,
-            archive: bool = True, profile: bool = True, age: int = 0, scene: str | None = None) -> Path:
+            archive: bool = True, profile: bool = True, age: int = 0, scene: str | None = None,
+            namespace: str = "team") -> Path:
     launch = root / name
     job = launch / "allocator" / "scene-configuration-job"
     (job / "vast_provider_run").mkdir(parents=True)
@@ -22,7 +25,7 @@ def _launch(root: Path, name: str, *, intent: str = INTENT, closed: bool = True,
         (launch / "launch_profile.json").write_text(json.dumps({
             "schema_version": "task_evaluation_launch_profile.v1",
             "scene_attempt_binding": {"intent_digest": intent, "intent_id": "scene-x"},
-            **({"task_evaluation_run": {"team_namespace": "team", "scene_id": scene, "task_id": "t"}} if scene else {})}))
+            **({"task_evaluation_run": {"team_namespace": namespace, "scene_id": scene, "task_id": "t"}} if scene else {})}))
     if terminal:
         (launch / "launch_receipt.json").write_text(json.dumps({"status": "completed"}))
     if closed:
@@ -106,3 +109,30 @@ def test_explicit_source_of_this_scene_is_honoured(tmp_path):
     assert pretraining.scoped_completed_training_environment(
         {SOURCE_ENV: str(tmp_path / "missing")}, unscoped / "allocator" / "scene-configuration-job",
     ) == ({SOURCE_ENV: str(tmp_path / "missing")}, None)
+
+
+@pytest.mark.parametrize("source_intent,source_scene,retained", [
+    (INTENT, "840938", True),
+    (FOREIGN, "840938", False),
+    (INTENT, "841757", False),
+    (None, "840938", False),
+])
+def test_successor_namespace_preserves_exact_intent_human_approval(
+    tmp_path, source_intent, source_scene, retained,
+):
+    from blueprint_pipeline.task_evaluation_scene_configuration_appearance_review import HUMAN_REVIEW_ENV
+
+    root = tmp_path / "launch-runs"
+    own = _launch(root, "successor", scene="840938", namespace="scene-new-attempt")
+    source = _launch(root, "completed", intent=source_intent, scene=source_scene,
+                     namespace="scene-old-attempt")
+    environment = {SOURCE_ENV: str(source), HUMAN_REVIEW_ENV: str(source / "owner-approval"),
+                   "OTHER": "kept"}
+    values, ignored = pretraining.scoped_completed_training_environment(
+        environment, own / "allocator" / "scene-configuration-job")
+    if retained:
+        assert values == environment
+        assert ignored is None
+    else:
+        assert values == {"OTHER": "kept"}
+        assert ignored["ignored_environment"] == [SOURCE_ENV, HUMAN_REVIEW_ENV]
