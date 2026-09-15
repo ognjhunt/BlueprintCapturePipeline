@@ -209,6 +209,7 @@ def scoped_completed_training_environment(environment: Mapping[str, str], job_di
     validator; this only stops a foreign pin from blocking a run it never described.
     """
     from .artifixer_completed_training_reuse import REVIEW_ENV, SOURCE_ENV
+    from .task_evaluation_scene_configuration_appearance_review import HUMAN_REVIEW_ENV
     values = dict(environment)
     source = values.get(SOURCE_ENV)
     if not source:
@@ -221,8 +222,8 @@ def scoped_completed_training_environment(environment: Mapping[str, str], job_di
     ignored = {"schema_version": SOURCE_IGNORED_SCHEMA, "reason": "completed_training_source_out_of_scope",
                "source_launch_root": str(source), "source_scene": list(theirs) if theirs else None,
                "current_scene": list(own),
-               "ignored_environment": [key for key in (SOURCE_ENV, REVIEW_ENV) if values.get(key)]}
-    for key in (SOURCE_ENV, REVIEW_ENV):
+               "ignored_environment": [key for key in (SOURCE_ENV, REVIEW_ENV, HUMAN_REVIEW_ENV) if values.get(key)]}
+    for key in (SOURCE_ENV, REVIEW_ENV, HUMAN_REVIEW_ENV):
         values.pop(key, None)
     return values, ignored
 

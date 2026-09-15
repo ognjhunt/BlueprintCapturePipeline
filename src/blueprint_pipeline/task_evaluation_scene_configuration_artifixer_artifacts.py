@@ -82,10 +82,16 @@ def _materialize_selected_task_thumbnail(
 
     thumbnail_selection = review_receipt.get("task_thumbnail_selection")
     reviewer = review_receipt.get("reviewer")
+    from .task_evaluation_scene_configuration_appearance_review import HUMAN_REVIEW_SCHEMA, human_review_receipt_valid
+    human = review_receipt.get("schema_version") == HUMAN_REVIEW_SCHEMA
+    if human and not human_review_receipt_valid(review_receipt,
+            publisher_instance_id=review_receipt.get("publisher_instance_id"), minimum_frame_count=len(review_frames),
+            thumbnail_digest=thumbnail_selection.get("frame_sha256") if isinstance(thumbnail_selection, Mapping) else None):
+        raise TaskEvaluationSceneConfigurationArtifixerError("human_appearance_thumbnail_invalid")
     if (
         not isinstance(thumbnail_selection, Mapping)
         or not isinstance(reviewer, Mapping)
-        or reviewer.get("kind") != "ai"
+        or reviewer.get("kind") != ("human" if human else "ai")
         or not str(reviewer.get("identity") or "")
         or not str(reviewer.get("model") or "")
         or review_receipt.get("task_thumbnail_is_exact_review_frame") is not True

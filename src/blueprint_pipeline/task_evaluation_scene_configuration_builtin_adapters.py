@@ -405,7 +405,22 @@ def execute_artifixer3d_observed_object_removal(
             == "task_evaluation_artifixer_object_removal_result.v1",
         ),
     ]
-    if review_mode == REQUIRED_MODE:
+    from .task_evaluation_scene_configuration_appearance_review import (
+        HUMAN_REVIEW_SCHEMA, HUMAN_REMOVAL_STATUS, human_review_receipt_valid)
+    if review_mode == REQUIRED_MODE and review.get("schema_version") == HUMAN_REVIEW_SCHEMA:
+        predicates.extend([
+            ("human_removal_status", lambda: receipt.get("status") == HUMAN_REMOVAL_STATUS),
+            ("human_owner_present", lambda: bool(configuration.get("human_authority", {}).get("accepted_by"))),
+            ("human_approval_passed", lambda: receipt.get("human_visual_approval_passed") is True),
+            ("ai_acceptance_not_claimed", lambda: receipt.get("ai_visual_review_accepted") is False),
+            ("semantic_ai_grade_preserved", lambda: receipt.get("semantic_object_free_visual_review_passed") is False),
+            ("multiview_ai_grade_preserved", lambda: receipt.get("multiview_consistency_review_passed") is False),
+            ("human_review_bound", lambda: human_review_receipt_valid(review,
+                publisher_instance_id=str(source_publisher_id), minimum_frame_count=minimum_views,
+                thumbnail_digest=thumbnail_digest,
+                expected_owner=configuration.get("human_authority", {}).get("accepted_by"))),
+        ])
+    elif review_mode == REQUIRED_MODE:
         predicates.extend(
             [
                 (

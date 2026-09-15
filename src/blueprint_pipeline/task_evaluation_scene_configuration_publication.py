@@ -151,6 +151,27 @@ def _thumbnail_selection(
             },
             "appearance_review_status": PAUSED_UNGRADED_MODE,
         }
+    from .task_evaluation_scene_configuration_appearance_review import (
+        HUMAN_REVIEW_SCHEMA, HUMAN_ACCEPTED_STATUS, HUMAN_REMOVAL_STATUS, human_review_receipt_valid)
+    if review_mode == REQUIRED_MODE and receipt.get("schema_version") == HUMAN_REVIEW_SCHEMA:
+        if removal_receipt_path is None:
+            raise TaskEvaluationSceneConfigurationPublicationError("human_appearance_removal_missing")
+        removal = json.loads(removal_receipt_path.read_text())
+        if (removal.get("status") != HUMAN_REMOVAL_STATUS
+                or removal.get("visual_review_receipt_digest") != receipt.get("receipt_digest")
+                or removal.get("result_digest") != canonical_digest(removal, digest_field="result_digest")
+                or not human_review_receipt_valid(receipt,
+                    publisher_instance_id=str(removal.get("publisher_instance_id") or ""),
+                    minimum_frame_count=minimum_frame_count, thumbnail_digest=thumbnail_digest)
+                or not 1 <= thumbnail_size <= MAX_TASK_THUMBNAIL_SIZE_BYTES):
+            raise TaskEvaluationSceneConfigurationPublicationError("human_appearance_thumbnail_invalid")
+        return {"camera_id":selection["camera_id"], "frame_digest":thumbnail_digest,
+                "rationale":selection["rationale"], "reviewer":dict(reviewer),
+                "appearance_review_status":HUMAN_ACCEPTED_STATUS,
+                "ai_visual_review_status":"rejected",
+                "human_approval_digest":receipt["human_approval"]["approval_digest"],
+                "known_artifacts":receipt["human_approval"]["known_artifacts"],
+                "thumbnail_selector":receipt["thumbnail_selector"]}
     if (
         review_mode != REQUIRED_MODE
         or receipt.get("schema_version")
@@ -615,6 +636,8 @@ def publish_configured_scene_revision(
         review_mode=review_mode,
         minimum_frame_count=8,
     )
+    human_review_metadata = {key: thumbnail_selection[key] for key in
+        ("ai_visual_review_status", "human_approval_digest", "known_artifacts") if key in thumbnail_selection}
     bundle = root / "configured_scene_bundle.v1.zip"
     _deterministic_bundle(
         files=[
@@ -735,6 +758,7 @@ def publish_configured_scene_revision(
             "visual_review_status": thumbnail_selection[
                 "appearance_review_status"
             ],
+            **human_review_metadata,
             **(
                 {"warning_label": PAUSED_UNGRADED_WARNING}
                 if review_mode == PAUSED_UNGRADED_MODE
@@ -825,6 +849,7 @@ def publish_configured_scene_revision(
             "appearance_review_status": thumbnail_selection[
                 "appearance_review_status"
             ],
+            **human_review_metadata,
             "selected_from_exact_reviewed_frame_count": (
                 0 if review_mode == PAUSED_UNGRADED_MODE else json.loads(
                     artifacts["appearance_visual_review_receipt"].read_text()
@@ -942,6 +967,7 @@ def publish_configured_scene_revision(
             "appearance_review_status": thumbnail_selection[
                 "appearance_review_status"
             ],
+            **human_review_metadata,
             **(
                 {"appearance_warning_label": PAUSED_UNGRADED_WARNING}
                 if review_mode == PAUSED_UNGRADED_MODE
