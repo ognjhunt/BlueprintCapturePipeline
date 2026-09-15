@@ -292,3 +292,16 @@ def test_rejects_revision_that_repeats_construction_for_each_evaluation() -> Non
         match="configured_scene_revision_invalid",
     ):
         validate_configured_scene_revision(value)
+
+
+@pytest.mark.parametrize("key,value", [
+    ("ai_visual_review_status", "rejected"), ("human_approval_digest", "sha256:"+"a"*64),
+    ("human_reviewer_identity", "owner"), ("known_artifacts", ["mark"]),
+    ("thumbnail_selector", "deterministic_first_approved_camera"),
+])
+def test_ai_revision_cannot_carry_human_only_metadata(key, value):
+    doc = revision()
+    doc["presentation"]["selection"][key] = value
+    doc["revision_digest"] = canonical_digest(doc, digest_field="revision_digest")
+    with pytest.raises(TaskEvaluationConfiguredSceneRevisionError):
+        validate_configured_scene_revision(doc)

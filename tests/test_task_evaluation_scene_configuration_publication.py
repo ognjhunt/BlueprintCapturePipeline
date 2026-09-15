@@ -201,8 +201,9 @@ def _disclosure_decision(*, provider: bool) -> dict[str, object]:
     return value
 
 
+@pytest.mark.parametrize("human_accepted", [False, True])
 def test_control_plane_publishes_reads_back_and_seals_robot_neutral_revision(
-    tmp_path: Path,
+    tmp_path: Path, human_accepted: bool,
 ) -> None:
     request = configuration_request_fixture()
     _authorize_public_display(request)
@@ -226,6 +227,24 @@ def test_control_plane_publishes_reads_back_and_seals_robot_neutral_revision(
         path.write_bytes((role + "\n").encode())
         rows.append(_artifact(role, path))
     rows.extend(_thumbnail_artifacts(artifacts))
+    if human_accepted:
+        from tests.test_artifixer_human_appearance_acceptance import human_case, seal
+        from blueprint_pipeline import task_evaluation_scene_configuration_appearance_review as human
+        from blueprint_pipeline.task_evaluation_scene_configuration_artifixer_artifacts import _materialize_selected_task_thumbnail
+        human_root = tmp_path / "human"
+        human_input, _, human_reference, human_frames = human_case(human_root)
+        reviewed = human.reuse_human_approval(reference=human_reference, current_input_path=human_input,
+            output_root=human_root, publisher_instance_id="104", minimum_frame_count=16)
+        review_path = Path(reviewed["review"]["review_receipt"]["path"])
+        review = json.loads(review_path.read_text())
+        thumbnail_path = artifacts / "configured-task-thumbnail.png"
+        _materialize_selected_task_thumbnail(review_receipt=review, review_frames=human_frames, destination=thumbnail_path)
+        removal_path = artifacts / "appearance-receipt.json"
+        removal_path.write_text(json.dumps(seal({"status":human.HUMAN_REMOVAL_STATUS,
+            "publisher_instance_id":"104", "visual_review_receipt_digest":review["receipt_digest"]}, "result_digest")))
+        replacements = {"appearance_visual_review_receipt":review_path,
+                        "configured_task_thumbnail":thumbnail_path, "appearance_removal_receipt":removal_path}
+        rows = [_artifact(row["role"], replacements[row["role"]]) if row["role"] in replacements else row for row in rows]
     stage_results = [{"output_artifacts": rows}]
     envelope = {
         "run_id": request["run_id"],
@@ -291,8 +310,8 @@ def test_control_plane_publishes_reads_back_and_seals_robot_neutral_revision(
     assert revision["presentation"]["task_thumbnail"]["digest"] == _sha256(
         artifacts / "configured-task-thumbnail.png"
     )
-    assert revision["presentation"]["selection"]["camera_id"] == "camera-3"
-    assert revision["presentation"]["selected_from_exact_reviewed_frame_count"] == 8
+    assert revision["presentation"]["selection"]["camera_id"] == ("camera-00" if human_accepted else "camera-3")
+    assert revision["presentation"]["selected_from_exact_reviewed_frame_count"] == (16 if human_accepted else 8)
     offering = result["configured_scene_offering"]
     assert offering["status"] == "configured_controls_pending"
     assert offering["evaluation_admission"] == {
@@ -332,6 +351,12 @@ def test_control_plane_publishes_reads_back_and_seals_robot_neutral_revision(
         "configured_scene_revision"
     ] == result["configured_scene_revision_reference"]
     assert result["provider_mutation_performed"] is False
+
+    if human_accepted:
+        assert offering["presentation"]["appearance_review_status"] == "human_accepted_with_known_artifacts"
+        assert offering["proof_boundary"]["human_reviewer_identity"] == "owner"
+        assert offering["proof_boundary"]["ai_visual_review_status"] == "rejected"
+        return
 
     request["appearance_review_override"] = {
         "mode": "paused_ungraded",

@@ -1034,6 +1034,7 @@ def _run_artifixer_visual_review_round(
     max_cost_usd: float,
     review_phase: str = "post_training",
     completed_review: dict | None = None,
+    human_acceptance: dict | None = None,
 ) -> dict[str, Any]:
     """Call the unchanged independent gate for one exact candidate inventory."""
 
@@ -1066,6 +1067,11 @@ def _run_artifixer_visual_review_round(
     review_input_path.write_text(
         canonical_json(review_input) + "\n", encoding="utf-8"
     )
+    if human_acceptance is not None and review_phase == "post_training" and review_round == 0:
+        from .task_evaluation_scene_configuration_appearance_review import reuse_human_approval
+        return reuse_human_approval(reference=human_acceptance, current_input_path=review_input_path,
+            output_root=round_root, publisher_instance_id=str(configuration["source_object"]["publisher_instance_id"]),
+            minimum_frame_count=len(review_frames))
     if completed_review is not None and review_phase == "post_training" and review_round == 0:
         from .artifixer_completed_training_reuse import reuse_completed_review
         return reuse_completed_review(reference=completed_review, current_input_path=review_input_path,
@@ -1757,6 +1763,15 @@ def execute_artifixer_component(
                 raise TaskEvaluationSceneConfigurationArtifixerError("completed_review_requires_retained_training")
             prepared["completed_review"] = stage_completed_review(
                 source_root=Path(values[REVIEW_ENV]), output_root=output_root / "completed_review")
+        from .task_evaluation_scene_configuration_appearance_review import HUMAN_REVIEW_ENV, stage_human_approval
+        if values.get(HUMAN_REVIEW_ENV):
+            if not prepared.get("completed_training_reuse") or not values.get(SOURCE_ENV) or values.get(REVIEW_ENV):
+                raise TaskEvaluationSceneConfigurationArtifixerError("human_appearance_requires_exact_completed_training")
+            prepared["human_appearance_acceptance"] = stage_human_approval(
+                source_root=Path(values[HUMAN_REVIEW_ENV]), source_launch_root=Path(values[SOURCE_ENV]),
+                output_root=output_root / "human_appearance_acceptance",
+                completed_training=prepared["completed_training_reuse"],
+                expected_owner=_human_authority(configuration)["accepted_by"])
         return write_pretraining_state(state=prepared, stage_input=stage_input,
             output_path=component_result_path)
     task_id = prepared["task_id"]
@@ -1895,6 +1910,7 @@ def execute_artifixer_component(
         post_training_binding_digest=training["post_training_binding_digest"],
         max_cost_usd=(visual_review_cap if semantic_repair_used else visual_review_cap / 2),
         completed_review=prepared.get("completed_review"),
+        human_acceptance=prepared.get("human_appearance_acceptance"),
     )
     review = reviewed["review"]
     review_frames = training["review_frames"]
@@ -2064,15 +2080,18 @@ def execute_artifixer_component(
     shutil.copyfile(native_appearance_source, appearance)
     copied_review = output_root / "appearance_visual_review_receipt.v1.json"
     shutil.copyfile(review_receipt_path, copied_review)
+    from .task_evaluation_scene_configuration_appearance_review import HUMAN_REVIEW_SCHEMA, HUMAN_REMOVAL_STATUS
+    human_accepted = review_receipt.get("schema_version") == HUMAN_REVIEW_SCHEMA
     removal: dict[str, Any] = {
         "schema_version": "task_evaluation_artifixer_object_removal_result.v1",
-        "status": "qualified_generated_appearance_edit",
+        "status": HUMAN_REMOVAL_STATUS if human_accepted else "qualified_generated_appearance_edit",
         "publisher_instance_id": configuration["source_object"]["publisher_instance_id"],
         "raw_interiorgs_bytes_sent_to_external_provider": False,
         "visual_review_receipt_digest": review["review_receipt"]["receipt_digest"],
         "visual_review_receipt_sha256": _sha256(copied_review),
-        "semantic_object_free_visual_review_passed": True,
-        "multiview_consistency_review_passed": True,
+        "semantic_object_free_visual_review_passed": not human_accepted,
+        "multiview_consistency_review_passed": not human_accepted,
+        **({"human_visual_approval_passed": True, "ai_visual_review_accepted": False} if human_accepted else {}),
         "task_thumbnail_selection": thumbnail_selection,
         "generated_pixels_labeled": True,
         "appearance_authority": "generated_support_not_observed_source_or_physics_truth",

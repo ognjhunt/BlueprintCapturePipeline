@@ -140,6 +140,13 @@ def validate_configured_scene_revision(
             raise TaskEvaluationConfiguredSceneRevisionError(
                 "configured_scene_revision_appearance_review_binding_invalid"
             )
+        if review_status != "human_accepted_with_known_artifacts" and any(
+            key in row for row in (presentation, appearance, selection)
+            for key in ("ai_visual_review_status", "human_approval_digest", "human_reviewer_identity",
+                        "known_artifacts", "thumbnail_selector")
+        ):
+            raise TaskEvaluationConfiguredSceneRevisionError(
+                "configured_scene_revision_human_metadata_status_conflict")
         if review_status == "paused_ungraded":
             if (
                 presentation.get("selected_from_exact_reviewed_frame_count") != 0
@@ -152,6 +159,20 @@ def validate_configured_scene_revision(
                 raise TaskEvaluationConfiguredSceneRevisionError(
                     "configured_scene_revision_ungraded_review_boundary_invalid"
                 )
+        elif review_status == "human_accepted_with_known_artifacts":
+            count = presentation.get("selected_from_exact_reviewed_frame_count", 0)
+            if (not 8 <= count <= 64 or reviewer.get("kind") != "human"
+                    or selection.get("thumbnail_selector") != "deterministic_first_approved_camera"
+                    or not presentation.get("human_approval_digest")
+                    or presentation.get("human_reviewer_identity") != reviewer.get("identity")
+                    or reviewer.get("runtime") != "owner_approval" or reviewer.get("model") != "none"
+                    or not presentation.get("known_artifacts")
+                    or any(row.get("ai_visual_review_status") != "rejected" for row in (presentation, appearance, selection))
+                    or any(row.get(key) != presentation.get(key)
+                           for row in (appearance, selection)
+                           for key in ("human_approval_digest", "human_reviewer_identity", "known_artifacts"))):
+                raise TaskEvaluationConfiguredSceneRevisionError(
+                    "configured_scene_revision_human_approval_boundary_invalid")
         elif (
             review_status != "accepted"
             or presentation.get("selected_from_exact_reviewed_frame_count", 0) < 8
