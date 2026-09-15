@@ -54,6 +54,9 @@ Environment=BLUEPRINT_CONTROL_PLANE_GC_QUEUE_ROOTS=/var/lib/blueprint/pipeline-c
 # Sealed run evidence eligible for offload after the hot window; offload itself stays dry-run until
 # BLUEPRINT_CONTROL_PLANE_EVIDENCE_OFFLOAD=1 is set in the operator environment file.
 Environment=BLUEPRINT_CONTROL_PLANE_GC_EVIDENCE_ROOTS=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs:/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries:/var/lib/blueprint/pipeline-control-plane/episode-interpretation-backfills:/var/lib/blueprint/pipeline-control-plane/policy-canary-preprovider-audits
+# Settled attempts keep reopening their launch run's local receipt; retention
+# reads these records so it never archives evidence the accounting still needs.
+Environment=BLUEPRINT_CONTROL_PLANE_GC_SETTLEMENT_ROOTS=/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-intents
 # Offload itself stays an operator opt-in: BLUEPRINT_CONTROL_PLANE_EVIDENCE_OFFLOAD=1
 # in the environment file.  Once opted in, the artifact store is the system of
 # record for sealed run evidence and the host keeps a digest-bound pointer; two
