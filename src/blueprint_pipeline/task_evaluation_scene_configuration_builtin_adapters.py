@@ -112,6 +112,15 @@ def _materialized_reference(
     return row, path
 
 
+#: The disclaimer each authoring backend stamps on a replacement candidate: the
+#: geometry is neither observed truth nor physics authority. Same meaning, two
+#: spellings, because the drivers were written at different times.
+ACCEPTED_SOURCE_CANDIDATE_CLAIMS = (
+    "sage_candidate_geometry_not_observed_truth_or_physics_authority",
+    "source_geometry_not_observed_truth_or_physics_authority",
+)
+
+
 def _dependency_artifact(
     dependency_results: tuple[Mapping[str, Any], ...], *, role: str
 ) -> tuple[Mapping[str, Any], Path]:
@@ -1048,8 +1057,14 @@ def execute_content_agents_rigid_replacement(
         or receipt.get("replacement_identity") != identity
         or receipt.get("source_candidate_digest")
         != source_candidate_record.get("digest")
-        or receipt.get("source_candidate_claim")
-        != "sage_candidate_geometry_not_observed_truth_or_physics_authority"
+        # Both supported authoring backends disclaim the same thing, in different
+        # words: the legacy content_agents driver writes "sage_candidate_..."
+        # (content_agents_driver.py) and the astra CAD driver writes "source_..."
+        # (astra_driver.py). This clause only ever accepted the legacy spelling, so
+        # every astra result was refused as content_agents_replacement_result_invalid
+        # no matter how good it was. Scene 840938 object 219, 2026-09-15: a fully
+        # packaged replacement candidate USDZ was rejected on this string alone.
+        or receipt.get("source_candidate_claim") not in ACCEPTED_SOURCE_CANDIDATE_CLAIMS
         or receipt.get("output_usd", {}).get("sha256")
         != asset_record.get("digest")
         or receipt.get("output_usd", {}).get("size_bytes")
