@@ -4,6 +4,7 @@ import functools
 import hashlib
 import json
 import os
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -852,3 +853,46 @@ def test_offload_rereads_settlement_records_before_each_eviction(tmp_path) -> No
     assert "run-b" not in offloaded, "a settlement written mid-apply must still protect"
     assert late.is_dir()
     assert not first.exists()
+
+
+def test_run_cli_honours_the_derived_minimum_age_from_the_unit_environment(tmp_path, monkeypatch, capsys):
+    """The derived age must be configurable, like every other GC class.
+
+    It was accepted by `run_storage_gc` but never passed by the CLI, so the 6h
+    default always won and the unit environment was silently ignored. Scene
+    840938, 2026-09-15: ~1.3 GiB of activation set per attempt, a new attempt
+    roughly every 45 minutes, so they accumulated far faster than they aged out
+    and disk blocked the run three times.
+    """
+
+    derived = tmp_path / "launch-activations"
+    child = derived / "activation-1"
+    child.mkdir(parents=True)
+    (child / "bundle.zip").write_bytes(b"x" * 2048)
+    # Two hours idle: older than a 1h setting, younger than the 6h default.
+    idle = time.time() - 2 * 60 * 60
+    for path in (child / "bundle.zip", child):
+        os.utime(path, (idle, idle))
+    queue = tmp_path / "queue"
+    (queue / "pending").mkdir(parents=True)
+    monkeypatch.setenv("BLUEPRINT_CONTROL_PLANE_GC_DERIVED_ROOTS", str(derived))
+    monkeypatch.setenv("BLUEPRINT_CONTROL_PLANE_GC_QUEUE_ROOTS", str(queue))
+    monkeypatch.delenv("BLUEPRINT_CONTROL_PLANE_GC_DERIVED_MINIMUM_AGE_SECONDS", raising=False)
+    monkeypatch.setattr(gc_module, "require_storage_class", _noclass)
+
+    # The 6h default still protects it.
+    assert gc_module.main(["run", "--pins-root", str(tmp_path / "pins")]) == 0
+    assert json.loads(capsys.readouterr().out)["derived_directories"]["candidate_count"] == 0
+
+    # The unit environment now actually takes effect.
+    monkeypatch.setenv("BLUEPRINT_CONTROL_PLANE_GC_DERIVED_MINIMUM_AGE_SECONDS", "3600")
+    assert gc_module.main(["run", "--pins-root", str(tmp_path / "pins")]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["derived_directories"]["candidate_count"] == 1
+    assert report["derived_directories"]["candidates"][0]["name"] == "activation-1"
+
+    # An explicit flag overrides the environment.
+    assert gc_module.main([
+        "run", "--pins-root", str(tmp_path / "pins"), "--derived-minimum-age-seconds", "86400",
+    ]) == 0
+    assert json.loads(capsys.readouterr().out)["derived_directories"]["candidate_count"] == 0
