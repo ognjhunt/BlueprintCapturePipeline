@@ -76,6 +76,18 @@ def reconcile_stopped_launch(*, queue_root, state_root, guard_report_path, launc
         started_at = _timestamp(started.get("started_at"))
         if started_at is None or not started_at <= exited_at <= observed_at:
             raise TaskEvaluationLaunchError("stopped_launch_time_binding_invalid")
+        secrets = run_root / "allocator/scene-configuration-job/runtime-secrets"
+        if secrets.exists() or secrets.is_symlink():
+            if any(p.is_symlink() for p in (secrets, *secrets.parents)):
+                raise TaskEvaluationLaunchError("stopped_launch_secret_root_unsafe")
+            from blueprint_pipeline.task_evaluation_scene_configuration_vast import _discard_staged_runtime_secrets
+            if _discard_staged_runtime_secrets(secrets):
+                raise TaskEvaluationLaunchError("stopped_launch_secret_cleanup_failed")
+        guard = json.loads(raw_guard)
+        guard_bytes = (json.dumps(guard, sort_keys=True, separators=(",", ":")) + "\n").encode()
+        guard_digest = hashlib.sha256(guard_bytes).hexdigest()
+        guard_snapshot = run_root / "reconciliations" / (guard_digest + ".provider-zero.json")
+        _write_immutable(guard_snapshot, guard)
         receipt = {
             "schema_version": ORPHAN_RECOVERY_SCHEMA_VERSION, "launch_id": launch_id,
             "request_digest": request["request_digest"], "observed_at": observed_at.isoformat(),
@@ -85,7 +97,8 @@ def reconcile_stopped_launch(*, queue_root, state_root, guard_report_path, launc
             "hard_ttl_seconds": started.get("hard_ttl_seconds"), "required_providers": providers,
             "launch_profile_digest": profile["profile_digest"], "provider_scope_source": scope,
             "profile_record_source": source, "profile_record_path": str(profile_path),
-            "guard_report_path": str(guard_path), "guard_report_sha256": "sha256:" + hashlib.sha256(raw_guard).hexdigest(),
+            "guard_report_path": str(guard_snapshot), "guard_report_sha256": "sha256:" + guard_digest,
+            "source_guard_report_path": str(guard_path), "temporary_runtime_secrets_removed": not secrets.exists(),
             "provider_zero_confirmed": True, "automatic_retry_performed": False,
             "allocator_invoked": False, "historical_spend_settled": False, "blockers": [],
         }

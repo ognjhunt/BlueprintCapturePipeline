@@ -1,4 +1,5 @@
 import importlib.util
+import hashlib
 import json
 import sys
 from contextlib import contextmanager
@@ -100,3 +101,32 @@ def test_refuses_live_original_dispatcher_pid(run, monkeypatch):
     with pytest.raises(recovery.TaskEvaluationLaunchError, match="writer_or_binding"):
         recovery.reconcile_stopped_launch(**args)
     assert claim.exists()
+
+
+def test_retains_guard_snapshot_and_discards_only_temporary_secret_copies(run):
+    args, root, _, guard, _ = run
+    source_guard = json.loads(guard.read_text())
+    secrets = root / "allocator/scene-configuration-job/runtime-secrets"
+    secrets.mkdir(parents=True)
+    (secrets / "OPENAI_CONTENT_AGENTS_API_KEY_FILE").write_text("test-only-copy")
+    result = recovery.reconcile_stopped_launch(**args)
+    guard.write_text("{}")
+    retained = Path(result["guard_report_path"])
+    assert json.loads(retained.read_text()) == source_guard
+    assert "sha256:" + hashlib.sha256(retained.read_bytes()).hexdigest() == result["guard_report_sha256"]
+    assert not secrets.exists()
+    assert result["temporary_runtime_secrets_removed"] is True
+
+
+def test_refuses_symlinked_secret_directory(run, tmp_path):
+    args, root, claim, _, _ = run
+    outside = tmp_path / "canonical-secrets"
+    outside.mkdir()
+    key = outside / "key"
+    key.write_text("preserve")
+    secrets = root / "allocator/scene-configuration-job/runtime-secrets"
+    secrets.parent.mkdir(parents=True)
+    secrets.symlink_to(outside, target_is_directory=True)
+    with pytest.raises(recovery.TaskEvaluationLaunchError, match="secret_root_unsafe"):
+        recovery.reconcile_stopped_launch(**args)
+    assert key.read_text() == "preserve" and claim.exists()
