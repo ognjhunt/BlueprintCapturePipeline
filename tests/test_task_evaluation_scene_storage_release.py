@@ -105,6 +105,45 @@ def test_never_allocated_launch_releases_with_bound_zero_and_teardown(case):
     assert case['source'].read_bytes() == case['staged'].read_bytes()
 
 
+def test_reconciliation_retries_release_when_zero_receipt_arrives_later(case, monkeypatch):
+    from datetime import datetime, timezone
+    from blueprint_pipeline.control_plane_storage_pins import PINS_ROOT_ENV
+    from blueprint_pipeline.task_evaluation_launch_reconciler import _reconcile_terminal_provider_zero
+    never_allocated(case)
+    path = case['run_root']/'post_teardown_provider_zero_receipt.json'
+    sealed_zero = path.read_bytes()
+    path.unlink()
+    assert release(case)['status'] != 'released'
+    assert pin(case)['released_at_epoch'] is None
+    path.write_bytes(sealed_zero)
+    monkeypatch.setenv(PINS_ROOT_ENV, str(case['pins_root']))
+    result = _reconcile_terminal_provider_zero(run_root=case['run_root'], receipt=case['receipt'],
+        profile={}, guard={}, guard_path=case['run_root']/'unused-guard', guard_bytes=None,
+        guard_error=None, observed_at=datetime.now(timezone.utc))
+    assert result['status'] == 'provider_zero_receipt_retained'
+    assert result['activation_cache_release']['status'] == 'released'
+    assert pin(case)['released_at_epoch'] is not None
+    assert path.read_bytes() == sealed_zero
+    assert case['source'].read_bytes() == case['staged'].read_bytes()
+
+
+def test_cache_release_failure_cannot_invalidate_proven_zero(case, monkeypatch):
+    from datetime import datetime, timezone
+    from blueprint_pipeline.task_evaluation_launch_reconciler import _reconcile_terminal_provider_zero
+    never_allocated(case)
+    def fail(**kwargs):
+        raise RuntimeError('cleanup unavailable')
+    monkeypatch.setattr('blueprint_pipeline.task_evaluation_scene_storage_release.release_terminal_scene_activation_pin', fail)
+    result = _reconcile_terminal_provider_zero(run_root=case['run_root'], receipt=case['receipt'],
+        profile={}, guard={}, guard_path=case['run_root']/'unused-guard', guard_bytes=None,
+        guard_error=None, observed_at=datetime.now(timezone.utc))
+    assert result['provider_zero_confirmed'] is True
+    assert result['status'] == 'provider_zero_receipt_retained'
+    assert result['activation_cache_release'] == {'status':'release_unconfirmed',
+        'error_type':'RuntimeError','evidence_removed':False}
+    assert pin(case)['released_at_epoch'] is None
+
+
 @pytest.mark.parametrize('mutation', ['missing_zero','changed_zero','wrong_launch','changed_teardown','budget_present','broken_budget_link'])
 def test_never_allocated_launch_requires_complete_noncontradictory_proof(case, mutation):
     zero = never_allocated(case)

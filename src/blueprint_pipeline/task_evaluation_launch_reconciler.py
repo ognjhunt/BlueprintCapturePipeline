@@ -451,6 +451,16 @@ def _validated_post_teardown_provider_zero_receipt(
     return value
 
 
+def _release_scene_cache_after_zero(*, run_root: Path, receipt: Mapping[str, Any]) -> dict[str, Any]:
+    """Retry metadata-only release once independently bound closure exists."""
+    try:
+        from .task_evaluation_scene_storage_release import release_terminal_scene_activation_pin
+        return release_terminal_scene_activation_pin(run_root=run_root, receipt=receipt)
+    except Exception as exc:  # Cleanup cannot invalidate already proven resource closure.
+        return {"status": "release_unconfirmed", "error_type": type(exc).__name__,
+                "evidence_removed": False}
+
+
 def _reconcile_terminal_provider_zero(
     *,
     run_root: Path,
@@ -481,6 +491,7 @@ def _reconcile_terminal_provider_zero(
             "status": "provider_zero_receipt_retained",
             "provider_zero_confirmed": True,
             "provider_zero_receipt_digest": retained.get("provider_zero_receipt_digest"),
+            "activation_cache_release": _release_scene_cache_after_zero(run_root=run_root, receipt=receipt),
             "provider_mutation_performed": False,
             "allocator_invoked": False,
             "automatic_retry_performed": False,
@@ -616,6 +627,7 @@ def _reconcile_terminal_provider_zero(
         "status": "provider_zero_confirmed",
         "provider_zero_confirmed": True,
         "provider_zero_receipt_digest": closure["provider_zero_receipt_digest"],
+        "activation_cache_release": _release_scene_cache_after_zero(run_root=run_root, receipt=receipt),
         "provider_mutation_performed": False,
         "allocator_invoked": False,
         "automatic_retry_performed": False,
