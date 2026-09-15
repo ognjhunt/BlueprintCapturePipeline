@@ -19,7 +19,6 @@ from .decision_evidence_contracts import (
     cross_runtime_canonical_digest,
 )
 from .control_plane_disk_budget import reserve_control_plane_disk
-from . import task_evaluation_scene_intake as intake
 from .task_evaluation_scene_attempt_binding import require_scene_execution_binding
 
 SCHEMA = "task_evaluation_partial_astra_transport.v1"
@@ -40,9 +39,13 @@ REQUIRED = {"authoring/request.json", "authoring/source_analysis.json", "authori
             "authoring/appearance-01/final_visual_mesh_receipt.json", "stage_source_binding.json"}
 
 
+class PartialAstraTransportError(ValueError):
+    """A static retained-transport predicate refused before provider admission."""
+
+
 def _require(condition, reason):
     if not condition:
-        raise ValueError("partial_astra_transport_" + reason)
+        raise PartialAstraTransportError("partial_astra_transport_" + reason)
 
 
 def _safe(path):
@@ -51,27 +54,19 @@ def _safe(path):
     return path
 
 
+def _record_digest(value, field):
+    # Intake records normalize integral JSON numbers across producer runtimes.
+    digest = cross_runtime_canonical_digest if field in {"intent_digest", "attempt_digest"} else canonical_digest
+    return digest(value, digest_field=field)
+
+
 def _read(path, field=None):
     path = _safe(path)
     _require(path.is_file() and path.stat().st_size <= 8 * 1024**2, "record_invalid")
     value = json.loads(path.read_text())
     _require(isinstance(value, dict), "record_invalid")
     if field:
-        # Records reach this module sealed under BOTH canonical forms. Intake seals the
-        # scene intent and owner attempts with the rfc8785 cross-runtime digest -- it
-        # imports that function under the bare name `canonical_digest`
-        # (task_evaluation_scene_intake.py:22) -- while this module seals its own
-        # descriptor and selection with the plain one. Verifying only the plain form made
-        # every real scene intent fail `record_digest_invalid`, so the reuse path could
-        # never run on live data (scene 840938, 2026-09-15: stored sha256:01ede5c4...,
-        # plain sha256:a551825e...). Both are canonical digests over the actual value, so
-        # accepting either identifies the record without weakening it: a tampered record
-        # still matches neither.
-        _require(
-            value.get(field) in (canonical_digest(value, digest_field=field),
-                                 cross_runtime_canonical_digest(value, digest_field=field)),
-            "record_digest_invalid",
-        )
+        _require(value.get(field) == _record_digest(value, field), "record_digest_invalid")
     return value
 
 
@@ -93,6 +88,7 @@ def _write(path, value):
 
 def _canonical_owner(value, root):
     """Reopen historical identity without reopening its expired spending authority."""
+    from . import task_evaluation_scene_intake as intake
     binding = value["scene_attempt_binding"]
     require_scene_execution_binding(value, source_commit=binding["source_commit"])
     directory = _safe(root) / binding["intent_id"]
@@ -220,6 +216,7 @@ def validate_envelope_owner(envelope, current):
 def select_partial_astra_source(*, owner_attempt_path, envelope, output_root,
                                 intent_root=None, launch_root=None):
     """Freeze the newest closed, same-owner/scene/task pending second-review source."""
+    from . import task_evaluation_scene_intake as intake
     current = _read(owner_attempt_path, "owner_attempt_digest")
     validate_envelope_owner(envelope, current)
     target = _safe(output_root)
@@ -229,9 +226,10 @@ def select_partial_astra_source(*, owner_attempt_path, envelope, output_root,
                  and retained["verified_lineage"]["successor_run_id"] == envelope["run_id"], "retained_selection_changed")
         return target / "selection.json"
     root = _safe(intent_root or os.environ[intake.ROOT_ENV])
-    own, _ = _canonical_owner(current, root)
-    if own["request"]["task"].get("reuse_completed_stages", True) is not True:
-        return None
+    _canonical_owner(current, root)
+    # Match public_scene_attempt_factory._prefix_candidates: a fresh-intent flag
+    # excludes other intents, not this intent's own interrupted work. Selection
+    # below always requires the same canonical intent, including when false.
     launches = _safe(launch_root or os.getenv("BLUEPRINT_TASK_EVALUATION_LAUNCH_STATE_ROOT")
                      or root.parent / "task-evaluation-launch-runs")
     if not launches.exists():
@@ -253,7 +251,14 @@ def select_partial_astra_source(*, owner_attempt_path, envelope, output_root,
                 except (OSError, ValueError, KeyError, TypeError):
                     continue
     candidates = sorted(sources, reverse=True)[:MAX_CANDIDATES]
-    configuration = next(r for r in envelope["stage_configuration_references"] if r["stage_id"] == "stage-3")
+    stages, references = envelope["recipe"]["stage_sequence"], envelope["stage_configuration_references"]
+    _require(len(stages) == len(references), "configuration_reference_count_invalid")
+    matches = [(index, row) for index, (stage, row) in enumerate(zip(stages, references, strict=True))
+               if stage.get("stage_id") == "stage-3"]
+    _require(len(matches) == 1, "configuration_stage_invalid")
+    index, configuration = matches[0]
+    _require(configuration.get("contract_path") == f"construction.recipe.stage_sequence.{index}.configuration",
+             "configuration_reference_slot_invalid")
     rejected = []
     unusable_partial = False
     for _, source in candidates:
@@ -337,7 +342,7 @@ def select_partial_astra_source(*, owner_attempt_path, envelope, output_root,
         path = target.parent / "partial_astra_successor_rejections.json"
         if not path.exists():
             _write(path, refusal)
-        raise ValueError("partial_astra_transport_known_partial_source_unusable")
+        raise PartialAstraTransportError("partial_astra_transport_known_partial_source_unusable")
     return None
 
 
@@ -355,7 +360,7 @@ def validate_transport(value, descriptor):
     for record, field in ((intent, "intent_digest"), (current, "owner_attempt_digest"),
                           (proof["source_attempt"], "attempt_digest"), (proof["successor_attempt"], "attempt_digest"),
                           (proof["source_provider_zero"], "provider_zero_receipt_digest")):
-        _require(record.get(field) == canonical_digest(record, digest_field=field), "authority_digest_invalid")
+        _require(record.get(field) == _record_digest(record, field), "authority_digest_invalid")
     for record, attempt in ((current, proof["successor_attempt"]), (profile, proof["source_attempt"])):
         binding = record["scene_attempt_binding"]
         require_scene_execution_binding(record, source_commit=binding["source_commit"])

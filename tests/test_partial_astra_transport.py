@@ -9,7 +9,7 @@ import zipfile
 
 import pytest
 
-from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 from blueprint_pipeline import task_evaluation_partial_astra_transport as transport
 from blueprint_pipeline.task_evaluation_scene_execution_authority import bind_scene_attempt
 from blueprint_pipeline.task_evaluation_scene_owner_attempt_profiles import make_owner_attempt_record
@@ -22,7 +22,8 @@ COMMIT = "a" * 40
 
 
 def seal(value, field):
-    value[field] = canonical_digest(value, digest_field=field)
+    digest = cross_runtime_canonical_digest if field in {"intent_digest", "attempt_digest"} else canonical_digest
+    value[field] = digest(value, digest_field=field)
     return value
 
 
@@ -38,7 +39,9 @@ def retained(tmp_path, monkeypatch):
     intents, launches = tmp_path / "scene-intents", tmp_path / "task-evaluation-launch-runs"
     intent = seal({"intent_id": "scene-owner", "authenticated_issuer": "blueprint-webapp",
                    "request": {"owner": {"user_id": "owner", "organization_id": "org"},
-                               "task": {"task_id": "pick-one", "reuse_completed_stages": True}}}, "intent_digest")
+                               "task": {"task_id": "pick-one", "reuse_completed_stages": False},
+                               "execution": {"max_total_spend_usd": 1000.0}},
+                   "accepted_at_epoch": 1789497600.0}, "intent_digest")
     write(intents / "scene-owner/intent.json", intent)
     preparation = {"scene_intent_digest": intent["intent_digest"], "scene": {"identity": {"id": "840938"}},
                    "task": {"identity": {"id": "pick-one"}}, "team_namespace": "new-namespace",
@@ -47,7 +50,8 @@ def retained(tmp_path, monkeypatch):
     for attempt_id in ("old", "new"):
         attempt = seal({"intent_id": intent["intent_id"], "intent_digest": intent["intent_digest"],
                         "attempt_id": attempt_id, "source_commit": COMMIT, "runtime_digest": SHA,
-                        "input_digest": canonical_digest(preparation) if attempt_id == "new" else SHA, "provider": "vast"}, "attempt_digest")
+                        "input_digest": canonical_digest(preparation) if attempt_id == "new" else SHA, "provider": "vast",
+                        "maximum_spend_usd": 15.0}, "attempt_digest")
         write(intents / "scene-owner/attempts" / (attempt_id + ".json"), attempt)
         attempts.append(attempt)
     current = make_owner_attempt_record(owner_fields=bind_scene_attempt(attempts[1]), phase="scene_configuration",
@@ -96,8 +100,9 @@ def retained(tmp_path, monkeypatch):
                        "full_byte_service_account_readback_passed": True}}, "result_digest")
     write(source / "allocator/scene-configuration-job/task_evaluation_scene_configuration_vast_result.v1.json", result)
     envelope = {"run_id": SUCCESSOR_RUN, "request": preparation, "team_namespace": "new-namespace",
-                "expected_production_commit": COMMIT, "stage_configuration_references": [
-        {"stage_id": "stage-3", "digest": META["stage_source_binding"]["configuration_sha256"]}]}
+                "expected_production_commit": COMMIT, "recipe": {"stage_sequence": [{"stage_id": "stage-3"}]},
+                "stage_configuration_references": [
+        {"contract_path": "construction.recipe.stage_sequence.0.configuration", "digest": META["stage_source_binding"]["configuration_sha256"]}]}
     return dict(owner_attempt_path=owner_path, envelope=envelope, output_root=tmp_path / "selected",
                 intent_root=intents, launch_root=launches), source
 
@@ -333,3 +338,72 @@ def test_actual_construction_request_must_match_reserved_owner_input(retained, c
     with pytest.raises(ValueError, match="construction_owner_binding_changed"):
         transport.select_partial_astra_source(**args)
     assert not args["output_root"].exists()
+
+
+def test_intake_producer_number_normalization_is_preserved_and_tampering_refuses(retained):
+    args, _ = retained
+    intent_path = args["intent_root"] / "scene-owner/intent.json"
+    intent = json.loads(intent_path.read_text())
+    assert intent["intent_digest"] != canonical_digest(intent, digest_field="intent_digest")
+    assert transport._read(intent_path, "intent_digest") == intent
+    assert transport.select_partial_astra_source(**args) is not None
+    intent["request"]["execution"]["max_total_spend_usd"] = 1001.0
+    write(intent_path, intent)
+    with pytest.raises(transport.PartialAstraTransportError, match="record_digest_invalid"):
+        transport._read(intent_path, "intent_digest")
+
+
+def test_fresh_intent_continuation_maps_six_stage_production_contract_paths(retained):
+    args, _ = retained
+    assert json.loads((args["intent_root"] / "scene-owner/intent.json").read_text())["request"]["task"]["reuse_completed_stages"] is False
+    args["envelope"]["recipe"] = {"stage_sequence": [{"stage_id": f"stage-{i+1}"} for i in range(6)]}
+    args["envelope"]["stage_configuration_references"] = [
+        {"contract_path": f"construction.recipe.stage_sequence.{i}.configuration",
+         "digest": META["stage_source_binding"]["configuration_sha256"] if i == 2 else SHA}
+        for i in range(6)]
+    assert transport.select_partial_astra_source(**args) is not None
+
+
+def test_wrong_configuration_reference_slot_refuses_before_selecting(retained):
+    args, _ = retained
+    args["envelope"]["stage_configuration_references"][0]["contract_path"] = "construction.recipe.stage_sequence.2.configuration"
+    with pytest.raises(transport.PartialAstraTransportError, match="configuration_reference_slot_invalid"):
+        transport.select_partial_astra_source(**args)
+    assert not args["output_root"].exists()
+
+
+def test_provider_isolated_transport_validation_uses_shipped_rfc8785(retained, tmp_path):
+    import shutil
+    import subprocess
+    import sys
+    import rfc8785
+    from blueprint_pipeline.task_evaluation_scene_configuration_python_runtime import RUNTIME_PROFILE_IMPORTS, RUNTIME_PROFILE_ROOTS
+
+    args, _ = retained
+    selection = transport.select_partial_astra_source(**args)
+    record = json.loads(selection.read_text())
+    runtime = tmp_path / "provider_runtime"
+    runtime.mkdir()
+    # Construction bundles ship the complete package; the selected wheelhouse
+    # supplies third-party imports before provider_runner hydrates its envelope.
+    shutil.copytree(Path(transport.__file__).parent, runtime / "blueprint_pipeline",
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    shutil.copytree(Path(rfc8785.__file__).parent, runtime / "rfc8785",
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    assert "rfc8785" in RUNTIME_PROFILE_ROOTS["astra_asset_authoring"]
+    assert "rfc8785" in RUNTIME_PROFILE_IMPORTS["astra_asset_authoring"]
+    code = '''import json, pathlib, sys
+sys.path.insert(0, sys.argv[1])
+from blueprint_pipeline.task_evaluation_partial_astra_transport import validate_transport
+import rfc8785
+assert pathlib.Path(rfc8785.__file__).is_relative_to(pathlib.Path(sys.argv[1]))
+selection = json.loads(pathlib.Path(sys.argv[2]).read_text())
+descriptor = json.loads(pathlib.Path(sys.argv[3]).read_text())
+validate_transport(selection, descriptor)
+print("provider_transport_validated")
+'''
+    completed = subprocess.run([sys.executable, "-I", "-S", "-B", "-c", code, str(runtime),
+                                str(selection), record["descriptor"]["path"]],
+                               capture_output=True, text=True, timeout=30)
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "provider_transport_validated"
