@@ -593,6 +593,8 @@ def test_large_readback_refuses_incomplete_changed_or_unpinned_ranges(tmp_path, 
         store.publish_configured_scene_artifact(
             path=source, artifact_kind="provider-bundle", client=client, bucket="inputs"
         )
+    if fault != "network":
+        assert len(client.ranges) == len(set(client.ranges))
     assert all(body.closed for body in client.bodies)
 
 
@@ -625,3 +627,62 @@ def test_large_readback_accepts_fragmented_stream_without_accepting_truncation(t
             assert result["readback_digest"] == "sha256:" + hashlib.sha256(source.read_bytes()).hexdigest()
             assert result["readback_size_bytes"] == len(source.read_bytes())
         assert all(body.closed for body in client.bodies)
+
+
+def test_range_transport_retry_keeps_same_object_pin_and_full_digest(tmp_path, monkeypatch):
+    _small_range_limits(monkeypatch)
+    monkeypatch.setattr(store.time, "sleep", lambda _: None)
+    class RetryClient(_RangedClient):
+        def __init__(self):
+            super().__init__()
+            self.attempts = {}
+        def get_object(self, **kwargs):
+            key = (kwargs["Range"], kwargs["IfMatch"])
+            self.attempts[key] = self.attempts.get(key, 0) + 1
+            if self.attempts[key] == 1:
+                raise OSError("transient range transport failure")
+            return super().get_object(**kwargs)
+    client = RetryClient()
+    path = tmp_path / "layer.zip"
+    path.write_bytes(b"abcdefghijk")
+    result = store.publish_configured_scene_artifact(path=path, artifact_kind="native-runtime-source-layer",
+        client=client, bucket="inputs")
+    assert result["readback_digest"] == "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+    assert all(n == 2 for n in client.attempts.values())
+    assert all(body.closed for body in client.bodies)
+
+
+def test_range_transport_retries_are_bounded(tmp_path, monkeypatch):
+    _small_range_limits(monkeypatch)
+    monkeypatch.setattr(store.time, "sleep", lambda _: None)
+    client = _RangedClient(fault="network")
+    path = tmp_path / "layer.zip"
+    path.write_bytes(b"abcd")
+    with pytest.raises(store.TaskEvaluationConfiguredSceneObjectStoreError, match="readback_failed:OSError"):
+        store.publish_configured_scene_artifact(path=path, artifact_kind="provider-output", client=client, bucket="inputs")
+    assert client.ranges == [(0, 3)] * 3
+
+
+def test_range_retry_closes_failed_stream_before_retry(tmp_path, monkeypatch):
+    _small_range_limits(monkeypatch)
+    monkeypatch.setattr(store.time, 'sleep', lambda _: None)
+    class BrokenBody(io.BytesIO):
+        def read(self, amount=-1):
+            raise OSError('interrupted body stream')
+    class Client(_RangedClient):
+        first = True
+        def get_object(self, **kwargs):
+            result = super().get_object(**kwargs)
+            if self.first:
+                self.first = False
+                result['Body'].close()
+                result['Body'] = BrokenBody(b'abcd')
+                self.bodies.append(result['Body'])
+            return result
+    client = Client()
+    path = tmp_path / 'layer.zip'
+    path.write_bytes(b'abcd')
+    result = store.publish_configured_scene_artifact(path=path, artifact_kind='provider-output', client=client, bucket='inputs')
+    assert result['readback_size_bytes'] == 4
+    assert client.ranges == [(0, 3), (0, 3)]
+    assert all(body.closed for body in client.bodies)
