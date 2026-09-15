@@ -323,6 +323,10 @@ def _settlement_reference_text(settlement_roots: Sequence[str | Path]) -> tuple[
             for path in paths:
                 try:
                     if path.is_symlink() or path.stat().st_size > _MAX_QUEUE_MESSAGE_BYTES:
+                        # A record we decline to read is a record whose references
+                        # we do not know.  Count it rather than skipping it, or a
+                        # symlinked or oversized record silently unprotects its run.
+                        unreadable += 1
                         continue
                     chunks.append(path.read_text(encoding="utf-8"))
                 except (OSError, UnicodeDecodeError):
@@ -1109,14 +1113,22 @@ def run_storage_gc(
     evidence_present, absent = _existing(evidence_roots)
     report["skipped_roots"].extend(absent)
     if evidence_present:
-        settlement_text, settlement_unreadable = _settlement_reference_text(settlement_roots)
+        observed_text, observed_unreadable = _settlement_reference_text(settlement_roots)
         report["evidence_settlement_reference"] = {
             "roots": [str(Path(root).expanduser()) for root in settlement_roots],
-            "unreadable_count": settlement_unreadable,
-            "protect_all": bool(settlement_unreadable),
+            "unreadable_count": observed_unreadable,
+            "protect_all": bool(observed_unreadable),
         }
+        del observed_text
 
         def evidence_protected(directory: Path) -> bool:
+            # Re-read the records on every check, exactly as the queue text is.
+            # ``apply_evidence_offload`` re-checks protection immediately before it
+            # evicts each candidate; a settlement written after the manifest was
+            # built must protect its launch run at that final check too.
+            settlement_text, settlement_unreadable = _settlement_reference_text(
+                settlement_roots
+            )
             # Fail closed: an unreadable settlement root proves nothing is unreferenced.
             if settlement_unreadable:
                 return True
