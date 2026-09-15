@@ -80,3 +80,40 @@ def test_one_failed_visual_predicate_prevents_acceptance():
 def test_budget_cannot_be_raised_by_caller(tmp_path):
     with pytest.raises(author.AssetAuthoringError, match='budget_invalid'):
         author.budgeted_invoker(root=tmp_path, run_id='test', maximum_cost_usd=16)
+
+
+def test_cad_handoff_states_the_real_evidence_scope():
+    """The CAD graph gets TEXT only; say so, or it refuses to emit geometry.
+
+    Scene 840938 object 219, 2026-09-15: the brief said "recover section profiles
+    from the retained source geometry", which the graph cannot open — the analysis
+    agent read those sources to write the brief and nothing carries them forward.
+    The coder emitted a script whose only statement raised "provide the retained
+    mesh or STEP … Envelope dimensions alone cannot define this solid", exported no
+    STEP/STL, and the stage failed `cad_graph_missing_exports` after a GPU rental.
+    """
+
+    request = SimpleNamespace(
+        object_id="interiorgs-840938-object-219",
+        owner_description="bottle-shaped ornament",
+        dimensions_m=(0.08142562, 0.06046583, 0.143437244),
+        maximum_export_error_m=0.00001,
+        construction_constraints=("single solid",),
+    )
+    brief = SimpleNamespace(cad_brief_markdown=(
+        "# CAD brief\nRecover section profiles and feature dimensions from the "
+        "retained source geometry before finalizing a parametric loft.\n"
+        "## Estimated physical properties\nmass: unknown\n"
+    ))
+
+    handoff = author.compact_cad_handoff(request, brief)
+
+    # The physical-properties packet still belongs to its own agent.
+    assert "Estimated physical properties" not in handoff
+    # The graph is told what it actually has, and that refusing is not an option.
+    assert "COMPLETE evidence set" in handoff
+    assert "not an input you can open" in handoff
+    assert "NOT a valid" in handoff
+    assert "documented assumption" in handoff
+    # Exact geometry is still carried through without rounding.
+    assert "81.42562" in handoff

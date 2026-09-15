@@ -558,5 +558,25 @@ def compact_cad_handoff(request: AuthoringRequest, brief: VisualBrief) -> str:
         'maximum_export_error_mm': request.maximum_export_error_m * 1000,
         'construction_constraints': request.construction_constraints,
         'manufacturing_method': 'unspecified',
+        # The CAD graph is handed TEXT only: this brief plus these dimensions. It cannot
+        # open the source mesh, the USD, or the source-derived views -- the analysis agent
+        # read those to WRITE the brief, and nothing carries them forward. Scene 840938
+        # object 219 (2026-09-15) died on exactly that gap: the brief said "recover section
+        # profiles from the retained source geometry", so the coder emitted a script whose
+        # only statement raised "provide the retained mesh or STEP ... Envelope dimensions
+        # alone cannot define this solid", no STEP/STL was written, and the stage failed
+        # `cad_graph_missing_exports` after a full GPU rental. Say what is actually in
+        # scope, so the graph builds a documented provisional solid instead of refusing.
+        'evidence_scope': (
+            'The brief above and these binding dimensions are the COMPLETE evidence set for '
+            'this stage. The source mesh, STEP, USD and the source-derived views are NOT '
+            'readable here and will not be supplied. Any instruction above to recover '
+            'profiles or features from retained source geometry describes how the brief was '
+            'written; it is not an input you can open. Build the solid from the brief text '
+            'and the exact envelope, and record every unmeasured choice as a documented '
+            'assumption. Emitting no geometry pending source recovery is NOT a valid '
+            'outcome: a development_only provisional solid honouring the exact envelope is '
+            'the required deliverable.'
+        ),
         'output_discipline': 'Do not copy the full prompt into user_request_raw. Use a concise one-line object description; the harness restores the exact request.',
     })
