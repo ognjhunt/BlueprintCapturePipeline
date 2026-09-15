@@ -271,12 +271,19 @@ def _ranged_readback(
                 raise TaskEvaluationConfiguredSceneObjectStoreError(
                     "configured_scene_artifact_range_identity_mismatch"
                 )
-            payload = body.read(expected_size + 1)
+            payload = bytearray()
+            # A stream read may return fewer bytes without reaching EOF.
+            # Read one extra byte so an oversized response still fails closed.
+            while len(payload) <= expected_size:
+                chunk = body.read(expected_size + 1 - len(payload))
+                if not chunk:
+                    break
+                payload.extend(chunk)
             if len(payload) != expected_size:
                 raise TaskEvaluationConfiguredSceneObjectStoreError(
                     "configured_scene_artifact_range_size_mismatch"
                 )
-            return payload
+            return bytes(payload)
         finally:
             body.close()
 
