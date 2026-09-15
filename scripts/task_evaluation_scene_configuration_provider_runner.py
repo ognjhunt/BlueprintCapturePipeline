@@ -147,6 +147,17 @@ def _hydrate_envelope(runtime: Path, portable: dict) -> dict:
         row["materialized_path"] = str(path)
     render["portable_render_result_digest"] = portable_render_digest
     render["result_digest"] = canonical_digest(render, digest_field="result_digest")
+    if "partial_astra_successor" in envelope:
+        from blueprint_pipeline.task_evaluation_partial_astra_transport import validate_transport, validate_envelope_owner
+        partial = envelope["partial_astra_successor"]
+        for name in ("descriptor", "runtime_archive", "transport"):
+            row = partial[name]
+            row["materialized_path"] = str(_runtime_file(
+                runtime, row["path"], digest=row["digest"], size_bytes=row["size_bytes"]))
+        transport = _read(Path(partial["transport"]["materialized_path"]))
+        validate_envelope_owner(envelope, transport["authority_evidence"]["successor_owner_attempt"])
+        validate_transport(transport,
+                           _read(Path(partial["descriptor"]["materialized_path"])))
     envelope["portable_envelope_digest"] = portable["envelope_digest"]
     envelope["envelope_digest"] = canonical_digest(
         envelope, digest_field="envelope_digest"

@@ -245,6 +245,32 @@ def scene_configuration_bundle_contract(
         blockers.append("scene_configuration_portable_envelope_invalid")
 
     bound_rows: list[tuple[str, Mapping[str, Any]]] = []
+    if "partial_astra_successor" in envelope:
+        try:
+            from .task_evaluation_partial_astra_transport import validate_transport, validate_envelope_owner
+            partial = envelope["partial_astra_successor"]
+            if (manifest.get("partial_astra_successor_digest") != canonical_digest(partial)
+                    or partial["verified_lineage"]["successor_run_id"] != envelope["run_id"]):
+                raise ValueError("partial_astra_transport_bundle_binding_changed")
+            for name in ("descriptor", "runtime_archive", "transport"):
+                row = partial[name]
+                if row.get("materialized_path") is not None:
+                    raise ValueError("partial_astra_transport_not_portable")
+                bound_rows.append((str(row["path"]), row))
+            transport = json.loads(archive.read(root + partial["transport"]["path"]))
+            descriptor = json.loads(archive.read(root + partial["descriptor"]["path"]))
+            validate_transport(transport, descriptor)
+            validate_envelope_owner(envelope, transport["authority_evidence"]["successor_owner_attempt"])
+            if partial["verified_lineage"] != transport["verified_lineage"]:
+                raise ValueError("partial_astra_transport_lineage_changed")
+            for name in ("descriptor", "runtime_archive"):
+                if (partial[name]["digest"] != transport[name]["sha256"]
+                        or partial[name]["size_bytes"] != transport[name]["size_bytes"]):
+                    raise ValueError("partial_astra_transport_reference_changed")
+        except (KeyError, TypeError, ValueError, UnicodeError):
+            blockers.append("scene_configuration_partial_astra_transport_invalid")
+    elif manifest.get("partial_astra_successor_digest") is not None:
+        blockers.append("scene_configuration_partial_astra_transport_missing")
     if isinstance(references, list):
         bound_rows.extend(
             (str(row.get("provider_relative_path") or ""), row)

@@ -571,6 +571,8 @@ def build_scene_configuration_provider_bundle(
     production_semantic_reuse_revision_id: str | None = None,
     retained_candidate_selection_path: str | Path | None = None,
     retained_candidate_selection_optional: bool = False,
+    partial_astra_successor_selection: str | Path | None = None,
+    scene_owner_attempt_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Package provider-authorized derived inputs; raw InteriorGS stays local."""
 
@@ -1044,6 +1046,11 @@ def build_scene_configuration_provider_bundle(
             (render_inputs.get("disclosure_decision") or {}).get("decision_digest")
         ),
     }
+    if partial_astra_successor_selection is not None:
+        from .task_evaluation_partial_astra_transport import stage_partial_astra_transport
+        portable["partial_astra_successor"] = stage_partial_astra_transport(
+            selection_path=partial_astra_successor_selection, runtime=runtime,
+            successor_run_id=envelope["run_id"], owner_attempt_path=scene_owner_attempt_path, envelope=envelope)
     portable["envelope_digest"] = canonical_digest(
         portable, digest_field="envelope_digest"
     )
@@ -1207,6 +1214,8 @@ def build_scene_configuration_provider_bundle(
                 ],
             }
         )
+    if "partial_astra_successor" in portable:
+        manifest["partial_astra_successor_digest"] = canonical_digest(portable["partial_astra_successor"])
     manifest["manifest_digest"] = canonical_digest(manifest, digest_field="manifest_digest")
     (runtime / f"{BUNDLE_SCHEMA_VERSION}.json").write_text(
         canonical_json(manifest) + "\n", encoding="utf-8"
@@ -1808,6 +1817,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--production-semantic-reuse-queue-root")
     parser.add_argument("--production-semantic-reuse-revision-id")
     parser.add_argument("--retained-candidate-selection", default="")
+    parser.add_argument("--partial-astra-successor-selection")
+    parser.add_argument("--scene-owner-attempt")
     args = parser.parse_args(argv)
     ambient_selection = os.getenv(RETAINED_CANDIDATE_SELECTION_ENV, "")
     if not args.retained_candidate_selection and ambient_selection:
@@ -1834,6 +1845,8 @@ def main(argv: list[str] | None = None) -> int:
         ),
         retained_candidate_selection_path=args.retained_candidate_selection or None,
         retained_candidate_selection_optional=retained_selection_optional,
+        partial_astra_successor_selection=args.partial_astra_successor_selection,
+        scene_owner_attempt_path=args.scene_owner_attempt,
     )
     print(canonical_json(receipt))
     return 0

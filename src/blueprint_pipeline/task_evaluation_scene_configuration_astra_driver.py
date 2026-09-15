@@ -413,13 +413,37 @@ def execute_astra_component(*, environment=None, runner=subprocess.run,
         raise AstraStageError("astra_component_path_invalid")
     primary = output / "astra_cad_blender_runtime"
     attempts = output / "astra_resume_attempts"
+    partial_envelope = envelope.get("partial_astra_successor")
+    partial_descriptor = None
+    verified_lineage = None
+    if partial_envelope is not None:
+        from .task_evaluation_partial_astra_successor import restore_partial_astra
+        if configuration.get("astra_phase_adoption") is not None or retained_runtime is not None:
+            raise AstraStageError("astra_partial_successor_conflicting_adoption")
+        descriptor_record = partial_envelope["descriptor"]
+        descriptor_path = Path(descriptor_record["materialized_path"])
+        actual = file_record(descriptor_path)
+        if (actual["sha256"] != descriptor_record.get("sha256", descriptor_record.get("digest"))
+                or actual["size_bytes"] != descriptor_record.get("size_bytes")):
+            raise AstraStageError("astra_partial_successor_descriptor_file_changed")
+        partial_descriptor = _read(descriptor_path, code="astra_partial_successor_descriptor_invalid")
+        verified_lineage = partial_envelope["verified_lineage"]
+        archive_record = partial_envelope["runtime_archive"]
+        archive_path = Path(archive_record["materialized_path"])
+        archive_actual = file_record(archive_path)
+        if (archive_actual["sha256"] != archive_record.get("sha256", archive_record.get("digest"))
+                or archive_actual["size_bytes"] != archive_record.get("size_bytes")):
+            raise AstraStageError("astra_partial_successor_archive_file_changed")
+        restore_partial_astra(value=partial_descriptor, request_value=request.model_dump(mode="json"),
+            original_root=primary, verified_lineage=verified_lineage, archive_path=archive_path)
     prior_roots = ([primary] if primary.exists() else []) + sorted(attempts.glob("attempt-????"))
+    cross_run = partial_descriptor is not None and len(prior_roots) == 1
     descriptor = configuration.get("astra_phase_adoption")
     if retained_runtime is not None:
         if not no_cost_replay or descriptor is not None:
             raise AstraStageError("astra_operational_replay_scope_invalid")
         descriptor = materialize_automatic_phase_adoption(prior_runtime=Path(retained_runtime))
-    if prior_roots:
+    if prior_roots and not cross_run:
         if descriptor is not None and Path(descriptor["prior_runtime"]) != prior_roots[-1]:
             raise AstraStageError("astra_resume_cannot_skip_latest_budget_journal")
         descriptor = descriptor or materialize_automatic_phase_adoption(prior_runtime=prior_roots[-1])
@@ -442,8 +466,15 @@ def execute_astra_component(*, environment=None, runner=subprocess.run,
         if source.is_symlink() or not source.is_file():
             raise AstraStageError("astra_cad_package_incomplete")
         shutil.copyfile(source, runtime / name)
-    adoption = prepare_phase_adoption(value=descriptor, request_value=request.model_dump(mode="json"),
-        package=package, budget_root=runtime / "inference")
+    if cross_run:
+        from .task_evaluation_partial_astra_successor import prepare_partial_astra_successor
+        adoption = prepare_partial_astra_successor(value=partial_descriptor,
+            request_value=request.model_dump(mode="json"), source_binding=source_binding,
+            verified_lineage=verified_lineage, package=package, budget_root=runtime / "inference")
+        _write(runtime / "partial_successor_descriptor.json", partial_descriptor)
+    else:
+        adoption = prepare_phase_adoption(value=descriptor, request_value=request.model_dump(mode="json"),
+            package=package, budget_root=runtime / "inference")
     if descriptor is not None:
         _write(runtime / "retained_artifact_contract.json", descriptor)
     if package_candidate is None:

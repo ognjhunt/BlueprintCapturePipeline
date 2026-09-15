@@ -36,9 +36,9 @@ def _inventory(root: Path) -> list[dict[str, Any]]:
             raise AssetAuthoringError("astra_phase_adoption_symlink_forbidden")
         if path.is_file():
             relative = path.relative_to(root)
-            if (relative.parts[0] in {"authoring", "retained_astra_phases"} or str(relative) in SOURCE_ARCHIVES
+            if (relative.parts[0] in {"authoring", "retained_astra_phases", "official_openai_cost"} or str(relative) in SOURCE_ARCHIVES
                     or str(relative) in {"no_cost_authoring_adoption.json", "stage_source_binding.json"}
-                    or relative.parts[:2] == ("inference", "inference_reservations")):
+                    or relative.parts[:1] == ("inference",)):
                 with path.open("rb") as stream:
                     digest = "sha256:" + hashlib.file_digest(stream, "sha256").hexdigest()
                 records.append({"relative_path": str(relative), "sha256": digest,
@@ -153,6 +153,8 @@ def prepare_phase_adoption(*, value: Mapping[str, Any] | None, request_value: di
         old_budget = prior / "inference"
         old_audit = InferenceReservationAudit(run_root=old_budget, run_id=value["run_id"])
         manifest = old_audit.manifest()
+        from .task_object_astra_inherited_inference import inherited_balance, copy_inherited_inference
+        inherited = inherited_balance(old_budget, value["run_id"])
         if manifest["in_flight_unknown_count"]:
             raise AssetAuthoringError("astra_phase_adoption_unresolved_inference")
         kwargs, cad_kwargs = {}, {}
@@ -227,6 +229,7 @@ def prepare_phase_adoption(*, value: Mapping[str, Any] | None, request_value: di
         for record in manifest["reservations"]:
             restored.record_reservation(json.loads((old_budget / record["reservation_path"]).read_text()))
             restored.record_completion(json.loads((old_budget / record["completion_path"]).read_text()))
+        copy_inherited_inference(source=old_budget, destination=budget_root, run_id=value["run_id"])
         current = restored.manifest()
         if current["reserved_max_cost_usd"] != manifest["reserved_max_cost_usd"]:
             raise AssetAuthoringError("astra_phase_adoption_inference_balance_changed")
@@ -272,11 +275,11 @@ def prepare_phase_adoption(*, value: Mapping[str, Any] | None, request_value: di
                 retained_artifact_adoption_digest=value["adoption_digest"])
             retained_result["result_digest"] = canonical_digest(retained_result, digest_field="result_digest")
         return {"authoring_kwargs": kwargs, "cad_kwargs": cad_kwargs,
-                "prior_call_count": manifest["reservation_count"],
+                "prior_call_count": manifest["reservation_count"] + inherited["call_count"],
                 "adoption_digest": value["adoption_digest"],
                 "retained_phase_root": str(snapshot),
                 "completed_authoring_result": retained_result,
-                "retained_inference_cost_usd": manifest["reserved_max_cost_usd"]}
+                "retained_inference_cost_usd": manifest["reserved_max_cost_usd"] + inherited["cost_usd"]}
     except (KeyError, TypeError, OSError, ValueError) as exc:
         if isinstance(exc, AssetAuthoringError):
             raise
