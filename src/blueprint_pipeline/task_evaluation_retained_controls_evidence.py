@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
+from .control_plane_retained_receipt import read_receipt_bytes
 
 UNSTARTED_SCHEMA = "task_evaluation_unstarted_controls_cancellation.v1"
 DIRECTORY = "cancelled-unstarted-controls"
@@ -31,9 +32,7 @@ def _terminal_require(condition: bool, code: str) -> None:
         raise ValueError("controls_autoprovision_" + code)
 
 def _read(path: Path) -> dict[str, Any]:
-    if not path.is_file() or any(p.is_symlink() for p in (path, *path.parents)):
-        raise ValueError("unstarted_controls_evidence_unsafe")
-    value = json.loads(path.read_text())
+    value = json.loads(read_receipt_bytes(path))
     if not isinstance(value, dict):
         raise ValueError("unstarted_controls_evidence_invalid")
     return value
@@ -41,7 +40,7 @@ def _read(path: Path) -> dict[str, Any]:
 
 def _file(path: Path) -> dict[str, Any]:
     _read(path)
-    return {"path": str(path), "digest": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()}
+    return {"path": str(path), "digest": "sha256:" + hashlib.sha256(read_receipt_bytes(path)).hexdigest()}
 
 
 def _placement_require(condition: Any, code: str) -> None:

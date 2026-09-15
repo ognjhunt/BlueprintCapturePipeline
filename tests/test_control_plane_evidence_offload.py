@@ -403,3 +403,125 @@ def test_pointer_ownership_failure_keeps_the_evidence(tmp_path, monkeypatch):
     assert result["skipped"] == [{"name": "run-1", "reason": "offload_failed:PermissionError"}]
     assert directory.is_dir() and (directory / "dispatch_receipt.json").is_file()
     assert not (root / ("run-1" + POINTER_SUFFIX)).exists()
+
+
+def test_offload_preserves_exact_settlement_receipt_without_releasing_paid_hold(tmp_path):
+    from blueprint_pipeline import task_evaluation_terminal_scene_attempt_settlement as settlement
+    from blueprint_pipeline.task_evaluation_retained_controls_evidence import validated_cancellation
+    from tests.test_terminal_scene_attempt_settlement import _fixture, _settle
+
+    fx = _fixture(tmp_path)
+    _settle(fx)
+    attempts = [json.loads(p.read_text()) for p in (fx['directory'] / 'attempts').glob('*.json')]
+    before = {a['attempt_id']: settlement.retained_hold(validated_cancellation(fx['directory'], a))
+              for a in attempts}
+    client = _ContentAddressedClient()
+    manifest = build_evidence_offload_manifest(evidence_roots=[fx['launches']], hot_window_seconds=0,
+        classifier=_unclassified)
+    result = apply_evidence_offload(manifest, ack=EXECUTE_ACK,
+        publisher=functools.partial(store.publish_configured_scene_artifact, client=client, bucket=BUCKET))
+    assert result['offloaded_count'] == 1
+    assert not (fx['launches'] / fx['launch_id']).exists()
+    after = {a['attempt_id']: settlement.retained_hold(validated_cancellation(fx['directory'], a))
+             for a in attempts}
+    assert before == after
+    assert sum(h['retained_spend_usd'] for h in after.values()) == pytest.approx(21.26)
+
+
+@pytest.mark.parametrize('fault', ['bytes', 'seal', 'member', 'directory', 'missing', 'local_tamper', 'symlink'])
+def test_archived_accounting_receipt_fails_closed(tmp_path, fault):
+    import base64
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    from blueprint_pipeline.task_evaluation_retained_controls_evidence import _file
+
+    root = tmp_path / 'runs'
+    root.mkdir()
+    run = _run(root, 'run', receipt='launch_receipt.json', age=100, now=1000)
+    receipt = run / 'launch_receipt.json'
+    expected = _file(receipt)
+    client = _ContentAddressedClient()
+    manifest = build_evidence_offload_manifest(evidence_roots=[root], hot_window_seconds=0,
+        now=lambda: 1000, classifier=_unclassified)
+    result = apply_evidence_offload(manifest, ack=EXECUTE_ACK, now=lambda: 1000,
+        publisher=functools.partial(store.publish_configured_scene_artifact, client=client, bucket=BUCKET))
+    assert result['offloaded_count'] == 1
+    assert _file(receipt) == expected
+    pointer_path = root / ('run' + POINTER_SUFFIX)
+    pointer = json.loads(pointer_path.read_text())
+    if fault == 'bytes':
+        pointer['retained_receipt_bytes']['launch_receipt.json'] = base64.b64encode(b'{}').decode()
+    elif fault == 'member':
+        pointer['members'] = [m for m in pointer['members'] if m['relative_path'] != 'launch_receipt.json']
+    elif fault == 'directory':
+        pointer['directory'] = 'foreign-run'
+    elif fault == 'missing':
+        pointer.pop('retained_receipt_bytes')  # Legacy pointers require explicit restoration.
+    elif fault == 'local_tamper':
+        run.mkdir()
+        receipt.write_text('{}')
+        assert _file(receipt) != expected
+        return
+    elif fault == 'symlink':
+        alias = root / 'alias.json'
+        pointer_path.rename(alias)
+        pointer_path.symlink_to(alias)
+        with pytest.raises(ValueError):
+            _file(receipt)
+        return
+    pointer['pointer_digest'] = canonical_digest(pointer, digest_field='pointer_digest')
+    if fault == 'seal':
+        pointer['pointer_digest'] = 'sha256:' + '0' * 64
+    pointer_path.chmod(0o640)
+    pointer_path.write_text(json.dumps(pointer))
+    with pytest.raises(ValueError):
+        _file(receipt)
+
+
+@pytest.mark.parametrize('ownership_fails', [False, True])
+def test_restore_adopts_service_owner_before_publishing(tmp_path, monkeypatch, ownership_fails):
+    from blueprint_pipeline import control_plane_evidence_offload as offload
+    root = tmp_path / 'runs'
+    root.mkdir()
+    run = _run(root, 'run', receipt='launch_receipt.json', age=100, now=1000)
+    client = _ContentAddressedClient()
+    manifest = build_evidence_offload_manifest(evidence_roots=[root], hot_window_seconds=0,
+        now=lambda: 1000, classifier=_unclassified)
+    apply_evidence_offload(manifest, ack=EXECUTE_ACK, now=lambda: 1000,
+        publisher=functools.partial(store.publish_configured_scene_artifact, client=client, bucket=BUCKET))
+    pointer_path = root / ('run' + POINTER_SUFFIX)
+    pointer = json.loads(pointer_path.read_text())
+    calls = []
+    def adopt(path, parent):
+        assert not run.exists()
+        assert parent == root
+        calls.append(str(path))
+        if ownership_fails:
+            raise PermissionError('cannot adopt service owner')
+    monkeypatch.setattr(offload, '_adopt_root_owner', adopt)
+    def materialize(*, reference, destination, maximum_size_bytes):
+        Path(destination).write_bytes(client.objects[(BUCKET, reference['uri'].split(f's3://{BUCKET}/', 1)[1])])
+    if ownership_fails:
+        with pytest.raises(PermissionError):
+            restore_offloaded_evidence(pointer_path=pointer_path, destination=run, materializer=materialize)
+        assert not run.exists()
+    else:
+        restore_offloaded_evidence(pointer_path=pointer_path, destination=run, materializer=materialize)
+        assert len(calls) == 2 + len(pointer['members'])  # tree plus episodes directory
+        assert run.is_dir()
+    assert not list(root.glob('.restore-*'))
+
+
+def test_oversized_accounting_receipt_keeps_original_run(tmp_path):
+    from blueprint_pipeline.control_plane_retained_receipt import MAX_RECEIPT_BYTES
+    root = tmp_path / 'runs'
+    root.mkdir()
+    run = _run(root, 'run', receipt='launch_receipt.json', age=100, now=1000)
+    (run / 'launch_receipt.json').write_text(json.dumps({'data': 'x' * MAX_RECEIPT_BYTES}))
+    client = _ContentAddressedClient()
+    manifest = build_evidence_offload_manifest(evidence_roots=[root], hot_window_seconds=0,
+        classifier=_unclassified)
+    result = apply_evidence_offload(manifest, ack=EXECUTE_ACK,
+        publisher=functools.partial(store.publish_configured_scene_artifact, client=client, bucket=BUCKET))
+    assert result['offloaded_count'] == 0
+    assert run.is_dir()
+    assert not (root / ('run' + POINTER_SUFFIX)).exists()
