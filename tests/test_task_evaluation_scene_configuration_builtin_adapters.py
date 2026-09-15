@@ -715,6 +715,121 @@ def test_content_agents_handler_retains_candidate_for_independent_checks(
     }
 
 
+@pytest.mark.parametrize(
+    ("claim", "accepted"),
+    [
+        ("sage_candidate_geometry_not_observed_truth_or_physics_authority", True),
+        ("source_geometry_not_observed_truth_or_physics_authority", True),
+        ("candidate_geometry_is_observed_truth", False),
+        ("", False),
+        (None, False),
+    ],
+)
+def test_content_agents_handler_accepts_every_authoring_backend_disclaimer(
+    tmp_path: Path, claim: str | None, accepted: bool
+) -> None:
+    """Both authoring drivers disclaim the same thing in different words.
+
+    The legacy content_agents driver stamps "sage_candidate_...", the astra CAD
+    driver stamps "source_...". The handler must accept either and still fail
+    closed on anything that is not a disclaimer.
+    """
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    asset = runtime / "mug.usdz"
+    _portable_rigid_asset(asset)
+    source_candidate = runtime / "source-candidate.usda"
+    source_candidate.write_text("#usda 1.0\n", encoding="utf-8")
+    identity = {"id": "replacement-mug", "version": "v1"}
+    receipt = {
+        "schema_version": "task_evaluation_rigid_replacement_authoring_result.v1",
+        "status": "authored_candidate_pending_qualification",
+        "replacement_identity": identity,
+        "source_candidate_digest": sha256(source_candidate),
+        "source_candidate_claim": claim,
+        "output_usd": {
+            "sha256": sha256(asset),
+            "size_bytes": asset.stat().st_size,
+        },
+        "candidate_physics_completion": _physics_completion(),
+        "physics_authority_granted": False,
+        "result_digest": "",
+    }
+    receipt["result_digest"] = canonical_digest(receipt, digest_field="result_digest")
+    receipt_path = runtime / "authoring.json"
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    graph = {
+        "schema_version": "task_evaluation_rigid_replacement_graph.v1",
+        "asset_id": "replacement-mug",
+        "asset_version": "v1",
+        "articulation_graph": {"joints": []},
+        "single_rigid_candidate": True,
+        "physics_bounds": PHYSICS_BOUNDS,
+        "physics_authority_granted": False,
+    }
+    graph_path = runtime / "graph.json"
+    graph_path.write_text(json.dumps(graph), encoding="utf-8")
+    configuration = {
+        "schema_version": "rigid_replacement_authoring_configuration.v1",
+        "replacement_identity": identity,
+        "required_output": {
+            "format": "OpenUSD",
+            "rigid_body": True,
+            "single_movable_root": True,
+            "units": "meters",
+            "up_axis": "Z",
+            "mass_kg_bounds": PHYSICS_BOUNDS["mass_kg"],
+            "static_friction_bounds": PHYSICS_BOUNDS["static_friction"],
+            "dynamic_friction_bounds": PHYSICS_BOUNDS["dynamic_friction"],
+            "restitution_bounds": PHYSICS_BOUNDS["restitution"],
+        },
+        "physics_authority_granted_by_authoring": False,
+    }
+    configuration_path = tmp_path / "authoring-configuration.json"
+    configuration_path.write_text(json.dumps(configuration), encoding="utf-8")
+    output = tmp_path / "authoring-output"
+    output.mkdir()
+
+    def _execute() -> dict[str, object]:
+        return execute_content_agents_rigid_replacement(
+            envelope={"recipe": {"subject_identity": identity}},
+            stage={
+                "stage_id": "stage-3",
+                "capability": "rigid_replacement_authoring",
+                "execution_class": "gpu_canary",
+            },
+            configuration=configuration,
+            configuration_path=configuration_path,
+            dependency_results=(
+                {},
+                {
+                    "output_artifacts": [
+                        artifact("source_object_candidate_mesh", source_candidate)
+                    ]
+                },
+            ),
+            output_root=output,
+            provider_runtime_artifacts=(
+                artifact("replacement_asset", asset),
+                artifact("replacement_authoring_receipt", receipt_path),
+                artifact("replacement_graph_spec", graph_path),
+            ),
+        )
+
+    if accepted:
+        result = _execute()
+        assert {row["role"] for row in result["output_artifacts"]} == {
+            "replacement_asset",
+            "replacement_authoring_receipt",
+            "replacement_graph_spec",
+        }
+        return
+
+    with pytest.raises(TaskEvaluationSceneConfigurationAdapterError) as failure:
+        _execute()
+    assert "content_agents_replacement_result_invalid" in str(failure.value)
+
+
 def test_sage_exact_prim_excision_removes_only_requested_prim(tmp_path: Path) -> None:
     source = tmp_path / "source.usda"
     stage = Usd.Stage.CreateNew(str(source))
