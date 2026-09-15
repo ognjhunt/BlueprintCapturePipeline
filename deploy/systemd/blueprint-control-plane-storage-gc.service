@@ -68,6 +68,10 @@ Environment=BLUEPRINT_CONTROL_PLANE_EVIDENCE_HOT_WINDOW_SECONDS=172800
 Environment=BLUEPRINT_CONTROL_PLANE_EVIDENCE_ABANDONED_AFTER_SECONDS=259200
 Environment=BLUEPRINT_CONTROL_PLANE_GC_SCRATCH_ROOTS=/var/lib/blueprint/pipeline-control-plane/engineering:/var/lib/blueprint/pipeline-control-plane/render-probes:/var/lib/blueprint/pipeline-control-plane/diagnostic-checkouts:/var/lib/blueprint/pipeline-control-plane/release-builds:/var/lib/blueprint/task-evaluation-inputs/render-probes
 Environment=BLUEPRINT_CONTROL_PLANE_GC_SCRATCH_MINIMUM_AGE_SECONDS=259200
+# Each scene-configuration attempt leaves a ~1.3 GiB activation set and a new attempt
+# lands roughly every 45 minutes, so the 6h default let about eight accumulate before
+# the first became eligible and disk starved. One hour still leaves a debugging window.
+Environment=BLUEPRINT_CONTROL_PLANE_GC_DERIVED_MINIMUM_AGE_SECONDS=3600
 Environment=BLUEPRINT_CONTROL_PLANE_GC_WORKSPACE_BUNDLE_ROOTS=/var/lib/blueprint/task-evaluation-inputs/semantic-pretraining
 Environment=BLUEPRINT_CONTROL_PLANE_GC_WORKSPACE_BUNDLE_MINIMUM_AGE_SECONDS=21600
 Environment=BLUEPRINT_CONTROL_PLANE_STORAGE_PINS_ROOT=/var/lib/blueprint/pipeline-control-plane/storage-pins

@@ -73,6 +73,7 @@ EVIDENCE_OFFLOAD_ENV = "BLUEPRINT_CONTROL_PLANE_EVIDENCE_OFFLOAD"
 EVIDENCE_HOT_WINDOW_ENV = "BLUEPRINT_CONTROL_PLANE_EVIDENCE_HOT_WINDOW_SECONDS"
 EVIDENCE_ABANDONED_AFTER_ENV = "BLUEPRINT_CONTROL_PLANE_EVIDENCE_ABANDONED_AFTER_SECONDS"
 SCRATCH_ROOTS_ENV = "BLUEPRINT_CONTROL_PLANE_GC_SCRATCH_ROOTS"
+DERIVED_MINIMUM_AGE_ENV = "BLUEPRINT_CONTROL_PLANE_GC_DERIVED_MINIMUM_AGE_SECONDS"
 SCRATCH_MINIMUM_AGE_ENV = "BLUEPRINT_CONTROL_PLANE_GC_SCRATCH_MINIMUM_AGE_SECONDS"
 RUNNING_COMMIT_ENV = "BLUEPRINT_CONTROL_PLANE_GC_RUNNING_COMMIT"
 # Stranded rows: a pending queue row bound to a release other than the running
@@ -1239,6 +1240,11 @@ def _run_main(argv: list[str]) -> int:
     parser.add_argument("--queue-root", action="append", default=None)
     parser.add_argument("--evidence-root", action="append", default=None)
     parser.add_argument("--settlement-root", action="append", default=None)
+    parser.add_argument(
+        "--derived-minimum-age-seconds",
+        type=int,
+        default=_env_int(DERIVED_MINIMUM_AGE_ENV, DEFAULT_DERIVED_MINIMUM_AGE_SECONDS),
+    )
     parser.add_argument("--pins-root", default=os.getenv(PINS_ROOT_ENV) or None)
     parser.add_argument("--scratch-root", action="append", default=None)
     parser.add_argument("--workspace-bundle-root", action="append", default=None)
@@ -1291,6 +1297,13 @@ def _run_main(argv: list[str]) -> int:
         workspace_bundle_roots=args.workspace_bundle_root or _split_env(WORKSPACE_BUNDLE_ROOTS_ENV),
         workspace_bundle_minimum_age_seconds=args.workspace_bundle_minimum_age_seconds,
         scratch_minimum_age_seconds=args.scratch_minimum_age_seconds,
+        # Without this the run always used DEFAULT_DERIVED_MINIMUM_AGE_SECONDS (6h) and
+        # both the unit environment and --derived-minimum-age-seconds were silently
+        # ignored, unlike every other class. Scene 840938, 2026-09-15: each attempt leaves
+        # a ~1.3 GiB activation set and a new attempt lands roughly every 45 minutes, so
+        # about eight pile up before the first becomes eligible. Disk starved and blocked
+        # the run three separate times.
+        derived_minimum_age_seconds=args.derived_minimum_age_seconds,
         classifier=require_storage_class,
     )
     if args.report_out:
