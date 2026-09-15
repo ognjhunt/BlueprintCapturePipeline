@@ -13,6 +13,7 @@ reverses the migration byte-for-byte.  Nothing here ever touches
 from __future__ import annotations
 
 import hashlib
+import base64
 import json
 import os
 import shutil
@@ -26,6 +27,7 @@ from typing import Any
 from .control_plane_storage_roots import require_storage_class
 from .control_plane_disk_budget import DEFAULT_RESERVATION_ROOT, reserve_control_plane_disk
 from .decision_evidence_contracts import canonical_digest
+from .control_plane_retained_receipt import MAX_RECEIPT_BYTES, RETAINED_RECEIPTS
 from .task_evaluation_configured_scene_object_store import (
     materialize_configured_scene_artifact,
     publish_configured_scene_stream,
@@ -400,6 +402,16 @@ def apply_evidence_offload(
                     or not _members_unchanged(directory, members)):
                 skipped.append({"name": name, "reason": "candidate_changed_during_archive"})
                 continue
+            retained_receipts = {}
+            for member in members:
+                if member["relative_path"] in RETAINED_RECEIPTS:
+                    if member["size_bytes"] > MAX_RECEIPT_BYTES:
+                        raise ControlPlaneEvidenceOffloadError("accounting_receipt_too_large")
+                    raw = (directory / member["relative_path"]).read_bytes()
+                    if (len(raw) != member["size_bytes"]
+                            or "sha256:" + hashlib.sha256(raw).hexdigest() != member["sha256"]):
+                        raise ControlPlaneEvidenceOffloadError("accounting_receipt_changed")
+                    retained_receipts[member["relative_path"]] = base64.b64encode(raw).decode("ascii")
             payload: dict[str, Any] = {
                 "schema_version": POINTER_SCHEMA_VERSION,
                 "status": "offloaded",
@@ -410,6 +422,7 @@ def apply_evidence_offload(
                 "size_bytes": size,
                 "member_count": len(members),
                 "members": members,
+                "retained_receipt_bytes": retained_receipts,
                 "offloaded_at_epoch": float(now()),
                 "evidence_deleted": False,
                 "pointer_digest": "",
@@ -508,6 +521,12 @@ def restore_offloaded_evidence(
             for name in expected
         ):
             raise ControlPlaneEvidenceOffloadError("control_plane_evidence_restore_member_mismatch")
+        # The archive deliberately normalizes ownership to root. Adopt the
+        # destination service owner before publishing any restored file.
+        for restored in (extracted, *extracted.rglob("*")):
+            if restored.is_symlink():
+                raise ControlPlaneEvidenceOffloadError("control_plane_evidence_restore_symlink")
+            _adopt_root_owner(restored, target.parent)
         os.replace(extracted, target)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
