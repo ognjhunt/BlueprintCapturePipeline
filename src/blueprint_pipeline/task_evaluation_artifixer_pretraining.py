@@ -217,7 +217,15 @@ def scoped_completed_training_environment(environment: Mapping[str, str], job_di
     job = Path(job_dir).resolve()
     own = _launch_scene_scope(job.parent.parent)
     theirs = _launch_scene_scope(Path(str(source)))
-    if own is None or theirs == own:
+    # Scene-attempt namespaces change on every successor. The retained owner
+    # intent is stable; exact training and owner approval are validated later.
+    own_intent = _launch_intent_digest(job.parent.parent)
+    same_intent_scene = (
+        own is not None and theirs is not None and own[1] == theirs[1]
+        and own_intent is not None
+        and own_intent == _launch_intent_digest(Path(str(source)))
+    )
+    if own is None or theirs == own or same_intent_scene:
         return values, None
     ignored = {"schema_version": SOURCE_IGNORED_SCHEMA, "reason": "completed_training_source_out_of_scope",
                "source_launch_root": str(source), "source_scene": list(theirs) if theirs else None,
