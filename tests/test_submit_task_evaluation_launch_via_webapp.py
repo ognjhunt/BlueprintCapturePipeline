@@ -162,6 +162,71 @@ def stat_mode(path: Path) -> int:
     return path.stat().st_mode & 0o777
 
 
+@pytest.mark.parametrize(
+    ("timeout_args", "response_delay", "expected_timeout", "expected_code"),
+    [
+        ([], 45.0, 60.0, 0),
+        (["--timeout-seconds", "30"], 45.0, 30.0, 2),
+        ([], 61.0, 60.0, 2),
+        (["--timeout-seconds", "75"], 61.0, 75.0, 0),
+    ],
+)
+def test_launch_response_wait_is_bounded_and_overridable(
+    monkeypatch, tmp_path, capsys,
+    timeout_args, response_delay, expected_timeout, expected_code,
+) -> None:
+    request_path, secret_path, receipt_path, body, request = _files(tmp_path)
+    calls = []
+
+    def urlopen(http_request, timeout):
+        # Model a delayed HTTP response without sleeping or opening a socket.
+        calls.append((http_request.data, timeout))
+        assert http_request.get_header("Idempotency-key") == request["launch_id"]
+        if response_delay > timeout:
+            raise TimeoutError("simulated response wait exceeded socket timeout")
+        return _Response(202, _web_receipt(request))
+
+    monkeypatch.setattr(submitter.urllib.request, "urlopen", urlopen)
+    assert submitter.main([
+        "--request", str(request_path),
+        "--secret-file", str(secret_path),
+        "--receipt-out", str(receipt_path),
+        *timeout_args,
+    ]) == expected_code
+    assert calls == [(body, expected_timeout)]
+    output = json.loads(capsys.readouterr().out)
+    if expected_code == 0:
+        assert output["status"] == "submitted"
+        evidence = json.loads(receipt_path.read_text())
+        assert evidence["launch_id"] == request["launch_id"]
+        assert evidence["run_id"] == request["run_id"]
+        assert evidence["idempotency_key"] == request["launch_id"]
+    else:
+        assert output["status"] == "blocked"
+        assert output["blockers"] == ["webapp_transport_error"]
+        assert not receipt_path.exists()
+
+
+@pytest.mark.parametrize("timeout", ["0", "-1", "nan", "inf"])
+def test_invalid_timeout_refuses_before_transport(monkeypatch, tmp_path, capsys, timeout):
+    request_path, secret_path, receipt_path, _, _ = _files(tmp_path)
+
+    def unexpected_transport(*_args, **_kwargs):
+        pytest.fail("invalid timeout must refuse before transport")
+
+    monkeypatch.setattr(submitter.urllib.request, "urlopen", unexpected_transport)
+    assert submitter.main([
+        "--request", str(request_path),
+        "--secret-file", str(secret_path),
+        "--receipt-out", str(receipt_path),
+        "--timeout-seconds", timeout,
+    ]) == 2
+    assert json.loads(capsys.readouterr().out)["blockers"] == [
+        "launch_submit_timeout_invalid"
+    ]
+    assert not receipt_path.exists()
+
+
 def test_body_tamper_changes_the_signature_and_receipt_mismatch_fails() -> None:
     request = _request()
     original = json.dumps(request, separators=(",", ":")).encode()
