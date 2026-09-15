@@ -1053,6 +1053,13 @@ def _build_scene_configuration_context(
         "service_group": service_group,
     }
     _owner_attempt(operations, "config", activation_request, preparation_request, activation_root)
+    if operations.get("scene_owner_attempt"):
+        from .task_evaluation_partial_astra_transport import select_partial_astra_source
+        selection = select_partial_astra_source(
+            owner_attempt_path=operations["scene_owner_attempt"], envelope=construction_value,
+            output_root=activation_root / "partial_astra_successor")
+        if selection is not None:
+            operations["partial_astra_successor_selection"] = str(selection)
     return {
         "schema_version": (
             "task_evaluation_scene_configuration_launch_preparation_context.v1"

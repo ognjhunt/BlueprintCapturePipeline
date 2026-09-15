@@ -153,6 +153,8 @@ def budgeted_invoker(*, root: Path, run_id: str, maximum_cost_usd: float = MAX_C
         raise AssetAuthoringError('authoring_budget_invalid')
     audit = InferenceReservationAudit(run_root=root, run_id=run_id)
     restored = audit.manifest()
+    from .task_object_astra_inherited_inference import inherited_balance
+    inherited = inherited_balance(root, run_id)
     # An unpriced prior request retains its full worst-case allowance. New,
     # distinct bounded repair requests may use only the remaining balance;
     # the durable audit still refuses replay of an existing reservation ID.
@@ -164,7 +166,7 @@ def budgeted_invoker(*, root: Path, run_id: str, maximum_cost_usd: float = MAX_C
     ))
     invoker.configure_reservation_audit(
         record_reservation=audit.record_reservation, record_completion=audit.record_completion,
-        restored_reserved_cost_usd=restored['reserved_max_cost_usd'],
+        restored_reserved_cost_usd=restored['reserved_max_cost_usd'] + inherited['cost_usd'],
     )
     return invoker, audit
 

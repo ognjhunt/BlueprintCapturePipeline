@@ -1,0 +1,336 @@
+{
+  "claim_scope": "development_only",
+  "source_instance_id": 51136393,
+  "source_archive_bytes": 676131591,
+  "request": {
+    "construction_constraints": "{\"additional_constraints\":\"\",\"exact_nominal_dimensions_m\":[0.08142562000000009,0.060465830000000054,0.14343724400000002],\"owner_description\":\"One opaque, rigid bottle-shaped ornament matching the selected source geometry and dimensions; no liquid or movable contents.\",\"replacement_identity\":{\"id\":\"interiorgs-840938-object-219\",\"version\":\"v1\"},\"required_output\":{\"dynamic_friction_bounds\":[0.4,0.7],\"format\":\"OpenUSD\",\"mass_kg_bounds\":[0.05,0.25],\"restitution_bounds\":[0.0,0.05],\"rigid_body\":true,\"single_movable_root\":true,\"static_friction_bounds\":[0.5,0.8],\"units\":\"meters\",\"up_axis\":\"Z\",\"visual_mesh_separate_from_collision\":true},\"source_object_identity\":\"publisher-instance-219\",\"source_uncertainty_note\":\"Source-envelope relative tolerance used as an explicit uncertainty proxy; it is not measured accuracy or a permission to round nominal dimensions.\"}",
+    "coordinate_frame": "object_center_xy_bottom_z_z_up_meters",
+    "dimension_authority": "source_geometry",
+    "dimension_source_digest": "sha256:516c2d62886ebb89c70dfa1618994a096a11e6060b00872ee77cd01b3e832d6d",
+    "dimension_uncertainty_m": [
+      0.004071281000000005,
+      0.0030232915000000028,
+      0.007171862200000001
+    ],
+    "dimensions_m": [
+      0.08142562000000009,
+      0.060465830000000054,
+      0.14343724400000002
+    ],
+    "expected_production_commit": "7756dd485c569e8722d0d89d9be97161b4c42288",
+    "maximum_export_error_m": 1e-05,
+    "object_id": "interiorgs-840938-object-219",
+    "owner_description": "One opaque, rigid bottle-shaped ornament matching the selected source geometry and dimensions; no liquid or movable contents.",
+    "physical_review_input": {
+      "admitted_restitution": {
+        "lower": 0.0,
+        "upper": 0.05
+      },
+      "appearance": "unknown",
+      "dimensions": {
+        "x_m": {
+          "basis": "estimated",
+          "evidence_ids": [
+            "retained_source_geometry"
+          ],
+          "interval": {
+            "lower": 0.07735433900000008,
+            "upper": 0.0854969010000001
+          },
+          "rationale": "Exact nominal source-geometry construction constraint.",
+          "uncertainty": "Source-envelope relative tolerance used as an explicit uncertainty proxy; it is not measured accuracy or a permission to round nominal dimensions.",
+          "value": 0.08142562000000009
+        },
+        "y_m": {
+          "basis": "estimated",
+          "evidence_ids": [
+            "retained_source_geometry"
+          ],
+          "interval": {
+            "lower": 0.05744253850000005,
+            "upper": 0.06348912150000005
+          },
+          "rationale": "Exact nominal source-geometry construction constraint.",
+          "uncertainty": "Source-envelope relative tolerance used as an explicit uncertainty proxy; it is not measured accuracy or a permission to round nominal dimensions.",
+          "value": 0.060465830000000054
+        },
+        "z_m": {
+          "basis": "estimated",
+          "evidence_ids": [
+            "retained_source_geometry"
+          ],
+          "interval": {
+            "lower": 0.13626538180000003,
+            "upper": 0.1506091062
+          },
+          "rationale": "Exact nominal source-geometry construction constraint.",
+          "uncertainty": "Source-envelope relative tolerance used as an explicit uncertainty proxy; it is not measured accuracy or a permission to round nominal dimensions.",
+          "value": 0.14343724400000002
+        }
+      },
+      "evidence": [
+        {
+          "evidence_id": "retained_source_geometry",
+          "excerpt": "Retained source object identity and metric envelope: {\"metric_envelope\":{\"expected_dimensions_m\":[0.08142562000000009,0.060465830000000054,0.14343724400000002],\"maximum_dimension_relative_error\":0.05,\"maximum_xyz_m\":[-2.462409171,2.276115033,0.891387134],\"minimum_xyz_m\":[-2.543834791,2.215649203,0.74794989]},\"source_object_identity\":\"publisher-instance-219\"}",
+          "kind": "source_geometry",
+          "sha256": "516c2d62886ebb89c70dfa1618994a096a11e6060b00872ee77cd01b3e832d6d",
+          "uri": "/workspace/task_evaluation_scene_configuration_provider_bundle/runtime_output/stages/stage-2/adapter/source_object_candidate_mesh.usda"
+        },
+        {
+          "evidence_id": "retained_source_view_0",
+          "excerpt": "Owner-described object shown in the retained source-derived appearance view.",
+          "kind": "material_observation",
+          "sha256": "b77ec625a001622b59c8c85de44ef99c9ae2624c589de06e0b5c6ff7f717f9cb",
+          "uri": "/workspace/task_evaluation_scene_configuration_provider_bundle/runtime_output/stages/stage-1/producer/provider_render_references/0000.png"
+        },
+        {
+          "evidence_id": "retained_source_view_1",
+          "excerpt": "Owner-described object shown in the retained source-derived appearance view.",
+          "kind": "material_observation",
+          "sha256": "3d1e29c045b9b0017df5025ce319372763507aeaa654ffcdbb672fe2f4c758c7",
+          "uri": "/workspace/task_evaluation_scene_configuration_provider_bundle/runtime_output/stages/stage-1/producer/provider_render_references/0001.png"
+        },
+        {
+          "evidence_id": "retained_source_view_2",
+          "excerpt": "Owner-described object shown in the retained source-derived appearance view.",
+          "kind": "material_observation",
+          "sha256": "902745a8f0389275c09cc25f6262e3472864835bd273ec1f4a130d03b20ead35",
+          "uri": "/workspace/task_evaluation_scene_configuration_provider_bundle/runtime_output/stages/stage-1/producer/provider_render_references/0002.png"
+        },
+        {
+          "evidence_id": "retained_source_view_3",
+          "excerpt": "Owner-described object shown in the retained source-derived appearance view.",
+          "kind": "material_observation",
+          "sha256": "a561510b3fccc6ed0e059b52cea14a010a4153e9539aca20dd46874392a692f8",
+          "uri": "/workspace/task_evaluation_scene_configuration_provider_bundle/runtime_output/stages/stage-1/producer/provider_render_references/0003.png"
+        },
+        {
+          "evidence_id": "retained_source_view_4",
+          "excerpt": "Owner-described object shown in the retained source-derived appearance view.",
+          "kind": "material_observation",
+          "sha256": "902fc87ded9e6660f0f32325638558eb5200cc5bc373c83f3dda82594dc7ed0a",
+          "uri": "/workspace/task_evaluation_scene_configuration_provider_bundle/runtime_output/stages/stage-1/producer/provider_render_references/0004.png"
+        },
+        {
+          "evidence_id": "retained_source_view_5",
+          "excerpt": "Owner-described object shown in the retained source-derived appearance view.",
+          "kind": "material_observation",
+          "sha256": "9458951f3d33f7af2e750fc1821612a93d66f9e5a4103f6c765e6aba81409125",
+          "uri": "/workspace/task_evaluation_scene_configuration_provider_bundle/runtime_output/stages/stage-1/producer/provider_render_references/0005.png"
+        },
+        {
+          "evidence_id": "retained_source_view_6",
+          "excerpt": "Owner-described object shown in the retained source-derived appearance view.",
+          "kind": "material_observation",
+          "sha256": "0320b5b7ccc7b8785820a25ecfd7d2051279d8703550c9d244b7f96b1b13d831",
+          "uri": "/workspace/task_evaluation_scene_configuration_provider_bundle/runtime_output/stages/stage-1/producer/provider_render_references/0006.png"
+        },
+        {
+          "evidence_id": "retained_source_view_7",
+          "excerpt": "Owner-described object shown in the retained source-derived appearance view.",
+          "kind": "material_observation",
+          "sha256": "3fb3d08df6a7692c1fc674a265cbbd96397068581c4c3f1c55768bbe8d4fa77a",
+          "uri": "/workspace/task_evaluation_scene_configuration_provider_bundle/runtime_output/stages/stage-1/producer/provider_render_references/0007.png"
+        },
+        {
+          "evidence_id": "retained_source_view_8",
+          "excerpt": "Owner-described object shown in the retained source-derived appearance view.",
+          "kind": "material_observation",
+          "sha256": "e1036e8dddd94c18401978ce24bf1bd02bd5a846b69112b20fa10057f67bb2fe",
+          "uri": "/workspace/task_evaluation_scene_configuration_provider_bundle/runtime_output/stages/stage-1/producer/provider_render_references/0008.png"
+        },
+        {
+          "evidence_id": "retained_source_view_9",
+          "excerpt": "Owner-described object shown in the retained source-derived appearance view.",
+          "kind": "material_observation",
+          "sha256": "b9e3f5916e8c66d7f489089dc3a2da50ecf6cf64b1146c3e5639013d8612e4a2",
+          "uri": "/workspace/task_evaluation_scene_configuration_provider_bundle/runtime_output/stages/stage-1/producer/provider_render_references/0009.png"
+        },
+        {
+          "evidence_id": "retained_source_view_10",
+          "excerpt": "Owner-described object shown in the retained source-derived appearance view.",
+          "kind": "material_observation",
+          "sha256": "f77b803bad616308c66fe50d0e11ba6f30fe8e3c1597fe0d98d8afcca5e66c8d",
+          "uri": "/workspace/task_evaluation_scene_configuration_provider_bundle/runtime_output/stages/stage-1/producer/provider_render_references/0010.png"
+        },
+        {
+          "evidence_id": "retained_source_view_11",
+          "excerpt": "Owner-described object shown in the retained source-derived appearance view.",
+          "kind": "material_observation",
+          "sha256": "6699a3f66716c130587e61072a803144ef60be3acc7e541e9728e204d59635be",
+          "uri": "/workspace/task_evaluation_scene_configuration_provider_bundle/runtime_output/stages/stage-1/producer/provider_render_references/0011.png"
+        },
+        {
+          "evidence_id": "retained_source_view_12",
+          "excerpt": "Owner-described object shown in the retained source-derived appearance view.",
+          "kind": "material_observation",
+          "sha256": "57c24579a5420e49b14d47242eb1cd64fc8583248d55fb87f5c204438fa40562",
+          "uri": "/workspace/task_evaluation_scene_configuration_provider_bundle/runtime_output/stages/stage-1/producer/provider_render_references/0012.png"
+        },
+        {
+          "evidence_id": "retained_source_view_13",
+          "excerpt": "Owner-described object shown in the retained source-derived appearance view.",
+          "kind": "material_observation",
+          "sha256": "f7bb5f5b21a012cf88ea2bf71a67288752357d7dcdaab79521538aa63fed6d0c",
+          "uri": "/workspace/task_evaluation_scene_configuration_provider_bundle/runtime_output/stages/stage-1/producer/provider_render_references/0013.png"
+        },
+        {
+          "evidence_id": "retained_source_view_14",
+          "excerpt": "Owner-described object shown in the retained source-derived appearance view.",
+          "kind": "material_observation",
+          "sha256": "375ac82702c103eacbd7527f2eeca306e26a43b234e841e9f9af9fd948741ac0",
+          "uri": "/workspace/task_evaluation_scene_configuration_provider_bundle/runtime_output/stages/stage-1/producer/provider_render_references/0014.png"
+        },
+        {
+          "evidence_id": "retained_source_view_15",
+          "excerpt": "Owner-described object shown in the retained source-derived appearance view.",
+          "kind": "material_observation",
+          "sha256": "df422affcd77045a192cb4218672e2f3f80bf21c05b0b1169597e58444d759af",
+          "uri": "/workspace/task_evaluation_scene_configuration_provider_bundle/runtime_output/stages/stage-1/producer/provider_render_references/0015.png"
+        }
+      ],
+      "material_description": "Infer material conservatively from the retained owner description and reference views: One opaque, rigid bottle-shaped ornament matching the selected source geometry and dimensions; no liquid or movable contents.",
+      "measured": {
+        "dynamic_friction": null,
+        "mass_kg": null,
+        "restitution": null,
+        "static_friction": null
+      },
+      "object_description": "One opaque, rigid bottle-shaped ornament matching the selected source geometry and dimensions; no liquid or movable contents.",
+      "object_id": "interiorgs-840938-object-219",
+      "optical_material": {
+        "name": "Infer material conservatively from the retained owner description and reference views: One opaque, rigid bottle-shaped ornament matching the selected source geometry and dimensions; no liquid or movable contents.",
+        "opacity": 1.0,
+        "transmission": 0.0
+      },
+      "proposed": null
+    },
+    "private_provider_processing_allowed": true,
+    "provider_training_allowed": false,
+    "public_redistribution_allowed": false,
+    "request_digest": "sha256:24a9160cd03a118644bdc27ac954299201b88fe3e7eacf314a5c476db2bf4eab",
+    "role": "task_object",
+    "run_id": "scene-0578bcfa7dd281944480-source-eae3946a363aaab08778cb46-7756dd48-20260915t154906z-scene-configuration",
+    "schema_version": "task_object_astra_authoring_request.v1",
+    "source_frames": [
+      {
+        "description": "Digest-bound stage-1 appearance view 0; derived source render, not physical truth.",
+        "path": "/workspace/task_evaluation_scene_configuration_provider_bundle/runtime_output/stages/stage-1/producer/provider_render_references/0000.png",
+        "role": "observed_source",
+        "sha256": "sha256:b77ec625a001622b59c8c85de44ef99c9ae2624c589de06e0b5c6ff7f717f9cb"
+      },
+      {
+        "description": "Digest-bound stage-1 appearance view 1; derived source render, not physical truth.",
+        "path": "/workspace/task_evaluation_scene_configuration_provider_bundle/runtime_output/stages/stage-1/producer/provider_render_references/0001.png",
+        "role": "observed_source",
+        "sha256": "sha256:3d1e29c045b9b0017df5025ce319372763507aeaa654ffcdbb672fe2f4c758c7"
+      },
+      {
+        "description": "Digest-bound stage-1 appearance view 2; derived source render, not physical truth.",
+        "path": "/workspace/task_evaluation_scene_configuration_provider_bundle/runtime_output/stages/stage-1/producer/provider_render_references/0002.png",
+        "role": "observed_source",
+        "sha256": "sha256:902745a8f0389275c09cc25f6262e3472864835bd273ec1f4a130d03b20ead35"
+      },
+      {
+        "description": "Digest-bound stage-1 appearance view 3; derived source render, not physical truth.",
+        "path": "/workspace/task_evaluation_scene_configuration_provider_bundle/runtime_output/stages/stage-1/producer/provider_render_references/0003.png",
+        "role": "observed_source",
+        "sha256": "sha256:a561510b3fccc6ed0e059b52cea14a010a4153e9539aca20dd46874392a692f8"
+      },
+      {
+        "description": "Digest-bound stage-1 appearance view 4; derived source render, not physical truth.",
+        "path": "/workspace/task_evaluation_scene_configuration_provider_bundle/runtime_output/stages/stage-1/producer/provider_render_references/0004.png",
+        "role": "observed_source",
+        "sha256": "sha256:902fc87ded9e6660f0f32325638558eb5200cc5bc373c83f3dda82594dc7ed0a"
+      },
+      {
+        "description": "Digest-bound stage-1 appearance view 5; derived source render, not physical truth.",
+        "path": "/workspace/task_evaluation_scene_configuration_provider_bundle/runtime_output/stages/stage-1/producer/provider_render_references/0005.png",
+        "role": "observed_source",
+        "sha256": "sha256:9458951f3d33f7af2e750fc1821612a93d66f9e5a4103f6c765e6aba81409125"
+      },
+      {
+        "description": "Digest-bound stage-1 appearance view 6; derived source render, not physical truth.",
+        "path": "/workspace/task_evaluation_scene_configuration_provider_bundle/runtime_output/stages/stage-1/producer/provider_render_references/0006.png",
+        "role": "observed_source",
+        "sha256": "sha256:0320b5b7ccc7b8785820a25ecfd7d2051279d8703550c9d244b7f96b1b13d831"
+      },
+      {
+        "description": "Digest-bound stage-1 appearance view 7; derived source render, not physical truth.",
+        "path": "/workspace/task_evaluation_scene_configuration_provider_bundle/runtime_output/stages/stage-1/producer/provider_render_references/0007.png",
+        "role": "observed_source",
+        "sha256": "sha256:3fb3d08df6a7692c1fc674a265cbbd96397068581c4c3f1c55768bbe8d4fa77a"
+      },
+      {
+        "description": "Digest-bound stage-1 appearance view 8; derived source render, not physical truth.",
+        "path": "/workspace/task_evaluation_scene_configuration_provider_bundle/runtime_output/stages/stage-1/producer/provider_render_references/0008.png",
+        "role": "observed_source",
+        "sha256": "sha256:e1036e8dddd94c18401978ce24bf1bd02bd5a846b69112b20fa10057f67bb2fe"
+      },
+      {
+        "description": "Digest-bound stage-1 appearance view 9; derived source render, not physical truth.",
+        "path": "/workspace/task_evaluation_scene_configuration_provider_bundle/runtime_output/stages/stage-1/producer/provider_render_references/0009.png",
+        "role": "observed_source",
+        "sha256": "sha256:b9e3f5916e8c66d7f489089dc3a2da50ecf6cf64b1146c3e5639013d8612e4a2"
+      },
+      {
+        "description": "Digest-bound stage-1 appearance view 10; derived source render, not physical truth.",
+        "path": "/workspace/task_evaluation_scene_configuration_provider_bundle/runtime_output/stages/stage-1/producer/provider_render_references/0010.png",
+        "role": "observed_source",
+        "sha256": "sha256:f77b803bad616308c66fe50d0e11ba6f30fe8e3c1597fe0d98d8afcca5e66c8d"
+      },
+      {
+        "description": "Digest-bound stage-1 appearance view 11; derived source render, not physical truth.",
+        "path": "/workspace/task_evaluation_scene_configuration_provider_bundle/runtime_output/stages/stage-1/producer/provider_render_references/0011.png",
+        "role": "observed_source",
+        "sha256": "sha256:6699a3f66716c130587e61072a803144ef60be3acc7e541e9728e204d59635be"
+      },
+      {
+        "description": "Digest-bound stage-1 appearance view 12; derived source render, not physical truth.",
+        "path": "/workspace/task_evaluation_scene_configuration_provider_bundle/runtime_output/stages/stage-1/producer/provider_render_references/0012.png",
+        "role": "observed_source",
+        "sha256": "sha256:57c24579a5420e49b14d47242eb1cd64fc8583248d55fb87f5c204438fa40562"
+      },
+      {
+        "description": "Digest-bound stage-1 appearance view 13; derived source render, not physical truth.",
+        "path": "/workspace/task_evaluation_scene_configuration_provider_bundle/runtime_output/stages/stage-1/producer/provider_render_references/0013.png",
+        "role": "observed_source",
+        "sha256": "sha256:f7bb5f5b21a012cf88ea2bf71a67288752357d7dcdaab79521538aa63fed6d0c"
+      },
+      {
+        "description": "Digest-bound stage-1 appearance view 14; derived source render, not physical truth.",
+        "path": "/workspace/task_evaluation_scene_configuration_provider_bundle/runtime_output/stages/stage-1/producer/provider_render_references/0014.png",
+        "role": "observed_source",
+        "sha256": "sha256:375ac82702c103eacbd7527f2eeca306e26a43b234e841e9f9af9fd948741ac0"
+      },
+      {
+        "description": "Digest-bound stage-1 appearance view 15; derived source render, not physical truth.",
+        "path": "/workspace/task_evaluation_scene_configuration_provider_bundle/runtime_output/stages/stage-1/producer/provider_render_references/0015.png",
+        "role": "observed_source",
+        "sha256": "sha256:df422affcd77045a192cb4218672e2f3f80bf21c05b0b1169597e58444d759af"
+      }
+    ]
+  },
+  "stage_source_binding": {
+    "authoring_input_digest": "sha256:c8205ffe5f38e89cb9ac2bad7e4ddcf98f097aeab6dd14341ce92e7d502b0a39",
+    "binding_digest": "sha256:f29a1f98a112b807bd88c97a099110d0ab39d83476ea0ab69d8bfda770fa19c0",
+    "configuration_sha256": "sha256:3e71d41a6fedb0b9bad3c1175cddfaf6192c405a10ff900d1c268c7d3960e85a",
+    "rights_admission": {
+      "path": "/workspace/task_evaluation_scene_configuration_provider_bundle/provider_runtime/input/references/0015",
+      "sha256": "sha256:6d531301c426227daee0e9692955d39c00b069760723a4b00e70b496c3addb85",
+      "size_bytes": 2914
+    },
+    "run_id": "scene-0578bcfa7dd281944480-source-eae3946a363aaab08778cb46-7756dd48-20260915t154906z-scene-configuration",
+    "schema_version": "astra_same_run_source_binding.v1",
+    "source_candidate": {
+      "candidate_geometry_only": true,
+      "digest": "sha256:516c2d62886ebb89c70dfa1618994a096a11e6060b00872ee77cd01b3e832d6d",
+      "movable_physics_authority": false,
+      "observed_source_truth": false,
+      "path": "/workspace/task_evaluation_scene_configuration_provider_bundle/runtime_output/stages/stage-2/adapter/source_object_candidate_mesh.usda",
+      "role": "source_object_candidate_mesh",
+      "size_bytes": 34249,
+      "source_prim_path": "/Root/bcp_instance_314f04b30f62e005"
+    }
+  }
+}

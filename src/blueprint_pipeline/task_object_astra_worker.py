@@ -161,10 +161,11 @@ def verify_source_analysis_adoption(*, prior_root: Path, request_value: dict,
         raise AssetAuthoringError('authoring_adoption_phase_binding_invalid')
     output = VisualBrief.model_validate(record['output'])
     output_digest = canonical_digest(output.model_dump(mode='json'))
+    from .task_object_astra_inherited_inference import phase_completion_paths
     matching = []
-    for path in (budget_root / 'inference_reservations/completed').glob('*.json'):
+    for path in phase_completion_paths(budget_root=budget_root, request_value=request_value, phase=record):
         completion = json.loads(path.read_text())
-        if (completion.get('run_id') == request_value['run_id']
+        if ((completion.get('run_id') == request_value['run_id'] or 'inherited' in path.relative_to(budget_root).parts)
             and completion.get('capability') == request_value['object_id'] + '_source_analysis'
             and completion.get('structured_output_digest') == output_digest
             and completion.get('inference_completion_digest') == canonical_digest(
@@ -192,10 +193,11 @@ def verify_physical_review_adoption(*, prior_root: Path, request_value: dict, bu
         raise AssetAuthoringError('authoring_physical_adoption_phase_binding_invalid')
     output = PhysicalPropertyReviewProposal.model_validate(record['output'])
     output_digest = canonical_digest(output.model_dump(mode='json'))
+    from .task_object_astra_inherited_inference import phase_completion_paths
     matches = []
-    for path in (budget_root / 'inference_reservations/completed').glob('*.json'):
+    for path in phase_completion_paths(budget_root=budget_root, request_value=request_value, phase=record):
         row = json.loads(path.read_text())
-        if (row.get('run_id') == request_value['run_id']
+        if ((row.get('run_id') == request_value['run_id'] or 'inherited' in path.relative_to(budget_root).parts)
             and row.get('capability') == request_value['object_id'] + '_physical_property_review'
             and row.get('structured_output_digest') == output_digest
             and row.get('inference_completion_digest') == canonical_digest(row, digest_field='inference_completion_digest')):
@@ -230,10 +232,11 @@ def verify_blender_program_adoption(*, prior_root: Path, request_value: dict, bu
         raise AssetAuthoringError('authoring_blender_adoption_phase_binding_invalid')
     output = BlenderProgram.model_validate(record['output'])
     output_digest = canonical_digest(output.model_dump(mode='json'))
+    from .task_object_astra_inherited_inference import phase_completion_paths
     matches = []
-    for path in (budget_root / 'inference_reservations/completed').glob('*.json'):
+    for path in phase_completion_paths(budget_root=budget_root, request_value=request_value, phase=record):
         row = json.loads(path.read_text())
-        if (row.get('run_id') == request_value['run_id']
+        if ((row.get('run_id') == request_value['run_id'] or 'inherited' in path.relative_to(budget_root).parts)
             and row.get('capability') == request_value['object_id'] + f'_blender_author_{round_index}'
             and row.get('model') == 'gpt-6-astra' and row.get('provider') == 'openai'
             and row.get('structured_output_digest') == output_digest
