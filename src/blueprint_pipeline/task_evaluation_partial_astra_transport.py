@@ -11,6 +11,7 @@ import os
 from pathlib import Path, PurePosixPath
 import shutil
 import stat
+import time
 import zipfile
 
 from .decision_evidence_contracts import (
@@ -213,8 +214,36 @@ def validate_envelope_owner(envelope, current):
              "construction_owner_binding_changed")
 
 
+def _pin_source_metadata(*, proof, activation_request, activation_root, pins_root, on_pin_created):
+    """An actual activation owns the retained roots until its normal terminal release."""
+    if activation_request is None:
+        return
+    from .control_plane_storage_pins import pin_activation_best_effort, pin_status
+    current = proof["successor_owner_attempt"]
+    owned = _safe(activation_root)
+    _require(owned.name == activation_request.get("activation_id")
+             and activation_request.get("team_namespace") == current["team_namespace"], "metadata_pin_owner_changed")
+    metadata_roots = set()
+    for name in ("source_bundle_manifest", "scene_configuration_attempt_authority"):
+        references = [row for row in proof["source_profile"]["immutable_inputs"] if row.get("name") == name]
+        _require(len(references) == 1, "metadata_pin_source_missing")
+        path = _safe(references[0]["path"])
+        source_roots = [parent for parent in path.parents if parent.parent == owned.parent]
+        _require(len(source_roots) == 1 and source_roots[0] != owned, "metadata_pin_source_root_invalid")
+        metadata_roots.add(str(source_roots[0]))
+    pin = pin_activation_best_effort(activation_request, owned.parent, pins_root=pins_root,
+                                   retained_paths=sorted(metadata_roots), on_created=on_pin_created)
+    expected_dependencies = [{"kind": kind, "owner_id": activation_request["preparation"]["preparation_id"]}
+                             for kind in ("compilation", "preparation")]
+    _require(isinstance(pin, dict) and pin_status(pin, now=time.time()) == "live"
+             and pin.get("owner_id") == owned.name and pin.get("kind") == "activation"
+             and {str(owned), *metadata_roots} <= set(pin.get("paths", []))
+             and pin.get("depends_on") == expected_dependencies, "metadata_pin_missing_or_insufficient")
+
+
 def select_partial_astra_source(*, owner_attempt_path, envelope, output_root,
-                                intent_root=None, launch_root=None):
+                                intent_root=None, launch_root=None, activation_request=None,
+                                activation_root=None, pins_root=None, on_pin_created=None):
     """Freeze the newest closed, same-owner/scene/task pending second-review source."""
     from . import task_evaluation_scene_intake as intake
     current = _read(owner_attempt_path, "owner_attempt_digest")
@@ -224,6 +253,17 @@ def select_partial_astra_source(*, owner_attempt_path, envelope, output_root,
         retained = _read(target / "selection.json", "transport_digest")
         _require(retained["authority_evidence"]["successor_owner_attempt"] == current
                  and retained["verified_lineage"]["successor_run_id"] == envelope["run_id"], "retained_selection_changed")
+        if activation_request is not None:
+            lineage, proof = _source_identity(Path(retained["source_launch_root"]), current,
+                intent_root=_safe(intent_root or os.environ[intake.ROOT_ENV]), successor_run_id=envelope["run_id"])
+            _require(proof == retained["authority_evidence"] and lineage == retained["verified_lineage"], "retained_source_changed")
+            _require(_file(Path(retained["source_archive"]["path"])) == retained["source_archive"],
+                     "retained_source_archive_changed")
+            _pin_source_metadata(proof=proof, activation_request=activation_request, activation_root=activation_root,
+                                 pins_root=pins_root, on_pin_created=on_pin_created)
+            _require(_source_identity(Path(retained["source_launch_root"]), current,
+                intent_root=_safe(intent_root or os.environ[intake.ROOT_ENV]), successor_run_id=envelope["run_id"]) == (lineage, proof),
+                "retained_source_changed_after_pin")
         return target / "selection.json"
     root = _safe(intent_root or os.environ[intake.ROOT_ENV])
     _canonical_owner(current, root)
@@ -285,6 +325,11 @@ def select_partial_astra_source(*, owner_attempt_path, envelope, output_root,
                          and binding.get("run_id") == request["run_id"]
                          and binding.get("configuration_sha256") == configuration["digest"], "source_configuration_changed")
                 members = _members(archive)
+                _pin_source_metadata(proof=proof, activation_request=activation_request, activation_root=activation_root,
+                                     pins_root=pins_root, on_pin_created=on_pin_created)
+                if activation_request is not None:
+                    _require(_source_identity(source, current, intent_root=root, successor_run_id=envelope["run_id"]) == (lineage, proof),
+                             "source_changed_after_metadata_pin")
                 with reserve_control_plane_disk(
                     "semantic_pretraining", target_root=target.parent,
                     expected_bytes=sum(i.file_size for _, i in members) + 16 * 1024**2,

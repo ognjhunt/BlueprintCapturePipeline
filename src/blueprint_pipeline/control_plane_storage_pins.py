@@ -20,7 +20,8 @@ import os
 import re
 import tempfile
 import time
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -90,6 +91,16 @@ def _load(path: Path) -> dict[str, Any] | None:
     return dict(value)
 
 
+@contextmanager
+def storage_pin_guard(pins_root: str | Path, *, exclusive: bool):
+    """Publish pins and retire cache targets under the same stable directory lock."""
+    from .task_evaluation_release_reference_lock import release_reference_lock
+    root = Path(pins_root).expanduser()
+    root.mkdir(parents=True, exist_ok=True, mode=0o750)
+    with release_reference_lock(root, exclusive=exclusive):
+        yield
+
+
 def write_storage_pin(
     *,
     pins_root: str | Path,
@@ -99,6 +110,7 @@ def write_storage_pin(
     depends_on: Sequence[Mapping[str, str]] = (),
     ttl_seconds: int = DEFAULT_PIN_TTL_SECONDS,
     now: Any = time.time,
+    on_created: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Pin ``paths`` for ``owner_id``; an existing pin is returned unchanged."""
 
@@ -129,12 +141,15 @@ def write_storage_pin(
         "released_at_epoch": None,
     }
     path = pin_path(pins_root, kind, owner_id)
-    if _write_atomic(path, payload, exclusive=True):
-        return payload
-    existing = _load(path)
-    if existing is None:
-        raise ControlPlaneStoragePinError("control_plane_storage_pin_existing_unreadable")
-    return existing
+    with storage_pin_guard(pins_root, exclusive=False):
+        if _write_atomic(path, payload, exclusive=True):
+            if on_created is not None:
+                on_created(payload)
+            return payload
+        existing = _load(path)
+        if existing is None:
+            raise ControlPlaneStoragePinError("control_plane_storage_pin_existing_unreadable")
+        return existing
 
 
 def pin_activation_best_effort(
@@ -143,11 +158,15 @@ def pin_activation_best_effort(
     *,
     pins_root: str | Path | None = None,
     environ: Mapping[str, str] = os.environ,
+    retained_paths: Sequence[str | Path] = (),
+    on_created: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any] | None:
     """Pin one activation's launch set plus its preparation and compilation.
 
-    Called by the activation worker after a successful activation; the pins
-    root comes from the unit environment unless given.  Never raises: a
+    The worker normally calls this after activation, or before consuming
+    retained source metadata. Extra paths are included only on first creation;
+    existing pins remain unchanged. The pins root comes from the unit
+    environment unless given. Never raises: a
     missing ledger must not disturb a sealed activation result.
     """
 
@@ -161,13 +180,14 @@ def pin_activation_best_effort(
             pins_root=root,
             kind="activation",
             owner_id=activation_id,
-            paths=[Path(activation_root) / activation_id],
+            paths=[Path(activation_root) / activation_id, *retained_paths],
+            on_created=on_created,
             depends_on=[
                 {"kind": "preparation", "owner_id": preparation_id},
                 {"kind": "compilation", "owner_id": preparation_id},
             ],
         )
-    except (ControlPlaneStoragePinError, OSError, KeyError, TypeError):
+    except (ControlPlaneStoragePinError, OSError, KeyError, TypeError, ValueError):
         return None
 
 

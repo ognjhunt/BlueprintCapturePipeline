@@ -887,6 +887,7 @@ def _build_scene_configuration_context(
     service_account: str,
     service_group: str,
     configured_controls_autostart_intent_root: Path,
+    created_storage_pins: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build server-owned inputs for one Website-started configuration profile."""
 
@@ -1061,7 +1062,10 @@ def _build_scene_configuration_context(
         try:
             selection = select_partial_astra_source(
                 owner_attempt_path=operations["scene_owner_attempt"], envelope=construction_value,
-                output_root=activation_root / "partial_astra_successor")
+                output_root=activation_root / "partial_astra_successor",
+                activation_request=activation_request if created_storage_pins is not None else None,
+                activation_root=activation_root,
+                on_pin_created=created_storage_pins.append if created_storage_pins is not None else None)
         except PartialAstraTransportError as exc:
             # This typed error contains a fixed predicate code, never artifact
             # contents. Preserve it in the activation receipt for saved-input replay.
@@ -1566,6 +1570,23 @@ def _policy_campaign_activation_result(
     return result
 
 
+def _release_created_early_storage_pins(request, created_pins):
+    """A failed activation releases only an unchanged pin this invocation created."""
+    pins_root = storage_pins.pins_root_from_environment()
+    if pins_root is None or request is None:
+        return
+    for created in created_pins:
+        if created.get("kind") != "activation" or created.get("owner_id") != request.get("activation_id"):
+            continue
+        try:
+            path = storage_pins.pin_path(pins_root, "activation", request["activation_id"])
+            if storage_pins._load(path) == created:
+                storage_pins.release_storage_pin(pins_root=pins_root, kind="activation", owner_id=request["activation_id"])
+        except (OSError, ValueError, storage_pins.ControlPlaneStoragePinError):
+            # Preserve the original activation failure; an unconfirmed cleanup retains its pin.
+            continue
+
+
 def process_launch_activation_queue(
     *,
     queue_root: str | Path,
@@ -1635,6 +1656,7 @@ def process_launch_activation_queue(
         processing_leases.append(_acquire_processing_lease(claimed))
         terminal_state = "prepared"
         request, disk_reservation = None, None
+        created_storage_pins = []
         try:
             envelope = _load_sealed(
                 claimed,
@@ -1752,6 +1774,7 @@ def process_launch_activation_queue(
                     configured_controls_autostart_intent_root=(
                         resolved_autostart_root
                     ),
+                    created_storage_pins=created_storage_pins,
                 )
                 context_path = (
                     owned_root
@@ -1908,6 +1931,8 @@ def process_launch_activation_queue(
             write_launch_preparation_record_exclusive(
                 dispatch_path, dispatch_envelope
             )
+        if terminal_state == "blocked":
+            _release_created_early_storage_pins(request, created_storage_pins)
         os.replace(claimed, root / terminal_state / source.name)
         processed.append(result)
     for lease in processing_leases:

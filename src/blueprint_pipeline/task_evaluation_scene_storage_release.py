@@ -60,16 +60,17 @@ def release_terminal_scene_activation_pin(*, run_root, receipt, pins_root=None, 
                 or staging.get('profile_digest') != receipt.get('launch_profile_digest')):
             return {**retained, 'reason': 'staging_identity_mismatch'}
         paths = [Path(p) for p in pin.get('paths', [])]
-        if (len(paths) != 1 or any(not p.is_absolute() or '..' in p.parts or p.name != owner
-                or p.parent.name != 'launch-activations' for p in paths)):
+        primary = [p for p in paths if p.name == owner and p.parent.name == 'launch-activations']
+        if (len(primary) != 1 or len(set(paths)) != len(paths)
+                or any(not p.is_absolute() or '..' in p.parts or p.parent != primary[0].parent for p in paths)):
             return {**retained, 'reason': 'pin_path_invalid'}
-        if (not paths[0].is_dir()
-                or any(p.is_symlink() for p in (paths[0], *paths[0].parents))):
+        if (any(not p.is_dir() or any(part.is_symlink() for part in (p, *p.parents)) for p in paths)):
             return {**retained, 'reason': 'pin_target_unsafe'}
+        activation_path = primary[0]
         matched = [row for row in staging.get('inputs', [])
                    if Path(row.get('source_path', '')).is_absolute()
                    and '..' not in Path(row['source_path']).parts
-                   and Path(row['source_path']).is_relative_to(paths[0])]
+                   and Path(row['source_path']).is_relative_to(activation_path)]
         if not matched:
             return {**retained, 'reason': 'staged_input_not_bound_to_pin'}
         verified = {}

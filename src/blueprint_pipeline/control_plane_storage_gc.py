@@ -445,8 +445,7 @@ def apply_derived_directory_manifest(
     ):
         raise ControlPlaneStorageGCError("control_plane_storage_gc_apply_not_authorized")
     observed_at = float(now())
-    pinned = live_pinned_paths(pins_root, now=lambda: observed_at)
-    queue_text = _queue_reference_text(queue_roots)
+    from .control_plane_storage_pins import storage_pin_guard
     minimum_age = int(manifest.get("minimum_age_seconds") or 0)
     removed: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
@@ -455,23 +454,26 @@ def apply_derived_directory_manifest(
         name = str(row.get("name") or "")
         child = root / name
         try:
-            classifier(str(root), expected="cache", code="control_plane_storage_gc_derived_root_class")
-            if (
-                not name
-                or "/" in name
-                or name.startswith(".")
-                or name in RESERVED_DERIVED_CHILDREN
-                or child.is_symlink()
-                or not child.is_dir()
-                or str(child) in pinned
-                or str(child.resolve()) in pinned
-                or name in queue_text
-            ):
-                raise OSError("candidate changed after dry run")
-            latest, size = _tree_snapshot(child)
-            if observed_at - latest < minimum_age:
-                raise OSError("candidate changed after dry run")
-            shutil.rmtree(child)
+            with storage_pin_guard(pins_root, exclusive=True):
+                pinned = live_pinned_paths(pins_root, now=lambda: observed_at)
+                queue_text = _queue_reference_text(queue_roots)
+                classifier(str(root), expected="cache", code="control_plane_storage_gc_derived_root_class")
+                if (
+                    not name
+                    or "/" in name
+                    or name.startswith(".")
+                    or name in RESERVED_DERIVED_CHILDREN
+                    or child.is_symlink()
+                    or not child.is_dir()
+                    or str(child) in pinned
+                    or str(child.resolve()) in pinned
+                    or name in queue_text
+                ):
+                    raise OSError("candidate changed after dry run")
+                latest, size = _tree_snapshot(child)
+                if observed_at - latest < minimum_age:
+                    raise OSError("candidate changed after dry run")
+                shutil.rmtree(child)
         except (OSError, ValueError):
             skipped.append({"name": name, "reason": "candidate_changed"})
             continue

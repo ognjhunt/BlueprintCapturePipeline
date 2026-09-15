@@ -245,3 +245,19 @@ def test_absence_claim_cannot_override_recorded_provider_evidence(case):
     case['receipt'] = seal(case['receipt'], cross=True)
     assert release(case)['status'] == 'retained'
     assert pin(case)['released_at_epoch'] is None
+
+
+def test_terminal_release_includes_retained_source_metadata_on_same_activation_pin(case):
+    from blueprint_pipeline.control_plane_storage_pins import live_pinned_paths
+    retained = case['cache'].parent / 'old-source-activation'
+    retained.mkdir()
+    (retained / 'source-authority.json').write_text('retained original authority')
+    value = pin(case)
+    value['paths'].append(str(retained))
+    write(pin_path(case['pins_root'], 'activation', case['owner']), value)
+    never_allocated(case)
+    assert str(retained) in live_pinned_paths(case['pins_root'])
+    assert release(case)['status'] == 'released'
+    assert not live_pinned_paths(case['pins_root'])
+    assert (retained / 'source-authority.json').read_text() == 'retained original authority'
+    assert case['source'].is_file()
