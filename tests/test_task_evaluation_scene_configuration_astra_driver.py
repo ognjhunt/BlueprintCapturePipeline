@@ -1,6 +1,7 @@
 """Stage-3 evidence translation, parent admission, and truthful candidate delivery."""
 from pathlib import Path
 from types import SimpleNamespace
+import inspect
 import json
 import os
 
@@ -385,3 +386,62 @@ def test_missing_sandboxed_blender_output_refuses_before_model_reservation(compo
     with pytest.raises(driver.AstraStageError, match="sandboxed_blender_runtime_preflight_failed"):
         driver.execute_astra_component(**component.kwargs)
     assert "reserve" not in component.events
+
+
+def test_stage_invoker_admits_the_cad_output_budget_and_refuses_above_it():
+    """The architect emits every section in one reply; 12000 truncated a real part.
+
+    Scene 840938 object 219 planned 13 loft sections, the reply was cut mid-string
+    and failed to parse, the coder node never ran, and the graph exported no
+    STEP/STL. The boundary must admit the budget the CAD path actually asks for
+    and still refuse anything above it.
+    """
+
+    assert driver.CAD_MAX_OUTPUT_TOKENS == 20000
+    seen = []
+    invoker = driver._StageInvoker(
+        SimpleNamespace(invoke=lambda *args: seen.append(args)), "run", 4
+    )
+
+    def spec(tokens):
+        return SimpleNamespace(
+            run_id="run", model="gpt-6-astra", max_turns=1, tool_bindings=(),
+            max_output_tokens=tokens, max_input_tokens=80000, reasoning_effort="high",
+        )
+
+    invoker.invoke(spec(driver.CAD_MAX_OUTPUT_TOKENS), "input")
+    invoker.invoke(spec(12000), "input")
+    assert len(seen) == 2
+    with pytest.raises(driver.AstraStageError):
+        invoker.invoke(spec(driver.CAD_MAX_OUTPUT_TOKENS + 1), "input")
+    assert len(seen) == 2
+
+
+def test_cad_output_budget_stays_inside_the_runtime_contract():
+    """The runtime refuses a budget over 32000; the CAD path must stay under it."""
+
+    from blueprint_pipeline import astra_cad_skill_runtime as runtime
+
+    source = inspect.getsource(runtime.execute_mac_candidate)
+    assert "max_output_tokens <= 32_000" in source
+    assert 256 <= driver.CAD_MAX_OUTPUT_TOKENS <= 32_000
+
+
+def test_cad_output_budget_fits_the_observed_stage_cost_reservation():
+    """The budget must not project past the content-agents stage cost cap.
+
+    Reserving `input + tokens * $0.00005` per request, the 2026-09-15 run put
+    $0.827/$0.540/$0.316 of input against a $5.00 cap. A budget that projects
+    over the cap is refused before any CAD is produced, which costs a whole
+    GPU rental and an attempt slot.
+    """
+
+    observed_input_usd = (0.82717, 0.53957, 0.31573)
+    usd_per_output_token = 0.00005
+    stage_cap_usd = 5.00
+
+    projected = sum(
+        cost + driver.CAD_MAX_OUTPUT_TOKENS * usd_per_output_token
+        for cost in observed_input_usd
+    )
+    assert projected < stage_cap_usd, f"projects {projected:.2f} over the {stage_cap_usd} cap"
