@@ -57,10 +57,6 @@ from stage_task_evaluation_control_plane_release import (  # noqa: E402
 from bootstrap_task_evaluation_splat_render_prerequisites import (  # noqa: E402
     validate_splat_render_prerequisites,
 )
-from provision_task_evaluation_scene_configuration_release import (  # noqa: E402
-    provision_scene_configuration_release,
-    service_account_readback,
-)
 from blueprint_pipeline.production_blender_runtime import (  # noqa: E402
     ARCHIVE_NAME as BLENDER_ARCHIVE_NAME,
     DEFAULT_ROOT as BLENDER_INSTALL_ROOT,
@@ -293,6 +289,34 @@ SUPERSEDED_ITERATION_PROVENANCE_NAME = (
 
 class ControlPlaneDeployError(ValueError):
     """A surface did not reach the requested commit, or cannot say that it did."""
+
+
+def _provision_scene_configuration_from_release(*, repository_root, source_commit,
+        readback_user, **paths) -> dict[str, Any]:
+    """Run target-release builders, never modules imported by the old deployer."""
+    repository = Path(repository_root).resolve()
+    command = [sys.executable,
+        str(repository / "scripts/provision_task_evaluation_scene_configuration_release.py"),
+        "--repository-root", str(repository), "--source-commit", source_commit,
+        "--readback-user", readback_user]
+    for key, value in paths.items():
+        if value is not None:
+            flag = "astra-blender-archive" if key == "astra_blender_archive_path" else key.replace("_", "-")
+            command.extend(["--" + flag, str(value)])
+    environment = dict(os.environ)
+    environment.update(PYTHONPATH=os.pathsep.join([str(repository / "src"), str(repository)]),
+                       PYTHONDONTWRITEBYTECODE="1")
+    try:
+        result = subprocess.run(command, cwd=repository, env=environment,
+            check=True, capture_output=True, text=True, timeout=1800)
+        value = json.loads(result.stdout.strip().splitlines()[-1])
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError) as exc:
+        raise ValueError("scene_configuration_target_release_provision_failed") from exc
+    if (not isinstance(value, dict) or value.get("status") != "ready"
+            or value.get("source_commit") != source_commit
+            or not isinstance(value.get("environment"), dict)):
+        raise ValueError("scene_configuration_target_release_provision_receipt_invalid")
+    return value
 
 
 def _sha256_bytes(payload: bytes) -> str:
@@ -2395,7 +2419,7 @@ def deploy_control_plane_commit(
                 repository_root=staged_release["release_path"],
             )
             prerequisite_entrypoints = prerequisite["entrypoints"]
-            scene_configuration_runtime = provision_scene_configuration_release(
+            scene_configuration_runtime = _provision_scene_configuration_from_release(
                 repository_root=staged_release["release_path"],
                 source_commit=source_commit,
                 runtime_root=scene_configuration_runtime_root,
@@ -2408,8 +2432,7 @@ def deploy_control_plane_commit(
                 text_to_cad_root=cad_sources_by_id["text-to-cad"],
                 multi_agent_cad_root=cad_sources_by_id["multi-agent-cad"],
                 astra_blender_archive_path=astra_blender_archive_path,
-                readback=service_account_readback(DEFAULT_SERVICE_ACCOUNT),
-                readback_actor=f"service-account:{DEFAULT_SERVICE_ACCOUNT}",
+                readback_user=DEFAULT_SERVICE_ACCOUNT,
             )
         except (ValueError, ProductionCadSkillSourcesError) as exc:
             raise ControlPlaneDeployError(

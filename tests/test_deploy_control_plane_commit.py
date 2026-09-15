@@ -1335,7 +1335,7 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
     )
     monkeypatch.setattr(
         deploy,
-        "provision_scene_configuration_release",
+        "_provision_scene_configuration_from_release",
         lambda **kwargs: {
             "status": "ready",
             "environment": {
@@ -1356,11 +1356,6 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
                 {"id": "multi-agent-cad", "path": "/runtime/Multi-Agent-CAD"},
             ],
         },
-    )
-    monkeypatch.setattr(
-        deploy,
-        "service_account_readback",
-        lambda _user: lambda path: path.read_bytes(),
     )
     disk_runtime_receipt = {
         "status": "ready",
@@ -2476,3 +2471,51 @@ def test_deploy_drains_prior_agent_tasks_before_adopting_release(tmp_path, monke
         assert state['result']['output']['summary'] == 'Retained observation'
     assert json.loads(config_path.read_text())['source_commit'] == 'b' * 40
     assert ['systemctl', 'restart', 'blueprint-agent-execution.service'] in calls
+
+
+@pytest.mark.slow
+def test_runtime_provision_uses_target_release_imports(tmp_path, monkeypatch):
+    """An old deployer's imported module must not define the new bundle inventory."""
+    import types
+    target = tmp_path / 'new-release'
+    (target / 'scripts').mkdir(parents=True)
+    package = target / 'src/blueprint_pipeline'
+    package.mkdir(parents=True)
+    (package / '__init__.py').write_text('')
+    (package / 'runtime_inventory.py').write_text("REQUIRED = ['artifixer_metric_state.py']\n")
+    stale = types.ModuleType('blueprint_pipeline.runtime_inventory')
+    stale.REQUIRED = []
+    monkeypatch.setitem(sys.modules, 'blueprint_pipeline.runtime_inventory', stale)
+    monkeypatch.setenv('PYTHONPATH', '/stale-release/src')
+    script = target / 'scripts/provision_task_evaluation_scene_configuration_release.py'
+    script.write_text("""import json,sys
+from blueprint_pipeline.runtime_inventory import REQUIRED
+assert REQUIRED == ['artifixer_metric_state.py']
+assert sys.argv[sys.argv.index('--readback-user')+1] == 'blueprint'
+assert sys.argv[sys.argv.index('--astra-blender-archive')+1] == '/runtime/blender.tar.xz'
+print(json.dumps({'status':'ready','source_commit':sys.argv[sys.argv.index('--source-commit')+1],
+                  'environment':{'required_module':REQUIRED[0]}}))
+""")
+    result = deploy._provision_scene_configuration_from_release(
+        repository_root=target, source_commit='a'*40, readback_user='blueprint',
+        runtime_root=tmp_path/'runtimes', astra_blender_archive_path='/runtime/blender.tar.xz')
+    assert result['environment']['required_module'] == 'artifixer_metric_state.py'
+    assert stale.REQUIRED == []
+
+
+@pytest.mark.parametrize('stdout', ['not-json', '', '[]',
+    '{"status":"ready","source_commit":"wrong","environment":{}}'])
+def test_runtime_provision_refuses_invalid_target_receipt(tmp_path, monkeypatch, stdout):
+    monkeypatch.setattr(deploy.subprocess, 'run', lambda *a, **kw: SimpleNamespace(stdout=stdout))
+    with pytest.raises(ValueError, match='scene_configuration_target_release_provision'):
+        deploy._provision_scene_configuration_from_release(
+            repository_root=tmp_path, source_commit='a'*40, readback_user='blueprint')
+
+
+def test_runtime_provision_failure_does_not_fall_back_to_old_builder(tmp_path, monkeypatch):
+    def fail(*a, **kw):
+        raise subprocess.CalledProcessError(1, a[0], stderr='target runtime invalid')
+    monkeypatch.setattr(deploy.subprocess, 'run', fail)
+    with pytest.raises(ValueError, match='scene_configuration_target_release_provision_failed'):
+        deploy._provision_scene_configuration_from_release(
+            repository_root=tmp_path, source_commit='a'*40, readback_user='blueprint')
