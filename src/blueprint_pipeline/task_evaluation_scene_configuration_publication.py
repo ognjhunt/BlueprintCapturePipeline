@@ -170,6 +170,7 @@ def _thumbnail_selection(
                 "appearance_review_status":HUMAN_ACCEPTED_STATUS,
                 "ai_visual_review_status":"rejected",
                 "human_approval_digest":receipt["human_approval"]["approval_digest"],
+                "human_reviewer_identity":reviewer["identity"],
                 "known_artifacts":receipt["human_approval"]["known_artifacts"],
                 "thumbnail_selector":receipt["thumbnail_selector"]}
     if (
@@ -637,7 +638,7 @@ def publish_configured_scene_revision(
         minimum_frame_count=8,
     )
     human_review_metadata = {key: thumbnail_selection[key] for key in
-        ("ai_visual_review_status", "human_approval_digest", "known_artifacts") if key in thumbnail_selection}
+        ("ai_visual_review_status", "human_approval_digest", "human_reviewer_identity", "known_artifacts") if key in thumbnail_selection}
     bundle = root / "configured_scene_bundle.v1.zip"
     _deterministic_bundle(
         files=[

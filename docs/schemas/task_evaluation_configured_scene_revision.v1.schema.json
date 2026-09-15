@@ -113,6 +113,7 @@
         "visual_review_status": {"enum": ["accepted", "paused_ungraded", "human_accepted_with_known_artifacts"]},
         "ai_visual_review_status": {"const": "rejected"},
         "human_approval_digest": {"$ref": "#/$defs/digest"},
+        "human_reviewer_identity": {"type": "string", "minLength": 1, "maxLength": 200},
         "known_artifacts": {"type": "array", "minItems": 1, "maxItems": 64, "items": {"type": "string", "minLength": 1, "maxLength": 1000}},
         "warning_label": {"const": "Visual review paused - appearance ungraded"}
       }
@@ -234,6 +235,7 @@
             "appearance_review_status": {"enum": ["accepted", "paused_ungraded", "human_accepted_with_known_artifacts"]},
             "ai_visual_review_status": {"const": "rejected"},
             "human_approval_digest": {"$ref": "#/$defs/digest"},
+        "human_reviewer_identity": {"type": "string", "minLength": 1, "maxLength": 200},
             "known_artifacts": {"type": "array", "minItems": 1, "maxItems": 64, "items": {"type": "string", "minLength": 1, "maxLength": 1000}},
             "thumbnail_selector": {"const": "deterministic_first_approved_camera"},
             "reviewer": {
@@ -252,6 +254,7 @@
         "appearance_review_status": {"enum": ["accepted", "paused_ungraded", "human_accepted_with_known_artifacts"]},
         "ai_visual_review_status": {"const": "rejected"},
         "human_approval_digest": {"$ref": "#/$defs/digest"},
+        "human_reviewer_identity": {"type": "string", "minLength": 1, "maxLength": 200},
         "known_artifacts": {"type": "array", "minItems": 1, "maxItems": 64, "items": {"type": "string", "minLength": 1, "maxLength": 1000}},
         "selected_from_exact_reviewed_frame_count": {"type": "integer", "minimum": 0, "maximum": 64},
         "warning_label": {"const": "Visual review paused - appearance ungraded"},

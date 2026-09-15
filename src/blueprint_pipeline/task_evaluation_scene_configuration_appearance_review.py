@@ -156,8 +156,10 @@ def validate_human_approval(value, *, expected_owner=None):
         and bool(str(value.get("statement") or "").strip())
         and bool(str(value.get("approval_reference") or "").strip())
         and isinstance(value.get("known_artifacts"), list)
-        and bool(value["known_artifacts"])
-        and all(isinstance(x, str) and x.strip() for x in value["known_artifacts"])
+        and 1 <= len(value["known_artifacts"]) <= 64
+        and all(
+            isinstance(x, str) and x.strip() and len(x) <= 1000 for x in value["known_artifacts"]
+        )
         and bool(str(value.get("source_launch_id") or "").strip())
         and all(
             digest(value.get(k))

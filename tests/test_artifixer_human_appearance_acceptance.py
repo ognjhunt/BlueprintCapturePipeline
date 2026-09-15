@@ -224,3 +224,12 @@ def test_human_receipt_cannot_claim_ai_acceptance(tmp_path):
         thumbnail_digest=receipt["task_thumbnail_selection"]["frame_sha256"],
         expected_owner="owner",
     )
+
+
+@pytest.mark.parametrize("artifacts", [["x"] * 65, ["x" * 1001]])
+def test_owner_artifact_acknowledgments_obey_publication_bounds(tmp_path, artifacts):
+    _, approval, _, _ = human_case(tmp_path)
+    approval["known_artifacts"] = artifacts
+    seal(approval, "approval_digest")
+    with pytest.raises(human.AppearanceReviewContractError):
+        human.validate_human_approval(approval, expected_owner="owner")
