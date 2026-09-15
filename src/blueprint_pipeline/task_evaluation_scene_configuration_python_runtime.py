@@ -27,11 +27,11 @@ _MAX_TOTAL_BYTES = 768 * 1024**2
 DEFAULT_RUNTIME_PROFILE = "base"
 RUNTIME_PROFILE_ROOTS = {
     "base": ("openai-agents", "usd-core"),
-    "astra_asset_authoring": ("openai-agents", "usd-core", "build123d", "langgraph", "trimesh", "pillow"),
+    "astra_asset_authoring": ("openai-agents", "usd-core", "build123d", "langgraph", "trimesh", "pillow", "rfc8785"),
 }
 RUNTIME_PROFILE_IMPORTS = {
     "base": (),
-    "astra_asset_authoring": ("agents", "pxr.Usd", "build123d", "OCP", "langgraph.graph", "trimesh", "PIL.Image"),
+    "astra_asset_authoring": ("agents", "pxr.Usd", "build123d", "OCP", "langgraph.graph", "trimesh", "PIL.Image", "rfc8785"),
 }
 _ASTRA_SOURCE_ROOT = Path(__file__).resolve().parent.parent
 _ASTRA_STAGE_MODULES = ("blueprint_pipeline.astra_cad_skill_runtime",

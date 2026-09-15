@@ -1054,10 +1054,18 @@ def _build_scene_configuration_context(
     }
     _owner_attempt(operations, "config", activation_request, preparation_request, activation_root)
     if operations.get("scene_owner_attempt"):
-        from .task_evaluation_partial_astra_transport import select_partial_astra_source
-        selection = select_partial_astra_source(
-            owner_attempt_path=operations["scene_owner_attempt"], envelope=construction_value,
-            output_root=activation_root / "partial_astra_successor")
+        from .task_evaluation_partial_astra_transport import (
+            PartialAstraTransportError,
+            select_partial_astra_source,
+        )
+        try:
+            selection = select_partial_astra_source(
+                owner_attempt_path=operations["scene_owner_attempt"], envelope=construction_value,
+                output_root=activation_root / "partial_astra_successor")
+        except PartialAstraTransportError as exc:
+            # This typed error contains a fixed predicate code, never artifact
+            # contents. Preserve it in the activation receipt for saved-input replay.
+            raise TaskEvaluationLaunchActivationWorkerError(str(exc)) from exc
         if selection is not None:
             operations["partial_astra_successor_selection"] = str(selection)
     return {
