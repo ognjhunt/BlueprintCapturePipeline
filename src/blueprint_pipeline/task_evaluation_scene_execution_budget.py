@@ -13,7 +13,13 @@ SCHEMA = 'task_evaluation_scene_execution_budget_extension.v1'
 DIRECTORY = 'execution-budget-extensions'
 ACK = 'extend-scene-execution-budget'
 LIMIT_FIELDS = {'max_total_spend_usd', 'max_paid_attempts'}
-MAX_EXTENDED_PAID_ATTEMPTS = 64  # Explicit owner grant; original intake stays capped at 32.
+# Ceiling for an explicit owner grant; original intake stays capped at 32.
+# Raised 64 -> 100 on 2026-09-16 at the owner's instruction for scene 840938,
+# whose contract-drift repairs consumed attempts without reaching the policy
+# runs. Every other bound is unchanged: the $1000 cumulative spend ceiling
+# still applies, grants must still be monotonic, and each attempt is still
+# charged against the same per-attempt caps.
+MAX_EXTENDED_PAID_ATTEMPTS = 100
 ATTEMPT_GRANT_FIELD = 'execution_budget_extension_digest'
 
 

@@ -121,13 +121,27 @@ def test_chain_is_monotonic_idempotent_and_old_grants_stay_valid(tmp_path):
     dict(owner={'user_id': 'other', 'organization_id': 'org1'}), dict(authorization_reference=''),
     dict(max_total_spend_usd=True), dict(max_total_spend_usd=float('nan')),
     dict(max_total_spend_usd=float('inf')), dict(max_total_spend_usd=1001),
-    dict(max_paid_attempts=True), dict(max_paid_attempts=1.5), dict(max_paid_attempts=65),
+    dict(max_paid_attempts=True), dict(max_paid_attempts=1.5), dict(max_paid_attempts=101),
     dict(max_paid_attempts=0), dict(now=1000), dict(now=99)])
 def test_invalid_or_unapproved_extensions_do_not_write(tmp_path, change):
     owner = stage(tmp_path)
     with pytest.raises(ValueError):
         extend(tmp_path, owner, **change)
     assert not (tmp_path / owner['intent_id'] / budget.DIRECTORY).exists()
+
+
+def test_owner_grant_reaches_the_extended_attempt_ceiling(tmp_path):
+    """The ceiling is 100 attempts, and one past it still fails closed."""
+    from blueprint_pipeline.task_evaluation_scene_execution_budget import (
+        MAX_EXTENDED_PAID_ATTEMPTS,
+    )
+
+    assert MAX_EXTENDED_PAID_ATTEMPTS == 100
+    owner = stage(tmp_path)
+    grant = extend(tmp_path, owner, max_total_spend_usd=100, max_paid_attempts=100)
+    assert grant['limits'] == {'max_total_spend_usd': 100, 'max_paid_attempts': 100}
+    with pytest.raises(ValueError, match='scene_execution_budget_limits_invalid'):
+        extend(tmp_path, owner, max_total_spend_usd=100, max_paid_attempts=101)
 
 
 def test_revocation_is_not_overridden(tmp_path):
