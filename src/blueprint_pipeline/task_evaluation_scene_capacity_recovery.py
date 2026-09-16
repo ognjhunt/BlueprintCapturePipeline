@@ -5,6 +5,7 @@ becomes executable input. Every successor still builds and admits a new bundle.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
 import shutil
@@ -17,6 +18,50 @@ from .task_evaluation_scene_progression_state import require, safe_path
 
 KIND = "preallocation_capacity"
 BLOCKER = "scene_configuration_provider_output_disk_capacity_insufficient"
+#: A scene-configuration launch whose provider machine was created and then produced
+#: nothing. The disk-capacity path above is strictly a $0 no-instance refusal, so this
+#: is a different class and gets its own evidence: the instance really did exist.
+#: Scene 840938, 2026-09-16: two consecutive machines (137888, 108924) accepted the
+#: create call and never started a container, and with no launch-level recovery the
+#: hands-off run parked at scene_configuration_failed each time.
+DEAD_MACHINE_PROOF_BLOCKERS = frozenset({
+    "vast_heartbeat_instance_exited",
+    "vast_heartbeat_container_missing",
+    "vast_heartbeat_no_log_progress_timeout",
+    "vast_probe_failed",
+})
+#: Consequences of producing no output. They may accompany the proof above, and on
+#: their own they mean the work failed rather than the machine dying.
+DEAD_MACHINE_CONSEQUENCE_BLOCKERS = frozenset({
+    "scene_configuration_configured_revision_not_published",
+    "scene_configuration_provider_envelope_mismatch",
+    "scene_configuration_provider_not_completed",
+    "scene_configuration_provider_output_zip_invalid",
+    "scene_configuration_provider_run_id_mismatch",
+    "scene_configuration_provider_source_commit_mismatch",
+    "scene_configuration_provider_source_envelope_mismatch",
+    "task_evaluation_artifact_role_missing:provider_runtime_evidence",
+})
+
+
+def dead_machine_launch_failure(result) -> bool:
+    """Did this launch rent a machine that then produced nothing at all?
+
+    Every blocker must be a recognised dead-machine proof or one of its
+    consequences, and at least one must actually prove the machine died. Nothing
+    may still be spending. An execution failure on a live machine keeps every
+    other terminal path it had.
+    """
+    if not isinstance(result, Mapping):
+        return False
+    blockers = [str(b) for b in (result.get("blockers") or [])]
+    allowed = DEAD_MACHINE_PROOF_BLOCKERS | DEAD_MACHINE_CONSEQUENCE_BLOCKERS
+    return (result.get("schema_version") == "task_evaluation_scene_configuration_vast_result.v1"
+            and result.get("status") == "blocked"
+            and bool(blockers)
+            and all(b in allowed for b in blockers)
+            and any(b in DEAD_MACHINE_PROOF_BLOCKERS for b in blockers)
+            and result.get("continuing_spend_from_this_run") is False)
 RESULT_RELATIVE = "allocator/scene-configuration-job/task_evaluation_scene_configuration_vast_result.v1.json"
 MAX_LAUNCHES = 4096
 
@@ -34,7 +79,7 @@ def _values(refs):
     return result
 
 
-def validate_source(refs, *, prior_attempt):
+def validate_source(refs, *, prior_attempt, kind="preallocation_capacity"):
     """Reopen exact producer/request/owner bytes, including the failed disk phase."""
     from .task_evaluation_scene_configuration_provider_artifacts import (
         _provider_output_disk_requirements, _provider_transfer_byte_budget,
@@ -83,12 +128,20 @@ def validate_source(refs, *, prior_attempt):
             and result.get("bundle_sha256") == bundle.get("bundle_sha256") == authority.get("bundle_sha256")
             and result.get("authority_digest") == authority.get("authority_digest")
             and result.get("schema_version") == "task_evaluation_scene_configuration_vast_result.v1"
-            and result.get("status") == "blocked" and result.get("blockers") == [BLOCKER]
+            and result.get("status") == "blocked"
+            and (result.get("blockers") == [BLOCKER] if kind == "preallocation_capacity"
+                 else dead_machine_launch_failure(result))
             and type(result.get("provider_mutations_performed")) is int and result["provider_mutations_performed"] == 0
             and type(result.get("retry_cap")) is int and result["retry_cap"] == 0
             and result.get("continuing_spend_from_this_run") is False
-            and not result.get("instance_id") and not result.get("vast_instance_ids")
-            and result.get("allocation_created") is not True, "capacity_not_zero_provider_failure")
+            and (kind != "preallocation_capacity" or (
+                not result.get("instance_id") and not result.get("vast_instance_ids")
+                and result.get("allocation_created") is not True)),
+            "capacity_not_zero_provider_failure")
+    if kind != "preallocation_capacity":
+        # A dead machine never reached the disk phase, so there is no shortfall
+        # measurement to reopen. Every identity and binding assertion above still ran.
+        return values
     _download, upload = _provider_transfer_byte_budget(bundle)
     requirements = _provider_output_disk_requirements(upload)
     disk = result.get("provider_output_disk_capacity") or {}
@@ -126,7 +179,12 @@ def observe_failure(*, attempt, link_path, preparation_path, factory_path, confi
         if result.get("status") != "blocked":
             continue
         # Surface other terminal failures, but do not turn them into capacity retries.
-        if result.get("blockers") != [BLOCKER]:
+        kind = None
+        if result.get("blockers") == [BLOCKER]:
+            kind = "preallocation_capacity"
+        elif dead_machine_launch_failure(result):
+            kind = "provider_dead_machine"
+        if kind is None:
             return {"recoverable": False, "blockers": result.get("blockers") or ["configuration_launch_failed"],
                     "result": record(result_path)}
         inputs = {row["name"]: row for row in profile["immutable_inputs"]}
@@ -138,9 +196,10 @@ def observe_failure(*, attempt, link_path, preparation_path, factory_path, confi
                     authority=record(Path(inputs["scene_configuration_attempt_authority"]["path"])),
                     link=record(link_path), preparation=record(preparation_path), factory=record(factory_path),
                     configuration_attempt=link["scene_configuration_attempt"])
-        values = validate_source(refs, prior_attempt=attempt)
-        matches.append({"recoverable": True, "blockers": [BLOCKER], "records": refs,
-                        "result": refs["result"], "values": values})
+        values = validate_source(refs, prior_attempt=attempt, kind=kind)
+        matches.append({"recoverable": True, "kind": kind,
+                        "blockers": [str(b) for b in (result.get("blockers") or [])],
+                        "records": refs, "result": refs["result"], "values": values})
     require(len(matches) <= 1, "capacity_launch_identity_ambiguous")
     return matches[0] if matches else None
 
