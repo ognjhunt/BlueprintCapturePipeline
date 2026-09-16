@@ -203,3 +203,72 @@ def test_capacity_admission_cannot_substitute_an_unrelated_disk_mount(tmp_path, 
     failure["capacity_admission"]["capacity_digest"] = canonical_digest(failure["capacity_admission"], digest_field="capacity_digest")
     with pytest.raises(ValueError, match="capacity_measurement_scope_changed"):
         capacity.validate_capacity_failure(failure, observed["values"]["result"], first, 104)
+
+
+def _dead_machine_result(**overrides):
+    """A scene-configuration launch whose machine was created and produced nothing."""
+    value = {
+        "schema_version": "task_evaluation_scene_configuration_vast_result.v1",
+        "status": "blocked",
+        "blockers": [
+            "scene_configuration_configured_revision_not_published",
+            "scene_configuration_provider_not_completed",
+            "scene_configuration_provider_output_zip_invalid",
+            "vast_heartbeat_no_log_progress_timeout",
+        ],
+        "continuing_spend_from_this_run": False,
+    }
+    value.update(overrides)
+    return value
+
+
+def test_dead_machine_launch_is_a_distinct_recoverable_class():
+    """Scene 840938, 2026-09-16: two machines were created and produced nothing.
+
+    The disk-capacity path is strictly a $0 no-instance refusal, so it could never
+    cover this, and with no launch-level recovery the hands-off run parked at
+    scene_configuration_failed after every dead machine.
+    """
+    from blueprint_pipeline.task_evaluation_scene_capacity_recovery import (
+        dead_machine_launch_failure,
+    )
+
+    assert dead_machine_launch_failure(_dead_machine_result()) is True
+
+
+def test_dead_machine_requires_proof_the_machine_died():
+    """Consequences alone mean the work failed on a live machine."""
+    from blueprint_pipeline.task_evaluation_scene_capacity_recovery import (
+        dead_machine_launch_failure,
+    )
+
+    consequences_only = _dead_machine_result(blockers=[
+        "scene_configuration_provider_not_completed",
+        "scene_configuration_provider_output_zip_invalid",
+    ])
+    assert dead_machine_launch_failure(consequences_only) is False
+
+
+@pytest.mark.parametrize("override", [
+    {"status": "completed"},
+    {"continuing_spend_from_this_run": True},
+    {"blockers": []},
+    {"blockers": ["vast_heartbeat_instance_exited", "scene_configuration_scene_inputs_invalid"]},
+    {"schema_version": "task_evaluation_scene_configuration_vast_result.v2"},
+])
+def test_dead_machine_launch_fails_closed(override):
+    """Anything still spending, differently sealed, or carrying an unrelated blocker."""
+    from blueprint_pipeline.task_evaluation_scene_capacity_recovery import (
+        dead_machine_launch_failure,
+    )
+
+    assert dead_machine_launch_failure(_dead_machine_result(**override)) is False
+
+
+def test_capacity_blocker_is_not_treated_as_a_dead_machine():
+    """The two classes must stay separate: a $0 capacity refusal rented nothing."""
+    from blueprint_pipeline.task_evaluation_scene_capacity_recovery import (
+        BLOCKER, dead_machine_launch_failure,
+    )
+
+    assert dead_machine_launch_failure(_dead_machine_result(blockers=[BLOCKER])) is False
