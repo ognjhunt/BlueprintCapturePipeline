@@ -188,6 +188,110 @@ def test_exact_geometry_gate_accepts_supported_clear_facing_pose(tmp_path) -> No
     assert all(candidate["geometry_gate_digest"].startswith("sha256:") for candidate in candidates)
 
 
+def _shelf_scene(tmp_path):
+    """A floor plus many tiny ledges sitting near the target height.
+
+    The ledges are too small to support a robot base; the floor is the only
+    real support. Ranking by height proximity puts every ledge ahead of the
+    floor, which is what used to push the floor out of the search.
+    """
+    scene_path = tmp_path / "shelf-scene.usda"
+    scene = Usd.Stage.CreateNew(str(scene_path))
+    root = UsdGeom.Xform.Define(scene, "/Scene")
+    scene.SetDefaultPrim(root.GetPrim())
+    _mesh(
+        scene,
+        "/Scene/Floor",
+        [(-3, -3, 0), (3, -3, 0), (3, 3, 0), (-3, 3, 0)],
+        [(0, 1, 2, 3)],
+    )
+    for index in range(13):
+        # Distinct heights just under the target so each ledge is its own
+        # support surface and every one of them outranks the floor. They sit
+        # clustered on +x, inside the xy prefilter but clear of the open -x
+        # floor the robot can actually stand on.
+        height = 0.38 + 0.005 * index
+        y0 = -0.07 + 0.005 * index
+        # Above the 0.015 m2 support-surface floor, well under the robot's
+        # 0.30 x 0.30 m base footprint, so each ledge registers as a support
+        # yet cannot actually carry the robot.
+        _box(
+            scene,
+            f"/Scene/Ledge_{index:02d}",
+            (0.70, y0, height - 0.01),
+            (0.84, y0 + 0.14, height),
+        )
+    scene.GetRootLayer().Save()
+
+    robot_path = tmp_path / "shelf-robot.usda"
+    robot = Usd.Stage.CreateNew(str(robot_path))
+    robot.SetDefaultPrim(UsdGeom.Xform.Define(robot, "/Robot").GetPrim())
+    _box(robot, "/Robot/Body", (-0.15, -0.15, 0), (0.15, 0.15, 0.75))
+    robot.GetRootLayer().Save()
+    return scene_path, robot_path
+
+
+def test_enumeration_keeps_the_largest_support_when_height_ranking_buries_it(
+    tmp_path,
+) -> None:
+    """The floor must stay in the search even when it ranks last by height.
+
+    Scene 840938 (2026-09-16): the floor ranked 18th of 19 viable supports at
+    90.8 m2 and fell outside the height-ranked cap, so every evaluated
+    candidate sat on a shelf as small as 0.029 m2 and the run blocked on
+    robot_placement_geometry_candidate_inventory_empty.
+    """
+    import blueprint_pipeline.task_evaluation_robot_placement_geometry as module
+
+    scene, robot = _shelf_scene(tmp_path)
+    index = build_robot_placement_geometry_index(
+        scene_collision_usd_path=scene,
+        robot_asset_usd_path=robot,
+    )
+    target = [0.0, 0.0, 0.45]
+
+    floor = next(
+        surface for surface in index.support_surfaces
+        if surface.prim_path == "/Scene/Floor"
+    )
+    ledges = [
+        surface for surface in index.support_surfaces
+        if surface.prim_path.startswith("/Scene/Ledge_")
+    ]
+    # The premise: enough ledges rank ahead of the floor to fill the cap.
+    assert len(ledges) >= module._HEIGHT_RANKED_SURFACE_LIMIT
+    assert floor.area_m2 > max(surface.area_m2 for surface in ledges)
+
+    candidates = enumerate_robot_placement_geometry_candidates(
+        index=index,
+        target_position_world_m=target,
+        maximum_candidates=4,
+    )
+    assert candidates, "the largest support must stay in the search"
+    assert all(
+        candidate["support_surface_id"] == floor.surface_id
+        for candidate in candidates
+    )
+
+
+def test_enumeration_still_prefers_surfaces_near_the_target_height(tmp_path) -> None:
+    """Keeping the largest support must not displace the height ranking."""
+
+    scene, robot = _assets(tmp_path)
+    index = build_robot_placement_geometry_index(
+        scene_collision_usd_path=scene,
+        robot_asset_usd_path=robot,
+    )
+    target = [0.8, 0.0, 0.5]
+
+    candidates = enumerate_robot_placement_geometry_candidates(
+        index=index,
+        target_position_world_m=target,
+        maximum_candidates=5,
+    )
+    assert len(candidates) == 5
+
+
 def test_geometry_gate_rejects_embedded_and_obstacle_overlapping_pose(tmp_path) -> None:
     scene, robot = _assets(tmp_path)
     index = build_robot_placement_geometry_index(
