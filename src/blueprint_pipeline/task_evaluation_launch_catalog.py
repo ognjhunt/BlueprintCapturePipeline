@@ -105,6 +105,16 @@ def build_catalog_payload(profile_dir: str | Path) -> bytes:
             inactive_owner_states = {
                 "scene_execution_owner_revoked",
                 "scene_execution_owner_attempt_cancelled_before_execution",
+                # An owner record this host cannot read is host unavailability,
+                # the same category as missing immutable inputs above, not
+                # corrupted evidence. Raising made one stale profile abort the
+                # whole catalog, and the reconciler is an ExecStartPre for
+                # intake. Scene 840938, 2026-09-16: a single profile from a
+                # retired source (7756dd48) failed this way for hours, the
+                # catalog never reconciled, and launch activation starved --
+                # so a healthy retargeted run sat at awaiting_execution with
+                # nothing wrong with it.
+                "scene_execution_owner_store_missing",
             }
             if blockers and not set(blockers).issubset(inactive_owner_states):
                 raise LaunchCatalogError(

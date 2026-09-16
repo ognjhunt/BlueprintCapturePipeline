@@ -235,7 +235,9 @@ def test_a_symlinked_profile_fails_closed(tmp_path: Path) -> None:
         )
 
 
-@pytest.mark.parametrize("inactive_blocker", ["scene_execution_owner_revoked", "scene_execution_owner_attempt_cancelled_before_execution"])
+@pytest.mark.parametrize("inactive_blocker", ["scene_execution_owner_revoked",
+                                              "scene_execution_owner_attempt_cancelled_before_execution",
+                                              "scene_execution_owner_store_missing"])
 @pytest.mark.parametrize("extra_blocker", [None, "scene_execution_owner_record_mismatch"])
 def test_revoked_owner_profile_is_retained_as_non_runnable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, extra_blocker: str | None, inactive_blocker: str
@@ -263,6 +265,44 @@ def test_revoked_owner_profile_is_retained_as_non_runnable(
         assert admission["live_enabled"] is False
         assert inactive_blocker in admission["blockers"]
     assert revoked_path.read_bytes() == original
+
+
+def test_one_unreadable_owner_store_cannot_starve_the_whole_catalog(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Scene 840938, 2026-09-16: one retired source blocked every launch.
+
+    A single stale profile carried scene_execution_owner_store_missing. The
+    builder raised, the catalog never reconciled, and launch activation
+    starved -- a healthy retargeted run sat at awaiting_execution for hours
+    with nothing wrong with it. An owner record this host cannot read is
+    unavailability, not corrupted evidence, so it demotes like a missing input.
+    """
+    from blueprint_pipeline import task_evaluation_launch_catalog as catalog_module
+
+    _profile(tmp_path, "retired-source-profile")
+    _profile(tmp_path, "live-profile")
+    real_validate = catalog_module.validate_launch_profile
+
+    def validate(profile):
+        if profile["profile_id"] == "retired-source-profile":
+            return ["scene_execution_owner_store_missing"]
+        return real_validate(profile)
+
+    monkeypatch.setattr(catalog_module, "validate_launch_profile", validate)
+    rows = {row["profile_id"]: row for row in json.loads(build_catalog_payload(tmp_path / "profiles"))}
+
+    # The catalog builds at all -- that is the whole point. Before this change
+    # the single stale profile raised and no catalog was produced, so every
+    # other profile became unreachable and activation had nothing to read.
+    assert set(rows) == {"retired-source-profile", "live-profile"}
+    assert "scene_execution_owner_store_missing" not in (
+        rows["live-profile"]["execution_admission"]["blockers"]
+    )
+    # The stale one is retained as evidence but cannot start a run.
+    demoted = rows["retired-source-profile"]["execution_admission"]
+    assert demoted["live_enabled"] is False
+    assert "scene_execution_owner_store_missing" in demoted["blockers"]
 
 
 def test_a_profile_whose_inputs_are_missing_is_demoted_not_fatal(tmp_path):
