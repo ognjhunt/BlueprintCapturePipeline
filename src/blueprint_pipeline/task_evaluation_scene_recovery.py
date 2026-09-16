@@ -31,7 +31,11 @@ def recovery_budget(failure_kind: str, producer) -> str:
         return "retry"
     created = (producer.get("allocation_created") is True
                or bool(producer.get("vast_instance_ids"))
-               or bool(producer.get("instance_id")))
+               or bool(producer.get("instance_id"))
+               # A machine that started and then exited consumed a real resource even
+               # though the run sealed no instance id, so it draws on the ordinary retry
+               # budget rather than the marketplace-miss one.
+               or gaussian_excision_dead_machine_evidence(producer))
     return "retry" if created else "market_miss"
 
 
@@ -67,6 +71,49 @@ def sam31_capacity_miss_evidence(producer) -> bool:
             and producer.get("allocation_created") is not True)
 
 
+#: Every blocker a gaussian-excision provider run carries when its machine accepted the
+#: create call and then died before returning any output. Anything else (a real execution
+#: error, a missing input, a budget refusal) is not a dead machine and is never retried here.
+GAUSSIAN_EXCISION_DEAD_MACHINE_BLOCKERS = frozenset({
+    "gaussian_excision_execution_not_completed",
+    "gaussian_excision_provider_output_zip_missing",
+    "vast_heartbeat_instance_exited",
+    "vast_heartbeat_container_missing",
+    "vast_heartbeat_outputs_missing",
+    "vast_probe_failed",
+})
+#: The blockers that actually prove the machine died rather than the work failing.
+GAUSSIAN_EXCISION_DEAD_MACHINE_PROOF = frozenset({
+    "vast_heartbeat_instance_exited",
+    "vast_heartbeat_container_missing",
+})
+
+
+def gaussian_excision_dead_machine_evidence(producer) -> bool:
+    """A gaussian-excision run whose machine started and then exited before any output.
+
+    2026-09-16 08:25, scene 840938: vast created the instance, the container never reached
+    the on-start heartbeat, and the run sealed only bare blockers -- no
+    provider_attempt_classification. Scene recovery recognised nothing, so a $0.06 dead box
+    parked the whole retargeted hands-off run at source_preparation/preparation_failed with
+    max_retries still untouched. This is the same shape as the SAM capacity miss above.
+    """
+    if not isinstance(producer, dict):
+        return False
+    if producer.get("schema_version") != "adp009b_gaussian_excision_vast_run.v1":
+        return False
+    blockers = [str(b) for b in (producer.get("blockers") or [])]
+    return (producer.get("status") == "blocked"
+            and bool(blockers)
+            and all(b in GAUSSIAN_EXCISION_DEAD_MACHINE_BLOCKERS for b in blockers)
+            and any(b in GAUSSIAN_EXCISION_DEAD_MACHINE_PROOF for b in blockers)
+            # Nothing kept running and nothing was left staged on the provider.
+            and producer.get("continuing_spend_from_this_run") is False
+            and producer.get("all_staged_objects_absent") is True
+            and producer.get("raw_secret_values_recorded") is False
+            and producer.get("retained_owned") is not True)
+
+
 def provider_null_evidence(producer) -> bool:
     """A provider run whose machine never started our container: nothing scientific was consumed.
 
@@ -75,6 +122,8 @@ def provider_null_evidence(producer) -> bool:
     tore the instance down, and the render sealed a bare blocker that no recovery path recognized.
     """
     if sam31_capacity_miss_evidence(producer):
+        return True
+    if gaussian_excision_dead_machine_evidence(producer):
         return True
     classification = producer.get("provider_attempt_classification") if isinstance(producer, dict) else None
     return (isinstance(classification, dict)
