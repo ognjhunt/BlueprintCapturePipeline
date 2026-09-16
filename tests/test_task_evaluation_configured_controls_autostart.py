@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from contextlib import nullcontext
 from pathlib import Path
@@ -220,6 +221,98 @@ def test_explicit_prior_configuration_adoption_is_separate_and_exact(
         match="configured_controls_autostart_adoption_evidence_invalid",
     ):
         autostart._validate_configuration_adoption(adoption=adoption, **evidence)
+
+
+def _bound_intent_run(tmp_path: Path):
+    """A launch run whose profile binds an autostart intent by path and digest."""
+    run_root = tmp_path / "launch-runs" / "scene-840938-launch"
+    activation = tmp_path / "activation" / "launch-set"
+    registry = tmp_path / "registry"
+    run_root.mkdir(parents=True)
+    activation.mkdir(parents=True)
+    registry.mkdir(parents=True)
+
+    payload = json.dumps({"schema_version": "x", "scene_id": "840938"}, sort_keys=True)
+    bound = activation / "task_evaluation_configured_controls_autostart_intent.v1.json"
+    bound.write_text(payload, encoding="utf-8")
+    digest = "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    # The registry holds the same sealed bytes under its own id.
+    (registry / "593b2252.json").write_text(payload, encoding="utf-8")
+
+    (run_root / "launch_profile.json").write_text(
+        json.dumps(
+            {
+                "immutable_inputs": [
+                    {
+                        "name": "configured_controls_autostart_intent",
+                        "path": str(bound),
+                        "digest": digest,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    return run_root, bound, registry
+
+
+def test_autostart_intent_recovers_from_the_registry_when_the_activation_set_is_gone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The activation pin is released at receipt time; autostart runs later.
+
+    Scene 840938, 2026-09-16: the pin was released at 01:39:53, GC reclaimed the
+    activation directory at 01:44:47, and every autostart tick from 02:02 failed
+    on the missing intent while the run was otherwise healthy and published.
+    """
+    run_root, bound, registry = _bound_intent_run(tmp_path)
+    monkeypatch.setenv(
+        autostart.AUTOSTART_INTENT_REGISTRY_ROOT_ENV, str(registry)
+    )
+
+    # Bound copy present: it is used, and the registry is not consulted.
+    _, resolved = autostart._profile_intent(run_root)
+    assert resolved == bound
+
+    bound.unlink()
+    _, recovered = autostart._profile_intent(run_root)
+    assert recovered.parent == registry
+    assert recovered.read_bytes() == (registry / "593b2252.json").read_bytes()
+
+
+def test_autostart_intent_still_fails_closed_without_a_matching_registry_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_root, bound, registry = _bound_intent_run(tmp_path)
+    monkeypatch.setenv(
+        autostart.AUTOSTART_INTENT_REGISTRY_ROOT_ENV, str(registry)
+    )
+    bound.unlink()
+    (registry / "593b2252.json").write_text("{\"tampered\": true}", encoding="utf-8")
+
+    with pytest.raises(
+        autostart.TaskEvaluationConfiguredControlsAutostartError,
+        match="configured_controls_autostart_intent_binding_invalid",
+    ):
+        autostart._profile_intent(run_root)
+
+
+def test_autostart_intent_refuses_a_present_but_altered_bound_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A present-but-wrong file is tampering, not loss: no registry rescue."""
+    run_root, bound, registry = _bound_intent_run(tmp_path)
+    monkeypatch.setenv(
+        autostart.AUTOSTART_INTENT_REGISTRY_ROOT_ENV, str(registry)
+    )
+    bound.write_text('{"altered": true}', encoding="utf-8")
+
+    with pytest.raises(
+        autostart.TaskEvaluationConfiguredControlsAutostartError,
+        match="configured_controls_autostart_intent_binding_invalid",
+    ):
+        autostart._profile_intent(run_root)
+
 
 
 def test_worker_materializes_cpu_autostart_before_advancing_plan(

@@ -623,6 +623,16 @@ def _configured_collision(
     return destination
 
 
+#: Registry that holds every installed autostart intent, keyed by its own id.
+#: It outlives the activation launch set the launch profile binds.
+AUTOSTART_INTENT_REGISTRY_ROOT_ENV = (
+    "BLUEPRINT_TASK_EVALUATION_CONFIGURED_CONTROLS_AUTOSTART_INTENT_ROOT"
+)
+DEFAULT_AUTOSTART_INTENT_REGISTRY_ROOT = (
+    "/etc/blueprint/task-evaluation-configured-controls-intents"
+)
+
+
 def _profile_intent(
     run_root: Path, *, intent_path_override: str | Path | None = None
 ) -> tuple[dict[str, Any], Path]:
@@ -661,17 +671,57 @@ def _profile_intent(
             "configured_controls_autostart_intent_missing"
         )
     path = Path(str(matches[0].get("path") or "")).expanduser()
-    if (
-        not path.is_absolute()
-        or path.is_symlink()
-        or not path.is_file()
-        or _DIGEST.fullmatch(str(matches[0].get("digest") or "")) is None
-        or _sha256(path) != matches[0]["digest"]
-    ):
+    digest = str(matches[0].get("digest") or "")
+    if not path.is_absolute() or _DIGEST.fullmatch(digest) is None:
         raise TaskEvaluationConfiguredControlsAutostartError(
             "configured_controls_autostart_intent_binding_invalid"
         )
-    return profile, path
+    if path.exists() or path.is_symlink():
+        # Something is there. It must be the exact sealed bytes or nothing:
+        # a present-but-wrong file is tampering, not loss, and still fails closed.
+        if not path.is_symlink() and path.is_file() and _sha256(path) == digest:
+            return profile, path
+        raise TaskEvaluationConfiguredControlsAutostartError(
+            "configured_controls_autostart_intent_binding_invalid"
+        )
+    # The bound copy lives in the activation launch set, whose storage pin is
+    # released as soon as the launch receipt is written -- but this autostart
+    # only runs after publication, which is later. Scene 840938, 2026-09-16:
+    # the pin was released at 01:39:53, GC reclaimed the activation directory
+    # at 01:44:47, and every autostart tick from 02:02 failed
+    # configured_controls_autostart_intent_binding_invalid with the run
+    # otherwise healthy and published.
+    #
+    # The registry holds the same sealed intent, so fall back to it -- but only
+    # to a file whose bytes hash to the digest this profile already committed
+    # to. Anything else still fails closed, exactly as before.
+    recovered = _registry_intent(digest)
+    if recovered is None:
+        raise TaskEvaluationConfiguredControlsAutostartError(
+            "configured_controls_autostart_intent_binding_invalid"
+        )
+    return profile, recovered
+
+
+def _registry_intent(digest: str, *, registry_root: str | Path | None = None) -> Path | None:
+    """Return the registry copy of an autostart intent matching ``digest`` exactly."""
+
+    root = Path(
+        registry_root
+        or os.getenv(AUTOSTART_INTENT_REGISTRY_ROOT_ENV)
+        or DEFAULT_AUTOSTART_INTENT_REGISTRY_ROOT
+    ).expanduser()
+    if not root.is_dir():
+        return None
+    for candidate in sorted(root.glob("*.json")):
+        if candidate.is_symlink() or not candidate.is_file():
+            continue
+        try:
+            if _sha256(candidate) == digest:
+                return candidate
+        except OSError:
+            continue
+    return None
 
 
 def _placement_checkpoint(
