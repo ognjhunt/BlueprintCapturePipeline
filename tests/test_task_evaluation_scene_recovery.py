@@ -110,3 +110,79 @@ def test_concurrent_successors_cannot_reset_retry_count(tmp_path):
     with ThreadPoolExecutor(2) as pool:
         rows = list(pool.map(run, ["a2", "a3"]))
     assert sum(row is not None for row in rows) == 1
+
+
+def _dead_machine_producer(**overrides):
+    """A gaussian-excision run whose machine started then exited before any output."""
+    value = {
+        "schema_version": "adp009b_gaussian_excision_vast_run.v1",
+        "status": "blocked",
+        "blockers": [
+            "gaussian_excision_execution_not_completed",
+            "gaussian_excision_provider_output_zip_missing",
+            "vast_heartbeat_instance_exited",
+        ],
+        "continuing_spend_from_this_run": False,
+        "all_staged_objects_absent": True,
+        "raw_secret_values_recorded": False,
+    }
+    value.update(overrides)
+    return value
+
+
+def test_dead_provider_machine_is_recognised_as_a_provider_null():
+    """Scene 840938, 2026-09-16: a $0.06 dead box parked the whole hands-off run.
+
+    Vast created the instance, the container never reached the on-start heartbeat,
+    and the run sealed bare blockers with no provider_attempt_classification, so
+    scene recovery recognised nothing and the intent stopped at
+    source_preparation/preparation_failed with max_retries untouched.
+    """
+    from blueprint_pipeline.task_evaluation_scene_recovery import (
+        gaussian_excision_dead_machine_evidence, provider_null_evidence, recovery_budget,
+    )
+
+    producer = _dead_machine_producer()
+    assert gaussian_excision_dead_machine_evidence(producer) is True
+    assert provider_null_evidence(producer) is True
+    # A machine that ran and died consumed a real resource: ordinary retry budget,
+    # not the marketplace-miss budget reserved for $0 no-instance misses.
+    assert recovery_budget("provider_null", producer) == "retry"
+
+
+def test_dead_machine_recovery_requires_proof_the_machine_died():
+    """Execution failures on a live machine must never be recycled as provider nulls."""
+    from blueprint_pipeline.task_evaluation_scene_recovery import (
+        gaussian_excision_dead_machine_evidence,
+    )
+
+    # Same job, but the heartbeat proof is absent: the work itself failed.
+    work_failed = _dead_machine_producer(blockers=[
+        "gaussian_excision_execution_not_completed",
+        "gaussian_excision_provider_output_zip_missing",
+    ])
+    assert gaussian_excision_dead_machine_evidence(work_failed) is False
+
+    # An unrelated blocker alongside the proof is not a clean dead machine either.
+    mixed = _dead_machine_producer(blockers=[
+        "vast_heartbeat_instance_exited", "gaussian_excision_scene_inputs_invalid",
+    ])
+    assert gaussian_excision_dead_machine_evidence(mixed) is False
+
+
+@pytest.mark.parametrize("override", [
+    {"status": "completed"},
+    {"continuing_spend_from_this_run": True},
+    {"all_staged_objects_absent": False},
+    {"raw_secret_values_recorded": True},
+    {"retained_owned": True},
+    {"schema_version": "adp009b_gaussian_excision_vast_run.v2"},
+    {"blockers": []},
+])
+def test_dead_machine_recovery_fails_closed(override):
+    """Anything still running, retained, or differently sealed is not recoverable."""
+    from blueprint_pipeline.task_evaluation_scene_recovery import (
+        gaussian_excision_dead_machine_evidence,
+    )
+
+    assert gaussian_excision_dead_machine_evidence(_dead_machine_producer(**override)) is False
