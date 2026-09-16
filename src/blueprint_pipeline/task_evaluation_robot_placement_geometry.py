@@ -777,6 +777,12 @@ def validate_robot_placement_trajectory_position_ik(
     return result
 
 
+#: How many surfaces the height-proximity ranking contributes to the search.
+_HEIGHT_RANKED_SURFACE_LIMIT = 12
+#: How many of the largest supports are always searched regardless of height.
+_LARGEST_SUPPORT_SURFACE_LIMIT = 3
+
+
 def enumerate_robot_placement_geometry_candidates(
     *,
     index: RobotPlacementGeometryIndex,
@@ -822,7 +828,23 @@ def enumerate_robot_placement_geometry_candidates(
     geometry_work: list[
         tuple[dict[str, Any], SupportSurface, float, int]
     ] = []
-    for surface_index, surface in enumerate(surfaces[:12]):
+    # Surfaces are ranked by how close they sit to the target height, which is
+    # the right instinct for mounting an arm at working height -- but the cap
+    # then silently discarded the floor. Scene 840938: the floor ranked 18th of
+    # 19 viable surfaces (90.8 m2) and was cut, so every evaluated candidate sat
+    # on a shelf as small as 0.029 m2 and failed base-support coverage. A large
+    # support is exactly where a fixed arm is usually mounted, so always keep
+    # the biggest ones in the search even when their height ranks them last.
+    considered = list(surfaces[:_HEIGHT_RANKED_SURFACE_LIMIT])
+    considered_ids = {surface.surface_id for surface in considered}
+    for surface in sorted(surfaces, key=lambda row: -row.area_m2)[
+        :_LARGEST_SUPPORT_SURFACE_LIMIT
+    ]:
+        if surface.surface_id not in considered_ids:
+            considered.append(surface)
+            considered_ids.add(surface.surface_id)
+
+    for surface_index, surface in enumerate(considered):
         for radius_index, radius in enumerate(radii):
             for angle_index in range(72):
                 angle = 2.0 * math.pi * angle_index / 72.0
