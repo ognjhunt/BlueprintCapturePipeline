@@ -89,6 +89,26 @@ def _copy(path, destination):
             "size_bytes": destination.stat().st_size}
 
 
+def _same_source_splat(reference, source) -> bool:
+    """Is the sweep frozen against the same source splat bytes this run is using?
+
+    ``_file`` has already proven the referenced file is exactly the bytes the freeze
+    recorded, so the remaining question is whether those bytes are the ones in play.
+    Path equality answered that only while a run stayed inside one attempt.
+
+    Scene 840938, 2026-09-16: a dead provider machine forced a successor attempt. The
+    successor correctly reused the retained conversion instead of re-running it, so the
+    freeze still referenced the previous attempt's materialized copy -- same bytes,
+    different attempt root -- and the join refused a retry that was entirely valid.
+    Compare content, which is the property this join actually asserts, and which is
+    strictly stronger than trusting two paths to name the same file.
+    """
+    referenced = _file(reference)
+    if referenced == Path(source):
+        return True
+    return _sha(referenced) == _sha(Path(source))
+
+
 def validate_retained_sweep(*, sweep_reference, source, task, camera_ids, mask_paths):
     """Validate the frozen mask/camera/source joins before contribution or cutout."""
     sweep_path = _file(sweep_reference)
@@ -105,7 +125,7 @@ def validate_retained_sweep(*, sweep_reference, source, task, camera_ids, mask_p
              and split.get("calibration_camera_ids") == camera_ids
              and split.get("heldout_camera_ids") == []
              and split.get("camera_count") == len(camera_ids), "sweep_invalid")
-    _require(_file(sweep["source_standard_splat"]) == source
+    _require(_same_source_splat(sweep["source_standard_splat"], source)
              and sweep["scene"]["target_instance_id"] == task["source_object"]["instance_id"]
              and sweep["scene"]["task_id"] == task["task_id"]
              and sweep["target_collision_prim_path"] == task["removal_plan"]["source_collider_prim_path"],
