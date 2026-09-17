@@ -57,6 +57,7 @@ from .launch_proof_policy import (
 )
 from .object_index_stage import ensure_object_index_stage
 from .object_index_artifacts import resolve_current_object_index_artifacts
+from .clean_plate_stage import run_clean_plate_stage
 from .privacy_processing import run_privacy_postprocess
 from .provider_preview import run_preview_provider
 from .proof_contracts import build_rights_provenance_review
@@ -4776,6 +4777,37 @@ def run_qualification_pipeline(
                 "manifest_uri": None,
                 "output_video_uri": None,
             }
+        # Conditional pre-reconstruction clean-plate stage (extract -> Atlas).
+        # Opt-in via BLUEPRINT_CLEAN_PLATE_ENABLED (default off). People are
+        # already removed by run_privacy_postprocess above; this stage verifies
+        # that and plans movable-object removal. Scaffold: it emits its analysis
+        # artifacts + receipt but never produces a clean-plate video, so the Atlas
+        # input is unchanged (strict no-op). When the view-consistent fill
+        # machinery lands, redirect worldlabs_input to the clean-plate video here.
+        stage = "clean_plate"
+        clean_plate = run_clean_plate_stage(
+            capture_root=capture_root,
+            privacy_processing=privacy_processing,
+            worldlabs_input=worldlabs_input,
+        )
+        gates.append(
+            QualificationGate(
+                "clean_plate_stage",
+                clean_plate.get("status") != "failed_closed",
+                f"status={clean_plate.get('status')} mode={clean_plate.get('mode')}",
+            )
+        )
+        clean_plate_video_uri = clean_plate.get("clean_plate_video_uri")
+        if (
+            clean_plate.get("status") == "objects_removed"
+            and clean_plate_video_uri
+            and clean_plate.get("privacy_verified")
+        ):
+            worldlabs_input = {
+                **worldlabs_input,
+                "output_video_uri": clean_plate_video_uri,
+                "clean_plate_applied": True,
+            }
         metadata_payload = dict(descriptor_payload.get("metadata") or {})
         metadata_payload["privacy_processing"] = {
             "status": privacy_processing.get("status"),
@@ -4822,6 +4854,17 @@ def run_qualification_pipeline(
             if isinstance(worldlabs_input.get("input_labeling"), Mapping)
             else {}
         )
+        metadata_payload["clean_plate"] = {
+            "status": clean_plate.get("status"),
+            "mode": clean_plate.get("mode"),
+            "adp_item": clean_plate.get("adp_item"),
+            "claim_ceiling": clean_plate.get("claim_ceiling"),
+            "movable_removal_count": clean_plate.get("movable_removal_count"),
+            "person_target_count": clean_plate.get("person_target_count"),
+            "privacy_verified": clean_plate.get("privacy_verified"),
+            "clean_plate_video_uri": clean_plate.get("clean_plate_video_uri"),
+            "stage_manifest_uri": clean_plate.get("stage_manifest_uri"),
+        }
         descriptor_payload["metadata"] = metadata_payload
         write_json(descriptor_path, descriptor_payload)
         descriptor = CaptureDescriptor.from_dict(descriptor_payload)
