@@ -17,6 +17,7 @@ analysis function with a canned plan. These pin the scaffold contract:
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -356,3 +357,156 @@ def test_validator_rejects_claim_elevation():
     assert "clean_plate_stage_boundary_metric_authority_elevated" in validate_clean_plate_stage_manifest(
         elevated_boundary
     )
+
+
+# --------------------------------------------------------------------------- #
+# Completed-stage reuse (skip completed work; retries never re-spend)
+# --------------------------------------------------------------------------- #
+
+
+def test_completed_noop_is_reused_without_recalling_analysis(tmp_path, monkeypatch):
+    monkeypatch.setenv(FLAG_ENV, "1")
+    capture_root = _make_capture(tmp_path)
+
+    def _fake(**_kwargs):
+        return empty_removal_plan(status="completed", model="m", processing="agentic")
+
+    monkeypatch.setattr(_ANALYSIS_ATTR, _fake)
+    first = run_clean_plate_stage(capture_root=capture_root, privacy_processing=_SAFE_PRIVACY)
+    assert first["status"] == "noop"
+
+    def _boom(**_kwargs):
+        raise AssertionError("completed stage must be reused, not recomputed")
+
+    monkeypatch.setattr(_ANALYSIS_ATTR, _boom)
+    second = run_clean_plate_stage(capture_root=capture_root, privacy_processing=_SAFE_PRIVACY)
+    assert second["status"] == "noop"
+    assert second["reused"] is True
+    assert second["stage_manifest_path"] == first["stage_manifest_path"]
+
+
+def test_blocked_stage_is_not_reused(tmp_path, monkeypatch):
+    monkeypatch.setenv(FLAG_ENV, "1")
+    capture_root = _make_capture(tmp_path)
+    # Gate env absent -> first run is blocked (real fail-closed analysis, no call).
+    blocked = run_clean_plate_stage(capture_root=capture_root, privacy_processing=_SAFE_PRIVACY)
+    assert blocked["status"] == "blocked"
+
+    monkeypatch.setenv(GATE_ENV, "1")
+
+    def _fake(**_kwargs):
+        return empty_removal_plan(status="completed", model="m", processing="agentic")
+
+    monkeypatch.setattr(_ANALYSIS_ATTR, _fake)
+    second = run_clean_plate_stage(capture_root=capture_root, privacy_processing=_SAFE_PRIVACY)
+    assert second["status"] == "noop"
+    assert "reused" not in second
+
+
+def test_force_rebuild_recomputes_completed_stage(tmp_path, monkeypatch):
+    monkeypatch.setenv(FLAG_ENV, "1")
+    capture_root = _make_capture(tmp_path)
+    calls = []
+
+    def _fake(**_kwargs):
+        calls.append(1)
+        return empty_removal_plan(status="completed", model="m", processing="agentic")
+
+    monkeypatch.setattr(_ANALYSIS_ATTR, _fake)
+    run_clean_plate_stage(capture_root=capture_root, privacy_processing=_SAFE_PRIVACY)
+    second = run_clean_plate_stage(
+        capture_root=capture_root, privacy_processing=_SAFE_PRIVACY, force_rebuild=True
+    )
+    assert len(calls) == 2
+    assert "reused" not in second
+
+
+def test_reuse_recomputes_when_policy_changes(tmp_path, monkeypatch):
+    monkeypatch.setenv(FLAG_ENV, "1")
+    capture_root = _make_capture(tmp_path)
+
+    def _fake(**_kwargs):
+        return empty_removal_plan(status="completed", model="m", processing="agentic")
+
+    monkeypatch.setattr(_ANALYSIS_ATTR, _fake)
+    run_clean_plate_stage(capture_root=capture_root, privacy_processing=_SAFE_PRIVACY)
+    monkeypatch.setenv(ADP_ITEM_ENV, "ADP-021")
+    second = run_clean_plate_stage(capture_root=capture_root, privacy_processing=_SAFE_PRIVACY)
+    assert second["status"] == "noop"
+    assert "reused" not in second
+    assert second["adp_item"] == "ADP-021"
+
+
+# --------------------------------------------------------------------------- #
+# Residual-person fail-safe cross-check (design §8: fail closed on residual
+# person detection the privacy pipeline did not account for)
+# --------------------------------------------------------------------------- #
+
+
+def _person_plan() -> dict:
+    return build_removal_plan(
+        targets=[
+            {
+                "target_id": "worker_1",
+                "semantic_label": "person",
+                "target_class": "person",
+                "disposition": "remove",
+                "rebuild_intent": "none",
+            }
+        ],
+        status="completed",
+        model="m",
+        processing="agentic",
+    )
+
+
+def test_residual_person_with_unaccounted_privacy_blocks_fail_safe(tmp_path, monkeypatch):
+    monkeypatch.setenv(FLAG_ENV, "1")
+    capture_root = _make_capture(tmp_path)
+    monkeypatch.setattr(_ANALYSIS_ATTR, lambda **_kwargs: _person_plan())
+
+    result = run_clean_plate_stage(capture_root=capture_root, privacy_processing=_SAFE_PRIVACY)
+    assert result["status"] == "blocked"
+    assert result["mode"] == "residual_person_detected"
+    assert "residual_person_target_not_accounted_by_privacy" in result["blockers"]
+    assert result["clean_plate_video_uri"] is None
+    manifest = read_json(Path(result["stage_manifest_path"]))
+    assert validate_clean_plate_stage_manifest(manifest) == []
+
+
+def test_person_accounted_by_privacy_does_not_block(tmp_path, monkeypatch):
+    monkeypatch.setenv(FLAG_ENV, "1")
+    capture_root = _make_capture(tmp_path)
+    monkeypatch.setattr(_ANALYSIS_ATTR, lambda **_kwargs: _person_plan())
+
+    result = run_clean_plate_stage(
+        capture_root=capture_root,
+        privacy_processing={"status": "person_removed", "world_model_video_uri": "gs://b/x.mov"},
+    )
+    assert result["status"] == "noop"  # no movable removals; person was accounted for
+    assert "residual_person_target_not_accounted_by_privacy" not in result["blockers"]
+
+
+# --------------------------------------------------------------------------- #
+# Privacy provenance digest (design §6: consumed privacy manifest digest)
+# --------------------------------------------------------------------------- #
+
+
+def test_stage_manifest_records_privacy_provenance_digest(tmp_path, monkeypatch):
+    monkeypatch.setenv(FLAG_ENV, "1")
+    capture_root = _make_capture(tmp_path)
+    monkeypatch.setattr(
+        _ANALYSIS_ATTR,
+        lambda **_kwargs: empty_removal_plan(status="completed", model="m", processing="agentic"),
+    )
+
+    result = run_clean_plate_stage(capture_root=capture_root, privacy_processing=_SAFE_PRIVACY)
+    manifest = read_json(Path(result["stage_manifest_path"]))
+    digest = manifest["privacy"]["manifest_sha256"]
+    assert isinstance(digest, str) and len(digest) == 64
+    expected = hashlib.sha256(
+        json.dumps(
+            _SAFE_PRIVACY, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode("utf-8")
+    ).hexdigest()
+    assert digest == expected
