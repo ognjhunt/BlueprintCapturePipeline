@@ -293,3 +293,23 @@ def test_signed_local_webapp_queue_closes_digest_bound_fixture(tmp_path: Path) -
         for _, payload in received
     )
     assert received[-1][1]["rate_usd"] == 2.0
+
+
+def test_installed_dispatcher_and_control_plane_share_the_canonical_inbox() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    dispatcher = (repo / "deploy/systemd/blueprint-agent-run-dispatcher.service").read_text()
+    control_plane = (repo / "deploy/systemd/blueprint-pipeline-control-plane.service").read_text()
+    timer = (repo / "deploy/systemd/blueprint-pipeline-control-plane.timer").read_text()
+    env_example = (repo / "deploy/systemd/pipeline-control-plane.env.example").read_text()
+    installer = (repo / "scripts/install_live_pipeline_control_plane.sh").read_text()
+    assert "EnvironmentFile=/etc/blueprint/pipeline-control-plane.env" in dispatcher
+    assert 'test "$${BLUEPRINT_AGENT_RUN_DISPATCH_ENABLED:-false}" = true' in dispatcher
+    assert '--inbox-dir "$${BLUEPRINT_ROBOT_EVAL_JOB_REQUEST_INBOX}"' in dispatcher
+    assert "blueprint_pipeline.live_pipeline_control_plane" in control_plane
+    assert "OnUnitActiveSec=5min" in timer
+    assert (
+        "BLUEPRINT_ROBOT_EVAL_JOB_REQUEST_INBOX=/var/lib/blueprint/pipeline-control-plane/robot-eval-job-requests"
+        in env_example
+    )
+    assert "blueprint-agent-run-dispatcher.timer" in installer
+    assert "blueprint-pipeline-control-plane.timer" in installer
