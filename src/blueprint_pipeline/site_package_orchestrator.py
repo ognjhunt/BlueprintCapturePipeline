@@ -57,7 +57,7 @@ from .launch_proof_policy import (
 )
 from .object_index_stage import ensure_object_index_stage
 from .object_index_artifacts import resolve_current_object_index_artifacts
-from .clean_plate_stage import apply_clean_plate_to_reconstruction_input, run_clean_plate_stage
+from .clean_plate_stage import CleanPlatePolicy, apply_clean_plate_to_reconstruction_input, run_clean_plate_stage
 from .website_task_context import load_current_website_task_context
 from .privacy_processing import run_privacy_postprocess
 from .provider_preview import run_preview_provider
@@ -2693,6 +2693,9 @@ def _geometry_advisory_payload(geometry_artifacts: Mapping[str, Any]) -> Dict[st
 
 
 def _should_run_default_geometry_stage(descriptor: CaptureDescriptor) -> bool:
+    if descriptor.metadata.get("capture_entry_source") == "browser_self_capture":
+        # Original-view geometry is already inferred by the website preparation.
+        return False
     if descriptor.capture_source == "iphone" and descriptor.arkit_poses_uri:
         return False
     capture_rights = (
@@ -4693,25 +4696,29 @@ def run_qualification_pipeline(
         )
         stage = "gemini_capture_review"
         raw_video_path = _resolve_optional_uri_to_path(descriptor.raw_video_uri, storage_root)
-        capture_fidelity_review = infer_capture_fidelity_review(
-            capture_root=descriptor_path.parent,
-            raw_video_path=raw_video_path,
-            keyframe_path=_resolve_optional_uri_to_path(descriptor.keyframe_uri, storage_root),
-            descriptor=descriptor.to_dict(),
-            qa_report=qa_report,
-            task_hypothesis_report=task_hypothesis_report,
-            capture_context={
-                "capture_rights": _capture_rights(effective_metadata if isinstance(effective_metadata, Mapping) else {}),
-                "capture_orientation": descriptor.capture_orientation,
-                "requested_outputs": list(descriptor.requested_outputs),
-                "quoted_payout_cents": descriptor.quoted_payout_cents,
-                "site_submission_id": descriptor.site_submission_id,
-                "buyer_request_id": descriptor.buyer_request_id,
-                "capture_job_id": descriptor.capture_job_id,
-                "metadata": dict(effective_metadata) if isinstance(effective_metadata, Mapping) else {},
-            },
-            timeout_sec=int(getattr(config, "gemini_timeout_seconds", 45) or 45),
-        )
+        website_capture = (descriptor.metadata or {}).get("capture_entry_source") == "browser_self_capture"
+        if website_capture:
+            capture_fidelity_review = {"status": "not_run", "reason": "website_task_analysis_owns_media_review"}
+        else:
+            capture_fidelity_review = infer_capture_fidelity_review(
+                capture_root=descriptor_path.parent,
+                raw_video_path=raw_video_path,
+                keyframe_path=_resolve_optional_uri_to_path(descriptor.keyframe_uri, storage_root),
+                descriptor=descriptor.to_dict(),
+                qa_report=qa_report,
+                task_hypothesis_report=task_hypothesis_report,
+                capture_context={
+                    "capture_rights": _capture_rights(effective_metadata if isinstance(effective_metadata, Mapping) else {}),
+                    "capture_orientation": descriptor.capture_orientation,
+                    "requested_outputs": list(descriptor.requested_outputs),
+                    "quoted_payout_cents": descriptor.quoted_payout_cents,
+                    "site_submission_id": descriptor.site_submission_id,
+                    "buyer_request_id": descriptor.buyer_request_id,
+                    "capture_job_id": descriptor.capture_job_id,
+                    "metadata": dict(effective_metadata) if isinstance(effective_metadata, Mapping) else {},
+                },
+                timeout_sec=int(getattr(config, "gemini_timeout_seconds", 45) or 45),
+            )
         write_json(pipeline_dir / "gemini_capture_fidelity_review.json", capture_fidelity_review)
         gates.append(
             QualificationGate(
@@ -4726,25 +4733,23 @@ def run_qualification_pipeline(
             metadata=effective_metadata if isinstance(effective_metadata, Mapping) else {},
         )
         stage = "privacy_postprocess"
-        privacy_processing = run_privacy_postprocess(
-            bucket=bucket,
-            scene_id=descriptor.scene_id,
-            capture_id=descriptor.capture_id,
-            capture_root=capture_root,
-            pipeline_dir=pipeline_dir,
-            raw_video_path=raw_video_path,
-        )
+        if website_capture:
+            privacy_processing = {"status": "pending_website_review", "mode": "task_aware_prepared_images",
+                                  "raw_retained": True, "fail_closed": True}
+        else:
+            privacy_processing = run_privacy_postprocess(
+                bucket=bucket,
+                scene_id=descriptor.scene_id,
+                capture_id=descriptor.capture_id,
+                capture_root=capture_root,
+                pipeline_dir=pipeline_dir,
+                raw_video_path=raw_video_path,
+            )
         # PIPE-03: a "delivery run" builds buyer/reviewer-facing downstream artifacts
         # (scene_memory / evaluation_prep lanes). For those, privacy post-processing
         # must actually have run and cleared — ``not_run`` is NON-passing. Non-delivery
         # / local flows keep passing on ``not_run``.
         privacy_delivery_run = bool(downstream_requested_lanes) or production_launch_mode()
-        gates.append(
-            _privacy_postprocess_gate(
-                privacy_status=str(privacy_processing.get("status") or ""),
-                delivery_run=privacy_delivery_run,
-            )
-        )
         descriptor_payload = descriptor.to_dict()
         descriptor_payload["privacy_processed_video_uri"] = privacy_processing.get("privacy_processed_video_uri")
         descriptor_payload["world_model_video_uri"] = privacy_processing.get("world_model_video_uri")
@@ -4769,7 +4774,9 @@ def run_qualification_pipeline(
             metadata=descriptor.metadata if isinstance(descriptor.metadata, Mapping) else {}
         )
         privacy_descriptor = CaptureDescriptor.from_dict(descriptor_payload)
-        if preview_requested_for_worldlabs and worldlabs_derived_rights_allowed:
+        if website_capture and preview_requested_for_worldlabs and worldlabs_derived_rights_allowed:
+            worldlabs_input = {"status": "awaiting_prepared_images", "output_video_uri": None, "manifest_uri": None}
+        elif preview_requested_for_worldlabs and worldlabs_derived_rights_allowed:
             worldlabs_input = _prepare_worldlabs_input_video(
                 descriptor=privacy_descriptor,
                 privacy_processing=privacy_processing,
@@ -4799,8 +4806,10 @@ def run_qualification_pipeline(
             privacy_processing=privacy_processing,
             worldlabs_input=worldlabs_input,
             task_context=(descriptor.metadata or {}).get("site_task_context"),
-            website_source_video=(raw_video_path if (descriptor.metadata or {}).get("capture_entry_source")
-                                  == "browser_self_capture" else None),
+            website_source_video=(raw_video_path if website_capture else None),
+            image_edit_admission=(descriptor.metadata or {}).get("website_image_edit_admission"),
+            policy=(CleanPlatePolicy(enabled=worldlabs_derived_rights_allowed and preview_requested_for_worldlabs)
+                    if website_capture else None),
         )
         gates.append(
             QualificationGate(
@@ -4813,6 +4822,12 @@ def run_qualification_pipeline(
             worldlabs_input, clean_plate,
             required=(descriptor.metadata or {}).get("capture_entry_source") == "browser_self_capture",
         )
+        if website_capture:
+            privacy_processing.update(status=clean_plate.get("privacy_status"),
+                                      fail_closed=not bool(clean_plate.get("privacy_verified")))
+            descriptor_payload["privacy_status"] = privacy_processing["status"]
+        gates.append(_privacy_postprocess_gate(privacy_status=str(privacy_processing.get("status") or ""),
+                                               delivery_run=privacy_delivery_run))
         metadata_payload = dict(descriptor_payload.get("metadata") or {})
         metadata_payload["privacy_processing"] = {
             "status": privacy_processing.get("status"),

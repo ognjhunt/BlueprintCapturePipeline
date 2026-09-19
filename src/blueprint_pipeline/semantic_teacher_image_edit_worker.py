@@ -258,6 +258,7 @@ def _multipart(
     image_bytes: bytes,
     mask_bytes: bytes,
     boundary: str,
+    reference_images: Sequence[bytes] = (),
 ) -> bytes:
     chunks: list[bytes] = []
     for name, raw_value in sorted(fields.items()):
@@ -270,10 +271,10 @@ def _multipart(
                 b"\r\n",
             )
         )
-    for field_name, filename, payload in (
-        ("image", "input.png", image_bytes),
-        ("mask", "mask.png", mask_bytes),
-    ):
+    media = [("image[]" if reference_images else "image", "input.png", image_bytes)]
+    media.extend(("image[]", f"reference-{i}.png", data) for i, data in enumerate(reference_images))
+    media.append(("mask", "mask.png", mask_bytes))
+    for field_name, filename, payload in media:
         chunks.extend(
             (
                 f"--{boundary}\r\n".encode(),
@@ -378,9 +379,13 @@ def _execute_frame_request(
     expected_size: tuple[int, int],
     token: str,
     opener: Callable[..., Any],
+    reference_images: Sequence[bytes] = (),
 ) -> dict[str, Any]:
     """Make one no-retry provider request and return only bounded result data."""
 
+    if len(reference_images) > 7 or any(not isinstance(data, bytes) or len(data) > MAX_INPUT_PNG_BYTES
+                                      for data in reference_images):
+        raise SemanticTeacherImageEditWorkerError("semantic_teacher_reference_images_invalid")
     fields = {
         **dict(execution["default_options"]),
         "model": execution["model_snapshot"],
@@ -393,6 +398,7 @@ def _execute_frame_request(
         image_bytes=image_bytes,
         mask_bytes=mask_bytes,
         boundary=boundary,
+        reference_images=reference_images,
     )
     http_request = Request(
         str(execution["endpoint"]),

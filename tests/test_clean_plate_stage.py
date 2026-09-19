@@ -69,6 +69,15 @@ def test_only_validated_preparation_selects_reconstruction_media():
                     {**edited, "clean_plate_video_uri": None}):
         assert apply_clean_plate_to_reconstruction_input(original, invalid, required=True)["status"] == "blocked"
 
+
+def test_prepared_images_cannot_override_an_existing_rights_hold():
+    held = {"status": "blocked", "reason": "rights_not_cleared_for_derived_scene_generation"}
+    prepared = {"status": "objects_removed", "privacy_verified": True, "prepared_views": {"status": "ready"}}
+    result = apply_clean_plate_to_reconstruction_input(held, prepared, required=True)
+    assert result["status"] == "blocked"
+    assert result["reason"] == held["reason"]
+    assert result["prepared_views"] is None
+
 _GATE_AND_KEY_ENVS = (
     FLAG_ENV,
     GATE_ENV,
@@ -169,7 +178,8 @@ def test_website_preparation_preserves_original_geometry_without_requiring_measu
         assert result["blockers"] == []
 
 
-def test_website_stage_runs_geometry_masks_and_recovery_before_image_handoff(tmp_path, monkeypatch):
+@pytest.mark.parametrize("fill_result", ["unneeded", "passed", "blocked"])
+def test_website_stage_runs_geometry_masks_and_recovery_before_image_handoff(tmp_path, monkeypatch, fill_result):
     capture_root = _make_capture(tmp_path)
     source = capture_root / "raw/walkthrough.mp4"
     order = []
@@ -199,16 +209,32 @@ def test_website_stage_runs_geometry_masks_and_recovery_before_image_handoff(tmp
     def recover(**kwargs):
         order.append("recovery")
         assert kwargs["task_masks"] == masks
-        return [{"frame_id": frame["frame_id"], "remaining_pixel_count": 0, "recovered_pixel_count": 2}
+        return [{"frame_id": frame["frame_id"], "remaining_pixel_count": int(fill_result != "unneeded"), "recovered_pixel_count": 2}
                 for frame in geometry["frames"]]
+
+    def complete(**kwargs):
+        order.append("completion")
+        return [{**frame, "remaining_pixel_count": 0, "generated_pixels_present": True} for frame in kwargs["frames"]]
+
+    def review(**kwargs):
+        order.append("review")
+        return {"status": fill_result}
 
     monkeypatch.setattr(_ANALYSIS_ATTR, analyze)
     monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.run_website_scene_geometry", estimate)
     monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.run_website_task_masks", track)
     monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.recover_observed_background", recover)
-    result = run_clean_plate_stage(capture_root=capture_root, privacy_processing=_SAFE_PRIVACY,
-                                   policy=CleanPlatePolicy(enabled=True), website_source_video=source)
-    assert order == ["analysis", "geometry", "masks", "recovery"]
+    monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.complete_background_images", complete)
+    monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.verify_completed_background", review)
+    result = run_clean_plate_stage(capture_root=capture_root, privacy_processing={"status": "pending_website_review"},
+                                   website_source_video=source)
+    assert result["privacy_verified"] is True
+    assert order == ["analysis", "geometry", "masks", "recovery"] + ([] if fill_result == "unneeded" else ["completion", "review"])
+    if fill_result == "blocked":
+        assert result["status"] == "blocked"
+        assert result["prepared_views"] is None
+        assert "website_image_completion_review_failed" in result["blockers"]
+        return
     assert result["status"] == "objects_removed"
     assert len(result["prepared_views"]["frames"]) == 2
     forwarded = apply_clean_plate_to_reconstruction_input({"output_video_uri": "gs://raw.mov"}, result, required=True)
