@@ -160,8 +160,20 @@ def test_placement_destination_is_preserved_as_static_contact():
     target = {"target_id": "tray", "target_class": "movable_object", "target_role": "destination",
               "task_effect": "static_contact", "disposition": "keep", "rebuild_intent": "none",
               "semantic_label": "destination tray", "decision_reason": "The robot places the box here.",
+              "placement_relation": "inside", "task_basis_quote": "inside the tray",
               "confidence": 0.9, "spatial_evidence": [{"timestamp_seconds": 2, "box_xywh_normalized": [0.2, 0.2, 0.2, 0.2]}]}
-    parsed = parse_removal_plan_response(json.dumps({"targets": [target]}), strict=True, task_description="Move box to tray")
+    parsed = parse_removal_plan_response(json.dumps({"targets": [target]}), strict=True, task_description="Move box inside the tray")
     assert parsed[0]["target_role"] == "destination"
+    assert parsed[0]["placement_relation"] == "inside"
     assert parsed[0]["disposition"] == "keep"
     assert parsed[0]["collision_required"] is True
+
+
+def test_destination_relation_cannot_be_invented_from_movability():
+    import json
+    target = {"target_id": "tray", "target_class": "movable_object", "target_role": "destination",
+              "task_effect": "static_contact", "disposition": "keep", "rebuild_intent": "none",
+              "decision_reason": "A tray is visible."}
+    with pytest.raises(ValueError, match="destination_relation_required"):
+        parse_removal_plan_response(json.dumps({"targets": [target]}), strict=True,
+                                    task_description="Move the small object")

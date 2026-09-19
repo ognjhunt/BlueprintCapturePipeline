@@ -71,7 +71,7 @@ def _owner(store, now, *, source_kind="gaussian_splat"):
     return owner
 
 
-def _config(tmp_path, monkeypatch, *, submission_enabled=False, extra=None, source_kind="gaussian_splat", real_destination=False):
+def _config(tmp_path, monkeypatch, *, submission_enabled=False, extra=None, source_kind="gaussian_splat", real_destination=False, existing_support=False):
     now = time.time()
     fixture = production_fixture(tmp_path)
     if real_destination:
@@ -84,6 +84,8 @@ def _config(tmp_path, monkeypatch, *, submission_enabled=False, extra=None, sour
     store = tmp_path / "store"
     intake_root = tmp_path / "intents"
     owner = _owner(store, now, source_kind=source_kind)
+    if existing_support:
+        owner["task"]["destination"].update(mode="existing_support_surface", relation="on", visible_label="clear table surface")
     receipt = stage_scene_intent(value=owner, queue_root=intake_root, authenticated_client="blueprint-webapp",
                                  trusted_clients={"blueprint-webapp"}, now=now)
     monkeypatch.setenv("BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT", str(intake_root.resolve()))
@@ -98,6 +100,8 @@ def _config(tmp_path, monkeypatch, *, submission_enabled=False, extra=None, sour
                  "simulation_physics_bounds": {"mass_kg_bounds": [0.1, 0.8],
                     "static_friction_bounds": [0.4, 0.8], "dynamic_friction_bounds": [0.3, 0.6],
                     "restitution_bounds": [0.0, 0.1]}}
+    if existing_support:
+        machinery.pop("destination_catalog")
     machinery_path = _write(tmp_path / "completed-machinery.json", machinery, "machinery_digest")
     (tmp_path / "repo").mkdir(exist_ok=True)
     release = {"schema_version": RELEASE_SCHEMA, "source_commit": SHA, "runtime_digest": "sha256:" + "f" * 64,
@@ -287,3 +291,34 @@ def test_owner_task_id_bridges_controls_autoprovision(tmp_path, monkeypatch):
     factory = json.loads(Path(state.load_progression(directory, intent)["state"]["factory"]["path"]).read_text())
     req = json.loads(Path(factory["submission_request"]["path"]).read_text())
     assert req["task"]["identity"]["id"] == owner_task_id, req["task"]["identity"]
+
+
+def test_existing_support_does_not_require_or_add_a_destination_asset(tmp_path, monkeypatch):
+    config_path, intent_id, intake_root, now = _config(tmp_path, monkeypatch, existing_support=True)
+    result = engine.process_scene_intents(config_path=config_path, now=now)
+    assert result["results"][0]["phase"] == "publication_ready", result
+    intent = json.loads((intake_root / intent_id / "intent.json").read_text())
+    progress = state.load_progression(intake_root / intent_id, intent)
+    factory = json.loads(Path(progress["state"]["factory"]["path"]).read_text())
+    request = json.loads(Path(factory["submission_request"]["path"]).read_text())
+    assert "destination" not in request["task"]
+    assert request["task"]["surface_target"]["non_colliding"] is True
+    assert validate_launch_preparation_request(request) == request
+    staging = Path(factory["submission_manifest"]["path"]).parent
+    recipe = json.loads((staging / "configuration/scene_construction_recipe.v1.json").read_text())
+    assert "supplemental_destination" not in recipe
+    template = json.loads((staging / "configuration/task_template.v1.json").read_text())
+    assert "clear table surface" in template["instruction"]
+    assert not (staging / "destination").exists()
+
+
+def test_existing_support_rejects_off_edge_or_floating_placement():
+    import pytest
+    from blueprint_pipeline.task_evaluation_completed_scene_submission import _existing_support_target
+    task = {"support": {"aabb_min_xyz_m": [-1, -1, 0], "aabb_max_xyz_m": [1, 1, 0.75]},
+            "destination": {"relation": "on", "position_world_m": [0.5, 0.5, 0.75]}}
+    assert _existing_support_target(task, [0, 0, 0.75], [0.2, 0.2, 0.85]) == [0.5, 0.5, 0.8]
+    for point in ([1, 0.5, 0.75], [0.5, 0.5, 1.0]):
+        task["destination"]["position_world_m"] = point
+        with pytest.raises(ValueError, match="outside_surface"):
+            _existing_support_target(task, [0, 0, 0.75], [0.2, 0.2, 0.85])

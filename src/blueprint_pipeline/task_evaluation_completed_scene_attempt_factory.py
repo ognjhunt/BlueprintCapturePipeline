@@ -128,6 +128,9 @@ def _task_and_blockers(*, intent: dict, binding: dict, commit: str) -> tuple[dic
             "point_count": int(support["point_count"]), "face_count": int(support["face_count"])},
         "destination": {"identity": {"id": "completed-destination-" + scene_key, "version": version},
             "relation": destination.get("relation") if destination.get("relation") in {"inside", "on"} else "on",
+            **({"mode": "existing_support_surface",
+                **({"radius_m": destination["radius_m"]} if "radius_m" in destination else {})}
+               if destination.get("mode") == "existing_support_surface" else {}),
             "visible_label": str(destination.get("visible_label") or support_label or "destination"),
             "position_world_m": position, "orientation_xyzw": orientation},
         "grasp": {"axis": _grasp_axis(lower, upper), "sign": 1.0},
@@ -193,22 +196,30 @@ def materialize_completed_scene_attempt(*, intent_path, source_binding_path, mac
     for role in ("subject", "support"):
         task[role]["runtime_prim_path"] = normalized["object_mapping"][task[role]["source_object_id"]]
 
-    catalog = machinery.get("destination_catalog")
-    require(isinstance(catalog, list) and 1 <= len(catalog) <= 64,
-            "completed_factory_destination_catalog_missing")
-    destination = request["task"]["destination"]
-    requested_asset = destination.get("asset_binding_id")
-    description = str(destination.get("description") or destination.get("visible_label") or "").strip().casefold()
-    candidates = [row for row in catalog if (
-        row.get("binding_id") == requested_asset if requested_asset else
-        description in [str(label).strip().casefold() for label in row.get("owner_description_aliases", [])])]
-    if len(candidates) != 1:
-        return {"schema_version": FACTORY_SCHEMA, "status": "needs_input",
-                "blockers": ["task_destination_asset_selection_required"], "provider_mutation_performed": False}
-    asset = candidates[0]
-    task["destination"]["simready_result"] = record(checked_file(
-        asset["simready_result"]["path"], asset["simready_result"]))
-    task["destination"]["catalog_binding_id"] = asset["binding_id"]
+    if task["destination"].get("mode") == "existing_support_surface":
+        from .task_evaluation_completed_scene_submission import _existing_support_target
+        try:
+            _existing_support_target(task, task["subject"]["aabb_min_xyz_m"], task["subject"]["aabb_max_xyz_m"])
+        except ValueError as exc:
+            return {"schema_version": FACTORY_SCHEMA, "status": "needs_input", "blockers": [str(exc)],
+                    "provider_mutation_performed": False}
+    else:
+        catalog = machinery.get("destination_catalog")
+        require(isinstance(catalog, list) and 1 <= len(catalog) <= 64,
+                "completed_factory_destination_catalog_missing")
+        destination = request["task"]["destination"]
+        requested_asset = destination.get("asset_binding_id")
+        description = str(destination.get("description") or destination.get("visible_label") or "").strip().casefold()
+        candidates = [row for row in catalog if (
+            row.get("binding_id") == requested_asset if requested_asset else
+            description in [str(label).strip().casefold() for label in row.get("owner_description_aliases", [])])]
+        if len(candidates) != 1:
+            return {"schema_version": FACTORY_SCHEMA, "status": "needs_input",
+                    "blockers": ["task_destination_asset_selection_required"], "provider_mutation_performed": False}
+        asset = candidates[0]
+        task["destination"]["simready_result"] = record(checked_file(
+            asset["simready_result"]["path"], asset["simready_result"]))
+        task["destination"]["catalog_binding_id"] = asset["binding_id"]
     physics = machinery.get("simulation_physics_bounds")
     require(isinstance(physics, dict), "completed_factory_simulation_physics_bounds_missing")
     task["subject"]["physics_bounds"] = physics

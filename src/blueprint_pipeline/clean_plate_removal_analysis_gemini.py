@@ -85,6 +85,8 @@ PROMPT_INSTRUCTION = (
     "supports, tables, obstacles and background unless the task itself moves them. "
     "Mark each target_role as task_object, support, destination, obstacle, background or person. "
     "Identify the visible placement destination as destination with static_contact; keep it in the scene. "
+    "For a destination provide placement_relation on or inside, only when the task text supports it, "
+    "and quote those task words in task_basis_quote. Otherwise mark it uncertain and ask a question. "
     "Movability alone NEVER warrants removal. A chair, tote or tool unrelated to "
     "this task stays even if physically movable. The same chair becomes a task "
     "object only when the confirmed task requires moving it. Keep a table used "
@@ -231,6 +233,7 @@ def _normalize_target(raw: Mapping[str, Any], index: int) -> Optional[dict[str, 
         "semantic_label": _string(raw.get("semantic_label")) or target_class,
         "target_class": target_class,
         "target_role": _string(raw.get("target_role")),
+        "placement_relation": _string(raw.get("placement_relation")),
         "task_effect": _string(raw.get("task_effect")),
         "decision_reason": _string(raw.get("decision_reason")),
         "task_basis_quote": _string(raw.get("task_basis_quote")),
@@ -302,6 +305,10 @@ def parse_removal_plan_response(
             }.get(effect)
             if expected and (role, raw.get("disposition"), raw.get("rebuild_intent")) != expected:
                 raise ValueError("removal_analysis_task_effect_conflict")
+            if role == "destination" and effect == "static_contact":
+                quote = _string(raw.get("task_basis_quote"))
+                if raw.get("placement_relation") not in {"on", "inside"} or not quote or quote not in task_description:
+                    raise ValueError("removal_analysis_destination_relation_required")
             if effect == "manipulated":
                 quote = _string(raw.get("task_basis_quote"))
                 if not quote or quote not in task_description:

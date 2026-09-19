@@ -76,7 +76,7 @@ def _masks(source_geometry, *, destination=True):
                 "estimated_visible_bounds": _bounds([0.05, 0.4, 1.45], [0.10, 0.5, 1.55])}]
     if destination:
         targets.append({"target_id": "tray-1", "task_effect": "static_contact", "disposition": "keep",
-                        "target_role": "destination", "track": track,
+                        "target_role": "destination", "placement_relation": "on", "track": track,
                         "estimated_visible_bounds": _bounds([0.4, 0.48, 1.4], [0.6, 0.5, 1.6])})
     value = {"schema_version": "website_task_masks.v1", "status": "completed", "targets": targets,
              "source_geometry_digest": source_geometry["digest"]}
@@ -244,3 +244,14 @@ def test_collected_reconstruction_reaches_real_website_preparation(tmp_path):
     assert Path(result["thumbnail"]["path"]).is_file()
     assert result["simulator_ready"] is False
     assert result["provider_mutation_performed"] is False
+
+
+def test_container_destination_is_not_silently_changed_to_top_surface(tmp_path):
+    args = _arguments(tmp_path)
+    args["task_masks"]["targets"][1]["placement_relation"] = "inside"
+    args["task_masks"]["digest"] = canonical_digest(args["task_masks"], digest_field="digest")
+    result = preparation.compile_website_scene_preparation(**args)
+    assert result["destination"]["relation"] == "inside"
+    assert "mode" not in result["destination"]
+    assert result["status"] == "needs_input"
+    assert "task_destination_interior_geometry_required" in result["blockers"]

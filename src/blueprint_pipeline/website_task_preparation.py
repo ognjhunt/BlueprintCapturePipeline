@@ -264,7 +264,13 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         low, high = _runtime_bounds(destination_rows[0]["estimated_visible_bounds"], matrix)
         position = [(low[i] + high[i]) / 2 for i in range(3)]
         position[up] = high[up]
-        destination = {"relation": "on", "visible_label": destination_rows[0]["target_id"],
+        relation = destination_rows[0].get("placement_relation")
+        if relation not in {"on", "inside"}:
+            blockers.append("task_destination_relation_required")
+        elif relation == "inside":
+            blockers.append("task_destination_interior_geometry_required")
+        destination = {"relation": relation, "visible_label": destination_rows[0].get("semantic_label") or destination_rows[0]["target_id"],
+                       **({"mode": "existing_support_surface"} if relation == "on" else {}),
                        "position_world_m": (runtime_to_sim @ [*position, 1.0])[:3].tolist(),
                        "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
                        "basis": "registered_estimated_visible_bounds"}

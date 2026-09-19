@@ -66,7 +66,7 @@ def stage_configurations(*, task: dict, collision_digest: str) -> list[dict]:
 
 def construction_recipe(*, run_id: str, task: dict, source_manifest_digest: str,
                         rights_admission_digest: str, configurations: list[dict],
-                        supplemental_destination: dict) -> dict:
+                        supplemental_destination: dict | None) -> dict:
     value = records.recipe(recipe_id=run_id + "-recipe", team_namespace=task["team_namespace"],
         scene_identity=task["scene_identity"], task_identity=task["task_identity"],
         subject_identity=task["subject"]["identity"], output_identity=task["output_identity"],
