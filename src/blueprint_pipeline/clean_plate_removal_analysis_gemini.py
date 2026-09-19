@@ -481,8 +481,8 @@ def _invoke_agentic_video(
 ) -> dict[str, Any]:
     """Run the paid agentic-video analysis and return the raw JSON text.
 
-    Uses the documented Part.media_processing flag and verifies the returned
-    MEDIA_PROCESSING trace. No static fallback can satisfy this contract.
+    Uses the documented Interactions video processing flag and verifies paired
+    processing steps. No static fallback can satisfy this contract.
     """
 
     if processing.lower() != "agentic":
@@ -503,38 +503,39 @@ def _invoke_agentic_video(
             raise ValueError("gemini_clean_plate_file_processing_failed")
         # Agentic navigation uses a stable processed media handle, as in the
         # provider's video API example; the original stays unchanged locally.
-        part = types.Part.from_uri(file_uri=uploaded.uri, mime_type=mime_type)
-        part.media_processing = "AGENTIC"
-        response = client.models.generate_content(
-            model=model, contents=[part, prompt],
-            config=types.GenerateContentConfig(response_mime_type="application/json", max_output_tokens=8192,
-                                               thinking_config=types.ThinkingConfig(thinking_level="LOW")),
+        response = client.interactions.create(
+            model=model, store=False,
+            input=[{"type": "video", "uri": uploaded.uri, "mime_type": mime_type, "processing": "agentic"},
+                   {"type": "text", "text": prompt}],
+            response_format={"type": "text", "mime_type": "application/json"},
+            generation_config={"max_output_tokens": 8192, "thinking_level": "low"},
+            timeout=300.0,
         )
     finally:
         client.files.delete(name=uploaded.name)
-    candidates = getattr(response, "candidates", None) or []
-    finish = getattr(candidates[0], "finish_reason", None) if candidates else None
-    if finish != "STOP":
-        suffix = {"MAX_TOKENS": "_max_tokens", "SAFETY": "_safety",
-                  "TOO_MANY_TOOL_CALLS": "_too_many_tool_calls"}.get(finish, "")
-        raise ValueError("gemini_clean_plate_analysis_incomplete" + suffix)
-    parts = getattr(getattr(candidates[0], "content", None), "parts", None) or []
-    calls = [part for part in parts if getattr(getattr(part, "tool_call", None), "tool_type", None) == "MEDIA_PROCESSING"]
-    replies = [part for part in parts if getattr(getattr(part, "tool_response", None), "tool_type", None) == "MEDIA_PROCESSING"]
-    if not calls or not replies:
+    if getattr(response, "status", None) != "completed":
+        raise ValueError("gemini_clean_plate_analysis_incomplete")
+    steps = getattr(response, "steps", None) or []
+    calls = [step for step in steps if getattr(step, "type", None) == "processing_call"]
+    replies = [step for step in steps if getattr(step, "type", None) == "processing_result"]
+    call_ids = [getattr(step, "id", None) for step in calls]
+    reply_ids = [getattr(step, "call_id", None) for step in replies]
+    if (not calls or not all(call_ids) or not all(reply_ids) or len(set(call_ids)) != len(call_ids)
+            or sorted(call_ids) != sorted(reply_ids)):
         raise ValueError("gemini_clean_plate_agentic_trace_missing")
     text = "\n".join(
-        part.text for part in parts
-        if isinstance(getattr(part, "text", None), str) and not getattr(part, "thought", False)
+        part.text for step in steps if getattr(step, "type", None) == "model_output"
+        for part in (getattr(step, "content", None) or [])
+        if getattr(part, "type", None) == "text" and isinstance(getattr(part, "text", None), str)
     )
-    usage = getattr(response, "usage_metadata", None)
+    usage = getattr(response, "usage", None)
     return {"text": text, "video_processing": {
         "mode": "agentic", "media_tool_calls": len(calls),
         "media_tool_responses": len(replies),
-        "model_version": getattr(response, "model_version", None) or model,
-        "prompt_tokens": getattr(usage, "prompt_token_count", None),
-        "completion_tokens": getattr(usage, "candidates_token_count", None),
-        "total_tokens": getattr(usage, "total_token_count", None),
+        "api": "interactions", "model_version": getattr(response, "model", None) or model,
+        "prompt_tokens": getattr(usage, "total_input_tokens", None),
+        "completion_tokens": getattr(usage, "total_output_tokens", None),
+        "total_tokens": getattr(usage, "total_tokens", None),
     }}
 
 

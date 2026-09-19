@@ -10,22 +10,20 @@ from blueprint_pipeline.clean_plate_removal_analysis_gemini import (
 )
 
 
-def invoke(tmp_path, parts, finish="STOP", processing="agentic"):
+def invoke(tmp_path, steps, finish="completed", processing="agentic"):
     path = tmp_path / "source.mov"
     path.write_bytes(b"source video")
     calls = []
 
     def generate(**kwargs):
         calls.append(kwargs)
-        return NS(candidates=[NS(finish_reason=finish, content=NS(parts=parts))])
+        return NS(status=finish, steps=steps)
 
     media = NS(name="files/test", uri="https://provider.test/file", state=NS(name="ACTIVE"))
     deleted = []
     files = NS(upload=lambda **_: media, delete=lambda **kwargs: deleted.append(kwargs))
-    genai = NS(Client=lambda **_: NS(models=NS(generate_content=generate), files=files))
-    types = NS(Part=NS(from_uri=lambda *, file_uri, mime_type: NS(
-        file_data=NS(file_uri=file_uri, mime_type=mime_type))),
-        GenerateContentConfig=NS, HttpOptions=NS, HttpRetryOptions=NS, ThinkingConfig=NS)
+    genai = NS(Client=lambda **_: NS(interactions=NS(create=generate), files=files))
+    types = NS(HttpOptions=NS, HttpRetryOptions=NS)
     try:
         result = _invoke_agentic_video(api_key="fake", model=DEFAULT_MODEL,
                                       processing=processing, video_path=path,
@@ -37,33 +35,43 @@ def invoke(tmp_path, parts, finish="STOP", processing="agentic"):
 
 
 def trace():
-    return [NS(tool_call=NS(tool_type="MEDIA_PROCESSING")),
-            NS(tool_response=NS(tool_type="MEDIA_PROCESSING"))]
+    return [NS(type="processing_call", id="inspect-1"),
+            NS(type="processing_result", call_id="inspect-1")]
+
+
+def output(text):
+    return NS(type="model_output", content=[NS(type="text", text=text)])
 
 
 def test_requests_agentic_38_and_filters_thoughts(tmp_path):
-    result, calls = invoke(tmp_path, [*trace(), NS(thought=True, text="private"),
-                                    NS(text='{"targets":[]}')])
+    result, calls = invoke(tmp_path, [*trace(), NS(type="thought", text="private"),
+                                    output('{"targets":[]}')])
     assert result["text"] == '{"targets":[]}'
     assert result["video_processing"]["media_tool_calls"] == 1
     assert result["video_processing"]["media_tool_responses"] == 1
     assert len(calls) == 1
     assert calls[0]["model"] == "gemini-3.8-flash"
-    assert calls[0]["config"].thinking_config.thinking_level == "LOW"
-    part = calls[0]["contents"][0]
-    assert part.media_processing == "AGENTIC"
-    assert part.file_data.file_uri == "https://provider.test/file"
-    assert part.file_data.mime_type == "video/quicktime"
+    assert calls[0]["generation_config"]["thinking_level"] == "low"
+    assert calls[0]["store"] is False
+    assert calls[0]["input"][0] == {"type": "video", "processing": "agentic",
+        "uri": "https://provider.test/file", "mime_type": "video/quicktime"}
 
 
 def test_static_answer_does_not_masquerade_as_agentic(tmp_path):
     with pytest.raises(ValueError, match="agentic_trace_missing"):
-        invoke(tmp_path, [NS(text='{"targets":[]}')])
+        invoke(tmp_path, [output('{"targets":[]}')])
 
 
 def test_partial_json_not_accepted_as_completed_analysis(tmp_path):
     with pytest.raises(ValueError, match="analysis_incomplete"):
-        invoke(tmp_path, [*trace(), NS(text="{}")], finish="MAX_TOKENS")
+        invoke(tmp_path, [*trace(), output("{}")], finish="incomplete")
+
+
+def test_unmatched_video_processing_result_is_not_an_agentic_receipt(tmp_path):
+    steps = trace()
+    steps[1].call_id = "different-call"
+    with pytest.raises(ValueError, match="agentic_trace_missing"):
+        invoke(tmp_path, [*steps, output('{"targets":[]}')])
 
 
 def test_static_override_is_rejected_before_provider_call(tmp_path):
