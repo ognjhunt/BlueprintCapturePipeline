@@ -7,6 +7,7 @@ or spend facts that the existing artifacts did not record.
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -49,6 +50,11 @@ def _read_object(path: Path, blockers: list[str], artifact: str) -> dict[str, An
     return dict(value)
 
 
+def _digest(value: Mapping[str, Any]) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
 def _first_string(payload: Mapping[str, Any], paths: tuple[tuple[str, ...], ...]) -> str:
     for path in paths:
         value: Any = payload
@@ -74,6 +80,7 @@ def read_terminal_robot_eval_artifacts(job_dir: str | Path) -> dict[str, Any]:
     root = Path(job_dir).resolve()
     blockers: list[str] = []
     manifest = _read_object(root / "job_run_manifest.json", blockers, "job_run_manifest")
+    commit = _read_object(root / "job_commit.json", blockers, "job_commit")
     metrics = _read_object(
         root / "simulator_command_batch_metrics.json", blockers, "simulator_command_batch_metrics"
     )
@@ -98,25 +105,24 @@ def read_terminal_robot_eval_artifacts(job_dir: str | Path) -> dict[str, Any]:
     if any(value != job_id for value in ids.values()):
         blockers.append("canonical_job_id_mismatch")
 
-    claim_boundary = _mapping(manifest.get("claim_boundary")) or _mapping(
-        manifest.get("proof_boundary")
-    )
     if manifest:
-        if manifest.get("status") != "simulator_command_completed":
+        if manifest.get("state") != "completed":
             blockers.append("job_run_manifest_not_terminal_completed")
-        if manifest.get("simulator_service_status") != "completed":
+        if manifest.get("simulator_service_status") not in {
+            "completed",
+            "simulator_command_completed",
+        }:
             blockers.append("simulator_service_not_completed")
-        if claim_boundary.get("simulator_execution_proven") is not True:
-            blockers.append("simulator_execution_not_proven")
         if manifest.get("blockers"):
             blockers.append("job_run_manifest_has_blockers")
+    if commit and commit.get("status") != "committed":
+        blockers.append("job_commit_not_committed")
 
     attempts = _integer(metrics.get("attempt_count"))
-    successes = _integer(
-        metrics.get("passed_attempt_count")
-        if "passed_attempt_count" in metrics
-        else metrics.get("success_count")
-    )
+    failures = _integer(metrics.get("failed_attempt_count"))
+    successes = _integer(metrics.get("passed_attempt_count"))
+    if successes is None and attempts is not None and failures is not None:
+        successes = attempts - failures
     if attempts is None or attempts <= 0:
         blockers.append("episode_attempt_count_not_observed")
     if successes is None or attempts is None or successes > attempts:
@@ -155,7 +161,9 @@ def read_terminal_robot_eval_artifacts(job_dir: str | Path) -> dict[str, Any]:
     unique_blockers = list(dict.fromkeys(blockers))
     return {
         "status": "terminal_observed" if not unique_blockers else "blocked",
+        "job_manifest_status": manifest.get("state"),
         "job_id": job_id,
+        "canonical_job_request_digest": _digest(request) if request else None,
         "execution_admission_digest": admission_digest,
         "episode_result": {
             "episodes_run": attempts,

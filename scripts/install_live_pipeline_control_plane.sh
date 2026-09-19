@@ -261,6 +261,12 @@ run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-pipeline-control-plane.service" \
   "${SYSTEMD_DIR}/blueprint-pipeline-control-plane.service"
 run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-agent-run-dispatcher.service" \
+  "${SYSTEMD_DIR}/blueprint-agent-run-dispatcher.service"
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-agent-run-dispatcher.timer" \
+  "${SYSTEMD_DIR}/blueprint-agent-run-dispatcher.timer"
+run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-pipeline-control-plane.timer" \
   "${SYSTEMD_DIR}/blueprint-pipeline-control-plane.timer"
 run install -m 0644 \

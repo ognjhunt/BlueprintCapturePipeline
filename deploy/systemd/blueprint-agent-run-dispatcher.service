@@ -1,0 +1,15 @@
+[Unit]
+Description=Blueprint admitted agent-run dispatcher
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=blueprint
+Group=blueprint
+EnvironmentFile=/etc/blueprint/pipeline-control-plane.env
+ConditionEnvironment=BLUEPRINT_AGENT_RUN_DISPATCH_ENABLED=true
+ExecStart=/opt/blueprint/pipeline/.venv/bin/python -m blueprint_pipeline.agent_run_executor --webapp-url ${BLUEPRINT_WEBAPP_URL} --capture-root ${BLUEPRINT_AGENT_RUN_CAPTURE_ROOT} --token-file ${BLUEPRINT_PIPELINE_SYNC_TOKEN_FILE} --inbox-dir ${BLUEPRINT_ROBOT_EVAL_JOB_REQUEST_INBOX} --journal-dir ${BLUEPRINT_AGENT_RUN_JOURNAL_DIR}
+NoNewPrivileges=true
+PrivateTmp=true
+

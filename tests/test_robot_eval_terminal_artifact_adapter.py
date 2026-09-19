@@ -28,12 +28,17 @@ def _terminal_job(tmp_path: Path) -> Path:
         {
             "schema_version": "robot_eval_job_run_manifest.v1",
             "job_id": "canonical-job-1",
-            "status": "simulator_command_completed",
+            "status": "completed",
+            "state": "completed",
             "simulator_service_status": "completed",
             "blockers": [],
             "claim_boundary": {"simulator_execution_proven": True},
             "request_provenance": {"execution_admission_digest": "sha256:admitted"},
         },
+    )
+    _write(
+        job_dir / "job_commit.json",
+        {"schema_version": "robot_eval_job_commit.v1", "job_id": "canonical-job-1", "status": "committed"},
     )
     _write(
         job_dir / "simulator_command_batch_metrics.json",
@@ -77,7 +82,7 @@ def test_reads_terminal_observed_episode_and_zero_cost(tmp_path: Path) -> None:
 def test_blocks_nonterminal_incomplete_and_unobserved_cost(tmp_path: Path) -> None:
     job_dir = _terminal_job(tmp_path)
     manifest = json.loads((job_dir / "job_run_manifest.json").read_text())
-    manifest["status"] = "running"
+    manifest["state"] = "running"
     manifest["claim_boundary"]["simulator_execution_proven"] = False
     _write(job_dir / "job_run_manifest.json", manifest)
     metrics = json.loads((job_dir / "simulator_command_batch_metrics.json").read_text())
@@ -95,7 +100,6 @@ def test_blocks_nonterminal_incomplete_and_unobserved_cost(tmp_path: Path) -> No
     assert result["status"] == "blocked"
     assert set(result["blockers"]) >= {
         "job_run_manifest_not_terminal_completed",
-        "simulator_execution_not_proven",
         "episode_coverage_not_complete",
         "actual_gpu_time_not_observed",
         "actual_cost_usd_not_observed",

@@ -10,13 +10,14 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
+import tempfile
+import time
 from typing import Any, Callable, Mapping
 from urllib.parse import urlsplit
+from uuid import uuid4
 
-from .robot_eval_evaluation_run_adapter import (
-    execute_robot_eval_request_as_evaluation_run,
-)
 from .safe_outbound_http import (
     loopback_service_policy,
     pinned_api_policy,
@@ -40,15 +41,32 @@ def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
 
 
-def validate_queue_run(row: Mapping[str, Any]) -> list[str]:
+def validate_queue_run(row: Mapping[str, Any], *, capture_root: Path | None = None) -> list[str]:
     blockers: list[str] = []
     admission = _mapping(row.get("execution_admission"))
     binding = _mapping(admission.get("binding"))
     request = _mapping(admission.get("decision_request"))
     canonical = _mapping(admission.get("canonical_execution_request"))
+    authorization = _mapping(canonical.get("execution_authorization"))
     if admission.get("schema_version") != ADMISSION_SCHEMA_VERSION:
         blockers.append("agent_execution_admission_schema_invalid")
-    if row.get("execution_admission_digest") != _digest(admission):
+    frozen = row.get("execution_admission_canonical_json")
+    if not isinstance(frozen, str):
+        blockers.append("agent_execution_admission_canonical_json_missing")
+    else:
+        try:
+            parsed_frozen = json.loads(frozen)
+        except json.JSONDecodeError:
+            parsed_frozen = None
+            blockers.append("agent_execution_admission_canonical_json_invalid")
+        if parsed_frozen != admission:
+            blockers.append("agent_execution_admission_canonical_json_mismatch")
+    frozen_digest = (
+        "sha256:" + hashlib.sha256(frozen.encode("utf-8")).hexdigest()
+        if isinstance(frozen, str)
+        else None
+    )
+    if row.get("execution_admission_digest") != frozen_digest:
         blockers.append("agent_execution_admission_digest_mismatch")
     exact = {
         "team_id": row.get("team_id"),
@@ -67,6 +85,39 @@ def validate_queue_run(row: Mapping[str, Any]) -> list[str]:
         blockers.append("agent_execution_canonical_team_mismatch")
     if _mapping(canonical.get("site_package")).get("capture_id") != binding.get("capture_id"):
         blockers.append("agent_execution_canonical_capture_mismatch")
+    if capture_root is not None:
+        configured_root = str(capture_root.resolve())
+        request_root = str(_mapping(canonical.get("site_package")).get("capture_root") or "")
+        if request_root != configured_root:
+            blockers.append("agent_execution_capture_root_partition_mismatch")
+        episode_specs_path = capture_root / "pipeline" / "simulation_automation" / "episode_specs.json"
+        if not episode_specs_path.is_file():
+            blockers.append("agent_execution_episode_specs_missing")
+        else:
+            try:
+                episode_specs = _load_json(episode_specs_path)
+            except (OSError, ValueError):
+                blockers.append("agent_execution_episode_specs_invalid")
+            else:
+                if episode_specs.get("episode_count") != row.get("quoted_episodes"):
+                    blockers.append("agent_execution_episode_spec_count_mismatch")
+    if authorization.get("episodes") != row.get("quoted_episodes"):
+        blockers.append("agent_execution_episode_quote_mismatch")
+    if authorization.get("max_cost_usd") != row.get("quoted_usd"):
+        blockers.append("agent_execution_cost_quote_mismatch")
+    tasks = canonical.get("requested_tasks")
+    if not isinstance(tasks, list) or len(tasks) != 1:
+        blockers.append("agent_execution_task_scope_unbounded")
+    else:
+        task = _mapping(tasks[0])
+        scenarios = task.get("scenario_ids")
+        if (
+            authorization.get("task_id") != task.get("task_id")
+            or not isinstance(scenarios, list)
+            or len(scenarios) != 1
+            or authorization.get("scenario_id") != scenarios[0]
+        ):
+            blockers.append("agent_execution_scenario_scope_mismatch")
     proof = _mapping(admission.get("proof_boundary"))
     if proof.get("provider_spend_authorized") is not False:
         blockers.append("agent_execution_webapp_spend_boundary_invalid")
@@ -111,6 +162,9 @@ class AgentRunWebAppClient:
         if not isinstance(rows, list):
             raise ValueError("agent_execution_queue_response_invalid")
         return [dict(row) for row in rows if isinstance(row, Mapping)]
+
+    def get_run(self, run_id: str) -> dict[str, Any]:
+        return self._json(f"/api/internal/pipeline/agent-runs/{run_id}")
 
     def claim(self, run_id: str, pipeline_run_id: str, admission_digest: str) -> dict[str, Any]:
         return self._json(
@@ -162,7 +216,10 @@ class AgentRunWebAppClient:
                 "artifact_uri": receipt.get("artifact_uri"),
             },
         )
-        rate = float(row["quoted_usd"]) / max(1, int(row["quoted_episodes"]))
+        observed_cost = receipt.get("observed_cost_usd")
+        if isinstance(observed_cost, bool) or not isinstance(observed_cost, (int, float)):
+            raise ValueError("agent_execution_observed_cost_missing")
+        rate = float(observed_cost) / episodes
         self._json(
             "/api/internal/pipeline/agent-run-settlements",
             method="POST",
@@ -179,7 +236,7 @@ class AgentRunWebAppClient:
         )
 
 
-def _pipeline_run_id(row: Mapping[str, Any]) -> str:
+def _canonical_job_id(row: Mapping[str, Any]) -> str:
     canonical = _mapping(
         _mapping(row.get("execution_admission")).get("canonical_execution_request")
     )
@@ -189,62 +246,98 @@ def _pipeline_run_id(row: Mapping[str, Any]) -> str:
     return job_id
 
 
-def execute_one(
-    *,
-    row: Mapping[str, Any],
-    capture_root: Path,
-    executor: Callable[..., Mapping[str, Any]] = execute_robot_eval_request_as_evaluation_run,
-) -> Mapping[str, Any]:
+def _write_json_atomic(path: Path, value: Mapping[str, Any], *, exclusive: bool = False) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    encoded = _canonical_json(value)
+    if exclusive and path.exists():
+        raise FileExistsError(path)
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        os.fchmod(descriptor, 0o600)
+        os.write(descriptor, encoded)
+        os.fsync(descriptor)
+        os.close(descriptor)
+        descriptor = -1
+        if exclusive:
+            os.link(temporary_name, path)
+            os.unlink(temporary_name)
+        else:
+            os.replace(temporary_name, path)
+        parent = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(parent)
+        finally:
+            os.close(parent)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        if os.path.exists(temporary_name):
+            os.unlink(temporary_name)
+
+
+def _load_json(path: Path) -> dict[str, Any]:
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, Mapping):
+        raise ValueError("agent_execution_journal_not_object")
+    return dict(value)
+
+
+def _stage_canonical_request(row: Mapping[str, Any], inbox_dir: Path) -> Path:
     admission = _mapping(row.get("execution_admission"))
-    translated = _mapping(admission.get("canonical_execution_request"))
+    canonical = _mapping(admission.get("canonical_execution_request"))
     required = ("customer", "site_package", "requested_tasks", "robot_profile", "policy_package")
-    missing = [field for field in required if not translated.get(field)]
+    missing = [field for field in required if not canonical.get(field)]
     if missing:
         raise ValueError("agent_execution_canonical_fields_missing:" + ",".join(missing))
-    declared_root = str(_mapping(translated.get("site_package")).get("capture_root") or "")
-    if not declared_root or Path(declared_root).resolve() != capture_root.resolve():
-        raise ValueError("agent_execution_capture_root_mismatch")
-    return executor(
-        capture_root=capture_root,
-        job_request=translated,
-        job_id=_pipeline_run_id(row),
-        provisioner="fixture_local",
-        simulator="fixture",
-        allow_wam_provider=False,
-        allow_gpu_provisioning=False,
-        allow_simulator_execution=False,
-        allow_training=False,
-        allow_policy_execution=False,
-        allow_delivery_upload=False,
-    )
+    job_id = _canonical_job_id(row)
+    if Path(job_id).name != job_id or job_id in {".", ".."}:
+        raise ValueError("agent_execution_canonical_job_id_unsafe")
+    path = inbox_dir / f"{job_id}.json"
+    if path.exists():
+        if _digest(_load_json(path)) != _digest(canonical):
+            raise ValueError("agent_execution_inbox_identity_conflict")
+        return path
+    _write_json_atomic(path, canonical, exclusive=True)
+    return path
 
 
-def terminal_episode_receipt(
-    row: Mapping[str, Any], result: Mapping[str, Any]
-) -> dict[str, Any] | None:
-    receipt = _mapping(result.get("agent_run_episode_receipt"))
-    if receipt.get("schema_version") != "blueprint.agent_run_episode_receipt.v1":
-        return None
-    if receipt.get("pipeline_run_id") != _pipeline_run_id(row):
-        return None
-    if receipt.get("execution_admission_digest") != row.get("execution_admission_digest"):
-        return None
-    episodes = receipt.get("episodes_run")
-    successes = receipt.get("episodes_succeeded")
-    if (
-        not isinstance(episodes, int)
-        or isinstance(episodes, bool)
-        or episodes <= 0
-        or not isinstance(successes, int)
-        or isinstance(successes, bool)
-        or successes < 0
-        or successes > episodes
-        or not receipt.get("artifact_uri")
-        or receipt.get("receipt_sha256")
-        != _digest({key: value for key, value in receipt.items() if key != "receipt_sha256"})
-    ):
-        return None
-    return receipt
+def _default_terminal_reader(
+    *, job_dir: Path, expected_job_id: str, expected_canonical_request_digest: str
+) -> Mapping[str, Any]:
+    from .robot_eval_terminal_artifact_adapter import read_terminal_robot_eval_artifacts
+
+    observed = read_terminal_robot_eval_artifacts(job_dir)
+    if observed.get("status") == "blocked":
+        blockers = list(observed.get("blockers") or [])
+        manifest_status = str(observed.get("job_manifest_status") or "")
+        if (
+            all(str(item).endswith("_missing") for item in blockers)
+            or manifest_status not in {"completed", "failed", "blocked", "cancelled"}
+            or set(map(str, blockers)).issubset(
+                {"actual_gpu_time_not_observed", "actual_cost_usd_not_observed"}
+            )
+        ):
+            return {"status": "pending", "blockers": blockers}
+        return observed
+    blockers: list[str] = []
+    if observed.get("job_id") != expected_job_id:
+        blockers.append("terminal_canonical_job_id_mismatch")
+    if observed.get("canonical_job_request_digest") != expected_canonical_request_digest:
+        blockers.append("terminal_canonical_job_request_mismatch")
+    if blockers:
+        return {"status": "blocked", "blockers": blockers}
+    episode = _mapping(observed.get("episode_result"))
+    return {
+        "status": "completed",
+        "episodes_run": episode.get("episodes_run"),
+        "episodes_succeeded": episode.get("episodes_succeeded"),
+        "median_cycle_seconds": None,
+        "cycle_seconds_p10": None,
+        "cycle_seconds_p90": None,
+        "note": "Observed canonical terminal robot-eval artifacts",
+        "artifact_uri": episode.get("metrics_path"),
+        "observed_cost_usd": _mapping(observed.get("cost")).get("observed_cost_usd"),
+    }
 
 
 def poll_once(
@@ -252,41 +345,133 @@ def poll_once(
     client: AgentRunWebAppClient,
     capture_root: Path,
     limit: int = 10,
-    executor: Callable[..., Mapping[str, Any]] = execute_robot_eval_request_as_evaluation_run,
+    inbox_dir: Path | None = None,
+    journal_dir: Path | None = None,
+    terminal_reader: Callable[..., Mapping[str, Any]] = _default_terminal_reader,
 ) -> dict[str, Any]:
-    summary: dict[str, Any] = {"examined": 0, "claimed": 0, "blocked": 0, "completed": 0}
+    pipeline_root = capture_root / "pipeline"
+    inbox = inbox_dir or pipeline_root / "robot_eval_job_requests" / "inbox"
+    journals = journal_dir or pipeline_root / "agent_run_executor" / "journal"
+    jobs_root = pipeline_root / "robot_eval_jobs"
+    journals.mkdir(parents=True, exist_ok=True)
+    summary: dict[str, Any] = {
+        "examined": 0,
+        "claimed": 0,
+        "staged": 0,
+        "pending": 0,
+        "blocked": 0,
+        "completed": 0,
+    }
+    # Reconcile intents first. A crash may happen after the server commits the
+    # claim but before this process records the response. The durable unique
+    # attempt id is therefore looked up and reused; a second owner is never
+    # created for that run.
+    for journal_path in sorted(journals.glob("*.json")):
+        journal = _load_json(journal_path)
+        if journal.get("state") != "claim_intent":
+            continue
+        row = _mapping(journal.get("row"))
+        run_id = str(journal.get("run_id") or "")
+        pipeline_run_id = str(journal.get("pipeline_run_id") or "")
+        observed = client.get_run(run_id)
+        dispatch = _mapping(observed.get("dispatch"))
+        observed_owner = str(dispatch.get("pipeline_run_id") or "")
+        if not observed_owner:
+            claim = client.claim(
+                run_id,
+                pipeline_run_id,
+                str(journal["execution_admission_digest"]),
+            )
+            observed_owner = str(claim.get("pipeline_run_id") or "")
+        if observed_owner != pipeline_run_id:
+            journal["state"] = "claim_rejected"
+            _write_json_atomic(journal_path, journal)
+            summary["blocked"] += 1
+            continue
+        try:
+            staged_path = _stage_canonical_request(row, inbox)
+            journal["state"] = "staged"
+            journal["staged_request_path"] = str(staged_path)
+            _write_json_atomic(journal_path, journal)
+            summary["claimed"] += 1
+            summary["staged"] += 1
+        except Exception as exc:
+            journal["state"] = "claim_intent"
+            journal["last_staging_error"] = f"staging_failed:{type(exc).__name__}"
+            _write_json_atomic(journal_path, journal)
+            summary["pending"] += 1
     for row in client.list_runs(limit):
         summary["examined"] += 1
-        blockers = validate_queue_run(row)
+        blockers = validate_queue_run(row, capture_root=capture_root)
         if blockers:
             summary["blocked"] += 1
             continue
-        pipeline_run_id = _pipeline_run_id(row)
+        pipeline_run_id = f"agent-attempt-{uuid4().hex}"
+        journal_path = journals / f"{row['run_id']}--{pipeline_run_id}.json"
+        journal = {
+            "schema_version": "blueprint.agent_run_executor_journal.v1",
+            "state": "claim_intent",
+            "run_id": row["run_id"],
+            "pipeline_run_id": pipeline_run_id,
+            "canonical_job_id": _canonical_job_id(row),
+            "execution_admission_digest": row["execution_admission_digest"],
+            "row": dict(row),
+        }
+        _write_json_atomic(journal_path, journal, exclusive=True)
         claim = client.claim(
             str(row["run_id"]),
             pipeline_run_id,
             str(row["execution_admission_digest"]),
         )
         if claim.get("pipeline_run_id") != pipeline_run_id:
+            journal["state"] = "claim_rejected"
+            _write_json_atomic(journal_path, journal)
             summary["blocked"] += 1
             continue
         summary["claimed"] += 1
         try:
-            result = execute_one(row=row, capture_root=capture_root, executor=executor)
-        except Exception as exc:  # terminal no-episode closeout is safe and retry-idempotent
-            client.report_blocked(row, pipeline_run_id, f"executor_failed:{type(exc).__name__}")
-            summary["blocked"] += 1
+            staged_path = _stage_canonical_request(row, inbox)
+            journal["state"] = "staged"
+            journal["staged_request_path"] = str(staged_path)
+            _write_json_atomic(journal_path, journal)
+            summary["staged"] += 1
+        except Exception as exc:
+            journal["state"] = "claim_intent"
+            journal["last_staging_error"] = f"staging_failed:{type(exc).__name__}"
+            _write_json_atomic(journal_path, journal)
+            summary["pending"] += 1
+    for journal_path in sorted(journals.glob("*.json")):
+        journal = _load_json(journal_path)
+        if journal.get("state") != "staged":
             continue
-        # Canonical execution may produce a structured blocked result. Billing
-        # and measured-result publication require an explicit episode receipt;
-        # a status string alone can never fabricate episodes or success.
-        receipt = terminal_episode_receipt(row, result)
-        if receipt is None:
-            client.report_blocked(row, pipeline_run_id, "canonical_executor_reported_no_episodes")
-            summary["blocked"] += 1
+        row = _mapping(journal.get("row"))
+        terminal = terminal_reader(
+            job_dir=jobs_root / str(journal["canonical_job_id"]),
+            expected_job_id=str(journal["canonical_job_id"]),
+            expected_canonical_request_digest=_digest(
+                _mapping(_mapping(row.get("execution_admission")).get("canonical_execution_request"))
+            ),
+        )
+        status = terminal.get("status")
+        if status in {"pending", "not_found"}:
+            summary["pending"] += 1
             continue
-        client.report_completed(row, pipeline_run_id, receipt)
-        summary["completed"] += 1
+        if status == "blocked":
+            client.report_blocked(
+                row,
+                str(journal["pipeline_run_id"]),
+                ";".join(str(item) for item in terminal.get("blockers", [])),
+            )
+            journal["state"] = "reported_blocked"
+            summary["blocked"] += 1
+        elif status == "completed":
+            client.report_completed(row, str(journal["pipeline_run_id"]), terminal)
+            journal["state"] = "reported_completed"
+            summary["completed"] += 1
+        else:
+            summary["pending"] += 1
+            continue
+        _write_json_atomic(journal_path, journal)
     return summary
 
 
@@ -296,15 +481,23 @@ def main() -> int:
     parser.add_argument("--capture-root", required=True, type=Path)
     parser.add_argument("--limit", type=int, default=10)
     parser.add_argument("--token-file", required=True, type=Path)
+    parser.add_argument("--inbox-dir", type=Path)
+    parser.add_argument("--journal-dir", type=Path)
+    parser.add_argument("--poll-seconds", type=float, default=0)
     args = parser.parse_args()
     token = load_pipeline_sync_token(token_file_path=args.token_file, require_file=True)
     client = AgentRunWebAppClient(base_url=args.webapp_url, token=token)
-    print(
-        json.dumps(
-            poll_once(client=client, capture_root=args.capture_root, limit=args.limit),
-            sort_keys=True,
-        )
-    )
+    while True:
+        print(json.dumps(poll_once(
+            client=client,
+            capture_root=args.capture_root,
+            limit=args.limit,
+            inbox_dir=args.inbox_dir,
+            journal_dir=args.journal_dir,
+        ), sort_keys=True), flush=True)
+        if args.poll_seconds <= 0:
+            break
+        time.sleep(max(1.0, args.poll_seconds))
     return 0
 
 

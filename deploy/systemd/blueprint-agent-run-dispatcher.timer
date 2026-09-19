@@ -1,0 +1,13 @@
+[Unit]
+Description=Poll WebApp for admitted agent runs
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=30s
+RandomizedDelaySec=5s
+Persistent=true
+Unit=blueprint-agent-run-dispatcher.service
+
+[Install]
+WantedBy=timers.target
+

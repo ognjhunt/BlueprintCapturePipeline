@@ -12,6 +12,9 @@ from blueprint_pipeline import agent_run_executor as executor
 
 
 def _row(tmp_path: Path) -> dict[str, Any]:
+    episode_specs = tmp_path / "pipeline" / "simulation_automation" / "episode_specs.json"
+    episode_specs.parent.mkdir(parents=True, exist_ok=True)
+    episode_specs.write_text(json.dumps({"episode_count": 5}), encoding="utf-8")
     admission = {
         "schema_version": executor.ADMISSION_SCHEMA_VERSION,
         "source_request_id": "request-1",
@@ -21,9 +24,15 @@ def _row(tmp_path: Path) -> dict[str, Any]:
             "job_id": "canonical-job-1",
             "customer": {"id": "team-1"},
             "site_package": {"capture_id": "capture-1", "capture_root": str(tmp_path)},
-            "requested_tasks": [{"task_id": "pick_place"}],
+            "requested_tasks": [{"task_id": "pick_place", "scenario_ids": ["nominal"]}],
             "robot_profile": {"robot_profile_id": "arm-1"},
             "policy_package": {"policy_api_endpoint": {"endpoint_url": "https://policy.example"}},
+            "execution_authorization": {
+                "task_id": "pick_place",
+                "scenario_id": "nominal",
+                "episodes": 5,
+                "max_cost_usd": 10,
+            },
         },
         "binding": {
             "team_id": "team-1",
@@ -34,6 +43,7 @@ def _row(tmp_path: Path) -> dict[str, Any]:
         },
         "proof_boundary": {"provider_spend_authorized": False},
     }
+    canonical_json = json.dumps(admission, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return {
         "run_id": "run-1",
         "reservation_id": "reservation-1",
@@ -45,7 +55,8 @@ def _row(tmp_path: Path) -> dict[str, Any]:
         "checkpoint": {"checkpoint_id": "checkpoint-1"},
         "scene": {"request_id": "scene-request-1"},
         "execution_admission": admission,
-        "execution_admission_digest": executor._digest(admission),
+        "execution_admission_canonical_json": canonical_json,
+        "execution_admission_digest": "sha256:" + hashlib.sha256(canonical_json.encode()).hexdigest(),
     }
 
 
@@ -63,6 +74,9 @@ class FakeClient:
         self.claims.append((run_id, pipeline_run_id))
         return {"pipeline_run_id": pipeline_run_id}
 
+    def get_run(self, run_id: str) -> dict[str, Any]:
+        return {"run_id": run_id, "dispatch": None}
+
     def report_blocked(self, _row: Any, _pipeline_run_id: str, reason: str) -> None:
         self.blocked.append(reason)
 
@@ -74,54 +88,91 @@ def test_missing_admission_refuses_claim_and_execution(tmp_path: Path) -> None:
     row = _row(tmp_path)
     row.pop("execution_admission")
     client = FakeClient([row])
-    called = False
-
-    def must_not_execute(**_kwargs: Any) -> dict[str, Any]:
-        nonlocal called
-        called = True
-        return {}
-
-    summary = executor.poll_once(client=client, capture_root=tmp_path, executor=must_not_execute)
-    assert summary == {"examined": 1, "claimed": 0, "blocked": 1, "completed": 0}
+    summary = executor.poll_once(client=client, capture_root=tmp_path)
+    assert summary["examined"] == 1
+    assert summary["claimed"] == 0
+    assert summary["blocked"] == 1
     assert not client.claims
-    assert called is False
 
 
 def test_digest_bound_episode_receipt_closes_claimed_run(tmp_path: Path) -> None:
     row = _row(tmp_path)
-    pipeline_run_id = executor._pipeline_run_id(row)
     receipt = {
-        "schema_version": "blueprint.agent_run_episode_receipt.v1",
-        "pipeline_run_id": pipeline_run_id,
-        "execution_admission_digest": row["execution_admission_digest"],
+        "status": "completed",
         "episodes_run": 5,
         "episodes_succeeded": 3,
         "median_cycle_seconds": 4.2,
         "artifact_uri": "gs://blueprint/results/run-1/receipt.json",
+        "observed_cost_usd": 8.0,
     }
-    receipt["receipt_sha256"] = executor._digest(receipt)
     client = FakeClient([row])
 
     summary = executor.poll_once(
         client=client,
         capture_root=tmp_path,
-        executor=lambda **_kwargs: {"agent_run_episode_receipt": receipt},
+        terminal_reader=lambda **_kwargs: receipt,
     )
 
-    assert summary == {"examined": 1, "claimed": 1, "blocked": 0, "completed": 1}
-    assert client.claims == [("run-1", pipeline_run_id)]
+    assert summary["claimed"] == 1
+    assert summary["staged"] == 1
+    assert summary["completed"] == 1
+    assert client.claims[0][0] == "run-1"
     assert client.completed == [receipt]
 
 
-def test_unbound_executor_result_releases_as_no_episode(tmp_path: Path) -> None:
+def test_pending_terminal_artifacts_keep_claimed_run_open(tmp_path: Path) -> None:
     client = FakeClient([_row(tmp_path)])
     summary = executor.poll_once(
         client=client,
         capture_root=tmp_path,
-        executor=lambda **_kwargs: {"status": "completed"},
+        terminal_reader=lambda **_kwargs: {"status": "pending"},
     )
-    assert summary["blocked"] == 1
-    assert client.blocked == ["canonical_executor_reported_no_episodes"]
+    assert summary["pending"] == 1
+    assert client.blocked == []
+
+
+def test_frozen_utf8_admission_bytes_are_digest_authority(tmp_path: Path) -> None:
+    row = _row(tmp_path)
+    row["execution_admission"]["operator_name"] = "José 🤖"
+    row["execution_admission"]["integer_quote"] = 1
+    frozen = json.dumps(
+        row["execution_admission"], sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+    row["execution_admission_canonical_json"] = frozen
+    row["execution_admission_digest"] = "sha256:" + hashlib.sha256(frozen.encode()).hexdigest()
+    assert executor.validate_queue_run(row) == []
+
+
+def test_restart_reconciles_committed_claim_before_staging(tmp_path: Path) -> None:
+    row = _row(tmp_path)
+    client = FakeClient([])
+    owner = "agent-attempt-restart"
+    client.get_run = lambda _run_id: {
+        "run_id": "run-1",
+        "dispatch": {"pipeline_run_id": owner},
+    }
+    journal_dir = tmp_path / "journal"
+    executor._write_json_atomic(
+        journal_dir / f"run-1--{owner}.json",
+        {
+            "schema_version": "blueprint.agent_run_executor_journal.v1",
+            "state": "claim_intent",
+            "run_id": "run-1",
+            "pipeline_run_id": owner,
+            "canonical_job_id": "canonical-job-1",
+            "execution_admission_digest": row["execution_admission_digest"],
+            "row": row,
+        },
+    )
+    summary = executor.poll_once(
+        client=client,
+        capture_root=tmp_path,
+        journal_dir=journal_dir,
+        terminal_reader=lambda **_kwargs: {"status": "pending"},
+    )
+    assert summary["staged"] == 1
+    assert summary["pending"] == 1
+    assert client.claims == []
 
 
 def test_signed_local_webapp_queue_closes_digest_bound_fixture(tmp_path: Path) -> None:
@@ -169,30 +220,29 @@ def test_signed_local_webapp_queue_closes_digest_bound_fixture(tmp_path: Path) -
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        pipeline_run_id = executor._pipeline_run_id(row)
         receipt = {
-            "schema_version": "blueprint.agent_run_episode_receipt.v1",
-            "pipeline_run_id": pipeline_run_id,
-            "execution_admission_digest": row["execution_admission_digest"],
+            "status": "completed",
             "episodes_run": 5,
             "episodes_succeeded": 4,
             "artifact_uri": "gs://blueprint/results/canonical-job-1/receipt.json",
+            "observed_cost_usd": 8.0,
         }
-        receipt["receipt_sha256"] = executor._digest(receipt)
         client = executor.AgentRunWebAppClient(
             base_url=f"http://127.0.0.1:{server.server_port}", token=token
         )
         summary = executor.poll_once(
             client=client,
             capture_root=tmp_path,
-            executor=lambda **_kwargs: {"agent_run_episode_receipt": receipt},
+            terminal_reader=lambda **_kwargs: receipt,
         )
     finally:
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
 
-    assert summary == {"examined": 1, "claimed": 1, "blocked": 0, "completed": 1}
+    assert summary["claimed"] == 1
+    assert summary["staged"] == 1
+    assert summary["completed"] == 1
     assert [path for path, _ in received] == [
         "/api/internal/pipeline/agent-runs/run-1/started",
         "/api/internal/pipeline/agent-run-results",
