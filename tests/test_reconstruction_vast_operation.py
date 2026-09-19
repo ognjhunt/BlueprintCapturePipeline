@@ -130,6 +130,7 @@ class _Provider:
         self.zero_after = zero_after
         self.launched = False
         self.requests: list[dict] = []
+        self.specs = []
 
     def billable_inventory(self, *, name_prefix):
         del name_prefix
@@ -142,6 +143,7 @@ class _Provider:
 
     def build_request(self, spec, job_dir):
         del job_dir
+        self.specs.append(spec)
         assert spec.image == IMAGE
         assert spec.env["BLUEPRINT_RECONSTRUCTION_OPERATION"] == "pose_canary"
         assert "INPUT_BUNDLE_GET_URL" in " ".join(spec.env)
@@ -203,10 +205,12 @@ def test_operation_retrieves_validates_then_tears_down_and_replays_offline(
 ) -> None:
     provider = _Provider()
     times = iter([1000.0, 1001.0, 1002.0])
+    preflight = _preflight()
+    preflight["capacity_request"] = {"excluded_machine_ids": [123]}
     result = run_reconstruction_vast_operation(
         bound_request=_bound_request(),
         bundle_receipt=_bundle_receipt(),
-        preflight=_preflight(),
+        preflight=preflight,
         job_dir=tmp_path,
         input_bundle_get_url="https://objects.example/input?sig=secret",
         input_receipt_get_url="https://objects.example/receipt?sig=secret",
@@ -220,6 +224,7 @@ def test_operation_retrieves_validates_then_tears_down_and_replays_offline(
         clock=lambda: next(times),
         watchdog_validator=lambda _watchdog, _now, _ttl: True,
     )
+    assert provider.specs[0].excluded_machine_ids == (123,)
     assert result["status"] == "completed"
     assert result["operation_result_status"] == "succeeded"
     assert result["output_retrieved_before_teardown"] is True

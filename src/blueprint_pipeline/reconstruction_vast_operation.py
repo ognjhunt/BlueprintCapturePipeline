@@ -521,6 +521,7 @@ def run_reconstruction_vast_operation(
             ),
             requires_rtx=False,
             vast_launch_mode="args",
+            excluded_machine_ids=tuple(preflight.get("capacity_request", {}).get("excluded_machine_ids", [])),
         )
         provider_request = provider.build_request(spec, root)
         provider_request["prelaunch_spend_guard"] = {

@@ -318,6 +318,7 @@ def collect_reconstruction_vast_preflight(
     max_hourly_rate_usd: float,
     minimum_gpu_ram_mb: int = 24_000,
     minimum_reliability: float = 0.98,
+    excluded_machine_ids: tuple[int, ...] = (),
     provider_name: str = "vast",
     clock: Callable[[], float] = time.time,
 ) -> dict[str, Any]:
@@ -337,6 +338,7 @@ def collect_reconstruction_vast_preflight(
         # Match the worker allocation so storage pricing and host capacity are
         # checked before binding the maximum launch rate.
         "container_disk_gb": max(100, int(container_disk_bytes) // 1024**3),
+        "excluded_machine_ids": list(excluded_machine_ids),
         "min_reliability": float(minimum_reliability),
         "require_avx": True,
         "require_known_supported_isaac_driver": False,

@@ -280,6 +280,7 @@ def test_preflight_collector_requires_global_zero_and_independent_watchdog():
     }
     def capacity(request):
         assert request["container_disk_gb"] == 120
+        assert request["excluded_machine_ids"] == [123]
         return {"status": "available", "selected_offer": {
             "gpu_name": "L40S", "gpu_ram_mb": 46_068, "hourly_rate_usd": 0.47}}
 
@@ -291,6 +292,7 @@ def test_preflight_collector_requires_global_zero_and_independent_watchdog():
         capacity_probe=capacity,
         inventory_probe=lambda prefix: inventories[prefix],
         max_hourly_rate_usd=0.75,
+        excluded_machine_ids=(123,),
         clock=lambda: 1000.0,
     )
     assert result["status"] == "verified"
