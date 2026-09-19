@@ -132,3 +132,23 @@ def test_visual_scene_publishes_only_viewer_assets_and_checks_receipt(monkeypatc
     with pytest.raises(ValueError, match="preparation_missing"):
         module.publish_website_visual_scene(descriptor=descriptor, world=world, operation_id="op-1")
     assert len(calls) == 1
+
+
+def test_sam_spend_uses_signed_current_capture_reservation(monkeypatch):
+    from blueprint_pipeline.paid_resource_admission import require_paid_resource_admission_grant
+    calls = []
+    def post(**kwargs):
+        calls.append(kwargs)
+        return {**kwargs["payload"]["spend"], "schema_version": "paid_lane_admission.v1", "status": "admitted",
+                "blockers": [], "external_disclosure_allowed": True, "expires_at_epoch": 9_999_999_999}
+    monkeypatch.setattr(module, "website_webapp_request", post)
+    digest = "sha256:" + "a" * 64
+    receipt, grant = module.reserve_website_sam_spend(task_context=context(), binding_digest=digest,
+                                                     maximum_cost_usd=0.02, request_count=2)
+    require_paid_resource_admission_grant(grant, resource_class="evaluator_api", allocation_binding_digest=digest,
+                                          require_allocation_binding=True)
+    assert calls[0]["operation"] == "preparation-spend"
+    assert receipt["maximum_cost_usd"] == .02
+    monkeypatch.setattr(module, "website_webapp_request", lambda **kw: {**receipt, "allocation_binding_digest": "sha256:" + "b" * 64})
+    with pytest.raises(ValueError, match="receipt_invalid"):
+        module.reserve_website_sam_spend(task_context=context(), binding_digest=digest, maximum_cost_usd=.02, request_count=2)

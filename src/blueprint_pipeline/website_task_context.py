@@ -46,7 +46,7 @@ def load_current_website_task_context(
 
 def website_webapp_request(*, capture_id: str, operation: str, payload: Mapping[str, Any]) -> dict[str, Any]:
     """Use the existing signed transport for private preparation control data."""
-    if operation not in {"task-context", "scene-sponsorship", "prepared-scene", "visual-scene"}:
+    if operation not in {"task-context", "scene-sponsorship", "prepared-scene", "visual-scene", "preparation-spend"}:
         raise ValueError("website_control_operation_invalid")
     configured = os.getenv("PIPELINE_SYNC_WEBAPP_URL", "").strip()
     if not configured:
@@ -65,6 +65,23 @@ def website_webapp_request(*, capture_id: str, operation: str, payload: Mapping[
     if not isinstance(value, Mapping):
         raise ValueError("website_task_context_response_invalid")
     return dict(value)
+
+
+def reserve_website_sam_spend(*, task_context: Mapping[str, Any], binding_digest: str,
+                            maximum_cost_usd: float, request_count: int) -> tuple[dict[str, Any], Any]:
+    import time
+    from .paid_resource_admission import require_paid_resource_admission
+    command = {"task_context_digest": task_context["context_digest"], "allocation_binding_digest": binding_digest,
+               "resource_class": "evaluator_api", "provider": "meta", "maximum_cost_usd": maximum_cost_usd,
+               "request_count": request_count}
+    value = website_webapp_request(capture_id=task_context["capture_id"], operation="preparation-spend",
+        payload={"request_id": task_context["request_id"], "scene_id": task_context["scene_id"], "spend": command})
+    if (any(value.get(key) != expected for key, expected in command.items())
+            or value.get("external_disclosure_allowed") is not True
+            or not isinstance(value.get("expires_at_epoch"), (int, float)) or value["expires_at_epoch"] <= time.time()):
+        raise ValueError("website_sam_spend_receipt_invalid")
+    grant = require_paid_resource_admission(value, resource_class="evaluator_api", expected_schema_version="paid_lane_admission.v1")
+    return value, grant
 
 
 def publish_website_visual_scene(*, descriptor: Mapping[str, Any], world: Mapping[str, Any],

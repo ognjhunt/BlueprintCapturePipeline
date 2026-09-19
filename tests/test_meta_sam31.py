@@ -86,7 +86,7 @@ def test_exact_request_is_retained_and_replay_does_not_charge_again(tmp_path, mo
         return BytesIO(json.dumps(response()).encode())
     args = inputs(tmp_path)
     first = sam.run_meta_sam31(**args, opener=opener)
-    second = sam.run_meta_sam31(**args, opener=opener)
+    second = sam.run_meta_sam31(**{**args, "admission_grant": None, "admission": {}}, opener=opener)
     assert first == second and len(calls) == 1
     assert first["tracks"][0]["label"] == "task-object"
     for file in args["output_root"].rglob("*.json"):

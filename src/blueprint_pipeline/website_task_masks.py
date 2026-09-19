@@ -98,7 +98,7 @@ def estimate_target_bounds(track: Mapping[str, Any], frames: list[Mapping[str, A
 
 def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[str, Any],
                           output_root: Path, meta_admission: Mapping[str, Any] | None = None,
-                          meta_admission_grant: Any = None) -> dict[str, Any]:
+                          meta_admission_grant: Any = None, task_context: Mapping[str, Any] | None = None) -> dict[str, Any]:
     targets = [target for target in plan.get("targets", [])
                if target.get("task_effect") in {"manipulated", "static_contact", "static_obstacle"}]
     if not targets:
@@ -153,7 +153,8 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
                "allowed_evidence_uses": ["semantic_analysis"]}
     if provider == "meta":
         result = run_meta_sam31(frame_registry=registry, frame_artifacts=artifacts, prompts=prompts,
-                               output_root=root, admission=meta_admission or {}, admission_grant=meta_admission_grant)
+                               output_root=root, admission=meta_admission or {}, admission_grant=meta_admission_grant,
+                               task_context=task_context)
         tracks = result["tracks"]
     else:
         request_path, result_path, tracks_path = root / "request.json", root / "result.json", root / "tracks.json"

@@ -381,7 +381,8 @@ def run_clean_plate_stage(
             task_masks = run_website_task_masks(plan=plan, source_geometry=source_geometry,
                                                 output_root=clean_plate_root / "task_masks",
                                                 meta_admission=meta_sam_admission,
-                                                meta_admission_grant=meta_sam_admission_grant)
+                                                meta_admission_grant=meta_sam_admission_grant,
+                                                task_context=task_context)
         except Exception as exc:
             status, mode = "blocked", "task_masks_blocked"
             reason = "website_task_masks_unavailable"

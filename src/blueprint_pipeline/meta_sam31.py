@@ -135,28 +135,35 @@ def encode_clip(*, registry: Sequence[Mapping[str, Any]], artifacts: Sequence[Ma
 def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifacts: Sequence[Mapping[str, Any]],
                    prompts: Sequence[Mapping[str, Any]], output_root: Path, admission: Mapping[str, Any],
                    admission_grant: PaidResourceAdmissionGrant | None = None,
+                   task_context: Mapping[str, Any] | None = None,
                    opener: Any = _open_no_redirect) -> dict[str, Any]:
     binding = request_binding(frame_registry=frame_registry, frame_artifacts=frame_artifacts, prompts=prompts)
     digest = canonical_digest(binding)
-    require_paid_resource_admission_grant(admission_grant, resource_class="evaluator_api",
-                                          allocation_binding_digest=digest, require_allocation_binding=True)
-    budget = admission.get("maximum_cost_usd")
+    root = output_root / digest[7:]
+    retained = bool(prompts) and all((root / f"response-{i}.json").is_file() for i in range(len(prompts)))
     image_request = len(frame_registry) == 1
     unit_cost = 0.0025 if image_request else max(50, len(frame_registry)) * PRICE_PER_FRAME_USD
-    if (admission.get("allocation_binding_digest") != digest or admission.get("external_disclosure_allowed") is not True
-            or isinstance(budget, bool) or not isinstance(budget, (int, float)) or not math.isfinite(budget)
-            or budget < unit_cost * len(prompts)):
-        raise ValueError("meta_sam_authorization_missing")
     if not prompts or len({p["prompt_id"] for p in prompts}) != len(prompts):
         raise ValueError("meta_sam_prompts_invalid")
     for prompt in prompts:
         if not str(prompt.get("text", "")).strip() or len(prompt["text"]) > 200:
             raise ValueError("meta_sam_prompt_invalid")
-    token = meta_api_key()
-    root = output_root / digest[7:]
+    token = meta_api_key() if not retained else ""
     root.mkdir(parents=True, exist_ok=True)
     write_json(root / "binding.json", binding)
     clip = encode_clip(registry=frame_registry, artifacts=frame_artifacts, root=root)
+    if not retained:
+        if admission_grant is None and task_context is not None:
+            from .website_task_context import reserve_website_sam_spend
+            admission, admission_grant = reserve_website_sam_spend(task_context=task_context, binding_digest=digest,
+                maximum_cost_usd=unit_cost * len(prompts), request_count=len(prompts))
+        require_paid_resource_admission_grant(admission_grant, resource_class="evaluator_api",
+                                              allocation_binding_digest=digest, require_allocation_binding=True)
+        budget = admission.get("maximum_cost_usd")
+        if (admission.get("allocation_binding_digest") != digest or admission.get("external_disclosure_allowed") is not True
+                or isinstance(budget, bool) or not isinstance(budget, (int, float)) or not math.isfinite(budget)
+                or budget < unit_cost * len(prompts)):
+            raise ValueError("meta_sam_authorization_missing")
     media = ({"type": "input_image", "image_url": "data:image/png;base64," + base64.b64encode((root / "frame-000000.png").read_bytes()).decode()}
              if image_request else {"type": "input_video", "video_url": "data:video/mp4;base64," + base64.b64encode(clip.read_bytes()).decode()})
     tracks, receipts = [], []
@@ -168,6 +175,8 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
                 raise ValueError("meta_sam_retained_response_changed")
             response = receipt["response"]
         else:
+            if retained:
+                raise ValueError("meta_sam_retained_response_missing")
             if intent_path.exists():
                 raise ValueError("meta_sam_submission_requires_reconciliation")
             payload = {"model": MODEL, "stream": False, "metadata": {"mask_encoding": "one_bit"}, "input": [
