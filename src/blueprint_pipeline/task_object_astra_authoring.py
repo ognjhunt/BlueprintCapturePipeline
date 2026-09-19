@@ -16,7 +16,7 @@ import shutil
 from typing import Any, Literal
 from urllib.parse import unquote, urlparse
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
 from .task_evaluation_scene_configuration_runtime_budget import MAX_ASTRA_AUTHORING_SPEND_USD as MAX_COST_USD
@@ -44,8 +44,20 @@ class StrictModel(BaseModel):
 class SourceFrame(StrictModel):
     path: str
     sha256: str = Field(pattern=r'^sha256:[0-9a-f]{64}$')
-    role: Literal['observed_source', 'prior_candidate', 'native_scene']
+    role: Literal['observed_source', 'prior_candidate', 'native_scene', 'task_context']
     description: str = Field(min_length=1)
+
+
+class GeneratedObjectSpecification(StrictModel):
+    object_id: str = Field(pattern=r'^[A-Za-z0-9_-]{1,96}$')
+    description: str = Field(min_length=1)
+    task_purpose: str = Field(min_length=1)
+    dimensions_m: tuple[float, float, float]
+    geometry_features: list[str] = Field(min_length=1)
+    appearance_requirements: list[str] = Field(min_length=1)
+    material_description: str = Field(min_length=1)
+    appearance: Literal['opaque', 'translucent', 'transparent', 'unknown']
+    variant_of: str | None = None
 
 
 class AuthoringRequest(StrictModel):
@@ -68,6 +80,14 @@ class AuthoringRequest(StrictModel):
     public_redistribution_allowed: Literal[False]
     expected_production_commit: str = Field(pattern=r'^[0-9a-f]{40}$')
     request_digest: str = Field(pattern=r'^sha256:[0-9a-f]{64}$')
+    generated_specification: GeneratedObjectSpecification | None = None
+
+    @model_serializer(mode='wrap')
+    def retain_legacy_serialization(self, handler):
+        value = handler(self)
+        if self.generated_specification is None:
+            value.pop('generated_specification', None)
+        return value
 
     @model_validator(mode='after')
     def positive_dimensions(self):
@@ -78,6 +98,12 @@ class AuthoringRequest(StrictModel):
             getattr(physical.dimensions, axis).value for axis in ('x_m', 'y_m', 'z_m')
         ) != self.dimensions_m:
             raise ValueError('authoring_physical_dimensions_mismatch')
+        if self.generated_specification is not None:
+            if (self.generated_specification.object_id != self.object_id
+                    or self.generated_specification.dimensions_m != self.dimensions_m
+                    or self.dimension_authority != 'estimated'
+                    or any(value is not None for value in physical.measured.model_dump().values())):
+                raise ValueError('generated_object_specification_or_authority_mismatch')
         return self
 
 
@@ -106,6 +132,14 @@ class AppearanceReview(StrictModel):
     blockers: list[str]
     repair_instructions: str
     unobserved_surface_limitations: list[str]
+    requested_specification_satisfied: bool | None = None
+
+    @model_serializer(mode='wrap')
+    def retain_legacy_serialization(self, handler):
+        value = handler(self)
+        if self.requested_specification_satisfied is None:
+            value.pop('requested_specification_satisfied', None)
+        return value
 
 
 def file_record(path: Path) -> dict[str, Any]:
@@ -141,7 +175,7 @@ def validate_request(value: dict) -> AuthoringRequest:
         if file_record(Path(frame.path))['sha256'] != frame.sha256:
             raise AssetAuthoringError('authoring_reference_digest_mismatch')
     if request.role == 'task_object' and not any(
-        f.role == 'observed_source' for f in request.source_frames
+        f.role == ('task_context' if request.generated_specification else 'observed_source') for f in request.source_frames
     ):
         raise AssetAuthoringError('authoring_observed_reference_required')
     return request
@@ -189,6 +223,11 @@ def invoke_vision(invoker, request: AuthoringRequest, *, capability: str,
         'are binding. Source observations outrank prior candidate renders. Keep unknown '
         'regions explicit. Outputs are development-only candidates, never physical truth.'
     )
+    if getattr(request, 'generated_specification', None) is not None:
+        instructions += (' This is an explicitly generated task object. Context images show the task '
+                         'or reference family, not proof that this new object was captured. Follow the '
+                         'generated specification, including intended geometry and appearance changes; '
+                         'preserve the task purpose and label unobserved choices as generated.')
     stable_prefix = instructions + '\n' + cache_prefix if cache_prefix else None
     reasoning_effort = 'medium' if output_type is BlenderProgram else 'high'
     if stable_prefix:
@@ -274,7 +313,11 @@ def validate_geometry_readback(request: AuthoringRequest, measurement: dict,
         raise AssetAuthoringError('authoring_opaque_material_conflict')
 
 
-def appearance_passed(review: AppearanceReview) -> bool:
+def appearance_passed(review: AppearanceReview, *, generated: bool = False) -> bool:
+    if generated:
+        return (not review.blockers and review.requested_specification_satisfied is True
+                and review.opaque_surfaces_opaque and review.required_parts_present
+                and review.no_obvious_geometry_artifacts)
     return not review.blockers and all(getattr(review, key) for key in (
         'source_object_recognizable', 'source_color_and_material_preserved',
         'opaque_surfaces_opaque', 'required_parts_present', 'no_obvious_geometry_artifacts'))
@@ -320,7 +363,9 @@ def execute_asset_authoring(*, request_value: dict, output_root: Path, invoker,
                                       request_digest=request.request_digest)
         else:
             brief = invoke_vision(invoker, request, capability='source_analysis',
-                prompt='Inspect the source object and create a precise CAD brief in millimetres. '
+                prompt=('Create the explicitly specified generated task object using the images as task/family context. '
+                        'Do not claim its new features were observed. ' if request.generated_specification else
+                        'Inspect the source object and create a precise CAD brief in millimetres. ') +
                        'Use center XY / bottom Z origin and Z up. Preserve all exact dimensions. '
                        'Name observed cover/page/print, wall/floor or other relevant features. '
                        'Prior failed renders are comparison data only.\n' + canonical_json(context),
@@ -470,14 +515,18 @@ def execute_asset_authoring(*, request_value: dict, output_root: Path, invoker,
                     request_digest=request.request_digest, references=[frame.model_dump(mode='json') for frame in request.source_frames + rendered])
             else:
                 review = invoke_vision(invoker, request, capability=f'independent_visual_review_{index}',
-                    prompt='Independently compare new CAD/Blender render views to the ORIGINAL '
+                    prompt=('For this generated object, independently verify EVERY requested geometry and appearance '
+                            'requirement and task purpose. Set requested_specification_satisfied accordingly. '
+                            'Intended differences from the context object are allowed; unrequested changes are not. '
+                            if request.generated_specification else
+                       'Independently compare new CAD/Blender render views to the ORIGINAL '
                        'observed source and binding owner specification. Reject missing required '
                        'parts, wrong materials, glass paper, jagged/crumpled forms, missing source '
-                       'print/color structure. Do not reward merely producing a file. These '
+                       'print/color structure. ') + 'Do not reward merely producing a file. These '
                        'are isolated studio views, not proof of scene placement.\n' + canonical_json(context),
                     output_type=AppearanceReview, frames=request.source_frames + rendered, root=attempt,
                     cache_prefix=authoring_instructions)
-            if appearance_passed(review):
+            if appearance_passed(review, generated=request.generated_specification is not None):
                 selected = attempt
                 break
             prior_feedback = canonical_json(review.model_dump(mode='json'))
@@ -498,6 +547,10 @@ def execute_asset_authoring(*, request_value: dict, output_root: Path, invoker,
             'review_images': [file_record(selected / f'{view}.png') for view in ('perspective', 'top', 'side')],
             'native_import_qualified': False, 'scene_placement_qualified': False,
             'physical_equivalence_proven': False,
+            'asset_origin': ('generated_variant' if request.generated_specification.variant_of else 'generated_task_object')
+                            if request.generated_specification else 'captured_object_reconstruction',
+            'generated_specification': request.generated_specification.model_dump(mode='json')
+                                       if request.generated_specification else None,
         }
         result['result_digest'] = canonical_digest(result)
         save_json(output_root / 'result.json', result)
@@ -511,6 +564,10 @@ def execute_asset_authoring(*, request_value: dict, output_root: Path, invoker,
 
 def blender_author_prompt(request: AuthoringRequest, brief: VisualBrief, feedback: str) -> str:
     return (
+        ('This asset is generated for the task: follow the requested geometry, color, material and package '
+         'variations. SOURCE_IMAGES are context/reference, not evidence that the new object existed. '
+         'Use source texture pixels only where consistent with that specification.\n'
+         if getattr(request, 'generated_specification', None) else '') +
         'Write a Python bpy program to finish this exact rigid object. Blender 5.2, metres, '
         'Z up, center XY bottom Z. A CAD mesh object CAD_BASE is already imported at metric '
         'scale. DIMENSIONS is the exact XYZ tuple. SOURCE_IMAGES is a list of already loaded '
@@ -537,6 +594,8 @@ def blender_author_prompt(request: AuthoringRequest, brief: VisualBrief, feedbac
             'owner_description': request.owner_description,
             'dimensions_m': request.dimensions_m,
             'constraints': request.construction_constraints,
+            'generated_specification': request.generated_specification.model_dump(mode='json')
+                                       if getattr(request, 'generated_specification', None) else None,
             'source_analysis': brief.model_dump(mode='json'),
             'prior_feedback': feedback,
         })

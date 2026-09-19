@@ -283,6 +283,30 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         authoring_frames.append({"path": frame["image_path"], "sha256": frame["image_digest"],
                                  "role": "observed_source", "frame_id": frame["frame_id"]})
     physics = screen_physics(dimensions_m)
+    from .task_evaluation_scene_configuration_submission_records import stage_three_configuration
+    authoring_configuration = stage_three_configuration(
+        scene_id=task_context["scene_id"],
+        replacement_identity={"id": "website-subject-" + task_context["context_digest"][7:27], "version": "v1"},
+        source_instance_id=subject_entry["target_id"],
+        authoring_target=subject_entry.get("semantic_label") or subject_entry["target_id"],
+        source_min=sim_min, source_max=sim_max, dimension_tolerance=DIMENSION_RELATIVE_ERROR,
+        physics_bounds={key + "_bounds": value for key, value in physics["bounds"].items()},
+    )
+    authoring_configuration.update(
+        source_object_identity=subject_entry["target_id"],
+        source_observation_kind="website_capture_frames", dimension_authority="estimated",
+        appearance_inputs="digest_bound_original_capture_frames",
+        geometry_support="registered_partial_visible_bounds_from_estimated_source_geometry",
+        construction_constraints={
+            "confirmed_task": task_context["description"],
+            "operator_answers": task_context.get("operator_answers") or {},
+            "task_context_digest": task_context["context_digest"],
+            "subject_target_id": subject_entry["target_id"], "destination": destination,
+            "rebuild_only_this_subject": True, "non_target_scene_objects_remain_in_background": True,
+            "complete_object_dimensions_observed": False,
+            "unknown_surfaces": "Generated completion must remain an explicit assumption.",
+        },
+    )
     thumbnail = _thumbnail(track, frames_by_id, output_root / "thumbnail.png")
     # Capture consent permits scene preparation; it does not manufacture a
     # paid simulation authorization or accept provider terms on the owner's behalf.
@@ -348,6 +372,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                                                            "runtime_to_simulator": runtime_to_sim.tolist()},
         "subject": request["task"]["subject"], "support": support, "destination": destination,
         "authoring_inputs": {"adapter": "content_agents_rigid_replacement", "source_frames": authoring_frames,
+                             "configuration": authoring_configuration,
                              "metric_envelope": {"minimum_xyz_m": sim_min,
                                                  "maximum_xyz_m": sim_max,
                                                  "maximum_dimension_relative_error": DIMENSION_RELATIVE_ERROR},

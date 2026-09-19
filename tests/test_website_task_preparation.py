@@ -292,3 +292,24 @@ def test_source_far_above_support_is_not_snapped_down_to_floor(tmp_path):
     assert result["status"] == "needs_input"
     assert "support_surface_not_found_under_subject" in result["blockers"]
     assert result["compose_back"]["pose_world"]["support_snap_runtime_units"] == 0
+
+
+def test_website_task_and_original_frames_reach_existing_astra_request(tmp_path):
+    from blueprint_pipeline.task_evaluation_scene_configuration_astra_driver import build_authoring_request
+    args = _arguments(tmp_path)
+    prepared = preparation.compile_website_scene_preparation(**args)
+    source = tmp_path / "out/preparation.json"
+    request = build_authoring_request(
+        {"configuration": prepared["authoring_inputs"]["configuration"], "construction_envelope": {},
+         "run_id": "development-website-test", "source_commit": "a" * 40},
+        {"path": str(source), "digest": _sha256_file(source)},
+        [Path(row["path"]) for row in prepared["authoring_inputs"]["source_frames"]],
+        {"status": "admitted_for_internal_development", "private_provider_processing_allowed": True,
+         "provider_training_allowed": False, "public_redistribution_allowed": False},
+    )
+    assert args["task_context"]["description"] in request.construction_constraints
+    assert "rebuild_only_this_subject" in request.construction_constraints
+    assert request.dimension_authority == "estimated"
+    assert request.physical_review_input.measured.mass_kg is None
+    assert request.source_frames[0].description.startswith("Original website capture frame")
+    assert request.dimensions_m == pytest.approx(prepared["physics"]["dimensions_m"])
