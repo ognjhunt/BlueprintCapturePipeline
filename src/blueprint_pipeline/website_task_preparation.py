@@ -15,7 +15,6 @@ import base64
 import io
 import math
 import re
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -211,15 +210,31 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                                       now: float) -> dict[str, Any]:
     output_root.mkdir(parents=True, exist_ok=True)
     blockers: list[str] = []
+    for value, field in ((task_context, "context_digest"), (task_masks, "digest"), (source_geometry, "digest")):
+        if value.get(field) != canonical_digest(value, digest_field=field):
+            raise ValueError("website_preparation_input_digest_mismatch")
+    if task_context.get("confirmed") is not True:
+        raise ValueError("website_preparation_task_not_confirmed")
+    if task_masks.get("source_geometry_digest") != source_geometry["digest"]:
+        raise ValueError("website_preparation_geometry_binding_mismatch")
     request_id, capture_id = str(task_context["request_id"]), str(task_context["capture_id"])
     if not _IDENTIFIER.fullmatch(capture_id) or not re.fullmatch(r"[A-Za-z0-9._-]{1,100}", request_id):
         raise ValueError("website_identity_invalid")
     for path_key, digest_key in (("splat_path", "splat_digest"), ("collision_mesh_path", "collision_mesh_digest")):
         if _sha256_file(Path(base_scene[path_key])) != base_scene[digest_key]:
             raise ValueError("website_base_scene_changed")
-    up, mpu = _UP_INDEX[base_scene["up_axis"]], float(base_scene["meters_per_unit"])
+    up = _UP_INDEX[base_scene["up_axis"]]
     registration = register_source_to_runtime(source_geometry=source_geometry,
                                               collision_mesh_path=Path(base_scene["collision_mesh_path"]))
+    # With browser video, use MapAnything's estimated metres to scale the
+    # generated world. A provider's nominal unit is not a physical measurement.
+    mpu = (1.0 / registration["scale"] if base_scene.get("meters_per_unit") is None
+           else float(base_scene["meters_per_unit"]))
+    if not math.isfinite(mpu) or mpu <= 0 or isinstance(base_scene.get("meters_per_unit"), bool):
+        raise ValueError("website_base_scene_scale_invalid")
+    runtime_to_sim = np.eye(4)
+    runtime_to_sim[:3, :3] = mpu * (np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0]])
+                                   if up == 1 else np.eye(3))
     registration_path = output_root / "registration.json"
     write_json(registration_path, registration)
     matrix = np.asarray(registration["source_to_runtime"])
@@ -239,7 +254,10 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         snap = support["top_runtime_units"] - subject_min[up]
         subject_min[up] += snap
         subject_max[up] += snap
-    dimensions_m = [(subject_max[i] - subject_min[i]) * mpu for i in range(3)]
+    sim_min, sim_max = _runtime_bounds({"minimum": subject_min, "maximum": subject_max}, runtime_to_sim)
+    dimensions_m = [sim_max[i] - sim_min[i] for i in range(3)]
+    sim_support = (_runtime_bounds({"minimum": support["aabb_min"], "maximum": support["aabb_max"]}, runtime_to_sim)
+                   if support else (None, None))
     destination_rows = [row for row in task_masks["targets"] if row.get("target_role") == "destination"]
     destination = None
     if len(destination_rows) == 1:
@@ -247,7 +265,8 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         position = [(low[i] + high[i]) / 2 for i in range(3)]
         position[up] = high[up]
         destination = {"relation": "on", "visible_label": destination_rows[0]["target_id"],
-                       "position_world_m": position, "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+                       "position_world_m": (runtime_to_sim @ [*position, 1.0])[:3].tolist(),
+                       "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
                        "basis": "registered_estimated_visible_bounds"}
     else:
         blockers.append("task_destination_pose_required")
@@ -259,8 +278,15 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                                  "role": "observed_source", "frame_id": frame["frame_id"]})
     physics = screen_physics(dimensions_m)
     thumbnail = _thumbnail(track, frames_by_id, output_root / "thumbnail.png")
-    confirmed_epoch = datetime.fromisoformat(str(task_context["confirmed_at"]).replace("Z", "+00:00")).timestamp()
-    owner = {"user_id": "site-operator:" + request_id, "organization_id": "website-captures"}
+    # Capture consent permits scene preparation; it does not manufacture a
+    # paid simulation authorization or accept provider terms on the owner's behalf.
+    owner = dict(spend.get("owner") or {})
+    consent = dict(spend.get("consent") or {})
+    if not owner or not consent:
+        blockers.append("website_scene_execution_authority_required")
+    rights = task_context.get("capture_rights") or {}
+    if rights.get("derived_scene_generation_allowed") is not True:
+        blockers.append("website_scene_processing_rights_required")
     request = {
         "schema_version": intake.REQUEST_SCHEMA, "submission_id": capture_id, "owner": owner,
         "source": {"kind": "gaussian_splat", "binding_id": base_scene["splat_binding_id"],
@@ -271,12 +297,12 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                                       "frame_relation": "owner_declared_common_frame"}},
         "task": {"task_id": "website-" + task_context["context_digest"][7:27], "strategy": "pick_and_place",
                  "subject": {"description": subject_entry.get("semantic_label") or subject_entry["target_id"],
-                             "aabb_min_xyz": subject_min, "aabb_max_xyz": subject_max,
+                             "aabb_min_xyz": sim_min, "aabb_max_xyz": sim_max,
+                             "coordinate_frame": "Z_up_estimated_meters",
                              "geometry_origin": "removed_before_reconstruction",
                              "complete_object_dimensions": False},
                  "support": {"description": subject_entry.get("support_label") or "support surface under subject",
-                             "aabb_min_xyz": support["aabb_min"] if support else None,
-                             "aabb_max_xyz": support["aabb_max"] if support else None},
+                             "aabb_min_xyz": sim_support[0], "aabb_max_xyz": sim_support[1]},
                  "destination": destination or {"needs_input": "task_destination_pose_required"},
                  "success": dict(SUCCESS)},
         "execution": {"max_total_spend_usd": spend["max_total_spend_usd"],
@@ -285,11 +311,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                       "policy_candidates": [{"id": name, "artifact_digest": EXPECTED_CANDIDATES[name]["checkpoint_inventory_digest"]}
                                             for name in intake.SUPPORTED_POLICY_CANDIDATE_IDS],
                       "claim_scope": CLAIM_CEILING},
-        "consent": {"accepted_by": owner["user_id"], "accepted_at_epoch": confirmed_epoch,
-                    "rights_reference": task_context["context_digest"],
-                    "provider_terms_reference": "website-capture-terms-2026-09",
-                    "private_processing_authorized": True, "provider_training_authorized": False,
-                    "task_confirmed": task_context.get("confirmed") is True, "spend_authorized": True},
+        "consent": consent,
     }
     if not blockers:
         try:
@@ -315,11 +337,13 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                     "provider": base_scene.get("provider"), "operation_id": base_scene.get("operation_id")},
         "registration": registration, "coordinate_frame": {"declared_meters_per_unit": mpu,
                                                            "declared_up_axis": base_scene["up_axis"],
-                                                           "physical_scale_measured": False},
+                                                           "physical_scale_measured": False,
+                                                           "task_coordinates": "Z_up_estimated_meters",
+                                                           "runtime_to_simulator": runtime_to_sim.tolist()},
         "subject": request["task"]["subject"], "support": support, "destination": destination,
         "authoring_inputs": {"adapter": "content_agents_rigid_replacement", "source_frames": authoring_frames,
-                             "metric_envelope": {"minimum_xyz_m": [v * mpu for v in subject_min],
-                                                 "maximum_xyz_m": [v * mpu for v in subject_max],
+                             "metric_envelope": {"minimum_xyz_m": sim_min,
+                                                 "maximum_xyz_m": sim_max,
                                                  "maximum_dimension_relative_error": DIMENSION_RELATIVE_ERROR},
                              "dimension_authority": "estimated"},
         "physics": physics, "thumbnail": {key: value for key, value in thumbnail.items() if key != "png_base64"},

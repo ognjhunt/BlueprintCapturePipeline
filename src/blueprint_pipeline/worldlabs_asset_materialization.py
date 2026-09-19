@@ -282,6 +282,7 @@ def materialize_worldlabs_assets(
     world_manifest: str | Path | None = None,
     include_visual_assets: bool = False,
     max_asset_bytes: int | None = 500_000_000,
+    scene_preparation: bool = False,
 ) -> Dict[str, Any]:
     context = resolve_local_capture_context(capture_root)
     pipeline_dir = context.pipeline_root
@@ -295,8 +296,19 @@ def materialize_worldlabs_assets(
     generated_at = utc_now_iso()
     candidates, skipped_candidates = _candidate_assets(
         world,
-        include_visual_assets=include_visual_assets,
+        include_visual_assets=include_visual_assets or scene_preparation,
     )
+    if scene_preparation:
+        # A simulator needs one appearance representation and the collider, not
+        # every export resolution, HQ mesh and USD download offered by the API.
+        splats = [row for row in candidates if row["kind"] in {"splat_ply", "splat_spz"}]
+        splats.sort(key=lambda row: (row["kind"] != "splat_ply", row["quality"] != "full_res", row["quality"]))
+        selected = [row for row in candidates if row["kind"] == "collider_mesh_glb"] + splats[:1]
+        skipped_candidates.extend(row for row in candidates if row not in selected)
+        candidates = selected
+    previous = _read_optional_mapping(assets_dir / "materialized_assets_manifest.json")
+    retained = {(row.get("kind"), row.get("quality"), row.get("source_url")): row
+                for row in previous.get("downloads", []) if isinstance(row, Mapping)}
     downloads: List[Dict[str, Any]] = []
     failures: List[Dict[str, str]] = []
     for candidate in candidates:
@@ -312,7 +324,15 @@ def materialize_worldlabs_assets(
             continue
         output_path = assets_dir / _safe_token(candidate.get("filename") or "worldlabs_asset")
         try:
-            proof = _download_remote_asset(url, output_path, max_bytes=max_asset_bytes)
+            prior = retained.get((candidate.get("kind"), candidate.get("quality"), url), {})
+            if (previous.get("world_id") == _world_id(world) and output_path.is_file()
+                    and prior.get("local_path") == str(output_path.resolve())
+                    and output_path.stat().st_size == prior.get("size_bytes")
+                    and (max_asset_bytes is None or output_path.stat().st_size <= max_asset_bytes)
+                    and _sha_file(output_path) == prior.get("sha256")):
+                proof = {key: prior.get(key) for key in ("size_bytes", "sha256", "content_type")}
+            else:
+                proof = _download_remote_asset(url, output_path, max_bytes=max_asset_bytes)
         except Exception as exc:
             failures.append(
                 {
@@ -334,7 +354,16 @@ def materialize_worldlabs_assets(
             }
         )
 
-    if failures and not downloads:
+    missing_scene_assets = []
+    if scene_preparation:
+        kinds = {row["kind"] for row in downloads}
+        if "collider_mesh_glb" not in kinds:
+            missing_scene_assets.append("worldlabs_collider_required")
+        if not kinds.intersection({"splat_ply", "splat_spz"}):
+            missing_scene_assets.append("worldlabs_splat_required")
+    if missing_scene_assets:
+        status = "blocked_scene_assets_incomplete"
+    elif failures and not downloads:
         status = "blocked"
     elif failures:
         status = "complete_with_download_failures"
@@ -353,7 +382,9 @@ def materialize_worldlabs_assets(
         "world_id": _world_id(world),
         "status": status,
         "source_world_manifest": str(world_path),
-        "include_visual_assets": include_visual_assets,
+        "include_visual_assets": include_visual_assets or scene_preparation,
+        "scene_preparation": scene_preparation,
+        "blockers": missing_scene_assets,
         "max_asset_bytes": max_asset_bytes,
         "download_count": len(downloads),
         "downloads": downloads,
@@ -363,13 +394,13 @@ def materialize_worldlabs_assets(
                 "kind": item.get("kind"),
                 "quality": item.get("quality"),
                 "source_url": item.get("url"),
-                "reason": "visual_asset_download_disabled_by_default",
+                "reason": "not_required_for_scene_preparation" if scene_preparation else "visual_asset_download_disabled_by_default",
             }
             for item in skipped_candidates
         ],
         "download_policy": {
             "remote_asset_downloads_performed": bool(downloads),
-            "visual_asset_downloads_enabled": include_visual_assets,
+            "visual_asset_downloads_enabled": include_visual_assets or scene_preparation,
             "default_scope": "collider_mesh_glb_only",
         },
         "claim_boundary": dict(CLAIM_BOUNDARY),
@@ -389,6 +420,7 @@ def materialize_worldlabs_assets(
         "status": status,
         "download_count": len(downloads),
         "failure_count": len(failures),
+        "blockers": missing_scene_assets,
         "claim_boundary": dict(CLAIM_BOUNDARY),
     }
 

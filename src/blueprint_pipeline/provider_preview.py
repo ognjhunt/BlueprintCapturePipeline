@@ -948,6 +948,7 @@ def run_preview_provider(
                 worldlabs_asset_materialization = materialize_worldlabs_assets(
                     capture_root=capture_root,
                     world_manifest=worldlabs_world_manifest_path,
+                    scene_preparation=(descriptor.get("metadata") or {}).get("capture_entry_source") == "browser_self_capture",
                 )
                 artifact_uris = dict(normalized.get("artifact_uris") or {})
                 artifact_uris.update(

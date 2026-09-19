@@ -18,6 +18,7 @@ import functools
 import os
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional
@@ -5336,6 +5337,15 @@ def run_qualification_pipeline(
                 "provenance": {"canonical": False, "derived": True},
             }
         )
+        website_scene_preparation = None
+        if website_capture:
+            from .website_scene_handoff import prepare_website_scene_handoff
+            website_scene_preparation = prepare_website_scene_handoff(
+                descriptor=descriptor.to_dict(), clean_plate=clean_plate,
+                provider_run=provider_run, capture_root=capture_root, now=time.time(),
+            )
+            provider_run["website_scene_preparation"] = website_scene_preparation
+            write_json(pipeline_dir / "provider_run_manifest.json", provider_run)
         worldlabs_request_manifest_path = pipeline_dir / "worldlabs_request_manifest.json"
         worldlabs_request_manifest_uri = (
             f"gs://{bucket}/{pipeline_prefix}/worldlabs_request_manifest.json"
@@ -5637,6 +5647,7 @@ def run_qualification_pipeline(
             "completeness_status": scorecard.get("completeness_status"),
             "match_ready": opportunity_handoff.get("match_ready"),
             "readiness_support_outputs_emitted": emit_support_outputs,
+            "website_scene_preparation": website_scene_preparation,
             "webapp_sync_result_uri": f"gs://{bucket}/{pipeline_prefix}/webapp_sync_result.json",
         }
 

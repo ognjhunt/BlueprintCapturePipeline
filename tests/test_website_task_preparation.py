@@ -88,7 +88,8 @@ def _task_context(confirmed_at=NOW - 100):
     value = {"schema_version": "website_site_task_context.v1", "request_id": "req1", "scene_id": "site-req1",
              "capture_id": "walkthrough-req1", "description": "Move the cup onto the tray.", "confirmed": True,
              "confirmed_at": datetime.fromtimestamp(confirmed_at, timezone.utc).isoformat(),
-             "operator_answers": {}, "unresolved": []}
+             "operator_answers": {}, "unresolved": [],
+             "capture_rights": {"derived_scene_generation_allowed": True}}
     value["context_digest"] = canonical_digest(value, digest_field="context_digest")
     return value
 
@@ -96,7 +97,12 @@ def _task_context(confirmed_at=NOW - 100):
 REMOVAL = {"schema_version": "clean_plate_removal_manifest.v1", "entries": [
     {"target_id": "cup-1", "semantic_label": "cup", "task_effect": "manipulated", "disposition": "remove",
      "compose_back": {"replacement_asset_id": None, "pose_world": None, "replacement_asset_frame_registration_uri": None}}]}
-SPEND = {"max_total_spend_usd": 40, "max_paid_attempts": 2, "expires_at_epoch": NOW + 3600}
+SPEND = {"max_total_spend_usd": 40, "max_paid_attempts": 2, "expires_at_epoch": NOW + 3600,
+         "owner": {"user_id": "owner-1", "organization_id": "org-1"},
+         "consent": {"accepted_by": "owner-1", "accepted_at_epoch": NOW - 100,
+                     "rights_reference": "recorded-owner-rights", "provider_terms_reference": "accepted-provider-terms",
+                     "private_processing_authorized": True, "provider_training_authorized": False,
+                     "task_confirmed": True, "spend_authorized": True}}
 
 
 def _arguments(tmp_path, overrides=None, **keyword_overrides):
@@ -122,10 +128,10 @@ def test_registered_estimates_compile_into_an_intake_ready_request(tmp_path):
     assert registration["physical_scale_measured"] is False
     subject = value["subject"]
     # Source bounds land on the registered table top (runtime y = 2 - 0.5 * 0.5).
-    assert subject["aabb_min_xyz"][1] == pytest.approx(1.75, abs=1e-6)
-    assert subject["aabb_max_xyz"][1] == pytest.approx(1.80, abs=1e-6)
+    assert subject["aabb_min_xyz"][2] == pytest.approx(3.5, abs=1e-6)
+    assert subject["aabb_max_xyz"][2] == pytest.approx(3.6, abs=1e-6)
     assert value["support"]["top_runtime_units"] == pytest.approx(1.75, abs=1e-6)
-    assert value["destination"]["position_world_m"][1] == pytest.approx(1.76, abs=1e-6)
+    assert value["destination"]["position_world_m"][2] == pytest.approx(3.52, abs=1e-6)
     assert value["physics"]["basis"] == "estimated"
     assert value["physics"]["dimensions_m"] == pytest.approx([0.05, 0.1, 0.1], abs=1e-6)
     assert value["physics"]["sensitivity"] == "robust_within_range"
@@ -151,8 +157,8 @@ def test_missing_destination_is_a_typed_blocker_not_a_default(tmp_path):
     assert value["destination"] is None
 
 
-def test_stale_confirmation_holds_intake(tmp_path):
-    value = _compile(tmp_path, task_context=_task_context(NOW - 2 * 86400))
+def test_stale_execution_authority_holds_intake(tmp_path):
+    value = _compile(tmp_path, spend={**SPEND, "consent": {**SPEND["consent"], "accepted_at_epoch": NOW - 2 * 86400}})
     assert value["status"] == "needs_input"
     assert value["blockers"] == ["scene_intake_consent_actor_or_time_invalid"]
 
@@ -181,3 +187,60 @@ def test_physics_screen_escalates_the_smallest_missing_measurement():
     assert medium["sensitivity"] == "outcome_depends_on_estimate"
     assert medium["measurement_escalation"]["property"] == "mass_kg"
     assert all(row["basis"] == "estimated" for row in [medium])
+
+
+def test_capture_consent_does_not_invent_paid_execution_permission(tmp_path):
+    value = _compile(tmp_path, spend={key: val for key, val in SPEND.items() if key not in {"owner", "consent"}})
+    assert value["status"] == "needs_input"
+    assert "website_scene_execution_authority_required" in value["blockers"]
+    assert value["intake_request"]["consent"] == {}
+
+
+def test_registration_inputs_cannot_change_without_rebinding(tmp_path):
+    arguments = _arguments(tmp_path)
+    arguments["task_masks"]["targets"][0]["estimated_visible_bounds"]["minimum"][0] = 999
+    with pytest.raises(ValueError, match="input_digest_mismatch"):
+        preparation.compile_website_scene_preparation(**arguments)
+
+
+def test_pose_and_authoring_bounds_share_normalized_simulator_frame(tmp_path):
+    value = _compile(tmp_path)
+    lower = value["subject"]["aabb_min_xyz"]
+    assert lower == value["authoring_inputs"]["metric_envelope"]["minimum_xyz_m"]
+    assert value["coordinate_frame"]["task_coordinates"] == "Z_up_estimated_meters"
+    # Y-up (x,y,z) -> Z-up (2*x,-2*z,2*y), including translation.
+    assert lower[1] < 0
+    assert value["intake_request"]["consent"] == SPEND["consent"]
+
+
+def test_collected_reconstruction_reaches_real_website_preparation(tmp_path):
+    from blueprint_pipeline.common import write_json
+    from blueprint_pipeline.website_scene_handoff import prepare_website_scene_handoff
+    pipeline = tmp_path / "pipeline"
+    pipeline.mkdir()
+    args = _arguments(pipeline)
+    base = args["base_scene"]
+    rows = [{"kind": kind, "local_path": base[path], "sha256": base[digest][7:]}
+            for kind, path, digest in (("splat_ply", "splat_path", "splat_digest"),
+                                      ("collider_mesh_glb", "collision_mesh_path", "collision_mesh_digest"))]
+    assets_path = pipeline / "assets.json"
+    removal_path = pipeline / "removal.json"
+    write_json(assets_path, {"world_id": "world-1", "downloads": rows})
+    write_json(removal_path, args["removal_manifest"])
+    context = args["task_context"]
+    result = prepare_website_scene_handoff(
+        descriptor={"capture_id": context["capture_id"], "scene_id": context["scene_id"], "metadata": {
+            "site_task_context": context, "website_scene_execution_authority": SPEND}},
+        clean_plate={"status": "objects_removed", "privacy_verified": True,
+                     "task_masks": args["task_masks"], "source_geometry": args["source_geometry"],
+                     "removal_manifest_path": str(removal_path)},
+        provider_run={"status": "ready", "world_id": "world-1", "provider_run_id": "op-1",
+                      "worldlabs_asset_materialization": {"manifest_path": str(assets_path)}},
+        capture_root=tmp_path, now=NOW,
+    )
+    assert result["status"] == "intake_ready", result["blockers"]
+    compiled = json.loads(Path(result["preparation_path"]).read_text())
+    assert compiled["coordinate_frame"]["declared_meters_per_unit"] == pytest.approx(1 / RUNTIME_SCALE)
+    assert Path(result["thumbnail"]["path"]).is_file()
+    assert result["simulator_ready"] is False
+    assert result["provider_mutation_performed"] is False
