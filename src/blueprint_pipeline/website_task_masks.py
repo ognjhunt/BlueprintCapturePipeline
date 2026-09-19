@@ -13,6 +13,7 @@ from PIL import Image
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
+from .meta_sam31 import PROFILE as META_PROFILE, run_meta_sam31
 from .sam31_source_track_provider_stage import run_sam31_source_track_stage
 from .scene_placement.sam31_source_track_provider import RUN_REQUEST_SCHEMA_VERSION
 from .scene_placement.semantic_gaussian_lifting import canonical_json_digest
@@ -96,15 +97,22 @@ def estimate_target_bounds(track: Mapping[str, Any], frames: list[Mapping[str, A
 
 
 def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[str, Any],
-                          output_root: Path) -> dict[str, Any]:
+                          output_root: Path, meta_admission: Mapping[str, Any] | None = None,
+                          meta_admission_grant: Any = None) -> dict[str, Any]:
     targets = [target for target in plan.get("targets", [])
                if target.get("task_effect") in {"manipulated", "static_contact", "static_obstacle"}]
     if not targets:
         raise ValueError("website_task_targets_missing")
-    profile_path = Path(os.getenv("BLUEPRINT_WEBSITE_SAM31_PROFILE") or "")
-    if not profile_path.is_file():
-        raise ValueError("website_sam31_profile_missing")
-    profile = json.loads(profile_path.read_text())
+    provider = os.getenv("BLUEPRINT_WEBSITE_SAM31_PROVIDER", "meta")
+    if provider == "meta":
+        profile = {**META_PROFILE, "profile_digest": canonical_digest(META_PROFILE)}
+    elif provider == "local":
+        profile_path = Path(os.getenv("BLUEPRINT_WEBSITE_SAM31_PROFILE") or "")
+        if not profile_path.is_file():
+            raise ValueError("website_sam31_profile_missing")
+        profile = json.loads(profile_path.read_text())
+    else:
+        raise ValueError("website_sam31_provider_invalid")
     binding = {"geometry_digest": source_geometry["digest"], "task_targets": targets,
                "task_context_sha256": plan["task_context_sha256"], "profile_digest": profile["profile_digest"]}
     request_key = canonical_digest(binding)
@@ -143,20 +151,25 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
                             "frame_registry_digest": canonical_json_digest(registry)},
                "frame_registry": registry, "frame_artifacts": artifacts, "prompts": prompts,
                "allowed_evidence_uses": ["semantic_analysis"]}
-    request_path, result_path, tracks_path = root / "request.json", root / "result.json", root / "tracks.json"
-    write_json(request_path, request)
-    if result_path.is_file():
-        result = json.loads(result_path.read_text())
-        if result.get("run_request_artifact", {}).get("sha256") != _sha256_file(request_path):
-            raise ValueError("website_sam31_retained_request_changed")
+    if provider == "meta":
+        result = run_meta_sam31(frame_registry=registry, frame_artifacts=artifacts, prompts=prompts,
+                               output_root=root, admission=meta_admission or {}, admission_grant=meta_admission_grant)
+        tracks = result["tracks"]
     else:
-        result = run_sam31_source_track_stage(request_path=request_path, run_result_path=result_path,
-                                             provider_result_path=tracks_path, import_request_path=root / "import.json")
-    if result.get("status") != "completed":
-        raise ValueError("website_sam31_tracks_unavailable")
-    if result.get("provider_result_artifact", {}).get("sha256") != _sha256_file(tracks_path):
-        raise ValueError("website_sam31_retained_tracks_changed")
-    tracks = json.loads(tracks_path.read_text())["tracks"]
+        request_path, result_path, tracks_path = root / "request.json", root / "result.json", root / "tracks.json"
+        write_json(request_path, request)
+        if result_path.is_file():
+            result = json.loads(result_path.read_text())
+            if result.get("run_request_artifact", {}).get("sha256") != _sha256_file(request_path):
+                raise ValueError("website_sam31_retained_request_changed")
+        else:
+            result = run_sam31_source_track_stage(request_path=request_path, run_result_path=result_path,
+                                                 provider_result_path=tracks_path, import_request_path=root / "import.json")
+        if result.get("status") != "completed":
+            raise ValueError("website_sam31_tracks_unavailable")
+        if result.get("provider_result_artifact", {}).get("sha256") != _sha256_file(tracks_path):
+            raise ValueError("website_sam31_retained_tracks_changed")
+        tracks = json.loads(tracks_path.read_text())["tracks"]
     selected = []
     for target in targets:
         track = select_task_track(target=target, tracks=tracks, frames=frames)

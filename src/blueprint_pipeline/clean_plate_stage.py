@@ -271,6 +271,8 @@ def run_clean_plate_stage(
     website_source_video: Optional[Path] = None,
     image_edit_admission: Optional[Mapping[str, Any]] = None,
     image_edit_admission_grant: Any = None,
+    meta_sam_admission: Optional[Mapping[str, Any]] = None,
+    meta_sam_admission_grant: Any = None,
     policy: Optional[CleanPlatePolicy] = None,
     force_rebuild: bool = False,
 ) -> Dict[str, Any]:
@@ -377,7 +379,9 @@ def run_clean_plate_stage(
     ):
         try:
             task_masks = run_website_task_masks(plan=plan, source_geometry=source_geometry,
-                                                output_root=clean_plate_root / "task_masks")
+                                                output_root=clean_plate_root / "task_masks",
+                                                meta_admission=meta_sam_admission,
+                                                meta_admission_grant=meta_sam_admission_grant)
         except Exception as exc:
             status, mode = "blocked", "task_masks_blocked"
             reason = "website_task_masks_unavailable"

@@ -51,6 +51,8 @@ dependencies = [
     # runtime extra.
     "scipy>=1.10.0",
     "Pillow>=10.0.0",
+    # Official CPU-only decoder for hosted SAM 3.1 masks.
+    "meta-sam-parser==0.0.5",
     "fastapi>=0.115.0",
     "json-numpy>=2.1.0",
     # NuRec volumes -- the splat format Isaac renders natively -- are gzip
