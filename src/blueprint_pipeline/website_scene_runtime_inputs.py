@@ -83,6 +83,14 @@ def prepare_website_runtime_inputs(*, preparation: Mapping[str, Any], base_scene
         "reconstruction_performed": False, "provider_mutation_performed": False,
         "simulator_ready": False, "physics_qualified": False,
     }
+    from .website_native_appearance import prepare_native_appearance
+    try:
+        appearance = prepare_native_appearance(preparation=preparation, base_scene=base_scene,
+                                               output_root=output_root / "appearance")
+        value["appearance"] = {**appearance["artifact"], "status": appearance["status"],
+                               "receipt": appearance, "renderer_qualified": False}
+    except (ValueError, OSError, ImportError) as exc:
+        value["appearance"]["blockers"] = [str(exc)]
     value["digest"] = canonical_digest(value, digest_field="digest")
     write_json(output_root / "runtime_inputs.json", value)
     return value

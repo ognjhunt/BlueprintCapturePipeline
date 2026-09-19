@@ -1850,9 +1850,13 @@ def builtin_scene_configuration_adapter_handlers(
                             else execute_provided_mesh_authoring)
                  for identity in ADMITTED_STAGE_ADAPTER_IDENTITIES
                  if identity.adapter_id in {"provided_mesh_appearance_excision", "provided_mesh_rigid_authoring"}}
-    from .website_native_background import ADAPTER_ID, execute_prepared_collision
+    from .website_native_background import (
+        ADAPTER_ID, execute_prepared_collision, APPEARANCE_ADAPTER_ID, execute_prepared_appearance,
+    )
     website_identity = next(identity for identity in ADMITTED_STAGE_ADAPTER_IDENTITIES
                             if identity.adapter_id == ADAPTER_ID)
+    website_appearance_identity = next(identity for identity in ADMITTED_STAGE_ADAPTER_IDENTITIES
+                                       if identity.adapter_id == APPEARANCE_ADAPTER_ID)
     return {
         artifixer_identity: execute_artifixer3d_observed_object_removal,
         sage_identity: execute_sage_exact_prim_excision,
@@ -1861,6 +1865,7 @@ def builtin_scene_configuration_adapter_handlers(
         native_import_identity: execute_simready_native_import_qualification,
         assembly_identity: execute_native_task_scene_assembly,
         website_identity: execute_prepared_collision,
+        website_appearance_identity: execute_prepared_appearance,
         **completed,
     }
 

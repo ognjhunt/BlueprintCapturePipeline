@@ -17,6 +17,7 @@ from .website_object_observations import REFERENCE_ROLE, _record, validate_obser
 SCHEMA = "website_prepared_collision.v1"
 ADAPTER_ID = "website_prepared_collision"
 PREFIX = "scene.website_native_inputs"
+APPEARANCE_ADAPTER_ID = "website_prepared_appearance"
 
 
 def collision_configuration_refusal(configuration: Mapping[str, Any], envelope: Mapping[str, Any]) -> str | None:
@@ -26,6 +27,19 @@ def collision_configuration_refusal(configuration: Mapping[str, Any], envelope: 
         return "website_background_operation"
     for name, contract in (("runtime_inputs_digest", PREFIX + ".runtime_inputs"),
                            ("collision_source_digest", "scene.geometry.collision")):
+        rows = [r for r in envelope.get("materialized_references", []) if r.get("contract_path") == contract]
+        if len(rows) != 1 or rows[0].get("digest") != configuration.get(name):
+            return name
+    return None
+
+
+def appearance_configuration_refusal(configuration: Mapping[str, Any], envelope: Mapping[str, Any]) -> str | None:
+    if (configuration.get("schema_version") != "website_prepared_appearance.v1"
+            or configuration.get("operation") != "reuse_background_without_removal"
+            or configuration.get("claim_ceiling") != "development_only"):
+        return "website_background_operation"
+    for name, contract in (("runtime_inputs_digest", PREFIX + ".runtime_inputs"),
+                           ("appearance_source_digest", PREFIX + ".appearance")):
         rows = [r for r in envelope.get("materialized_references", []) if r.get("contract_path") == contract]
         if len(rows) != 1 or rows[0].get("digest") != configuration.get(name):
             return name
@@ -70,6 +84,57 @@ def prepare_collision_stage(runtime_inputs_path: Path) -> dict[str, Any]:
                               "runtime_inputs_digest": _record(runtime_inputs_path)["digest"],
                               "collision_source_digest": value["collision"]["digest"]},
             "references": references}
+
+
+def prepare_appearance_stage(runtime_inputs_path: Path) -> dict[str, Any]:
+    value = _runtime(runtime_inputs_path)
+    appearance = value["appearance"]
+    if appearance.get("status") != "native_appearance_authored":
+        raise ValueError("website_native_appearance_pending")
+    source = _record(Path(appearance["path"]))
+    if any(source[key] != appearance[key] for key in ("digest", "size_bytes")):
+        raise ValueError("website_native_appearance_changed")
+    runtime = _record(runtime_inputs_path)
+    return {"stage": {"stage_id": "stage-1", "capability": "observed_appearance_object_removal",
+                       "execution_class": "no_spend", "adapter": {"id": APPEARANCE_ADAPTER_ID, "version": "v1"}},
+            "configuration": {"schema_version": "website_prepared_appearance.v1",
+                              "operation": "reuse_background_without_removal", "claim_ceiling": "development_only",
+                              "runtime_inputs_digest": runtime["digest"], "appearance_source_digest": source["digest"]},
+            "references": [{"contract_path": PREFIX + ".runtime_inputs", **runtime},
+                           {"contract_path": PREFIX + ".appearance", **source}]}
+
+
+def execute_prepared_appearance(*, envelope, stage, configuration, configuration_path,
+                                dependency_results, output_root, provider_runtime_artifacts=()):
+    from .task_evaluation_scene_configuration_builtin_adapters import (
+        _copy_artifact, _materialized_reference, _stage_result,
+    )
+    if (appearance_configuration_refusal(configuration, envelope) or dependency_results
+            or stage.get("adapter", {}).get("id") != APPEARANCE_ADAPTER_ID
+            or stage.get("execution_class") != "no_spend"):
+        raise ValueError("website_prepared_appearance_configuration_invalid")
+    _, runtime_path = _materialized_reference(envelope, contract_path=PREFIX + ".runtime_inputs")
+    value = _runtime(runtime_path)
+    appearance = value["appearance"]
+    row, source = _materialized_reference(envelope, contract_path=PREFIX + ".appearance")
+    receipt = appearance.get("receipt", {})
+    if (appearance.get("status") != "native_appearance_authored"
+            or receipt.get("digest") != canonical_digest(receipt, digest_field="digest")
+            or receipt.get("binding", {}).get("preparation_digest") != value["preparation_digest"]
+            or receipt.get("appearance_removal_performed") is not False
+            or receipt.get("renderer_qualified") is not False
+            or receipt.get("physical_measurement_proven") is not False
+            or envelope.get("recipe", {}).get("subject_identity") != value["object_authoring"]["configuration"]["replacement_identity"]
+            or any(row[key] != appearance[key] or row[key] != receipt["artifact"][key]
+                   for key in ("digest", "size_bytes"))):
+        raise ValueError("website_prepared_appearance_source_mismatch")
+    output_root.mkdir(parents=True, exist_ok=True)
+    appearance_artifact = _copy_artifact(source, output_root / "background_appearance.usdc")
+    receipt_path = output_root / "appearance_authoring.json"
+    write_json(receipt_path, receipt)
+    return _stage_result(stage=stage, configuration_path=configuration_path, output_artifacts=[
+        {"role": "configured_appearance_without_source_object", **appearance_artifact},
+        {"role": "website_background_appearance_receipt", **_record(receipt_path)}])
 
 
 def execute_prepared_collision(*, envelope, stage, configuration, configuration_path,

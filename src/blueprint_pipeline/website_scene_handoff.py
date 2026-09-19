@@ -89,10 +89,14 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
                 output_root=root / "native")
             result["runtime_inputs"] = {"status": runtime_inputs["status"], "digest": runtime_inputs["digest"],
                                         "path": str(root / "native" / "runtime_inputs.json")}
-            from .website_native_background import prepare_collision_stage
+            from .website_native_background import prepare_collision_stage, prepare_appearance_stage
             collision_stage = prepare_collision_stage(root / "native" / "runtime_inputs.json")
             write_json(root / "native" / "collision_stage_inputs.json", collision_stage)
             result["runtime_inputs"]["collision_stage_inputs_path"] = str(root / "native" / "collision_stage_inputs.json")
+            if runtime_inputs["appearance"]["status"] == "native_appearance_authored":
+                appearance_stage = prepare_appearance_stage(root / "native" / "runtime_inputs.json")
+                write_json(root / "native" / "appearance_stage_inputs.json", appearance_stage)
+                result["runtime_inputs"]["appearance_stage_inputs_path"] = str(root / "native" / "appearance_stage_inputs.json")
         except (ValueError, KeyError, TypeError, OSError, ImportError) as exc:
             result["runtime_inputs"] = {"status": "awaiting_inputs", "blockers": [str(exc)]}
     except (ValueError, KeyError, TypeError, OSError) as exc:

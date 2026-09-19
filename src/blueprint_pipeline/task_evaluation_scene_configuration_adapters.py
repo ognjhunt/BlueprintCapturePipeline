@@ -45,6 +45,9 @@ ADMITTED_STAGE_ADAPTER_IDENTITIES = (
         "collision_object_excision", "website_prepared_collision", "v1", "no_spend",
     ),
     SceneConfigurationAdapterIdentity(
+        "observed_appearance_object_removal", "website_prepared_appearance", "v1", "no_spend",
+    ),
+    SceneConfigurationAdapterIdentity(
         "rigid_replacement_authoring",
         "content_agents_rigid_replacement",
         "v1",
