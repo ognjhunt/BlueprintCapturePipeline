@@ -450,6 +450,8 @@ def validate_removal_plan(plan: Mapping[str, Any]) -> list[str]:
 
 def _provider_error_blocker(exc: Exception) -> str:
     text = f"{type(exc).__name__}: {exc}".lower()
+    if "too many tool calls" in text:
+        return "gemini_clean_plate_analysis_incomplete_too_many_tool_calls"
     for code in (
         "gemini_clean_plate_agentic_processing_required",
         "gemini_clean_plate_agentic_trace_missing",

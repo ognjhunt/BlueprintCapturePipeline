@@ -6,6 +6,7 @@ import pytest
 from blueprint_pipeline.clean_plate_removal_analysis_gemini import (
     DEFAULT_MODEL,
     _invoke_agentic_video,
+    _provider_error_blocker,
     parse_removal_plan_response,
 )
 
@@ -72,6 +73,11 @@ def test_unmatched_video_processing_result_is_not_an_agentic_receipt(tmp_path):
     steps[1].call_id = "different-call"
     with pytest.raises(ValueError, match="agentic_trace_missing"):
         invoke(tmp_path, [*steps, output('{"targets":[]}')])
+
+
+def test_provider_tool_loop_error_is_distinct_from_credit_or_key_failure():
+    error = ValueError("Error code: 400 - Model generated too many tool calls. Please retry the request.")
+    assert _provider_error_blocker(error) == "gemini_clean_plate_analysis_incomplete_too_many_tool_calls"
 
 
 def test_static_override_is_rejected_before_provider_call(tmp_path):
