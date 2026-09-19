@@ -23,7 +23,7 @@ from .clean_plate_removal_analysis_gemini import DEFAULT_MODEL, _api_key
 from .decision_evidence_contracts import canonical_digest
 from .fresh_scene_semantic_teacher_image_edit import _validated_backend
 from .local_reconstruction_adapters import _sha256_file
-from .paid_resource_admission import PAID_LANE_ADMISSION_SCHEMA_VERSION, require_paid_resource_admission
+from .paid_resource_admission import PaidResourceAdmissionGrant, require_paid_resource_admission_grant
 from .semantic_teacher_image_edit_worker import _execute_frame_request, _open_no_redirect, _usage_cost
 
 BACKEND_ID = "openai_gpt_image_2_5_sunburst_2026_09_08_semantic_teacher"
@@ -69,14 +69,14 @@ def _canvas(image: Image.Image, mask: Image.Image) -> tuple[Image.Image, Image.I
 
 def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_digest: str,
                                output_root: Path, admission: Mapping[str, Any],
-                               token: str, opener: Any = _open_no_redirect) -> list[dict[str, Any]]:
+                               token: str, admission_grant: PaidResourceAdmissionGrant | None = None, opener: Any = _open_no_redirect) -> list[dict[str, Any]]:
     if not any(frame["remaining_pixel_count"] for frame in frames):
         return [dict(frame) for frame in frames]
     _backend, execution, backend_digest = _validated_backend(REGISTRY_PATH, backend_id=BACKEND_ID)
     binding = completion_binding(frames, task_digest=task_digest, backend_digest=backend_digest)
     request_digest = canonical_digest(binding)
-    require_paid_resource_admission(admission, resource_class="openai_api_candidate",
-                                   expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION)
+    require_paid_resource_admission_grant(admission_grant, resource_class="openai_api_candidate",
+                                          allocation_binding_digest=request_digest, require_allocation_binding=True)
     if admission.get("allocation_binding_digest") != request_digest or admission.get("external_disclosure_allowed") is not True:
         raise ValueError("website_image_completion_authorization_missing")
     budget = admission.get("maximum_cost_usd")

@@ -12,11 +12,12 @@ from typing import Any, Callable, Mapping
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
-from .paid_resource_admission import PAID_LANE_ADMISSION_SCHEMA_VERSION, require_paid_resource_admission
+from .paid_resource_admission import PaidResourceAdmissionGrant, require_paid_resource_admission_grant
 
 
 def submit_website_prepared_views(*, descriptor: Mapping[str, Any], capture_root: Path,
-                                 api_request: Callable[..., Any], upload: Callable[..., Any]) -> dict[str, Any]:
+                                 api_request: Callable[..., Any], upload: Callable[..., Any],
+                                 admission_grant: PaidResourceAdmissionGrant | None = None) -> dict[str, Any]:
     metadata = descriptor.get("metadata") or {}
     clean_plate = metadata.get("clean_plate") or {}
     preparation = clean_plate.get("prepared_views") or {}
@@ -62,8 +63,8 @@ def submit_website_prepared_views(*, descriptor: Mapping[str, Any], capture_root
             admission = metadata.get("website_reconstruction_admission") or {}
             if admission.get("allocation_binding_digest") != request_digest:
                 raise ValueError("website_reconstruction_spend_binding_missing")
-            require_paid_resource_admission(admission, resource_class="provider_reconstruction_api",
-                                             expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION)
+            require_paid_resource_admission_grant(admission_grant, resource_class="provider_reconstruction_api",
+                                                  allocation_binding_digest=request_digest, require_allocation_binding=True)
             content = []
             for path in image_paths:
                 prepared = api_request("/marble/v1/media-assets:prepare_upload", method="POST",

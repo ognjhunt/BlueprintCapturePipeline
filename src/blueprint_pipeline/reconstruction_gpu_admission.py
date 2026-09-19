@@ -52,6 +52,7 @@ EXECUTION_ADAPTER_IDS = {
     CANONICAL_POSTSHOT_AWS_WINDOWS_ADAPTER_ID,
 }
 CAPTURE_PROFILES = {
+    "website_monocular_video",
     "iphone_arkit_lidar",
     "camera_360_native",
     "camera_360_equirectangular",
@@ -62,6 +63,7 @@ CAPTURE_PROFILES = {
     "external_generated_asset",
 }
 OPERATIONS = {
+    "website_mapanything",
     "worker_smoke",
     "pose_canary",
     "trainer_canary",
@@ -73,6 +75,7 @@ OPERATIONS = {
     "measurement_chrono_dem_canary",
 }
 EXECUTABLE_OPERATIONS = {
+    "website_mapanything",
     "worker_smoke",
     "pose_canary",
     "trainer_canary",
@@ -84,6 +87,7 @@ EXECUTABLE_OPERATIONS = {
     "measurement_chrono_dem_canary",
 }
 EXPECTED_RUNTIME_RESULT_SCHEMAS = {
+    "website_mapanything": "website_mapanything_result.v1",
     "worker_smoke": "reconstruction_vast_worker_smoke_result.v1",
     "pose_canary": "pose_estimation_result.v1",
     "trainer_canary": "reconstruction_training_result.v1",
@@ -220,6 +224,12 @@ def build_reconstruction_gpu_canary_request(
             }.items():
                 if source.get(key) != expected:
                     errors.append(f"reconstruction_gpu_external_boundary_invalid:{key}")
+    elif operation == "website_mapanything":
+        for key in ("reconstruction_dataset_digest", "frozen_split_digest", "remote_processing_authorization_digest"):
+            if _DIGEST.fullmatch(str(source.get(key) or "")) is None:
+                errors.append(f"reconstruction_gpu_{key}_invalid")
+        if source.get("calibration_digest") is not None or source.get("capture_profile") != "website_monocular_video":
+            errors.append("reconstruction_gpu_website_estimated_geometry_boundary_invalid")
     else:
         for key in (
             "reconstruction_dataset_digest",
@@ -552,6 +562,12 @@ def build_reconstruction_gpu_canary_admission(
             }.items():
                 if source.get(key) != expected:
                     blockers.append(f"reconstruction_gpu_external_boundary_invalid:{key}")
+    elif operation == "website_mapanything":
+        for key in ("reconstruction_dataset_digest", "frozen_split_digest", "remote_processing_authorization_digest"):
+            if _DIGEST.fullmatch(str(source.get(key) or "")) is None:
+                blockers.append(f"reconstruction_gpu_{key}_invalid")
+        if source.get("calibration_digest") is not None or source.get("capture_profile") != "website_monocular_video":
+            blockers.append("reconstruction_gpu_website_estimated_geometry_boundary_invalid")
     else:
         for key in (
             "reconstruction_dataset_digest",

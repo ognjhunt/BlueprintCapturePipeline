@@ -1546,7 +1546,7 @@ def _run_reconstruction_gpu_canary(
             output_fetcher=_windows_output_fetcher,
             output_validator=_windows_output_validator,
         )
-    elif operation in {"pose_canary", "trainer_canary"}:
+    elif operation in {"pose_canary", "trainer_canary", "website_mapanything"}:
         result = run_reconstruction_vast_operation(
             bound_request=_load(args.bound_request_out),
             bundle_receipt=operation_bundle_receipt,

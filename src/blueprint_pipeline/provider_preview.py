@@ -675,6 +675,7 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
             return submit_website_prepared_views(
                 descriptor=descriptor, capture_root=capture_root,
                 api_request=_worldlabs_api_request, upload=_presigned_upload,
+                admission_grant=(provider_adapter_input or {}).get("paid_resource_admission_grant"),
             )
         request_manifest = self._build_request_manifest(
             descriptor=descriptor,

@@ -63,6 +63,7 @@ PAID_LANE = "reconstruction_gpu_canary"
 NAME_PREFIX = "blueprint-reconstruction-"
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 _EXPECTED_RESULTS = {
+    "website_mapanything": "website_mapanything_result.v1",
     "pose_canary": "pose_estimation_result.v1",
     "trainer_canary": "reconstruction_training_result.v1",
 }
@@ -130,7 +131,10 @@ def _default_output_fetcher(url: str, destination: Path) -> SafeHttpFileTransfer
         raise
 
 
-def _bootstrap_script(*, canonical_splatfacto: bool = False) -> str:
+def _bootstrap_script(*, canonical_splatfacto: bool = False, website_mapanything: bool = False) -> str:
+    if website_mapanything:
+        script = Path(__file__).with_name("website_mapanything_bootstrap.py").read_text()
+        return "set -euo pipefail\npython - <<'PY'\n" + script + "\nPY\n"
     if canonical_splatfacto:
         return """set -euo pipefail
 python3 - <<'PY'
@@ -278,6 +282,10 @@ def _validate_bindings(
         or request.get("proof_effect") != "none"
     ):
         blockers.append("reconstruction_vast_operation_bound_request_not_executable")
+    if operation == "website_mapanything":
+        roles = [row.get("role") for row in receipt.get("artifact_members", [])]
+        if roles.count("worker_wheel") != 3 or roles.count("worker_dependencies") != 1:
+            blockers.append("website_mapanything_runtime_bundle_missing")
     bindings = [
         ("operation", "operation"),
         ("operation_request_digest", "operation_request_digest"),
@@ -500,7 +508,7 @@ def run_reconstruction_vast_operation(
             name=name,
             image=worker_image,
             env=worker_environment,
-            bootstrap_argv=["-lc", _bootstrap_script(canonical_splatfacto=canonical_splatfacto)],
+            bootstrap_argv=["-lc", _bootstrap_script(canonical_splatfacto=canonical_splatfacto, website_mapanything=operation == "website_mapanything")],
             entrypoint=["bash"],
             container_disk_gb=container_disk_gb,
             volume_gb=0,
@@ -753,7 +761,7 @@ def run_reconstruction_vast_operation(
     runtime_digest = None
     runtime_status = None
     if runtime_result is not None:
-        runtime_digest = runtime_result.get("pose_estimation_result_digest") or runtime_result.get(
+        runtime_digest = runtime_result.get("website_mapanything_result_digest") or runtime_result.get("pose_estimation_result_digest") or runtime_result.get(
             "reconstruction_training_result_digest"
         )
         runtime_status = runtime_result.get("status")

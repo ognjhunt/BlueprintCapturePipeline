@@ -144,7 +144,14 @@ def execute_reconstruction_gpu_operation_bundle(
     output = output.resolve()
     operation = extraction["operation"]
     try:
-        if operation == "pose_canary":
+        if operation == "website_mapanything":
+            from .website_mapanything_operation import execute, REQUEST_DIGEST, RESULT_DIGEST
+            _, input_manifest = _single_role(manifest, role="geometry_inputs", root=materialized)
+            result = execute(request=request, input_manifest=input_manifest, output_root=output)
+            request_digest = request[REQUEST_DIGEST]
+            result_digest_field = RESULT_DIGEST
+            result_root = output / request_digest[7:23]
+        elif operation == "pose_canary":
             _, plan_path = _single_role(
                 manifest, role="pose_execution_plan", root=materialized
             )
@@ -197,7 +204,9 @@ def execute_reconstruction_gpu_operation_bundle(
     if (
         result.get("schema_version") != manifest.get("expected_runtime_result_schema")
         or result.get(
-            "pose_estimation_request_digest"
+            "website_mapanything_request_digest"
+            if operation == "website_mapanything"
+            else "pose_estimation_request_digest"
             if operation == "pose_canary"
             else "reconstruction_training_request_digest"
         )

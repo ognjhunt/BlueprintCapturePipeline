@@ -1,6 +1,10 @@
 import json
 from hashlib import sha256
 
+from blueprint_pipeline.paid_resource_admission import require_paid_resource_admission
+
+
+
 import pytest
 from PIL import Image
 
@@ -9,6 +13,11 @@ from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
 from blueprint_pipeline.provider_preview import WorldLabsPreviewProvider
 from blueprint_pipeline import provider_preview
 from blueprint_pipeline.website_worldlabs import submit_website_prepared_views
+
+
+def _grant(admission):
+    return require_paid_resource_admission(admission, resource_class=admission["resource_class"],
+                                           expected_schema_version="paid_lane_admission.v1")
 
 
 def _descriptor(tmp_path):
@@ -52,8 +61,10 @@ def test_website_submits_only_prepared_images_and_reuses_the_operation(tmp_path,
     monkeypatch.setattr(provider_preview, "_worldlabs_api_request", api)
     monkeypatch.setattr(provider_preview, "_presigned_upload", lambda *a, **k: uploads.append(k["data"]))
     provider = WorldLabsPreviewProvider()
-    first = provider.submit(descriptor=descriptor, capture_root=tmp_path)
-    second = provider.submit(descriptor=descriptor, capture_root=tmp_path)
+    first = provider.submit(descriptor=descriptor, capture_root=tmp_path,
+                            provider_adapter_input={"paid_resource_admission_grant": _grant(descriptor["metadata"]["website_reconstruction_admission"])})
+    second = provider.submit(descriptor=descriptor, capture_root=tmp_path,
+                            provider_adapter_input={"paid_resource_admission_grant": _grant(descriptor["metadata"]["website_reconstruction_admission"])})
     assert first["provider_run_id"] == second["provider_run_id"] == "operation-1"
     assert len(requests) == 3 and len(uploads) == 2
 
@@ -92,8 +103,16 @@ def test_uncertain_purchase_is_not_repeated(tmp_path):
         raise TimeoutError("response lost after provider accepted the request")
 
     with pytest.raises(TimeoutError):
-        submit_website_prepared_views(descriptor=descriptor, capture_root=tmp_path, api_request=api, upload=lambda *_a, **_k: None)
+        submit_website_prepared_views(descriptor=descriptor, capture_root=tmp_path, api_request=api,
+                                      admission_grant=_grant(descriptor["metadata"]["website_reconstruction_admission"]), upload=lambda *_a, **_k: None)
     with pytest.raises(ValueError, match="requires_reconciliation"):
         submit_website_prepared_views(descriptor=descriptor, capture_root=tmp_path,
                                       api_request=lambda *_a, **_k: pytest.fail("must not purchase twice"), upload=lambda *_a, **_k: None)
     assert calls.count("/marble/v1/worlds:generate") == 1
+
+
+def test_admission_dictionary_cannot_authorize_marble_purchase(tmp_path):
+    with pytest.raises(RuntimeError, match="grant_missing"):
+        submit_website_prepared_views(descriptor=_descriptor(tmp_path), capture_root=tmp_path,
+                                     api_request=lambda *_a, **_k: pytest.fail("must not call provider"),
+                                     upload=lambda *_a, **_k: pytest.fail("must not upload"))

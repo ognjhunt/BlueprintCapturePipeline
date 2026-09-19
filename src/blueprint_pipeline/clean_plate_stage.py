@@ -270,6 +270,7 @@ def run_clean_plate_stage(
     task_context: Optional[Mapping[str, Any]] = None,
     website_source_video: Optional[Path] = None,
     image_edit_admission: Optional[Mapping[str, Any]] = None,
+    image_edit_admission_grant: Any = None,
     policy: Optional[CleanPlatePolicy] = None,
     force_rebuild: bool = False,
 ) -> Dict[str, Any]:
@@ -408,7 +409,7 @@ def run_clean_plate_stage(
                 selected = complete_background_images(
                     frames=selected, task_digest=plan["task_context_sha256"],
                     output_root=clean_plate_root / "image_completion", admission=image_edit_admission or {},
-                    token=os.getenv("OPENAI_API_KEY", ""))
+                    token=os.getenv("OPENAI_API_KEY", ""), admission_grant=image_edit_admission_grant)
                 completion_review = verify_completed_background(
                     frames=selected, original_frames=source_geometry["frames"], plan=plan,
                     output_root=clean_plate_root / "image_completion")

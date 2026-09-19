@@ -3,6 +3,10 @@ from io import BytesIO
 from pathlib import Path
 
 import numpy as np
+from blueprint_pipeline.paid_resource_admission import require_paid_resource_admission
+
+
+
 import pytest
 from PIL import Image
 
@@ -10,6 +14,11 @@ from blueprint_pipeline import website_image_completion as completion
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
 from blueprint_pipeline.semantic_teacher_image_edit_worker import _multipart, _normalized_usage
+
+
+def _grant(admission):
+    return require_paid_resource_admission(admission, resource_class=admission["resource_class"],
+                                           expected_schema_version="paid_lane_admission.v1")
 
 
 def _inputs(tmp_path):
@@ -42,7 +51,7 @@ def test_completion_preserves_unmasked_pixels_references_first_edit_and_reuses_p
         return {"succeeded": True, "generated": stream.getvalue(), "usage": _normalized_usage({"output_tokens_details": {"image_tokens": 100}})}
 
     monkeypatch.setattr(completion, "_execute_frame_request", edit)
-    args = dict(frames=frames, task_digest="task", output_root=tmp_path / "edits", admission=admission, token="test")
+    args = dict(frames=frames, task_digest="task", output_root=tmp_path / "edits", admission=admission, admission_grant=_grant(admission), token="test")
     outputs = completion.complete_background_images(**args)
     assert len(calls) == 2
     assert calls[0]["reference_images"] == []
@@ -71,8 +80,8 @@ def test_completion_holds_before_provider_mutation(tmp_path, monkeypatch, fault)
     else:
         Image.new("RGB", (10, 20), "green").save(frames[0]["image_path"])
     monkeypatch.setattr(completion, "_execute_frame_request", lambda **_: pytest.fail("must not spend"))
-    with pytest.raises(ValueError):
-        completion.complete_background_images(frames=frames, task_digest="task", output_root=tmp_path / "edits", admission=admission, token="test")
+    with pytest.raises((ValueError, RuntimeError)):
+        completion.complete_background_images(frames=frames, task_digest="task", output_root=tmp_path / "edits", admission=admission, admission_grant=_grant(admission), token="test")
 
 
 def test_uncertain_provider_response_is_not_purchased_again(tmp_path, monkeypatch):
@@ -84,7 +93,7 @@ def test_uncertain_provider_response_is_not_purchased_again(tmp_path, monkeypatc
         return {"succeeded": False, "blocker": "timeout"}
 
     monkeypatch.setattr(completion, "_execute_frame_request", fail)
-    args = dict(frames=frames, task_digest="task", output_root=tmp_path / "edits", admission=admission, token="test")
+    args = dict(frames=frames, task_digest="task", output_root=tmp_path / "edits", admission=admission, admission_grant=_grant(admission), token="test")
     with pytest.raises(ValueError, match="timeout"):
         completion.complete_background_images(**args)
     with pytest.raises(ValueError, match="requires_reconciliation"):
@@ -98,3 +107,11 @@ def test_reference_multipart_keeps_mask_on_first_image():
     body = _multipart(fields={"prompt": "test"}, image_bytes=b"FIRST", mask_bytes=b"MASK", boundary="test", reference_images=[b"REFERENCE"])
     assert body.count(b'name="image[]"') == 2
     assert body.index(b"FIRST") < body.index(b"REFERENCE") < body.index(b"MASK")
+
+
+def test_admission_dictionary_cannot_authorize_image_spend(tmp_path, monkeypatch):
+    frames, admission = _inputs(tmp_path)
+    monkeypatch.setattr(completion, "_execute_frame_request", lambda **_: pytest.fail("must not spend"))
+    with pytest.raises(RuntimeError, match="grant_missing"):
+        completion.complete_background_images(frames=frames, task_digest="task", output_root=tmp_path / "edits",
+                                              admission=admission, token="test")
