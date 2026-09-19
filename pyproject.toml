@@ -303,7 +303,6 @@ blueprint-build-eval-ready-task-grounding = "blueprint_pipeline.eval_ready_task_
 blueprint-run-site-eval-director = "blueprint_pipeline.site_eval_director:main"
 blueprint-run-robot-eval-job = "blueprint_pipeline.robot_eval_job_orchestrator:main"
 blueprint-run-robot-eval-worker = "blueprint_pipeline.robot_eval_worker:main"
-blueprint-run-agent-execution-dispatcher = "blueprint_pipeline.agent_run_executor:main"
 blueprint-run-policy-autoresearch = "blueprint_pipeline.policy_autoresearch:main"
 blueprint-run-policy-autoresearch-local-evaluator = "blueprint_pipeline.policy_autoresearch_local_evaluator:main"
 blueprint-run-policy-autoresearch-mujoco-evaluator = "blueprint_pipeline.policy_autoresearch_mujoco_evaluator:main"
