@@ -48,7 +48,37 @@ def request_binding(*, frame_registry: Sequence[Mapping[str, Any]],
             "prompts": list(prompts)}
     if video_artifact is not None:
         binding["continuous_video"] = {key: video_artifact[key] for key in ("sha256", "source_video_digest", "encoding")}
+        binding["video_transport"] = "meta_files_v1"
     return binding
+
+
+def _upload_video(*, clip: Path, root: Path, token: str, opener: Any) -> str:
+    receipt_path = root / "uploaded-video.json"
+    if receipt_path.exists():
+        receipt = json.loads(receipt_path.read_text())
+        if receipt.get("clip_digest") != _sha256_file(clip):
+            raise ValueError("meta_sam_uploaded_video_changed")
+        return receipt["file_id"]
+    # Uploads do not purchase segmentation, but an uncertain upload must not
+    # silently accumulate copies of private footage on the provider.
+    intent = root / "video-upload-intent.json"
+    if intent.exists():
+        raise ValueError("meta_sam_video_upload_requires_reconciliation")
+    boundary = "blueprint-" + _sha256_file(clip)[7:39]
+    body = (f'--{boundary}\r\nContent-Disposition: form-data; name="purpose"\r\n\r\nuser_data\r\n'
+            f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="walkthrough.mp4"\r\n'
+            'Content-Type: video/mp4\r\n\r\n').encode() + clip.read_bytes() + f'\r\n--{boundary}--\r\n'.encode()
+    with intent.open("x") as file:
+        json.dump({"clip_digest": _sha256_file(clip)}, file)
+    request = Request("https://api.meta.ai/v1/files", data=body, method="POST", headers={
+        "Authorization": "Bearer " + token, "Content-Type": "multipart/form-data; boundary=" + boundary})
+    with opener(request, timeout=120) as response:
+        value = json.loads(response.read(100_000))
+    file_id = value.get("id")
+    if not isinstance(file_id, str) or not re.fullmatch(r"file-[A-Za-z0-9_-]{1,200}", file_id):
+        raise ValueError("meta_sam_uploaded_file_id_invalid")
+    write_json(receipt_path, {"file_id": file_id, "clip_digest": _sha256_file(clip)})
+    return file_id
 
 
 def _probe_video(path: Path) -> dict[str, Any]:
@@ -220,8 +250,12 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
                 or isinstance(budget, bool) or not isinstance(budget, (int, float)) or not math.isfinite(budget)
                 or budget < unit_cost * len(prompts)):
             raise ValueError("meta_sam_authorization_missing")
-    media = ({"type": "input_image", "image_url": "data:image/png;base64," + base64.b64encode((root / "frame-000000.png").read_bytes()).decode()}
-             if image_request else {"type": "input_video", "video_url": "data:video/mp4;base64," + base64.b64encode(clip.read_bytes()).decode()})
+    media = None
+    if not retained:
+        media = ({"type": "input_video", "file_id": _upload_video(clip=clip, root=root, token=token, opener=opener)}
+                 if video_artifact else
+                 {"type": "input_image", "image_url": "data:image/png;base64," + base64.b64encode((root / "frame-000000.png").read_bytes()).decode()}
+                 if image_request else {"type": "input_video", "video_url": "data:video/mp4;base64," + base64.b64encode(clip.read_bytes()).decode()})
     tracks, receipts = [], []
     for index, prompt in enumerate(prompts):
         result_path, intent_path = root / f"response-{index}.json", root / f"intent-{index}.json"
@@ -270,4 +304,13 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
     result = {"schema_version": "website_meta_sam31_tracks.v1", "status": "completed", "binding_digest": digest,
               "profile": PROFILE, "tracks": tracks, "responses": receipts, "claim_ceiling": "development_only"}
     write_json(root / "tracks.json", result)
+    if video_artifact and not retained:
+        try:
+            request = Request("https://api.meta.ai/v1/files/" + media["file_id"], method="DELETE",
+                              headers={"Authorization": "Bearer " + token})
+            with opener(request, timeout=30) as response:
+                value = json.loads(response.read(100_000))
+            write_json(root / "video-cleanup.json", {"file_id": media["file_id"], "deleted": value.get("deleted") is True})
+        except Exception:
+            write_json(root / "video-cleanup.json", {"file_id": media["file_id"], "deleted": False})
     return result

@@ -156,13 +156,20 @@ def test_continuous_video_keeps_original_frames_and_timestamps(tmp_path, monkeyp
     calls = []
     def opener(request, **kwargs):
         calls.append(request)
+        if request.full_url == "https://api.meta.ai/v1/files":
+            assert b'name="purpose"\r\n\r\nuser_data' in request.data
+            return BytesIO(b'{"id":"file-fixture"}')
+        if request.get_method() == "DELETE":
+            assert request.full_url == "https://api.meta.ai/v1/files/file-fixture"
+            return BytesIO(b'{"deleted":true}')
         assert json.loads(request.data)["input"][0]["content"][1]["type"] == "input_video"
+        assert json.loads(request.data)["input"][0]["content"][1]["file_id"] == "file-fixture"
         text = response()["output"][0]["content"][0]["text"].replace("<0f>", "<2f>")
         return BytesIO(json.dumps(response(text)).encode())
     result = sam.run_meta_sam31(**args, opener=opener)
     assert result["tracks"][0]["observations"][0]["source_frame_id"] == "decoded-000000002"
     assert sam.run_meta_sam31(**{**args, "admission_grant": None, "admission": {}}, opener=opener) == result
-    assert len(calls) == 1
+    assert len(calls) == 3
     Path(video["path"]).write_bytes(b"changed encoded video")
     with pytest.raises(ValueError, match="continuous_video_invalid"):
         sam.run_meta_sam31(**args, opener=opener)
