@@ -481,3 +481,46 @@ def test_teardown_failure_remains_terminal_blocker_and_keeps_lane_state(
     assert list((tmp_path / "leases").glob("*.lease.json"))
     pending = list((tmp_path / "pending_teardowns").glob("*.json"))
     assert json.loads(pending[0].read_text())["status"] == "open"
+
+
+@pytest.mark.parametrize("interrupted_read", [False, True])
+def test_missing_output_checks_provider_exit_and_tears_down_before_ttl(tmp_path, interrupted_read):
+    provider = _Provider()
+    statuses = iter([
+        {"api_confirmed": True, "desiredStatus": "stopped_before_start"},
+        *([{"api_confirmed": False}] if interrupted_read else []),
+        {"api_confirmed": True, "desiredStatus": "stopped_before_start"},
+        {"api_confirmed": True, "desiredStatus": "stopped_before_start"},
+    ])
+    observations = []
+
+    def inspect(instance_id):
+        assert instance_id == "42"
+        value = next(statuses)
+        observations.append(value)
+        return value
+
+    provider.inspect = inspect
+    ticks = iter(range(1000, 1100))
+
+    def missing(_url, _path):
+        raise FileNotFoundError("not ready")
+
+    preflight = _preflight()
+    preflight["watchdog"]["watchdog_out_dir"] = str(tmp_path / "watchdog")
+    result = run_reconstruction_vast_operation(
+        bound_request=_bound_request(), bundle_receipt=_bundle_receipt(), preflight=preflight,
+        job_dir=tmp_path, input_bundle_get_url="https://objects.example/input",
+        input_receipt_get_url="https://objects.example/receipt",
+        output_bundle_put_url="https://objects.example/put", output_bundle_get_url="https://objects.example/get",
+        provider=provider, paid_resource_admission_grant=_grant(), output_fetcher=missing,
+        sleeper=lambda _seconds: None, clock=lambda: float(next(ticks)),
+        watchdog_validator=lambda *_args: True,
+    )
+    assert len(observations) == (4 if interrupted_read else 2)
+    assert result["duration_seconds"] < 100
+    assert "reconstruction_vast_operation_provider_terminal_without_output" in result["blockers"]
+    assert result["provider_zero_verified"] is True
+    assert provider.launched is False
+    assert json.loads((tmp_path / "teardown_receipt.json").read_text())["status"] == "PASS"
+    assert (tmp_path / "watchdog/started_vast_instance_id.txt").read_text().strip() == "42"

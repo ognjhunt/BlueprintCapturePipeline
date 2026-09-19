@@ -475,6 +475,7 @@ def run_reconstruction_vast_operation(
     blockers: list[str] = []
     invalid_digests: set[str] = set()
     fetch_attempts = 0
+    terminal_observations = 0
     try:
         worker_environment = {
                 "BLUEPRINT_RECONSTRUCTION_OPERATION": operation,
@@ -563,6 +564,11 @@ def run_reconstruction_vast_operation(
             instance_id = str(launch_result["instance_id"])
             provider_mutations += 1
             bind_pending_teardown_instance(pending_path, instance_id)
+            if watchdog.get("watchdog_out_dir"):
+                from .vast_independent_watchdog_control import write_started_vast_instance_id
+                write_started_vast_instance_id(
+                    Path(watchdog["watchdog_out_dir"]) / "started_vast_instance_id.txt", int(instance_id)
+                )
             while float(clock()) - started_at <= hard_ttl:
                 fetch_attempts += 1
                 attempt_path = attempts_dir / f"output_{fetch_attempts:04d}.zip"
@@ -571,6 +577,22 @@ def run_reconstruction_vast_operation(
                         output_bundle_get_url, attempt_path
                     )
                 except (FileNotFoundError, TimeoutError):
+                    # Missing output alone is normal during work. Confirm a
+                    # terminal provider state twice before ending a dead run;
+                    # a failed status request must never count as an exit.
+                    try:
+                        observed = provider.inspect(instance_id)
+                    except Exception:  # noqa: BLE001 - an observation failure is not death.
+                        observed = {}
+                    terminal = observed.get("api_confirmed") is True and (
+                        observed.get("provider_absence_confirmed") is True
+                        or str(observed.get("desiredStatus") or "").lower()
+                        in {"exited", "stopped", "stopped_before_start", "dead", "destroyed"}
+                    )
+                    terminal_observations = terminal_observations + 1 if terminal else 0
+                    if terminal_observations >= 2:
+                        blockers.append("reconstruction_vast_operation_provider_terminal_without_output")
+                        break
                     if float(clock()) - started_at >= hard_ttl:
                         break
                     sleeper(

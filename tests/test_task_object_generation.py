@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -104,3 +105,37 @@ def test_generated_request_cannot_inherit_measured_physics(retained, tmp_path):
         "rationale": "Anchor mass", "uncertainty": "Wrong object", "evidence_ids": ["generated_design"]}
     with pytest.raises(ValueError, match="authority_mismatch"):
         author.AuthoringRequest.model_validate(request)
+
+
+def test_resume_retries_only_unfinished_object_and_rechecks_saved_bytes(retained, tmp_path):
+    requests = generation.build_generated_object_requests(context_request=context(retained),
+        specifications=[spec("delayed"), spec("finished")], output_root=tmp_path / "specs")
+    calls = []
+
+    def execute(**kwargs):
+        request, root = kwargs["request_value"], kwargs["output_root"]
+        calls.append(request["object_id"])
+        if calls == ["delayed"]:
+            (root / "failure.json").write_text('{"blocker":"rate_limit"}')
+            raise RuntimeError("rate_limit")
+        asset = root / "asset.usdc"
+        asset.write_bytes(b"hermetic geometry bytes")
+        value = {"status": "candidate_authored_pending_native_qualification", "object_id": request["object_id"],
+                 "request_digest": request["request_digest"], "asset": author.file_record(asset)}
+        value["result_digest"] = generation.canonical_digest(value)
+        (root / "result.json").write_text(json.dumps(value))
+        return value
+
+    args = dict(requests=requests, output_root=tmp_path / "batch", invoker=object(), mac_executor=None,
+                blender_runner=None, blender_executable="test-only", executor=execute)
+    first = generation.execute_generated_object_batch(**args)
+    assert [row["status"] for row in first["objects"]] == ["held", "candidate_authored"]
+    second = generation.execute_generated_object_batch(**args)
+    assert [row["status"] for row in second["objects"]] == ["candidate_authored", "candidate_authored"]
+    assert calls == ["delayed", "finished", "delayed"]
+    assert (tmp_path / "batch/delayed/attempt-0001/failure.json").is_file()
+    Path(second["objects"][1]["result"]["asset"]["path"]).write_bytes(b"changed")
+    third = generation.execute_generated_object_batch(**args)
+    assert third["objects"][1]["status"] == "held"
+    assert "artifact_changed" in third["objects"][1]["blocker"]
+    assert calls == ["delayed", "finished", "delayed"]
