@@ -26,7 +26,8 @@ ENDPOINT = "https://api.meta.ai/v1/responses"
 # https://dev.meta.ai/docs/pricing-rate-limits#sam-pricing (2026-09-19).
 PRICE_PER_FRAME_USD = 0.0002
 PROFILE = {"provider": "meta_model_api", "model": MODEL, "mask_encoding": "one_bit",
-           "parser": "meta-sam-parser==0.0.5", "price_per_frame_usd": PRICE_PER_FRAME_USD}
+           "parser": "meta-sam-parser==0.0.5", "price_per_frame_usd": PRICE_PER_FRAME_USD,
+           "minimum_reserved_frames": 50}
 
 
 def meta_api_key() -> str:
@@ -142,7 +143,7 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
     budget = admission.get("maximum_cost_usd")
     if (admission.get("allocation_binding_digest") != digest or admission.get("external_disclosure_allowed") is not True
             or isinstance(budget, bool) or not isinstance(budget, (int, float)) or not math.isfinite(budget)
-            or budget < len(frame_registry) * len(prompts) * PRICE_PER_FRAME_USD):
+            or budget < max(50, len(frame_registry)) * len(prompts) * PRICE_PER_FRAME_USD):
         raise ValueError("meta_sam_authorization_missing")
     if not prompts or len({p["prompt_id"] for p in prompts}) != len(prompts):
         raise ValueError("meta_sam_prompts_invalid")
@@ -190,6 +191,11 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
             temporary = result_path.with_suffix(".tmp")
             write_json(temporary, receipt)
             os.replace(temporary, result_path)
+        processed = (response.get("usage") or {}).get("video_frames_processed")
+        if isinstance(processed, bool) or not isinstance(processed, int) or processed < 0:
+            raise ValueError("meta_sam_usage_missing")
+        if processed > max(50, len(frame_registry)):
+            raise ValueError("meta_sam_usage_exceeds_reservation")
         tracks.extend(parse_tracks(response, prompt=prompt, registry=frame_registry))
         receipts.append({"path": str(result_path), "sha256": _sha256_file(result_path)})
     result = {"schema_version": "website_meta_sam31_tracks.v1", "status": "completed", "binding_digest": digest,

@@ -17,7 +17,7 @@ from blueprint_pipeline.website_task_masks import decode_track_mask
 def response(text=None, status="completed"):
     if text is None:
         text = '<0f>0<|box;x1=1;y1=0;x2=2;y2=1;w=4;h=4|><|mask;x=0;y=0;data=2,2,!!!!!&T:u9`|>'
-    return {"status": status, "output": [{"type": "message", "content": [{"type": "output_text", "text": text}]}]}
+    return {"status": status, "usage": {"video_frames_processed": 1}, "output": [{"type": "message", "content": [{"type": "output_text", "text": text}]}]}
 
 
 def registry():
