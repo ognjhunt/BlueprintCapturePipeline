@@ -38,6 +38,7 @@ def _descriptor(tmp_path):
                          "clean_plate": {"status": "objects_removed", "privacy_verified": True, "prepared_views": preparation},
                          "website_reconstruction_admission": {"schema_version": "paid_lane_admission.v1", "status": "admitted",
                                                               "resource_class": "provider_reconstruction_api", "blockers": [],
+                                                              "maximum_cost_usd": 2.48, "external_disclosure_allowed": True,
                                                               "allocation_binding_digest": canonical_digest(binding)}}}
 
 
@@ -116,3 +117,55 @@ def test_admission_dictionary_cannot_authorize_marble_purchase(tmp_path):
         submit_website_prepared_views(descriptor=_descriptor(tmp_path), capture_root=tmp_path,
                                      api_request=lambda *_a, **_k: pytest.fail("must not call provider"),
                                      upload=lambda *_a, **_k: pytest.fail("must not upload"))
+
+
+@pytest.mark.parametrize("budget", [None, True, -1, 2.47, float("nan"), float("inf")])
+def test_insufficient_or_invalid_budget_cannot_upload_or_purchase(tmp_path, budget):
+    descriptor = _descriptor(tmp_path)
+    admission = descriptor["metadata"]["website_reconstruction_admission"]
+    admission["maximum_cost_usd"] = budget
+    with pytest.raises(ValueError, match="budget_insufficient"):
+        submit_website_prepared_views(descriptor=descriptor, capture_root=tmp_path,
+            admission_grant=_grant(admission), api_request=lambda *_a, **_k: pytest.fail("must not spend"),
+            upload=lambda *_a, **_k: pytest.fail("must not upload"))
+
+
+def test_canonical_allocator_preflights_then_submits_through_the_same_grant(tmp_path, monkeypatch, capsys):
+    from blueprint_pipeline import paid_resource_allocator as allocator
+    descriptor = _descriptor(tmp_path)
+    descriptor["metadata"]["website_reconstruction_admission"]["source_commit"] = "1" * 40
+    path = tmp_path / "descriptor.json"
+    path.write_text(json.dumps(descriptor))
+    checks, calls = [], []
+    def source(commit, **kwargs):
+        checks.append((commit, kwargs))
+        return [], commit
+    monkeypatch.setattr(allocator, "_source_checkout_blockers", source)
+    def submit(self, **kwargs):
+        from blueprint_pipeline.paid_resource_admission import require_paid_resource_admission_grant
+        require_paid_resource_admission_grant(kwargs["provider_adapter_input"]["paid_resource_admission_grant"],
+            resource_class="provider_reconstruction_api", require_allocation_binding=True,
+            allocation_binding_digest=descriptor["metadata"]["website_reconstruction_admission"]["allocation_binding_digest"])
+        calls.append(kwargs)
+        return {"provider_run_id": "operation", "status": "processing"}
+    monkeypatch.setattr(WorldLabsPreviewProvider, "submit", submit)
+    args = ["provider-reconstruction", "--provider", "world_labs", "--descriptor", str(path),
+            "--capture-root", str(tmp_path), "--output-dir", str(tmp_path / "allocator"), "--experimental-branch-diagnostic"]
+    assert allocator.main(args) == 0
+    assert not calls
+    assert allocator.main([*args, "--execute"]) == 0
+    assert len(calls) == 1
+    assert checks == [("1" * 40, {"allow_pushed_branch_diagnostic": True})] * 2
+    monkeypatch.setattr(allocator, "_source_checkout_blockers", lambda *_a, **_k: (["dirty_checkout"], "1" * 40))
+    assert allocator.main([*args, "--execute"]) == 2
+    assert len(calls) == 1
+
+
+def test_disclosure_denial_blocks_the_provider(tmp_path):
+    descriptor = _descriptor(tmp_path)
+    admission = descriptor["metadata"]["website_reconstruction_admission"]
+    admission["external_disclosure_allowed"] = False
+    with pytest.raises(ValueError, match="disclosure_not_authorized"):
+        submit_website_prepared_views(descriptor=descriptor, capture_root=tmp_path,
+            admission_grant=_grant(admission), api_request=lambda *_a, **_k: pytest.fail("must not spend"),
+            upload=lambda *_a, **_k: pytest.fail("must not upload"))

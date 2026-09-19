@@ -42,10 +42,21 @@
       "src/blueprint_pipeline/single_g1_kitchen_episode_runpod.py",
       "src/blueprint_pipeline/single_g1_kitchen_qualification_session.py",
       "src/blueprint_pipeline/task_evaluation_scene_configuration_allocator.py",
-      "src/blueprint_pipeline/teleport_paid_allocator.py"
+      "src/blueprint_pipeline/teleport_paid_allocator.py",
+      "src/blueprint_pipeline/website_task_context.py"
     ]
   },
   "surfaces": [
+    {
+      "path": "src/blueprint_pipeline/website_task_context.py",
+      "classification": "canonical_adapter",
+      "required_markers": [
+        "reserve_website_sam_spend",
+        "preparation-spend",
+        "website_sam_spend_receipt_invalid",
+        "require_paid_resource_admission"
+      ]
+    },
     {
       "path": "src/blueprint_pipeline/capture_reconstruction_postshot_allocator.py",
       "classification": "canonical_adapter",

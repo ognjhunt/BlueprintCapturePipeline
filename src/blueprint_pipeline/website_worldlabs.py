@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import fcntl
 import json
+import math
 import os
 from hashlib import sha256
 from pathlib import Path
@@ -14,10 +15,13 @@ from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 from .paid_resource_admission import PaidResourceAdmissionGrant, require_paid_resource_admission_grant
 
+# Multi-image Marble 1.1 Plus: 100 + 1500 + at most 1500 credits.
+# https://docs.worldlabs.ai/api/pricing (verified 2026-09-19); no HQ mesh export.
+MAX_GENERATION_COST_USD = 3100 / 1250
 
-def submit_website_prepared_views(*, descriptor: Mapping[str, Any], capture_root: Path,
-                                 api_request: Callable[..., Any], upload: Callable[..., Any],
-                                 admission_grant: PaidResourceAdmissionGrant | None = None) -> dict[str, Any]:
+
+def validate_website_prepared_views(*, descriptor: Mapping[str, Any], capture_root: Path) -> tuple[list[Path], dict[str, Any]]:
+    """Shared no-network preflight for the allocator and provider adapter."""
     metadata = descriptor.get("metadata") or {}
     clean_plate = metadata.get("clean_plate") or {}
     preparation = clean_plate.get("prepared_views") or {}
@@ -40,6 +44,26 @@ def submit_website_prepared_views(*, descriptor: Mapping[str, Any], capture_root
         image_paths.append(path)
     binding = {"prepared_views_digest": preparation["digest"], "model": "marble-1.1-plus",
                "scene_id": descriptor["scene_id"], "capture_id": descriptor["capture_id"]}
+    return image_paths, binding
+
+
+def validate_website_reconstruction_admission(admission: Mapping[str, Any], request_digest: str) -> None:
+    budget = admission.get("maximum_cost_usd")
+    if (isinstance(budget, bool) or not isinstance(budget, (float, int)) or not math.isfinite(budget)
+            or budget < MAX_GENERATION_COST_USD):
+        raise ValueError("website_reconstruction_budget_insufficient")
+    if admission.get("external_disclosure_allowed") is not True:
+        raise ValueError("website_reconstruction_disclosure_not_authorized")
+    if admission.get("allocation_binding_digest") != request_digest:
+        raise ValueError("website_reconstruction_spend_binding_missing")
+
+
+def submit_website_prepared_views(*, descriptor: Mapping[str, Any], capture_root: Path,
+                                 api_request: Callable[..., Any], upload: Callable[..., Any],
+                                 admission_grant: PaidResourceAdmissionGrant | None = None) -> dict[str, Any]:
+    image_paths, binding = validate_website_prepared_views(descriptor=descriptor, capture_root=capture_root)
+    metadata = descriptor["metadata"]
+    frames = metadata["clean_plate"]["prepared_views"]["frames"]
     request_digest = canonical_digest(binding)
     root = capture_root / "pipeline" / "website_reconstruction"
     root.mkdir(parents=True, exist_ok=True)
@@ -61,8 +85,7 @@ def submit_website_prepared_views(*, descriptor: Mapping[str, Any], capture_root
             generation = state["generation_request"]
         else:
             admission = metadata.get("website_reconstruction_admission") or {}
-            if admission.get("allocation_binding_digest") != request_digest:
-                raise ValueError("website_reconstruction_spend_binding_missing")
+            validate_website_reconstruction_admission(admission, request_digest)
             require_paid_resource_admission_grant(admission_grant, resource_class="provider_reconstruction_api",
                                                   allocation_binding_digest=request_digest, require_allocation_binding=True)
             content = []

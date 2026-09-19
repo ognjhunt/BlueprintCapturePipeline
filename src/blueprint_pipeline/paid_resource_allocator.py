@@ -2207,13 +2207,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps({"success": False}, sort_keys=True))
             return 2
     if args.command == "provider-reconstruction":
-        result = run_teleport_provider(
-            args,
-            load_json=_load,
-            source_checkout_blockers=_source_checkout_blockers,
-            credential_loader=load_teleport_credentials,
-        )
-        success = result.get("status") in {"dry_run_ready", "succeeded_unqualified"}
+        if args.provider == "world_labs":
+            from .website_worldlabs_allocator import run_website_worldlabs
+            result = run_website_worldlabs(args, load_json=_load, source_checkout_blockers=_source_checkout_blockers,
+                                           admission_issuer=require_paid_resource_admission)
+            success = result.get("status") in {"dry_run_ready", "submitted"}
+        else:
+            result = run_teleport_provider(
+                args,
+                load_json=_load,
+                source_checkout_blockers=_source_checkout_blockers,
+                credential_loader=load_teleport_credentials,
+            )
+            success = result.get("status") in {"dry_run_ready", "succeeded_unqualified"}
     elif args.command == "cpu-build":
         if args.execution_plane == "local":
             missing = [
