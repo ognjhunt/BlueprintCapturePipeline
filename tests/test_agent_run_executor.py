@@ -4,6 +4,7 @@ from pathlib import Path
 import hashlib
 import hmac
 import json
+import urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
 from typing import Any
@@ -81,7 +82,7 @@ class FakeClient:
         return {"pipeline_run_id": pipeline_run_id}
 
     def get_run(self, run_id: str) -> dict[str, Any]:
-        return {"run_id": run_id, "dispatch": None}
+        return {"run_id": run_id, "state": "REQUESTED", "money_resolved": False, "dispatch": None}
 
     def report_blocked(self, _row: Any, _pipeline_run_id: str, reason: str) -> None:
         self.blocked.append(reason)
@@ -201,6 +202,8 @@ def test_restart_reconciles_committed_claim_before_staging(tmp_path: Path) -> No
     owner = "agent-attempt-restart"
     client.get_run = lambda _run_id: {
         "run_id": "run-1",
+        "state": "RUNNING",
+        "money_resolved": False,
         "dispatch": {"pipeline_run_id": owner},
     }
     journal_dir = tmp_path / "journal"
@@ -224,7 +227,77 @@ def test_restart_reconciles_committed_claim_before_staging(tmp_path: Path) -> No
     )
     assert summary["staged"] == 1
     assert summary["pending"] == 1
+    assert client.claims == [("run-1", owner)]
+
+
+def test_restart_preserves_preflight_release_disposition_after_claim(tmp_path: Path) -> None:
+    row = _row(tmp_path)
+    owner = "agent-attempt-blocked"
+    client = FakeClient([])
+    client.get_run = lambda _run_id: {
+        "run_id": "run-1", "state": "RUNNING", "money_resolved": False,
+        "dispatch": {"pipeline_run_id": owner},
+    }
+    journal_dir = tmp_path / "journal"
+    executor._write_json_atomic(journal_dir / f"run-1--{owner}.json", {
+        "schema_version": "blueprint.agent_run_executor_journal.v1",
+        "state": "claim_intent", "run_id": "run-1", "pipeline_run_id": owner,
+        "canonical_job_id": "canonical-job-1",
+        "execution_admission_digest": row["execution_admission_digest"],
+        "disposition": "block_before_execution",
+        "preflight_blockers": ["agent_execution_episode_spec_count_mismatch"],
+        "row": row,
+    })
+    summary = executor.poll_once(client=client, capture_root=tmp_path, journal_dir=journal_dir)
+    assert summary["blocked"] == 1
+    assert client.blocked == ["agent_execution_episode_spec_count_mismatch"]
+    assert not (tmp_path / "pipeline" / "robot_eval_job_requests" / "inbox" / "canonical-job-1.json").exists()
+
+
+def test_restart_does_not_stage_money_resolved_run(tmp_path: Path) -> None:
+    row = _row(tmp_path)
+    owner = "agent-attempt-resolved"
+    client = FakeClient([])
+    client.get_run = lambda _run_id: {
+        "run_id": "run-1", "state": "COMPLETED", "money_resolved": True,
+        "dispatch": {"pipeline_run_id": owner},
+    }
+    journal_dir = tmp_path / "journal"
+    executor._write_json_atomic(journal_dir / f"run-1--{owner}.json", {
+        "schema_version": "blueprint.agent_run_executor_journal.v1",
+        "state": "claim_intent", "run_id": "run-1", "pipeline_run_id": owner,
+        "canonical_job_id": "canonical-job-1",
+        "execution_admission_digest": row["execution_admission_digest"],
+        "disposition": "stage_for_execution", "preflight_blockers": [], "row": row,
+    })
+    summary = executor.poll_once(client=client, capture_root=tmp_path, journal_dir=journal_dir)
+    assert summary["blocked"] == 1
     assert client.claims == []
+
+
+def test_restart_records_same_owner_lease_409_without_staging(tmp_path: Path) -> None:
+    row = _row(tmp_path)
+    owner = "agent-attempt-expired"
+    client = FakeClient([])
+    client.get_run = lambda _run_id: {
+        "run_id": "run-1", "state": "RUNNING", "money_resolved": False,
+        "dispatch": {"pipeline_run_id": owner},
+    }
+    client.claim = lambda *_args: (_ for _ in ()).throw(
+        urllib.error.HTTPError("http://local", 409, "expired", {}, None)
+    )
+    journal_dir = tmp_path / "journal"
+    path = journal_dir / f"run-1--{owner}.json"
+    executor._write_json_atomic(path, {
+        "schema_version": "blueprint.agent_run_executor_journal.v1",
+        "state": "claim_intent", "run_id": "run-1", "pipeline_run_id": owner,
+        "canonical_job_id": "canonical-job-1",
+        "execution_admission_digest": row["execution_admission_digest"],
+        "disposition": "stage_for_execution", "preflight_blockers": [], "row": row,
+    })
+    summary = executor.poll_once(client=client, capture_root=tmp_path, journal_dir=journal_dir)
+    assert summary["blocked"] == 1
+    assert executor._load_json(path)["state"] == "claim_rejected"
 
 
 def test_signed_local_webapp_queue_closes_digest_bound_fixture(tmp_path: Path) -> None:

@@ -15,6 +15,7 @@ from pathlib import Path
 import tempfile
 import time
 from typing import Any, Callable, Mapping
+import urllib.error
 from urllib.parse import quote, urlsplit
 from uuid import uuid4
 
@@ -395,19 +396,63 @@ def poll_once(
         row = _mapping(journal.get("row"))
         run_id = str(journal.get("run_id") or "")
         pipeline_run_id = str(journal.get("pipeline_run_id") or "")
-        observed = client.get_run(run_id)
+        try:
+            observed = client.get_run(run_id)
+        except (OSError, ValueError, urllib.error.URLError):
+            summary["pending"] += 1
+            continue
+        observed_state = str(observed.get("state") or "")
+        if observed.get("money_resolved") is True or observed_state not in {"REQUESTED", "RUNNING"}:
+            journal["state"] = "claim_rejected"
+            journal["rejection"] = "server_run_not_executable"
+            _write_json_atomic(journal_path, journal)
+            summary["blocked"] += 1
+            continue
         dispatch = _mapping(observed.get("dispatch"))
         observed_owner = str(dispatch.get("pipeline_run_id") or "")
-        if not observed_owner:
+        if observed_owner and observed_owner != pipeline_run_id:
+            journal["state"] = "claim_rejected"
+            journal["rejection"] = "server_dispatch_owner_conflict"
+            _write_json_atomic(journal_path, journal)
+            summary["blocked"] += 1
+            continue
+        try:
             claim = client.claim(
                 run_id,
                 pipeline_run_id,
                 str(journal["execution_admission_digest"]),
             )
-            observed_owner = str(claim.get("pipeline_run_id") or "")
+        except urllib.error.HTTPError as exc:
+            if exc.code == 409:
+                journal["state"] = "claim_rejected"
+                journal["rejection"] = "server_claim_no_longer_valid"
+                _write_json_atomic(journal_path, journal)
+                summary["blocked"] += 1
+            else:
+                summary["pending"] += 1
+            continue
+        except (OSError, ValueError, urllib.error.URLError):
+            summary["pending"] += 1
+            continue
+        observed_owner = str(claim.get("pipeline_run_id") or "")
         if observed_owner != pipeline_run_id:
             journal["state"] = "claim_rejected"
             _write_json_atomic(journal_path, journal)
+            summary["blocked"] += 1
+            continue
+        if journal.get("disposition") == "block_before_execution":
+            try:
+                client.report_blocked(
+                    row,
+                    pipeline_run_id,
+                    ";".join(str(item) for item in journal.get("preflight_blockers", [])),
+                )
+            except (OSError, ValueError, urllib.error.URLError):
+                summary["pending"] += 1
+                continue
+            journal["state"] = "reported_blocked"
+            _write_json_atomic(journal_path, journal)
+            summary["claimed"] += 1
             summary["blocked"] += 1
             continue
         try:
@@ -450,6 +495,10 @@ def poll_once(
             "pipeline_run_id": pipeline_run_id,
             "canonical_job_id": _canonical_job_id(row),
             "execution_admission_digest": row["execution_admission_digest"],
+            "disposition": (
+                "block_before_execution" if preflight_blockers else "stage_for_execution"
+            ),
+            "preflight_blockers": preflight_blockers,
             "row": dict(row),
         }
         _write_json_atomic(journal_path, journal, exclusive=True)
