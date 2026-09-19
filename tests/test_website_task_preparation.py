@@ -259,6 +259,8 @@ def test_collected_reconstruction_reaches_real_website_preparation(tmp_path):
     assert Path(result["thumbnail"]["path"]).is_file()
     assert result["simulator_ready"] is False
     assert result["provider_mutation_performed"] is False
+    assert result["runtime_inputs"]["status"] == "background_collision_prepared"
+    assert Path(result["runtime_inputs"]["path"]).is_file()
 
 
 def test_container_destination_is_not_silently_changed_to_top_surface(tmp_path):
