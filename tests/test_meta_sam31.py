@@ -116,3 +116,23 @@ def test_per_frame_budget_is_checked_before_submission(tmp_path, monkeypatch):
     args["admission"]["maximum_cost_usd"] = 0.00001
     with pytest.raises(ValueError, match="authorization_missing"):
         sam.run_meta_sam31(**args, opener=lambda *a, **kw: pytest.fail("unauthorized call"))
+
+
+def test_video_uses_video_payload_and_blocks_usage_beyond_reserved_frames(tmp_path, monkeypatch):
+    monkeypatch.setenv("META_MODEL_API_KEY", "fixture-meta-secret")
+    args = inputs(tmp_path)
+    args["frame_registry"].append({**args["frame_registry"][0], "source_frame_id": "second"})
+    args["frame_artifacts"].append({**args["frame_artifacts"][0], "source_frame_id": "second"})
+    digest = canonical_digest(sam.request_binding(frame_registry=args["frame_registry"],
+        frame_artifacts=args["frame_artifacts"], prompts=args["prompts"]))
+    args["admission"]["allocation_binding_digest"] = digest
+    args["admission_grant"] = require_paid_resource_admission(args["admission"], resource_class="evaluator_api",
+        expected_schema_version="paid_lane_admission.v1")
+    def opener(request, **kwargs):
+        media = json.loads(request.data)["input"][0]["content"][1]
+        assert media["type"] == "input_video"
+        result = response()
+        result["usage"]["video_frames_processed"] = 51
+        return BytesIO(json.dumps(result).encode())
+    with pytest.raises(ValueError, match="usage_exceeds_reservation"):
+        sam.run_meta_sam31(**args, opener=opener)
