@@ -171,6 +171,18 @@ def test_episode_spec_mismatch_claims_and_releases_full_hold(tmp_path: Path) -> 
     assert client.blocked == ["agent_execution_episode_spec_count_mismatch"]
 
 
+def test_unapproved_staged_policy_claims_and_releases_without_execution(tmp_path: Path) -> None:
+    row = _row(tmp_path)
+    staged = tmp_path / "pipeline" / "robot_eval_inputs" / "canonical-job-1" / "policy_package.json"
+    staged.parent.mkdir(parents=True)
+    staged.write_text(json.dumps({"job_id": "canonical-job-1", "policy_package": {}}))
+    client = FakeClient([row])
+    summary = executor.poll_once(client=client, capture_root=tmp_path)
+    assert summary["claimed"] == 1
+    assert summary["blocked"] == 1
+    assert client.blocked == ["agent_execution_unapproved_staged_policy_package"]
+
+
 def test_frozen_utf8_admission_bytes_are_digest_authority(tmp_path: Path) -> None:
     row = _row(tmp_path)
     row["execution_admission"]["operator_name"] = "José 🤖"

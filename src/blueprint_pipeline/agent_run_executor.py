@@ -101,6 +101,19 @@ def validate_queue_run(row: Mapping[str, Any], *, capture_root: Path | None = No
             else:
                 if episode_specs.get("episode_count") != row.get("quoted_episodes"):
                     blockers.append("agent_execution_episode_spec_count_mismatch")
+        job_id = str(canonical.get("job_id") or "")
+        if Path(job_id).name != job_id or job_id in {"", ".", ".."}:
+            blockers.append("agent_execution_canonical_job_id_unsafe")
+        else:
+            staged_policy = (
+                capture_root
+                / "pipeline"
+                / "robot_eval_inputs"
+                / job_id
+                / "policy_package.json"
+            )
+            if staged_policy.exists():
+                blockers.append("agent_execution_unapproved_staged_policy_package")
     if authorization.get("episodes") != row.get("quoted_episodes"):
         blockers.append("agent_execution_episode_quote_mismatch")
     if authorization.get("max_cost_usd") != row.get("quoted_usd"):
@@ -413,6 +426,7 @@ def poll_once(
         "agent_execution_episode_specs_missing",
         "agent_execution_episode_specs_invalid",
         "agent_execution_episode_spec_count_mismatch",
+        "agent_execution_unapproved_staged_policy_package",
     }
     for row in client.list_runs(limit, capture_id=capture_id):
         summary["examined"] += 1
