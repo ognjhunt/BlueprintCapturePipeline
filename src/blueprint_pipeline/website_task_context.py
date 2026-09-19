@@ -46,7 +46,7 @@ def load_current_website_task_context(
 
 def website_webapp_request(*, capture_id: str, operation: str, payload: Mapping[str, Any]) -> dict[str, Any]:
     """Use the existing signed transport for private preparation control data."""
-    if operation not in {"task-context", "scene-sponsorship", "prepared-scene"}:
+    if operation not in {"task-context", "scene-sponsorship", "prepared-scene", "visual-scene"}:
         raise ValueError("website_control_operation_invalid")
     configured = os.getenv("PIPELINE_SYNC_WEBAPP_URL", "").strip()
     if not configured:
@@ -65,6 +65,34 @@ def website_webapp_request(*, capture_id: str, operation: str, payload: Mapping[
     if not isinstance(value, Mapping):
         raise ValueError("website_task_context_response_invalid")
     return dict(value)
+
+
+def publish_website_visual_scene(*, descriptor: Mapping[str, Any], world: Mapping[str, Any],
+                                 operation_id: str) -> dict[str, Any]:
+    """Publish the first viewable world before mesh downloads or native authoring."""
+    metadata = descriptor.get("metadata") or {}
+    context = metadata.get("site_task_context") or {}
+    if (metadata.get("capture_entry_source") != "browser_self_capture"
+            or (metadata.get("clean_plate") or {}).get("privacy_verified") is not True):
+        raise ValueError("website_visual_scene_preparation_missing")
+    validate_website_task_context(context, request_id=context.get("request_id", ""),
+                                  scene_id=descriptor["scene_id"], capture_id=descriptor["capture_id"])
+    assets = world.get("assets") or {}
+    imagery = assets.get("imagery") or {}
+    world_id = world.get("world_id") or world.get("id")
+    launch_url = world.get("world_marble_url")
+    if not world_id or not launch_url or not operation_id:
+        raise ValueError("website_visual_scene_not_viewable")
+    payload = {"request_id": context["request_id"], "scene_id": context["scene_id"],
+               "task_context_digest": context["context_digest"], "world_id": world_id,
+               "operation_id": operation_id, "model": world.get("model") or "marble-1.1-plus",
+               "launch_url": launch_url, "thumbnail_url": assets.get("thumbnail_url") or world.get("thumbnail_url"),
+               "pano_url": imagery.get("pano_url")}
+    value = website_webapp_request(capture_id=context["capture_id"], operation="visual-scene", payload=payload)
+    if (value.get("world_id") != world_id or value.get("state") != "ready"
+            or value.get("task_context_digest") != context["context_digest"]):
+        raise ValueError("website_visual_scene_receipt_invalid")
+    return value
 
 
 def load_website_scene_sponsorship(*, task_context: Mapping[str, Any], now: float) -> dict[str, Any]:

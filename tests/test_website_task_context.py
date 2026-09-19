@@ -109,3 +109,26 @@ def test_prepared_scene_enters_webapp_outbox_not_a_forged_local_owner_intent(mon
     value["request_digest"] = "sha256:" + "0" * 64
     with pytest.raises(ValueError, match="outbox_receipt_invalid"):
         module.enqueue_website_prepared_scene(task_context=context(), request=request)
+
+
+def test_visual_scene_publishes_only_viewer_assets_and_checks_receipt(monkeypatch):
+    value = context()
+    descriptor = {"capture_id": value["capture_id"], "scene_id": value["scene_id"], "metadata": {
+        "capture_entry_source": "browser_self_capture", "site_task_context": value,
+        "clean_plate": {"privacy_verified": True}}}
+    world = {"world_id": "world-1", "world_marble_url": "https://marble.worldlabs.ai/world/1",
+             "assets": {"thumbnail_url": "https://cdn.example/thumb.png", "imagery": {"pano_url": "https://cdn.example/pano.jpg"},
+                        "mesh": {"collider_mesh_url": "not-needed-for-first-view"}}}
+    calls = []
+    def post(**kwargs):
+        calls.append(kwargs)
+        return {"state": "ready", "world_id": "world-1", "task_context_digest": value["context_digest"]}
+    monkeypatch.setattr(module, "website_webapp_request", post)
+    assert module.publish_website_visual_scene(descriptor=descriptor, world=world, operation_id="op-1")["state"] == "ready"
+    assert calls[0]["operation"] == "visual-scene"
+    assert calls[0]["payload"]["thumbnail_url"] == "https://cdn.example/thumb.png"
+    assert "collider" not in json.dumps(calls)
+    descriptor["metadata"]["clean_plate"]["privacy_verified"] = False
+    with pytest.raises(ValueError, match="preparation_missing"):
+        module.publish_website_visual_scene(descriptor=descriptor, world=world, operation_id="op-1")
+    assert len(calls) == 1

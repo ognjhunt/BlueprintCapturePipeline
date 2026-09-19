@@ -937,6 +937,20 @@ def run_preview_provider(
                 normalized["worldlabs_world_manifest_uri"] = str(worldlabs_world_manifest_path)
             normalized["operation_terminal_status"] = poll_result.get("operation_terminal_status") or poll_result.get("status")
 
+            if (normalized.get("status") == "ready" and isinstance(worldlabs_world, Mapping)
+                    and (descriptor.get("metadata") or {}).get("capture_entry_source") == "browser_self_capture"):
+                from .website_task_context import publish_website_visual_scene
+                try:
+                    publication = publish_website_visual_scene(descriptor=descriptor, world=worldlabs_world,
+                                                               operation_id=operation_id)
+                except Exception as exc:
+                    # Retain the ready world and retry this idempotent callback
+                    # when the existing controller resumes the same operation.
+                    publication = {"state": "pending", "world_id": normalized.get("world_id"),
+                                   "blocker": str(exc) if isinstance(exc, ValueError) else type(exc).__name__}
+                normalized["website_visual_publication"] = publication
+                write_json(pipeline_dir / "website_visual_publication.json", publication)
+
         worldlabs_asset_materialization: Dict[str, Any] | None = None
         if (
             isinstance(provider, WorldLabsPreviewProvider)
@@ -1054,6 +1068,7 @@ def run_preview_provider(
                 normalized.get("worldlabs_asset_materialization") or {}
             ),
             "marble_sim_asset_handoff": normalized.get("marble_sim_asset_handoff") or {},
+            "website_visual_publication": normalized.get("website_visual_publication"),
             "labeling": dict(normalized.get("labeling") or {}),
             "provenance": provenance,
         }
