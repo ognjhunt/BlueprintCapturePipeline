@@ -1,7 +1,7 @@
 """Prepare task-aware website images before a single reconstruction.
 
 Website inputs retain original frames and estimated MapAnything cameras, bind
-SAM3.1 task masks, recover observed background and conditionally fill holes.
+SAM3.1 task masks, and edit selected objects out of original-resolution frames.
 Legacy capture keeps its existing opt-in behavior. All inferred geometry and
 repairs remain development evidence (ADP-009B, public_scene_day_14).
 """
@@ -32,7 +32,8 @@ from .local_capture import resolve_local_capture_context
 from .decision_evidence_contracts import canonical_digest
 from .website_scene_geometry import run_website_scene_geometry
 from .website_task_masks import run_website_task_masks
-from .website_object_removal import prepare_object_removal_frames
+from .website_object_removal import prepare_object_removal_frames, select_reconstruction_frames, reconstruction_source_frames
+from .website_reconstruction_profile import reconstruction_profile
 from .website_image_completion import complete_background_images, verify_completed_background
 
 FLAG_ENV = "BLUEPRINT_CLEAN_PLATE_ENABLED"
@@ -273,6 +274,7 @@ def run_clean_plate_stage(
     image_edit_admission_grant: Any = None,
     meta_sam_admission: Optional[Mapping[str, Any]] = None,
     meta_sam_admission_grant: Any = None,
+    reconstruction_capabilities: Optional[Mapping[str, Any]] = None,
     policy: Optional[CleanPlatePolicy] = None,
     force_rebuild: bool = False,
 ) -> Dict[str, Any]:
@@ -391,8 +393,12 @@ def run_clean_plate_stage(
 
     if task_masks is not None and source_geometry is not None and not blockers:
         try:
+            profile = reconstruction_profile(reconstruction_capabilities)
+            reconstruction_frames = reconstruction_source_frames(source_geometry=source_geometry, task_masks=task_masks,
+                source_video=website_source_video, limit=profile["max_input_images"],
+                output_root=clean_plate_root / "reconstruction_source_frames")
             object_removal_frames = prepare_object_removal_frames(
-                frames=source_geometry["frames"], task_masks=task_masks,
+                frames=reconstruction_frames, task_masks=task_masks,
                 output_root=clean_plate_root / "object_removal_frames",
             )
         except Exception as exc:
@@ -402,14 +408,8 @@ def run_clean_plate_stage(
 
     if object_removal_frames is not None and not blockers:
         try:
-            visible_ids = {observation["source_frame_id"] for target in (task_masks or {}).get("targets", [])
-                           if target.get("task_effect") != "privacy"
-                           for observation in target["track"]["observations"]}
-            relevant = [frame for frame in object_removal_frames if frame["frame_id"] in visible_ids]
-            if len(relevant) < 2:
-                raise ValueError("at_least_two_task_views_required")
-            count = min(8, len(relevant))
-            selected = [relevant[round(i * (len(relevant) - 1) / (count - 1))] for i in range(count)]
+            selected = select_reconstruction_frames(frames=object_removal_frames, task_masks=task_masks,
+                                                    limit=profile["max_input_images"])
             completion_review = None
             if any(frame["remaining_pixel_count"] for frame in selected):
                 selected = complete_background_images(
@@ -423,6 +423,7 @@ def run_clean_plate_stage(
                 if completion_review.get("status") != "passed":
                     raise ValueError("website_image_completion_review_failed")
             prepared_views = {"schema_version": "website_prepared_views.v1", "status": "ready", "frames": selected,
+                              "reconstruction_profile": profile,
                               "task_context_sha256": plan.get("task_context_sha256"),
                               "source_geometry_digest": (source_geometry or {}).get("digest"),
                               "generated_pixels_present": any(f.get("generated_pixels_present") for f in selected),

@@ -25,6 +25,9 @@ def validate_website_prepared_views(*, descriptor: Mapping[str, Any], capture_ro
     metadata = descriptor.get("metadata") or {}
     clean_plate = metadata.get("clean_plate") or {}
     preparation = clean_plate.get("prepared_views") or {}
+    profile = preparation.get("reconstruction_profile")
+    if profile is not None and profile != {"provider": "world_labs", "model": "marble-1.1-plus", "max_input_images": 8}:
+        raise ValueError("website_reconstruction_profile_requires_matching_provider_adapter")
     frames = preparation.get("frames") or []
     task_context = metadata.get("site_task_context") or {}
     task_digest = sha256(json.dumps(task_context, sort_keys=True, separators=(",", ":")).encode()).hexdigest()

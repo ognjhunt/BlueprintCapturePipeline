@@ -238,11 +238,13 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
                          "estimated_visible_bounds": estimate_target_bounds(track, frames)})
         if provider == "meta":
             source_track = next(row for row in result["tracks"] if row["track_id"] == track["track_id"])
-            selected[-1]["source_track"] = {**source_track, "observations": [row for row in source_track["observations"]
-                if row["source_frame_id"] in geometry_ids]}
+            selected[-1]["source_track"] = source_track
     manifest = {"schema_version": "website_task_masks.v1", "status": "completed", "binding": binding,
                 "claim_ceiling": "development_only", "targets": selected,
                 "source_geometry_digest": source_geometry["digest"]}
+    if video_artifact:
+        manifest["source_frame_registry"] = registry
+        manifest["source_video_digest"] = source_geometry["binding"]["source_video_digest"]
     manifest["digest"] = canonical_digest(manifest, digest_field="digest")
     write_json(root / "task_masks.json", manifest)
     return manifest

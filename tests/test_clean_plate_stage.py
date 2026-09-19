@@ -189,7 +189,7 @@ def test_website_stage_runs_geometry_masks_and_edit_preparation_before_image_han
         "rebuild_intent": "rebuild_and_compose", "spatial_evidence": [], "confidence": 0.9,
     }], status="completed", model="test", processing="agentic")
     plan["task_context_sha256"] = "task-digest"
-    geometry = {"status": "estimated", "digest": "geometry-digest", "frames": [{"frame_id": "f0"}, {"frame_id": "f1"}]}
+    geometry = {"status": "estimated", "digest": "geometry-digest", "frames": [{"frame_id": f"f{i}"} for i in range(13)]}
     masks = {"targets": [{"track": {"observations": [{"source_frame_id": "f0"}, {"source_frame_id": "f1"}]}}]}
 
     def analyze(**kwargs):
@@ -208,13 +208,22 @@ def test_website_stage_runs_geometry_masks_and_edit_preparation_before_image_han
         return masks
 
     def recover(**kwargs):
+        from PIL import Image
+        from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
         order.append("mask_preparation")
         assert kwargs["task_masks"] == masks
-        return [{"frame_id": frame["frame_id"], "remaining_pixel_count": int(fill_result != "unneeded"), "recovered_pixel_count": 2}
-                for frame in geometry["frames"]]
+        frames = []
+        for i, frame in enumerate(geometry["frames"]):
+            image = tmp_path / f"context-{i}.png"
+            Image.new("RGB", (16, 16), (i * 15, 40, 90)).save(image)
+            frames.append({"frame_id": frame["frame_id"], "image_path": str(image), "image_digest": _sha256_file(image),
+                           "remaining_pixel_count": int(fill_result != "unneeded" and i < 2)})
+        return frames
 
     def complete(**kwargs):
         order.append("completion")
+        assert len(kwargs["frames"]) == 8
+        assert sum(f["remaining_pixel_count"] > 0 for f in kwargs["frames"]) == 2
         return [{**frame, "remaining_pixel_count": 0, "generated_pixels_present": True} for frame in kwargs["frames"]]
 
     def review(**kwargs):
@@ -237,7 +246,7 @@ def test_website_stage_runs_geometry_masks_and_edit_preparation_before_image_han
         assert "website_image_completion_review_failed" in result["blockers"]
         return
     assert result["status"] == "objects_removed"
-    assert len(result["prepared_views"]["frames"]) == 2
+    assert len(result["prepared_views"]["frames"]) == 8
     forwarded = apply_clean_plate_to_reconstruction_input({"output_video_uri": "gs://raw.mov"}, result, required=True)
     assert forwarded["output_video_uri"] is None
     assert forwarded["prepared_views"] == result["prepared_views"]

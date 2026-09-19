@@ -2,14 +2,88 @@
 from __future__ import annotations
 
 from pathlib import Path
+import shutil
 from typing import Any, Mapping, Sequence
 
 import numpy as np
 from PIL import Image
 from scipy.ndimage import binary_dilation
 
-from .local_reconstruction_adapters import _sha256_file
+from .local_reconstruction_adapters import _sha256_file, _extract_frames
 from .website_task_masks import decode_track_mask
+
+
+def select_reconstruction_frames(*, frames: Sequence[Mapping[str, Any]], task_masks: Mapping[str, Any],
+                                 limit: int) -> list[dict[str, Any]]:
+    """Use the provider's full view allowance, including wider room context."""
+    visible = {row["source_frame_id"] for target in task_masks["targets"]
+               if target.get("task_effect") != "privacy" for row in target["track"]["observations"]}
+    anchors = [index for index, frame in enumerate(frames) if frame["frame_id"] in visible]
+    if len({frame["image_digest"] for frame in frames}) < 2:
+        raise ValueError("at_least_two_distinct_reconstruction_views_required")
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 2:
+        raise ValueError("website_reconstruction_frame_limit_invalid")
+    quality = {}
+    for index, frame in enumerate(frames):
+        path = Path(frame["image_path"])
+        if _sha256_file(path) != frame["image_digest"]:
+            raise ValueError("website_reconstruction_source_changed")
+        with Image.open(path) as image:
+            gray = image.convert("L")
+            gray.thumbnail((256, 256))
+            pixels = np.asarray(gray, dtype=float)
+        laplacian = (4 * pixels[1:-1, 1:-1] - pixels[:-2, 1:-1] - pixels[2:, 1:-1]
+                     - pixels[1:-1, :-2] - pixels[1:-1, 2:])
+        quality[index] = float(laplacian.var()) if laplacian.size else 0.0
+    # Preserve views of the actual work; object absence is not a reason to
+    # discard useful room context. Review still checks every selected view.
+    selected = list(dict.fromkeys([anchors[0], anchors[-1]])) if anchors else []
+    if len(selected) == 2 and frames[selected[0]]["image_digest"] == frames[selected[1]]["image_digest"]:
+        selected.pop()
+    peak = max(quality.values())
+    candidates = set(quality) - set(selected)
+    while candidates and len(selected) < limit:
+        seen = {frames[i]["image_digest"] for i in selected}
+        candidates = {i for i in candidates if frames[i]["image_digest"] not in seen}
+        if not candidates:
+            break
+        best = max(sorted(candidates), key=lambda i: min((abs(i - j) for j in selected), default=len(frames))
+                   * (0.5 + 0.5 * quality[i] / max(peak, 1e-12)))
+        selected.append(best)
+        candidates.remove(best)
+    return [dict(frames[i]) for i in sorted(selected)]
+
+
+def reconstruction_source_frames(*, source_geometry: Mapping[str, Any], task_masks: Mapping[str, Any],
+                                 source_video: Path, limit: int, output_root: Path) -> list[dict[str, Any]]:
+    """CPU-decode extra context without increasing the geometry/GPU frame batch."""
+    existing = {f["frame_id"]: dict(f) for f in source_geometry["frames"]}
+    if len(existing) >= limit:
+        return list(existing.values())
+    registry = task_masks.get("source_frame_registry") or []
+    if not registry:
+        raise ValueError("website_full_video_frame_registry_required")
+    if (_sha256_file(source_video) != task_masks.get("source_video_digest")
+            or task_masks["source_video_digest"] != source_geometry["binding"]["source_video_digest"]):
+        raise ValueError("website_reconstruction_video_changed")
+    count = min(limit, len(registry))
+    indexes = sorted({round(i * (len(registry) - 1) / (count - 1)) for i in range(count)})
+    indexes = [i for i in indexes if registry[i]["source_frame_id"] not in existing]
+    if any(row["source_frame_id"] != f"decoded-{i:09d}" for i, row in enumerate(registry)):
+        raise ValueError("website_reconstruction_frame_mapping_invalid")
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise ValueError("website_reconstruction_ffmpeg_missing")
+    rows = _extract_frames(video_path=source_video, ffmpeg=ffmpeg, indexes=indexes,
+        presentation_times=[row["decoded_pts_seconds"] for row in registry],
+        decoded_frame_metadata=registry, frame_root=output_root)
+    rotation = source_geometry["frames"][0]["display_rotation_degrees"]
+    for row in rows:
+        path = output_root / f'{row["frame_id"]}.png'
+        existing[row["frame_id"]] = {"frame_id": row["frame_id"], "timestamp_seconds": row["t_video_sec"],
+            "source_image_path": str(path), "source_image_digest": row["digest"],
+            "display_rotation_degrees": rotation}
+    return sorted(existing.values(), key=lambda frame: frame["timestamp_seconds"])
 
 
 def prepare_object_removal_frames(*, frames: Sequence[Mapping[str, Any]], task_masks: Mapping[str, Any],

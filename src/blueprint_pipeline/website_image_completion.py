@@ -141,7 +141,9 @@ def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_dige
                     stream.flush()
                     os.fsync(stream.fileno())
                 if reference is None:
-                    other = next((other for other in frames if other["frame_id"] != frame["frame_id"]), None)
+                    others = [other for other in frames if other["frame_id"] != frame["frame_id"]]
+                    other = next((other for other in others if other["remaining_pixel_count"]),
+                                 others[0] if others else None)
                     if other is not None:
                         other_path = Path(other["image_path"])
                         if _sha256_file(other_path) != other["image_digest"]:
