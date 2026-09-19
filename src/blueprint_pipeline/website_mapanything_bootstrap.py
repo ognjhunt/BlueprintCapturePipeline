@@ -73,9 +73,11 @@ def install_runtime(root):
     wheels, dependencies = files.get("worker_wheel", []), files.get("worker_dependencies", [])
     if len(dependencies) != 1 or len(wheels) != 3 or any(path.suffix != ".whl" for path in wheels):
         raise ValueError("website_worker_runtime_missing")
-    subprocess.run([sys.executable, "-m", "pip", "install", "--no-deps", "--require-hashes",
+    # The pinned PyTorch image uses Ubuntu's externally managed Python. This
+    # disposable worker owns its interpreter; allow the sealed overlay there.
+    subprocess.run([sys.executable, "-m", "pip", "install", "--break-system-packages", "--no-deps", "--require-hashes",
                     "--no-cache-dir", "-r", str(dependencies[0])], check=True)
-    subprocess.run([sys.executable, "-m", "pip", "install", "--no-deps", "--no-cache-dir", *map(str, wheels)], check=True)
+    subprocess.run([sys.executable, "-m", "pip", "install", "--break-system-packages", "--no-deps", "--no-cache-dir", *map(str, wheels)], check=True)
     return root
 
 

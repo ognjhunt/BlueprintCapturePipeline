@@ -143,6 +143,8 @@ def test_bootstrap_installs_only_bundle_bound_runtime_files(packet, tmp_path, mo
     commands = []
     monkeypatch.setattr(bootstrap.subprocess, "run", lambda args, **_kwargs: commands.append(args))
     bootstrap.install_runtime(tmp_path / "worker")
+    # The deployed base is Ubuntu Python with an EXTERNALLY-MANAGED marker.
+    assert all("--break-system-packages" in command for command in commands)
     assert len(commands) == 2
     assert "--require-hashes" in commands[0]
     assert len([arg for arg in commands[1] if arg.endswith(".whl")]) == 3
