@@ -68,12 +68,14 @@ def test_phone_rotation_preserves_a_pixel_mapping(tmp_path):
 
 def test_missing_local_weights_do_not_trigger_a_download(tmp_path, monkeypatch):
     monkeypatch.setenv("BLUEPRINT_MAPANYTHING_MODEL_PATH", str(tmp_path / "missing"))
+    monkeypatch.setattr(geometry, "prepare_website_geometry_inputs", lambda **_kwargs: {})
     monkeypatch.setattr(geometry, "_infer", lambda *_a, **_k: pytest.fail("must not infer"))
     with pytest.raises(ValueError, match="local_checkpoint_missing"):
         geometry.run_website_scene_geometry(source_video=tmp_path / "raw.mov", output_root=tmp_path / "out", capture_id="c")
 
 
-def test_website_geometry_uses_original_views_and_reuses_bound_estimates(tmp_path, monkeypatch):
+@pytest.fixture
+def geometry_case(tmp_path, monkeypatch):
     weights = tmp_path / "weights"
     weights.mkdir()
     (weights / "model.safetensors").write_bytes(b"test weights")
@@ -107,6 +109,11 @@ def test_website_geometry_uses_original_views_and_reuses_bound_estimates(tmp_pat
     monkeypatch.setattr(geometry.LocalDecodedObservationAdapter, "execute", decode)
     monkeypatch.setattr(geometry, "_infer", infer)
     kwargs = dict(source_video=source, output_root=tmp_path / "out", capture_id="website-capture")
+    return kwargs, calls
+
+
+def test_website_geometry_uses_original_views_and_reuses_bound_estimates(geometry_case):
+    kwargs, calls = geometry_case
     result = geometry.run_website_scene_geometry(**kwargs)
     assert result["status"] == "estimated"
     assert result["scale_status"] == "model_estimated"
@@ -120,3 +127,62 @@ def test_website_geometry_uses_original_views_and_reuses_bound_estimates(tmp_pat
     Path(result["frames"][0]["source_image_path"]).write_bytes(b"edited pixels")
     with pytest.raises(ValueError, match="artifact_changed"):
         geometry.run_website_scene_geometry(**kwargs)
+
+
+def test_cpu_preparation_needs_no_checkpoint_and_exports_only_candidate_views(geometry_case, monkeypatch):
+    kwargs, calls = geometry_case
+    monkeypatch.setenv("BLUEPRINT_MAPANYTHING_MODEL_PATH", "/missing-model")
+    inputs = geometry.prepare_website_geometry_inputs(**kwargs)
+    root = kwargs["output_root"] / "worker_inputs"
+    assert inputs["heldout_pixels_included"] is False
+    assert not calls
+    assert all(not Path(row["image_path"]).is_absolute() for row in inputs["frames"])
+    assert len(list(root.rglob("*.png"))) == 4
+    assert geometry.prepare_website_geometry_inputs(**kwargs) == inputs
+
+
+def test_worker_inputs_and_outputs_survive_host_path_changes(geometry_case, tmp_path, monkeypatch):
+    import shutil
+
+    kwargs, calls = geometry_case
+    inputs = geometry.prepare_website_geometry_inputs(**kwargs)
+    worker_inputs = tmp_path / "other-host" / "inputs"
+    shutil.copytree(kwargs["output_root"] / "worker_inputs", worker_inputs)
+    worker_output = tmp_path / "other-host" / "output"
+    geometry.infer_website_geometry_inputs(input_manifest=worker_inputs / "geometry_inputs.json",
+                                           output_root=worker_output, model_path=tmp_path / "weights")
+    received = tmp_path / "received"
+    shutil.move(worker_output, received)
+    shutil.rmtree(worker_inputs)
+    monkeypatch.setenv("BLUEPRINT_WEBSITE_GEOMETRY_RESULT", str(received / "source_geometry.json"))
+    monkeypatch.setenv("BLUEPRINT_MAPANYTHING_MODEL_PATH", "/missing-model")
+    result = geometry.run_website_scene_geometry(**kwargs)
+    assert result["binding"]["input_digest"] == inputs["digest"]
+    assert len(calls) == 1
+    assert all(Path(row["geometry_path"]).is_relative_to(received) for row in result["frames"])
+    assert result["metric_measurement_proven"] is False
+    assert geometry.run_website_scene_geometry(**kwargs) == result
+
+
+@pytest.mark.parametrize("mutation", ["source", "input", "frame", "escape", "measurement"])
+def test_returned_worker_result_cannot_switch_capture_or_upgrade_authority(geometry_case, mutation):
+    kwargs, _ = geometry_case
+    geometry.run_website_scene_geometry(**kwargs)
+    root = kwargs["output_root"]
+    path = root / "source_geometry.json"
+    document = json.loads(path.read_text())
+    inputs = json.loads((root / "worker_inputs" / "geometry_inputs.json").read_text())
+    if mutation == "source":
+        document["binding"]["source_video_digest"] = "0" * 64
+    elif mutation == "input":
+        document["binding"]["input_digest"] = "0" * 64
+    elif mutation == "frame":
+        document["frames"][0]["timestamp_seconds"] += 1
+    elif mutation == "escape":
+        document["frames"][0]["image_path"] = "../other.png"
+    else:
+        document["metric_measurement_proven"] = True
+    document["digest"] = geometry.canonical_digest(document, digest_field="digest")
+    path.write_text(json.dumps(document))
+    with pytest.raises(ValueError, match="website_(geometry_result|source_geometry_artifact_escape)"):
+        geometry.load_website_geometry_result(manifest_path=path, inputs=inputs)
