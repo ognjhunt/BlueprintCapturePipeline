@@ -84,7 +84,12 @@ def _validated_inventory(root: Path, expected_commit: str) -> tuple[dict, list[d
     rows = manifest.get("files")
     _require(isinstance(rows, list) and 1 <= len(rows) <= 1024, "inventory_invalid")
     owned = manifest.get("source") == "owner_provided_completed_asset"
-    if owned:
+    website = manifest.get("source") == "website_capture_derivatives"
+    if website:
+        # Website publications contain admitted derivatives only. Original
+        # capture video is never a redistributable source in this inventory.
+        raw = set()
+    elif owned:
         from .task_evaluation_completed_scene_publication import verified_owner_source_inventory
         raw = verified_owner_source_inventory(root, manifest)
     else:
@@ -137,6 +142,9 @@ def _validated_inventory(root: Path, expected_commit: str) -> tuple[dict, list[d
         row = by_uri.get(ref["uri"])
         _require(row is not None and all(row[key] == ref[key] for key in ("uri", "digest", "size_bytes")),
                  "request_reference_missing")
+    if website:
+        from .website_native_submission import validate_website_publication
+        validate_website_publication(root=root, manifest=manifest, request=request)
     return manifest, rows
 
 

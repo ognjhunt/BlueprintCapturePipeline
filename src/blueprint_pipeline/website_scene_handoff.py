@@ -108,6 +108,13 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
                     construction["references"].append({"contract_path": "scene.rights.admission", **_record(rights_path)})
                 write_json(root / "native" / "construction_inputs.json", construction)
                 result["runtime_inputs"]["construction_inputs_path"] = str(root / "native" / "construction_inputs.json")
+                if preparation["status"] == "intake_ready":
+                    from .website_scene_dispatch import binding_root, register_website_preparation
+                    context_path = root / "task_context.json"
+                    write_json(context_path, context)
+                    result["source_registration"] = register_website_preparation(
+                        preparation_path=root / "preparation.json", runtime_inputs_path=root / "native/runtime_inputs.json",
+                        task_context_path=context_path, root=binding_root(), now=now)
         except (ValueError, KeyError, TypeError, OSError, ImportError) as exc:
             # Preserve finished CPU outputs when a later handoff is held.
             result.setdefault("runtime_inputs", {}).update(status="awaiting_inputs", blockers=[str(exc)])

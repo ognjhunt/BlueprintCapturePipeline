@@ -320,11 +320,10 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     request = {
         "schema_version": intake.REQUEST_SCHEMA, "submission_id": capture_id, "owner": owner,
         "source": {"kind": "gaussian_splat", "binding_id": base_scene["splat_binding_id"],
-                   "content_digest": base_scene["splat_digest"],
-                   "collision_mesh": {"binding_id": base_scene["collision_binding_id"],
-                                      "content_digest": base_scene["collision_mesh_digest"],
-                                      "rights_reference": task_context["context_digest"],
-                                      "frame_relation": "owner_declared_common_frame"}},
+                   "content_digest": base_scene["splat_digest"]},
+        # The preparation below binds the reconstructed collider and estimated
+        # registration. This is not an owner-uploaded companion mesh or an
+        # owner declaration of its coordinate frame.
         "task": {"task_id": "website-" + task_context["context_digest"][7:27], "strategy": "pick_and_place",
                  "subject": {"description": subject_entry.get("semantic_label") or subject_entry["target_id"],
                              "aabb_min_xyz": sim_min, "aabb_max_xyz": sim_max,

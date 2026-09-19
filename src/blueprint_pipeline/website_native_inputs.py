@@ -144,7 +144,7 @@ def materialize_website_inputs(*, envelope, stage_one_configuration, output_root
              "stage_one_changed")
     binding = validate_website_native_inputs(envelope=envelope, configurations=configurations, require_render_inputs=False)
     result = {"schema_version": "task_evaluation_scene_configuration_render_inputs.v1", "status": INPUT_STATUS,
-              "run_id": envelope["run_id"], "input_kind": "website_capture_derivatives", "website_binding": binding,
+              "run_id": envelope["request"]["run_id"], "input_kind": "website_capture_derivatives", "website_binding": binding,
               "source_appearance_digest": runtime["appearance"]["digest"],
               "raw_interiorgs_bytes_in_provider_packet": False, "raw_capture_video_in_provider_packet": False,
               "captured_frame_derivatives_in_provider_packet": True, "prepared_background_in_provider_packet": True,
