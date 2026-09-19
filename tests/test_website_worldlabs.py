@@ -169,3 +169,19 @@ def test_disclosure_denial_blocks_the_provider(tmp_path):
         submit_website_prepared_views(descriptor=descriptor, capture_root=tmp_path,
             admission_grant=_grant(admission), api_request=lambda *_a, **_k: pytest.fail("must not spend"),
             upload=lambda *_a, **_k: pytest.fail("must not upload"))
+
+
+@pytest.mark.parametrize("credits", [1600, 3100, None, True, -1])
+def test_marble_poll_reports_settled_provider_cost_without_inventing_zero(monkeypatch, credits):
+    monkeypatch.setattr(provider_preview, "_worldlabs_api_request", lambda *_a, **_k: {
+        "done": True, "response": {"world_id": "world", "world_marble_url": "https://marble.worldlabs.ai/world/world"},
+        "cost": {"total_credits": credits}})
+    result = WorldLabsPreviewProvider().poll(run_id="operation")
+    assert result["status"] == "ready"
+    if credits in (1600, 3100):
+        assert result["billing_status"] == "settled"
+        assert result["cost_credits"] == credits
+        assert result["cost_usd"] == credits / 1250
+    else:
+        assert result["billing_status"] == "unreported"
+        assert "cost_usd" not in result

@@ -833,6 +833,9 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
             if not world and world_id:
                 world = _worldlabs_api_request(f"/marble/v1/worlds/{world_id}")
             launch_url = str(world.get("world_marble_url") or "").strip()
+            cost = operation.get("cost") or {}
+            credits = cost.get("total_credits") if isinstance(cost, Mapping) else None
+            settled = isinstance(credits, int) and not isinstance(credits, bool) and credits >= 0
             return {
                 "provider_run_id": run_id,
                 "status": "ready" if launch_url else "failed",
@@ -843,6 +846,8 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
                 "operation_terminal_status": "ready" if launch_url else "failed",
                 "worldlabs_operation": operation,
                 "worldlabs_world": world or None,
+                "billing_status": "settled" if settled else "unreported",
+                **({"cost_credits": credits, "cost_usd": credits / 1250} if settled else {}),
             }
         raw_status = str(operation.get("status") or "").lower()
         return {
@@ -913,6 +918,10 @@ def run_preview_provider(
             poll_result = _poll_worldlabs_until_terminal(provider=provider, operation_id=operation_id)
             normalized["status"] = poll_result.get("status", "failed")
             normalized["failure_reason"] = poll_result.get("failure_reason")
+            normalized["billing_status"] = poll_result.get("billing_status", "unreported")
+            if normalized["billing_status"] == "settled":
+                normalized["cost_credits"] = poll_result["cost_credits"]
+                normalized["cost_usd"] = poll_result["cost_usd"]
             if poll_result.get("world_id"):
                 normalized["world_id"] = poll_result["world_id"]
             if poll_result.get("launch_url"):
