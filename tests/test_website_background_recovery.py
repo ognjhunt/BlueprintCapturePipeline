@@ -1,5 +1,6 @@
 import numpy as np
 from PIL import Image
+from pathlib import Path
 
 from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
 from blueprint_pipeline.website_background_recovery import recover_observed_background, removal_masks
@@ -44,6 +45,21 @@ def test_unseen_background_stays_an_explicit_hole(tmp_path):
     results = recover_observed_background(frames=frames, task_masks=masks, output_root=tmp_path / "prepared")
     assert results[0]["recovered_pixel_count"] == 0
     assert results[0]["remaining_pixel_count"] > 0
+
+
+def test_partial_reprojection_cannot_lock_checkerboard_pixels_into_generated_repair(tmp_path):
+    frames, masks = _frames(tmp_path), _masks()
+    path = Path(frames[1]["geometry_path"])
+    valid = np.ones((4, 4), dtype=bool)
+    valid[0, 0] = False
+    np.savez_compressed(path, depth_m=np.full((4, 4), 2.0), valid_mask=valid)
+    frames[1]["geometry_digest"] = _sha256_file(path)
+    result = recover_observed_background(frames=frames, task_masks=masks, output_root=tmp_path / "prepared")[0]
+    assert result["attempted_recovery_pixel_count"] > 0
+    assert result["recovered_pixel_count"] == 0
+    removed = removal_masks(masks, frames)["f0"]
+    np.testing.assert_array_equal(np.asarray(Image.open(result["remaining_mask_path"])) == 255, removed)
+    np.testing.assert_array_equal(np.asarray(Image.open(result["image_path"])), np.asarray(Image.open(frames[0]["image_path"])))
 
 
 def test_static_supports_and_unrelated_movables_are_preserved(tmp_path):

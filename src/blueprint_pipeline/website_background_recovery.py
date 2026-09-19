@@ -89,6 +89,14 @@ def recover_observed_background(*, frames: Sequence[Mapping[str, Any]], task_mas
             px, py, z, ys, xs = px[closer], py[closer], z[closer], ys[closer], xs[closer]
             edited[py, px], zbuffer[py, px], recovered[py, px] = rgb[ys, xs], z, True
         remaining = target_mask & ~recovered
+        attempted_recovery_count = int(recovered.sum())
+        if remaining.any():
+            # Sparse reprojected samples are not a coherent revealed surface.
+            # Edit the whole removal region instead of locking those samples
+            # into a checkerboard of observed and generated pixels.
+            edited = original.copy()
+            remaining = target_mask.copy()
+            recovered[:] = False
         image_path, mask_path = output_root / f"{index:06d}.png", output_root / f"{index:06d}.mask.png"
         recovered_path = output_root / f"{index:06d}.recovered.png"
         Image.fromarray(edited).save(image_path)
@@ -98,6 +106,7 @@ def recover_observed_background(*, frames: Sequence[Mapping[str, Any]], task_mas
                          "remaining_mask_path": str(mask_path), "remaining_mask_digest": _sha256_file(mask_path),
                          "recovered_mask_path": str(recovered_path), "recovered_mask_digest": _sha256_file(recovered_path),
                          "original_image_digest": target["image_digest"], "recovered_pixel_count": int(recovered.sum()),
+                         "attempted_recovery_pixel_count": attempted_recovery_count,
                          "remaining_pixel_count": int(remaining.sum()), "placement_basis": "model_estimated_geometry",
                          "generated_pixels_present": False, "metric_measurement_proven": False})
     return prepared

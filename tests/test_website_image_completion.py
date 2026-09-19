@@ -115,3 +115,40 @@ def test_admission_dictionary_cannot_authorize_image_spend(tmp_path, monkeypatch
     with pytest.raises(RuntimeError, match="grant_missing"):
         completion.complete_background_images(frames=frames, task_digest="task", output_root=tmp_path / "edits",
                                               admission=admission, token="test")
+
+
+def test_background_review_keeps_client_alive_until_response(tmp_path, monkeypatch):
+    import sys
+    from types import SimpleNamespace as NS
+    import google
+
+    state = {"closed": False, "calls": 0}
+    def generate(**kwargs):
+        assert not state["closed"]
+        state["calls"] += 1
+        return NS(candidates=[NS(finish_reason="STOP")], text=json.dumps({
+            "consistent_background": True, "task_objects_removed": True,
+            "people_absent": True, "unrelated_objects_preserved": True}))
+    class Client:
+        def __init__(self, **kwargs):
+            self.models = NS(generate_content=generate)
+        def __enter__(self):
+            return self
+        def __exit__(self, *_):
+            state["closed"] = True
+        def __del__(self):
+            state["closed"] = True
+
+    types = NS(Part=NS(from_bytes=lambda **kw: kw), GenerateContentConfig=NS,
+               HttpOptions=NS, HttpRetryOptions=NS)
+    fake = NS(Client=Client, types=types)
+    monkeypatch.setattr(google, "genai", fake, raising=False)
+    monkeypatch.setitem(sys.modules, "google.genai", fake)
+    monkeypatch.setattr(completion, "_api_key", lambda: ("fixture-key", "fixture"))
+    frames, _ = _inputs(tmp_path)
+    args = dict(frames=frames, original_frames=frames, plan={"task_context_sha256": "task", "targets": []},
+                output_root=tmp_path / "review")
+    assert completion.verify_completed_background(**args)["status"] == "passed"
+    assert state == {"closed": True, "calls": 1}
+    assert completion.verify_completed_background(**args)["status"] == "passed"
+    assert state["calls"] == 1

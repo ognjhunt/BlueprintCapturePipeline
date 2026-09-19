@@ -188,9 +188,11 @@ def verify_completed_background(*, frames: Sequence[Mapping[str, Any]], original
             if _sha256_file(path) != item["image_digest"]:
                 raise ValueError("website_image_completion_review_source_changed")
             contents.extend([f"{label} {frame['frame_id']}", types.Part.from_bytes(data=path.read_bytes(), mime_type="image/png")])
-    response = genai.Client(api_key=key).models.generate_content(
-        model=DEFAULT_MODEL, contents=contents,
-        config=types.GenerateContentConfig(response_mime_type="application/json", max_output_tokens=2048))
+    with genai.Client(api_key=key, http_options=types.HttpOptions(
+            timeout=120_000, retry_options=types.HttpRetryOptions(attempts=1))) as client:
+        response = client.models.generate_content(
+            model=DEFAULT_MODEL, contents=contents,
+            config=types.GenerateContentConfig(response_mime_type="application/json", max_output_tokens=2048))
     if not response.candidates or response.candidates[0].finish_reason != "STOP":
         raise ValueError("website_image_completion_review_incomplete")
     review = json.loads(response.text)
