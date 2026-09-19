@@ -179,7 +179,7 @@ def test_website_preparation_preserves_original_geometry_without_requiring_measu
 
 
 @pytest.mark.parametrize("fill_result", ["unneeded", "passed", "blocked"])
-def test_website_stage_runs_geometry_masks_and_recovery_before_image_handoff(tmp_path, monkeypatch, fill_result):
+def test_website_stage_runs_geometry_masks_and_edit_preparation_before_image_handoff(tmp_path, monkeypatch, fill_result):
     capture_root = _make_capture(tmp_path)
     source = capture_root / "raw/walkthrough.mp4"
     order = []
@@ -208,7 +208,7 @@ def test_website_stage_runs_geometry_masks_and_recovery_before_image_handoff(tmp
         return masks
 
     def recover(**kwargs):
-        order.append("recovery")
+        order.append("mask_preparation")
         assert kwargs["task_masks"] == masks
         return [{"frame_id": frame["frame_id"], "remaining_pixel_count": int(fill_result != "unneeded"), "recovered_pixel_count": 2}
                 for frame in geometry["frames"]]
@@ -224,13 +224,13 @@ def test_website_stage_runs_geometry_masks_and_recovery_before_image_handoff(tmp
     monkeypatch.setattr(_ANALYSIS_ATTR, analyze)
     monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.run_website_scene_geometry", estimate)
     monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.run_website_task_masks", track)
-    monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.recover_observed_background", recover)
+    monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.prepare_object_removal_frames", recover)
     monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.complete_background_images", complete)
     monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.verify_completed_background", review)
     result = run_clean_plate_stage(capture_root=capture_root, privacy_processing={"status": "pending_website_review"},
                                    website_source_video=source)
     assert result["privacy_verified"] is True
-    assert order == ["analysis", "geometry", "masks", "recovery"] + ([] if fill_result == "unneeded" else ["completion", "review"])
+    assert order == ["analysis", "geometry", "masks", "mask_preparation"] + ([] if fill_result == "unneeded" else ["completion", "review"])
     if fill_result == "blocked":
         assert result["status"] == "blocked"
         assert result["prepared_views"] is None

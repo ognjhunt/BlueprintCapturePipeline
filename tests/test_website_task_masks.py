@@ -56,7 +56,8 @@ def test_masked_geometry_preserves_world_position_and_estimated_scale(tmp_path):
         estimate_target_bounds(_track(), [frame])
 
 
-def test_hosted_masks_use_original_upright_pixels_and_bind_to_depth(tmp_path, monkeypatch):
+@pytest.mark.parametrize("multiple", [False, True])
+def test_hosted_masks_use_original_upright_pixels_and_bind_to_depth(tmp_path, monkeypatch, multiple):
     from PIL import Image
     from blueprint_pipeline.website_task_masks import run_website_task_masks
 
@@ -77,25 +78,38 @@ def test_hosted_masks_use_original_upright_pixels_and_bind_to_depth(tmp_path, mo
 
     def hosted(**kwargs):
         calls.append(kwargs)
+        assert len(kwargs["prompts"]) == 1
         assert kwargs["prompts"][0]["text"] == "blue object"
         assert (kwargs["frame_registry"][0]["width"], kwargs["frame_registry"][0]["height"]) == (4, 8)
         with Image.open(kwargs["frame_artifacts"][0]["path"]) as submitted:
             assert submitted.size == (4, 8)
             assert submitted.getpixel((0, 0))[2] > 240
-        return {"tracks": [{"track_id": "selected", "label": "task-cup", "observations": [
+        tracks = [{"track_id": "selected", "label": "task-cup", "observations": [
             {"source_frame_id": "frame-0", "width": 4, "height": 8,
-             "runs": [{"start": y * 4, "length": 2} for y in range(4)]}]}]}
+             "runs": [{"start": y * 4, "length": 2} for y in range(4)]}]}]
+        if multiple:
+            tracks.append({"track_id": "second", "label": "task-cup", "observations": [
+                {"source_frame_id": "frame-0", "width": 4, "height": 8,
+                 "runs": [{"start": y * 4 + 2, "length": 2} for y in range(4, 8)]}]})
+        return {"tracks": tracks}
 
     monkeypatch.setenv("BLUEPRINT_WEBSITE_SAM31_PROVIDER", "meta")
     monkeypatch.setattr("blueprint_pipeline.website_task_masks.run_meta_sam31", hosted)
-    kwargs = dict(plan={"targets": [target], "task_context_sha256": "task"},
+    targets = [target]
+    if multiple:
+        targets.append({**target, "target_id": "second-task-cup", "spatial_evidence": [
+            {"timestamp_seconds": 0, "box_xywh_normalized": [0.5, 0.5, 0.5, 0.5]}]})
+    kwargs = dict(plan={"targets": targets, "task_context_sha256": "task"},
                   source_geometry={"digest": "geometry", "frames": [frame],
                                    "binding": {"source_video_digest": "video"}}, output_root=tmp_path / "masks")
     result = run_website_task_masks(**kwargs)
     observation = result["targets"][0]["track"]["observations"][0]
+    assert result["targets"][0]["source_track"]["observations"][0]["width"] == 4
     np.testing.assert_array_equal(decode_track_mask(observation), [[True, False], [True, False], [False, False], [False, False]])
     assert observation["source_mask_width"] == 4
     assert result["targets"][0]["estimated_visible_bounds"]["metric_measurement_proven"] is False
+    if multiple:
+        assert [t["track"]["track_id"] for t in result["targets"]] == ["selected", "second"]
     original.write_bytes(b"changed source")
     with pytest.raises(ValueError, match="source_frame_changed"):
         run_website_task_masks(**kwargs)

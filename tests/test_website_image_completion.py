@@ -54,7 +54,7 @@ def test_completion_preserves_unmasked_pixels_references_first_edit_and_reuses_p
     args = dict(frames=frames, task_digest="task", output_root=tmp_path / "edits", admission=admission, admission_grant=_grant(admission), token="test")
     outputs = completion.complete_background_images(**args)
     assert len(calls) == 2
-    assert calls[0]["reference_images"] == []
+    assert calls[0]["reference_images"] == [Path(frames[1]["image_path"]).read_bytes()]
     assert calls[1]["reference_images"] == [Path(outputs[0]["image_path"]).read_bytes()]
     for original, output in zip(frames, outputs):
         image = np.asarray(Image.open(output["image_path"]))

@@ -144,6 +144,7 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
     root.mkdir(parents=True, exist_ok=True)
     frames = list(source_geometry["frames"])
     registry, artifacts, prompts = [], [], []
+    prompt_labels = {}
     video_artifact = None
     if provider == "meta" and source_video is not None:
         registry, video_artifact = prepare_continuous_video(source=source_video,
@@ -183,8 +184,13 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
         if not evidence or evidence[0].get("timestamp_seconds") is None:
             raise ValueError("task_target_spatial_anchor_missing")
         anchor = min(range(len(registry)), key=lambda i: abs(registry[i]["decoded_pts_seconds"] - evidence[0]["timestamp_seconds"]))
-        prompts.append({"prompt_id": target["target_id"], "text": target.get("segmentation_prompt") or target["semantic_label"],
-                        "output_label": target["target_id"], "anchor_frame_index": anchor})
+        text = target.get("segmentation_prompt") or target["semantic_label"]
+        shared = next((p for p in prompts if p["text"].strip().casefold() == text.strip().casefold()), None) if provider == "meta" else None
+        if shared is None:
+            shared = {"prompt_id": target["target_id"], "text": text,
+                      "output_label": target["target_id"], "anchor_frame_index": anchor}
+            prompts.append(shared)
+        prompt_labels[target["target_id"]] = shared["output_label"]
     request = {"schema_version": RUN_REQUEST_SCHEMA_VERSION, "provider_profile": profile,
                "bindings": {"capture_digest": source_geometry["binding"]["source_video_digest"],
                             "retained_video_digest": source_geometry["binding"]["source_video_digest"],
@@ -217,13 +223,23 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
             raise ValueError("website_sam31_retained_tracks_changed")
         tracks = json.loads(tracks_path.read_text())["tracks"]
     selected = []
+    selected_track_ids = set()
     for target in targets:
-        track = select_task_track(target=target, tracks=tracks, frames=frames)
+        candidates = [{**track, "label": target["target_id"]} for track in tracks
+                      if track.get("label") == prompt_labels[target["target_id"]]]
+        track = select_task_track(target=target, tracks=candidates, frames=frames)
+        if track["track_id"] in selected_track_ids:
+            raise ValueError("website_task_targets_resolve_to_same_instance")
+        selected_track_ids.add(track["track_id"])
         selected.append({"target_id": target["target_id"], "target_role": target.get("target_role"),
                          "semantic_label": target["semantic_label"], "task_effect": target["task_effect"],
                          "placement_relation": target.get("placement_relation"),
                          "disposition": target["disposition"], "track": track,
                          "estimated_visible_bounds": estimate_target_bounds(track, frames)})
+        if provider == "meta":
+            source_track = next(row for row in result["tracks"] if row["track_id"] == track["track_id"])
+            selected[-1]["source_track"] = {**source_track, "observations": [row for row in source_track["observations"]
+                if row["source_frame_id"] in geometry_ids]}
     manifest = {"schema_version": "website_task_masks.v1", "status": "completed", "binding": binding,
                 "claim_ceiling": "development_only", "targets": selected,
                 "source_geometry_digest": source_geometry["digest"]}

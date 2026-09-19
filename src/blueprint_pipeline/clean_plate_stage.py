@@ -32,7 +32,7 @@ from .local_capture import resolve_local_capture_context
 from .decision_evidence_contracts import canonical_digest
 from .website_scene_geometry import run_website_scene_geometry
 from .website_task_masks import run_website_task_masks
-from .website_background_recovery import recover_observed_background
+from .website_object_removal import prepare_object_removal_frames
 from .website_image_completion import complete_background_images, verify_completed_background
 
 FLAG_ENV = "BLUEPRINT_CLEAN_PLATE_ENABLED"
@@ -314,7 +314,7 @@ def run_clean_plate_stage(
     reason: Optional[str] = None
     source_geometry: Optional[Dict[str, Any]] = None
     task_masks: Optional[Dict[str, Any]] = None
-    recovered_views: Optional[list[Dict[str, Any]]] = None
+    object_removal_frames: Optional[list[Dict[str, Any]]] = None
     prepared_views: Optional[Dict[str, Any]] = None
 
     if privacy_status == "failed_closed":
@@ -391,21 +391,21 @@ def run_clean_plate_stage(
 
     if task_masks is not None and source_geometry is not None and not blockers:
         try:
-            recovered_views = recover_observed_background(
+            object_removal_frames = prepare_object_removal_frames(
                 frames=source_geometry["frames"], task_masks=task_masks,
-                output_root=clean_plate_root / "recovered_views",
+                output_root=clean_plate_root / "object_removal_frames",
             )
         except Exception as exc:
-            status, mode = "blocked", "background_recovery_blocked"
-            reason = "website_background_recovery_unavailable"
+            status, mode = "blocked", "object_removal_frames_blocked"
+            reason = "website_object_removal_frames_unavailable"
             blockers.append(str(exc) if isinstance(exc, ValueError) else type(exc).__name__)
 
-    if recovered_views is not None and not blockers:
+    if object_removal_frames is not None and not blockers:
         try:
             visible_ids = {observation["source_frame_id"] for target in (task_masks or {}).get("targets", [])
                            if target.get("task_effect") != "privacy"
                            for observation in target["track"]["observations"]}
-            relevant = [frame for frame in recovered_views if frame["frame_id"] in visible_ids]
+            relevant = [frame for frame in object_removal_frames if frame["frame_id"] in visible_ids]
             if len(relevant) < 2:
                 raise ValueError("at_least_two_task_views_required")
             count = min(8, len(relevant))
@@ -415,7 +415,8 @@ def run_clean_plate_stage(
                 selected = complete_background_images(
                     frames=selected, task_digest=plan["task_context_sha256"],
                     output_root=clean_plate_root / "image_completion", admission=image_edit_admission or {},
-                    token=os.getenv("OPENAI_API_KEY", ""), admission_grant=image_edit_admission_grant)
+                    token=os.getenv("OPENAI_API_KEY", ""), admission_grant=image_edit_admission_grant,
+                    targets=plan["targets"])
                 completion_review = verify_completed_background(
                     frames=selected, original_frames=source_geometry["frames"], plan=plan,
                     output_root=clean_plate_root / "image_completion")
@@ -466,7 +467,7 @@ def run_clean_plate_stage(
         "originals_retained": True,
         "source_geometry": source_geometry,
         "task_masks": task_masks,
-        "recovered_views": recovered_views,
+        "object_removal_frames": object_removal_frames,
         "prepared_views": prepared_views,
         "removal_plan_uri": _stage_uri(ctx, REMOVAL_PLAN_FILENAME),
         "removal_manifest_uri": _stage_uri(ctx, REMOVAL_MANIFEST_FILENAME),
@@ -502,7 +503,7 @@ def run_clean_plate_stage(
         "privacy_verified": privacy_verified,
         "source_geometry": source_geometry,
         "task_masks": task_masks,
-        "recovered_views": recovered_views,
+        "object_removal_frames": object_removal_frames,
         "prepared_views": prepared_views,
         "target_count": stage_manifest["target_count"],
         "movable_removal_count": stage_manifest["movable_removal_count"],
