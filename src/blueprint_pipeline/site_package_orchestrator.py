@@ -59,7 +59,7 @@ from .launch_proof_policy import (
 from .object_index_stage import ensure_object_index_stage
 from .object_index_artifacts import resolve_current_object_index_artifacts
 from .clean_plate_stage import CleanPlatePolicy, apply_clean_plate_to_reconstruction_input, run_clean_plate_stage
-from .website_task_context import load_current_website_task_context
+from .website_task_context import load_current_website_task_context, load_website_scene_sponsorship
 from .privacy_processing import run_privacy_postprocess
 from .provider_preview import run_preview_provider
 from .proof_contracts import build_rights_provenance_review
@@ -4422,9 +4422,12 @@ def run_qualification_pipeline(
                 scene_id=scene_id, capture_id=capture_id,
             )
             write_json(pipeline_dir / "website_task_context.json", task_context)
+            sponsorship = load_website_scene_sponsorship(task_context=task_context, now=time.time())
+            write_json(pipeline_dir / "website_scene_sponsorship.json", sponsorship)
             descriptor = CaptureDescriptor.from_dict({
                 **descriptor.to_dict(),
                 "metadata": {**descriptor.metadata, "site_task_context": task_context,
+                             "website_scene_execution_authority": sponsorship,
                              "capture_rights": dict(task_context.get("capture_rights") or {}),
                              "task_statement": task_context["description"]},
             })

@@ -115,6 +115,10 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
                     result["source_registration"] = register_website_preparation(
                         preparation_path=root / "preparation.json", runtime_inputs_path=root / "native/runtime_inputs.json",
                         task_context_path=context_path, root=binding_root(), now=now)
+                    if authority.get("schema_version") == "website_scene_sponsorship.v1":
+                        from .website_task_context import enqueue_website_prepared_scene
+                        result["website_intake_outbox"] = enqueue_website_prepared_scene(
+                            task_context=context, request=preparation["intake_request"])
         except (ValueError, KeyError, TypeError, OSError, ImportError) as exc:
             # Preserve finished CPU outputs when a later handoff is held.
             result.setdefault("runtime_inputs", {}).update(status="awaiting_inputs", blockers=[str(exc)])

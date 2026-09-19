@@ -57,3 +57,55 @@ def test_missing_endpoint_cannot_reuse_stale_manifest_confirmation(monkeypatch):
     monkeypatch.delenv("PIPELINE_SYNC_WEBAPP_URL", raising=False)
     with pytest.raises(ValueError, match="webapp_url_missing"):
         module.load_current_website_task_context(request_id="req1", scene_id="site-req1", capture_id="walkthrough-req1")
+
+
+def sponsorship():
+    value = {"schema_version": "website_scene_sponsorship.v1", "sponsor": "blueprint",
+        "request_id": "req1", "scene_id": "site-req1", "capture_id": "walkthrough-req1",
+        "task_context_digest": context()["context_digest"],
+        "preparation_max_total_spend_usd": 25, "upstream_max_spend_usd": 5,
+        "max_total_spend_usd": 20, "expires_at_epoch": 2000}
+    value["authority_digest"] = canonical_digest(value, digest_field="authority_digest")
+    return value
+
+
+def test_sponsor_is_separate_from_model_context_and_rejects_budget_or_capture_changes(monkeypatch):
+    value = sponsorship()
+    calls = []
+
+    def fetch(**kwargs):
+        calls.append(kwargs)
+        return value
+
+    monkeypatch.setattr(module, "website_webapp_request", fetch)
+    task = context()
+    assert module.load_website_scene_sponsorship(task_context=task, now=1000) == value
+    assert "owner" not in task and "sponsor" not in task
+    assert calls[0]["operation"] == "scene-sponsorship"
+    for changed in ({"capture_id": "walkthrough-other"}, {"task_context_digest": "sha256:" + "0" * 64},
+                    {"upstream_max_spend_usd": 6}, {"expires_at_epoch": 1000},
+                    {"max_total_spend_usd": True}, {"preparation_max_total_spend_usd": float("inf")}):
+        value = {**sponsorship(), **changed}
+        # A correctly hashed but semantically invalid response still fails.
+        if changed.get("preparation_max_total_spend_usd") != float("inf"):
+            value["authority_digest"] = canonical_digest(value, digest_field="authority_digest")
+        with pytest.raises(ValueError):
+            module.load_website_scene_sponsorship(task_context=task, now=1000)
+
+
+def test_prepared_scene_enters_webapp_outbox_not_a_forged_local_owner_intent(monkeypatch):
+    request = {"submission_id": "walkthrough-req1", "source": {"binding_id": "website-splat-test"}}
+    calls = []
+    value = {"id": "scene-test", "state": "forward_pending", "request_digest": canonical_digest(request)}
+
+    def fetch(**kwargs):
+        calls.append(kwargs)
+        return value
+
+    monkeypatch.setattr(module, "website_webapp_request", fetch)
+    assert module.enqueue_website_prepared_scene(task_context=context(), request=request) == value
+    assert calls[0]["operation"] == "prepared-scene"
+    assert calls[0]["payload"]["request"] == request
+    value["request_digest"] = "sha256:" + "0" * 64
+    with pytest.raises(ValueError, match="outbox_receipt_invalid"):
+        module.enqueue_website_prepared_scene(task_context=context(), request=request)
