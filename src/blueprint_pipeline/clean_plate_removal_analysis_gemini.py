@@ -48,7 +48,7 @@ PROCESSING_ENV = "BLUEPRINT_GEMINI_CLEAN_PLATE_PROCESSING"
 # Agentic video keeps the model deciding what to watch, at what speed, and which
 # modality -- the right shape for enumerating/time-localizing distinct movers and
 # task objects over a long walkthrough. Model + processing mode are overridable.
-DEFAULT_MODEL = "gemini-3.7-flash"
+DEFAULT_MODEL = "gemini-3.8-flash"
 DEFAULT_PROCESSING = "agentic"
 
 REMOVAL_PLAN_SCHEMA_VERSION = "clean_plate_removal_plan.v1"
@@ -351,6 +351,13 @@ def validate_removal_plan(plan: Mapping[str, Any]) -> list[str]:
 
 def _provider_error_blocker(exc: Exception) -> str:
     text = f"{type(exc).__name__}: {exc}".lower()
+    for code in (
+        "gemini_clean_plate_agentic_processing_required",
+        "gemini_clean_plate_agentic_trace_missing",
+        "gemini_clean_plate_analysis_incomplete",
+    ):
+        if code in text:
+            return code
     if "api_key_invalid" in text or "permission_denied" in text or "unauthenticated" in text:
         return "gemini_clean_plate_authentication_failed"
     if "resource_exhausted" in text or "quota" in text or "429" in text:
@@ -368,41 +375,51 @@ def _invoke_agentic_video(
     video_path: Path,
     genai: Any,
     types: Any,
-) -> str:
+) -> dict[str, Any]:
     """Run the paid agentic-video analysis and return the raw JSON text.
 
-    Prefers the agentic ``interactions`` surface (``processing="agentic"``); if
-    the installed SDK does not expose it, falls back to whole-video
-    ``generate_content``. This path is live-only and exercised behind the gate;
-    the parse/validate/build helpers above are what tests cover.
+    Uses the documented Part.media_processing flag and verifies the returned
+    MEDIA_PROCESSING trace. No static fallback can satisfy this contract.
     """
 
-    client = genai.Client(api_key=api_key)
+    if processing.lower() != "agentic":
+        raise ValueError("gemini_clean_plate_agentic_processing_required")
+    client = genai.Client(api_key=api_key, http_options=types.HttpOptions(
+        timeout=300_000, retry_options=types.HttpRetryOptions(attempts=1),
+    ))
     video_bytes = video_path.read_bytes()
     mime_type = "video/mp4" if video_path.suffix.lower() == ".mp4" else "video/quicktime"
 
-    interactions = getattr(client, "interactions", None)
-    if interactions is not None and hasattr(interactions, "create"):
-        result = interactions.create(
-            model=model,
-            inputs=[
-                {"type": "video", "mime_type": mime_type, "data": video_bytes},
-                {"type": "text", "text": PROMPT_INSTRUCTION},
-            ],
-            config={"processing": processing, "response_mime_type": "application/json"},
-        )
-        text = getattr(result, "text", None)
-        if text is None and hasattr(result, "output_text"):
-            text = result.output_text
-        return _string(text)
-
-    part = types.Part.from_bytes(data=video_bytes, mime_type=mime_type)
+    part = types.Part(
+        inline_data=types.Blob(data=video_bytes, mime_type=mime_type),
+        media_processing="AGENTIC",
+    )
     response = client.models.generate_content(
         model=model,
         contents=[part, PROMPT_INSTRUCTION],
         config=types.GenerateContentConfig(response_mime_type="application/json"),
     )
-    return _string(getattr(response, "text", ""))
+    candidates = getattr(response, "candidates", None) or []
+    if not candidates or getattr(candidates[0], "finish_reason", None) != "STOP":
+        raise ValueError("gemini_clean_plate_analysis_incomplete")
+    parts = getattr(getattr(candidates[0], "content", None), "parts", None) or []
+    calls = [part for part in parts if getattr(getattr(part, "tool_call", None), "tool_type", None) == "MEDIA_PROCESSING"]
+    replies = [part for part in parts if getattr(getattr(part, "tool_response", None), "tool_type", None) == "MEDIA_PROCESSING"]
+    if not calls or not replies:
+        raise ValueError("gemini_clean_plate_agentic_trace_missing")
+    text = "\n".join(
+        part.text for part in parts
+        if isinstance(getattr(part, "text", None), str) and not getattr(part, "thought", False)
+    )
+    usage = getattr(response, "usage_metadata", None)
+    return {"text": text, "video_processing": {
+        "mode": "agentic", "media_tool_calls": len(calls),
+        "media_tool_responses": len(replies),
+        "model_version": getattr(response, "model_version", None) or model,
+        "prompt_tokens": getattr(usage, "prompt_token_count", None),
+        "completion_tokens": getattr(usage, "candidates_token_count", None),
+        "total_tokens": getattr(usage, "total_token_count", None),
+    }}
 
 
 def analyze_removal_targets(
@@ -461,7 +478,7 @@ def analyze_removal_targets(
         )
 
     try:
-        text = _invoke_agentic_video(
+        analysis = _invoke_agentic_video(
             api_key=api_key,
             model=model_name,
             processing=processing_mode,
@@ -479,8 +496,8 @@ def analyze_removal_targets(
             video_digest=video_digest,
         )
 
-    targets = parse_removal_plan_response(text)
-    return build_removal_plan(
+    targets = parse_removal_plan_response(analysis["text"])
+    plan = build_removal_plan(
         targets=targets,
         status="completed",
         model=model_name,
@@ -488,3 +505,5 @@ def analyze_removal_targets(
         video_path=resolved_video,
         video_digest=video_digest,
     )
+    plan["video_processing"] = analysis["video_processing"]
+    return plan

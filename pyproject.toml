@@ -133,7 +133,8 @@ geometry = [
     "pycollada>=0.8",
 ]
 llm = [
-    "google-genai>=1.0.0",
+    # Agentic video requires typed Part.media_processing and media-tool traces.
+    "google-genai>=2.24.0",
     "openai>=1.0.0",
 ]
 # Compatibility alias retained for existing install commands. The Agents SDK
