@@ -186,3 +186,26 @@ def test_returned_worker_result_cannot_switch_capture_or_upgrade_authority(geome
     path.write_text(json.dumps(document))
     with pytest.raises(ValueError, match="website_(geometry_result|source_geometry_artifact_escape)"):
         geometry.load_website_geometry_result(manifest_path=path, inputs=inputs)
+
+
+def test_inference_requests_the_upstream_validity_mask(tmp_path, monkeypatch):
+    import sys
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+    image_path = tmp_path / "view.png"
+    Image.new("RGB", (28, 14)).save(image_path)
+    class Model:
+        def to(self, device): return self
+        def eval(self): return self
+        def infer(self, views, **kwargs):
+            # Upstream creates the mask key only inside its apply_mask branch.
+            prediction = _prediction()
+            if not kwargs["apply_mask"]:
+                prediction.pop("mask")
+            return [prediction]
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: False), inference_mode=nullcontext))
+    monkeypatch.setitem(sys.modules, "mapanything.models", SimpleNamespace(MapAnything=SimpleNamespace(from_pretrained=lambda *a, **kw: Model())))
+    monkeypatch.setitem(sys.modules, "mapanything.utils.image", SimpleNamespace(load_images=lambda paths, **kw: [{} for _ in paths]))
+    prediction = geometry._infer([str(image_path)], model_path=tmp_path)[0]
+    result = geometry._write_prediction(prediction, {"width": 28, "height": 14}, tmp_path / "prediction.npz")
+    assert result["valid_pixel_fraction"] == 1.0

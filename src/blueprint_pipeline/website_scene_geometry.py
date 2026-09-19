@@ -51,7 +51,7 @@ def _infer(paths: list[str], *, model_path: Path) -> Sequence[Mapping[str, Any]]
     model = MapAnything.from_pretrained(str(model_path), local_files_only=True).to(device).eval()
     with torch.inference_mode():
         return model.infer(views, memory_efficient_inference=True, use_amp=device == "cuda",
-                           apply_mask=False, mask_edges=True, apply_confidence_mask=False)
+                           apply_mask=True, mask_edges=True, apply_confidence_mask=False)
 
 
 def _prepare_image(source: Path, target: Path, rotation: float) -> dict[str, Any]:
