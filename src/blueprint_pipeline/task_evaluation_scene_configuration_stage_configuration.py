@@ -322,6 +322,9 @@ def _stage_one_refusal(
 def _stage_two_refusal(
     configuration: Mapping[str, Any], envelope: Mapping[str, Any]
 ) -> str | None:
+    if configuration.get("schema_version") == "website_prepared_collision.v1":
+        from .website_native_background import collision_configuration_refusal
+        return collision_configuration_refusal(configuration, envelope)
     collision_rows = [
         row
         for row in envelope.get("materialized_references") or []

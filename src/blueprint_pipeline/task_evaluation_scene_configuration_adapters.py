@@ -42,6 +42,9 @@ ADMITTED_STAGE_ADAPTER_IDENTITIES = (
         "no_spend",
     ),
     SceneConfigurationAdapterIdentity(
+        "collision_object_excision", "website_prepared_collision", "v1", "no_spend",
+    ),
+    SceneConfigurationAdapterIdentity(
         "rigid_replacement_authoring",
         "content_agents_rigid_replacement",
         "v1",

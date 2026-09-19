@@ -482,7 +482,15 @@ def _materialize_cad_skill_runtime(runtime: Path) -> dict[str, Any]:
 def _reference_frames(
     stage_input: Mapping[str, Any], dependencies: list[Any]
 ) -> list[Path]:
-    """Resolve stage 1's explicit render handoff, never stale envelope state."""
+    """Resolve retained source observations or the explicit render handoff."""
+
+    configuration = stage_input.get("configuration") or {}
+    if configuration.get("source_observation_kind") == "website_capture_frames":
+        from .website_object_observations import REFERENCE_ROLE, validate_observation_handoff
+        from .task_evaluation_scene_configuration_builtin_adapters import _dependency_artifact
+        _record, path = _dependency_artifact(tuple(dependencies), role=REFERENCE_ROLE)
+        _manifest, frames = validate_observation_handoff(path, configuration=configuration)
+        return frames
 
     matches = [
         artifact

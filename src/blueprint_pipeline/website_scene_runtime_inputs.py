@@ -17,6 +17,7 @@ from .task_evaluation_completed_scene_geometry import normalize_completed_mesh
 
 
 def prepare_website_runtime_inputs(*, preparation: Mapping[str, Any], base_scene: Mapping[str, Any],
+                                   source_geometry: Mapping[str, Any], task_masks: Mapping[str, Any],
                                    output_root: Path) -> dict[str, Any]:
     if preparation.get("digest") != canonical_digest(preparation, digest_field="digest"):
         raise ValueError("website_native_preparation_changed")
@@ -57,6 +58,9 @@ def prepare_website_runtime_inputs(*, preparation: Mapping[str, Any], base_scene
     normalized = normalize_completed_mesh(source=source, original_filename=source.name,
                                          coordinate_frame=frame, output_root=collision_root)
     collision = collision_root / normalized["output"]["relative_path"]
+    from .website_object_observations import materialize_object_observations, REFERENCE_ROLE
+    observations = materialize_object_observations(preparation=preparation, source_geometry=source_geometry,
+        task_masks=task_masks, output_root=output_root / "object_observations")
     value = {
         "schema_version": "website_scene_runtime_inputs.v1", "status": "background_collision_prepared",
         "preparation_digest": preparation["digest"], "claim_ceiling": "development_only",
@@ -67,7 +71,12 @@ def prepare_website_runtime_inputs(*, preparation: Mapping[str, Any], base_scene
                       "object_mapping": normalized["object_mapping"]},
         "appearance": {"path": base_scene["splat_path"], "digest": bindings["splat_digest"],
                        "status": "awaiting_splat_frame_binding", "unchanged": True},
-        "object_authoring": dict(preparation["authoring_inputs"]),
+        "object_authoring": {**preparation["authoring_inputs"], "configuration": observations["configuration"],
+                             "source_candidate": observations["candidate"],
+                             "observation_manifest": observations["manifest"]},
+        "authoring_dependency_artifacts": [
+            {"role": "source_object_candidate_mesh", **observations["candidate"]},
+            {"role": REFERENCE_ROLE, **observations["manifest"]}],
         "subject": dict(preparation["subject"]), "destination": preparation["destination"],
         "coordinate_frame": {"up_axis": "Z", "unit": "estimated_meters", "physical_scale_measured": False},
         "appearance_removal_required": False, "collision_excision_required": False,

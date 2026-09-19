@@ -85,9 +85,14 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
         # conversion. The object stays in its separate authoring lane.
         try:
             runtime_inputs = prepare_website_runtime_inputs(preparation=preparation, base_scene=base,
-                                                            output_root=root / "native")
+                source_geometry=clean_plate["source_geometry"], task_masks=clean_plate["task_masks"],
+                output_root=root / "native")
             result["runtime_inputs"] = {"status": runtime_inputs["status"], "digest": runtime_inputs["digest"],
                                         "path": str(root / "native" / "runtime_inputs.json")}
+            from .website_native_background import prepare_collision_stage
+            collision_stage = prepare_collision_stage(root / "native" / "runtime_inputs.json")
+            write_json(root / "native" / "collision_stage_inputs.json", collision_stage)
+            result["runtime_inputs"]["collision_stage_inputs_path"] = str(root / "native" / "collision_stage_inputs.json")
         except (ValueError, KeyError, TypeError, OSError, ImportError) as exc:
             result["runtime_inputs"] = {"status": "awaiting_inputs", "blockers": [str(exc)]}
     except (ValueError, KeyError, TypeError, OSError) as exc:
