@@ -130,21 +130,33 @@ def read_terminal_robot_eval_artifacts(job_dir: str | Path) -> dict[str, Any]:
     if metrics and metrics.get("scenario_eval_run_coverage_complete") is not True:
         blockers.append("episode_coverage_not_complete")
 
+    cost_blockers: list[str] = []
     gpu_time = _mapping(ledger.get("gpu_time"))
     actual_gpu_seconds = _number(gpu_time.get("actual_gpu_seconds"))
     if gpu_time.get("actual_gpu_time_record_present") is not True or actual_gpu_seconds is None:
-        blockers.append("actual_gpu_time_not_observed")
-    observed_cost_usd = _number(
-        ledger.get("actual_cost_usd")
-        if "actual_cost_usd" in ledger
-        else ledger.get("cost_usd")
-    )
+        cost_blockers.append("actual_gpu_time_not_observed")
+    cost_values = [
+        value for key in ("actual_cost_usd", "cost_usd")
+        if (value := ledger.get(key)) is not None
+    ]
+    valid_cost_values = [_number(value) for value in cost_values]
+    if any(value is None for value in valid_cost_values):
+        cost_blockers.append("actual_cost_usd_invalid")
+    if len(valid_cost_values) > 1 and len(set(valid_cost_values)) > 1:
+        cost_blockers.append("actual_cost_usd_conflict")
+    observed_cost_usd = valid_cost_values[0] if valid_cost_values else None
     if ledger.get("status") == "fixture_local_no_gpu" and actual_gpu_seconds == 0:
         observed_cost_usd = 0.0
     if observed_cost_usd is None:
-        blockers.append("actual_cost_usd_not_observed")
+        cost_blockers.append("actual_cost_usd_not_observed")
     if ledger.get("blockers"):
         blockers.append("gpu_cost_control_ledger_has_blockers")
+    if ledger.get("provider") != "fixture_local":
+        finalizer = _mapping(ledger.get("artifact_finalizer"))
+        if ledger.get("lifecycle_state") != "completed":
+            blockers.append("provider_lifecycle_not_completed")
+        if finalizer.get("provider_shutdown_proven") is not True:
+            blockers.append("provider_shutdown_not_proven")
 
     manifest_digest = _first_string(
         manifest,
@@ -176,6 +188,8 @@ def read_terminal_robot_eval_artifacts(job_dir: str | Path) -> dict[str, Any]:
             "actual_gpu_seconds": actual_gpu_seconds,
             "actual_gpu_time_source": gpu_time.get("actual_gpu_time_source"),
             "observed_cost_usd": observed_cost_usd,
+            "status": "observed" if observed_cost_usd is not None and not cost_blockers else "unknown" if not cost_values else "invalid",
+            "blockers": list(dict.fromkeys(cost_blockers)),
             "ledger_path": str(root / "gpu_cost_control_ledger.json"),
         },
         "blockers": unique_blockers,

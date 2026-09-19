@@ -120,6 +120,28 @@ def test_digest_bound_episode_receipt_closes_claimed_run(tmp_path: Path) -> None
     assert client.completed == [receipt]
 
 
+def test_missing_provider_cost_does_not_block_quoted_episode_settlement(tmp_path: Path) -> None:
+    row = _row(tmp_path)
+    received: list[tuple[str, dict[str, Any]]] = []
+
+    class RecordingClient(FakeClient):
+        def _json(self, path: str, *, method: str = "GET", payload: dict[str, Any] | None = None):
+            received.append((path, payload or {}))
+            return {"ok": True}
+
+    client = RecordingClient([])
+    executor.AgentRunWebAppClient.report_completed(
+        client,
+        row,
+        "attempt-1",
+        {"episodes_run": 4, "episodes_succeeded": 3, "artifact_uri": "gs://result"},
+    )
+    settlement = received[-1][1]
+    assert settlement["episodes_run"] == 4
+    assert settlement["rate_usd"] == 2.0
+    assert "observed_cost_usd" not in settlement
+
+
 def test_pending_terminal_artifacts_keep_claimed_run_open(tmp_path: Path) -> None:
     client = FakeClient([_row(tmp_path)])
     summary = executor.poll_once(
@@ -252,3 +274,4 @@ def test_signed_local_webapp_queue_closes_digest_bound_fixture(tmp_path: Path) -
         payload["execution_admission_digest"] == row["execution_admission_digest"]
         for _, payload in received
     )
+    assert received[-1][1]["rate_usd"] == 2.0

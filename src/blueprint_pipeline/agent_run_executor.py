@@ -200,6 +200,10 @@ class AgentRunWebAppClient:
         receipt: Mapping[str, Any],
     ) -> None:
         episodes = int(receipt["episodes_run"])
+        quoted_episodes = int(row["quoted_episodes"])
+        quoted_usd = float(row["quoted_usd"])
+        if episodes <= 0 or episodes > quoted_episodes or quoted_episodes <= 0:
+            raise ValueError("agent_execution_terminal_episode_count_invalid")
         self._json(
             "/api/internal/pipeline/agent-run-results",
             method="POST",
@@ -216,10 +220,7 @@ class AgentRunWebAppClient:
                 "artifact_uri": receipt.get("artifact_uri"),
             },
         )
-        observed_cost = receipt.get("observed_cost_usd")
-        if isinstance(observed_cost, bool) or not isinstance(observed_cost, (int, float)):
-            raise ValueError("agent_execution_observed_cost_missing")
-        rate = float(observed_cost) / episodes
+        rate = quoted_usd / quoted_episodes
         self._json(
             "/api/internal/pipeline/agent-run-settlements",
             method="POST",
@@ -231,7 +232,7 @@ class AgentRunWebAppClient:
                 "execution_admission_digest": row["execution_admission_digest"],
                 "episodes_run": episodes,
                 "rate_usd": rate,
-                "reason": "Digest-bound canonical episode receipt",
+                "reason": "Purchased per-episode quote applied to observed canonical episodes",
             },
         )
 

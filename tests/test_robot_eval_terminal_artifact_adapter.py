@@ -101,9 +101,43 @@ def test_blocks_nonterminal_incomplete_and_unobserved_cost(tmp_path: Path) -> No
     assert set(result["blockers"]) >= {
         "job_run_manifest_not_terminal_completed",
         "episode_coverage_not_complete",
+        "provider_lifecycle_not_completed",
+        "provider_shutdown_not_proven",
+    }
+    assert set(result["cost"]["blockers"]) >= {
         "actual_gpu_time_not_observed",
         "actual_cost_usd_not_observed",
     }
+
+
+def test_terminal_provider_episode_evidence_survives_missing_or_invalid_cost(tmp_path: Path) -> None:
+    job_dir = _terminal_job(tmp_path)
+    ledger_path = job_dir / "gpu_cost_control_ledger.json"
+    ledger = json.loads(ledger_path.read_text())
+    ledger.update({
+        "provider": "vast",
+        "status": "provider_runtime_observed",
+        "lifecycle_state": "completed",
+        "artifact_finalizer": {"provider_shutdown_proven": True},
+    })
+    ledger["gpu_time"] = {
+        "actual_gpu_seconds": 31.5,
+        "actual_gpu_time_source": "worker_runtime_wall_clock_seconds",
+        "actual_gpu_time_record_present": True,
+    }
+    _write(ledger_path, ledger)
+
+    missing = read_terminal_robot_eval_artifacts(job_dir)
+    assert missing["status"] == "terminal_observed"
+    assert missing["cost"]["status"] == "unknown"
+    assert missing["cost"]["observed_cost_usd"] is None
+
+    ledger["actual_cost_usd"] = -1
+    _write(ledger_path, ledger)
+    invalid = read_terminal_robot_eval_artifacts(job_dir)
+    assert invalid["status"] == "terminal_observed"
+    assert invalid["cost"]["status"] == "invalid"
+    assert "actual_cost_usd_invalid" in invalid["cost"]["blockers"]
 
 
 def test_blocks_job_and_admission_provenance_mismatch(tmp_path: Path) -> None:
