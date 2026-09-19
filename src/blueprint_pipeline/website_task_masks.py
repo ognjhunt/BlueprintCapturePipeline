@@ -13,7 +13,7 @@ from PIL import Image
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
-from .meta_sam31 import PROFILE as META_PROFILE, run_meta_sam31
+from .meta_sam31 import PROFILE as META_PROFILE, prepare_continuous_video, run_meta_sam31
 from .sam31_source_track_provider_stage import run_sam31_source_track_stage
 from .scene_placement.sam31_source_track_provider import RUN_REQUEST_SCHEMA_VERSION
 from .scene_placement.semantic_gaussian_lifting import canonical_json_digest
@@ -119,7 +119,8 @@ def estimate_target_bounds(track: Mapping[str, Any], frames: list[Mapping[str, A
 
 def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[str, Any],
                           output_root: Path, meta_admission: Mapping[str, Any] | None = None,
-                          meta_admission_grant: Any = None, task_context: Mapping[str, Any] | None = None) -> dict[str, Any]:
+                          meta_admission_grant: Any = None, task_context: Mapping[str, Any] | None = None,
+                          source_video: Path | None = None) -> dict[str, Any]:
     targets = [target for target in plan.get("targets", [])
                if target.get("task_effect") in {"manipulated", "static_contact", "static_obstacle"}]
     if not targets:
@@ -136,13 +137,23 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
         raise ValueError("website_sam31_provider_invalid")
     binding = {"geometry_digest": source_geometry["digest"], "task_targets": targets,
                "task_context_sha256": plan["task_context_sha256"], "profile_digest": profile["profile_digest"],
-               "mask_input_pixels": "upright_source_v1" if provider == "meta" else "geometry_v1"}
+               "mask_input_pixels": ("continuous_source_video_v1" if source_video else "upright_source_v1")
+                                    if provider == "meta" else "geometry_v1"}
     request_key = canonical_digest(binding)
     root = output_root.resolve() / request_key[7:23]
     root.mkdir(parents=True, exist_ok=True)
     frames = list(source_geometry["frames"])
     registry, artifacts, prompts = [], [], []
-    for index, frame in enumerate(frames):
+    video_artifact = None
+    if provider == "meta" and source_video is not None:
+        registry, video_artifact = prepare_continuous_video(source=source_video,
+            source_digest=source_geometry["binding"]["source_video_digest"], root=root)
+        by_id = {row["source_frame_id"]: row for row in registry}
+        for frame in frames:
+            row = by_id.get(frame["frame_id"])
+            if row is None or abs(row["decoded_pts_seconds"] - frame["timestamp_seconds"]) > 0.002:
+                raise ValueError("website_sam31_geometry_frame_mapping_invalid")
+    for index, frame in enumerate([] if video_artifact else frames):
         source = Path(frame["source_image_path"] if provider == "meta" else frame["image_path"])
         expected_digest = frame["source_image_digest"] if provider == "meta" else frame["image_digest"]
         if _sha256_file(source) != expected_digest:
@@ -171,7 +182,7 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
         evidence = target.get("spatial_evidence") or []
         if not evidence or evidence[0].get("timestamp_seconds") is None:
             raise ValueError("task_target_spatial_anchor_missing")
-        anchor = min(range(len(frames)), key=lambda i: abs(frames[i]["timestamp_seconds"] - evidence[0]["timestamp_seconds"]))
+        anchor = min(range(len(registry)), key=lambda i: abs(registry[i]["decoded_pts_seconds"] - evidence[0]["timestamp_seconds"]))
         prompts.append({"prompt_id": target["target_id"], "text": target.get("segmentation_prompt") or target["semantic_label"],
                         "output_label": target["target_id"], "anchor_frame_index": anchor})
     request = {"schema_version": RUN_REQUEST_SCHEMA_VERSION, "provider_profile": profile,
@@ -184,8 +195,12 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
     if provider == "meta":
         result = run_meta_sam31(frame_registry=registry, frame_artifacts=artifacts, prompts=prompts,
                                output_root=root, admission=meta_admission or {}, admission_grant=meta_admission_grant,
-                               task_context=task_context)
-        tracks = [track_at_geometry_resolution(track, frames) for track in result["tracks"]]
+                               task_context=task_context, video_artifact=video_artifact)
+        geometry_ids = {frame["frame_id"] for frame in frames}
+        # Full tracks stay in the provider receipt; only geometry-backed frames
+        # enter placement and background recovery. No interpolation of missing masks.
+        tracks = [track_at_geometry_resolution({**track, "observations": [row for row in track["observations"]
+                  if row["source_frame_id"] in geometry_ids]}, frames) for track in result["tracks"]]
     else:
         request_path, result_path, tracks_path = root / "request.json", root / "result.json", root / "tracks.json"
         write_json(request_path, request)

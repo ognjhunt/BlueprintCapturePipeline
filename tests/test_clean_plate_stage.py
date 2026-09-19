@@ -204,6 +204,7 @@ def test_website_stage_runs_geometry_masks_and_recovery_before_image_handoff(tmp
     def track(**kwargs):
         order.append("masks")
         assert kwargs["source_geometry"] == geometry
+        assert kwargs["source_video"] == source
         return masks
 
     def recover(**kwargs):

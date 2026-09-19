@@ -41,10 +41,53 @@ def meta_api_key() -> str:
 
 
 def request_binding(*, frame_registry: Sequence[Mapping[str, Any]],
-                    frame_artifacts: Sequence[Mapping[str, Any]], prompts: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    return {"profile": PROFILE, "frame_registry": list(frame_registry),
+                    frame_artifacts: Sequence[Mapping[str, Any]], prompts: Sequence[Mapping[str, Any]],
+                    video_artifact: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    binding = {"profile": PROFILE, "frame_registry": list(frame_registry),
             "frame_artifacts": [{k: row[k] for k in ("source_frame_id", "sha256")} for row in frame_artifacts],
             "prompts": list(prompts)}
+    if video_artifact is not None:
+        binding["continuous_video"] = {key: video_artifact[key] for key in ("sha256", "source_video_digest", "encoding")}
+    return binding
+
+
+def _probe_video(path: Path) -> dict[str, Any]:
+    result = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_frames",
+        "-show_entries", "stream=width,height:frame=best_effort_timestamp_time", "-of", "json", str(path)],
+        check=True, timeout=120, capture_output=True)
+    return json.loads(result.stdout)
+
+
+def prepare_continuous_video(*, source: Path, source_digest: str, root: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Keep all source frames for tracking, independently of geometry sampling."""
+    if _sha256_file(source) != source_digest:
+        raise ValueError("meta_sam_source_video_changed")
+    original = _probe_video(source)
+    if not 2 <= len(original["frames"]) <= 15000:
+        raise ValueError("meta_sam_frame_count_invalid")
+    root.mkdir(parents=True, exist_ok=True)
+    destination = root / "continuous-upright.mp4"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(source), "-map", "0:v:0", "-an",
+        "-fps_mode", "passthrough", "-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p",
+        "-movflags", "+faststart", str(destination)], check=True, timeout=120, capture_output=True)
+    encoded = _probe_video(destination)
+    if len(encoded["frames"]) != len(original["frames"]):
+        raise ValueError("meta_sam_encoded_frame_mapping_invalid")
+    width, height = encoded["streams"][0]["width"], encoded["streams"][0]["height"]
+    if min(width, height) <= 0 or max(width, height) > 4096 or destination.stat().st_size > 32 * 1024**2:
+        raise ValueError("meta_sam_inline_video_limits_exceeded")
+    source_start = float(original["frames"][0]["best_effort_timestamp_time"])
+    encoded_start = float(encoded["frames"][0]["best_effort_timestamp_time"])
+    rows = []
+    for index, (before, after) in enumerate(zip(original["frames"], encoded["frames"], strict=True)):
+        pts = float(before["best_effort_timestamp_time"])
+        if abs((pts - source_start) - (float(after["best_effort_timestamp_time"]) - encoded_start)) > 0.002:
+            raise ValueError("meta_sam_encoded_frame_mapping_invalid")
+        rows.append({"source_frame_id": f"decoded-{index:09d}", "model_frame_index": index,
+                     "decoded_pts_seconds": pts, "width": width, "height": height,
+                     "retained_video_digest": source_digest})
+    return rows, {"path": str(destination), "sha256": _sha256_file(destination),
+                  "source_video_digest": source_digest, "encoding": "upright_h264_crf18_all_source_frames_v1"}
 
 
 def parse_tracks(response: Mapping[str, Any], *, prompt: Mapping[str, Any],
@@ -136,8 +179,10 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
                    prompts: Sequence[Mapping[str, Any]], output_root: Path, admission: Mapping[str, Any],
                    admission_grant: PaidResourceAdmissionGrant | None = None,
                    task_context: Mapping[str, Any] | None = None,
+                   video_artifact: Mapping[str, Any] | None = None,
                    opener: Any = _open_no_redirect) -> dict[str, Any]:
-    binding = request_binding(frame_registry=frame_registry, frame_artifacts=frame_artifacts, prompts=prompts)
+    binding = request_binding(frame_registry=frame_registry, frame_artifacts=frame_artifacts, prompts=prompts,
+                              video_artifact=video_artifact)
     digest = canonical_digest(binding)
     root = output_root / digest[7:]
     retained = bool(prompts) and all((root / f"response-{i}.json").is_file() for i in range(len(prompts)))
@@ -151,7 +196,18 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
     token = meta_api_key() if not retained else ""
     root.mkdir(parents=True, exist_ok=True)
     write_json(root / "binding.json", binding)
-    clip = encode_clip(registry=frame_registry, artifacts=frame_artifacts, root=root)
+    if video_artifact is None:
+        clip = encode_clip(registry=frame_registry, artifacts=frame_artifacts, root=root)
+    else:
+        clip = Path(video_artifact["path"])
+        if frame_artifacts or image_request or _sha256_file(clip) != video_artifact["sha256"]:
+            raise ValueError("meta_sam_continuous_video_invalid")
+        probe = _probe_video(clip)
+        stream = probe["streams"][0]
+        if (len(probe["frames"]) != len(frame_registry) or not 2 <= len(frame_registry) <= 15000
+                or clip.stat().st_size > 32 * 1024**2 or max(stream["width"], stream["height"]) > 4096
+                or any((row["width"], row["height"]) != (stream["width"], stream["height"]) for row in frame_registry)):
+            raise ValueError("meta_sam_encoded_frame_mapping_invalid")
     if not retained:
         if admission_grant is None and task_context is not None:
             from .website_task_context import reserve_website_sam_spend

@@ -136,3 +136,35 @@ def test_video_uses_video_payload_and_blocks_usage_beyond_reserved_frames(tmp_pa
         return BytesIO(json.dumps(result).encode())
     with pytest.raises(ValueError, match="usage_exceeds_reservation"):
         sam.run_meta_sam31(**args, opener=opener)
+
+
+def test_continuous_video_keeps_original_frames_and_timestamps(tmp_path, monkeypatch):
+    monkeypatch.setenv("META_MODEL_API_KEY", "fixture-meta-secret")
+    args = inputs(tmp_path)
+    rows = [{**args["frame_registry"][0], "source_frame_id": f"f{i}"} for i in range(3)]
+    artifacts = [{**args["frame_artifacts"][0], "source_frame_id": row["source_frame_id"]} for row in rows]
+    source = sam.encode_clip(registry=rows, artifacts=artifacts, root=tmp_path)
+    source_digest = _sha256_file(source)
+    registry, video = sam.prepare_continuous_video(source=source, source_digest=source_digest, root=tmp_path / "continuous")
+    assert [row["decoded_pts_seconds"] for row in registry] == [0, 1, 2]
+    assert [row["source_frame_id"] for row in registry] == ["decoded-000000000", "decoded-000000001", "decoded-000000002"]
+    args.update(frame_registry=registry, frame_artifacts=[], video_artifact=video)
+    digest = canonical_digest(sam.request_binding(frame_registry=registry, frame_artifacts=[], prompts=[PROMPT], video_artifact=video))
+    args["admission"]["allocation_binding_digest"] = digest
+    args["admission_grant"] = require_paid_resource_admission(args["admission"], resource_class="evaluator_api",
+        expected_schema_version="paid_lane_admission.v1")
+    calls = []
+    def opener(request, **kwargs):
+        calls.append(request)
+        assert json.loads(request.data)["input"][0]["content"][1]["type"] == "input_video"
+        text = response()["output"][0]["content"][0]["text"].replace("<0f>", "<2f>")
+        return BytesIO(json.dumps(response(text)).encode())
+    result = sam.run_meta_sam31(**args, opener=opener)
+    assert result["tracks"][0]["observations"][0]["source_frame_id"] == "decoded-000000002"
+    assert sam.run_meta_sam31(**{**args, "admission_grant": None, "admission": {}}, opener=opener) == result
+    assert len(calls) == 1
+    Path(video["path"]).write_bytes(b"changed encoded video")
+    with pytest.raises(ValueError, match="continuous_video_invalid"):
+        sam.run_meta_sam31(**args, opener=opener)
+    with pytest.raises(ValueError, match="source_video_changed"):
+        sam.prepare_continuous_video(source=source, source_digest="sha256:wrong", root=tmp_path / "bad")
