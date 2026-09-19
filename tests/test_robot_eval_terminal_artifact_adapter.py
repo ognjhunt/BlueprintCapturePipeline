@@ -16,7 +16,7 @@ def _write(path: Path, value: dict[str, object]) -> None:
 def _terminal_job(tmp_path: Path) -> Path:
     job_dir = tmp_path / "canonical-job-1"
     _write(
-        job_dir / "job_request.json",
+        job_dir / "job_request_source.json",
         {
             "schema_version": "robot_eval_job_request.v1",
             "job_id": "canonical-job-1",
@@ -145,9 +145,9 @@ def test_blocks_job_and_admission_provenance_mismatch(tmp_path: Path) -> None:
     ledger = json.loads((job_dir / "gpu_cost_control_ledger.json").read_text())
     ledger["job_id"] = "different-job"
     _write(job_dir / "gpu_cost_control_ledger.json", ledger)
-    request = json.loads((job_dir / "job_request.json").read_text())
+    request = json.loads((job_dir / "job_request_source.json").read_text())
     request["source"]["execution_admission_digest"] = "sha256:different"
-    _write(job_dir / "job_request.json", request)
+    _write(job_dir / "job_request_source.json", request)
 
     result = read_terminal_robot_eval_artifacts(job_dir)
 

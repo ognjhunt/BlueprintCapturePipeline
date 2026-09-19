@@ -22,6 +22,7 @@ def _row(tmp_path: Path) -> dict[str, Any]:
         "canonical_execution_request": {
             "schema_version": "robot_eval_job_request.v1",
             "job_id": "canonical-job-1",
+            "capture_root": str(tmp_path),
             "customer": {"id": "team-1"},
             "site_package": {"capture_id": "capture-1", "capture_root": str(tmp_path)},
             "requested_tasks": [{"task_id": "pick_place", "scenario_ids": ["nominal"]}],
@@ -67,7 +68,12 @@ class FakeClient:
         self.blocked: list[str] = []
         self.completed: list[dict[str, Any]] = []
 
-    def list_runs(self, _limit: int) -> list[dict[str, Any]]:
+    def list_runs(self, _limit: int, *, capture_id: str | None = None) -> list[dict[str, Any]]:
+        if capture_id:
+            return [
+                row for row in self.rows
+                if row["execution_admission"]["binding"]["capture_id"] == capture_id
+            ]
         return self.rows
 
     def claim(self, run_id: str, pipeline_run_id: str, _admission_digest: str) -> dict[str, Any]:
@@ -151,6 +157,18 @@ def test_pending_terminal_artifacts_keep_claimed_run_open(tmp_path: Path) -> Non
     )
     assert summary["pending"] == 1
     assert client.blocked == []
+
+
+def test_episode_spec_mismatch_claims_and_releases_full_hold(tmp_path: Path) -> None:
+    row = _row(tmp_path)
+    (tmp_path / "pipeline" / "simulation_automation" / "episode_specs.json").write_text(
+        json.dumps({"episode_count": 6}), encoding="utf-8"
+    )
+    client = FakeClient([row])
+    summary = executor.poll_once(client=client, capture_root=tmp_path)
+    assert summary["claimed"] == 1
+    assert summary["blocked"] == 1
+    assert client.blocked == ["agent_execution_episode_spec_count_mismatch"]
 
 
 def test_frozen_utf8_admission_bytes_are_digest_authority(tmp_path: Path) -> None:

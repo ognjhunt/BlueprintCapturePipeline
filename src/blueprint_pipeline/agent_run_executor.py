@@ -15,7 +15,7 @@ from pathlib import Path
 import tempfile
 import time
 from typing import Any, Callable, Mapping
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 from uuid import uuid4
 
 from .safe_outbound_http import (
@@ -88,7 +88,7 @@ def validate_queue_run(row: Mapping[str, Any], *, capture_root: Path | None = No
     if capture_root is not None:
         configured_root = str(capture_root.resolve())
         request_root = str(_mapping(canonical.get("site_package")).get("capture_root") or "")
-        if request_root != configured_root:
+        if request_root != configured_root or canonical.get("capture_root") != configured_root:
             blockers.append("agent_execution_capture_root_partition_mismatch")
         episode_specs_path = capture_root / "pipeline" / "simulation_automation" / "episode_specs.json"
         if not episode_specs_path.is_file():
@@ -156,8 +156,11 @@ class AgentRunWebAppClient:
             raise ValueError("agent_execution_webapp_response_not_object")
         return dict(decoded)
 
-    def list_runs(self, limit: int) -> list[dict[str, Any]]:
-        payload = self._json(f"/api/internal/pipeline/agent-runs?limit={max(1, min(limit, 200))}")
+    def list_runs(self, limit: int, *, capture_id: str | None = None) -> list[dict[str, Any]]:
+        path = f"/api/internal/pipeline/agent-runs?limit={max(1, min(limit, 200))}"
+        if capture_id:
+            path += f"&capture_id={quote(capture_id, safe='')}"
+        payload = self._json(path)
         rows = payload.get("runs")
         if not isinstance(rows, list):
             raise ValueError("agent_execution_queue_response_invalid")
@@ -293,6 +296,10 @@ def _stage_canonical_request(row: Mapping[str, Any], inbox_dir: Path) -> Path:
     job_id = _canonical_job_id(row)
     if Path(job_id).name != job_id or job_id in {".", ".."}:
         raise ValueError("agent_execution_canonical_job_id_unsafe")
+    capture_root = Path(str(canonical.get("capture_root") or "")).resolve()
+    staged_policy = capture_root / "pipeline" / "robot_eval_inputs" / job_id / "policy_package.json"
+    if staged_policy.exists():
+        raise ValueError("agent_execution_unapproved_staged_policy_package")
     path = inbox_dir / f"{job_id}.json"
     if path.exists():
         if _digest(_load_json(path)) != _digest(canonical):
@@ -345,6 +352,7 @@ def poll_once(
     *,
     client: AgentRunWebAppClient,
     capture_root: Path,
+    capture_id: str | None = None,
     limit: int = 10,
     inbox_dir: Path | None = None,
     journal_dir: Path | None = None,
@@ -401,10 +409,22 @@ def poll_once(
             journal["last_staging_error"] = f"staging_failed:{type(exc).__name__}"
             _write_json_atomic(journal_path, journal)
             summary["pending"] += 1
-    for row in client.list_runs(limit):
+    runtime_preflight_blockers = {
+        "agent_execution_episode_specs_missing",
+        "agent_execution_episode_specs_invalid",
+        "agent_execution_episode_spec_count_mismatch",
+    }
+    for row in client.list_runs(limit, capture_id=capture_id):
         summary["examined"] += 1
         blockers = validate_queue_run(row, capture_root=capture_root)
-        if blockers:
+        if capture_id and _mapping(_mapping(row.get("execution_admission")).get("binding")).get(
+            "capture_id"
+        ) != capture_id:
+            summary["blocked"] += 1
+            continue
+        contract_blockers = [item for item in blockers if item not in runtime_preflight_blockers]
+        preflight_blockers = [item for item in blockers if item in runtime_preflight_blockers]
+        if contract_blockers:
             summary["blocked"] += 1
             continue
         pipeline_run_id = f"agent-attempt-{uuid4().hex}"
@@ -430,6 +450,14 @@ def poll_once(
             summary["blocked"] += 1
             continue
         summary["claimed"] += 1
+        if preflight_blockers:
+            reason = ";".join(preflight_blockers)
+            client.report_blocked(row, pipeline_run_id, reason)
+            journal["state"] = "reported_blocked"
+            journal["blocker"] = reason
+            _write_json_atomic(journal_path, journal)
+            summary["blocked"] += 1
+            continue
         try:
             staged_path = _stage_canonical_request(row, inbox)
             journal["state"] = "staged"
@@ -480,6 +508,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--webapp-url", required=True)
     parser.add_argument("--capture-root", required=True, type=Path)
+    parser.add_argument("--capture-id", required=True)
     parser.add_argument("--limit", type=int, default=10)
     parser.add_argument("--token-file", required=True, type=Path)
     parser.add_argument("--inbox-dir", type=Path)
@@ -492,6 +521,7 @@ def main() -> int:
         print(json.dumps(poll_once(
             client=client,
             capture_root=args.capture_root,
+            capture_id=args.capture_id,
             limit=args.limit,
             inbox_dir=args.inbox_dir,
             journal_dir=args.journal_dir,

@@ -85,9 +85,7 @@ def read_terminal_robot_eval_artifacts(job_dir: str | Path) -> dict[str, Any]:
         root / "simulator_command_batch_metrics.json", blockers, "simulator_command_batch_metrics"
     )
     ledger = _read_object(root / "gpu_cost_control_ledger.json", blockers, "gpu_cost_control_ledger")
-    request = {}
-    if (root / "job_request.json").is_file():
-        request = _read_object(root / "job_request.json", blockers, "job_request")
+    request = _read_object(root / "job_request_source.json", blockers, "job_request_source")
 
     if manifest and manifest.get("schema_version") != TERMINAL_MANIFEST_SCHEMA:
         blockers.append("job_run_manifest_schema_invalid")
@@ -96,7 +94,7 @@ def read_terminal_robot_eval_artifacts(job_dir: str | Path) -> dict[str, Any]:
 
     ids = {
         name: _string(payload.get("job_id"))
-        for name, payload in (("manifest", manifest), ("ledger", ledger), ("request", request))
+        for name, payload in (("manifest", manifest), ("ledger", ledger), ("source_request", request))
         if payload and _string(payload.get("job_id"))
     }
     job_id = ids.get("manifest") or ids.get("request") or ids.get("ledger") or root.name
