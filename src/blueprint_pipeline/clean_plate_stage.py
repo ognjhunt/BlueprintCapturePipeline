@@ -35,6 +35,7 @@ Governance: ``program_id="arm-decision-proof-v1"``, ``adp_item="ADP-009B"``
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from dataclasses import dataclass
@@ -86,6 +87,23 @@ _PRIVACY_SAFE_STATUSES = frozenset(
         "full_frame_redacted_local_proof",
     }
 )
+
+# Statuses under which the privacy pipeline explicitly accounted for the people
+# it found. If the removal analysis still sees a person while privacy reports
+# anything else (``no_people_detected`` included), that disagreement is a
+# fail-safe blocker (design §8: residual person detection fails closed).
+_PRIVACY_PERSON_ACCOUNTED_STATUSES = frozenset(
+    {
+        "person_removed",
+        "face_anonymized_fallback",
+        "full_frame_redacted_local_proof",
+    }
+)
+
+# Terminal stage outcomes a later run may reuse instead of re-spending the paid
+# analysis. ``blocked`` / ``failed_closed`` are never reused: the next run
+# retries, because transient gate/key/video blockers may since have been fixed.
+_REUSABLE_STATUSES = frozenset({"noop", "objects_removed"})
 
 # Candidate local locations of the privacy-safe walkthrough that Atlas consumes,
 # in preference order. All are pipeline-internal; raw/ is never read for output.
@@ -150,6 +168,62 @@ def _privacy_status(privacy: Mapping[str, Any]) -> str:
 
 def _privacy_is_verified(privacy: Mapping[str, Any]) -> bool:
     return _privacy_status(privacy) in _PRIVACY_SAFE_STATUSES
+
+
+def _canonical_sha256(payload: Mapping[str, Any]) -> str:
+    """Digest of the exact privacy record consumed, for stage provenance."""
+
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _reuse_completed_receipt(
+    clean_plate_root: Path, policy: CleanPlatePolicy
+) -> Optional[Dict[str, Any]]:
+    """Replay a terminal prior run's receipt without re-spending the analysis.
+
+    Only a reusable terminal status whose recorded policy still matches is
+    reused; anything else (blocked, failed_closed, policy drift, unreadable
+    manifest) returns ``None`` so the stage recomputes.
+    """
+
+    pointer = optional_read_json(clean_plate_root / CURRENT_POINTER_FILENAME)
+    if not isinstance(pointer, Mapping):
+        return None
+    if _string(pointer.get("status")) not in _REUSABLE_STATUSES:
+        return None
+    manifest = optional_read_json(clean_plate_root / STAGE_MANIFEST_FILENAME)
+    if not isinstance(manifest, Mapping):
+        return None
+    if manifest.get("adp_item") != policy.adp_item or manifest.get("day_gate") != policy.day_gate:
+        return None
+    if validate_clean_plate_stage_manifest(manifest):
+        return None
+    privacy = manifest.get("privacy") if isinstance(manifest.get("privacy"), Mapping) else {}
+    return {
+        "status": _string(manifest.get("status")),
+        "mode": _string(manifest.get("mode")),
+        "reason": manifest.get("reason"),
+        "clean_plate_video_uri": manifest.get("clean_plate_video_uri"),
+        "program_id": PROGRAM_ID,
+        "adp_item": manifest.get("adp_item"),
+        "day_gate": manifest.get("day_gate"),
+        "claim_ceiling": CLAIM_CEILING,
+        "policy": policy.to_dict(),
+        "privacy_status": _string(privacy.get("status")),
+        "privacy_verified": bool(privacy.get("verified")),
+        "target_count": int(manifest.get("target_count") or 0),
+        "movable_removal_count": int(manifest.get("movable_removal_count") or 0),
+        "person_target_count": int(manifest.get("person_target_count") or 0),
+        "removal_plan_path": str(clean_plate_root / REMOVAL_PLAN_FILENAME),
+        "removal_manifest_path": str(clean_plate_root / REMOVAL_MANIFEST_FILENAME),
+        "stage_manifest_path": str(clean_plate_root / STAGE_MANIFEST_FILENAME),
+        "removal_plan_uri": manifest.get("removal_plan_uri"),
+        "removal_manifest_uri": manifest.get("removal_manifest_uri"),
+        "stage_manifest_uri": manifest.get("stage_manifest_uri"),
+        "blockers": [_string(item) for item in manifest.get("blockers") or []],
+        "reused": True,
+    }
 
 
 def _resolve_input_video(pipeline_root: Path, capture_root: Path) -> Optional[Path]:
@@ -258,6 +332,10 @@ def run_clean_plate_stage(
     Returns a receipt dict. In the scaffold ``clean_plate_video_uri`` is always
     ``None`` -- the caller must not redirect the reconstruction input on any
     status other than a future ``objects_removed`` carrying a real video.
+
+    A terminal prior run (``noop`` / ``objects_removed``) whose recorded policy
+    still matches is reused via the current pointer unless ``force_rebuild`` --
+    retries never re-spend the paid analysis on completed work.
     """
 
     policy = policy or CleanPlatePolicy.from_env()
@@ -279,6 +357,11 @@ def run_clean_plate_stage(
     ctx = resolve_local_capture_context(capture_root)
     clean_plate_root = ctx.pipeline_root / CLEAN_PLATE_DIRNAME
     ensure_dir(clean_plate_root)
+
+    if not force_rebuild:
+        reused = _reuse_completed_receipt(clean_plate_root, policy)
+        if reused is not None:
+            return reused
 
     if privacy_processing is None:
         privacy_processing = (
@@ -327,6 +410,16 @@ def run_clean_plate_stage(
             mode = "fill_machinery_pending"
             reason = "clean_plate_fill_machinery_not_implemented"
 
+        person_seen = int(plan.get("person_target_count") or 0) > 0
+        if person_seen and privacy_status not in _PRIVACY_PERSON_ACCOUNTED_STATUSES:
+            # Fail-safe cross-check (design §8): the analysis sees a person the
+            # privacy pipeline did not account for. Emit blocked (substitutes
+            # nothing); pixels are never edited on an unresolved person signal.
+            status = "blocked"
+            mode = "residual_person_detected"
+            reason = "residual_person_target_not_accounted_by_privacy"
+            blockers.append(reason)
+
     removal_manifest = _build_removal_manifest(plan)
 
     stage_manifest: Dict[str, Any] = {
@@ -345,6 +438,7 @@ def run_clean_plate_stage(
         "privacy": {
             "status": privacy_status,
             "verified": privacy_verified,
+            "manifest_sha256": _canonical_sha256(dict(privacy_processing)),
             "world_model_video_uri": privacy_processing.get("world_model_video_uri"),
         },
         "input_video_path": str(input_video_path) if input_video_path else None,
