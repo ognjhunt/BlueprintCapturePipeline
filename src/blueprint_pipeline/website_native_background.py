@@ -104,6 +104,46 @@ def prepare_appearance_stage(runtime_inputs_path: Path) -> dict[str, Any]:
                            {"contract_path": PREFIX + ".appearance", **source}]}
 
 
+def prepare_construction_stages(*, runtime_inputs_path: Path, preparation_path: Path) -> dict[str, Any]:
+    """Compile all six existing stages for this task, with no provider calls."""
+    from . import task_evaluation_scene_configuration_submission_records as records
+    runtime = _runtime(runtime_inputs_path)
+    preparation = json.loads(preparation_path.read_text())
+    if (preparation.get("digest") != canonical_digest(preparation, digest_field="digest")
+            or preparation["digest"] != runtime["preparation_digest"]):
+        raise ValueError("website_native_construction_preparation_changed")
+    first, second = prepare_appearance_stage(runtime_inputs_path), prepare_collision_stage(runtime_inputs_path)
+    third = runtime["object_authoring"]["configuration"]
+    identity = third["replacement_identity"]
+    scene_identity = {"id": third["scene_id"], "version": "v1"}
+    subject = runtime["subject"]
+    lower, upper = subject["aabb_min_xyz"], subject["aabb_max_xyz"]
+    support = preparation["intake_request"]["task"]["support"]
+    assembly = records.stage_six_configuration(scene_identity=scene_identity,
+        support_plane={"sage_prim_path": "/Root", "publisher_instance_id": "website-support",
+                       "top_z_m": support["aabb_max_xyz"][2], "bounds_min_xyz_m": support["aabb_min_xyz"],
+                       "bounds_max_xyz_m": support["aabb_max_xyz"]},
+        start_center=[(a + b) / 2 for a, b in zip(lower, upper, strict=True)], bottom_z=lower[2])
+    assembly["appearance"] = {"source": "website_prepared_background", "reuse_from_stage": "stage-1",
+                               "generated_region_label_required": True}
+    assembly["collision"] = {"source": "website_prepared_background", "reuse_from_stage": "stage-2",
+                              "support_prim": "/Root"}
+    assembly["support_plane"].update(authority="registered_estimated_capture_and_reconstruction",
+        physical_scale_measured=False, source_face_indices=preparation["support"]["face_indices"])
+    configurations = [first["configuration"], second["configuration"], third,
+        records.stage_four_configuration(replacement_identity=identity,
+            dimension_tolerance=third["metric_envelope"]["maximum_dimension_relative_error"]),
+        records.stage_five_configuration(replacement_identity=identity), assembly]
+    stages = records.stage_sequence()
+    for old, new in zip(stages[:2], (first["stage"], second["stage"]), strict=True):
+        old.update(new)
+    references = {row["contract_path"]: row for row in first["references"] + second["references"]}
+    return {"schema_version": "website_native_construction_inputs.v1", "scene_identity": scene_identity,
+            "subject_identity": identity, "stage_sequence": stages, "configurations": configurations,
+            "references": list(references.values()), "preparation": _record(preparation_path),
+            "provider_mutation_performed": False, "claim_ceiling": "development_only"}
+
+
 def execute_prepared_appearance(*, envelope, stage, configuration, configuration_path,
                                 dependency_results, output_root, provider_runtime_artifacts=()):
     from .task_evaluation_scene_configuration_builtin_adapters import (

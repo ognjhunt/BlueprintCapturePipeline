@@ -17,6 +17,7 @@ from .task_evaluation_scene_configuration_builtin_producers import (
 )
 from .task_evaluation_scene_configuration_disclosure import (
     MESH_INPUT_STATUS,
+    WEBSITE_INPUT_STATUS,
     PENDING_PROVIDER_RENDER_STATUS,
     render_inputs_disclosure_is_coherent,
     renders_on_provider,
@@ -213,10 +214,15 @@ def scene_configuration_bundle_contract(
         or disclosure.get("raw_interiorgs_bytes_in_provider_bundle")
         is not expected_provider_renderer
         or disclosure.get("derived_rendered_views_in_provider_bundle")
-        is not (not expected_provider_renderer and render.get("status") != MESH_INPUT_STATUS)
+        is not (not expected_provider_renderer and render.get("status") not in {MESH_INPUT_STATUS, WEBSITE_INPUT_STATUS})
         or (render.get("status") == MESH_INPUT_STATUS
             and (disclosure.get("derived_visual_geometry_in_provider_bundle") is not True
                  or stages[0].get("adapter", {}).get("id") != "provided_mesh_appearance_excision"))
+        or (render.get("status") == WEBSITE_INPUT_STATUS
+            and (disclosure.get("captured_frame_derivatives_in_provider_bundle") is not True
+                 or disclosure.get("prepared_background_in_provider_bundle") is not True
+                 or stages[0].get("adapter", {}).get("id") != "website_prepared_appearance"
+                 or stages[1].get("adapter", {}).get("id") != "website_prepared_collision"))
         or (
             diagnostic_only
             and not fresh_diagnostic_bootstrap
@@ -333,6 +339,10 @@ def scene_configuration_bundle_contract(
                 blockers.append("scene_configuration_provider_input_path_invalid")
             else:
                 bound_rows.append((str(geometry.get("path") or ""), geometry))
+        elif render.get("status") == WEBSITE_INPUT_STATUS:
+            # Captured observations are bound through materialized_references,
+            # not a fictitious reconstructed-scene Gaussian cutout.
+            pass
         elif not isinstance(cutout, Mapping):
             blockers.append("scene_configuration_provider_input_path_invalid")
         else:

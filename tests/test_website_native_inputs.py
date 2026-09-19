@@ -1,0 +1,179 @@
+import copy
+import json
+from pathlib import Path
+
+import pytest
+
+from blueprint_pipeline.common import write_json
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.website_native_background import prepare_construction_stages
+from blueprint_pipeline.website_native_inputs import INPUT_STATUS, validate_website_native_inputs
+from blueprint_pipeline.website_object_observations import _record
+from blueprint_pipeline.website_scene_runtime_inputs import prepare_website_runtime_inputs
+from blueprint_pipeline.task_evaluation_scene_configuration_render_inputs import materialize_scene_configuration_render_inputs
+from blueprint_pipeline.task_evaluation_scene_configuration_source_preflight import validate_scene_configuration_source_preflight
+from blueprint_pipeline.task_evaluation_scene_configuration_stage_configuration import validate_immutable_stage_configurations
+from blueprint_pipeline.task_evaluation_scene_configuration_disclosure import render_inputs_disclosure_is_coherent
+from blueprint_pipeline.task_evaluation_scene_configuration_submission_records import recipe
+from blueprint_pipeline.task_evaluation_scene_construction_recipe import validate_scene_construction_recipe
+from tests.test_website_native_appearance import inputs
+
+
+def packet(tmp_path):
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    args, preparation, _ = inputs(tmp_path)
+    preparation_path = args["output_root"] / "preparation.json"
+    runtime = prepare_website_runtime_inputs(preparation=preparation, base_scene=args["base_scene"],
+        source_geometry=args["source_geometry"], task_masks=args["task_masks"], output_root=tmp_path / "native")
+    construction = prepare_construction_stages(runtime_inputs_path=tmp_path / "native/runtime_inputs.json",
+                                               preparation_path=preparation_path)
+    rights = tmp_path / "rights.json"
+    write_json(rights, {"provider_disclosure": {"captured_frame_derivatives_allowed": True,
+        "prepared_background_allowed": True, "provider_training_allowed": False, "public_redistribution_allowed": False}})
+    request = {"run_id": "website-development", "scene": {"website_native_inputs": {"frames": []},
+               "rights": {"provider_disclosure_scope": "derived_only"}}}
+    refs = construction["references"] + [
+        {"contract_path": "scene.source_manifest", **_record(preparation_path)},
+        {"contract_path": "scene.geometry.validation", **_record(Path(runtime["collision"]["normalization_path"]))},
+        {"contract_path": "scene.rights.admission", **_record(rights)}]
+    rows = []
+    for i, row in enumerate(refs):
+        reference = {"uri": f"gs://test-bucket/website/{i}{Path(row['path']).suffix}", "digest": row["digest"], "size_bytes": row["size_bytes"]}
+        bound = request
+        parts = row["contract_path"].split(".")
+        for part in parts[:-1]:
+            bound = bound.setdefault(part, {})
+        if isinstance(bound, list):
+            assert int(parts[-1]) == len(bound)
+            bound.append(reference)
+        else:
+            bound[parts[-1]] = reference
+        rows.append({"contract_path": row["contract_path"], **reference, "materialized_path": row["path"],
+                     "full_byte_service_account_readback_passed": True})
+    config_rows, config_refs, configurations = [], [], {}
+    for i, config in enumerate(construction["configurations"]):
+        path = tmp_path / f"configuration-{i}.json"
+        write_json(path, config)
+        record = _record(path)
+        reference = {"uri": f"gs://test-bucket/configuration/{i}.json", "digest": record["digest"],
+                     "size_bytes": record["size_bytes"]}
+        config_refs.append(reference)
+        config_rows.append({"contract_path": f"construction.recipe.stage_sequence.{i}.configuration", **reference,
+                            "materialized_path": record["path"], "full_byte_service_account_readback_passed": True})
+        configurations[f"stage-{i + 1}"] = config
+    compiled = recipe(recipe_id="website-recipe", team_namespace="website-development",
+        scene_identity=construction["scene_identity"], task_identity={"id": "pick-place", "version": "v1"},
+        subject_identity=construction["subject_identity"], output_identity={"id": "website-revision", "version": "v1"},
+        source_manifest_digest=request["scene"]["source_manifest"]["digest"],
+        rights_admission_digest=request["scene"]["rights"]["admission"]["digest"],
+        stage_configuration_references=config_refs, supplemental_destination=None)
+    for i, stage in enumerate(construction["stage_sequence"]):
+        compiled["stage_sequence"][i].update(stage)
+    compiled["recipe_digest"] = canonical_digest(compiled, digest_field="recipe_digest")
+    validate_scene_construction_recipe(compiled)
+    return {"run_id": request["run_id"], "request": request, "recipe": compiled,
+            "materialized_references": rows, "stage_configuration_references": config_rows}, configurations
+
+
+def test_website_six_stage_inputs_pass_real_preflight_and_need_no_reconstructed_object_render(tmp_path):
+    envelope, configs = packet(tmp_path)
+    validate_immutable_stage_configurations(envelope=envelope, configurations=configs)
+    validate_website_native_inputs(envelope=envelope, configurations=configs, require_render_inputs=False)
+    def never(**_):
+        pytest.fail("website prepared background must not render an object-present reconstruction")
+    render = materialize_scene_configuration_render_inputs(envelope=envelope, stage_one_configuration=configs["stage-1"],
+        output_root=tmp_path / "method-inputs", renderer=never, runtime_resolver=never, splat_decoder=never)
+    assert render["status"] == INPUT_STATUS
+    assert render_inputs_disclosure_is_coherent(render)
+    assert render["renderer_qualified"] is False
+    envelope["render_inputs_result"] = render
+    validate_scene_configuration_source_preflight(envelope=envelope, configurations=configs)
+
+
+@pytest.mark.parametrize("change", ["subject", "frame_binding", "legacy_adapter", "render_binding", "configuration"])
+def test_preflight_cannot_adopt_different_task_or_input_contract(tmp_path, change):
+    envelope, configs = packet(tmp_path)
+    render = materialize_scene_configuration_render_inputs(envelope=envelope, stage_one_configuration=configs["stage-1"],
+        output_root=tmp_path / "method-inputs")
+    envelope["render_inputs_result"] = render
+    if change == "subject":
+        envelope["recipe"]["subject_identity"]["id"] = "another-object"
+    elif change == "frame_binding":
+        envelope["request"]["scene"]["website_native_inputs"]["frames"][0]["digest"] = "sha256:" + "f" * 64
+    elif change == "legacy_adapter":
+        configs["stage-1"]["schema_version"] = "observed_appearance_object_removal_configuration.v1"
+    elif change == "render_binding":
+        render["website_binding"]["captured_frame_count"] += 1
+        render["result_digest"] = canonical_digest(render, digest_field="result_digest")
+    else:
+        configs["stage-3"]["construction_constraints"]["rebuild_only_this_subject"] = False
+    with pytest.raises(ValueError, match="website_native_inputs"):
+        validate_scene_configuration_source_preflight(envelope=envelope, configurations=configs)
+
+
+def test_capture_derivative_upload_requires_its_own_rights_admission(tmp_path):
+    envelope, configs = packet(tmp_path)
+    row = next(r for r in envelope["materialized_references"] if r["contract_path"] == "scene.rights.admission")
+    path = Path(row["materialized_path"])
+    rights = json.loads(path.read_text())
+    rights["provider_disclosure"]["captured_frame_derivatives_allowed"] = False
+    write_json(path, rights)
+    row.update(digest=_record(path)["digest"], size_bytes=path.stat().st_size)
+    envelope["request"]["scene"]["rights"]["admission"].update(digest=row["digest"], size_bytes=row["size_bytes"])
+    envelope["recipe"]["rights_admission_digest"] = row["digest"]
+    with pytest.raises(ValueError, match="capture_derivative_disclosure_not_admitted"):
+        validate_website_native_inputs(envelope=envelope, configurations=configs, require_render_inputs=False)
+
+
+def test_website_disclosure_cannot_claim_qualified_renders_or_raw_video_upload(tmp_path):
+    envelope, configs = packet(tmp_path)
+    render = materialize_scene_configuration_render_inputs(envelope=envelope, stage_one_configuration=configs["stage-1"],
+        output_root=tmp_path / "method-inputs")
+    for key in ("renderer_qualified", "physical_truth_claimed", "raw_capture_video_in_provider_packet", "provider_render_required"):
+        changed = copy.deepcopy(render)
+        changed[key] = True
+        assert not render_inputs_disclosure_is_coherent(changed)
+
+
+def test_website_bundle_relocates_and_hydrates_actual_capture_inputs(tmp_path, monkeypatch):
+    import shutil
+    import zipfile
+    from blueprint_pipeline.task_evaluation_scene_configuration_bundle import build_scene_configuration_provider_bundle
+    from blueprint_pipeline.task_evaluation_scene_configuration_provider_preflight import scene_configuration_bundle_contract
+    from blueprint_pipeline.task_evaluation_scene_configuration_adapters import SceneConfigurationAdapterRegistry
+    from blueprint_pipeline.task_evaluation_scene_configuration_builtin_adapters import builtin_scene_configuration_adapter_handlers
+    from blueprint_pipeline.task_evaluation_scene_configuration_content_agents_driver import _reference_frames
+    from scripts.task_evaluation_scene_configuration_provider_runner import _hydrate_envelope
+    from tests.astra_toolchain_fixture import astra_toolchain_fixture
+    control = tmp_path / "control"
+    envelope, configs = packet(control)
+    render = materialize_scene_configuration_render_inputs(envelope=envelope, stage_one_configuration=configs["stage-1"],
+        output_root=control / "method-inputs")
+    commit = "a" * 40
+    envelope.update(schema_version="task_evaluation_scene_construction_envelope.v1", expected_production_commit=commit,
+        orchestration_id="website-preparation", recipe_digest=envelope["recipe"]["recipe_digest"], render_inputs_result=render)
+    envelope["envelope_digest"] = canonical_digest(envelope, digest_field="envelope_digest")
+    path = control / "envelope.json"
+    write_json(path, envelope)
+    built = build_scene_configuration_provider_bundle(construction_envelope_path=path,
+        toolchain_root=astra_toolchain_fixture(tmp_path / "toolchain", commit, monkeypatch),
+        repository_root=Path(__file__).resolve().parents[1],
+        output_root=tmp_path / "bundle", expected_source_commit=commit)
+    with zipfile.ZipFile(built["bundle_path"]) as archive:
+        _, _, blockers = scene_configuration_bundle_contract(archive)
+        assert not blockers
+        archive.extractall(tmp_path / "worker")  # Our locally constructed hermetic fixture archive.
+    shutil.rmtree(control)
+    runtime = tmp_path / "worker/provider_runtime"
+    portable = json.loads((runtime / "input/portable_construction_envelope.v1.json").read_text())
+    hydrated = _hydrate_envelope(runtime, portable)
+    assert hydrated["render_inputs_result"]["status"] == INPUT_STATUS
+    assert hydrated["provider_disclosure_receipt"]["captured_frame_derivatives_in_provider_bundle"] is True
+    assert hydrated["provider_disclosure_receipt"]["derived_rendered_views_in_provider_bundle"] is False
+    registry = SceneConfigurationAdapterRegistry(builtin_scene_configuration_adapter_handlers())
+    results = []
+    for stage, row in zip(hydrated["recipe"]["stage_sequence"][:2], hydrated["stage_configuration_references"][:2], strict=True):
+        config_path = Path(row["materialized_path"])
+        results.append(registry.execute(stage=stage, envelope=hydrated, configuration=json.loads(config_path.read_text()),
+            configuration_path=config_path, dependency_results=tuple(results), output_root=tmp_path / stage["stage_id"]))
+    assert _reference_frames({"configuration": configs["stage-3"]}, results)

@@ -80,7 +80,8 @@ def _hydrate_envelope(runtime: Path, portable: dict) -> dict:
         raise ValueError("scene_configuration_provider_render_inputs_digest_invalid")
     portable_render_digest = render["result_digest"]
     mesh_input = render.get("status") == "explicit_visual_geometry_prepared"
-    render_file_keys = ("derived_visual_geometry",) if mesh_input else ("camera_calibration", "render_manifest")
+    website_input = render.get("status") == "website_capture_derivatives_prepared"
+    render_file_keys = () if website_input else (("derived_visual_geometry",) if mesh_input else ("camera_calibration", "render_manifest"))
     for key in render_file_keys:
         row = render.get(key)
         if (
@@ -124,7 +125,7 @@ def _hydrate_envelope(runtime: Path, portable: dict) -> dict:
     # protected input for the corrective Artifixer run.  Hydrate every bound
     # cutout row that is actually present instead of turning an intentional
     # omission into an empty relative path at provider runtime.
-    for key in (() if mesh_input else ("retained_scene_without_source_object", "source_object_candidate")):
+    for key in (() if mesh_input or website_input else ("retained_scene_without_source_object", "source_object_candidate")):
         row = cutout.get(key)
         if key == "source_object_candidate" and row is None:
             continue
