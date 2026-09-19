@@ -142,6 +142,33 @@ def test_disabled_is_pure_noop(tmp_path):
     assert not (capture_root / "pipeline" / "clean_plate").exists()
 
 
+@pytest.mark.parametrize("geometry_missing", [False, True])
+def test_website_preparation_preserves_original_geometry_without_requiring_measured_scale(tmp_path, monkeypatch, geometry_missing):
+    capture_root = _make_capture(tmp_path)
+    source = capture_root / "raw" / "walkthrough.mp4"
+    plan = empty_removal_plan(status="completed", model="test", processing="agentic")
+    monkeypatch.setattr(_ANALYSIS_ATTR, lambda **_kwargs: plan)
+    estimated = {"status": "estimated", "scale_status": "model_estimated", "metric_measurement_proven": False}
+
+    def geometry(**kwargs):
+        assert kwargs["source_video"] == source
+        assert source.read_bytes() == b"RAWVIDEO"
+        if geometry_missing:
+            raise ValueError("mapanything_local_checkpoint_missing")
+        return estimated
+
+    monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.run_website_scene_geometry", geometry)
+    result = run_clean_plate_stage(capture_root=capture_root, privacy_processing=_SAFE_PRIVACY,
+                                   policy=CleanPlatePolicy(enabled=True), website_source_video=source)
+    if geometry_missing:
+        assert result["status"] == "blocked"
+        assert "mapanything_local_checkpoint_missing" in result["blockers"]
+    else:
+        assert result["status"] == "noop"
+        assert result["source_geometry"] == estimated
+        assert result["blockers"] == []
+
+
 # --------------------------------------------------------------------------- #
 # Fail-closed analysis (no paid call)
 # --------------------------------------------------------------------------- #

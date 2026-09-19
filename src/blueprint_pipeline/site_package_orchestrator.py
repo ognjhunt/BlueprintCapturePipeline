@@ -4799,6 +4799,8 @@ def run_qualification_pipeline(
             privacy_processing=privacy_processing,
             worldlabs_input=worldlabs_input,
             task_context=(descriptor.metadata or {}).get("site_task_context"),
+            website_source_video=(raw_video_path if (descriptor.metadata or {}).get("capture_entry_source")
+                                  == "browser_self_capture" else None),
         )
         gates.append(
             QualificationGate(
@@ -4867,6 +4869,7 @@ def run_qualification_pipeline(
             "privacy_verified": clean_plate.get("privacy_verified"),
             "clean_plate_video_uri": clean_plate.get("clean_plate_video_uri"),
             "stage_manifest_uri": clean_plate.get("stage_manifest_uri"),
+            "source_geometry": clean_plate.get("source_geometry"),
         }
         descriptor_payload["metadata"] = metadata_payload
         write_json(descriptor_path, descriptor_payload)

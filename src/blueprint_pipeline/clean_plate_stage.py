@@ -55,6 +55,8 @@ from .common import (
     write_json,
 )
 from .local_capture import resolve_local_capture_context
+from .website_scene_geometry import run_website_scene_geometry
+from .website_task_masks import run_website_task_masks
 
 FLAG_ENV = "BLUEPRINT_CLEAN_PLATE_ENABLED"
 ADP_ITEM_ENV = "BLUEPRINT_CLEAN_PLATE_ADP_ITEM"
@@ -281,6 +283,7 @@ def run_clean_plate_stage(
     privacy_processing: Optional[Mapping[str, Any]] = None,
     worldlabs_input: Optional[Mapping[str, Any]] = None,
     task_context: Optional[Mapping[str, Any]] = None,
+    website_source_video: Optional[Path] = None,
     policy: Optional[CleanPlatePolicy] = None,
     force_rebuild: bool = False,
 ) -> Dict[str, Any]:
@@ -321,6 +324,8 @@ def run_clean_plate_stage(
     plan: Dict[str, Any]
     blockers: list[str] = []
     reason: Optional[str] = None
+    source_geometry: Optional[Dict[str, Any]] = None
+    task_masks: Optional[Dict[str, Any]] = None
 
     if privacy_status == "failed_closed":
         # Fail safe: never proceed on a capture whose privacy pipeline failed.
@@ -358,6 +363,32 @@ def run_clean_plate_stage(
             mode = "fill_machinery_pending"
             reason = "clean_plate_fill_machinery_not_implemented"
 
+    # The website uses the original video for placement, never generated pixels.
+    # Estimated scale is sufficient for this development replica; a missing
+    # measured dimension is not a reason to stop preparation.
+    if website_source_video is not None and privacy_verified and not blockers:
+        try:
+            source_geometry = run_website_scene_geometry(
+                source_video=website_source_video,
+                output_root=clean_plate_root / "source_geometry", capture_id=ctx.capture_id,
+            )
+        except Exception as exc:
+            status, mode = "blocked", "source_geometry_blocked"
+            reason = "website_source_geometry_unavailable"
+            blockers.append(str(exc) if isinstance(exc, ValueError) else type(exc).__name__)
+
+    if source_geometry is not None and not blockers and any(
+        target.get("task_effect") in {"manipulated", "static_contact", "static_obstacle"}
+        for target in plan.get("targets", [])
+    ):
+        try:
+            task_masks = run_website_task_masks(plan=plan, source_geometry=source_geometry,
+                                                output_root=clean_plate_root / "task_masks")
+        except Exception as exc:
+            status, mode = "blocked", "task_masks_blocked"
+            reason = "website_task_masks_unavailable"
+            blockers.append(str(exc) if isinstance(exc, ValueError) else type(exc).__name__)
+
     removal_manifest = _build_removal_manifest(plan)
 
     stage_manifest: Dict[str, Any] = {
@@ -389,6 +420,8 @@ def run_clean_plate_stage(
         "clean_plate_video_uri": None,
         "generated_regions_present": False,
         "originals_retained": True,
+        "source_geometry": source_geometry,
+        "task_masks": task_masks,
         "removal_plan_uri": _stage_uri(ctx, REMOVAL_PLAN_FILENAME),
         "removal_manifest_uri": _stage_uri(ctx, REMOVAL_MANIFEST_FILENAME),
         "stage_manifest_uri": _stage_uri(ctx, STAGE_MANIFEST_FILENAME),
@@ -421,6 +454,8 @@ def run_clean_plate_stage(
         "policy": policy.to_dict(),
         "privacy_status": privacy_status,
         "privacy_verified": privacy_verified,
+        "source_geometry": source_geometry,
+        "task_masks": task_masks,
         "target_count": stage_manifest["target_count"],
         "movable_removal_count": stage_manifest["movable_removal_count"],
         "person_target_count": stage_manifest["person_target_count"],
