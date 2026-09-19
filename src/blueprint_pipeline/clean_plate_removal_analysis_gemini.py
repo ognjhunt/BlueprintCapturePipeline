@@ -38,6 +38,7 @@ import json
 import math
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 
@@ -482,19 +483,28 @@ def _invoke_agentic_video(
     client = genai.Client(api_key=api_key, http_options=types.HttpOptions(
         timeout=300_000, retry_options=types.HttpRetryOptions(attempts=1),
     ))
-    video_bytes = video_path.read_bytes()
     mime_type = "video/mp4" if video_path.suffix.lower() == ".mp4" else "video/quicktime"
-
-    part = types.Part(
-        inline_data=types.Blob(data=video_bytes, mime_type=mime_type),
-        media_processing="AGENTIC",
-    )
-    response = client.models.generate_content(
-        model=model,
-        contents=[part, prompt],
-        config=types.GenerateContentConfig(response_mime_type="application/json", max_output_tokens=8192,
-                                           thinking_config=types.ThinkingConfig(thinking_level="LOW")),
-    )
+    uploaded = client.files.upload(file=str(video_path), config={"mime_type": mime_type})
+    try:
+        deadline = time.monotonic() + 60
+        while getattr(getattr(uploaded, "state", None), "name", "") == "PROCESSING":
+            if time.monotonic() >= deadline:
+                raise ValueError("gemini_clean_plate_file_processing_timeout")
+            time.sleep(1)
+            uploaded = client.files.get(name=uploaded.name)
+        if getattr(getattr(uploaded, "state", None), "name", "") != "ACTIVE":
+            raise ValueError("gemini_clean_plate_file_processing_failed")
+        # Agentic navigation uses a stable processed media handle, as in the
+        # provider's video API example; the original stays unchanged locally.
+        part = types.Part.from_uri(file_uri=uploaded.uri, mime_type=mime_type)
+        part.media_processing = "AGENTIC"
+        response = client.models.generate_content(
+            model=model, contents=[part, prompt],
+            config=types.GenerateContentConfig(response_mime_type="application/json", max_output_tokens=8192,
+                                               thinking_config=types.ThinkingConfig(thinking_level="LOW")),
+        )
+    finally:
+        client.files.delete(name=uploaded.name)
     candidates = getattr(response, "candidates", None) or []
     finish = getattr(candidates[0], "finish_reason", None) if candidates else None
     if finish != "STOP":

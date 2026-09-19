@@ -19,11 +19,20 @@ def invoke(tmp_path, parts, finish="STOP", processing="agentic"):
         calls.append(kwargs)
         return NS(candidates=[NS(finish_reason=finish, content=NS(parts=parts))])
 
-    genai = NS(Client=lambda **_: NS(models=NS(generate_content=generate)))
-    types = NS(Part=NS, Blob=NS, GenerateContentConfig=NS, HttpOptions=NS, HttpRetryOptions=NS, ThinkingConfig=NS)
-    result = _invoke_agentic_video(api_key="fake", model=DEFAULT_MODEL,
-                                  processing=processing, video_path=path,
-                                  genai=genai, types=types)
+    media = NS(name="files/test", uri="https://provider.test/file", state=NS(name="ACTIVE"))
+    deleted = []
+    files = NS(upload=lambda **_: media, delete=lambda **kwargs: deleted.append(kwargs))
+    genai = NS(Client=lambda **_: NS(models=NS(generate_content=generate), files=files))
+    types = NS(Part=NS(from_uri=lambda *, file_uri, mime_type: NS(
+        file_data=NS(file_uri=file_uri, mime_type=mime_type))),
+        GenerateContentConfig=NS, HttpOptions=NS, HttpRetryOptions=NS, ThinkingConfig=NS)
+    try:
+        result = _invoke_agentic_video(api_key="fake", model=DEFAULT_MODEL,
+                                      processing=processing, video_path=path,
+                                      genai=genai, types=types)
+    finally:
+        if processing == "agentic":
+            assert deleted == [{"name": "files/test"}]
     return result, calls
 
 
@@ -43,8 +52,8 @@ def test_requests_agentic_38_and_filters_thoughts(tmp_path):
     assert calls[0]["config"].thinking_config.thinking_level == "LOW"
     part = calls[0]["contents"][0]
     assert part.media_processing == "AGENTIC"
-    assert part.inline_data.data == b"source video"
-    assert part.inline_data.mime_type == "video/quicktime"
+    assert part.file_data.file_uri == "https://provider.test/file"
+    assert part.file_data.mime_type == "video/quicktime"
 
 
 def test_static_answer_does_not_masquerade_as_agentic(tmp_path):
