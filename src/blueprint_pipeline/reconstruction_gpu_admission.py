@@ -334,6 +334,9 @@ def collect_reconstruction_vast_preflight(
     capacity_request = {
         "max_hourly_rate_usd": float(max_hourly_rate_usd),
         "min_gpu_ram_mb": int(minimum_gpu_ram_mb),
+        # Match the worker allocation so storage pricing and host capacity are
+        # checked before binding the maximum launch rate.
+        "container_disk_gb": max(100, int(container_disk_bytes) // 1024**3),
         "min_reliability": float(minimum_reliability),
         "require_avx": True,
         "require_known_supported_isaac_driver": False,

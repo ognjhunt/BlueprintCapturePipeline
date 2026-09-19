@@ -524,3 +524,20 @@ def test_missing_output_checks_provider_exit_and_tears_down_before_ttl(tmp_path,
     assert provider.launched is False
     assert json.loads((tmp_path / "teardown_receipt.json").read_text())["status"] == "PASS"
     assert (tmp_path / "watchdog/started_vast_instance_id.txt").read_text().strip() == "42"
+
+
+def test_declined_launch_preserves_provider_blocker_and_leaves_zero_resources(tmp_path):
+    provider = _Provider()
+    provider.launch = lambda *args, **kwargs: {
+        "status": "blocked", "allocation_created": False,
+        "blockers": ["no_vast_offer_matching_rate_and_gpu_memory"]}
+    result = run_reconstruction_vast_operation(
+        bound_request=_bound_request(), bundle_receipt=_bundle_receipt(), preflight=_preflight(),
+        job_dir=tmp_path, input_bundle_get_url="https://objects.example/input",
+        input_receipt_get_url="https://objects.example/receipt",
+        output_bundle_put_url="https://objects.example/output-put",
+        output_bundle_get_url="https://objects.example/output-get", provider=provider,
+        paid_resource_admission_grant=_grant(), watchdog_validator=lambda *args: True)
+    assert "no_vast_offer_matching_rate_and_gpu_memory" in result["blockers"]
+    assert result["provider_zero_verified"] is True
+    assert result["provider_mutations_performed"] == 0

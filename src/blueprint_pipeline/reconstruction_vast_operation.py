@@ -560,6 +560,7 @@ def run_reconstruction_vast_operation(
                 evidence={"status": launch_result.get("status")},
             )
             blockers.append("reconstruction_vast_operation_instance_not_created")
+            blockers.extend(str(code) for code in launch_result.get("blockers", []))
         else:
             instance_id = str(launch_result["instance_id"])
             provider_mutations += 1
