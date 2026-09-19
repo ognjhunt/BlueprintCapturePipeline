@@ -38,6 +38,7 @@ from blueprint_pipeline.clean_plate_stage import (
     PROGRAM_ID,
     STAGE_MANIFEST_SCHEMA_VERSION,
     CleanPlatePolicy,
+    apply_clean_plate_to_reconstruction_input,
     run_clean_plate_stage,
     validate_clean_plate_stage_manifest,
 )
@@ -45,6 +46,28 @@ from blueprint_pipeline.common import read_json
 
 _ANALYSIS_ATTR = "blueprint_pipeline.clean_plate_stage.analyze_removal_targets"
 _SAFE_PRIVACY = {"status": "no_people_detected", "world_model_video_uri": "gs://b/x.mov"}
+
+
+@pytest.mark.parametrize("status", ["blocked", "failed_closed", "disabled", "unknown"])
+def test_website_preparation_hold_cannot_fall_back_to_original_video(status):
+    original = {"status": "ready", "output_video_uri": "gs://b/original.mov"}
+    result = apply_clean_plate_to_reconstruction_input(original, {"status": status}, required=True)
+    assert result["status"] == "blocked"
+    assert result["output_video_uri"] is None
+    assert original["output_video_uri"] == "gs://b/original.mov"
+
+
+def test_only_validated_preparation_selects_reconstruction_media():
+    original = {"status": "ready", "output_video_uri": "gs://b/original.mov"}
+    assert apply_clean_plate_to_reconstruction_input(original, {"status": "disabled"}, required=False) == original
+    noop = {"status": "noop", "privacy_verified": True, "blockers": []}
+    assert apply_clean_plate_to_reconstruction_input(original, noop, required=True) == original
+    edited = {**noop, "status": "objects_removed", "clean_plate_video_uri": "gs://b/edited.mov"}
+    assert apply_clean_plate_to_reconstruction_input(original, edited, required=True)["output_video_uri"] == "gs://b/edited.mov"
+    for invalid in ({**noop, "blockers": ["task_object_ambiguous"]},
+                    {**noop, "privacy_verified": False},
+                    {**edited, "clean_plate_video_uri": None}):
+        assert apply_clean_plate_to_reconstruction_input(original, invalid, required=True)["status"] == "blocked"
 
 _GATE_AND_KEY_ENVS = (
     FLAG_ENV,

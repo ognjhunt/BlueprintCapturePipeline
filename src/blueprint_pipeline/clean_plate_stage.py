@@ -162,6 +162,31 @@ def _resolve_input_video(pipeline_root: Path, capture_root: Path) -> Optional[Pa
     return None
 
 
+def apply_clean_plate_to_reconstruction_input(
+    worldlabs_input: Mapping[str, Any], clean_plate: Mapping[str, Any], *, required: bool,
+) -> Dict[str, Any]:
+    """Never let a task-analysis hold fall back to the unedited source video."""
+    result = dict(worldlabs_input)
+    status = clean_plate.get("status")
+    # Preserve the disabled legacy path; website preparation is mandatory.
+    if status == "disabled" and not required:
+        return result
+    passed = (
+        status in {"noop", "objects_removed"}
+        and clean_plate.get("privacy_verified") is True
+        and not clean_plate.get("blockers")
+    )
+    if status == "objects_removed" and not clean_plate.get("clean_plate_video_uri"):
+        passed = False
+    if not passed:
+        return {**result, "status": "blocked", "output_video_uri": None,
+                "reason": clean_plate.get("reason") or "task_scene_preparation_required",
+                "clean_plate_blockers": list(clean_plate.get("blockers") or [])}
+    if status == "objects_removed":
+        result.update(output_video_uri=clean_plate["clean_plate_video_uri"], clean_plate_applied=True)
+    return result
+
+
 def _build_removal_manifest(plan: Mapping[str, Any]) -> Dict[str, Any]:
     """Per-target manifest linking a removed source object to its (future) asset.
 
@@ -181,6 +206,10 @@ def _build_removal_manifest(plan: Mapping[str, Any]) -> Dict[str, Any]:
                 "target_id": target.get("target_id"),
                 "semantic_label": target.get("semantic_label"),
                 "target_class": target.get("target_class"),
+                "target_role": target.get("target_role"),
+                "task_effect": target.get("task_effect"),
+                "decision_reason": target.get("decision_reason"),
+                "task_basis_quote": target.get("task_basis_quote"),
                 "rebuild_intent": target.get("rebuild_intent"),
                 "spatial_evidence": target.get("spatial_evidence", []),
                 # Filled by the deferred fill machinery / rebuild chain:
@@ -200,6 +229,7 @@ def _build_removal_manifest(plan: Mapping[str, Any]) -> Dict[str, Any]:
         "claim_ceiling": CLAIM_CEILING,
         "removal_plan_schema_version": plan.get("schema_version"),
         "removal_plan_status": plan.get("status"),
+        "task_context_sha256": plan.get("task_context_sha256"),
         "removed_target_count": len(entries),
         "entries": entries,
     }
@@ -250,6 +280,7 @@ def run_clean_plate_stage(
     capture_root: str | Path,
     privacy_processing: Optional[Mapping[str, Any]] = None,
     worldlabs_input: Optional[Mapping[str, Any]] = None,
+    task_context: Optional[Mapping[str, Any]] = None,
     policy: Optional[CleanPlatePolicy] = None,
     force_rebuild: bool = False,
 ) -> Dict[str, Any]:
@@ -306,13 +337,13 @@ def run_clean_plate_stage(
         input_video_path = None
     else:
         input_video_path = _resolve_input_video(ctx.pipeline_root, ctx.capture_root)
-        plan = analyze_removal_targets(video_path=input_video_path)
+        plan = analyze_removal_targets(video_path=input_video_path, task_context=task_context)
         plan_errors = validate_removal_plan(plan)
         if plan_errors:
             blockers.extend(plan_errors)
         blockers.extend(plan.get("blockers", []) or [])
         movable_removals = int(plan.get("movable_removal_count") or 0)
-        if _string(plan.get("status")) == "blocked":
+        if blockers or _string(plan.get("status")) != "completed":
             status = "blocked"
             mode = "analysis_blocked"
             reason = "removal_analysis_blocked"

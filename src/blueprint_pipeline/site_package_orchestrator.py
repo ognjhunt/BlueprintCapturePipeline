@@ -57,7 +57,8 @@ from .launch_proof_policy import (
 )
 from .object_index_stage import ensure_object_index_stage
 from .object_index_artifacts import resolve_current_object_index_artifacts
-from .clean_plate_stage import run_clean_plate_stage
+from .clean_plate_stage import apply_clean_plate_to_reconstruction_input, run_clean_plate_stage
+from .website_task_context import load_current_website_task_context
 from .privacy_processing import run_privacy_postprocess
 from .provider_preview import run_preview_provider
 from .proof_contracts import build_rights_provenance_review
@@ -4410,6 +4411,18 @@ def run_qualification_pipeline(
         pipeline_prefix = to_pipeline_prefix(scene_id, capture_id)
         pipeline_dir = storage_root / pipeline_prefix
         ensure_dir(pipeline_dir)
+        if descriptor.metadata.get("capture_entry_source") == "browser_self_capture":
+            stage = "website_task_context"
+            task_context = load_current_website_task_context(
+                request_id=str(descriptor.site_submission_id or descriptor.metadata.get("site_submission_id") or ""),
+                scene_id=scene_id, capture_id=capture_id,
+            )
+            write_json(pipeline_dir / "website_task_context.json", task_context)
+            descriptor = CaptureDescriptor.from_dict({
+                **descriptor.to_dict(),
+                "metadata": {**descriptor.metadata, "site_task_context": task_context,
+                             "task_statement": task_context["description"]},
+            })
         downstream_requested_lanes = _requested_downstream_lanes(
             descriptor=descriptor,
             requested_lanes=requested_lanes,
@@ -4777,37 +4790,27 @@ def run_qualification_pipeline(
                 "manifest_uri": None,
                 "output_video_uri": None,
             }
-        # Conditional pre-reconstruction clean-plate stage (extract -> Atlas).
-        # Opt-in via BLUEPRINT_CLEAN_PLATE_ENABLED (default off). People are
-        # already removed by run_privacy_postprocess above; this stage verifies
-        # that and plans movable-object removal. Scaffold: it emits its analysis
-        # artifacts + receipt but never produces a clean-plate video, so the Atlas
-        # input is unchanged (strict no-op). When the view-consistent fill
-        # machinery lands, redirect worldlabs_input to the clean-plate video here.
+        # Website reconstruction must consume the task-aware preparation result.
+        # A held or disabled preparation cannot fall back to the original video.
+        # Legacy capture keeps its existing opt-in behavior.
         stage = "clean_plate"
         clean_plate = run_clean_plate_stage(
             capture_root=capture_root,
             privacy_processing=privacy_processing,
             worldlabs_input=worldlabs_input,
+            task_context=(descriptor.metadata or {}).get("site_task_context"),
         )
         gates.append(
             QualificationGate(
                 "clean_plate_stage",
-                clean_plate.get("status") != "failed_closed",
+                clean_plate.get("status") in {"noop", "objects_removed", "disabled"},
                 f"status={clean_plate.get('status')} mode={clean_plate.get('mode')}",
             )
         )
-        clean_plate_video_uri = clean_plate.get("clean_plate_video_uri")
-        if (
-            clean_plate.get("status") == "objects_removed"
-            and clean_plate_video_uri
-            and clean_plate.get("privacy_verified")
-        ):
-            worldlabs_input = {
-                **worldlabs_input,
-                "output_video_uri": clean_plate_video_uri,
-                "clean_plate_applied": True,
-            }
+        worldlabs_input = apply_clean_plate_to_reconstruction_input(
+            worldlabs_input, clean_plate,
+            required=(descriptor.metadata or {}).get("capture_entry_source") == "browser_self_capture",
+        )
         metadata_payload = dict(descriptor_payload.get("metadata") or {})
         metadata_payload["privacy_processing"] = {
             "status": privacy_processing.get("status"),

@@ -34,6 +34,20 @@ def _minimal_ready_capture(tmp_path: Path, *, scene_id: str = "scene-1", capture
     return raw
 
 
+def test_website_task_context_survives_capture_materialization(tmp_path: Path) -> None:
+    raw = _minimal_ready_capture(tmp_path)
+    manifest = json.loads((raw / "manifest.json").read_text())
+    task = {"schema_version": "website_site_task_context.v1", "request_id": "req-1",
+            "description": "Pick a small rigid object", "confirmed": False, "confirmed_at": None}
+    manifest["site_task_context"] = task
+    _write_json(raw / "manifest.json", manifest)
+    result = m.build_capture_bundle_records(bucket="bucket", scene_id="scene-1",
+                                           capture_id="capture-1", gcs_root=tmp_path,
+                                           write_frames_index=False)
+    assert result["descriptor"]["metadata"]["site_task_context"] == task
+    assert result["descriptor"]["metadata"]["site_task_context"]["confirmed"] is False
+
+
 def test_small_normalizers_and_fault_tolerant_readers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     broken = tmp_path / "broken.json"
     broken.write_text("{}", encoding="utf-8")
