@@ -72,6 +72,13 @@ _SECRET_FILES = ("gemini_api_key", "google_genai_api_key", "google_ai_api_key")
 PROMPT_INSTRUCTION = (
     "You are analyzing a walkthrough video of a work environment to plan which "
     "content must be removed BEFORE 3D reconstruction of the task environment. "
+    "This is a bounded scene-preparation decision, not an exhaustive video investigation. "
+    "Watch the clip once for context, then inspect the task area once or twice. "
+    "Use at most SIX media-processing tool calls total; stop looking sooner when the target is clear. "
+    "Do not repeatedly zoom or seek to refine a box. After this budget, report uncertainty "
+    "as a question instead of making more tool calls. Report at most six distinct task-relevant "
+    "objects (plus any people). Use only one or two timestamped coarse boxes per object. "
+    "Unlisted unrelated objects are kept automatically; they do not need inventory rows. "
     "Use the confirmed task context to decide what must be independent in the "
     "simulation. Do not remove everything that could conceivably move. Keep fixed "
     "supports, tables, obstacles and background unless the task itself moves them. "
@@ -438,6 +445,7 @@ def _provider_error_blocker(exc: Exception) -> str:
     for code in (
         "gemini_clean_plate_agentic_processing_required",
         "gemini_clean_plate_agentic_trace_missing",
+        "gemini_clean_plate_analysis_incomplete_too_many_tool_calls",
         "gemini_clean_plate_analysis_incomplete_max_tokens",
         "gemini_clean_plate_analysis_incomplete_safety",
         "gemini_clean_plate_analysis_incomplete",
@@ -484,13 +492,14 @@ def _invoke_agentic_video(
     response = client.models.generate_content(
         model=model,
         contents=[part, prompt],
-        config=types.GenerateContentConfig(response_mime_type="application/json", max_output_tokens=16384,
+        config=types.GenerateContentConfig(response_mime_type="application/json", max_output_tokens=8192,
                                            thinking_config=types.ThinkingConfig(thinking_level="LOW")),
     )
     candidates = getattr(response, "candidates", None) or []
     finish = getattr(candidates[0], "finish_reason", None) if candidates else None
     if finish != "STOP":
-        suffix = "_max_tokens" if finish == "MAX_TOKENS" else "_safety" if finish == "SAFETY" else ""
+        suffix = {"MAX_TOKENS": "_max_tokens", "SAFETY": "_safety",
+                  "TOO_MANY_TOOL_CALLS": "_too_many_tool_calls"}.get(finish, "")
         raise ValueError("gemini_clean_plate_analysis_incomplete" + suffix)
     parts = getattr(getattr(candidates[0], "content", None), "parts", None) or []
     calls = [part for part in parts if getattr(getattr(part, "tool_call", None), "tool_type", None) == "MEDIA_PROCESSING"]
