@@ -72,3 +72,14 @@ def test_native_collision_cannot_disagree_with_subject_coordinate_conversion(tmp
     with pytest.raises(ValueError, match="website_native_coordinate_frame_mismatch"):
         prepare_website_runtime_inputs(preparation=preparation, base_scene=args["base_scene"],
                                        output_root=tmp_path / "native")
+
+
+def test_capture_processing_rights_are_required_even_without_paid_execution(tmp_path):
+    args = _arguments(tmp_path)
+    args["task_context"]["capture_rights"]["derived_scene_generation_allowed"] = False
+    args["task_context"]["context_digest"] = canonical_digest(args["task_context"], digest_field="context_digest")
+    preparation = compile_website_scene_preparation(**args)
+    with pytest.raises(ValueError, match="website_scene_processing_rights_required"):
+        prepare_website_runtime_inputs(preparation=preparation, base_scene=args["base_scene"],
+                                       output_root=tmp_path / "native")
+    assert not (tmp_path / "native").exists()

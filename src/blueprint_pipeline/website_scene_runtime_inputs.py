@@ -23,6 +23,8 @@ def prepare_website_runtime_inputs(*, preparation: Mapping[str, Any], base_scene
     if (preparation.get("claim_ceiling") != "development_only"
             or preparation.get("subject", {}).get("geometry_origin") != "removed_before_reconstruction"):
         raise ValueError("website_native_preparation_kind_invalid")
+    if "website_scene_processing_rights_required" in preparation.get("blockers", []):
+        raise ValueError("website_scene_processing_rights_required")
     bindings = preparation["binding"]
     for key in ("collision_mesh", "splat"):
         path = Path(base_scene[key + "_path"])
