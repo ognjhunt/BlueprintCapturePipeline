@@ -17,6 +17,7 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 from PIL import Image, ImageOps
+from scipy.ndimage import distance_transform_edt
 
 from .common import write_json
 from .clean_plate_removal_analysis_gemini import DEFAULT_MODEL, _api_key
@@ -52,7 +53,8 @@ def completion_binding(frames: Sequence[Mapping[str, Any]], *, task_digest: str,
                        targets: Sequence[Mapping[str, Any]] = ()) -> dict[str, Any]:
     return {"schema_version": "website_image_completion_request.v1", "task_digest": task_digest,
             "backend_digest": backend_digest, "prompt": _completion_prompt(targets),
-            "frames": [{key: frame[key] for key in ("frame_id", "image_digest", "remaining_mask_digest")}
+            "frames": [{**{key: frame[key] for key in ("frame_id", "image_digest", "remaining_mask_digest")},
+                        "edge_feather_pixels": frame.get("edge_feather_pixels", 0)}
                        for frame in frames]}
 
 
@@ -112,6 +114,9 @@ def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_dige
             source = Image.open(source_path).convert("RGB")
             mask = Image.open(mask_path).convert("L")
             editable = np.asarray(mask) == 255
+            feather_pixels = frame.get("edge_feather_pixels", 0)
+            if isinstance(feather_pixels, bool) or not isinstance(feather_pixels, int) or feather_pixels < 0:
+                raise ValueError("website_image_completion_feather_invalid")
             if mask.size != source.size or set(np.unique(mask)) - {0, 255} or int(editable.sum()) != frame["remaining_pixel_count"]:
                 raise ValueError("website_image_completion_mask_invalid")
             if not editable.any():
@@ -153,8 +158,11 @@ def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_dige
                 cost = _usage_cost(response["usage"], execution["pricing_binding"])
                 spent += cost
                 generated = Image.open(BytesIO(response["generated"])).convert("RGB").crop(box).resize(source.size, Image.Resampling.LANCZOS)
-                pixels = np.asarray(source).copy()
-                pixels[editable] = np.asarray(generated)[editable]
+                # Blend only inside the expanded mask. The original object is
+                # fully replaced; the transition lies on surrounding background.
+                alpha = (np.clip(distance_transform_edt(editable) / feather_pixels, 0, 1)
+                         if feather_pixels else editable.astype(float))[..., None]
+                pixels = np.rint(np.asarray(source) * (1 - alpha) + np.asarray(generated) * alpha).astype(np.uint8)
                 Image.fromarray(pixels).save(destination)
                 receipt = {"status": "completed", "request_digest": request_digest, "frame_id": frame["frame_id"],
                            "image_digest": _sha256_file(destination), "cost_usd": cost, "usage": response["usage"],

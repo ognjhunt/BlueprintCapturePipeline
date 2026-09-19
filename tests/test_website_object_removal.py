@@ -32,13 +32,14 @@ def test_multiple_task_objects_share_one_mask_without_removing_unrelated_objects
     expected = np.zeros((16, 12), dtype=bool)
     expected[2:4, 2:4] = True
     expected[12:14, 8:10] = True
-    expected = binary_dilation(expected, iterations=2)
+    expected = binary_dilation(expected, iterations=3)
     np.testing.assert_array_equal(np.asarray(Image.open(result["remaining_mask_path"])) == 255, expected)
     assert not expected[7, 5]
     original = Image.open(frame["source_image_path"]).rotate(90, expand=True)
     np.testing.assert_array_equal(np.asarray(Image.open(result["image_path"])), np.asarray(original))
     assert result["remaining_pixel_count"] == int(expected.sum())
     assert result["generated_pixels_present"] is False
+    assert result["edge_feather_pixels"] == 1
     assert _sha256_file(Path(frame["source_image_path"])) == frame["source_image_digest"]
 
 

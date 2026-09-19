@@ -109,6 +109,27 @@ def test_reference_multipart_keeps_mask_on_first_image():
     assert body.index(b"FIRST") < body.index(b"REFERENCE") < body.index(b"MASK")
 
 
+def test_edit_feathers_background_margin_but_preserves_outside_and_replaces_core(tmp_path, monkeypatch):
+    frames, admission = _inputs(tmp_path)
+    for frame in frames:
+        frame["edge_feather_pixels"] = 2
+    _, _, digest = completion._validated_backend(completion.REGISTRY_PATH, backend_id=completion.BACKEND_ID)
+    admission["allocation_binding_digest"] = canonical_digest(completion.completion_binding(
+        frames, task_digest="task", backend_digest=digest))
+    def edit(**kwargs):
+        stream = BytesIO()
+        Image.new("RGB", kwargs["expected_size"], "blue").save(stream, format="PNG")
+        return {"succeeded": True, "generated": stream.getvalue(),
+                "usage": _normalized_usage({"output_tokens_details": {"image_tokens": 100}})}
+    monkeypatch.setattr(completion, "_execute_frame_request", edit)
+    outputs = completion.complete_background_images(frames=frames, task_digest="task", output_root=tmp_path / "edits",
+        admission=admission, admission_grant=_grant(admission), token="test")
+    pixels = np.asarray(Image.open(outputs[0]["image_path"]))
+    np.testing.assert_array_equal(pixels[5, 3], [128, 0, 128])
+    np.testing.assert_array_equal(pixels[7, 4], [0, 0, 255])
+    np.testing.assert_array_equal(pixels[4, 3], [255, 0, 0])
+
+
 def test_admission_dictionary_cannot_authorize_image_spend(tmp_path, monkeypatch):
     frames, admission = _inputs(tmp_path)
     monkeypatch.setattr(completion, "_execute_frame_request", lambda **_: pytest.fail("must not spend"))

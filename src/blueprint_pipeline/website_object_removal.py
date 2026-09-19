@@ -38,9 +38,12 @@ def prepare_object_removal_frames(*, frames: Sequence[Mapping[str, Any]], task_m
                 if target.get("source_track") and source_mask.shape != mask.shape:
                     raise ValueError("website_object_removal_source_mask_mismatch")
                 mask |= np.asarray(Image.fromarray(source_mask).resize(original.size, Image.Resampling.NEAREST))
-        # A small source-pixel margin covers the segmented object's boundary.
+        # Cover motion-blurred object edges and leave a narrow background-only
+        # transition for compositing. Scale the margin with the source resolution.
+        edge_margin = max(2, round(min(original.size) * 0.01))
+        feather_pixels = max(1, round(min(original.size) * 0.005))
         if mask.any():
-            mask = binary_dilation(mask, iterations=2)
+            mask = binary_dilation(mask, iterations=edge_margin + feather_pixels)
         image_path, mask_path = output_root / f"{index:06d}.png", output_root / f"{index:06d}.mask.png"
         original.save(image_path)
         Image.fromarray((mask * 255).astype(np.uint8)).save(mask_path)
@@ -49,6 +52,7 @@ def prepare_object_removal_frames(*, frames: Sequence[Mapping[str, Any]], task_m
                          "original_image_path": str(image_path), "original_image_digest": digest,
                          "original_source_digest": frame["source_image_digest"],
                          "remaining_mask_path": str(mask_path), "remaining_mask_digest": _sha256_file(mask_path),
+                         "edge_feather_pixels": feather_pixels,
                          "remaining_pixel_count": int(mask.sum()), "generated_pixels_present": False,
                          "metric_measurement_proven": False})
     return prepared
