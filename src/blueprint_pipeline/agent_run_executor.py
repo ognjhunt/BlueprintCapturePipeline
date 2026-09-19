@@ -402,7 +402,7 @@ def poll_once(
             summary["pending"] += 1
             continue
         observed_state = str(observed.get("state") or "")
-        if observed.get("money_resolved") is True or observed_state not in {"REQUESTED", "RUNNING"}:
+        if observed.get("money_resolved") is True or observed_state != "requested":
             journal["state"] = "claim_rejected"
             journal["rejection"] = "server_run_not_executable"
             _write_json_atomic(journal_path, journal)

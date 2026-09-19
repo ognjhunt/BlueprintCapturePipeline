@@ -82,7 +82,7 @@ class FakeClient:
         return {"pipeline_run_id": pipeline_run_id}
 
     def get_run(self, run_id: str) -> dict[str, Any]:
-        return {"run_id": run_id, "state": "REQUESTED", "money_resolved": False, "dispatch": None}
+        return {"run_id": run_id, "state": "requested", "money_resolved": False, "dispatch": None}
 
     def report_blocked(self, _row: Any, _pipeline_run_id: str, reason: str) -> None:
         self.blocked.append(reason)
@@ -202,7 +202,7 @@ def test_restart_reconciles_committed_claim_before_staging(tmp_path: Path) -> No
     owner = "agent-attempt-restart"
     client.get_run = lambda _run_id: {
         "run_id": "run-1",
-        "state": "RUNNING",
+        "state": "requested",
         "money_resolved": False,
         "dispatch": {"pipeline_run_id": owner},
     }
@@ -235,7 +235,7 @@ def test_restart_preserves_preflight_release_disposition_after_claim(tmp_path: P
     owner = "agent-attempt-blocked"
     client = FakeClient([])
     client.get_run = lambda _run_id: {
-        "run_id": "run-1", "state": "RUNNING", "money_resolved": False,
+        "run_id": "run-1", "state": "requested", "money_resolved": False,
         "dispatch": {"pipeline_run_id": owner},
     }
     journal_dir = tmp_path / "journal"
@@ -259,7 +259,7 @@ def test_restart_does_not_stage_money_resolved_run(tmp_path: Path) -> None:
     owner = "agent-attempt-resolved"
     client = FakeClient([])
     client.get_run = lambda _run_id: {
-        "run_id": "run-1", "state": "COMPLETED", "money_resolved": True,
+        "run_id": "run-1", "state": "completed", "money_resolved": True,
         "dispatch": {"pipeline_run_id": owner},
     }
     journal_dir = tmp_path / "journal"
@@ -280,7 +280,7 @@ def test_restart_records_same_owner_lease_409_without_staging(tmp_path: Path) ->
     owner = "agent-attempt-expired"
     client = FakeClient([])
     client.get_run = lambda _run_id: {
-        "run_id": "run-1", "state": "RUNNING", "money_resolved": False,
+        "run_id": "run-1", "state": "requested", "money_resolved": False,
         "dispatch": {"pipeline_run_id": owner},
     }
     client.claim = lambda *_args: (_ for _ in ()).throw(
