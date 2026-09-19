@@ -4870,6 +4870,7 @@ def run_qualification_pipeline(
             "clean_plate_video_uri": clean_plate.get("clean_plate_video_uri"),
             "stage_manifest_uri": clean_plate.get("stage_manifest_uri"),
             "source_geometry": clean_plate.get("source_geometry"),
+            "prepared_views": clean_plate.get("prepared_views"),
         }
         descriptor_payload["metadata"] = metadata_payload
         write_json(descriptor_path, descriptor_payload)
@@ -5274,7 +5275,7 @@ def run_qualification_pipeline(
         preview_provider_name = str(os.getenv("BLUEPRINT_PREVIEW_PROVIDER") or "world_labs").strip()
         requested_outputs = set(descriptor.requested_outputs or [])
         preview_requested = "preview_simulation" in requested_outputs or "preview" in requested_outputs
-        preview_input_ready = bool(worldlabs_input.get("output_video_uri")) and str(worldlabs_input.get("status") or "").strip().lower() == "ready"
+        preview_input_ready = bool(worldlabs_input.get("output_video_uri") or worldlabs_input.get("prepared_views")) and str(worldlabs_input.get("status") or "").strip().lower() == "ready"
         provider_run = (
             run_preview_provider(
                 provider_name=preview_provider_name,

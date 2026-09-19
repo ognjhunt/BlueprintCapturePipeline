@@ -169,6 +169,53 @@ def test_website_preparation_preserves_original_geometry_without_requiring_measu
         assert result["blockers"] == []
 
 
+def test_website_stage_runs_geometry_masks_and_recovery_before_image_handoff(tmp_path, monkeypatch):
+    capture_root = _make_capture(tmp_path)
+    source = capture_root / "raw/walkthrough.mp4"
+    order = []
+    plan = build_removal_plan(targets=[{
+        "target_id": "box", "semantic_label": "blue box", "target_class": "movable_object",
+        "target_role": "task_object", "task_effect": "manipulated", "disposition": "remove",
+        "rebuild_intent": "rebuild_and_compose", "spatial_evidence": [], "confidence": 0.9,
+    }], status="completed", model="test", processing="agentic")
+    plan["task_context_sha256"] = "task-digest"
+    geometry = {"status": "estimated", "digest": "geometry-digest", "frames": [{"frame_id": "f0"}, {"frame_id": "f1"}]}
+    masks = {"targets": [{"track": {"observations": [{"source_frame_id": "f0"}, {"source_frame_id": "f1"}]}}]}
+
+    def analyze(**kwargs):
+        order.append("analysis")
+        assert kwargs["video_path"] == source
+        return plan
+
+    def estimate(**kwargs):
+        order.append("geometry")
+        return geometry
+
+    def track(**kwargs):
+        order.append("masks")
+        assert kwargs["source_geometry"] == geometry
+        return masks
+
+    def recover(**kwargs):
+        order.append("recovery")
+        assert kwargs["task_masks"] == masks
+        return [{"frame_id": frame["frame_id"], "remaining_pixel_count": 0, "recovered_pixel_count": 2}
+                for frame in geometry["frames"]]
+
+    monkeypatch.setattr(_ANALYSIS_ATTR, analyze)
+    monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.run_website_scene_geometry", estimate)
+    monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.run_website_task_masks", track)
+    monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.recover_observed_background", recover)
+    result = run_clean_plate_stage(capture_root=capture_root, privacy_processing=_SAFE_PRIVACY,
+                                   policy=CleanPlatePolicy(enabled=True), website_source_video=source)
+    assert order == ["analysis", "geometry", "masks", "recovery"]
+    assert result["status"] == "objects_removed"
+    assert len(result["prepared_views"]["frames"]) == 2
+    forwarded = apply_clean_plate_to_reconstruction_input({"output_video_uri": "gs://raw.mov"}, result, required=True)
+    assert forwarded["output_video_uri"] is None
+    assert forwarded["prepared_views"] == result["prepared_views"]
+
+
 # --------------------------------------------------------------------------- #
 # Fail-closed analysis (no paid call)
 # --------------------------------------------------------------------------- #

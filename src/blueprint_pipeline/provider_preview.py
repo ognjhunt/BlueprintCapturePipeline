@@ -669,6 +669,13 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
         provider_adapter_input: Mapping[str, Any] | None = None,
     ) -> Dict[str, Any]:
         started_at = time.time()
+        if (descriptor.get("metadata") or {}).get("capture_entry_source") == "browser_self_capture":
+            from .website_worldlabs import submit_website_prepared_views
+
+            return submit_website_prepared_views(
+                descriptor=descriptor, capture_root=capture_root,
+                api_request=_worldlabs_api_request, upload=_presigned_upload,
+            )
         request_manifest = self._build_request_manifest(
             descriptor=descriptor,
             capture_root=capture_root,

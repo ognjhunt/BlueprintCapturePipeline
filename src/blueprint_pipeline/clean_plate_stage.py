@@ -55,8 +55,10 @@ from .common import (
     write_json,
 )
 from .local_capture import resolve_local_capture_context
+from .decision_evidence_contracts import canonical_digest
 from .website_scene_geometry import run_website_scene_geometry
 from .website_task_masks import run_website_task_masks
+from .website_background_recovery import recover_observed_background
 
 FLAG_ENV = "BLUEPRINT_CLEAN_PLATE_ENABLED"
 ADP_ITEM_ENV = "BLUEPRINT_CLEAN_PLATE_ADP_ITEM"
@@ -178,13 +180,17 @@ def apply_clean_plate_to_reconstruction_input(
         and clean_plate.get("privacy_verified") is True
         and not clean_plate.get("blockers")
     )
-    if status == "objects_removed" and not clean_plate.get("clean_plate_video_uri"):
+    views = clean_plate.get("prepared_views")
+    image_input_ready = isinstance(views, Mapping) and views.get("status") == "ready"
+    if status == "objects_removed" and not clean_plate.get("clean_plate_video_uri") and not image_input_ready:
         passed = False
     if not passed:
         return {**result, "status": "blocked", "output_video_uri": None,
                 "reason": clean_plate.get("reason") or "task_scene_preparation_required",
                 "clean_plate_blockers": list(clean_plate.get("blockers") or [])}
-    if status == "objects_removed":
+    if image_input_ready:
+        result.update(status="ready", output_video_uri=None, prepared_views=dict(views), clean_plate_applied=True)
+    elif status == "objects_removed":
         result.update(output_video_uri=clean_plate["clean_plate_video_uri"], clean_plate_applied=True)
     return result
 
@@ -326,6 +332,8 @@ def run_clean_plate_stage(
     reason: Optional[str] = None
     source_geometry: Optional[Dict[str, Any]] = None
     task_masks: Optional[Dict[str, Any]] = None
+    recovered_views: Optional[list[Dict[str, Any]]] = None
+    prepared_views: Optional[Dict[str, Any]] = None
 
     if privacy_status == "failed_closed":
         # Fail safe: never proceed on a capture whose privacy pipeline failed.
@@ -342,7 +350,7 @@ def run_clean_plate_stage(
         input_video_path = None
     else:
         input_video_path = _resolve_input_video(ctx.pipeline_root, ctx.capture_root)
-        plan = analyze_removal_targets(video_path=input_video_path, task_context=task_context)
+        plan = analyze_removal_targets(video_path=website_source_video or input_video_path, task_context=task_context)
         plan_errors = validate_removal_plan(plan)
         if plan_errors:
             blockers.extend(plan_errors)
@@ -389,6 +397,41 @@ def run_clean_plate_stage(
             reason = "website_task_masks_unavailable"
             blockers.append(str(exc) if isinstance(exc, ValueError) else type(exc).__name__)
 
+    if task_masks is not None and source_geometry is not None and not blockers:
+        try:
+            recovered_views = recover_observed_background(
+                frames=source_geometry["frames"], task_masks=task_masks,
+                output_root=clean_plate_root / "recovered_views",
+            )
+        except Exception as exc:
+            status, mode = "blocked", "background_recovery_blocked"
+            reason = "website_background_recovery_unavailable"
+            blockers.append(str(exc) if isinstance(exc, ValueError) else type(exc).__name__)
+
+    if recovered_views is not None and not blockers:
+        if int(plan.get("person_target_count") or 0) > 0:
+            status, mode, reason = "blocked", "website_privacy_required", "original_frames_still_contain_people"
+            blockers.append(reason)
+        elif any(frame["remaining_pixel_count"] for frame in recovered_views):
+            status, mode, reason = "blocked", "website_image_edit_required", "unobserved_background_requires_image_edit"
+        else:
+            visible_ids = {observation["source_frame_id"] for target in (task_masks or {}).get("targets", [])
+                           for observation in target["track"]["observations"]}
+            relevant = [frame for frame in recovered_views if frame["frame_id"] in visible_ids]
+            if len(relevant) < 2:
+                status, mode, reason = "blocked", "task_coverage_missing", "at_least_two_task_views_required"
+                blockers.append(reason)
+            else:
+                count = min(8, len(relevant))
+                selected = [relevant[round(i * (len(relevant) - 1) / (count - 1))] for i in range(count)]
+                prepared_views = {"schema_version": "website_prepared_views.v1", "status": "ready", "frames": selected,
+                                  "task_context_sha256": plan.get("task_context_sha256"),
+                                  "source_geometry_digest": (source_geometry or {}).get("digest"),
+                                  "generated_pixels_present": False, "claim_ceiling": CLAIM_CEILING}
+                prepared_views["digest"] = canonical_digest(prepared_views, digest_field="digest")
+                status = "objects_removed" if int(plan.get("movable_removal_count") or 0) else "noop"
+                mode, reason = "prepared_images", None
+
     removal_manifest = _build_removal_manifest(plan)
 
     stage_manifest: Dict[str, Any] = {
@@ -422,6 +465,8 @@ def run_clean_plate_stage(
         "originals_retained": True,
         "source_geometry": source_geometry,
         "task_masks": task_masks,
+        "recovered_views": recovered_views,
+        "prepared_views": prepared_views,
         "removal_plan_uri": _stage_uri(ctx, REMOVAL_PLAN_FILENAME),
         "removal_manifest_uri": _stage_uri(ctx, REMOVAL_MANIFEST_FILENAME),
         "stage_manifest_uri": _stage_uri(ctx, STAGE_MANIFEST_FILENAME),
@@ -456,6 +501,8 @@ def run_clean_plate_stage(
         "privacy_verified": privacy_verified,
         "source_geometry": source_geometry,
         "task_masks": task_masks,
+        "recovered_views": recovered_views,
+        "prepared_views": prepared_views,
         "target_count": stage_manifest["target_count"],
         "movable_removal_count": stage_manifest["movable_removal_count"],
         "person_target_count": stage_manifest["person_target_count"],
