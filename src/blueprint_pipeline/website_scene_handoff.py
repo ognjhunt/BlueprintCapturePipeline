@@ -99,10 +99,18 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
                 result["runtime_inputs"]["appearance_stage_inputs_path"] = str(root / "native" / "appearance_stage_inputs.json")
                 construction = prepare_construction_stages(runtime_inputs_path=root / "native" / "runtime_inputs.json",
                                                             preparation_path=root / "preparation.json")
+                if preparation["status"] == "intake_ready":
+                    from .website_native_background import construction_rights_admission
+                    from .website_object_observations import _record
+                    rights = construction_rights_admission(preparation=preparation, task_context=context, now=now)
+                    rights_path = root / "native" / "rights_admission.json"
+                    write_json(rights_path, rights)
+                    construction["references"].append({"contract_path": "scene.rights.admission", **_record(rights_path)})
                 write_json(root / "native" / "construction_inputs.json", construction)
                 result["runtime_inputs"]["construction_inputs_path"] = str(root / "native" / "construction_inputs.json")
         except (ValueError, KeyError, TypeError, OSError, ImportError) as exc:
-            result["runtime_inputs"] = {"status": "awaiting_inputs", "blockers": [str(exc)]}
+            # Preserve finished CPU outputs when a later handoff is held.
+            result.setdefault("runtime_inputs", {}).update(status="awaiting_inputs", blockers=[str(exc)])
     except (ValueError, KeyError, TypeError, OSError) as exc:
         result.update(status="awaiting_inputs", blockers=[str(exc)])
     result["digest"] = canonical_digest(result, digest_field="digest")

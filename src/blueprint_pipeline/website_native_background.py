@@ -144,6 +144,36 @@ def prepare_construction_stages(*, runtime_inputs_path: Path, preparation_path: 
             "provider_mutation_performed": False, "claim_ceiling": "development_only"}
 
 
+def construction_rights_admission(*, preparation: Mapping[str, Any], task_context: Mapping[str, Any],
+                                 now: float) -> dict[str, Any]:
+    """Carry recorded website consent into the existing worker disclosure gate."""
+    from .task_evaluation_scene_intake import validate_request
+
+    if (preparation.get("digest") != canonical_digest(preparation, digest_field="digest")
+            or task_context.get("context_digest") != canonical_digest(task_context, digest_field="context_digest")
+            or preparation["binding"]["task_context_digest"] != task_context["context_digest"]
+            or task_context.get("confirmed") is not True
+            or task_context.get("capture_rights", {}).get("derived_scene_generation_allowed") is not True):
+        raise ValueError("website_construction_rights_context_invalid")
+    if preparation.get("status") != "intake_ready" or preparation.get("blockers"):
+        raise ValueError("website_construction_preparation_not_ready")
+    request = validate_request(preparation["intake_request"], now=now)
+    consent = request["consent"]
+    value = {"schema_version": "website_native_rights_admission.v1",
+             "preparation_digest": preparation["digest"],
+             "task_context_digest": task_context["context_digest"],
+             "capture_id": task_context["capture_id"], "scene_id": task_context["scene_id"],
+             "owner": request["owner"], "consent": consent,
+             "execution_authority": request["execution"],
+             "provider_disclosure": {"captured_frame_derivatives_allowed": True,
+                 "prepared_background_allowed": True, "raw_capture_video_allowed": False,
+                 "provider_training_allowed": False, "public_redistribution_allowed": False},
+             "physical_measurement_proven": False, "provider_mutation_performed": False,
+             "claim_ceiling": "development_only"}
+    value["digest"] = canonical_digest(value, digest_field="digest")
+    return value
+
+
 def execute_prepared_appearance(*, envelope, stage, configuration, configuration_path,
                                 dependency_results, output_root, provider_runtime_artifacts=()):
     from .task_evaluation_scene_configuration_builtin_adapters import (

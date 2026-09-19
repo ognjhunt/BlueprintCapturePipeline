@@ -102,6 +102,13 @@ def validate_website_native_inputs(*, envelope, configurations, require_render_i
     admission = json.loads(rights_path.read_text())
     disclosure = admission.get("provider_disclosure", {})
     _require(recipe.get("rights_admission_digest") == rights_row["digest"]
+             and admission.get("schema_version") == "website_native_rights_admission.v1"
+             and admission.get("digest") == canonical_digest(admission, digest_field="digest")
+             and admission.get("preparation_digest") == preparation["digest"]
+             and admission.get("task_context_digest") == preparation["binding"]["task_context_digest"]
+             and admission.get("owner") == preparation["intake_request"]["owner"]
+             and admission.get("consent") == preparation["intake_request"]["consent"]
+             and admission.get("execution_authority") == preparation["intake_request"]["execution"]
              and disclosure.get("captured_frame_derivatives_allowed") is True
              and disclosure.get("prepared_background_allowed") is True
              and disclosure.get("provider_training_allowed") is False

@@ -6,7 +6,7 @@ import pytest
 
 from blueprint_pipeline.common import write_json
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
-from blueprint_pipeline.website_native_background import prepare_construction_stages
+from blueprint_pipeline.website_native_background import prepare_construction_stages, construction_rights_admission
 from blueprint_pipeline.website_native_inputs import INPUT_STATUS, validate_website_native_inputs
 from blueprint_pipeline.website_object_observations import _record
 from blueprint_pipeline.website_scene_runtime_inputs import prepare_website_runtime_inputs
@@ -28,8 +28,8 @@ def packet(tmp_path):
     construction = prepare_construction_stages(runtime_inputs_path=tmp_path / "native/runtime_inputs.json",
                                                preparation_path=preparation_path)
     rights = tmp_path / "rights.json"
-    write_json(rights, {"provider_disclosure": {"captured_frame_derivatives_allowed": True,
-        "prepared_background_allowed": True, "provider_training_allowed": False, "public_redistribution_allowed": False}})
+    write_json(rights, construction_rights_admission(preparation=preparation,
+        task_context=args["task_context"], now=args["now"]))
     request = {"run_id": "website-development", "scene": {"website_native_inputs": {"frames": []},
                "rights": {"provider_disclosure_scope": "derived_only"}}}
     refs = construction["references"] + [
@@ -123,6 +123,26 @@ def test_capture_derivative_upload_requires_its_own_rights_admission(tmp_path):
     envelope["recipe"]["rights_admission_digest"] = row["digest"]
     with pytest.raises(ValueError, match="capture_derivative_disclosure_not_admitted"):
         validate_website_native_inputs(envelope=envelope, configurations=configs, require_render_inputs=False)
+
+
+@pytest.mark.parametrize("change", ["context", "consent", "expired", "held"])
+def test_native_rights_producer_requires_bound_current_authority(tmp_path, change):
+    args, preparation, _ = inputs(tmp_path)
+    context, now = copy.deepcopy(args["task_context"]), args["now"]
+    if change == "context":
+        context["capture_rights"]["derived_scene_generation_allowed"] = False
+        context["context_digest"] = canonical_digest(context, digest_field="context_digest")
+    elif change == "consent":
+        preparation["intake_request"]["consent"]["accepted_by"] = "another-owner"
+        preparation["digest"] = canonical_digest(preparation, digest_field="digest")
+    elif change == "expired":
+        now += 90000
+    else:
+        preparation["status"] = "needs_input"
+        preparation["blockers"] = ["task_destination_pose_required"]
+        preparation["digest"] = canonical_digest(preparation, digest_field="digest")
+    with pytest.raises(ValueError):
+        construction_rights_admission(preparation=preparation, task_context=context, now=now)
 
 
 def test_website_disclosure_cannot_claim_qualified_renders_or_raw_video_upload(tmp_path):
