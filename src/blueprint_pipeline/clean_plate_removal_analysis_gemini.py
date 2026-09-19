@@ -108,7 +108,9 @@ PROMPT_INSTRUCTION = (
     "an object with a single key 'targets' whose value is a list. Enumerate the "
     "DISTINCT targets across the whole video (do not repeat one object per frame). "
     "For each target provide: 'target_id' (stable short slug), 'semantic_label' "
-    "(short phrase), 'target_class' (exactly one of person, movable_object, "
+    "(short phrase), 'segmentation_prompt' (one short visible-appearance noun phrase for SAM; "
+    "no instructions or spatial relations; when the object type is unclear use a phrase like "
+    "'blue object' instead of guessing its type), 'target_class' (exactly one of person, movable_object, "
     "fixed_clutter), 'disposition' (remove or keep), 'rebuild_intent' "
     "(rebuild_and_compose or none), 'spatial_evidence' (a list of "
     "{timestamp_seconds, box_xywh_normalized:[x,y,w,h]} entries time-localizing the "
@@ -231,6 +233,8 @@ def _normalize_target(raw: Mapping[str, Any], index: int) -> Optional[dict[str, 
     return {
         "target_id": target_id,
         "semantic_label": _string(raw.get("semantic_label")) or target_class,
+        "segmentation_prompt": (_string(raw.get("segmentation_prompt")) or
+                                _string(raw.get("semantic_label")) or target_class)[:160],
         "target_class": target_class,
         "target_role": _string(raw.get("target_role")),
         "placement_relation": _string(raw.get("placement_relation")),

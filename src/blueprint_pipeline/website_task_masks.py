@@ -32,6 +32,27 @@ def decode_track_mask(observation: Mapping[str, Any]) -> np.ndarray:
     return mask.reshape(height, width)
 
 
+def track_at_geometry_resolution(track: Mapping[str, Any], frames: list[Mapping[str, Any]]) -> dict[str, Any]:
+    """Map upright source masks to the same uncropped grid as estimated depth."""
+    by_id = {frame["frame_id"]: frame for frame in frames}
+    observations = []
+    for observation in track["observations"]:
+        frame = by_id[observation["source_frame_id"]]
+        mask = decode_track_mask(observation)
+        resized = np.asarray(Image.fromarray(mask).resize(
+            (frame["width"], frame["height"]), Image.Resampling.NEAREST))
+        edges = np.diff(np.pad(resized.reshape(-1).astype(np.int8), (1, 1)))
+        starts, ends = np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)
+        observations.append({**observation, "width": frame["width"], "height": frame["height"],
+                             "source_mask_digest": canonical_digest(observation),
+                             "source_mask_width": observation["width"],
+                             "source_mask_height": observation["height"],
+                             "resampling": "upright_uncropped_nearest",
+                             "runs": [{"start": int(start), "length": int(end - start)}
+                                      for start, end in zip(starts, ends)]})
+    return {**track, "observations": observations}
+
+
 def select_task_track(*, target: Mapping[str, Any], tracks: list[Mapping[str, Any]],
                       frames: list[Mapping[str, Any]]) -> Mapping[str, Any]:
     """A text match alone must not remove every instance of the same object class."""
@@ -114,19 +135,28 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
     else:
         raise ValueError("website_sam31_provider_invalid")
     binding = {"geometry_digest": source_geometry["digest"], "task_targets": targets,
-               "task_context_sha256": plan["task_context_sha256"], "profile_digest": profile["profile_digest"]}
+               "task_context_sha256": plan["task_context_sha256"], "profile_digest": profile["profile_digest"],
+               "mask_input_pixels": "upright_source_v1" if provider == "meta" else "geometry_v1"}
     request_key = canonical_digest(binding)
     root = output_root.resolve() / request_key[7:23]
     root.mkdir(parents=True, exist_ok=True)
     frames = list(source_geometry["frames"])
     registry, artifacts, prompts = [], [], []
     for index, frame in enumerate(frames):
-        source = Path(frame["image_path"])
-        if _sha256_file(source) != frame["image_digest"]:
+        source = Path(frame["source_image_path"] if provider == "meta" else frame["image_path"])
+        expected_digest = frame["source_image_digest"] if provider == "meta" else frame["image_digest"]
+        if _sha256_file(source) != expected_digest:
             raise ValueError("website_sam31_source_frame_changed")
         jpeg = root / f"{index:06d}.jpg"
         with Image.open(source) as image:
-            image.convert("RGB").save(jpeg, quality=95, subsampling=0)
+            image = image.convert("RGB")
+            if provider == "meta":
+                rotation = float(frame["display_rotation_degrees"])
+                if not np.isfinite(rotation) or rotation % 90:
+                    raise ValueError("website_source_rotation_not_supported")
+                image = image.rotate(rotation, expand=True)
+            width, height = image.size
+            image.save(jpeg, quality=95, subsampling=0)
         digest = _sha256_file(jpeg)
         registry.append({"source_frame_id": frame["frame_id"], "model_frame_index": index,
                          "source_frame_digest": frame["source_image_digest"],
@@ -134,7 +164,7 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
                          "decoded_pts_seconds": frame["timestamp_seconds"],
                          "sync_map_row_digest": canonical_json_digest({"frame_id": frame["frame_id"], "pts": frame["timestamp_seconds"]}),
                          "camera_record_digest": canonical_json_digest(frame), "encoder_retained": True,
-                         "width": frame["width"], "height": frame["height"], "analysis_jpeg_digest": digest})
+                         "width": width, "height": height, "analysis_jpeg_digest": digest})
         artifacts.append({"source_frame_id": frame["frame_id"], "path": str(jpeg), "sha256": digest,
                           "size_bytes": jpeg.stat().st_size, "media_type": "image/jpeg"})
     for target in targets:
@@ -142,7 +172,7 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
         if not evidence or evidence[0].get("timestamp_seconds") is None:
             raise ValueError("task_target_spatial_anchor_missing")
         anchor = min(range(len(frames)), key=lambda i: abs(frames[i]["timestamp_seconds"] - evidence[0]["timestamp_seconds"]))
-        prompts.append({"prompt_id": target["target_id"], "text": target["semantic_label"],
+        prompts.append({"prompt_id": target["target_id"], "text": target.get("segmentation_prompt") or target["semantic_label"],
                         "output_label": target["target_id"], "anchor_frame_index": anchor})
     request = {"schema_version": RUN_REQUEST_SCHEMA_VERSION, "provider_profile": profile,
                "bindings": {"capture_digest": source_geometry["binding"]["source_video_digest"],
@@ -155,7 +185,7 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
         result = run_meta_sam31(frame_registry=registry, frame_artifacts=artifacts, prompts=prompts,
                                output_root=root, admission=meta_admission or {}, admission_grant=meta_admission_grant,
                                task_context=task_context)
-        tracks = result["tracks"]
+        tracks = [track_at_geometry_resolution(track, frames) for track in result["tracks"]]
     else:
         request_path, result_path, tracks_path = root / "request.json", root / "result.json", root / "tracks.json"
         write_json(request_path, request)

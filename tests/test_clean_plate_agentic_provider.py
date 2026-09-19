@@ -63,6 +63,15 @@ def test_static_answer_does_not_masquerade_as_agentic(tmp_path):
         invoke(tmp_path, [output('{"targets":[]}')])
 
 
+def test_visual_segmentation_prompt_survives_normalization():
+    import json
+    row = {"semantic_label": "small container beside picture", "target_class": "movable_object",
+           "segmentation_prompt": "blue object", "disposition": "remove"}
+    assert parse_removal_plan_response(json.dumps([row]))[0]["segmentation_prompt"] == "blue object"
+    del row["segmentation_prompt"]
+    assert parse_removal_plan_response(json.dumps([row]))[0]["segmentation_prompt"] == row["semantic_label"]
+
+
 def test_partial_json_not_accepted_as_completed_analysis(tmp_path):
     with pytest.raises(ValueError, match="analysis_incomplete"):
         invoke(tmp_path, [*trace(), output("{}")], finish="incomplete")

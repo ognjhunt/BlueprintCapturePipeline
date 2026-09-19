@@ -54,3 +54,49 @@ def test_masked_geometry_preserves_world_position_and_estimated_scale(tmp_path):
     geometry_path.write_bytes(b"changed geometry")
     with pytest.raises(ValueError, match="geometry_changed"):
         estimate_target_bounds(_track(), [frame])
+
+
+def test_hosted_masks_use_original_upright_pixels_and_bind_to_depth(tmp_path, monkeypatch):
+    from PIL import Image
+    from blueprint_pipeline.website_task_masks import run_website_task_masks
+
+    original = tmp_path / "original.png"
+    pixels = np.zeros((4, 8, 3), dtype=np.uint8)
+    pixels[:2, 4:] = [0, 0, 255]
+    Image.fromarray(pixels).save(original)
+    geometry_path = tmp_path / "geometry.npz"
+    np.savez_compressed(geometry_path, depth_m=np.ones((4, 2)), valid_mask=np.ones((4, 2), dtype=bool))
+    frame = {"frame_id": "frame-0", "timestamp_seconds": 0,
+             "source_image_path": str(original), "source_image_digest": _sha256_file(original),
+             "display_rotation_degrees": 90, "width": 2, "height": 4,
+             "geometry_path": str(geometry_path), "geometry_digest": _sha256_file(geometry_path),
+             "intrinsics": np.eye(3).tolist(), "world_from_camera": np.eye(4).tolist()}
+    target = {**_target(), "semantic_label": "small container beside picture", "segmentation_prompt": "blue object",
+              "task_effect": "manipulated", "disposition": "remove"}
+    calls = []
+
+    def hosted(**kwargs):
+        calls.append(kwargs)
+        assert kwargs["prompts"][0]["text"] == "blue object"
+        assert (kwargs["frame_registry"][0]["width"], kwargs["frame_registry"][0]["height"]) == (4, 8)
+        with Image.open(kwargs["frame_artifacts"][0]["path"]) as submitted:
+            assert submitted.size == (4, 8)
+            assert submitted.getpixel((0, 0))[2] > 240
+        return {"tracks": [{"track_id": "selected", "label": "task-cup", "observations": [
+            {"source_frame_id": "frame-0", "width": 4, "height": 8,
+             "runs": [{"start": y * 4, "length": 2} for y in range(4)]}]}]}
+
+    monkeypatch.setenv("BLUEPRINT_WEBSITE_SAM31_PROVIDER", "meta")
+    monkeypatch.setattr("blueprint_pipeline.website_task_masks.run_meta_sam31", hosted)
+    kwargs = dict(plan={"targets": [target], "task_context_sha256": "task"},
+                  source_geometry={"digest": "geometry", "frames": [frame],
+                                   "binding": {"source_video_digest": "video"}}, output_root=tmp_path / "masks")
+    result = run_website_task_masks(**kwargs)
+    observation = result["targets"][0]["track"]["observations"][0]
+    np.testing.assert_array_equal(decode_track_mask(observation), [[True, False], [True, False], [False, False], [False, False]])
+    assert observation["source_mask_width"] == 4
+    assert result["targets"][0]["estimated_visible_bounds"]["metric_measurement_proven"] is False
+    original.write_bytes(b"changed source")
+    with pytest.raises(ValueError, match="source_frame_changed"):
+        run_website_task_masks(**kwargs)
+    assert len(calls) == 1
