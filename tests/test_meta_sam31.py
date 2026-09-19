@@ -82,7 +82,7 @@ def test_exact_request_is_retained_and_replay_does_not_charge_again(tmp_path, mo
         calls.append(request)
         payload = json.loads(request.data)
         assert request.full_url == sam.ENDPOINT
-        assert payload["input"][0]["content"][1]["video_url"].startswith("data:video/mp4;base64,")
+        assert payload["input"][0]["content"][1]["image_url"].startswith("data:image/png;base64,")
         return BytesIO(json.dumps(response()).encode())
     args = inputs(tmp_path)
     first = sam.run_meta_sam31(**args, opener=opener)

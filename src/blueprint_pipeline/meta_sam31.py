@@ -27,14 +27,14 @@ ENDPOINT = "https://api.meta.ai/v1/responses"
 PRICE_PER_FRAME_USD = 0.0002
 PROFILE = {"provider": "meta_model_api", "model": MODEL, "mask_encoding": "one_bit",
            "parser": "meta-sam-parser==0.0.5", "price_per_frame_usd": PRICE_PER_FRAME_USD,
-           "minimum_reserved_frames": 50}
+           "minimum_reserved_frames": 50, "single_frame_transport": "input_image", "price_per_image_usd": 0.0025}
 
 
 def meta_api_key() -> str:
     value = os.getenv("META_MODEL_API_KEY", "").strip()
-    path = Path.home() / ".blueprint-secrets/meta_model_api_key"
-    if not value and path.is_file():
-        value = path.read_text().strip()
+    if not value:
+        from .gpu_render_providers import _read_secret
+        value = (_read_secret("meta_model_api_key") or "").strip()
     if not value or any(c.isspace() for c in value):
         raise ValueError("meta_model_api_key_missing_or_invalid")
     return value
@@ -141,9 +141,11 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
     require_paid_resource_admission_grant(admission_grant, resource_class="evaluator_api",
                                           allocation_binding_digest=digest, require_allocation_binding=True)
     budget = admission.get("maximum_cost_usd")
+    image_request = len(frame_registry) == 1
+    unit_cost = 0.0025 if image_request else max(50, len(frame_registry)) * PRICE_PER_FRAME_USD
     if (admission.get("allocation_binding_digest") != digest or admission.get("external_disclosure_allowed") is not True
             or isinstance(budget, bool) or not isinstance(budget, (int, float)) or not math.isfinite(budget)
-            or budget < max(50, len(frame_registry)) * len(prompts) * PRICE_PER_FRAME_USD):
+            or budget < unit_cost * len(prompts)):
         raise ValueError("meta_sam_authorization_missing")
     if not prompts or len({p["prompt_id"] for p in prompts}) != len(prompts):
         raise ValueError("meta_sam_prompts_invalid")
@@ -155,6 +157,8 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
     root.mkdir(parents=True, exist_ok=True)
     write_json(root / "binding.json", binding)
     clip = encode_clip(registry=frame_registry, artifacts=frame_artifacts, root=root)
+    media = ({"type": "input_image", "image_url": "data:image/png;base64," + base64.b64encode((root / "frame-000000.png").read_bytes()).decode()}
+             if image_request else {"type": "input_video", "video_url": "data:video/mp4;base64," + base64.b64encode(clip.read_bytes()).decode()})
     tracks, receipts = [], []
     for index, prompt in enumerate(prompts):
         result_path, intent_path = root / f"response-{index}.json", root / f"intent-{index}.json"
@@ -169,7 +173,7 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
             payload = {"model": MODEL, "stream": False, "metadata": {"mask_encoding": "one_bit"}, "input": [
                 {"type": "message", "role": "user", "content": [
                     {"type": "input_text", "text": prompt["text"]},
-                    {"type": "input_video", "video_url": "data:video/mp4;base64," + base64.b64encode(clip.read_bytes()).decode()}]}]}
+                    media]}]}
             request = Request(ENDPOINT, data=json.dumps(payload).encode(), method="POST",
                               headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
             with intent_path.open("x") as file:
@@ -187,14 +191,14 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
                 write_json(root / f"failure-{index}.json", {"http_status": exc.code, "binding_digest": digest})
                 raise ValueError(f"meta_sam_http_{exc.code}") from None
             receipt = {"binding_digest": digest, "clip_digest": _sha256_file(clip), "response": response,
-                       "estimated_cost_usd": len(frame_registry) * PRICE_PER_FRAME_USD}
+                       "reserved_cost_usd": unit_cost}
             temporary = result_path.with_suffix(".tmp")
             write_json(temporary, receipt)
             os.replace(temporary, result_path)
         processed = (response.get("usage") or {}).get("video_frames_processed")
-        if isinstance(processed, bool) or not isinstance(processed, int) or processed < 0:
+        if not image_request and (isinstance(processed, bool) or not isinstance(processed, int) or processed < 0):
             raise ValueError("meta_sam_usage_missing")
-        if processed > max(50, len(frame_registry)):
+        if not image_request and processed > max(50, len(frame_registry)):
             raise ValueError("meta_sam_usage_exceeds_reservation")
         tracks.extend(parse_tracks(response, prompt=prompt, registry=frame_registry))
         receipts.append({"path": str(result_path), "sha256": _sha256_file(result_path)})
