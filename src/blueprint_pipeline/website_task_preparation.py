@@ -30,6 +30,7 @@ from .decision_evidence_contracts import canonical_digest
 from .external_scene_frame_registration import _axis_rotations, _sample, _trimmed_rmse
 from .local_reconstruction_adapters import _sha256_file
 from .website_task_masks import decode_track_mask
+from .website_support_geometry import support_under
 
 SCHEMA_VERSION = "website_scene_preparation.v1"
 CLAIM_CEILING = "development_only"
@@ -120,28 +121,6 @@ def _runtime_bounds(bounds: Mapping[str, Any], matrix: np.ndarray) -> tuple[list
     corners = np.array([[x, y, z] for x in (low[0], high[0]) for y in (low[1], high[1]) for z in (low[2], high[2])])
     moved = corners @ matrix[:3, :3].T + matrix[:3, 3]
     return moved.min(axis=0).tolist(), moved.max(axis=0).tolist()
-
-
-def _support_under(vertices: np.ndarray, lower: Sequence[float], upper: Sequence[float], *, up: int,
-                   meters_per_unit: float) -> dict[str, Any] | None:
-    lower, upper = np.asarray(lower, dtype=np.float64), np.asarray(upper, dtype=np.float64)
-    horizontal = [axis for axis in range(3) if axis != up]
-    margin = 0.05 / meters_per_unit
-    inside = np.ones(len(vertices), dtype=bool)
-    for axis in horizontal:
-        inside &= (vertices[:, axis] >= lower[axis] - margin) & (vertices[:, axis] <= upper[axis] + margin)
-    below = inside & (vertices[:, up] <= lower[up] + 0.03 / meters_per_unit)
-    if not below.any():
-        return None
-    top = float(vertices[below, up].max())
-    extent = upper - lower
-    support_min, support_max = lower.copy(), upper.copy()
-    for axis in horizontal:
-        support_min[axis] -= extent[axis]
-        support_max[axis] += extent[axis]
-    support_min[up], support_max[up] = top - 0.05 / meters_per_unit, top
-    return {"top_runtime_units": top, "aabb_min": support_min.tolist(), "aabb_max": support_max.tolist(),
-            "basis": "collider_vertices_under_estimated_subject_footprint"}
 
 
 def screen_physics(dimensions_m: Sequence[float]) -> dict[str, Any]:
@@ -245,8 +224,9 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         raise ValueError("website_single_manipulated_subject_required")
     subject_entry, subject_target = removed[0], targets[removed[0]["target_id"]]
     subject_min, subject_max = _runtime_bounds(subject_target["estimated_visible_bounds"], matrix)
-    vertices = _mesh_vertices(Path(base_scene["collision_mesh_path"]))
-    support = _support_under(vertices, subject_min, subject_max, up=up, meters_per_unit=mpu)
+    import trimesh
+    collider = trimesh.load(base_scene["collision_mesh_path"], force="mesh", process=False)
+    support = support_under(collider, subject_min, subject_max, up=up, meters_per_unit=mpu)
     snap = 0.0
     if support is None:
         blockers.append("support_surface_not_found_under_subject")
@@ -265,15 +245,35 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         position = [(low[i] + high[i]) / 2 for i in range(3)]
         position[up] = high[up]
         relation = destination_rows[0].get("placement_relation")
+        contact_bound = False
         if relation not in {"on", "inside"}:
             blockers.append("task_destination_relation_required")
         elif relation == "inside":
             blockers.append("task_destination_interior_geometry_required")
+        elif support is not None:
+            # Test the subject's footprint at the destination against real
+            # triangles, not the destination mask's enclosing box.
+            destination_min, destination_max = np.asarray(subject_min).copy(), np.asarray(subject_max).copy()
+            for axis in range(3):
+                if axis != up:
+                    half_width = (subject_max[axis] - subject_min[axis]) / 2
+                    destination_min[axis], destination_max[axis] = position[axis] - half_width, position[axis] + half_width
+            destination_min[up] = position[up]
+            destination_max[up] = position[up] + subject_max[up] - subject_min[up]
+            destination_support = support_under(collider, destination_min, destination_max, up=up, meters_per_unit=mpu)
+            if destination_support is None:
+                blockers.append("task_destination_surface_contact_required")
+            elif destination_support["face_indices"] != support["face_indices"]:
+                blockers.append("task_distinct_destination_surface_binding_required")
+            else:
+                position[up] = destination_support["top_runtime_units"]
+                contact_bound = True
         destination = {"relation": relation, "visible_label": destination_rows[0].get("semantic_label") or destination_rows[0]["target_id"],
                        **({"mode": "existing_support_surface"} if relation == "on" else {}),
                        "position_world_m": (runtime_to_sim @ [*position, 1.0])[:3].tolist(),
                        "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
-                       "basis": "registered_estimated_visible_bounds"}
+                       "basis": "registered_estimated_visible_bounds_and_collider_contact" if contact_bound
+                       else "registered_estimated_visible_bounds"}
     else:
         blockers.append("task_destination_pose_required")
     track = subject_target["track"]

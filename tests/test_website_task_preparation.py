@@ -50,9 +50,24 @@ def _source_geometry(root: Path):
 
 
 def _base_scene(root: Path, source_geometry, *, symmetric=False):
-    points = np.random.default_rng(3).uniform(-1, 1, (3000, 3)) if symmetric else preparation._source_points(source_geometry)
+    # A real connected triangle grid: arbitrary point triplets are not a
+    # support surface even when their enclosing box resembles one.
+    points, faces = [], []
+    for frame in source_geometry["frames"]:
+        yy, xx = np.indices((HEIGHT, WIDTH))
+        pixels = np.stack([xx, yy, np.ones_like(xx)], axis=-1).reshape(-1, 3)
+        camera = (pixels @ np.linalg.inv(frame["intrinsics"]).T) * _depth().reshape(-1, 1)
+        pose = np.array(frame["world_from_camera"])
+        offset = len(points) * WIDTH * HEIGHT
+        points.append(camera @ pose[:3, :3].T + pose[:3, 3])
+        for y in range(HEIGHT - 1):
+            for x in range(WIDTH - 1):
+                a = offset + y * WIDTH + x
+                faces.extend([[a, a + 1, a + WIDTH], [a + 1, a + WIDTH + 1, a + WIDTH]])
+    points = np.concatenate(points)
+    if symmetric:
+        points = np.random.default_rng(3).uniform(-1, 1, points.shape)
     vertices = (points @ RUNTIME_ROTATION.T) * RUNTIME_SCALE + RUNTIME_TRANSLATION
-    faces = np.arange(len(vertices) - len(vertices) % 3).reshape(-1, 3)
     mesh_path = root / "collider.glb"
     trimesh.Trimesh(vertices=vertices, faces=faces, process=False).export(mesh_path)
     splat = root / "world.ply"
@@ -131,7 +146,7 @@ def test_registered_estimates_compile_into_an_intake_ready_request(tmp_path):
     assert subject["aabb_min_xyz"][2] == pytest.approx(3.5, abs=1e-6)
     assert subject["aabb_max_xyz"][2] == pytest.approx(3.6, abs=1e-6)
     assert value["support"]["top_runtime_units"] == pytest.approx(1.75, abs=1e-6)
-    assert value["destination"]["position_world_m"][2] == pytest.approx(3.52, abs=1e-6)
+    assert value["destination"]["position_world_m"][2] == pytest.approx(3.5, abs=1e-6)
     assert value["physics"]["basis"] == "estimated"
     assert value["physics"]["dimensions_m"] == pytest.approx([0.05, 0.1, 0.1], abs=1e-6)
     assert value["physics"]["sensitivity"] == "robust_within_range"
@@ -255,3 +270,23 @@ def test_container_destination_is_not_silently_changed_to_top_surface(tmp_path):
     assert "mode" not in result["destination"]
     assert result["status"] == "needs_input"
     assert "task_destination_interior_geometry_required" in result["blockers"]
+
+
+def test_destination_outside_reconstructed_surface_cannot_reach_intake(tmp_path):
+    args = _arguments(tmp_path)
+    args["task_masks"]["targets"][1]["estimated_visible_bounds"] = _bounds([100, .48, 1.4], [101, .5, 1.6])
+    args["task_masks"]["digest"] = canonical_digest(args["task_masks"], digest_field="digest")
+    result = preparation.compile_website_scene_preparation(**args)
+    assert result["status"] == "needs_input"
+    assert "task_destination_surface_contact_required" in result["blockers"]
+    assert result["destination"]["basis"] == "registered_estimated_visible_bounds"
+
+
+def test_source_far_above_support_is_not_snapped_down_to_floor(tmp_path):
+    args = _arguments(tmp_path)
+    args["task_masks"]["targets"][0]["estimated_visible_bounds"] = _bounds([.05, -.6, 1.45], [.1, -.5, 1.55])
+    args["task_masks"]["digest"] = canonical_digest(args["task_masks"], digest_field="digest")
+    result = preparation.compile_website_scene_preparation(**args)
+    assert result["status"] == "needs_input"
+    assert "support_surface_not_found_under_subject" in result["blockers"]
+    assert result["compose_back"]["pose_world"]["support_snap_runtime_units"] == 0
