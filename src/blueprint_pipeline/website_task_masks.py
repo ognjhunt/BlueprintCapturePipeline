@@ -160,7 +160,8 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
     selected = []
     for target in targets:
         track = select_task_track(target=target, tracks=tracks, frames=frames)
-        selected.append({"target_id": target["target_id"], "task_effect": target["task_effect"],
+        selected.append({"target_id": target["target_id"], "target_role": target.get("target_role"),
+                         "semantic_label": target["semantic_label"], "task_effect": target["task_effect"],
                          "disposition": target["disposition"], "track": track,
                          "estimated_visible_bounds": estimate_target_bounds(track, frames)})
     manifest = {"schema_version": "website_task_masks.v1", "status": "completed", "binding": binding,

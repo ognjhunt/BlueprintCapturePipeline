@@ -921,7 +921,7 @@ def test_website_preparation_skips_legacy_privacy_video_and_geometry(tmp_path, m
         capture_source="unknown", capture_modality="video_only", requested_outputs=["preview_simulation"],
         metadata={"capture_entry_source": "browser_self_capture", "capture_rights": {"derived_scene_generation_allowed": True}}))
     _patch_pipeline_side_effects(monkeypatch)
-    monkeypatch.setattr(q, "load_current_website_task_context", lambda **_: {"description": "Pick the box", "confirmed": True})
+    monkeypatch.setattr(q, "load_current_website_task_context", lambda **_: {"description": "Pick the box", "confirmed": True, "capture_rights": {"derived_scene_generation_allowed": True}})
     for name in ("run_privacy_postprocess", "infer_capture_fidelity_review", "_prepare_worldlabs_input_video", "build_geometry_stage_contract"):
         monkeypatch.setattr(q, name, lambda **_: pytest.fail("website must not enter a legacy media stage"))
     calls = []

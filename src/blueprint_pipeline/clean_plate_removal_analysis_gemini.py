@@ -75,7 +75,8 @@ PROMPT_INSTRUCTION = (
     "Use the confirmed task context to decide what must be independent in the "
     "simulation. Do not remove everything that could conceivably move. Keep fixed "
     "supports, tables, obstacles and background unless the task itself moves them. "
-    "Mark each target_role as task_object, support, obstacle, background or person. "
+    "Mark each target_role as task_object, support, destination, obstacle, background or person. "
+    "Identify the visible placement destination as destination with static_contact; keep it in the scene. "
     "Movability alone NEVER warrants removal. A chair, tote or tool unrelated to "
     "this task stays even if physically movable. The same chair becomes a task "
     "object only when the confirmed task requires moving it. Keep a table used "
@@ -273,7 +274,7 @@ def parse_removal_plan_response(
             if not isinstance(raw, Mapping):
                 raise ValueError("removal_analysis_target_invalid")
             role = raw.get("target_role")
-            if role not in {"task_object", "support", "obstacle", "background", "person"}:
+            if role not in {"task_object", "support", "destination", "obstacle", "background", "person"}:
                 raise ValueError("removal_analysis_target_role_missing")
             if raw.get("disposition") not in DISPOSITIONS:
                 raise ValueError("removal_analysis_disposition_invalid")
@@ -286,7 +287,7 @@ def parse_removal_plan_response(
                 raise ValueError("removal_analysis_task_reason_required")
             expected = {
                 "manipulated": ("task_object", "remove", "rebuild_and_compose"),
-                "static_contact": ("support", "keep", "none"),
+                "static_contact": ("destination" if role == "destination" else "support", "keep", "none"),
                 "static_obstacle": ("obstacle", "keep", "none"),
                 "unrelated": ("background", "keep", "none"),
                 "privacy": ("person", "remove", "none"),
@@ -437,6 +438,8 @@ def _provider_error_blocker(exc: Exception) -> str:
     for code in (
         "gemini_clean_plate_agentic_processing_required",
         "gemini_clean_plate_agentic_trace_missing",
+        "gemini_clean_plate_analysis_incomplete_max_tokens",
+        "gemini_clean_plate_analysis_incomplete_safety",
         "gemini_clean_plate_analysis_incomplete",
     ):
         if code in text:
@@ -481,11 +484,14 @@ def _invoke_agentic_video(
     response = client.models.generate_content(
         model=model,
         contents=[part, prompt],
-        config=types.GenerateContentConfig(response_mime_type="application/json", max_output_tokens=8192),
+        config=types.GenerateContentConfig(response_mime_type="application/json", max_output_tokens=16384,
+                                           thinking_config=types.ThinkingConfig(thinking_level="LOW")),
     )
     candidates = getattr(response, "candidates", None) or []
-    if not candidates or getattr(candidates[0], "finish_reason", None) != "STOP":
-        raise ValueError("gemini_clean_plate_analysis_incomplete")
+    finish = getattr(candidates[0], "finish_reason", None) if candidates else None
+    if finish != "STOP":
+        suffix = "_max_tokens" if finish == "MAX_TOKENS" else "_safety" if finish == "SAFETY" else ""
+        raise ValueError("gemini_clean_plate_analysis_incomplete" + suffix)
     parts = getattr(getattr(candidates[0], "content", None), "parts", None) or []
     calls = [part for part in parts if getattr(getattr(part, "tool_call", None), "tool_type", None) == "MEDIA_PROCESSING"]
     replies = [part for part in parts if getattr(getattr(part, "tool_response", None), "tool_type", None) == "MEDIA_PROCESSING"]

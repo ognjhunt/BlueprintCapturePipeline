@@ -4424,6 +4424,7 @@ def run_qualification_pipeline(
             descriptor = CaptureDescriptor.from_dict({
                 **descriptor.to_dict(),
                 "metadata": {**descriptor.metadata, "site_task_context": task_context,
+                             "capture_rights": dict(task_context.get("capture_rights") or {}),
                              "task_statement": task_context["description"]},
             })
         downstream_requested_lanes = _requested_downstream_lanes(

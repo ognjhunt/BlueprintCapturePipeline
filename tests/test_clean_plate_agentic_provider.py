@@ -20,7 +20,7 @@ def invoke(tmp_path, parts, finish="STOP", processing="agentic"):
         return NS(candidates=[NS(finish_reason=finish, content=NS(parts=parts))])
 
     genai = NS(Client=lambda **_: NS(models=NS(generate_content=generate)))
-    types = NS(Part=NS, Blob=NS, GenerateContentConfig=NS, HttpOptions=NS, HttpRetryOptions=NS)
+    types = NS(Part=NS, Blob=NS, GenerateContentConfig=NS, HttpOptions=NS, HttpRetryOptions=NS, ThinkingConfig=NS)
     result = _invoke_agentic_video(api_key="fake", model=DEFAULT_MODEL,
                                   processing=processing, video_path=path,
                                   genai=genai, types=types)
@@ -40,6 +40,7 @@ def test_requests_agentic_38_and_filters_thoughts(tmp_path):
     assert result["video_processing"]["media_tool_responses"] == 1
     assert len(calls) == 1
     assert calls[0]["model"] == "gemini-3.8-flash"
+    assert calls[0]["config"].thinking_config.thinking_level == "LOW"
     part = calls[0]["contents"][0]
     assert part.media_processing == "AGENTIC"
     assert part.inline_data.data == b"source video"
@@ -143,3 +144,15 @@ def test_unrelated_movable_object_cannot_be_silently_rebuilt():
            "decision_reason": "Unrelated to the task."}
     with pytest.raises(ValueError, match="task_effect_conflict"):
         parse_removal_plan_response(json.dumps({"targets": [row]}), strict=True)
+
+
+def test_placement_destination_is_preserved_as_static_contact():
+    import json
+    target = {"target_id": "tray", "target_class": "movable_object", "target_role": "destination",
+              "task_effect": "static_contact", "disposition": "keep", "rebuild_intent": "none",
+              "semantic_label": "destination tray", "decision_reason": "The robot places the box here.",
+              "confidence": 0.9, "spatial_evidence": [{"timestamp_seconds": 2, "box_xywh_normalized": [0.2, 0.2, 0.2, 0.2]}]}
+    parsed = parse_removal_plan_response(json.dumps({"targets": [target]}), strict=True, task_description="Move box to tray")
+    assert parsed[0]["target_role"] == "destination"
+    assert parsed[0]["disposition"] == "keep"
+    assert parsed[0]["collision_required"] is True
