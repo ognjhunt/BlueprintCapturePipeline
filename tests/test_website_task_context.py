@@ -1,6 +1,8 @@
 """Current owner task binding; no network, credentials, or model inference."""
 import json
+from io import BytesIO
 from types import SimpleNamespace
+from urllib.error import HTTPError
 
 import pytest
 
@@ -57,6 +59,25 @@ def test_missing_endpoint_cannot_reuse_stale_manifest_confirmation(monkeypatch):
     monkeypatch.delenv("PIPELINE_SYNC_WEBAPP_URL", raising=False)
     with pytest.raises(ValueError, match="webapp_url_missing"):
         module.load_current_website_task_context(request_id="req1", scene_id="site-req1", capture_id="walkthrough-req1")
+
+
+@pytest.mark.parametrize("body,reason", [
+    (b'{"code":"website_scene_preparation_budget_exhausted"}', "website_scene_preparation_budget_exhausted"),
+    (b'{"code":"private token: secret"}', "unclassified"),
+    (b'private token: secret', "unclassified"),
+])
+def test_control_refusals_are_typed_without_leaking_provider_bodies(monkeypatch, body, reason):
+    monkeypatch.setenv("PIPELINE_SYNC_WEBAPP_URL", "https://tryblueprint.io/api/internal/pipeline/sync")
+    monkeypatch.setattr(module, "load_pipeline_sync_token", lambda: "test-secret")
+    calls = []
+    def refuse(*args, **kwargs):
+        calls.append(kwargs)
+        raise HTTPError(args[0], 409, "request refused", {}, BytesIO(body))
+    monkeypatch.setattr(module, "safe_request", refuse)
+    with pytest.raises(ValueError) as error:
+        module.website_webapp_request(capture_id="walkthrough-req1", operation="preparation-spend", payload={})
+    assert str(error.value) == f"website_control_preparation-spend_http_409:{reason}"
+    assert len(calls) == 1 and "secret" not in str(error.value)
 
 
 def sponsorship():

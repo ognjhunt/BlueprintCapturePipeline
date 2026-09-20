@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Any, Mapping
+from urllib.error import HTTPError
 from urllib.parse import quote, urlsplit
 
 from .decision_evidence_contracts import canonical_digest
@@ -55,12 +57,29 @@ def website_webapp_request(*, capture_id: str, operation: str, payload: Mapping[
     origin = f"{parsed.scheme}://{parsed.netloc}"
     token = load_pipeline_sync_token()
     body = json.dumps(payload, separators=(",", ":")).encode()
-    response = safe_request(
-        f"{origin}/api/internal/pipeline/creator-captures/{quote(capture_id, safe='')}/{operation}",
-        method="POST", data=body, headers=_pipeline_sync_headers(token, body),
-        timeout_seconds=10, policy=pinned_api_policy(origin, max_response_bytes=100_000),
-        max_response_bytes=100_000,
-    )
+    try:
+        response = safe_request(
+            f"{origin}/api/internal/pipeline/creator-captures/{quote(capture_id, safe='')}/{operation}",
+            method="POST", data=body, headers=_pipeline_sync_headers(token, body),
+            timeout_seconds=10, policy=pinned_api_policy(origin, max_response_bytes=100_000),
+            max_response_bytes=100_000,
+        )
+    except HTTPError as exc:
+        # Preserve the owning service's typed refusal, never its raw body or
+        # request headers. In particular, an exhausted request allowance must
+        # not look like an unexplained model/provider failure.
+        code = None
+        try:
+            failure = json.loads(exc.read(4096))
+            if isinstance(failure, dict):
+                code = failure.get("code")
+        except (ValueError, OSError):
+            pass
+        finally:
+            exc.close()
+        if not isinstance(code, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,99}", code):
+            code = "unclassified"
+        raise ValueError(f"website_control_{operation}_http_{exc.code}:{code}") from None
     value = json.loads(response.body)
     if not isinstance(value, Mapping):
         raise ValueError("website_task_context_response_invalid")
