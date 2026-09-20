@@ -112,6 +112,9 @@ def _website_preparation(tmp_path, monkeypatch):
     from blueprint_pipeline.task_evaluation_launch_preparation_contract import validate_launch_preparation_request
     request = test_configuration_request()
     request.update(preparation_id="website-owner-commit-preparation", expected_production_commit=COMMIT)
+    from blueprint_pipeline.task_evaluation_scene_configuration_submission_records import spend_block
+    request["replacement_authoring_backend"] = "astra_cad_blender_v1"
+    request["spend"] = spend_block("astra_cad_blender_v1")
     request = validate_launch_preparation_request(request)
     digest = canonical_digest(request)
     fx["rows"] = settlement.dependent_row_ids(digest)
@@ -341,3 +344,46 @@ def test_sweep_settles_lineage_and_tolerates_broken_entries(tmp_path: Path) -> N
     again = settlement.sweep_retired_attempts(directory=fx["directory"], state=state, config=config)
     assert again["settled_rows"] == 0 and again["already_released_rows"] == 5
     assert again["summary_digest"] != summary["summary_digest"]
+
+
+def _website_preallocation_failure(tmp_path, monkeypatch, *, allocated=False):
+    fx, row_id = _website_preparation(tmp_path, monkeypatch)
+    factory = json.loads(Path(fx["factory"]["path"]).read_text())
+    request = json.loads(Path(factory["submission_request"]["path"]).read_text())
+    run = fx["launches"] / fx["launch_id"]
+    result_path = _write(run / "result.json", {
+        "schema_version": "task_evaluation_scene_configuration_vast_result.v1",
+        "run_id": request["run_id"], "source_commit": COMMIT, "status": "blocked",
+        "provider_mutations_performed": int(allocated), "continuing_spend_from_this_run": False,
+        "provider_runtime_output_zip_path": None})
+    teardown_path = _write(run / "teardown.json", {"schema_version": "vast_teardown_manifest.v1",
+        "status": "not_required_provider_adapter_never_invoked", "vast_instance_ids": [],
+        "continuing_spend_from_this_run": False})
+    def ref(path):
+        return {**settlement._file(path), "exists": True}
+    _write(run / "launch_receipt.json", {"launch_id": fx["launch_id"], "source_commit": COMMIT,
+        "status": "blocked", "terminal_evidence": {"result": ref(result_path),
+            "artifacts": {"teardown_manifest_path": ref(teardown_path)}}})
+    _settle(fx, source_factory=fx["factory"])
+    attempt = json.loads((fx["directory"] / "attempts" / (row_id + ".json")).read_text())
+    return fx, validated_cancellation(fx["directory"], attempt), result_path, teardown_path
+
+
+def test_proven_no_allocation_releases_only_gpu_and_provider_authoring_budget(tmp_path, monkeypatch):
+    fx, receipt, _, _ = _website_preallocation_failure(tmp_path, monkeypatch)
+    assert receipt["settled_spend"]["retained_spend_usd"] == 16.76
+    assert settlement.retained_hold(receipt)["retained_spend_usd"] == 16.76
+    assert settlement.budget_retained_hold(receipt) == {
+        "basis": "preallocation_api_budget_upper_bound", "retained_spend_usd": 5.76,
+        "counts_as_attempt": False}
+    assert _reserve(fx["root"], fx["intent"], "scene-configuration-successor", 15, now=300)["status"] == "reserved"
+    with pytest.raises(SceneIntakeError, match="spend_cap_exhausted"):
+        _reserve(fx["root"], fx["intent"], "scene-configuration-another", 5.25, now=301)
+
+
+@pytest.mark.parametrize("changed", ["result", "teardown", "allocated"])
+def test_preallocation_budget_reduction_requires_bound_nonallocation_evidence(tmp_path, monkeypatch, changed):
+    _, receipt, result, teardown = _website_preallocation_failure(tmp_path, monkeypatch, allocated=changed == "allocated")
+    if changed != "allocated":
+        (result if changed == "result" else teardown).write_text("{}")
+    assert settlement.budget_retained_hold(receipt)["retained_spend_usd"] == 16.76
