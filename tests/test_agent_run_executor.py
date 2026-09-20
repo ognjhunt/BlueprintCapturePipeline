@@ -9,6 +9,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
 from typing import Any
 
+import pytest
+
 from blueprint_pipeline import agent_run_executor as executor
 
 
@@ -380,6 +382,60 @@ def test_signed_local_webapp_queue_closes_digest_bound_fixture(tmp_path: Path) -
     assert received[-1][1]["rate_usd"] == 2.0
 
 
+def _partition_row(partition: Path, scene_id: str, capture_id: str, run_id: str) -> dict[str, Any]:
+    capture_root = partition / "scenes" / scene_id / "captures" / capture_id
+    row = _row(capture_root)
+    canonical = row["execution_admission"]["canonical_execution_request"]
+    canonical["job_id"] = f"canonical-{run_id}"
+    canonical["site_package"]["capture_id"] = capture_id
+    row["execution_admission"]["binding"]["capture_id"] = capture_id
+    row["run_id"] = run_id
+    canonical_json = json.dumps(row["execution_admission"], sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    row["execution_admission_canonical_json"] = canonical_json
+    row["execution_admission_digest"] = "sha256:" + hashlib.sha256(canonical_json.encode()).hexdigest()
+    return row
+
+
+def test_partition_scope_serves_every_admitted_capture_without_reconfiguration(tmp_path: Path) -> None:
+    partition = tmp_path / "captures"
+    first = _partition_row(partition, "site-a", "walkthrough-a", "run-a")
+    second = _partition_row(partition, "site-b", "walkthrough-b", "run-b")
+    outside_root = tmp_path / "elsewhere" / "scenes" / "site-c" / "captures" / "walkthrough-c"
+    outside = _partition_row(tmp_path / "elsewhere", "site-c", "walkthrough-c", "run-c")
+    assert outside_root.is_dir()
+    mismatched = _partition_row(partition, "site-d", "walkthrough-d", "run-d")
+    mismatched["execution_admission"]["binding"]["capture_id"] = "walkthrough-other"
+    client = FakeClient([first, second, outside, mismatched])
+    seen: list[Path] = []
+
+    def reader(*, job_dir: Path, **_kwargs: Any) -> dict[str, Any]:
+        seen.append(job_dir)
+        return {"status": "completed", "episodes_run": 5, "episodes_succeeded": 4}
+
+    summary = executor.poll_once(
+        client=client, capture_partition_root=partition, inbox_dir=tmp_path / "inbox",
+        journal_dir=tmp_path / "journal", terminal_reader=reader)
+
+    assert summary["examined"] == 4 and summary["claimed"] == 2 and summary["completed"] == 2
+    assert summary["blocked"] == 2
+    assert {claim[0] for claim in client.claims} == {"run-a", "run-b"}
+    assert sorted(path.parents[2].name for path in seen) == ["walkthrough-a", "walkthrough-b"]
+    journals = [json.loads(path.read_text()) for path in sorted((tmp_path / "journal").glob("*.json"))]
+    assert {journal["capture_root"] for journal in journals} == {
+        str((partition / "scenes/site-a/captures/walkthrough-a").resolve()),
+        str((partition / "scenes/site-b/captures/walkthrough-b").resolve())}
+
+
+def test_capture_scope_must_be_exactly_one_of_single_or_partition(tmp_path: Path) -> None:
+    client = FakeClient([])
+    with pytest.raises(ValueError, match="agent_execution_capture_scope_required"):
+        executor.poll_once(client=client)
+    with pytest.raises(ValueError, match="agent_execution_capture_scope_required"):
+        executor.poll_once(client=client, capture_root=tmp_path, capture_partition_root=tmp_path)
+    with pytest.raises(ValueError, match="requires_shared_inbox_and_journal"):
+        executor.poll_once(client=client, capture_partition_root=tmp_path)
+
+
 def test_installed_dispatcher_and_control_plane_share_the_canonical_inbox() -> None:
     repo = Path(__file__).resolve().parents[1]
     dispatcher = (repo / "deploy/systemd/blueprint-agent-run-dispatcher.service").read_text()
@@ -390,6 +446,8 @@ def test_installed_dispatcher_and_control_plane_share_the_canonical_inbox() -> N
     assert "EnvironmentFile=/etc/blueprint/pipeline-control-plane.env" in dispatcher
     assert 'test "$${BLUEPRINT_AGENT_RUN_DISPATCH_ENABLED:-false}" = true' in dispatcher
     assert '--inbox-dir "$${BLUEPRINT_ROBOT_EVAL_JOB_REQUEST_INBOX}"' in dispatcher
+    assert "BLUEPRINT_AGENT_RUN_CAPTURE_PARTITION_ROOT" in dispatcher
+    assert "BLUEPRINT_AGENT_RUN_CAPTURE_PARTITION_ROOT=" in env_example
     assert "blueprint_pipeline.live_pipeline_control_plane" in control_plane
     assert "OnUnitActiveSec=5min" in timer
     assert (

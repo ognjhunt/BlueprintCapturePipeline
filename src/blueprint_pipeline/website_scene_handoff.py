@@ -71,17 +71,34 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
         removal_path = Path(clean_plate["removal_manifest_path"])
         if not removal_path.resolve().is_relative_to(capture_root.resolve() / "pipeline"):
             raise ValueError("website_scene_removal_manifest_outside_capture")
+        # World Labs exports are OpenCV Y-down, including their GLB meshes:
+        # https://docs.worldlabs.ai/marble/export/specs . The world manifest
+        # declares an estimated metric factor and ground plane (raw units x
+        # factor = metres; ground at y = offset after scaling), and the world
+        # is generated from the prepared views in submission order, so the
+        # first view's camera anchors registration. None of it is measured.
+        semantics: dict[str, Any] = {}
+        world_path = Path(assets.get("source_world_manifest") or root / "missing")
+        if world_path.resolve().is_relative_to(capture_root.resolve() / "pipeline") and world_path.is_file():
+            from .marble_sim_assets import _semantics_metadata
+            world = json.loads(world_path.read_text())
+            if world.get("world_id") == assets["world_id"]:
+                semantics = _semantics_metadata(world)
+        prepared = ((clean_plate.get("prepared_views") or (metadata.get("clean_plate") or {}).get("prepared_views")
+                     or {}).get("frames") or [])
+        declared = semantics.get("metric_scale_factor")
         base = {
             "splat_path": splat["local_path"], "splat_digest": "sha256:" + splat["sha256"],
             "splat_binding_id": "website-splat-" + splat["sha256"][:32],
             "collision_mesh_path": collision["local_path"], "collision_mesh_digest": "sha256:" + collision["sha256"],
             "collision_binding_id": "website-collider-" + collision["sha256"][:32],
-            "up_axis": "-Y", "meters_per_unit": None, "provider": "world_labs",
+            "up_axis": "-Y", "meters_per_unit": declared, "provider": "world_labs",
+            "scale_authority": "provider_declared_estimate" if declared else "registration_estimate",
+            "ground_plane_offset_m": semantics.get("ground_plane_offset") if declared else None,
+            "anchor": ({"kind": "first_input_view_camera", "frame_id": prepared[0]["frame_id"]}
+                       if declared and prepared else None),
             "operation_id": provider_run.get("provider_run_id"), "world_id": assets["world_id"],
         }
-        # World Labs exports are OpenCV Y-down, including their GLB meshes:
-        # https://docs.worldlabs.ai/marble/export/specs . Registration supplies
-        # estimated scale; splat decoding/frame qualification stays downstream.
         write_json(root / "base_scene.json", base)
         authority = metadata.get("website_scene_execution_authority") or {}
         if not all(key in authority for key in ("max_total_spend_usd", "max_paid_attempts", "expires_at_epoch")):

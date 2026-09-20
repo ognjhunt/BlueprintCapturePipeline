@@ -95,3 +95,35 @@ def test_geometry_controller_runs_only_after_visual_world_and_assets_are_ready(t
     assert len(calls) == 1 and calls[0]["task_context"] == kwargs["descriptor"]["metadata"]["site_task_context"]
     assert kwargs["provider_run"]["status"] == "ready"
     assert result["geometry_controller_invoked"] is True
+
+
+def test_provider_declared_scale_ground_and_anchor_view_enter_the_base_scene(tmp_path, monkeypatch):
+    kwargs = inputs(tmp_path)
+    pipeline = tmp_path / "pipeline"
+    world = pipeline / "world.json"
+    write_json(world, {"world_id": "world-1", "assets": {"splats": {
+        "semantics_metadata": {"metric_scale_factor": 1.4771584, "ground_plane_offset": 1.6066047}}}})
+    manifest = pipeline / "assets.json"
+    write_json(manifest, {**json.loads(manifest.read_text()), "source_world_manifest": str(world)})
+    kwargs["clean_plate"]["prepared_views"] = {"frames": [{"frame_id": "decoded-000000000"}, {"frame_id": "decoded-000000108"}]}
+    seen = {}
+    monkeypatch.setattr(handoff, "compile_website_scene_preparation",
+                        lambda **value: seen.update(value) or (_ for _ in ()).throw(ValueError("stop")))
+    handoff.prepare_website_scene_handoff(**kwargs)
+    base = seen["base_scene"]
+    assert base["meters_per_unit"] == 1.4771584 and base["ground_plane_offset_m"] == 1.6066047
+    assert base["scale_authority"] == "provider_declared_estimate"
+    assert base["anchor"] == {"kind": "first_input_view_camera", "frame_id": "decoded-000000000"}
+    assert json.loads((tmp_path / "pipeline/website_scene_preparation/base_scene.json").read_text()) == base
+
+
+def test_world_without_declared_scale_leaves_registration_to_estimate(tmp_path, monkeypatch):
+    kwargs = inputs(tmp_path)
+    kwargs["clean_plate"]["prepared_views"] = {"frames": [{"frame_id": "decoded-000000000"}]}
+    seen = {}
+    monkeypatch.setattr(handoff, "compile_website_scene_preparation",
+                        lambda **value: seen.update(value) or (_ for _ in ()).throw(ValueError("stop")))
+    handoff.prepare_website_scene_handoff(**kwargs)
+    base = seen["base_scene"]
+    assert base["meters_per_unit"] is None and base["anchor"] is None
+    assert base["scale_authority"] == "registration_estimate"

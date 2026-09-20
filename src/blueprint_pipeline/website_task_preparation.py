@@ -109,9 +109,44 @@ def _refine_registration(source: np.ndarray, target: np.ndarray, scale: float,
     return scale, rotation, translation
 
 
+_ROLLS = (0.0, 90.0, -90.0, 180.0)
+ANCHOR_MAX_ROTATION_DEGREES = 45.0
+ANCHOR_SCALE_RATIO_BOUNDS = (0.75, 4.0 / 3.0)
+GROUND_PLANE_MAX_RESIDUAL_M = 0.35
+
+
+def _roll(degrees: float) -> np.ndarray:
+    c, s = math.cos(math.radians(degrees)), math.sin(math.radians(degrees))
+    return np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
+
+
+def _rotation_degrees(a: np.ndarray, b: np.ndarray) -> float:
+    return math.degrees(math.acos(max(-1.0, min(1.0, (np.trace(a @ b.T) - 1.0) / 2.0))))
+
+
+def _anchor_prior(source_geometry: Mapping[str, Any], anchor: Mapping[str, Any]) -> tuple[float, np.ndarray]:
+    """The provider world is anchored at its first input view's camera, in the same OpenCV convention."""
+    frame = next((row for row in source_geometry["frames"] if row["frame_id"] == anchor.get("frame_id")), None)
+    if frame is None:
+        raise ValueError("website_registration_anchor_frame_missing")
+    mpu = anchor.get("meters_per_unit")
+    if isinstance(mpu, bool) or not isinstance(mpu, (int, float)) or not math.isfinite(mpu) or mpu <= 0:
+        raise ValueError("website_base_scene_scale_invalid")
+    if anchor.get("up_axis") not in _UP_INDEX:
+        raise ValueError("website_registration_anchor_frame_invalid")
+    return float(mpu), np.linalg.inv(np.asarray(frame["world_from_camera"], dtype=np.float64))
+
+
 def register_source_to_runtime(*, source_geometry: Mapping[str, Any], collision_mesh_path: Path,
-                               sample_cap: int = 20000) -> dict[str, Any]:
-    """Similarity-register estimated source points to the reconstructed collider frame."""
+                               sample_cap: int = 20000, anchor: Mapping[str, Any] | None = None,
+                               focus_bounds: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Similarity-register estimated source points to the reconstructed collider frame.
+
+    With ``anchor`` (the provider's declared scale, ground plane and the source
+    frame it was generated from), the prior pose is refined and its deviation
+    reported; an unconstrained pose that clearly fits better is a conflict, not
+    a silent override. Without it the unconstrained search must be unambiguous.
+    """
     source = _sample(_source_points(source_geometry), cap=sample_cap, seed=601)
     target = _sample(_mesh_vertices(collision_mesh_path), cap=sample_cap, seed=602)
     target_tree = cKDTree(target)
@@ -144,29 +179,95 @@ def register_source_to_runtime(*, source_geometry: Mapping[str, Any], collision_
     if min(row[0] for row in rows) > 1e-7 * np.linalg.norm(target_extent):
         rows += [score(*_refine_registration(fit_source, target, *row[1:])) for row in list(rows)]
     rows.sort(key=lambda row: row[0])
-    best = rows[0]
-    best_moved = best[1] * (source @ best[2].T) + best[3]
-    # Seeds converging to the same pose are one hypothesis, not ambiguity.
-    distinct = [row for row in rows[1:] if np.sqrt(np.mean(np.square(
-        row[1] * (source @ row[2].T) + row[3] - best_moved))) > 0.005 * np.linalg.norm(target_extent)]
-    if not distinct:
-        raise ValueError("website_registration_ambiguous")
-    runner_up = distinct[0]
-    ratio = runner_up[0] / max(best[0], 1e-12)
-    if ratio < 1.2:
-        raise ValueError("website_registration_ambiguous")
-    if best[0] > 0.1 * float(np.linalg.norm(target_extent)):
+    extent_norm = float(np.linalg.norm(target_extent))
+
+    def moved_by(row):
+        return row[1] * (source @ row[2].T) + row[3]
+
+    def distinct_from(reference, candidates):
+        # Seeds converging to the same pose are one hypothesis, not ambiguity.
+        base_moved = moved_by(reference)
+        return [row for row in candidates
+                if np.sqrt(np.mean(np.square(moved_by(row) - base_moved))) > 0.005 * extent_norm]
+
+    anchor_report = ground = None
+    if anchor is None:
+        best = rows[0]
+        distinct = distinct_from(best, rows[1:])
+        if not distinct:
+            raise ValueError("website_registration_ambiguous")
+        ratio = distinct[0][0] / max(best[0], 1e-12)
+        if ratio < 1.2:
+            raise ValueError("website_registration_ambiguous")
+        metres_per_runtime_unit = 1.0 / best[1]
+    else:
+        mpu, camera_from_world = _anchor_prior(source_geometry, anchor)
+        anchored = []
+        for roll in _ROLLS:
+            prior = (1.0 / mpu, _roll(roll) @ camera_from_world[:3, :3], (_roll(roll) @ camera_from_world[:3, 3]) / mpu)
+            anchored.append((score(*_refine_registration(fit_source, target, *prior)), roll, prior))
+        anchored.sort(key=lambda row: row[0][0])
+        best, roll, prior = anchored[0]
+        distinct = distinct_from(best, [row[0] for row in anchored[1:]])
+        ratio = distinct[0][0] / max(best[0], 1e-12) if distinct else math.inf
+        if ratio < 1.2:
+            raise ValueError("website_registration_ambiguous")
+        def same_hypothesis(row):
+            return (_rotation_degrees(row[2], best[2]) <= 10.0 and abs(math.log(row[1] / best[1])) <= math.log(1.1)
+                    and float(np.linalg.norm(row[3] - best[3])) <= 0.1 * extent_norm)
+        better = [row for row in rows if row[0] < best[0]]
+        # An unconstrained pose that fits materially and clearly better than
+        # the anchored one means the world does not follow its declared anchor.
+        if any(row[0] * 1.2 < best[0] and best[0] - row[0] > 0.005 * extent_norm
+               for row in better if not same_hypothesis(row)):
+            raise ValueError("website_registration_conflicts_provider_anchor")
+        # The same pose reached from an unconstrained seed is the same
+        # hypothesis; keep whichever solution of it converged better.
+        same_pose = [row for row in better if same_hypothesis(row)]
+        if same_pose:
+            best = min(same_pose, key=lambda row: row[0])
+        anchor_report = {"kind": anchor.get("kind"), "frame_id": anchor["frame_id"], "roll_degrees": roll,
+                         "rotation_deviation_degrees": _rotation_degrees(best[2], prior[1]),
+                         "translation_deviation_m": float(np.linalg.norm(best[3] - prior[2]) * mpu),
+                         "scale_ratio_to_declared": float(best[1] * mpu),
+                         "declared_meters_per_unit": mpu}
+        if (anchor_report["rotation_deviation_degrees"] > ANCHOR_MAX_ROTATION_DEGREES
+                or not ANCHOR_SCALE_RATIO_BOUNDS[0] <= anchor_report["scale_ratio_to_declared"] <= ANCHOR_SCALE_RATIO_BOUNDS[1]):
+            raise ValueError("website_registration_anchor_deviation")
+        metres_per_runtime_unit = mpu
+        offset = anchor.get("ground_plane_offset_m")
+        if offset is not None:
+            up = _UP_INDEX[anchor["up_axis"]]
+            down = (1 if anchor["up_axis"] == "-Y" else -1) * moved_by(best)[:, up]
+            floor_raw = float(np.percentile(down, 98))
+            fraction = float(np.mean(np.abs(down - floor_raw) <= 0.10 / mpu))
+            ground = {"declared_offset_m": float(offset), "observed_floor_offset_m": floor_raw * mpu,
+                      "residual_m": abs(floor_raw * mpu - float(offset)), "floor_point_fraction": fraction,
+                      "checked": fraction >= 0.03}
+            if ground["checked"] and ground["residual_m"] > GROUND_PLANE_MAX_RESIDUAL_M:
+                raise ValueError("website_registration_ground_plane_inconsistent")
+    if best[0] > 0.1 * extent_norm:
         raise ValueError("website_registration_poor_fit")
+    task_region = None
+    if focus_bounds is not None:
+        low, high = (np.asarray(focus_bounds[key], dtype=np.float64) for key in ("minimum", "maximum"))
+        center, radius = (low + high) / 2.0, max(1.0, float(np.linalg.norm(high - low)))
+        near = source[np.linalg.norm(source - center, axis=1) <= radius]
+        task_region = {"radius_m": radius, "point_count": int(len(near)), "trimmed_rmse_m": None}
+        if len(near) >= 50:
+            moved = best[1] * (near @ best[2].T) + best[3]
+            task_region["trimmed_rmse_m"] = _trimmed_rmse(target_tree.query(moved, k=1)[0], 0.8) * metres_per_runtime_unit
     matrix = np.eye(4)
     matrix[:3, :3] = best[1] * best[2]
     matrix[:3, 3] = best[3]
     return {"schema_version": "website_source_registration.v1", "source_to_runtime": matrix.tolist(),
             "scale": best[1], "rotation": best[2].tolist(), "translation": best[3].tolist(),
-            "trimmed_rmse_runtime_units": best[0], "runner_up_ratio": ratio,
+            "trimmed_rmse_runtime_units": best[0], "trimmed_rmse_m": best[0] * metres_per_runtime_unit,
+            "runner_up_ratio": ratio, "anchor": anchor_report, "ground_plane": ground, "task_region": task_region,
             "source_geometry_digest": source_geometry["digest"],
             "collision_mesh_digest": _sha256_file(collision_mesh_path),
-            "scale_status": "estimated_registration", "physical_scale_measured": False,
-            "physical_registration_proven": False}
+            "scale_status": "provider_declared_anchor" if anchor else "estimated_registration",
+            "physical_scale_measured": False, "physical_registration_proven": False}
 
 
 def _runtime_bounds(bounds: Mapping[str, Any], matrix: np.ndarray) -> tuple[list[float], list[float]]:
@@ -257,26 +358,37 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
             raise ValueError("website_base_scene_changed")
     up = _UP_INDEX[base_scene["up_axis"]]
     up_sign = -1 if base_scene["up_axis"] == "-Y" else 1
-    registration = register_source_to_runtime(source_geometry=source_geometry,
-                                              collision_mesh_path=Path(base_scene["collision_mesh_path"]))
-    # With browser video, use MapAnything's estimated metres to scale the
-    # generated world. A provider's nominal unit is not a physical measurement.
-    mpu = (1.0 / registration["scale"] if base_scene.get("meters_per_unit") is None
-           else float(base_scene["meters_per_unit"]))
-    if not math.isfinite(mpu) or mpu <= 0 or isinstance(base_scene.get("meters_per_unit"), bool):
+    targets = {row["target_id"]: row for row in task_masks["targets"]}
+    removed = [row for row in removal_manifest["entries"] if row.get("task_effect") == "manipulated"]
+    if len(removed) != 1 or removed[0]["target_id"] not in targets:
+        raise ValueError("website_single_manipulated_subject_required")
+    subject_entry, subject_target = removed[0], targets[removed[0]["target_id"]]
+    declared_mpu = base_scene.get("meters_per_unit")
+    if isinstance(declared_mpu, bool) or (declared_mpu is not None and (
+            not isinstance(declared_mpu, (int, float)) or not math.isfinite(declared_mpu) or declared_mpu <= 0)):
         raise ValueError("website_base_scene_scale_invalid")
+    anchor = base_scene.get("anchor")
+    if anchor is not None:
+        if declared_mpu is None:
+            raise ValueError("website_base_scene_scale_invalid")
+        anchor = {**anchor, "meters_per_unit": declared_mpu, "up_axis": base_scene["up_axis"],
+                  "ground_plane_offset_m": base_scene.get("ground_plane_offset_m")}
+    registration = register_source_to_runtime(source_geometry=source_geometry,
+                                              collision_mesh_path=Path(base_scene["collision_mesh_path"]),
+                                              anchor=anchor, focus_bounds=subject_target["estimated_visible_bounds"])
+    # With browser video, use MapAnything's estimated metres to scale the
+    # generated world. A provider's declared factor is an estimate too, and
+    # the two must agree; neither is a physical measurement.
+    mpu = 1.0 / registration["scale"] if declared_mpu is None else float(declared_mpu)
+    if declared_mpu is not None and anchor is None and not 0.75 <= registration["scale"] * mpu <= 4.0 / 3.0:
+        blockers.append("website_registration_scale_conflicts_declared")
     runtime_to_sim = np.eye(4)
     runtime_to_sim[:3, :3] = mpu * (np.array([[1, 0, 0], [0, 0, -up_sign], [0, up_sign, 0]])
                                    if up == 1 else np.eye(3))
     registration_path = output_root / "registration.json"
     write_json(registration_path, registration)
     matrix = np.asarray(registration["source_to_runtime"])
-    targets = {row["target_id"]: row for row in task_masks["targets"]}
     frames_by_id = {frame["frame_id"]: frame for frame in source_geometry["frames"]}
-    removed = [row for row in removal_manifest["entries"] if row.get("task_effect") == "manipulated"]
-    if len(removed) != 1 or removed[0]["target_id"] not in targets:
-        raise ValueError("website_single_manipulated_subject_required")
-    subject_entry, subject_target = removed[0], targets[removed[0]["target_id"]]
     subject_min, subject_max = _runtime_bounds(subject_target["estimated_visible_bounds"], matrix)
     import trimesh
     collider = trimesh.load(base_scene["collision_mesh_path"], force="mesh", process=False)
@@ -421,6 +533,8 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                     "splat_digest": base_scene["splat_digest"], "collision_mesh_digest": base_scene["collision_mesh_digest"],
                     "provider": base_scene.get("provider"), "operation_id": base_scene.get("operation_id")},
         "registration": registration, "coordinate_frame": {"declared_meters_per_unit": mpu,
+                                                           "scale_authority": base_scene.get("scale_authority") or "registration_estimate",
+                                                           "placement_uncertainty_m": (registration.get("task_region") or {}).get("trimmed_rmse_m"),
                                                            "declared_up_axis": base_scene["up_axis"],
                                                            "physical_scale_measured": False,
                                                            "task_coordinates": "Z_up_estimated_meters",
