@@ -508,6 +508,7 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
     )
     additional_sources = []
     for name in (
+        "blueprint-pubsub-handoff-listener.service", "blueprint-pubsub-handoff-listener.timer",
         "blueprint-agent-execution.service", "blueprint-agent-run-dispatcher.service",
         "blueprint-agent-run-dispatcher.timer", "blueprint-agent-stage-replay.service", "blueprint-agent-stage-replay.timer",
         "blueprint-task-evaluation-scene-progression.service", "blueprint-task-evaluation-scene-progression.timer",
@@ -539,7 +540,7 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
 
     expected = []
     for source in (
-        *additional_sources[:5],
+        *additional_sources[:7],
         service,
         path_unit,
         preparation_service,
@@ -558,7 +559,7 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         progression_service,
         progression_timer,
         progression_path,
-        *additional_sources[5:],
+        *additional_sources[7:],
         storage_gc_service,
         storage_gc_timer,
         capacity_service,
@@ -593,6 +594,8 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
     """
 
     assert deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS == (
+        "blueprint-pubsub-handoff-listener.service",
+        "blueprint-pubsub-handoff-listener.timer",
         "blueprint-agent-execution.service",
         "blueprint-agent-run-dispatcher.service",
         "blueprint-agent-run-dispatcher.timer",

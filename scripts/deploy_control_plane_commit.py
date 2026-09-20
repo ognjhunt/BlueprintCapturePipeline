@@ -94,6 +94,8 @@ DEFAULT_PAID_LAUNCH_LOCKS = (
 )
 DEFAULT_RESTART_UNITS = ("blueprint-pipeline-intake.service",)
 DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
+    "blueprint-pubsub-handoff-listener.service",
+    "blueprint-pubsub-handoff-listener.timer",
     "blueprint-agent-execution.service",
     "blueprint-agent-run-dispatcher.service",
     "blueprint-agent-run-dispatcher.timer",
