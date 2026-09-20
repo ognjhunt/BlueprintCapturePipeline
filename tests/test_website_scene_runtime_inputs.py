@@ -11,9 +11,22 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from tests.test_website_task_preparation import _arguments
 
 
-def test_real_native_collision_conversion_preserves_background_and_separate_subject(tmp_path):
+@pytest.mark.parametrize("up_axis", ["Y", "-Y"])
+def test_real_native_collision_conversion_preserves_background_and_separate_subject(tmp_path, up_axis):
     args = _arguments(tmp_path)
+    if up_axis == "-Y":
+        import trimesh
+        from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
+        base = args["base_scene"]
+        path = Path(base["collision_mesh_path"])
+        mesh = trimesh.load(path, force="mesh", process=False)
+        mesh.apply_transform(np.diag([1.0, -1.0, -1.0, 1.0]))
+        mesh.export(path)
+        base.update(up_axis="-Y", collision_mesh_digest=_sha256_file(path))
     preparation = compile_website_scene_preparation(**args)
+    assert preparation["status"] == "intake_ready"
+    assert preparation["subject"]["aabb_min_xyz"] == pytest.approx([2.05, -4.55, 3.5])
+    assert preparation["destination"]["position_world_m"][2] == pytest.approx(3.5)
     kwargs = {"preparation": preparation, "base_scene": args["base_scene"], "source_geometry": args["source_geometry"], "task_masks": args["task_masks"], "output_root": tmp_path / "native"}
     value = prepare_website_runtime_inputs(**kwargs)
     assert value["status"] == "background_collision_prepared"

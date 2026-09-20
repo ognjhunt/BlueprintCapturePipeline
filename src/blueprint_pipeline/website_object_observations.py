@@ -102,7 +102,7 @@ def materialize_object_observations(*, preparation: Mapping[str, Any], source_ge
     source_to_runtime = np.asarray(preparation["registration"]["source_to_runtime"], dtype=float)
     runtime_to_sim = np.asarray(preparation["coordinate_frame"]["runtime_to_simulator"], dtype=float)
     snap = np.eye(4)
-    up = {"Y": 1, "Z": 2}[preparation["coordinate_frame"]["declared_up_axis"]]
+    up = {"Y": 1, "-Y": 1, "Z": 2}[preparation["coordinate_frame"]["declared_up_axis"]]
     snap[up, 3] = preparation["compose_back"]["pose_world"]["support_snap_runtime_units"]
     transform = runtime_to_sim @ snap @ source_to_runtime
     retained = []

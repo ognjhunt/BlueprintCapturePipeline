@@ -25,8 +25,15 @@ def inputs(tmp_path):
     return args, preparation, data
 
 
-def test_native_appearance_uses_same_world_frame_without_editing_gaussians(tmp_path, monkeypatch):
+@pytest.mark.parametrize("up_axis", ["Y", "-Y"])
+def test_native_appearance_uses_same_world_frame_without_editing_gaussians(tmp_path, monkeypatch, up_axis):
     args, preparation, data = inputs(tmp_path)
+    if up_axis == "-Y":
+        preparation["coordinate_frame"]["declared_up_axis"] = "-Y"
+        transform = np.array(preparation["coordinate_frame"]["runtime_to_simulator"])
+        transform[:3, 1:3] *= -1
+        preparation["coordinate_frame"]["runtime_to_simulator"] = transform.tolist()
+        preparation["digest"] = canonical_digest(preparation, digest_field="digest")
     source = Path(args["base_scene"]["splat_path"])
     original = source.read_bytes()
     value = prepare_native_appearance(preparation=preparation, base_scene=args["base_scene"], output_root=tmp_path / "out")

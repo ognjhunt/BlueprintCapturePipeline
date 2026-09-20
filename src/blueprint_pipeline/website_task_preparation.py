@@ -34,7 +34,7 @@ from .website_support_geometry import support_under
 
 SCHEMA_VERSION = "website_scene_preparation.v1"
 CLAIM_CEILING = "development_only"
-_UP_INDEX = {"Y": 1, "Z": 2}
+_UP_INDEX = {"Y": 1, "-Y": 1, "Z": 2}
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 # Robotiq 2F-85 datasheet: 85 mm stroke, 20-235 N grip force. Reference only.
 GRIPPER = {"model": "robotiq_2f85", "full_stroke_m": FULL_STROKE_M,
@@ -79,6 +79,36 @@ def _mesh_vertices(path: Path) -> np.ndarray:
     return vertices
 
 
+def _refine_registration(source: np.ndarray, target: np.ndarray, scale: float,
+                         rotation: np.ndarray, translation: np.ndarray) -> tuple[float, np.ndarray, np.ndarray]:
+    """Trimmed similarity ICP; a candidate still needs fit and ambiguity checks."""
+    tree = cKDTree(target)
+    initial_scale = scale
+    for _ in range(30):
+        moved = scale * (source @ rotation.T) + translation
+        distances, indices = tree.query(moved, k=1)
+        keep = distances <= np.quantile(distances, 0.8)
+        a, b = source[keep], target[indices[keep]]
+        ac, bc = a.mean(axis=0), b.mean(axis=0)
+        a, b = a - ac, b - bc
+        u, singular, vt = np.linalg.svd(b.T @ a)
+        if singular[1] <= 1e-12:
+            break
+        signs = np.ones(3)
+        signs[-1] = np.linalg.det(u @ vt)
+        next_rotation = (u * signs) @ vt
+        next_scale = float(np.dot(singular, signs) / np.sum(a * a))
+        if not 0.5 * initial_scale <= next_scale <= 2 * initial_scale:
+            break
+        next_translation = bc - next_scale * (next_rotation @ ac)
+        next_moved = next_scale * (source @ next_rotation.T) + next_translation
+        change = np.max(np.linalg.norm(next_moved - moved, axis=1))
+        scale, rotation, translation = next_scale, next_rotation, next_translation
+        if change < 1e-7:
+            break
+    return scale, rotation, translation
+
+
 def register_source_to_runtime(*, source_geometry: Mapping[str, Any], collision_mesh_path: Path,
                                sample_cap: int = 20000) -> dict[str, Any]:
     """Similarity-register estimated source points to the reconstructed collider frame."""
@@ -86,19 +116,42 @@ def register_source_to_runtime(*, source_geometry: Mapping[str, Any], collision_
     target = _sample(_mesh_vertices(collision_mesh_path), cap=sample_cap, seed=602)
     target_tree = cKDTree(target)
     target_extent = np.percentile(target, 99, axis=0) - np.percentile(target, 1, axis=0)
+    # Model camera frames are not limited to axis permutations. Principal-axis
+    # seeds cover arbitrary orientation; ICP refines candidate correspondences.
+    source_axes = np.linalg.eigh(np.cov(source.T))[1]
+    target_axes = np.linalg.eigh(np.cov(target.T))[1]
+    source_axes[:, -1] *= np.linalg.det(source_axes)
+    target_axes[:, -1] *= np.linalg.det(target_axes)
+    rotations = _axis_rotations()
+    rotations += [target_axes @ turn @ source_axes.T for turn in _axis_rotations()]
     rows = []
-    for rotation in _axis_rotations():
+    fit_source = _sample(source, cap=4000, seed=603)
+
+    def score(scale, rotation, translation):
+        moved = scale * (source @ rotation.T) + translation
+        forward = _trimmed_rmse(target_tree.query(moved, k=1)[0], 0.8)
+        reverse = _trimmed_rmse(cKDTree(moved).query(target, k=1)[0], 0.8)
+        return (math.sqrt((forward**2 + reverse**2) / 2.0), scale, rotation, translation)
+
+    for rotation in rotations:
         moved = source @ rotation.T
         source_extent = np.percentile(moved, 99, axis=0) - np.percentile(moved, 1, axis=0)
         scale = float(np.median(target_extent / np.maximum(source_extent, 1e-9)))
         moved = moved * scale
         translation = np.median(target, axis=0) - np.median(moved, axis=0)
-        moved = moved + translation
-        forward = _trimmed_rmse(target_tree.query(moved, k=1)[0], 0.8)
-        reverse = _trimmed_rmse(cKDTree(moved).query(target, k=1)[0], 0.8)
-        rows.append((math.sqrt((forward**2 + reverse**2) / 2.0), scale, rotation, translation))
+        rows.append(score(scale, rotation, translation))
+    # An already exact frame conversion needs no iterative optimization.
+    if min(row[0] for row in rows) > 1e-7 * np.linalg.norm(target_extent):
+        rows += [score(*_refine_registration(fit_source, target, *row[1:])) for row in list(rows)]
     rows.sort(key=lambda row: row[0])
-    best, runner_up = rows[0], rows[1]
+    best = rows[0]
+    best_moved = best[1] * (source @ best[2].T) + best[3]
+    # Seeds converging to the same pose are one hypothesis, not ambiguity.
+    distinct = [row for row in rows[1:] if np.sqrt(np.mean(np.square(
+        row[1] * (source @ row[2].T) + row[3] - best_moved))) > 0.005 * np.linalg.norm(target_extent)]
+    if not distinct:
+        raise ValueError("website_registration_ambiguous")
+    runner_up = distinct[0]
     ratio = runner_up[0] / max(best[0], 1e-12)
     if ratio < 1.2:
         raise ValueError("website_registration_ambiguous")
@@ -203,6 +256,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         if _sha256_file(Path(base_scene[path_key])) != base_scene[digest_key]:
             raise ValueError("website_base_scene_changed")
     up = _UP_INDEX[base_scene["up_axis"]]
+    up_sign = -1 if base_scene["up_axis"] == "-Y" else 1
     registration = register_source_to_runtime(source_geometry=source_geometry,
                                               collision_mesh_path=Path(base_scene["collision_mesh_path"]))
     # With browser video, use MapAnything's estimated metres to scale the
@@ -212,7 +266,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     if not math.isfinite(mpu) or mpu <= 0 or isinstance(base_scene.get("meters_per_unit"), bool):
         raise ValueError("website_base_scene_scale_invalid")
     runtime_to_sim = np.eye(4)
-    runtime_to_sim[:3, :3] = mpu * (np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0]])
+    runtime_to_sim[:3, :3] = mpu * (np.array([[1, 0, 0], [0, 0, -up_sign], [0, up_sign, 0]])
                                    if up == 1 else np.eye(3))
     registration_path = output_root / "registration.json"
     write_json(registration_path, registration)
@@ -226,12 +280,12 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     subject_min, subject_max = _runtime_bounds(subject_target["estimated_visible_bounds"], matrix)
     import trimesh
     collider = trimesh.load(base_scene["collision_mesh_path"], force="mesh", process=False)
-    support = support_under(collider, subject_min, subject_max, up=up, meters_per_unit=mpu)
+    support = support_under(collider, subject_min, subject_max, up=up, meters_per_unit=mpu, up_sign=up_sign)
     snap = 0.0
     if support is None:
         blockers.append("support_surface_not_found_under_subject")
     else:
-        snap = support["top_runtime_units"] - subject_min[up]
+        snap = support["top_runtime_units"] - (subject_min if up_sign == 1 else subject_max)[up]
         subject_min[up] += snap
         subject_max[up] += snap
     sim_min, sim_max = _runtime_bounds({"minimum": subject_min, "maximum": subject_max}, runtime_to_sim)
@@ -243,7 +297,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     if len(destination_rows) == 1:
         low, high = _runtime_bounds(destination_rows[0]["estimated_visible_bounds"], matrix)
         position = [(low[i] + high[i]) / 2 for i in range(3)]
-        position[up] = high[up]
+        position[up] = (high if up_sign == 1 else low)[up]
         relation = destination_rows[0].get("placement_relation")
         contact_bound = False
         if relation not in {"on", "inside"}:
@@ -258,9 +312,11 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                 if axis != up:
                     half_width = (subject_max[axis] - subject_min[axis]) / 2
                     destination_min[axis], destination_max[axis] = position[axis] - half_width, position[axis] + half_width
-            destination_min[up] = position[up]
-            destination_max[up] = position[up] + subject_max[up] - subject_min[up]
-            destination_support = support_under(collider, destination_min, destination_max, up=up, meters_per_unit=mpu)
+            height = subject_max[up] - subject_min[up]
+            destination_min[up] = position[up] - (height if up_sign == -1 else 0)
+            destination_max[up] = position[up] + (height if up_sign == 1 else 0)
+            destination_support = support_under(collider, destination_min, destination_max, up=up,
+                                                meters_per_unit=mpu, up_sign=up_sign)
             if destination_support is None:
                 blockers.append("task_destination_surface_contact_required")
             elif destination_support["face_indices"] != support["face_indices"]:

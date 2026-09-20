@@ -42,11 +42,12 @@ def prepare_website_runtime_inputs(*, preparation: Mapping[str, Any], base_scene
         raise ValueError("website_native_scale_authority_invalid")
     frame = {"meters_per_unit": coordinates["declared_meters_per_unit"],
              "up_axis": coordinates["declared_up_axis"]}
-    if frame["up_axis"] != base_scene["up_axis"] or frame["up_axis"] not in {"Y", "Z"}:
+    if frame["up_axis"] != base_scene["up_axis"] or frame["up_axis"] not in {"Y", "-Y", "Z"}:
         raise ValueError("website_native_coordinate_frame_mismatch")
     expected = np.eye(4)
+    sign = -1 if frame["up_axis"] == "-Y" else 1
     expected[:3, :3] = frame["meters_per_unit"] * (
-        np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0]]) if frame["up_axis"] == "Y" else np.eye(3))
+        np.array([[1, 0, 0], [0, 0, -sign], [0, sign, 0]]) if frame["up_axis"] in {"Y", "-Y"} else np.eye(3))
     retained = np.asarray(coordinates.get("runtime_to_simulator"), dtype=float)
     if retained.shape != (4, 4) or not np.allclose(retained, expected, rtol=0, atol=1e-10):
         raise ValueError("website_native_coordinate_frame_mismatch")

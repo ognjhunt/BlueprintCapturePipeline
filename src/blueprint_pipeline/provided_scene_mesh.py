@@ -63,8 +63,8 @@ def _row(identity: str, points: Any, faces: Any, *, scale: float, axis: str) -> 
              and np.isfinite(vertices).all(), "geometry_invalid")
     _require(len(faces) > 0, "mesh_faces_missing")
     vertices = vertices * scale
-    if axis == "Y":
-        vertices = vertices[:, [0, 2, 1]] * [1, -1, 1]
+    if axis in {"Y", "-Y"}:
+        vertices = vertices[:, [0, 2, 1]] * ([1, -1, 1] if axis == "Y" else [1, 1, -1])
     lower, upper = vertices.min(axis=0), vertices.max(axis=0)
     _require(np.isfinite(lower).all() and np.isfinite(upper).all(), "geometry_invalid")
     return {"source_object_id": identity, "point_count": len(vertices), "face_count": len(faces),
@@ -78,7 +78,7 @@ def inspect_mesh(path: Path, *, original_filename: str,
     scale = coordinate_frame_declaration.get("meters_per_unit")
     axis = coordinate_frame_declaration.get("up_axis")
     _require(not isinstance(scale, bool) and isinstance(scale, (int, float))
-             and math.isfinite(scale) and 0 < scale <= 1000 and axis in {"Y", "Z"}, "units_missing")
+             and math.isfinite(scale) and 0 < scale <= 1000 and axis in {"Y", "-Y", "Z"}, "units_missing")
     suffix = Path(original_filename).suffix.lower()
     if suffix in {".usd", ".usda", ".usdc"} and path.suffix.lower() != suffix:
         # Content-addressed blobs have no extension. USD selects its reader by

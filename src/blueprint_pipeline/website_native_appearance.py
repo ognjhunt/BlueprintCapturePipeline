@@ -35,10 +35,12 @@ def prepare_native_appearance(*, preparation: Mapping[str, Any], base_scene: Map
     coordinate = preparation["coordinate_frame"]
     transform = np.asarray(coordinate["runtime_to_simulator"], dtype=float)
     scale = coordinate["declared_meters_per_unit"]
-    rotation = np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0]]) if coordinate["declared_up_axis"] == "Y" else np.eye(3)
+    sign = -1 if coordinate["declared_up_axis"] == "-Y" else 1
+    rotation = (np.array([[1, 0, 0], [0, 0, -sign], [0, sign, 0]])
+                if coordinate["declared_up_axis"] in {"Y", "-Y"} else np.eye(3))
     expected = np.eye(4)
     expected[:3, :3] = float(scale) * rotation
-    if (coordinate["declared_up_axis"] not in {"Y", "Z"} or not np.isfinite(expected).all() or scale <= 0
+    if (coordinate["declared_up_axis"] not in {"Y", "-Y", "Z"} or not np.isfinite(expected).all() or scale <= 0
             or coordinate.get("physical_scale_measured") is not False
             or transform.shape != (4, 4) or not np.allclose(transform, expected, atol=1e-10, rtol=0)):
         raise ValueError("website_native_appearance_frame_invalid")

@@ -39,6 +39,7 @@ def test_collected_world_drives_preparation_but_never_invents_execution(tmp_path
         calls.append(value)
         assert value["spend"]["max_total_spend_usd"] == 0
         assert value["base_scene"]["meters_per_unit"] is None
+        assert value["base_scene"]["up_axis"] == "-Y"
         return {"status": "needs_input", "blockers": ["website_scene_execution_authority_required"],
                 "digest": "sha256:" + "a" * 64, "thumbnail": {"path": "proposed-thumbnail.png"}}
     monkeypatch.setattr(handoff, "compile_website_scene_preparation", compile)

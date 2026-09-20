@@ -185,6 +185,25 @@ def test_symmetric_geometry_cannot_register(tmp_path):
         preparation.register_source_to_runtime(source_geometry=geometry, collision_mesh_path=Path(base["collision_mesh_path"]))
 
 
+@pytest.mark.parametrize("noise", [0.0, 0.001])
+def test_registration_recovers_arbitrary_camera_orientation(tmp_path, noise):
+    geometry = _source_geometry(tmp_path)
+    base = _base_scene(tmp_path, geometry)
+    path = Path(base["collision_mesh_path"])
+    mesh = trimesh.load(path, force="mesh", process=False)
+    turn = trimesh.transformations.euler_matrix(0.31, -0.47, 0.63)
+    mesh.apply_transform(turn)
+    if noise:
+        mesh.vertices += np.random.default_rng(701).normal(0, noise, mesh.vertices.shape)
+    mesh.export(path)
+    registration = preparation.register_source_to_runtime(source_geometry=geometry, collision_mesh_path=path)
+    tolerance = 0.002 if noise else 1e-5
+    assert registration["scale"] == pytest.approx(RUNTIME_SCALE, rel=tolerance)
+    assert np.allclose(registration["rotation"], turn[:3, :3] @ RUNTIME_ROTATION, atol=tolerance)
+    assert np.allclose(registration["translation"], turn[:3, :3] @ RUNTIME_TRANSLATION, atol=tolerance)
+    assert registration["physical_registration_proven"] is False
+
+
 def test_changed_base_scene_bytes_are_refused(tmp_path):
     def swap(geometry):
         base = _base_scene(tmp_path, geometry)
@@ -235,6 +254,12 @@ def test_collected_reconstruction_reaches_real_website_preparation(tmp_path):
     pipeline.mkdir()
     args = _arguments(pipeline)
     base = args["base_scene"]
+    # A World Labs export uses OpenCV Y-down, unlike the generic fixture.
+    collider_path = Path(base["collision_mesh_path"])
+    collider = trimesh.load(collider_path, force="mesh", process=False)
+    collider.apply_transform(np.diag([1.0, -1.0, -1.0, 1.0]))
+    collider.export(collider_path)
+    base["collision_mesh_digest"] = _sha256_file(collider_path)
     rows = [{"kind": kind, "local_path": base[path], "sha256": base[digest][7:]}
             for kind, path, digest in (("splat_ply", "splat_path", "splat_digest"),
                                       ("collider_mesh_glb", "collision_mesh_path", "collision_mesh_digest"))]

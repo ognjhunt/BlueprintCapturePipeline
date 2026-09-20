@@ -11,7 +11,7 @@ import numpy as np
 
 
 def support_under(mesh: Any, lower: Sequence[float], upper: Sequence[float], *,
-                  up: int, meters_per_unit: float) -> dict[str, Any] | None:
+                  up: int, meters_per_unit: float, up_sign: int = 1) -> dict[str, Any] | None:
     """Find a nearby, connected, nearly horizontal surface under the footprint.
 
     Probe the center, corners and edge midpoints; retain the actual face set for
@@ -19,10 +19,22 @@ def support_under(mesh: Any, lower: Sequence[float], upper: Sequence[float], *,
     """
     lower, upper = np.asarray(lower, dtype=float), np.asarray(upper, dtype=float)
     if (lower.shape != (3,) or upper.shape != (3,) or not np.isfinite([lower, upper]).all()
-            or np.any(upper <= lower) or up not in {1, 2}
+            or np.any(upper <= lower) or up not in {1, 2} or up_sign not in {-1, 1}
             or not np.isfinite(meters_per_unit) or meters_per_unit <= 0):
         raise ValueError("website_support_query_invalid")
     mesh = mesh.copy()
+    if up_sign == -1:
+        # Probe in an upright temporary frame; keep output in the source frame.
+        transform = np.eye(4)
+        transform[up, up] = -1
+        mesh.apply_transform(transform)
+        low, high = lower.copy(), upper.copy()
+        low[up], high[up] = -upper[up], -lower[up]
+        result = support_under(mesh, low, high, up=up, meters_per_unit=meters_per_unit)
+        if result is not None:
+            result["top_runtime_units"] *= -1
+            result["aabb_min"][up], result["aabb_max"][up] = -result["aabb_max"][up], -result["aabb_min"][up]
+        return result
     mesh.merge_vertices()
     horizontal = [axis for axis in range(3) if axis != up]
     triangles = np.asarray(mesh.triangles, dtype=float)
