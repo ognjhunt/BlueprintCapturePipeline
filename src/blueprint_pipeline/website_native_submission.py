@@ -79,6 +79,9 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
                                   release_admission_mode, staging_root):
     intent, preparation, context, rights, construction, paths = verified_submission_inputs(task)
     owner_task = intent["request"]["task"]
+    from .website_development_test import environment, LABEL
+    development = environment(preparation)
+    scene_id = construction["scene_identity"]["id"]
     commit = expected_production_commit
     deploy, toolchain, renderer = release_inputs(deploy_path=Path(deploy_receipt_path),
         provenance_path=Path(release_provenance_path), publication_root=Path(runtime_publication_root),
@@ -112,10 +115,10 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
     subject = runtime["subject"]
     lower, upper = subject["aabb_min_xyz"], subject["aabb_max_xyz"]
     support = owner_task["support"]
-    support_record = records.support_plane_input(scene_id=context["scene_id"], instance_id="website-support",
+    support_record = records.support_plane_input(scene_id=scene_id, instance_id="website-support",
         semantic_label=support["description"], sage_prim_path="/Root",
         bounds_min=support["aabb_min_xyz"], bounds_max=support["aabb_max_xyz"])
-    support_record.update(authority="registered_estimated_capture_and_reconstruction",
+    support_record.update(authority="authored_development_surface" if development else "registered_estimated_capture_and_reconstruction",
                           physical_scale_measured=False, source_face_indices=preparation["support"]["face_indices"])
     from .task_evaluation_surface_target import derive_surface_target, surface_execution_limits
     destination = owner_task["destination"]
@@ -136,7 +139,7 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
     # registration's task-region residual travel with the task, so a result can
     # abstain from a feasibility claim the estimate cannot support.
     physics = preparation["physics"]
-    template.update(instruction=context["description"], instruction_subject_label=subject["description"],
+    template.update(instruction=(LABEL + " " if development else "") + context["description"], instruction_subject_label=subject["description"],
                     visible_target_label=destination["visible_label"], surface_target=target,
                     dimension_authority="estimated", physical_world_truth_claimed=False,
                     physical_property_screen={
@@ -147,20 +150,22 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
                         "feasibility_claim_allowed": physics["sensitivity"] == "robust_within_range"},
                     placement_uncertainty_m=preparation["coordinate_frame"].get("placement_uncertainty_m"),
                     scale_authority=preparation["coordinate_frame"].get("scale_authority", "registration_estimate"))
+    if development:
+        template["test_environment"] = development
     template["owner_success_contract_authority"] = {"confirmation_status": "confirmed",
         "accepted_by": intent["request"]["owner"]["user_id"],
         "authority_reference": "scene-intent:" + intent["intent_digest"]}
     template["success"]["surface_target"] = target
     success["surface_target"] = target
     selection_ref = stage.json("configuration/subject.json", {
-        "schema_version": "task_evaluation_source_object_selection.v1", "scene_id": context["scene_id"],
+        "schema_version": "task_evaluation_source_object_selection.v1", "scene_id": scene_id,
         "source_object_id": construction["configurations"][2]["source_object_identity"],
         "review_label": subject["description"], "geometry_origin": "removed_before_reconstruction",
         "aabb_min_xyz_m": lower, "aabb_max_xyz_m": upper,
         "complete_object_geometry": False, "source_object_is_physics_authority": False})
     def plan(name, **fields):
         return stage.json(f"configuration/{name}.json", {"schema_version": f"website_{name}.v1",
-            "status": "execute_during_scene_configuration_run", "scene_id": context["scene_id"],
+            "status": "execute_during_scene_configuration_run", "scene_id": scene_id,
             "physical_metrology_claimed": False, **fields})
     renderer_ref = plan("renderer_qualification", appearance_qualified=False, browser_preview_qualifies=False)
     metric_ref = plan("metric_registration", **preparation["coordinate_frame"],
@@ -169,10 +174,10 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
     robot_ref = plan("robot_mount_interface", supported_robot_classes=["fixed_arm"], robot_qualified=False)
     workspace_ref = plan("workspace_clearance", workspace_clearance_qualified=False)
     camera_ref = stage.json("configuration/camera.json",
-        records.camera_calibration_plan(scene_id=context["scene_id"], strategy="pick_and_place"))
+        records.camera_calibration_plan(scene_id=scene_id, strategy="pick_and_place"))
     config_refs = [stage.json(f"configuration/stage_{i + 1}.json", value)
                    for i, value in enumerate(construction["configurations"])]
-    output_identity = {"id": context["scene_id"] + "-configured", "version": intent["intent_digest"][7:19]}
+    output_identity = {"id": scene_id + "-configured", "version": intent["intent_digest"][7:19]}
     recipe = records.recipe(recipe_id=run_id + "-recipe", team_namespace=team,
         scene_identity=construction["scene_identity"], task_identity=task_identity,
         subject_identity=construction["subject_identity"], output_identity=output_identity,
@@ -194,7 +199,7 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
         "team_namespace": team, "run_id": run_id, "scene_intent_digest": intent["intent_digest"],
         "scene": {"mode": "configure_source_scene", "identity": construction["scene_identity"],
             "source_manifest": manifest_ref, "website_native_inputs": website,
-            "appearance": {"kind": "gaussian_splat", "representation": website["appearance"],
+            "appearance": {"kind": "textured_usd" if development else "gaussian_splat", "representation": website["appearance"],
                            "renderer_qualification": renderer_ref},
             "geometry": {"kind": "other_derived", "collision": refs["scene.geometry.collision"], "validation": normalization_ref},
             "registration": {"metric_registration": metric_ref, "support_plane": support_ref,
@@ -219,7 +224,10 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
             "mounts": [{"source": release_ref, "container_path": "/inputs/release-binding.json", "mode": "read_only"},
                        {"container_path": "/outputs", "mode": "output"}], "output_limit_bytes": 20_000_000_000},
         "execution_adapter": {"kind": "scene_configuration_pipeline", "version": "v1", "runtime_source_bundle": release_ref},
-        "publication": {"input_namespace": namespace, "service_account_readback_required": True}, "spend": records.spend_block()}
+        "publication": {"input_namespace": namespace, "service_account_readback_required": True}, "spend": records.spend_block(construction["configurations"][2]["authoring_backend"])}
+    request["replacement_authoring_backend"] = construction["configurations"][2]["authoring_backend"]
+    require(request["spend"]["hard_cap_usd"] <= intent["request"]["execution"]["max_total_spend_usd"],
+            "website_native_construction_budget_exceeds_authority")
     validate_launch_preparation_request(request)
     from .website_native_inputs import validate_website_native_inputs
     envelope = {"request": request, "recipe": recipe, "materialized_references": stage.reference_rows(request)}

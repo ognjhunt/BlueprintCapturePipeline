@@ -128,7 +128,9 @@ def prepare_construction_stages(*, runtime_inputs_path: Path, preparation_path: 
                                "generated_region_label_required": True}
     assembly["collision"] = {"source": "website_prepared_background", "reuse_from_stage": "stage-2",
                               "support_prim": "/Root"}
-    assembly["support_plane"].update(authority="registered_estimated_capture_and_reconstruction",
+    from .website_development_test import environment
+    test = environment(preparation)
+    assembly["support_plane"].update(authority="authored_development_surface" if test else "registered_estimated_capture_and_reconstruction",
         physical_scale_measured=False, source_face_indices=preparation["support"]["face_indices"])
     configurations = [first["configuration"], second["configuration"], third,
         records.stage_four_configuration(replacement_identity=identity,
@@ -155,6 +157,10 @@ def construction_rights_admission(*, preparation: Mapping[str, Any], task_contex
             or task_context.get("confirmed") is not True
             or task_context.get("capture_rights", {}).get("derived_scene_generation_allowed") is not True):
         raise ValueError("website_construction_rights_context_invalid")
+    from .website_development_test import environment, enabled
+    test = environment(preparation)
+    if test and not enabled(task_context["context_digest"]):
+        raise ValueError("website_development_test_not_authorized")
     if preparation.get("status") != "intake_ready" or preparation.get("blockers"):
         raise ValueError("website_construction_preparation_not_ready")
     request = validate_request(preparation["intake_request"], now=now)

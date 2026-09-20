@@ -984,6 +984,15 @@ def publish_configured_scene_revision(
         },
         "offering_digest": "",
     }
+    if request["scene"].get("website_native_inputs"):
+        from .website_development_test import environment
+        _, preparation_path = _materialized_reference_file(envelope, contract_path="scene.source_manifest")
+        preparation = _read_json(preparation_path, code="website_development_source_invalid")
+        test_environment = environment(preparation)
+        if test_environment:
+            offering["proof_boundary"]["test_environment"] = test_environment
+            if request["scene"].get("rights", {}).get("public_display_authorization"):
+                raise TaskEvaluationSceneConfigurationPublicationError("website_development_public_offering_forbidden")
     # JSON has one numeric type. Preserve numeric values while avoiding Python's
     # integral-float spelling (0.0) at the Website's JSON.stringify boundary.
     # Existing Pipeline consumers still validate the Python-owned digest, so
