@@ -605,7 +605,16 @@ def _claim_job_lease(
         if status == "corrupt":
             return "corrupt", dict(ledger)
         if status == "completed":
-            return "completed", dict(ledger)
+            retained = _read_optional_json_object(capture_root / "pipeline" / "run_e2e_stage_ledger.json")
+            capture_result = _mapping(_mapping(_mapping(retained.get("stages")).get("capture_pipeline")).get("result_snapshot"))
+            if capture_result.get("status") != "completed_with_lane_failures":
+                return "completed", dict(ledger)
+            # Older acknowledgements treated this status as success. Preserve
+            # the old receipt while reopening only that explicitly failed run.
+            old_commit = _read_optional_json_object(capture_root / JOB_OUTPUT_COMMIT_FILENAME)
+            if old_commit:
+                write_json(capture_root / JOB_OUTPUT_COMMIT_FILENAME, {
+                    **old_commit, "status": "superseded_failed_lanes", "superseded_at": _iso_at(current_time)})
         expires_at = _parse_utc_timestamp(ledger.get("lease_expires_at"))
         if (
             status == "processing"
@@ -1077,6 +1086,7 @@ def _handoff_result_disposition(result: Mapping[str, Any]) -> tuple[str, list[st
         or "retryable" in status
         or status.startswith("blocked")
         or status.startswith("failed")
+        or status == "completed_with_lane_failures"
     ]
     if retryable:
         return "retryable_blocked", retryable
@@ -1261,6 +1271,10 @@ def process_handoff_payload(
                 "run_evaluation_prep": run_evaluation_prep,
                 "resume_completed_stages": True,
             }
+            if website_capture:
+                # The website preparation callback owns native construction;
+                # device evaluation/simulation lanes are a different intake.
+                run_kwargs.update(pipeline_lane="qualification", run_evaluation_prep=False)
             robot_eval_job_request = _resolve_staged_handoff_path(
                 handoff.robot_eval_job_request_uri,
                 handoff=handoff,

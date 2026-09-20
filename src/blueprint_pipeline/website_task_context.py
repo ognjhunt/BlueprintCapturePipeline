@@ -128,6 +128,7 @@ def load_website_scene_sponsorship(*, task_context: Mapping[str, Any], now: floa
     value = website_webapp_request(capture_id=task_context["capture_id"], operation="scene-sponsorship",
         payload={"request_id": task_context["request_id"], "scene_id": task_context["scene_id"]})
     from math import isfinite
+    issued = (value.get("consent") or {}).get("accepted_at_epoch")
     amounts = [value.get(key) for key in ("preparation_max_total_spend_usd", "upstream_max_spend_usd", "max_total_spend_usd")]
     if (value.get("schema_version") != "website_scene_sponsorship.v1" or value.get("sponsor") != "blueprint"
             or value.get("authority_digest") != canonical_digest(value, digest_field="authority_digest")
@@ -136,7 +137,10 @@ def load_website_scene_sponsorship(*, task_context: Mapping[str, Any], now: floa
             or any(isinstance(x, bool) or not isinstance(x, (float, int)) or not isfinite(x) or x <= 0 for x in amounts)
             or amounts[1] + amounts[2] > amounts[0]
             or not isinstance(value.get("expires_at_epoch"), (int, float))
-            or not now < value["expires_at_epoch"] <= now + 86400):
+            or isinstance(issued, bool) or not isinstance(issued, (int, float)) or not isfinite(issued)
+            or issued > now + 60
+            or not now < value["expires_at_epoch"]
+            or not 0 < value["expires_at_epoch"] - issued <= 86400):
         raise ValueError("website_scene_sponsorship_binding_invalid")
     return value
 

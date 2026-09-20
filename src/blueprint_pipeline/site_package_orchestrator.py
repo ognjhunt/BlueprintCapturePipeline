@@ -4827,6 +4827,8 @@ def run_qualification_pipeline(
             worldlabs_input, clean_plate,
             required=(descriptor.metadata or {}).get("capture_entry_source") == "browser_self_capture",
         )
+        if website_capture and clean_plate.get("status") not in {"noop", "objects_removed"}:
+            raise StageError("clean_plate", ",".join(clean_plate.get("blockers") or ["website_preparation_pending"]))
         if website_capture:
             privacy_processing.update(status=clean_plate.get("privacy_status"),
                                       fail_closed=not bool(clean_plate.get("privacy_verified")))
@@ -5349,6 +5351,17 @@ def run_qualification_pipeline(
             )
             provider_run["website_scene_preparation"] = website_scene_preparation
             write_json(pipeline_dir / "provider_run_manifest.json", provider_run)
+            outbox = website_scene_preparation.get("website_intake_outbox") or {}
+            if outbox.get("state") != "forward_pending":
+                raise StageError("website_scene_preparation", ",".join(
+                    website_scene_preparation.get("blockers")
+                    or (website_scene_preparation.get("runtime_inputs") or {}).get("blockers")
+                    or ["website_native_intake_pending"]))
+            # The authenticated website outbox owns the next stage. Do not
+            # project a device capture job or pretend native execution finished.
+            return {"status": "completed", "lane": "qualification",
+                    "website_scene_preparation": website_scene_preparation,
+                    "native_execution_complete": False}
         worldlabs_request_manifest_path = pipeline_dir / "worldlabs_request_manifest.json"
         worldlabs_request_manifest_uri = (
             f"gs://{bucket}/{pipeline_prefix}/worldlabs_request_manifest.json"

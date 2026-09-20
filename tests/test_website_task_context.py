@@ -64,7 +64,8 @@ def sponsorship():
         "request_id": "req1", "scene_id": "site-req1", "capture_id": "walkthrough-req1",
         "task_context_digest": context()["context_digest"],
         "preparation_max_total_spend_usd": 25, "upstream_max_spend_usd": 5,
-        "max_total_spend_usd": 20, "expires_at_epoch": 2000}
+        "max_total_spend_usd": 20, "expires_at_epoch": 2000,
+        "consent": {"accepted_at_epoch": 1000}}
     value["authority_digest"] = canonical_digest(value, digest_field="authority_digest")
     return value
 
@@ -152,3 +153,18 @@ def test_sam_spend_uses_signed_current_capture_reservation(monkeypatch):
     monkeypatch.setattr(module, "website_webapp_request", lambda **kw: {**receipt, "allocation_binding_digest": "sha256:" + "b" * 64})
     with pytest.raises(ValueError, match="receipt_invalid"):
         module.reserve_website_sam_spend(task_context=context(), binding_digest=digest, maximum_cost_usd=.02, request_count=2)
+
+
+def test_new_sponsorship_expiry_uses_signed_issuance_not_request_start(monkeypatch):
+    value = {**sponsorship(), "expires_at_epoch": 1000.8 + 86400,
+             "consent": {"accepted_at_epoch": 1000.8}}
+    value["authority_digest"] = canonical_digest(value, digest_field="authority_digest")
+    monkeypatch.setattr(module, "website_webapp_request", lambda **_: value)
+    assert module.load_website_scene_sponsorship(task_context=context(), now=1000) == value
+    for fields in ({"expires_at_epoch": 1000.8 + 86401},
+                   {"consent": {"accepted_at_epoch": 1061}}, {"expires_at_epoch": 999}):
+        bad = {**value, **fields}
+        bad["authority_digest"] = canonical_digest(bad, digest_field="authority_digest")
+        monkeypatch.setattr(module, "website_webapp_request", lambda **_: bad)
+        with pytest.raises(ValueError):
+            module.load_website_scene_sponsorship(task_context=context(), now=1000)
