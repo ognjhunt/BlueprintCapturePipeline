@@ -836,3 +836,22 @@ def test_candidacy_decision_sha_unchanged_for_canonical_boolean_rights() -> None
         _rights_decision(missing_block).decision_sha256
         == "18f42119d5a8453e3b987774e3c042e29eb7432a79d5d306f1a3494b101b9ddf"
     )
+
+
+def test_website_preflight_uses_website_bundle_without_device_intake(tmp_path: Path) -> None:
+    from blueprint_pipeline.preflight_capture import build_capture_preflight_report
+    raw = _minimal_ready_capture(tmp_path)
+    manifest = json.loads((raw / "manifest.json").read_text())
+    manifest.update(capture_id="capture-1", capture_source="browser_self_capture",
+                    site_submission_id="request-1")
+    _write_json(raw / "manifest.json", manifest)
+    _write_json(raw / "capture_upload_complete.json", {})
+    report = build_capture_preflight_report(raw.parent)
+    assert report["missing_required_inputs"] == []
+    assert report["status"] == "pre_screen_only"
+    assert not (raw / "capture_context.json").exists()
+    assert not (raw / "intake_packet.json").exists()
+    manifest["capture_source"] = "iphone"
+    _write_json(raw / "manifest.json", manifest)
+    report = build_capture_preflight_report(raw.parent)
+    assert set(report["missing_required_inputs"]) == {"capture_context", "intake_packet"}

@@ -1250,6 +1250,11 @@ def process_handoff_payload(
                 storage_root=storage_root,
                 storage_client=storage_client,
             )
+            # Website uploads need scene preparation before a robot team can
+            # submit a run. They cannot enter the legacy device-job converter,
+            # which requires an already-built dataset and a capture-app job ID.
+            raw_manifest = _read_optional_json_object(staged_capture_root / "raw" / "manifest.json")
+            website_capture = raw_manifest.get("capture_source") == "browser_self_capture"
             run_kwargs: dict[str, Any] = {
                 "capture_root": str(staged_capture_root),
                 "provider": provider,
@@ -1288,7 +1293,7 @@ def process_handoff_payload(
                         "allow_robot_eval_simulator_execution": False,
                     }
                 )
-            if stage_control_plane:
+            if stage_control_plane and not website_capture:
                 failure_stage = "control_plane_staging"
                 if control_plane_manifest_path is None:
                     raise PipelineError(
@@ -1310,7 +1315,7 @@ def process_handoff_payload(
             failure_stage = "run_e2e"
             result = (
                 run_e2e(**run_kwargs)
-                if run_e2e_enabled
+                if run_e2e_enabled or website_capture
                 else {
                     "status": "skipped",
                     "reason": "run_e2e_disabled_after_control_plane_staging",

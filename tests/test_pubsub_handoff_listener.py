@@ -1143,3 +1143,30 @@ def test_stage_handoff_missing_upload_complete_still_raises(tmp_path: Path) -> N
 
     with pytest.raises(PipelineError, match="capture_upload_complete.json"):
         stage_handoff_capture(handoff, storage_root=tmp_path, storage_client=client)  # type: ignore[arg-type]
+
+
+def test_website_upload_runs_preparation_before_legacy_robot_job_conversion(tmp_path: Path) -> None:
+    prefix = "scenes/scene-1/captures/capture-1"
+    manifest = {"scene_id": "scene-1", "capture_id": "capture-1",
+                "capture_source": "browser_self_capture", "site_submission_id": "request-1"}
+    client = FakeStorageClient([
+        FakeBlob(f"{prefix}/raw/manifest.json", json.dumps(manifest).encode()),
+        FakeBlob(f"{prefix}/raw/capture_upload_complete.json", b"{}"),
+        FakeBlob(f"{prefix}/raw/walkthrough.mov", b"video"),
+    ])
+    calls = []
+    def prepare(**kwargs):
+        calls.append(kwargs)
+        return {"status": "completed"}
+    payload = {"bucket": "capture-bucket", "scene_id": "scene-1", "capture_id": "capture-1",
+               "raw_prefix_uri": f"gs://capture-bucket/{prefix}/raw"}
+    kwargs = dict(storage_root=tmp_path, provider="openai", run_e2e=prepare,
+                  storage_client=client, stage_control_plane=True, run_e2e_enabled=False)
+    first = process_handoff_payload(payload, **kwargs)
+    second = process_handoff_payload(payload, **kwargs)
+    assert first["status"] == "processed"
+    assert first["control_plane_staging"] is None
+    assert second["status"] == "skipped_already_processed"
+    assert len(calls) == 1
+    assert calls[0]["resume_completed_stages"] is True
+    assert "robot_eval_job_request" not in calls[0]

@@ -456,3 +456,27 @@ def test_installed_dispatcher_and_control_plane_share_the_canonical_inbox() -> N
     )
     assert "blueprint-agent-run-dispatcher.timer" in installer
     assert "blueprint-pipeline-control-plane.timer" in installer
+
+
+@pytest.mark.parametrize("partition", ["", "capture partition"])
+def test_dispatcher_service_passes_one_capture_scope(tmp_path: Path, partition: str) -> None:
+    import os
+    import shlex
+    import subprocess
+    service = Path(__file__).resolve().parents[1] / "deploy/systemd/blueprint-agent-run-dispatcher.service"
+    line = next(line for line in service.read_text().splitlines() if line.startswith("ExecStart="))
+    command = shlex.split(line.removeprefix("ExecStart="))[2].replace("$$", "$")
+    printer = tmp_path / "print-argv"
+    printer.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
+    printer.chmod(0o755)
+    env = {**os.environ, "BLUEPRINT_PIPELINE_REPO": str(tmp_path),
+           "BLUEPRINT_PIPELINE_PYTHON": str(printer), "BLUEPRINT_WEBAPP_URL": "https://example.com",
+           "BLUEPRINT_AGENT_RUN_CAPTURE_PARTITION_ROOT": partition,
+           "BLUEPRINT_AGENT_RUN_CAPTURE_ROOT": "single capture", "BLUEPRINT_AGENT_RUN_CAPTURE_ID": "capture-1",
+           "BLUEPRINT_PIPELINE_SYNC_TOKEN_FILE": "token file", "BLUEPRINT_ROBOT_EVAL_JOB_REQUEST_INBOX": "inbox",
+           "BLUEPRINT_AGENT_RUN_JOURNAL_DIR": "journal"}
+    args = subprocess.run(["/bin/bash", "-c", command], env=env, check=True,
+                          text=True, capture_output=True).stdout.splitlines()
+    expected_scope = ["--capture-partition-root", partition] if partition else ["--capture-root", "single capture", "--capture-id", "capture-1"]
+    assert args == ["-m", "blueprint_pipeline.agent_run_executor", "--webapp-url", "https://example.com",
+                    *expected_scope, "--token-file", "token file", "--inbox-dir", "inbox", "--journal-dir", "journal"]
