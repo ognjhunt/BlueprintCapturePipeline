@@ -211,7 +211,9 @@ def _build_removal_manifest(plan: Mapping[str, Any]) -> Dict[str, Any]:
         )
     return {
         "schema_version": REMOVAL_MANIFEST_SCHEMA_VERSION,
-        "generated_at": utc_now_iso(),
+        # This report derives from the retained analysis. A retry is not new
+        # evidence: changing its timestamp changes the downstream intake hash.
+        "generated_at": plan["generated_at"],
         "claim_ceiling": CLAIM_CEILING,
         "removal_plan_schema_version": plan.get("schema_version"),
         "removal_plan_status": plan.get("status"),
