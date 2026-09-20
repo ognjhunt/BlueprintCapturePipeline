@@ -60,16 +60,23 @@ def select_task_track(*, target: Mapping[str, Any], tracks: list[Mapping[str, An
                 if isinstance(row, Mapping) and row.get("box_xywh_normalized") is not None]
     if not evidence:
         raise ValueError("task_target_spatial_anchor_missing")
+    by_id = {frame["frame_id"]: frame for frame in frames}
     scores: list[tuple[float, Mapping[str, Any]]] = []
     for track in tracks:
         if track.get("label") != target["target_id"]:
             continue
         overlaps = []
         for observation in evidence:
-            frame = min(frames, key=lambda f: abs(float(f["timestamp_seconds"]) - observation["timestamp_seconds"]))
-            support = next((row for row in track["observations"] if row["source_frame_id"] == frame["frame_id"]), None)
-            if support is None:
+            # Video-analysis timestamps are coarse (static analysis samples at
+            # 2 FPS). Use the nearest observed mask within that bounded window,
+            # not a sparse geometry frame or an unobserved exact timestamp.
+            nearby = [row for row in track["observations"] if row["source_frame_id"] in by_id
+                      and abs(float(by_id[row["source_frame_id"]]["timestamp_seconds"])
+                              - observation["timestamp_seconds"]) <= 0.5]
+            if not nearby:
                 continue
+            support = min(nearby, key=lambda row: abs(
+                float(by_id[row["source_frame_id"]]["timestamp_seconds"]) - observation["timestamp_seconds"]))
             mask = decode_track_mask(support)
             ys, xs = np.nonzero(mask)
             if not len(xs):
@@ -210,6 +217,9 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
         # editing now; the same tracks gain geometry later without a second call.
         tracks = [track_at_geometry_resolution({**track, "observations": [row for row in track["observations"]
                   if row["source_frame_id"] in geometry_ids]}, frames) for track in result["tracks"]]
+        identity_tracks = result["tracks"]
+        identity_frames = [{"frame_id": row["source_frame_id"], "timestamp_seconds": row["decoded_pts_seconds"]}
+                           for row in registry]
     else:
         request_path, result_path, tracks_path = root / "request.json", root / "result.json", root / "tracks.json"
         write_json(request_path, request)
@@ -225,12 +235,15 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
         if result.get("provider_result_artifact", {}).get("sha256") != _sha256_file(tracks_path):
             raise ValueError("website_sam31_retained_tracks_changed")
         tracks = json.loads(tracks_path.read_text())["tracks"]
+        identity_tracks, identity_frames = tracks, frames
     selected = []
     selected_track_ids = set()
     for target in targets:
-        candidates = [{**track, "label": target["target_id"]} for track in tracks
+        candidates = [{**track, "label": target["target_id"]} for track in identity_tracks
                       if track.get("label") == prompt_labels[target["target_id"]]]
-        track = select_task_track(target=target, tracks=candidates, frames=frames)
+        identity = select_task_track(target=target, tracks=candidates, frames=identity_frames)
+        track = {**next(row for row in tracks if row["track_id"] == identity["track_id"]),
+                 "label": target["target_id"]}
         if track["track_id"] in selected_track_ids:
             raise ValueError("website_task_targets_resolve_to_same_instance")
         selected_track_ids.add(track["track_id"])
