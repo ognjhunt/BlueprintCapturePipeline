@@ -48,8 +48,6 @@ OWNERSHIP_SCHEMA = "task_evaluation_scene_attempt_ownership.v1"
 TERMINAL_LAUNCH_STATUSES = {"blocked", "completed", "failed"}
 CONTROLS_PHASES = ("construction", "controls", "placement")
 _ATTEMPT_FIELDS = ("attempt_id", "attempt_digest", "intent_digest", "provider", "maximum_spend_usd", "source_commit")
-_PREPARATION_SUFFIX = "-scene-configuration-preparation"
-_ACTIVATION_SUFFIX = "-scene-configuration-activation-auto"
 SETTLED_SPEND_BASES = {
     "retired_source_unreconciled",      # the source row executed its preparation: full hold, counts as an attempt
     "terminal_launch_unreconciled",     # a terminal launch may have paid: full hold until a reconciliation is bound
@@ -70,8 +68,10 @@ def _sealed(path: Path, field: str) -> dict[str, Any]:
 
 
 def launch_id_for_preparation(preparation_id: str) -> str:
-    _require(preparation_id.endswith(_PREPARATION_SUFFIX), "preparation_id_invalid")
-    return preparation_id[: -len(_PREPARATION_SUFFIX)] + _ACTIVATION_SUFFIX + "-launch"
+    from .task_evaluation_scene_configuration_activation_automation import _activation_id, _bounded_launch_id
+
+    _require(preparation_id.endswith("-preparation"), "preparation_id_invalid")
+    return _bounded_launch_id(_activation_id(preparation_id))
 
 
 def dependent_row_ids(request_digest: str) -> dict[str, str]:
@@ -80,6 +80,23 @@ def dependent_row_ids(request_digest: str) -> dict[str, str]:
     rows = {"scene-configuration-" + request_digest[7:31]: "scene_configuration"}
     rows.update({f"{stem}-{phase}": phase for phase in CONTROLS_PHASES})
     return rows
+
+
+def _factory_binds_link(reference, retired, link):
+    """Website IDs do not embed source attempt IDs; use their sealed factory."""
+    if reference is None:
+        return False
+    from .task_evaluation_scene_configuration_submission_inputs import checked_file, read
+    factory = read(checked_file(reference["path"], reference), digest_field="factory_digest")
+    if factory.get("schema_version") != "website_scene_attempt_factory.v1":
+        return False
+    request_ref = factory["submission_request"]
+    request = read(checked_file(request_ref["path"], request_ref))
+    return (factory.get("attempt_digest") == retired["attempt_digest"]
+            and factory.get("intent_digest") == link["intent_digest"]
+            and factory.get("source_commit") == link["expected_production_commit"]
+            and canonical_digest(request) == link["request_digest"]
+            and request.get("preparation_id") == link["preparation_id"])
 
 
 def validate_terminal_settlement(*, receipt: Mapping[str, Any], attempt: Mapping[str, Any]) -> None:
@@ -122,7 +139,8 @@ def validate_terminal_settlement(*, receipt: Mapping[str, Any], attempt: Mapping
     rows = dependent_row_ids(str(link.get("request_digest")))
     _require(
         attempt["attempt_id"] in rows
-        and ("-" + str(retired.get("attempt_id")) + "-") in str(link.get("preparation_id"))
+        and (("-" + str(retired.get("attempt_id")) + "-") in str(link.get("preparation_id"))
+             or _factory_binds_link(dependency.get("source_factory"), retired, link))
         and (rows[attempt["attempt_id"]] != "scene_configuration" or attempt.get("input_digest") == link["request_digest"]),
         "dependency_binding_invalid",
     )
@@ -196,7 +214,8 @@ def _launch_state(*, launch_id: str, launch_execution_root: Path, launch_queue_r
 
 def settle_retired_attempt_rows(*, directory: Path, retired_attempt: Mapping[str, Any],
         retirement_record: Mapping[str, Any], ownership_record: Mapping[str, Any],
-        launch_execution_root: Path, launch_queue_root: Path, dry_run: bool = False) -> dict[str, Any]:
+        launch_execution_root: Path, launch_queue_root: Path, dry_run: bool = False,
+        source_factory: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Write settlement receipts for the retired attempt's rows; idempotent and lock-free by design."""
     from . import task_evaluation_scene_intake as intake
 
@@ -231,16 +250,24 @@ def settle_retired_attempt_rows(*, directory: Path, retired_attempt: Mapping[str
             intake.write_exclusive(target, receipt)
         settled.append({"attempt_id": attempt["attempt_id"], "status": "settled"})
 
-    source_path = directory / "attempts" / (retired["attempt_id"] + ".json")
+    from .task_evaluation_scene_preparation_attempts import preparation_attempt_path, SCHEMA as PREPARATION_SCHEMA
+    source_path = preparation_attempt_path(directory, retired["attempt_id"])
     source_row = intake._read(source_path, "attempt_digest")
     _require(source_row["attempt_digest"] == retired["attempt_digest"], "retired_attempt_digest_mismatch")
-    settle(source_row, dependency=None, execution=None, phase=None)
+    if source_row.get("schema_version") == PREPARATION_SCHEMA:
+        _require(source_row.get("maximum_spend_usd") == 0 and source_row.get("paid_authority_granted") is False,
+                 "preparation_has_paid_authority")
+    else:
+        settle(source_row, dependency=None, execution=None, phase=None)
     marker = "-" + retired["attempt_id"] + "-"
     for link_path in sorted((directory / "preparations").glob("*.json")):
         if link_path.name.endswith(".activation.json"):
             continue
         link = _read(link_path)
-        if link.get("schema_version") != "task_evaluation_scene_preparation_link.v1" or marker not in str(link.get("preparation_id", "")):
+        if link.get("schema_version") != "task_evaluation_scene_preparation_link.v1":
+            continue
+        factory_bound = _factory_binds_link(source_factory, retired, link)
+        if marker not in str(link.get("preparation_id", "")) and not factory_bound:
             continue
         if link.get("link_digest") != canonical_digest(link, digest_field="link_digest"):
             skipped.append({"preparation_link": link_path.name, "reason": "link_seal_invalid"})
@@ -252,6 +279,8 @@ def settle_retired_attempt_rows(*, directory: Path, retired_attempt: Mapping[str
             skipped.append({"preparation_link": link_path.name, "reason": "launch_not_terminal", "launch_id": launch_id})
             continue
         dependency = {"preparation_link": _file(link_path), "request_digest": link["request_digest"]}
+        if factory_bound:
+            dependency["source_factory"] = dict(source_factory)
         for row_id, phase in dependent_row_ids(str(link["request_digest"])).items():
             row_path = directory / "attempts" / (row_id + ".json")
             if not row_path.is_file():
@@ -268,10 +297,12 @@ def sweep_retired_attempts(*, directory: Path, state: Mapping[str, Any], config:
     summary: dict[str, Any] = {"settled_rows": 0, "already_released_rows": 0, "skipped": []}
     entries = []
     for lineage in state.get("release_predecessors") or []:
-        entries.append((lineage.get("attempt"), lineage.get("reconciliation")) if isinstance(lineage, Mapping) else (None, None))
+        entries.append((lineage.get("attempt"), lineage.get("reconciliation"), lineage.get("factory"))
+                       if isinstance(lineage, Mapping) else (None, None, None))
     for lineage in state.get("recovery_predecessors") or []:
-        entries.append((lineage.get("attempt"), lineage.get("evidence")) if isinstance(lineage, Mapping) else (None, None))
-    for attempt_ref, evidence in entries:
+        entries.append((lineage.get("attempt"), lineage.get("evidence"), None)
+                       if isinstance(lineage, Mapping) else (None, None, None))
+    for attempt_ref, evidence, factory_ref in entries:
         try:
             if not isinstance(attempt_ref, Mapping) or not isinstance(evidence, Mapping):
                 raise ValueError("terminal_settlement_lineage_shape_invalid")
@@ -281,7 +312,7 @@ def sweep_retired_attempts(*, directory: Path, state: Mapping[str, Any], config:
                 directory=directory, retired_attempt=retired,
                 retirement_record=evidence["failure"], ownership_record=evidence["ownership_reconciliation"],
                 launch_execution_root=Path(config["launch_execution_root"]),
-                launch_queue_root=Path(config["launch_queue_root"]), dry_run=dry_run)
+                launch_queue_root=Path(config["launch_queue_root"]), dry_run=dry_run, source_factory=factory_ref)
         except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
             summary["skipped"].append({"attempt": str((attempt_ref or {}).get("path", ""))[-60:], "reason": str(exc)[:120]})
             continue

@@ -75,7 +75,7 @@ def retain_failure(*, attempt, link, child_queue_root, output_root, now):
     return path
 
 
-def reconcile_ownership(*, attempt, failure_path, config, output_root, now):
+def reconcile_ownership(*, attempt, failure_path, config, output_root, now, execution_attempt=None):
     """Observe all configured ownership roots and global inventory; never reap.
 
     Unresolved pending teardowns continue to block. This function never closes
@@ -87,7 +87,12 @@ def reconcile_ownership(*, attempt, failure_path, config, output_root, now):
     failure = read(failure_path, digest_field="failure_digest")
     guard_path = safe_path(config["provider_guard_path"])
     guard = read(guard_path)
-    verified, blockers = _guard_provider_zero(guard=guard, required_providers=[attempt["provider"]],
+    if execution_attempt is not None:
+        require(execution_attempt.get("intent_digest") == attempt.get("intent_digest")
+                and execution_attempt.get("source_commit") == attempt.get("source_commit"),
+                "recovery_execution_attempt_mismatch")
+    provider = (execution_attempt or attempt)["provider"]
+    verified, blockers = _guard_provider_zero(guard=guard, required_providers=[provider],
         max_age_seconds=300, now=datetime.fromtimestamp(now, timezone.utc),
         not_before=datetime.fromtimestamp(failure["observed_at_epoch"], timezone.utc))
     require(verified, "recovery_provider_zero_required:" + ";".join(blockers))

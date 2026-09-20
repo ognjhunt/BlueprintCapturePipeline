@@ -8,6 +8,7 @@ import pytest
 
 from blueprint_pipeline import task_evaluation_terminal_scene_attempt_settlement as settlement
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.task_evaluation_sam31_prefix_adoption import record
 from blueprint_pipeline.task_evaluation_retained_controls_evidence import validated_cancellation
 from blueprint_pipeline.task_evaluation_scene_intake import (
     SceneIntakeError, reserve_scene_attempt, stage_scene_intent,
@@ -86,6 +87,117 @@ def _settle(fx, **kwargs):
     return settlement.settle_retired_attempt_rows(directory=fx["directory"], retired_attempt=fx["source"],
         retirement_record={"path": str(fx["transition"])}, ownership_record={"path": str(fx["ownership"])},
         launch_execution_root=fx["launches"], launch_queue_root=fx["queue"], **kwargs)
+
+
+@pytest.mark.parametrize("preparation_id,expected", [
+    ("scene-source-a1-scene-configuration-preparation", "scene-source-a1-scene-configuration-activation-auto-launch"),
+    ("website-owner-commit-preparation", "website-owner-commit-activation-auto-launch"),
+])
+def test_settlement_uses_the_controllers_actual_launch_id(preparation_id, expected):
+    assert settlement.launch_id_for_preparation(preparation_id) == expected
+
+
+def _website_preparation(tmp_path, monkeypatch):
+    from blueprint_pipeline.task_evaluation_scene_preparation_attempts import create_preparation_attempt
+    fx = _fixture(tmp_path, launch_status=None)
+    monkeypatch.setenv("BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT", str(fx["root"]))
+    monkeypatch.setenv("BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_CLIENT_IDS", "webapp")
+    for path in (fx["directory"] / "attempts").glob("*.json"):
+        path.unlink()
+    source = create_preparation_attempt(directory=fx["directory"], attempt_id="source-website",
+        source_commit=COMMIT, runtime_digest="sha256:" + "e" * 64,
+        input_digest="sha256:" + "f" * 64, now=101)
+    fx["source"] = source
+    from tests.test_task_evaluation_launch_preparation_contract import test_configuration_request
+    from blueprint_pipeline.task_evaluation_launch_preparation_contract import validate_launch_preparation_request
+    request = test_configuration_request()
+    request.update(preparation_id="website-owner-commit-preparation", expected_production_commit=COMMIT)
+    request = validate_launch_preparation_request(request)
+    digest = canonical_digest(request)
+    fx["rows"] = settlement.dependent_row_ids(digest)
+    row_id = next(iter(fx["rows"]))
+    _reserve(fx["root"], fx["intent"], row_id, 16.76, input_digest=digest)
+    link_path = next((fx["directory"] / "preparations").glob("*.json"))
+    link = json.loads(link_path.read_text())
+    link.update(preparation_id=request["preparation_id"], request_digest=digest)
+    _write(link_path, _seal(link, "link_digest"))
+    for path, field in ((fx["transition"], "failure_digest"), (fx["ownership"], "ownership_digest")):
+        value = json.loads(path.read_text())
+        value["attempt_digest"] = source["attempt_digest"]
+        _write(path, _seal(value, field))
+    request_path = _write(tmp_path / "website-request.json", request)
+    factory_path = _write(tmp_path / "factory.json", _seal({
+        "schema_version": "website_scene_attempt_factory.v1", "attempt_digest": source["attempt_digest"],
+        "intent_digest": fx["intent"]["intent_digest"], "source_commit": COMMIT,
+        "submission_request": record(request_path)}, "factory_digest"))
+    fx["factory"] = record(factory_path)
+    fx["launch_id"] = settlement.launch_id_for_preparation(request["preparation_id"])
+    return fx, row_id
+
+
+def test_zero_cost_website_preparation_releases_only_unstarted_construction_hold(tmp_path, monkeypatch):
+    fx, row_id = _website_preparation(tmp_path, monkeypatch)
+    result = _settle(fx, source_factory=fx["factory"])
+    assert result["rows"] == [{"attempt_id": row_id, "status": "settled"}]
+    attempt = json.loads((fx["directory"] / "attempts" / (row_id + ".json")).read_text())
+    receipt = validated_cancellation(fx["directory"], attempt)
+    assert receipt["settled_spend"]["retained_spend_usd"] == 0
+    assert receipt["settled_spend"]["counts_as_attempt"] is False
+    assert _reserve(fx["root"], fx["intent"], "scene-configuration-successor", 16.76, now=300)["status"] == "reserved"
+    assert _settle(fx, source_factory=fx["factory"])["rows"][0]["status"] == "already_released"
+
+
+def test_website_preparation_does_not_release_pending_execution_or_changed_factory(tmp_path, monkeypatch):
+    fx, _ = _website_preparation(tmp_path, monkeypatch)
+    pending = _write(fx["queue"] / "pending" / (fx["launch_id"] + ".json"), {"launch_id": fx["launch_id"]})
+    result = _settle(fx, source_factory=fx["factory"])
+    assert result["rows"] == []
+    assert result["skipped"][0]["reason"] == "launch_not_terminal"
+    pending.unlink()
+    Path(fx["factory"]["path"]).write_text("{}")
+    with pytest.raises(ValueError):
+        _settle(fx, source_factory=fx["factory"])
+
+
+def test_activated_website_preparation_uses_execution_reconciliation_on_release_change(tmp_path, monkeypatch):
+    from blueprint_pipeline import task_evaluation_scene_progression as engine
+    from blueprint_pipeline import task_evaluation_scene_progression_recovery as recovery
+    from blueprint_pipeline.task_evaluation_launch_preparation_queue import ENVELOPE_SCHEMA_VERSION
+    fx, row_id = _website_preparation(tmp_path, monkeypatch)
+    directory = fx["directory"]
+    link_path = next((directory / "preparations").glob("*.json"))
+    link = json.loads(link_path.read_text())
+    paid_path = directory / "attempts" / (row_id + ".json")
+    paid = json.loads(paid_path.read_text())
+    link["scene_configuration_attempt"] = record(paid_path)
+    activation_link = _write(directory / "activation.json", _seal(link, "link_digest"))
+    factory = json.loads(Path(fx["factory"]["path"]).read_text())
+    request = json.loads(Path(factory["submission_request"]["path"]).read_text())
+    preparation_queue = tmp_path / "preparations"
+    _write(preparation_queue / "materialized" / (request["preparation_id"] + "-x.json"), _seal({
+        "schema_version": ENVELOPE_SCHEMA_VERSION, "request": request,
+        "request_digest": canonical_digest(request)}, "envelope_digest"))
+    output = tmp_path / "factory-output" / fx["intent"]["intent_id"] / fx["source"]["attempt_id"]
+    _write(output / "submission-attempts" / "1.json", {})
+    state = {"attempt_id": fx["source"]["attempt_id"],
+        "attempt": record(directory / "preparation-attempts" / (fx["source"]["attempt_id"] + ".json")),
+        "activation": {"present": True}, "activation_link": record(activation_link),
+        "factory": fx["factory"]}
+    observed = []
+    def reconcile(**kwargs):
+        observed.append(kwargs)
+        return {"failure": record(fx["transition"]),
+                "ownership_reconciliation": record(fx["ownership"])}
+    monkeypatch.setattr(recovery, "reconcile_ownership", reconcile)
+    assert engine._release_successor(directory=directory, intent=fx["intent"], state=state,
+        config={"activation_enabled": True, "factory_output_root": str(tmp_path / "factory-output"),
+                "preparation_queue_root": str(preparation_queue), "launch_execution_root": str(fx["launches"]),
+                "launch_queue_root": str(fx["queue"])}, release={"source_commit": "b" * 40}, now=300)
+    assert observed[0]["execution_attempt"] == paid
+    assert observed[0]["attempt"] == fx["source"]
+    assert "attempt_id" not in state
+    assert state["release_predecessors"][0]["factory"] == fx["factory"]
+    assert validated_cancellation(directory, paid)["settled_spend"]["retained_spend_usd"] == 0
 
 
 def test_settlement_releases_holds_and_attempt_slots(tmp_path: Path) -> None:

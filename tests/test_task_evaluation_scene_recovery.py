@@ -3,6 +3,7 @@ import copy
 import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -186,3 +187,25 @@ def test_dead_machine_recovery_fails_closed(override):
     )
 
     assert gaussian_excision_dead_machine_evidence(_dead_machine_producer(**override)) is False
+
+
+@pytest.mark.parametrize("mismatched_execution", [False, True])
+def test_preparation_release_reconciles_its_bound_execution_provider(tmp_path, mismatched_execution):
+    from blueprint_pipeline.task_evaluation_scene_progression_recovery import reconcile_ownership
+    _, execution, _ = setup(tmp_path)
+    preparation = {**execution, "provider": "control_plane", "maximum_spend_usd": 0}
+    if mismatched_execution:
+        execution = {**execution, "source_commit": "f" * 40}
+    kwargs = dict(attempt=preparation, execution_attempt=execution,
+        failure_path=tmp_path / "failure.json", output_root=tmp_path / "reconciliation", now=104,
+        config={"provider_guard_path": str(tmp_path / "guard.json"), "ownership_roots": [str(tmp_path)],
+            "child_execution_root": str(tmp_path / "children"), "launch_execution_root": str(tmp_path / "launches"),
+            "child_queue_root": str(tmp_path), "launch_queue_root": str(tmp_path)})
+    if mismatched_execution:
+        with pytest.raises(ValueError, match="recovery_execution_attempt_mismatch"):
+            reconcile_ownership(**kwargs)
+    else:
+        receipt = reconcile_ownership(**kwargs)
+        owner = json.loads(Path(receipt["ownership_reconciliation"]["path"]).read_text())
+        assert owner["attempt_digest"] == preparation["attempt_digest"]
+        assert owner["status"] == "closed_without_resource"
