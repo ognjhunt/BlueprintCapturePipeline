@@ -434,11 +434,38 @@ def _recover_configuration_capacity(*, directory, intent, state, attempt, link_p
     admission = capacity_admission(observed, config, now)
     state["capacity_recovery_admission"] = admission
     if admission["status"] != "admitted":
-        return {"status": "blocked", "phase": "configuration_capacity", "blockers": ["preallocation_capacity_not_recovered"]}
-    require(intent["request"]["execution"]["max_retries"] > 0, "retry_cap_exhausted")
+        credit = admission.get("provider_credit_admission") or {}
+        return {"status": "blocked", "phase": "configuration_capacity",
+                "blockers": credit.get("blockers") or ["preallocation_capacity_not_recovered"]}
+    # A proven funding refusal did not start the authorized execution. Keep its
+    # bounded administrative recovery separate from retries of executed work.
+    from .task_evaluation_scene_capacity_recovery import CREDIT_KIND
+    unstarted_credit = (attempt.get("schema_version") == "task_evaluation_scene_preparation_attempt.v1"
+                        and observed.get("kind") == CREDIT_KIND)
+    require(intent["request"]["execution"]["max_retries"] > 0 or unstarted_credit, "retry_cap_exhausted")
     successor_id = "source-" + canonical_digest({"prior_attempt_digest": attempt["attempt_digest"],
         "source_commit": release["source_commit"], "intent_digest": intent["intent_digest"],
         "failure_result_digest": observed["values"]["result"]["result_digest"], "kind": KIND})[7:31]
+    if attempt.get("schema_version") == "task_evaluation_scene_preparation_attempt.v1":
+        from .task_evaluation_scene_preparation_attempts import create_preparation_attempt, preparation_attempt_path
+        from .task_evaluation_scene_recovery import MAX_PREALLOCATION_CAPACITY_RECOVERIES
+        require(sum(row.get("kind") == KIND for row in state.get("recovery_predecessors", []))
+                < MAX_PREALLOCATION_CAPACITY_RECOVERIES, "preallocation_capacity_recovery_cap_exhausted")
+        failure_path = retain_failure(observation=observed, attempt=attempt,
+            output_root=output / "capacity-recovery", admission=admission)
+        evidence = reconcile_ownership(attempt=attempt, failure_path=failure_path, config=config,
+            output_root=output / "capacity-recovery/reconciliations", now=now,
+            execution_attempt=observed["values"]["configuration_attempt"])
+        _settle_retired_rows(directory=directory, state=state, config=config, retired=attempt, evidence=evidence)
+        create_preparation_attempt(directory=directory, attempt_id=successor_id, now=now,
+            source_commit=release["source_commit"], runtime_digest=release["runtime_digest"],
+            input_digest=state["binding_digest"])
+        state.setdefault("recovery_predecessors", []).append(
+            {"attempt": state["attempt"], "factory": state["factory"], "evidence": evidence, "kind": KIND})
+        _clear_attempt(state)
+        state.update(attempt_id=successor_id, attempt_commit=release["source_commit"],
+                     attempt=record(preparation_attempt_path(directory, successor_id)))
+        return {"status": "preparing", "phase": "capacity_recovery_reserved", "blockers": []}
     successor_path = directory / "attempts" / (successor_id + ".json")
     prior_reservation = intake._read(successor_path, "attempt_digest") if successor_path.exists() else None
     if prior_reservation is not None:
