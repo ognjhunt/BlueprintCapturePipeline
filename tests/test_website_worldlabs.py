@@ -230,3 +230,38 @@ def test_controller_does_not_reserve_marble_on_unmerged_code(tmp_path, monkeypat
     monkeypatch.setattr(control, "reserve_website_preparation_spend", lambda **_: pytest.fail("must not reserve"))
     with pytest.raises(ValueError, match="release_not_admitted"):
         allocator.submit_sponsored_website_reconstruction(descriptor=_descriptor(tmp_path), capture_root=tmp_path)
+
+
+def test_controller_retains_original_reservation_after_upload_auth_failure(tmp_path, monkeypatch):
+    from blueprint_pipeline import paid_resource_allocator as allocator
+    from blueprint_pipeline import website_task_context as control
+    descriptor = _descriptor(tmp_path)
+    descriptor['metadata'].pop('website_reconstruction_admission')
+    monkeypatch.setattr(allocator, '_current_checkout_source_state', lambda: ('1'*40, True, True))
+    monkeypatch.setattr(allocator, '_source_checkout_blockers', lambda *_: ([], '1'*40))
+    monkeypatch.setattr(provider_preview, '_worldlabs_api_key', lambda: 'test')
+    reservations, calls = [], []
+    def reserve(**kwargs):
+        reservations.append(kwargs)
+        if len(reservations)>1:
+            assert kwargs['retained_admission']['status'] == 'admitted'
+            assert kwargs['retained_admission']['allocation_binding_digest'] == kwargs['binding_digest']
+        admission = {'schema_version':'paid_lane_admission.v1', 'status':'admitted','blockers':[],
+                     'resource_class':kwargs['resource_class'], 'external_disclosure_allowed':True,
+                     'maximum_cost_usd':kwargs['maximum_cost_usd'], 'allocation_binding_digest':kwargs['binding_digest']}
+        return admission, _grant(admission)
+    monkeypatch.setattr(control, 'reserve_website_preparation_spend', reserve)
+    def api(path, **kwargs):
+        calls.append(path)
+        if len(calls)==1:
+            raise RuntimeError('worldlabs_api_401')
+        if path.endswith('prepare_upload'):
+            return {'media_asset':{'media_asset_id':'image'}, 'upload_info':{'upload_url':'https://example.com/upload'}}
+        return {'operation_id':'one-operation'}
+    monkeypatch.setattr(provider_preview, '_worldlabs_api_request', api)
+    monkeypatch.setattr(provider_preview, '_presigned_upload', lambda *a, **kw: None)
+    with pytest.raises(RuntimeError, match='worldlabs_api_401'):
+        allocator.submit_sponsored_website_reconstruction(descriptor=descriptor, capture_root=tmp_path)
+    second = allocator.submit_sponsored_website_reconstruction(descriptor=descriptor, capture_root=tmp_path)
+    assert second['provider_run_id'] == 'one-operation'
+    assert calls.count('/marble/v1/worlds:generate') == 1
