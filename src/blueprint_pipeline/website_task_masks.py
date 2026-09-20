@@ -261,6 +261,11 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
                     raise
                 previous_prompt = next(p["text"] for p in prompts if p["output_label"] == prompt_labels[target["target_id"]])
                 if grounded["segmentation_prompt"].casefold() == previous_prompt.casefold():
+                    grounded = ground_task_target(target=grounded, tracks=candidates, registry=registry,
+                        video=video_artifact, task_context=task_context, output_root=root / "grounding",
+                        failed_segmentation_prompt=previous_prompt)
+                    grounding = grounded["grounding"]
+                if grounded["segmentation_prompt"].casefold() == previous_prompt.casefold():
                     raise
                 # Only one evidence-derived concept refinement. Reuse full-video
                 # transport and admission; never buy repeated identical attempts.

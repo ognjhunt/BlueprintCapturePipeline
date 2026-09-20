@@ -28,3 +28,36 @@ def test_grounding_refines_visual_evidence_without_rewriting_the_task():
 def test_uncertain_or_invalid_grounding_cannot_authorize_a_mask(changes):
     with pytest.raises(ValueError, match="grounding"):
         validate_grounding(candidate(**changes), target={}, timestamp=8, frame_id="frame", image_digest="image")
+
+
+def test_concept_recovery_binds_unedited_crop_and_keeps_full_frame_coordinates(tmp_path, monkeypatch):
+    from PIL import Image
+    from blueprint_pipeline import website_task_grounding as module
+    from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
+
+    video = tmp_path / "video.mp4"
+    video.write_bytes(b"retained video")
+    def extract(args, **kwargs):
+        Image.new("RGB", (100, 200), "white").save(args[-1])
+    monkeypatch.setattr(module.subprocess, "run", extract)
+    calls = []
+    def retain(**kwargs):
+        calls.append(kwargs)
+        return {"observation": candidate()}
+    monkeypatch.setattr(module, "retained_gemini_call", retain)
+    target = {"target_id": "support", "disposition": "keep", "spatial_evidence": [
+        {"timestamp_seconds": 8, "box_xywh_normalized": [0.2, 0.3, 0.2, 0.1]}]}
+    result = module.ground_task_target(target=target, tracks=[],
+        registry=[{"source_frame_id": "frame", "model_frame_index": 240, "decoded_pts_seconds": 8}],
+        video={"path": str(video), "sha256": _sha256_file(video)},
+        task_context={"description": "Keep the support under the blue object"}, output_root=tmp_path / "ground",
+        failed_segmentation_prompt="white container")
+    binding = calls[0]["binding"]
+    recovery = binding["concept_recovery"]
+    assert recovery["failed_prompt"] == "white container"
+    crop = tmp_path / "ground" / "support-240-concept.png"
+    assert recovery["crop_digest"] == _sha256_file(crop)
+    assert recovery["crop_box_pixels"] == (16, 55, 44, 84)
+    assert "FIRST, full image" in binding["prompt"]
+    assert result["target_id"] == "support" and result["disposition"] == "keep"
+    assert result["spatial_evidence"][0]["box_xywh_normalized"] == [0.2, 0.3, 0.2, 0.1]
