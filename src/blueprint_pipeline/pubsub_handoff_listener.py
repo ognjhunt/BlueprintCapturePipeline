@@ -195,12 +195,45 @@ def stage_handoff_capture(
             "Staged handoff capture is missing raw/capture_upload_complete.json; "
             f"capture_root={capture_root}"
         )
+    _preserve_local_website_derivatives(capture_root, {str(blob.name) for blob in blobs}, handoff.capture_prefix)
     if not (capture_root / "pipeline_handoff.json").is_file():
         # Real iOS bundles never upload pipeline_handoff.json (XR-03); synthesize it from the
         # provenance already carried by raw/manifest.json + raw/capture_context.json so the
         # capture_job_id / site_submission_id / buyer_request_id data contract stays intact.
         _synthesize_pipeline_handoff(handoff, capture_root=capture_root)
     return capture_root
+
+
+def _preserve_local_website_derivatives(capture_root: Path, uploaded_names: set[str], prefix: str) -> None:
+    """Recover the legacy SAM helper's local-only frames without relaxing raw checks.
+
+    GCS is the completed upload authority. Never move an uploaded member or a
+    symlink; retain displaced local artifacts and their hashes under pipeline/.
+    Called only by staging under the existing job lease.
+    """
+    if _read_optional_json_object(capture_root / "raw/manifest.json").get("capture_source") != "browser_self_capture":
+        return
+    source = capture_root / "raw/object_index_artifacts"
+    if not source.exists() and not source.is_symlink():
+        return
+    cloud_prefix = f"{prefix}/raw/object_index_artifacts"
+    if any(name == cloud_prefix or name.startswith(cloud_prefix + "/") for name in uploaded_names):
+        return  # Canonical upload violations still fail the raw verifier.
+    if source.is_symlink() or not source.is_dir() or any(p.is_symlink() for p in source.rglob("*")):
+        raise PipelineError("website_local_derivative_recovery_unsafe")
+    members = {p.relative_to(source).as_posix(): sha256(p.read_bytes()).hexdigest()
+               for p in sorted(source.rglob("*")) if p.is_file()}
+    archive = contained_path(capture_root, "pipeline", "recovered_raw_derivatives",
+                             field="website derivative recovery archive")
+    archive.mkdir(parents=True, exist_ok=True)
+    recovery = Path(tempfile.mkdtemp(prefix="sam3-", dir=archive))
+    write_json(recovery / "receipt.json", {
+        "schema_version": "website_local_derivative_recovery.v1",
+        "source": "raw/object_index_artifacts", "reason": "legacy_sam_helper_local_outputs",
+        "not_present_in_completed_upload": True, "member_sha256": members,
+        "claim_ceiling": "development_only", "recovered_at": utc_now_iso(),
+    })
+    source.rename(recovery / "object_index_artifacts")
 
 
 def _read_optional_json_object(path: Path) -> dict[str, Any]:
