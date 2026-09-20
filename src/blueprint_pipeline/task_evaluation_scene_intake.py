@@ -323,7 +323,7 @@ def reserve_scene_attempt(*, queue_root: str | Path, intent_id: str, attempt_id:
         # prove unspent and, for the retired source attempt, its place in the
         # paid-attempt count (2026-09-13 audit). Never-started cancellations
         # release everything.
-        from .task_evaluation_terminal_scene_attempt_settlement import retained_hold
+        from .task_evaluation_terminal_scene_attempt_settlement import budget_retained_hold
         settled_exposure = Decimal(0)
         settled_attempts = 0
         live_rows = []
@@ -332,7 +332,7 @@ def reserve_scene_attempt(*, queue_root: str | Path, intent_id: str, attempt_id:
             if cancellation is None:
                 live_rows.append(row)
             elif cancellation.get("schema_version") == TERMINAL_SETTLEMENT_SCHEMA:
-                hold = retained_hold(cancellation)
+                hold = budget_retained_hold(cancellation)
                 settled_exposure += Decimal(str(hold["retained_spend_usd"]))
                 settled_attempts += 1 if hold["counts_as_attempt"] else 0
         rows = live_rows

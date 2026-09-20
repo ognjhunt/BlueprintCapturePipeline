@@ -195,6 +195,72 @@ def retained_hold(receipt: Mapping[str, Any]) -> dict[str, Any]:
     return hold
 
 
+def budget_retained_hold(receipt: Mapping[str, Any]) -> dict[str, Any]:
+    """Use sealed pre-allocation evidence without rewriting historical settlements.
+
+    The scene adapter's only paid work before GPU allocation is API background
+    preparation. If it never entered the provider adapter, retain that entire
+    API allowance, but not GPU compute or provider-only object authoring. This
+    is a conservative exposure bound, not a claim that API spending was zero.
+    Callers must first validate the terminal settlement and ownership evidence.
+    """
+    hold = retained_hold(receipt)
+    if hold["basis"] != "terminal_launch_unreconciled":
+        return hold
+    try:
+        dependency = receipt["dependency"]
+        if dependent_row_ids(dependency["request_digest"])[receipt["attempt_id"]] != "scene_configuration":
+            return hold
+        factory_ref = dependency.get("source_factory")
+        if factory_ref is None:
+            return hold
+        from .task_evaluation_scene_configuration_submission_inputs import checked_file, read
+        factory = read(checked_file(factory_ref["path"], factory_ref), digest_field="factory_digest")
+        request_ref = factory["submission_request"]
+        request = read(checked_file(request_ref["path"], request_ref))
+        if (factory.get("schema_version") != "website_scene_attempt_factory.v1"
+                or canonical_digest(request) != dependency["request_digest"]
+                or request["expected_production_commit"] != receipt["source_commit"]
+                or request["spend"]["hard_cap_usd"] != receipt["maximum_spend_usd"]):
+            return hold
+        launch_ref = receipt["execution_terminal"]["launch_receipt"]
+        if _file(Path(launch_ref["path"])) != launch_ref:
+            return hold
+        launch = _read(Path(launch_ref["path"]))
+        if launch.get("status") != "blocked" or launch.get("source_commit") != receipt["source_commit"]:
+            return hold
+
+        def terminal_artifact(ref):
+            if ref.get("exists") is not True or _file(Path(ref["path"]))["digest"] != ref["digest"]:
+                raise ValueError("preallocation_artifact_changed")
+            return _read(Path(ref["path"]))
+
+        terminal = launch["terminal_evidence"]
+        result = terminal_artifact(terminal["result"])
+        teardown = terminal_artifact(terminal["artifacts"]["teardown_manifest_path"])
+        if (result.get("schema_version") != "task_evaluation_scene_configuration_vast_result.v1"
+                or result.get("run_id") != request["run_id"]
+                or result.get("source_commit") != receipt["source_commit"]
+                or result.get("status") != "blocked"
+                or type(result.get("provider_mutations_performed")) is not int
+                or result["provider_mutations_performed"] != 0
+                or result.get("continuing_spend_from_this_run") is not False
+                or result.get("provider_runtime_output_zip_path") is not None
+                or teardown.get("schema_version") != "vast_teardown_manifest.v1"
+                or teardown.get("status") != "not_required_provider_adapter_never_invoked"
+                or teardown.get("vast_instance_ids") != []
+                or teardown.get("continuing_spend_from_this_run") is not False):
+            return hold
+        caps = request["spend"]["external_service_caps"]["openai"]["stage_max_cost_usd"]
+        bound = round(float(caps["artifixer_semantic_teacher"]) + float(caps["artifixer_visual_review"]), 6)
+        if not 0 <= bound <= hold["retained_spend_usd"]:
+            return hold
+        return {"basis": "preallocation_api_budget_upper_bound", "retained_spend_usd": bound,
+                "counts_as_attempt": hold["counts_as_attempt"]}
+    except (OSError, ValueError, KeyError, TypeError):
+        return hold
+
+
 def _launch_state(*, launch_id: str, launch_execution_root: Path, launch_queue_root: Path) -> dict[str, Any] | None:
     """Terminal evidence for a dependent row, or None while a launch may still spend."""
     receipt_path = launch_execution_root / launch_id / "launch_receipt.json"
