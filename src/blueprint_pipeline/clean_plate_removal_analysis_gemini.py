@@ -545,7 +545,7 @@ def _invoke_agentic_video(
     }}
 
 
-def analyze_removal_targets(
+def _analyze_removal_targets(
     *,
     video_path: Optional[str | Path],
     model: Optional[str] = None,
@@ -650,3 +650,38 @@ def analyze_removal_targets(
     plan["video_processing"] = analysis["video_processing"]
     plan["task_context_sha256"] = hashlib.sha256(json.dumps(dict(task_context or {}), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     return plan
+
+
+def analyze_removal_targets(*, video_path: Optional[str | Path], model: Optional[str] = None,
+                            processing: Optional[str] = None, task_context: Optional[Mapping[str, Any]] = None,
+                            output_root: Optional[Path] = None) -> dict[str, Any]:
+    """Website calls retain one paid decision; legacy diagnostics keep their gate."""
+    args = dict(video_path=video_path, model=model, processing=processing, task_context=task_context)
+    if not (task_context or {}).get("capture_id"):
+        return _analyze_removal_targets(**args)
+    from .website_gemini_receipts import gemini_quote, retained_gemini_call
+    model_name = model or _string_env(MODEL_ENV, DEFAULT_MODEL)
+    processing_mode = processing or _string_env(PROCESSING_ENV, DEFAULT_PROCESSING)
+    path = Path(video_path).expanduser() if video_path else None
+    if output_root is None or path is None or not path.is_file():
+        raise ValueError("website_gemini_retained_source_required")
+    binding = {"kind": "task_video_analysis", "model": model_name, "processing": processing_mode,
+               "source_digest": sha256_file(path), "prompt": PROMPT_INSTRUCTION,
+               "max_output_tokens": 8192, "thinking_level": "low"}
+
+    def preflight():
+        if not _truthy(os.getenv(GATE_ENV)) or not _api_key()[0]:
+            raise ValueError("website_gemini_runtime_not_configured")
+        if processing_mode != "agentic":
+            raise ValueError("gemini_clean_plate_agentic_processing_required")
+        from google import genai  # noqa: F401
+
+    def invoke():
+        result = _analyze_removal_targets(**args)
+        if result.get("input_video_sha256") != binding["source_digest"]:
+            raise ValueError("website_gemini_source_changed")
+        return result
+
+    return retained_gemini_call(output_root=output_root, binding=binding, task_context=task_context,
+        maximum_cost_usd=gemini_quote(model=model_name, input_tokens=1_048_576),
+        preflight=preflight, invoke=invoke)

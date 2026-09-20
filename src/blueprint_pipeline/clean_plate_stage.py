@@ -334,7 +334,8 @@ def run_clean_plate_stage(
         input_video_path = None
     else:
         input_video_path = website_source_video or _resolve_input_video(ctx.pipeline_root, ctx.capture_root)
-        plan = analyze_removal_targets(video_path=website_source_video or input_video_path, task_context=task_context)
+        plan = analyze_removal_targets(video_path=website_source_video or input_video_path, task_context=task_context,
+                                       output_root=clean_plate_root / "gemini_analysis")
         plan_errors = validate_removal_plan(plan)
         if plan_errors:
             blockers.extend(plan_errors)
@@ -418,7 +419,7 @@ def run_clean_plate_stage(
                     targets=plan["targets"], task_context=task_context)
                 completion_review = verify_completed_background(
                     frames=selected, original_frames=source_geometry["frames"], plan=plan,
-                    output_root=clean_plate_root / "image_completion")
+                    output_root=clean_plate_root / "image_completion", task_context=task_context)
                 if completion_review.get("status") != "passed":
                     raise ValueError("website_image_completion_review_failed")
             prepared_views = {"schema_version": "website_prepared_views.v1", "status": "ready", "frames": selected,
