@@ -69,18 +69,29 @@ def website_webapp_request(*, capture_id: str, operation: str, payload: Mapping[
 
 def reserve_website_sam_spend(*, task_context: Mapping[str, Any], binding_digest: str,
                             maximum_cost_usd: float, request_count: int) -> tuple[dict[str, Any], Any]:
+    return reserve_website_preparation_spend(task_context=task_context, binding_digest=binding_digest,
+        maximum_cost_usd=maximum_cost_usd, request_count=request_count,
+        resource_class="evaluator_api", provider="meta")
+
+
+def reserve_website_preparation_spend(*, task_context: Mapping[str, Any], binding_digest: str,
+                                     maximum_cost_usd: float, request_count: int,
+                                     resource_class: str, provider: str) -> tuple[dict[str, Any], Any]:
+    """The controller obtains an exact, one-dispatch grant from the shared cap."""
     import time
     from .paid_resource_admission import require_paid_resource_admission
+    if (resource_class, provider) not in {("evaluator_api", "meta"), ("openai_api_candidate", "openai")}:
+        raise ValueError("website_preparation_provider_resource_mismatch")
     command = {"task_context_digest": task_context["context_digest"], "allocation_binding_digest": binding_digest,
-               "resource_class": "evaluator_api", "provider": "meta", "maximum_cost_usd": maximum_cost_usd,
+               "resource_class": resource_class, "provider": provider, "maximum_cost_usd": maximum_cost_usd,
                "request_count": request_count}
     value = website_webapp_request(capture_id=task_context["capture_id"], operation="preparation-spend",
         payload={"request_id": task_context["request_id"], "scene_id": task_context["scene_id"], "spend": command})
     if (any(value.get(key) != expected for key, expected in command.items())
             or value.get("external_disclosure_allowed") is not True
             or not isinstance(value.get("expires_at_epoch"), (int, float)) or value["expires_at_epoch"] <= time.time()):
-        raise ValueError("website_sam_spend_receipt_invalid")
-    grant = require_paid_resource_admission(value, resource_class="evaluator_api", expected_schema_version="paid_lane_admission.v1")
+        raise ValueError("website_preparation_spend_receipt_invalid")
+    grant = require_paid_resource_admission(value, resource_class=resource_class, expected_schema_version="paid_lane_admission.v1")
     return value, grant
 
 

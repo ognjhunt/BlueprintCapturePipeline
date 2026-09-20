@@ -173,3 +173,50 @@ def test_background_review_keeps_client_alive_until_response(tmp_path, monkeypat
     assert state == {"closed": True, "calls": 1}
     assert completion.verify_completed_background(**args)["status"] == "passed"
     assert state["calls"] == 1
+
+
+def test_controller_reserves_image_edits_and_restart_reuses_outputs_without_new_grant(tmp_path, monkeypatch):
+    from blueprint_pipeline import website_task_context as control
+    frames, admission = _inputs(tmp_path)
+    reservations, calls = [], []
+
+    def reserve(**kwargs):
+        reservations.append(kwargs)
+        return admission, _grant(admission)
+
+    def edit(**kwargs):
+        calls.append(kwargs)
+        stream = BytesIO()
+        Image.new("RGB", kwargs["expected_size"], "blue").save(stream, format="PNG")
+        return {"succeeded": True, "generated": stream.getvalue(),
+                "usage": _normalized_usage({"output_tokens_details": {"image_tokens": 100}})}
+
+    monkeypatch.setattr(control, "reserve_website_preparation_spend", reserve)
+    monkeypatch.setattr(completion, "_execute_frame_request", edit)
+    args = dict(frames=frames, task_digest="task", task_context={"context_digest": "task"},
+                output_root=tmp_path / "edits", admission={}, token="test")
+    outputs = completion.complete_background_images(**args)
+    assert len(reservations) == 1 and len(calls) == 2
+    assert reservations[0]["provider"] == "openai"
+    assert reservations[0]["binding_digest"] == admission["allocation_binding_digest"]
+    assert reservations[0]["request_count"] == 2
+    # No key or admission survives the controller restart. Reuse needs neither.
+    assert completion.complete_background_images(**{**args, "token": ""}) == outputs
+    assert len(reservations) == 1 and len(calls) == 2
+    Image.new("RGB", (10, 20), "green").save(outputs[0]["image_path"])
+    with pytest.raises(ValueError, match="output_changed"):
+        completion.complete_background_images(**args)
+    assert len(reservations) == 1 and len(calls) == 2
+
+
+def test_another_controller_cannot_rebuy_reserved_image_work(tmp_path, monkeypatch):
+    from blueprint_pipeline import website_task_context as control
+    frames, _ = _inputs(tmp_path)
+    def reserved(**kwargs):
+        return _grant({"schema_version": "paid_lane_admission.v1", "status": "already_reserved",
+                       "resource_class": "openai_api_candidate", "blockers": []})
+    monkeypatch.setattr(control, "reserve_website_preparation_spend", reserved)
+    monkeypatch.setattr(completion, "_execute_frame_request", lambda **_: pytest.fail("duplicate spend"))
+    with pytest.raises(RuntimeError):
+        completion.complete_background_images(frames=frames, task_digest="task",
+            task_context={"context_digest": "task"}, output_root=tmp_path / "edits", admission={}, token="test")

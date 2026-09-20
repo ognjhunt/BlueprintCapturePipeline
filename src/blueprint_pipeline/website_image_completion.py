@@ -82,21 +82,13 @@ def _canvas(image: Image.Image, mask: Image.Image) -> tuple[Image.Image, Image.I
 def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_digest: str,
                                output_root: Path, admission: Mapping[str, Any],
                                token: str, admission_grant: PaidResourceAdmissionGrant | None = None,
-                               targets: Sequence[Mapping[str, Any]] = (), opener: Any = _open_no_redirect) -> list[dict[str, Any]]:
+                               targets: Sequence[Mapping[str, Any]] = (), opener: Any = _open_no_redirect,
+                               task_context: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
     if not any(frame["remaining_pixel_count"] for frame in frames):
         return [dict(frame) for frame in frames]
     _backend, execution, backend_digest = _validated_backend(REGISTRY_PATH, backend_id=BACKEND_ID)
     binding = completion_binding(frames, task_digest=task_digest, backend_digest=backend_digest, targets=targets)
     request_digest = canonical_digest(binding)
-    require_paid_resource_admission_grant(admission_grant, resource_class="openai_api_candidate",
-                                          allocation_binding_digest=request_digest, require_allocation_binding=True)
-    if admission.get("allocation_binding_digest") != request_digest or admission.get("external_disclosure_allowed") is not True:
-        raise ValueError("website_image_completion_authorization_missing")
-    budget = admission.get("maximum_cost_usd")
-    if isinstance(budget, bool) or not isinstance(budget, (float, int)) or not math.isfinite(budget) or budget <= 0:
-        raise ValueError("website_image_completion_budget_missing")
-    if not token or "\n" in token or "\r" in token:
-        raise ValueError("website_image_completion_token_missing")
     cap = float(execution["pricing_binding"]["max_cost_per_request_usd"])
     output_root.mkdir(parents=True, exist_ok=True)
     with (output_root / "completion.lock").open("a") as lock:
@@ -106,6 +98,51 @@ def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_dige
             raise ValueError("website_image_completion_in_progress") from exc
         root = output_root / request_digest[7:]
         root.mkdir(exist_ok=True)
+        edited_indices = [i for i, frame in enumerate(frames) if frame["remaining_pixel_count"]]
+        # A restart may read completed bytes without renewing spend authority.
+        # Missing or uncertain receipts never authorize another purchase.
+        reuse_only = all((root / f"{i}.json").is_file() for i in edited_indices)
+        for index in edited_indices:
+            receipt_path = root / f"{index}.json"
+            if receipt_path.is_file():
+                receipt = json.loads(receipt_path.read_text())
+                if receipt.get("status") != "completed":
+                    raise ValueError("website_image_completion_requires_reconciliation")
+                cost = receipt.get("cost_usd")
+                if (receipt.get("request_digest") != request_digest
+                        or receipt.get("frame_id") != frames[index]["frame_id"]
+                        or receipt.get("backend_digest") != backend_digest
+                        or isinstance(cost, bool) or not isinstance(cost, (int, float))
+                        or not math.isfinite(cost) or not 0 <= cost <= cap):
+                    raise ValueError("website_image_completion_receipt_invalid")
+        if reuse_only:
+            budget = len(edited_indices) * cap
+        else:
+            # Resolve runtime credentials and source bytes before reserving money.
+            if not token:
+                from .task_evaluation_supervisor.agents_sdk import _file_based_openai_api_key
+                token = _file_based_openai_api_key() or ""
+            if not token or "\n" in token or "\r" in token:
+                raise ValueError("website_image_completion_token_missing")
+            for frame in frames:
+                if (_sha256_file(Path(frame["image_path"])) != frame["image_digest"]
+                        or _sha256_file(Path(frame["remaining_mask_path"])) != frame["remaining_mask_digest"]):
+                    raise ValueError("website_image_completion_source_changed")
+            if task_context is not None and not admission:
+                if task_context.get("context_digest") != task_digest:
+                    raise ValueError("website_image_completion_task_mismatch")
+                from .website_task_context import reserve_website_preparation_spend
+                admission, admission_grant = reserve_website_preparation_spend(
+                    task_context=task_context, binding_digest=request_digest,
+                    maximum_cost_usd=len(edited_indices) * cap, request_count=len(edited_indices),
+                    resource_class="openai_api_candidate", provider="openai")
+            require_paid_resource_admission_grant(admission_grant, resource_class="openai_api_candidate",
+                                                  allocation_binding_digest=request_digest, require_allocation_binding=True)
+            if admission.get("allocation_binding_digest") != request_digest or admission.get("external_disclosure_allowed") is not True:
+                raise ValueError("website_image_completion_authorization_missing")
+            budget = admission.get("maximum_cost_usd")
+            if isinstance(budget, bool) or not isinstance(budget, (float, int)) or not math.isfinite(budget) or budget <= 0:
+                raise ValueError("website_image_completion_budget_missing")
         results, reference, spent = [], None, 0.0
         for index, frame in enumerate(frames):
             source_path, mask_path = Path(frame["image_path"]), Path(frame["remaining_mask_path"])
