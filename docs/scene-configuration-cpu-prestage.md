@@ -104,6 +104,9 @@ archive writer, restores it at the same path and continues to stage 6).
   it); the entrypoint builds the provider runtime from the bundle, so the
   host venv does not need the Astra profile itself.
 - `bash`, `timeout`, `bwrap` (present).
+- The dispatcher mounts `/workspace` writable and admits the namespace/Landlock
+  setup syscalls and netlink needed by the authoring sandbox; its host capability
+  sets remain empty. Verify under the service restrictions, not only an SSH shell.
 - Capacity: 4 vCPU / 7 GB. Blender appearance review may prove slow; measure
   the first prestage (`job/cpu_prestage_entrypoint.log`) before deciding on a
   CPU worker class.
