@@ -70,6 +70,14 @@ _EXPECTED_RESULTS = {
 MAX_CANONICAL_RECEIPT_BYTES = 8 * 1024**2
 
 
+def reconstruction_resource_name(operation: str, request_digest: str) -> str:
+    # Website geometry uses the exact-resource watchdog contract. Preserve the
+    # names of older prefix-scoped lanes and their retained reconciliation data.
+    if operation == "website_mapanything":
+        return f"{NAME_PREFIX}website-mapanything-{request_digest[7:39]}"
+    return f"{NAME_PREFIX}{operation.replace('_canary', '')}-{request_digest[7:19]}"
+
+
 class ReconstructionVastOperationError(ValueError):
     def __init__(self, codes: Sequence[str]) -> None:
         self.codes = tuple(sorted(set(str(code) for code in codes if str(code))))
@@ -418,7 +426,7 @@ def run_reconstruction_vast_operation(
     started_at = float(clock())
     watchdog = preflight.get("watchdog")
     watchdog = watchdog if isinstance(watchdog, Mapping) else {}
-    name = f"{NAME_PREFIX}{operation.replace('_canary', '')}-{request_digest[7:19]}"
+    name = reconstruction_resource_name(operation, request_digest)
     validator = watchdog_validator or (
         lambda value, now, ttl: _watchdog_valid(
             value, now_epoch=now, hard_ttl_seconds=ttl, resource_name=name
@@ -455,7 +463,7 @@ def run_reconstruction_vast_operation(
         raise ReconstructionVastOperationError(
             ["reconstruction_vast_operation_paid_lane_not_acquired"]
         )
-    name = f"{NAME_PREFIX}{operation.replace('_canary', '')}-{request_digest[7:19]}"
+    name = reconstruction_resource_name(operation, request_digest)
     pending = open_pending_teardown(
         provider="vast",
         lane=PAID_LANE,
