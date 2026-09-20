@@ -37,7 +37,8 @@ LimitNOFILE=65536
 MemoryMax=8G
 CPUQuota=200%
 Type=oneshot
-Environment=BLUEPRINT_PIPELINE_REPO=/opt/blueprint/BlueprintCapturePipeline
+Environment=BLUEPRINT_PIPELINE_REPO=/opt/blueprint/task-evaluation-control-plane
+Environment=BLUEPRINT_PIPELINE_PYTHON=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python
 Environment=BLUEPRINT_LAUNCH_PROOF_MODE=production
 Environment=PRIVACY_PIPELINE_ENABLED=true
 Environment=PRIVACY_FAIL_CLOSED=true
@@ -52,6 +53,6 @@ Environment=BLUEPRINT_PUBSUB_HANDOFF_SKIP_RUN_E2E=true
 EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
 EnvironmentFile=-/etc/blueprint/task-evaluation-scene-configuration-release.env
 WorkingDirectory=/
-ExecStartPre=/bin/bash -lc 'cd "$${BLUEPRINT_PIPELINE_REPO}" && if [ -x .venv/bin/python ]; then exec .venv/bin/python -m blueprint_pipeline.production_runtime_env_guard; fi; exec env PYTHONPATH=src python3 -m blueprint_pipeline.production_runtime_env_guard'
-ExecStart=/bin/bash -lc 'cd "$${BLUEPRINT_PIPELINE_REPO}" && subscription="$${BLUEPRINT_PUBSUB_HANDOFF_SUBSCRIPTION:-blueprint-pipeline-handoff-listener}" && storage_root="$${BLUEPRINT_PUBSUB_HANDOFF_STORAGE_ROOT:-/var/lib/blueprint/pubsub-handoffs}" && provider="$${BLUEPRINT_PUBSUB_HANDOFF_PROVIDER:-openai}" && max_messages="$${BLUEPRINT_PUBSUB_HANDOFF_MAX_MESSAGES:-10}" && if [ -x .venv/bin/blueprint-pubsub-handoff-listener ]; then exec .venv/bin/blueprint-pubsub-handoff-listener --subscription "$${subscription}" --storage-root "$${storage_root}" --provider "$${provider}" --max-messages "$${max_messages}"; fi; if [ -x .venv/bin/python ]; then exec .venv/bin/python -m blueprint_pipeline.pubsub_handoff_listener --subscription "$${subscription}" --storage-root "$${storage_root}" --provider "$${provider}" --max-messages "$${max_messages}"; fi; exec env PYTHONPATH=src python3 -m blueprint_pipeline.pubsub_handoff_listener --subscription "$${subscription}" --storage-root "$${storage_root}" --provider "$${provider}" --max-messages "$${max_messages}"'
+ExecStartPre=/bin/bash -lc 'cd "$${BLUEPRINT_PIPELINE_REPO}" && exec env PYTHONPATH=src "$${BLUEPRINT_PIPELINE_PYTHON}" -m blueprint_pipeline.production_runtime_env_guard'
+ExecStart=/bin/bash -lc 'cd "$${BLUEPRINT_PIPELINE_REPO}" && subscription="$${BLUEPRINT_PUBSUB_HANDOFF_SUBSCRIPTION:-blueprint-pipeline-handoff-listener}" && storage_root="$${BLUEPRINT_PUBSUB_HANDOFF_STORAGE_ROOT:-/var/lib/blueprint/pubsub-handoffs}" && provider="$${BLUEPRINT_PUBSUB_HANDOFF_PROVIDER:-openai}" && max_messages="$${BLUEPRINT_PUBSUB_HANDOFF_MAX_MESSAGES:-10}" && exec env PYTHONPATH=src "$${BLUEPRINT_PIPELINE_PYTHON}" -m blueprint_pipeline.pubsub_handoff_listener --subscription "$${subscription}" --storage-root "$${storage_root}" --provider "$${provider}" --max-messages "$${max_messages}"'
 Nice=5
