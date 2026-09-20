@@ -191,3 +191,44 @@ def test_hosted_masks_use_original_upright_pixels_and_bind_to_depth(tmp_path, mo
     with pytest.raises(ValueError, match="source_frame_changed"):
         run_website_task_masks(**kwargs)
     assert len(calls) == 1
+
+
+def test_exact_frame_grounding_cannot_match_a_neighboring_timestamp():
+    target = {**_target(), "grounding": {"source_frame_id": "exact"}}
+    with pytest.raises(ValueError, match="track_ambiguous"):
+        select_task_track(target=target, tracks=[_track()], frames=[
+            {"frame_id": "exact", "timestamp_seconds": 0}, {"frame_id": "frame-0", "timestamp_seconds": 0.03}])
+
+
+@pytest.mark.parametrize("needs_refined_concept", [False, True])
+def test_controller_recovers_ambiguous_video_anchor_with_bounded_exact_frame_evidence(tmp_path, monkeypatch, needs_refined_concept):
+    from blueprint_pipeline import website_task_masks as masks, website_task_grounding as grounding
+    target = {**_target(), "semantic_label": "white support", "segmentation_prompt": "white container",
+              "task_effect": "static_contact", "disposition": "keep"}
+    target["spatial_evidence"][0]["box_xywh_normalized"] = [0, 0.5, 0.5, 0.5]
+    frame = {"frame_id": "frame-0", "timestamp_seconds": 0, "width": 4, "height": 4}
+    registry = [{"source_frame_id": "frame-0", "decoded_pts_seconds": 0, "width": 4, "height": 4}]
+    monkeypatch.setenv("BLUEPRINT_WEBSITE_SAM31_PROVIDER", "meta")
+    monkeypatch.setattr(masks, "prepare_continuous_video", lambda **kw: (registry, {"path": "prepared.mp4"}))
+    calls = []
+    def hosted(**kw):
+        calls.append(kw)
+        return {"tracks": [_track(start=2 if needs_refined_concept and len(calls) == 1 else 0)]}
+    monkeypatch.setattr(masks, "run_meta_sam31", hosted)
+    grounds = []
+    def ground(**kw):
+        grounds.append(kw)
+        return {**target, **_target(), "segmentation_prompt": "white book", "grounding": {"source_frame_id": "frame-0"}}
+    monkeypatch.setattr(grounding, "ground_task_target", ground)
+    result = masks.run_website_task_masks(plan={"targets": [target], "task_context_sha256": "task"},
+        source_geometry={"digest": "source", "geometry_available": False,
+                         "binding": {"source_video_digest": "video"}, "frames": [frame]},
+        source_video=tmp_path / "source.mov", task_context={"confirmed": True}, output_root=tmp_path / "masks")
+    assert len(grounds) == 1
+    assert len(calls) == (2 if needs_refined_concept else 1)
+    if needs_refined_concept:
+        assert calls[1]["prompts"][0]["text"] == "white book"
+        assert calls[1]["video_artifact"] == calls[0]["video_artifact"]
+    assert result["targets"][0]["disposition"] == "keep"
+    assert result["targets"][0]["source_track"]["observations"][0]["runs"][0]["start"] == 0
+    assert result["targets"][0]["grounding"]["source_frame_id"] == "frame-0"

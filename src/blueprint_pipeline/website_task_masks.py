@@ -70,7 +70,9 @@ def select_task_track(*, target: Mapping[str, Any], tracks: list[Mapping[str, An
             # Video-analysis timestamps are coarse (static analysis samples at
             # 2 FPS). Use the nearest observed mask within that bounded window,
             # not a sparse geometry frame or an unobserved exact timestamp.
+            exact_frame = (target.get("grounding") or {}).get("source_frame_id")
             nearby = [row for row in track["observations"] if row["source_frame_id"] in by_id
+                      and (exact_frame is None or row["source_frame_id"] == exact_frame)
                       and abs(float(by_id[row["source_frame_id"]]["timestamp_seconds"])
                               - observation["timestamp_seconds"]) <= 0.5]
             if not nearby:
@@ -241,7 +243,37 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
     for target in targets:
         candidates = [{**track, "label": target["target_id"]} for track in identity_tracks
                       if track.get("label") == prompt_labels[target["target_id"]]]
-        identity = select_task_track(target=target, tracks=candidates, frames=identity_frames)
+        grounding = None
+        try:
+            identity = select_task_track(target=target, tracks=candidates, frames=identity_frames)
+        except ValueError as exc:
+            if (str(exc) != f"task_target_track_ambiguous:{target['target_id']}"
+                    or provider != "meta" or not video_artifact or not task_context):
+                raise
+            from .website_task_grounding import ground_task_target
+            grounded = ground_task_target(target=target, tracks=candidates, registry=registry,
+                video=video_artifact, task_context=task_context, output_root=root / "grounding")
+            grounding = grounded["grounding"]
+            try:
+                identity = select_task_track(target=grounded, tracks=candidates, frames=identity_frames)
+            except ValueError as grounded_exc:
+                if str(grounded_exc) != f"task_target_track_ambiguous:{target['target_id']}":
+                    raise
+                previous_prompt = next(p["text"] for p in prompts if p["output_label"] == prompt_labels[target["target_id"]])
+                if grounded["segmentation_prompt"].casefold() == previous_prompt.casefold():
+                    raise
+                # Only one evidence-derived concept refinement. Reuse full-video
+                # transport and admission; never buy repeated identical attempts.
+                refined = run_meta_sam31(frame_registry=registry, frame_artifacts=[],
+                    prompts=[{"prompt_id": target["target_id"], "output_label": target["target_id"],
+                              "text": grounded["segmentation_prompt"]}], output_root=root / "grounded_masks",
+                    admission={}, task_context=task_context, video_artifact=video_artifact)
+                identity = select_task_track(target=grounded, tracks=refined["tracks"], frames=identity_frames)
+                # The concept can change while target id stays fixed; replace the
+                # sampled candidate below from the exact selected full track.
+            tracks = [row for row in tracks if row["track_id"] != identity["track_id"]]
+            tracks.append(track_at_geometry_resolution({**identity, "observations": [row for row in identity["observations"]
+                if row["source_frame_id"] in geometry_ids]}, frames))
         track = {**next(row for row in tracks if row["track_id"] == identity["track_id"]),
                  "label": target["target_id"]}
         if track["track_id"] in selected_track_ids:
@@ -253,8 +285,9 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
                          "disposition": target["disposition"], "track": track,
                          "estimated_visible_bounds": estimate_target_bounds(track, frames) if geometry_available else None})
         if provider == "meta":
-            source_track = next(row for row in result["tracks"] if row["track_id"] == track["track_id"])
-            selected[-1]["source_track"] = source_track
+            selected[-1]["source_track"] = identity
+            if grounding is not None:
+                selected[-1]["grounding"] = grounding
     manifest = {"schema_version": "website_task_masks.v1", "status": "completed", "binding": binding,
                 "claim_ceiling": "development_only", "targets": selected,
                 "source_geometry_digest": source_geometry["digest"] if geometry_available else None}

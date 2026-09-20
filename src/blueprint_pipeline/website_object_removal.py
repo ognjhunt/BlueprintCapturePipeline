@@ -17,7 +17,8 @@ def select_reconstruction_frames(*, frames: Sequence[Mapping[str, Any]], task_ma
                                  limit: int) -> list[dict[str, Any]]:
     """Use the provider's full view allowance, including wider room context."""
     visible = {row["source_frame_id"] for target in task_masks["targets"]
-               if target.get("task_effect") != "privacy" for row in target["track"]["observations"]}
+               if target.get("task_effect") == "manipulated"
+               for row in (target.get("source_track") or target["track"])["observations"]}
     anchors = [index for index, frame in enumerate(frames) if frame["frame_id"] in visible]
     if len({frame["image_digest"] for frame in frames}) < 2:
         raise ValueError("at_least_two_distinct_reconstruction_views_required")
@@ -58,7 +59,16 @@ def reconstruction_source_frames(*, source_geometry: Mapping[str, Any], task_mas
                                  source_video: Path, limit: int, output_root: Path) -> list[dict[str, Any]]:
     """CPU-decode extra context without increasing the geometry/GPU frame batch."""
     existing = {f["frame_id"]: dict(f) for f in source_geometry["frames"]}
-    if len(existing) >= limit:
+    # A short-lived target can fall between the sparse geometry samples.
+    # Retain its actual observed frames even when the context budget is full.
+    required = set()
+    for target in task_masks.get("targets", []):
+        if target.get("task_effect") != "manipulated":
+            continue
+        observations = (target.get("source_track") or target.get("track") or {}).get("observations", [])
+        if observations:
+            required.update((observations[0]["source_frame_id"], observations[-1]["source_frame_id"]))
+    if len(existing) >= limit and required <= set(existing):
         return list(existing.values())
     registry = task_masks.get("source_frame_registry") or []
     if not registry:
@@ -67,7 +77,10 @@ def reconstruction_source_frames(*, source_geometry: Mapping[str, Any], task_mas
             or task_masks["source_video_digest"] != source_geometry["binding"]["source_video_digest"]):
         raise ValueError("website_reconstruction_video_changed")
     count = min(limit, len(registry))
-    indexes = sorted({round(i * (len(registry) - 1) / (count - 1)) for i in range(count)})
+    indexes = ({round(i * (len(registry) - 1) / (count - 1)) for i in range(count)}
+               if len(existing) < limit else set())
+    indexes.update(i for i, row in enumerate(registry) if row["source_frame_id"] in required)
+    indexes = sorted(indexes)
     indexes = [i for i in indexes if registry[i]["source_frame_id"] not in existing]
     if any(row["source_frame_id"] != f"decoded-{i:09d}" for i, row in enumerate(registry)):
         raise ValueError("website_reconstruction_frame_mapping_invalid")

@@ -330,7 +330,23 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
             raise ValueError("meta_sam_usage_missing")
         if not image_request and processed > max(50, len(frame_registry)):
             raise ValueError("meta_sam_usage_exceeds_reservation")
-        tracks.extend(parse_tracks(response, prompt=prompt, registry=frame_registry))
+        parsed_path = root / f"parsed-response-{index}.json"
+        parsed_binding = {"response_digest": _sha256_file(result_path), "request_digest": digest,
+                          "parser_revision": 1, "profile": PROFILE}
+        if parsed_path.is_file():
+            parsed = json.loads(parsed_path.read_text())
+            if (parsed.get("binding") != parsed_binding
+                    or parsed.get("digest") != canonical_digest(parsed, digest_field="digest")):
+                raise ValueError("meta_sam_retained_tracks_changed")
+            decoded = parsed["tracks"]
+        else:
+            decoded = parse_tracks(response, prompt=prompt, registry=frame_registry)
+            parsed = {"binding": parsed_binding, "tracks": decoded}
+            parsed["digest"] = canonical_digest(parsed, digest_field="digest")
+            temporary = parsed_path.with_suffix(".tmp")
+            write_json(temporary, parsed)
+            os.replace(temporary, parsed_path)
+        tracks.extend(decoded)
         receipts.append({"path": str(result_path), "sha256": _sha256_file(result_path)})
     result = {"schema_version": "website_meta_sam31_tracks.v1", "status": "completed", "binding_digest": digest,
               "profile": PROFILE, "tracks": tracks, "responses": receipts, "claim_ceiling": "development_only"}
