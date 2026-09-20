@@ -320,7 +320,7 @@ def _settle_retired_rows(*, directory, state, config, retired=None, evidence=Non
             outcome = settle_retired_attempt_rows(directory=directory, retired_attempt=retired,
                 retirement_record=evidence["failure"], ownership_record=evidence["ownership_reconciliation"],
                 launch_execution_root=Path(config["launch_execution_root"]),
-                launch_queue_root=Path(config["launch_queue_root"]))
+                launch_queue_root=Path(config["launch_queue_root"]), source_factory=state.get("factory"))
             settled = sum(1 for row in outcome["rows"] if row["status"] == "settled")
             summary = {**summary, "settled_rows": int(summary.get("settled_rows") or 0) + settled}
         else:
@@ -338,15 +338,24 @@ def _release_successor(*, directory, intent, state, config, release, now):
     previous = intake._read(previous_path, "attempt_digest")
     old_output = Path(config["factory_output_root"]) / intent["intent_id"] / previous_id
     calls = list((old_output / "submission-attempts").glob("*.json"))
-    lineage = {"attempt": record(previous_path),
+    lineage = {"attempt": record(previous_path), "factory": state.get("factory"),
                "new_source_commit": release["source_commit"]}
     if state.get("preparation_failure"):
         lineage["preparation_failure"] = state["preparation_failure"]
-    if previous.get("schema_version") == "task_evaluation_scene_preparation_attempt.v1":
-        require(config.get("activation_enabled") is False and not state.get("activation")
-                and previous.get("maximum_spend_usd") == 0
+    preparation_only = previous.get("schema_version") == "task_evaluation_scene_preparation_attempt.v1"
+    execution_attempt = None
+    if preparation_only:
+        require(previous.get("maximum_spend_usd") == 0
                 and previous.get("paid_authority_granted") is False,
                 "preparation_release_authority_conflict")
+        if state.get("activation"):
+            link = read(_reference(state["activation_link"]), digest_field="link_digest")
+            execution_attempt = intake._read(_reference(link["scene_configuration_attempt"]), "attempt_digest")
+            require(execution_attempt["intent_digest"] == previous["intent_digest"]
+                    and execution_attempt["source_commit"] == previous["source_commit"]
+                    and execution_attempt["input_digest"] == link["request_digest"]
+                    and bool(calls), "preparation_release_execution_binding_invalid")
+    if preparation_only and execution_attempt is None:
         # Once any paid reservation exists, use the execution recovery path;
         # administrative preparation alone must never explain away a live run.
         require(not list((directory / "attempts").glob("*.json")), "preparation_release_paid_reservation_exists")
@@ -368,7 +377,8 @@ def _release_successor(*, directory, intent, state, config, release, now):
             value["failure_digest"] = canonical_digest(value, digest_field="failure_digest")
             _put(transition_path, value)
         lineage["reconciliation"] = reconcile_ownership(attempt=previous, failure_path=transition_path,
-            config=config, output_root=old_output / "release-reconciliation", now=now)
+            config=config, output_root=old_output / "release-reconciliation", now=now,
+            **({"execution_attempt": execution_attempt} if execution_attempt is not None else {}))
         lineage["basis"] = "terminal_preparation_and_reconciled_global_ownership"
         _settle_retired_rows(directory=directory, state=state, config=config,
                              retired=previous, evidence=lineage["reconciliation"])
