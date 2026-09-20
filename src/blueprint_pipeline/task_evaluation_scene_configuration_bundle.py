@@ -1861,5 +1861,53 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def portable_construction_envelope(
+    receipt: Mapping[str, Any],
+) -> dict[str, Any]:
+    bundle = Path(str(receipt.get("bundle_path") or ""))
+    try:
+        with zipfile.ZipFile(bundle) as archive:
+            value = json.loads(
+                archive.read(
+                    "provider_runtime/input/portable_construction_envelope.v1.json"
+                ).decode("utf-8")
+            )
+    except (
+        KeyError,
+        OSError,
+        UnicodeError,
+        ValueError,
+        zipfile.BadZipFile,
+        json.JSONDecodeError,
+    ) as exc:
+        raise TaskEvaluationSceneConfigurationBundleError(
+            "scene_configuration_publication_envelope_unavailable"
+        ) from exc
+    envelope = dict(value) if isinstance(value, Mapping) else {}
+    if (
+        envelope.get("schema_version")
+        != "task_evaluation_scene_construction_envelope.v1"
+        or envelope.get("envelope_digest")
+        != canonical_digest(envelope, digest_field="envelope_digest")
+        or envelope.get("envelope_digest")
+        != receipt.get("portable_construction_envelope_digest")
+        or envelope.get("expected_production_commit")
+        != receipt.get("source_commit")
+        or envelope.get("run_id") != receipt.get("run_id")
+    ):
+        raise TaskEvaluationSceneConfigurationBundleError(
+            "scene_configuration_publication_envelope_invalid"
+        )
+    return envelope
+
+
+
+def bundle_requires_artifixer(receipt: Mapping[str, Any]) -> bool:
+    """Derive service requirements from the sealed recipe, never a caller flag."""
+    envelope = portable_construction_envelope(receipt)
+    return any(stage["adapter"]["id"] == "artifixer3d_observed_object_removal"
+               for stage in envelope["recipe"]["stage_sequence"])
+
+
 if __name__ == "__main__":
     raise SystemExit(main())

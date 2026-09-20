@@ -272,11 +272,15 @@ def _validate_launch_preparation_request(
         stage_caps = openai["stage_max_cost_usd"]
         openai_cap = float(openai["maximum_cost_usd"])
         request_count = int(openai["maximum_requests"])
+        # Website backgrounds are already prepared before reconstruction.
+        # The construction consumer verifies this declaration against the
+        # sealed recipe and native-input evidence before paid authority.
+        prepared_website = request["scene"].get("website_native_inputs") is not None
         minimum_stage_caps = {
             "artifixer_semantic_teacher": (
-                scene_budget.semantic_teacher_minimum
+                0.0 if prepared_website else scene_budget.semantic_teacher_minimum
             ),
-            "artifixer_visual_review": scene_budget.visual_review_minimum,
+            "artifixer_visual_review": 0.0 if prepared_website else scene_budget.visual_review_minimum,
             "content_agents": scene_budget.content_agents_minimum,
         }
         if spend["hard_ttl_seconds"] != scene_budget.parent_ttl_seconds:

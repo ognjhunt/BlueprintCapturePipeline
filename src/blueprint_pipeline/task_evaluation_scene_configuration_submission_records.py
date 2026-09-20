@@ -133,9 +133,12 @@ def stage_sequence() -> list[dict[str, Any]]:
     return rows
 
 
-def spend_block(authoring_backend: str = "content_agents", *, authoring_max_cost_usd: float | None = None) -> dict[str, Any]:
+def spend_block(authoring_backend: str = "content_agents", *, authoring_max_cost_usd: float | None = None, requires_artifixer: bool = True) -> dict[str, Any]:
     profile = scene_configuration_budget_profile(authoring_backend)
     caps = profile.stage_caps(authoring_max_cost_usd)
+    if not requires_artifixer:
+        caps["artifixer_semantic_teacher"] = 0.0
+        caps["artifixer_visual_review"] = 0.0
     external_cap = round(sum(caps.values()), 6)
     return {
         "maximum_hourly_rate_usd": MAX_HOURLY_RATE_USD,

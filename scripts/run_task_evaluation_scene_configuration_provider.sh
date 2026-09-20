@@ -135,6 +135,9 @@ else
   # SDK/Pydantic runtime) before the first expensive render or training step.
   if ! "$PYTHON_BIN" - \
     >"$OUTPUT_ROOT/provider_python_import_preflight.log" 2>&1 <<'PY'
+import json
+import os
+from pathlib import Path
 import agents
 import numpy
 import pydantic
@@ -142,12 +145,17 @@ import scipy
 import yaml
 from PIL import Image
 from pxr import Usd
-from blueprint_pipeline import task_evaluation_scene_configuration_artifixer_driver
 from blueprint_pipeline import task_evaluation_scene_configuration_content_agents_driver
 from blueprint_pipeline import task_evaluation_scene_configuration_native_import_driver
 
+envelope = json.loads((Path(os.environ["BLUEPRINT_TASK_EVALUATION_SCENE_CONFIGURATION_TOOLCHAIN_ROOT"]).parent
+                       / "input/portable_construction_envelope.v1.json").read_text())
+if any(stage["adapter"]["id"] == "artifixer3d_observed_object_removal"
+       for stage in envelope["recipe"]["stage_sequence"]):
+    from blueprint_pipeline import task_evaluation_scene_configuration_artifixer_driver
+    assert task_evaluation_scene_configuration_artifixer_driver
+
 assert agents and numpy and pydantic and scipy and yaml and Image and Usd
-assert task_evaluation_scene_configuration_artifixer_driver
 assert task_evaluation_scene_configuration_content_agents_driver
 assert task_evaluation_scene_configuration_native_import_driver
 PY

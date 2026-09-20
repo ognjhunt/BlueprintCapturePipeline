@@ -224,7 +224,7 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
             "mounts": [{"source": release_ref, "container_path": "/inputs/release-binding.json", "mode": "read_only"},
                        {"container_path": "/outputs", "mode": "output"}], "output_limit_bytes": 20_000_000_000},
         "execution_adapter": {"kind": "scene_configuration_pipeline", "version": "v1", "runtime_source_bundle": release_ref},
-        "publication": {"input_namespace": namespace, "service_account_readback_required": True}, "spend": records.spend_block(construction["configurations"][2]["authoring_backend"])}
+        "publication": {"input_namespace": namespace, "service_account_readback_required": True}, "spend": records.spend_block(construction["configurations"][2]["authoring_backend"], requires_artifixer=False)}
     request["replacement_authoring_backend"] = construction["configurations"][2]["authoring_backend"]
     require(request["spend"]["hard_cap_usd"] <= intent["request"]["execution"]["max_total_spend_usd"],
             "website_native_construction_budget_exceeds_authority")

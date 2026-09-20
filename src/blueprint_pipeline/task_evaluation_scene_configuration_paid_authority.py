@@ -20,6 +20,7 @@ from .native_task_isaaclab_launch import (
 from .project_spend_reconciliation import validate_project_spend_reconciliation
 from .task_evaluation_scene_configuration_bundle import (
     load_scene_configuration_provider_bundle_receipt,
+    bundle_requires_artifixer,
 )
 from .task_evaluation_scene_configuration_disclosure import renders_on_provider
 from .task_evaluation_scene_configuration_diagnostic_mode import (
@@ -61,6 +62,7 @@ def _required_external_stage_minima(
     historical_terminal_evidence: bool = False,
     production_semantic_reuse: bool = False,
     authoring_backend: str = "content_agents",
+    requires_artifixer: bool = True,
 ) -> dict[str, float]:
     try:
         budget_profile = scene_configuration_budget_profile(authoring_backend)
@@ -73,13 +75,13 @@ def _required_external_stage_minima(
     return {
         "artifixer_semantic_teacher": (
             0.0
-            if production_semantic_reuse
+            if not requires_artifixer or production_semantic_reuse
             or (diagnostic_only and not fresh_diagnostic_bootstrap)
             else MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD
         ),
         "artifixer_visual_review": (
             0.0
-            if diagnostic_only and carried_stage_count >= 1
+            if not requires_artifixer or (diagnostic_only and carried_stage_count >= 1)
             else (
                 _LEGACY_ARTIFIXER_VISUAL_REVIEW_SPEND_USD
                 if diagnostic_only and historical_terminal_evidence
@@ -272,7 +274,9 @@ def materialize_scene_configuration_paid_authority(
         diagnostic_only
         and diagnostic_bootstrap_mode == FRESH_DIAGNOSTIC_BOOTSTRAP_MODE
     )
+    requires_artifixer = bundle_requires_artifixer(receipt)
     required_stage_minima = _required_external_stage_minima(
+        requires_artifixer=requires_artifixer,
         diagnostic_only=diagnostic_only,
         diagnostic_bootstrap_mode=diagnostic_bootstrap_mode,
         carried_stage_count=carried_stage_count,
@@ -506,7 +510,9 @@ def validate_scene_configuration_paid_authority(
     carried_stage_count = int(
         bundle_receipt.get("carried_completed_stage_count") or 0
     )
+    requires_artifixer = bundle_requires_artifixer(bundle_receipt)
     required_stage_minima = _required_external_stage_minima(
+        requires_artifixer=requires_artifixer,
         diagnostic_only=diagnostic_only,
         diagnostic_bootstrap_mode=diagnostic_bootstrap_mode,
         carried_stage_count=carried_stage_count,

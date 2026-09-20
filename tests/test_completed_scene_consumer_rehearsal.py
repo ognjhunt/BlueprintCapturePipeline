@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import pwd
+import grp
 import zipfile
 import pytest
 from urllib.parse import urlsplit
@@ -150,30 +151,46 @@ def test_splat_and_mesh_pair_reaches_real_renderer_orchestration_and_constructio
     assert render["source_object_masks"]["observed_segmentation_truth"] is False
 
 
-def test_completed_upload_reaches_activation_worker_and_complete_launch_plan(tmp_path, monkeypatch):
+@pytest.mark.parametrize("source", ["mesh", "website"])
+def test_completed_upload_reaches_execute_only_dispatch_boundary(tmp_path, monkeypatch, source):
     """Rehearse real consumer joins beyond the old preparation-context checks.
 
-    Only storage and provider inventory are transports. Stop explicitly before
-    publication/allocation; a resolved plan is not an executed simulation.
+    Storage, accounting, and Website readiness use test transports. Real
+    preparation and dispatcher checks run, stopping before allocator execution.
     """
     from datetime import datetime, timedelta, timezone
+    import socket
     from blueprint_pipeline import task_evaluation_scene_configuration_activation_automation as activation
     from blueprint_pipeline.task_evaluation_launch_activation_worker import process_launch_activation_queue
-    from scripts.prepare_paid_lane_launch import _load_scene_configuration_context, validate_paid_lane_launch
+    from scripts.prepare_paid_lane_launch import _load_scene_configuration_context, validate_paid_lane_launch, prepare_paid_lane_launch
     from tests.astra_toolchain_fixture import astra_toolchain_fixture
-    from tests.test_task_evaluation_scene_configuration_activation_automation import _project_spend, _provider_zero, _publisher
+    from tests.test_task_evaluation_scene_configuration_activation_automation import _provider_zero, _publisher
+    from tests.test_project_spend_reconciliation import _human_baseline
+    from blueprint_pipeline.project_spend_reconciliation import materialize_project_spend_reconciliation
 
-    envelope, _, _, _, _, _ = _prepare(tmp_path, monkeypatch)
+    monkeypatch.setattr(socket.socket, "connect", lambda *_: pytest.fail("rehearsal attempted network access"))
+
+    if source == "website":
+        from tests.test_website_native_submission import prepare_website_construction
+        envelope = prepare_website_construction(tmp_path, monkeypatch, development=True)
+    else:
+        envelope, _, _, _, _, _ = _prepare(tmp_path, monkeypatch)
     request = envelope["request"]
     queue = tmp_path / "preparations"
     result_path = next((queue / "results").glob("*.json"))
     registry = tmp_path / "activation-intents"
+    baseline, _ = _human_baseline(tmp_path / "baseline.json")
+    project_spend = tmp_path / "project-spend.json"
+    materialize_project_spend_reconciliation(
+        baseline_authority_path=baseline, posted_reconciliation_paths=[], expected_coverage_ids=[],
+        completeness_reference=str(baseline), authorized_by="fixture-owner",
+        authorized_on=datetime.now(timezone.utc).isoformat(), output_path=project_spend)
     activation.provision_scene_configuration_activation_intent(
         expected_production_commit=SHA, team_namespace=request["team_namespace"],
         scene_id=request["scene"]["identity"]["id"], task_id=request["task"]["identity"]["id"],
         authorization_reference="scene-intent:" + request["scene_intent_digest"],
         authorized_by=ACCOUNT, profile_revision="rehearsal", valid_for_seconds=3600,
-        project_spend_reconciliation_path=_project_spend(tmp_path / "project-spend.json"),
+        project_spend_reconciliation_path=project_spend,
         rights_scope="internal_noncommercial_research_only",
         maximum_hard_cap_usd=request["spend"]["hard_cap_usd"], release_reference="development-rehearsal",
         intent_root=registry, materialization_root=tmp_path / "activation-inputs", release_scoped=True)
@@ -199,7 +216,10 @@ def test_completed_upload_reaches_activation_worker_and_complete_launch_plan(tmp
     def inspect_plan(*, lane, context_path, **_):
         context = _load_scene_configuration_context(context_path, expected_lane=lane)
         plans.append(validate_paid_lane_launch(lane, context))
-        raise RuntimeError("rehearsal_stop_before_launch_plan_execution")
+        try:
+            return prepare_paid_lane_launch(lane, context, runner=_preparation_runner(tmp_path, monkeypatch, website=source == "website"))
+        except Exception as exc:
+            pytest.fail(str(exc))
 
     controls = tmp_path / "controls-intents"
     controls.mkdir()
@@ -207,7 +227,7 @@ def test_completed_upload_reaches_activation_worker_and_complete_launch_plan(tmp
         queue_root=tmp_path / "activation-queue", preparation_queue_root=queue,
         preparation_input_root=tmp_path / "worker-inputs", activation_root=tmp_path / "activations",
         allowed_uri_prefixes=["s3://blueprint/task-evaluation/production-inputs/"],
-        service_account=ACCOUNT, service_group=ACCOUNT, repository_root=Path(__file__).resolve().parents[1],
+        service_account=ACCOUNT, service_group=grp.getgrgid(os.getegid()).gr_name, repository_root=Path(__file__).resolve().parents[1],
         destination_prefix="s3://blueprint/task-evaluation/production-inputs/rehearsal",
         release_window_prefix="s3://blueprint/task-evaluation/production-inputs/coordinator-release-windows/",
         profile_dir=tmp_path / "profiles", webapp_catalog=tmp_path / "catalog.json",
@@ -220,5 +240,93 @@ def test_completed_upload_reaches_activation_worker_and_complete_launch_plan(tmp
     assert plans[0]["paid_inference_performed"] is False
     assert {row["step_id"] for row in plans[0]["planned_steps"]} >= {
         "provider_bundle", "paid_authority", "allocator_dry_run", "live_profile", "standing_authorization"}
-    assert not (tmp_path / "profiles").exists()
-    assert not (tmp_path / "authorizations").exists()
+    assert run["results"][0]["status"] == "profile_authority_materialized_no_execution", run
+    profile = json.loads(next((tmp_path / "profiles").glob("*.json")).read_text())
+    assert profile["task_evaluation_run"]["evaluation_episode_executed"] is False
+    _rehearse_dispatch(tmp_path, monkeypatch, profile)
+
+
+def _preparation_runner(tmp_path, monkeypatch, *, website=False):
+    """Execute the actual no-allocation graph, replacing only external I/O."""
+    import hashlib
+    import importlib
+    from blueprint_pipeline import robot_eval_provider_input_setup as publication
+    from blueprint_pipeline import task_evaluation_scene_configuration_vast as vast
+    from tests.test_task_evaluation_scene_configuration_bundle import _configure_scene_openai_runtime_files
+
+    objects = {}
+
+    def upload(path, uri, *, exclusive):
+        assert exclusive and uri not in objects
+        objects[uri] = Path(path).read_bytes()
+        digest = hashlib.sha256(objects[uri]).hexdigest()
+        return {"status": "uploaded", "full_byte_readback_verified": True,
+                "source_sha256": digest, "remote_sha256": digest,
+                "source_size_bytes": len(objects[uri]), "remote_size_bytes": len(objects[uri]),
+                "receipt_digest": "sha256:" + digest}
+
+    monkeypatch.setattr(publication, "upload_file", upload)
+    monkeypatch.setattr(vast, "_collect_openai_cost_snapshot", lambda **_: {"total_cost_usd": 0.0})
+    _configure_scene_openai_runtime_files(tmp_path, monkeypatch)
+    if website:
+        for name in (*vast._OPENAI_RUNTIME_FILE_ENVS, *vast._OPENAI_RUNTIME_VALUE_ENVS):
+            if "ARTIFIXER" in name:
+                monkeypatch.delenv(name, raising=False)
+
+    def run(argv):
+        assert "--execute" not in argv
+        if "blueprint_pipeline.paid_resource_allocator" in argv:
+            def arg(name):
+                return argv[argv.index(name) + 1]
+            result = vast.run_scene_configuration_vast(
+                job_dir=arg("--scene-configuration-job-dir"),
+                bundle_receipt_path=arg("--scene-configuration-bundle-receipt"),
+                paid_attempt_authority_path=arg("--scene-configuration-attempt-authority"),
+                paid_resource_admission_grant=None, execute=False,
+                scene_construction_queue_root=tmp_path / "construction")
+            Path(arg("--adapter-output")).write_text(json.dumps(result))
+            assert result["status"] == "dry_run_ready", result
+            return 0
+        if argv[1] == "-m":
+            name, args = argv[2], argv[3:]
+        else:
+            name, args = "scripts." + Path(argv[1]).stem, argv[2:]
+        assert name in {
+            "blueprint_pipeline.task_evaluation_scene_configuration_bundle",
+            "blueprint_pipeline.task_evaluation_scene_configuration_paid_authority",
+            "scripts.publish_task_evaluation_immutable_manifest",
+            "scripts.build_task_evaluation_scene_configuration_live_profile",
+            "scripts.rehearse_lane_terminal_contract",
+            "scripts.publish_task_evaluation_launch_profiles",
+            "scripts.materialize_task_evaluation_standing_launch_authorization"}
+        return importlib.import_module(name).main(args)
+
+    return run
+
+
+def _rehearse_dispatch(tmp_path, monkeypatch, profile):
+    from blueprint_pipeline import task_evaluation_launch_dispatcher as dispatcher
+    from tests.test_task_evaluation_launch_dispatcher import _request
+    request = _request(profile)
+    request["authorization"]["spend"]["max_spend_usd"] = profile["allocator"]["max_spend_usd"]
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+    path = tmp_path / "dispatch-request.json"
+    path.write_text(json.dumps(request))
+    monkeypatch.setenv(dispatcher.EXECUTE_ENV, "true")
+    monkeypatch.setenv(dispatcher.SECRET_PROFILE_ID_ENV, profile["required_controls"]["secret_profile_id"])
+    monkeypatch.setenv(dispatcher.STANDING_AUTHORIZATION_DIR_ENV, str(tmp_path / "authorizations"))
+    calls = []
+
+    def stop_at_allocator(argv):
+        assert "--execute" in argv
+        calls.append(argv)
+        # All controller execute-only gates ran; no provider call or fake result.
+        return 75
+
+    receipt = dispatcher.dispatch_launch_request(
+        request_path=path, profile_dir=tmp_path / "profiles", state_root=tmp_path / "dispatch",
+        execute=True, allocator_runner=stop_at_allocator,
+        publication_readiness_probe=lambda **_: {"status": "ready", "provider_mutation_performed": False, "spend_authority_granted": False})
+    assert len(calls) == 1, receipt
+    assert receipt["status"] == "blocked"
+    assert receipt["provider_mutation_attempted"] is False

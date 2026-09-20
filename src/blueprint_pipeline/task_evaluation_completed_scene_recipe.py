@@ -49,6 +49,10 @@ def stage_configurations(*, task: dict, collision_digest: str) -> list[dict]:
         source_object_identity=subject["source_object_id"],
         geometry_support="exact_provided_mesh_in_owner_declared_frame",
         appearance_inputs="provided_mesh_visual_geometry_preserved")
+    # This adapter preserves supplied geometry; it does not call a generative
+    # authoring backend. Carrying the shared helper's Astra default makes the
+    # provider demand an unrelated Astra spend/runtime contract.
+    third.pop("authoring_backend", None)
     assembly = records.stage_six_configuration(scene_identity=task["scene_identity"],
         support_plane={"sage_prim_path": support["runtime_prim_path"],
             "publisher_instance_id": "owner-support-" + canonical_digest(support)[7:31],
