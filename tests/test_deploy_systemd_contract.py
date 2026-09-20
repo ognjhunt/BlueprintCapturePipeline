@@ -883,11 +883,18 @@ def test_activation_loads_operator_owned_preparation_routing():
     )
 
 
-def test_website_capture_worker_loads_deployed_geometry_runtime():
+def test_website_capture_worker_loads_deployed_geometry_runtime(monkeypatch):
     service = _read("blueprint-pubsub-handoff-listener.service")
     assert service.index("EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env") < service.index(
         "EnvironmentFile=-/etc/blueprint/task-evaluation-scene-configuration-release.env"
     )
+    from blueprint_pipeline import vast_independent_watchdog_control as watchdog
+    assert "KillMode=process" in service
+    declaration = next(line.split("=", 2)[2] for line in service.splitlines()
+                       if line.startswith(f"Environment={watchdog.CALLER_EXIT_SURVIVAL_ENV}="))
+    monkeypatch.setenv("INVOCATION_ID", "website-service")
+    monkeypatch.setenv(watchdog.CALLER_EXIT_SURVIVAL_ENV, declaration)
+    assert watchdog._caller_exit_survival_proven(watchdog._caller_exit_survival_contract())
 
 
 def test_paid_units_enable_the_provider_credit_guard_and_the_controller_can_read_credit():
@@ -897,6 +904,7 @@ def test_paid_units_enable_the_provider_credit_guard_and_the_controller_can_read
 
     flag = "Environment=BLUEPRINT_VAST_CREDIT_GUARD_ENABLED=true"
     for name in (
+        "blueprint-pubsub-handoff-listener.service",
         "blueprint-task-evaluation-launch-dispatcher.service",
         "blueprint-task-evaluation-policy-canary-dispatcher.service",
         "blueprint-task-evaluation-sam31-preparation-execution.service",

@@ -5,6 +5,10 @@ Wants=network-online.target
 After=network-online.target
 
 [Service]
+# Keep the independent geometry watchdog alive if the capture worker exits.
+KillMode=process
+Environment=BLUEPRINT_VAST_WATCHDOG_CALLER_EXIT_SURVIVAL=systemd_dispatcher_kill_mode_process
+Environment=BLUEPRINT_VAST_CREDIT_GUARD_ENABLED=true
 User=blueprint
 Group=blueprint
 UMask=0077
