@@ -362,12 +362,12 @@ def main() -> int:
         }
     result["result_digest"] = canonical_digest(result, digest_field="result_digest")
     result_path.write_text(canonical_json(result) + "\n", encoding="utf-8")
-    if result["status"] != "completed":
+    if result["status"] not in {"completed", "completed_prefix"}:
         print("BLUEPRINT_SCENE_CONFIGURATION_FAILURE:" + canonical_json({
             "run_id": result["run_id"], "blockers": result["blockers"],
             "result_digest": result["result_digest"],
         }), flush=True)
-    return 0 if result["status"] == "completed" else 2
+    return 0 if result["status"] in {"completed", "completed_prefix"} else 2
 
 
 if __name__ == "__main__":

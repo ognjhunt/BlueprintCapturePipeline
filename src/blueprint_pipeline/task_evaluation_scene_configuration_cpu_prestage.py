@@ -21,6 +21,7 @@ from contextlib import contextmanager
 import fcntl
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import shutil
@@ -203,6 +204,10 @@ def _clear_work_products(work_dir: Path) -> None:
         if target.is_symlink() or target.is_file():
             target.unlink()
         elif target.is_dir():
+            # The entrypoint seals its toolchain read-only. Make only our
+            # disposable directories writable; never follow runtime symlinks.
+            for directory, _, _ in os.walk(target, followlinks=False):
+                Path(directory).chmod(0o700)
             shutil.rmtree(target)
 
 
@@ -242,6 +247,7 @@ def prepare_stage_prefix_before_gpu(
                  and existing.get("stage_limit") == stage_limit
                  and _sha(Path(existing["capsule_path"])) == existing["capsule_sha256"], "retained_receipt_invalid")
         return existing
+    _require(not (job / "cpu_prestage_output.zip").exists(), "prior_attempt_requires_reconciliation")
     bundle = Path(str(bundle_receipt["bundle_path"]))
     _require(_sha(bundle) == bundle_receipt["bundle_sha256"], "source_bundle_changed")
     _bundle_manifest(bundle)
@@ -273,6 +279,12 @@ def prepare_stage_prefix_before_gpu(
             output.mkdir(mode=0o750)
             checkpoint_path = work / CHECKPOINT_NAME
             deadline = float(now()) + int(ttl_seconds)
+            parent_deadline = environment.get("BLUEPRINT_SCENE_CONFIGURATION_PARENT_DEADLINE_EPOCH")
+            if parent_deadline:
+                parent_deadline = float(parent_deadline)
+                _require(math.isfinite(parent_deadline), "parent_deadline_invalid")
+                deadline = min(deadline, parent_deadline)
+            _require(deadline > float(now()) + int(closure_reserve_seconds), "parent_deadline_exhausted")
             values = {
                 **{str(k): str(v) for k, v in environment.items()},
                 "BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS": "1",
@@ -297,7 +309,7 @@ def prepare_stage_prefix_before_gpu(
                 _require(result_path.is_file(), "runner_result_missing")
                 result = _json(result_path)
                 shutil.copyfile(result_path, job / "cpu_prestage_provider_result.json")
-                _require(result.get("status") == "completed_prefix"
+                _require(returncode == 0 and result.get("status") == "completed_prefix"
                          and result.get("run_id") == bundle_receipt["run_id"]
                          and result.get("source_commit") == bundle_receipt["source_commit"],
                          "prefix_not_completed:" + str(result.get("status")))
@@ -329,6 +341,11 @@ def prepare_stage_prefix_before_gpu(
                     zipped.writestr(_TRANSPORT_NAME, canonical_json(transport) + "\n")
                 validate_stage_prefix_capsule(capsule, expected_stage_ids=expected_ids)
             finally:
+                # Keep failed-stage authoring and cost reservations as well as
+                # successful checkpoints before removing the scratch runtime.
+                # A crash after spending must not look like an untouched job.
+                from .task_evaluation_scene_configuration_output_archive import write_output_archive
+                write_output_archive(output, job / "cpu_prestage_output.zip")
                 _clear_work_products(work)
     receipt = {
         "schema_version": RECEIPT_SCHEMA, "status": "completed_prefix_before_gpu_allocation",

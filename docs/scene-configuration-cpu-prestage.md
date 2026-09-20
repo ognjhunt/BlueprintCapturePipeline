@@ -72,6 +72,12 @@ staged for a provider:
    (`key_prefix=blueprint/arm-decision-proof-v1/cpu-prestage`) and the runtime
    environment carries `BLUEPRINT_SCENE_CONFIGURATION_STAGE_PREFIX_CAPSULE_{URL,SHA256,BYTES}`.
    A failed prestage raises before any provider allocation.
+   Its full evidence archive (including incomplete authoring and cost records)
+   is retained as `job/cpu_prestage_output.zip` before scratch cleanup, and enters
+   the existing reconciliation path if no native output was returned. Repeating
+   an attempt with that archive but no success receipt is refused. Cleanup
+   handles the toolchain's sealed read-only directories without following links.
+   The CPU deadline cannot exceed the already consumed parent's deadline.
 5. On the GPU host the runner calls `consume_stage_prefix_capsule` before
    `completed_astra_prefix`: it downloads exactly the bound bytes, verifies the
    digest, marker and transport record, refuses a capsule bound to another
@@ -80,6 +86,8 @@ staged for a provider:
    (`BLUEPRINT_SCENE_CONFIGURATION_STAGE_ADOPTED`), binds its own native
    continuation deadline, skips Astra tool installation and executes stages
    5-6 only.
+   Model credentials stay on the control plane once the prefix is complete;
+   they are not forwarded to the native worker.
 
 Tests: `tests/test_task_evaluation_scene_configuration_cpu_prestage.py`
 (including a rehearsal that seals a real prefix through the real chain and
