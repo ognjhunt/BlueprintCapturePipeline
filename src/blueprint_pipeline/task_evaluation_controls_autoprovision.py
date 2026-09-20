@@ -567,6 +567,12 @@ def process_config(config_path: str | Path, *, expected_production_commit: str) 
                 trusted_clients=set(config["trusted_clients"]), service_group=config.get("service_group", "blueprint")))
         except (ValueError, OSError, KeyError, TypeError, producer.ConfiguredControlsProvisioningError,
                 _StoreError) as exc:
+            if str(exc) == "scene_robot_assignment_missing":
+                # Scene construction is independent of a team's robot choice.
+                # Do not provision controls or block the separately authorized
+                # construction while the team has not selected its setup.
+                rows.append({"status": "awaiting_robot_team_selection", "intent_id": intent_id})
+                continue
             row = {"status": "controls_autoprovision_refused", "intent_id": intent_id, "blocker": str(exc)}
             key = _configured_scene_key(intent_path, preparation_queue_root)
             if key is not None:

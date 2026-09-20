@@ -36,9 +36,6 @@ from .task_evaluation_launch_activation_contract import (
     TaskEvaluationLaunchActivationContractError,
     validate_launch_activation_request,
 )
-from .task_evaluation_configured_controls_autostart import (
-    configured_controls_autostart_registry_name,
-)
 from .task_evaluation_launch_activation_queue import stage_launch_activation_request
 from .task_evaluation_launch_preparation_queue import (
     ENVELOPE_SCHEMA_VERSION as PREPARATION_ENVELOPE_SCHEMA_VERSION,
@@ -799,21 +796,9 @@ def advance_scene_configuration_activation(
         raise SceneConfigurationActivationAutomationError(
             "scene_configuration_activation_intent_commit_mismatch"
         )
-    if configured_controls_intent_root is not None:
-        controls_intent = Path(configured_controls_intent_root).expanduser() / (
-            configured_controls_autostart_registry_name(
-                team_namespace=team_namespace, scene_id=scene_id, task_id=task_id
-            )
-        )
-        if controls_intent.is_symlink() or not controls_intent.is_file():
-            return {
-                "status": "awaiting_configured_controls_continuation_intent",
-                "preparation_id": preparation_id,
-                "team_namespace": team_namespace,
-                "scene_id": scene_id,
-                "task_id": task_id,
-                "configured_controls_intent_path": str(controls_intent),
-            }
+    # A robot team's controls intent is required for robot execution, not for
+    # constructing this reusable scene. Construction has its own owner intent,
+    # spend authorization, provider-zero check and activation below.
     from .task_evaluation_scene_configuration_paid_authority import (
         MAX_PROVIDER_ZERO_AGE_SECONDS,
     )
