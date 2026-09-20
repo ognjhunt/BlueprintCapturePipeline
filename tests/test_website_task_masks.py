@@ -25,6 +25,49 @@ def test_same_class_neighbor_is_not_removed():
     assert selected["track_id"] == "right"
 
 
+def test_coarse_timestamp_uses_nearest_observed_mask_with_bounded_tolerance():
+    frames = [{"frame_id": "unobserved", "timestamp_seconds": 0},
+              {"frame_id": "frame-0", "timestamp_seconds": 1 / 30}]
+    assert select_task_track(target=_target(), tracks=[_track()], frames=frames)["track_id"] == "cup-1"
+    frames[1]["timestamp_seconds"] = 0.6
+    with pytest.raises(ValueError, match="track_ambiguous"):
+        select_task_track(target=_target(), tracks=[_track()], frames=frames)
+
+
+def test_temporal_tolerance_does_not_cherry_pick_a_later_spatial_match():
+    track = _track(start=2)
+    later = {**_track()["observations"][0], "source_frame_id": "later"}
+    track["observations"].append(later)
+    with pytest.raises(ValueError, match="track_ambiguous"):
+        select_task_track(target=_target(), tracks=[track], frames=[
+            {"frame_id": "frame-0", "timestamp_seconds": 0.03},
+            {"frame_id": "later", "timestamp_seconds": 0.1}])
+
+
+def test_full_video_identity_is_selected_before_geometry_sampling(tmp_path, monkeypatch):
+    from blueprint_pipeline import website_task_masks as masks
+
+    target = {**_target(), "semantic_label": "blue box", "task_effect": "manipulated", "disposition": "remove"}
+    target["spatial_evidence"][0]["timestamp_seconds"] = 8.0
+    full_track = _track()
+    full_track["observations"][0]["source_frame_id"] = "anchor"
+    full_track["observations"].append({**_track(start=2)["observations"][0], "source_frame_id": "sampled"})
+    registry = [{"source_frame_id": frame_id, "decoded_pts_seconds": timestamp, "width": 4, "height": 4}
+                for frame_id, timestamp in [("anchor", 8 + 1 / 30), ("sampled", 8.1)]]
+    monkeypatch.setenv("BLUEPRINT_WEBSITE_SAM31_PROVIDER", "meta")
+    monkeypatch.setattr(masks, "prepare_continuous_video", lambda **kw: (registry, {"path": "prepared.mp4"}))
+    monkeypatch.setattr(masks, "run_meta_sam31", lambda **kw: {"tracks": [full_track]})
+    result = masks.run_website_task_masks(
+        plan={"targets": [target], "task_context_sha256": "task"},
+        source_geometry={"digest": "source", "geometry_available": False,
+                         "binding": {"source_video_digest": "video"},
+                         "frames": [{"frame_id": "sampled", "timestamp_seconds": 8.1, "width": 4, "height": 4}]},
+        source_video=tmp_path / "source.mov", output_root=tmp_path / "masks")
+    assert result["targets"][0]["track"]["track_id"] == "cup-1"
+    assert [row["source_frame_id"] for row in result["targets"][0]["track"]["observations"]] == ["sampled"]
+    assert len(result["targets"][0]["source_track"]["observations"]) == 2
+
+
 @pytest.mark.parametrize("tracks", [[], [_track(start=2)], [_track("a"), _track("b")], [_track(label="other-target")]])
 def test_missing_or_ambiguous_instance_holds_editing(tracks):
     with pytest.raises(ValueError, match="track_ambiguous"):
