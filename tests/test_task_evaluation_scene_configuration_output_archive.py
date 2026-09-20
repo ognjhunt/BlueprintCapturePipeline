@@ -35,3 +35,21 @@ def test_declared_completed_weights_survive_scratch_exclusion(tmp_path):
     weights.write_bytes(b'tampered')
     with pytest.raises(RuntimeError, match='training_checkpoint_path_invalid'):
         write_output_archive(output, destination)
+
+
+def test_a_completed_prefix_carries_its_resume_binding_and_omits_other_stages(tmp_path):
+    output = tmp_path/'output'
+    (output/'stages/stage-1/adapter').mkdir(parents=True)
+    (output/'stages/stage-1/adapter/artifact.json').write_text('{}')
+    (output/'stages/stage-2/adapter').mkdir(parents=True)
+    (output/'stages/stage-2/adapter/partial.json').write_text('{}')
+    (output/'stages/astra_same_run_resume_binding.json').write_text('{"binding": true}')
+    destination = tmp_path/'checkpoint.zip'
+    write_output_archive(output, destination, completed_stages=['stage-1'])
+    with zipfile.ZipFile(destination) as archive:
+        names = set(archive.namelist())
+    assert 'stages/astra_same_run_resume_binding.json' in names
+    assert 'stages/stage-1/adapter/artifact.json' in names
+    assert not any(name.startswith('stages/stage-2/') for name in names)
+    assert json.loads(zipfile.ZipFile(destination).read('completed_stage_checkpoint.json'))[
+        'completed_stage_ids'] == ['stage-1']

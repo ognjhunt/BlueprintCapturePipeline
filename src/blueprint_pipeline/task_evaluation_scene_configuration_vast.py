@@ -1060,8 +1060,15 @@ def run_scene_configuration_vast(
     warm_session_output_root: str | Path | None = None,
     scene_construction_queue_root: str | Path | None = None,
     disk_usage_provider: Callable[[Path], Any] | None = None,
+    cpu_prestage_stage_limit: str | None = None,
 ) -> dict[str, Any]:
-    """Run exactly one configuration allocation and close every owned resource."""
+    """Run exactly one configuration allocation and close every owned resource.
+
+    With ``cpu_prestage_stage_limit`` the CPU stages up to that limit execute
+    on this host first, from the same bundle and authority; their completed
+    checkpoints travel as a digest-bound capsule and the paid run starts at
+    the first GPU stage. A prefix that fails never rents a GPU.
+    """
 
     job = Path(job_dir).expanduser().resolve()
     ensure_dir(job)
@@ -1436,6 +1443,8 @@ def run_scene_configuration_vast(
     runtime_secret_cleanup_blockers: list[str] = []
     api_pretraining: dict[str, Any] = {}
     api_pretraining_staging_dir = job / "api_pretraining_object_store"
+    cpu_prestage: dict[str, Any] = {}
+    cpu_prestage_staging_dir = job / "cpu_prestage_object_store"
     try:
         runtime_secret_paths, staged_secret_root = (
             _stage_owner_only_runtime_secrets(
@@ -1482,6 +1491,36 @@ def run_scene_configuration_vast(
                 GPU_PREPARATION_REQUIRED_ENV: "1",
             })
             expected_download_bytes += int(api_pretraining["capsule_bytes"])
+        if cpu_prestage_stage_limit and not diagnostic_only:
+            from .task_evaluation_scene_configuration_cpu_prestage import (
+                PREFIX_BYTES_ENV, PREFIX_SHA_ENV, PREFIX_URL_ENV, STAGE_LIMIT_ENV,
+                prepare_stage_prefix_before_gpu, prestage_stage_limit, prestage_ttl_seconds,
+            )
+            stage_limit = str(prestage_stage_limit(receipt, {STAGE_LIMIT_ENV: cpu_prestage_stage_limit}))
+            cpu_prestage = prepare_stage_prefix_before_gpu(
+                bundle_receipt=receipt, authority=authority, job_dir=job, stage_limit=stage_limit,
+                environment={**dict(os.environ), **runtime_environment, **runtime_secret_paths},
+                ttl_seconds=prestage_ttl_seconds(receipt, stage_limit),
+            )
+            prestage_staging = stage_wam_provider_bundle_object_store(
+                job_dir=cpu_prestage_staging_dir,
+                bundle_path=Path(cpu_prestage["capsule_path"]),
+                key_prefix="blueprint/arm-decision-proof-v1/cpu-prestage",
+                expiration_seconds=ttl + 1_800, retain_content_addressed_bundle=True,
+            )
+            prestage_reference = prestage_staging.get("provider_bundle_remote_reference") or {}
+            if (prestage_staging.get("status") != "completed"
+                    or prestage_reference.get("digest") != cpu_prestage["capsule_sha256"]
+                    or prestage_reference.get("size_bytes") != cpu_prestage["capsule_bytes"]
+                    or prestage_reference.get("full_byte_service_account_readback_passed") is not True):
+                raise TaskEvaluationSceneConfigurationVastError(
+                    "scene_configuration_cpu_prestage_staging_failed")
+            runtime_environment.update({
+                PREFIX_URL_ENV: (cpu_prestage_staging_dir / "provider_bundle_url.txt").read_text().strip(),
+                PREFIX_SHA_ENV: cpu_prestage["capsule_sha256"],
+                PREFIX_BYTES_ENV: str(cpu_prestage["capsule_bytes"]),
+            })
+            expected_download_bytes += int(cpu_prestage["capsule_bytes"])
         with _authority_environment():
             adapter = run_vast_provider_adapter(
                 job_dir=provider_run,
@@ -1586,6 +1625,14 @@ def run_scene_configuration_vast(
             write_json(job / "api_pretraining_object_store_cleanup.json", pretraining_cleanup)
             if pretraining_cleanup.get("all_objects_absent") is not True:
                 runtime_secret_cleanup_blockers.append("api_pretraining_staging_cleanup_unproven")
+        if cpu_prestage_staging_dir.exists():
+            prestage_cleanup = cleanup_scene_staging(
+                adapter=adapter, staging_dir=cpu_prestage_staging_dir,
+                cleanup=cleanup_staged_wam_provider_objects,
+            )
+            write_json(job / "cpu_prestage_object_store_cleanup.json", prestage_cleanup)
+            if prestage_cleanup.get("all_objects_absent") is not True:
+                runtime_secret_cleanup_blockers.append("cpu_prestage_staging_cleanup_unproven")
 
     if retain_warm_session and adapter.get("retained_owned") is True:
         from .task_evaluation_scene_configuration_warm_bootstrap import (  # noqa: PLC0415
@@ -1803,6 +1850,7 @@ def run_scene_configuration_vast(
         "authority_digest": authority["authority_digest"],
         "authorization_consumption": consumption,
         "api_pretraining": api_pretraining or None,
+        "cpu_prestage": cpu_prestage or None,
         "api_pretraining_failure_path": (
             str(job / "api_pretraining_failure.json")
             if (job / "api_pretraining_failure.json").is_file() else None),

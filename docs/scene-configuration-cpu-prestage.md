@@ -38,29 +38,70 @@ on a rights-record field; the GPU minutes bought nothing.
    existing budgeted invoker and inference reservations; the controls and
    policy runs are unchanged.
 
-## Done
+## How the prestage works (`task_evaluation_scene_configuration_cpu_prestage.py`)
 
-- `stage_limit` in the provider runtime and the bundle runner
-  (`BLUEPRINT_SCENE_CONFIGURATION_STAGE_LIMIT`). Prefix time admission counts
-  only the scheduled stages.
-- Exact-path split-phase checkpoint binding. A real-file fixture exercises
-  prefix restoration at its original logical path, adoption of stages 1–4, and
-  rejection of path changes or deadline extensions. This is local contract
-  evidence; the cross-host capsule and live CPU authoring remain unproven.
-- Website rights admission carries the driver gate fields (the stage-3 failure).
+Set `BLUEPRINT_SCENE_CONFIGURATION_CPU_PRESTAGE_STAGE_LIMIT=stage-4` in the
+control-plane environment. Inside `run_scene_configuration_vast`, after the
+OpenAI stage gates and runtime secrets are composed and before anything is
+staged for a provider:
+
+1. `prestage_stage_limit` admits the limit only when every scheduled adapter
+   is CPU work and the bundle's replacement backend is Astra (the only backend
+   that seals same-root checkpoints). `carried_completed_stage_count` must be 0.
+2. `prepare_stage_prefix_before_gpu` extracts the sealed bundle to the paid
+   run's exact logical path, `<work_dir>/task_evaluation_scene_configuration_provider_bundle`
+   (`BLUEPRINT_SCENE_CONFIGURATION_CPU_PRESTAGE_WORK_DIR`, default `/workspace`,
+   the Vast onstart's `WORK_DIR`), and runs the bundle's own entrypoint
+   (`run_task_evaluation_scene_configuration_provider.sh`) with the paid run's
+   composed environment plus `BLUEPRINT_SCENE_CONFIGURATION_STAGE_LIMIT`, its
+   own bounded deadline (`prestage_ttl_seconds`: the scheduled stages'
+   allowances, no Isaac allowance) and the host Python on `PATH`. The
+   entrypoint materialises the bundled `astra_asset_authoring` wheelhouse
+   runtime under `runtime_output/.venv` exactly as it does on the GPU host.
+   Secrets stay outside the work dir; the disk budget role is `cpu_prestage`;
+   one prestage runs at a time (`<work_dir>/.cpu-prestage.lock`).
+3. The result must be `completed_prefix` for the same run id and source commit
+   with a sealed `astra_split_stage_resume_binding.v1`. The runner's prefix
+   checkpoint zip (marker, completed `stages/<id>/` trees and
+   `stages/astra_same_run_resume_binding.json`) is copied to
+   `job/cpu_prestage_capsule.zip` with a digest-bound
+   `cpu_prestage_transport.json` (work dir, output root, run id, bundle sha,
+   authority digest, prefix deadline). The receipt is sealed at
+   `job/cpu_prestage_receipt.json`; the work dir is cleared.
+4. The capsule is staged like the ArtiFixer pretraining capsule
+   (`key_prefix=blueprint/arm-decision-proof-v1/cpu-prestage`) and the runtime
+   environment carries `BLUEPRINT_SCENE_CONFIGURATION_STAGE_PREFIX_CAPSULE_{URL,SHA256,BYTES}`.
+   A failed prestage raises before any provider allocation.
+5. On the GPU host the runner calls `consume_stage_prefix_capsule` before
+   `completed_astra_prefix`: it downloads exactly the bound bytes, verifies the
+   digest, marker and transport record, refuses a capsule bound to another
+   run id or output root, and restores only `stages/` members into the empty
+   output root. The chain then adopts stages 1-4
+   (`BLUEPRINT_SCENE_CONFIGURATION_STAGE_ADOPTED`), binds its own native
+   continuation deadline, skips Astra tool installation and executes stages
+   5-6 only.
+
+Tests: `tests/test_task_evaluation_scene_configuration_cpu_prestage.py`
+(including a rehearsal that seals a real prefix through the real chain and
+archive writer, restores it at the same path and continues to stage 6).
+
+## Host requirements (control plane)
+
+- `/workspace` must be a real directory (not a symlink; `.resolve()` must be
+  identity) writable by the `blueprint` service user, ideally a bind mount
+  onto the work volume. A stale root-owned
+  `/workspace/task_evaluation_scene_configuration_provider_bundle` from an
+  earlier manual run must be removed first.
+- `python3` on the service `PATH` must be 3.12 (the wheelhouse manifest pins
+  it); the entrypoint builds the provider runtime from the bundle, so the
+  host venv does not need the Astra profile itself.
+- `bash`, `timeout`, `bwrap` (present).
+- Capacity: 4 vCPU / 7 GB. Blender appearance review may prove slow; measure
+  the first prestage (`job/cpu_prestage_entrypoint.log`) before deciding on a
+  CPU worker class.
 
 ## Remaining
 
-- Control-plane prestage entrypoint: materialise the packaged Blender runtime
-  and the `astra_asset_authoring` python profile on the host (build123d, OCP
-  and pxr are already in the venv), run the runner with the limit under the
-  staged bundle's `runtime_output`, and seal the prefix receipt.
-- Bundle builder: include input bytes and `runtime_output/stages` from the
-  prestage in a digest-bound capsule, restore the exact logical paths on the
-  native host, and verify actual artifact and hydrated-input bindings before
-  adoption. Do not rewrite signed receipts or weaken their path checks.
-- Launch ordering: activation submits the paid run only after the prestage
-  receipt is sealed; a failed prestage never rents a GPU.
-- Capacity: the control plane is 4 vCPU / 7 GB; Blender appearance review may
-  need a CPU worker class or a cheap CPU-only provider instance if it proves
-  slow. Measure the first prestage before deciding.
+- Deploy with Astra: batch this with #2028-#2030, provision `/workspace`,
+  set the stage-limit env, then one controller-origin website run. Do not
+  deploy over a paid run.

@@ -45,6 +45,7 @@ ROLE_FOOTPRINT_BYTES: Mapping[str, int] = {
     "result_artifact_download": 256 * 1024 * 1024,
     "stage_replay": 4 * GIB,
     "semantic_pretraining": 3 * GIB,
+    "cpu_prestage": 6 * GIB,
 }
 _ROLE_RE = re.compile(r"[a-z][a-z0-9_]{1,63}\Z")
 
