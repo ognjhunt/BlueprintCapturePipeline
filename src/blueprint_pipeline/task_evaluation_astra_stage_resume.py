@@ -123,6 +123,24 @@ def save_completed_stage(stage_root, stage, binding, previous, result):
     _seal(stage_root / "completed_stage_checkpoint.json", _checkpoint(stage, binding, previous, result))
 
 
+def completed_astra_prefix(root, envelope, configurations, parent_deadline_epoch, *, stage_limit=None):
+    """Skip authoring tool setup only after validating its actual retained files."""
+    authoring = next((stage for stage in envelope.get("recipe", {}).get("stage_sequence", [])
+                      if configurations[stage["stage_id"]][0].get("authoring_backend") == "astra_cad_blender_v1"), None)
+    if authoring is None or not (root / authoring["stage_id"] / "completed_stage_checkpoint.json").is_file():
+        return False
+    binding = bind_same_root_resume(root, envelope, configurations, parent_deadline_epoch, stage_limit=stage_limit)
+    previous = []
+    for stage in envelope["recipe"]["stage_sequence"]:
+        result = load_completed_stage(root / stage["stage_id"], stage, binding, previous)
+        if result is None:
+            return False
+        previous.append(result)
+        if stage["stage_id"] == authoring["stage_id"]:
+            return True
+    return False
+
+
 def retained_astra_production(producer_root, stage, envelope, configuration_path):
     path = producer_root / "task_evaluation_scene_configuration_stage_production.v1.json"
     if not path.exists():

@@ -292,9 +292,12 @@ def main() -> int:
         preserve_stage_prefix(output_root=output, completed_results=results,
                               checkpoint_path=checkpoint_path)
 
+    stage_limit = os.environ.get("BLUEPRINT_SCENE_CONFIGURATION_STAGE_LIMIT") or None
     try:
+        from blueprint_pipeline.task_evaluation_astra_stage_resume import completed_astra_prefix
         if any(value.get("authoring_backend") == "astra_cad_blender_v1"
-               for value, _ in configurations.values()):
+               for value, _ in configurations.values()) and not completed_astra_prefix(
+                   stages_root, envelope, configurations, parent_deadline_epoch, stage_limit=stage_limit):
             from blueprint_pipeline.task_evaluation_scene_configuration_astra_driver import preflight_astra_execution_runtime
             from blueprint_pipeline.task_evaluation_scene_configuration_builtin_producers import _validate_toolchain
             toolchain = runtime / "toolchain"
@@ -304,7 +307,6 @@ def main() -> int:
             preflight_astra_execution_runtime(package=component.parent,
                 output_root=output / "astra_runtime_preflight")
             print("BLUEPRINT_SCENE_CONFIGURATION_ASTRA_RUNTIME_PREFLIGHT_PASSED", flush=True)
-        stage_limit = os.environ.get("BLUEPRINT_SCENE_CONFIGURATION_STAGE_LIMIT") or None
         chain = _portable_stage_chain(
             execute_scene_configuration_stage_chain(
                 envelope=envelope,
