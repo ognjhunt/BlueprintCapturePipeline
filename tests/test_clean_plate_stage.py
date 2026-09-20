@@ -348,6 +348,23 @@ def test_empty_plan_is_noop(tmp_path, monkeypatch):
     assert validate_clean_plate_stage_manifest(manifest) == []
 
 
+def test_retried_analysis_preserves_removal_evidence_bytes(tmp_path, monkeypatch):
+    monkeypatch.setenv(FLAG_ENV, "1")
+    capture_root = _make_capture(tmp_path)
+    plan = empty_removal_plan(status="completed", model="m", processing="static")
+    monkeypatch.setattr(_ANALYSIS_ATTR, lambda **_: plan)
+    monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.utc_now_iso", lambda: "2026-09-20T10:00:00Z")
+    first = run_clean_plate_stage(capture_root=capture_root, privacy_processing=_SAFE_PRIVACY)
+    path = Path(first["removal_manifest_path"])
+    original = path.read_bytes()
+    monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.utc_now_iso", lambda: "2026-09-20T11:00:00Z")
+    run_clean_plate_stage(capture_root=capture_root, privacy_processing=_SAFE_PRIVACY)
+    assert path.read_bytes() == original
+    plan["task_context_sha256"] = "a" * 64
+    run_clean_plate_stage(capture_root=capture_root, privacy_processing=_SAFE_PRIVACY)
+    assert path.read_bytes() != original
+
+
 def test_movable_objects_defer_fill_machinery(tmp_path, monkeypatch):
     monkeypatch.setenv(FLAG_ENV, "1")
     capture_root = _make_capture(tmp_path)
