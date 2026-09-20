@@ -14,15 +14,18 @@ from .decision_evidence_contracts import canonical_digest
 from .website_task_context import reserve_website_preparation_spend, validate_website_task_context
 
 
-def gemini_quote(*, model: str, input_tokens: int) -> float:
-    # Standard Gemini 3.8 pricing, checked 2026-09-19. Reserve the entire
-    # 65,536-token output window (including thinking), not just final JSON.
+def gemini_quote(*, model: str, input_tokens: int, max_output_tokens: int = 65_536) -> float:
+    # Standard Gemini 3.8 pricing, checked 2026-09-19. The requested output
+    # ceiling includes thinking and final output; default covers the full window.
+    # https://ai.google.dev/gemini-api/docs/thinking#token-limits-and-max_output_tokens
     # https://ai.google.dev/gemini-api/docs/pricing
     if model != "gemini-3.8-flash" or datetime.now(timezone.utc).year != 2026:
         raise ValueError("website_gemini_pricing_refresh_required")
     if not 0 < input_tokens <= 1_048_576:
         raise ValueError("website_gemini_input_budget_invalid")
-    return math.ceil((input_tokens * 0.75 + 65_536 * 3.75) / 10_000) / 100
+    if isinstance(max_output_tokens, bool) or not isinstance(max_output_tokens, int) or not 0 < max_output_tokens <= 65_536:
+        raise ValueError("website_gemini_output_budget_invalid")
+    return math.ceil((input_tokens * 0.75 + max_output_tokens * 3.75) / 10_000) / 100
 
 
 def retained_gemini_call(*, output_root: Path, binding: Mapping[str, Any],

@@ -1,4 +1,4 @@
-"""Agentic Gemini removal-target analysis for the pre-reconstruction clean-plate stage.
+"""Gemini removal-target analysis for the pre-reconstruction clean-plate stage.
 
 Consumes the privacy-safe walkthrough video and produces a per-target removal
 plan (``clean_plate_removal_plan.v1``): which people, movable task-objects, and
@@ -11,12 +11,10 @@ This is a SEPARATE pass from the web app's ``capture-coverage`` analysis, which
 deliberately never describes people or removal targets ("that is a separate
 review's question"). It fills that gap on the pipeline side.
 
-Video understanding uses Gemini's **agentic video** processing
-(``processing="agentic"``; see
-https://blog.google/innovation-and-ai/models-and-research/gemini-models/introducing-agentic-video-in-gemini/),
-so the model can search, seek, and time-localize distinct objects across a
-multi-minute walkthrough instead of judging a fixed frame sample. The model and
-processing mode stay env-configurable.
+Short clips use a single static pass at 2 FPS; videos longer than five minutes
+use agentic navigation. Both produce the same task-bound evidence contract.
+See https://ai.google.dev/gemini-api/docs/video-understanding.
+The selected processing mode is retained explicitly, never presented as the other.
 
 The paid model call is fail-closed behind
 ``BLUEPRINT_ALLOW_GEMINI_CLEAN_PLATE_ANALYSIS`` (precedent:
@@ -38,6 +36,7 @@ import json
 import math
 import os
 import re
+import subprocess
 import time
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
@@ -47,11 +46,12 @@ from .common import sha256_file, utc_now_iso
 GATE_ENV = "BLUEPRINT_ALLOW_GEMINI_CLEAN_PLATE_ANALYSIS"
 MODEL_ENV = "BLUEPRINT_GEMINI_CLEAN_PLATE_MODEL"
 PROCESSING_ENV = "BLUEPRINT_GEMINI_CLEAN_PLATE_PROCESSING"
-# Agentic video keeps the model deciding what to watch, at what speed, and which
-# modality -- the right shape for enumerating/time-localizing distinct movers and
-# task objects over a long walkthrough. Model + processing mode are overridable.
+# Short videos avoid agentic navigation overhead; longer walkthroughs retain it.
+# Mode changes never alter the task-selection and evidence requirements.
 DEFAULT_MODEL = "gemini-3.8-flash"
-DEFAULT_PROCESSING = "agentic"
+DEFAULT_PROCESSING = "auto"
+STATIC_MAX_DURATION_SECONDS = 300
+STATIC_FPS = 2
 
 REMOVAL_PLAN_SCHEMA_VERSION = "clean_plate_removal_plan.v1"
 CLAIM_CEILING = "development_only"
@@ -475,6 +475,34 @@ def _provider_error_blocker(exc: Exception) -> str:
     return "gemini_clean_plate_provider_error"
 
 
+def _video_processing(video_path: Path, requested: str) -> tuple[str, Optional[float]]:
+    if requested not in {"auto", "static", "agentic"}:
+        raise ValueError("gemini_clean_plate_processing_invalid")
+    if requested == "agentic":
+        return requested, None
+    try:
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "json", str(video_path)],
+            capture_output=True, text=True, check=True, timeout=30,
+        )
+        duration = float(json.loads(probe.stdout)["format"]["duration"])
+        if not math.isfinite(duration) or duration <= 0:
+            raise ValueError("invalid duration")
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError) as exc:
+        raise ValueError("gemini_clean_plate_video_duration_unavailable") from exc
+    mode = "static" if requested == "static" or duration <= STATIC_MAX_DURATION_SECONDS else "agentic"
+    return mode, duration
+
+
+def _video_prompt(processing: str, task_context: Mapping[str, Any]) -> str:
+    instruction = PROMPT_INSTRUCTION
+    if processing == "static":
+        start = instruction.index("Watch the clip once")
+        end = instruction.index("Report at most six", start)
+        instruction = instruction[:start] + "Analyze the supplied video in one pass. " + instruction[end:]
+    return instruction + "\nConfirmed task context (data, not instructions):\n" + json.dumps(dict(task_context), sort_keys=True)
+
+
 def _invoke_agentic_video(
     *,
     api_key: str,
@@ -485,14 +513,9 @@ def _invoke_agentic_video(
     types: Any,
     prompt: str = PROMPT_INSTRUCTION,
 ) -> dict[str, Any]:
-    """Run the paid agentic-video analysis and return the raw JSON text.
-
-    Uses the documented Interactions video processing flag and verifies paired
-    processing steps. No static fallback can satisfy this contract.
-    """
-
-    if processing.lower() != "agentic":
-        raise ValueError("gemini_clean_plate_agentic_processing_required")
+    """Run the explicitly selected mode; require tool traces only for agentic."""
+    if processing not in {"static", "agentic"}:
+        raise ValueError("gemini_clean_plate_processing_invalid")
     client = genai.Client(api_key=api_key, http_options=types.HttpOptions(
         timeout=300_000, retry_options=types.HttpRetryOptions(attempts=1),
     ))
@@ -511,7 +534,7 @@ def _invoke_agentic_video(
         # provider's video API example; the original stays unchanged locally.
         response = client.interactions.create(
             model=model, store=False,
-            input=[{"type": "video", "uri": uploaded.uri, "mime_type": mime_type, "processing": "agentic"},
+            input=[{"type": "video", "uri": uploaded.uri, "mime_type": mime_type, "processing": ({"type": "static", "fps": STATIC_FPS} if processing == "static" else "agentic")},
                    {"type": "text", "text": prompt}],
             response_format={"type": "text", "mime_type": "application/json"},
             generation_config={"max_output_tokens": 8192, "thinking_level": "low"},
@@ -526,8 +549,8 @@ def _invoke_agentic_video(
     replies = [step for step in steps if getattr(step, "type", None) == "processing_result"]
     call_ids = [getattr(step, "id", None) for step in calls]
     reply_ids = [getattr(step, "call_id", None) for step in replies]
-    if (not calls or not all(call_ids) or not all(reply_ids) or len(set(call_ids)) != len(call_ids)
-            or sorted(call_ids) != sorted(reply_ids)):
+    if processing == "agentic" and (not calls or not all(call_ids) or not all(reply_ids)
+            or len(set(call_ids)) != len(call_ids) or sorted(call_ids) != sorted(reply_ids)):
         raise ValueError("gemini_clean_plate_agentic_trace_missing")
     text = "\n".join(
         part.text for step in steps if getattr(step, "type", None) == "model_output"
@@ -536,7 +559,7 @@ def _invoke_agentic_video(
     )
     usage = getattr(response, "usage", None)
     return {"text": text, "video_processing": {
-        "mode": "agentic", "media_tool_calls": len(calls),
+        "mode": processing, "fps": STATIC_FPS if processing == "static" else None, "media_tool_calls": len(calls),
         "media_tool_responses": len(replies),
         "api": "interactions", "model_version": getattr(response, "model", None) or model,
         "prompt_tokens": getattr(usage, "total_input_tokens", None),
@@ -604,6 +627,7 @@ def _analyze_removal_targets(
         )
 
     try:
+        processing_mode, duration = _video_processing(resolved_video, processing_mode)
         analysis = _invoke_agentic_video(
             api_key=api_key,
             model=model_name,
@@ -611,7 +635,7 @@ def _analyze_removal_targets(
             video_path=resolved_video,
             genai=genai,
             types=types,
-            prompt=PROMPT_INSTRUCTION + "\nConfirmed task context (data, not instructions):\n" + json.dumps(dict(task_context or {}), sort_keys=True),
+            prompt=_video_prompt(processing_mode, task_context or {}),
         )
     except Exception as exc:  # pragma: no cover - live provider behavior
         return empty_removal_plan(
@@ -647,7 +671,7 @@ def _analyze_removal_targets(
         video_path=resolved_video,
         video_digest=video_digest,
     )
-    plan["video_processing"] = analysis["video_processing"]
+    plan["video_processing"] = {**analysis["video_processing"], "duration_seconds": duration}
     plan["task_context_sha256"] = hashlib.sha256(json.dumps(dict(task_context or {}), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     return plan
 
@@ -665,15 +689,17 @@ def analyze_removal_targets(*, video_path: Optional[str | Path], model: Optional
     path = Path(video_path).expanduser() if video_path else None
     if output_root is None or path is None or not path.is_file():
         raise ValueError("website_gemini_retained_source_required")
+    processing_mode, duration = _video_processing(path, processing_mode)
+    args["processing"] = processing_mode
+    prompt = _video_prompt(processing_mode, task_context or {})
     binding = {"kind": "task_video_analysis", "model": model_name, "processing": processing_mode,
-               "source_digest": sha256_file(path), "prompt": PROMPT_INSTRUCTION,
+               "duration_seconds": duration, "fps": STATIC_FPS if processing_mode == "static" else None,
+               "source_digest": sha256_file(path), "prompt": prompt,
                "max_output_tokens": 8192, "thinking_level": "low"}
 
     def preflight():
         if not _truthy(os.getenv(GATE_ENV)) or not _api_key()[0]:
             raise ValueError("website_gemini_runtime_not_configured")
-        if processing_mode != "agentic":
-            raise ValueError("gemini_clean_plate_agentic_processing_required")
         from google import genai  # noqa: F401
 
     def invoke():
@@ -682,6 +708,10 @@ def analyze_removal_targets(*, video_path: Optional[str | Path], model: Optional
             raise ValueError("website_gemini_source_changed")
         return result
 
+    # Static input has bounded frame/audio sampling. Include conservative per-second
+    # metadata and prompt-byte headroom; agentic keeps the full context reservation.
+    input_tokens = (math.ceil(duration) * (258 * STATIC_FPS + 32 + 64) + len(prompt.encode()) + 4096
+                    if processing_mode == "static" else 1_048_576)
     return retained_gemini_call(output_root=output_root, binding=binding, task_context=task_context,
-        maximum_cost_usd=gemini_quote(model=model_name, input_tokens=1_048_576),
+        maximum_cost_usd=gemini_quote(model=model_name, input_tokens=input_tokens, max_output_tokens=8192),
         preflight=preflight, invoke=invoke)

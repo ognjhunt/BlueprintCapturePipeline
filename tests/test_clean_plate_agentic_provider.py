@@ -30,7 +30,7 @@ def invoke(tmp_path, steps, finish="completed", processing="agentic"):
                                       processing=processing, video_path=path,
                                       genai=genai, types=types)
     finally:
-        if processing == "agentic":
+        if processing in {"agentic", "static"}:
             assert deleted == [{"name": "files/test"}]
     return result, calls
 
@@ -89,9 +89,30 @@ def test_provider_tool_loop_error_is_distinct_from_credit_or_key_failure():
     assert _provider_error_blocker(error) == "gemini_clean_plate_analysis_incomplete_too_many_tool_calls"
 
 
-def test_static_override_is_rejected_before_provider_call(tmp_path):
-    with pytest.raises(ValueError, match="agentic_processing_required"):
-        invoke(tmp_path, [], processing="static")
+def test_static_single_pass_has_explicit_mode_and_no_agentic_trace(tmp_path):
+    result, calls = invoke(tmp_path, [output('{"targets":[]}')], processing="static")
+    assert calls[0]["input"][0]["processing"] == {"type": "static", "fps": 2}
+    assert result["video_processing"]["mode"] == "static"
+    assert result["video_processing"]["media_tool_calls"] == 0
+
+
+@pytest.mark.parametrize(("duration", "expected"), [(13.525, "static"), (300, "static"), (300.1, "agentic")])
+def test_duration_selects_mode_without_changing_task_semantics(monkeypatch, tmp_path, duration, expected):
+    from blueprint_pipeline import clean_plate_removal_analysis_gemini as module
+    monkeypatch.setattr(module.subprocess, "run", lambda *a, **k: NS(stdout='{"format":{"duration":%s}}' % duration))
+    assert module._video_processing(tmp_path / "video.mov", "auto") == (expected, duration)
+    prompt = module._video_prompt(expected, {"description": "Move only the blue box"})
+    assert "Move only the blue box" in prompt
+    assert "Movability alone NEVER warrants removal" in prompt
+    if expected == "static":
+        assert "media-processing tool calls" not in prompt
+
+
+def test_unreadable_duration_cannot_silently_choose_an_expensive_mode(monkeypatch, tmp_path):
+    from blueprint_pipeline import clean_plate_removal_analysis_gemini as module
+    monkeypatch.setattr(module.subprocess, "run", lambda *a, **k: NS(stdout='{"format":{}}'))
+    with pytest.raises(ValueError, match="video_duration_unavailable"):
+        module._video_processing(tmp_path / "video.mov", "auto")
 
 
 @pytest.mark.parametrize("payload", ["not json", "{}", '{"targets":[{}]}'])

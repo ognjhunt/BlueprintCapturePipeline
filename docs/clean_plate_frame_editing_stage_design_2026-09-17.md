@@ -90,24 +90,23 @@ scope for the first build unless requested.
 
 ## 4. The analysis → removal contract
 
-A **separate** agentic Gemini video pass (the web app's `capture-coverage`
-deliberately never describes people/targets — *"that is a separate review's
-question"* — so this fills a real, non-overlapping gap). It uses Gemini's
-**agentic video** processing (`processing="agentic"` on a Gemini 3.x Flash
-model; see the
-[agentic-video announcement](https://blog.google/innovation-and-ai/models-and-research/gemini-models/introducing-agentic-video-in-gemini/)),
-so the model searches/seeks the walkthrough and **time-localizes distinct
-objects across a multi-minute pass** rather than judging a fixed 16-frame
-sample — the right shape for enumerating removal targets. Model and processing
-mode are env-configurable (`BLUEPRINT_GEMINI_CLEAN_PLATE_MODEL`,
-`BLUEPRINT_GEMINI_CLEAN_PLATE_PROCESSING`). It follows the gated paid-Gemini
-precedent `wam_generated_video_success_label_gemini.py` (versioned prompt +
-`PROMPT_TEMPLATE_SHA256`, provider-error mapping) with a **fail-closed gate**
-`BLUEPRINT_ALLOW_GEMINI_CLEAN_PLATE_ANALYSIS` (collect blockers → skip the paid
-call → `status="blocked"`). New per-provider module, not a new abstraction. This
-directive — agentic video for the analysis — is scoped to *this stage's* video
-analysis; migrating other repo Gemini passes (e.g. coverage) to agentic video is
-a separate, non-blocking follow-up, not part of this change.
+A separate Gemini task-analysis pass complements the WebApp coverage review.
+The controller selects static single-pass processing at 2 FPS for videos up to
+five minutes, and agentic navigation for longer videos. This owner-approved
+2026-09-19 revision follows the observed `too_many_tool_calls` failure on the
+13.525-second website walkthrough and [Google's video guidance](https://ai.google.dev/gemini-api/docs/video-understanding).
+The task schema and evidence checks are unchanged. Static receipts identify
+static mode, duration and FPS; only agentic receipts require matched navigation
+calls/results. Neither becomes measured or physical evidence.
+
+`BLUEPRINT_GEMINI_CLEAN_PLATE_PROCESSING` defaults to `auto`; explicit `static`
+and `agentic` remain available. Invalid or unreadable duration in auto mode
+holds before paid dispatch. The retained request binds mode, duration, FPS,
+source digest, task and prompt. A mode change needs a new bounded reservation;
+failed previous requests remain recorded and reserved. Short clips reserve
+bounded static input and the requested combined thinking/output window, not
+the model's entire context. The existing
+`BLUEPRINT_ALLOW_GEMINI_CLEAN_PLATE_ANALYSIS` gate remains fail closed.
 
 Output = **removal plan** `clean_plate_removal_plan.v1` (a fork of the existing
 `public_scene_removal_selection.v1`, dropping the post-reconstruction USD/collider

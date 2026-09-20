@@ -298,7 +298,7 @@ def verify_completed_background(*, frames: Sequence[Mapping[str, Any]], original
             if _sha256_file(Path(item["image_path"])) != item["image_digest"]:
                 raise ValueError("website_image_completion_review_source_changed")
             inputs.append(item["image_digest"])
-    binding = {"kind": "background_review", "revision": 1, "model": DEFAULT_MODEL,
+    binding = {"kind": "background_review", "revision": 1, "model": DEFAULT_MODEL, "max_output_tokens": 2048,
                "image_digests": inputs, "frame_ids": [f["frame_id"] for f in frames], "targets": plan["targets"],
                "prompt": REVIEW_PROMPT, "media_resolution": "MEDIA_RESOLUTION_HIGH"}
     # HIGH is bounded at 1120 tokens/image. UTF-8 bytes upper-bound the
@@ -314,6 +314,6 @@ def verify_completed_background(*, frames: Sequence[Mapping[str, Any]], original
         from google import genai  # noqa: F401
 
     return retained_gemini_call(output_root=output_root / "gemini_reviews", binding=binding,
-        task_context=task_context, maximum_cost_usd=gemini_quote(model=DEFAULT_MODEL, input_tokens=input_tokens),
+        task_context=task_context, maximum_cost_usd=gemini_quote(model=DEFAULT_MODEL, input_tokens=input_tokens, max_output_tokens=2048),
         preflight=preflight, invoke=lambda: _verify_completed_background(frames=frames,
             original_frames=original_frames, plan=plan, output_root=output_root, retain_result=False))
