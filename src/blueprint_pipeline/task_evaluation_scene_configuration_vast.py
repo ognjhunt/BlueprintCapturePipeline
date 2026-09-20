@@ -1578,7 +1578,7 @@ def run_scene_configuration_vast(
                 started_instance_id_path=watchdog.started_instance_id_path,
                 forward_hf_token=False,
                 paid_resource_admission_grant=paid_resource_admission_grant,
-                runtime_secret_file_paths=runtime_secret_paths,
+                runtime_secret_file_paths={} if cpu_prestage else runtime_secret_paths,
                 provider_runtime_environment=runtime_environment,
                 allowed_geolocation_country_codes=(
                     OPENAI_API_SUPPORTED_COUNTRY_CODES
@@ -1591,6 +1591,13 @@ def run_scene_configuration_vast(
                 ),
             )
     except (OSError, RuntimeError, ValueError) as exc:
+        if cpu_prestage_stage_limit and not cpu_prestage:
+            write_json(job / "cpu_prestage_failure.json", {
+                "status": "blocked_before_gpu_allocation", "phase": "cpu_prestage",
+                "run_id": receipt["run_id"], "source_commit": receipt["source_commit"],
+                "failure": redacted_failure_detail(exc), "gpu_allocation_attempted": False,
+                "raw_secret_values_recorded": False,
+            })
         if not api_pretraining and requires_api_pretraining:
             write_json(job / "api_pretraining_failure.json", {
                 "status": "blocked_before_gpu_allocation", "phase": "api_pretraining",
@@ -1678,6 +1685,10 @@ def run_scene_configuration_vast(
         and watchdog_close.get("status") == "provider_terminal"
     ):
         cleanup = cleanup_staged_wam_provider_objects(staging_dir)
+    # Preserve the CPU model ledger and partial assets through the existing
+    # output/reconciliation path when no native output could be returned.
+    if not output_zip.is_file() and (job / "cpu_prestage_output.zip").is_file():
+        output_zip = job / "cpu_prestage_output.zip"
     execution, blockers, extraction_disk_capacity = (
         extract_provider_output_with_capacity_guard(
             output_zip,

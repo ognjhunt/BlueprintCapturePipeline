@@ -4104,7 +4104,7 @@ def test_the_lane_hands_the_adapter_the_staged_paths_and_always_discards_them(
 
     source = inspect.getsource(lane.run_scene_configuration_vast)
     stage_index = source.find("_stage_owner_only_runtime_secrets")
-    adapter_index = source.find("runtime_secret_file_paths=runtime_secret_paths")
+    adapter_index = source.find("runtime_secret_file_paths={} if cpu_prestage else runtime_secret_paths")
     assert stage_index != -1, "the lane never stages owner-only copies"
     assert adapter_index != -1
     assert stage_index < adapter_index, (

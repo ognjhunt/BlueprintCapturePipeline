@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import types
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -23,18 +24,31 @@ from tests.test_task_evaluation_scene_configuration_bundle import (
 
 
 @pytest.mark.parametrize("preparation_rejected", [False, True])
+@pytest.mark.parametrize("website_prefix", [False, True])
 def test_postcreate_adapter_exception_preserves_instance_identity_and_watchdog(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, preparation_rejected: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, preparation_rejected: bool, website_prefix: bool
 ) -> None:
     """A finalization error cannot turn a rented instance into "unallocated"."""
 
     receipt = _build(tmp_path, "bundle")
     from blueprint_pipeline import task_evaluation_artifixer_pretraining as prep
+    from blueprint_pipeline import task_evaluation_scene_configuration_cpu_prestage as cpu
+    monkeypatch.setattr(cpu, "prestage_stage_limit", lambda *_: "stage-4")
+    monkeypatch.setattr(cpu, "prestage_ttl_seconds", lambda *_: 7200)
+    if website_prefix:
+        monkeypatch.setattr(scene_vast, "_requires_artifixer_pretraining", lambda _: False)
     events = []
 
     def prepare(**kwargs):
         events.append("api_preparation")
         if preparation_rejected:
+            if website_prefix:
+                with zipfile.ZipFile(Path(kwargs["job_dir"]) / "cpu_prestage_output.zip", "w") as archive:
+                    archive.writestr(scene_vast.RESULT_FILENAME, json.dumps({
+                        "status": "blocked", "run_id": receipt["run_id"], "source_commit": receipt["source_commit"],
+                        "blockers": ["fixture_authoring_failed_after_reservation"],
+                    }))
+                    archive.writestr("stages/stage-3/official_openai_cost/reservation.json", '{"reserved_usd": 3}')
             raise ValueError("pretraining_review_rejected")
         capsule = Path(kwargs["job_dir"]) / "prepared.zip"
         capsule.write_bytes(b"prepared")
@@ -42,6 +56,7 @@ def test_postcreate_adapter_exception_preserves_instance_identity_and_watchdog(
                 "capsule_bytes": capsule.stat().st_size}
 
     monkeypatch.setattr(prep, "prepare_semantics_before_gpu", prepare)
+    monkeypatch.setattr(cpu, "prepare_stage_prefix_before_gpu", prepare)
     receipt_path = tmp_path / "bundle" / f"{BUNDLE_SCHEMA_VERSION}.receipt.json"
     authority_path = tmp_path / "authority.json"
     authority_path.write_text("{}", encoding="utf-8")
@@ -133,12 +148,15 @@ def test_postcreate_adapter_exception_preserves_instance_identity_and_watchdog(
     monkeypatch.setattr(
         scene_vast,
         "_stage_owner_only_runtime_secrets",
-        lambda **_kwargs: ({}, None),
+        lambda **_kwargs: ({"OPENAI_API_KEY_FILE": "/owner-only-key"} if website_prefix else {}, None),
     )
 
     def adapter(**kwargs):
         events.append("gpu_allocation")
         assert events == ["api_preparation", "gpu_allocation"]
+        if website_prefix:
+            assert kwargs["runtime_secret_file_paths"] == {}
+            assert kwargs["provider_runtime_environment"][cpu.PREFIX_SHA_ENV].startswith("sha256:")
         started = Path(kwargs["started_instance_id_path"])
         started.parent.mkdir(parents=True, exist_ok=True)
         started.write_text("918273\n", encoding="utf-8")
@@ -163,6 +181,7 @@ def test_postcreate_adapter_exception_preserves_instance_identity_and_watchdog(
     result = scene_vast.run_scene_configuration_vast(
         job_dir=job,
         bundle_receipt_path=receipt_path,
+        cpu_prestage_stage_limit="stage-4" if website_prefix else None,
         paid_attempt_authority_path=authority_path,
         paid_resource_admission_grant=object(),
         execute=True,
@@ -174,6 +193,9 @@ def test_postcreate_adapter_exception_preserves_instance_identity_and_watchdog(
     if preparation_rejected:
         assert events == ["api_preparation"]
         assert result["provider_mutations_performed"] == 0
+        if website_prefix:
+            assert (job / "cpu_prestage_failure.json").is_file()
+            assert (job / "immutable_execution/stages/stage-3/official_openai_cost/reservation.json").is_file()
         return
     assert close_call["instance_ids"] == [918273]
     assert close_call["provider_teardown_completed"] is False

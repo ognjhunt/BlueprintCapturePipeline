@@ -65,6 +65,9 @@ def _fake_entrypoint(stage_ids: list[str], *, status: str = "completed_prefix", 
             seen.update(env)
         assert argv[0] == "bash" and argv[1].endswith(ENTRYPOINT) and cwd == str(Path(argv[1]).parent)
         output = Path(env["BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_ROOT"])
+        # The real wrapper seals the unpacked toolchain before execution.
+        Path(cwd, "toolchain/manifest.json").chmod(0o444)
+        Path(cwd, "toolchain").chmod(0o555)
         stages = output / "stages"
         stages.mkdir()
         binding = {"schema_version": "astra_split_stage_resume_binding.v1", "output_root": str(stages),
@@ -78,6 +81,8 @@ def _fake_entrypoint(stage_ids: list[str], *, status: str = "completed_prefix", 
             (stages / stage_id / "adapter/artifact.usda").write_text("#usda 1.0\n")
         (stages / "stage-5").mkdir()
         (stages / "stage-5/partial.json").write_text("{}")
+        (stages / "stage-3/official_openai_cost").mkdir(parents=True, exist_ok=True)
+        (stages / "stage-3/official_openai_cost/reservation.json").write_text('{"reserved_usd": 3}')
         preserve_stage_prefix(output_root=output, completed_results=[{"stage_id": s} for s in stage_ids],
                               checkpoint_path=Path(env["BLUEPRINT_SCENE_CONFIGURATION_STAGE_CHECKPOINT_PATH"]))
         _write_result(env, status=status, stage_ids=stage_ids)
@@ -96,7 +101,7 @@ def _prepare(tmp_path: Path, runner, **overrides):
     kwargs = dict(bundle_receipt=_bundle(tmp_path), authority={"authority_digest": "sha256:" + "a" * 64},
                   job_dir=job, environment={"OPENAI_CONTENT_AGENTS_API_KEY_FILE": str(tmp_path / "key"),
                                             "BLUEPRINT_SCENE_CONFIGURATION_OPENAI_MAX_COST_USD": "3",
-                                            "BLUEPRINT_SCENE_CONFIGURATION_PARENT_DEADLINE_EPOCH": "1",
+                                            "BLUEPRINT_SCENE_CONFIGURATION_PARENT_DEADLINE_EPOCH": "9999999999",
                                             "PATH": "/usr/bin:/bin"},
                   stage_limit="stage-4", runner=runner, work_dir=work, python_bin_dir=tmp_path / "bin",
                   now=lambda: 1_000.0, reservation_root=tmp_path / "reservations", which=lambda name: "/usr/bin/" + name,
@@ -138,6 +143,8 @@ def test_prefix_runs_the_bundle_entrypoint_at_the_paid_paths_and_archives_only_c
     # The work dir is returned to the paid run's initial state; the log stays with the job.
     assert sorted(p.name for p in work.iterdir()) == [".cpu-prestage.lock"]
     assert (job / "cpu_prestage_entrypoint.log").read_bytes() == b"entrypoint ran\n"
+    with zipfile.ZipFile(job / "cpu_prestage_output.zip") as archived:
+        assert "stages/stage-3/official_openai_cost/reservation.json" in archived.namelist()
     # Idempotent: the retained receipt is returned without a second execution.
     again, _ = _prepare(tmp_path, lambda *a, **k: pytest.fail("prefix executed twice"))
     assert again == receipt
@@ -149,7 +156,19 @@ def test_an_entrypoint_that_did_not_complete_the_prefix_yields_no_capsule_and_cl
     assert not (tmp_path / "job/cpu_prestage_capsule.zip").exists()
     assert not (tmp_path / "job/cpu_prestage_receipt.json").exists()
     assert (tmp_path / "job/cpu_prestage_provider_result.json").is_file()
+    with zipfile.ZipFile(tmp_path / "job/cpu_prestage_output.zip") as archived:
+        assert "stages/stage-3/official_openai_cost/reservation.json" in archived.namelist()
     assert sorted(p.name for p in (tmp_path / "workspace").iterdir()) == [".cpu-prestage.lock"]
+    with pytest.raises(prestage.CpuPrestageError, match="prior_attempt_requires_reconciliation"):
+        _prepare(tmp_path, lambda *a, **k: pytest.fail("failed paid attempt repeated"))
+
+
+def test_prefix_cannot_extend_the_consumed_parent_authority_deadline(tmp_path):
+    seen = {}
+    receipt, _ = _prepare(tmp_path, _fake_entrypoint(["stage-1", "stage-2", "stage-3", "stage-4"], seen=seen),
+                          environment={"BLUEPRINT_SCENE_CONFIGURATION_PARENT_DEADLINE_EPOCH": "9000"})
+    assert receipt["prefix_deadline_epoch"] == 9000
+    assert seen["BLUEPRINT_SCENE_CONFIGURATION_PARENT_DEADLINE_EPOCH"] == "9000.0"
 
 
 def test_the_prestage_refuses_a_missing_work_dir_or_a_secret_inside_it(tmp_path):
