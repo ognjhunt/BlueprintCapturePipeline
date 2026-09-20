@@ -132,9 +132,21 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
         source_min=lower, source_max=upper, grasp_axis=2, grasp_sign=1.0,
         success=surface_execution_limits(success=owner_task["success"], support=support_record),
         resolved_seed=1, jaw_axis=min(range(2), key=lambda i: upper[i] - lower[i]))
+    # The estimated property ranges, the grasp-hold sensitivity verdict and the
+    # registration's task-region residual travel with the task, so a result can
+    # abstain from a feasibility claim the estimate cannot support.
+    physics = preparation["physics"]
     template.update(instruction=context["description"], instruction_subject_label=subject["description"],
                     visible_target_label=destination["visible_label"], surface_target=target,
-                    dimension_authority="estimated", physical_world_truth_claimed=False)
+                    dimension_authority="estimated", physical_world_truth_claimed=False,
+                    physical_property_screen={
+                        "basis": physics["basis"], "dimensions_m": physics["dimensions_m"],
+                        "bounds": physics["bounds"], "sensitivity": physics["sensitivity"],
+                        "measurement_escalation": physics.get("measurement_escalation"),
+                        "reference_gripper": physics.get("gripper"),
+                        "feasibility_claim_allowed": physics["sensitivity"] == "robust_within_range"},
+                    placement_uncertainty_m=preparation["coordinate_frame"].get("placement_uncertainty_m"),
+                    scale_authority=preparation["coordinate_frame"].get("scale_authority", "registration_estimate"))
     template["owner_success_contract_authority"] = {"confirmation_status": "confirmed",
         "accepted_by": intent["request"]["owner"]["user_id"],
         "authority_reference": "scene-intent:" + intent["intent_digest"]}

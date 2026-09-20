@@ -68,6 +68,16 @@ def test_prepared_capture_materializes_a_publishable_native_request_without_raw_
     recipe = json.loads((root / "configuration/recipe.json").read_text())
     assert [s["adapter"]["id"] for s in recipe["stage_sequence"][:2]] == [
         "website_prepared_appearance", "website_prepared_collision"]
+    # Estimated physics and placement uncertainty ride with the task, so the
+    # result can abstain rather than claim feasibility the estimate cannot carry.
+    task = json.loads((root / "configuration/task.json").read_text())
+    screen = task["physical_property_screen"]
+    assert screen["basis"] == "estimated" and screen["bounds"]["mass_kg"][0] < screen["bounds"]["mass_kg"][1]
+    assert screen["sensitivity"] in {"robust_within_range", "outcome_depends_on_estimate", "blocked_by_estimate"}
+    assert screen["feasibility_claim_allowed"] == (screen["sensitivity"] == "robust_within_range")
+    assert screen["reference_gripper"]["model"] == "robotiq_2f85"
+    assert task["scale_authority"] in {"registration_estimate", "provider_declared_estimate"}
+    assert "placement_uncertainty_m" in task and task["physical_world_truth_claimed"] is False
 
 
 def test_publication_rechecks_owner_revocation(tmp_path, monkeypatch):
