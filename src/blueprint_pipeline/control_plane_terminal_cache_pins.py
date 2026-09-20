@@ -12,7 +12,15 @@ from pathlib import Path
 from .control_plane_storage_pins import load_storage_pins, release_storage_pin
 from .decision_evidence_contracts import canonical_digest
 from .completed_replay_cache_retention import active_reference
+from .control_plane_evidence_offload import (
+    DEFAULT_HOT_WINDOW_SECONDS, POINTER_SUFFIX, _has_result_registry, _terminal_receipt, _tree_snapshot,
+)
 from .control_plane_storage_roots import require_storage_class
+
+# A pin may name the reproducible activation inputs (cache or work class) or the
+# retained run directory itself (evidence_cold). Releasing a pin removes no
+# bytes, so any of these is acceptable; hot evidence and state never are.
+_PIN_PATH_CLASSES = ("cache", "work", "evidence_cold")
 
 def _read(path):
     if (not path.is_file() or any(p.is_symlink() for p in (path, *path.parents))
@@ -25,12 +33,44 @@ def _read(path):
     return value if isinstance(value, dict) else None
 
 
-def _closed_proof(pin, evidence_roots):
+def _pin_path_allowed(classifier, path):
+    last = None
+    for expected in _PIN_PATH_CLASSES:
+        try:
+            classifier(str(path), expected=expected, code="terminal_cache_pin_path_class_invalid")
+            return
+        except ValueError as exc:
+            last = exc
+    raise last
+
+
+def _closed_proof(pin, evidence_roots, *, hot_window_seconds=DEFAULT_HOT_WINDOW_SECONDS, now=None):
+    """Proof that the run this activation pin protects no longer needs the pin.
+
+    Either the run has been archived behind a verified pointer, or the run
+    directory itself is sealed by a terminal receipt, idle past the hot window,
+    and carries no result registry. The second case exists because the
+    collector will not offload a pinned run and used to release the pin only
+    after offload: a launch that ended blocked or cancelled without releasing
+    its own pin kept its evidence on disk indefinitely.
+    """
+
     owner, kind = pin["owner_id"], pin["kind"]
     if kind != "activation":
         return None
     for root in evidence_roots:
         root = Path(root)
+        directory = root / owner
+        if (now is not None and directory.is_dir() and not directory.is_symlink()
+                and not (root / (owner + POINTER_SUFFIX)).exists()):
+            receipt = _terminal_receipt(directory)
+            if receipt is None or _has_result_registry(directory):
+                continue
+            latest, size, count = _tree_snapshot(directory)
+            if now - latest < hot_window_seconds:
+                continue
+            return {"kind": "sealed_cold_run", "path": str(directory), "terminal_receipt": receipt,
+                    "latest_mtime_epoch": latest, "size_bytes": size, "file_count": count}
         path = root / (owner + ".offloaded.v1.json")
         value = _read(path)
         if (value is None or (root / owner).exists()
@@ -48,7 +88,8 @@ def _closed_proof(pin, evidence_roots):
 
 
 def reconcile_terminal_cache_pins(*, pins_root, queue_roots, evidence_roots, now, apply=False,
-                                  reference_checker=active_reference, classifier=require_storage_class):
+                                  reference_checker=active_reference, classifier=require_storage_class,
+                                  hot_window_seconds=DEFAULT_HOT_WINDOW_SECONDS):
     from .control_plane_storage_gc import _queue_reference_text
     pins_root = Path(pins_root)
     for root in evidence_roots:
@@ -57,11 +98,11 @@ def reconcile_terminal_cache_pins(*, pins_root, queue_roots, evidence_roots, now
     queue_text = _queue_reference_text(queue_roots)
     candidates, kept, released = [], [], []
     for identity, pin in pins.items():
-        proof = _closed_proof(pin, evidence_roots)
+        proof = _closed_proof(pin, evidence_roots, hot_window_seconds=hot_window_seconds, now=now)
         if proof is None or now - pin["created_at_epoch"] < 6 * 3600:
             continue
         for path in pin["paths"]:
-            classifier(str(path), expected="cache", code="terminal_cache_pin_cache_root_invalid")
+            _pin_path_allowed(classifier, path)
         # Check the entire dependency closure before releasing a parent pin.
         closure, pending = {}, [identity]
         while pending:
@@ -82,7 +123,7 @@ def reconcile_terminal_cache_pins(*, pins_root, queue_roots, evidence_roots, now
         if apply:
             # Re-read live queue references and the proof at the mutation edge.
             fresh = _queue_reference_text(queue_roots)
-            if (proof != _closed_proof(pin, evidence_roots)
+            if (proof != _closed_proof(pin, evidence_roots, hot_window_seconds=hot_window_seconds, now=now)
                     or any(p["owner_id"] in fresh or any(reference_checker(Path(path)) for path in p["paths"])
                            for p in closure.values())):
                 kept.append({**candidate, "reason": "reference_changed"})

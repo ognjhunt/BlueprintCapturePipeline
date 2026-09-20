@@ -1,5 +1,6 @@
 """Archived evidence releases reproducible caches while live references win."""
 import json
+import os
 
 import pytest
 
@@ -67,3 +68,69 @@ def test_another_active_run_keeps_shared_inputs_pinned(tmp_path):
     assert result["released"][0]["released"] == [{"kind":"activation", "owner_id":"closed"}]
     states={(p["kind"],p["owner_id"]):p["status"] for p in load_storage_pins(args["pins_root"], now=lambda:30_000)}
     assert states[("compilation","prep")] == states[("preparation","prep")] == "live"
+
+
+def _sealed_run(tmp_path, name, *, idle_seconds, now=30_000_000, receipt=True, registry=False):
+    evidence = tmp_path / "evidence"
+    run = evidence / name
+    (run / "allocator").mkdir(parents=True)
+    (run / "allocator" / "result.json").write_text("{}")
+    if receipt:
+        (run / "launch_receipt.json").write_text(json.dumps({"status": "blocked"}))
+    if registry:
+        (run / "artifacts/result_delivery").mkdir(parents=True)
+        (run / "artifacts/result_delivery/artifact_registry.json").write_text("{}")
+    stamp = now - idle_seconds
+    for path in [run, run / "allocator", *run.rglob("*")]:
+        os.utime(path, (stamp, stamp))
+    return evidence, run
+
+
+def _pin_on_run(tmp_path, run, *, created=30_000_000 - 7 * 86400):
+    pins = tmp_path / "storage-pins"
+    write_storage_pin(pins_root=pins, kind="activation", owner_id=run.name, paths=[run], now=lambda: created)
+    return dict(pins_root=pins, queue_roots=[tmp_path / "queue"], evidence_roots=[run.parent], now=30_000_000,
+                reference_checker=lambda _: False, classifier=lambda *args, **kwargs: None,
+                hot_window_seconds=2 * 86400)
+
+
+def test_a_sealed_cold_run_releases_its_own_activation_pin_so_it_can_be_offloaded(tmp_path):
+    """A launch that ended blocked without releasing its pin must not hold its evidence forever.
+
+    The collector refuses to offload a pinned run and used to release the pin
+    only once the run was archived, which could never happen.
+    """
+    evidence, run = _sealed_run(tmp_path, "blocked-run", idle_seconds=5 * 86400)
+    args = _pin_on_run(tmp_path, run)
+    dry = reconcile_terminal_cache_pins(**args)
+    assert [c["proof"]["kind"] for c in dry["candidates"]] == ["sealed_cold_run"]
+    assert dry["candidates"][0]["proof"]["terminal_receipt"] == "launch_receipt.json"
+    assert not dry["released"]
+    result = reconcile_terminal_cache_pins(**args, apply=True)
+    assert result["released"][0]["released"] == [{"kind": "activation", "owner_id": "blocked-run"}]
+    assert run.is_dir() and (run / "launch_receipt.json").is_file()
+    assert result["cache_or_evidence_bytes_removed"] is False
+
+
+@pytest.mark.parametrize("reason", ["hot", "no_receipt", "result_registry", "queue", "touched"])
+def test_a_run_still_in_use_keeps_its_activation_pin(tmp_path, reason):
+    evidence, run = _sealed_run(
+        tmp_path, "run-x", idle_seconds=3600 if reason == "hot" else 5 * 86400,
+        receipt=reason != "no_receipt", registry=reason == "result_registry")
+    args = _pin_on_run(tmp_path, run)
+    if reason == "queue":
+        pending = tmp_path / "queue/pending"
+        pending.mkdir(parents=True)
+        (pending / "active.json").write_text(json.dumps({"launch_id": "run-x"}))
+    if reason == "touched":
+        original = reconcile_terminal_cache_pins
+        def touching(**kwargs):
+            (run / "allocator" / "progress.json").write_text("{}")
+            return original(**kwargs)
+        dry = original(**args)
+        assert len(dry["candidates"]) == 1
+        result = touching(**args, apply=True)
+    else:
+        result = reconcile_terminal_cache_pins(**args, apply=True)
+    assert not result["released"]
+    assert all(p["status"] == "live" for p in load_storage_pins(args["pins_root"], now=lambda: 30_000_000))
