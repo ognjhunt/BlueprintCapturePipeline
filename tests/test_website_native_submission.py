@@ -79,6 +79,13 @@ def test_prepared_capture_materializes_a_publishable_native_request_without_raw_
     assert request["spend"]["hard_cap_usd"] == 11
     assert request["scene"]["geometry"]["kind"] == "other_derived"
     assert request["scene"]["rights"]["provider_disclosure_scope"] == "derived_only"
+    # Project the website permission fields for compatible consumers. Full
+    # authoring-request validation is covered by test_website_native_inputs.
+    rights = json.loads((root / "rights/admission.json").read_text())
+    assert rights["schema_version"] == "website_native_rights_admission.v1"
+    assert rights["status"] == "admitted_for_internal_development"
+    assert rights["private_provider_processing_allowed"] is True
+    assert rights["provider_training_allowed"] is False and rights["public_redistribution_allowed"] is False
     assert request["scene"]["website_native_inputs"]["frames"]
     assert request["task"]["surface_target"]["non_colliding"] is True
     recipe = json.loads((root / "configuration/recipe.json").read_text())

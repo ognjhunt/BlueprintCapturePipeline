@@ -166,6 +166,14 @@ def construction_rights_admission(*, preparation: Mapping[str, Any], task_contex
     request = validate_request(preparation["intake_request"], now=now)
     consent = request["consent"]
     value = {"schema_version": "website_native_rights_admission.v1",
+             # The authoring drivers read these four fields at the top level
+             # (astra_driver.build_authoring_request); the website consent
+             # admits exactly this: private provider processing of derived
+             # views for internal development, no training, no redistribution.
+             "status": "admitted_for_internal_development",
+             "private_provider_processing_allowed": True,
+             "provider_training_allowed": False,
+             "public_redistribution_allowed": False,
              "preparation_digest": preparation["digest"],
              "task_context_digest": task_context["context_digest"],
              "capture_id": task_context["capture_id"], "scene_id": task_context["scene_id"],

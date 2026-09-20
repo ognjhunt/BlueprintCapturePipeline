@@ -273,7 +273,7 @@ def test_activation_filter_allows_other_scene(tmp_path, monkeypatch):
         _write(queue / "materialized" / (scene + ".json"), {"request": {
             "team_namespace": TEAM, "scene": {"identity": {"id": scene}},
             "task": {"identity": {"id": TASK_ID}}}})
-    monkeypatch.setattr(activation, "_awaiting_scene_configurations", lambda root: files)
+    monkeypatch.setattr(activation, "_awaiting_scene_configurations", lambda root: [(queue, f) for f in files])
     observed = []
     monkeypatch.setattr(activation, "advance_scene_configuration_activation", lambda **kw:
         observed.append(kw["preparation_result_path"].stem) or {"status": "awaiting_configuration"})
@@ -420,6 +420,39 @@ def test_process_config_scopes_a_refused_scene_by_its_identity(tmp_path, monkeyp
     assert [row["status"] for row in rows] == ["controls_autoprovision_refused"]
     assert rows[0]["blocked_scene_key"] == [TEAM, SCENE_ID, TASK_ID]
     assert "scope_unresolved" not in rows[0]
+
+
+def test_process_config_resolves_each_scene_from_its_own_owned_queue(tmp_path, monkeypatch):
+    """One worker configuration serves every scene: no per-scene queue in the config."""
+    kwargs = _configured_scene(tmp_path)
+    owned = kwargs["preparation_queue_root"]
+    scene_queue = owned / kwargs["intent_id"]
+    scene_queue.mkdir()
+    for name in ("materialized", "results"):
+        (owned / name).rename(scene_queue / name)
+    assert worker.scene_preparation_queue_root(owned, kwargs["intent_id"]) == scene_queue
+    assert worker.scene_preparation_queue_root(owned, "scene-absent") == owned
+    catalog_path = _write(tmp_path / "catalog.json", kwargs["catalog"])
+    config_path = _write(tmp_path / "autoprovision-config.json", {
+        "robot_catalog_path": str(catalog_path), "scene_root": str(kwargs["scene_root"]),
+        "preparation_queue_root": str(owned),
+        "controls_root": str(kwargs["controls_root"]), "intent_root": str(kwargs["intent_root"]),
+        "profile_dir": str(kwargs["profile_dir"]), "trusted_clients": ["webapp"]})
+    seen = {}
+
+    def capture(**provision_kwargs):
+        seen.update(provision_kwargs)
+        return {"status": "installed", "intent_id": provision_kwargs["intent_id"]}
+
+    monkeypatch.setattr(worker, "provision_configured_scene_controls", capture)
+    rows = worker.process_config(str(config_path), expected_production_commit=COMMIT)
+    assert [row["status"] for row in rows] == ["installed"]
+    assert seen["preparation_queue_root"] == scene_queue
+    # The same scene resolved through the real path derives its link from that queue.
+    link = worker._configured_scene_preparation_link(
+        intent=json.loads((kwargs["scene_root"] / kwargs["intent_id"] / "intent.json").read_text()),
+        preparation_queue_root=scene_queue, expected_production_commit=COMMIT)
+    assert link is not None and link["task_id"] == TASK_ID
 
 
 def test_missing_robot_waits_for_team_without_blocking_scene_construction(tmp_path, monkeypatch):
