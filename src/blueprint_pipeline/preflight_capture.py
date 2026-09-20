@@ -74,6 +74,14 @@ def _required_raw_entries(
     manifest: Mapping[str, Any],
     capture_context: Mapping[str, Any],
 ) -> Dict[str, Path]:
+    if manifest.get("capture_source") == "browser_self_capture":
+        # Website task/rights are fetched and authenticated by the package
+        # orchestrator before preparation spend. Device-only intake sidecars
+        # do not exist for these uploads and must not be fabricated.
+        return {
+            "manifest": context.raw_root / "manifest.json",
+            "capture_upload_complete": context.raw_complete_path,
+        }
     required = {
         "manifest": context.raw_root / "manifest.json",
         "capture_context": context.raw_root / "capture_context.json",
