@@ -265,3 +265,42 @@ def test_controller_retains_original_reservation_after_upload_auth_failure(tmp_p
     second = allocator.submit_sponsored_website_reconstruction(descriptor=descriptor, capture_root=tmp_path)
     assert second['provider_run_id'] == 'one-operation'
     assert calls.count('/marble/v1/worlds:generate') == 1
+
+
+@pytest.mark.parametrize('fault', [None, 'pending', 'unreported', 'wrong-operation', 'changed-admission', 'bad-receipt'])
+def test_settlement_uses_only_bound_terminal_provider_billing(tmp_path, monkeypatch, fault):
+    from blueprint_pipeline import website_task_context as control
+    from blueprint_pipeline.website_worldlabs import settle_website_reconstruction
+    from blueprint_pipeline.common import write_json
+    root = tmp_path / 'pipeline/website_reconstruction'
+    root.mkdir(parents=True)
+    operation = {'operation_id':'op-one', 'done':True, 'error':None, 'cost':{'total_credits':1600}}
+    if fault == 'pending':
+        operation['done'] = False
+    if fault == 'unreported':
+        operation['cost'] = None
+    if fault == 'wrong-operation':
+        operation['operation_id'] = 'op-other'
+    write_json(root/'submission.json', {'operation_id':'op-one', 'request_digest':'sha256:'+'a'*64})
+    write_json(root/'controller_admission.json', {'allocation_binding_digest':'sha256:'+'a'*64,
+        'task_context_digest':'sha256:'+('b' if fault != 'changed-admission' else 'c')*64})
+    write_json(root/'operation.json', operation)
+    context = {'capture_id':'walkthrough-req1','request_id':'req1','scene_id':'site-req1','context_digest':'sha256:'+'b'*64}
+    calls = []
+    def post(**kwargs):
+        calls.append(kwargs)
+        return {**kwargs['payload']['settlement'], 'status':'settled', 'actual_cost_usd':0 if fault=='bad-receipt' else 1.28}
+    monkeypatch.setattr(control,'website_webapp_request',post)
+    kwargs = dict(provider_run={'provider_run_id':'op-one','worldlabs_operation_manifest_uri':str(root/'operation.json')},
+                  capture_root=tmp_path,task_context=context)
+    if fault in ('wrong-operation','changed-admission','bad-receipt'):
+        with pytest.raises(ValueError,match='billing_binding|settlement_receipt'):
+            settle_website_reconstruction(**kwargs)
+        assert not (root/'settlement.json').exists()
+    elif fault:
+        assert settle_website_reconstruction(**kwargs) is None and not calls
+    else:
+        receipt = settle_website_reconstruction(**kwargs)
+        assert receipt['actual_cost_usd'] == 1.28
+        assert calls[0]['operation'] == 'preparation-settlement'
+        assert json.loads((root/'settlement.json').read_text()) == receipt

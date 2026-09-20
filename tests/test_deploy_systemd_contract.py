@@ -883,6 +883,13 @@ def test_activation_loads_operator_owned_preparation_routing():
     )
 
 
+def test_website_capture_worker_loads_deployed_geometry_runtime():
+    service = _read("blueprint-pubsub-handoff-listener.service")
+    assert service.index("EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env") < service.index(
+        "EnvironmentFile=-/etc/blueprint/task-evaluation-scene-configuration-release.env"
+    )
+
+
 def test_paid_units_enable_the_provider_credit_guard_and_the_controller_can_read_credit():
     """The per-attempt credit guard and the hourly credit alert are opt-in in code
     (BLUEPRINT_VAST_CREDIT_GUARD_ENABLED); production turns them on in the unit files
