@@ -87,10 +87,13 @@ def compile_input_bundle(*, input_manifest: Path, output_root: Path, source_comm
     runtime = []
     for source in runtime_files:
         _require(source.is_file() and not source.is_symlink(), "runtime_file_invalid")
-        target = input_manifest.parent / "runtime" / source.name
+        # Keep prior release inputs intact when a pre-allocation retry uses
+        # a rebuilt wheel with the same distribution filename.
+        source_digest = sha256_file(source)
+        target = input_manifest.parent / "runtime" / source_digest / source.name
         target.parent.mkdir(parents=True, exist_ok=True)
         if target.exists():
-            _require(sha256_file(target) == sha256_file(source), "runtime_file_conflict")
+            _require(not target.is_symlink() and sha256_file(target) == source_digest, "runtime_file_conflict")
         else:
             shutil.copyfile(source, target)
         runtime.append((target.resolve(), "worker_wheel" if source.suffix == ".whl" else "worker_dependencies"))
