@@ -132,21 +132,65 @@ def validate_website_native_inputs(*, envelope, configurations, require_render_i
     return binding
 
 
+def _configurations(envelope):
+    from .task_evaluation_scene_configuration_builtin_adapters import _materialized_reference, _sha256_and_size
+    configurations = {}
+    for index, stage in enumerate(envelope["recipe"]["stage_sequence"]):
+        contract = f"construction.recipe.stage_sequence.{index}.configuration"
+        matches = [row for row in envelope["stage_configuration_references"]
+                   if row.get("contract_path") == contract or row.get("stage_id") == stage["stage_id"]]
+        _require(len(matches) == 1, "configuration_reference_changed")
+        # Portable worker packets identify configurations by stage ID, while
+        # the control plane uses contract paths. Both bind the same exact bytes.
+        row = matches[0]
+        if row.get("stage_id") == stage["stage_id"]:
+            path = Path(row["materialized_path"])
+            _require(path.is_absolute() and not path.is_symlink() and path.is_file()
+                     and _sha256_and_size(path) == (row.get("digest"), row.get("size_bytes")),
+                     "configuration_reference_changed")
+        else:
+            row, path = _materialized_reference({"materialized_references": [row]}, contract_path=contract)
+        _require(all(row[k] == stage["configuration"][k] for k in ("digest", "size_bytes"))
+                 and ("uri" not in row or row["uri"] == stage["configuration"]["uri"]),
+                 "configuration_reference_changed")
+        configurations[stage["stage_id"]] = json.loads(path.read_text())
+    return configurations
+
+
+def validate_website_authoring_disclosure(*, envelope, configuration, rights):
+    """Reopen the website's own consent and exact input bindings for Astra."""
+    from .task_evaluation_scene_configuration_source_preflight import _reference
+
+    configurations = _configurations(envelope)
+    validate_website_native_inputs(envelope=envelope, configurations=configurations, require_render_inputs=False)
+    stage = envelope["recipe"]["stage_sequence"][2]
+    _, rights_path = _reference(envelope, "scene.rights.admission")
+    _require(configuration == configurations[stage["stage_id"]]
+             and rights == json.loads(rights_path.read_text()), "authoring_disclosure_binding_invalid")
+
+
+def preflight_website_authoring_request(*, envelope, configurations):
+    """Run the actual stage-3 request translation on CPU before renting a worker."""
+    from .task_evaluation_scene_configuration_source_preflight import _reference
+    from .task_evaluation_scene_configuration_astra_driver import build_authoring_request
+
+    stage = envelope["recipe"]["stage_sequence"][2]
+    candidate, candidate_path = _reference(envelope, PREFIX + ".candidate")
+    frames = [_reference(envelope, PREFIX + f".frames.{index}")[1]
+              for index in range(len(envelope["request"]["scene"]["website_native_inputs"]["frames"]))]
+    _, rights_path = _reference(envelope, "scene.rights.admission")
+    return build_authoring_request(
+        {"run_id": envelope["run_id"], "source_commit": envelope["expected_production_commit"],
+         "construction_envelope": envelope, "configuration": configurations[stage["stage_id"]]},
+        {**candidate, "path": str(candidate_path)}, frames, json.loads(rights_path.read_text()))
+
+
 def materialize_website_inputs(*, envelope, stage_one_configuration, output_root):
     from .task_evaluation_scene_configuration_builtin_adapters import _materialized_reference
 
     _, runtime_path = _materialized_reference(envelope, contract_path=PREFIX + ".runtime_inputs")
     runtime = _runtime(runtime_path)
-    # The caller validates all six immutable configurations before bundling.
-    # Use the same bound first/second/third inputs at method-input preparation.
-    configurations = {}
-    for index, stage in enumerate(envelope["recipe"]["stage_sequence"]):
-        contract = f"construction.recipe.stage_sequence.{index}.configuration"
-        row, path = _materialized_reference({"materialized_references": envelope["stage_configuration_references"]},
-                                            contract_path=contract)
-        _require(all(row[k] == stage["configuration"][k] for k in ("uri", "digest", "size_bytes")),
-                 "configuration_reference_changed")
-        configurations[stage["stage_id"]] = json.loads(path.read_text())
+    configurations = _configurations(envelope)
     _require(configurations[envelope["recipe"]["stage_sequence"][0]["stage_id"]] == stage_one_configuration,
              "stage_one_changed")
     binding = validate_website_native_inputs(envelope=envelope, configurations=configurations, require_render_inputs=False)
