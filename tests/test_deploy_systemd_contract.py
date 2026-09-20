@@ -115,6 +115,9 @@ def test_production_systemd_units_set_fail_closed_runtime_posture():
                 in text
             )
         if unit == "blueprint-pubsub-handoff-listener.service":
+            # Website handoffs register prepared sources in the same namespace
+            # consumed by scene progression before enqueueing the signed intake.
+            assert "EnvironmentFile=-/etc/blueprint/task-evaluation-scene-progression.env" in text
             assert text.count('exec env PYTHONPATH=src "$${BLUEPRINT_PIPELINE_PYTHON}" -m') == 2
             assert ".venv/bin/blueprint-pubsub-handoff-listener" not in text
             assert text.count('cd -P "$${BLUEPRINT_PUBSUB_HANDOFF_REPO}"') == 2

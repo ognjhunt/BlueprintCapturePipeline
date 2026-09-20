@@ -51,6 +51,7 @@ Environment=BLUEPRINT_PUBSUB_HANDOFF_MAX_MESSAGES=10
 Environment=BLUEPRINT_PUBSUB_HANDOFF_STAGE_CONTROL_PLANE=true
 Environment=BLUEPRINT_PUBSUB_HANDOFF_SKIP_RUN_E2E=true
 EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
+EnvironmentFile=-/etc/blueprint/task-evaluation-scene-progression.env
 EnvironmentFile=-/etc/blueprint/task-evaluation-scene-configuration-release.env
 WorkingDirectory=/
 ExecStartPre=/bin/bash -lc 'cd -P "$${BLUEPRINT_PUBSUB_HANDOFF_REPO}" && export BLUEPRINT_PIPELINE_REPO="$${PWD}" && exec env PYTHONPATH=src "$${BLUEPRINT_PIPELINE_PYTHON}" -m blueprint_pipeline.production_runtime_env_guard'
