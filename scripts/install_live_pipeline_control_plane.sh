@@ -257,6 +257,14 @@ run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
 run chown -R --no-dereference "${SERVICE_USER}:${SERVICE_GROUP}" \
   "${HANDOFF_DIR}" \
   "${STATE_DIR}"
+# Host hygiene that used to be hand-applied: bound journald and age /var/tmp.
+run install -d -m 0755 /etc/systemd/journald.conf.d /etc/tmpfiles.d
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/host/journald.conf.d/50-blueprint-cap.conf" \
+  /etc/systemd/journald.conf.d/50-blueprint-cap.conf
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/host/tmpfiles.d/blueprint-var-tmp.conf" \
+  /etc/tmpfiles.d/blueprint-var-tmp.conf
 run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-pipeline-control-plane.service" \
   "${SYSTEMD_DIR}/blueprint-pipeline-control-plane.service"
