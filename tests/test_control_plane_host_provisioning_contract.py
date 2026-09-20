@@ -146,3 +146,24 @@ def test_ledger_reconciliation_runs_as_the_service_account() -> None:
     assert 'runuser -u "${SERVICE_USER}"' in block, (
         "adopted records must carry the ownership the consumption check requires"
     )
+
+
+INSTALLER = REPO_ROOT / "scripts" / "install_live_pipeline_control_plane.sh"
+
+
+def test_installer_bounds_the_journal_and_ages_var_tmp_from_the_repo() -> None:
+    """Both were hand-applied on the production host; a rebuild must not forget them.
+
+    The journal cap keeps archived logs from eating the root disk, and /var/tmp
+    had no age rule at all, so audit and debug scratch accumulated for weeks.
+    """
+    text = INSTALLER.read_text(encoding="utf-8")
+    journald = REPO_ROOT / "deploy/host/journald.conf.d/50-blueprint-cap.conf"
+    tmpfiles = REPO_ROOT / "deploy/host/tmpfiles.d/blueprint-var-tmp.conf"
+    assert journald.is_file() and tmpfiles.is_file()
+    assert "SystemMaxUse=1G" in journald.read_text() and "MaxRetentionSec=14day" in journald.read_text()
+    assert re.search(r"^d /var/tmp 1777 root root 14d$", tmpfiles.read_text(), re.MULTILINE)
+    assert "deploy/host/journald.conf.d/50-blueprint-cap.conf" in text
+    assert "/etc/systemd/journald.conf.d/50-blueprint-cap.conf" in text
+    assert "deploy/host/tmpfiles.d/blueprint-var-tmp.conf" in text
+    assert "/etc/tmpfiles.d/blueprint-var-tmp.conf" in text

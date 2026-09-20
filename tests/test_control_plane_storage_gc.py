@@ -625,8 +625,8 @@ def known_process_inventory(monkeypatch):
     monkeypatch.setattr(gc_module, "workspace_process_active", lambda workspace: False)
 
 
-def _settlement_scene(root, *, scene: str, launch_run_name: str):
-    """One settled attempt whose receipt reopens ``launch_run_name``'s receipt."""
+def _settlement_scene(root, *, scene: str, launch_run_name: str, reopened: str = "launch_profile.json"):
+    """One settled attempt whose receipt reopens ``reopened`` under ``launch_run_name``."""
     directory = root / scene / "cancelled-unstarted-controls"
     directory.mkdir(parents=True)
     (directory / "controls-1.json").write_text(
@@ -636,7 +636,7 @@ def _settlement_scene(root, *, scene: str, launch_run_name: str):
                 "execution_terminal": {
                     "launch_id": launch_run_name,
                     "launch_receipt": {
-                        "path": f"/var/lib/blueprint/launch-runs/{launch_run_name}/launch_receipt.json",
+                        "path": f"/var/lib/blueprint/launch-runs/{launch_run_name}/{reopened}",
                         "digest": "sha256:" + "0" * 64,
                     },
                 },
@@ -703,6 +703,50 @@ def test_offload_retains_evidence_a_settlement_record_still_reopens(tmp_path) ->
     assert (referenced / "launch_receipt.json").is_file()
     assert not orphan.exists()
     assert [row["name"] for row in report["evidence_offload"]["offloaded"]] == ["run-orphan"]
+
+
+def test_offload_proceeds_when_a_settlement_reopens_only_a_retained_receipt(tmp_path) -> None:
+    """A record that reopens ``launch_receipt.json`` keeps working from the pointer.
+
+    The pointer retains that receipt byte-for-byte and ``read_receipt_bytes``
+    serves it, so the reference must not pin gigabytes of bulk evidence. A
+    bare mention of the run id is not a reopen either.
+    """
+
+    from blueprint_pipeline.control_plane_retained_receipt import read_receipt_bytes
+
+    now = 30_000_000.0
+    evidence = tmp_path / "launch-runs"
+    receipt_only = _cold_evidence_run(evidence, "run-receipt-only", now)
+    (receipt_only / "launch_receipt.json").write_text(json.dumps({"status": "blocked"}), encoding="utf-8")
+    os.utime(receipt_only / "launch_receipt.json", (now - 30 * 86400, now - 30 * 86400))
+    mentioned = _cold_evidence_run(evidence, "run-mentioned", now)
+    reopened = _cold_evidence_run(evidence, "run-profile", now)
+    settlement = tmp_path / "scene-intents"
+    _settlement_scene(settlement, scene="scene-receipt", launch_run_name="run-receipt-only",
+                      reopened="launch_receipt.json")
+    (settlement / "scene-mention" / "attempts").mkdir(parents=True)
+    (settlement / "scene-mention" / "attempts" / "a.json").write_text(
+        json.dumps({"launch_id": "run-mentioned"}), encoding="utf-8")
+    _settlement_scene(settlement, scene="scene-profile", launch_run_name="run-profile")
+    queue = tmp_path / "queue"
+    (queue / "pending").mkdir(parents=True)
+    client = _ContentAddressedClient()
+    report = run_storage_gc(
+        content_store_roots=[], derived_roots=[], queue_roots=[queue], pins_root=tmp_path / "pins",
+        evidence_roots=[evidence], settlement_roots=[settlement], now=lambda: now, classifier=_noclass,
+        apply=True, ack=RUN_ACK, offload_enabled=True,
+        publisher=functools.partial(store.publish_configured_scene_artifact, client=client,
+                                    bucket="blueprint-production-inputs"),
+    )
+
+    assert sorted(row["name"] for row in report["evidence_offload"]["offloaded"]) == ["run-mentioned", "run-receipt-only"]
+    assert reopened.is_dir() and not receipt_only.exists() and not mentioned.exists()
+    assert json.loads(read_receipt_bytes(receipt_only / "launch_receipt.json")) == {"status": "blocked"}
+    assert gc_module.settlement_reopens_beyond_retained_receipts(
+        "run-x", '"/launch-runs/run-x/artifacts/policy/frames.tar"') is True
+    assert gc_module.settlement_reopens_beyond_retained_receipts("run-x", '"launch_id": "run-x"') is False
+    assert gc_module.settlement_reopens_beyond_retained_receipts("run-x", '"run-x/launch_receipt.json"') is False
 
 
 def test_offload_protects_every_run_when_a_settlement_root_is_unreadable(tmp_path) -> None:
