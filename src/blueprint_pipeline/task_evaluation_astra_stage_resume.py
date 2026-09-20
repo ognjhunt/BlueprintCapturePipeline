@@ -35,11 +35,21 @@ def _seal(path, value):
         Path(temporary).unlink(missing_ok=True)
 
 
-def bind_same_root_resume(root, envelope, configurations, parent_deadline_epoch):
-    value = {"schema_version": "astra_same_run_stage_resume_binding.v1", "output_root": str(root),
+def bind_same_root_resume(root, envelope, configurations, parent_deadline_epoch=None):
+    """Bind checkpoints to the run, its envelope and its exact configurations.
+
+    The binding names the output root by its final component only, and does
+    not carry the process deadline: a stage prefix executed on the control
+    plane under ``.../runtime_output/stages`` must be adoptable by the paid
+    run under ``/workspace/.../runtime_output/stages``, whose deadline is its
+    own. Everything that identifies the work (run id, envelope, configuration
+    bytes) is still sealed.
+    """
+    del parent_deadline_epoch
+    value = {"schema_version": "astra_same_run_stage_resume_binding.v1", "output_root": Path(root).name,
         "run_id": envelope["run_id"], "envelope_digest": canonical_digest(envelope),
         "configuration_digests": {name: _hash(path) for name, (_, path) in configurations.items()},
-        "parent_deadline_epoch": parent_deadline_epoch, "new_paid_allocation_authorized": False}
+        "new_paid_allocation_authorized": False}
     value["binding_digest"] = canonical_digest(value, digest_field="binding_digest")
     path = root / "astra_same_run_resume_binding.json"
     if not path.exists() and any((root / name).exists() for name in configurations):
