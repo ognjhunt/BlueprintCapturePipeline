@@ -204,8 +204,8 @@ def test_exact_frame_grounding_cannot_match_a_neighboring_timestamp():
             {"frame_id": "exact", "timestamp_seconds": 0}, {"frame_id": "frame-0", "timestamp_seconds": 0.03}])
 
 
-@pytest.mark.parametrize("needs_refined_concept", [False, True])
-def test_controller_recovers_ambiguous_video_anchor_with_bounded_exact_frame_evidence(tmp_path, monkeypatch, needs_refined_concept):
+@pytest.mark.parametrize("recovery", ["anchor", "concept", "crop", "unchanged", "wrong_instance"])
+def test_controller_recovers_ambiguous_video_anchor_with_bounded_exact_frame_evidence(tmp_path, monkeypatch, recovery):
     from blueprint_pipeline import website_task_masks as masks, website_task_grounding as grounding
     target = {**_target(), "semantic_label": "white support", "segmentation_prompt": "white container",
               "task_effect": "static_contact", "disposition": "keep"}
@@ -217,20 +217,31 @@ def test_controller_recovers_ambiguous_video_anchor_with_bounded_exact_frame_evi
     calls = []
     def hosted(**kw):
         calls.append(kw)
-        return {"tracks": [_track(start=2 if needs_refined_concept and len(calls) == 1 else 0)]}
+        wrong = (recovery != "anchor" and len(calls) == 1) or recovery == "wrong_instance"
+        return {"tracks": [_track(start=2 if wrong else 0)]}
     monkeypatch.setattr(masks, "run_meta_sam31", hosted)
     grounds = []
     def ground(**kw):
         grounds.append(kw)
-        return {**target, **_target(), "segmentation_prompt": "white book", "grounding": {"source_frame_id": "frame-0"}}
+        concept = "white container" if recovery == "unchanged" or (recovery == "crop" and len(grounds) == 1) else "white book"
+        return {**target, **_target(), "segmentation_prompt": concept, "grounding": {"source_frame_id": "frame-0"}}
     monkeypatch.setattr(grounding, "ground_task_target", ground)
-    result = masks.run_website_task_masks(plan={"targets": [target], "task_context_sha256": "task"},
+    kwargs = dict(plan={"targets": [target], "task_context_sha256": "task"},
         source_geometry={"digest": "source", "geometry_available": False,
                          "binding": {"source_video_digest": "video"}, "frames": [frame]},
         source_video=tmp_path / "source.mov", task_context={"confirmed": True}, output_root=tmp_path / "masks")
-    assert len(grounds) == 1
-    assert len(calls) == (2 if needs_refined_concept else 1)
-    if needs_refined_concept:
+    if recovery in {"unchanged", "wrong_instance"}:
+        with pytest.raises(ValueError, match="track_ambiguous"):
+            masks.run_website_task_masks(**kwargs)
+        assert len(calls) == (1 if recovery == "unchanged" else 2)
+        assert len(grounds) == (2 if recovery == "unchanged" else 1)
+        return
+    result = masks.run_website_task_masks(**kwargs)
+    assert len(grounds) == (2 if recovery == "crop" else 1)
+    assert len(calls) == (1 if recovery == "anchor" else 2)
+    if recovery == "crop":
+        assert grounds[1]["failed_segmentation_prompt"] == "white container"
+    if recovery != "anchor":
         assert calls[1]["prompts"][0]["text"] == "white book"
         assert calls[1]["video_artifact"] == calls[0]["video_artifact"]
     assert result["targets"][0]["disposition"] == "keep"

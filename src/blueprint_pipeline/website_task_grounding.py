@@ -7,6 +7,8 @@ import subprocess
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from PIL import Image
+
 from .clean_plate_removal_analysis_gemini import DEFAULT_MODEL, _api_key
 from .local_reconstruction_adapters import _sha256_file
 from .website_gemini_receipts import gemini_quote, retained_gemini_call
@@ -43,7 +45,8 @@ def validate_grounding(value: Mapping[str, Any], *, target: Mapping[str, Any], t
 
 def ground_task_target(*, target: Mapping[str, Any], tracks: Sequence[Mapping[str, Any]],
                        registry: Sequence[Mapping[str, Any]], video: Mapping[str, Any],
-                       task_context: Mapping[str, Any], output_root: Path) -> dict[str, Any]:
+                       task_context: Mapping[str, Any], output_root: Path,
+                       failed_segmentation_prompt: str | None = None) -> dict[str, Any]:
     """One bounded observation; no repeated video analysis or human-selected pixels."""
     path = Path(video["path"])
     if _sha256_file(path) != video["sha256"]:
@@ -66,9 +69,33 @@ def ground_task_target(*, target: Mapping[str, Any], tracks: Sequence[Mapping[st
                    check=True, timeout=120, capture_output=True)
     image_digest = _sha256_file(image_path)
     prompt = PROMPT + json.dumps({"task": task_context["description"], "target": dict(target)}, sort_keys=True)
+    crop_path = None
+    if failed_segmentation_prompt is not None:
+        # The same noun already selected unrelated objects. Show the observed
+        # target at readable size; do not repeat that SAM request or relax IoU.
+        x, y, width, height = anchors[0]["box_xywh_normalized"]
+        with Image.open(image_path) as image:
+            crop_box = (max(0, math.floor((x - width * 0.2) * image.width)),
+                        max(0, math.floor((y - height * 0.2) * image.height)),
+                        min(image.width, math.ceil((x + width * 1.2) * image.width)),
+                        min(image.height, math.ceil((y + height * 1.2) * image.height)))
+            crop_path = output_root / f"{target['target_id']}-{frame['model_frame_index']}-concept.png"
+            image.crop(crop_box).save(crop_path)
+        prompt += (
+            " The second image is an unedited crop around the previously localized target. "
+            "The segmentation concept " + json.dumps(failed_segmentation_prompt) +
+            " found no matching instance at that location. Inspect the actual appearance and "
+            "supply a different short visually supported object concept (shape/material may help). "
+            "Do not just repeat the task's noun. Do not invent a category to force a match: "
+            "if no alternative is supported, set visible false. Keep coordinates relative to "
+            "the FIRST, full image, and preserve the same physical target."
+        )
     binding = {"kind": "exact_frame_task_grounding", "model": DEFAULT_MODEL, "prompt": prompt,
                "source_video_digest": video["sha256"], "frame": dict(frame), "image_digest": image_digest,
                "max_output_tokens": 2048, "media_resolution": "MEDIA_RESOLUTION_HIGH"}
+    if crop_path is not None:
+        binding["concept_recovery"] = {"failed_prompt": failed_segmentation_prompt,
+                                      "crop_box_pixels": crop_box, "crop_digest": _sha256_file(crop_path)}
 
     def preflight():
         if not _api_key()[0]:
@@ -80,8 +107,11 @@ def ground_task_target(*, target: Mapping[str, Any], tracks: Sequence[Mapping[st
         from google.genai import types
         with genai.Client(api_key=_api_key()[0], http_options=types.HttpOptions(
                 timeout=120_000, retry_options=types.HttpRetryOptions(attempts=1))) as client:
+            contents = [prompt, types.Part.from_bytes(data=image_path.read_bytes(), mime_type="image/png")]
+            if crop_path is not None:
+                contents.append(types.Part.from_bytes(data=crop_path.read_bytes(), mime_type="image/png"))
             response = client.models.generate_content(model=DEFAULT_MODEL,
-                contents=[prompt, types.Part.from_bytes(data=image_path.read_bytes(), mime_type="image/png")],
+                contents=contents,
                 config=types.GenerateContentConfig(response_mime_type="application/json", max_output_tokens=2048,
                                                    media_resolution="MEDIA_RESOLUTION_HIGH"))
         if not response.candidates or response.candidates[0].finish_reason != "STOP":
@@ -90,7 +120,7 @@ def ground_task_target(*, target: Mapping[str, Any], tracks: Sequence[Mapping[st
         return {"observation": json.loads(response.text)}
 
     result = retained_gemini_call(output_root=output_root / "receipts", binding=binding, task_context=task_context,
-        maximum_cost_usd=gemini_quote(model=DEFAULT_MODEL, input_tokens=len(prompt.encode()) + 3168,
+        maximum_cost_usd=gemini_quote(model=DEFAULT_MODEL, input_tokens=len(prompt.encode()) + 3168 * (2 if crop_path else 1),
                                      max_output_tokens=2048), preflight=preflight, invoke=invoke)
     return validate_grounding(result["observation"], target=target, timestamp=frame["decoded_pts_seconds"],
                               frame_id=frame["source_frame_id"], image_digest=image_digest)
