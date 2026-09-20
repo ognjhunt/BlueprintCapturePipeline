@@ -49,7 +49,7 @@ def _source_geometry(root: Path):
     return value
 
 
-def _base_scene(root: Path, source_geometry, *, symmetric=False):
+def _grid(source_geometry):
     # A real connected triangle grid: arbitrary point triplets are not a
     # support surface even when their enclosing box resembles one.
     points, faces = [], []
@@ -64,7 +64,11 @@ def _base_scene(root: Path, source_geometry, *, symmetric=False):
             for x in range(WIDTH - 1):
                 a = offset + y * WIDTH + x
                 faces.extend([[a, a + 1, a + WIDTH], [a + 1, a + WIDTH + 1, a + WIDTH]])
-    points = np.concatenate(points)
+    return np.concatenate(points), faces
+
+
+def _base_scene(root: Path, source_geometry, *, symmetric=False):
+    points, faces = _grid(source_geometry)
     if symmetric:
         points = np.random.default_rng(3).uniform(-1, 1, points.shape)
     vertices = (points @ RUNTIME_ROTATION.T) * RUNTIME_SCALE + RUNTIME_TRANSLATION
@@ -338,3 +342,84 @@ def test_website_task_and_original_frames_reach_existing_astra_request(tmp_path)
     assert request.physical_review_input.measured.mass_kg is None
     assert request.source_frames[0].description.startswith("Original website capture frame")
     assert request.dimensions_m == pytest.approx(prepared["physics"]["dimensions_m"])
+
+
+def _anchored_base_scene(root: Path, source_geometry, *, rotation=np.eye(3), translation=(0.1, 0.05, 0.02),
+                         ground_plane_offset_m=0.6):
+    points, faces = _grid(source_geometry)
+    vertices = (points @ np.asarray(rotation).T) * RUNTIME_SCALE + np.asarray(translation)
+    mesh_path = root / "anchored-collider.glb"
+    trimesh.Trimesh(vertices=vertices, faces=faces, process=False).export(mesh_path)
+    splat = root / "anchored-world.ply"
+    splat.write_bytes(b"ply\nformat binary_little_endian 1.0\nend_header\n")
+    return {"splat_path": str(splat), "splat_digest": _sha256_file(splat), "splat_binding_id": "marble-splat-2",
+            "collision_mesh_path": str(mesh_path), "collision_mesh_digest": _sha256_file(mesh_path),
+            "collision_binding_id": "marble-mesh-2", "up_axis": "-Y", "meters_per_unit": 1 / RUNTIME_SCALE,
+            "ground_plane_offset_m": ground_plane_offset_m, "provider": "world_labs", "operation_id": "op-2",
+            "anchor": {"kind": "first_input_view_camera", "frame_id": "frame-0"}}
+
+
+def _anchor(base, **overrides):
+    return {**base["anchor"], "meters_per_unit": base["meters_per_unit"], "up_axis": base["up_axis"],
+            "ground_plane_offset_m": base["ground_plane_offset_m"], **overrides}
+
+
+def test_provider_anchor_registers_from_the_first_view_and_checks_the_declared_ground(tmp_path):
+    geometry = _source_geometry(tmp_path)
+    base = _anchored_base_scene(tmp_path, geometry)
+    value = preparation.register_source_to_runtime(
+        source_geometry=geometry, collision_mesh_path=Path(base["collision_mesh_path"]), anchor=_anchor(base),
+        focus_bounds={"minimum": [0.05, 0.4, 1.45], "maximum": [0.10, 0.5, 1.55]})
+    assert value["scale_status"] == "provider_declared_anchor"
+    assert value["scale"] == pytest.approx(RUNTIME_SCALE, rel=1e-3)
+    assert value["translation"] == pytest.approx([0.1, 0.05, 0.02], abs=1e-3)
+    anchor = value["anchor"]
+    assert anchor["roll_degrees"] == 0 and anchor["rotation_deviation_degrees"] < 0.5
+    assert anchor["translation_deviation_m"] == pytest.approx(2 * np.linalg.norm([0.1, 0.05, 0.02]), abs=0.01)
+    assert anchor["scale_ratio_to_declared"] == pytest.approx(1.0, abs=1e-3)
+    # The fixture's table sits 0.5 m below the anchor camera: 0.6 m declared matches.
+    assert value["ground_plane"]["checked"] is True
+    assert value["ground_plane"]["residual_m"] < 0.02
+    assert value["task_region"]["point_count"] >= 50 and value["task_region"]["trimmed_rmse_m"] < 0.01
+    assert value["physical_registration_proven"] is False
+
+
+def test_declared_ground_plane_that_contradicts_the_footage_is_refused(tmp_path):
+    geometry = _source_geometry(tmp_path)
+    base = _anchored_base_scene(tmp_path, geometry, ground_plane_offset_m=1.5)
+    with pytest.raises(ValueError, match="website_registration_ground_plane_inconsistent"):
+        preparation.register_source_to_runtime(source_geometry=geometry,
+            collision_mesh_path=Path(base["collision_mesh_path"]), anchor=_anchor(base))
+
+
+def test_anchor_view_absent_from_the_estimate_is_refused(tmp_path):
+    geometry = _source_geometry(tmp_path)
+    base = _anchored_base_scene(tmp_path, geometry)
+    with pytest.raises(ValueError, match="website_registration_anchor_frame_missing"):
+        preparation.register_source_to_runtime(source_geometry=geometry,
+            collision_mesh_path=Path(base["collision_mesh_path"]), anchor=_anchor(base, frame_id="frame-9"))
+
+
+def test_world_that_does_not_follow_its_declared_anchor_is_a_typed_refusal(tmp_path):
+    geometry = _source_geometry(tmp_path)
+    base = _anchored_base_scene(tmp_path, geometry, rotation=RUNTIME_ROTATION, translation=(0.0, 0.0, 0.0),
+                                ground_plane_offset_m=None)
+    with pytest.raises(ValueError, match="website_registration_(anchor_deviation|conflicts_provider_anchor|ambiguous)"):
+        preparation.register_source_to_runtime(source_geometry=geometry,
+            collision_mesh_path=Path(base["collision_mesh_path"]), anchor=_anchor(base))
+
+
+def test_anchored_world_compiles_with_the_declared_scale(tmp_path):
+    value = _compile(tmp_path, lambda geometry: {"base_scene": _anchored_base_scene(tmp_path, geometry)})
+    assert value["status"] == "intake_ready", value["blockers"]
+    assert value["registration"]["scale_status"] == "provider_declared_anchor"
+    assert value["coordinate_frame"]["declared_meters_per_unit"] == pytest.approx(1 / RUNTIME_SCALE)
+    assert value["physics"]["dimensions_m"] == pytest.approx([0.05, 0.1, 0.1], abs=1e-6)
+
+
+def test_declared_scale_without_an_anchor_must_agree_with_the_registration(tmp_path):
+    def base(geometry):
+        scene = _base_scene(tmp_path, geometry)
+        return {"base_scene": {**scene, "meters_per_unit": 8.0}}
+    value = _compile(tmp_path, base)
+    assert "website_registration_scale_conflicts_declared" in value["blockers"]

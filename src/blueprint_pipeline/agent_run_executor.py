@@ -362,21 +362,60 @@ def _default_terminal_reader(
     }
 
 
+def _row_capture_root(row: Mapping[str, Any], partition_root: Path) -> tuple[Path | None, str | None]:
+    """Resolve the capture a queued run belongs to, inside the configured partition.
+
+    A website capture is created at intake, so the dispatcher cannot be bound
+    to one capture id ahead of time. The canonical request names its capture
+    root; it is honoured only when it is a real `scenes/<scene>/captures/<id>`
+    directory under the partition and its id matches the admitted binding.
+    """
+    admission = _mapping(row.get("execution_admission"))
+    canonical = _mapping(admission.get("canonical_execution_request"))
+    binding = _mapping(admission.get("binding"))
+    raw = str(_mapping(canonical.get("site_package")).get("capture_root") or canonical.get("capture_root") or "")
+    if not raw:
+        return None, "agent_execution_capture_root_missing"
+    candidate = Path(raw)
+    partition = partition_root.resolve()
+    if not candidate.is_absolute() or any(part in {"..", ""} for part in candidate.parts[1:]):
+        return None, "agent_execution_capture_root_unsafe"
+    resolved = candidate.resolve()
+    if not resolved.is_relative_to(partition) or resolved == partition:
+        return None, "agent_execution_capture_root_outside_partition"
+    relative = resolved.relative_to(partition).parts
+    if (len(relative) != 4 or relative[0] != "scenes" or relative[2] != "captures"
+            or relative[3] != str(binding.get("capture_id") or "")):
+        return None, "agent_execution_capture_root_not_admitted_capture"
+    if not resolved.is_dir():
+        return None, "agent_execution_capture_root_absent"
+    return resolved, None
+
+
 def poll_once(
     *,
     client: AgentRunWebAppClient,
-    capture_root: Path,
+    capture_root: Path | None = None,
     capture_id: str | None = None,
+    capture_partition_root: Path | None = None,
     limit: int = 10,
     inbox_dir: Path | None = None,
     journal_dir: Path | None = None,
     terminal_reader: Callable[..., Mapping[str, Any]] = _default_terminal_reader,
 ) -> dict[str, Any]:
-    pipeline_root = capture_root / "pipeline"
+    if (capture_root is None) == (capture_partition_root is None):
+        raise ValueError("agent_execution_capture_scope_required")
+    if capture_partition_root is not None and (inbox_dir is None or journal_dir is None):
+        raise ValueError("agent_execution_partition_scope_requires_shared_inbox_and_journal")
+    scope_root = capture_root if capture_root is not None else capture_partition_root
+    pipeline_root = scope_root / "pipeline"
     inbox = inbox_dir or pipeline_root / "robot_eval_job_requests" / "inbox"
     journals = journal_dir or pipeline_root / "agent_run_executor" / "journal"
-    jobs_root = pipeline_root / "robot_eval_jobs"
     journals.mkdir(parents=True, exist_ok=True)
+
+    def jobs_root_for(journal: Mapping[str, Any]) -> Path:
+        root = Path(str(journal.get("capture_root") or "")) if capture_partition_root is not None else capture_root
+        return root / "pipeline" / "robot_eval_jobs"
     summary: dict[str, Any] = {
         "examined": 0,
         "claimed": 0,
@@ -475,7 +514,13 @@ def poll_once(
     }
     for row in client.list_runs(limit, capture_id=capture_id):
         summary["examined"] += 1
-        blockers = validate_queue_run(row, capture_root=capture_root)
+        row_capture_root = capture_root
+        if capture_partition_root is not None:
+            row_capture_root, scope_blocker = _row_capture_root(row, capture_partition_root)
+            if scope_blocker is not None:
+                summary["blocked"] += 1
+                continue
+        blockers = validate_queue_run(row, capture_root=row_capture_root)
         if capture_id and _mapping(_mapping(row.get("execution_admission")).get("binding")).get(
             "capture_id"
         ) != capture_id:
@@ -499,6 +544,7 @@ def poll_once(
                 "block_before_execution" if preflight_blockers else "stage_for_execution"
             ),
             "preflight_blockers": preflight_blockers,
+            "capture_root": str(row_capture_root),
             "row": dict(row),
         }
         _write_json_atomic(journal_path, journal, exclusive=True)
@@ -538,7 +584,7 @@ def poll_once(
             continue
         row = _mapping(journal.get("row"))
         terminal = terminal_reader(
-            job_dir=jobs_root / str(journal["canonical_job_id"]),
+            job_dir=jobs_root_for(journal) / str(journal["canonical_job_id"]),
             expected_job_id=str(journal["canonical_job_id"]),
             expected_canonical_request_digest=_digest(
                 _mapping(_mapping(row.get("execution_admission")).get("canonical_execution_request"))
@@ -570,14 +616,22 @@ def poll_once(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--webapp-url", required=True)
-    parser.add_argument("--capture-root", required=True, type=Path)
-    parser.add_argument("--capture-id", required=True)
+    scope = parser.add_mutually_exclusive_group(required=True)
+    scope.add_argument("--capture-root", type=Path,
+                       help="Serve one configured capture; requires --capture-id.")
+    scope.add_argument("--capture-partition-root", type=Path,
+                       help="Serve every admitted capture under this scenes/<scene>/captures/<id> partition.")
+    parser.add_argument("--capture-id", default=None)
     parser.add_argument("--limit", type=int, default=10)
     parser.add_argument("--token-file", required=True, type=Path)
     parser.add_argument("--inbox-dir", type=Path)
     parser.add_argument("--journal-dir", type=Path)
     parser.add_argument("--poll-seconds", type=float, default=0)
     args = parser.parse_args()
+    if args.capture_root is not None and not args.capture_id:
+        parser.error("--capture-id is required with --capture-root")
+    if args.capture_partition_root is not None and (args.capture_id or not (args.inbox_dir and args.journal_dir)):
+        parser.error("--capture-partition-root takes --inbox-dir and --journal-dir, not --capture-id")
     token = load_pipeline_sync_token(token_file_path=args.token_file, require_file=True)
     client = AgentRunWebAppClient(base_url=args.webapp_url, token=token)
     while True:
@@ -585,6 +639,7 @@ def main() -> int:
             client=client,
             capture_root=args.capture_root,
             capture_id=args.capture_id,
+            capture_partition_root=args.capture_partition_root,
             limit=args.limit,
             inbox_dir=args.inbox_dir,
             journal_dir=args.journal_dir,
