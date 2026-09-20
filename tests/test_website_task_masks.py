@@ -204,7 +204,7 @@ def test_exact_frame_grounding_cannot_match_a_neighboring_timestamp():
             {"frame_id": "exact", "timestamp_seconds": 0}, {"frame_id": "frame-0", "timestamp_seconds": 0.03}])
 
 
-@pytest.mark.parametrize("recovery", ["anchor", "concept", "crop", "unchanged", "wrong_instance"])
+@pytest.mark.parametrize("recovery", ["anchor", "concept", "crop", "image", "unchanged", "wrong_instance"])
 def test_controller_recovers_ambiguous_video_anchor_with_bounded_exact_frame_evidence(tmp_path, monkeypatch, recovery):
     from blueprint_pipeline import website_task_masks as masks, website_task_grounding as grounding
     target = {**_target(), "semantic_label": "white support", "segmentation_prompt": "white container",
@@ -217,7 +217,7 @@ def test_controller_recovers_ambiguous_video_anchor_with_bounded_exact_frame_evi
     calls = []
     def hosted(**kw):
         calls.append(kw)
-        wrong = (recovery != "anchor" and len(calls) == 1) or recovery == "wrong_instance"
+        wrong = (recovery != "anchor" and len(calls) == 1) or recovery in {"image", "wrong_instance"}
         return {"tracks": [_track(start=2 if wrong else 0)]}
     monkeypatch.setattr(masks, "run_meta_sam31", hosted)
     grounds = []
@@ -226,6 +226,14 @@ def test_controller_recovers_ambiguous_video_anchor_with_bounded_exact_frame_evi
         concept = "white container" if recovery == "unchanged" or (recovery == "crop" and len(grounds) == 1) else "white book"
         return {**target, **_target(), "segmentation_prompt": concept, "grounding": {"source_frame_id": "frame-0"}}
     monkeypatch.setattr(grounding, "ground_task_target", ground)
+    image_calls = []
+    def image_fallback(**kw):
+        image_calls.append(kw)
+        if recovery == "wrong_instance":
+            raise ValueError("task_target_track_ambiguous:task-cup")
+        assert recovery == "image" and kw["target"]["disposition"] == "keep"
+        return _track()
+    monkeypatch.setattr(masks, "segment_grounded_static_target", image_fallback)
     kwargs = dict(plan={"targets": [target], "task_context_sha256": "task"},
         source_geometry={"digest": "source", "geometry_available": False,
                          "binding": {"source_video_digest": "video"}, "frames": [frame]},
@@ -237,6 +245,7 @@ def test_controller_recovers_ambiguous_video_anchor_with_bounded_exact_frame_evi
         assert len(grounds) == (2 if recovery == "unchanged" else 1)
         return
     result = masks.run_website_task_masks(**kwargs)
+    assert len(image_calls) == (1 if recovery == "image" else 0)
     assert len(grounds) == (2 if recovery == "crop" else 1)
     assert len(calls) == (1 if recovery == "anchor" else 2)
     if recovery == "crop":
@@ -247,3 +256,50 @@ def test_controller_recovers_ambiguous_video_anchor_with_bounded_exact_frame_evi
     assert result["targets"][0]["disposition"] == "keep"
     assert result["targets"][0]["source_track"]["observations"][0]["runs"][0]["start"] == 0
     assert result["targets"][0]["grounding"]["source_frame_id"] == "frame-0"
+
+
+@pytest.mark.parametrize("case", ["match", "empty", "wrong_instance", "bad_grid", "changed_image", "manipulated"])
+def test_static_source_crop_maps_masks_back_without_inventing_temporal_coverage(tmp_path, monkeypatch, case):
+    from PIL import Image
+    from blueprint_pipeline import website_task_masks as masks
+
+    image = tmp_path / "original.png"
+    Image.new("RGB", (100, 100), "white").save(image)
+    target = {"target_id": "support", "task_effect": "static_contact", "disposition": "keep",
+              "segmentation_prompt": "white book", "grounding": {"source_frame_id": "decoded-41",
+                  "source_image_path": str(image), "image_digest": _sha256_file(image)},
+              "spatial_evidence": [{"timestamp_seconds": 1.367, "box_xywh_normalized": [0.2, 0.3, 0.2, 0.1]}]}
+    registry = [{"source_frame_id": "decoded-41", "model_frame_index": 41, "decoded_pts_seconds": 1.367,
+                 "width": 100, "height": 100}]
+    calls = []
+    def hosted(**kw):
+        calls.append(kw)
+        assert "video_artifact" not in kw
+        assert kw["task_context"] == {"confirmed": True}
+        frame = kw["frame_registry"][0]
+        assert frame["model_frame_index"] == 0 and frame["source_frame_id"] == "decoded-41"
+        left, top, right, bottom = frame["source_crop_box_pixels"]
+        w, h = right - left, bottom - top
+        x, y, width, height = (20 - left, 30 - top, 20, 10) if case != "wrong_instance" else (0, 0, 2, 2)
+        observation = {"source_frame_id": "decoded-41", "width": w, "height": h + (case == "bad_grid"),
+                       "runs": [{"start": row * w + x, "length": width} for row in range(y, y + height)]}
+        return {"binding_digest": "sha256:provider", "tracks": [] if case == "empty" else [
+            {"track_id": "support-0", "label": "support", "observations": [observation]}]}
+    monkeypatch.setattr(masks, "run_meta_sam31", hosted)
+    if case == "changed_image":
+        image.write_bytes(b"changed")
+    if case == "manipulated":
+        target.update(task_effect="manipulated", disposition="remove")
+    kwargs = dict(target=target, registry=registry, task_context={"confirmed": True}, output_root=tmp_path / "masks")
+    if case != "match":
+        errors = {"empty": "track_ambiguous", "wrong_instance": "track_ambiguous", "bad_grid": "mapping_invalid",
+                  "changed_image": "image_changed", "manipulated": "requires_static_contact"}
+        with pytest.raises(ValueError, match=errors[case]):
+            masks.segment_grounded_static_target(**kwargs)
+        assert len(calls) == (0 if case in {"changed_image", "manipulated"} else 1)
+        return
+    result = masks.segment_grounded_static_target(**kwargs)
+    assert result["coverage"] == "single_observed_frame" and len(result["observations"]) == 1
+    mask = masks.decode_track_mask(result["observations"][0])
+    assert mask.shape == (100, 100) and mask.sum() == 200 and mask[30:40, 20:40].all()
+    assert result["observations"][0]["source_frame_id"] == "decoded-41"
