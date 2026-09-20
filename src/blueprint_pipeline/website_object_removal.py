@@ -55,6 +55,49 @@ def select_reconstruction_frames(*, frames: Sequence[Mapping[str, Any]], task_ma
     return [dict(frames[i]) for i in sorted(selected)]
 
 
+def replace_unmasked_task_views(*, selected: Sequence[Mapping[str, Any]],
+                                frames: Sequence[Mapping[str, Any]], task_masks: Mapping[str, Any],
+                                targets: Sequence[Mapping[str, Any]], limit: int) -> list[dict[str, Any]]:
+    """A missing SAM mask does not override positive task-object evidence.
+
+    Keep completed edits byte-for-byte and replace unedited, positively observed
+    task views with other context views. The whole resulting set still requires
+    visual review; this does not certify object absence in replacement views.
+    """
+    registry = task_masks.get("source_frame_registry") or []
+    visible = set()
+    for target in targets:
+        if target.get("task_effect") != "manipulated" or target.get("disposition") != "remove":
+            continue
+        for evidence in target.get("spatial_evidence", []):
+            timestamp = evidence.get("timestamp_seconds")
+            if registry and isinstance(timestamp, (float, int)) and np.isfinite(timestamp):
+                nearest = min(registry, key=lambda row: abs(row["decoded_pts_seconds"] - timestamp))
+                visible.add(nearest["source_frame_id"])
+    unsafe = {frame["frame_id"] for frame in frames
+              if frame["frame_id"] in visible and not frame["remaining_pixel_count"]}
+    if not unsafe.intersection(frame["frame_id"] for frame in selected):
+        return [dict(frame) for frame in selected]
+    retained = [dict(frame) for frame in selected if frame["frame_id"] not in unsafe]
+    order = {frame["frame_id"]: i for i, frame in enumerate(frames)}
+    # Never add a frame needing an edit: only completed task views and unchanged
+    # context may enter this reuse path. Keep using the provider's actual limit.
+    candidates = [dict(frame) for frame in frames
+                  if frame["frame_id"] not in unsafe and not frame["remaining_pixel_count"]]
+    while len(retained) < limit:
+        seen = {frame["image_digest"] for frame in retained}
+        ids = {frame["frame_id"] for frame in retained}
+        candidates = [frame for frame in candidates if frame["frame_id"] not in ids and frame["image_digest"] not in seen]
+        if not candidates:
+            break
+        replacement = max(candidates, key=lambda frame: min(
+            (abs(order[frame["frame_id"]] - order[row["frame_id"]]) for row in retained), default=len(frames)))
+        retained.append(replacement)
+    if len(retained) < 2:
+        raise ValueError("at_least_two_distinct_reconstruction_views_required")
+    return sorted(retained, key=lambda frame: order[frame["frame_id"]])
+
+
 def reconstruction_source_frames(*, source_geometry: Mapping[str, Any], task_masks: Mapping[str, Any],
                                  source_video: Path, limit: int, output_root: Path) -> list[dict[str, Any]]:
     """CPU-decode extra context without increasing the geometry/GPU frame batch."""

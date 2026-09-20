@@ -154,3 +154,32 @@ def test_short_lived_task_view_is_retained_when_context_budget_is_already_full(t
                                                 limit=8, output_root=tmp_path / "frames")
     assert indexes == [43, 45]
     assert len(frames) == 11 and len(geometry["frames"]) == 9
+
+
+@pytest.mark.parametrize('limit', [8, 128])
+def test_positive_task_evidence_replaces_unmasked_context_without_reediting(limit):
+    from blueprint_pipeline.website_object_removal import replace_unmasked_task_views
+    frames = [{"frame_id": f"f{i}", "image_digest": f"original-{i}", "remaining_pixel_count": 0}
+              for i in range(limit + 3)]
+    frames[5]["remaining_pixel_count"] = 20
+    frames[7]["remaining_pixel_count"] = 20  # Not selected or edited: cannot fill a context slot.
+    selected = [dict(frame) for frame in frames[:limit]]
+    selected = [frame for frame in selected if frame["frame_id"] != 'f7']
+    selected.append(dict(frames[limit]))
+    selected[5] = {**selected[5], "image_digest": "completed-edit", "image_path": "/retained/5.png",
+                   "generated_pixels_present": True}
+    masks = {"source_frame_registry": [{"source_frame_id": f"f{i}", "decoded_pts_seconds": i / 30}
+                                        for i in range(limit + 3)]}
+    targets = [{"task_effect": "manipulated", "disposition": "remove",
+                "spatial_evidence": [{"timestamp_seconds": 4 / 30}]}]
+    result = replace_unmasked_task_views(selected=selected, frames=frames, task_masks=masks,
+                                        targets=targets, limit=limit)
+    assert len(result) == limit
+    assert "f4" not in {frame["frame_id"] for frame in result}
+    assert "f7" not in {frame["frame_id"] for frame in result}
+    assert next(frame for frame in result if frame["frame_id"] == "f5") == selected[5]
+    assert len({frame["image_digest"] for frame in result}) == limit
+    # Missing masks on kept furniture do not remove useful room views.
+    targets[0].update(task_effect="static_contact", disposition="keep")
+    assert replace_unmasked_task_views(selected=selected, frames=frames, task_masks=masks,
+                                       targets=targets, limit=limit) == selected

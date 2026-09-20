@@ -32,7 +32,7 @@ from .local_capture import resolve_local_capture_context
 from .decision_evidence_contracts import canonical_digest
 from .website_scene_geometry import prepare_website_source_frames
 from .website_task_masks import run_website_task_masks
-from .website_object_removal import prepare_object_removal_frames, select_reconstruction_frames, reconstruction_source_frames
+from .website_object_removal import prepare_object_removal_frames, select_reconstruction_frames, reconstruction_source_frames, replace_unmasked_task_views
 from .website_reconstruction_profile import reconstruction_profile
 from .website_image_completion import complete_background_images, verify_completed_background
 
@@ -417,6 +417,8 @@ def run_clean_plate_stage(
                     output_root=clean_plate_root / "image_completion", admission=image_edit_admission or {},
                     token=os.getenv("OPENAI_API_KEY", ""), admission_grant=image_edit_admission_grant,
                     targets=plan["targets"], task_context=task_context)
+                selected = replace_unmasked_task_views(selected=selected, frames=object_removal_frames,
+                    task_masks=task_masks, targets=plan["targets"], limit=profile["max_input_images"])
                 completion_review = verify_completed_background(
                     frames=selected, original_frames=source_geometry["frames"], plan=plan,
                     output_root=clean_plate_root / "image_completion", task_context=task_context)
