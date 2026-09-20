@@ -259,6 +259,16 @@ def load_website_geometry_result(*, manifest_path: Path, inputs: Mapping[str, An
     return result
 
 
+def prepare_website_source_frames(*, source_video: Path, output_root: Path, capture_id: str) -> dict[str, Any]:
+    """CPU-only source views for SAM and image editing, before any GPU job."""
+    inputs = prepare_website_geometry_inputs(source_video=source_video, output_root=output_root, capture_id=capture_id)
+    value = {"schema_version": "website_source_frames.v1", "binding": inputs["binding"],
+             "geometry_input_digest": inputs["digest"], "geometry_available": False,
+             "frames": _bound_frames(inputs, output_root / "worker_inputs", geometry=False)}
+    value["digest"] = canonical_digest(value, digest_field="digest")
+    return value
+
+
 def run_website_scene_geometry(*, source_video: Path, output_root: Path, capture_id: str,
                                task_context: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Local inference compatibility entry; CPU preparation is reusable by a worker."""

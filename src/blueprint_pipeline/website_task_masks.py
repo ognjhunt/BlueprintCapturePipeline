@@ -1,4 +1,4 @@
-"""Bind task-specific SAM 3.1 tracks to original-view estimated geometry."""
+"""Track task objects in source pixels; bind estimated geometry when available."""
 
 from __future__ import annotations
 
@@ -135,7 +135,10 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
         profile = json.loads(profile_path.read_text())
     else:
         raise ValueError("website_sam31_provider_invalid")
-    binding = {"geometry_digest": source_geometry["digest"], "task_targets": targets,
+    geometry_available = source_geometry.get("geometry_available") is not False
+    binding = {"geometry_digest": source_geometry["digest"] if geometry_available else None,
+               "source_frames_digest": source_geometry["digest"],
+               "geometry_input_digest": source_geometry.get("geometry_input_digest"), "task_targets": targets,
                "task_context_sha256": plan["task_context_sha256"], "profile_digest": profile["profile_digest"],
                "mask_input_pixels": ("continuous_source_video_v1" if source_video else "upright_source_v1")
                                     if provider == "meta" else "geometry_v1"}
@@ -203,8 +206,8 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
                                output_root=root, admission=meta_admission or {}, admission_grant=meta_admission_grant,
                                task_context=task_context, video_artifact=video_artifact)
         geometry_ids = {frame["frame_id"] for frame in frames}
-        # Full tracks stay in the provider receipt; only geometry-backed frames
-        # enter placement and background recovery. No interpolation of missing masks.
+        # Full tracks stay in the provider receipt. Sampled source frames drive
+        # editing now; the same tracks gain geometry later without a second call.
         tracks = [track_at_geometry_resolution({**track, "observations": [row for row in track["observations"]
                   if row["source_frame_id"] in geometry_ids]}, frames) for track in result["tracks"]]
     else:
@@ -235,16 +238,37 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
                          "semantic_label": target["semantic_label"], "task_effect": target["task_effect"],
                          "placement_relation": target.get("placement_relation"),
                          "disposition": target["disposition"], "track": track,
-                         "estimated_visible_bounds": estimate_target_bounds(track, frames)})
+                         "estimated_visible_bounds": estimate_target_bounds(track, frames) if geometry_available else None})
         if provider == "meta":
             source_track = next(row for row in result["tracks"] if row["track_id"] == track["track_id"])
             selected[-1]["source_track"] = source_track
     manifest = {"schema_version": "website_task_masks.v1", "status": "completed", "binding": binding,
                 "claim_ceiling": "development_only", "targets": selected,
-                "source_geometry_digest": source_geometry["digest"]}
+                "source_geometry_digest": source_geometry["digest"] if geometry_available else None}
     if video_artifact:
         manifest["source_frame_registry"] = registry
         manifest["source_video_digest"] = source_geometry["binding"]["source_video_digest"]
     manifest["digest"] = canonical_digest(manifest, digest_field="digest")
     write_json(root / "task_masks.json", manifest)
     return manifest
+
+
+def bind_task_masks_to_geometry(*, task_masks: Mapping[str, Any], source_geometry: Mapping[str, Any]) -> dict[str, Any]:
+    """Lift the retained selected tracks after reconstruction; never call SAM again."""
+    if (task_masks.get("digest") != canonical_digest(task_masks, digest_field="digest")
+            or source_geometry.get("digest") != canonical_digest(source_geometry, digest_field="digest")
+            or task_masks.get("source_video_digest") != source_geometry["binding"].get("source_video_digest")
+            or task_masks["binding"].get("geometry_input_digest") != source_geometry["binding"].get("input_digest")):
+        raise ValueError("website_task_geometry_binding_mismatch")
+    frames = source_geometry["frames"]
+    ids = {frame["frame_id"] for frame in frames}
+    targets = []
+    for target in task_masks["targets"]:
+        source_track = target["source_track"]
+        track = track_at_geometry_resolution({**source_track, "observations": [row for row in source_track["observations"]
+                                            if row["source_frame_id"] in ids]}, frames)
+        targets.append({**target, "track": track, "estimated_visible_bounds": estimate_target_bounds(track, frames)})
+    value = {**task_masks, "targets": targets, "source_geometry_digest": source_geometry["digest"],
+             "binding": {**task_masks["binding"], "geometry_digest": source_geometry["digest"]}}
+    value["digest"] = canonical_digest(value, digest_field="digest")
+    return value

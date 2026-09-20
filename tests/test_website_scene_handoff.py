@@ -73,3 +73,25 @@ def test_held_or_changed_inputs_do_not_enter_scene_construction(tmp_path, monkey
     result = handoff.prepare_website_scene_handoff(**kwargs)
     assert result["blockers"] == [reason]
     assert result["simulator_ready"] is False
+
+
+def test_geometry_controller_runs_only_after_visual_world_and_assets_are_ready(tmp_path, monkeypatch):
+    kwargs = inputs(tmp_path)
+    video = tmp_path / "walkthrough.mov"
+    video.write_bytes(b"source")
+    kwargs["clean_plate"].update(source_geometry=None, input_video_path=str(video),
+        stage_manifest_path=str(tmp_path / "pipeline/clean_plate/stage.json"))
+    calls = []
+    def dispatch(**kw):
+        calls.append(kw)
+        raise ValueError("geometry_capacity_pending")
+    monkeypatch.setattr("blueprint_pipeline.website_scene_geometry.run_website_scene_geometry", dispatch)
+    kwargs["provider_run"]["status"] = "processing"
+    assert handoff.prepare_website_scene_handoff(**kwargs)["blockers"] == ["website_reconstruction_pending"]
+    assert calls == []
+    kwargs["provider_run"]["status"] = "ready"
+    result = handoff.prepare_website_scene_handoff(**kwargs)
+    assert result["blockers"] == ["geometry_capacity_pending"]
+    assert len(calls) == 1 and calls[0]["task_context"] == kwargs["descriptor"]["metadata"]["site_task_context"]
+    assert kwargs["provider_run"]["status"] == "ready"
+    assert result["geometry_controller_invoked"] is True
