@@ -281,7 +281,8 @@ def main() -> int:
         configurations[stage_id] = (_read(path), path)
     output.mkdir(parents=True, exist_ok=True)
     stages_root = output / "stages"
-    stages_root.mkdir(mode=0o750)
+    # A control-plane prestage may already have populated the prefix.
+    stages_root.mkdir(mode=0o750, exist_ok=True)
     from blueprint_pipeline.task_evaluation_scene_configuration_output_archive import preserve_stage_prefix
     checkpoint_path = Path(os.environ.get(
         "BLUEPRINT_SCENE_CONFIGURATION_STAGE_CHECKPOINT_PATH",
@@ -303,6 +304,7 @@ def main() -> int:
             preflight_astra_execution_runtime(package=component.parent,
                 output_root=output / "astra_runtime_preflight")
             print("BLUEPRINT_SCENE_CONFIGURATION_ASTRA_RUNTIME_PREFLIGHT_PASSED", flush=True)
+        stage_limit = os.environ.get("BLUEPRINT_SCENE_CONFIGURATION_STAGE_LIMIT") or None
         chain = _portable_stage_chain(
             execute_scene_configuration_stage_chain(
                 envelope=envelope,
@@ -310,12 +312,13 @@ def main() -> int:
                 output_root=stages_root,
                 parent_deadline_epoch=parent_deadline_epoch,
                 checkpoint_callback=preserve,
+                stage_limit=stage_limit,
             ),
             output_root=output,
         )
         result = {
             "schema_version": RESULT_SCHEMA_VERSION,
-            "status": "completed",
+            "status": chain["status"],
             "run_id": envelope["run_id"],
             "source_commit": envelope["expected_production_commit"],
             "construction_envelope_digest": portable_envelope_digest,

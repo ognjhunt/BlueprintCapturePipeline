@@ -55,8 +55,17 @@ def execute_scene_configuration_stage_chain(
     parent_deadline_epoch: float | None = None,
     clock: Callable[[], float] = time.time,
     checkpoint_callback: Callable[..., None] | None = None,
+    stage_limit: str | None = None,
 ) -> dict[str, Any]:
-    """Execute all six stages once without any nested paid mutation."""
+    """Execute the six stages once without any nested paid mutation.
+
+    With ``stage_limit`` the chain stops after that stage and reports a
+    completed prefix. Only stages 5 and 6 need the Isaac host; stages 1-4
+    (prepared background, Astra CAD/Blender authoring, static SimReady
+    qualification) are CPU work, so a control-plane prestage can execute
+    them into the same output layout and the paid run adopts the checkpoints
+    and continues from stage 5.
+    """
 
     recipe = envelope.get("recipe")
     stages = recipe.get("stage_sequence") if isinstance(recipe, Mapping) else None
@@ -85,6 +94,10 @@ def execute_scene_configuration_stage_chain(
         raise TaskEvaluationSceneConfigurationProviderRuntimeError(
             "scene_configuration_provider_output_root_invalid"
         )
+    if stage_limit is not None and stage_limit not in {str(stage.get("stage_id")) for stage in stages}:
+        raise TaskEvaluationSceneConfigurationProviderRuntimeError(
+            f"scene_configuration_provider_stage_limit_invalid:{stage_limit}"
+        )
     results: list[dict[str, Any]] = []
     astra_resume = None
     if any(value.get("authoring_backend") == "astra_cad_blender_v1" for value, _ in configurations.values()):
@@ -106,6 +119,8 @@ def execute_scene_configuration_stage_chain(
                 if checkpoint_callback is not None:
                     checkpoint_callback(tuple(results))
                 print(f"BLUEPRINT_SCENE_CONFIGURATION_STAGE_ADOPTED: stage_id={stage_id}", flush=True)
+                if stage_id == stage_limit:
+                    break
                 continue
         print(
             "BLUEPRINT_SCENE_CONFIGURATION_STAGE_STARTED:"
@@ -198,6 +213,8 @@ def execute_scene_configuration_stage_chain(
             f" index={index + 1}/{len(stages)} stage_id={stage_id}",
             flush=True,
         )
+        if stage_id == stage_limit:
+            break
     if (
         parent_deadline_epoch is not None
         and parent_deadline_epoch - clock() < OUTPUT_AND_CLOSURE_RESERVE_SECONDS
@@ -209,7 +226,9 @@ def execute_scene_configuration_stage_chain(
         )
     chain: dict[str, Any] = {
         "schema_version": RESULT_SCHEMA_VERSION,
-        "status": "completed",
+        "status": "completed" if stage_limit is None else "completed_prefix",
+        "stage_limit": stage_limit,
+        "whole_run_completed": stage_limit is None,
         "run_id": envelope["run_id"],
         "stage_result_digests": [
             result["stage_result_digest"] for result in results
