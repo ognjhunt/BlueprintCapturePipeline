@@ -729,6 +729,41 @@ def _current_remote_branch_commit(branch: str) -> str:
     return commit
 
 
+def submit_sponsored_website_reconstruction(*, descriptor: Mapping[str, Any], capture_root: Path) -> dict[str, Any]:
+    """Controller entry through the canonical allocator, never a manual grant.
+
+    ADP-009B/day-14: retain the provider operation across controller restarts.
+    No branch diagnostic is permitted on this automatic production path.
+    """
+    from .provider_preview import WorldLabsPreviewProvider, _worldlabs_api_key
+    from .website_task_context import reserve_website_preparation_spend
+    from .website_worldlabs import MAX_GENERATION_COST_USD, validate_website_prepared_views
+
+    _, binding = validate_website_prepared_views(descriptor=descriptor, capture_root=capture_root)
+    root = capture_root / "pipeline" / "website_reconstruction"
+    provider = WorldLabsPreviewProvider()
+    if (root / "submission.json").is_file():
+        # The adapter checks exact input identity and refuses unknown outcomes.
+        # With a retained operation it makes no new billable provider request.
+        return provider.submit(descriptor=descriptor, capture_root=capture_root)
+    commit, _, _ = _current_checkout_source_state()
+    blockers, _ = _source_checkout_blockers(commit)
+    if blockers:
+        raise ValueError("website_reconstruction_release_not_admitted:" + ",".join(blockers))
+    if not _worldlabs_api_key():
+        raise ValueError("website_reconstruction_api_key_missing")
+    admission, grant = reserve_website_preparation_spend(
+        task_context=descriptor["metadata"]["site_task_context"], binding_digest=canonical_digest(binding),
+        maximum_cost_usd=MAX_GENERATION_COST_USD, request_count=1,
+        resource_class="provider_reconstruction_api", provider="world_labs")
+    admission = {**admission, "source_commit": commit}
+    root.mkdir(parents=True, exist_ok=True)
+    write_json(root / "controller_admission.json", admission)
+    prepared = {**descriptor, "metadata": {**descriptor["metadata"], "website_reconstruction_admission": admission}}
+    return provider.submit(descriptor=prepared, capture_root=capture_root,
+                           provider_adapter_input={"paid_resource_admission_grant": grant})
+
+
 def _source_checkout_blockers(
     expected_source_commit: str, *, allow_pushed_branch_diagnostic: bool = False
 ) -> tuple[list[str], str]:

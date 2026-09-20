@@ -885,7 +885,11 @@ def run_preview_provider(
     provider: PreviewProvider | None = None
     try:
         provider = resolve_preview_provider(provider_name)
-        if provider_adapter_input is not None:
+        if (isinstance(provider, WorldLabsPreviewProvider)
+                and (descriptor.get("metadata") or {}).get("capture_entry_source") == "browser_self_capture"):
+            from .paid_resource_allocator import submit_sponsored_website_reconstruction
+            submitted = submit_sponsored_website_reconstruction(descriptor=descriptor, capture_root=capture_root)
+        elif provider_adapter_input is not None:
             submitted = provider.submit(
                 descriptor=descriptor,
                 capture_root=capture_root,

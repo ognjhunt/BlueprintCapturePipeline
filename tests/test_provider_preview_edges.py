@@ -318,10 +318,14 @@ def test_worldlabs_poll_variants_and_run_preview_provider_edge_manifests(
 
 
 def test_website_publishes_first_view_before_asset_download_or_simulation(tmp_path, monkeypatch):
-    from blueprint_pipeline import website_task_context, worldlabs_asset_materialization
+    from blueprint_pipeline import website_task_context, worldlabs_asset_materialization, paid_resource_allocator
     provider = pp.WorldLabsPreviewProvider()
     events = []
-    monkeypatch.setattr(provider, "submit", lambda **kw: {"provider_run_id": "op-visual", "status": "processing", "artifact_uris": {}})
+    def allocate(**kwargs):
+        events.append("allocate")
+        return {"provider_run_id": "op-visual", "status": "processing", "artifact_uris": {}}
+    monkeypatch.setattr(paid_resource_allocator, "submit_sponsored_website_reconstruction", allocate)
+    monkeypatch.setattr(provider, "submit", lambda **kw: pytest.fail("must route through canonical allocator"))
     monkeypatch.setattr(provider, "normalize", lambda row: dict(row))
     monkeypatch.setattr(pp, "resolve_preview_provider", lambda name: provider)
     monkeypatch.setattr(pp, "_poll_worldlabs_until_terminal", lambda **kw: {
@@ -338,5 +342,5 @@ def test_website_publishes_first_view_before_asset_download_or_simulation(tmp_pa
     result = pp.run_preview_provider(provider_name="world_labs", descriptor={"capture_id": "walkthrough-r1",
         "scene_id": "site-r1", "metadata": {"capture_entry_source": "browser_self_capture"}},
         capture_root=tmp_path, pipeline_dir=tmp_path)
-    assert events[:2] == ["publish", "download"]
+    assert events[:3] == ["allocate", "publish", "download"]
     assert result["website_visual_publication"] == {"state": "ready", "world_id": "world-visual"}

@@ -185,3 +185,48 @@ def test_marble_poll_reports_settled_provider_cost_without_inventing_zero(monkey
     else:
         assert result["billing_status"] == "unreported"
         assert "cost_usd" not in result
+
+
+def test_controller_allocator_reserves_once_and_reuses_retained_marble_operation(tmp_path, monkeypatch):
+    from blueprint_pipeline import paid_resource_allocator as allocator
+    from blueprint_pipeline import website_task_context as control
+    descriptor = _descriptor(tmp_path)
+    descriptor["metadata"].pop("website_reconstruction_admission")
+    reservations, calls, checks = [], [], []
+    monkeypatch.setattr(allocator, "_current_checkout_source_state", lambda: ("1" * 40, True, True))
+    def source(commit, **kwargs):
+        checks.append(kwargs)
+        return [], commit
+    monkeypatch.setattr(allocator, "_source_checkout_blockers", source)
+    monkeypatch.setattr(provider_preview, "_worldlabs_api_key", lambda: "test")
+    def reserve(**kwargs):
+        reservations.append(kwargs)
+        admission = {"schema_version": "paid_lane_admission.v1", "status": "admitted", "blockers": [],
+                     "resource_class": kwargs["resource_class"], "external_disclosure_allowed": True,
+                     "maximum_cost_usd": kwargs["maximum_cost_usd"], "allocation_binding_digest": kwargs["binding_digest"]}
+        return admission, _grant(admission)
+    monkeypatch.setattr(control, "reserve_website_preparation_spend", reserve)
+    def api(path, **kwargs):
+        calls.append(path)
+        if path.endswith("prepare_upload"):
+            return {"media_asset": {"media_asset_id": "image"}, "upload_info": {"upload_url": "https://example.com/upload"}}
+        return {"operation_id": "retained-operation"}
+    monkeypatch.setattr(provider_preview, "_worldlabs_api_request", api)
+    monkeypatch.setattr(provider_preview, "_presigned_upload", lambda *a, **kw: None)
+    first = allocator.submit_sponsored_website_reconstruction(descriptor=descriptor, capture_root=tmp_path)
+    second = allocator.submit_sponsored_website_reconstruction(descriptor=descriptor, capture_root=tmp_path)
+    assert first["provider_run_id"] == second["provider_run_id"] == "retained-operation"
+    assert len(reservations) == 1 and reservations[0]["provider"] == "world_labs"
+    assert reservations[0]["maximum_cost_usd"] == 2.48
+    assert calls.count("/marble/v1/worlds:generate") == 1
+    assert checks == [{}]  # Automatic path cannot opt into a diagnostic branch.
+
+
+def test_controller_does_not_reserve_marble_on_unmerged_code(tmp_path, monkeypatch):
+    from blueprint_pipeline import paid_resource_allocator as allocator
+    from blueprint_pipeline import website_task_context as control
+    monkeypatch.setattr(allocator, "_current_checkout_source_state", lambda: ("1" * 40, True, True))
+    monkeypatch.setattr(allocator, "_source_checkout_blockers", lambda *_: (["checkout_not_main"], "1" * 40))
+    monkeypatch.setattr(control, "reserve_website_preparation_spend", lambda **_: pytest.fail("must not reserve"))
+    with pytest.raises(ValueError, match="release_not_admitted"):
+        allocator.submit_sponsored_website_reconstruction(descriptor=_descriptor(tmp_path), capture_root=tmp_path)

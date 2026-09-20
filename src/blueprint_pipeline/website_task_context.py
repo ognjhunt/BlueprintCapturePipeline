@@ -80,7 +80,8 @@ def reserve_website_preparation_spend(*, task_context: Mapping[str, Any], bindin
     """The controller obtains an exact, one-dispatch grant from the shared cap."""
     import time
     from .paid_resource_admission import require_paid_resource_admission
-    if (resource_class, provider) not in {("evaluator_api", "meta"), ("openai_api_candidate", "openai")}:
+    if (resource_class, provider) not in {("evaluator_api", "meta"), ("openai_api_candidate", "openai"),
+                                         ("provider_reconstruction_api", "world_labs")}:
         raise ValueError("website_preparation_provider_resource_mismatch")
     command = {"task_context_digest": task_context["context_digest"], "allocation_binding_digest": binding_digest,
                "resource_class": resource_class, "provider": provider, "maximum_cost_usd": maximum_cost_usd,
