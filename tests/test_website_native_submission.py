@@ -79,24 +79,13 @@ def test_prepared_capture_materializes_a_publishable_native_request_without_raw_
     assert request["spend"]["hard_cap_usd"] == 11
     assert request["scene"]["geometry"]["kind"] == "other_derived"
     assert request["scene"]["rights"]["provider_disclosure_scope"] == "derived_only"
-    # The authoring drivers gate on these four top-level fields; a production
-    # run failed at stage 3 with astra_derived_disclosure_not_admitted when the
-    # website record carried them only under provider_disclosure.
+    # Project the website permission fields for compatible consumers. Full
+    # authoring-request validation is covered by test_website_native_inputs.
     rights = json.loads((root / "rights/admission.json").read_text())
     assert rights["schema_version"] == "website_native_rights_admission.v1"
     assert rights["status"] == "admitted_for_internal_development"
     assert rights["private_provider_processing_allowed"] is True
     assert rights["provider_training_allowed"] is False and rights["public_redistribution_allowed"] is False
-    from blueprint_pipeline.task_evaluation_scene_configuration_astra_driver import build_authoring_request, AstraStageError
-    from blueprint_pipeline.task_object_astra_authoring import AssetAuthoringError
-    stage_three = json.loads((root / "configuration/stage_3.json").read_text())
-    # Placeholder source and references: only the disclosure gate, which runs
-    # first, is under test here; later checks may refuse the placeholders.
-    try:
-        build_authoring_request({"configuration": stage_three, "configuration_sha256": "sha256:" + "0" * 64},
-                                {"path": "/dev/null", "digest": "sha256:" + "0" * 64}, [Path("/dev/null")], rights)
-    except (AstraStageError, AssetAuthoringError) as exc:
-        assert str(exc) != "astra_derived_disclosure_not_admitted", exc
     assert request["scene"]["website_native_inputs"]["frames"]
     assert request["task"]["surface_target"]["non_colliding"] is True
     recipe = json.loads((root / "configuration/recipe.json").read_text())

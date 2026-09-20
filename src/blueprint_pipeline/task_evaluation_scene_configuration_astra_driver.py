@@ -97,14 +97,21 @@ def build_authoring_request(stage_input: Mapping[str, Any], source_record: Mappi
     """Translate retained data without inventing physical measurements or rounding geometry."""
     configuration = stage_input["configuration"]
     disclosure = configuration.get("provider_disclosure") or {}
+    website_capture = configuration.get("source_observation_kind") == "website_capture_frames"
+    if website_capture:
+        from .website_native_inputs import validate_website_authoring_disclosure
+        validate_website_authoring_disclosure(envelope=stage_input["construction_envelope"],
+            configuration=configuration, rights=rights)
+    else:
+        if (rights.get("status") != "admitted_for_internal_development"
+                or rights.get("private_provider_processing_allowed") is not True
+                or rights.get("provider_training_allowed") is not False
+                or rights.get("public_redistribution_allowed") is not False):
+            raise AstraStageError("astra_derived_disclosure_not_admitted")
     if (configuration.get("authoring_backend") != BACKEND
             or disclosure.get("derived_views_and_metric_envelope") is not True
             or disclosure.get("provider_training") is not False
-            or disclosure.get("public_redistribution") is not False
-            or rights.get("status") != "admitted_for_internal_development"
-            or rights.get("private_provider_processing_allowed") is not True
-            or rights.get("provider_training_allowed") is not False
-            or rights.get("public_redistribution_allowed") is not False):
+            or disclosure.get("public_redistribution") is not False):
         raise AstraStageError("astra_derived_disclosure_not_admitted")
     envelope = _metric_envelope_spec(configuration)
     dimensions = envelope["expected_dimensions_m"]
@@ -131,7 +138,6 @@ def build_authoring_request(stage_input: Mapping[str, Any], source_record: Mappi
                  "excerpt": "Retained source object identity and metric envelope: " + canonical_json({
                      "source_object_identity": source_identity, "metric_envelope": envelope})}]
     frames = []
-    website_capture = configuration.get("source_observation_kind") == "website_capture_frames"
     if website_capture and configuration.get("dimension_authority") != "estimated":
         raise AstraStageError("astra_website_dimensions_must_remain_estimated")
     for index, reference in enumerate(references):
