@@ -422,6 +422,25 @@ def test_process_config_scopes_a_refused_scene_by_its_identity(tmp_path, monkeyp
     assert "scope_unresolved" not in rows[0]
 
 
+def test_missing_robot_waits_for_team_without_blocking_scene_construction(tmp_path, monkeypatch):
+    kwargs = _configured_scene(tmp_path, robot_binding_id=None)
+    monkeypatch.setattr(worker.time, "time", lambda: NOW.timestamp())
+    config = _write(tmp_path / "config.json", {
+        "robot_catalog_path": str(_write(tmp_path / "catalog.json", kwargs["catalog"])),
+        **{key: str(kwargs[key]) for key in ("scene_root", "preparation_queue_root", "controls_root",
+                                            "intent_root", "profile_dir")},
+        "trusted_clients": ["webapp"]})
+    monkeypatch.setenv(worker.CONFIG_ENV, str(config))
+    scope = worker.progression_owner_scope(COMMIT)
+    assert scope.rows == [{"status": "awaiting_robot_team_selection", "intent_id": kwargs["intent_id"]}]
+    assert scope.blocked_scene_keys == set()
+    assert scope.unresolved is False
+    assert not kwargs["intent_root"].exists()
+    directory = kwargs["scene_root"] / kwargs["intent_id"]
+    assert not (directory / "robot-assignment.json").exists()
+    assert not list((directory / "attempts").glob("*.json"))
+
+
 # --- persisted byte digests + retained installed receipt (2026-09-13 controls tick cost) ---
 
 

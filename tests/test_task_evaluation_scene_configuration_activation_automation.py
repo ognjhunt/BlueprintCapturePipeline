@@ -406,16 +406,18 @@ def test_activation_waits_without_an_intent_and_refuses_a_foreign_commit(tmp_pat
         _advance(tmp_path, result_path, intent_root)
 
 
-def test_activation_waits_until_the_controls_continuation_intent_is_registered(tmp_path: Path) -> None:
-    """The activation worker binds the controls intent into the profile; activating first would strand it."""
+def test_scene_construction_does_not_require_a_robot_controls_intent(tmp_path: Path) -> None:
+    """Scene preparation uses its own authority before any team selects a robot."""
 
     intent_root, _intent_value = _intent(tmp_path)
     result_path = _preparation(tmp_path)
     observed, _l, _w = _advance(tmp_path, result_path, intent_root, controls_registered=False)
-    assert observed["status"] == "awaiting_configured_controls_continuation_intent"
-    assert not (tmp_path / "activations" / "pending").exists()
+    assert observed["status"] == "scene_configuration_activation_queued"
+    assert len(list((tmp_path / "activations" / "pending").glob("*.json"))) == 1
+    assert not list((tmp_path / "controls-intents").glob("*.json"))
     ready, _l2, _w2 = _advance(tmp_path, result_path, intent_root, controls_registered=True)
     assert ready["status"] == "scene_configuration_activation_queued"
+    assert ready == observed
 
 
 def test_provision_intent_authors_its_own_release_window_template(tmp_path: Path) -> None:
