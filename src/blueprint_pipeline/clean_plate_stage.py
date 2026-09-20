@@ -380,7 +380,7 @@ def run_clean_plate_stage(
         for target in plan.get("targets", [])
     ):
         try:
-            task_masks = run_website_task_masks(plan=plan, source_geometry=source_geometry,
+            task_masks = run_website_task_masks(plan=plan, source_geometry=source_geometry, defer_kept_static=True,
                                                 output_root=clean_plate_root / "task_masks",
                                                 meta_admission=meta_sam_admission,
                                                 meta_admission_grant=meta_sam_admission_grant,

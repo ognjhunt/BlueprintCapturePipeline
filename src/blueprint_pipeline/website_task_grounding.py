@@ -68,7 +68,11 @@ def ground_task_target(*, target: Mapping[str, Any], tracks: Sequence[Mapping[st
                     "-vf", f"select=eq(n\\,{frame['model_frame_index']})", "-frames:v", "1", str(image_path)],
                    check=True, timeout=120, capture_output=True)
     image_digest = _sha256_file(image_path)
-    prompt = PROMPT + json.dumps({"task": task_context["description"], "target": dict(target)}, sort_keys=True)
+    prompt_target = dict(target)
+    if "grounding" in prompt_target:
+        prompt_target["grounding"] = {key: value for key, value in prompt_target["grounding"].items()
+                                      if key != "source_image_path"}
+    prompt = PROMPT + json.dumps({"task": task_context["description"], "target": prompt_target}, sort_keys=True)
     crop_path = None
     if failed_segmentation_prompt is not None:
         # The same noun already selected unrelated objects. Show the observed

@@ -117,6 +117,38 @@ def test_provider_declared_scale_ground_and_anchor_view_enter_the_base_scene(tmp
     assert json.loads((tmp_path / "pipeline/website_scene_preparation/base_scene.json").read_text()) == base
 
 
+@pytest.mark.parametrize("support_ready", [False, True])
+def test_visual_world_survives_deferred_support_and_full_masks_are_required_before_geometry(tmp_path, monkeypatch, support_ready):
+    kwargs = inputs(tmp_path)
+    video = tmp_path / "walkthrough.mov"
+    video.write_bytes(b"source")
+    plan = tmp_path / "pipeline/plan.json"
+    write_json(plan, {"targets": [{"target_id": "support"}]})
+    kwargs["clean_plate"].update(source_geometry=None, source_frames={"digest": "source"},
+        input_video_path=str(video), removal_plan_path=str(plan), task_masks={"deferred_target_ids": ["support"]},
+        stage_manifest_path=str(tmp_path / "pipeline/stage.json"))
+    calls = []
+    full_masks = {"targets": [{"target_id": "object"}, {"target_id": "support"}]}
+    def resolve(**kw):
+        calls.append("masks")
+        assert not kw.get("defer_kept_static")
+        assert kw["source_geometry"] == {"digest": "source"}
+        if not support_ready:
+            raise ValueError("support_unresolved")
+        return full_masks
+    def geometry(**kw):
+        calls.append("geometry")
+        assert kw["task_masks"] == full_masks
+        raise ValueError("geometry_pending")
+    monkeypatch.setattr("blueprint_pipeline.website_task_masks.run_website_task_masks", resolve)
+    monkeypatch.setattr("blueprint_pipeline.website_scene_geometry.run_website_scene_geometry", geometry)
+    result = handoff.prepare_website_scene_handoff(**kwargs)
+    assert result["visual_reconstruction_ready"] is True and result["simulator_ready"] is False
+    assert result["blockers"] == ["geometry_pending" if support_ready else "support_unresolved"]
+    assert calls == (["masks", "geometry"] if support_ready else ["masks"])
+    assert kwargs["provider_run"]["status"] == "ready"
+
+
 def test_world_without_declared_scale_leaves_registration_to_estimate(tmp_path, monkeypatch):
     kwargs = inputs(tmp_path)
     kwargs["clean_plate"]["prepared_views"] = {"frames": [{"frame_id": "decoded-000000000"}]}

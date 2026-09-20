@@ -204,6 +204,7 @@ def test_website_stage_prepares_images_without_waiting_for_geometry(tmp_path, mo
 
     def track(**kwargs):
         order.append("masks")
+        assert kwargs["defer_kept_static"] is True
         assert kwargs["source_geometry"] == geometry
         assert kwargs["source_video"] == source
         return masks

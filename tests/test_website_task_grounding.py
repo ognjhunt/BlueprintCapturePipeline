@@ -47,6 +47,7 @@ def test_concept_recovery_binds_unedited_crop_and_keeps_full_frame_coordinates(t
     monkeypatch.setattr(module, "retained_gemini_call", retain)
     target = {"target_id": "support", "disposition": "keep", "spatial_evidence": [
         {"timestamp_seconds": 8, "box_xywh_normalized": [0.2, 0.3, 0.2, 0.1]}]}
+    target["grounding"] = {"source_image_path": "/private/local/path.png", "image_digest": "sha256:source"}
     result = module.ground_task_target(target=target, tracks=[],
         registry=[{"source_frame_id": "frame", "model_frame_index": 240, "decoded_pts_seconds": 8}],
         video={"path": str(video), "sha256": _sha256_file(video)},
@@ -59,5 +60,6 @@ def test_concept_recovery_binds_unedited_crop_and_keeps_full_frame_coordinates(t
     assert recovery["crop_digest"] == _sha256_file(crop)
     assert recovery["crop_box_pixels"] == (16, 55, 44, 84)
     assert "FIRST, full image" in binding["prompt"]
+    assert "/private/local/path.png" not in binding["prompt"]
     assert result["target_id"] == "support" and result["disposition"] == "keep"
     assert result["spatial_evidence"][0]["box_xywh_normalized"] == [0.2, 0.3, 0.2, 0.1]
