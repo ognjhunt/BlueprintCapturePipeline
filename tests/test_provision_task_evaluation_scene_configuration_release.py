@@ -214,3 +214,11 @@ def test_release_provisioner_builds_scene_neutral_runtime_and_all_components(
     if astra:
         assert website_calls[0]["source_commit"] == commit
         assert website_calls[0]["template_path"] == tmp_path / "website-template.json"
+    # Exercise the consumer too: new bindings must survive the real installer.
+    from scripts import deploy_control_plane_commit as deployment
+    installed = tmp_path / "scene-runtime.env"
+    deployment._install_scene_configuration_environment(installed, environment=result["environment"])
+    assert ("BLUEPRINT_WEBSITE_MAPANYTHING_PROFILE=" in installed.read_text()) == astra
+    with pytest.raises(deployment.ControlPlaneDeployError, match="environment_invalid"):
+        deployment._install_scene_configuration_environment(
+            installed, environment={**result["environment"], "UNEXPECTED_SETTING": "value"})
