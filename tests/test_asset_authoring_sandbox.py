@@ -4,6 +4,36 @@ import pytest
 from blueprint_pipeline import asset_authoring_sandbox as sandbox
 
 
+@pytest.mark.parametrize('system', ['Darwin', 'Linux'])
+def test_venv_interpreter_name_is_preserved_after_binary_authorization(tmp_path, monkeypatch, system):
+    binary_root = tmp_path / 'python-runtime'
+    binary_root.mkdir()
+    binary = binary_root / 'python-real'
+    binary.write_text('runtime')
+    venv = tmp_path / 'venv'
+    (venv / 'bin').mkdir(parents=True)
+    python = venv / 'bin/python'
+    python.symlink_to(binary)
+    output = tmp_path / 'output'
+    output.mkdir()
+    monkeypatch.setattr(sandbox.platform, 'system', lambda: system)
+    monkeypatch.setattr(sandbox.os, 'geteuid', lambda: 1000)
+    monkeypatch.setattr(sandbox.shutil, 'which', lambda _: '/usr/bin/sandbox-exec')
+    calls = []
+    monkeypatch.setattr(sandbox.subprocess, 'run', lambda command, **kwargs:
+                        calls.append(command) or SimpleNamespace(returncode=0))
+    runner = sandbox.SandboxedAssetRunner(read_roots=[venv, binary_root], write_root=output)
+    runner([str(python), '-c', 'import build123d'])
+    assert calls[0][-3:] == [str(python), '-c', 'import build123d']
+    outside = tmp_path / 'unadmitted-python'
+    outside.write_text('not admitted')
+    python.unlink()
+    python.symlink_to(outside)
+    with pytest.raises(sandbox.AssetSandboxError, match='executable_not_admitted'):
+        runner([str(python), '-c', 'import build123d'])
+    assert len(calls) == 1
+
+
 def test_linux_deep_mount_ancestors_are_empty_traversable_namespace_dirs(tmp_path, monkeypatch):
     read_root = tmp_path / 'private-runtime' / 'version' / 'bin'
     write_root = tmp_path / 'private-output' / 'attempt'
