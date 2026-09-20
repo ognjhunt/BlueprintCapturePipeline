@@ -7,7 +7,7 @@ from urllib.error import HTTPError
 import pytest
 
 from blueprint_pipeline import website_task_context as module
-from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 
 
 def context(confirmed=True):
@@ -116,9 +116,10 @@ def test_sponsor_is_separate_from_model_context_and_rejects_budget_or_capture_ch
 
 
 def test_prepared_scene_enters_webapp_outbox_not_a_forged_local_owner_intent(monkeypatch):
-    request = {"submission_id": "walkthrough-req1", "source": {"binding_id": "website-splat-test"}}
+    request = {"submission_id": "walkthrough-req1", "source": {"binding_id": "website-splat-test"},
+               "task": {"position": [0.0, 1.0, 1e-7]}}
     calls = []
-    value = {"id": "scene-test", "state": "forward_pending", "request_digest": canonical_digest(request)}
+    value = {"id": "scene-test", "state": "forward_pending", "request_digest": cross_runtime_canonical_digest(request)}
 
     def fetch(**kwargs):
         calls.append(kwargs)

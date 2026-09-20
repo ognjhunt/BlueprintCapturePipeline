@@ -12,7 +12,7 @@ from typing import Any, Mapping
 from urllib.error import HTTPError
 from urllib.parse import quote, urlsplit
 
-from .decision_evidence_contracts import canonical_digest
+from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 from .safe_outbound_http import pinned_api_policy, request as safe_request
 from .task_evaluation_launch_webapp_sync import load_pipeline_sync_token
 from .webapp_sync import _pipeline_sync_headers, validated_https_sync_url
@@ -179,7 +179,7 @@ def load_website_scene_sponsorship(*, task_context: Mapping[str, Any], now: floa
 def enqueue_website_prepared_scene(*, task_context: Mapping[str, Any], request: Mapping[str, Any]) -> dict[str, Any]:
     value = website_webapp_request(capture_id=task_context["capture_id"], operation="prepared-scene",
         payload={"request_id": task_context["request_id"], "scene_id": task_context["scene_id"], "request": request})
-    if (value.get("request_digest") != canonical_digest(request) or value.get("state") != "forward_pending"
+    if (value.get("request_digest") != cross_runtime_canonical_digest(request) or value.get("state") != "forward_pending"
             or not isinstance(value.get("id"), str) or not value["id"].startswith("scene-")):
         raise ValueError("website_scene_outbox_receipt_invalid")
     return value
