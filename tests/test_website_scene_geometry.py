@@ -141,6 +141,17 @@ def test_cpu_preparation_needs_no_checkpoint_and_exports_only_candidate_views(ge
     assert geometry.prepare_website_geometry_inputs(**kwargs) == inputs
 
 
+def test_visual_source_frames_do_not_infer_or_invent_geometry(geometry_case, monkeypatch):
+    kwargs, calls = geometry_case
+    monkeypatch.setenv("BLUEPRINT_MAPANYTHING_MODEL_PATH", "/missing-model")
+    frames = geometry.prepare_website_source_frames(**kwargs)
+    assert calls == []
+    assert frames["geometry_available"] is False
+    assert all(Path(row["source_image_path"]).is_file() and "geometry_path" not in row for row in frames["frames"])
+    inputs = json.loads((kwargs["output_root"] / "worker_inputs/geometry_inputs.json").read_text())
+    assert frames["geometry_input_digest"] == inputs["digest"]
+
+
 def test_worker_inputs_and_outputs_survive_host_path_changes(geometry_case, tmp_path, monkeypatch):
     import shutil
 

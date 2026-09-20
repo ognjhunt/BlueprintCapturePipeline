@@ -1,7 +1,7 @@
 """Prepare task-aware website images before a single reconstruction.
 
-Website inputs retain original frames and estimated MapAnything cameras, bind
-SAM3.1 task masks, and edit selected objects out of original-resolution frames.
+Website inputs retain original frames, bind SAM3.1 task masks, and edit selected
+objects out of original-resolution frames. MapAnything runs after visual publication.
 Legacy capture keeps its existing opt-in behavior. All inferred geometry and
 repairs remain development evidence (ADP-009B, public_scene_day_14).
 """
@@ -30,7 +30,7 @@ from .common import (
 )
 from .local_capture import resolve_local_capture_context
 from .decision_evidence_contracts import canonical_digest
-from .website_scene_geometry import run_website_scene_geometry
+from .website_scene_geometry import prepare_website_source_frames
 from .website_task_masks import run_website_task_masks
 from .website_object_removal import prepare_object_removal_frames, select_reconstruction_frames, reconstruction_source_frames
 from .website_reconstruction_profile import reconstruction_profile
@@ -361,15 +361,13 @@ def run_clean_plate_stage(
             mode = "fill_machinery_pending"
             reason = "clean_plate_fill_machinery_not_implemented"
 
-    # The website uses the original video for placement, never generated pixels.
-    # Estimated scale is sufficient for this development replica; a missing
-    # measured dimension is not a reason to stop preparation.
+    # Tracking/editing needs source pixels, not depth. Defer the GPU geometry
+    # job until the provider has published its visual result.
     if website_source_video is not None and privacy_verified and not blockers:
         try:
-            source_geometry = run_website_scene_geometry(
+            source_geometry = prepare_website_source_frames(
                 source_video=website_source_video,
                 output_root=clean_plate_root / "source_geometry", capture_id=ctx.capture_id,
-                task_context=task_context,
             )
         except Exception as exc:
             status, mode = "blocked", "source_geometry_blocked"
@@ -426,7 +424,8 @@ def run_clean_plate_stage(
             prepared_views = {"schema_version": "website_prepared_views.v1", "status": "ready", "frames": selected,
                               "reconstruction_profile": profile,
                               "task_context_sha256": plan.get("task_context_sha256"),
-                              "source_geometry_digest": (source_geometry or {}).get("digest"),
+                              "source_geometry_digest": None,
+                              "source_frames_digest": (source_geometry or {}).get("digest"),
                               "generated_pixels_present": any(f.get("generated_pixels_present") for f in selected),
                               "completion_review": completion_review, "claim_ceiling": CLAIM_CEILING}
             prepared_views["digest"] = canonical_digest(prepared_views, digest_field="digest")
@@ -467,7 +466,8 @@ def run_clean_plate_stage(
         "clean_plate_video_uri": None,
         "generated_regions_present": bool((prepared_views or {}).get("generated_pixels_present")),
         "originals_retained": True,
-        "source_geometry": source_geometry,
+        "source_geometry": None,
+        "source_frames": source_geometry,
         "task_masks": task_masks,
         "object_removal_frames": object_removal_frames,
         "prepared_views": prepared_views,
@@ -503,7 +503,9 @@ def run_clean_plate_stage(
         "policy": policy.to_dict(),
         "privacy_status": privacy_status,
         "privacy_verified": privacy_verified,
-        "source_geometry": source_geometry,
+        "source_geometry": None,
+        "source_frames": source_geometry,
+        "input_video_path": str(input_video_path) if input_video_path else None,
         "task_masks": task_masks,
         "object_removal_frames": object_removal_frames,
         "prepared_views": prepared_views,

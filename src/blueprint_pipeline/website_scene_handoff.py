@@ -1,4 +1,4 @@
-"""Join prepared website captures to collected reconstruction assets, without spend.
+"""Join prepared website captures to collected reconstruction assets.
 
 ADP-030/040, day 28: retain the task placement and authoring inputs as soon as
 the world finishes. A held provider or missing execution authority must not
@@ -54,6 +54,20 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
         context = metadata.get("site_task_context") or {}
         if context.get("capture_id") != descriptor["capture_id"] or context.get("scene_id") != descriptor["scene_id"]:
             raise ValueError("website_scene_task_identity_mismatch")
+        if clean_plate.get("source_geometry") is None:
+            from .website_scene_geometry import run_website_scene_geometry
+            from .website_task_masks import bind_task_masks_to_geometry
+            video = Path(clean_plate.get("input_video_path") or "")
+            if not video.is_file() or not video.resolve().is_relative_to(capture_root.resolve()):
+                raise ValueError("website_source_video_outside_capture")
+            result.pop("provider_mutation_performed", None)
+            result["geometry_controller_invoked"] = True
+            geometry = run_website_scene_geometry(source_video=video,
+                output_root=Path(clean_plate["stage_manifest_path"]).parent / "source_geometry",
+                capture_id=context["capture_id"], task_context=context)
+            masks = bind_task_masks_to_geometry(task_masks=clean_plate["task_masks"], source_geometry=geometry)
+            write_json(root / "task_masks.geometry.json", masks)
+            clean_plate = {**clean_plate, "source_geometry": geometry, "task_masks": masks}
         removal_path = Path(clean_plate["removal_manifest_path"])
         if not removal_path.resolve().is_relative_to(capture_root.resolve() / "pipeline"):
             raise ValueError("website_scene_removal_manifest_outside_capture")

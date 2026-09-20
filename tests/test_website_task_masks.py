@@ -56,8 +56,34 @@ def test_masked_geometry_preserves_world_position_and_estimated_scale(tmp_path):
         estimate_target_bounds(_track(), [frame])
 
 
+def test_retained_masks_gain_estimated_bounds_without_retracking(tmp_path, monkeypatch):
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    from blueprint_pipeline.website_task_masks import bind_task_masks_to_geometry
+    geometry_path = tmp_path / "depth.npz"
+    np.savez_compressed(geometry_path, depth_m=np.ones((4, 4)), valid_mask=np.ones((4, 4), dtype=bool))
+    frame = {"frame_id": "frame-0", "width": 4, "height": 4, "geometry_path": str(geometry_path),
+             "geometry_digest": _sha256_file(geometry_path), "intrinsics": np.eye(3).tolist(),
+             "world_from_camera": np.eye(4).tolist()}
+    geometry = {"frames": [frame], "binding": {"source_video_digest": "video", "input_digest": "inputs"}}
+    geometry["digest"] = canonical_digest(geometry, digest_field="digest")
+    masks = {"source_geometry_digest": None, "source_video_digest": "video",
+             "binding": {"geometry_input_digest": "inputs"},
+             "targets": [{"target_id": "cup", "source_track": _track(), "estimated_visible_bounds": None}]}
+    masks["digest"] = canonical_digest(masks, digest_field="digest")
+    monkeypatch.setattr("blueprint_pipeline.website_task_masks.run_meta_sam31", lambda **kw: pytest.fail("must reuse SAM tracks"))
+    bound = bind_task_masks_to_geometry(task_masks=masks, source_geometry=geometry)
+    assert bound["targets"][0]["estimated_visible_bounds"]["unit"] == "estimated_meters"
+    assert bound["source_geometry_digest"] == geometry["digest"]
+    assert masks["targets"][0]["estimated_visible_bounds"] is None
+    masks["binding"]["geometry_input_digest"] = "another-input"
+    masks["digest"] = canonical_digest(masks, digest_field="digest")
+    with pytest.raises(ValueError, match="geometry_binding_mismatch"):
+        bind_task_masks_to_geometry(task_masks=masks, source_geometry=geometry)
+
+
 @pytest.mark.parametrize("multiple", [False, True])
-def test_hosted_masks_use_original_upright_pixels_and_bind_to_depth(tmp_path, monkeypatch, multiple):
+@pytest.mark.parametrize("defer_geometry", [False, True])
+def test_hosted_masks_use_original_upright_pixels_and_bind_to_depth(tmp_path, monkeypatch, multiple, defer_geometry):
     from PIL import Image
     from blueprint_pipeline.website_task_masks import run_website_task_masks
 
@@ -102,12 +128,20 @@ def test_hosted_masks_use_original_upright_pixels_and_bind_to_depth(tmp_path, mo
     kwargs = dict(plan={"targets": targets, "task_context_sha256": "task"},
                   source_geometry={"digest": "geometry", "frames": [frame],
                                    "binding": {"source_video_digest": "video"}}, output_root=tmp_path / "masks")
+    if defer_geometry:
+        kwargs["source_geometry"]["geometry_available"] = False
+        kwargs["source_geometry"]["frames"] = [{k: v for k, v in frame.items()
+            if k not in {"geometry_path", "geometry_digest", "intrinsics", "world_from_camera"}}]
     result = run_website_task_masks(**kwargs)
     observation = result["targets"][0]["track"]["observations"][0]
     assert result["targets"][0]["source_track"]["observations"][0]["width"] == 4
     np.testing.assert_array_equal(decode_track_mask(observation), [[True, False], [True, False], [False, False], [False, False]])
     assert observation["source_mask_width"] == 4
-    assert result["targets"][0]["estimated_visible_bounds"]["metric_measurement_proven"] is False
+    if defer_geometry:
+        assert result["source_geometry_digest"] is None
+        assert result["targets"][0]["estimated_visible_bounds"] is None
+    else:
+        assert result["targets"][0]["estimated_visible_bounds"]["metric_measurement_proven"] is False
     if multiple:
         assert [t["track"]["track_id"] for t in result["targets"]] == ["selected", "second"]
     original.write_bytes(b"changed source")

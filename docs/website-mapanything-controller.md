@@ -4,6 +4,14 @@ ADP-009B / public day 14. A confirmed website task now sends its retained
 original frames to the existing admitted Vast reconstruction worker. Geometry
 is estimated; it never becomes measured scale or physical evidence.
 
+Visual delivery precedes that GPU job. CPU frame decoding, Gemini analysis,
+hosted SAM tracking and image editing prepare Marble's input. The provider
+publishes the finished visual world through the existing website callback.
+Only then does the scene handoff request MapAnything and lift the retained SAM
+tracks into estimated geometry. A missing GPU or geometry result holds native
+construction, while the published visual world remains available. No second
+tracking purchase is needed for this binding.
+
 The service deployment supplies `BLUEPRINT_WEBSITE_MAPANYTHING_PROFILE`, the
 path to one release-specific JSON profile. It is service configuration, never
 an upload field or a per-capture command. The profile has:

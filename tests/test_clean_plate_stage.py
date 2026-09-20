@@ -151,35 +151,36 @@ def test_disabled_is_pure_noop(tmp_path):
     assert not (capture_root / "pipeline" / "clean_plate").exists()
 
 
-@pytest.mark.parametrize("geometry_missing", [False, True])
-def test_website_preparation_preserves_original_geometry_without_requiring_measured_scale(tmp_path, monkeypatch, geometry_missing):
+@pytest.mark.parametrize("frames_missing", [False, True])
+def test_website_preparation_preserves_original_frames_without_geometry(tmp_path, monkeypatch, frames_missing):
     capture_root = _make_capture(tmp_path)
     source = capture_root / "raw" / "walkthrough.mp4"
     plan = empty_removal_plan(status="completed", model="test", processing="agentic")
     monkeypatch.setattr(_ANALYSIS_ATTR, lambda **_kwargs: plan)
-    estimated = {"status": "estimated", "scale_status": "model_estimated", "metric_measurement_proven": False}
+    estimated = {"schema_version": "website_source_frames.v1", "geometry_available": False}
 
     def geometry(**kwargs):
         assert kwargs["source_video"] == source
         assert source.read_bytes() == b"RAWVIDEO"
-        if geometry_missing:
-            raise ValueError("mapanything_local_checkpoint_missing")
+        if frames_missing:
+            raise ValueError("source_decode_failed")
         return estimated
 
-    monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.run_website_scene_geometry", geometry)
+    monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.prepare_website_source_frames", geometry)
     result = run_clean_plate_stage(capture_root=capture_root, privacy_processing=_SAFE_PRIVACY,
                                    policy=CleanPlatePolicy(enabled=True), website_source_video=source)
-    if geometry_missing:
+    if frames_missing:
         assert result["status"] == "blocked"
-        assert "mapanything_local_checkpoint_missing" in result["blockers"]
+        assert "source_decode_failed" in result["blockers"]
     else:
         assert result["status"] == "noop"
-        assert result["source_geometry"] == estimated
+        assert result["source_geometry"] is None
+        assert result["source_frames"] == estimated
         assert result["blockers"] == []
 
 
 @pytest.mark.parametrize("fill_result", ["unneeded", "passed", "blocked"])
-def test_website_stage_runs_geometry_masks_and_edit_preparation_before_image_handoff(tmp_path, monkeypatch, fill_result):
+def test_website_stage_prepares_images_without_waiting_for_geometry(tmp_path, monkeypatch, fill_result):
     capture_root = _make_capture(tmp_path)
     source = capture_root / "raw/walkthrough.mp4"
     order = []
@@ -198,7 +199,7 @@ def test_website_stage_runs_geometry_masks_and_edit_preparation_before_image_han
         return plan
 
     def estimate(**kwargs):
-        order.append("geometry")
+        order.append("source_frames")
         return geometry
 
     def track(**kwargs):
@@ -231,7 +232,7 @@ def test_website_stage_runs_geometry_masks_and_edit_preparation_before_image_han
         return {"status": fill_result}
 
     monkeypatch.setattr(_ANALYSIS_ATTR, analyze)
-    monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.run_website_scene_geometry", estimate)
+    monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.prepare_website_source_frames", estimate)
     monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.run_website_task_masks", track)
     monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.prepare_object_removal_frames", recover)
     monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.complete_background_images", complete)
@@ -239,7 +240,9 @@ def test_website_stage_runs_geometry_masks_and_edit_preparation_before_image_han
     result = run_clean_plate_stage(capture_root=capture_root, privacy_processing={"status": "pending_website_review"},
                                    website_source_video=source)
     assert result["privacy_verified"] is True
-    assert order == ["analysis", "geometry", "masks", "mask_preparation"] + ([] if fill_result == "unneeded" else ["completion", "review"])
+    assert result["source_geometry"] is None
+    assert result["source_frames"] == geometry
+    assert order == ["analysis", "source_frames", "masks", "mask_preparation"] + ([] if fill_result == "unneeded" else ["completion", "review"])
     if fill_result == "blocked":
         assert result["status"] == "blocked"
         assert result["prepared_views"] is None
