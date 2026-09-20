@@ -63,7 +63,7 @@ def _inputs(tmp_path: Path):
     return envelope, configurations
 
 
-def _registry(observed: list[str], *, nested_mutation: bool = False):
+def _registry(observed: list[str], *, nested_mutation: bool = False, real_artifacts: bool = False):
     handlers = {}
     for identity in ADMITTED_STAGE_ADAPTER_IDENTITIES:
         def execute(
@@ -94,7 +94,9 @@ def _registry(observed: list[str], *, nested_mutation: bool = False):
                 "executed_inside_parent_configuration_run": True,
                 "retry_cap": 0,
                 "raw_secret_values_recorded": False,
-                "output_artifacts": [],
+                "output_artifacts": ([{"role": "fixture", "path": str(artifact),
+                                      "digest": "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest(),
+                                      "size_bytes": artifact.stat().st_size}] if real_artifacts else []),
                 "stage_result_digest": "",
             }
             result["stage_result_digest"] = canonical_digest(
@@ -344,7 +346,7 @@ def test_stage_limit_executes_a_cpu_prefix_that_a_paid_run_elsewhere_adopts(
     observed_host: list[str] = []
     prefix = execute_scene_configuration_stage_chain(
         envelope=envelope, configurations=configurations, output_root=host,
-        registry=_registry(observed_host), producer_registry=_producers(), stage_limit="stage-4",
+        registry=_registry(observed_host, real_artifacts=True), producer_registry=_producers(), stage_limit="stage-4",
     )
     assert observed_host == ["stage-1", "stage-2", "stage-3", "stage-4"]
     assert prefix["status"] == "completed_prefix" and prefix["whole_run_completed"] is False
