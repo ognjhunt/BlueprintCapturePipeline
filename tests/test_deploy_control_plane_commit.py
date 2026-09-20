@@ -508,7 +508,8 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
     )
     additional_sources = []
     for name in (
-        "blueprint-agent-execution.service", "blueprint-agent-stage-replay.service", "blueprint-agent-stage-replay.timer",
+        "blueprint-agent-execution.service", "blueprint-agent-run-dispatcher.service",
+        "blueprint-agent-run-dispatcher.timer", "blueprint-agent-stage-replay.service", "blueprint-agent-stage-replay.timer",
         "blueprint-task-evaluation-scene-progression.service", "blueprint-task-evaluation-scene-progression.timer",
         "blueprint-task-evaluation-launch-supervisor.service", "blueprint-task-evaluation-launch-supervisor.timer",
         "blueprint-task-evaluation-launch-reconciler.service", "blueprint-task-evaluation-launch-reconciler.timer",
@@ -538,7 +539,7 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
 
     expected = []
     for source in (
-        *additional_sources[:3],
+        *additional_sources[:5],
         service,
         path_unit,
         preparation_service,
@@ -557,7 +558,7 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         progression_service,
         progression_timer,
         progression_path,
-        *additional_sources[3:],
+        *additional_sources[5:],
         storage_gc_service,
         storage_gc_timer,
         capacity_service,
