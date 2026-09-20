@@ -1,4 +1,4 @@
-"""Observe closed pre-allocation disk refusals and admit bounded controller recovery.
+"""Observe closed pre-allocation capacity refusals and admit bounded controller recovery.
 
 Historical bundle receipts prove what failed; a removed historical ZIP never
 becomes executable input. Every successor still builds and admits a new bundle.
@@ -18,6 +18,7 @@ from .task_evaluation_scene_progression_state import require, safe_path
 
 KIND = "preallocation_capacity"
 BLOCKER = "scene_configuration_provider_output_disk_capacity_insufficient"
+CREDIT_KIND = "preallocation_credit"
 #: A scene-configuration launch whose provider machine was created and then produced
 #: nothing. The disk-capacity path above is strictly a $0 no-instance refusal, so this
 #: is a different class and gets its own evidence: the instance really did exist.
@@ -42,6 +43,24 @@ DEAD_MACHINE_CONSEQUENCE_BLOCKERS = frozenset({
     "scene_configuration_provider_source_envelope_mismatch",
     "task_evaluation_artifact_role_missing:provider_runtime_evidence",
 })
+
+
+def credit_launch_failure(result) -> bool:
+    """A funding refusal before any allocation or API preparation executed."""
+    if not isinstance(result, Mapping):
+        return False
+    blockers = set(result.get("blockers") or [])
+    return (result.get("schema_version") == "task_evaluation_scene_configuration_vast_result.v1"
+            and result.get("status") == "blocked"
+            and "provider_credit_insufficient" in blockers
+            and blockers <= DEAD_MACHINE_CONSEQUENCE_BLOCKERS | {"provider_credit_insufficient"}
+            and result.get("api_pretraining") is None
+            and result.get("continuing_spend_from_this_run") is False
+            and not result.get("provider_runtime_output_zip_path")
+            and type(result.get("provider_mutations_performed")) is int
+            and result["provider_mutations_performed"] == 0
+            and not result.get("instance_id") and not result.get("vast_instance_ids")
+            and result.get("allocation_created") is not True)
 
 
 def dead_machine_launch_failure(result) -> bool:
@@ -97,7 +116,11 @@ def validate_source(refs, *, prior_attempt, kind="preallocation_capacity"):
             and factory.get("source_commit") == prior_attempt["source_commit"]
             and factory.get("submission_request") == refs["preparation"], "capacity_prior_source_mismatch")
     scope, owner = profile.get("task_evaluation_run") or {}, profile.get("scene_attempt_binding") or {}
-    require(main.get("provider") == prior_attempt.get("provider") == "vast"
+    free_preparation = (prior_attempt.get("schema_version") == "task_evaluation_scene_preparation_attempt.v1"
+                        and prior_attempt.get("provider") == "control_plane"
+                        and prior_attempt.get("maximum_spend_usd") == 0
+                        and prior_attempt.get("paid_authority_granted") is False)
+    require(main.get("provider") == "vast" and (prior_attempt.get("provider") == "vast" or free_preparation)
             and link.get("intent_digest") == prior_attempt["intent_digest"] == main.get("intent_digest")
             == profile.get("scene_intent_digest") == preparation.get("scene_intent_digest")
             and link.get("intent_id") == prior_attempt["intent_id"] == main.get("intent_id")
@@ -129,8 +152,9 @@ def validate_source(refs, *, prior_attempt, kind="preallocation_capacity"):
             and result.get("authority_digest") == authority.get("authority_digest")
             and result.get("schema_version") == "task_evaluation_scene_configuration_vast_result.v1"
             and result.get("status") == "blocked"
-            and (result.get("blockers") == [BLOCKER] if kind == "preallocation_capacity"
-                 else dead_machine_launch_failure(result))
+            and (result.get("blockers") == [BLOCKER] if kind == KIND
+                 else credit_launch_failure(result) if kind == CREDIT_KIND
+                 else kind == "provider_dead_machine" and dead_machine_launch_failure(result))
             and type(result.get("provider_mutations_performed")) is int and result["provider_mutations_performed"] == 0
             and type(result.get("retry_cap")) is int and result["retry_cap"] == 0
             and result.get("continuing_spend_from_this_run") is False
@@ -138,6 +162,17 @@ def validate_source(refs, *, prior_attempt, kind="preallocation_capacity"):
                 not result.get("instance_id") and not result.get("vast_instance_ids")
                 and result.get("allocation_created") is not True)),
             "capacity_not_zero_provider_failure")
+    if kind == CREDIT_KIND:
+        from .task_evaluation_retained_controls_evidence import _file
+        ref = launch["terminal_evidence"]["artifacts"]["teardown_manifest_path"]
+        require(ref.get("exists") is True
+                and _file(safe_path(ref["path"]))["digest"] == ref["digest"], "credit_teardown_changed")
+        teardown = read(ref["path"])
+        require(teardown.get("schema_version") == "vast_teardown_manifest.v1"
+                and teardown.get("status") == "not_required_prelaunch_inventory_guard_blocked"
+                and teardown.get("vast_instance_ids") == []
+                and teardown.get("continuing_spend_from_this_run") is False, "credit_teardown_invalid")
+        return values
     if kind != "preallocation_capacity":
         # A dead machine never reached the disk phase, so there is no shortfall
         # measurement to reopen. Every identity and binding assertion above still ran.
@@ -182,6 +217,8 @@ def observe_failure(*, attempt, link_path, preparation_path, factory_path, confi
         kind = None
         if result.get("blockers") == [BLOCKER]:
             kind = "preallocation_capacity"
+        elif credit_launch_failure(result):
+            kind = CREDIT_KIND
         elif dead_machine_launch_failure(result):
             kind = "provider_dead_machine"
         if kind is None:
@@ -223,6 +260,14 @@ def capacity_admission(observation, config, now):
     output_path = safe_path(config["launch_execution_root"])
     output_free = shutil.disk_usage(output_path).free
     passed = measurement["free_bytes"] >= cpu_required + overhead and output_free >= output_required + overhead
+    credit = None
+    if observation.get("kind") == CREDIT_KIND:
+        from .provider_credit_admission import credit_admission, observe_vast_credit, RESERVE_ENV
+        import os
+        credit = credit_admission(observe_vast_credit(),
+            required_usd=observation["values"]["authority"]["provider_compute_spend_cap_usd"],
+            reserve_usd=float(os.getenv(RESERVE_ENV, "1")))
+        passed = passed and credit["status"] == "admitted"
     value = {"schema_version": "task_evaluation_preallocation_capacity_admission.v1",
              "status": "admitted" if passed else "waiting_for_capacity", "observed_at_epoch": now,
              "cpu_path": str(config["factory_output_root"]), "output_path": str(output_path),
@@ -231,6 +276,8 @@ def capacity_admission(observation, config, now):
              "output_required_free_bytes": output_required + overhead, "output_observed_free_bytes": output_free,
              "whole_chain_admission": chain, "provider_mutation_performed": False,
              "historical_bundle_payload_required": False, "successor_requires_new_sealed_bundle": True}
+    if credit is not None:
+        value["provider_credit_admission"] = credit
     value["capacity_digest"] = canonical_digest(value, digest_field="capacity_digest")
     return value
 
@@ -245,6 +292,8 @@ def retain_failure(*, observation, attempt, output_root, admission):
              "attempt_digest": attempt["attempt_digest"], "failure_kind": KIND, "observed_at_epoch": occurred,
              "producer_result": observation["result"], "construction_records": observation["records"],
              "capacity_admission": admission}
+    if observation.get("kind") == CREDIT_KIND:
+        value["configuration_failure_kind"] = CREDIT_KIND
     value["failure_digest"] = canonical_digest(value, digest_field="failure_digest")
     path = output / (value["failure_digest"][7:] + ".json")
     if not path.exists():
@@ -253,7 +302,8 @@ def retain_failure(*, observation, attempt, output_root, admission):
 
 
 def validate_capacity_failure(failure, producer, prior_attempt, now):
-    values = validate_source(failure.get("construction_records") or {}, prior_attempt=prior_attempt)
+    kind = failure.get("configuration_failure_kind", KIND)
+    values = validate_source(failure.get("construction_records") or {}, prior_attempt=prior_attempt, kind=kind)
     require(values["result"] == producer and failure["producer_result"] == failure["construction_records"]["result"],
             "capacity_producer_reference_changed")
     prior = failure.get("capacity_admission") or {}
@@ -265,7 +315,7 @@ def validate_capacity_failure(failure, producer, prior_attempt, now):
     refs = failure["construction_records"]
     require(prior["cpu_path"] == str(Path(refs["factory"]["path"]).parents[2])
             and prior["output_path"] == str(Path(refs["profile"]["path"]).parents[1]), "capacity_measurement_scope_changed")
-    current = capacity_admission({"values": values}, {"factory_output_root": prior["cpu_path"],
+    current = capacity_admission({"values": values, "kind": kind}, {"factory_output_root": prior["cpu_path"],
         "launch_execution_root": prior["output_path"],
         "preparation_worker": {"disk_reservation_root": prior["reservation_root"]}}, now)
     require(current["status"] == "admitted", "capacity_not_recovered")

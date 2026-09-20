@@ -346,7 +346,8 @@ def test_sweep_settles_lineage_and_tolerates_broken_entries(tmp_path: Path) -> N
     assert again["summary_digest"] != summary["summary_digest"]
 
 
-def _website_preallocation_failure(tmp_path, monkeypatch, *, allocated=False):
+def _website_preallocation_failure(tmp_path, monkeypatch, *, allocated=False,
+        teardown_status="not_required_provider_adapter_never_invoked"):
     fx, row_id = _website_preparation(tmp_path, monkeypatch)
     factory = json.loads(Path(fx["factory"]["path"]).read_text())
     request = json.loads(Path(factory["submission_request"]["path"]).read_text())
@@ -357,7 +358,7 @@ def _website_preallocation_failure(tmp_path, monkeypatch, *, allocated=False):
         "provider_mutations_performed": int(allocated), "continuing_spend_from_this_run": False,
         "provider_runtime_output_zip_path": None})
     teardown_path = _write(run / "teardown.json", {"schema_version": "vast_teardown_manifest.v1",
-        "status": "not_required_provider_adapter_never_invoked", "vast_instance_ids": [],
+        "status": teardown_status, "vast_instance_ids": [],
         "continuing_spend_from_this_run": False})
     def ref(path):
         return {**settlement._file(path), "exists": True}
@@ -369,8 +370,10 @@ def _website_preallocation_failure(tmp_path, monkeypatch, *, allocated=False):
     return fx, validated_cancellation(fx["directory"], attempt), result_path, teardown_path
 
 
-def test_proven_no_allocation_releases_only_gpu_and_provider_authoring_budget(tmp_path, monkeypatch):
-    fx, receipt, _, _ = _website_preallocation_failure(tmp_path, monkeypatch)
+@pytest.mark.parametrize("teardown_status", ["not_required_provider_adapter_never_invoked",
+                                           "not_required_prelaunch_inventory_guard_blocked"])
+def test_proven_no_allocation_releases_only_gpu_and_provider_authoring_budget(tmp_path, monkeypatch, teardown_status):
+    fx, receipt, _, _ = _website_preallocation_failure(tmp_path, monkeypatch, teardown_status=teardown_status)
     assert receipt["settled_spend"]["retained_spend_usd"] == 16.76
     assert settlement.retained_hold(receipt)["retained_spend_usd"] == 16.76
     assert settlement.budget_retained_hold(receipt) == {
