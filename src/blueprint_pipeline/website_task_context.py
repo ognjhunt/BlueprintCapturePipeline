@@ -95,7 +95,8 @@ def reserve_website_sam_spend(*, task_context: Mapping[str, Any], binding_digest
 
 def reserve_website_preparation_spend(*, task_context: Mapping[str, Any], binding_digest: str,
                                      maximum_cost_usd: float, request_count: int,
-                                     resource_class: str, provider: str) -> tuple[dict[str, Any], Any]:
+                                     resource_class: str, provider: str,
+                                     retained_admission: Mapping[str, Any] | None = None) -> tuple[dict[str, Any], Any]:
     """The controller obtains an exact, one-dispatch grant from the shared cap."""
     import time
     from .paid_resource_admission import require_paid_resource_admission
@@ -111,6 +112,16 @@ def reserve_website_preparation_spend(*, task_context: Mapping[str, Any], bindin
             or value.get("external_disclosure_allowed") is not True
             or not isinstance(value.get("expires_at_epoch"), (int, float)) or value["expires_at_epoch"] <= time.time()):
         raise ValueError("website_preparation_spend_receipt_invalid")
+    if value.get("status") == "already_reserved" and retained_admission is not None:
+        # Only Marble's durable pre-generation recovery may reuse this grant.
+        # Its adapter locks submission and persists intent before worlds:generate;
+        # unknown outcomes still refuse, and another worker without the original
+        # local admission cannot turn an existing reservation into new authority.
+        retained = {key: item for key, item in retained_admission.items() if key != "source_commit"}
+        if ((resource_class, provider) != ("provider_reconstruction_api", "world_labs")
+                or retained != {**value, "status": "admitted"}):
+            raise ValueError("website_preparation_retained_admission_mismatch")
+        value = retained
     grant = require_paid_resource_admission(value, resource_class=resource_class, expected_schema_version="paid_lane_admission.v1")
     return value, grant
 

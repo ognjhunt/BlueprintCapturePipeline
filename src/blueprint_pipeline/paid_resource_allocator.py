@@ -764,10 +764,12 @@ def submit_sponsored_website_reconstruction(*, descriptor: Mapping[str, Any], ca
         raise ValueError("website_reconstruction_release_not_admitted:" + ",".join(blockers))
     if not _worldlabs_api_key():
         raise ValueError("website_reconstruction_api_key_missing")
+    retained_path = root / "controller_admission.json"
+    retained = json.loads(retained_path.read_text()) if retained_path.is_file() else None
     admission, grant = reserve_website_preparation_spend(
         task_context=descriptor["metadata"]["site_task_context"], binding_digest=canonical_digest(binding),
         maximum_cost_usd=MAX_GENERATION_COST_USD, request_count=1,
-        resource_class="provider_reconstruction_api", provider="world_labs")
+        resource_class="provider_reconstruction_api", provider="world_labs", retained_admission=retained)
     admission = {**admission, "source_commit": commit}
     root.mkdir(parents=True, exist_ok=True)
     write_json(root / "controller_admission.json", admission)

@@ -189,3 +189,30 @@ def test_new_sponsorship_expiry_uses_signed_issuance_not_request_start(monkeypat
         monkeypatch.setattr(module, "website_webapp_request", lambda **_: bad)
         with pytest.raises(ValueError):
             module.load_website_scene_sponsorship(task_context=context(), now=1000)
+
+
+@pytest.mark.parametrize('fault', [None, 'missing', 'changed', 'wrong-provider', 'expired'])
+def test_only_exact_retained_marble_admission_can_resume_before_submission(monkeypatch, fault):
+    import time
+    task = context()
+    provider, resource = ('meta', 'evaluator_api') if fault == 'wrong-provider' else ('world_labs', 'provider_reconstruction_api')
+    command = dict(task_context_digest=task['context_digest'], allocation_binding_digest='sha256:'+'a'*64,
+                   maximum_cost_usd=2.48, request_count=1, provider=provider, resource_class=resource)
+    retained = {**command, 'schema_version':'paid_lane_admission.v1', 'status':'admitted', 'blockers':[],
+                'external_disclosure_allowed':True, 'expires_at_epoch':time.time()+100,
+                'sponsorship_digest':'sha256:'+'b'*64}
+    response = {**retained, 'status':'already_reserved'}
+    if fault == 'expired':
+        response['expires_at_epoch'] = 1
+    if fault == 'changed':
+        retained['maximum_cost_usd'] = 1
+    monkeypatch.setattr(module, 'website_webapp_request', lambda **kw: response)
+    kwargs = dict(task_context=task, binding_digest=command['allocation_binding_digest'], maximum_cost_usd=2.48,
+                  request_count=1, provider=provider, resource_class=resource,
+                  retained_admission=None if fault == 'missing' else {**retained, 'source_commit':'1'*40})
+    if fault:
+        with pytest.raises((ValueError, RuntimeError)):
+            module.reserve_website_preparation_spend(**kwargs)
+    else:
+        admission, grant = module.reserve_website_preparation_spend(**kwargs)
+        assert admission == retained and grant.allocation_binding_digest == command['allocation_binding_digest']
