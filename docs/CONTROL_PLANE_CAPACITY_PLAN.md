@@ -54,6 +54,17 @@ history. Every deploy multiplied inputs because bindings were keyed by commit.
    `BLUEPRINT_CAPACITY_AUTORESIZE_ACK=grow-control-plane-volume` once growth is wanted.
 5. Set `BLUEPRINT_OPERATOR_ALERT_WEBHOOK_URL` so capacity alerts reach an operator.
 
+Observed on the production account (2026-09-20): the DigitalOcean API refuses
+volume creation and resize above 100 GB with `invalid size specified`. Until a
+limit increase is granted, set `BLUEPRINT_CAPACITY_VOLUME_MAX_GIB=100` so the
+controller does not request a growth step the provider will reject, and raise
+it once the limit is lifted. The bulk roots measured 49 GB at migration.
+
+Offload protection reads settlement records for reopens of a run's files. A
+record that reopens only `launch_receipt.json` (retained byte-for-byte in the
+offload pointer and served by `read_receipt_bytes`) or that merely names the
+run id does not pin the run; any other path under the run does.
+
 ## Capacity statement after the procedure
 
 Disk per run on the root disk is flat at megabytes of state. Bulk bytes are bounded to
