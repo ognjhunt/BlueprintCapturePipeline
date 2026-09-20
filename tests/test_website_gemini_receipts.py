@@ -109,6 +109,7 @@ def test_video_entrypoint_reuses_analysis_before_credentials_or_sdk(tmp_path, mo
     video = tmp_path / "video.mov"
     video.write_bytes(b"original video")
     monkeypatch.setenv(analysis.GATE_ENV, "true")
+    monkeypatch.setattr(analysis, "_video_processing", lambda *a: ("static", 13.525))
     monkeypatch.setattr(analysis, "_api_key", lambda: ("fixture", "fixture"))
     monkeypatch.setattr(google, "genai", SimpleNamespace(), raising=False)
     monkeypatch.setitem(sys.modules, "google.genai", google.genai)
@@ -123,3 +124,11 @@ def test_video_entrypoint_reuses_analysis_before_credentials_or_sdk(tmp_path, mo
     with pytest.raises(ValueError, match="runtime_not_configured"):
         analysis.analyze_removal_targets(**kwargs)
     assert len(calls) == 2
+
+
+def test_quote_uses_requested_combined_output_ceiling():
+    assert module.gemini_quote(model="gemini-3.8-flash", input_tokens=24000, max_output_tokens=8192) == .05
+    assert module.gemini_quote(model="gemini-3.8-flash", input_tokens=24000, max_output_tokens=2048) == .03
+    for invalid in (0, -1, True, 65537, 8192.5):
+        with pytest.raises(ValueError, match="output_budget_invalid"):
+            module.gemini_quote(model="gemini-3.8-flash", input_tokens=24000, max_output_tokens=invalid)
