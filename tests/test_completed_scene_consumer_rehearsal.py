@@ -148,3 +148,77 @@ def test_splat_and_mesh_pair_reaches_real_renderer_orchestration_and_constructio
     assert render["derived_gaussian_cutout"]["removed_count"] == 16
     assert render["derived_gaussian_cutout"]["retained_count"] == 48
     assert render["source_object_masks"]["observed_segmentation_truth"] is False
+
+
+def test_completed_upload_reaches_activation_worker_and_complete_launch_plan(tmp_path, monkeypatch):
+    """Rehearse real consumer joins beyond the old preparation-context checks.
+
+    Only storage and provider inventory are transports. Stop explicitly before
+    publication/allocation; a resolved plan is not an executed simulation.
+    """
+    from datetime import datetime, timedelta, timezone
+    from blueprint_pipeline import task_evaluation_scene_configuration_activation_automation as activation
+    from blueprint_pipeline.task_evaluation_launch_activation_worker import process_launch_activation_queue
+    from scripts.prepare_paid_lane_launch import _load_scene_configuration_context, validate_paid_lane_launch
+    from tests.astra_toolchain_fixture import astra_toolchain_fixture
+    from tests.test_task_evaluation_scene_configuration_activation_automation import _project_spend, _provider_zero, _publisher
+
+    envelope, _, _, _, _, _ = _prepare(tmp_path, monkeypatch)
+    request = envelope["request"]
+    queue = tmp_path / "preparations"
+    result_path = next((queue / "results").glob("*.json"))
+    registry = tmp_path / "activation-intents"
+    activation.provision_scene_configuration_activation_intent(
+        expected_production_commit=SHA, team_namespace=request["team_namespace"],
+        scene_id=request["scene"]["identity"]["id"], task_id=request["task"]["identity"]["id"],
+        authorization_reference="scene-intent:" + request["scene_intent_digest"],
+        authorized_by=ACCOUNT, profile_revision="rehearsal", valid_for_seconds=3600,
+        project_spend_reconciliation_path=_project_spend(tmp_path / "project-spend.json"),
+        rights_scope="internal_noncommercial_research_only",
+        maximum_hard_cap_usd=request["spend"]["hard_cap_usd"], release_reference="development-rehearsal",
+        intent_root=registry, materialization_root=tmp_path / "activation-inputs", release_scoped=True)
+    lineage = _publisher("scene-configuration-activation-lineage")
+    window = _publisher("coordinator-release-windows")
+    now = datetime.now(timezone.utc)
+    staged = activation.advance_scene_configuration_activation(
+        preparation_result_path=result_path, preparation_queue_root=queue,
+        activation_queue_root=tmp_path / "activation-queue", progression_root=tmp_path / "activation-progression",
+        intent_root=registry, provider_zero_collector=lambda: _provider_zero(now - timedelta(seconds=1)),
+        lineage_publisher_factory=lambda: lineage, release_window_publisher_factory=lambda: window,
+        now=now, running_commit=SHA)
+    assert staged["status"] == "scene_configuration_activation_queued", staged
+    payloads = {**lineage.published, **window.published}
+
+    def fetch(uri, destination, maximum_bytes):
+        data = payloads[uri]
+        assert len(data) <= maximum_bytes
+        destination.write_bytes(data)
+
+    plans = []
+
+    def inspect_plan(*, lane, context_path, **_):
+        context = _load_scene_configuration_context(context_path, expected_lane=lane)
+        plans.append(validate_paid_lane_launch(lane, context))
+        raise RuntimeError("rehearsal_stop_before_launch_plan_execution")
+
+    controls = tmp_path / "controls-intents"
+    controls.mkdir()
+    run = process_launch_activation_queue(
+        queue_root=tmp_path / "activation-queue", preparation_queue_root=queue,
+        preparation_input_root=tmp_path / "worker-inputs", activation_root=tmp_path / "activations",
+        allowed_uri_prefixes=["s3://blueprint/task-evaluation/production-inputs/"],
+        service_account=ACCOUNT, service_group=ACCOUNT, repository_root=Path(__file__).resolve().parents[1],
+        destination_prefix="s3://blueprint/task-evaluation/production-inputs/rehearsal",
+        release_window_prefix="s3://blueprint/task-evaluation/production-inputs/coordinator-release-windows/",
+        profile_dir=tmp_path / "profiles", webapp_catalog=tmp_path / "catalog.json",
+        standing_authorization_dir=tmp_path / "authorizations", scene_construction_queue_root=tmp_path / "construction",
+        scene_configuration_toolchain_root=astra_toolchain_fixture(tmp_path / "toolchain", SHA, monkeypatch),
+        configured_controls_autostart_intent_root=controls, source_commit=SHA, fetcher=fetch, preparer=inspect_plan)
+    assert len(plans) == 1, run
+    assert plans[0]["status"] == "validated_no_commands_run"
+    assert plans[0]["provider_allocation_performed"] is False
+    assert plans[0]["paid_inference_performed"] is False
+    assert {row["step_id"] for row in plans[0]["planned_steps"]} >= {
+        "provider_bundle", "paid_authority", "allocator_dry_run", "live_profile", "standing_authorization"}
+    assert not (tmp_path / "profiles").exists()
+    assert not (tmp_path / "authorizations").exists()
