@@ -38,6 +38,7 @@ from blueprint_pipeline.clean_plate_stage import (
     PROGRAM_ID,
     STAGE_MANIFEST_SCHEMA_VERSION,
     CleanPlatePolicy,
+    apply_clean_plate_to_reconstruction_input,
     run_clean_plate_stage,
     validate_clean_plate_stage_manifest,
 )
@@ -45,6 +46,37 @@ from blueprint_pipeline.common import read_json
 
 _ANALYSIS_ATTR = "blueprint_pipeline.clean_plate_stage.analyze_removal_targets"
 _SAFE_PRIVACY = {"status": "no_people_detected", "world_model_video_uri": "gs://b/x.mov"}
+
+
+@pytest.mark.parametrize("status", ["blocked", "failed_closed", "disabled", "unknown"])
+def test_website_preparation_hold_cannot_fall_back_to_original_video(status):
+    original = {"status": "ready", "output_video_uri": "gs://b/original.mov"}
+    result = apply_clean_plate_to_reconstruction_input(original, {"status": status}, required=True)
+    assert result["status"] == "blocked"
+    assert result["output_video_uri"] is None
+    assert original["output_video_uri"] == "gs://b/original.mov"
+
+
+def test_only_validated_preparation_selects_reconstruction_media():
+    original = {"status": "ready", "output_video_uri": "gs://b/original.mov"}
+    assert apply_clean_plate_to_reconstruction_input(original, {"status": "disabled"}, required=False) == original
+    noop = {"status": "noop", "privacy_verified": True, "blockers": []}
+    assert apply_clean_plate_to_reconstruction_input(original, noop, required=True) == original
+    edited = {**noop, "status": "objects_removed", "clean_plate_video_uri": "gs://b/edited.mov"}
+    assert apply_clean_plate_to_reconstruction_input(original, edited, required=True)["output_video_uri"] == "gs://b/edited.mov"
+    for invalid in ({**noop, "blockers": ["task_object_ambiguous"]},
+                    {**noop, "privacy_verified": False},
+                    {**edited, "clean_plate_video_uri": None}):
+        assert apply_clean_plate_to_reconstruction_input(original, invalid, required=True)["status"] == "blocked"
+
+
+def test_prepared_images_cannot_override_an_existing_rights_hold():
+    held = {"status": "blocked", "reason": "rights_not_cleared_for_derived_scene_generation"}
+    prepared = {"status": "objects_removed", "privacy_verified": True, "prepared_views": {"status": "ready"}}
+    result = apply_clean_plate_to_reconstruction_input(held, prepared, required=True)
+    assert result["status"] == "blocked"
+    assert result["reason"] == held["reason"]
+    assert result["prepared_views"] is None
 
 _GATE_AND_KEY_ENVS = (
     FLAG_ENV,
@@ -117,6 +149,107 @@ def test_disabled_is_pure_noop(tmp_path):
     # Nothing written anywhere, including no clean_plate dir.
     assert _hash_tree(capture_root) == before
     assert not (capture_root / "pipeline" / "clean_plate").exists()
+
+
+@pytest.mark.parametrize("geometry_missing", [False, True])
+def test_website_preparation_preserves_original_geometry_without_requiring_measured_scale(tmp_path, monkeypatch, geometry_missing):
+    capture_root = _make_capture(tmp_path)
+    source = capture_root / "raw" / "walkthrough.mp4"
+    plan = empty_removal_plan(status="completed", model="test", processing="agentic")
+    monkeypatch.setattr(_ANALYSIS_ATTR, lambda **_kwargs: plan)
+    estimated = {"status": "estimated", "scale_status": "model_estimated", "metric_measurement_proven": False}
+
+    def geometry(**kwargs):
+        assert kwargs["source_video"] == source
+        assert source.read_bytes() == b"RAWVIDEO"
+        if geometry_missing:
+            raise ValueError("mapanything_local_checkpoint_missing")
+        return estimated
+
+    monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.run_website_scene_geometry", geometry)
+    result = run_clean_plate_stage(capture_root=capture_root, privacy_processing=_SAFE_PRIVACY,
+                                   policy=CleanPlatePolicy(enabled=True), website_source_video=source)
+    if geometry_missing:
+        assert result["status"] == "blocked"
+        assert "mapanything_local_checkpoint_missing" in result["blockers"]
+    else:
+        assert result["status"] == "noop"
+        assert result["source_geometry"] == estimated
+        assert result["blockers"] == []
+
+
+@pytest.mark.parametrize("fill_result", ["unneeded", "passed", "blocked"])
+def test_website_stage_runs_geometry_masks_and_edit_preparation_before_image_handoff(tmp_path, monkeypatch, fill_result):
+    capture_root = _make_capture(tmp_path)
+    source = capture_root / "raw/walkthrough.mp4"
+    order = []
+    plan = build_removal_plan(targets=[{
+        "target_id": "box", "semantic_label": "blue box", "target_class": "movable_object",
+        "target_role": "task_object", "task_effect": "manipulated", "disposition": "remove",
+        "rebuild_intent": "rebuild_and_compose", "spatial_evidence": [], "confidence": 0.9,
+    }], status="completed", model="test", processing="agentic")
+    plan["task_context_sha256"] = "task-digest"
+    geometry = {"status": "estimated", "digest": "geometry-digest", "frames": [{"frame_id": f"f{i}"} for i in range(13)]}
+    masks = {"targets": [{"track": {"observations": [{"source_frame_id": "f0"}, {"source_frame_id": "f1"}]}}]}
+
+    def analyze(**kwargs):
+        order.append("analysis")
+        assert kwargs["video_path"] == source
+        return plan
+
+    def estimate(**kwargs):
+        order.append("geometry")
+        return geometry
+
+    def track(**kwargs):
+        order.append("masks")
+        assert kwargs["source_geometry"] == geometry
+        assert kwargs["source_video"] == source
+        return masks
+
+    def recover(**kwargs):
+        from PIL import Image
+        from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
+        order.append("mask_preparation")
+        assert kwargs["task_masks"] == masks
+        frames = []
+        for i, frame in enumerate(geometry["frames"]):
+            image = tmp_path / f"context-{i}.png"
+            Image.new("RGB", (16, 16), (i * 15, 40, 90)).save(image)
+            frames.append({"frame_id": frame["frame_id"], "image_path": str(image), "image_digest": _sha256_file(image),
+                           "remaining_pixel_count": int(fill_result != "unneeded" and i < 2)})
+        return frames
+
+    def complete(**kwargs):
+        order.append("completion")
+        assert len(kwargs["frames"]) == 8
+        assert sum(f["remaining_pixel_count"] > 0 for f in kwargs["frames"]) == 2
+        return [{**frame, "remaining_pixel_count": 0, "generated_pixels_present": True} for frame in kwargs["frames"]]
+
+    def review(**kwargs):
+        order.append("review")
+        return {"status": fill_result}
+
+    monkeypatch.setattr(_ANALYSIS_ATTR, analyze)
+    monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.run_website_scene_geometry", estimate)
+    monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.run_website_task_masks", track)
+    monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.prepare_object_removal_frames", recover)
+    monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.complete_background_images", complete)
+    monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.verify_completed_background", review)
+    result = run_clean_plate_stage(capture_root=capture_root, privacy_processing={"status": "pending_website_review"},
+                                   website_source_video=source)
+    assert result["privacy_verified"] is True
+    assert order == ["analysis", "geometry", "masks", "mask_preparation"] + ([] if fill_result == "unneeded" else ["completion", "review"])
+    if fill_result == "blocked":
+        assert result["status"] == "blocked"
+        assert result["prepared_views"] is None
+        assert "website_image_completion_review_failed" in result["blockers"]
+        return
+    assert result["status"] == "objects_removed"
+    assert len(result["prepared_views"]["frames"]) == 8
+    forwarded = apply_clean_plate_to_reconstruction_input({"output_video_uri": "gs://raw.mov"}, result, required=True)
+    assert forwarded["output_video_uri"] is None
+    assert forwarded["prepared_views"] == result["prepared_views"]
 
 
 # --------------------------------------------------------------------------- #

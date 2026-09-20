@@ -455,6 +455,10 @@ def materialize_scene_configuration_render_inputs(
 ) -> dict[str, Any]:
     """Render exact derived method inputs without exposing the raw source."""
 
+    if stage_one_configuration.get("schema_version") == "website_prepared_appearance.v1":
+        from .website_native_inputs import materialize_website_inputs
+        return materialize_website_inputs(envelope=envelope, stage_one_configuration=stage_one_configuration,
+                                          output_root=output_root)
     if stage_one_configuration.get("schema_version") == "task_evaluation_provided_mesh_appearance_excision.v1":
         from .task_evaluation_completed_scene_inputs import materialize_completed_mesh_inputs
         return materialize_completed_mesh_inputs(envelope=envelope, stage_one_configuration=stage_one_configuration,

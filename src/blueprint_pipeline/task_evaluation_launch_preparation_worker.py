@@ -1446,6 +1446,7 @@ def process_launch_preparation_queue(
                         **sam31_fields,
                         "recipe": recipe,
                         "materialized_references": result["references"],
+                        "stage_configuration_references": recipe_configuration_references,
                     },
                     stage_one_configuration=stage_one_configuration,
                     output_root=(

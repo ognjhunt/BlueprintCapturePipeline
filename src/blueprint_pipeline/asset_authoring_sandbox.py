@@ -126,7 +126,11 @@ class SandboxedAssetRunner:
                 check=check, capture_output=capture_output, text=text)
         loader_keys = {'LD_LIBRARY_PATH', 'DYLD_LIBRARY_PATH', 'PYTHONPATH'}
         launcher_environment = {k: v for k, v in environment.items() if k not in loader_keys}
-        target = [str(executable), *map(str, argv[1:])]
+        # Authorize the resolved binary above, but preserve its invocation name:
+        # resolving a venv's final python symlink discards pyvenv.cfg and its
+        # installed CAD packages. Resolve directory aliases for namespace mounts.
+        invoked = Path(argv[0])
+        target = [str(invoked.parent.resolve() / invoked.name), *map(str, argv[1:])]
         loader_assignments = [f'{k}={v}' for k, v in environment.items() if k in loader_keys]
         if loader_assignments:
             # env itself starts clean, after sandbox setup and any UID drop.

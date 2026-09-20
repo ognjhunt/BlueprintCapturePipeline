@@ -219,6 +219,9 @@ def stage_one_gaussian_inputs_refusal(configuration: Mapping[str, Any]) -> str |
 def _stage_one_refusal(
     configuration: Mapping[str, Any], envelope: Mapping[str, Any]
 ) -> str | None:
+    if configuration.get("schema_version") == "website_prepared_appearance.v1":
+        from .website_native_background import appearance_configuration_refusal
+        return appearance_configuration_refusal(configuration, envelope)
     if configuration.get("schema_version") == "task_evaluation_provided_mesh_appearance_excision.v1":
         from .task_evaluation_completed_scene_validation import mesh_appearance_configuration_refusal
         return mesh_appearance_configuration_refusal(configuration, envelope)
@@ -322,6 +325,9 @@ def _stage_one_refusal(
 def _stage_two_refusal(
     configuration: Mapping[str, Any], envelope: Mapping[str, Any]
 ) -> str | None:
+    if configuration.get("schema_version") == "website_prepared_collision.v1":
+        from .website_native_background import collision_configuration_refusal
+        return collision_configuration_refusal(configuration, envelope)
     collision_rows = [
         row
         for row in envelope.get("materialized_references") or []

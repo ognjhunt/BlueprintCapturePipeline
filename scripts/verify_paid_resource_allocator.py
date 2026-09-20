@@ -63,6 +63,7 @@ APPROVED_ADMISSION_ISSUERS = {
     "src/blueprint_pipeline/single_g1_kitchen_qualification_session.py",
     "src/blueprint_pipeline/task_evaluation_scene_configuration_allocator.py",
     "src/blueprint_pipeline/teleport_paid_allocator.py",
+    "src/blueprint_pipeline/website_task_context.py",
 }
 APPROVED_LANE_ADMISSION_BUILDERS = {
     "src/blueprint_pipeline/capture_reconstruction_postshot_allocator.py",

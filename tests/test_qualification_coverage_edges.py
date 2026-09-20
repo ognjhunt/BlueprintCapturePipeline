@@ -915,6 +915,37 @@ def _patch_pipeline_side_effects(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(q, "write_pipeline_sync_result", lambda **_kwargs: None)
 
 
+def test_website_preparation_skips_legacy_privacy_video_and_geometry(tmp_path, monkeypatch):
+    storage_root = tmp_path / "gcs"
+    descriptor_uri = _write_descriptor(storage_root, _descriptor(
+        capture_source="unknown", capture_modality="video_only", requested_outputs=["preview_simulation"],
+        metadata={"capture_entry_source": "browser_self_capture", "capture_rights": {"derived_scene_generation_allowed": True}}))
+    _patch_pipeline_side_effects(monkeypatch)
+    monkeypatch.setattr(q, "load_current_website_task_context", lambda **_: {"description": "Pick the box", "confirmed": True, "capture_rights": {"derived_scene_generation_allowed": True}})
+    monkeypatch.setattr(q, "load_website_scene_sponsorship", lambda **_: {"sponsor": "blueprint"})
+    for name in ("run_privacy_postprocess", "infer_capture_fidelity_review", "_prepare_worldlabs_input_video", "build_geometry_stage_contract"):
+        monkeypatch.setattr(q, name, lambda **_: pytest.fail("website must not enter a legacy media stage"))
+    calls = []
+
+    def prepare(**kwargs):
+        calls.append(kwargs)
+        return {"status": "blocked", "mode": "source_geometry_blocked", "privacy_status": "no_people_detected",
+                "privacy_verified": True, "blockers": ["mapanything_local_checkpoint_missing"]}
+
+    monkeypatch.setattr(q, "run_clean_plate_stage", prepare)
+    result = q.run_qualification_pipeline(descriptor_gcs_uri=descriptor_uri,
+                                         config=SimpleNamespace(gcs_root=storage_root, runtime_preflight_enabled=False))
+    assert result["status"] == "completed"
+    assert len(calls) == 1
+    assert calls[0]["policy"].enabled is True
+    assert calls[0]["privacy_processing"]["mode"] == "task_aware_prepared_images"
+    assert calls[0]["worldlabs_input"]["status"] == "awaiting_prepared_images"
+    path = storage_root / "scenes/scene-1/captures/capture-1/capture_descriptor.json"
+    metadata = json.loads(path.read_text())["metadata"]
+    assert metadata["worldlabs_input_status"] == "blocked"
+    assert metadata["worldlabs_input_video_uri"] is None
+
+
 def test_run_qualification_pipeline_disabled_preflight_and_llm_outputs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -22,6 +22,9 @@ def preparation_storage(config, binding, output_root):
     refs = binding.get("references", {})
     expected = (3 * refs.get("primary", {}).get("size_bytes", 0)
                 + 8 * refs.get("collision", {}).get("size_bytes", 0) + 256 * 1024**2)
+    if binding.get("schema_version") == "website_scene_source_binding.v1":
+        expected = binding.get("required_staging_bytes")
+        require(type(expected) is int and expected > 256 * 1024**2, "website_staging_size_invalid")
     with reserve_control_plane_disk("launch_preparation", target_root=output_root,
                                    expected_bytes=expected, reservation_root=root):
         yield

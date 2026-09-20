@@ -63,6 +63,7 @@ PAID_LANE = "reconstruction_gpu_canary"
 NAME_PREFIX = "blueprint-reconstruction-"
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 _EXPECTED_RESULTS = {
+    "website_mapanything": "website_mapanything_result.v1",
     "pose_canary": "pose_estimation_result.v1",
     "trainer_canary": "reconstruction_training_result.v1",
 }
@@ -130,7 +131,10 @@ def _default_output_fetcher(url: str, destination: Path) -> SafeHttpFileTransfer
         raise
 
 
-def _bootstrap_script(*, canonical_splatfacto: bool = False) -> str:
+def _bootstrap_script(*, canonical_splatfacto: bool = False, website_mapanything: bool = False) -> str:
+    if website_mapanything:
+        script = Path(__file__).with_name("website_mapanything_bootstrap.py").read_text()
+        return "set -euo pipefail\npython - <<'PY'\n" + script + "\nPY\n"
     if canonical_splatfacto:
         return """set -euo pipefail
 python3 - <<'PY'
@@ -278,6 +282,10 @@ def _validate_bindings(
         or request.get("proof_effect") != "none"
     ):
         blockers.append("reconstruction_vast_operation_bound_request_not_executable")
+    if operation == "website_mapanything":
+        roles = [row.get("role") for row in receipt.get("artifact_members", [])]
+        if roles.count("worker_wheel") != 3 or roles.count("worker_dependencies") != 1:
+            blockers.append("website_mapanything_runtime_bundle_missing")
     bindings = [
         ("operation", "operation"),
         ("operation_request_digest", "operation_request_digest"),
@@ -467,6 +475,7 @@ def run_reconstruction_vast_operation(
     blockers: list[str] = []
     invalid_digests: set[str] = set()
     fetch_attempts = 0
+    terminal_observations = 0
     try:
         worker_environment = {
                 "BLUEPRINT_RECONSTRUCTION_OPERATION": operation,
@@ -500,7 +509,7 @@ def run_reconstruction_vast_operation(
             name=name,
             image=worker_image,
             env=worker_environment,
-            bootstrap_argv=["-lc", _bootstrap_script(canonical_splatfacto=canonical_splatfacto)],
+            bootstrap_argv=["-lc", _bootstrap_script(canonical_splatfacto=canonical_splatfacto, website_mapanything=operation == "website_mapanything")],
             entrypoint=["bash"],
             container_disk_gb=container_disk_gb,
             volume_gb=0,
@@ -512,6 +521,7 @@ def run_reconstruction_vast_operation(
             ),
             requires_rtx=False,
             vast_launch_mode="args",
+            excluded_machine_ids=tuple(preflight.get("capacity_request", {}).get("excluded_machine_ids", [])),
         )
         provider_request = provider.build_request(spec, root)
         provider_request["prelaunch_spend_guard"] = {
@@ -551,10 +561,16 @@ def run_reconstruction_vast_operation(
                 evidence={"status": launch_result.get("status")},
             )
             blockers.append("reconstruction_vast_operation_instance_not_created")
+            blockers.extend(str(code) for code in launch_result.get("blockers", []))
         else:
             instance_id = str(launch_result["instance_id"])
             provider_mutations += 1
             bind_pending_teardown_instance(pending_path, instance_id)
+            if watchdog.get("watchdog_out_dir"):
+                from .vast_independent_watchdog_control import write_started_vast_instance_id
+                write_started_vast_instance_id(
+                    Path(watchdog["watchdog_out_dir"]) / "started_vast_instance_id.txt", int(instance_id)
+                )
             while float(clock()) - started_at <= hard_ttl:
                 fetch_attempts += 1
                 attempt_path = attempts_dir / f"output_{fetch_attempts:04d}.zip"
@@ -563,6 +579,22 @@ def run_reconstruction_vast_operation(
                         output_bundle_get_url, attempt_path
                     )
                 except (FileNotFoundError, TimeoutError):
+                    # Missing output alone is normal during work. Confirm a
+                    # terminal provider state twice before ending a dead run;
+                    # a failed status request must never count as an exit.
+                    try:
+                        observed = provider.inspect(instance_id)
+                    except Exception:  # noqa: BLE001 - an observation failure is not death.
+                        observed = {}
+                    terminal = observed.get("api_confirmed") is True and (
+                        observed.get("provider_absence_confirmed") is True
+                        or str(observed.get("desiredStatus") or "").lower()
+                        in {"exited", "stopped", "stopped_before_start", "dead", "destroyed"}
+                    )
+                    terminal_observations = terminal_observations + 1 if terminal else 0
+                    if terminal_observations >= 2:
+                        blockers.append("reconstruction_vast_operation_provider_terminal_without_output")
+                        break
                     if float(clock()) - started_at >= hard_ttl:
                         break
                     sleeper(
@@ -753,7 +785,7 @@ def run_reconstruction_vast_operation(
     runtime_digest = None
     runtime_status = None
     if runtime_result is not None:
-        runtime_digest = runtime_result.get("pose_estimation_result_digest") or runtime_result.get(
+        runtime_digest = runtime_result.get("website_mapanything_result_digest") or runtime_result.get("pose_estimation_result_digest") or runtime_result.get(
             "reconstruction_training_result_digest"
         )
         runtime_status = runtime_result.get("status")

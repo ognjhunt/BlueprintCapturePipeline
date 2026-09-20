@@ -43,6 +43,7 @@ _FORBIDDEN_PARTS = {
 _SECRET_MARKERS = {"credential", "credentials", "secret", "token", "password"}
 _SECRET_SUFFIXES = {".env", ".key", ".pem", ".p12", ".pfx"}
 _ALLOWED_ROLES = {
+    "website_mapanything": {"geometry_inputs", "candidate_observation", "worker_wheel", "worker_dependencies"},
     "pose_canary": {
         "pose_execution_plan",
         "candidate_observation",
@@ -61,6 +62,7 @@ _ALLOWED_ROLES = {
     },
 }
 _REQUIRED_ROLES = {
+    "website_mapanything": {"geometry_inputs", "candidate_observation"},
     "pose_canary": {"pose_execution_plan", "candidate_observation"},
     "trainer_canary": {"dataset_export", "candidate_dataset_member"},
 }
@@ -106,7 +108,11 @@ def _accepted_request(
     operation: str, value: Mapping[str, Any]
 ) -> tuple[dict[str, Any], str, str]:
     try:
-        if operation == "pose_canary":
+        if operation == "website_mapanything":
+            from .website_mapanything_operation import build_request, REQUEST_DIGEST
+            request = build_request(value)
+            digest_field = REQUEST_DIGEST
+        elif operation == "pose_canary":
             request = build_pose_estimation_request(value)
             digest_field = "pose_estimation_request_digest"
         elif operation == "trainer_canary":
@@ -355,6 +361,8 @@ def compile_reconstruction_gpu_operation_bundle(
         "proof_effect": "none",
         "claim_ceiling": "candidate_operation_input_only",
     }
+    if operation == "website_mapanything":
+        manifest["remote_processing_authorization_digest"] = request["remote_processing_authorization_digest"]
     manifest["bundle_manifest_digest"] = canonical_digest(
         manifest, digest_field="bundle_manifest_digest"
     )
@@ -425,6 +433,9 @@ def build_canary_request_from_operation_bundle(
         "calibration_digest": receipt.get("calibration_digest"),
         "expected_runtime_result_schema": receipt.get("expected_runtime_result_schema"),
     }
+    if receipt.get("operation") == "website_mapanything":
+        expected_bindings["capture_profile"] = "website_monocular_video"
+        expected_bindings["remote_processing_authorization_digest"] = receipt["remote_processing_authorization_digest"]
     for key, expected in expected_bindings.items():
         supplied = fields.get(key)
         if supplied is not None and supplied != expected:

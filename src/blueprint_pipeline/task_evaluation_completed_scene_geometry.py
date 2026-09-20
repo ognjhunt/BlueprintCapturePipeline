@@ -64,8 +64,8 @@ def _usd_copy(source: Path, output: Path, *, scale: float, axis: str) -> dict[st
     UsdGeom.SetStageMetersPerUnit(stage, 1.0)
     UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
     transform = Gf.Matrix4d().SetScale(scale)
-    if axis == "Y":
-        transform = transform * Gf.Matrix4d().SetRotate(Gf.Rotation(Gf.Vec3d(1, 0, 0), 90))
+    if axis in {"Y", "-Y"}:
+        transform = transform * Gf.Matrix4d().SetRotate(Gf.Rotation(Gf.Vec3d(1, 0, 0), 90 if axis == "Y" else -90))
     parent.AddTransformOp().Set(transform)
     for prim in original.GetPseudoRoot().GetChildren():
         require(Sdf.CopySpec(source_layer, prim.GetPath(), stage.GetRootLayer(),
@@ -123,8 +123,8 @@ def _triangle_copy(source: Path, output: Path, *, suffix: str, scale: float, axi
         # supplied appearance. Texture-bearing glTF needs an admitted converter.
         require(source_mesh.visual.kind != "texture", "completed_textured_gltf_not_supported")
         points = trimesh.transform_points(source_mesh.vertices, transform) * scale
-        if axis == "Y":
-            points = points[:, [0, 2, 1]] * [1, -1, 1]
+        if axis in {"Y", "-Y"}:
+            points = points[:, [0, 2, 1]] * ([1, -1, 1] if axis == "Y" else [1, 1, -1])
         path = f"/Root/mesh_{index:04d}_" + re.sub(r"[^A-Za-z0-9_]", "_", str(node))[:80]
         mesh = UsdGeom.Mesh.Define(stage, path)
         mesh.CreatePointsAttr(points.tolist())

@@ -51,6 +51,8 @@ dependencies = [
     # runtime extra.
     "scipy>=1.10.0",
     "Pillow>=10.0.0",
+    # Official CPU-only decoder for hosted SAM 3.1 masks.
+    "meta-sam-parser==0.0.5",
     "fastapi>=0.115.0",
     "json-numpy>=2.1.0",
     # NuRec volumes -- the splat format Isaac renders natively -- are gzip
@@ -86,6 +88,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Website-only source geometry; install in the existing inference worker.
+website_geometry = [
+    "mapanything @ git+https://github.com/facebookresearch/map-anything.git@3d10cf7a3016fc0f9bb13a071ee66c47b10be0d9",
+]
 # Closed, opt-in CPU authoring closure; the legacy provider profile stays unchanged.
 astra_asset_authoring = [
     "openai-agents==0.19.1",
@@ -133,7 +139,8 @@ geometry = [
     "pycollada>=0.8",
 ]
 llm = [
-    "google-genai>=1.0.0",
+    # Agentic video requires typed Part.media_processing and media-tool traces.
+    "google-genai>=2.24.0",
     "openai>=1.0.0",
 ]
 # Compatibility alias retained for existing install commands. The Agents SDK

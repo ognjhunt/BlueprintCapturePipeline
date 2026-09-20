@@ -1761,6 +1761,9 @@ def build_capture_bundle_records(
     ]
     metadata: Dict[str, Any] = {
         "site_submission_id": site_submission_id,
+        "capture_entry_source": str(manifest.get("capture_source") or ""),
+        "site_task_context": dict(manifest["site_task_context"])
+        if isinstance(manifest.get("site_task_context"), Mapping) else None,
         "buyer_request_id": buyer_request_id,
         "capture_job_id": capture_job_id,
         "upstream_link_truth_state": "verified"

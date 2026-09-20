@@ -170,7 +170,8 @@ _stage_requests_upload = stage_requests_upload
 MATERIALIZED_STATUS = "derived_method_inputs_materialized"
 PENDING_PROVIDER_RENDER_STATUS = "derived_method_inputs_pending_provider_render"
 MESH_INPUT_STATUS = "explicit_visual_geometry_prepared"
-RENDER_INPUT_STATUSES = frozenset({MATERIALIZED_STATUS, PENDING_PROVIDER_RENDER_STATUS, MESH_INPUT_STATUS})
+WEBSITE_INPUT_STATUS = "website_capture_derivatives_prepared"
+RENDER_INPUT_STATUSES = frozenset({MATERIALIZED_STATUS, PENDING_PROVIDER_RENDER_STATUS, MESH_INPUT_STATUS, WEBSITE_INPUT_STATUS})
 
 
 def render_inputs_disclosure_is_coherent(render_inputs: Mapping[str, Any]) -> bool:
@@ -187,6 +188,18 @@ def render_inputs_disclosure_is_coherent(render_inputs: Mapping[str, Any]) -> bo
         return False
     status = render_inputs.get("status")
     crossed = render_inputs.get("raw_interiorgs_bytes_in_provider_packet")
+    if status == WEBSITE_INPUT_STATUS:
+        binding = render_inputs.get("website_binding", {})
+        return (crossed is False and render_inputs.get("input_kind") == "website_capture_derivatives"
+                and render_inputs.get("raw_capture_video_in_provider_packet") is False
+                and render_inputs.get("captured_frame_derivatives_in_provider_packet") is True
+                and render_inputs.get("prepared_background_in_provider_packet") is True
+                and render_inputs.get("derived_frames") == [] and render_inputs.get("derived_frame_count") == 0
+                and render_inputs.get("renderer_qualified") is False
+                and render_inputs.get("physical_truth_claimed") is False
+                and render_inputs.get("provider_render_required") is False
+                and isinstance(binding, Mapping) and type(binding.get("captured_frame_count")) is int
+                and binding["captured_frame_count"] > 0)
     if status == MESH_INPUT_STATUS:
         geometry = render_inputs.get("derived_visual_geometry")
         return (crossed is False and render_inputs.get("input_kind") == "provided_mesh"

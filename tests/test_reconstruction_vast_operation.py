@@ -130,6 +130,7 @@ class _Provider:
         self.zero_after = zero_after
         self.launched = False
         self.requests: list[dict] = []
+        self.specs = []
 
     def billable_inventory(self, *, name_prefix):
         del name_prefix
@@ -142,6 +143,7 @@ class _Provider:
 
     def build_request(self, spec, job_dir):
         del job_dir
+        self.specs.append(spec)
         assert spec.image == IMAGE
         assert spec.env["BLUEPRINT_RECONSTRUCTION_OPERATION"] == "pose_canary"
         assert "INPUT_BUNDLE_GET_URL" in " ".join(spec.env)
@@ -203,10 +205,12 @@ def test_operation_retrieves_validates_then_tears_down_and_replays_offline(
 ) -> None:
     provider = _Provider()
     times = iter([1000.0, 1001.0, 1002.0])
+    preflight = _preflight()
+    preflight["capacity_request"] = {"excluded_machine_ids": [123]}
     result = run_reconstruction_vast_operation(
         bound_request=_bound_request(),
         bundle_receipt=_bundle_receipt(),
-        preflight=_preflight(),
+        preflight=preflight,
         job_dir=tmp_path,
         input_bundle_get_url="https://objects.example/input?sig=secret",
         input_receipt_get_url="https://objects.example/receipt?sig=secret",
@@ -220,6 +224,7 @@ def test_operation_retrieves_validates_then_tears_down_and_replays_offline(
         clock=lambda: next(times),
         watchdog_validator=lambda _watchdog, _now, _ttl: True,
     )
+    assert provider.specs[0].excluded_machine_ids == (123,)
     assert result["status"] == "completed"
     assert result["operation_result_status"] == "succeeded"
     assert result["output_retrieved_before_teardown"] is True
@@ -481,3 +486,63 @@ def test_teardown_failure_remains_terminal_blocker_and_keeps_lane_state(
     assert list((tmp_path / "leases").glob("*.lease.json"))
     pending = list((tmp_path / "pending_teardowns").glob("*.json"))
     assert json.loads(pending[0].read_text())["status"] == "open"
+
+
+@pytest.mark.parametrize("interrupted_read", [False, True])
+def test_missing_output_checks_provider_exit_and_tears_down_before_ttl(tmp_path, interrupted_read):
+    provider = _Provider()
+    statuses = iter([
+        {"api_confirmed": True, "desiredStatus": "stopped_before_start"},
+        *([{"api_confirmed": False}] if interrupted_read else []),
+        {"api_confirmed": True, "desiredStatus": "stopped_before_start"},
+        {"api_confirmed": True, "desiredStatus": "stopped_before_start"},
+    ])
+    observations = []
+
+    def inspect(instance_id):
+        assert instance_id == "42"
+        value = next(statuses)
+        observations.append(value)
+        return value
+
+    provider.inspect = inspect
+    ticks = iter(range(1000, 1100))
+
+    def missing(_url, _path):
+        raise FileNotFoundError("not ready")
+
+    preflight = _preflight()
+    preflight["watchdog"]["watchdog_out_dir"] = str(tmp_path / "watchdog")
+    result = run_reconstruction_vast_operation(
+        bound_request=_bound_request(), bundle_receipt=_bundle_receipt(), preflight=preflight,
+        job_dir=tmp_path, input_bundle_get_url="https://objects.example/input",
+        input_receipt_get_url="https://objects.example/receipt",
+        output_bundle_put_url="https://objects.example/put", output_bundle_get_url="https://objects.example/get",
+        provider=provider, paid_resource_admission_grant=_grant(), output_fetcher=missing,
+        sleeper=lambda _seconds: None, clock=lambda: float(next(ticks)),
+        watchdog_validator=lambda *_args: True,
+    )
+    assert len(observations) == (4 if interrupted_read else 2)
+    assert result["duration_seconds"] < 100
+    assert "reconstruction_vast_operation_provider_terminal_without_output" in result["blockers"]
+    assert result["provider_zero_verified"] is True
+    assert provider.launched is False
+    assert json.loads((tmp_path / "teardown_receipt.json").read_text())["status"] == "PASS"
+    assert (tmp_path / "watchdog/started_vast_instance_id.txt").read_text().strip() == "42"
+
+
+def test_declined_launch_preserves_provider_blocker_and_leaves_zero_resources(tmp_path):
+    provider = _Provider()
+    provider.launch = lambda *args, **kwargs: {
+        "status": "blocked", "allocation_created": False,
+        "blockers": ["no_vast_offer_matching_rate_and_gpu_memory"]}
+    result = run_reconstruction_vast_operation(
+        bound_request=_bound_request(), bundle_receipt=_bundle_receipt(), preflight=_preflight(),
+        job_dir=tmp_path, input_bundle_get_url="https://objects.example/input",
+        input_receipt_get_url="https://objects.example/receipt",
+        output_bundle_put_url="https://objects.example/output-put",
+        output_bundle_get_url="https://objects.example/output-get", provider=provider,
+        paid_resource_admission_grant=_grant(), watchdog_validator=lambda *args: True)
+    assert "no_vast_offer_matching_rate_and_gpu_memory" in result["blockers"]
+    assert result["provider_zero_verified"] is True
+    assert result["provider_mutations_performed"] == 0

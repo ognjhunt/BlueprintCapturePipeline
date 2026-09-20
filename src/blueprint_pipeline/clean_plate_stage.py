@@ -1,35 +1,9 @@
-"""Conditional clean-plate frame-editing stage (extract -> Atlas).
+"""Prepare task-aware website images before a single reconstruction.
 
-This stage sits between the WorldLabs/Atlas input preparation and the
-reconstruction submit. When a walkthrough contains movable task-objects, they
-should be removed from the immovable "stage plate" before reconstruction (and
-rebuilt separately as physics-ready assets from the ORIGINAL frames), because
-multi-view reconstruction fuses a static world and bakes movers into ghosts.
-
-**Scope of this module (scaffold).** It lands the contract and wiring only:
-
-- an agentic Gemini removal-target analysis -> ``clean_plate_removal_plan.v1``
-  (``clean_plate_removal_analysis_gemini.py``, fail-closed behind its own gate);
-- a ``clean_plate_removal_manifest.v1`` linking each removed source object to a
-  (later) rebuilt asset + pose for compose-back;
-- a ``clean_plate_stage_manifest.v1`` receipt;
-- a ``development_only`` fail-closed validator.
-
-The **view-consistent fill machinery** (observed-background recovery + a
-video-consistent generative fallback) is deliberately deferred. Until it lands
-and a with/without reconstruction comparison on one real capture shows a win,
-this stage **never** produces a clean-plate video and **never** redirects the
-reconstruction input -- it is a strict no-op on the Atlas path.
-
-**People are not removed here.** They are removed upstream, view-consistently,
-by ``run_privacy_postprocess`` (SAM3 -> VIP video-inpaint -> verify). This stage
-*verifies* that (fail-safe) and spends its machinery only on movable objects.
-
-Governance: ``program_id="arm-decision-proof-v1"``, ``adp_item="ADP-009B"``
-(own-capture, pre-reconstruction analog of the public-splat edit path;
-``ADP-021`` is the field consumer), ``claim_ceiling="development_only"``. Behind
-``BLUEPRINT_CLEAN_PLATE_ENABLED`` (default off). Design:
-``docs/clean_plate_frame_editing_stage_design_2026-09-17.md``.
+Website inputs retain original frames and estimated MapAnything cameras, bind
+SAM3.1 task masks, and edit selected objects out of original-resolution frames.
+Legacy capture keeps its existing opt-in behavior. All inferred geometry and
+repairs remain development evidence (ADP-009B, public_scene_day_14).
 """
 
 from __future__ import annotations
@@ -55,6 +29,12 @@ from .common import (
     write_json,
 )
 from .local_capture import resolve_local_capture_context
+from .decision_evidence_contracts import canonical_digest
+from .website_scene_geometry import run_website_scene_geometry
+from .website_task_masks import run_website_task_masks
+from .website_object_removal import prepare_object_removal_frames, select_reconstruction_frames, reconstruction_source_frames
+from .website_reconstruction_profile import reconstruction_profile
+from .website_image_completion import complete_background_images, verify_completed_background
 
 FLAG_ENV = "BLUEPRINT_CLEAN_PLATE_ENABLED"
 ADP_ITEM_ENV = "BLUEPRINT_CLEAN_PLATE_ADP_ITEM"
@@ -162,6 +142,37 @@ def _resolve_input_video(pipeline_root: Path, capture_root: Path) -> Optional[Pa
     return None
 
 
+def apply_clean_plate_to_reconstruction_input(
+    worldlabs_input: Mapping[str, Any], clean_plate: Mapping[str, Any], *, required: bool,
+) -> Dict[str, Any]:
+    """Never let a task-analysis hold fall back to the unedited source video."""
+    result = dict(worldlabs_input)
+    status = clean_plate.get("status")
+    if required and result.get("status") == "blocked":
+        return {**result, "output_video_uri": None, "prepared_views": None}
+    # Preserve the disabled legacy path; website preparation is mandatory.
+    if status == "disabled" and not required:
+        return result
+    passed = (
+        status in {"noop", "objects_removed"}
+        and clean_plate.get("privacy_verified") is True
+        and not clean_plate.get("blockers")
+    )
+    views = clean_plate.get("prepared_views")
+    image_input_ready = isinstance(views, Mapping) and views.get("status") == "ready"
+    if status == "objects_removed" and not clean_plate.get("clean_plate_video_uri") and not image_input_ready:
+        passed = False
+    if not passed:
+        return {**result, "status": "blocked", "output_video_uri": None,
+                "reason": clean_plate.get("reason") or "task_scene_preparation_required",
+                "clean_plate_blockers": list(clean_plate.get("blockers") or [])}
+    if image_input_ready:
+        result.update(status="ready", output_video_uri=None, prepared_views=dict(views), clean_plate_applied=True)
+    elif status == "objects_removed":
+        result.update(output_video_uri=clean_plate["clean_plate_video_uri"], clean_plate_applied=True)
+    return result
+
+
 def _build_removal_manifest(plan: Mapping[str, Any]) -> Dict[str, Any]:
     """Per-target manifest linking a removed source object to its (future) asset.
 
@@ -181,6 +192,10 @@ def _build_removal_manifest(plan: Mapping[str, Any]) -> Dict[str, Any]:
                 "target_id": target.get("target_id"),
                 "semantic_label": target.get("semantic_label"),
                 "target_class": target.get("target_class"),
+                "target_role": target.get("target_role"),
+                "task_effect": target.get("task_effect"),
+                "decision_reason": target.get("decision_reason"),
+                "task_basis_quote": target.get("task_basis_quote"),
                 "rebuild_intent": target.get("rebuild_intent"),
                 "spatial_evidence": target.get("spatial_evidence", []),
                 # Filled by the deferred fill machinery / rebuild chain:
@@ -200,6 +215,7 @@ def _build_removal_manifest(plan: Mapping[str, Any]) -> Dict[str, Any]:
         "claim_ceiling": CLAIM_CEILING,
         "removal_plan_schema_version": plan.get("schema_version"),
         "removal_plan_status": plan.get("status"),
+        "task_context_sha256": plan.get("task_context_sha256"),
         "removed_target_count": len(entries),
         "entries": entries,
     }
@@ -230,11 +246,13 @@ def validate_clean_plate_stage_manifest(manifest: Mapping[str, Any]) -> list[str
         for key, value in _boundary_flags().items():
             if boundary.get(key) is not value:
                 errors.append(f"clean_plate_stage_boundary_{key}_elevated")
-    # The scaffold must never emit a clean-plate video or claim removed pixels.
+    # This stage emits images; legacy video output is not implemented here.
     if manifest.get("clean_plate_video_uri") not in (None, ""):
         errors.append("clean_plate_stage_video_uri_unexpected_in_scaffold")
     if manifest.get("generated_regions_present") is not False:
-        errors.append("clean_plate_stage_generated_regions_unexpected_in_scaffold")
+        views = manifest.get("prepared_views") or {}
+        if views.get("generated_pixels_present") is not True or (views.get("completion_review") or {}).get("status") != "passed":
+            errors.append("clean_plate_stage_generated_regions_require_review")
     return errors
 
 
@@ -250,17 +268,23 @@ def run_clean_plate_stage(
     capture_root: str | Path,
     privacy_processing: Optional[Mapping[str, Any]] = None,
     worldlabs_input: Optional[Mapping[str, Any]] = None,
+    task_context: Optional[Mapping[str, Any]] = None,
+    website_source_video: Optional[Path] = None,
+    image_edit_admission: Optional[Mapping[str, Any]] = None,
+    image_edit_admission_grant: Any = None,
+    meta_sam_admission: Optional[Mapping[str, Any]] = None,
+    meta_sam_admission_grant: Any = None,
+    reconstruction_capabilities: Optional[Mapping[str, Any]] = None,
     policy: Optional[CleanPlatePolicy] = None,
     force_rebuild: bool = False,
 ) -> Dict[str, Any]:
     """Run (or no-op) the clean-plate stage for one capture.
 
-    Returns a receipt dict. In the scaffold ``clean_plate_video_uri`` is always
-    ``None`` -- the caller must not redirect the reconstruction input on any
-    status other than a future ``objects_removed`` carrying a real video.
+    Website reconstruction consumes only ready prepared images. The original
+    source and estimated placement remain available for asset composition.
     """
 
-    policy = policy or CleanPlatePolicy.from_env()
+    policy = policy or (CleanPlatePolicy(enabled=True) if website_source_video is not None else CleanPlatePolicy.from_env())
 
     if not policy.enabled:
         # Pure opt-in no-op; write nothing, mirror the supervisor-disabled shape.
@@ -290,6 +314,10 @@ def run_clean_plate_stage(
     plan: Dict[str, Any]
     blockers: list[str] = []
     reason: Optional[str] = None
+    source_geometry: Optional[Dict[str, Any]] = None
+    task_masks: Optional[Dict[str, Any]] = None
+    object_removal_frames: Optional[list[Dict[str, Any]]] = None
+    prepared_views: Optional[Dict[str, Any]] = None
 
     if privacy_status == "failed_closed":
         # Fail safe: never proceed on a capture whose privacy pipeline failed.
@@ -305,14 +333,20 @@ def run_clean_plate_stage(
         blockers.append("privacy_pipeline_failed_closed")
         input_video_path = None
     else:
-        input_video_path = _resolve_input_video(ctx.pipeline_root, ctx.capture_root)
-        plan = analyze_removal_targets(video_path=input_video_path)
+        input_video_path = website_source_video or _resolve_input_video(ctx.pipeline_root, ctx.capture_root)
+        plan = analyze_removal_targets(video_path=website_source_video or input_video_path, task_context=task_context)
         plan_errors = validate_removal_plan(plan)
         if plan_errors:
             blockers.extend(plan_errors)
         blockers.extend(plan.get("blockers", []) or [])
+        if website_source_video is not None:
+            # The website reviews its original source, not a VIP derivative.
+            # A complete review with no people can proceed; detected people
+            # require actual removal/verification before images leave Pipeline.
+            privacy_verified = not blockers and plan.get("status") == "completed" and not int(plan.get("person_target_count") or 0)
+            privacy_status = "no_people_detected" if privacy_verified else "pending_website_review"
         movable_removals = int(plan.get("movable_removal_count") or 0)
-        if _string(plan.get("status")) == "blocked":
+        if blockers or _string(plan.get("status")) != "completed":
             status = "blocked"
             mode = "analysis_blocked"
             reason = "removal_analysis_blocked"
@@ -326,6 +360,80 @@ def run_clean_plate_stage(
             status = "blocked"
             mode = "fill_machinery_pending"
             reason = "clean_plate_fill_machinery_not_implemented"
+
+    # The website uses the original video for placement, never generated pixels.
+    # Estimated scale is sufficient for this development replica; a missing
+    # measured dimension is not a reason to stop preparation.
+    if website_source_video is not None and privacy_verified and not blockers:
+        try:
+            source_geometry = run_website_scene_geometry(
+                source_video=website_source_video,
+                output_root=clean_plate_root / "source_geometry", capture_id=ctx.capture_id,
+            )
+        except Exception as exc:
+            status, mode = "blocked", "source_geometry_blocked"
+            reason = "website_source_geometry_unavailable"
+            blockers.append(str(exc) if isinstance(exc, ValueError) else type(exc).__name__)
+
+    if source_geometry is not None and not blockers and any(
+        target.get("task_effect") in {"manipulated", "static_contact", "static_obstacle"}
+        for target in plan.get("targets", [])
+    ):
+        try:
+            task_masks = run_website_task_masks(plan=plan, source_geometry=source_geometry,
+                                                output_root=clean_plate_root / "task_masks",
+                                                meta_admission=meta_sam_admission,
+                                                meta_admission_grant=meta_sam_admission_grant,
+                                                task_context=task_context,
+                                                source_video=website_source_video)
+        except Exception as exc:
+            status, mode = "blocked", "task_masks_blocked"
+            reason = "website_task_masks_unavailable"
+            blockers.append(str(exc) if isinstance(exc, ValueError) else type(exc).__name__)
+
+    if task_masks is not None and source_geometry is not None and not blockers:
+        try:
+            profile = reconstruction_profile(reconstruction_capabilities)
+            reconstruction_frames = reconstruction_source_frames(source_geometry=source_geometry, task_masks=task_masks,
+                source_video=website_source_video, limit=profile["max_input_images"],
+                output_root=clean_plate_root / "reconstruction_source_frames")
+            object_removal_frames = prepare_object_removal_frames(
+                frames=reconstruction_frames, task_masks=task_masks,
+                output_root=clean_plate_root / "object_removal_frames",
+            )
+        except Exception as exc:
+            status, mode = "blocked", "object_removal_frames_blocked"
+            reason = "website_object_removal_frames_unavailable"
+            blockers.append(str(exc) if isinstance(exc, ValueError) else type(exc).__name__)
+
+    if object_removal_frames is not None and not blockers:
+        try:
+            selected = select_reconstruction_frames(frames=object_removal_frames, task_masks=task_masks,
+                                                    limit=profile["max_input_images"])
+            completion_review = None
+            if any(frame["remaining_pixel_count"] for frame in selected):
+                selected = complete_background_images(
+                    frames=selected, task_digest=plan["task_context_sha256"],
+                    output_root=clean_plate_root / "image_completion", admission=image_edit_admission or {},
+                    token=os.getenv("OPENAI_API_KEY", ""), admission_grant=image_edit_admission_grant,
+                    targets=plan["targets"], task_context=task_context)
+                completion_review = verify_completed_background(
+                    frames=selected, original_frames=source_geometry["frames"], plan=plan,
+                    output_root=clean_plate_root / "image_completion")
+                if completion_review.get("status") != "passed":
+                    raise ValueError("website_image_completion_review_failed")
+            prepared_views = {"schema_version": "website_prepared_views.v1", "status": "ready", "frames": selected,
+                              "reconstruction_profile": profile,
+                              "task_context_sha256": plan.get("task_context_sha256"),
+                              "source_geometry_digest": (source_geometry or {}).get("digest"),
+                              "generated_pixels_present": any(f.get("generated_pixels_present") for f in selected),
+                              "completion_review": completion_review, "claim_ceiling": CLAIM_CEILING}
+            prepared_views["digest"] = canonical_digest(prepared_views, digest_field="digest")
+            status = "objects_removed" if int(plan.get("movable_removal_count") or 0) else "noop"
+            mode, reason = "prepared_images", None
+        except Exception as exc:
+            status, mode, reason = "blocked", "website_images_blocked", "website_prepared_images_unavailable"
+            blockers.append(str(exc) if isinstance(exc, (ValueError, RuntimeError)) else type(exc).__name__)
 
     removal_manifest = _build_removal_manifest(plan)
 
@@ -354,10 +462,14 @@ def run_clean_plate_stage(
         "target_count": int(plan.get("target_count") or 0),
         "movable_removal_count": int(plan.get("movable_removal_count") or 0),
         "person_target_count": int(plan.get("person_target_count") or 0),
-        # Scaffold never edits pixels: no clean plate, no generated regions.
+        # Generated image repairs are separate from the retained originals.
         "clean_plate_video_uri": None,
-        "generated_regions_present": False,
+        "generated_regions_present": bool((prepared_views or {}).get("generated_pixels_present")),
         "originals_retained": True,
+        "source_geometry": source_geometry,
+        "task_masks": task_masks,
+        "object_removal_frames": object_removal_frames,
+        "prepared_views": prepared_views,
         "removal_plan_uri": _stage_uri(ctx, REMOVAL_PLAN_FILENAME),
         "removal_manifest_uri": _stage_uri(ctx, REMOVAL_MANIFEST_FILENAME),
         "stage_manifest_uri": _stage_uri(ctx, STAGE_MANIFEST_FILENAME),
@@ -390,6 +502,10 @@ def run_clean_plate_stage(
         "policy": policy.to_dict(),
         "privacy_status": privacy_status,
         "privacy_verified": privacy_verified,
+        "source_geometry": source_geometry,
+        "task_masks": task_masks,
+        "object_removal_frames": object_removal_frames,
+        "prepared_views": prepared_views,
         "target_count": stage_manifest["target_count"],
         "movable_removal_count": stage_manifest["movable_removal_count"],
         "person_target_count": stage_manifest["person_target_count"],

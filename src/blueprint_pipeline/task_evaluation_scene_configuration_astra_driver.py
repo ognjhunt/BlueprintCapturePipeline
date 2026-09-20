@@ -131,13 +131,19 @@ def build_authoring_request(stage_input: Mapping[str, Any], source_record: Mappi
                  "excerpt": "Retained source object identity and metric envelope: " + canonical_json({
                      "source_object_identity": source_identity, "metric_envelope": envelope})}]
     frames = []
+    website_capture = configuration.get("source_observation_kind") == "website_capture_frames"
+    if website_capture and configuration.get("dimension_authority") != "estimated":
+        raise AstraStageError("astra_website_dimensions_must_remain_estimated")
     for index, reference in enumerate(references):
         record = file_record(reference)
         frames.append({"path": record["path"], "sha256": record["sha256"], "role": "observed_source",
-                       "description": f"Digest-bound stage-1 appearance view {index}; derived source render, not physical truth."})
+                       "description": (f"Original website capture frame {index}; retain observed appearance. "
+                                       "Geometry and scale inferred from it remain estimates." if website_capture else
+                                       f"Digest-bound stage-1 appearance view {index}; derived source render, not physical truth.")})
         evidence.append({"evidence_id": f"retained_source_view_{index}", "uri": record["path"],
                          "sha256": record["sha256"].removeprefix("sha256:"), "kind": "material_observation",
-                         "excerpt": "Owner-described object shown in the retained source-derived appearance view."})
+                         "excerpt": ("Task-selected object in the original website capture frame." if website_capture else
+                                     "Owner-described object shown in the retained source-derived appearance view.")})
     evidence.extend(_verify_physical_evidence(configuration.get("physical_evidence", []),
                                               stage_input["construction_envelope"]))
     if len({row["evidence_id"] for row in evidence}) != len(evidence):
@@ -164,7 +170,8 @@ def build_authoring_request(stage_input: Mapping[str, Any], source_record: Mappi
         "schema_version": "task_object_astra_authoring_request.v1", "run_id": stage_input["run_id"],
         "object_id": identity["id"], "owner_description": owner,
         "role": configuration.get("role", "task_object"), "dimensions_m": dimensions,
-        "dimension_authority": "source_geometry", "dimension_source_digest": source_record["digest"],
+        "dimension_authority": "estimated" if website_capture else "source_geometry",
+        "dimension_source_digest": source_record["digest"],
         "dimension_uncertainty_m": uncertainty, "coordinate_frame": "object_center_xy_bottom_z_z_up_meters",
         "maximum_export_error_m": configuration.get("maximum_export_error_m", 0.00001),
         "source_frames": frames, "physical_review_input": physical,

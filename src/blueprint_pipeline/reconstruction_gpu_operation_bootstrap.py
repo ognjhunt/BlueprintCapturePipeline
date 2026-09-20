@@ -107,7 +107,7 @@ def run_reconstruction_gpu_operation_bootstrap(
     worker_image = _required_env(environment, "BLUEPRINT_CONTAINER_IMAGE_DIGEST")
     source_commit = _required_env(environment, "BLUEPRINT_SOURCE_COMMIT")
     if (
-        operation not in {"pose_canary", "trainer_canary"}
+        operation not in {"pose_canary", "trainer_canary", "website_mapanything"}
         or _DIGEST.fullmatch(input_digest) is None
         or _DIGEST.fullmatch(receipt_file_digest) is None
         or _DIGEST.fullmatch(request_digest) is None
@@ -196,7 +196,7 @@ def run_reconstruction_gpu_operation_bootstrap(
         raise ReconstructionGpuOperationBootstrapError(
             ["reconstruction_operation_bootstrap_execution_failed"]
         ) from exc
-    result_digest = result.get("pose_estimation_result_digest") or result.get(
+    result_digest = result.get("website_mapanything_result_digest") or result.get("pose_estimation_result_digest") or result.get(
         "reconstruction_training_result_digest"
     )
     bootstrap = {

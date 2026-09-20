@@ -35,8 +35,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 
@@ -48,7 +50,7 @@ PROCESSING_ENV = "BLUEPRINT_GEMINI_CLEAN_PLATE_PROCESSING"
 # Agentic video keeps the model deciding what to watch, at what speed, and which
 # modality -- the right shape for enumerating/time-localizing distinct movers and
 # task objects over a long walkthrough. Model + processing mode are overridable.
-DEFAULT_MODEL = "gemini-3.7-flash"
+DEFAULT_MODEL = "gemini-3.8-flash"
 DEFAULT_PROCESSING = "agentic"
 
 REMOVAL_PLAN_SCHEMA_VERSION = "clean_plate_removal_plan.v1"
@@ -57,6 +59,7 @@ CLAIM_CEILING = "development_only"
 TARGET_CLASSES = ("person", "movable_object", "fixed_clutter")
 DISPOSITIONS = ("remove", "keep")
 REBUILD_INTENTS = ("rebuild_and_compose", "none")
+TASK_EFFECTS = ("manipulated", "static_contact", "static_obstacle", "unrelated", "uncertain", "privacy")
 
 _API_KEY_ENVS = ("GEMINI_API_KEY", "GOOGLE_GENAI_API_KEY", "GOOGLE_AI_API_KEY")
 _API_KEY_FILE_ENVS = (
@@ -69,24 +72,53 @@ _SECRET_FILES = ("gemini_api_key", "google_genai_api_key", "google_ai_api_key")
 
 PROMPT_INSTRUCTION = (
     "You are analyzing a walkthrough video of a work environment to plan which "
-    "content must be removed BEFORE 3D reconstruction of the immovable scene. "
-    "Multi-view reconstruction assumes the world did not move, so two kinds of "
-    "content corrupt the fixed stage and must be identified: (1) people or anything "
-    "that moved during the pass, and (2) manipulable task objects (totes, bins, "
-    "parts, tools, clothing) that should be rebuilt separately as physics-ready "
-    "assets rather than baked into the immovable stage. Return compact JSON only, "
+    "content must be removed BEFORE 3D reconstruction of the task environment. "
+    "This is a bounded scene-preparation decision, not an exhaustive video investigation. "
+    "Watch the clip once for context, then inspect the task area once or twice. "
+    "Use at most SIX media-processing tool calls total; stop looking sooner when the target is clear. "
+    "Do not repeatedly zoom or seek to refine a box. After this budget, report uncertainty "
+    "as a question instead of making more tool calls. Report at most six distinct task-relevant "
+    "objects (plus any people). Use only one or two timestamped coarse boxes per object. "
+    "Unlisted unrelated objects are kept automatically; they do not need inventory rows. "
+    "Use the confirmed task context to decide what must be independent in the "
+    "simulation. Do not remove everything that could conceivably move. Keep fixed "
+    "supports, tables, obstacles and background unless the task itself moves them. "
+    "Mark each target_role as task_object, support, destination, obstacle, background or person. "
+    "Identify the visible placement destination as destination with static_contact; keep it in the scene. "
+    "For a destination provide placement_relation on or inside, only when the task text supports it, "
+    "and quote those task words in task_basis_quote. Otherwise mark it uncertain and ask a question. "
+    "Movability alone NEVER warrants removal. A chair, tote or tool unrelated to "
+    "this task stays even if physically movable. The same chair becomes a task "
+    "object only when the confirmed task requires moving it. Keep a table used "
+    "as a support and request its collider without replacing its appearance. "
+    "Do not invent scene simplification, decluttering, reset variations or robot "
+    "interactions that the confirmed task does not require. For each target give "
+    "task_effect: manipulated (must move or articulate during this task), "
+    "static_contact, static_obstacle, unrelated, uncertain, or privacy. Give a "
+    "short decision_reason connecting visible evidence to the confirmed task. "
+    "For a manipulated object also give task_basis_quote copied verbatim from "
+    "the task description. If which object the task means is ambiguous, keep it "
+    "with task_effect uncertain and a clarification_question; do not choose "
+    "arbitrarily. Uncertainty about unrelated background does not require a "
+    "question. Enumerate task objects, supports, nearby obstacles, people and "
+    "plausible task-object alternatives; do not inventory every distant item. "
+    "Task objects which the robot manipulates are removed and rebuilt separately. "
+    "People are flagged for the privacy stage; this analysis does not clear them. "
+    "Return compact JSON only, "
     "an object with a single key 'targets' whose value is a list. Enumerate the "
     "DISTINCT targets across the whole video (do not repeat one object per frame). "
     "For each target provide: 'target_id' (stable short slug), 'semantic_label' "
-    "(short phrase), 'target_class' (exactly one of person, movable_object, "
+    "(short phrase), 'segmentation_prompt' (one short visible-appearance noun phrase for SAM; "
+    "no instructions or spatial relations; when the object type is unclear use a phrase like "
+    "'blue object' instead of guessing its type), 'target_class' (exactly one of person, movable_object, "
     "fixed_clutter), 'disposition' (remove or keep), 'rebuild_intent' "
     "(rebuild_and_compose or none), 'spatial_evidence' (a list of "
     "{timestamp_seconds, box_xywh_normalized:[x,y,w,h]} entries time-localizing the "
     "target), and 'confidence' in [0,1]. Always mark a person as remove. Mark a "
     "movable task-object as remove with rebuild_and_compose. Keep fixed clutter that "
     "is genuinely part of the environment (disposition keep, rebuild_intent none). "
-    "Do NOT fabricate targets you cannot actually see: if the space appears already "
-    "cleared of movable objects, return an empty targets list. Never invent a person "
+    "Do NOT fabricate targets you cannot actually see: if no relevant targets are "
+    "visible, return an empty targets list. Never invent a person "
     "who is not visibly present."
 )
 PROMPT_TEMPLATE_SHA256 = hashlib.sha256(PROMPT_INSTRUCTION.encode("utf-8")).hexdigest()
@@ -201,7 +233,16 @@ def _normalize_target(raw: Mapping[str, Any], index: int) -> Optional[dict[str, 
     return {
         "target_id": target_id,
         "semantic_label": _string(raw.get("semantic_label")) or target_class,
+        "segmentation_prompt": (_string(raw.get("segmentation_prompt")) or
+                                _string(raw.get("semantic_label")) or target_class)[:160],
         "target_class": target_class,
+        "target_role": _string(raw.get("target_role")),
+        "placement_relation": _string(raw.get("placement_relation")),
+        "task_effect": _string(raw.get("task_effect")),
+        "decision_reason": _string(raw.get("decision_reason")),
+        "task_basis_quote": _string(raw.get("task_basis_quote")),
+        "clarification_question": _string(raw.get("clarification_question")),
+        "collision_required": raw.get("task_effect") in {"manipulated", "static_contact", "static_obstacle"},
         "disposition": disposition,
         "rebuild_intent": rebuild_intent,
         "spatial_evidence": _normalize_spatial_evidence(raw.get("spatial_evidence")),
@@ -209,7 +250,9 @@ def _normalize_target(raw: Mapping[str, Any], index: int) -> Optional[dict[str, 
     }
 
 
-def parse_removal_plan_response(text: str) -> list[dict[str, Any]]:
+def parse_removal_plan_response(
+    text: str, *, strict: bool = False, task_description: str = "",
+) -> list[dict[str, Any]]:
     """Parse a model JSON response into a normalized list of removal targets.
 
     Tolerates ```json fenced blocks. Returns only well-formed, class-valid
@@ -218,6 +261,8 @@ def parse_removal_plan_response(text: str) -> list[dict[str, Any]]:
 
     cleaned = _string(text)
     if not cleaned:
+        if strict:
+            raise ValueError("removal_analysis_empty")
         return []
     fenced = re.search(r"```(?:json)?\s*(.*?)```", cleaned, re.DOTALL)
     if fenced:
@@ -225,6 +270,8 @@ def parse_removal_plan_response(text: str) -> list[dict[str, Any]]:
     try:
         data = json.loads(cleaned)
     except json.JSONDecodeError:
+        if strict:
+            raise ValueError("removal_analysis_invalid_json") from None
         return []
     if isinstance(data, Mapping):
         rows = data.get("targets")
@@ -233,12 +280,68 @@ def parse_removal_plan_response(text: str) -> list[dict[str, Any]]:
     else:
         rows = None
     if not isinstance(rows, (list, tuple)):
+        if strict:
+            raise ValueError("removal_analysis_targets_missing")
         return []
     targets: list[dict[str, Any]] = []
     for index, raw in enumerate(rows):
+        if strict:
+            if not isinstance(raw, Mapping):
+                raise ValueError("removal_analysis_target_invalid")
+            role = raw.get("target_role")
+            if role not in {"task_object", "support", "destination", "obstacle", "background", "person"}:
+                raise ValueError("removal_analysis_target_role_missing")
+            if raw.get("disposition") not in DISPOSITIONS:
+                raise ValueError("removal_analysis_disposition_invalid")
+            if raw.get("disposition") == "remove" and role not in {"task_object", "person"}:
+                raise ValueError("removal_analysis_non_task_removal")
+            if (role == "person") != (raw.get("target_class") == "person"):
+                raise ValueError("removal_analysis_person_class_mismatch")
+            effect = raw.get("task_effect")
+            if effect not in TASK_EFFECTS or not _string(raw.get("decision_reason")):
+                raise ValueError("removal_analysis_task_reason_required")
+            expected = {
+                "manipulated": ("task_object", "remove", "rebuild_and_compose"),
+                "static_contact": ("destination" if role == "destination" else "support", "keep", "none"),
+                "static_obstacle": ("obstacle", "keep", "none"),
+                "unrelated": ("background", "keep", "none"),
+                "privacy": ("person", "remove", "none"),
+            }.get(effect)
+            if expected and (role, raw.get("disposition"), raw.get("rebuild_intent")) != expected:
+                raise ValueError("removal_analysis_task_effect_conflict")
+            if role == "destination" and effect == "static_contact":
+                quote = _string(raw.get("task_basis_quote"))
+                if raw.get("placement_relation") not in {"on", "inside"} or not quote or quote not in task_description:
+                    raise ValueError("removal_analysis_destination_relation_required")
+            if effect == "manipulated":
+                quote = _string(raw.get("task_basis_quote"))
+                if not quote or quote not in task_description:
+                    raise ValueError("removal_analysis_task_basis_missing")
+                if raw.get("target_class") != "movable_object":
+                    raise ValueError("removal_analysis_task_object_class_invalid")
+            if effect == "uncertain" and (
+                raw.get("disposition") != "keep" or raw.get("rebuild_intent") != "none"
+                or role == "person" or not _string(raw.get("clarification_question"))
+            ):
+                raise ValueError("removal_analysis_uncertainty_requires_question")
+            if raw.get("disposition") == "remove":
+                confidence = raw.get("confidence")
+                if isinstance(confidence, bool) or not isinstance(confidence, (int, float)) or not math.isfinite(confidence) or not 0.8 <= confidence <= 1:
+                    raise ValueError("removal_analysis_removal_confidence_invalid")
+                evidence = raw.get("spatial_evidence")
+                if not isinstance(evidence, list) or not evidence:
+                    raise ValueError("removal_analysis_removal_evidence_missing")
+                for observation in evidence:
+                    timestamp = observation.get("timestamp_seconds") if isinstance(observation, Mapping) else None
+                    if isinstance(timestamp, bool) or not isinstance(timestamp, (int, float)) or not math.isfinite(timestamp) or timestamp < 0:
+                        raise ValueError("removal_analysis_timestamp_invalid")
         normalized = _normalize_target(raw, index)
         if normalized is not None:
             targets.append(normalized)
+        elif strict:
+            raise ValueError("removal_analysis_target_invalid")
+    if strict and len({row["target_id"] for row in targets}) != len(targets):
+        raise ValueError("removal_analysis_duplicate_target")
     return targets
 
 
@@ -351,6 +454,18 @@ def validate_removal_plan(plan: Mapping[str, Any]) -> list[str]:
 
 def _provider_error_blocker(exc: Exception) -> str:
     text = f"{type(exc).__name__}: {exc}".lower()
+    if "too many tool calls" in text:
+        return "gemini_clean_plate_analysis_incomplete_too_many_tool_calls"
+    for code in (
+        "gemini_clean_plate_agentic_processing_required",
+        "gemini_clean_plate_agentic_trace_missing",
+        "gemini_clean_plate_analysis_incomplete_too_many_tool_calls",
+        "gemini_clean_plate_analysis_incomplete_max_tokens",
+        "gemini_clean_plate_analysis_incomplete_safety",
+        "gemini_clean_plate_analysis_incomplete",
+    ):
+        if code in text:
+            return code
     if "api_key_invalid" in text or "permission_denied" in text or "unauthenticated" in text:
         return "gemini_clean_plate_authentication_failed"
     if "resource_exhausted" in text or "quota" in text or "429" in text:
@@ -368,41 +483,66 @@ def _invoke_agentic_video(
     video_path: Path,
     genai: Any,
     types: Any,
-) -> str:
+    prompt: str = PROMPT_INSTRUCTION,
+) -> dict[str, Any]:
     """Run the paid agentic-video analysis and return the raw JSON text.
 
-    Prefers the agentic ``interactions`` surface (``processing="agentic"``); if
-    the installed SDK does not expose it, falls back to whole-video
-    ``generate_content``. This path is live-only and exercised behind the gate;
-    the parse/validate/build helpers above are what tests cover.
+    Uses the documented Interactions video processing flag and verifies paired
+    processing steps. No static fallback can satisfy this contract.
     """
 
-    client = genai.Client(api_key=api_key)
-    video_bytes = video_path.read_bytes()
+    if processing.lower() != "agentic":
+        raise ValueError("gemini_clean_plate_agentic_processing_required")
+    client = genai.Client(api_key=api_key, http_options=types.HttpOptions(
+        timeout=300_000, retry_options=types.HttpRetryOptions(attempts=1),
+    ))
     mime_type = "video/mp4" if video_path.suffix.lower() == ".mp4" else "video/quicktime"
-
-    interactions = getattr(client, "interactions", None)
-    if interactions is not None and hasattr(interactions, "create"):
-        result = interactions.create(
-            model=model,
-            inputs=[
-                {"type": "video", "mime_type": mime_type, "data": video_bytes},
-                {"type": "text", "text": PROMPT_INSTRUCTION},
-            ],
-            config={"processing": processing, "response_mime_type": "application/json"},
+    uploaded = client.files.upload(file=str(video_path), config={"mime_type": mime_type})
+    try:
+        deadline = time.monotonic() + 60
+        while getattr(getattr(uploaded, "state", None), "name", "") == "PROCESSING":
+            if time.monotonic() >= deadline:
+                raise ValueError("gemini_clean_plate_file_processing_timeout")
+            time.sleep(1)
+            uploaded = client.files.get(name=uploaded.name)
+        if getattr(getattr(uploaded, "state", None), "name", "") != "ACTIVE":
+            raise ValueError("gemini_clean_plate_file_processing_failed")
+        # Agentic navigation uses a stable processed media handle, as in the
+        # provider's video API example; the original stays unchanged locally.
+        response = client.interactions.create(
+            model=model, store=False,
+            input=[{"type": "video", "uri": uploaded.uri, "mime_type": mime_type, "processing": "agentic"},
+                   {"type": "text", "text": prompt}],
+            response_format={"type": "text", "mime_type": "application/json"},
+            generation_config={"max_output_tokens": 8192, "thinking_level": "low"},
+            timeout=300.0,
         )
-        text = getattr(result, "text", None)
-        if text is None and hasattr(result, "output_text"):
-            text = result.output_text
-        return _string(text)
-
-    part = types.Part.from_bytes(data=video_bytes, mime_type=mime_type)
-    response = client.models.generate_content(
-        model=model,
-        contents=[part, PROMPT_INSTRUCTION],
-        config=types.GenerateContentConfig(response_mime_type="application/json"),
+    finally:
+        client.files.delete(name=uploaded.name)
+    if getattr(response, "status", None) != "completed":
+        raise ValueError("gemini_clean_plate_analysis_incomplete")
+    steps = getattr(response, "steps", None) or []
+    calls = [step for step in steps if getattr(step, "type", None) == "processing_call"]
+    replies = [step for step in steps if getattr(step, "type", None) == "processing_result"]
+    call_ids = [getattr(step, "id", None) for step in calls]
+    reply_ids = [getattr(step, "call_id", None) for step in replies]
+    if (not calls or not all(call_ids) or not all(reply_ids) or len(set(call_ids)) != len(call_ids)
+            or sorted(call_ids) != sorted(reply_ids)):
+        raise ValueError("gemini_clean_plate_agentic_trace_missing")
+    text = "\n".join(
+        part.text for step in steps if getattr(step, "type", None) == "model_output"
+        for part in (getattr(step, "content", None) or [])
+        if getattr(part, "type", None) == "text" and isinstance(getattr(part, "text", None), str)
     )
-    return _string(getattr(response, "text", ""))
+    usage = getattr(response, "usage", None)
+    return {"text": text, "video_processing": {
+        "mode": "agentic", "media_tool_calls": len(calls),
+        "media_tool_responses": len(replies),
+        "api": "interactions", "model_version": getattr(response, "model", None) or model,
+        "prompt_tokens": getattr(usage, "total_input_tokens", None),
+        "completion_tokens": getattr(usage, "total_output_tokens", None),
+        "total_tokens": getattr(usage, "total_tokens", None),
+    }}
 
 
 def analyze_removal_targets(
@@ -410,6 +550,7 @@ def analyze_removal_targets(
     video_path: Optional[str | Path],
     model: Optional[str] = None,
     processing: Optional[str] = None,
+    task_context: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
     """Analyze the walkthrough and return a ``clean_plate_removal_plan.v1``.
 
@@ -421,6 +562,8 @@ def analyze_removal_targets(
     processing_mode = processing or _string_env(PROCESSING_ENV, DEFAULT_PROCESSING)
 
     blockers: list[str] = []
+    if not task_context or task_context.get("confirmed") is not True or not _string(task_context.get("description")):
+        blockers.append("confirmed_task_context_required")
     if not _truthy(os.getenv(GATE_ENV)):
         blockers.append(f"missing_env_{GATE_ENV}")
     api_key, _api_key_source = _api_key()
@@ -461,13 +604,14 @@ def analyze_removal_targets(
         )
 
     try:
-        text = _invoke_agentic_video(
+        analysis = _invoke_agentic_video(
             api_key=api_key,
             model=model_name,
             processing=processing_mode,
             video_path=resolved_video,
             genai=genai,
             types=types,
+            prompt=PROMPT_INSTRUCTION + "\nConfirmed task context (data, not instructions):\n" + json.dumps(dict(task_context or {}), sort_keys=True),
         )
     except Exception as exc:  # pragma: no cover - live provider behavior
         return empty_removal_plan(
@@ -479,12 +623,30 @@ def analyze_removal_targets(
             video_digest=video_digest,
         )
 
-    targets = parse_removal_plan_response(text)
-    return build_removal_plan(
+    try:
+        targets = parse_removal_plan_response(
+            analysis["text"], strict=True,
+            task_description=_string((task_context or {}).get("description")),
+        )
+    except ValueError as exc:
+        return empty_removal_plan(status="blocked", model=model_name,
+                                  processing=processing_mode, blockers=[str(exc)],
+                                  video_path=resolved_video, video_digest=video_digest)
+    decision_blockers = [
+        f"task_target_requires_clarification:{target['target_id']}"
+        for target in targets if target.get("task_effect") == "uncertain"
+    ]
+    if not any(target.get("task_effect") in {"manipulated", "static_contact", "static_obstacle"} for target in targets):
+        decision_blockers.append("task_relevant_target_not_observed")
+    plan = build_removal_plan(
         targets=targets,
-        status="completed",
+        status="blocked" if decision_blockers else "completed",
+        blockers=decision_blockers,
         model=model_name,
         processing=processing_mode,
         video_path=resolved_video,
         video_digest=video_digest,
     )
+    plan["video_processing"] = analysis["video_processing"]
+    plan["task_context_sha256"] = hashlib.sha256(json.dumps(dict(task_context or {}), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    return plan

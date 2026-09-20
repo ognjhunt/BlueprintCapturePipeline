@@ -111,6 +111,24 @@ def _source_object(scene_id: str, obj: dict, review_label: str) -> dict[str, Any
         "physical_object_identity_proven": False, "source_object_is_physics_authority": False}
 
 
+def _existing_support_target(task: dict, lower: list[float], upper: list[float]) -> list[float]:
+    """Place on a captured support without inventing an extra tray asset."""
+    destination = task["destination"]
+    position = _finite_vector(destination.get("position_world_m"), 3)
+    require(destination.get("relation") == "on" and position is not None
+            and destination.get("simready_result") is None,
+            "completed_existing_support_destination_invalid")
+    support = task["support"]
+    support_min, support_max = support["aabb_min_xyz_m"], support["aabb_max_xyz_m"]
+    half = [(hi - lo) / 2 for lo, hi in zip(lower, upper, strict=True)]
+    require(all(math.isfinite(v) and v > 0 for v in half)
+            and all(support_min[i] <= position[i] - half[i]
+                    and position[i] + half[i] <= support_max[i] for i in (0, 1))
+            and math.isclose(position[2], support_max[2], abs_tol=0.005, rel_tol=0),
+            "completed_existing_support_destination_outside_surface")
+    return [position[0], position[1], position[2] + half[2]]
+
+
 @completed_submission_transaction
 def materialize_completed_scene_submission(
     *, binding: dict[str, Any], task: dict[str, Any], task_request_path: str | Path,
@@ -143,25 +161,47 @@ def materialize_completed_scene_submission(
     lower = [float(v) for v in subject["aabb_min_xyz_m"]]
     upper = [float(v) for v in subject["aabb_max_xyz_m"]]
     start = _center(lower, upper)
-    from .task_evaluation_scene_configuration_submission import _destination
-    destination_result_path = checked_file(task["destination"]["simready_result"]["path"],
-                                           task["destination"]["simready_result"])
-    destination_result, destination_static, destination_paths = _destination(destination_result_path, lower, upper)
-    destination_identity = destination_result["destination_identity"]
-    # The owner supplies the destination pose. Derive the object target from
-    # its admitted interior, preserving the owner's orientation and placement.
-    from scipy.spatial.transform import Rotation
-    orientation = task["destination"]["orientation_xyzw"]
-    interior = destination_result["interior_bounds_body_frame_m"]
-    local_target = [(interior["minimum"][i] + interior["maximum"][i]) / 2 for i in range(3)]
-    local_target[2] = interior["minimum"][2] + (upper[2] - lower[2]) / 2
-    target = (Rotation.from_quat(orientation).apply(local_target)
-              + task["destination"]["position_world_m"]).tolist()
+    existing_support = task["destination"].get("mode") == "existing_support_surface"
+    surface_target = None
+    effective_success = task["success"]
+    if existing_support:
+        target = _existing_support_target(task, lower, upper)
+        from .task_evaluation_surface_target import derive_surface_target, surface_execution_limits
+        surface = {"sage_prim_path": support["runtime_prim_path"],
+                   "bounds_min_xyz_m": support["aabb_min_xyz_m"],
+                   "bounds_max_xyz_m": support["aabb_max_xyz_m"], "top_z_m": support["aabb_max_xyz_m"][2]}
+        destination = {**task["destination"], "kind": "green_region",
+                       "radius_m": task["destination"].get("radius_m", math.hypot(
+                           (upper[0] - lower[0]) / 2, (upper[1] - lower[1]) / 2) + 0.01)}
+        surface_target = derive_surface_target(destination=destination, support=surface,
+            source_min=lower, source_max=upper, support_instance_id=support["source_object_id"])
+        effective_success = surface_execution_limits(success=task["success"], support=surface)
+    else:
+        from .task_evaluation_scene_configuration_submission import _destination
+        destination_result_path = checked_file(task["destination"]["simready_result"]["path"],
+                                               task["destination"]["simready_result"])
+        destination_result, destination_static, destination_paths = _destination(destination_result_path, lower, upper)
+        destination_identity = destination_result["destination_identity"]
+        # The owner supplies the destination pose. Derive the object target from
+        # its admitted interior, preserving the owner's orientation and placement.
+        from scipy.spatial.transform import Rotation
+        orientation = task["destination"]["orientation_xyzw"]
+        interior = destination_result["interior_bounds_body_frame_m"]
+        local_target = [(interior["minimum"][i] + interior["maximum"][i]) / 2 for i in range(3)]
+        local_target[2] = interior["minimum"][2] + (upper[2] - lower[2]) / 2
+        target = (Rotation.from_quat(orientation).apply(local_target)
+                  + task["destination"]["position_world_m"]).tolist()
     template, success, execution = records.pick_and_place_task_records(
         task_identity=task["task_identity"], object_identity=subject["identity"],
         start_center=start, target_center=target, source_min=lower, source_max=upper,
-        grasp_axis=int(task["grasp"]["axis"]), grasp_sign=float(task["grasp"]["sign"]),
-        success=task["success"], resolved_seed=1)
+        grasp_axis=2 if surface_target else int(task["grasp"]["axis"]),
+        grasp_sign=1.0 if surface_target else float(task["grasp"]["sign"]),
+        success=effective_success, resolved_seed=1,
+        jaw_axis=min(range(2), key=lambda i: upper[i] - lower[i]) if surface_target else 2)
+    if surface_target:
+        template["surface_target"] = surface_target
+        template["success"]["surface_target"] = surface_target
+        success["surface_target"] = surface_target
     label = str(subject["review_label"]).replace("_", " ")
     instruction = (f"Pick up the {label}, place it {task['destination']['relation']} the "
                    f"{task['destination']['visible_label']}, release it, and move the gripper clear.")
@@ -282,17 +322,30 @@ def materialize_completed_scene_submission(
     camera_ref = stage.json("configuration/camera_calibration_plan.v1.json",
         records.camera_calibration_plan(scene_id=scene_id, strategy="pick_and_place"))
 
-    destination_refs = {key: stage.copy(path, f"destination/{key}{path.suffix}")
-                        for key, path in destination_paths.items()}
-    destination_result_ref = stage.copy(destination_result_path, "destination/simready_result.v1.json")
-    native_probe = {"schema_version": "task_evaluation_rigid_destination_native_probe_configuration.v1",
-        "placement_support_scene_prim_paths": [support["runtime_prim_path"]],
-        "qualification_limits": {"maximum_penetration_m": 0.005, "minimum_support_contact_force_n": 0.05,
-            "maximum_forbidden_contact_force_n": 5.0, "settle_translation_tolerance_m": 0.01,
-            "settle_rotation_tolerance_rad": 0.08, "reset_translation_tolerance_m": 0.005,
-            "reset_rotation_tolerance_rad": 0.04,
-            "minimum_camera_pixels": {"external": 64, "wrist": 32, "overview": 64}},
-        "settle_sample_count": 3, "settle_steps_per_sample": 30}
+    supplemental_destination = None
+    destination_request = None
+    if not existing_support:
+        destination_refs = {key: stage.copy(path, f"destination/{key}{path.suffix}")
+                            for key, path in destination_paths.items()}
+        destination_result_ref = stage.copy(destination_result_path, "destination/simready_result.v1.json")
+        native_probe = {"schema_version": "task_evaluation_rigid_destination_native_probe_configuration.v1",
+            "placement_support_scene_prim_paths": [support["runtime_prim_path"]],
+            "qualification_limits": {"maximum_penetration_m": 0.005, "minimum_support_contact_force_n": 0.05,
+                "maximum_forbidden_contact_force_n": 5.0, "settle_translation_tolerance_m": 0.01,
+                "settle_rotation_tolerance_rad": 0.08, "reset_translation_tolerance_m": 0.005,
+                "reset_rotation_tolerance_rad": 0.04,
+                "minimum_camera_pixels": {"external": 64, "wrist": 32, "overview": 64}},
+            "settle_sample_count": 3, "settle_steps_per_sample": 30}
+
+        supplemental_destination = {"identity": destination_identity, "relation": task["destination"]["relation"],
+                                    **destination_refs, "simready_result": destination_result_ref}
+        destination_request = {"schema_version": "task_evaluation_rigid_destination_asset.v1",
+            "identity": destination_identity, "relation": task["destination"]["relation"],
+            "visible_label": task["destination"]["visible_label"],
+            **{key: destination_refs[key] for key in ("asset", "rights_admission", "static_qualification")},
+            "pose_world": {"position_world_m": task["destination"]["position_world_m"],
+                           "orientation_xyzw": [float(v) for v in task["destination"]["orientation_xyzw"]]},
+            "native_probe": native_probe, "provider_disclosure_allowed": True}
 
     definition_ref = stage.json("configuration/task_template.v1.json", template)
     success_ref = stage.json("configuration/task_success_criteria.v1.json", success)
@@ -303,8 +356,7 @@ def materialize_completed_scene_submission(
                    for i, value in enumerate(configurations)]
     recipe = construction_recipe(run_id=run_id, task=task, source_manifest_digest=manifest_ref["digest"],
         rights_admission_digest=rights_ref["digest"], configurations=config_refs,
-        supplemental_destination={"identity": destination_identity, "relation": task["destination"]["relation"],
-            **destination_refs, "simready_result": destination_result_ref})
+        supplemental_destination=supplemental_destination)
     recipe_ref = stage.json("configuration/scene_construction_recipe.v1.json", recipe)
     release = records.exact_production_release_binding(
         team_namespace=team, scene_identity=task["scene_identity"], source_commit=commit,
@@ -340,13 +392,7 @@ def materialize_completed_scene_submission(
                         "representation_kind": "simready_usd", "source_object": source_object_ref,
                         "rights_admission": rights_ref, "provider_disclosure_allowed": True},
             "definition": definition_ref, "success_criteria": success_ref, "execution": execution_ref,
-            "destination": {"schema_version": "task_evaluation_rigid_destination_asset.v1",
-                "identity": destination_identity, "relation": task["destination"]["relation"],
-                "visible_label": task["destination"]["visible_label"],
-                **{key: destination_refs[key] for key in ("asset", "rights_admission", "static_qualification")},
-                "pose_world": {"position_world_m": task["destination"]["position_world_m"],
-                               "orientation_xyzw": [float(v) for v in task["destination"]["orientation_xyzw"]]},
-                "native_probe": native_probe, "provider_disclosure_allowed": True}},
+            **({"destination": destination_request} if destination_request else {"surface_target": surface_target})},
         "sensors": {"configuration": camera_ref},
         "runtime": {"identity": {"id": "task-evaluation-scene-configuration-provider", "version": commit[:8]},
             "oci_image": NATIVE_TASK_ARENA_IMAGE,

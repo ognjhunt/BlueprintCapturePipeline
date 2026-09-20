@@ -18,6 +18,7 @@ import functools
 import os
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional
@@ -57,7 +58,8 @@ from .launch_proof_policy import (
 )
 from .object_index_stage import ensure_object_index_stage
 from .object_index_artifacts import resolve_current_object_index_artifacts
-from .clean_plate_stage import run_clean_plate_stage
+from .clean_plate_stage import CleanPlatePolicy, apply_clean_plate_to_reconstruction_input, run_clean_plate_stage
+from .website_task_context import load_current_website_task_context, load_website_scene_sponsorship
 from .privacy_processing import run_privacy_postprocess
 from .provider_preview import run_preview_provider
 from .proof_contracts import build_rights_provenance_review
@@ -2692,6 +2694,9 @@ def _geometry_advisory_payload(geometry_artifacts: Mapping[str, Any]) -> Dict[st
 
 
 def _should_run_default_geometry_stage(descriptor: CaptureDescriptor) -> bool:
+    if descriptor.metadata.get("capture_entry_source") == "browser_self_capture":
+        # Original-view geometry is already inferred by the website preparation.
+        return False
     if descriptor.capture_source == "iphone" and descriptor.arkit_poses_uri:
         return False
     capture_rights = (
@@ -4410,6 +4415,22 @@ def run_qualification_pipeline(
         pipeline_prefix = to_pipeline_prefix(scene_id, capture_id)
         pipeline_dir = storage_root / pipeline_prefix
         ensure_dir(pipeline_dir)
+        if descriptor.metadata.get("capture_entry_source") == "browser_self_capture":
+            stage = "website_task_context"
+            task_context = load_current_website_task_context(
+                request_id=str(descriptor.site_submission_id or descriptor.metadata.get("site_submission_id") or ""),
+                scene_id=scene_id, capture_id=capture_id,
+            )
+            write_json(pipeline_dir / "website_task_context.json", task_context)
+            sponsorship = load_website_scene_sponsorship(task_context=task_context, now=time.time())
+            write_json(pipeline_dir / "website_scene_sponsorship.json", sponsorship)
+            descriptor = CaptureDescriptor.from_dict({
+                **descriptor.to_dict(),
+                "metadata": {**descriptor.metadata, "site_task_context": task_context,
+                             "website_scene_execution_authority": sponsorship,
+                             "capture_rights": dict(task_context.get("capture_rights") or {}),
+                             "task_statement": task_context["description"]},
+            })
         downstream_requested_lanes = _requested_downstream_lanes(
             descriptor=descriptor,
             requested_lanes=requested_lanes,
@@ -4680,25 +4701,29 @@ def run_qualification_pipeline(
         )
         stage = "gemini_capture_review"
         raw_video_path = _resolve_optional_uri_to_path(descriptor.raw_video_uri, storage_root)
-        capture_fidelity_review = infer_capture_fidelity_review(
-            capture_root=descriptor_path.parent,
-            raw_video_path=raw_video_path,
-            keyframe_path=_resolve_optional_uri_to_path(descriptor.keyframe_uri, storage_root),
-            descriptor=descriptor.to_dict(),
-            qa_report=qa_report,
-            task_hypothesis_report=task_hypothesis_report,
-            capture_context={
-                "capture_rights": _capture_rights(effective_metadata if isinstance(effective_metadata, Mapping) else {}),
-                "capture_orientation": descriptor.capture_orientation,
-                "requested_outputs": list(descriptor.requested_outputs),
-                "quoted_payout_cents": descriptor.quoted_payout_cents,
-                "site_submission_id": descriptor.site_submission_id,
-                "buyer_request_id": descriptor.buyer_request_id,
-                "capture_job_id": descriptor.capture_job_id,
-                "metadata": dict(effective_metadata) if isinstance(effective_metadata, Mapping) else {},
-            },
-            timeout_sec=int(getattr(config, "gemini_timeout_seconds", 45) or 45),
-        )
+        website_capture = (descriptor.metadata or {}).get("capture_entry_source") == "browser_self_capture"
+        if website_capture:
+            capture_fidelity_review = {"status": "not_run", "reason": "website_task_analysis_owns_media_review"}
+        else:
+            capture_fidelity_review = infer_capture_fidelity_review(
+                capture_root=descriptor_path.parent,
+                raw_video_path=raw_video_path,
+                keyframe_path=_resolve_optional_uri_to_path(descriptor.keyframe_uri, storage_root),
+                descriptor=descriptor.to_dict(),
+                qa_report=qa_report,
+                task_hypothesis_report=task_hypothesis_report,
+                capture_context={
+                    "capture_rights": _capture_rights(effective_metadata if isinstance(effective_metadata, Mapping) else {}),
+                    "capture_orientation": descriptor.capture_orientation,
+                    "requested_outputs": list(descriptor.requested_outputs),
+                    "quoted_payout_cents": descriptor.quoted_payout_cents,
+                    "site_submission_id": descriptor.site_submission_id,
+                    "buyer_request_id": descriptor.buyer_request_id,
+                    "capture_job_id": descriptor.capture_job_id,
+                    "metadata": dict(effective_metadata) if isinstance(effective_metadata, Mapping) else {},
+                },
+                timeout_sec=int(getattr(config, "gemini_timeout_seconds", 45) or 45),
+            )
         write_json(pipeline_dir / "gemini_capture_fidelity_review.json", capture_fidelity_review)
         gates.append(
             QualificationGate(
@@ -4713,25 +4738,23 @@ def run_qualification_pipeline(
             metadata=effective_metadata if isinstance(effective_metadata, Mapping) else {},
         )
         stage = "privacy_postprocess"
-        privacy_processing = run_privacy_postprocess(
-            bucket=bucket,
-            scene_id=descriptor.scene_id,
-            capture_id=descriptor.capture_id,
-            capture_root=capture_root,
-            pipeline_dir=pipeline_dir,
-            raw_video_path=raw_video_path,
-        )
+        if website_capture:
+            privacy_processing = {"status": "pending_website_review", "mode": "task_aware_prepared_images",
+                                  "raw_retained": True, "fail_closed": True}
+        else:
+            privacy_processing = run_privacy_postprocess(
+                bucket=bucket,
+                scene_id=descriptor.scene_id,
+                capture_id=descriptor.capture_id,
+                capture_root=capture_root,
+                pipeline_dir=pipeline_dir,
+                raw_video_path=raw_video_path,
+            )
         # PIPE-03: a "delivery run" builds buyer/reviewer-facing downstream artifacts
         # (scene_memory / evaluation_prep lanes). For those, privacy post-processing
         # must actually have run and cleared — ``not_run`` is NON-passing. Non-delivery
         # / local flows keep passing on ``not_run``.
         privacy_delivery_run = bool(downstream_requested_lanes) or production_launch_mode()
-        gates.append(
-            _privacy_postprocess_gate(
-                privacy_status=str(privacy_processing.get("status") or ""),
-                delivery_run=privacy_delivery_run,
-            )
-        )
         descriptor_payload = descriptor.to_dict()
         descriptor_payload["privacy_processed_video_uri"] = privacy_processing.get("privacy_processed_video_uri")
         descriptor_payload["world_model_video_uri"] = privacy_processing.get("world_model_video_uri")
@@ -4756,7 +4779,9 @@ def run_qualification_pipeline(
             metadata=descriptor.metadata if isinstance(descriptor.metadata, Mapping) else {}
         )
         privacy_descriptor = CaptureDescriptor.from_dict(descriptor_payload)
-        if preview_requested_for_worldlabs and worldlabs_derived_rights_allowed:
+        if website_capture and preview_requested_for_worldlabs and worldlabs_derived_rights_allowed:
+            worldlabs_input = {"status": "awaiting_prepared_images", "output_video_uri": None, "manifest_uri": None}
+        elif preview_requested_for_worldlabs and worldlabs_derived_rights_allowed:
             worldlabs_input = _prepare_worldlabs_input_video(
                 descriptor=privacy_descriptor,
                 privacy_processing=privacy_processing,
@@ -4777,37 +4802,37 @@ def run_qualification_pipeline(
                 "manifest_uri": None,
                 "output_video_uri": None,
             }
-        # Conditional pre-reconstruction clean-plate stage (extract -> Atlas).
-        # Opt-in via BLUEPRINT_CLEAN_PLATE_ENABLED (default off). People are
-        # already removed by run_privacy_postprocess above; this stage verifies
-        # that and plans movable-object removal. Scaffold: it emits its analysis
-        # artifacts + receipt but never produces a clean-plate video, so the Atlas
-        # input is unchanged (strict no-op). When the view-consistent fill
-        # machinery lands, redirect worldlabs_input to the clean-plate video here.
+        # Website reconstruction must consume the task-aware preparation result.
+        # A held or disabled preparation cannot fall back to the original video.
+        # Legacy capture keeps its existing opt-in behavior.
         stage = "clean_plate"
         clean_plate = run_clean_plate_stage(
             capture_root=capture_root,
             privacy_processing=privacy_processing,
             worldlabs_input=worldlabs_input,
+            task_context=(descriptor.metadata or {}).get("site_task_context"),
+            website_source_video=(raw_video_path if website_capture else None),
+            image_edit_admission=(descriptor.metadata or {}).get("website_image_edit_admission"),
+            policy=(CleanPlatePolicy(enabled=worldlabs_derived_rights_allowed and preview_requested_for_worldlabs)
+                    if website_capture else None),
         )
         gates.append(
             QualificationGate(
                 "clean_plate_stage",
-                clean_plate.get("status") != "failed_closed",
+                clean_plate.get("status") in {"noop", "objects_removed", "disabled"},
                 f"status={clean_plate.get('status')} mode={clean_plate.get('mode')}",
             )
         )
-        clean_plate_video_uri = clean_plate.get("clean_plate_video_uri")
-        if (
-            clean_plate.get("status") == "objects_removed"
-            and clean_plate_video_uri
-            and clean_plate.get("privacy_verified")
-        ):
-            worldlabs_input = {
-                **worldlabs_input,
-                "output_video_uri": clean_plate_video_uri,
-                "clean_plate_applied": True,
-            }
+        worldlabs_input = apply_clean_plate_to_reconstruction_input(
+            worldlabs_input, clean_plate,
+            required=(descriptor.metadata or {}).get("capture_entry_source") == "browser_self_capture",
+        )
+        if website_capture:
+            privacy_processing.update(status=clean_plate.get("privacy_status"),
+                                      fail_closed=not bool(clean_plate.get("privacy_verified")))
+            descriptor_payload["privacy_status"] = privacy_processing["status"]
+        gates.append(_privacy_postprocess_gate(privacy_status=str(privacy_processing.get("status") or ""),
+                                               delivery_run=privacy_delivery_run))
         metadata_payload = dict(descriptor_payload.get("metadata") or {})
         metadata_payload["privacy_processing"] = {
             "status": privacy_processing.get("status"),
@@ -4864,6 +4889,8 @@ def run_qualification_pipeline(
             "privacy_verified": clean_plate.get("privacy_verified"),
             "clean_plate_video_uri": clean_plate.get("clean_plate_video_uri"),
             "stage_manifest_uri": clean_plate.get("stage_manifest_uri"),
+            "source_geometry": clean_plate.get("source_geometry"),
+            "prepared_views": clean_plate.get("prepared_views"),
         }
         descriptor_payload["metadata"] = metadata_payload
         write_json(descriptor_path, descriptor_payload)
@@ -5268,7 +5295,7 @@ def run_qualification_pipeline(
         preview_provider_name = str(os.getenv("BLUEPRINT_PREVIEW_PROVIDER") or "world_labs").strip()
         requested_outputs = set(descriptor.requested_outputs or [])
         preview_requested = "preview_simulation" in requested_outputs or "preview" in requested_outputs
-        preview_input_ready = bool(worldlabs_input.get("output_video_uri")) and str(worldlabs_input.get("status") or "").strip().lower() == "ready"
+        preview_input_ready = bool(worldlabs_input.get("output_video_uri") or worldlabs_input.get("prepared_views")) and str(worldlabs_input.get("status") or "").strip().lower() == "ready"
         provider_run = (
             run_preview_provider(
                 provider_name=preview_provider_name,
@@ -5313,6 +5340,15 @@ def run_qualification_pipeline(
                 "provenance": {"canonical": False, "derived": True},
             }
         )
+        website_scene_preparation = None
+        if website_capture:
+            from .website_scene_handoff import prepare_website_scene_handoff
+            website_scene_preparation = prepare_website_scene_handoff(
+                descriptor=descriptor.to_dict(), clean_plate=clean_plate,
+                provider_run=provider_run, capture_root=capture_root, now=time.time(),
+            )
+            provider_run["website_scene_preparation"] = website_scene_preparation
+            write_json(pipeline_dir / "provider_run_manifest.json", provider_run)
         worldlabs_request_manifest_path = pipeline_dir / "worldlabs_request_manifest.json"
         worldlabs_request_manifest_uri = (
             f"gs://{bucket}/{pipeline_prefix}/worldlabs_request_manifest.json"
@@ -5614,6 +5650,7 @@ def run_qualification_pipeline(
             "completeness_status": scorecard.get("completeness_status"),
             "match_ready": opportunity_handoff.get("match_ready"),
             "readiness_support_outputs_emitted": emit_support_outputs,
+            "website_scene_preparation": website_scene_preparation,
             "webapp_sync_result_uri": f"gs://{bucket}/{pipeline_prefix}/webapp_sync_result.json",
         }
 

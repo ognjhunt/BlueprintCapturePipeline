@@ -352,3 +352,35 @@ def test_worldlabs_asset_materialization_statuses_and_cli(
         run_module_as_main("blueprint_pipeline.worldlabs_asset_materialization")
     except SystemExit as exc:
         assert exc.code == 0
+
+
+def test_website_collects_one_splat_and_collider_and_reuses_checked_bytes(tmp_path, monkeypatch):
+    root = _build_capture_root(tmp_path)
+    _write_json(root / "pipeline" / "worldlabs_world_manifest.json", {
+        "id": "world-website", "assets": {
+            "mesh": {"collider_mesh_url": "https://x/collider.glb", "high_quality_mesh_url": "https://x/hq.glb"},
+            "splats": {"spz_urls": {"full_res": "https://x/full.spz", "500k": "https://x/small.spz"},
+                       "ply_url": "https://x/scene.ply"}}})
+    calls = []
+    def download(url, path, *, max_bytes):
+        calls.append(url)
+        path.write_bytes(url.encode())
+        return {"size_bytes": path.stat().st_size, "sha256": w._sha_file(path)}
+    monkeypatch.setattr(w, "_download_remote_asset", download)
+    first = materialize_worldlabs_assets(capture_root=root, scene_preparation=True)
+    assert first["status"] == "complete"
+    assert calls == ["https://x/collider.glb", "https://x/scene.ply"]
+    second = materialize_worldlabs_assets(capture_root=root, scene_preparation=True)
+    assert second["status"] == "complete" and len(calls) == 2
+    manifest = json.loads(Path(second["manifest_path"]).read_text())
+    Path(manifest["downloads"][1]["local_path"]).write_bytes(b"tampered")
+    materialize_worldlabs_assets(capture_root=root, scene_preparation=True)
+    assert calls[-1] == "https://x/scene.ply" and len(calls) == 3
+
+
+def test_website_missing_splat_does_not_report_complete(tmp_path, monkeypatch):
+    root = _build_capture_root(tmp_path)
+    _write_json(root / "pipeline" / "worldlabs_world_manifest.json", {"id": "world-empty"})
+    result = materialize_worldlabs_assets(capture_root=root, scene_preparation=True)
+    assert result["status"] == "blocked_scene_assets_incomplete"
+    assert result["blockers"] == ["worldlabs_collider_required", "worldlabs_splat_required"]

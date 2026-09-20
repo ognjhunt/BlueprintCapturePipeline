@@ -248,6 +248,39 @@
                   "$ref": "#/$defs/configuredScenePublicDisplayAuthorization"
                 }
               }
+            },
+            "website_native_inputs": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "runtime_inputs",
+                "appearance",
+                "observations",
+                "candidate",
+                "frames"
+              ],
+              "properties": {
+                "runtime_inputs": {
+                  "$ref": "#/$defs/reference"
+                },
+                "appearance": {
+                  "$ref": "#/$defs/reference"
+                },
+                "observations": {
+                  "$ref": "#/$defs/reference"
+                },
+                "candidate": {
+                  "$ref": "#/$defs/reference"
+                },
+                "frames": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 256,
+                  "items": {
+                    "$ref": "#/$defs/reference"
+                  }
+                }
+              }
             }
           }
         },
@@ -1786,7 +1819,8 @@
         },
         "radius_m": {
           "type": "number",
-          "exclusiveMinimum": 0, "maximum": 0.5
+          "exclusiveMinimum": 0,
+          "maximum": 0.5
         },
         "surface_position_world_m": {
           "type": "array",

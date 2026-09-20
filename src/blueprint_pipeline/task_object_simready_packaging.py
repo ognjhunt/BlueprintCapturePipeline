@@ -296,9 +296,13 @@ def package_astra_candidate(*, request: AuthoringRequest,
     reopened = Usd.Stage.Open(str(asset))
     if reopened is None or not reopened.GetDefaultPrim().HasAPI(UsdPhysics.RigidBodyAPI):
         raise AssetAuthoringError('authoring_usdz_readback_failed')
+    generated = getattr(request, 'generated_specification', None)
     receipt = {'asset': file_record(asset), 'physics_completion': completion,
                'request_digest': request.request_digest,
                'authoring_result_digest': authoring_result.get('result_digest'),
+               'asset_origin': ('generated_variant' if generated.variant_of else 'generated_task_object')
+                               if generated else 'captured_object_reconstruction',
+               'generated_specification': generated.model_dump(mode='json') if generated else None,
                'claim_ceiling': 'development_only', 'native_qualified': False}
     save_json(output_root / 'astra_packaging_receipt.json', receipt)
     return receipt

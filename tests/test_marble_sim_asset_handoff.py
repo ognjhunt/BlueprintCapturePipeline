@@ -263,8 +263,10 @@ def test_run_preview_provider_persists_marble_sim_asset_handoff(tmp_path: Path, 
         world_manifest=None,
         include_visual_assets=False,
         max_asset_bytes=500_000_000,
+        scene_preparation=False,
     ):  # type: ignore[no-untyped-def]
         del world_manifest, include_visual_assets, max_asset_bytes
+        assert scene_preparation is False
         materialized_dir = Path(capture_root) / "pipeline" / "worldlabs_assets"
         materialized_dir.mkdir(parents=True, exist_ok=True)
         manifest_path = materialized_dir / "materialized_assets_manifest.json"

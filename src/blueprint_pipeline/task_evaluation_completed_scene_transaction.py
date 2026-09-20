@@ -9,7 +9,9 @@ import tempfile
 from .task_evaluation_scene_configuration_submission_inputs import read, require
 
 
-def completed_submission_transaction(builder):
+def completed_submission_transaction(builder=None, *, task_relative_path="provenance/completed_task_request.v1.json"):
+    if builder is None:
+        return lambda function: completed_submission_transaction(function, task_relative_path=task_relative_path)
     @wraps(builder)
     def materialize(**kwargs):
         from .task_evaluation_scene_configuration_submission_publication import _validated_inventory, _namespace_lock
@@ -20,7 +22,7 @@ def completed_submission_transaction(builder):
         with _namespace_lock(root.parent / "submission-build-locks", root.name):
             if root.exists():
                 manifest, _ = _validated_inventory(root, kwargs["expected_production_commit"])
-                require(read(root / "provenance/completed_task_request.v1.json") == kwargs["task"],
+                require(read(root / task_relative_path) == kwargs["task"],
                         "completed_submission_task_conflict")
                 return {"staging_root": str(root), "input_namespace": manifest["input_namespace"],
                     "request_digest": manifest["request_digest"], "manifest_digest": manifest["manifest_digest"],

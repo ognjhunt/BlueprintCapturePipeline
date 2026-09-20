@@ -669,6 +669,14 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
         provider_adapter_input: Mapping[str, Any] | None = None,
     ) -> Dict[str, Any]:
         started_at = time.time()
+        if (descriptor.get("metadata") or {}).get("capture_entry_source") == "browser_self_capture":
+            from .website_worldlabs import submit_website_prepared_views
+
+            return submit_website_prepared_views(
+                descriptor=descriptor, capture_root=capture_root,
+                api_request=_worldlabs_api_request, upload=_presigned_upload,
+                admission_grant=(provider_adapter_input or {}).get("paid_resource_admission_grant"),
+            )
         request_manifest = self._build_request_manifest(
             descriptor=descriptor,
             capture_root=capture_root,
@@ -825,6 +833,9 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
             if not world and world_id:
                 world = _worldlabs_api_request(f"/marble/v1/worlds/{world_id}")
             launch_url = str(world.get("world_marble_url") or "").strip()
+            cost = operation.get("cost") or {}
+            credits = cost.get("total_credits") if isinstance(cost, Mapping) else None
+            settled = isinstance(credits, int) and not isinstance(credits, bool) and credits >= 0
             return {
                 "provider_run_id": run_id,
                 "status": "ready" if launch_url else "failed",
@@ -835,6 +846,8 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
                 "operation_terminal_status": "ready" if launch_url else "failed",
                 "worldlabs_operation": operation,
                 "worldlabs_world": world or None,
+                "billing_status": "settled" if settled else "unreported",
+                **({"cost_credits": credits, "cost_usd": credits / 1250} if settled else {}),
             }
         raw_status = str(operation.get("status") or "").lower()
         return {
@@ -872,7 +885,11 @@ def run_preview_provider(
     provider: PreviewProvider | None = None
     try:
         provider = resolve_preview_provider(provider_name)
-        if provider_adapter_input is not None:
+        if (isinstance(provider, WorldLabsPreviewProvider)
+                and (descriptor.get("metadata") or {}).get("capture_entry_source") == "browser_self_capture"):
+            from .paid_resource_allocator import submit_sponsored_website_reconstruction
+            submitted = submit_sponsored_website_reconstruction(descriptor=descriptor, capture_root=capture_root)
+        elif provider_adapter_input is not None:
             submitted = provider.submit(
                 descriptor=descriptor,
                 capture_root=capture_root,
@@ -905,6 +922,10 @@ def run_preview_provider(
             poll_result = _poll_worldlabs_until_terminal(provider=provider, operation_id=operation_id)
             normalized["status"] = poll_result.get("status", "failed")
             normalized["failure_reason"] = poll_result.get("failure_reason")
+            normalized["billing_status"] = poll_result.get("billing_status", "unreported")
+            if normalized["billing_status"] == "settled":
+                normalized["cost_credits"] = poll_result["cost_credits"]
+                normalized["cost_usd"] = poll_result["cost_usd"]
             if poll_result.get("world_id"):
                 normalized["world_id"] = poll_result["world_id"]
             if poll_result.get("launch_url"):
@@ -929,6 +950,20 @@ def run_preview_provider(
                 normalized["worldlabs_world_manifest_uri"] = str(worldlabs_world_manifest_path)
             normalized["operation_terminal_status"] = poll_result.get("operation_terminal_status") or poll_result.get("status")
 
+            if (normalized.get("status") == "ready" and isinstance(worldlabs_world, Mapping)
+                    and (descriptor.get("metadata") or {}).get("capture_entry_source") == "browser_self_capture"):
+                from .website_task_context import publish_website_visual_scene
+                try:
+                    publication = publish_website_visual_scene(descriptor=descriptor, world=worldlabs_world,
+                                                               operation_id=operation_id)
+                except Exception as exc:
+                    # Retain the ready world and retry this idempotent callback
+                    # when the existing controller resumes the same operation.
+                    publication = {"state": "pending", "world_id": normalized.get("world_id"),
+                                   "blocker": str(exc) if isinstance(exc, ValueError) else type(exc).__name__}
+                normalized["website_visual_publication"] = publication
+                write_json(pipeline_dir / "website_visual_publication.json", publication)
+
         worldlabs_asset_materialization: Dict[str, Any] | None = None
         if (
             isinstance(provider, WorldLabsPreviewProvider)
@@ -941,6 +976,7 @@ def run_preview_provider(
                 worldlabs_asset_materialization = materialize_worldlabs_assets(
                     capture_root=capture_root,
                     world_manifest=worldlabs_world_manifest_path,
+                    scene_preparation=(descriptor.get("metadata") or {}).get("capture_entry_source") == "browser_self_capture",
                 )
                 artifact_uris = dict(normalized.get("artifact_uris") or {})
                 artifact_uris.update(
@@ -1045,6 +1081,7 @@ def run_preview_provider(
                 normalized.get("worldlabs_asset_materialization") or {}
             ),
             "marble_sim_asset_handoff": normalized.get("marble_sim_asset_handoff") or {},
+            "website_visual_publication": normalized.get("website_visual_publication"),
             "labeling": dict(normalized.get("labeling") or {}),
             "provenance": provenance,
         }
