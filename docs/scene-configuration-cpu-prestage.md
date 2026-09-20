@@ -116,3 +116,24 @@ archive writer, restores it at the same path and continues to stage 6).
 - Deploy with Astra: batch this with #2028-#2030, provision `/workspace`,
   set the stage-limit env, then one controller-origin website run. Do not
   deploy over a paid run.
+
+## Retired reservations after an early refusal
+
+ADP-040/050, day 28: a website construction retry was refused at
+`scene_intake_spend_cap_exhausted` because retired attempts retained API allowances
+despite failing before model entry. `budget_retained_hold` now recognizes the
+pretraining first-adapter refusal and the initial Astra disclosure refusal. The
+latter requires the digest-bound complete archive, two no-spend dependencies,
+the exact initial refusal, and no partial authoring, adoption, or later-stage
+output. Missing or ambiguous evidence keeps the conservative allowance.
+
+The native allowance stays fully reserved; no runtime estimate or incomplete
+posted billing replaces it. Historical receipts are unchanged. The saved
+walkthrough replay reduces held exposure from $16.76 to $6, admitting the next
+$11 attempt under the existing $20 execution cap. This is admission evidence,
+not an authoring or simulator success. Regression coverage lives in
+`test_unentered_authoring_budget.py` and `test_terminal_scene_attempt_settlement.py`.
+
+Use retained-input candidate-code replays for the fix/test loop, batching fixes
+before deployment. A passing replay does not replace the final hands-off test
+against the deployed controller.

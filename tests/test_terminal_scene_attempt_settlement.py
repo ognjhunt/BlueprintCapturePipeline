@@ -390,3 +390,37 @@ def test_preallocation_budget_reduction_requires_bound_nonallocation_evidence(tm
     if changed != "allocated":
         (result if changed == "result" else teardown).write_text("{}")
     assert settlement.budget_retained_hold(receipt)["retained_spend_usd"] == 16.76
+
+
+@pytest.mark.parametrize("paid_native", [False, True])
+def test_bound_unentered_model_failure_releases_only_its_model_allowance(tmp_path, monkeypatch, paid_native):
+    fx, receipt, result_path, teardown_path = _website_preallocation_failure(tmp_path, monkeypatch)
+    factory = json.loads(Path(fx["factory"]["path"]).read_text())
+    request = json.loads(Path(factory["submission_request"]["path"]).read_text())
+    result = json.loads(result_path.read_text())
+    if paid_native:
+        # The fixture's historical recipe has paid preparation. Keep those
+        # bounds here and mock only the independently tested archive proof.
+        monkeypatch.setattr("blueprint_pipeline.task_evaluation_unentered_authoring_budget.authoring_never_entered",
+                            lambda result, request: True)
+        result.update(provider_mutations_performed=1)
+        teardown = json.loads(teardown_path.read_text())
+        teardown["status"] = "completed"
+        _write(teardown_path, teardown)
+        expected = request["spend"]["provider_compute_spend_cap_usd"]
+    else:
+        result["blockers"] = ["vast_adapter_failed:ValueError:artifixer_pretraining_first_stage_invalid"]
+        expected = 0
+    _write(result_path, _seal(result, "result_digest"))
+    launch_path = Path(receipt["execution_terminal"]["launch_receipt"]["path"])
+    launch = json.loads(launch_path.read_text())
+    launch["terminal_evidence"]["result"] = {**settlement._file(result_path), "exists": True}
+    launch["terminal_evidence"]["artifacts"]["teardown_manifest_path"] = {**settlement._file(teardown_path), "exists": True}
+    _write(launch_path, launch)
+    # Regenerate this fixture's terminal settlement after sealing its evidence.
+    (fx["directory"] / "cancelled-unstarted-controls" / (receipt["attempt_id"] + ".json")).unlink()
+    _settle(fx, source_factory=fx["factory"])
+    attempt = json.loads((fx["directory"] / "attempts" / (receipt["attempt_id"] + ".json")).read_text())
+    receipt = validated_cancellation(fx["directory"], attempt)
+    assert settlement.budget_retained_hold(receipt)["retained_spend_usd"] == expected
+    assert _reserve(fx["root"], fx["intent"], "scene-configuration-successor", 17, now=300)["status"] == "reserved"
