@@ -550,7 +550,10 @@ def test_declined_launch_preserves_provider_blocker_and_leaves_zero_resources(tm
 
 def test_watchdog_can_guard_exact_operation_but_never_another_operations_name():
     import os
-    name = vast_operation.NAME_PREFIX + "website_mapanything-123456789abc"
+    from blueprint_pipeline.vast_independent_watchdog_control import validate_independent_vast_watchdog_names
+    name = vast_operation.reconstruction_resource_name("website_mapanything", "sha256:" + "a" * 64)
+    assert name == vast_operation.NAME_PREFIX + "website-mapanything-" + "a" * 32
+    validate_independent_vast_watchdog_names(pod_name_prefix=vast_operation.NAME_PREFIX, resource_name_exact=name)
     watchdog = {"status": "armed", "independent_process": True, "name_prefix": name,
                 "pid": os.getpid(), "deadline_epoch": 10000}
     assert vast_operation._watchdog_valid(watchdog, now_epoch=1, hard_ttl_seconds=100, resource_name=name)

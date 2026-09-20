@@ -192,7 +192,9 @@ def test_controller_owns_geometry_funding_allocator_and_restart_without_second_r
         "expires_at_epoch": 9_999_999_999, "authority_digest": DIGEST})
     def arm(**kwargs):
         events.append("watchdog")
-        assert kwargs["resource_name_exact"].startswith("blueprint-reconstruction-website_mapanything-")
+        from blueprint_pipeline.vast_independent_watchdog_control import validate_independent_vast_watchdog_names
+        validate_independent_vast_watchdog_names(pod_name_prefix=kwargs["pod_name_prefix"],
+                                                resource_name_exact=kwargs["resource_name_exact"])
         return {"watchdog_pid": 123, "watchdog_deadline_epoch": 9_999_999_999,
                 "watchdog_out_dir": str(tmp_path / "watchdog")}, handle
     monkeypatch.setattr(dispatch, "arm_independent_vast_watchdog", arm)

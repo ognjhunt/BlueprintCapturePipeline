@@ -21,7 +21,7 @@ from .decision_evidence_contracts import canonical_digest
 from .gpu_render_providers import get_render_provider
 from .reconstruction_gpu_admission import collect_reconstruction_vast_preflight
 from .reconstruction_gpu_operation_bundle import build_canary_request_from_operation_bundle
-from .reconstruction_vast_operation import NAME_PREFIX, _canonical_receipt_file, replay_reconstruction_vast_operation
+from .reconstruction_vast_operation import NAME_PREFIX, _canonical_receipt_file, replay_reconstruction_vast_operation, reconstruction_resource_name
 from .vast_independent_watchdog_control import arm_independent_vast_watchdog, close_independent_vast_watchdog
 from .wam_provider_object_store import stage_wam_provider_bundle_object_store, cleanup_staged_wam_provider_objects
 from .website_mapanything_operation import compile_input_bundle
@@ -123,7 +123,7 @@ def dispatch_geometry(*, input_manifest: Path, output_root: Path, task_context: 
             "candidate_may_read_hidden_heldout": False, "trainer_may_grade_heldout": False})
         write_json(root / "request.json", request)
         canonical_receipt, _ = _canonical_receipt_file(root, receipt)
-        name = f"{NAME_PREFIX}website_mapanything-{request['request_digest'][7:19]}"
+        name = reconstruction_resource_name(request["operation"], request["request_digest"])
         handoff, handle = arm_independent_vast_watchdog(job_dir=root,
             max_live_minutes=math.ceil(profile["hard_ttl_seconds"] / 60) + 2,
             generated_at=utc_now_iso(), pod_name_prefix=NAME_PREFIX, resource_name_exact=name)
