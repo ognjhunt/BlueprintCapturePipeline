@@ -129,3 +129,28 @@ def test_provider_profile_selects_capacity_without_silently_reusing_marble_limit
     monkeypatch.setenv("WORLDLABS_DEFAULT_MODEL", "different-model")
     with pytest.raises(ValueError, match="model_mismatch"):
         reconstruction_profile()
+
+
+def test_short_lived_task_view_is_retained_when_context_budget_is_already_full(tmp_path, monkeypatch):
+    from blueprint_pipeline import website_object_removal as module
+    video = tmp_path / "video.mov"
+    video.write_bytes(b"source")
+    registry = [{"source_frame_id": f"decoded-{i:09d}", "decoded_pts_seconds": i / 30} for i in range(90)]
+    existing = [{"frame_id": registry[i]["source_frame_id"], "timestamp_seconds": i / 30,
+                 "display_rotation_degrees": 0} for i in range(0, 90, 10)]
+    geometry = {"frames": existing, "binding": {"source_video_digest": _sha256_file(video)}}
+    masks = {"source_video_digest": _sha256_file(video), "source_frame_registry": registry,
+             "targets": [{"task_effect": "manipulated", "track": {"observations": []},
+                          "source_track": {"observations": [{"source_frame_id": registry[i]["source_frame_id"]}
+                                                            for i in (43, 44, 45)]}}]}
+    indexes = []
+    def extract(**kw):
+        indexes.extend(kw["indexes"])
+        return [{"frame_id": registry[i]["source_frame_id"], "t_video_sec": i / 30, "digest": f"digest-{i}"}
+                for i in kw["indexes"]]
+    monkeypatch.setattr(module, "_extract_frames", extract)
+    monkeypatch.setattr(module.shutil, "which", lambda _: "/ffmpeg")
+    frames = module.reconstruction_source_frames(source_geometry=geometry, task_masks=masks, source_video=video,
+                                                limit=8, output_root=tmp_path / "frames")
+    assert indexes == [43, 45]
+    assert len(frames) == 11 and len(geometry["frames"]) == 9

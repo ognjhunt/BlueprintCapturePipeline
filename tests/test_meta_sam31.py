@@ -86,6 +86,7 @@ def test_exact_request_is_retained_and_replay_does_not_charge_again(tmp_path, mo
         return BytesIO(json.dumps(response()).encode())
     args = inputs(tmp_path)
     first = sam.run_meta_sam31(**args, opener=opener)
+    monkeypatch.setattr(sam, "parse_tracks", lambda *a, **kw: pytest.fail("validated decoded masks must be reused"))
     second = sam.run_meta_sam31(**{**args, "admission_grant": None, "admission": {}}, opener=opener)
     assert first == second and len(calls) == 1
     assert first["tracks"][0]["label"] == "task-object"
@@ -207,3 +208,15 @@ def test_failed_encoder_cannot_publish_partial_video(tmp_path, monkeypatch):
     assert not (root / "continuous-upright.mp4").exists()
     assert not (root / "continuous-video.json").exists()
     assert not list(root.glob("*.mp4"))
+
+
+def test_decoded_mask_cache_is_bound_to_retained_provider_bytes(tmp_path, monkeypatch):
+    monkeypatch.setenv("META_MODEL_API_KEY", "fixture")
+    args = inputs(tmp_path)
+    sam.run_meta_sam31(**args, opener=lambda *a, **kw: BytesIO(json.dumps(response()).encode()))
+    cache_path = next(args["output_root"].rglob("parsed-response-0.json"))
+    cache = json.loads(cache_path.read_text())
+    cache["tracks"][0]["label"] = "substituted"
+    cache_path.write_text(json.dumps(cache))
+    with pytest.raises(ValueError, match="retained_tracks_changed"):
+        sam.run_meta_sam31(**args, opener=lambda *a, **kw: pytest.fail("must not purchase a retry"))
