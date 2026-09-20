@@ -685,7 +685,10 @@ def run_end_to_end(
         artifacts_from_result: Any = None,
         input_binding_digest: str | None = None,
     ) -> Any:
-        if resume_completed_stages:
+        # Handoff staging can replace descriptor/QA files with the original cloud
+        # records on every delivery. Rebuild these cheap local projections from
+        # verified raw inputs; a saved result alone cannot restore their files.
+        if resume_completed_stages and stage != "materialization":
             resumed_result = _completed_stage_resume_snapshot(
                 stage_ledger,
                 stage=stage,
