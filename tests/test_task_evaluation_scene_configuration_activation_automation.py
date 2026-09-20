@@ -840,6 +840,34 @@ def test_process_reports_superseded_releases_without_blocking(tmp_path: Path) ->
     assert "blockers" not in rows[0]
 
 
+def test_process_scans_each_owned_scene_queue_beneath_the_root(tmp_path: Path) -> None:
+    """Owned scenes keep their own queue under the root; one root serves them all."""
+    intent_root, _intent_value = _intent(tmp_path)
+    _preparation(tmp_path)
+    owned = tmp_path / "preparations"
+    scene_queue = owned / "scene-abc"
+    scene_queue.mkdir()
+    for name in ("materialized", "results"):
+        (owned / name).rename(scene_queue / name)
+    found = automation._awaiting_scene_configurations(owned)
+    assert [(queue.name, path.parent.name) for queue, path in found] == [("scene-abc", "results")]
+    rows = automation.process_scene_configuration_activations(
+        preparation_queue_root=owned,
+        activation_queue_root=tmp_path / "activations",
+        progression_root=tmp_path / "progression",
+        intent_root=intent_root,
+        configured_controls_intent_root=_controls_intent_root(tmp_path),
+        profile_dir=tmp_path / "profiles",
+        standing_authorization_dir=tmp_path / "standing",
+        provider_zero_collector=lambda: pytest.fail("superseded rows never collect a zero"),
+        submitter=lambda request: pytest.fail("superseded rows never launch"),
+        now=NOW,
+        running_commit=SUPERSEDED_RUNNING_COMMIT,
+    )
+    assert [row["status"] for row in rows] == ["preparation_bound_to_superseded_release"]
+    assert rows[0]["preparation_id"] == PREPARATION_ID
+
+
 def test_process_scans_the_preparation_queue_and_reports_one_row_per_configuration(
     tmp_path: Path,
 ) -> None:

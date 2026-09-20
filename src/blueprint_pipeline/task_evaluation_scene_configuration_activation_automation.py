@@ -1315,22 +1315,32 @@ def advance_scene_configuration_launch(
 # ---------------------------------------------------------------- orchestration
 
 
-def _awaiting_scene_configurations(preparation_queue_root: Path) -> list[Path]:
-    results = preparation_queue_root / "results"
-    selected: list[Path] = []
-    for path in sorted(results.glob("*.json")) if results.is_dir() else []:
-        if path.is_symlink():
-            continue
-        try:
-            value = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError):
-            continue
-        if (
-            isinstance(value, Mapping)
-            and value.get("run_mode") == "scene_configuration"
-            and value.get("status") == AWAITING_ACTIVATION_STATUS
-        ):
-            selected.append(path)
+def _awaiting_scene_configurations(preparation_queue_root: Path) -> list[tuple[Path, Path]]:
+    """Every result awaiting activation, with the queue it belongs to.
+
+    The configured root may itself be one scene's queue, or the owned root
+    beneath which each scene keeps its own ``scene-*/results``; both layouts
+    are scanned so a new scene needs no worker configuration change.
+    """
+    queues = [preparation_queue_root]
+    queues.extend(sorted(path for path in preparation_queue_root.glob("scene-*")
+                         if path.is_dir() and not path.is_symlink()))
+    selected: list[tuple[Path, Path]] = []
+    for queue in queues:
+        results = queue / "results"
+        for path in sorted(results.glob("*.json")) if results.is_dir() else []:
+            if path.is_symlink():
+                continue
+            try:
+                value = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                continue
+            if (
+                isinstance(value, Mapping)
+                and value.get("run_mode") == "scene_configuration"
+                and value.get("status") == AWAITING_ACTIVATION_STATUS
+            ):
+                selected.append((queue, path))
     return selected
 
 
@@ -1354,8 +1364,7 @@ def process_scene_configuration_activations(
     """Advance every prepared configuration one safe step; one row per preparation."""
 
     rows: list[dict[str, Any]] = []
-    queue_root = Path(preparation_queue_root).expanduser()
-    for result_path in _awaiting_scene_configurations(queue_root):
+    for queue_root, result_path in _awaiting_scene_configurations(Path(preparation_queue_root).expanduser()):
         preparation_id = result_path.name.split("-sha256", 1)[0]
         try:
             if blocked_scene_keys:
