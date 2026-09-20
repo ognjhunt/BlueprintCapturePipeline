@@ -593,6 +593,8 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
 
     assert deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS == (
         "blueprint-agent-execution.service",
+        "blueprint-agent-run-dispatcher.service",
+        "blueprint-agent-run-dispatcher.timer",
         "blueprint-agent-stage-replay.service",
         "blueprint-agent-stage-replay.timer",
         "blueprint-task-evaluation-launch-dispatcher.service",
@@ -644,6 +646,7 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-scene-object-discovery.path",
     )
     assert deploy.DEFAULT_ALWAYS_ARM_TIMER_UNITS == (
+        "blueprint-agent-run-dispatcher.timer",
         "blueprint-agent-stage-replay.timer",
         "blueprint-task-evaluation-scene-progression.timer",
         "blueprint-task-evaluation-sam31-preparation-execution.timer",

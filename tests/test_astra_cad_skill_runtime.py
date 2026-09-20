@@ -166,6 +166,11 @@ def test_graph_routes_models_and_execution_through_bounded_supplied_adapters(tmp
     assert set(runner.calls[0][1]["env"]) == {"PYTHONPATH"}
     assert runner.calls[0][1]["timeout"] == 120
     assert (root / "repair-2-before.py").is_file()
+    # The real repair seam receives the same pinned exporter contract as initial generation.
+    repair_input = json.loads((root / "invocation-03-input.json").read_text())
+    repair_task = json.loads(repair_input["upstream_messages"][0]["content"])["task"]
+    assert runtime._CAD_PROGRAM_CONTRACT in repair_task
+    assert "never a dictionary" in repair_task and "do not export files" in repair_task
     assert json.loads((root / "parameters.json").read_text())["expected_dimensions_mm"][0] == 12.34567
 
 

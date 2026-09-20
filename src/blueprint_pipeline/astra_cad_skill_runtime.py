@@ -27,6 +27,17 @@ MAC_COMMIT = "42737c408534e7c00c63081d73ce7565a9464e56"
 CAD_COMMIT = "4fd71ea75fbb8a80b0d7c76862e0fd73c52a8989"
 _LOCK = threading.Lock()
 _CODER_SYSTEM_PROMPT = "Implement the supplied ArchitectPlan as complete executable build123d Python."
+_CAD_PROGRAM_CONTRACT = (
+    "Return complete build123d Python defining gen_step() which returns a build123d Shape "
+    "(Solid, Part, or Compound), never a dictionary, filename, or None. The pinned CAD CLI "
+    "imports this function and owns STEP/STL export; do not export files or require a main block. "
+    "Shape length, area, and volume are numeric properties, not methods; use edge.length, not edge.length(). "
+    "Keep the exact nominal millimeter dimensions. Return at most 120 lines of geometry code. "
+    "Do not write physics, USD, rendering, validation, measurement, report, metadata, or test code. "
+    "Do not access network, subprocesses, viewers, or external files. Use build123d primitives, "
+    "not direct OCP APIs or Decimal arithmetic. The trusted downstream harness owns those other steps."
+)
+
 
 
 class AstraCADRuntimeBlocked(RuntimeError):
@@ -226,7 +237,8 @@ class _SDKChatBridge:
             "Never repeat the raw prompt/evidence packet. For user_request_raw return only "
             "a concise one-line object name; the harness restores the canonical request. "
             "For digital candidates manufacturing_method must be the schema enum 'unspecified'. "
-            "Use only requested schema fields and keep narrative concise.")
+            "Use only requested schema fields and keep narrative concise. "
+            "In build123d selector expressions, length, area and volume are properties, not methods.")
         stable_prefix = instructions + '\n' + self.stable_prefix if self.stable_prefix else None
         if stable_prefix:
             from .asset_authoring_prompt_cache import asset_cache_policy
@@ -382,13 +394,7 @@ def _compact_coder_prompt(**kwargs: Any) -> str:
                        "previous_feedback": kwargs.get("previous_feedback"),
                        "step_path": kwargs["step_path"], "stl_path": kwargs["stl_path"],
                        "task": "Implement the complete exact plan, including custom curved profiles in notes. "
-                       "Return at most 120 lines of straightforward build123d Python defining gen_step(), and a main block that calls it "
-                       "and exports STEP/STL to the supplied paths. Use from build123d import *. "
-                       "Use ordinary Python floats; the tolerance is 0.01 millimetre, not symbolic infinite precision. "
-                       "Use build123d sketch/Bezier/extrude primitives, no direct OCP APIs or Decimal arithmetic. "
-                       "Do not write validation, measurement, rendering, report, metadata, or test code: the trusted harness supplies those. "
-                       "Do not copy the brief or source evidence into code. Preserve every supplied nominal dimension; no sizing objects. "
-                       "No network, external files, subprocesses, or viewers. Geometry remains development_only."},
+                       + _CAD_PROGRAM_CONTRACT},
                       separators=(",", ":"))
 
 
@@ -536,7 +542,7 @@ def execute_mac_candidate(
             before = path.read_text()
             response = bridge.create(messages=[{"role": "user", "content": json.dumps({
                 "brief": user_request, "errors": error_details, "script": before,
-                "task": "Return complete corrected Python code. Preserve exact millimeter dimensions."})}])
+                "task": "Repair the geometry program using the reported errors. " + _CAD_PROGRAM_CONTRACT})}])
             code = nodes._extract_code_from_llm_response(response.choices[0].message.content)
             if not code.strip():
                 return False

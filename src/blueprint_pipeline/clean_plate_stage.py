@@ -369,6 +369,7 @@ def run_clean_plate_stage(
             source_geometry = run_website_scene_geometry(
                 source_video=website_source_video,
                 output_root=clean_plate_root / "source_geometry", capture_id=ctx.capture_id,
+                task_context=task_context,
             )
         except Exception as exc:
             status, mode = "blocked", "source_geometry_blocked"

@@ -259,9 +259,16 @@ def load_website_geometry_result(*, manifest_path: Path, inputs: Mapping[str, An
     return result
 
 
-def run_website_scene_geometry(*, source_video: Path, output_root: Path, capture_id: str) -> dict[str, Any]:
+def run_website_scene_geometry(*, source_video: Path, output_root: Path, capture_id: str,
+                               task_context: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Local inference compatibility entry; CPU preparation is reusable by a worker."""
     inputs = prepare_website_geometry_inputs(source_video=source_video, output_root=output_root, capture_id=capture_id)
+    if task_context is not None:
+        from .paid_resource_allocator import run_sponsored_website_geometry
+        if task_context.get("capture_id") != capture_id or task_context.get("confirmed") is not True:
+            raise ValueError("website_mapanything_task_capture_mismatch")
+        return run_sponsored_website_geometry(input_manifest=output_root / "worker_inputs/geometry_inputs.json",
+                                               output_root=output_root, task_context=task_context)
     remote_result = os.getenv("BLUEPRINT_WEBSITE_GEOMETRY_RESULT")
     if remote_result:
         return load_website_geometry_result(manifest_path=Path(remote_result), inputs=inputs)

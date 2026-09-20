@@ -209,3 +209,20 @@ def test_inference_requests_the_upstream_validity_mask(tmp_path, monkeypatch):
     prediction = geometry._infer([str(image_path)], model_path=tmp_path)[0]
     result = geometry._write_prediction(prediction, {"width": 28, "height": 14}, tmp_path / "prediction.npz")
     assert result["valid_pixel_fraction"] == 1.0
+
+
+def test_confirmed_website_task_uses_controller_allocator_instead_of_manual_result_override(geometry_case, monkeypatch):
+    from blueprint_pipeline import paid_resource_allocator as allocator
+    kwargs, calls = geometry_case
+    invoked = []
+    monkeypatch.setenv("BLUEPRINT_WEBSITE_GEOMETRY_RESULT", "/manual/result.json")
+    def dispatch(**kwargs):
+        invoked.append(kwargs)
+        return {"status": "estimated", "controller": True}
+    monkeypatch.setattr(allocator, "run_sponsored_website_geometry", dispatch)
+    task = {"capture_id": kwargs["capture_id"], "confirmed": True}
+    assert geometry.run_website_scene_geometry(**kwargs, task_context=task)["controller"] is True
+    assert invoked[0]["task_context"] == task
+    assert not calls
+    with pytest.raises(ValueError, match="task_capture_mismatch"):
+        geometry.run_website_scene_geometry(**kwargs, task_context={**task, "capture_id": "other"})

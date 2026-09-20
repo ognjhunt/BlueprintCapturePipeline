@@ -729,6 +729,18 @@ def _current_remote_branch_commit(branch: str) -> str:
     return commit
 
 
+def run_sponsored_website_geometry(*, input_manifest: Path, output_root: Path,
+                                   task_context: Mapping[str, Any]) -> dict[str, Any]:
+    """Use the existing GPU admission/worker from the normal website controller."""
+    from .website_geometry_dispatch import dispatch_geometry
+    commit, _, _ = _current_checkout_source_state()
+    blockers, _ = _source_checkout_blockers(commit)
+    if blockers:
+        raise ValueError("website_mapanything_release_not_admitted:" + ",".join(blockers))
+    return dispatch_geometry(input_manifest=input_manifest, output_root=output_root,
+        task_context=task_context, source_commit=commit, allocate=_run_reconstruction_gpu_canary)
+
+
 def submit_sponsored_website_reconstruction(*, descriptor: Mapping[str, Any], capture_root: Path) -> dict[str, Any]:
     """Controller entry through the canonical allocator, never a manual grant.
 
