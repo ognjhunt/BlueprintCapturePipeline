@@ -286,7 +286,7 @@ def _activation(*, intent, link, config, output, now, provisioner):
         rights_scope=intent["request"]["consent"]["rights_reference"], maximum_hard_cap_usd=main["maximum_spend_usd"],
         release_reference="scene-intent:" + intent["intent_digest"], intent_root=config["activation_intent_root"],
         materialization_root=output / "activation-inputs", release_window_valid_for_seconds=seconds,
-        service_group=config.get("service_group"))
+        service_group=config.get("service_group"), release_scoped=True)
     require(result.get("expected_production_commit") == link["expected_production_commit"]
             and result.get("provider_mutation_performed") is False, "activation_producer_invalid")
     _put(path, intake._seal({"link_digest": link["link_digest"], "activation_intent": result,
@@ -348,7 +348,7 @@ def _release_successor(*, directory, intent, state, config, release, now):
         require(previous.get("maximum_spend_usd") == 0
                 and previous.get("paid_authority_granted") is False,
                 "preparation_release_authority_conflict")
-        if state.get("activation"):
+        if state.get("activation_link"):
             link = read(_reference(state["activation_link"]), digest_field="link_digest")
             execution_attempt = intake._read(_reference(link["scene_configuration_attempt"]), "attempt_digest")
             require(execution_attempt["intent_digest"] == previous["intent_digest"]

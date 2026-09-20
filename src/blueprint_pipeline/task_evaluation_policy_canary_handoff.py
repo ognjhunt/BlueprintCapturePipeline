@@ -722,7 +722,8 @@ def advance_policy_canary_handoff(
     if not (team_namespace and scene_id and task_id and preparation_id) or not re.fullmatch(r"[0-9]{1,12}", numeric_scene_id):
         raise PolicyCanaryHandoffError("policy_canary_handoff_base_progression_invalid")
     intent = load_scene_configuration_activation_intent(
-        intent_root=activation_intent_root, team_namespace=team_namespace, scene_id=scene_id, task_id=task_id
+        intent_root=activation_intent_root, team_namespace=team_namespace, scene_id=scene_id, task_id=task_id,
+        expected_production_commit=expected_production_commit,
     )
     if intent is None:
         return {
