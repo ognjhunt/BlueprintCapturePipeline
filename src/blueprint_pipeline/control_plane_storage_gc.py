@@ -300,6 +300,25 @@ SETTLEMENT_RECORD_GLOBS = (
 )
 
 
+def settlement_reopens_beyond_retained_receipts(name: str, settlement_text: str) -> bool:
+    """Whether a settlement record reads something of ``name`` the pointer will not keep.
+
+    Offload retains the accounting receipts in ``RETAINED_RECEIPTS`` byte-for-byte
+    inside the pointer, and the settlement readers reopen them through
+    ``read_receipt_bytes``, which falls back to that copy. A record that names
+    the run only as an identifier, or reopens only retained receipts, therefore
+    keeps working after the bulk evidence is archived. Any other path under the
+    run is a reopen the archive would break, so the run stays.
+    """
+
+    from .control_plane_retained_receipt import RETAINED_RECEIPTS
+
+    for match in re.finditer(re.escape(name) + r"/([A-Za-z0-9_.\-]+(?:/[A-Za-z0-9_.\-]+)*)", settlement_text):
+        if match.group(1) not in RETAINED_RECEIPTS:
+            return True
+    return False
+
+
 def _settlement_reference_text(settlement_roots: Sequence[str | Path]) -> tuple[str, int]:
     """Concatenate every settlement record; a directory named in it is still read.
 
@@ -1141,7 +1160,7 @@ def run_storage_gc(
             pinned = live_pinned_paths(pins_root, now=clock)
             if any(Path(p) == directory or directory in Path(p).parents or Path(p) in directory.parents for p in pinned):
                 return True
-            if directory.name in settlement_text:
+            if settlement_reopens_beyond_retained_receipts(directory.name, settlement_text):
                 return True
             return directory.name in _queue_reference_text(queue_roots)
         # Keep authenticated downloads usable after cold evidence reclamation.
