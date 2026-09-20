@@ -196,12 +196,12 @@ def retained_hold(receipt: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def budget_retained_hold(receipt: Mapping[str, Any]) -> dict[str, Any]:
-    """Use sealed pre-allocation evidence without rewriting historical settlements.
+    """Use bound terminal evidence without rewriting historical settlements.
 
-    The scene adapter's only paid work before GPU allocation is API background
-    preparation. If it never entered the provider adapter, retain that entire
-    API allowance, but not GPU compute or provider-only object authoring. This
-    is a conservative exposure bound, not a claim that API spending was zero.
+    A retained CPU output keeps its allowance unless an explicit proof below
+    applies. Legacy pre-allocation failures retain the API background allowance.
+    Two initial admission refusals prove model work unentered; the native case
+    still retains its entire provider allowance, not an estimated final bill.
     Callers must first validate the terminal settlement and ownership evidence.
     """
     hold = retained_hold(receipt)
@@ -238,6 +238,24 @@ def budget_retained_hold(receipt: Mapping[str, Any]) -> dict[str, Any]:
         terminal = launch["terminal_evidence"]
         result = terminal_artifact(terminal["result"])
         teardown = terminal_artifact(terminal["artifacts"]["teardown_manifest_path"])
+        from .task_evaluation_unentered_authoring_budget import authoring_never_entered, pretraining_never_entered
+        if (result.get("schema_version") == "task_evaluation_scene_configuration_vast_result.v1"
+                and result.get("run_id") == request["run_id"]
+                and result.get("source_commit") == receipt["source_commit"]
+                and result.get("status") == "blocked"
+                and result.get("continuing_spend_from_this_run") is False
+                and type(result.get("provider_mutations_performed")) is int
+                and result.get("provider_mutations_performed") == 1
+                and teardown.get("schema_version") == "vast_teardown_manifest.v1"
+                and teardown.get("status") == "completed"
+                and teardown.get("continuing_spend_from_this_run") is False
+                and authoring_never_entered(result, request)):
+            # Keep the entire native allowance; partial posted billing or a
+            # runtime estimate cannot establish a final provider charge.
+            bound = float(request["spend"]["provider_compute_spend_cap_usd"])
+            if 0 <= bound <= hold["retained_spend_usd"]:
+                return {"basis": "native_allowance_with_unentered_authoring", "retained_spend_usd": bound,
+                        "counts_as_attempt": hold["counts_as_attempt"]}
         if (result.get("schema_version") != "task_evaluation_scene_configuration_vast_result.v1"
                 or result.get("run_id") != request["run_id"]
                 or result.get("source_commit") != receipt["source_commit"]
@@ -254,6 +272,9 @@ def budget_retained_hold(receipt: Mapping[str, Any]) -> dict[str, Any]:
             return hold
         caps = request["spend"]["external_service_caps"]["openai"]["stage_max_cost_usd"]
         bound = round(float(caps["artifixer_semantic_teacher"]) + float(caps["artifixer_visual_review"]), 6)
+        if (result.get("result_digest") == canonical_digest(result, digest_field="result_digest")
+                and pretraining_never_entered(result)):
+            bound = 0.0
         if not 0 <= bound <= hold["retained_spend_usd"]:
             return hold
         return {"basis": "preallocation_api_budget_upper_bound", "retained_spend_usd": bound,

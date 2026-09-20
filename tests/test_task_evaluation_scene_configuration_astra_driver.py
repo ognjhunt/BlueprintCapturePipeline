@@ -240,6 +240,16 @@ def test_stage_reserves_parent_gate_then_seals_existing_roles_without_nvidia_cla
     assert os.environ.get("OPENAI_API_KEY_FILE") == previous
 
 
+def test_initial_disclosure_refusal_precedes_model_gate_and_runtime(component, retained):
+    rights = json.loads(retained.rights_path.read_text())
+    rights["private_provider_processing_allowed"] = False
+    retained.rights_path.write_text(json.dumps(rights))
+    with pytest.raises(driver.AstraStageError, match="astra_derived_disclosure_not_admitted"):
+        driver.execute_astra_component(**component.kwargs)
+    assert component.events == []
+    assert "gate" not in component.seen and "budget" not in component.seen
+
+
 def test_stage_preserves_sealed_external_python_runtime_in_sandbox(component, tmp_path, monkeypatch):
     installed = tmp_path / "sealed-python-runtime"
     installed.mkdir()
