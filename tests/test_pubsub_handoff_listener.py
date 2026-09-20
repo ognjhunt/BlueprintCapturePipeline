@@ -1169,4 +1169,29 @@ def test_website_upload_runs_preparation_before_legacy_robot_job_conversion(tmp_
     assert second["status"] == "skipped_already_processed"
     assert len(calls) == 1
     assert calls[0]["resume_completed_stages"] is True
+    assert calls[0]["pipeline_lane"] == "qualification"
+    assert calls[0]["run_evaluation_prep"] is False
     assert "robot_eval_job_request" not in calls[0]
+
+
+def test_partial_pipeline_failures_are_not_acknowledged_as_success():
+    disposition, blockers = listener_module._handoff_result_disposition({
+        "pipeline_status": "completed_with_lane_failures", "final_bundle_path": "exists"})
+    assert disposition == "retryable_blocked"
+    assert blockers == ["completed_with_lane_failures"]
+
+
+def test_old_failed_lane_completion_is_reopened_under_existing_lease(tmp_path):
+    root = tmp_path / "capture"
+    (root / "pipeline").mkdir(parents=True)
+    (root / "pipeline_job_ledger.json").write_text(json.dumps({"status": "completed", "attempt_count": 6}))
+    (root / "pipeline_job_output_commit.json").write_text(json.dumps({"status": "committed", "result_sha256": "retained"}))
+    (root / "pipeline/run_e2e_stage_ledger.json").write_text(json.dumps({"stages": {
+        "capture_pipeline": {"result_snapshot": {"status": "completed_with_lane_failures"}}}}))
+    status, ledger = listener_module._claim_job_lease(root, scene_id="scene-1", capture_id="cap-1",
+                                                     owner="worker", lease_seconds=900)
+    assert status == "claimed"
+    assert ledger["attempt_count"] == 7
+    retained = json.loads((root / "pipeline_job_output_commit.json").read_text())
+    assert retained["result_sha256"] == "retained"
+    assert retained["status"] == "superseded_failed_lanes"
