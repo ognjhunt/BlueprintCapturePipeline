@@ -66,7 +66,7 @@ def _resolve_prompts(environment: str) -> List[str]:
     return list(_PROMPT_BANKS.get(environment, _PROMPT_BANKS["default"]))
 
 
-def _extract_frames(video_path: Path, *, n_frames: int) -> List[Path]:
+def _extract_frames(video_path: Path, *, n_frames: int, output_root: Path) -> List[Path]:
     n_frames = max(1, n_frames)
     with tempfile.TemporaryDirectory(prefix="sam3_detect_frames_") as tmp_dir:
         temp_root = Path(tmp_dir)
@@ -93,7 +93,7 @@ def _extract_frames(video_path: Path, *, n_frames: int) -> List[Path]:
                 check=False,
             )
             if proc.returncode == 0 and frame_path.is_file():
-                persisted = video_path.parent / "object_index_artifacts" / "sam3_frames" / frame_path.name
+                persisted = output_root / "sam3_frames" / frame_path.name
                 persisted.parent.mkdir(parents=True, exist_ok=True)
                 persisted.write_bytes(frame_path.read_bytes())
                 frame_paths.append(persisted)
@@ -173,7 +173,8 @@ def main() -> int:
 
     runtime_blocker = _sam3_ready_reason()
     prompts = _resolve_prompts(str(args.environment or "default").strip().lower() or "default")
-    frame_paths = _extract_frames(video_path, n_frames=max(1, int(args.n_frames or 8)))
+    frame_paths = ([] if runtime_blocker else _extract_frames(
+        video_path, n_frames=max(1, int(args.n_frames or 8)), output_root=output_path.parent))
     if runtime_blocker:
         payload = {
             "backend_status": "skipped",

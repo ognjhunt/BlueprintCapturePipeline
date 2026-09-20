@@ -1195,3 +1195,48 @@ def test_old_failed_lane_completion_is_reopened_under_existing_lease(tmp_path):
     retained = json.loads((root / "pipeline_job_output_commit.json").read_text())
     assert retained["result_sha256"] == "retained"
     assert retained["status"] == "superseded_failed_lanes"
+
+
+def test_website_staging_preserves_local_sam_derivatives_outside_raw(tmp_path):
+    prefix = "scenes/scene-1/captures/capture-1"
+    root = tmp_path / "capture-bucket" / prefix
+    stray = root / "raw/object_index_artifacts/sam3_frames/frame_000000.png"
+    stray.parent.mkdir(parents=True)
+    stray.write_bytes(b"retained derived frame")
+    blobs = [FakeBlob(f"{prefix}/raw/manifest.json", b'{"capture_source":"browser_self_capture"}'),
+             FakeBlob(f"{prefix}/raw/capture_upload_complete.json", b"{}"),
+             FakeBlob(f"{prefix}/raw/walkthrough.mov", b"original video"),
+             FakeBlob(f"{prefix}/pipeline_handoff.json", b"{}")]
+    handoff = HandoffMessage(bucket="capture-bucket", scene_id="scene-1", capture_id="capture-1",
+        raw_prefix_uri=f"gs://capture-bucket/{prefix}/raw", pipeline_handoff_uri=None)
+    for _ in range(2):
+        stage_handoff_capture(handoff, storage_root=tmp_path, storage_client=FakeStorageClient(blobs))
+    assert (root / "raw/walkthrough.mov").read_bytes() == b"original video"
+    assert not (root / "raw/object_index_artifacts").exists()
+    archives = list((root / "pipeline/recovered_raw_derivatives").glob("*/receipt.json"))
+    assert len(archives) == 1
+    assert (archives[0].parent / "object_index_artifacts/sam3_frames/frame_000000.png").read_bytes() == b"retained derived frame"
+    assert json.loads(archives[0].read_text())["member_sha256"]["sam3_frames/frame_000000.png"]
+
+
+def test_recovery_never_reclassifies_uploaded_derivatives_or_device_raw(tmp_path):
+    root = tmp_path
+    source = root / "raw/object_index_artifacts"
+    source.mkdir(parents=True)
+    manifest = root / "raw/manifest.json"
+    manifest.write_text('{"capture_source":"browser_self_capture"}')
+    listener_module._preserve_local_website_derivatives(root, {"prefix/raw/object_index_artifacts/file.png"}, "prefix")
+    assert source.exists()
+    manifest.write_text('{"capture_source":"ios"}')
+    listener_module._preserve_local_website_derivatives(root, set(), "prefix")
+    assert source.exists()
+
+
+def test_recovery_refuses_symlinks_without_moving_anything(tmp_path):
+    (tmp_path / "raw").mkdir()
+    (tmp_path / "raw/manifest.json").write_text('{"capture_source":"browser_self_capture"}')
+    source = tmp_path / "raw/object_index_artifacts"
+    source.symlink_to(tmp_path / "outside", target_is_directory=True)
+    with pytest.raises(PipelineError, match="recovery_unsafe"):
+        listener_module._preserve_local_website_derivatives(tmp_path, set(), "prefix")
+    assert source.is_symlink()
