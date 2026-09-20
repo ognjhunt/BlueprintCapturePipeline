@@ -255,3 +255,28 @@ def test_controller_owns_geometry_funding_allocator_and_restart_without_second_r
     assert events[:3] == ["watchdog", "capacity", "reserve"]
     with pytest.raises(ValueError, match="inputs_changed"):
         dispatch.dispatch_geometry(**{**args, "task_context": {"context_digest": "changed"}})
+
+
+def test_runtime_upgrade_preserves_prior_bundle_and_reuses_identical_bytes(packet, tmp_path):
+    import zipfile
+
+    path, old_receipt, old_bundle = packet
+    old_digest = sha256_file(old_bundle)
+    wheel = tmp_path / "runtime" / "pipeline-1-py3-none-any.whl"
+    legacy = path.parent / "runtime" / wheel.name
+    legacy.write_bytes(b"prior release retained here")
+    wheel.write_bytes(b"updated immutable runtime")
+    kwargs = dict(input_manifest=path, output_root=tmp_path / "upgraded-bundles",
+                  source_commit_sha="c" * 40, worker_image_digest=IMAGE,
+                  remote_processing_authorization_digest=DIGEST,
+                  runtime_files=sorted((tmp_path / "runtime").iterdir()))
+    receipt = operation.compile_input_bundle(**kwargs)
+    assert operation.compile_input_bundle(**kwargs) == receipt
+    assert receipt["operation_input_bundle_digest"] != old_receipt["operation_input_bundle_digest"]
+    assert sha256_file(old_bundle) == old_digest
+    assert legacy.read_bytes() == b"prior release retained here"
+    bundle = tmp_path / "upgraded-bundles" / receipt["bundle_artifact_reference"]
+    with zipfile.ZipFile(bundle) as archive:
+        members = [name for name in archive.namelist() if name.endswith(wheel.name)]
+        assert len(members) == 1
+        assert archive.read(members[0]) == wheel.read_bytes()
