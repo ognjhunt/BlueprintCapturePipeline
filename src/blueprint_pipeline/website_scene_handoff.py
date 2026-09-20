@@ -64,7 +64,7 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
             result["geometry_controller_invoked"] = True
             geometry = run_website_scene_geometry(source_video=video,
                 output_root=Path(clean_plate["stage_manifest_path"]).parent / "source_geometry",
-                capture_id=context["capture_id"], task_context=context)
+                capture_id=context["capture_id"], task_context=context, task_masks=clean_plate["task_masks"])
             masks = bind_task_masks_to_geometry(task_masks=clean_plate["task_masks"], source_geometry=geometry)
             write_json(root / "task_masks.geometry.json", masks)
             clean_plate = {**clean_plate, "source_geometry": geometry, "task_masks": masks}
