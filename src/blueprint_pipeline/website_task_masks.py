@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from pathlib import Path
 from typing import Any, Mapping
@@ -96,6 +97,58 @@ def select_task_track(*, target: Mapping[str, Any], tracks: list[Mapping[str, An
     if not scores or scores[0][0] < 0.25 or (len(scores) > 1 and scores[0][0] - scores[1][0] < 0.1):
         raise ValueError(f"task_target_track_ambiguous:{target['target_id']}")
     return scores[0][1]
+
+
+def segment_grounded_static_target(*, target: Mapping[str, Any], registry: list[Mapping[str, Any]],
+                                   task_context: Mapping[str, Any], output_root: Path) -> Mapping[str, Any]:
+    """One source-image mask for a static contact surface missed by video SAM.
+
+    This never substitutes a single-frame mask for an object that must be
+    removed throughout the video. Crop pixels map back to the original grid.
+    """
+    if target.get("task_effect") != "static_contact" or target.get("disposition") != "keep":
+        raise ValueError("website_single_frame_mask_requires_static_contact")
+    grounding = target["grounding"]
+    path = Path(grounding["source_image_path"])
+    if _sha256_file(path) != grounding["image_digest"]:
+        raise ValueError("website_grounded_source_image_changed")
+    frame = next(row for row in registry if row["source_frame_id"] == grounding["source_frame_id"])
+    x, y, width, height = target["spatial_evidence"][0]["box_xywh_normalized"]
+    output_root.mkdir(parents=True, exist_ok=True)
+    with Image.open(path) as image:
+        if image.size != (frame["width"], frame["height"]):
+            raise ValueError("website_grounded_source_dimensions_changed")
+        crop_box = (max(0, math.floor((x - width * 0.2) * image.width)),
+                    max(0, math.floor((y - height * 0.2) * image.height)),
+                    min(image.width, math.ceil((x + width * 1.2) * image.width)),
+                    min(image.height, math.ceil((y + height * 1.2) * image.height)))
+        crop_path = output_root / "source-crop.png"
+        image.crop(crop_box).save(crop_path)
+    left, top, right, bottom = crop_box
+    crop_registry = [{**frame, "model_frame_index": 0, "width": right - left, "height": bottom - top,
+                      "source_crop_box_pixels": crop_box, "source_image_digest": grounding["image_digest"]}]
+    result = run_meta_sam31(frame_registry=crop_registry,
+        frame_artifacts=[{"source_frame_id": frame["source_frame_id"], "path": str(crop_path), "sha256": _sha256_file(crop_path)}],
+        prompts=[{"prompt_id": target["target_id"], "output_label": target["target_id"], "text": target["segmentation_prompt"]}],
+        output_root=output_root, admission={}, task_context=task_context)
+    tracks = []
+    for track in result["tracks"]:
+        observations = []
+        for row in track["observations"]:
+            mask = decode_track_mask(row)
+            if row["source_frame_id"] != frame["source_frame_id"] or mask.shape != (bottom - top, right - left):
+                raise ValueError("website_grounded_crop_mask_mapping_invalid")
+            full = np.zeros((frame["height"], frame["width"]), dtype=bool)
+            full[top:bottom, left:right] = mask
+            edges = np.diff(np.pad(full.reshape(-1).astype(np.int8), (1, 1)))
+            starts, ends = np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)
+            observations.append({**row, "width": frame["width"], "height": frame["height"],
+                "source_crop_box_pixels": crop_box, "crop_mask_digest": canonical_digest(row),
+                "runs": [{"start": int(start), "length": int(end - start)} for start, end in zip(starts, ends)]})
+        tracks.append({**track, "track_id": track["track_id"] + "-static-frame", "observations": observations,
+                       "coverage": "single_observed_frame", "provider_binding_digest": result["binding_digest"]})
+    return select_task_track(target=target, tracks=tracks, frames=[
+        {"frame_id": frame["source_frame_id"], "timestamp_seconds": frame["decoded_pts_seconds"]}])
 
 
 def estimate_target_bounds(track: Mapping[str, Any], frames: list[Mapping[str, Any]]) -> dict[str, Any]:
@@ -273,7 +326,14 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
                     prompts=[{"prompt_id": target["target_id"], "output_label": target["target_id"],
                               "text": grounded["segmentation_prompt"]}], output_root=root / "grounded_masks",
                     admission={}, task_context=task_context, video_artifact=video_artifact)
-                identity = select_task_track(target=grounded, tracks=refined["tracks"], frames=identity_frames)
+                try:
+                    identity = select_task_track(target=grounded, tracks=refined["tracks"], frames=identity_frames)
+                except ValueError as refined_exc:
+                    if (str(refined_exc) != f"task_target_track_ambiguous:{target['target_id']}"
+                            or target.get("task_effect") != "static_contact" or target.get("disposition") != "keep"):
+                        raise
+                    identity = segment_grounded_static_target(target=grounded, registry=registry,
+                        task_context=task_context, output_root=root / "grounded_static_masks" / target["target_id"])
                 # The concept can change while target id stays fixed; replace the
                 # sampled candidate below from the exact selected full track.
             tracks = [row for row in tracks if row["track_id"] != identity["track_id"]]

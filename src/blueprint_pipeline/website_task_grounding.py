@@ -122,5 +122,7 @@ def ground_task_target(*, target: Mapping[str, Any], tracks: Sequence[Mapping[st
     result = retained_gemini_call(output_root=output_root / "receipts", binding=binding, task_context=task_context,
         maximum_cost_usd=gemini_quote(model=DEFAULT_MODEL, input_tokens=len(prompt.encode()) + 3168 * (2 if crop_path else 1),
                                      max_output_tokens=2048), preflight=preflight, invoke=invoke)
-    return validate_grounding(result["observation"], target=target, timestamp=frame["decoded_pts_seconds"],
-                              frame_id=frame["source_frame_id"], image_digest=image_digest)
+    grounded = validate_grounding(result["observation"], target=target, timestamp=frame["decoded_pts_seconds"],
+                                  frame_id=frame["source_frame_id"], image_digest=image_digest)
+    grounded["grounding"]["source_image_path"] = str(image_path)
+    return grounded
