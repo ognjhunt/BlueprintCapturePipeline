@@ -8,7 +8,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from .decision_evidence_contracts import canonical_digest
+from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 from .task_evaluation_public_scene_attempt_factory import record, RELEASE_SCHEMA
 from .task_evaluation_scene_configuration_submission_inputs import checked_file, read
 from .task_evaluation_scene_progression_state import require, safe_path
@@ -26,7 +26,7 @@ def binding_root(config=None):
 
 
 def _index_path(root, request):
-    return root / (canonical_digest(request)[7:] + ".json")
+    return root / (cross_runtime_canonical_digest(request)[7:] + ".json")
 
 
 def register_website_preparation(*, preparation_path, runtime_inputs_path, task_context_path, root, now):
@@ -36,7 +36,7 @@ def register_website_preparation(*, preparation_path, runtime_inputs_path, task_
     construction_rights_admission(preparation=preparation, task_context=context, now=now)
     prepare_construction_stages(runtime_inputs_path=Path(runtime_inputs_path), preparation_path=Path(preparation_path))
     value = {"schema_version": "website_scene_source_registration.v1",
-        "request_digest": canonical_digest(preparation["intake_request"]),
+        "request_digest": cross_runtime_canonical_digest(preparation["intake_request"]),
         "references": {"preparation": record(preparation_path), "runtime_inputs": record(runtime_inputs_path),
                        "task_context": record(task_context_path)},
         "provider_mutation_performed": False, "execution_authority_granted": False,
@@ -59,7 +59,7 @@ def resolve_website_source(*, intent, config):
         return SourceResolution("awaiting_source", blockers=("website_prepared_source_pending",))
     registration = read(path, digest_field="registration_digest")
     require(registration.get("schema_version") == "website_scene_source_registration.v1"
-            and registration.get("request_digest") == canonical_digest(intent["request"])
+            and registration.get("request_digest") == cross_runtime_canonical_digest(intent["request"])
             and registration.get("execution_authority_granted") is False, "website_source_registration_invalid")
     refs = registration["references"]
     for ref in refs.values():

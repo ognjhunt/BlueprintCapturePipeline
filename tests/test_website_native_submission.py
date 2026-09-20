@@ -117,6 +117,13 @@ def test_existing_progression_publishes_and_queues_website_source_without_manual
     register_website_preparation(preparation_path=task["preparation"]["path"],
         runtime_inputs_path=task["runtime_inputs"]["path"], task_context_path=task["task_context"]["path"],
         root=root, now=time.time())
+    # The WebApp forwards ECMAScript JSON: whole-number floats become integers.
+    # Its accepted intent must still find the original Python source registration.
+    from blueprint_pipeline.decision_evidence_contracts import cross_runtime_canonical_json
+    intent_path = Path(task["scene_intent_authority"]["path"])
+    intent = json.loads(intent_path.read_text())
+    intent["request"] = json.loads(cross_runtime_canonical_json(intent["request"]))
+    write_json(intent_path, intent)
     def sealed(name, value, field):
         value[field] = canonical_digest(value, digest_field=field)
         path = tmp_path / name
