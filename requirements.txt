@@ -207,9 +207,9 @@ google-api-core==2.31.0 \
     #   google-cloud-core
     #   google-cloud-pubsub
     #   google-cloud-storage
-google-auth==2.55.2 \
-    --hash=sha256:97ae7790ff740f2bc9db60eb864a7804f4ac19f5f02c38b3d942f2fea6e9b9ae \
-    --hash=sha256:d715f265f2cafc6a5f1bf0dc19870d20e3119f6f6682785a250bce3d03d38a3b
+google-auth==2.58.0 \
+    --hash=sha256:55e30cf15e737de92c5323d78cda8a83fcd57e7ffbaf900c4600039fd60a80fd \
+    --hash=sha256:8a9c4645bb4c8e91668fb1934b95ae6a8687084232753639220ba9bf04a1610d
     # via
     #   blueprint-capture-pipeline
     #   google-api-core
@@ -480,6 +480,10 @@ mcp==1.28.1 \
     --hash=sha256:2726bca5e7193f61c5dde8b12500a6de2d9acf6d1a1c0be9e8c2e706437991df \
     --hash=sha256:d51e36a5f5644faea4f85ea649bfffa6bc6c26770d42798ad6a3de3d2ba69683
     # via openai-agents
+meta-sam-parser==0.0.5 \
+    --hash=sha256:1c727bdf16421a321f307cb9e629ffda0b855d0f7ef3c0e40069b326af889495 \
+    --hash=sha256:a5c6552b8854e5481940212f8b5a6ff12653904ae37a17b7d0f395c7949e276f
+    # via blueprint-capture-pipeline
 msgpack==1.2.1 \
     --hash=sha256:01e2dd6c9b19d333a00282330cc8a73d38d8dabc306dc5b42cd668c3ac82e833 \
     --hash=sha256:020e881a764b20d8d7ca1a54fc01b8175519d108e3c3f194fddc200bda95951a \

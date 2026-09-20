@@ -158,6 +158,16 @@ def test_collected_website_world_registers_the_source_for_progression(tmp_path, 
     pipeline = tmp_path / "pipeline"
     pipeline.mkdir()
     args, _, _ = inputs(pipeline)
+    # This seam consumes World Labs' Y-down exports, whereas the reusable
+    # fixture is Y-up. Rotate the actual collider bytes into the provider frame.
+    import numpy as np
+    import trimesh
+    from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
+    collider = Path(args["base_scene"]["collision_mesh_path"])
+    mesh = trimesh.load(collider, force="mesh")
+    mesh.apply_transform(np.diag([1.0, -1.0, -1.0, 1.0]))
+    mesh.export(collider)
+    args["base_scene"]["collision_mesh_digest"] = _sha256_file(collider)
     context = args["task_context"]
     monkeypatch.setenv("BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT", str(tmp_path / "intents"))
     assets = pipeline / "assets.json"
