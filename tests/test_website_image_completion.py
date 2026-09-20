@@ -193,7 +193,12 @@ def test_controller_reserves_image_edits_and_restart_reuses_outputs_without_new_
 
     monkeypatch.setattr(control, "reserve_website_preparation_spend", reserve)
     monkeypatch.setattr(completion, "_execute_frame_request", edit)
-    args = dict(frames=frames, task_digest="task", task_context={"context_digest": "task"},
+    context = {"context_digest": "task"}
+    task_digest = completion.sha256(json.dumps(context, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    _, _, backend_digest = completion._validated_backend(completion.REGISTRY_PATH, backend_id=completion.BACKEND_ID)
+    admission["allocation_binding_digest"] = canonical_digest(completion.completion_binding(
+        frames, task_digest=task_digest, backend_digest=backend_digest))
+    args = dict(frames=frames, task_digest=task_digest, task_context=context,
                 output_root=tmp_path / "edits", admission={}, token="test")
     outputs = completion.complete_background_images(**args)
     assert len(reservations) == 1 and len(calls) == 2
@@ -217,6 +222,8 @@ def test_another_controller_cannot_rebuy_reserved_image_work(tmp_path, monkeypat
                        "resource_class": "openai_api_candidate", "blockers": []})
     monkeypatch.setattr(control, "reserve_website_preparation_spend", reserved)
     monkeypatch.setattr(completion, "_execute_frame_request", lambda **_: pytest.fail("duplicate spend"))
+    context = {"context_digest": "task"}
+    task_digest = completion.sha256(json.dumps(context, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     with pytest.raises(RuntimeError):
-        completion.complete_background_images(frames=frames, task_digest="task",
-            task_context={"context_digest": "task"}, output_root=tmp_path / "edits", admission={}, token="test")
+        completion.complete_background_images(frames=frames, task_digest=task_digest,
+            task_context=context, output_root=tmp_path / "edits", admission={}, token="test")

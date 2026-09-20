@@ -12,6 +12,7 @@ import json
 import math
 import os
 from io import BytesIO
+from hashlib import sha256
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -129,7 +130,7 @@ def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_dige
                         or _sha256_file(Path(frame["remaining_mask_path"])) != frame["remaining_mask_digest"]):
                     raise ValueError("website_image_completion_source_changed")
             if task_context is not None and not admission:
-                if task_context.get("context_digest") != task_digest:
+                if sha256(json.dumps(dict(task_context), sort_keys=True, separators=(",", ":")).encode()).hexdigest() != task_digest:
                     raise ValueError("website_image_completion_task_mismatch")
                 from .website_task_context import reserve_website_preparation_spend
                 admission, admission_grant = reserve_website_preparation_spend(
