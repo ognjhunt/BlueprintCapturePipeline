@@ -84,3 +84,33 @@ def test_interrupted_submission_build_restarts_on_the_same_free_preparation(tmp_
     assert second["results"][0]["phase"] == "publication_ready", second
     assert list((intents / intent_id / "preparation-attempts").glob("*.json")) == attempts
     assert not list((intents / intent_id / "attempts").glob("*.json"))
+
+
+@pytest.mark.parametrize("history", ["settled", "live", "tampered"])
+def test_free_preparation_release_validates_historical_paid_rows(tmp_path, history):
+    from tests.test_terminal_scene_attempt_settlement import _fixture, _settle, _write, _seal
+    fx = _fixture(tmp_path)
+    if history != "live":
+        _settle(fx)
+    if history == "tampered":
+        receipt_path = next((fx["directory"] / "cancelled-unstarted-controls").glob("*.json"))
+        receipt = json.loads(receipt_path.read_text())
+        receipt["maximum_spend_usd"] = 0
+        receipt_path.chmod(0o600)
+        receipt_path.write_text(json.dumps(receipt))
+    attempt = _seal({"schema_version": "task_evaluation_scene_preparation_attempt.v1",
+        "attempt_id": "source-free", "maximum_spend_usd": 0, "paid_authority_granted": False},
+        "attempt_digest")
+    path = _write(fx["directory"] / "preparation-attempts" / "source-free.json", attempt)
+    state = {"attempt_id": "source-free", "attempt": record(path), "preparation_state": "pending"}
+    kwargs = dict(directory=fx["directory"], intent=fx["intent"], state=state,
+        config={"factory_output_root": str(tmp_path / "factory")},
+        release={"source_commit": "b" * 40}, now=300)
+    if history == "settled":
+        assert engine._release_successor(**kwargs) is True
+        assert "attempt_id" not in state
+        assert len(list((fx["directory"] / "attempts").glob("*.json"))) == 5
+    else:
+        with pytest.raises(ValueError, match="paid_reservation_exists|terminal_settlement_receipt_invalid"):
+            engine._release_successor(**kwargs)
+        assert state["attempt_id"] == "source-free"

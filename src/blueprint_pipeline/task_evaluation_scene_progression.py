@@ -356,9 +356,14 @@ def _release_successor(*, directory, intent, state, config, release, now):
                     and execution_attempt["input_digest"] == link["request_digest"]
                     and bool(calls), "preparation_release_execution_binding_invalid")
     if preparation_only and execution_attempt is None:
-        # Once any paid reservation exists, use the execution recovery path;
-        # administrative preparation alone must never explain away a live run.
-        require(not list((directory / "attempts").glob("*.json")), "preparation_release_paid_reservation_exists")
+        # Historical rows remain on disk after settlement. Only a validated
+        # terminal cancellation excludes one from live execution ownership;
+        # budget admission still accounts for its retained spend separately.
+        from .task_evaluation_retained_controls_evidence import validated_cancellation
+        for path in (directory / "attempts").glob("*.json"):
+            paid = intake._read(path, "attempt_digest")
+            require(validated_cancellation(directory, paid) is not None,
+                    "preparation_release_paid_reservation_exists")
         lineage["basis"] = "preparation_only_no_execution_authority_issued"
     elif not calls:
         lineage["basis"] = "no_submission_attempt_performed"
