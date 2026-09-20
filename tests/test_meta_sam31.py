@@ -175,3 +175,35 @@ def test_continuous_video_keeps_original_frames_and_timestamps(tmp_path, monkeyp
         sam.run_meta_sam31(**args, opener=opener)
     with pytest.raises(ValueError, match="source_video_changed"):
         sam.prepare_continuous_video(source=source, source_digest="sha256:wrong", root=tmp_path / "bad")
+
+
+def test_completed_continuous_video_reuses_cpu_work_and_rejects_tampering(tmp_path, monkeypatch):
+    args = inputs(tmp_path)
+    rows = [{**args["frame_registry"][0], "source_frame_id": f"f{i}"} for i in range(3)]
+    artifacts = [{**args["frame_artifacts"][0], "source_frame_id": row["source_frame_id"]} for row in rows]
+    source = sam.encode_clip(registry=rows, artifacts=artifacts, root=tmp_path)
+    kwargs = dict(source=source, source_digest=_sha256_file(source), root=tmp_path / "continuous")
+    result = sam.prepare_continuous_video(**kwargs)
+    monkeypatch.setattr(sam.subprocess, "run", lambda *a, **k: pytest.fail("completed encode must be reused"))
+    assert sam.prepare_continuous_video(**kwargs) == result
+    Path(result[1]["path"]).write_bytes(b"changed")
+    with pytest.raises(ValueError, match="prepared_video_receipt_invalid"):
+        sam.prepare_continuous_video(**kwargs)
+
+
+def test_failed_encoder_cannot_publish_partial_video(tmp_path, monkeypatch):
+    source = tmp_path / "source.mov"
+    source.write_bytes(b"source")
+    monkeypatch.setattr(sam, "_probe_video", lambda _: {"frames": [{}, {}]})
+    def timeout(argv, **kwargs):
+        assert argv[argv.index("-preset") + 1] == "veryfast"
+        assert argv[argv.index("-threads") + 1] == "2"
+        Path(argv[-1]).write_bytes(b"partial")
+        raise sam.subprocess.TimeoutExpired(argv, 120)
+    monkeypatch.setattr(sam.subprocess, "run", timeout)
+    root = tmp_path / "output"
+    with pytest.raises(sam.subprocess.TimeoutExpired):
+        sam.prepare_continuous_video(source=source, source_digest=_sha256_file(source), root=root)
+    assert not (root / "continuous-upright.mp4").exists()
+    assert not (root / "continuous-video.json").exists()
+    assert not list(root.glob("*.mp4"))

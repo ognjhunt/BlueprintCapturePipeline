@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import tempfile
 from typing import Any, Mapping, Sequence
 from urllib.error import HTTPError
 from urllib.request import Request
@@ -92,19 +93,40 @@ def prepare_continuous_video(*, source: Path, source_digest: str, root: Path) ->
     """Keep all source frames for tracking, independently of geometry sampling."""
     if _sha256_file(source) != source_digest:
         raise ValueError("meta_sam_source_video_changed")
+    root.mkdir(parents=True, exist_ok=True)
+    destination = root / "continuous-upright.mp4"
+    receipt_path = root / "continuous-video.json"
+    encoding = "upright_h264_crf18_veryfast_threads2_all_source_frames_v2"
+    if receipt_path.is_file():
+        receipt = json.loads(receipt_path.read_text())
+        video = receipt.get("video") or {}
+        if (receipt.get("digest") != canonical_digest(receipt, digest_field="digest")
+                or video.get("source_video_digest") != source_digest or video.get("encoding") != encoding
+                or video.get("path") != str(destination) or not destination.is_file()
+                or _sha256_file(destination) != video.get("sha256")):
+            raise ValueError("meta_sam_prepared_video_receipt_invalid")
+        return receipt["registry"], video
     original = _probe_video(source)
     if not 2 <= len(original["frames"]) <= 15000:
         raise ValueError("meta_sam_frame_count_invalid")
-    root.mkdir(parents=True, exist_ok=True)
-    destination = root / "continuous-upright.mp4"
-    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(source), "-map", "0:v:0", "-an",
-        "-fps_mode", "passthrough", "-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p",
-        "-movflags", "+faststart", str(destination)], check=True, timeout=120, capture_output=True)
-    encoded = _probe_video(destination)
+    # Full-resolution, every-frame tracking input; use the CPU preset rather
+    # than x264's slower default. Never publish a timed-out partial as ready.
+    fd, temporary = tempfile.mkstemp(prefix="continuous-", suffix=".mp4", dir=root)
+    os.close(fd)
+    partial = Path(temporary)
+    try:
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(source), "-map", "0:v:0", "-an",
+            "-fps_mode", "passthrough", "-c:v", "libx264", "-preset", "veryfast", "-threads", "2",
+            "-crf", "18", "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(partial)],
+            check=True, timeout=120, capture_output=True)
+        encoded = _probe_video(partial)
+    except Exception:
+        partial.unlink(missing_ok=True)
+        raise
     if len(encoded["frames"]) != len(original["frames"]):
         raise ValueError("meta_sam_encoded_frame_mapping_invalid")
     width, height = encoded["streams"][0]["width"], encoded["streams"][0]["height"]
-    if min(width, height) <= 0 or max(width, height) > 4096 or destination.stat().st_size > 32 * 1024**2:
+    if min(width, height) <= 0 or max(width, height) > 4096 or partial.stat().st_size > 32 * 1024**2:
         raise ValueError("meta_sam_inline_video_limits_exceeded")
     source_start = float(original["frames"][0]["best_effort_timestamp_time"])
     encoded_start = float(encoded["frames"][0]["best_effort_timestamp_time"])
@@ -116,8 +138,15 @@ def prepare_continuous_video(*, source: Path, source_digest: str, root: Path) ->
         rows.append({"source_frame_id": f"decoded-{index:09d}", "model_frame_index": index,
                      "decoded_pts_seconds": pts, "width": width, "height": height,
                      "retained_video_digest": source_digest})
-    return rows, {"path": str(destination), "sha256": _sha256_file(destination),
-                  "source_video_digest": source_digest, "encoding": "upright_h264_crf18_all_source_frames_v1"}
+    partial.replace(destination)
+    video = {"path": str(destination), "sha256": _sha256_file(destination),
+             "source_video_digest": source_digest, "encoding": encoding}
+    receipt = {"registry": rows, "video": video}
+    receipt["digest"] = canonical_digest(receipt, digest_field="digest")
+    temporary_receipt = receipt_path.with_suffix(".tmp")
+    write_json(temporary_receipt, receipt)
+    temporary_receipt.replace(receipt_path)
+    return rows, video
 
 
 def parse_tracks(response: Mapping[str, Any], *, prompt: Mapping[str, Any],
