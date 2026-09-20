@@ -22,6 +22,7 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
                                  now: float) -> dict[str, Any]:
     root = capture_root / "pipeline" / "website_scene_preparation"
     root.mkdir(parents=True, exist_ok=True)
+    handoff_path = root / "handoff.json"
     result: dict[str, Any] = {
         "schema_version": "website_scene_handoff.v1", "status": "awaiting_reconstruction",
         "blockers": [], "claim_ceiling": "development_only", "simulator_ready": False,
@@ -131,36 +132,48 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
         # A missing execution authority must not stop this CPU-only geometry
         # conversion. The object stays in its separate authoring lane.
         try:
-            runtime_inputs = prepare_website_runtime_inputs(preparation=preparation, base_scene=base,
-                source_geometry=clean_plate["source_geometry"], task_masks=clean_plate["task_masks"],
-                output_root=root / "native")
+            from .website_development_test import enabled, prepare_development_test
+            development = enabled(context["context_digest"])
+            if development:
+                root = root / "development_test"
+                preparation, runtime_inputs = prepare_development_test(preparation=preparation,
+                    source_geometry=clean_plate["source_geometry"], task_masks=clean_plate["task_masks"],
+                    output_root=root)
+                result["development_test"] = {**preparation["development_test"],
+                    "preparation_path": str(root / "preparation.json")}
+                native_root = root
+            else:
+                native_root = root / "native"
+                runtime_inputs = prepare_website_runtime_inputs(preparation=preparation, base_scene=base,
+                    source_geometry=clean_plate["source_geometry"], task_masks=clean_plate["task_masks"],
+                    output_root=native_root)
             result["runtime_inputs"] = {"status": runtime_inputs["status"], "digest": runtime_inputs["digest"],
-                                        "path": str(root / "native" / "runtime_inputs.json")}
+                                        "path": str(native_root / "runtime_inputs.json")}
             from .website_native_background import prepare_collision_stage, prepare_appearance_stage, prepare_construction_stages
-            collision_stage = prepare_collision_stage(root / "native" / "runtime_inputs.json")
-            write_json(root / "native" / "collision_stage_inputs.json", collision_stage)
-            result["runtime_inputs"]["collision_stage_inputs_path"] = str(root / "native" / "collision_stage_inputs.json")
+            collision_stage = prepare_collision_stage(native_root / "runtime_inputs.json")
+            write_json(native_root / "collision_stage_inputs.json", collision_stage)
+            result["runtime_inputs"]["collision_stage_inputs_path"] = str(native_root / "collision_stage_inputs.json")
             if runtime_inputs["appearance"]["status"] == "native_appearance_authored":
-                appearance_stage = prepare_appearance_stage(root / "native" / "runtime_inputs.json")
-                write_json(root / "native" / "appearance_stage_inputs.json", appearance_stage)
-                result["runtime_inputs"]["appearance_stage_inputs_path"] = str(root / "native" / "appearance_stage_inputs.json")
-                construction = prepare_construction_stages(runtime_inputs_path=root / "native" / "runtime_inputs.json",
+                appearance_stage = prepare_appearance_stage(native_root / "runtime_inputs.json")
+                write_json(native_root / "appearance_stage_inputs.json", appearance_stage)
+                result["runtime_inputs"]["appearance_stage_inputs_path"] = str(native_root / "appearance_stage_inputs.json")
+                construction = prepare_construction_stages(runtime_inputs_path=native_root / "runtime_inputs.json",
                                                             preparation_path=root / "preparation.json")
                 if preparation["status"] == "intake_ready":
                     from .website_native_background import construction_rights_admission
                     from .website_object_observations import _record
                     rights = construction_rights_admission(preparation=preparation, task_context=context, now=now)
-                    rights_path = root / "native" / "rights_admission.json"
+                    rights_path = native_root / "rights_admission.json"
                     write_json(rights_path, rights)
                     construction["references"].append({"contract_path": "scene.rights.admission", **_record(rights_path)})
-                write_json(root / "native" / "construction_inputs.json", construction)
-                result["runtime_inputs"]["construction_inputs_path"] = str(root / "native" / "construction_inputs.json")
+                write_json(native_root / "construction_inputs.json", construction)
+                result["runtime_inputs"]["construction_inputs_path"] = str(native_root / "construction_inputs.json")
                 if preparation["status"] == "intake_ready":
                     from .website_scene_dispatch import binding_root, register_website_preparation
                     context_path = root / "task_context.json"
                     write_json(context_path, context)
                     result["source_registration"] = register_website_preparation(
-                        preparation_path=root / "preparation.json", runtime_inputs_path=root / "native/runtime_inputs.json",
+                        preparation_path=root / "preparation.json", runtime_inputs_path=native_root / "runtime_inputs.json",
                         task_context_path=context_path, root=binding_root(), now=now)
                     if authority.get("schema_version") == "website_scene_sponsorship.v1":
                         from .website_task_context import enqueue_website_prepared_scene
@@ -172,5 +185,5 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
     except (ValueError, KeyError, TypeError, OSError) as exc:
         result.update(status="awaiting_inputs", blockers=[str(exc)])
     result["digest"] = canonical_digest(result, digest_field="digest")
-    write_json(root / "handoff.json", result)
+    write_json(handoff_path, result)
     return result

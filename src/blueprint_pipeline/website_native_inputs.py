@@ -63,6 +63,13 @@ def validate_website_native_inputs(*, envelope, configurations, require_render_i
              and recipe.get("source_manifest_digest") == manifest_row["digest"]
              and "website_scene_processing_rights_required" not in preparation.get("blockers", []),
              "preparation_binding_invalid")
+    from .website_development_test import environment
+    test = environment(preparation)
+    _require(runtime.get("development_test") == test, "development_test_binding_invalid")
+    if test:
+        _require(request["scene"]["identity"]["id"].endswith("-development")
+                 and request["scene"]["appearance"]["kind"] == "textured_usd"
+                 and not request["scene"].get("rights", {}).get("public_display_authorization"), "development_test_scope_invalid")
     reference("scene.geometry.collision", runtime["collision"])
     _, normalization_path = reference("scene.geometry.validation")
     normalization = json.loads(normalization_path.read_text())
@@ -75,7 +82,7 @@ def validate_website_native_inputs(*, envelope, configurations, require_render_i
     _require(appearance.get("status") == "native_appearance_authored"
              and receipt.get("digest") == canonical_digest(receipt, digest_field="digest")
              and receipt.get("binding", {}).get("preparation_digest") == preparation["digest"]
-             and receipt.get("binding", {}).get("source_digest") == preparation["binding"]["splat_digest"]
+             and receipt.get("binding", {}).get("source_digest") == preparation["binding"].get("appearance_digest", preparation["binding"].get("splat_digest"))
              and receipt.get("renderer_qualified") is False
              and receipt.get("physical_measurement_proven") is False, "appearance_binding_invalid")
     observed_row, observed_path = reference(PREFIX + ".observations", authoring["observation_manifest"])

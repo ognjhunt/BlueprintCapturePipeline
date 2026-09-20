@@ -18,7 +18,7 @@ from tests.test_website_native_appearance import inputs
 from tests.test_task_evaluation_scene_configuration_submission import production_fixture, SHA
 
 
-def setup(tmp_path, monkeypatch):
+def setup(tmp_path, monkeypatch, *, development=False):
     capture = tmp_path / "capture"
     capture.mkdir()
     args, _, _ = inputs(capture)
@@ -28,8 +28,19 @@ def setup(tmp_path, monkeypatch):
     args["spend"]["expires_at_epoch"] = now + 3600
     args["spend"]["consent"]["accepted_at_epoch"] = now - 1
     preparation = compile_website_scene_preparation(**args)
-    prepare_website_runtime_inputs(preparation=preparation, base_scene=args["base_scene"],
-        source_geometry=args["source_geometry"], task_masks=args["task_masks"], output_root=capture / "native")
+    if development:
+        from blueprint_pipeline.website_development_test import prepare_development_test, ENV
+        monkeypatch.setenv(ENV, json.dumps([args["task_context"]["context_digest"]]))
+        preparation["status"] = "needs_input"
+        preparation["blockers"] = ["support_surface_not_found_under_subject"]
+        preparation["support"] = None
+        preparation["digest"] = canonical_digest(preparation, digest_field="digest")
+        preparation, _ = prepare_development_test(preparation=preparation,
+            source_geometry=args["source_geometry"], task_masks=args["task_masks"], output_root=capture / "native")
+        args["output_root"] = capture / "native"
+    else:
+        prepare_website_runtime_inputs(preparation=preparation, base_scene=args["base_scene"],
+            source_geometry=args["source_geometry"], task_masks=args["task_masks"], output_root=capture / "native")
     write_json(capture / "context.json", args["task_context"])
     intake_root = tmp_path / "intents"
     accepted = stage_scene_intent(value=preparation["intake_request"], queue_root=intake_root,
@@ -89,7 +100,8 @@ def test_publication_rechecks_owner_revocation(tmp_path, monkeypatch):
         _validated_inventory(kwargs["staging_root"], SHA)
 
 
-def test_existing_progression_publishes_and_queues_website_source_without_manual_step(tmp_path, monkeypatch):
+@pytest.mark.parametrize("development", [False, True])
+def test_existing_progression_publishes_and_queues_website_source_without_manual_step(tmp_path, monkeypatch, development):
     import os
     import pwd
     from blueprint_pipeline import task_evaluation_scene_progression as engine
@@ -99,7 +111,7 @@ def test_existing_progression_publishes_and_queues_website_source_without_manual
     from blueprint_pipeline.task_evaluation_launch_preparation_queue import ensure_launch_preparation_queue_root
     from blueprint_pipeline.website_scene_dispatch import register_website_preparation
     from tests.test_task_evaluation_scene_configuration_submission_publication import Store
-    kwargs, accepted = setup(tmp_path, monkeypatch)
+    kwargs, accepted = setup(tmp_path, monkeypatch, development=development)
     task = kwargs["task"]
     root = tmp_path / "bindings"
     register_website_preparation(preparation_path=task["preparation"]["path"],
