@@ -269,6 +269,7 @@ def test_controller_retains_original_reservation_after_upload_auth_failure(tmp_p
 
 @pytest.mark.parametrize('fault', [None, 'pending', 'unreported', 'wrong-operation', 'changed-admission', 'bad-receipt'])
 def test_settlement_uses_only_bound_terminal_provider_billing(tmp_path, monkeypatch, fault):
+    from types import SimpleNamespace
     from blueprint_pipeline import website_task_context as control
     from blueprint_pipeline.website_worldlabs import settle_website_reconstruction
     from blueprint_pipeline.common import write_json
@@ -287,10 +288,14 @@ def test_settlement_uses_only_bound_terminal_provider_billing(tmp_path, monkeypa
     write_json(root/'operation.json', operation)
     context = {'capture_id':'walkthrough-req1','request_id':'req1','scene_id':'site-req1','context_digest':'sha256:'+'b'*64}
     calls = []
-    def post(**kwargs):
-        calls.append(kwargs)
-        return {**kwargs['payload']['settlement'], 'status':'settled', 'actual_cost_usd':0 if fault=='bad-receipt' else 1.28}
-    monkeypatch.setattr(control,'website_webapp_request',post)
+    def post(url, **kwargs):
+        calls.append((url, kwargs))
+        value = {**json.loads(kwargs['data'])['settlement'], 'status':'settled',
+                 'actual_cost_usd':0 if fault=='bad-receipt' else 1.28}
+        return SimpleNamespace(body=json.dumps(value).encode())
+    monkeypatch.setenv('PIPELINE_SYNC_WEBAPP_URL', 'https://tryblueprint.io/api/internal/pipeline/sync')
+    monkeypatch.setattr(control, 'load_pipeline_sync_token', lambda: 'test-secret')
+    monkeypatch.setattr(control, 'safe_request', post)
     kwargs = dict(provider_run={'provider_run_id':'op-one','worldlabs_operation_manifest_uri':str(root/'operation.json')},
                   capture_root=tmp_path,task_context=context)
     if fault in ('wrong-operation','changed-admission','bad-receipt'):
@@ -302,5 +307,9 @@ def test_settlement_uses_only_bound_terminal_provider_billing(tmp_path, monkeypa
     else:
         receipt = settle_website_reconstruction(**kwargs)
         assert receipt['actual_cost_usd'] == 1.28
-        assert calls[0]['operation'] == 'preparation-settlement'
+        url, request = calls[0]
+        assert url.endswith('/api/internal/pipeline/creator-captures/walkthrough-req1/preparation-settlement')
+        assert request['headers']['X-Blueprint-Pipeline-Signature'].startswith('sha256=')
+        assert request['method'] == 'POST' and request['timeout_seconds'] == 10
+        assert json.loads(request['data'])['request_id'] == 'req1'
         assert json.loads((root/'settlement.json').read_text()) == receipt
