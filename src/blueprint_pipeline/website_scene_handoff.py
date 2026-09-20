@@ -54,6 +54,11 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
         context = metadata.get("site_task_context") or {}
         if context.get("capture_id") != descriptor["capture_id"] or context.get("scene_id") != descriptor["scene_id"]:
             raise ValueError("website_scene_task_identity_mismatch")
+        from .website_worldlabs import settle_website_reconstruction
+        settlement = settle_website_reconstruction(provider_run=provider_run, capture_root=capture_root,
+                                                    task_context=context)
+        if settlement is not None:
+            result["reconstruction_settlement"] = settlement
         if clean_plate.get("source_geometry") is None:
             from .website_scene_geometry import run_website_scene_geometry
             from .website_task_masks import bind_task_masks_to_geometry, run_website_task_masks

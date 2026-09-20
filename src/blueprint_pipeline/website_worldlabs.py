@@ -20,6 +20,41 @@ from .paid_resource_admission import PaidResourceAdmissionGrant, require_paid_re
 MAX_GENERATION_COST_USD = 3100 / 1250
 
 
+def settle_website_reconstruction(*, provider_run: Mapping[str, Any], capture_root: Path,
+                                  task_context: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Return unused quote capacity only from the retained terminal provider bill."""
+    root = capture_root / "pipeline" / "website_reconstruction"
+    submission_path, admission_path = root / "submission.json", root / "controller_admission.json"
+    operation_path = Path(provider_run.get("worldlabs_operation_manifest_uri") or root / "missing")
+    if not submission_path.is_file() or not admission_path.is_file() or not operation_path.is_file():
+        return None  # No settled bill means the full reservation remains charged.
+    if not operation_path.resolve().is_relative_to(capture_root.resolve() / "pipeline"):
+        raise ValueError("website_reconstruction_billing_path_invalid")
+    submission = json.loads(submission_path.read_text())
+    admission = json.loads(admission_path.read_text())
+    operation = json.loads(operation_path.read_text())
+    credits = (operation.get("cost") or {}).get("total_credits")
+    if operation.get("done") is not True or type(credits) is not int or credits < 0:
+        return None
+    if (operation.get("operation_id") != submission.get("operation_id")
+            or operation.get("operation_id") != provider_run.get("provider_run_id")
+            or submission.get("request_digest") != admission.get("allocation_binding_digest")
+            or admission.get("task_context_digest") != task_context.get("context_digest")):
+        raise ValueError("website_reconstruction_billing_binding_mismatch")
+    from .website_task_context import website_webapp_request
+    command = {"task_context_digest": task_context["context_digest"],
+               "allocation_binding_digest": admission["allocation_binding_digest"], "provider": "world_labs",
+               "operation_id": operation["operation_id"], "operation_done": True, "total_credits": credits,
+               "provider_receipt_digest": canonical_digest(operation)}
+    receipt = website_webapp_request(capture_id=task_context["capture_id"], operation="preparation-settlement",
+        payload={"request_id": task_context["request_id"], "scene_id": task_context["scene_id"], "settlement": command})
+    if (any(receipt.get(key) != value for key, value in command.items())
+            or receipt.get("status") != "settled" or receipt.get("actual_cost_usd") != credits / 1250):
+        raise ValueError("website_reconstruction_settlement_receipt_invalid")
+    write_json(root / "settlement.json", receipt)
+    return receipt
+
+
 def validate_website_prepared_views(*, descriptor: Mapping[str, Any], capture_root: Path) -> tuple[list[Path], dict[str, Any]]:
     """Shared no-network preflight for the allocator and provider adapter."""
     metadata = descriptor.get("metadata") or {}
