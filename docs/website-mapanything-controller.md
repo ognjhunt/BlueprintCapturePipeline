@@ -27,6 +27,20 @@ an upload field or a per-capture command. The profile has:
   wheel, the pinned MapAnything wheel, and the hash-locked dependency file.
   The existing bootstrap installs exactly three wheels and one dependency file.
 
+Canonical deployment builds this profile automatically when
+`/etc/blueprint/website-mapanything-runtime.json` exists (or the deploy process
+sets `BLUEPRINT_WEBSITE_MAPANYTHING_DEPLOYMENT_TEMPLATE`). This operator-owned
+template uses `website_mapanything_deployment.v1`, the same worker image and
+budget fields, and only the three pinned external runtime files: MapAnything,
+blueprint-contracts, and the dependency lock. The release provisioner builds
+the Pipeline wheel from the exact committed source tree without network
+dependency resolution, copies and verifies the pinned inputs, and publishes
+the profile under `system-runtimes/website-mapanything/<commit>/`. It reads the
+files back as the service account and returns the profile binding through the
+existing deployment environment. Subsequent captures reuse it; subsequent
+releases rebuild it. Changed inputs or an unreadable runtime fail deployment.
+This deployment artifact does not allocate a GPU or grant spending authority.
+
 The existing object-store and Vast credentials remain service-owned. WebApp's
 sponsorship configuration must include sufficient upstream allowance and current
 Vast terms, as it already does for other preparation providers. The signed

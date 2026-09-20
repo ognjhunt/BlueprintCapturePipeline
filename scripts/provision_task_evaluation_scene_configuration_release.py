@@ -222,6 +222,7 @@ def provision_scene_configuration_release(
     readback: Readback,
     readback_actor: str,
     astra_blender_archive_path: str | Path | None = None,
+    website_mapanything_template: str | Path | None = None,
 ) -> dict[str, Any]:
     """Publish or reopen the two immutable runtime trees for one release."""
 
@@ -316,6 +317,13 @@ def provision_scene_configuration_release(
             )
         finally:
             _remove_tree(component_parent)
+    website_environment = {}
+    if website_mapanything_template is not None:
+        from scripts.provision_website_geometry_runtime import provision_website_geometry_runtime
+        profile = provision_website_geometry_runtime(
+            repository_root=repository, source_commit=source_commit, runtime_root=runtimes,
+            template_path=Path(website_mapanything_template), readback=readback)
+        website_environment["BLUEPRINT_WEBSITE_MAPANYTHING_PROFILE"] = str(profile)
     return {
         "schema_version": SCHEMA_VERSION,
         "status": "ready",
@@ -323,6 +331,7 @@ def provision_scene_configuration_release(
         "splat_render_runtime": splat_receipt,
         "scene_configuration_toolchain": toolchain_receipt,
         "environment": {
+            **website_environment,
             "BLUEPRINT_TASK_EVALUATION_SPLAT_RENDER_RUNTIME_ROOT": str(splat_root),
             "BLUEPRINT_TASK_EVALUATION_SCENE_CONFIGURATION_TOOLCHAIN_ROOT": str(
                 toolchain_root
@@ -365,6 +374,10 @@ def main() -> int:
     parser.add_argument("--text-to-cad-root", required=True)
     parser.add_argument("--multi-agent-cad-root", required=True)
     parser.add_argument("--astra-blender-archive")
+    parser.add_argument("--website-mapanything-template", default=os.getenv(
+        "BLUEPRINT_WEBSITE_MAPANYTHING_DEPLOYMENT_TEMPLATE",
+        "/etc/blueprint/website-mapanything-runtime.json"
+        if Path("/etc/blueprint/website-mapanything-runtime.json").exists() else None))
     parser.add_argument("--readback-user", required=True)
     args = parser.parse_args()
     value = provision_scene_configuration_release(
@@ -380,6 +393,7 @@ def main() -> int:
         text_to_cad_root=args.text_to_cad_root,
         multi_agent_cad_root=args.multi_agent_cad_root,
         astra_blender_archive_path=args.astra_blender_archive,
+        website_mapanything_template=args.website_mapanything_template,
         readback=service_account_readback(args.readback_user),
         readback_actor=f"service-account:{args.readback_user}",
     )

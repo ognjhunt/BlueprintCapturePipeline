@@ -29,8 +29,8 @@ from .website_scene_geometry import load_website_geometry_result
 from .website_task_context import reserve_website_preparation_spend, load_website_scene_sponsorship
 
 
-def load_profile(*, source_commit: str) -> dict[str, Any]:
-    path = os.getenv("BLUEPRINT_WEBSITE_MAPANYTHING_PROFILE", "")
+def load_profile(*, source_commit: str, profile_path: str | Path | None = None) -> dict[str, Any]:
+    path = profile_path or os.getenv("BLUEPRINT_WEBSITE_MAPANYTHING_PROFILE", "")
     if not path:
         raise ValueError("website_mapanything_runtime_profile_missing")
     value = json.loads(Path(path).read_text())
