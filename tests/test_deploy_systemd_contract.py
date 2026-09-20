@@ -99,10 +99,12 @@ def test_production_systemd_units_set_fail_closed_runtime_posture():
             "blueprint-pipeline-control-plane.service",
             "blueprint-pubsub-handoff-listener.service",
         }:
-            assert (
-                "BLUEPRINT_PIPELINE_REPO="
-                "/opt/blueprint/task-evaluation-control-plane"
-            ) in text
+            repo_key = (
+                "BLUEPRINT_PUBSUB_HANDOFF_REPO"
+                if unit == "blueprint-pubsub-handoff-listener.service"
+                else "BLUEPRINT_PIPELINE_REPO"
+            )
+            assert f"{repo_key}=/opt/blueprint/task-evaluation-control-plane" in text
             assert (
                 "BLUEPRINT_PIPELINE_PYTHON="
                 "/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python"
@@ -115,6 +117,8 @@ def test_production_systemd_units_set_fail_closed_runtime_posture():
         if unit == "blueprint-pubsub-handoff-listener.service":
             assert text.count('exec env PYTHONPATH=src "$${BLUEPRINT_PIPELINE_PYTHON}" -m') == 2
             assert ".venv/bin/blueprint-pubsub-handoff-listener" not in text
+            assert text.count('cd -P "$${BLUEPRINT_PUBSUB_HANDOFF_REPO}"') == 2
+            assert "$${BLUEPRINT_PIPELINE_REPO}" not in text
         assert "BLUEPRINT_LAUNCH_PROOF_MODE=production" in text
         assert "PRIVACY_PIPELINE_ENABLED=true" in text
         assert "PRIVACY_FAIL_CLOSED=true" in text
