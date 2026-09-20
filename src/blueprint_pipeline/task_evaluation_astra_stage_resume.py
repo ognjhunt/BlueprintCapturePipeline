@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import tempfile
@@ -35,26 +36,46 @@ def _seal(path, value):
         Path(temporary).unlink(missing_ok=True)
 
 
-def bind_same_root_resume(root, envelope, configurations, parent_deadline_epoch=None):
-    """Bind checkpoints to the run, its envelope and its exact configurations.
+def bind_same_root_resume(root, envelope, configurations, parent_deadline_epoch=None, *, stage_limit=None):
+    """Keep exact paths and pin each execution phase's own deadline.
 
-    The binding names the output root by its final component only, and does
-    not carry the process deadline: a stage prefix executed on the control
-    plane under ``.../runtime_output/stages`` must be adoptable by the paid
-    run under ``/workspace/.../runtime_output/stages``, whose deadline is its
-    own. Everything that identifies the work (run id, envelope, configuration
-    bytes) is still sealed.
+    A transferred prefix must be restored at its original per-run logical
+    paths: artifact records and the hydrated envelope contain absolute paths.
+    Ordinary same-run resumes retain their original v1 deadline protection.
     """
-    del parent_deadline_epoch
-    value = {"schema_version": "astra_same_run_stage_resume_binding.v1", "output_root": Path(root).name,
+    path = root / "astra_same_run_resume_binding.json"
+    existing = json.loads(path.read_text()) if path.exists() else None
+    split = (existing or {}).get("schema_version") == "astra_split_stage_resume_binding.v1"
+    new_split = existing is None and stage_limit is not None
+    value = {"schema_version": "astra_same_run_stage_resume_binding.v1", "output_root": str(root),
         "run_id": envelope["run_id"], "envelope_digest": canonical_digest(envelope),
         "configuration_digests": {name: _hash(path) for name, (_, path) in configurations.items()},
-        "new_paid_allocation_authorized": False}
+        "parent_deadline_epoch": parent_deadline_epoch, "new_paid_allocation_authorized": False}
+    if split or new_split:
+        if (isinstance(parent_deadline_epoch, bool) or not isinstance(parent_deadline_epoch, (int, float))
+                or not math.isfinite(parent_deadline_epoch) or parent_deadline_epoch <= 0):
+            raise AssetAuthoringError("astra_stage_resume_phase_deadline_required")
+        value.update(schema_version="astra_split_stage_resume_binding.v1",
+                     prefix_stage_limit=stage_limit if stage_limit is not None else existing["prefix_stage_limit"],
+                     parent_deadline_epoch=(parent_deadline_epoch if stage_limit is not None
+                                            else existing["parent_deadline_epoch"]))
+        if value["prefix_stage_limit"] not in configurations:
+            raise AssetAuthoringError("astra_stage_resume_prefix_stage_invalid")
     value["binding_digest"] = canonical_digest(value, digest_field="binding_digest")
-    path = root / "astra_same_run_resume_binding.json"
     if not path.exists() and any((root / name).exists() for name in configurations):
         raise AssetAuthoringError("astra_stage_resume_legacy_prefix_not_checkpointed")
     _seal(path, value)
+    if split and stage_limit is None:
+        if not (root / value["prefix_stage_limit"] / "completed_stage_checkpoint.json").is_file():
+            raise AssetAuthoringError("astra_stage_resume_prefix_incomplete")
+        # A second process may have a later deadline, but retries of that
+        # process cannot extend it. This record grants no allocation authority.
+        continuation = {"schema_version": "astra_prefix_continuation_binding.v1",
+                        "prefix_binding_digest": value["binding_digest"],
+                        "parent_deadline_epoch": parent_deadline_epoch,
+                        "new_paid_allocation_authorized": False}
+        continuation["binding_digest"] = canonical_digest(continuation, digest_field="binding_digest")
+        _seal(root / "astra_prefix_continuation_binding.json", continuation)
     return value
 
 

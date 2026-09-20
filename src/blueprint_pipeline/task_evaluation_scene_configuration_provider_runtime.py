@@ -98,11 +98,14 @@ def execute_scene_configuration_stage_chain(
         raise TaskEvaluationSceneConfigurationProviderRuntimeError(
             f"scene_configuration_provider_stage_limit_invalid:{stage_limit}"
         )
+    scheduled_stages = (stages if stage_limit is None else
+                        stages[:next(i for i, stage in enumerate(stages) if stage["stage_id"] == stage_limit) + 1])
     results: list[dict[str, Any]] = []
     astra_resume = None
     if any(value.get("authoring_backend") == "astra_cad_blender_v1" for value, _ in configurations.values()):
         from .task_evaluation_astra_stage_resume import bind_same_root_resume
-        astra_resume = bind_same_root_resume(root, envelope, configurations, parent_deadline_epoch)
+        astra_resume = bind_same_root_resume(root, envelope, configurations, parent_deadline_epoch,
+                                            stage_limit=stage_limit)
     for index, stage in enumerate(stages):
         if not isinstance(stage, Mapping):
             raise TaskEvaluationSceneConfigurationProviderRuntimeError(
@@ -130,7 +133,7 @@ def execute_scene_configuration_stage_chain(
         if parent_deadline_epoch is not None:
             remaining_seconds = parent_deadline_epoch - clock()
             required_seconds = required_remaining_stage_seconds(
-                stages, start_index=index
+                scheduled_stages, start_index=index
             )
             if remaining_seconds < required_seconds:
                 raise TaskEvaluationSceneConfigurationProviderRuntimeError(

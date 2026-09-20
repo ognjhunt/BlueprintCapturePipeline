@@ -329,14 +329,13 @@ def _astra_inputs(tmp_path: Path):
     return envelope, configurations
 
 
-def test_stage_limit_executes_a_cpu_prefix_that_a_paid_run_elsewhere_adopts(
+def test_stage_limit_restores_real_files_at_exact_paths_before_native_continuation(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Stages 1-4 are CPU work; only native import and assembly need the Isaac host.
 
-    A prestage on the control plane executes the prefix into ``.../stages``;
-    the paid run receives that tree under its own root and, with its own
-    deadline, adopts the four checkpoints and executes only stages 5 and 6.
+    A sealed prefix is restored at its original per-run logical path on the
+    native host. Its next execution phase receives its own pinned deadline.
     """
     import shutil
 
@@ -344,9 +343,11 @@ def test_stage_limit_executes_a_cpu_prefix_that_a_paid_run_elsewhere_adopts(
     host = tmp_path / "control-plane" / "runtime_output" / "stages"
     host.mkdir(parents=True)
     observed_host: list[str] = []
+    prefix_deadline = time.time() + 10 * 3600
     prefix = execute_scene_configuration_stage_chain(
         envelope=envelope, configurations=configurations, output_root=host,
         registry=_registry(observed_host, real_artifacts=True), producer_registry=_producers(), stage_limit="stage-4",
+        parent_deadline_epoch=prefix_deadline,
     )
     assert observed_host == ["stage-1", "stage-2", "stage-3", "stage-4"]
     assert prefix["status"] == "completed_prefix" and prefix["whole_run_completed"] is False
@@ -354,23 +355,33 @@ def test_stage_limit_executes_a_cpu_prefix_that_a_paid_run_elsewhere_adopts(
     assert (host / "astra_same_run_resume_binding.json").is_file()
     assert all((host / f"stage-{i}" / "completed_stage_checkpoint.json").is_file() for i in range(1, 5))
     binding = json.loads((host / "astra_same_run_resume_binding.json").read_text())
-    assert binding["output_root"] == "stages" and "parent_deadline_epoch" not in binding
+    assert binding["output_root"] == str(host) and binding["parent_deadline_epoch"] == prefix_deadline
     from blueprint_pipeline.task_evaluation_astra_stage_resume import bind_same_root_resume
-    # The same run bound under a different root and deadline yields the same seal.
-    assert bind_same_root_resume(tmp_path / "elsewhere" / "stages", envelope, configurations,
-                                 time.time() + 3600) == binding
-
-    container = tmp_path / "workspace" / "runtime_output" / "stages"
-    shutil.copytree(host, container)
+    from blueprint_pipeline.task_object_astra_authoring import AssetAuthoringError
+    # A basename match is insufficient: both result files and hydrated inputs
+    # are path-bound. Refuse a move until the capsule restores the exact paths.
+    moved = tmp_path / "workspace" / "runtime_output" / "stages"
+    shutil.copytree(host, moved)
+    with pytest.raises(AssetAuthoringError, match="immutable_binding_changed"):
+        bind_same_root_resume(moved, envelope, configurations, prefix_deadline)
+    with pytest.raises(AssetAuthoringError, match="immutable_binding_changed"):
+        bind_same_root_resume(host, envelope, configurations, prefix_deadline + 1, stage_limit="stage-4")
+    backup = tmp_path / "transport"
+    shutil.move(host, backup)
+    shutil.copytree(backup, host)
+    container = host
     capsys.readouterr()
     # The registry stub asserts each stage sees as many dependency results as
     # stages executed so far; the four adopted stages count as executed.
     observed_paid = ["stage-1", "stage-2", "stage-3", "stage-4"]
+    native_deadline = time.time() + 10 * 3600
     full = execute_scene_configuration_stage_chain(
         envelope=envelope, configurations=configurations, output_root=container,
         registry=_registry(observed_paid), producer_registry=_producers(),
-        parent_deadline_epoch=time.time() + 10 * 3600,
+        parent_deadline_epoch=native_deadline,
     )
+    with pytest.raises(AssetAuthoringError, match="immutable_binding_changed"):
+        bind_same_root_resume(container, envelope, configurations, native_deadline + 1)
     assert observed_paid == [f"stage-{i}" for i in range(1, 7)]
     assert full["status"] == "completed" and full["stage_count"] == 6
     assert full["stage_result_digests"][:4] == prefix["stage_result_digests"]
@@ -389,3 +400,38 @@ def test_stage_limit_must_name_a_stage_in_the_recipe(tmp_path: Path) -> None:
             envelope=envelope, configurations=configurations, output_root=outputs,
             registry=_registry([]), producer_registry=_producers(), stage_limit="stage-9",
         )
+
+
+@pytest.mark.parametrize("deadline", [None, True, float("nan"), float("inf"), 0])
+def test_split_prefix_requires_a_bounded_deadline(tmp_path, deadline):
+    from blueprint_pipeline.task_evaluation_astra_stage_resume import bind_same_root_resume
+    from blueprint_pipeline.task_object_astra_authoring import AssetAuthoringError
+    envelope, configs = _astra_inputs(tmp_path)
+    with pytest.raises(AssetAuthoringError, match="phase_deadline_required"):
+        bind_same_root_resume(tmp_path / "stages", envelope, configs, deadline, stage_limit="stage-4")
+
+
+def test_incomplete_prefix_cannot_bind_a_native_continuation(tmp_path):
+    from blueprint_pipeline.task_evaluation_astra_stage_resume import bind_same_root_resume
+    from blueprint_pipeline.task_object_astra_authoring import AssetAuthoringError
+    envelope, configs = _astra_inputs(tmp_path)
+    root = tmp_path / "stages"
+    bind_same_root_resume(root, envelope, configs, 10000., stage_limit="stage-4")
+    with pytest.raises(AssetAuthoringError, match="prefix_incomplete"):
+        bind_same_root_resume(root, envelope, configs, 20000.)
+    assert not (root / "astra_prefix_continuation_binding.json").exists()
+
+
+def test_prefix_deadline_only_reserves_scheduled_stages(tmp_path):
+    from blueprint_pipeline.task_evaluation_scene_configuration_runtime_budget import required_remaining_stage_seconds
+    envelope, configurations = _astra_inputs(tmp_path)
+    root = tmp_path / "stages"
+    root.mkdir()
+    stages = envelope["recipe"]["stage_sequence"]
+    deadline = required_remaining_stage_seconds(stages[:4], start_index=0)
+    assert deadline < required_remaining_stage_seconds(stages, start_index=0)
+    result = execute_scene_configuration_stage_chain(
+        envelope=envelope, configurations=configurations, output_root=root,
+        registry=_registry([]), producer_registry=_producers(), stage_limit="stage-4",
+        parent_deadline_epoch=deadline, clock=lambda: 0.)
+    assert result["status"] == "completed_prefix" and result["stage_count"] == 4
