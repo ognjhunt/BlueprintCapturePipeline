@@ -306,7 +306,7 @@
     "src/blueprint_pipeline/live_pipeline_control_plane.py": 2313,
     "src/blueprint_pipeline/live_pipeline_intake_service.py": 3374,
     "src/blueprint_pipeline/live_robot_eval_closure.py": 4740,
-    "src/blueprint_pipeline/materialization.py": 2198,
+    "src/blueprint_pipeline/materialization.py": 2200,
     "src/blueprint_pipeline/mujoco_g1_simulator_command.py": 6063,
     "src/blueprint_pipeline/mujoco_g1_wam_vla_policy_endpoint_eval.py": 12110,
     "src/blueprint_pipeline/native_franka_pose_servo.py": 2845,
@@ -323,11 +323,11 @@
     "src/blueprint_pipeline/oscar_isaac_closed_loop_eval.py": 8183,
     "src/blueprint_pipeline/oscar_wam_command_adapter.py": 2010,
     "src/blueprint_pipeline/oscar_wam_provider_bundle.py": 5872,
-    "src/blueprint_pipeline/paid_resource_allocator.py": 7398,
+    "src/blueprint_pipeline/paid_resource_allocator.py": 7453,
     "src/blueprint_pipeline/policy_autoresearch.py": 2563,
     "src/blueprint_pipeline/policy_ranking_successor_gpu_admission.py": 2053,
     "src/blueprint_pipeline/post_training_data_package.py": 6727,
-    "src/blueprint_pipeline/public_scene_artifixer3d_vast.py": 2351,
+    "src/blueprint_pipeline/public_scene_artifixer3d_vast.py": 2352,
     "src/blueprint_pipeline/public_scene_replacement_occlusion.py": 2004,
     "src/blueprint_pipeline/public_scene_suite_admission.py": 2066,
     "src/blueprint_pipeline/public_scene_suite_materializer.py": 2545,
@@ -347,13 +347,13 @@
     "src/blueprint_pipeline/single_g1_kitchen_episode_runpod.py": 4378,
     "src/blueprint_pipeline/single_g1_kitchen_qualification_session.py": 4648,
     "src/blueprint_pipeline/site_eval_director.py": 2152,
-    "src/blueprint_pipeline/site_package_orchestrator.py": 5604,
-    "src/blueprint_pipeline/task_evaluation_launch_activation_worker.py": 2049,
+    "src/blueprint_pipeline/site_package_orchestrator.py": 5697,
+    "src/blueprint_pipeline/task_evaluation_launch_activation_worker.py": 2085,
     "src/blueprint_pipeline/task_evaluation_launch_dispatcher.py": 2109,
     "src/blueprint_pipeline/task_evaluation_policy_canary_dispatcher.py": 2662,
     "src/blueprint_pipeline/task_evaluation_supervisor/tools.py": 4166,
     "src/blueprint_pipeline/unitree_groot_n17_sonic_vast_persistent_session.py": 10104,
-    "src/blueprint_pipeline/vast_provider_adapter.py": 10374,
+    "src/blueprint_pipeline/vast_provider_adapter.py": 10420,
     "src/blueprint_pipeline/wam_derived_observation_harness.py": 3066,
     "src/blueprint_pipeline/wam_fixture_evaluator.py": 4605,
     "src/blueprint_pipeline/wam_generated_video_review.py": 2412,
@@ -451,6 +451,19 @@
       "src/blueprint_pipeline/vast_provider_adapter.py": 10374
     },
     "reason": "Reconcile already-merged protected-main growth; no changes to these modules in the agent-runtime production integration. Exact caps admit no further growth; decomposition remains required.",
+    "review_by_unchanged": "2026-10-12"
+  },
+  "baseline_adjustment_2026_09_20": {
+    "source_commit": "ea1088a99071348889f2a2f8da3d8ce27b860b4f",
+    "unchanged_module_line_counts": {
+      "src/blueprint_pipeline/materialization.py": 2200,
+      "src/blueprint_pipeline/paid_resource_allocator.py": 7453,
+      "src/blueprint_pipeline/public_scene_artifixer3d_vast.py": 2352,
+      "src/blueprint_pipeline/site_package_orchestrator.py": 5697,
+      "src/blueprint_pipeline/task_evaluation_launch_activation_worker.py": 2085,
+      "src/blueprint_pipeline/vast_provider_adapter.py": 10420
+    },
+    "reason": "Reconcile already-merged protected-main growth (#1968, #1982, #2004 and earlier); no changes to these modules in the CPU prestage integration. Exact caps admit no further growth; decomposition remains required.",
     "review_by_unchanged": "2026-10-12"
   }
 }
