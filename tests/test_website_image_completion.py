@@ -138,7 +138,8 @@ def test_admission_dictionary_cannot_authorize_image_spend(tmp_path, monkeypatch
                                               admission=admission, token="test")
 
 
-def test_background_review_keeps_client_alive_until_response(tmp_path, monkeypatch):
+@pytest.mark.parametrize("website", [False, True])
+def test_background_review_keeps_client_alive_until_response(tmp_path, monkeypatch, website):
     import sys
     from types import SimpleNamespace as NS
     import google
@@ -169,8 +170,26 @@ def test_background_review_keeps_client_alive_until_response(tmp_path, monkeypat
     frames, _ = _inputs(tmp_path)
     args = dict(frames=frames, original_frames=frames, plan={"task_context_sha256": "task", "targets": []},
                 output_root=tmp_path / "review")
+    reservations = []
+    if website:
+        from blueprint_pipeline import website_gemini_receipts as receipts
+        from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+        from hashlib import sha256
+        task = {"schema_version": "website_site_task_context.v1", "request_id": "req", "scene_id": "scene",
+                "capture_id": "capture", "confirmed": True, "confirmed_at": "2026-09-19", "description": "Move box"}
+        task["context_digest"] = canonical_digest(task, digest_field="context_digest")
+        args["task_context"] = task
+        args["plan"]["task_context_sha256"] = sha256(json.dumps(task, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        def reserve(**kwargs):
+            reservations.append(kwargs)
+            return {"status": "admitted"}, object()
+        monkeypatch.setattr(receipts, "reserve_website_preparation_spend", reserve)
     assert completion.verify_completed_background(**args)["status"] == "passed"
     assert state == {"closed": True, "calls": 1}
+    if website:
+        monkeypatch.setattr(completion, "_api_key", lambda: (None, None))
+        assert len(reservations) == 1
+        assert reservations[0]["provider"] == "google"
     assert completion.verify_completed_background(**args)["status"] == "passed"
     assert state["calls"] == 1
 
