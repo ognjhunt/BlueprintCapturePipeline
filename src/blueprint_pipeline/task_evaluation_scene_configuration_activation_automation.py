@@ -405,7 +405,8 @@ def validate_scene_configuration_activation_intent(value: Mapping[str, Any]) -> 
 
 
 def load_scene_configuration_activation_intent(
-    *, intent_root: str | Path, team_namespace: str, scene_id: str, task_id: str
+    *, intent_root: str | Path, team_namespace: str, scene_id: str, task_id: str,
+    expected_production_commit: str | None = None,
 ) -> dict[str, Any] | None:
     """Return the registered intent for one identity, or ``None`` when absent."""
 
@@ -417,6 +418,14 @@ def load_scene_configuration_activation_intent(
     candidate = root / scene_configuration_activation_registry_name(
         team_namespace=team_namespace, scene_id=scene_id, task_id=task_id
     )
+    if expected_production_commit is not None:
+        if _COMMIT.fullmatch(expected_production_commit) is None:
+            raise SceneConfigurationActivationAutomationError("scene_configuration_activation_intent_commit_invalid")
+        scoped = root / expected_production_commit / candidate.name
+        if scoped.parent.is_symlink() or scoped.is_symlink():
+            raise SceneConfigurationActivationAutomationError("scene_configuration_activation_intent_root_invalid")
+        if scoped.exists():
+            candidate = scoped
     if not candidate.is_file() or candidate.is_symlink():
         return None
     return validate_scene_configuration_activation_intent(
@@ -442,6 +451,7 @@ def provision_scene_configuration_activation_intent(
     materialization_root: str | Path,
     release_window_valid_for_seconds: int = DEFAULT_RELEASE_WINDOW_VALID_SECONDS,
     service_group: str | None = None,
+    release_scoped: bool = False,
 ) -> dict[str, Any]:
     """Author the release-window template and register the sealed intent in one step.
 
@@ -496,7 +506,12 @@ def provision_scene_configuration_activation_intent(
         with spend_path.open("xb") as stream:
             stream.write(spend_source.read_bytes())
         spend_path.chmod(0o440)
-    output_path = Path(intent_root).expanduser() / scene_configuration_activation_registry_name(
+    # Normal controller retries append an immutable release registration instead
+    # of replacing a shared name while its consuming worker is running.
+    registry_root = Path(intent_root).expanduser()
+    if release_scoped:
+        registry_root = registry_root / expected_production_commit
+    output_path = registry_root / scene_configuration_activation_registry_name(
         team_namespace=team_namespace, scene_id=scene_id, task_id=task_id
     )
     intent = materialize_scene_configuration_activation_intent(
@@ -781,7 +796,8 @@ def advance_scene_configuration_activation(
     task_id = str(request["task"]["identity"].get("id") or "")
     team_namespace = str(request["team_namespace"])
     intent = load_scene_configuration_activation_intent(
-        intent_root=intent_root, team_namespace=team_namespace, scene_id=scene_id, task_id=task_id
+        intent_root=intent_root, team_namespace=team_namespace, scene_id=scene_id, task_id=task_id,
+        expected_production_commit=str(request["expected_production_commit"]),
     )
     if intent is None:
         return {
@@ -1381,6 +1397,7 @@ def process_scene_configuration_activations(
                 team_namespace=str(activation["team_namespace"]),
                 scene_id=str(activation["scene_id"]),
                 task_id=str(activation["task_id"]),
+                expected_production_commit=str(activation["expected_production_commit"]),
             )
             if intent is None:
                 raise SceneConfigurationActivationAutomationError(

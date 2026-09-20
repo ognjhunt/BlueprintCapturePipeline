@@ -159,7 +159,8 @@ def test_website_preparation_does_not_release_pending_execution_or_changed_facto
         _settle(fx, source_factory=fx["factory"])
 
 
-def test_activated_website_preparation_uses_execution_reconciliation_on_release_change(tmp_path, monkeypatch):
+@pytest.mark.parametrize("activation_completed", [False, True])
+def test_activated_website_preparation_uses_execution_reconciliation_on_release_change(tmp_path, monkeypatch, activation_completed):
     from blueprint_pipeline import task_evaluation_scene_progression as engine
     from blueprint_pipeline import task_evaluation_scene_progression_recovery as recovery
     from blueprint_pipeline.task_evaluation_launch_preparation_queue import ENVELOPE_SCHEMA_VERSION
@@ -181,8 +182,10 @@ def test_activated_website_preparation_uses_execution_reconciliation_on_release_
     _write(output / "submission-attempts" / "1.json", {})
     state = {"attempt_id": fx["source"]["attempt_id"],
         "attempt": record(directory / "preparation-attempts" / (fx["source"]["attempt_id"] + ".json")),
-        "activation": {"present": True}, "activation_link": record(activation_link),
+        "activation_link": record(activation_link),
         "factory": fx["factory"]}
+    if activation_completed:
+        state["activation"] = {"present": True}
     observed = []
     def reconcile(**kwargs):
         observed.append(kwargs)

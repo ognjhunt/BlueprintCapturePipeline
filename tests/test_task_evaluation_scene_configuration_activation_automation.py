@@ -499,7 +499,7 @@ def test_provision_intent_authors_its_own_release_window_template(tmp_path: Path
 COMMIT_NEXT = "1359447d4" + "2" * 31
 
 
-def _provision(tmp_path: Path, *, commit: str = COMMIT, reference: str | None = None) -> dict:
+def _provision(tmp_path: Path, *, commit: str = COMMIT, reference: str | None = None, release_scoped=False) -> dict:
     spend = _project_spend(tmp_path / "spend.json")
     return automation.provision_scene_configuration_activation_intent(
         expected_production_commit=commit,
@@ -517,6 +517,7 @@ def _provision(tmp_path: Path, *, commit: str = COMMIT, reference: str | None = 
         release_reference="Scene 841757 scene-configuration automatic activation",
         intent_root=tmp_path / "intents",
         materialization_root=tmp_path / "activation-intent-inputs",
+        release_scoped=release_scoped,
     )
 
 
@@ -1115,3 +1116,27 @@ def test_webapp_submission_failure_surfaces_script_blocker(tmp_path: Path, monke
     assert not list((tmp_path / "submissions").glob("*.webapp-submission.json"))
     assert automation._submission_script_blockers("not json\n") == []
     assert automation._submission_script_blockers(None) == []
+
+
+def test_controller_registers_each_release_without_replacing_active_registry(tmp_path, monkeypatch):
+    from blueprint_pipeline import task_evaluation_intent_registry as registry
+    legacy = _provision(tmp_path)
+    identity = automation.scene_configuration_activation_registry_name(
+        team_namespace=TEAM, scene_id=SCENE_ID, task_id=TASK_ID)
+    old_bytes = (tmp_path / "intents" / identity).read_bytes()
+    def refuse_supersession(commit):
+        raise AssertionError("An active worker registration must not be replaced")
+    monkeypatch.setattr(registry, "_supersession_authority", refuse_supersession)
+    current = _provision(tmp_path, commit=COMMIT_NEXT, release_scoped=True)
+    assert _provision(tmp_path, commit=COMMIT_NEXT, release_scoped=True) == current
+    assert (tmp_path / "intents" / identity).read_bytes() == old_bytes
+    assert not list((tmp_path / "intents").glob("*.superseded-*.json"))
+    def load(commit):
+        return automation.load_scene_configuration_activation_intent(
+            intent_root=tmp_path / "intents", team_namespace=TEAM, scene_id=SCENE_ID, task_id=TASK_ID,
+            expected_production_commit=commit)
+    assert load(COMMIT_NEXT) == current
+    assert load(COMMIT) == legacy
+    with pytest.raises(automation.SceneConfigurationActivationAutomationError):
+        _provision(tmp_path, commit=COMMIT_NEXT, reference="changed authority", release_scoped=True)
+    assert load(COMMIT_NEXT) == current
