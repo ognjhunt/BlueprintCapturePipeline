@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import tempfile
@@ -35,16 +36,46 @@ def _seal(path, value):
         Path(temporary).unlink(missing_ok=True)
 
 
-def bind_same_root_resume(root, envelope, configurations, parent_deadline_epoch):
+def bind_same_root_resume(root, envelope, configurations, parent_deadline_epoch=None, *, stage_limit=None):
+    """Keep exact paths and pin each execution phase's own deadline.
+
+    A transferred prefix must be restored at its original per-run logical
+    paths: artifact records and the hydrated envelope contain absolute paths.
+    Ordinary same-run resumes retain their original v1 deadline protection.
+    """
+    path = root / "astra_same_run_resume_binding.json"
+    existing = json.loads(path.read_text()) if path.exists() else None
+    split = (existing or {}).get("schema_version") == "astra_split_stage_resume_binding.v1"
+    new_split = existing is None and stage_limit is not None
     value = {"schema_version": "astra_same_run_stage_resume_binding.v1", "output_root": str(root),
         "run_id": envelope["run_id"], "envelope_digest": canonical_digest(envelope),
         "configuration_digests": {name: _hash(path) for name, (_, path) in configurations.items()},
         "parent_deadline_epoch": parent_deadline_epoch, "new_paid_allocation_authorized": False}
+    if split or new_split:
+        if (isinstance(parent_deadline_epoch, bool) or not isinstance(parent_deadline_epoch, (int, float))
+                or not math.isfinite(parent_deadline_epoch) or parent_deadline_epoch <= 0):
+            raise AssetAuthoringError("astra_stage_resume_phase_deadline_required")
+        value.update(schema_version="astra_split_stage_resume_binding.v1",
+                     prefix_stage_limit=stage_limit if stage_limit is not None else existing["prefix_stage_limit"],
+                     parent_deadline_epoch=(parent_deadline_epoch if stage_limit is not None
+                                            else existing["parent_deadline_epoch"]))
+        if value["prefix_stage_limit"] not in configurations:
+            raise AssetAuthoringError("astra_stage_resume_prefix_stage_invalid")
     value["binding_digest"] = canonical_digest(value, digest_field="binding_digest")
-    path = root / "astra_same_run_resume_binding.json"
     if not path.exists() and any((root / name).exists() for name in configurations):
         raise AssetAuthoringError("astra_stage_resume_legacy_prefix_not_checkpointed")
     _seal(path, value)
+    if split and stage_limit is None:
+        if not (root / value["prefix_stage_limit"] / "completed_stage_checkpoint.json").is_file():
+            raise AssetAuthoringError("astra_stage_resume_prefix_incomplete")
+        # A second process may have a later deadline, but retries of that
+        # process cannot extend it. This record grants no allocation authority.
+        continuation = {"schema_version": "astra_prefix_continuation_binding.v1",
+                        "prefix_binding_digest": value["binding_digest"],
+                        "parent_deadline_epoch": parent_deadline_epoch,
+                        "new_paid_allocation_authorized": False}
+        continuation["binding_digest"] = canonical_digest(continuation, digest_field="binding_digest")
+        _seal(root / "astra_prefix_continuation_binding.json", continuation)
     return value
 
 
@@ -90,6 +121,24 @@ def load_completed_stage(stage_root, stage, binding, previous):
 def save_completed_stage(stage_root, stage, binding, previous, result):
     _artifacts(stage_root, result.get("output_artifacts"))
     _seal(stage_root / "completed_stage_checkpoint.json", _checkpoint(stage, binding, previous, result))
+
+
+def completed_astra_prefix(root, envelope, configurations, parent_deadline_epoch, *, stage_limit=None):
+    """Skip authoring tool setup only after validating its actual retained files."""
+    authoring = next((stage for stage in envelope.get("recipe", {}).get("stage_sequence", [])
+                      if configurations[stage["stage_id"]][0].get("authoring_backend") == "astra_cad_blender_v1"), None)
+    if authoring is None or not (root / authoring["stage_id"] / "completed_stage_checkpoint.json").is_file():
+        return False
+    binding = bind_same_root_resume(root, envelope, configurations, parent_deadline_epoch, stage_limit=stage_limit)
+    previous = []
+    for stage in envelope["recipe"]["stage_sequence"]:
+        result = load_completed_stage(root / stage["stage_id"], stage, binding, previous)
+        if result is None:
+            return False
+        previous.append(result)
+        if stage["stage_id"] == authoring["stage_id"]:
+            return True
+    return False
 
 
 def retained_astra_production(producer_root, stage, envelope, configuration_path):

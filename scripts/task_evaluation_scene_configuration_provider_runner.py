@@ -281,7 +281,8 @@ def main() -> int:
         configurations[stage_id] = (_read(path), path)
     output.mkdir(parents=True, exist_ok=True)
     stages_root = output / "stages"
-    stages_root.mkdir(mode=0o750)
+    # A control-plane prestage may already have populated the prefix.
+    stages_root.mkdir(mode=0o750, exist_ok=True)
     from blueprint_pipeline.task_evaluation_scene_configuration_output_archive import preserve_stage_prefix
     checkpoint_path = Path(os.environ.get(
         "BLUEPRINT_SCENE_CONFIGURATION_STAGE_CHECKPOINT_PATH",
@@ -291,9 +292,12 @@ def main() -> int:
         preserve_stage_prefix(output_root=output, completed_results=results,
                               checkpoint_path=checkpoint_path)
 
+    stage_limit = os.environ.get("BLUEPRINT_SCENE_CONFIGURATION_STAGE_LIMIT") or None
     try:
+        from blueprint_pipeline.task_evaluation_astra_stage_resume import completed_astra_prefix
         if any(value.get("authoring_backend") == "astra_cad_blender_v1"
-               for value, _ in configurations.values()):
+               for value, _ in configurations.values()) and not completed_astra_prefix(
+                   stages_root, envelope, configurations, parent_deadline_epoch, stage_limit=stage_limit):
             from blueprint_pipeline.task_evaluation_scene_configuration_astra_driver import preflight_astra_execution_runtime
             from blueprint_pipeline.task_evaluation_scene_configuration_builtin_producers import _validate_toolchain
             toolchain = runtime / "toolchain"
@@ -310,12 +314,13 @@ def main() -> int:
                 output_root=stages_root,
                 parent_deadline_epoch=parent_deadline_epoch,
                 checkpoint_callback=preserve,
+                stage_limit=stage_limit,
             ),
             output_root=output,
         )
         result = {
             "schema_version": RESULT_SCHEMA_VERSION,
-            "status": "completed",
+            "status": chain["status"],
             "run_id": envelope["run_id"],
             "source_commit": envelope["expected_production_commit"],
             "construction_envelope_digest": portable_envelope_digest,
