@@ -324,19 +324,16 @@ def test_source_far_above_support_is_not_snapped_down_to_floor(tmp_path):
 
 
 def test_website_task_and_original_frames_reach_existing_astra_request(tmp_path):
-    from blueprint_pipeline.task_evaluation_scene_configuration_astra_driver import build_authoring_request
-    args = _arguments(tmp_path)
-    prepared = preparation.compile_website_scene_preparation(**args)
-    source = tmp_path / "out/preparation.json"
-    request = build_authoring_request(
-        {"configuration": prepared["authoring_inputs"]["configuration"], "construction_envelope": {},
-         "run_id": "development-website-test", "source_commit": "a" * 40},
-        {"path": str(source), "digest": _sha256_file(source)},
-        [Path(row["path"]) for row in prepared["authoring_inputs"]["source_frames"]],
-        {"status": "admitted_for_internal_development", "private_provider_processing_allowed": True,
-         "provider_training_allowed": False, "public_redistribution_allowed": False},
-    )
-    assert args["task_context"]["description"] in request.construction_constraints
+    from blueprint_pipeline.website_native_inputs import preflight_website_authoring_request
+    from tests.test_website_native_inputs import packet
+    # Exercise the website's complete consent and source bindings, rather than
+    # substituting a legacy rights record and an empty construction envelope.
+    envelope, configs = packet(tmp_path)
+    source = next(row for row in envelope["materialized_references"]
+                  if row["contract_path"] == "scene.source_manifest")
+    prepared = json.loads(Path(source["materialized_path"]).read_text())
+    request = preflight_website_authoring_request(envelope=envelope, configurations=configs)
+    assert configs["stage-3"]["construction_constraints"]["confirmed_task"] in request.construction_constraints
     assert "rebuild_only_this_subject" in request.construction_constraints
     assert request.dimension_authority == "estimated"
     assert request.physical_review_input.measured.mass_kg is None

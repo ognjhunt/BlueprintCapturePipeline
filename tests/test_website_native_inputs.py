@@ -71,7 +71,7 @@ def packet(tmp_path):
         compiled["stage_sequence"][i].update(stage)
     compiled["recipe_digest"] = canonical_digest(compiled, digest_field="recipe_digest")
     validate_scene_construction_recipe(compiled)
-    return {"run_id": request["run_id"], "request": request, "recipe": compiled,
+    return {"run_id": request["run_id"], "expected_production_commit": "a" * 40, "request": request, "recipe": compiled,
             "materialized_references": rows, "stage_configuration_references": config_rows}, configurations
 
 
@@ -88,6 +88,44 @@ def test_website_six_stage_inputs_pass_real_preflight_and_need_no_reconstructed_
     assert render["renderer_qualified"] is False
     envelope["render_inputs_result"] = render
     validate_scene_configuration_source_preflight(envelope=envelope, configurations=configs)
+
+
+@pytest.mark.parametrize("portable", [False, True])
+def test_actual_astra_request_accepts_bound_website_consent_before_gpu(tmp_path, portable):
+    from blueprint_pipeline.website_native_inputs import preflight_website_authoring_request
+    envelope, configs = packet(tmp_path)
+    if portable:
+        envelope["stage_configuration_references"] = [
+            {"stage_id": stage["stage_id"], **{key: row[key] for key in ("materialized_path", "digest", "size_bytes")}}
+            for stage, row in zip(envelope["recipe"]["stage_sequence"], envelope["stage_configuration_references"], strict=True)]
+    request = preflight_website_authoring_request(envelope=envelope, configurations=configs)
+    assert request.dimension_authority == "estimated"
+    assert request.private_provider_processing_allowed is True
+    assert request.provider_training_allowed is False
+    assert request.public_redistribution_allowed is False
+    assert request.physical_review_input.measured.mass_kg is None
+    assert len(request.source_frames) == len(envelope["request"]["scene"]["website_native_inputs"]["frames"])
+
+
+def test_astra_website_disclosure_cannot_substitute_unbound_rights(tmp_path):
+    from blueprint_pipeline.website_native_inputs import validate_website_authoring_disclosure
+    envelope, configs = packet(tmp_path)
+    with pytest.raises(ValueError, match="authoring_disclosure_binding_invalid"):
+        validate_website_authoring_disclosure(envelope=envelope, configuration=configs["stage-3"],
+            rights={"status": "admitted_for_internal_development", "private_provider_processing_allowed": True,
+                    "provider_training_allowed": False, "public_redistribution_allowed": False})
+
+
+def test_cpu_source_preflight_runs_the_actual_authoring_request_contract(tmp_path, monkeypatch):
+    from blueprint_pipeline import task_evaluation_scene_configuration_astra_driver as driver
+    envelope, configs = packet(tmp_path)
+    envelope["render_inputs_result"] = materialize_scene_configuration_render_inputs(
+        envelope=envelope, stage_one_configuration=configs["stage-1"], output_root=tmp_path / "method-inputs")
+    def reject(*args):
+        raise driver.AstraStageError("astra_cad_export_tolerance_unsupported")
+    monkeypatch.setattr(driver, "build_authoring_request", reject)
+    with pytest.raises(ValueError, match="astra_cad_export_tolerance_unsupported"):
+        validate_scene_configuration_source_preflight(envelope=envelope, configurations=configs)
 
 
 @pytest.mark.parametrize("change", ["subject", "frame_binding", "legacy_adapter", "render_binding", "configuration"])
