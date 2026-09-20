@@ -72,6 +72,11 @@ def test_prepared_capture_materializes_a_publishable_native_request_without_raw_
     assert not any(Path(row["relative_path"]).suffix in {".mov", ".mp4"} for row in rows)
     request = json.loads((root / "scene_configuration_preparation_request.v1.json").read_text())
     assert request["scene_intent_digest"] == accepted["intent_digest"]
+    caps = request["spend"]["external_service_caps"]["openai"]
+    assert caps["stage_max_cost_usd"] == {"artifixer_semantic_teacher": 0,
+        "artifixer_visual_review": 0, "content_agents": 5}
+    assert caps["maximum_cost_usd"] == 5
+    assert request["spend"]["hard_cap_usd"] == 11
     assert request["scene"]["geometry"]["kind"] == "other_derived"
     assert request["scene"]["rights"]["provider_disclosure_scope"] == "derived_only"
     assert request["scene"]["website_native_inputs"]["frames"]
@@ -100,8 +105,7 @@ def test_publication_rechecks_owner_revocation(tmp_path, monkeypatch):
         _validated_inventory(kwargs["staging_root"], SHA)
 
 
-@pytest.mark.parametrize("development", [False, True])
-def test_existing_progression_publishes_and_queues_website_source_without_manual_step(tmp_path, monkeypatch, development):
+def prepare_website_construction(tmp_path, monkeypatch, development):
     import os
     import pwd
     from blueprint_pipeline import task_evaluation_scene_progression as engine
@@ -137,7 +141,7 @@ def test_existing_progression_publishes_and_queues_website_source_without_manual
         "namespace_timestamp": kwargs["namespace_timestamp"], "release_admission_mode": "promoted",
         **{key: record(kwargs[key + "_path"]) for key in ("deploy_receipt", "release_provenance", "release_environment")}},
         "release_digest")
-    queue = tmp_path / "queue"
+    queue = tmp_path / "preparations"
     ensure_launch_preparation_queue_root(queue)
     config_path = sealed("config.json", {"schema_version": engine.CONFIG_SCHEMA,
         "intent_root": str(tmp_path / "intents"), "public_source_binding_root": str(tmp_path / "unused"),
@@ -177,9 +181,16 @@ def test_existing_progression_publishes_and_queues_website_source_without_manual
     consumed = process_launch_preparation_queue(queue_root=queue, input_root=tmp_path / "worker-inputs",
         allowed_uri_prefixes=["s3://blueprint/task-evaluation/production-inputs/"],
         service_account=pwd.getpwuid(os.geteuid()).pw_name, source_commit=SHA, fetcher=fetch,
-        construction_queue_root=tmp_path / "construction-queue")
+        construction_queue_root=tmp_path / "construction")
     assert consumed["results"][0]["status"] == "queued_for_production_scene_configuration", consumed["results"][0].get("blockers")
-    assert len(list((tmp_path / "construction-queue/pending").glob("*.json"))) == 1
+    assert len(list((tmp_path / "construction/pending").glob("*.json"))) == 1
+
+    return json.loads(next((tmp_path / "construction/pending").glob("*.json")).read_text())
+
+
+@pytest.mark.parametrize("development", [False, True])
+def test_existing_progression_publishes_and_queues_website_source_without_manual_step(tmp_path, monkeypatch, development):
+    prepare_website_construction(tmp_path, monkeypatch, development)
 
 
 def test_collected_website_world_registers_the_source_for_progression(tmp_path, monkeypatch):

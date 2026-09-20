@@ -314,14 +314,18 @@ def _provider_runtime_inputs(
     openai = authority["external_service_spend_caps"]["openai"]
     if float(openai["maximum_cost_usd"]) <= 0:
         return {}, {}
-    secret_paths = {
-        name: str(os.environ.get(name) or "").strip()
-        for name in _OPENAI_RUNTIME_FILE_ENVS
-    }
-    values = {
-        name: str(os.environ.get(name) or "").strip()
-        for name in _OPENAI_RUNTIME_VALUE_ENVS
-    }
+    stage_caps = openai["stage_max_cost_usd"]
+    active_bindings = [binding for binding in _OPENAI_STAGE_SCOPE_BINDINGS
+                       if float(stage_caps[binding[0]]) > 0]
+    file_names = {"OPENAI_ADMIN_API_KEY_FILE"}
+    value_names = {"OPENAI_PROJECT_ID"}
+    for _stage, key_id, attestation in active_bindings:
+        file_names.update((key_id.removesuffix("_ID") + "_FILE", attestation))
+        value_names.add(key_id)
+    secret_paths = {name: str(os.environ.get(name) or "").strip()
+                    for name in _OPENAI_RUNTIME_FILE_ENVS if name in file_names}
+    values = {name: str(os.environ.get(name) or "").strip()
+              for name in _OPENAI_RUNTIME_VALUE_ENVS if name in value_names}
     if not all(secret_paths.values()) or not all(values.values()):
         raise TaskEvaluationSceneConfigurationVastError(
             "scene_configuration_openai_runtime_secret_configuration_missing"
@@ -357,8 +361,9 @@ def _provider_runtime_inputs(
     for group in _OPENAI_STAGE_SCOPE_DISTINCT_GROUPS:
         observed = [
             secret_paths.get(name) or values.get(name) for name in group
+            if name in secret_paths or name in values
         ]
-        if len(set(observed)) != len(group):
+        if len(set(observed)) != len(observed):
             raise TaskEvaluationSceneConfigurationVastError(
                 "scene_configuration_openai_stage_scopes_not_distinct"
             )
@@ -367,7 +372,7 @@ def _provider_runtime_inputs(
     # missing or pre-rename receipt is resolved here rather than refused: the
     # lane derives an equivalent one and records it as agent-derived. A receipt
     # that is present and valid is still honoured exactly as written.
-    for stage, api_key_id_env, attestation_file_env in _OPENAI_STAGE_SCOPE_BINDINGS:
+    for stage, api_key_id_env, attestation_file_env in active_bindings:
         try:
             resolve_stage_scope_attestation(
                 attestation=read_stage_scope_attestation(
@@ -390,7 +395,7 @@ def _provider_runtime_inputs(
         runtime_window_end.day,
         tzinfo=UTC,
     ) + timedelta(days=1)
-    for stage, api_key_id_env, _attestation_file_env in _OPENAI_STAGE_SCOPE_BINDINGS:
+    for stage, api_key_id_env, _attestation_file_env in active_bindings:
         try:
             snapshot = _collect_openai_cost_snapshot(
                 admin_api_key_file=secret_paths["OPENAI_ADMIN_API_KEY_FILE"],
@@ -415,7 +420,7 @@ def _provider_runtime_inputs(
     stage_caps = openai["stage_max_cost_usd"]
     runtime_environment = {
         **values,
-        # Reaching this mapping proves the paid scene authority, three distinct
+        # Reaching this mapping proves the paid scene authority, active distinct
         # stage identities, their cost-scope attestations, and official cost
         # baselines above. The generic Agents SDK keeps its own opt-in gate;
         # the admitted scene caller must explicitly satisfy it on the provider.
@@ -693,41 +698,26 @@ def _extract_provider_output(
 def _portable_construction_envelope(
     receipt: Mapping[str, Any],
 ) -> dict[str, Any]:
-    bundle = Path(str(receipt.get("bundle_path") or ""))
+    from .task_evaluation_scene_configuration_bundle import (
+        portable_construction_envelope, TaskEvaluationSceneConfigurationBundleError,
+    )
     try:
-        with zipfile.ZipFile(bundle) as archive:
-            value = json.loads(
-                archive.read(
-                    "provider_runtime/input/portable_construction_envelope.v1.json"
-                ).decode("utf-8")
-            )
-    except (
-        KeyError,
-        OSError,
-        UnicodeError,
-        ValueError,
-        zipfile.BadZipFile,
-        json.JSONDecodeError,
-    ) as exc:
-        raise TaskEvaluationSceneConfigurationVastError(
-            "scene_configuration_publication_envelope_unavailable"
-        ) from exc
-    envelope = dict(value) if isinstance(value, Mapping) else {}
-    if (
-        envelope.get("schema_version")
-        != "task_evaluation_scene_construction_envelope.v1"
-        or envelope.get("envelope_digest")
-        != canonical_digest(envelope, digest_field="envelope_digest")
-        or envelope.get("envelope_digest")
-        != receipt.get("portable_construction_envelope_digest")
-        or envelope.get("expected_production_commit")
-        != receipt.get("source_commit")
-        or envelope.get("run_id") != receipt.get("run_id")
-    ):
-        raise TaskEvaluationSceneConfigurationVastError(
-            "scene_configuration_publication_envelope_invalid"
-        )
-    return envelope
+        return portable_construction_envelope(receipt)
+    except TaskEvaluationSceneConfigurationBundleError as exc:
+        raise TaskEvaluationSceneConfigurationVastError(str(exc)) from exc
+
+
+def _requires_artifixer_pretraining(receipt: Mapping[str, Any]) -> bool:
+    """Only an uncompleted ArtiFixer stage needs its CPU/API preparation."""
+    if int(receipt.get("carried_completed_stage_count") or 0):
+        return False
+    envelope = _portable_construction_envelope(receipt)
+    stages = envelope["recipe"]["stage_sequence"]
+    indices = [i for i, stage in enumerate(stages)
+               if stage["adapter"]["id"] == "artifixer3d_observed_object_removal"]
+    if indices and indices != [0]:
+        raise TaskEvaluationSceneConfigurationVastError("scene_configuration_artifixer_stage_order_invalid")
+    return bool(indices)
 
 
 def _publication_envelope(receipt: Mapping[str, Any], *, output_root: Path) -> dict[str, Any]:
@@ -1078,6 +1068,7 @@ def run_scene_configuration_vast(
     receipt = load_scene_configuration_provider_bundle_receipt(
         bundle_receipt_path, diagnostic_only=diagnostic_only
     )
+    requires_api_pretraining = _requires_artifixer_pretraining(receipt)
     result_schema_version = (
         DIAGNOSTIC_RESULT_SCHEMA_VERSION
         if diagnostic_only
@@ -1462,7 +1453,7 @@ def run_scene_configuration_vast(
         # API image preparation and preliminary grading happen BEFORE the
         # first Vast allocation. A failed admission retains its images/review
         # on the control plane and cannot rent a GPU.
-        if not int(receipt.get("carried_completed_stage_count") or 0):
+        if requires_api_pretraining:
             from .task_evaluation_artifixer_pretraining import (
                 CAPSULE_BYTES_ENV, CAPSULE_SHA_ENV, CAPSULE_URL_ENV,
                 GPU_PREPARATION_REQUIRED_ENV, prepare_semantics_before_gpu,
@@ -1561,7 +1552,7 @@ def run_scene_configuration_vast(
                 ),
             )
     except (OSError, RuntimeError, ValueError) as exc:
-        if not api_pretraining and not int(receipt.get("carried_completed_stage_count") or 0):
+        if not api_pretraining and requires_api_pretraining:
             write_json(job / "api_pretraining_failure.json", {
                 "status": "blocked_before_gpu_allocation", "phase": "api_pretraining",
                 "run_id": receipt["run_id"], "source_commit": receipt["source_commit"],

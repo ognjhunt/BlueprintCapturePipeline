@@ -13,6 +13,29 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from tests.test_task_evaluation_scene_configuration_artifixer_driver import _inputs
 
 
+@pytest.mark.parametrize("adapter,required", [
+    ("artifixer3d_observed_object_removal", True),
+    ("website_prepared_appearance", False),
+    ("provided_mesh_appearance_excision", False),
+])
+def test_pretraining_is_selected_from_the_sealed_recipe(tmp_path, adapter, required):
+    from blueprint_pipeline.task_evaluation_scene_configuration_vast import _requires_artifixer_pretraining
+    envelope = {"schema_version": "task_evaluation_scene_construction_envelope.v1",
+        "expected_production_commit": "a" * 40, "run_id": "fixture-run",
+        "recipe": {"stage_sequence": [{"adapter": {"id": adapter}}]}}
+    envelope["envelope_digest"] = canonical_digest(envelope, digest_field="envelope_digest")
+    path = tmp_path / "bundle.zip"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("provider_runtime/input/portable_construction_envelope.v1.json", json.dumps(envelope))
+    receipt = {"bundle_path": str(path), "source_commit": "a" * 40, "run_id": "fixture-run",
+               "portable_construction_envelope_digest": envelope["envelope_digest"]}
+    assert _requires_artifixer_pretraining(receipt) is required
+    # A changed recipe must not be accepted just because it would skip an API.
+    receipt["portable_construction_envelope_digest"] = "sha256:" + "b" * 64
+    with pytest.raises(RuntimeError, match="publication_envelope_invalid"):
+        _requires_artifixer_pretraining(receipt)
+
+
 def _environment(tmp_path):
     envelope, configuration = _inputs(tmp_path)
     output = tmp_path / "out"

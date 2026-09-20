@@ -301,6 +301,8 @@ def _envelope(root: Path, commit: str) -> Path:
     render["result_digest"] = canonical_digest(render, digest_field="result_digest")
     stages = []
     configurations = []
+    from blueprint_pipeline.task_evaluation_scene_configuration_submission_records import stage_sequence
+    adapters = stage_sequence()
     for index in range(6):
         stage_id = f"stage-{index + 1}"
         config = inputs / f"{stage_id}.json"
@@ -308,6 +310,7 @@ def _envelope(root: Path, commit: str) -> Path:
         stages.append(
             {
                 "stage_id": stage_id,
+                "adapter": adapters[index]["adapter"],
                 "capability": f"capability-{index + 1}",
                 "execution_class": "no_spend",
                 "depends_on": [] if index == 0 else [f"stage-{index}"],
@@ -3620,6 +3623,7 @@ def test_completed_vast_run_cannot_finish_without_publishing_revision(
         "control_plane_envelope_digest": source_envelope["envelope_digest"],
         "request": request,
         "recipe": {
+            "stage_sequence": source_envelope["recipe"]["stage_sequence"],
             "scene_identity": request["scene"]["identity"],
             "task_identity": request["task"]["identity"],
             "subject_identity": request["task"]["subject"]["identity"],
@@ -5333,3 +5337,26 @@ def test_zip_tree_stores_already_compressed_members_and_deflates_the_rest(tmp_pa
     again = tmp_path / "again.zip"
     bundle_module._zip_tree(stage, again)
     assert again.read_bytes() == destination.read_bytes()  # still deterministic
+
+
+def test_website_authoring_needs_no_artifixer_credentials_or_cost_queries(tmp_path, monkeypatch):
+    authority = {"authority_digest": "sha256:" + "a" * 64,
+        "external_service_spend_caps": {"openai": {"maximum_cost_usd": 5,
+            "maximum_requests": 32, "stage_max_cost_usd": {
+                "artifixer_semantic_teacher": 0, "artifixer_visual_review": 0, "content_agents": 5}}}}
+    _configure_scene_openai_runtime_files(tmp_path, monkeypatch)
+    for name in (*scene_vast._OPENAI_RUNTIME_FILE_ENVS, *scene_vast._OPENAI_RUNTIME_VALUE_ENVS):
+        if "ARTIFIXER" in name:
+            monkeypatch.delenv(name, raising=False)
+    observed = []
+    def collect(**kwargs):
+        observed.append(kwargs["api_key_id"])
+        return {"total_cost_usd": 0}
+    monkeypatch.setattr(scene_vast, "_collect_openai_cost_snapshot", collect)
+    files, environment = scene_vast._provider_runtime_inputs(authority)
+    assert observed == ["key_content_agents"]
+    assert not any("ARTIFIXER" in name for name in files)
+    assert not any("ARTIFIXER" in name and "API_KEY" in name for name in environment)
+    monkeypatch.delenv("OPENAI_CONTENT_AGENTS_API_KEY_FILE")
+    with pytest.raises(scene_vast.TaskEvaluationSceneConfigurationVastError, match="configuration_missing"):
+        scene_vast._provider_runtime_inputs(authority)
