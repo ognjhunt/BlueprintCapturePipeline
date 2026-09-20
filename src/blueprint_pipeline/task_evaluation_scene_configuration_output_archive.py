@@ -31,8 +31,10 @@ def write_output_archive(output_dir: Path, output_zip: Path, *, completed_stages
             relative = path.relative_to(output_dir)
             if not EXCLUDED_PARTS.isdisjoint(relative.parts):
                 continue
+            # Only uncompleted stage directories are omitted; the resume
+            # binding beside them travels, so another root can adopt the prefix.
             if (completed_stages is not None and relative.parts[0] == 'stages'
-                    and len(relative.parts) > 1 and relative.parts[1] not in completed_stages):
+                    and len(relative.parts) > 2 and relative.parts[1] not in completed_stages):
                 continue
             if path.is_symlink():
                 raise RuntimeError('scene_configuration_provider_output_symlink_forbidden:' + relative.as_posix())

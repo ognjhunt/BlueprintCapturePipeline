@@ -71,6 +71,7 @@ def test_scene_allocator_preserves_admission_binding_and_queue_root(
 ) -> None:
     args = _args(tmp_path, execute=True)
     calls: list[dict[str, object]] = []
+    monkeypatch.setenv("BLUEPRINT_SCENE_CONFIGURATION_CPU_PRESTAGE_STAGE_LIMIT", "stage-4")
     monkeypatch.setenv(
         "BLUEPRINT_TASK_EVALUATION_SCENE_CONSTRUCTION_QUEUE_ROOT",
         str(tmp_path / "scene-queue"),
@@ -120,6 +121,7 @@ def test_scene_allocator_preserves_admission_binding_and_queue_root(
             "warm_session_authority_path": None,
             "warm_session_output_root": None,
             "scene_construction_queue_root": str(tmp_path / "scene-queue"),
+            "cpu_prestage_stage_limit": "stage-4",
         }
     ]
     admission = json.loads(Path(args.admission_out).read_text(encoding="utf-8"))
@@ -227,6 +229,7 @@ def test_diagnostic_allocator_is_separate_nonpublishing_launch_surface(
     assert calls[0]["diagnostic_only"] is True
     assert calls[0]["allowed_machine_ids"] == (21899, 44762)
     assert calls[0]["scene_construction_queue_root"] is None
+    assert calls[0]["cpu_prestage_stage_limit"] is None
     admission = json.loads(Path(args.admission_out).read_text(encoding="utf-8"))
     assert admission["diagnostic_only"] is True
     assert admission["qualification_eligible"] is False

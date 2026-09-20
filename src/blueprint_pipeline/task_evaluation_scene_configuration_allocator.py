@@ -527,6 +527,10 @@ def run_scene_configuration_allocator_probe(
                     )
                 )
             ),
+            cpu_prestage_stage_limit=(
+                None if diagnostic_only
+                else (os.getenv("BLUEPRINT_SCENE_CONFIGURATION_CPU_PRESTAGE_STAGE_LIMIT") or None)
+            ),
         )
     write_json(Path(args.adapter_output), result)
     success = result.get("status") in {
