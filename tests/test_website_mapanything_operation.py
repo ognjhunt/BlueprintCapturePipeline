@@ -153,3 +153,103 @@ def test_bootstrap_installs_only_bundle_bound_runtime_files(packet, tmp_path, mo
     with pytest.raises(ValueError, match="receipt_binding_mismatch"):
         bootstrap.install_runtime(tmp_path / "wrong-worker")
     assert len(commands) == 2
+
+
+def _controller_profile(tmp_path, monkeypatch):
+    from blueprint_pipeline import website_geometry_dispatch as dispatch
+    value = {"schema_version": "website_mapanything_runtime.v1", "source_commit": SHA,
+             "worker_image_digest": IMAGE, "maximum_cost_usd": 2.0,
+             "max_hourly_rate_usd": 1.5, "hard_ttl_seconds": 1800, "minimum_gpu_ram_mb": 80000,
+             "runtime_files": [{"path": str(p), "digest": "sha256:" + sha256_file(p)}
+                               for p in sorted((tmp_path / "runtime").iterdir())]}
+    path = tmp_path / "profile.json"
+    write_json(path, value)
+    monkeypatch.setenv("BLUEPRINT_WEBSITE_MAPANYTHING_PROFILE", str(path))
+    assert dispatch.load_profile(source_commit=SHA) == value
+    return value
+
+
+def test_controller_runtime_profile_rejects_stale_release_and_changed_wheels(packet, tmp_path, monkeypatch):
+    from blueprint_pipeline import website_geometry_dispatch as dispatch
+    profile = _controller_profile(tmp_path, monkeypatch)
+    with pytest.raises(ValueError, match="runtime_release_mismatch"):
+        dispatch.load_profile(source_commit="f" * 40)
+    Path(profile["runtime_files"][0]["path"]).write_bytes(b"substituted code")
+    with pytest.raises(ValueError, match="runtime_file_changed"):
+        dispatch.load_profile(source_commit=SHA)
+
+
+@pytest.mark.parametrize("uncertain", [False, True])
+def test_controller_owns_geometry_funding_allocator_and_restart_without_second_rental(packet, tmp_path, monkeypatch, uncertain):
+    from types import SimpleNamespace
+    from blueprint_pipeline import website_geometry_dispatch as dispatch
+    path, _, _ = packet
+    _controller_profile(tmp_path, monkeypatch)
+    events, closes = [], []
+    task = {"context_digest": DIGEST}
+    handle = object()
+    monkeypatch.setattr(dispatch, "load_website_scene_sponsorship", lambda **kw: {
+        "expires_at_epoch": 9_999_999_999, "authority_digest": DIGEST})
+    def arm(**kwargs):
+        events.append("watchdog")
+        assert kwargs["resource_name_exact"].startswith("blueprint-reconstruction-website_mapanything-")
+        return {"watchdog_pid": 123, "watchdog_deadline_epoch": 9_999_999_999,
+                "watchdog_out_dir": str(tmp_path / "watchdog")}, handle
+    monkeypatch.setattr(dispatch, "arm_independent_vast_watchdog", arm)
+    monkeypatch.setattr(dispatch, "get_render_provider", lambda *_: SimpleNamespace(capacity_preflight=None, billable_inventory=None))
+    def preflight(**kwargs):
+        events.append("capacity")
+        assert kwargs["minimum_gpu_ram_mb"] == 80000
+        return {"status": "verified"}
+    monkeypatch.setattr(dispatch, "collect_reconstruction_vast_preflight", preflight)
+    def reserve(**kwargs):
+        events.append("reserve")
+        assert kwargs["resource_class"] == "gpu_render" and kwargs["provider"] == "vast"
+        assert kwargs["maximum_cost_usd"] == 2 and kwargs["request_count"] == 1
+        return {"expires_at_epoch": 9_999_999_999, "allocation_binding_digest": kwargs["binding_digest"]}, object()
+    monkeypatch.setattr(dispatch, "reserve_website_preparation_spend", reserve)
+    def stage(**kwargs):
+        events.append("stage")
+        assert "reserve" in events
+        return {"status": "completed"}
+    monkeypatch.setattr(dispatch, "stage_wam_provider_bundle_object_store", stage)
+    def close(**kwargs):
+        events.append("close")
+        closes.append(kwargs)
+    monkeypatch.setattr(dispatch, "close_independent_vast_watchdog", close)
+    monkeypatch.setattr(dispatch, "cleanup_staged_wam_provider_objects", lambda **kw: events.append("cleanup"))
+    def reuse(root, inputs):
+        events.append("reuse")
+        if uncertain:
+            raise ValueError("website_mapanything_existing_attempt_requires_reconciliation")
+        return {"status": "estimated", "input_digest": inputs["digest"]}
+    monkeypatch.setattr(dispatch, "_reuse", reuse)
+    def allocate(args, **kwargs):
+        events.append("allocate")
+        assert kwargs == {"checkout_commit": SHA}
+        request = json.loads(Path(args.provider_launch_request).read_text())
+        assert request["operation"] == "website_mapanything"
+        assert request["retry_cap"] == 0 and request["max_spend_usd"] == 2
+        assert args.execute is True and not hasattr(args, "experimental_branch_diagnostic")
+        if uncertain:
+            raise TimeoutError("controller lost allocation response")
+        return {"status": "completed", "instance_id": 7, "provider_zero_verified": True}
+    args = dict(input_manifest=path, output_root=tmp_path / "controller", task_context=task,
+                source_commit=SHA, allocate=allocate)
+    if uncertain:
+        with pytest.raises(TimeoutError):
+            dispatch.dispatch_geometry(**args)
+        with pytest.raises(ValueError, match="requires_reconciliation"):
+            dispatch.dispatch_geometry(**args)
+        assert "cleanup" not in events
+        assert closes[0]["provider_teardown_completed"] is False
+        assert closes[0]["provider_allocation_impossible"] is False
+    else:
+        first = dispatch.dispatch_geometry(**args)
+        assert dispatch.dispatch_geometry(**args) == first
+        assert closes[0]["provider_teardown_completed"] is True
+        assert events.count("cleanup") == 2
+    assert events.count("allocate") == events.count("reserve") == 1
+    assert events[:3] == ["watchdog", "capacity", "reserve"]
+    with pytest.raises(ValueError, match="inputs_changed"):
+        dispatch.dispatch_geometry(**{**args, "task_context": {"context_digest": "changed"}})

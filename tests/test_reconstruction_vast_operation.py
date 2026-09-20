@@ -546,3 +546,14 @@ def test_declined_launch_preserves_provider_blocker_and_leaves_zero_resources(tm
     assert "no_vast_offer_matching_rate_and_gpu_memory" in result["blockers"]
     assert result["provider_zero_verified"] is True
     assert result["provider_mutations_performed"] == 0
+
+
+def test_watchdog_can_guard_exact_operation_but_never_another_operations_name():
+    import os
+    name = vast_operation.NAME_PREFIX + "website_mapanything-123456789abc"
+    watchdog = {"status": "armed", "independent_process": True, "name_prefix": name,
+                "pid": os.getpid(), "deadline_epoch": 10000}
+    assert vast_operation._watchdog_valid(watchdog, now_epoch=1, hard_ttl_seconds=100, resource_name=name)
+    assert not vast_operation._watchdog_valid(watchdog, now_epoch=1, hard_ttl_seconds=100,
+                                             resource_name=vast_operation.NAME_PREFIX + "other")
+    assert not vast_operation._watchdog_valid(watchdog, now_epoch=1, hard_ttl_seconds=100)

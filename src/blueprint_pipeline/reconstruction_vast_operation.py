@@ -94,7 +94,7 @@ def _canonical_receipt_file(root: Path, receipt: Mapping[str, Any]) -> tuple[Pat
 
 
 def _watchdog_valid(
-    watchdog: Mapping[str, Any], *, now_epoch: float, hard_ttl_seconds: int
+    watchdog: Mapping[str, Any], *, now_epoch: float, hard_ttl_seconds: int, resource_name: str | None = None
 ) -> bool:
     try:
         pid = int(watchdog.get("pid") or 0)
@@ -104,7 +104,7 @@ def _watchdog_valid(
     if (
         watchdog.get("status") != "armed"
         or watchdog.get("independent_process") is not True
-        or str(watchdog.get("name_prefix") or "") != NAME_PREFIX
+        or str(watchdog.get("name_prefix") or "") not in {NAME_PREFIX, resource_name or NAME_PREFIX}
         or pid <= 0
         or deadline < now_epoch + hard_ttl_seconds
     ):
@@ -418,9 +418,10 @@ def run_reconstruction_vast_operation(
     started_at = float(clock())
     watchdog = preflight.get("watchdog")
     watchdog = watchdog if isinstance(watchdog, Mapping) else {}
+    name = f"{NAME_PREFIX}{operation.replace('_canary', '')}-{request_digest[7:19]}"
     validator = watchdog_validator or (
         lambda value, now, ttl: _watchdog_valid(
-            value, now_epoch=now, hard_ttl_seconds=ttl
+            value, now_epoch=now, hard_ttl_seconds=ttl, resource_name=name
         )
     )
     if not validator(watchdog, started_at, hard_ttl):
