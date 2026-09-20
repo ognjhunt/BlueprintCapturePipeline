@@ -539,23 +539,40 @@ def _registered_terminal_adoption(*, config: Mapping[str, Any], intent_id: str,
     return matches[0] if matches else None
 
 
+def scene_preparation_queue_root(preparation_queue_root: Path, intent_id: str) -> Path:
+    """The queue that holds this scene's preparations.
+
+    Owned scene preparations land under ``<root>/<intent_id>/`` with their own
+    ``materialized`` and ``results``. A configured root that already is one
+    scene's queue keeps working unchanged, but pointing the worker at the
+    parent serves every scene without a per-scene configuration change.
+    """
+    candidate = preparation_queue_root / intent_id
+    if (candidate.is_dir() and not candidate.is_symlink()
+            and any((candidate / name).is_dir() for name in ("materialized", "results"))):
+        return candidate
+    return preparation_queue_root
+
+
 def process_config(config_path: str | Path, *, expected_production_commit: str) -> list[dict[str, Any]]:
     config = _json(Path(config_path))
     catalog = resolve_robot_catalog(_sealed(Path(config["robot_catalog_path"]), "catalog_digest"),
                                     source_commit=expected_production_commit)
     scene_root = Path(config["scene_root"])
-    preparation_queue_root = Path(config["preparation_queue_root"])
+    owned_queue_root = Path(config["preparation_queue_root"])
     rows = []
     for intent_path in sorted(scene_root.glob("scene-*/intent.json")):
         if intent_path.parent.is_symlink():
             continue
         intent_id = intent_path.parent.name
+        preparation_queue_root = scene_preparation_queue_root(owned_queue_root, intent_id)
+        scene_config = {**config, "preparation_queue_root": str(preparation_queue_root)}
         try:
-            adopted = _registered_terminal_adoption(config=config, intent_id=intent_id,
+            adopted = _registered_terminal_adoption(config=scene_config, intent_id=intent_id,
                 expected_production_commit=expected_production_commit)
             if adopted is None:
                 from .task_evaluation_controls_terminal_adoption import provision_terminal_controls_adoption
-                adopted = provision_terminal_controls_adoption(config=config, catalog=catalog,
+                adopted = provision_terminal_controls_adoption(config=scene_config, catalog=catalog,
                     intent_id=intent_id, expected_production_commit=expected_production_commit)
             if adopted is not None:
                 rows.append(adopted)
