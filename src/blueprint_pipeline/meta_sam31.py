@@ -85,7 +85,7 @@ def _upload_video(*, clip: Path, root: Path, token: str, opener: Any) -> str:
 def _probe_video(path: Path) -> dict[str, Any]:
     result = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_frames",
         "-show_entries", "stream=width,height:frame=best_effort_timestamp_time", "-of", "json", str(path)],
-        check=True, timeout=120, capture_output=True)
+        check=True, timeout=600, capture_output=True)
     return json.loads(result.stdout)
 
 
@@ -110,7 +110,9 @@ def prepare_continuous_video(*, source: Path, source_digest: str, root: Path) ->
     if not 2 <= len(original["frames"]) <= 15000:
         raise ValueError("meta_sam_frame_count_invalid")
     # Full-resolution, every-frame tracking input; use the CPU preset rather
-    # than x264's slower default. Never publish a timed-out partial as ready.
+    # than x264's slower default. Allow for the shared service's CPU quota/load;
+    # the former two-minute wall limit expired even for a 13-second walkthrough.
+    # Never publish a timed-out partial as ready.
     fd, temporary = tempfile.mkstemp(prefix="continuous-", suffix=".mp4", dir=root)
     os.close(fd)
     partial = Path(temporary)
@@ -118,7 +120,7 @@ def prepare_continuous_video(*, source: Path, source_digest: str, root: Path) ->
         subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(source), "-map", "0:v:0", "-an",
             "-fps_mode", "passthrough", "-c:v", "libx264", "-preset", "veryfast", "-threads", "2",
             "-crf", "18", "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(partial)],
-            check=True, timeout=120, capture_output=True)
+            check=True, timeout=600, capture_output=True)
         encoded = _probe_video(partial)
     except Exception:
         partial.unlink(missing_ok=True)
