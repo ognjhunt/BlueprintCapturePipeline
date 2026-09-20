@@ -95,6 +95,8 @@ DEFAULT_PAID_LAUNCH_LOCKS = (
 DEFAULT_RESTART_UNITS = ("blueprint-pipeline-intake.service",)
 DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     "blueprint-agent-execution.service",
+    "blueprint-agent-run-dispatcher.service",
+    "blueprint-agent-run-dispatcher.timer",
     "blueprint-agent-stage-replay.service",
     "blueprint-agent-stage-replay.timer",
     "blueprint-task-evaluation-launch-dispatcher.service",
@@ -172,6 +174,9 @@ DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS = (
 #: moment a no-spend canary compiles, so it carries the same progression
 #: authority rather than the no-spend watcher category.
 DEFAULT_ALWAYS_ARM_TIMER_UNITS = (
+    # The service retains its explicit enable flag and capture scope. Installing
+    # its timer makes admitted website runs progress after deployment/reboot.
+    "blueprint-agent-run-dispatcher.timer",
     "blueprint-agent-stage-replay.timer",
     "blueprint-task-evaluation-scene-progression.timer",
     "blueprint-task-evaluation-sam31-preparation-execution.timer",

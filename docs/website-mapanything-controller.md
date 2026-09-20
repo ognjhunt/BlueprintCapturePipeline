@@ -42,3 +42,14 @@ Validation: focused tests cover the real bundle contract, exact-name watchdog,
 controller reservation/dispatch, completed replay and uncertain allocation.
 Deployment configuration and an actual controller-origin run are separate proof
 requirements; a passing fixture or retained-output replay does not satisfy them.
+
+The canonical control-plane deploy also installs the agent-run dispatcher
+service and timer and restores the timer after deployment or reboot. The
+service still requires `BLUEPRINT_AGENT_RUN_DISPATCH_ENABLED=true` and its
+configured capture scope; timer installation alone does not authorize a run.
+Its Python entrypoint is checked by the production startup guard.
+
+CAD generation and repair share the pinned `gen_step()` shape-return contract:
+the CAD CLI owns exports, and the agent returns geometry rather than a filename
+or dictionary. This fixes the retained authoring failure in the reusable stage;
+the failed standalone candidate remains unaccepted and is not controller proof.
