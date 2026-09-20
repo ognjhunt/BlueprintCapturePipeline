@@ -304,7 +304,10 @@ def bind_task_masks_to_geometry(*, task_masks: Mapping[str, Any], source_geometr
     if (task_masks.get("digest") != canonical_digest(task_masks, digest_field="digest")
             or source_geometry.get("digest") != canonical_digest(source_geometry, digest_field="digest")
             or task_masks.get("source_video_digest") != source_geometry["binding"].get("source_video_digest")
-            or task_masks["binding"].get("geometry_input_digest") != source_geometry["binding"].get("input_digest")):
+            or task_masks["binding"].get("geometry_input_digest") != source_geometry["binding"].get(
+                "tracking_input_digest", source_geometry["binding"].get("input_digest"))
+            or (source_geometry["binding"].get("tracking_input_digest") is not None
+                and source_geometry["binding"].get("task_masks_digest") != task_masks["digest"])):
         raise ValueError("website_task_geometry_binding_mismatch")
     frames = source_geometry["frames"]
     ids = {frame["frame_id"] for frame in frames}

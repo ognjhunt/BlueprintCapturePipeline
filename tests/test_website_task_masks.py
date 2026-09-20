@@ -99,7 +99,8 @@ def test_masked_geometry_preserves_world_position_and_estimated_scale(tmp_path):
         estimate_target_bounds(_track(), [frame])
 
 
-def test_retained_masks_gain_estimated_bounds_without_retracking(tmp_path, monkeypatch):
+@pytest.mark.parametrize("task_frame_refinement", [False, True])
+def test_retained_masks_gain_estimated_bounds_without_retracking(tmp_path, monkeypatch, task_frame_refinement):
     from blueprint_pipeline.decision_evidence_contracts import canonical_digest
     from blueprint_pipeline.website_task_masks import bind_task_masks_to_geometry
     geometry_path = tmp_path / "depth.npz"
@@ -113,6 +114,9 @@ def test_retained_masks_gain_estimated_bounds_without_retracking(tmp_path, monke
              "binding": {"geometry_input_digest": "inputs"},
              "targets": [{"target_id": "cup", "source_track": _track(), "estimated_visible_bounds": None}]}
     masks["digest"] = canonical_digest(masks, digest_field="digest")
+    if task_frame_refinement:
+        geometry["binding"].update(input_digest="refined-inputs", tracking_input_digest="inputs", task_masks_digest=masks["digest"])
+        geometry["digest"] = canonical_digest(geometry, digest_field="digest")
     monkeypatch.setattr("blueprint_pipeline.website_task_masks.run_meta_sam31", lambda **kw: pytest.fail("must reuse SAM tracks"))
     bound = bind_task_masks_to_geometry(task_masks=masks, source_geometry=geometry)
     assert bound["targets"][0]["estimated_visible_bounds"]["unit"] == "estimated_meters"

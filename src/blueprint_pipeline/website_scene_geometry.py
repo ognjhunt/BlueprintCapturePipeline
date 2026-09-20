@@ -269,10 +269,103 @@ def prepare_website_source_frames(*, source_video: Path, output_root: Path, capt
     return value
 
 
+def prepare_task_geometry_inputs(*, source_video: Path, output_root: Path, inputs: Mapping[str, Any],
+                                 task_masks: Mapping[str, Any]) -> tuple[dict[str, Any], Path]:
+    """Keep observed task pixels in the bounded geometry batch, preserving held-outs."""
+    base_root = output_root / "worker_inputs"
+    base = _bound_frames(inputs, base_root, geometry=False)
+    if (task_masks.get("digest") != canonical_digest(task_masks, digest_field="digest")
+            or task_masks.get("source_video_digest") != inputs["binding"]["source_video_digest"]
+            or task_masks.get("binding", {}).get("geometry_input_digest") != inputs["digest"]
+            or _sha256_file(source_video) != inputs["binding"]["source_video_digest"]):
+        raise ValueError("website_task_geometry_input_mismatch")
+    base_ids = {row["frame_id"] for row in base}
+    tracks = [target["source_track"]["observations"] for target in task_masks["targets"]]
+    if all(any(row["source_frame_id"] in base_ids for row in observations) for observations in tracks):
+        return dict(inputs), output_root
+    splits = list((output_root / "source").rglob("frozen_split_manifest.json"))
+    if len(splits) != 1:
+        raise ValueError("website_task_geometry_frozen_split_missing")
+    split = json.loads(splits[0].read_text())
+    if (split.get("split_digest") != canonical_digest(split, digest_field="split_digest")
+            or split.get("capture_digest") != inputs["binding"]["source_video_digest"]):
+        raise ValueError("website_task_geometry_frozen_split_changed")
+    heldout = {row["frame_id"] for row in split["assignments"] if row["split"] == "held_out"}
+    registry = task_masks["source_frame_registry"]
+    if any(row["source_frame_id"] != f"decoded-{i:09d}" for i, row in enumerate(registry)):
+        raise ValueError("website_task_geometry_registry_invalid")
+    by_id = {row["source_frame_id"]: row for row in registry}
+    required = set()
+    for observations in tracks:
+        available = [row for row in observations if row["source_frame_id"] in by_id
+                     and row["source_frame_id"] not in heldout and row.get("runs")]
+        if not available:
+            raise ValueError("website_task_geometry_observation_missing")
+        # Prefer a retained candidate when it already observes this target.
+        choices = [row for row in available if row["source_frame_id"] in base_ids] or available
+        required.add(max(choices, key=lambda row: sum(run["length"] for run in row["runs"]))["source_frame_id"])
+    if len(required) > 16:
+        raise ValueError("website_task_geometry_batch_exceeded")
+    remaining = [row for row in base if row["frame_id"] not in required]
+    capacity = 16 - len(required)
+    if len(remaining) > capacity:
+        indexes = np.linspace(0, len(remaining) - 1, capacity, dtype=int) if capacity else []
+        remaining = [remaining[i] for i in indexes]
+    selected_ids = required | {row["frame_id"] for row in remaining}
+    binding = {**inputs["binding"], "tracking_input_digest": inputs["digest"],
+               "task_masks_digest": task_masks["digest"], "heldout_exclusion_digest": split["split_digest"]}
+    root = output_root / "task_inputs" / canonical_digest(binding)[7:23]
+    worker = root / "worker_inputs"
+    manifest = worker / "geometry_inputs.json"
+    if manifest.is_file():
+        previous = json.loads(manifest.read_text())
+        if previous.get("binding") != binding:
+            raise ValueError("website_task_geometry_retained_inputs_changed")
+        _bound_frames(previous, worker, geometry=False)
+        return previous, root
+    from .local_reconstruction_adapters import _extract_frames
+    indexes = sorted(by_id[frame_id]["model_frame_index"] for frame_id in required - base_ids)
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise ValueError("website_task_geometry_ffmpeg_missing")
+    decoded = _extract_frames(video_path=source_video, ffmpeg=ffmpeg, indexes=indexes,
+        presentation_times=[row["decoded_pts_seconds"] for row in registry],
+        decoded_frame_metadata=registry, frame_root=worker / "decoded")
+    rows = {row["frame_id"]: row for row in base if row["frame_id"] in selected_ids}
+    for row in decoded:
+        source = worker / "decoded" / f"{row['frame_id']}.png"
+        rows[row["frame_id"]] = {"frame_id": row["frame_id"], "timestamp_seconds": row["t_video_sec"],
+            "source_image_path": str(source), "source_image_digest": row["digest"],
+            **_prepare_image(source, worker / "model_inputs" / f"{row['frame_id']}.png", base[0]["display_rotation_degrees"])}
+    prepared = []
+    for row in sorted(rows.values(), key=lambda row: row["timestamp_seconds"]):
+        row = dict(row)
+        for path_key, digest_key in _FRAME_ARTIFACTS[:2]:
+            source = Path(row[path_key])
+            if _sha256_file(source) != row[digest_key]:
+                raise ValueError("website_task_geometry_source_changed")
+            destination = worker / ("observations" if path_key == "source_image_path" else "model_inputs") / f"{row['frame_id']}.png"
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if source.resolve() != destination.resolve():
+                shutil.copyfile(source, destination)
+            row[path_key] = str(destination.relative_to(worker))
+        prepared.append(row)
+    result = {"schema_version": INPUT_SCHEMA, "binding": binding, "frames": prepared,
+              "heldout_pixels_included": False, "claim_ceiling": "development_only"}
+    result["digest"] = canonical_digest(result, digest_field="digest")
+    write_json(manifest, result)
+    _bound_frames(result, worker, geometry=False)
+    return result, root
+
+
 def run_website_scene_geometry(*, source_video: Path, output_root: Path, capture_id: str,
-                               task_context: Mapping[str, Any] | None = None) -> dict[str, Any]:
+                               task_context: Mapping[str, Any] | None = None,
+                               task_masks: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Local inference compatibility entry; CPU preparation is reusable by a worker."""
     inputs = prepare_website_geometry_inputs(source_video=source_video, output_root=output_root, capture_id=capture_id)
+    if task_masks is not None:
+        inputs, output_root = prepare_task_geometry_inputs(source_video=source_video, output_root=output_root,
+                                                           inputs=inputs, task_masks=task_masks)
     if task_context is not None:
         from .paid_resource_allocator import run_sponsored_website_geometry
         if task_context.get("capture_id") != capture_id or task_context.get("confirmed") is not True:

@@ -237,3 +237,83 @@ def test_confirmed_website_task_uses_controller_allocator_instead_of_manual_resu
     assert not calls
     with pytest.raises(ValueError, match="task_capture_mismatch"):
         geometry.run_website_scene_geometry(**kwargs, task_context={**task, "capture_id": "other"})
+
+
+@pytest.fixture
+def task_geometry_case(geometry_case, monkeypatch):
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    kwargs, _ = geometry_case
+    original = geometry.prepare_website_geometry_inputs(**kwargs)
+    inputs = dict(original, frames=[{**row, "frame_id": f"decoded-{i * 2:09d}"}
+                                    for i, row in enumerate(original["frames"])])
+    inputs["digest"] = canonical_digest(inputs, digest_field="digest")
+    registry = [{"source_frame_id": f"decoded-{i:09d}", "model_frame_index": i,
+                 "decoded_pts_seconds": i / 30, "width": 14, "height": 28} for i in range(6)]
+    mask = {"source_frame_id": "decoded-000000003", "width": 14, "height": 28,
+            "runs": [{"start": 0, "length": 10}]}
+    masks = {"source_video_digest": inputs["binding"]["source_video_digest"],
+             "source_frame_registry": registry, "binding": {"geometry_input_digest": inputs["digest"]},
+             "targets": [{"source_track": {"observations": [mask]}}]}
+    masks["digest"] = canonical_digest(masks, digest_field="digest")
+    split = {"capture_digest": inputs["binding"]["source_video_digest"],
+             "assignments": [{"frame_id": "decoded-000000004", "split": "held_out"}]}
+    split["split_digest"] = canonical_digest(split, digest_field="split_digest")
+    (kwargs["output_root"] / "source/frozen_split_manifest.json").write_text(json.dumps(split))
+    calls = []
+    def decode(**kw):
+        calls.append(kw["indexes"])
+        kw["frame_root"].mkdir(parents=True, exist_ok=True)
+        rows = []
+        for i in kw["indexes"]:
+            frame_id = registry[i]["source_frame_id"]
+            path = kw["frame_root"] / f"{frame_id}.png"
+            Image.new("RGB", (28, 14), "blue").save(path)
+            rows.append({"frame_id": frame_id, "t_video_sec": i / 30, "digest": geometry._sha256_file(path)})
+        return rows
+    monkeypatch.setattr("blueprint_pipeline.local_reconstruction_adapters._extract_frames", decode)
+    return {k: kwargs[k] for k in ("source_video", "output_root")} | {"inputs": inputs, "task_masks": masks}, calls
+
+
+def test_geometry_adds_exact_observed_task_frame_and_reuses_bound_inputs(task_geometry_case):
+    kwargs, calls = task_geometry_case
+    result, root = geometry.prepare_task_geometry_inputs(**kwargs)
+    assert calls == [[3]]
+    assert len(result["frames"]) == 3
+    assert "decoded-000000003" in {row["frame_id"] for row in result["frames"]}
+    assert result["binding"]["tracking_input_digest"] == kwargs["inputs"]["digest"]
+    assert result["binding"]["task_masks_digest"] == kwargs["task_masks"]["digest"]
+    assert result["heldout_pixels_included"] is False
+    assert geometry.prepare_task_geometry_inputs(**kwargs) == (result, root)
+    assert calls == [[3]]
+    assert len(kwargs["inputs"]["frames"]) == 2
+
+
+def test_geometry_cannot_take_a_task_mask_from_heldout_pixels(task_geometry_case):
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    kwargs, calls = task_geometry_case
+    masks = kwargs["task_masks"]
+    masks["targets"][0]["source_track"]["observations"][0]["source_frame_id"] = "decoded-000000004"
+    masks["digest"] = canonical_digest(masks, digest_field="digest")
+    with pytest.raises(ValueError, match="observation_missing"):
+        geometry.prepare_task_geometry_inputs(**kwargs)
+    assert calls == []
+
+
+def test_already_observed_task_keeps_the_original_geometry_batch(task_geometry_case):
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    kwargs, calls = task_geometry_case
+    masks = kwargs["task_masks"]
+    masks["targets"][0]["source_track"]["observations"][0]["source_frame_id"] = "decoded-000000002"
+    masks["digest"] = canonical_digest(masks, digest_field="digest")
+    assert geometry.prepare_task_geometry_inputs(**kwargs) == (kwargs["inputs"], kwargs["output_root"])
+    assert calls == []
+
+
+def test_different_capture_masks_cannot_change_geometry_inputs(task_geometry_case):
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    kwargs, calls = task_geometry_case
+    kwargs["task_masks"]["source_video_digest"] = "other-video"
+    kwargs["task_masks"]["digest"] = canonical_digest(kwargs["task_masks"], digest_field="digest")
+    with pytest.raises(ValueError, match="input_mismatch"):
+        geometry.prepare_task_geometry_inputs(**kwargs)
+    assert calls == []
