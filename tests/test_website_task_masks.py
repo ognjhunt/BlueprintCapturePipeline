@@ -275,6 +275,7 @@ def test_static_source_crop_maps_masks_back_without_inventing_temporal_coverage(
     def hosted(**kw):
         calls.append(kw)
         assert "video_artifact" not in kw
+        assert kw["prompts"][0]["text"] == "book"
         assert kw["task_context"] == {"confirmed": True}
         frame = kw["frame_registry"][0]
         assert frame["model_frame_index"] == 0 and frame["source_frame_id"] == "decoded-41"
@@ -303,3 +304,48 @@ def test_static_source_crop_maps_masks_back_without_inventing_temporal_coverage(
     mask = masks.decode_track_mask(result["observations"][0])
     assert mask.shape == (100, 100) and mask.sum() == 200 and mask[30:40, 20:40].all()
     assert result["observations"][0]["source_frame_id"] == "decoded-41"
+
+
+@pytest.mark.parametrize("support_disposition,support_effect", [("keep", "static_contact"), ("remove", "static_contact"), ("keep", "manipulated")])
+def test_visual_masks_defer_kept_support_but_cannot_enter_simulation(tmp_path, monkeypatch, support_disposition, support_effect):
+    from blueprint_pipeline import website_task_masks as masks
+    from blueprint_pipeline.website_task_preparation import compile_website_scene_preparation
+    from blueprint_pipeline import website_task_grounding as grounding
+
+    blue = {**_target(), "semantic_label": "blue box", "segmentation_prompt": "blue box",
+            "task_effect": "manipulated", "disposition": "remove"}
+    support = {**_target(), "target_id": "support", "semantic_label": "white support", "segmentation_prompt": "white book",
+               "task_effect": support_effect, "disposition": support_disposition}
+    registry = [{"source_frame_id": "frame-0", "decoded_pts_seconds": 0, "width": 4, "height": 4}]
+    monkeypatch.setenv("BLUEPRINT_WEBSITE_SAM31_PROVIDER", "meta")
+    monkeypatch.setattr(masks, "prepare_continuous_video", lambda **kw: (registry, {"path": "prepared.mp4"}))
+    provider_calls = []
+    def hosted(**kw):
+        provider_calls.append(kw)
+        return {"tracks": [_track()]}
+    monkeypatch.setattr(masks, "run_meta_sam31", hosted)
+    def unresolved(**kw):
+        raise ValueError("support_not_resolved")
+    monkeypatch.setattr(grounding, "ground_task_target", unresolved)
+    kwargs = dict(plan={"targets": [blue, support], "task_context_sha256": "task"},
+        source_geometry={"digest": "source", "geometry_available": False, "binding": {"source_video_digest": "video"},
+                         "frames": [{"frame_id": "frame-0", "timestamp_seconds": 0, "width": 4, "height": 4}]},
+        source_video=tmp_path / "source.mov", task_context={"confirmed": True}, output_root=tmp_path / "masks")
+    if support_disposition != "keep" or support_effect == "manipulated":
+        with pytest.raises(ValueError, match="support_not_resolved"):
+            masks.run_website_task_masks(**kwargs, defer_kept_static=True)
+        assert not list((tmp_path / "masks").rglob("task_masks.object_removal.json"))
+        return
+    result = masks.run_website_task_masks(**kwargs, defer_kept_static=True)
+    assert result["status"] == "object_removal_ready" and result["deferred_target_ids"] == ["support"]
+    assert [t["target_id"] for t in result["targets"]] == ["task-cup"]
+    assert list((tmp_path / "masks").rglob("task_masks.object_removal.json"))
+    assert not list((tmp_path / "masks").rglob("task_masks.json"))
+    with pytest.raises(ValueError, match="static_task_masks_pending"):
+        masks.bind_task_masks_to_geometry(task_masks=result, source_geometry={})
+    with pytest.raises(ValueError, match="static_task_masks_pending"):
+        compile_website_scene_preparation(task_context={}, task_masks=result, removal_manifest={}, source_geometry={},
+            base_scene={}, output_root=tmp_path / "native", spend={}, now=0)
+    with pytest.raises(ValueError, match="support_not_resolved"):
+        masks.run_website_task_masks(**kwargs)
+    assert provider_calls[0] == provider_calls[1]  # strict continuation reuses identical paid request bindings

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -127,9 +128,13 @@ def segment_grounded_static_target(*, target: Mapping[str, Any], registry: list[
     left, top, right, bottom = crop_box
     crop_registry = [{**frame, "model_frame_index": 0, "width": right - left, "height": bottom - top,
                       "source_crop_box_pixels": crop_box, "source_image_digest": grounding["image_digest"]}]
+    # Location already identifies the target in this crop. Drop an optional
+    # leading color adjective, which can exclude a shaded/cream-colored book.
+    concept = re.sub(r"^(?:white|black|blue|red|green|yellow|orange|purple|brown|gray|grey|cream)(?:-colou?red)?\s+",
+                     "", target["segmentation_prompt"], count=1, flags=re.IGNORECASE).strip()
     result = run_meta_sam31(frame_registry=crop_registry,
         frame_artifacts=[{"source_frame_id": frame["source_frame_id"], "path": str(crop_path), "sha256": _sha256_file(crop_path)}],
-        prompts=[{"prompt_id": target["target_id"], "output_label": target["target_id"], "text": target["segmentation_prompt"]}],
+        prompts=[{"prompt_id": target["target_id"], "output_label": target["target_id"], "text": concept}],
         output_root=output_root, admission={}, task_context=task_context)
     tracks = []
     for track in result["tracks"]:
@@ -182,7 +187,7 @@ def estimate_target_bounds(track: Mapping[str, Any], frames: list[Mapping[str, A
 def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[str, Any],
                           output_root: Path, meta_admission: Mapping[str, Any] | None = None,
                           meta_admission_grant: Any = None, task_context: Mapping[str, Any] | None = None,
-                          source_video: Path | None = None) -> dict[str, Any]:
+                          source_video: Path | None = None, defer_kept_static: bool = False) -> dict[str, Any]:
     targets = [target for target in plan.get("targets", [])
                if target.get("task_effect") in {"manipulated", "static_contact", "static_obstacle"}]
     if not targets:
@@ -292,8 +297,12 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
         tracks = json.loads(tracks_path.read_text())["tracks"]
         identity_tracks, identity_frames = tracks, frames
     selected = []
+    deferred_target_ids = []
     selected_track_ids = set()
     for target in targets:
+        if defer_kept_static and target.get("disposition") == "keep" and target.get("task_effect") != "manipulated":
+            deferred_target_ids.append(target["target_id"])
+            continue
         candidates = [{**track, "label": target["target_id"]} for track in identity_tracks
                       if track.get("label") == prompt_labels[target["target_id"]]]
         grounding = None
@@ -356,16 +365,20 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
     manifest = {"schema_version": "website_task_masks.v1", "status": "completed", "binding": binding,
                 "claim_ceiling": "development_only", "targets": selected,
                 "source_geometry_digest": source_geometry["digest"] if geometry_available else None}
+    if deferred_target_ids:
+        manifest.update(status="object_removal_ready", deferred_target_ids=deferred_target_ids)
     if video_artifact:
         manifest["source_frame_registry"] = registry
         manifest["source_video_digest"] = source_geometry["binding"]["source_video_digest"]
     manifest["digest"] = canonical_digest(manifest, digest_field="digest")
-    write_json(root / "task_masks.json", manifest)
+    write_json(root / ("task_masks.object_removal.json" if deferred_target_ids else "task_masks.json"), manifest)
     return manifest
 
 
 def bind_task_masks_to_geometry(*, task_masks: Mapping[str, Any], source_geometry: Mapping[str, Any]) -> dict[str, Any]:
     """Lift the retained selected tracks after reconstruction; never call SAM again."""
+    if task_masks.get("deferred_target_ids"):
+        raise ValueError("website_static_task_masks_pending")
     if (task_masks.get("digest") != canonical_digest(task_masks, digest_field="digest")
             or source_geometry.get("digest") != canonical_digest(source_geometry, digest_field="digest")
             or task_masks.get("source_video_digest") != source_geometry["binding"].get("source_video_digest")

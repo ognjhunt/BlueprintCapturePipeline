@@ -56,11 +56,21 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
             raise ValueError("website_scene_task_identity_mismatch")
         if clean_plate.get("source_geometry") is None:
             from .website_scene_geometry import run_website_scene_geometry
-            from .website_task_masks import bind_task_masks_to_geometry
+            from .website_task_masks import bind_task_masks_to_geometry, run_website_task_masks
             video = Path(clean_plate.get("input_video_path") or "")
             if not video.is_file() or not video.resolve().is_relative_to(capture_root.resolve()):
                 raise ValueError("website_source_video_outside_capture")
             result.pop("provider_mutation_performed", None)
+            if (clean_plate.get("task_masks") or {}).get("deferred_target_ids"):
+                result["visual_reconstruction_ready"] = True
+                result["deferred_masks_controller_invoked"] = True
+                plan_path = Path(clean_plate["removal_plan_path"])
+                if not plan_path.resolve().is_relative_to(capture_root.resolve() / "pipeline"):
+                    raise ValueError("website_scene_removal_plan_outside_capture")
+                masks = run_website_task_masks(plan=json.loads(plan_path.read_text()),
+                    source_geometry=clean_plate["source_frames"], output_root=plan_path.parent / "task_masks",
+                    source_video=video, task_context=context)
+                clean_plate = {**clean_plate, "task_masks": masks}
             result["geometry_controller_invoked"] = True
             geometry = run_website_scene_geometry(source_video=video,
                 output_root=Path(clean_plate["stage_manifest_path"]).parent / "source_geometry",

@@ -343,6 +343,8 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                                       now: float) -> dict[str, Any]:
     output_root.mkdir(parents=True, exist_ok=True)
     blockers: list[str] = []
+    if task_masks.get("deferred_target_ids"):
+        raise ValueError("website_static_task_masks_pending")
     for value, field in ((task_context, "context_digest"), (task_masks, "digest"), (source_geometry, "digest")):
         if value.get(field) != canonical_digest(value, digest_field=field):
             raise ValueError("website_preparation_input_digest_mismatch")
