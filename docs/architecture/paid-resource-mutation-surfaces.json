@@ -51,9 +51,9 @@
       "path": "src/blueprint_pipeline/website_task_context.py",
       "classification": "canonical_adapter",
       "required_markers": [
-        "reserve_website_sam_spend",
+        "reserve_website_preparation_spend",
         "preparation-spend",
-        "website_sam_spend_receipt_invalid",
+        "website_preparation_spend_receipt_invalid",
         "require_paid_resource_admission"
       ]
     },
