@@ -192,7 +192,8 @@ def validate_stage_prefix_capsule(archive: Path, *, expected_stage_ids: list[str
 
 
 def _provider_environment(environment: Mapping[str, str],
-                          overrides: Mapping[str, str]) -> tuple[dict[str, str], list[str]]:
+                          overrides: Mapping[str, str], *,
+                          secret_file_paths: Mapping[str, str] | None = None) -> tuple[dict[str, str], list[str]]:
     """Compose the entrypoint's environment the way the paid container's is built.
 
     The GPU container starts from nothing and is handed scoped secret *file*
@@ -202,10 +203,12 @@ def _provider_environment(environment: Mapping[str, str],
     stages 1-2 had already run. Drop anything carrying a credential value --
     the producer's own forbidden names, imported rather than copied so the two
     cannot drift, plus any credential-shaped name that is not a reference --
-    and refuse if one still survives.
+    and refuse if one still survives. When staged files are supplied, replace
+    ambient secret references with that attempt's explicit selection; preserve
+    the key IDs used by its spend-scope attestation.
     """
     from .task_evaluation_scene_configuration_builtin_producers import (
-        _RAW_SECRET_ENVIRONMENT_NAMES,
+        _RAW_SECRET_ENVIRONMENT_NAMES, _SECRET_ENVIRONMENT_FILES,
     )
 
     values = {str(k): str(v) for k, v in environment.items()}
@@ -215,13 +218,21 @@ def _provider_environment(environment: Mapping[str, str],
         value = values[name]
         if not value.strip():
             continue
-        if name in _RAW_SECRET_ENVIRONMENT_NAMES or (
+        ambient_secret_reference = secret_file_paths is not None and (
+            name in _SECRET_ENVIRONMENT_FILES or (
+                _CREDENTIAL_NAME.search(name) and name.endswith(_REFERENCE_SUFFIXES)
+                and not name.endswith("_ID")))
+        if ambient_secret_reference or name in _RAW_SECRET_ENVIRONMENT_NAMES or (
             _CREDENTIAL_NAME.search(name)
             and not name.endswith(_REFERENCE_SUFFIXES)
             and not Path(value).is_absolute()
         ):
             dropped.append(name)
             values.pop(name)
+    if secret_file_paths is not None:
+        _require(all(name.endswith("_FILE") for name in secret_file_paths), "secret_file_name_invalid")
+        values.update(secret_file_paths)
+        dropped = [name for name in dropped if name not in secret_file_paths]
     _require(not any(str(values.get(name) or "").strip()
                      for name in _RAW_SECRET_ENVIRONMENT_NAMES), "raw_secret_environment_forbidden")
     return values, dropped
@@ -261,6 +272,7 @@ def prepare_stage_prefix_before_gpu(
     authority: Mapping[str, Any],
     job_dir: str | Path,
     environment: Mapping[str, str],
+    secret_file_paths: Mapping[str, str],
     stage_limit: str,
     runner: Callable[..., Any] = subprocess.run,
     work_dir: str | Path | None = None,
@@ -303,7 +315,7 @@ def prepare_stage_prefix_before_gpu(
     for name in ("bash", "timeout"):
         _require(which(name) is not None, f"host_command_missing:{name}")
     # Secrets are read from outside the work dir; the capsule never carries them.
-    for name, value in environment.items():
+    for name, value in secret_file_paths.items():
         if name.endswith("API_KEY_FILE") and value:
             _require(not Path(str(value)).resolve().is_relative_to(work), "secret_inside_work_dir")
     with zipfile.ZipFile(bundle) as zipped:
@@ -332,7 +344,11 @@ def prepare_stage_prefix_before_gpu(
         "BLUEPRINT_SCENE_CONFIGURATION_PARENT_DEADLINE_EPOCH": repr(deadline),
         "BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_CLOSURE_RESERVE_SECONDS": str(int(closure_reserve_seconds)),
         "PATH": str(python_bin) + ":" + str(environment.get("PATH") or "/usr/local/bin:/usr/bin:/bin"),
-    })
+    }, secret_file_paths=secret_file_paths)
+    # Validate the exact files the producer will read before unpacking or
+    # running stages. Ambient aliases and inactive-stage keys cannot enter.
+    from .task_evaluation_scene_configuration_builtin_producers import _secret_values
+    _secret_values(values)
     values.pop(PREFIX_URL_ENV, None)
     with _exclusive_work_dir(work):
         with reserve_control_plane_disk("cpu_prestage", target_root=work, expected_bytes=peak_bytes,

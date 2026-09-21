@@ -1499,7 +1499,8 @@ def run_scene_configuration_vast(
             stage_limit = str(prestage_stage_limit(receipt, {STAGE_LIMIT_ENV: cpu_prestage_stage_limit}))
             cpu_prestage = prepare_stage_prefix_before_gpu(
                 bundle_receipt=receipt, authority=authority, job_dir=job, stage_limit=stage_limit,
-                environment={**dict(os.environ), **runtime_environment, **runtime_secret_paths},
+                environment={**dict(os.environ), **runtime_environment},
+                secret_file_paths=runtime_secret_paths,
                 ttl_seconds=prestage_ttl_seconds(receipt, stage_limit),
             )
             prestage_staging = stage_wam_provider_bundle_object_store(
