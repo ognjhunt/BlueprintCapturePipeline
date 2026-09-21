@@ -17,6 +17,23 @@ from .task_evaluation_scene_intake import (
 
 def register_scene_intake_routes(app: FastAPI, require_admission: Callable,
                                  deployment_identity: Callable) -> None:
+    @app.post("/api/live-pipeline/task-evaluation-team-context",
+              dependencies=[Depends(require_admission)])
+    async def inspect_team_evaluation_context(request: Request) -> JSONResponse:
+        trusted = {v.strip() for v in os.getenv(CLIENTS_ENV, "blueprint-webapp").split(",") if v.strip()}
+        if (not request.headers.get("x-blueprint-pipeline-signature")
+                or getattr(request.state, "intake_client_id", "") not in trusted):
+            raise HTTPException(status_code=403, detail="scene source issuer not authorized")
+        from .task_evaluation_team_run_context import evaluation_context
+        try:
+            payload = await request.json()
+            if not isinstance(payload, dict) or set(payload) != {'source_launch_id', 'owner'}:
+                raise ValueError('evaluation_context_request_invalid')
+            result = await run_in_threadpool(evaluation_context, **payload)
+        except (ValueError, RuntimeError, OSError, KeyError, TypeError) as exc:
+            raise HTTPException(status_code=409, detail="evaluation context unavailable") from exc
+        return JSONResponse(content=result, headers={"Cache-Control":"no-store"})
+
     @app.get("/api/live-pipeline/task-evaluation-public-scene-sources",
              dependencies=[Depends(require_admission)])
     async def inspect_public_scene_sources(request: Request) -> JSONResponse:

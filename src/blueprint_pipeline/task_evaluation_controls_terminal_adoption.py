@@ -126,6 +126,10 @@ def provision_terminal_controls_adoption(*, config: Mapping[str, Any], catalog: 
     from .task_evaluation_scene_robot_assignment import resolve_controls_robot_binding
     binding, robot_assignment = resolve_controls_robot_binding(
         directory=directory, intent=intent, catalog=catalog, now=moment)
+    if selected_evaluation and request['task'].get('robot_binding_digest') is not None:
+        from .task_evaluation_team_run_context import configuration_binding_digest
+        worker._require(request['task']['robot_binding_digest'] == configuration_binding_digest(binding),
+            'team_evaluation_robot_binding_changed')
     from . import task_evaluation_completed_placement_adoption as completed
     completed_placement = (None if selected_evaluation else completed.discover(config=config,
         intent_id=intent_id, source=source, expected_commit=expected_production_commit))
