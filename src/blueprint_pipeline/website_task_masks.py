@@ -156,8 +156,7 @@ def segment_grounded_static_target(*, target: Mapping[str, Any], registry: list[
         {"frame_id": frame["source_frame_id"], "timestamp_seconds": frame["decoded_pts_seconds"]}])
 
 
-def estimate_target_bounds(track: Mapping[str, Any], frames: list[Mapping[str, Any]],
-                           *, source_to_target: np.ndarray | None = None) -> dict[str, Any]:
+def masked_source_points(track: Mapping[str, Any], frames: list[Mapping[str, Any]]) -> np.ndarray:
     by_id = {frame["frame_id"]: frame for frame in frames}
     points = []
     for observation in track["observations"]:
@@ -178,7 +177,12 @@ def estimate_target_bounds(track: Mapping[str, Any], frames: list[Mapping[str, A
         points.append(camera_points @ pose[:3, :3].T + pose[:3, 3])
     if not points:
         raise ValueError("task_target_has_no_estimated_geometry")
-    observed = np.concatenate(points)
+    return np.concatenate(points)
+
+
+def estimate_target_bounds(track: Mapping[str, Any], frames: list[Mapping[str, Any]],
+                           *, source_to_target: np.ndarray | None = None) -> dict[str, Any]:
+    observed = masked_source_points(track, frames)
     if source_to_target is not None:
         transform = np.asarray(source_to_target, dtype=float)
         if (transform.shape != (4, 4) or not np.isfinite(transform).all()

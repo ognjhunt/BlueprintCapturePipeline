@@ -378,14 +378,26 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
             raise ValueError("website_base_scene_scale_invalid")
         anchor = {**anchor, "meters_per_unit": declared_mpu, "up_axis": base_scene["up_axis"],
                   "ground_plane_offset_m": base_scene.get("ground_plane_offset_m")}
-    registration = register_source_to_runtime(source_geometry=source_geometry,
-                                              collision_mesh_path=Path(base_scene["collision_mesh_path"]),
-                                              anchor=anchor, focus_bounds=subject_target["estimated_visible_bounds"])
+    independent_object = False
+    try:
+        registration = register_source_to_runtime(source_geometry=source_geometry,
+            collision_mesh_path=Path(base_scene["collision_mesh_path"]),
+            anchor=anchor, focus_bounds=subject_target["estimated_visible_bounds"])
+    except ValueError as exc:
+        from .website_development_test import enabled
+        from .website_object_local_frame import REGISTRATION_REFUSALS, estimated_object_frame
+        if str(exc) not in REGISTRATION_REFUSALS or not enabled(task_context["context_digest"]):
+            raise
+        registration = estimated_object_frame(track=subject_target["track"],
+            source_geometry=source_geometry, registration_blocker=str(exc))
+        blockers.append(str(exc))
+        independent_object = True
+        up, up_sign, declared_mpu = 2, 1, 1.0
     # With browser video, use MapAnything's estimated metres to scale the
     # generated world. A provider's declared factor is an estimate too, and
     # the two must agree; neither is a physical measurement.
     mpu = 1.0 / registration["scale"] if declared_mpu is None else float(declared_mpu)
-    if declared_mpu is not None and anchor is None and not 0.75 <= registration["scale"] * mpu <= 4.0 / 3.0:
+    if not independent_object and declared_mpu is not None and anchor is None and not 0.75 <= registration["scale"] * mpu <= 4.0 / 3.0:
         blockers.append("website_registration_scale_conflicts_declared")
     runtime_to_sim = np.eye(4)
     runtime_to_sim[:3, :3] = mpu * (np.array([[1, 0, 0], [0, 0, -up_sign], [0, up_sign, 0]])
@@ -399,7 +411,8 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     subject_min, subject_max = subject_bounds["minimum"], subject_bounds["maximum"]
     import trimesh
     collider = trimesh.load(base_scene["collision_mesh_path"], force="mesh", process=False)
-    support = support_under(collider, subject_min, subject_max, up=up, meters_per_unit=mpu, up_sign=up_sign)
+    support = (None if independent_object else
+               support_under(collider, subject_min, subject_max, up=up, meters_per_unit=mpu, up_sign=up_sign))
     snap = 0.0
     if support is None:
         blockers.append("support_surface_not_found_under_subject")
@@ -413,7 +426,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                    if support else (None, None))
     destination_rows = [row for row in task_masks["targets"] if row.get("target_role") == "destination"]
     destination = None
-    if len(destination_rows) == 1:
+    if len(destination_rows) == 1 and not independent_object:
         low, high = _runtime_bounds(destination_rows[0]["estimated_visible_bounds"], matrix)
         position = [(low[i] + high[i]) / 2 for i in range(3)]
         position[up] = (high if up_sign == 1 else low)[up]
@@ -471,7 +484,8 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         source_object_identity=subject_entry["target_id"],
         source_observation_kind="website_capture_frames", dimension_authority="estimated",
         appearance_inputs="digest_bound_original_capture_frames",
-        geometry_support="registered_partial_visible_bounds_from_estimated_source_geometry",
+        geometry_support=("unregistered_object_local_estimated_visible_bounds" if independent_object
+                          else "registered_partial_visible_bounds_from_estimated_source_geometry"),
         construction_constraints={
             "confirmed_task": task_context["description"],
             "operator_answers": task_context.get("operator_answers") or {},
@@ -539,9 +553,10 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                     "splat_digest": base_scene["splat_digest"], "collision_mesh_digest": base_scene["collision_mesh_digest"],
                     "provider": base_scene.get("provider"), "operation_id": base_scene.get("operation_id")},
         "registration": registration, "coordinate_frame": {"declared_meters_per_unit": mpu,
-                                                           "scale_authority": base_scene.get("scale_authority") or "registration_estimate",
+                                                           "scale_authority": ("model_estimated_object_frame" if independent_object
+                                                                               else base_scene.get("scale_authority") or "registration_estimate"),
                                                            "placement_uncertainty_m": (registration.get("task_region") or {}).get("trimmed_rmse_m"),
-                                                           "declared_up_axis": base_scene["up_axis"],
+                                                           "declared_up_axis": "Z" if independent_object else base_scene["up_axis"],
                                                            "physical_scale_measured": False,
                                                            "task_coordinates": "Z_up_estimated_meters",
                                                            "runtime_to_simulator": runtime_to_sim.tolist()},
