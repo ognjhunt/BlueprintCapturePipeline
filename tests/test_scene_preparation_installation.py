@@ -316,3 +316,25 @@ def test_activation_intent_registry_identity_is_canonical(tmp_path, monkeypatch)
     receipt = _install_bootstrap(tmp_path, machinery, old["capture_store_root"], True, tmp_path / "authorized")
     auth_config = json.loads(Path(receipt["config"]["path"]).read_text())
     assert Path(auth_config["activation_intent_root"]).name == "task-evaluation-scene-configuration-activation-intents"
+
+
+def test_unscoped_installation_preserves_historical_pauses_across_redeploys(tmp_path, monkeypatch):
+    path, _, _, intent_id = _installed(tmp_path, monkeypatch)
+    bootstrap = json.loads(path.read_text())
+    bootstrap["paused_intent_ids"] = [intent_id]
+    bootstrap["bootstrap_digest"] = installation.canonical_digest(bootstrap, digest_field="bootstrap_digest")
+    path.write_text(json.dumps(bootstrap))
+    receipt = installation.install_scene_preparation(bootstrap_path=path)
+    config = json.loads(Path(receipt["config"]["path"]).read_text())
+    assert "only_intent_id" not in config
+    assert config["paused_intent_ids"] == [intent_id]
+    assert Path(config["preparation_queue_root"]).name == "task-evaluation-owned-scene-preparations"
+    assert installation.install_scene_preparation(bootstrap_path=path) == receipt
+    assert receipt["provider_mutation_performed"] is False
+    assert receipt["service_start_requested"] is False
+    bootstrap["paused_intent_ids"] = ["../other-owner"]
+    bootstrap["bootstrap_digest"] = installation.canonical_digest(bootstrap, digest_field="bootstrap_digest")
+    path.write_text(json.dumps(bootstrap))
+    with pytest.raises(ValueError, match="paused_intents_invalid"):
+        installation.install_scene_preparation(bootstrap_path=path)
+    assert json.loads(Path(receipt["config"]["path"]).read_text()) == config

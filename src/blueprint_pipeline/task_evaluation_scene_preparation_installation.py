@@ -162,6 +162,11 @@ def install_scene_preparation(*, bootstrap_path):
             and bootstrap.get("execution_activation_enabled") is False
             and bootstrap.get("supported_source_kinds") in (OWNER_UPLOAD_SOURCE_KINDS, PUBLIC_SCENE_SOURCE_KINDS),
             "scene_preparation_bootstrap_scope_invalid")
+    from .task_evaluation_scene_intake import _identifier
+    paused = bootstrap.get("paused_intent_ids", [])
+    require(isinstance(paused, list) and len(paused) <= 10000
+            and all(isinstance(item, str) and item.startswith("scene-") and _identifier(item) for item in paused),
+            "scene_preparation_paused_intents_invalid")
     validate_destination_catalog(bootstrap["destination_catalog"])
     from .task_evaluation_scene_configuration_content_agents_driver import _physics_bounds
     _physics_bounds({"required_output": bootstrap["simulation_physics_bounds"]})
@@ -265,6 +270,8 @@ def install_scene_preparation(*, bootstrap_path):
         for key in ("public_source_bootstrap_enabled", "public_source_catalog_path"):
             if key in bootstrap:
                 config[key] = bootstrap[key]
+    if paused:
+        config["paused_intent_ids"] = paused
     if bootstrap.get("only_intent_id") is not None:
         config["only_intent_id"] = bootstrap["only_intent_id"]
     if bool(bootstrap.get("activation_authorized")):
