@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
+from .configured_scene_run_identity import episode_namespace, evaluation_scope
 from .task_evaluation_configured_scene_revision import (
     TaskEvaluationConfiguredSceneRevisionError,
     validate_configured_scene_revision,
@@ -264,9 +265,14 @@ def stage_configured_controls_episode_preparation(
     preparation_stager: PreparationStager | None = None,
     destination_qualification_only: bool = False,
     destination_placement_qualification: Mapping[str, Any] | None = None,
+    evaluation_run_id: str | None = None,
 ) -> dict[str, Any]:
     """Materialize canonical inputs and queue one no-spend episode compilation."""
 
+    try:
+        run_scope = evaluation_scope(evaluation_run_id)
+    except ValueError as exc:
+        raise TaskEvaluationConfiguredControlsProgressionError(str(exc)) from exc
     _, publication, revision = _validate_configuration_predecessor(
         terminal_result=terminal_result,
         publication_result=publication_result,
@@ -286,6 +292,7 @@ def stage_configured_controls_episode_preparation(
         )
     progression_input_digest = canonical_digest(
         {
+            **run_scope,
             "configuration_terminal_result_digest": terminal_result.get(
                 "result_digest"
             ),
@@ -309,15 +316,8 @@ def stage_configured_controls_episode_preparation(
             ),
         }
     )
-    namespace = (
-        f"{revision['configuration_run_id']}-franka-"
-        + (
-            "destination-qualification-"
-            if destination_qualification_only
-            else "controls-"
-        )
-        + expected_production_commit[:12]
-    )
+    namespace = episode_namespace(revision["configuration_run_id"], expected_production_commit,
+        evaluation_run_id=evaluation_run_id, destination=destination_qualification_only)
     if _IDENTIFIER.fullmatch(namespace) is None:
         raise TaskEvaluationConfiguredControlsProgressionError(
             "configured_controls_progression_identity_invalid"
@@ -547,6 +547,7 @@ def stage_configured_controls_episode_preparation(
             "configured_controls_progression_preparation_intake_invalid"
         )
     result = {
+        **run_scope,
         "schema_version": PROGRESSION_SCHEMA_VERSION,
         "status": (
             "destination_qualification_preparation_queued"

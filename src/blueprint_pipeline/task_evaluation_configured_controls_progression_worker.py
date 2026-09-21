@@ -10,6 +10,8 @@ an allocator or provider directly.
 
 from __future__ import annotations
 
+from .configured_scene_run_identity import episode_namespace, progression_directory
+
 from .configured_controls_plan_validation import TaskEvaluationConfiguredControlsProgressionWorkerError as TaskEvaluationConfiguredControlsProgressionWorkerError
 
 import argparse
@@ -1206,7 +1208,7 @@ def advance_configured_controls_plan(
     state = (
         Path(progression_root).expanduser()
         / plan["source_launch_id"]
-        / f"franka-controls-{plan['expected_production_commit'][:12]}"
+        / progression_directory(plan["expected_production_commit"], plan.get("evaluation_run_id"))
     )
     state.mkdir(parents=True, exist_ok=True, mode=0o750)
     destination_enabled = (
@@ -1291,6 +1293,7 @@ def advance_configured_controls_plan(
                 queue_root=preparation_queue_root,
                 submitted_by=plan["submitted_by"],
                 destination_qualification_only=True,
+                evaluation_run_id=plan.get("evaluation_run_id"),
             )
             return {
                 "status": result["status"],
@@ -1431,10 +1434,8 @@ def advance_configured_controls_plan(
     base = _sealed_progression(base_path, statuses={"episode_preparation_queued"})
     if base is None:
         terminal, publication, revision, base_pose, rows, runtime = source_inputs()
-        namespace = (
-            f"{terminal['run_id']}-franka-controls-"
-            f"{plan['expected_production_commit'][:12]}-episode"
-        )
+        namespace = episode_namespace(terminal["run_id"], plan["expected_production_commit"],
+            evaluation_run_id=plan.get("evaluation_run_id")) + "-episode"
         if any(
             plan["future_outputs"][phase]["expected_activation_id"]
             != f"{namespace}-{phase}"
@@ -1459,6 +1460,7 @@ def advance_configured_controls_plan(
             submitted_by=plan["submitted_by"],
             destination_qualification_only=False,
             destination_placement_qualification=placement_reference,
+            evaluation_run_id=plan.get("evaluation_run_id"),
         )
         return {"status": result["status"], "source_launch_id": plan["source_launch_id"]}
 

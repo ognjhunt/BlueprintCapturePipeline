@@ -49,6 +49,7 @@ from .task_evaluation_policy_canary_handoff_state import (
     verify_completed_ack,
 )
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
+from .configured_scene_run_identity import evaluation_scope, progression_directory, scoped_identity
 from .task_evaluation_launch_dispatcher import LAUNCH_RECEIPT_DIGEST_CANONICALIZATION
 from .task_evaluation_launch_reconciler import validated_succeeded_webapp_sync_row
 from .task_evaluation_policy_canary_model_rights import materialize_policy_canary_model_rights
@@ -674,9 +675,12 @@ def advance_policy_canary_handoff(
     presubmission: Callable[..., Mapping[str, Any]] = materialize_policy_canary_presubmission_setup,
     model_rights_materializer: Callable[..., Mapping[str, Any]] = materialize_policy_canary_model_rights,
     now: datetime | None = None,
+    evaluation_run_id: str | None = None,
 ) -> dict[str, Any]:
     """Advance one configured scene from completed controls to a submitted Quick-10 canary."""
 
+    run_scope = evaluation_scope(evaluation_run_id)
+    execution_identity = scoped_identity(source_launch_id, evaluation_run_id)
     state = Path(state_root).expanduser()
     launches = Path(launch_state_root).expanduser()
     repo = Path(repo_root).expanduser()
@@ -687,7 +691,8 @@ def advance_policy_canary_handoff(
     state_path = state / STATE_FILENAME
     existing = _sealed_progression(state_path, statuses=set(_STAGES))
     if existing is not None and (existing.get("source_launch_id") != source_launch_id
-            or existing.get("expected_production_commit") != expected_production_commit):
+            or existing.get("expected_production_commit") != expected_production_commit
+            or existing.get("evaluation_run_id") != evaluation_run_id):
         raise PolicyCanaryHandoffError("policy_canary_handoff_progression_invalid")
 
     from .task_evaluation_scene_control_omission import load_for_run, derived_contract
@@ -764,7 +769,7 @@ def advance_policy_canary_handoff(
         return {"status": "awaiting_construction_compilation", "source_launch_id": source_launch_id}
 
     inputs = state / "policy-canary-inputs"
-    profile_id = f"{source_launch_id}-internal-policy-canary-{expected_production_commit[:10]}"
+    profile_id = f"{execution_identity}-internal-policy-canary-{expected_production_commit[:10]}"
     if existing is None:
         authorization = dict(intent["authorization_template"])
         if owner is not None:
@@ -888,6 +893,7 @@ def advance_policy_canary_handoff(
         existing = _seal_state(
             state_path,
             {
+                **run_scope,
                 "status": "canary_presubmitted",
                 "source_launch_id": source_launch_id,
                 "expected_production_commit": expected_production_commit,
@@ -943,7 +949,7 @@ def advance_policy_canary_handoff(
             },
         )
 
-    run_id = f"{source_launch_id}-policy-canary-{str(existing['setup_digest']).removeprefix('sha256:')[:12]}"
+    run_id = f"{execution_identity}-policy-canary-{str(existing['setup_digest']).removeprefix('sha256:')[:12]}"
     if _IDENTIFIER.fullmatch(run_id) is None:
         raise PolicyCanaryHandoffError("policy_canary_handoff_run_id_invalid")
     selection = _selection(setup=setup, run_id=run_id, notification_email=notification_email)
@@ -1011,7 +1017,7 @@ def advance_policy_canary_handoff_for_plan(
     commit = str(plan["expected_production_commit"])
     if not (activation_intent_root and repo_root and webapp_secret_file and webapp_catalog_out and notification_email):
         return {"status": "policy_canary_handoff_not_configured", "source_launch_id": source_launch_id}
-    state_root = Path(progression_root).expanduser() / source_launch_id / f"franka-controls-{commit[:12]}"
+    state_root = Path(progression_root).expanduser() / source_launch_id / progression_directory(commit, plan.get("evaluation_run_id"))
     return advance_policy_canary_handoff(
         state_root=state_root,
         source_launch_id=source_launch_id,
@@ -1026,5 +1032,6 @@ def advance_policy_canary_handoff_for_plan(
         webapp_endpoint=webapp_endpoint,
         notification_email=notification_email,
         publisher_factory=publisher_factory,
+        **evaluation_scope(plan.get("evaluation_run_id")),
         **overrides,
     )

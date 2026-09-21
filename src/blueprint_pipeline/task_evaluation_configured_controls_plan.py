@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .configured_scene_run_identity import episode_namespace, evaluation_scope, scoped_identity
+
 import argparse
 import hashlib
 import json
@@ -139,9 +141,14 @@ def materialize_configured_controls_plan(
     bindings: Mapping[str, Any],
     plan_root: str | Path,
     profile_dir: str | Path,
+    evaluation_run_id: str | None = None,
 ) -> dict[str, Any]:
     """Validate exact source/authority bytes and write one idempotent 0440 plan."""
 
+    try:
+        run_scope = evaluation_scope(evaluation_run_id)
+    except ValueError as exc:
+        raise TaskEvaluationConfiguredControlsPlanError(str(exc)) from exc
     if (
         _IDENTIFIER.fullmatch(source_launch_id) is None
         or _COMMIT.fullmatch(expected_production_commit) is None
@@ -193,18 +200,16 @@ def materialize_configured_controls_plan(
         _validate_commit_fields(row["value"], artifact_commit)
         inventory[name] = row
     configuration_run_id = str(terminal.get("run_id") or "")
-    namespace = (
-        f"{configuration_run_id}-franka-controls-"
-        f"{expected_production_commit[:12]}"
-    )
+    namespace = episode_namespace(configuration_run_id, expected_production_commit,
+        evaluation_run_id=evaluation_run_id)
     expected_activation_ids = {
         "construction": f"{namespace}-episode-construction",
         "controls": f"{namespace}-episode-controls",
         **(
             {
                 "destination": (
-                    f"{configuration_run_id}-franka-destination-qualification-"
-                    f"{expected_production_commit[:12]}-probe-destination"
+                    episode_namespace(configuration_run_id, expected_production_commit,
+                        evaluation_run_id=evaluation_run_id, destination=True) + "-probe-destination"
                 )
             }
             if "destination" in phase_names
@@ -217,6 +222,7 @@ def materialize_configured_controls_plan(
             "configured_controls_plan_profile_dir_invalid"
         )
     plan = {
+        **run_scope,
         "schema_version": (
             DESTINATION_PLAN_SCHEMA_VERSION
             if "destination" in phase_names
@@ -276,7 +282,7 @@ def materialize_configured_controls_plan(
     # Scope the plan to its production commit. A redeploy authors a plan
     # whose bytes differ only by commit, and a launch-id-only filename turns
     # that into configured_controls_plan_immutable_conflict forever.
-    destination = root / f"{source_launch_id}-{expected_production_commit[:12]}.json"
+    destination = root / f"{scoped_identity(source_launch_id, evaluation_run_id)}-{expected_production_commit[:12]}.json"
     payload = _payload(plan)
     status = "materialized"
     try:
