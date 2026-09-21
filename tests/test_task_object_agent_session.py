@@ -334,3 +334,27 @@ def test_uncompactable_current_evidence_fails_before_model(agent_fixture):
         session.execute_agent_authoring(**f.kwargs, invoker=invoker, model=f.model)
     assert not f.model.calls and not f.executed
     assert audit.manifest()['reserved_max_cost_usd'] == 0
+
+
+def test_context_preserves_entire_current_reasoning_tool_turn():
+    from blueprint_pipeline.task_object_agent_context import compact_authoring_history
+    original = {'role': 'user', 'content': 'original task and source evidence'}
+    older = [original,
+        {'type': 'reasoning', 'id': 'old-reasoning', 'encrypted_content': 'old opaque state'},
+        {'type': 'function_call', 'id': 'old-call', 'call_id': 'old', 'name': 'build_cad', 'arguments': '{"program":"exact prior program"}'},
+        {'type': 'function_call_output', 'call_id': 'old', 'output': 'prior CAD readback'}]
+    current = [
+        {'role': 'user', 'content': 'independent review requires repair'},
+        {'type': 'reasoning', 'id': 'current-reasoning', 'encrypted_content': 'required opaque state'},
+        {'type': 'function_call', 'id': 'new-call', 'call_id': 'new', 'name': 'build_cad', 'arguments': '{"program":"new program"}'},
+        {'type': 'function_call_output', 'call_id': 'new', 'output': 'current compiler error'}]
+    rows = older + current
+    before = json.dumps(rows)
+    compact = compact_authoring_history(rows)
+    assert compact[-len(current):] == current
+    assert compact[0] == original
+    assert 'exact prior program' in json.dumps(compact)
+    assert 'old-reasoning' not in json.dumps(compact)
+    assert not any(row.get('call_id') == 'old' for row in compact)
+    assert json.dumps(rows) == before
+    assert compact_authoring_history(older) == older  # No boundary: do not prune.
