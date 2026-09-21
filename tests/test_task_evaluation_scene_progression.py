@@ -214,3 +214,26 @@ def test_validation_progress_heartbeat_lands_in_scene_directory(context, monkeyp
                                       "bytes_reused", "last_path"}
     assert not (directory / (progress.FILENAME + ".tmp")).exists()
     assert progress.heartbeat("outside") is None
+
+
+def test_team_evaluation_does_not_rebuild_prepared_scene(context, monkeypatch):
+    config = configuration(context, monkeypatch)
+    args, _ = context
+    path = args['intent_path']
+    intent = json.loads(path.read_text())
+    intent['request']['task']['evaluation_source'] = {
+        'evaluation_run_id':'team-eval', 'source_launch_id':'delivered-scene',
+        'source_profile_digest':'sha256:'+'a'*64,
+        'configured_scene_revision_digest':'sha256:'+'b'*64}
+    from blueprint_pipeline import task_evaluation_scene_intake as intake
+    intent['request']['submission_id'] = 'team-eval'
+    owner = intake.stage_scene_intent(value=intent['request'], queue_root=path.parent.parent,
+        authenticated_client=intent['authenticated_issuer'], trusted_clients={intent['authenticated_issuer']},
+        now=intent['accepted_at_epoch'])
+    path = path.parent.parent / owner['intent_id'] / 'intent.json'
+    before = list(path.parent.joinpath('attempts').glob('*.json'))
+    result = engine.process_scene_intents(config_path=config, only_intent_id=owner['intent_id'])
+    assert result['results'][0]['phase'] == 'selected_team_evaluation', result
+    assert result['results'][0]['status'] == 'awaiting_execution'
+    assert before == list(path.parent.joinpath('attempts').glob('*.json'))
+    assert not Path(json.loads(config.read_text())['factory_output_root']).exists()

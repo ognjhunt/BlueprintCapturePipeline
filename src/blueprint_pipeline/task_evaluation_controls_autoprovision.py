@@ -569,6 +569,7 @@ def process_config(config_path: str | Path, *, expected_production_commit: str) 
         intent_id = intent_path.parent.name
         preparation_queue_root = scene_preparation_queue_root(owned_queue_root, intent_id)
         scene_config = {**config, "preparation_queue_root": str(preparation_queue_root)}
+        intent = None
         try:
             from .task_evaluation_scene_scope_restriction import preparation_only
             intent = _scene_intent(intent_path)
@@ -580,8 +581,11 @@ def process_config(config_path: str | Path, *, expected_production_commit: str) 
             if catalog is None:
                 catalog = resolve_robot_catalog(_sealed(Path(config['robot_catalog_path']), 'catalog_digest'),
                                                 source_commit=expected_production_commit)
-            adopted = _registered_terminal_adoption(config=scene_config, intent_id=intent_id,
-                expected_production_commit=expected_production_commit)
+            selected_evaluation = intent['request']['task'].get('evaluation_source') is not None
+            if selected_evaluation:
+                scene_config = config  # Source preparation belongs to its original owner queue.
+            adopted = (None if selected_evaluation else _registered_terminal_adoption(
+                config=scene_config, intent_id=intent_id, expected_production_commit=expected_production_commit))
             if adopted is None:
                 from .task_evaluation_controls_terminal_adoption import provision_terminal_controls_adoption
                 adopted = provision_terminal_controls_adoption(config=scene_config, catalog=catalog,
@@ -603,6 +607,11 @@ def process_config(config_path: str | Path, *, expected_production_commit: str) 
                 rows.append({"status": "awaiting_robot_team_selection", "intent_id": intent_id})
                 continue
             row = {"status": "controls_autoprovision_refused", "intent_id": intent_id, "blocker": str(exc)}
+            if intent is not None and intent['request']['task'].get('evaluation_source') is not None:
+                row['status'] = 'team_evaluation_refused'
+                row['evaluation_run_id'] = intent['request']['submission_id']
+                rows.append(row)
+                continue
             key = _configured_scene_key(intent_path, preparation_queue_root)
             if key is not None:
                 row["blocked_scene_key"] = key
@@ -659,6 +668,13 @@ class ProgressionOwnerScope:
             return True
 
     def plan_blocker(self, path: Path, launch_root: Path) -> str | None:
+        try:
+            value = _json(path)
+        except (ValueError, OSError, TypeError):
+            return 'configured_controls_worker_plan_invalid'
+        if value.get('evaluation_authority') is not None:
+            from .task_evaluation_team_run_controller import plan_authority_blocker
+            return plan_authority_blocker(value, launch_root)
         if not self.blocked_scene_keys:
             return None
         try:

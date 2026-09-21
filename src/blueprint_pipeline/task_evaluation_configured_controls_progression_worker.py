@@ -1685,6 +1685,9 @@ def process_plans(**kwargs: Any) -> dict[str, Any]:
     # Canary launches bound to another release can never activate here; a branch
     # checkout has no release identity and filters nothing.
     release = running_release_commit() or None
+    from .task_evaluation_team_run_controller import materialize_selected_evaluations
+    rows.extend(materialize_selected_evaluations(intent_root=intent_root, launch_state_root=launch_state_root,
+        progression_root=kwargs['progression_root'], plan_root=plan_root, release=release))
     for run_root in sorted(launch_state_root.iterdir()) if launch_state_root.is_dir() else []:
         if not run_root.is_dir() or run_root.is_symlink():
             continue
