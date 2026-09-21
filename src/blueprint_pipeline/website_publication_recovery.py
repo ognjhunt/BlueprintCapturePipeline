@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 
 from .decision_evidence_contracts import canonical_digest
+from .task_evaluation_scene_intake import _read
 from .task_evaluation_scene_configuration_publication_recovery import (
     recover_completed_configuration_publication,
     activate_recovered_launch_receipt,
@@ -62,10 +63,8 @@ def reconcile_website_publication(*, intent, config, release):
                 / "attempts"
                 / (binding["attempt_id"] + ".json")
             )
-            attempt = json.loads(safe_path(attempt_path).read_text())
-            if attempt.get("attempt_digest") != canonical_digest(
-                attempt, digest_field="attempt_digest"
-            ) or any(attempt.get(k) != v for k, v in binding.items() if k != "schema_version"):
+            attempt = _read(safe_path(attempt_path), "attempt_digest")
+            if any(attempt.get(k) != v for k, v in binding.items() if k != "schema_version"):
                 raise ValueError("website_publication_owner_mismatch")
             if not recovered.exists():
                 argv = profile["allocator"]["argv"]
