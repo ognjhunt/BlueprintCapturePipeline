@@ -104,6 +104,7 @@ def build_catalog_payload(profile_dir: str | Path) -> bytes:
             blockers = validate_launch_profile(profile)
             inactive_owner_states = {
                 "scene_execution_owner_revoked",
+                "scene_execution_owner_expired",
                 "scene_execution_owner_attempt_cancelled_before_execution",
                 # An owner record this host cannot read is host unavailability,
                 # the same category as missing immutable inputs above, not
