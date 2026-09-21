@@ -368,3 +368,95 @@ def test_rehearsal_a_real_prefix_sealed_on_the_host_is_adopted_by_the_paid_chain
     assert observed_paid == [f"stage-{i}" for i in range(1, 7)] and produced == ["stage-1", "stage-3", "stage-5"]
     assert capsys.readouterr().out.count("BLUEPRINT_SCENE_CONFIGURATION_STAGE_ADOPTED") == 4
     assert (output.resolve() / "stages/astra_prefix_continuation_binding.json").is_file()
+
+
+def test_ambient_credentials_beyond_the_named_list_are_dropped_but_file_references_survive():
+    """The producer's named list is the floor, not the whole rule.
+
+    The paid container is handed scoped secret *files*. Any host variable
+    whose name is credential-shaped and whose value is a literal rather than
+    a path would reach the stage as a raw credential, so it is dropped even
+    though the producer does not name it.
+    """
+    values, dropped = prestage._provider_environment(
+        {
+            "HUGGINGFACE_TOKEN": "hf_literal",
+            "AWS_SECRET_ACCESS_KEY": "literal",
+            "BLUEPRINT_REGISTRY_PASSWORD": "literal",
+            "OPENAI_CONTENT_AGENTS_API_KEY_FILE": "/run/secrets/openai",
+            "OPENAI_CONTENT_AGENTS_API_KEY_ID": "key_abc123",
+            "OPENAI_API_KEY_PATH": "/run/secrets/openai",
+            "BLUEPRINT_SCENE_CONFIGURATION_OPENAI_MAX_COST_USD": "3",
+            "BLUEPRINT_SCENE_CONFIGURATION_AUTHORITY_DIGEST": "sha256:" + "a" * 64,
+            "EMPTY_TOKEN": "",
+        },
+        {"PATH": "/usr/bin"},
+    )
+    assert dropped == ["AWS_SECRET_ACCESS_KEY", "BLUEPRINT_REGISTRY_PASSWORD", "HUGGINGFACE_TOKEN"]
+    # An identifier is a reference, not a credential.
+    assert values["OPENAI_CONTENT_AGENTS_API_KEY_ID"] == "key_abc123"
+    # File references and ordinary settings cross unchanged.
+    assert values["OPENAI_CONTENT_AGENTS_API_KEY_FILE"] == "/run/secrets/openai"
+    assert values["OPENAI_API_KEY_PATH"] == "/run/secrets/openai"
+    assert values["BLUEPRINT_SCENE_CONFIGURATION_OPENAI_MAX_COST_USD"] == "3"
+    assert values["BLUEPRINT_SCENE_CONFIGURATION_AUTHORITY_DIGEST"].startswith("sha256:")
+    assert values["PATH"] == "/usr/bin" and values["EMPTY_TOKEN"] == ""
+    assert "hf_literal" not in json.dumps(values)
+
+
+def test_every_name_the_producer_forbids_is_refused_however_it_arrives():
+    """Derived from the producer's own tuple, so the two cannot drift.
+
+    A name added to the producer's list is covered here without editing this
+    test -- including when it arrives as a caller override rather than from
+    the ambient host environment.
+    """
+    from blueprint_pipeline.task_evaluation_scene_configuration_builtin_producers import (
+        _RAW_SECRET_ENVIRONMENT_NAMES,
+    )
+
+    values, dropped = prestage._provider_environment(
+        {name: "literal-credential" for name in _RAW_SECRET_ENVIRONMENT_NAMES}, {})
+    assert sorted(dropped) == sorted(_RAW_SECRET_ENVIRONMENT_NAMES) and values == {}
+    for name in _RAW_SECRET_ENVIRONMENT_NAMES:
+        values, _ = prestage._provider_environment({}, {name: "literal-credential"})
+        assert name not in values
+
+
+def test_an_unusable_environment_refuses_before_the_bundle_is_unpacked(tmp_path):
+    """Refuse in milliseconds, not after stages 1-2 have run.
+
+    The first live prestage spent the bundle unpack and two stages before the
+    stage-3 producer rejected its environment. Everything that can be judged
+    from the inputs alone is now judged before the work dir is touched.
+    """
+    work = tmp_path / "workspace"
+    with pytest.raises(prestage.CpuPrestageError, match="parent_deadline_exhausted"):
+        _prepare(tmp_path, lambda *a, **k: pytest.fail("entrypoint ran"),
+                 environment={"BLUEPRINT_SCENE_CONFIGURATION_PARENT_DEADLINE_EPOCH": "1001"})
+    # Not even the work-dir lock is taken: nothing about the host changed.
+    assert list(work.iterdir()) == []
+
+
+def test_the_receipt_records_which_ambient_names_were_dropped_and_never_their_values(tmp_path):
+    receipt, _ = _prepare(tmp_path, _fake_entrypoint(["stage-1", "stage-2", "stage-3", "stage-4"]),
+                          environment={"OPENAI_API_KEY": "sk-should-never-appear",
+                                       "OPENAI_CONTENT_AGENTS_API_KEY_FILE": str(tmp_path / "key")})
+    assert "OPENAI_API_KEY" in receipt["dropped_ambient_environment_names"]
+    assert "sk-should-never-appear" not in json.dumps(receipt)
+    assert "sk-should-never-appear" not in (tmp_path / "job/cpu_prestage_entrypoint.log").read_text()
+
+
+def test_every_name_the_openai_stage_gate_requires_survives_composition():
+    """Derived from the gate's own scope table, so the rule cannot over-drop.
+
+    Stage 3's gate binds an exclusive key file *and* its key id (the
+    attestation scope). A credential-shaped filter that swallowed the id
+    would break authoring in a new way, visible only in production.
+    """
+    from blueprint_pipeline.task_evaluation_scene_configuration_openai_gate import _STAGE_SCOPE_ENV
+
+    required = {name: ("/run/secrets/k" if name.endswith("_FILE") else "key_abc123")
+                for scope in _STAGE_SCOPE_ENV.values() for name in scope.values()}
+    values, dropped = prestage._provider_environment(required, {})
+    assert dropped == [] and values == required
