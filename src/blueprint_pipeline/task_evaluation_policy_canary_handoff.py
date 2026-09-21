@@ -387,7 +387,7 @@ def rebind_policy_controller_configuration_to_scene(
         or not _is_sealed(template, field="configuration_digest")
     ):
         raise PolicyCanaryHandoffError("policy_canary_handoff_controller_template_invalid")
-    if not re.fullmatch(r"[0-9]{1,12}", scene_id) or _IDENTIFIER.fullmatch(task_id) is None:
+    if _IDENTIFIER.fullmatch(scene_id) is None or _IDENTIFIER.fullmatch(task_id) is None:
         raise PolicyCanaryHandoffError("policy_canary_handoff_scene_identity_invalid")
     cells = _quick_cells(scene_revision_digest, scene_id=scene_id)
     quick = dict(template["quick_10"])
@@ -718,8 +718,8 @@ def advance_policy_canary_handoff(
     scene_id = str(((episode_request.get("scene") or {}).get("identity") or {}).get("id") or "")
     task_id = str(((episode_request.get("task") or {}).get("identity") or {}).get("id") or "")
     preparation_id = str(episode_request.get("preparation_id") or "")
-    numeric_scene_id = scene_id.removeprefix("interiorgs-")
-    if not (team_namespace and scene_id and task_id and preparation_id) or not re.fullmatch(r"[0-9]{1,12}", numeric_scene_id):
+    policy_scene_id = scene_id.removeprefix("interiorgs-")
+    if not (team_namespace and scene_id and task_id and preparation_id) or _IDENTIFIER.fullmatch(policy_scene_id) is None:
         raise PolicyCanaryHandoffError("policy_canary_handoff_base_progression_invalid")
     intent = load_scene_configuration_activation_intent(
         intent_root=activation_intent_root, team_namespace=team_namespace, scene_id=scene_id, task_id=task_id,
@@ -778,19 +778,19 @@ def advance_policy_canary_handoff(
         native_controller_path = repo / MANIFESTS["native_controller_configuration"]
         controller_document = rebind_policy_controller_configuration_to_scene(
             template_path=repo / MANIFESTS["policy_controller_template"],
-            scene_id=numeric_scene_id,
+            scene_id=policy_scene_id,
             task_id=task_id,
             scene_revision_digest=str(base["configured_scene_revision_digest"]),
         )
-        controller_path = inputs / f"scene{numeric_scene_id}_policy_canary_controller_configuration.v1.json"
+        controller_path = inputs / f"scene{policy_scene_id}_policy_canary_controller_configuration.v1.json"
         _write_or_reuse(controller_path, controller_document)
-        rights_path = inputs / f"scene{numeric_scene_id}_policy_canary_model_rights.v1.json"
+        rights_path = inputs / f"scene{policy_scene_id}_policy_canary_model_rights.v1.json"
         if not rights_path.exists():
             model_rights_materializer(
                 template_path=str(repo / MANIFESTS["model_rights_template"]),
                 repo_root=str(repo),
                 source_commit=expected_production_commit,
-                scene_id=numeric_scene_id,
+                scene_id=policy_scene_id,
                 task_id=task_id,
                 output_path=str(rights_path),
             )
@@ -854,7 +854,7 @@ def advance_policy_canary_handoff(
             "maximum_hourly_rate_usd": CANARY_HOURLY_RATE_USD,
             "hard_cap_usd": CANARY_HARD_CAP_USD,
             "hard_ttl_seconds": CANARY_HARD_TTL_SECONDS,
-            "scene_id": numeric_scene_id,
+            "scene_id": policy_scene_id,
         }
         if omission is not None:
             contract, typed_omission = derived_contract(
@@ -864,7 +864,7 @@ def advance_policy_canary_handoff(
             typed_omission["policy_canary_camera_start_configuration"] = bind_camera_start(
                 directive=omission, plan=_load(Path(compiled["scene_plan_path"]), blocker="policy_canary_scene_plan_invalid"),
                 construction=_load(Path(_published_paths["construction_result"]), blocker="policy_canary_construction_result_invalid"),
-                contract=contract, cells=_quick_cells(str(base["configured_scene_revision_digest"]), scene_id=numeric_scene_id))
+                contract=contract, cells=_quick_cells(str(base["configured_scene_revision_digest"]), scene_id=policy_scene_id))
             typed_omission["authority_digest"] = canonical_digest(typed_omission, digest_field="authority_digest")
             parameters.update(task_success_contract=contract, diagnostic_control_omission_authority=typed_omission)
         parameters = _write_or_reuse(inputs / "presubmission_parameters.json", parameters)

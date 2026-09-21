@@ -301,7 +301,7 @@ def _immutable_ref(value: Mapping[str, Any], *, code: str) -> dict[str, Any]:
 def _quick_cells(
     scene_revision_digest: str, *, scene_id: str = SCENE_ID
 ) -> list[dict[str, Any]]:
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", scene_id):
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,191}", scene_id):
         raise PolicyCanarySetupError(["policy_canary_scene_id_invalid"])
     families = [family for family, count in QUICK_FAMILY_COUNTS.items() for _ in range(count)]
     parameters = [
@@ -565,7 +565,7 @@ def materialize_scene839873_policy_canary_setup(
         activation_authorization,
     )
     blockers: list[str] = []
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", scene_id):
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,191}", scene_id):
         blockers.append("policy_canary_scene_id_invalid")
     if not _SHA.fullmatch(source_commit):
         blockers.append("policy_canary_source_commit_invalid")
@@ -623,7 +623,9 @@ def materialize_scene839873_policy_canary_setup(
     ) != canonical_digest(scene_plan, digest_field="plan_digest"):
         blockers.append("policy_canary_scene_plan_invalid")
     if (
-        scene_plan.get("scene_id") != f"interiorgs-{scene_id}"
+        scene_plan.get("scene_id") != (
+            f"interiorgs-{scene_id}" if scene_id.isdecimal() else scene_id
+        )
         or scene_plan.get("task_kind") != "rigid_pick_place"
         or scene_plan.get("robot", {}).get("robot_id") != "franka_panda"
         or scene_plan.get("task_spec", {}).get("manipulation_strategy")

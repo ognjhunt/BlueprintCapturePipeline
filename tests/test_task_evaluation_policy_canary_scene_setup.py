@@ -404,13 +404,18 @@ def test_setup_keeps_both_policies_inside_nondivisible_action_ceiling(tmp_path: 
         )
 
 
-def test_setup_accepts_a_new_interiorgs_scene_without_scene_specific_code(
-    tmp_path: Path,
+@pytest.mark.parametrize("scene_id,plan_id", [
+    ("840999", "interiorgs-840999"),
+    ("site-capture-ae539f2c-f6aa-4cbd-9f99-3ed72017791e-development",
+     "site-capture-ae539f2c-f6aa-4cbd-9f99-3ed72017791e-development"),
+])
+def test_setup_accepts_a_new_scene_without_scene_specific_code(
+    tmp_path: Path, scene_id: str, plan_id: str,
 ) -> None:
     kwargs = _kwargs(tmp_path)
     scene_path = Path(kwargs["scene_plan_path"])
     scene = json.loads(scene_path.read_text(encoding="utf-8"))
-    scene["scene_id"] = "interiorgs-840999"
+    scene["scene_id"] = plan_id
     scene["task_id"] = "scene-840999-notebook-planar-push"
     scene["task_spec"]["instruction_subject_label"] = "notebook"
     scene["task_spec"]["visible_target_label"] = "blue outlined destination"
@@ -425,17 +430,17 @@ def test_setup_accepts_a_new_interiorgs_scene_without_scene_specific_code(
 
     setup = materialize_scene839873_policy_canary_setup(
         **kwargs,
-        scene_id="840999",
+        scene_id=scene_id,
     )
 
-    assert setup["scene_id"] == "840999"
+    assert setup["scene_id"] == scene_id
     assert all(
-        row["cell_id"].startswith("scene840999.quick10.")
+        row["cell_id"].startswith(f"scene{scene_id}.quick10.")
         for row in setup["quick_10"]["cells"]
     )
     for role in ("pi05_execution_spec", "groot_execution_spec"):
         spec = json.loads(Path(setup["records"][role]["path"]).read_text())
-        assert spec["scene_id"] == "interiorgs-840999"
+        assert spec["scene_id"] == plan_id
         assert spec["task_id"] == "scene-840999-notebook-planar-push"
         assert spec["prompt"] == "Push the notebook onto the blue outlined destination."
 

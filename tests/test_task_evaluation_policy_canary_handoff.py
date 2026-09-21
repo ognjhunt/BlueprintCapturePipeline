@@ -448,7 +448,9 @@ def test_handoff_waits_until_the_controls_run_is_terminal(tmp_path: Path) -> Non
     assert not (state / handoff.STATE_FILENAME).exists()
 
 
-def test_handoff_presubmits_publishes_and_fires_the_canary_exactly_once(tmp_path: Path) -> None:
+@pytest.mark.parametrize("scene_id", [SCENE_ID, "site-capture-ae539f2c-f6aa-4cbd-9f99-3ed72017791e-development"])
+def test_handoff_presubmits_publishes_and_fires_the_canary_exactly_once(tmp_path: Path, monkeypatch, scene_id: str) -> None:
+    monkeypatch.setitem(globals(), "SCENE_ID", scene_id)
     state = _prepared(tmp_path)
     webapp = _WebApp()
     publisher = _Publisher()
@@ -542,19 +544,20 @@ def test_handoff_refuses_a_website_rejection_without_sealing_a_launch(tmp_path: 
     assert sealed["status"] == "canary_profile_published"
 
 
-def test_controller_configuration_is_rebound_to_the_scene_and_its_quick10_matrix(tmp_path: Path) -> None:
+@pytest.mark.parametrize("scene_id", ["841007", "site-capture-ae539f2c-f6aa-4cbd-9f99-3ed72017791e-development"])
+def test_controller_configuration_is_rebound_to_the_scene_and_its_quick10_matrix(tmp_path: Path, scene_id: str) -> None:
     from blueprint_pipeline.task_evaluation_policy_canary_scene_setup import _quick_cells
 
     document = handoff.rebind_policy_controller_configuration_to_scene(
         template_path=REPO_ROOT / "docs/arm_decision_proof_v1/manifests/scene839873_policy_canary_controller_configuration.v1.json",
-        scene_id="841007",
+        scene_id=scene_id,
         task_id=TASK_ID,
         scene_revision_digest=REVISION_DIGEST,
     )
-    cells = _quick_cells(REVISION_DIGEST, scene_id="841007")
-    assert document["scene_id"] == "841007"
+    cells = _quick_cells(REVISION_DIGEST, scene_id=scene_id)
+    assert document["scene_id"] == scene_id
     assert document["task_id"] == TASK_ID
-    assert document["schema_version"] == "scene841007_policy_canary_controller_configuration.v1"
+    assert document["schema_version"] == f"scene{scene_id}_policy_canary_controller_configuration.v1"
     assert [cell["cell_id"] for cell in document["quick_10"]["cells"]] == [cell["cell_id"] for cell in cells]
     assert document["quick_10"]["matrix_digest"] == canonical_digest({"cells": cells})
     assert document["configuration_digest"] == canonical_digest(document, digest_field="configuration_digest")
