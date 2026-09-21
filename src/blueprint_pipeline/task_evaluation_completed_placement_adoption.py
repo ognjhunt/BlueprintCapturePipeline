@@ -159,6 +159,35 @@ def native_startup_failed(*, config: Mapping[str, Any], plan: Mapping[str, Any])
         return False  # Execution, unknown cause or unresolved teardown is not reusable here.
 
 
+def _latest_verified_descendant(matches: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """An adopted copy supersedes its exact ancestor, not a different placement."""
+    unique = {p['adoption_digest']: p for p in matches}
+    if len(unique) <= 1:
+        return next(iter(unique.values()), None)
+    required = {p['source_result']['digest'] for p in unique.values()}
+    winners = []
+    for packet in unique.values():
+        current = packet
+        ancestors = set()
+        while True:
+            digest = current['source_result']['digest']
+            require(digest not in ancestors, 'lineage_cycle')
+            ancestors.add(digest)
+            result = read_ref(current['source_result'])
+            parent = result.get('completed_placement_adoption')
+            if parent is None:
+                break
+            require(result.get('placement_calls_reexecuted') is False
+                and parent.get('adoption_digest') == canonical_digest(parent, digest_field='adoption_digest')
+                and all(parent.get(key) == packet.get(key) for key in (
+                    'source_launch_id', 'owner_intent_digest', 'source_agent_checkpoint')), 'lineage_changed')
+            current = parent
+        if required <= ancestors:
+            winners.append(packet)
+    require(len(winners) == 1, 'ambiguous_sources')
+    return winners[0]
+
+
 def discover(
     *, config: Mapping[str, Any], intent_id: str, source: Mapping[str, Any], expected_commit: str
 ) -> dict[str, Any] | None:
@@ -221,8 +250,7 @@ def discover(
         if (native_submission_absent(config=config, plan=verified["plan"])
                 or native_startup_failed(config=config, plan=verified["plan"])):
             matches.append(packet)
-    require(len(matches) <= 1, "ambiguous_sources")
-    return matches[0] if matches else None
+    return _latest_verified_descendant(matches)
 
 
 def retire_unused_native(
