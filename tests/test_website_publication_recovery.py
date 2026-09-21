@@ -100,3 +100,24 @@ def test_publication_failure_is_bounded_per_release(prepared, monkeypatch):
     for _ in range(2):
         assert worker.reconcile_website_publication(**args)["blockers"] == ["invalid_artifact"]
     assert len(calls) == 1
+
+
+def test_owner_attempt_uses_intake_cross_runtime_digest(prepared, monkeypatch):
+    from blueprint_pipeline.decision_evidence_contracts import cross_runtime_canonical_digest
+
+    args, _, _, calls = arrange(prepared, monkeypatch)
+    path = next(
+        (
+            worker.Path(args["config"]["intent_root"]) / args["intent"]["intent_id"] / "attempts"
+        ).glob("*.json")
+    )
+    value = json.loads(path.read_text())
+    value["maximum_spend_usd"] = 2.0
+    value["reserved_at_epoch"] = 101.125
+    value["attempt_digest"] = cross_runtime_canonical_digest(value, digest_field="attempt_digest")
+    assert value["attempt_digest"] != canonical_digest(value, digest_field="attempt_digest")
+    path.chmod(0o600)
+    path.write_text(json.dumps(value))
+    monkeypatch.setattr(worker, "activate_recovered_launch_receipt", lambda **kw: {})
+    assert worker.reconcile_website_publication(**args)["status"] == "awaiting_execution"
+    assert len(calls) == 1
