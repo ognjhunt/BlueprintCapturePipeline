@@ -435,6 +435,68 @@ def test_multimodal_sdk_invocation_requires_explicit_input_token_ceiling(
         )
 
 
+def test_multimodal_multi_turn_needs_a_declared_image_ceiling_and_still_bounds_growth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An iterating session may see the capture stills, but not unpriced ones.
+
+    Image tokenization is provider dependent, so a multimodal caller that
+    wants more than one turn declares what its payload costs. Without that
+    figure the later turns' reservation is unprovable and the call is refused;
+    with it, the ordinary growth bound applies unchanged.
+    """
+    monkeypatch.setenv("BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS", "true")
+    invoker = OpenAIAgentsSDKInvoker(
+        OpenAIAgentsSDKConfig(
+            model="gpt-5.6-terra",
+            allow_live_invocation=True,
+            max_inference_cost_usd=5.0,
+        )
+    )
+    stills = [{"role": "user", "content": [
+        {"type": "input_text", "text": "Author this object."},
+        {"type": "input_image", "image_url": "data:image/png;base64,AA==", "detail": "high"},
+    ]}]
+
+    def spec(**overrides):
+        values = dict(
+            run_id="authoring-session",
+            capability="fixture_multimodal_review",
+            name="Blueprint authoring session",
+            instructions="Return a typed fixture result only.",
+            model="gpt-5.6-terra",
+            max_turns=3,
+            max_output_tokens=1_000,
+            max_input_tokens=250_000,
+            max_tool_output_bytes=8_000,
+        )
+        values.update(overrides)
+        return AgentsSDKAgentSpec(**values)
+
+    # Undeclared image payload: refused exactly as before.
+    with pytest.raises(
+        AgentsSDKInvocationBlocked,
+        match="agents_sdk_multimodal_multi_turn_context_bound_unavailable",
+    ):
+        invoker.invoke(spec(), stills)
+
+    # Declared but larger than the ceiling it must fit inside: still refused.
+    with pytest.raises(
+        AgentsSDKInvocationBlocked,
+        match="agents_sdk_multimodal_multi_turn_context_bound_unavailable",
+    ):
+        invoker.invoke(spec(max_initial_multimodal_input_tokens=250_001), stills)
+
+    # Declared and admitted past the multimodal gate, where the ordinary
+    # growth bound now judges it: a payload leaving no room for the turns it
+    # asked for is refused on growth, not on the missing declaration.
+    with pytest.raises(
+        AgentsSDKInvocationBlocked,
+        match="agents_sdk_multi_turn_context_growth_exceeds_declared_ceiling",
+    ):
+        invoker.invoke(spec(max_initial_multimodal_input_tokens=249_000), stills)
+
+
 def test_live_sdk_requires_and_enforces_inference_budget(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
