@@ -140,3 +140,14 @@ def test_independent_object_frame_cannot_bypass_scope_or_corrupt_input(tmp_path,
     monkeypatch.setattr(compiler, 'register_source_to_runtime', refused)
     with pytest.raises(ValueError, match=reason):
         compiler.compile_website_scene_preparation(**args)
+
+
+@pytest.mark.parametrize('unit', [None, 'arbitrary', 'millimeters'])
+def test_independent_object_frame_requires_estimated_metric_source(tmp_path, unit):
+    from blueprint_pipeline.website_object_local_frame import estimated_object_frame
+    from tests.test_website_task_preparation import _arguments
+    args = _arguments(tmp_path)
+    source = {**args['source_geometry'], 'unit': unit}
+    with pytest.raises(ValueError, match='website_object_frame_scale_invalid'):
+        estimated_object_frame(track=args['task_masks']['targets'][0]['track'],
+            source_geometry=source, registration_blocker='website_registration_conflicts_provider_anchor')
