@@ -26,7 +26,7 @@ def _safe(path: Path):
 
 
 def load_for_run(*, launch_state_root: str | Path, source_launch_id: str,
-                 now: float | None = None) -> dict[str, Any] | None:
+                 now: float | None = None, evaluation_authority: Mapping[str, Any] | None = None) -> dict[str, Any] | None:
     """Bind the platform pause or an exact directive to the current owner intent."""
     from . import task_evaluation_scene_policy_binding as policy
     from . import task_evaluation_scene_intake as intake
@@ -39,12 +39,21 @@ def load_for_run(*, launch_state_root: str | Path, source_launch_id: str,
     if profile.get('scene_intent_digest') is None:
         return None
     intent_id = (profile.get('scene_attempt_binding') or {}).get('intent_id')
-    _require(intake._identifier(intent_id), 'owner_binding_missing')
+    if evaluation_authority is None:
+        _require(intake._identifier(intent_id), 'owner_binding_missing')
     from . import task_evaluation_control_stage_policy as stage_policy
     _require(profile.get('profile_digest') == canonical_digest(profile, digest_field='profile_digest'), 'profile_changed')
     moment = time.time() if now is None else now
     _require(intake._number(moment), 'clock_invalid')
-    owner = policy.owner_for_profile(profile, now=moment)
+    if evaluation_authority is None:
+        owner = policy.owner_for_profile(profile, now=moment)
+    else:
+        from .task_evaluation_team_run_authority import evaluation_owner
+        owner = evaluation_owner(source_profile=profile, authority=evaluation_authority,
+            source_launch_id=source_launch_id,
+            configured_scene_revision_digest=evaluation_authority.get('configured_scene_revision_digest'),
+            evaluation_run_id=evaluation_authority.get('evaluation_run_id'), now=moment)
+        intent_id = owner['intent_id']
     _require(owner is not None and owner['intent_id'] == intent_id, 'owner_mismatch')
     configured_root = os.getenv(ROOT_ENV)
     root = Path(configured_root or DEFAULT_ROOT)

@@ -706,7 +706,7 @@ def advance_policy_canary_handoff(
 
     from .task_evaluation_scene_control_omission import load_for_run, derived_contract
     omission = load_for_run(launch_state_root=launches, source_launch_id=source_launch_id,
-                            now=now.timestamp() if now is not None else None)
+                            now=now.timestamp() if now is not None else None, evaluation_authority=evaluation_authority)
     omission_digest = omission["directive_digest"] if omission is not None else None
     if existing is not None and existing.get("control_omission_directive_digest") != omission_digest:
         raise PolicyCanaryHandoffError("policy_canary_handoff_omission_authority_changed")
@@ -994,7 +994,7 @@ def advance_policy_canary_handoff(
         selection["episode_interpretation"] = scene_policy.interpretation_for_owner(
             profile=_base_profile, plan=execution_plan, default=EPISODE_INTERPRETATION)
     current_omission = load_for_run(launch_state_root=launches, source_launch_id=source_launch_id,
-                                    now=now.timestamp() if now is not None else None)
+                                    now=now.timestamp() if now is not None else None, evaluation_authority=evaluation_authority)
     if (current_omission or {}).get("directive_digest") != omission_digest:
         raise PolicyCanaryHandoffError("policy_canary_handoff_omission_authority_changed")
     body = json.dumps(selection, sort_keys=True, separators=(",", ":")).encode()

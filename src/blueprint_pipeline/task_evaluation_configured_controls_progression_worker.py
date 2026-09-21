@@ -1472,7 +1472,8 @@ def advance_configured_controls_plan(
         return {"status": "awaiting_episode_preparation", "source_launch_id": plan["source_launch_id"]}
 
     from .task_evaluation_scene_control_omission import load_for_run
-    omission = load_for_run(launch_state_root=launch_state_root, source_launch_id=plan["source_launch_id"])
+    omission = load_for_run(launch_state_root=launch_state_root, source_launch_id=plan["source_launch_id"],
+                            evaluation_authority=plan.get("evaluation_authority"))
     if omission is not None and not (state / "construction_activation_progression.json").exists():
         _validate_source(run_root)
         if not _compilation_ready(preparation=preparation, queue_root=compilation_queue,
@@ -1596,7 +1597,8 @@ def advance_configured_controls_plan(
             return {"status": pending, "source_launch_id": plan["source_launch_id"]}
 
     from .task_evaluation_scene_control_omission import load_for_run
-    omission = load_for_run(launch_state_root=launch_state_root, source_launch_id=plan["source_launch_id"])
+    omission = load_for_run(launch_state_root=launch_state_root, source_launch_id=plan["source_launch_id"],
+                            evaluation_authority=plan.get("evaluation_authority"))
     if omission is not None:
         if (state / "controls_activation_progression.json").exists() or (state / "controls_launch_progression.json").exists():
             raise TaskEvaluationConfiguredControlsProgressionWorkerError("configured_controls_omission_after_controls_admission")

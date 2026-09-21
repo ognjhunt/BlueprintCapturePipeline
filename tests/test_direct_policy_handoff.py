@@ -136,3 +136,24 @@ def test_controller_skips_scripted_construction_after_cpu_compilation(tmp_path, 
         assert result['construction_rehearsal_performed'] is False
         assert result['qualified_comparison_permitted'] is False
     assert not (state / 'construction_activation_progression.json').exists()
+
+
+def test_pause_binds_selected_team_request_not_robot_free_site_intent(tmp_path, monkeypatch):
+    from tests.test_team_evaluation_authority import _case, _evaluation
+    from blueprint_pipeline.task_evaluation_scene_control_omission import load_for_run
+    root, source, profile, now = _case(tmp_path, monkeypatch)
+    authority, selected = _evaluation(root, source, profile, now)
+    launch = tmp_path / 'launch-runs/source-launch'
+    launch.mkdir(parents=True)
+    (launch / 'launch_profile.json').write_text(json.dumps(profile))
+    before = {p: p.read_bytes() for p in root.glob('scene-*/intent.json')}
+    directive = load_for_run(launch_state_root=launch.parent, source_launch_id='source-launch',
+        now=now, evaluation_authority=authority)
+    assert directive['intent_digest'] == selected['intent_digest']
+    assert directive['intent_digest'] != profile['scene_intent_digest']
+    assert directive['policy_candidates']
+    assert all(p.read_bytes() == raw for p, raw in before.items())
+    (root / selected['intent_id'] / 'revoked.json').write_text('{}')
+    with pytest.raises(ValueError, match='owner_revoked'):
+        load_for_run(launch_state_root=launch.parent, source_launch_id='source-launch',
+            now=now, evaluation_authority=authority)
