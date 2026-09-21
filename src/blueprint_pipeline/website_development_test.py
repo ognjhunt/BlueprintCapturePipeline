@@ -14,6 +14,7 @@ import numpy as np
 
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
+from .website_object_local_frame import REGISTRATION_REFUSALS
 from .website_object_observations import _record, materialize_object_observations, REFERENCE_ROLE
 
 KIND = "authored_surface_component_test"
@@ -61,7 +62,9 @@ def prepare_development_test(*, preparation, source_geometry, task_masks, output
         raise ValueError("website_development_test_not_authorized")
     # Other refusals (rights, budget, missing target evidence) cannot be bypassed.
     allowed = {"support_surface_not_found_under_subject", "task_destination_surface_contact_required",
-               "task_distinct_destination_surface_binding_required"}
+               "task_distinct_destination_surface_binding_required"} | REGISTRATION_REFUSALS
+    if preparation.get("registration", {}).get("schema_version") == "website_object_local_frame.v1":
+        allowed.add("task_destination_pose_required")
     if (preparation.get("claim_ceiling") != "development_only"
             or set(preparation.get("blockers", [])) - allowed):
         raise ValueError("website_development_test_source_not_admitted")

@@ -95,3 +95,48 @@ def test_development_scope_cannot_be_stripped_or_published_as_capture(tmp_path, 
     del value['development_test']
     with pytest.raises(ValueError, match='binding_invalid'):
         environment(value)
+
+
+def test_registered_room_failure_does_not_block_authorized_object_preparation(tmp_path, monkeypatch):
+    from blueprint_pipeline import website_task_preparation as compiler
+    from tests.test_website_task_preparation import _arguments
+    args = _arguments(tmp_path)
+    monkeypatch.setenv(ENV, json.dumps([args['task_context']['context_digest']]))
+    def refused(**_):
+        raise ValueError('website_registration_conflicts_provider_anchor')
+    monkeypatch.setattr(compiler, 'register_source_to_runtime', refused)
+    original = compiler.compile_website_scene_preparation(**args)
+    assert original['status'] == 'needs_input'
+    assert 'website_registration_conflicts_provider_anchor' in original['blockers']
+    assert original['support'] is None
+    assert original['registration']['physical_registration_proven'] is False
+    assert original['coordinate_frame']['declared_meters_per_unit'] == 1
+    assert original['registration']['basis'] == 'estimated_masked_object_principal_axes'
+    prepared, runtime = prepare_development_test(preparation=original, source_geometry=args['source_geometry'],
+        task_masks=args['task_masks'], output_root=tmp_path / 'independent-test')
+    assert prepared['status'] == 'intake_ready'
+    assert prepared['development_test']['captured_scene_evaluation_allowed'] is False
+    assert prepared['development_test']['source_scene_blockers'] == original['blockers']
+    assert prepared['intake_request']['execution'] == original['intake_request']['execution']
+    assert runtime['simulator_ready'] is False
+    before = np.subtract(prepared['subject']['aabb_max_xyz'], prepared['subject']['aabb_min_xyz'])
+    # Marble's scale must not size the independently observed development object.
+    args['base_scene']['meters_per_unit'] = 500.0
+    again = compiler.compile_website_scene_preparation(**args)
+    np.testing.assert_allclose(before, np.subtract(again['subject']['aabb_max_xyz'], again['subject']['aabb_min_xyz']))
+
+
+@pytest.mark.parametrize('authorized,reason', [
+    (False, 'website_registration_conflicts_provider_anchor'),
+    (True, 'website_registration_anchor_frame_invalid'),
+])
+def test_independent_object_frame_cannot_bypass_scope_or_corrupt_input(tmp_path, monkeypatch, authorized, reason):
+    from blueprint_pipeline import website_task_preparation as compiler
+    from tests.test_website_task_preparation import _arguments
+    args = _arguments(tmp_path)
+    monkeypatch.setenv(ENV, json.dumps([args['task_context']['context_digest']] if authorized else []))
+    def refused(**_):
+        raise ValueError(reason)
+    monkeypatch.setattr(compiler, 'register_source_to_runtime', refused)
+    with pytest.raises(ValueError, match=reason):
+        compiler.compile_website_scene_preparation(**args)
