@@ -45,3 +45,20 @@ def test_direct_camera_still_validates_geometry_and_calibration(fault):
         value['plan']['plan_digest'] = canonical_digest(value['plan'], digest_field='plan_digest')
     with pytest.raises((ValueError, KeyError, TypeError)):
         camera.materialize_camera_start_from_plan(**value)
+
+
+def test_small_wrist_adjustment_frames_task_without_changing_base_or_claims():
+    value = plan_inputs()
+    plan = value['plan']
+    plan['robot']['joint_reset_positions_rad']['panda_joint6'] += .4
+    plan['plan_digest'] = canonical_digest(plan, digest_field='plan_digest')
+    before = deepcopy(value)
+    assert camera.camera_framing_report(plan, value['source_binding']['source_joint_chain'],
+        plan['robot']['joint_reset_positions_rad'])['status'] == 'blocked'
+    result = camera.materialize_camera_start_from_plan(**value)
+    assert result['reset_adjustment'] == {'joint': 'panda_joint6', 'delta_rad': -.1,
+        'reason': 'task_outside_wrist_camera_at_selected_reset', 'native_validated': False}
+    assert result['robot_base_pose_world'] == plan['robot']['base_pose_world']
+    assert result['native_qualification_claimed'] is False
+    assert value == before
+    assert camera.validate_camera_start_configuration(plan, result) == result

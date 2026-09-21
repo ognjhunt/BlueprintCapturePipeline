@@ -221,4 +221,23 @@ def materialize_camera_start_from_plan(*, plan, source_binding, native_reference
         'source_calibration_digest': calibration_digest, 'historical_scene_visibility_adopted': False,
         'reset_authority': 'configured_robot_plan_requires_native_readback'}
     value['configuration_digest'] = canonical_digest(value, digest_field='configuration_digest')
-    return validate_camera_start_configuration(plan, value)
+    try:
+        return validate_camera_start_configuration(plan, value)
+    except ValueError as exc:
+        if str(exc) != 'policy_camera_final_reset_does_not_frame_task':
+            raise
+    # Small wrist-only corrections preserve the selected base and task layout.
+    # This is a camera candidate; native reset, visibility and collision checks remain.
+    for delta in (.1, -.1, .2, -.2, .3, -.3, .4, -.4):
+        for joint in ('panda_joint6', 'panda_joint5', 'panda_joint7'):
+            candidate = deepcopy(value)
+            candidate['joint_reset_positions_rad'][joint] += delta
+            candidate['reset_adjustment'] = {'joint': joint, 'delta_rad': delta,
+                'reason': 'task_outside_wrist_camera_at_selected_reset', 'native_validated': False}
+            candidate['configuration_digest'] = canonical_digest(candidate, digest_field='configuration_digest')
+            try:
+                return validate_camera_start_configuration(plan, candidate)
+            except ValueError as exc:
+                if str(exc) not in {'policy_camera_final_reset_does_not_frame_task', 'policy_camera_start_joint_margin_invalid'}:
+                    raise
+    raise ValueError('policy_camera_final_reset_does_not_frame_task')
