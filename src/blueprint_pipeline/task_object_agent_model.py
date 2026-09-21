@@ -64,6 +64,11 @@ class BudgetedAuthoringModel(Model):
             "tools": [{"name": t.name, "description": t.description, "parameters": t.params_json_schema} for t in tools]}
         ceiling = context_ceiling(envelope)
         if ceiling > 80_000:
+            from .task_object_agent_context import compact_authoring_history
+            input = compact_authoring_history(input)
+            envelope["input"] = input
+            ceiling = context_ceiling(envelope)
+        if ceiling > 80_000:
             raise AssetAuthoringError("authoring_session_context_ceiling_exceeded")
         if not model_settings.max_tokens or model_settings.max_tokens > 12000:
             raise AssetAuthoringError("authoring_output_limit_required")
