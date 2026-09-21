@@ -516,7 +516,14 @@ def _advance_intent(directory, intent, config, release, *, resolver, publisher, 
     # never launches, retries, or reruns completed GPU work; when there is no
     # owner-bound terminal result yet it returns None and control falls through to
     # the authority gates unchanged.
-    if config.get("terminal_result_root") and state.get("activation"):
+    from .task_evaluation_scene_execution_scope import scene_preparation_only
+    if scene_preparation_only(intent['request']) and state.get('activation'):
+        from .task_evaluation_scene_preparation_completion import reconcile_preparation_completion
+        terminal = reconcile_preparation_completion(intent=intent, config=config)
+        if terminal is not None:
+            state.update(terminal['state'])
+            return emit(terminal['status'], terminal['phase'], terminal['blockers'], terminal.get('result_reference'))
+    if not scene_preparation_only(intent["request"]) and config.get("terminal_result_root") and state.get("activation"):
         from .task_evaluation_scene_terminal_reconciler import reconcile_terminal_owner_result
         terminal = reconcile_terminal_owner_result(intent=intent, config=config, release=release, now=now,
             output=safe_path(Path(config["factory_output_root"]) / intent["intent_id"] / "terminal-reconciliation"))
@@ -529,7 +536,7 @@ def _advance_intent(directory, intent, config, release, *, resolver, publisher, 
                                               else "scene_intake_authority_expired"])
     if intent["intent_id"] in config.get("paused_intent_ids", []):
         return emit("awaiting_execution", "paused", ["scene_intent_paused"])
-    if state.get("activation"):
+    if state.get("activation") and not scene_preparation_only(intent["request"]):
         from .task_evaluation_controls_autoprovision import CONFIG_ENV as CONTROLS_CONFIG_ENV, _registered_terminal_adoption
         controls_config_path = os.getenv(CONTROLS_CONFIG_ENV)
         if controls_config_path:

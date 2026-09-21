@@ -57,6 +57,11 @@ def policy_capability_blockers(request: Mapping[str, Any] | Any) -> list[str]:
 
     execution = request.get("execution") if isinstance(request, Mapping) else None
     requested = execution.get("policy_candidates") if isinstance(execution, Mapping) else None
+    if isinstance(execution, Mapping) and 'purpose' in execution:
+        from .task_evaluation_scene_execution_scope import scene_preparation_only
+        task = request.get('task')
+        return [] if (scene_preparation_only(request) and requested == [] and isinstance(task, Mapping)
+                      and 'robot_binding_id' not in task) else [CAPABILITY_BLOCKER]
     return [] if requested == supported_policy_candidates() else [CAPABILITY_BLOCKER]
 
 

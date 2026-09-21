@@ -22,7 +22,7 @@ def trusted_scene_issuer(monkeypatch):
     monkeypatch.setenv(intake.CLIENTS_ENV, "webapp")
 
 
-def setup(tmp_path, *, cap=20, attempts=8, robot_binding_id="franka-droid"):
+def setup(tmp_path, *, cap=20, attempts=8, robot_binding_id="franka-droid", purpose=None):
     moment = NOW.timestamp()
     owner = request()
     owner["task"]["task_id"] = TASK_ID
@@ -30,6 +30,8 @@ def setup(tmp_path, *, cap=20, attempts=8, robot_binding_id="franka-droid"):
         owner["task"]["robot_binding_id"] = robot_binding_id
     owner["execution"].update(max_total_spend_usd=cap, max_paid_attempts=attempts,
         expires_at_epoch=moment + 7200, allowed_providers=["vast", "openai"])
+    if purpose is not None:
+        owner['execution'].update(purpose=purpose, policy_candidates=[])
     owner["consent"]["accepted_at_epoch"] = moment - 1
     scene_root = tmp_path / "scenes"
     staged = intake.stage_scene_intent(value=owner, queue_root=scene_root,

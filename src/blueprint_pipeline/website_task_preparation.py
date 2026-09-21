@@ -24,7 +24,6 @@ from scipy.spatial import cKDTree
 
 from . import task_evaluation_scene_intake as intake
 from .adp009d_newton_gripper_drive import FULL_STROKE_M
-from .adp009d_policy_candidate_admission import EXPECTED_CANDIDATES
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .external_scene_frame_registration import _axis_rotations, _sample, _trimmed_rmse
@@ -277,22 +276,26 @@ def _runtime_bounds(bounds: Mapping[str, Any], matrix: np.ndarray) -> tuple[list
     return moved.min(axis=0).tolist(), moved.max(axis=0).tolist()
 
 
-def screen_physics(dimensions_m: Sequence[float]) -> dict[str, Any]:
-    """Estimated property ranges plus a grasp-hold sensitivity screen against the reference gripper."""
+def screen_physics(dimensions_m: Sequence[float], *, gripper: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Estimate object properties; test grasp sensitivity only for an explicitly supplied gripper."""
     volume = float(np.prod(dimensions_m))
     density, fill = PHYSICS_PRIORS["density_kg_m3"], PHYSICS_PRIORS["envelope_fill"]
     mass = [max(0.005, volume * density[0] * fill[0]), max(0.01, volume * density[1] * fill[1])]
     bounds = {"mass_kg": mass, "static_friction": list(PHYSICS_PRIORS["static_friction"]),
               "dynamic_friction": list(PHYSICS_PRIORS["dynamic_friction"]),
               "restitution": list(PHYSICS_PRIORS["restitution"])}
+    if gripper is None:
+        return {"basis": "estimated", "dimensions_m": [float(v) for v in dimensions_m],
+                "envelope_volume_m3": volume, "bounds": bounds, "priors": PHYSICS_PRIORS,
+                "sensitivity": "awaiting_robot_team_selection", "measurement_escalation": None}
     gravity, safety = 9.81, 2.0
     best = mass[0] * gravity * safety / (2 * bounds["static_friction"][1])
     worst = mass[1] * gravity * safety / (2 * bounds["static_friction"][0])
-    available = GRIPPER["grip_force_n"]["upper"]
+    available = gripper["grip_force_n"]["upper"]
     sorted_dims = sorted(dimensions_m)
     grasp_width_upper = sorted_dims[0] * (1 + DIMENSION_RELATIVE_ERROR)
     escalation = None
-    if grasp_width_upper > GRIPPER["full_stroke_m"]:
+    if grasp_width_upper > gripper["full_stroke_m"]:
         sensitivity = "blocked_by_estimate"
         escalation = {"property": "smallest_dimension_m", "instrument": "tape_measure",
                       "reason": "The estimated object width may exceed the reference gripper stroke."}
@@ -307,7 +310,7 @@ def screen_physics(dimensions_m: Sequence[float]) -> dict[str, Any]:
         escalation = {"property": "mass_kg", "instrument": "kitchen_scale",
                       "reason": "Even the lightest estimate exceeds the reference grip force."}
     return {"basis": "estimated", "dimensions_m": [float(v) for v in dimensions_m], "envelope_volume_m3": volume,
-            "bounds": bounds, "priors": PHYSICS_PRIORS, "gripper": GRIPPER,
+            "bounds": bounds, "priors": PHYSICS_PRIORS, "gripper": dict(gripper),
             "hold_force_required_n": {"best_case": best, "worst_case": worst, "safety_factor": safety},
             "sensitivity": sensitivity, "measurement_escalation": escalation}
 
@@ -504,11 +507,10 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                              "aabb_min_xyz": sim_support[0], "aabb_max_xyz": sim_support[1]},
                  "destination": destination or {"needs_input": "task_destination_pose_required"},
                  "success": dict(SUCCESS)},
-        "execution": {"max_total_spend_usd": spend["max_total_spend_usd"],
+        "execution": {"purpose": "scene_preparation", "max_total_spend_usd": spend["max_total_spend_usd"],
                       "max_paid_attempts": spend["max_paid_attempts"], "max_retries": 0,
                       "expires_at_epoch": spend["expires_at_epoch"], "allowed_providers": ["vast", "openai"],
-                      "policy_candidates": [{"id": name, "artifact_digest": EXPECTED_CANDIDATES[name]["checkpoint_inventory_digest"]}
-                                            for name in intake.SUPPORTED_POLICY_CANDIDATE_IDS],
+                      "policy_candidates": [],
                       "claim_scope": CLAIM_CEILING},
         "consent": consent,
     }
