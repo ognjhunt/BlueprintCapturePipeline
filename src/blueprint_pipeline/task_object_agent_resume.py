@@ -158,7 +158,11 @@ def inspect_agent_candidate(runtime: Path, request_value: dict) -> dict:
     if len(matched) != 1:
         raise AssetAuthoringError('agent_resume_physics_completion_missing')
     completed_result, retained_visual_review = None, None
-    review_path = attempt / f'independent_visual_review_{number}.json'
+    from .task_object_agent_tools import APPEARANCE_SCOPE
+    current_review = f'independent_visual_review_{number}_{APPEARANCE_SCOPE}'
+    review_path = attempt / (current_review + '.json')
+    if not review_path.exists():
+        review_path = attempt / f'independent_visual_review_{number}.json'
     if review_path.exists():
         phase = _read(review_path)
         review = AppearanceReview.model_validate(phase['output'])
@@ -167,7 +171,7 @@ def inspect_agent_candidate(runtime: Path, request_value: dict) -> dict:
                 or references[:len(previous['source_frames'])] != previous['source_frames']
                 or [r['sha256'] for r in references[len(previous['source_frames']):]] !=
                     [file_record(attempt / n)['sha256'] for n in ('perspective.png', 'top.png', 'side.png')]
-                or len([c for c in completions if c.get('capability') == request.object_id + f'_independent_visual_review_{number}'
+                or len([c for c in completions if c.get('capability') == request.object_id + '_' + review_path.stem
                         and c.get('run_id') == request_runs[phase['request_digest']] and c.get('provider') == 'openai' and c.get('model') == 'gpt-6-astra'
                         and c.get('structured_output_digest') == canonical_digest(review.model_dump(mode='json'))
                         and c.get('inference_completion_digest') == canonical_digest(c, digest_field='inference_completion_digest')]) != 1):
@@ -199,11 +203,20 @@ def inspect_agent_candidate(runtime: Path, request_value: dict) -> dict:
         completed_result = mapped(completed_result)
     author_calls = [int(c['capability'].removeprefix(request.object_id + '_author_turn_')) for c in completions
                     if str(c.get('capability', '')).startswith(request.object_id + '_author_turn_')]
+    # A rejection under an obsolete review scope is historical evidence, not
+    # reusable feedback for the corrected appearance-only contract. Accepted
+    # historical assets retain their original acceptance and provenance.
+    if (retained_visual_review is not None and review_path.stem != current_review
+            and not appearance_passed(review, generated=request.generated_specification is not None)):
+        retained_visual_review = None
     return {'original_root': str(original_root), 'brief': brief.model_dump(mode='json'), 'cad': cad,
         'render_attempts': number, 'cad_attempts': max(int(p.name.split('-')[-1]) for p in root.glob('cad-[0-9][0-9]')) + 1,
         'author_calls': max(author_calls), 'physics_input': physics_input, 'physics_proposal': proposal.model_dump(mode='json'),
         'completed_result': completed_result, 'retained_requests': [*lineage, previous],
         'retained_visual_review': retained_visual_review,
+        'current_scope_visual_reviews': sum(
+            '_independent_visual_review_' in str(c.get('capability'))
+            and str(c.get('capability')).endswith('_' + APPEARANCE_SCOPE) for c in completions),
         'completed_visual_reviews': sum('_independent_visual_review_' in str(c.get('capability')) for c in completions)}
 
 
