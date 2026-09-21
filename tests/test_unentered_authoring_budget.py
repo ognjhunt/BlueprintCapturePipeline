@@ -42,6 +42,9 @@ def evidence(tmp_path, *, before_producer=False):
         files.pop(prefix + "stage_producer.log")
         refusal = ("scene_configuration_provider_failed:TaskEvaluationSceneConfigurationStageProducerError:"
                    "scene_configuration_raw_secret_environment_forbidden")
+        if before_producer == "secret_file":
+            refusal = refusal.replace("scene_configuration_raw_secret_environment_forbidden",
+                                      "scene_configuration_secret_file_invalid:OPENAI_API_KEY_FILE")
         provider = files["task_evaluation_scene_configuration_provider_result.v1.json"]
         provider["blockers"] = [refusal]
         seal(provider)
@@ -59,7 +62,7 @@ def archive(files, result):
     return seal(result)
 
 
-@pytest.mark.parametrize("before_producer", [False, True])
+@pytest.mark.parametrize("before_producer", [False, True, "secret_file"])
 def test_exact_initial_admission_refusal_proves_unentered_authoring(tmp_path, before_producer):
     request, files, result = evidence(tmp_path, before_producer=before_producer)
     assert budget.authoring_never_entered(archive(files, result), request)
@@ -67,7 +70,7 @@ def test_exact_initial_admission_refusal_proves_unentered_authoring(tmp_path, be
 
 @pytest.mark.parametrize("mutation", ["model_attempt", "later_stage", "partial_adoption", "pretraining",
     "wrong_run", "unknown_error", "dependency_paid", "exclusion", "archive_changed", "seal_changed", "other_api_cap"])
-@pytest.mark.parametrize("before_producer", [False, True])
+@pytest.mark.parametrize("before_producer", [False, True, "secret_file"])
 def test_incomplete_ambiguous_or_previously_paid_work_keeps_allowance(tmp_path, mutation, before_producer):
     request, files, result = evidence(tmp_path, before_producer=before_producer)
     prefix = "stages/stage-3/producer/"

@@ -141,13 +141,19 @@ def test_builtin_producer_executes_only_sealed_entrypoint_and_redacts_secret(
     assert "REDACTED_SECRET" in log
 
 
-def test_builtin_producer_rejects_raw_secret_environment(tmp_path: Path) -> None:
+@pytest.mark.parametrize("environment,refusal", [
+    ({"OPENAI_API_KEY": "must-not-cross-runtime-boundary"},
+     "scene_configuration_raw_secret_environment_forbidden"),
+    ({"OPENAI_API_KEY_FILE": "/missing-blueprint-test-secret"},
+     "scene_configuration_secret_file_invalid:OPENAI_API_KEY_FILE"),
+])
+def test_builtin_producer_rejects_credentials_before_entry(tmp_path: Path, environment, refusal) -> None:
     commit = "b" * 40
     registry = builtin_scene_configuration_stage_producer_registry(
         expected_source_commit=commit,
         toolchain_root=_toolchain(tmp_path, commit),
-        environment={"OPENAI_API_KEY": "must-not-cross-runtime-boundary"},
-        runner=lambda *args, **kwargs: pytest.fail("raw credential refusal must precede producer entry"),
+        environment=environment,
+        runner=lambda *args, **kwargs: pytest.fail("credential refusal must precede producer entry"),
     )
     output = tmp_path / "output"
     output.mkdir()
@@ -156,7 +162,7 @@ def test_builtin_producer_rejects_raw_secret_environment(tmp_path: Path) -> None
     identity = ADMITTED_PRODUCER_IDENTITIES[0]
 
     with pytest.raises(
-        RuntimeError, match="scene_configuration_raw_secret_environment_forbidden"
+        RuntimeError, match=refusal
     ):
         registry.execute(
             stage={

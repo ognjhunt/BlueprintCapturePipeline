@@ -98,11 +98,15 @@ def _prepare(tmp_path: Path, runner, **overrides):
     work.mkdir(exist_ok=True)
     (tmp_path / "bin").mkdir(exist_ok=True)
     (tmp_path / "bin/python3").write_text("")
+    key = tmp_path / "key"
+    key.write_text("scoped-test-key")
+    key.chmod(0o600)
     kwargs = dict(bundle_receipt=_bundle(tmp_path), authority={"authority_digest": "sha256:" + "a" * 64},
                   job_dir=job, environment={"OPENAI_CONTENT_AGENTS_API_KEY_FILE": str(tmp_path / "key"),
                                             "BLUEPRINT_SCENE_CONFIGURATION_OPENAI_MAX_COST_USD": "3",
                                             "BLUEPRINT_SCENE_CONFIGURATION_PARENT_DEADLINE_EPOCH": "9999999999",
                                             "PATH": "/usr/bin:/bin"},
+                  secret_file_paths={"OPENAI_CONTENT_AGENTS_API_KEY_FILE": str(key)},
                   stage_limit="stage-4", runner=runner, work_dir=work, python_bin_dir=tmp_path / "bin",
                   now=lambda: 1_000.0, reservation_root=tmp_path / "reservations", which=lambda name: "/usr/bin/" + name,
                   disk_usage=lambda _p: type("Usage", (), {"total": 400 * 1024**3, "used": 0,
@@ -168,7 +172,11 @@ def test_prefix_drops_host_raw_credentials_and_preserves_scoped_secret_files(tmp
         assert not set(_RAW_SECRET_ENVIRONMENT_NAMES).intersection(kwargs["env"])
         return entrypoint(*args, **kwargs)
 
-    _prepare(tmp_path, checked_entrypoint, environment=environment)
+    secrets = {name: value for name, value in environment.items() if name.endswith("_FILE")}
+    for value in secrets.values():
+        Path(value).write_text("scoped-test-key")
+        Path(value).chmod(0o600)
+    _prepare(tmp_path, checked_entrypoint, environment=environment, secret_file_paths=secrets)
     assert seen["OPENAI_CONTENT_AGENTS_API_KEY_FILE"] == environment["OPENAI_CONTENT_AGENTS_API_KEY_FILE"]
     assert seen["OPENAI_ADMIN_API_KEY_FILE"] == environment["OPENAI_ADMIN_API_KEY_FILE"]
     assert seen["BLUEPRINT_SCENE_CONFIGURATION_OPENAI_MAX_COST_USD"] == "3"
@@ -201,7 +209,7 @@ def test_the_prestage_refuses_a_missing_work_dir_or_a_secret_inside_it(tmp_path)
         _prepare(tmp_path, _fake_entrypoint(["stage-1"]), work_dir=tmp_path / "missing")
     with pytest.raises(prestage.CpuPrestageError, match="secret_inside_work_dir"):
         _prepare(tmp_path, _fake_entrypoint(["stage-1"]),
-                 environment={"OPENAI_CONTENT_AGENTS_API_KEY_FILE": str(tmp_path / "workspace/key")})
+                 secret_file_paths={"OPENAI_CONTENT_AGENTS_API_KEY_FILE": str(tmp_path / "workspace/key")})
 
 
 def test_a_limit_that_reaches_a_gpu_stage_or_a_non_resumable_backend_is_refused(tmp_path, monkeypatch):
@@ -460,3 +468,43 @@ def test_every_name_the_openai_stage_gate_requires_survives_composition():
                 for scope in _STAGE_SCOPE_ENV.values() for name in scope.values()}
     values, dropped = prestage._provider_environment(required, {})
     assert dropped == [] and values == required
+
+
+def test_only_attempt_staged_files_cross_the_cpu_boundary(tmp_path):
+    from blueprint_pipeline.task_evaluation_scene_configuration_builtin_producers import _secret_values
+
+    seen = {}
+    fake = _fake_entrypoint(["stage-1", "stage-2", "stage-3", "stage-4"], seen=seen)
+    environment = {
+        "OPENAI_API_KEY_FILE": "/unreadable/host-default",
+        "OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_FILE": "/unreadable/inactive-stage",
+        "OPENAI_CONTENT_AGENTS_API_KEY_FILE": "/unreadable/ambient-active-alias",
+        "OPENAI_CONTENT_AGENTS_API_KEY_ID": "key_scope_identity",
+        "PIPELINE_SYNC_TOKEN_FILE": "/unreadable/unrelated-token",
+    }
+
+    def entrypoint(*args, **kwargs):
+        assert _secret_values(kwargs["env"]) == ["scoped-test-key"]
+        return fake(*args, **kwargs)
+
+    _prepare(tmp_path, entrypoint, environment=environment)
+    assert seen["OPENAI_CONTENT_AGENTS_API_KEY_FILE"] == str(tmp_path / "key")
+    assert seen["OPENAI_CONTENT_AGENTS_API_KEY_ID"] == "key_scope_identity"
+    assert not {"OPENAI_API_KEY_FILE", "OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_FILE",
+                "PIPELINE_SYNC_TOKEN_FILE"}.intersection(seen)
+
+
+@pytest.mark.parametrize("kind", ["missing", "empty", "shared", "symlink"])
+def test_invalid_staged_key_refuses_before_unpack_or_any_stage(tmp_path, kind):
+    key = tmp_path / "invalid-key"
+    if kind != "missing":
+        key.write_text("" if kind == "empty" else "scoped-test-key")
+        key.chmod(0o640 if kind == "shared" else 0o600)
+    if kind == "symlink":
+        link = tmp_path / "key-link"
+        link.symlink_to(key)
+        key = link
+    with pytest.raises(RuntimeError, match="scene_configuration_secret_file_invalid"):
+        _prepare(tmp_path, lambda *a, **k: pytest.fail("stage entered"),
+                 secret_file_paths={"OPENAI_CONTENT_AGENTS_API_KEY_FILE": str(key)})
+    assert list((tmp_path / "workspace").iterdir()) == []

@@ -1,6 +1,6 @@
 """Release only model allowances proven unentered by retained terminal evidence.
 
-Native billing stays at its full authorized allowance. These two early refusal
+Native billing stays at its full authorized allowance. These early refusal
 contracts precede the first model gate; an ordinary failure, a partial authoring
 directory, or an incomplete archive is not evidence of zero model spending.
 """
@@ -94,10 +94,14 @@ resumed authoring, or any later stage keeps the hold.
                 _require(row.get("status") == "completed" and row.get("execution_class") == "no_spend"
                          and row.get("paid_execution_requested") is False and row.get("provider_mutations_performed") == 0)
             if before_producer:
-                refusal = ("scene_configuration_provider_failed:TaskEvaluationSceneConfigurationStageProducerError:"
-                           "scene_configuration_raw_secret_environment_forbidden")
-                _require(provider.get("blockers") == [refusal]
-                         and "provider_result_blocker:" + refusal in result.get("blockers", []))
+                from .task_evaluation_scene_configuration_builtin_producers import _SECRET_ENVIRONMENT_FILES
+                prefix = "scene_configuration_provider_failed:TaskEvaluationSceneConfigurationStageProducerError:"
+                refusals = {prefix + "scene_configuration_raw_secret_environment_forbidden"}
+                refusals.update(prefix + "scene_configuration_secret_file_invalid:" + name
+                                for name in _SECRET_ENVIRONMENT_FILES)
+                blockers = provider.get("blockers") or []
+                _require(len(blockers) == 1 and blockers[0] in refusals
+                         and "provider_result_blocker:" + blockers[0] in result.get("blockers", []))
             else:
                 log = read(prefix + "stage_producer.log").decode("utf-8")
                 _require("in build_authoring_request\n" in log and
