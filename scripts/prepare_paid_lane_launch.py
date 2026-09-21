@@ -1598,6 +1598,11 @@ def _load_scene_claim_reference(
         raise PaidLaneLaunchPreparationError(
             "native_task_arena_scene_claim_reference_unreadable"
         ) from exc
+    from blueprint_pipeline.website_native_launch_claims import reference_valid
+    if reference_valid(value, expected_schema=expected_schema, scene_id=scene_id):
+        if _sha256_file(source) != expected_digest:
+            raise PaidLaneLaunchPreparationError("native_task_arena_scene_claim_reference_invalid")
+        return source, dict(value)
     embedded_digest = value.get(digest_field) if isinstance(value, Mapping) else None
     if embedded_digest is None:
         observed_digest = "sha256:" + hashlib.sha256(source.read_bytes()).hexdigest()
@@ -1698,7 +1703,13 @@ def _validate_provider_packet_source_rights(
 
     packet_request = packet_request or {}
     bindings = packet_receipt.get("source_bindings")
-    artifacts = source_manifest.get("artifacts")
+    from blueprint_pipeline.website_native_launch_claims import validate_join
+    try:
+        website_claims = validate_join(source_manifest, rights_admission or {},
+            scene_id=((configured_scene_revision or {}).get("scene_identity") or {}).get("id"))
+    except ValueError as exc:
+        raise PaidLaneLaunchPreparationError(str(exc)) from exc
+    artifacts = [] if website_claims else source_manifest.get("artifacts")
     if (
         isinstance(bindings, (str, bytes))
         or not isinstance(bindings, Sequence)
@@ -1723,7 +1734,7 @@ def _validate_provider_packet_source_rights(
         if (
             not isinstance(rights_admission, Mapping)
             or rights_admission.get("private_provider_processing_allowed") is not True
-            or disclosure.get("human_authority_accepts_provider_terms") is not True
+            or not (website_claims or disclosure.get("human_authority_accepts_provider_terms") is True)
         ):
             raise PaidLaneLaunchPreparationError(
                 "native_task_arena_provider_source_rights_invalid"
@@ -1828,7 +1839,7 @@ def _validate_provider_packet_source_rights(
                 and bool(runtime_disclosure.get("provider_retention_rule"))
             )
             source_is_admitted = source_is_admitted and (
-                disclosure.get("rights_admission_permits_upload") is True or derived_permission
+                website_claims or disclosure.get("rights_admission_permits_upload") is True or derived_permission
             )
             if role == "task_support":
                 source_is_admitted = (
