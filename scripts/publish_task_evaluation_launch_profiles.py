@@ -241,6 +241,15 @@ def _seal_immutable_input_permissions(
         inputs[resolved] = (name, str(item.get("digest") or ""))
 
     for path, (name, expected_digest) in inputs.items():
+        info = path.stat()
+        # Compilation inputs are mounted read-only in the activation service.
+        # A sealed file owned by that service needs no group-permission rewrite;
+        # readback as the consumer also proves traversal of its private parents.
+        if (os.statvfs(path).f_flag & os.ST_RDONLY
+                and info.st_uid == uid and info.st_gid == gid
+                and stat.S_IMODE(info.st_mode) in (0o400, 0o440)
+                and _digest_as_account(path, account=account, uid=uid) == expected_digest):
+            continue
         boundary = _production_root_for(path)
         if _under_production_root(target_root):
             if boundary is None:
