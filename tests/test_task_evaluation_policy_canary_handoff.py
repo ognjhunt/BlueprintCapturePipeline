@@ -664,3 +664,24 @@ def test_handoff_refuses_retained_identity_mismatch_without_reposting(tmp_path: 
     with pytest.raises(handoff.PolicyCanaryHandoffError):
         _advance(tmp_path, state=state, webapp=webapp, publisher=publisher, profile_calls=profiles)
     assert len(webapp.calls) == len(profiles) == 1
+
+
+def test_handoff_pins_active_release_link_before_strict_rights_reads(tmp_path, monkeypatch):
+    from blueprint_pipeline.task_evaluation_policy_canary_model_rights import _bytes
+
+    state = _prepared(tmp_path)
+    active = tmp_path / "active-release"
+    active.symlink_to(REPO_ROOT, target_is_directory=True)
+    materialize = _model_rights
+    reads = []
+
+    def checked_rights(**kwargs):
+        reads.append(_bytes(Path(kwargs["template_path"])))
+        assert Path(kwargs["repo_root"]) == active.resolve()
+        return materialize(**kwargs)
+
+    monkeypatch.setitem(globals(), "REPO_ROOT", active)
+    monkeypatch.setitem(globals(), "_model_rights", checked_rights)
+    result = _advance(tmp_path, state=state, webapp=_WebApp(), publisher=_Publisher(), profile_calls=[])
+    assert result["status"] == "canary_launch_submitted"
+    assert len(reads) == 1
