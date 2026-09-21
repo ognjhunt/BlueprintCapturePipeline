@@ -20,6 +20,12 @@ from tests.test_task_evaluation_policy_canary_preparation_dispatch import _profi
 from blueprint_pipeline.task_evaluation_launch_dispatcher import dispatch_launch_request, validate_launch_request
 
 
+@pytest.fixture(autouse=True)
+def controls_enabled_for_qualified_legacy_fixtures(monkeypatch):
+    from blueprint_pipeline import task_evaluation_control_stage_policy
+    monkeypatch.setattr(task_evaluation_control_stage_policy, 'CONTROLS_PAUSED', False)
+
+
 def _seal(value, field):
     value[field] = canonical_digest(value, digest_field=field)
     return value

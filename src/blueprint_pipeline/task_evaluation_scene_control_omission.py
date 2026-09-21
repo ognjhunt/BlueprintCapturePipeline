@@ -26,7 +26,7 @@ def _safe(path: Path):
 
 
 def load_for_run(*, launch_state_root: str | Path, source_launch_id: str,
-                 now: float | None = None) -> dict[str, Any] | None:
+                 now: float | None = None, evaluation_authority: Mapping[str, Any] | None = None) -> dict[str, Any] | None:
     """Bind the platform pause or an exact directive to the current owner intent."""
     from . import task_evaluation_scene_policy_binding as policy
     from . import task_evaluation_scene_intake as intake
@@ -39,12 +39,21 @@ def load_for_run(*, launch_state_root: str | Path, source_launch_id: str,
     if profile.get('scene_intent_digest') is None:
         return None
     intent_id = (profile.get('scene_attempt_binding') or {}).get('intent_id')
-    _require(intake._identifier(intent_id), 'owner_binding_missing')
+    if evaluation_authority is None:
+        _require(intake._identifier(intent_id), 'owner_binding_missing')
     from . import task_evaluation_control_stage_policy as stage_policy
     _require(profile.get('profile_digest') == canonical_digest(profile, digest_field='profile_digest'), 'profile_changed')
     moment = time.time() if now is None else now
     _require(intake._number(moment), 'clock_invalid')
-    owner = policy.owner_for_profile(profile, now=moment)
+    if evaluation_authority is None:
+        owner = policy.owner_for_profile(profile, now=moment)
+    else:
+        from .task_evaluation_team_run_authority import evaluation_owner
+        owner = evaluation_owner(source_profile=profile, authority=evaluation_authority,
+            source_launch_id=source_launch_id,
+            configured_scene_revision_digest=evaluation_authority.get('configured_scene_revision_digest'),
+            evaluation_run_id=evaluation_authority.get('evaluation_run_id'), now=moment)
+        intent_id = owner['intent_id']
     _require(owner is not None and owner['intent_id'] == intent_id, 'owner_mismatch')
     configured_root = os.getenv(ROOT_ENV)
     root = Path(configured_root or DEFAULT_ROOT)
@@ -105,13 +114,13 @@ def derived_contract(*, packet_request_path: Path, directive: Mapping[str, Any])
     return derived['task_spec']['task_success_contract'], derived['diagnostic_control_omission_authority']
 
 
-def bind_camera_start(*, directive, plan, construction, contract, cells):
+def bind_camera_start(*, directive, plan, contract, cells, construction=None):
     """Reopen exact owner robot calibration, then check every current cell's framing."""
     import hashlib
     from copy import deepcopy
     from . import task_evaluation_controls_autoprovision as controls
     from .task_evaluation_scene_robot_assignment import resolve_controls_robot_binding
-    from .native_task_camera_start_configuration import materialize_camera_start_from_construction, validate_camera_start_configuration
+    from .native_task_camera_start_configuration import materialize_camera_start_from_construction, materialize_camera_start_from_plan, validate_camera_start_configuration
     from .native_task_arena_policy_canary_worker import _resolved_scene_plan
     from . import task_evaluation_scene_intake as intake
     config = controls._json(Path(os.getenv(controls.CONFIG_ENV, '/etc/blueprint/task-evaluation-controls-autoprovision.json')))
@@ -144,7 +153,9 @@ def bind_camera_start(*, directive, plan, construction, contract, cells):
         values.append(json.loads(raw))
     current = deepcopy(plan)
     current['task_spec']['task_success_contract'] = deepcopy(contract)
-    binding = materialize_camera_start_from_construction(plan=current, construction=construction,
+    current['plan_digest'] = canonical_digest(current, digest_field='plan_digest')
+    materialize = materialize_camera_start_from_plan if construction is None else materialize_camera_start_from_construction
+    binding = materialize(plan=current, **({} if construction is None else {'construction': construction}),
         source_binding=values[0], native_reference_gate=values[1], robot_asset_sha256=robot_sha,
         runtime_digest=robot['runtime_digest'], calibration_digest=calibration['calibration_digest'])
     current['policy_canary_camera_start_configuration'] = binding

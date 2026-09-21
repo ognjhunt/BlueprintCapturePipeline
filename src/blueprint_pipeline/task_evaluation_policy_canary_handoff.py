@@ -603,6 +603,7 @@ def _compiled_construction(
             "packet_receipt_path": packet_root / "native_task_arena_packet_receipt.v1.json",
             "runtime_source_receipt_path": runtime_receipt,
             "compilation_result_digest": result["result_digest"],
+            "compilation_result_path": path,
         }
     return None
 
@@ -678,6 +679,7 @@ def advance_policy_canary_handoff(
     now: datetime | None = None,
     evaluation_run_id: str | None = None,
     evaluation_authority: Mapping[str, Any] | None = None,
+    diagnostic_initial_lineage: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Advance one configured scene from completed controls to a submitted Quick-10 canary."""
 
@@ -704,7 +706,7 @@ def advance_policy_canary_handoff(
 
     from .task_evaluation_scene_control_omission import load_for_run, derived_contract
     omission = load_for_run(launch_state_root=launches, source_launch_id=source_launch_id,
-                            now=now.timestamp() if now is not None else None)
+                            now=now.timestamp() if now is not None else None, evaluation_authority=evaluation_authority)
     omission_digest = omission["directive_digest"] if omission is not None else None
     if existing is not None and existing.get("control_omission_directive_digest") != omission_digest:
         raise PolicyCanaryHandoffError("policy_canary_handoff_omission_authority_changed")
@@ -719,12 +721,13 @@ def advance_policy_canary_handoff(
     construction_launch = _sealed_progression(
         state / "construction_launch_progression.json", statuses={"construction_launch_queued"}
     )
-    if construction_launch is None:
+    direct = omission is not None and diagnostic_initial_lineage is not None
+    if construction_launch is None and not direct:
         raise PolicyCanaryHandoffError("policy_canary_handoff_construction_launch_missing")
     controls_launch_id = str(controls_launch["launch_id"]) if controls_launch is not None else None
     from .task_evaluation_native_startup_recovery import effective_launch
-    construction_launch = effective_launch(state, construction_launch)
-    construction_launch_id = str(construction_launch["launch_id"])
+    construction_launch = effective_launch(state, construction_launch) if construction_launch is not None else None
+    construction_launch_id = str(construction_launch["launch_id"]) if construction_launch is not None else None
 
     base = _base_progression(state)
     episode_request = dict(base["episode_preparation_request"])
@@ -753,19 +756,6 @@ def advance_policy_canary_handoff(
     if existing is not None and existing.get("status") == "canary_launch_submitted":
         verify_completed_ack(state, existing)
         return _row(existing)
-    publisher = publisher_factory()
-    predecessor = (_construction_policy_predecessor(
-        launch_state_root=launches, construction_launch_id=construction_launch_id, publisher=publisher)
-        if omission is not None else _predecessor_lineage(
-            launch_state_root=launches, controls_launch_id=controls_launch_id,
-            construction_launch_id=construction_launch_id, publisher=publisher))
-    if predecessor is None:
-        return {
-            "status": "awaiting_construction_terminal" if omission is not None else "awaiting_controls_terminal",
-            "source_launch_id": source_launch_id,
-            "controls_launch_id": controls_launch_id,
-        }
-    lineage, _published_paths = predecessor
     request_path, launch_request, base_profile_path, _base_profile = _configured_run(launches, source_launch_id)
     authorized_profile = authorization_profile(_base_profile, evaluation_authority,
         source_launch_id=source_launch_id, configured_scene_revision_digest=base["configured_scene_revision_digest"])
@@ -778,6 +768,37 @@ def advance_policy_canary_handoff(
     )
     if compiled is None:
         return {"status": "awaiting_construction_compilation", "source_launch_id": source_launch_id}
+
+    publisher = publisher_factory()
+    if direct:
+        from .task_evaluation_configured_controls_progression_worker import _validate_source
+        _, source_receipt, _ = _validate_source(launches / source_launch_id)
+        if (source_receipt.get("launch_id") != source_launch_id
+                or source_receipt.get("launch_profile_digest") != _base_profile.get("profile_digest")):
+            raise PolicyCanaryHandoffError("policy_canary_direct_configuration_source_changed")
+        if construction_launch is not None:
+            raise PolicyCanaryHandoffError("policy_canary_direct_path_already_launched_construction")
+        lineage = dict(diagnostic_initial_lineage)
+        if set(lineage) != {"kind", "project_spend_reconciliation", "initial_provider_zero"} or lineage.get("kind") != "initial_project":
+            raise PolicyCanaryHandoffError("policy_canary_direct_lineage_invalid")
+        for name in ("project_spend_reconciliation", "initial_provider_zero"):
+            lineage[name] = _reference(lineage[name], blocker="policy_canary_direct_lineage_invalid")
+        lineage["construction_result"] = _publish(path=Path(compiled["compilation_result_path"]),
+            object_name=f"policy-canary-inputs/{execution_identity}/compiled-scene.json", publisher=publisher)
+        _published_paths = {"construction_result": str(compiled["compilation_result_path"])}
+    else:
+        predecessor = (_construction_policy_predecessor(
+            launch_state_root=launches, construction_launch_id=construction_launch_id, publisher=publisher)
+            if omission is not None else _predecessor_lineage(
+                launch_state_root=launches, controls_launch_id=controls_launch_id,
+                construction_launch_id=construction_launch_id, publisher=publisher))
+        if predecessor is None:
+            return {
+                "status": "awaiting_construction_terminal" if omission is not None else "awaiting_controls_terminal",
+                "source_launch_id": source_launch_id,
+                "controls_launch_id": controls_launch_id,
+            }
+        lineage, _published_paths = predecessor
 
     inputs = state / "policy-canary-inputs"
     profile_id = f"{execution_identity}-internal-policy-canary-{expected_production_commit[:10]}"
@@ -880,7 +901,7 @@ def advance_policy_canary_handoff(
             from .task_evaluation_scene_control_omission import bind_camera_start
             typed_omission["policy_canary_camera_start_configuration"] = bind_camera_start(
                 directive=omission, plan=_load(Path(compiled["scene_plan_path"]), blocker="policy_canary_scene_plan_invalid"),
-                construction=_load(Path(_published_paths["construction_result"]), blocker="policy_canary_construction_result_invalid"),
+                construction=(None if direct else _load(Path(_published_paths["construction_result"]), blocker="policy_canary_construction_result_invalid")),
                 contract=contract, cells=_quick_cells(str(base["configured_scene_revision_digest"]), scene_id=policy_scene_id))
             typed_omission["authority_digest"] = canonical_digest(typed_omission, digest_field="authority_digest")
             parameters.update(task_success_contract=contract, diagnostic_control_omission_authority=typed_omission)
@@ -973,7 +994,7 @@ def advance_policy_canary_handoff(
         selection["episode_interpretation"] = scene_policy.interpretation_for_owner(
             profile=_base_profile, plan=execution_plan, default=EPISODE_INTERPRETATION)
     current_omission = load_for_run(launch_state_root=launches, source_launch_id=source_launch_id,
-                                    now=now.timestamp() if now is not None else None)
+                                    now=now.timestamp() if now is not None else None, evaluation_authority=evaluation_authority)
     if (current_omission or {}).get("directive_digest") != omission_digest:
         raise PolicyCanaryHandoffError("policy_canary_handoff_omission_authority_changed")
     body = json.dumps(selection, sort_keys=True, separators=(",", ":")).encode()
@@ -1044,6 +1065,10 @@ def advance_policy_canary_handoff_for_plan(
         webapp_endpoint=webapp_endpoint,
         notification_email=notification_email,
         publisher_factory=publisher_factory,
+        diagnostic_initial_lineage=(
+            _load(Path(plan["phases"]["construction"]["lineage_path"]), blocker="policy_canary_direct_lineage_invalid")
+            if not (state_root / "construction_activation_progression.json").exists()
+            and plan.get("phases", {}).get("construction", {}).get("lineage_path") else None),
         **evaluation_scope(plan.get("evaluation_run_id")),
         **({"evaluation_authority": plan["evaluation_authority"]} if plan.get("evaluation_authority") is not None else {}),
         **overrides,
