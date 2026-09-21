@@ -27,6 +27,7 @@ FIELD = "partial_astra_successor"
 PREFIX = "stages/stage-3/producer/astra_cad_blender_runtime/"
 ORIGINAL_ROOT = "/workspace/task_evaluation_scene_configuration_provider_bundle/runtime_output/" + PREFIX.rstrip("/")
 ARCHIVE_RELATIVE = "allocator/scene-configuration-job/vast_provider_run/vast_provider_runtime_output.zip"
+CPU_ARCHIVE_RELATIVE = "allocator/scene-configuration-job/cpu_prestage_output.zip"
 MAX_SCAN = 4096
 MAX_CANDIDATES = 16
 MAX_ARCHIVE_BYTES = 1024**3
@@ -151,7 +152,8 @@ def _validate_source_proof(proof, source):
              and result.get("source_commit") == profile["source_commit"] == profile["scene_attempt_binding"]["source_commit"]
              and result.get("authority_digest") == authority["authority_digest"]
              and result.get("bundle_sha256") == authority["bundle_sha256"] == proof["source_bundle_manifest"]["bundle_sha256"]
-             and result.get("provider_runtime_output_zip_path") == str(Path(source) / ARCHIVE_RELATIVE)
+             and result.get("provider_runtime_output_zip_path") in {str(Path(source) / name)
+                 for name in (ARCHIVE_RELATIVE, CPU_ARCHIVE_RELATIVE)}
              and remote.get("status") == "remote_verified"
              and remote.get("digest") == remote.get("readback_digest") == result.get("provider_runtime_output_zip_sha256")
              and remote.get("size_bytes") == remote.get("readback_size_bytes")
@@ -185,8 +187,11 @@ def _members(archive):
                  and info.file_size >= 0, "archive_entry_invalid")
         selected.append((relative, info))
     names = {name for name, _ in selected}
-    _require(REQUIRED <= names and "authoring/appearance-01/independent_visual_review_1.json" not in names
-             and "authoring/result.json" not in names, "source_not_pending_final_review")
+    sdk = {"authoring/request.json", "authoring/source_analysis.json", "authoring/cad_result.json",
+           "stage_source_binding.json", "inference/asset_session/binding.json",
+           "inference/asset_session/conversation.sqlite"} <= names
+    legacy = REQUIRED <= names and "authoring/appearance-01/independent_visual_review_1.json" not in names
+    _require((sdk or legacy) and "authoring/result.json" not in names, "source_not_pending_final_review")
     _require(sum(i.file_size for _, i in selected) <= MAX_EXPANDED_BYTES, "archive_expansion_exceeded")
     return sorted(selected)
 
@@ -308,7 +313,7 @@ def select_partial_astra_source(*, owner_attempt_path, envelope, output_root,
         try:
             lineage, proof = _source_identity(source, current, intent_root=root, successor_run_id=envelope["run_id"])
             authenticated_archive = True
-            archive_path = _safe(source / ARCHIVE_RELATIVE)
+            archive_path = _safe(proof["source_result"]["provider_runtime_output_zip_path"])
             _require(archive_path.is_file() and archive_path.stat().st_size <= MAX_ARCHIVE_BYTES, "source_archive_invalid")
             original_record = _file(archive_path)
             _require(original_record["sha256"] == proof["source_result"]["provider_runtime_output_zip_sha256"]

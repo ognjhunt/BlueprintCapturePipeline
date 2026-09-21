@@ -183,3 +183,46 @@ def test_retained_rejection_returns_to_author_without_repeating_review(agent_fix
     assert 'Darken the blue' in json.dumps(f.model.calls[0]['input'])
     assert len(f.model.calls) == 5  # author render/inspect/summary and two new reviews
     assert f.executed.count('cad') == 1
+
+
+def test_controller_successor_resumes_sdk_candidate_with_original_costs(agent_fixture):  # noqa: F811
+    from blueprint_pipeline import task_evaluation_partial_astra_successor as partial
+    from blueprint_pipeline.task_object_astra_inherited_inference import inherited_balance
+    f = agent_fixture
+    before = interrupted(f)
+    executions = list(f.executed)
+    old = f.request.model_dump(mode='json')
+    new = dict(old, run_id=old['run_id'] + '-successor', expected_production_commit='b' * 40)
+    new['request_digest'] = canonical_digest(new, digest_field='request_digest')
+    binding = json.loads((f.runtime / 'stage_source_binding.json').read_text())
+    # The SDK fixture replaces the source PNG; bind that fixture image just as the driver does.
+    binding['authoring_input_digest'] = canonical_digest({k: v for k, v in old.items()
+        if k not in {'request_digest', 'expected_production_commit'}})
+    binding['binding_digest'] = canonical_digest(binding, digest_field='binding_digest')
+    (f.runtime / 'stage_source_binding.json').write_text(json.dumps(binding))
+    identity = dict(source_run_id=old['run_id'], successor_run_id=new['run_id'], owner_id='owner',
+                    stable_intent_id='intent', stable_intent_digest='sha256:' + 'c' * 64)
+    descriptor = dict(schema_version=partial.SCHEMA_VERSION, source_run_id=old['run_id'],
+        successor_run_id=new['run_id'], source_request_digest=old['request_digest'],
+        original_runtime_root=str(f.runtime), semantic_request_digest=canonical_digest(partial.semantic_request(new)),
+        source_stage_binding_digest=binding['binding_digest'], owner_intent_lineage=identity,
+        retained_files=adoption._inventory(f.runtime))
+    descriptor['adoption_digest'] = canonical_digest(descriptor, digest_field='adoption_digest')
+    output = f.runtime.parent / 'controller-successor'
+    prepared = partial.prepare_partial_astra_successor(value=descriptor, request_value=new,
+        source_binding=binding, verified_lineage=identity, package=f.package, budget_root=output / 'inference')
+    inherited = inherited_balance(output / 'inference', new['run_id'])
+    assert inherited['call_count'] == before['reservation_count']
+    assert inherited['cost_usd'] == before['reserved_max_cost_usd']
+    f.request = validate_request(new)
+    f.kwargs.update(request_value=new, output_root=output / 'authoring', budget_root=output / 'inference')
+    f.model = ScriptedModel([], f.model.physics)
+    invoker, audit = bounded(f)
+    invoker.prior_calls = prepared['prior_call_count']
+    result = session.execute_agent_authoring(**f.kwargs, **prepared['authoring_kwargs'], invoker=invoker, model=f.model)
+    assert result['status'] == 'candidate_authored_pending_native_qualification'
+    assert f.executed == executions
+    assert len(f.model.calls) == 1
+    assert audit.manifest()['reservation_count'] == 1
+    assert inspect_agent_candidate(output, new)['completed_result']['result_digest'] == result['result_digest']
+    assert adoption._inventory(f.runtime) == descriptor['retained_files']

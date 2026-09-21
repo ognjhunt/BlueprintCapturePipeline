@@ -84,7 +84,8 @@ def tool_definitions(asset, ledger):
 
 def execute_agent_authoring(*, request_value, output_root, budget_root, invoker,
                             cad_executor, blender_runner, blender_executable,
-                            authoring_instructions, model=None, run_agent=None, adopted_agent_root=None):
+                            authoring_instructions, model=None, run_agent=None, adopted_agent_root=None,
+                            adopted_agent_source_request=None):
     asset = AssetTools(request_value=request_value, output_root=output_root, cad_executor=cad_executor,
         blender_runner=blender_runner, blender_executable=blender_executable)
     request = asset.request
@@ -98,7 +99,8 @@ def execute_agent_authoring(*, request_value, output_root, budget_root, invoker,
     retained = None
     if adopted_agent_root is not None:
         from .task_object_agent_resume import restore_agent_candidate
-        retained = restore_agent_candidate(asset, Path(adopted_agent_root), state_root)
+        retained = restore_agent_candidate(asset, Path(adopted_agent_root), state_root,
+                                           source_request=adopted_agent_source_request)
     delegate = model or OpenAIProvider().get_model("gpt-6-astra")
     bounded = BudgetedAuthoringModel(delegate=delegate, invoker=invoker, run_id=request.run_id, object_id=request.object_id)
     if retained:

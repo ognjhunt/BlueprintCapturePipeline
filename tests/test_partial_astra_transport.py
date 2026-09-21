@@ -407,3 +407,32 @@ print("provider_transport_validated")
                                capture_output=True, text=True, timeout=30)
     assert completed.returncode == 0, completed.stderr
     assert completed.stdout.strip() == "provider_transport_validated"
+
+
+def test_cpu_sdk_archive_selected_and_bound_to_original_result(retained):
+    args, source = retained
+    old = source / transport.ARCHIVE_RELATIVE
+    archive = source / transport.CPU_ARCHIVE_RELATIVE
+    with zipfile.ZipFile(archive, 'w') as packed:
+        for name, value in {
+            'authoring/request.json': META['request'], 'stage_source_binding.json': META['stage_source_binding'],
+            'authoring/source_analysis.json': {}, 'authoring/cad_result.json': {},
+            'inference/asset_session/binding.json': {}, 'inference/asset_session/conversation.sqlite': {},
+        }.items():
+            packed.writestr(transport.PREFIX + name, json.dumps(value))
+    old.unlink()
+    path = source / 'allocator/scene-configuration-job/task_evaluation_scene_configuration_vast_result.v1.json'
+    result = json.loads(path.read_text())
+    digest, size = transport._sha(archive), archive.stat().st_size
+    result.update(provider_runtime_output_zip_path=str(archive), provider_runtime_output_zip_sha256=digest)
+    result['provider_runtime_output_remote_reference'].update(digest=digest, readback_digest=digest,
+                                                            size_bytes=size, readback_size_bytes=size)
+    write(path, seal(result, 'result_digest'))
+    selected = json.loads(transport.select_partial_astra_source(**args).read_text())
+    assert selected['source_archive']['path'] == str(archive)
+    assert selected['source_archive']['sha256'] == digest
+    # A digest-valid result still cannot redirect the archive outside its launch.
+    result['provider_runtime_output_zip_path'] = str(source.parent / 'foreign.zip')
+    write(path, seal(result, 'result_digest'))
+    with pytest.raises(ValueError, match='source_archive_authority_invalid'):
+        transport._validate_source_proof({**selected['authority_evidence'], 'source_result': result}, source)
