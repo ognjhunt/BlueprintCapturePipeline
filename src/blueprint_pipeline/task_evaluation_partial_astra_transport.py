@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from pathlib import Path, PurePosixPath
 import shutil
 import stat
@@ -168,16 +169,25 @@ def _allowed(relative):
     return relative in SOURCE_FILES or (parts and parts[0] in {"authoring", "inference", "official_openai_cost"})
 
 
-def _members(archive):
+def _latest_prefix(archive):
+    """Preserve the newest resumed conversation and ledger, never its ancestor."""
+    roots = {name.rsplit("/stage_source_binding.json", 1)[0] + "/" for name in archive.namelist()
+             if name.endswith("/stage_source_binding.json")}
+    resumed = sorted(root for root in roots if re.fullmatch(
+        r"stages/stage-3/producer/astra_resume_attempts/attempt-[0-9]{4}/", root))
+    return resumed[-1] if resumed else PREFIX
+
+
+def _members(archive, prefix=PREFIX):
     infos = archive.infolist()
     _require(len(infos) <= MAX_MEMBERS and len({i.filename for i in infos}) == len(infos), "archive_members_invalid")
     selected = []
     for info in infos:
         path = PurePosixPath(info.filename)
         _require(not path.is_absolute() and ".." not in path.parts, "archive_path_invalid")
-        if not info.filename.startswith(PREFIX) or info.is_dir():
+        if not info.filename.startswith(prefix) or info.is_dir():
             continue
-        relative = info.filename[len(PREFIX):]
+        relative = info.filename[len(prefix):]
         if not _allowed(relative):
             continue
         _require(not any(part in {".env", "secrets", "credentials", "runtime_secrets", "openai_api_key"}
@@ -196,8 +206,8 @@ def _members(archive):
     return sorted(selected)
 
 
-def _archive_json(archive, relative):
-    info = archive.getinfo(PREFIX + relative)
+def _archive_json(archive, relative, prefix=PREFIX):
+    info = archive.getinfo(prefix + relative)
     _require(info.file_size <= 8 * 1024**2, "archive_json_too_large")
     value = json.loads(archive.read(info))
     _require(isinstance(value, dict), "archive_json_invalid")
@@ -321,15 +331,16 @@ def select_partial_astra_source(*, owner_attempt_path, envelope, output_root,
                      "source_archive_download_changed")
             with zipfile.ZipFile(archive_path) as archive:
                 names = set(archive.namelist())
-                known_partial = PREFIX + "authoring/cad_result.json" in names
-                request = _archive_json(archive, "authoring/request.json")
-                binding = _archive_json(archive, "stage_source_binding.json")
+                prefix = _latest_prefix(archive)
+                known_partial = any(p + "authoring/cad_result.json" in names for p in (prefix, PREFIX))
+                request = _archive_json(archive, "authoring/request.json", prefix)
+                binding = _archive_json(archive, "stage_source_binding.json", prefix)
                 _require(request.get("request_digest") == canonical_digest(request, digest_field="request_digest")
                          and request.get("run_id") == lineage["source_run_id"]
                          and binding.get("binding_digest") == canonical_digest(binding, digest_field="binding_digest")
                          and binding.get("run_id") == request["run_id"]
                          and binding.get("configuration_sha256") == configuration["digest"], "source_configuration_changed")
-                members = _members(archive)
+                members = _members(archive, prefix)
                 _pin_source_metadata(proof=proof, activation_request=activation_request, activation_root=activation_root,
                                      pins_root=pins_root, on_pin_created=on_pin_created)
                 if activation_request is not None:
@@ -356,7 +367,7 @@ def select_partial_astra_source(*, owner_attempt_path, envelope, output_root,
                          "source_archive_changed")
                 from .task_evaluation_partial_astra_successor import SCHEMA_VERSION, semantic_request
                 descriptor = {"schema_version": SCHEMA_VERSION, "source_run_id": request["run_id"],
-                    "successor_run_id": envelope["run_id"], "original_runtime_root": ORIGINAL_ROOT,
+                    "successor_run_id": envelope["run_id"], "original_runtime_root": ORIGINAL_ROOT.removesuffix(PREFIX.rstrip("/")) + prefix.rstrip("/"),
                     "source_request_digest": request["request_digest"],
                     "semantic_request_digest": canonical_digest(semantic_request(request)),
                     "source_stage_binding_digest": binding["binding_digest"], "owner_intent_lineage": lineage,

@@ -409,7 +409,9 @@ print("provider_transport_validated")
     assert completed.stdout.strip() == "provider_transport_validated"
 
 
-def test_cpu_sdk_archive_selected_and_bound_to_original_result(retained):
+@pytest.mark.parametrize("prefix", [transport.PREFIX,
+    "stages/stage-3/producer/astra_resume_attempts/attempt-0001/"])
+def test_cpu_sdk_archive_selected_and_bound_to_original_result(retained, prefix):
     args, source = retained
     old = source / transport.ARCHIVE_RELATIVE
     archive = source / transport.CPU_ARCHIVE_RELATIVE
@@ -419,7 +421,10 @@ def test_cpu_sdk_archive_selected_and_bound_to_original_result(retained):
             'authoring/source_analysis.json': {}, 'authoring/cad_result.json': {},
             'inference/asset_session/binding.json': {}, 'inference/asset_session/conversation.sqlite': {},
         }.items():
-            packed.writestr(transport.PREFIX + name, json.dumps(value))
+            packed.writestr(prefix + name, json.dumps(value))
+        if prefix != transport.PREFIX:
+            packed.writestr(transport.PREFIX + "stage_source_binding.json", "{}")
+            packed.writestr(transport.PREFIX + "authoring/request.json", "{}")
     old.unlink()
     path = source / 'allocator/scene-configuration-job/task_evaluation_scene_configuration_vast_result.v1.json'
     result = json.loads(path.read_text())
@@ -429,6 +434,10 @@ def test_cpu_sdk_archive_selected_and_bound_to_original_result(retained):
                                                             size_bytes=size, readback_size_bytes=size)
     write(path, seal(result, 'result_digest'))
     selected = json.loads(transport.select_partial_astra_source(**args).read_text())
+    descriptor = json.loads(Path(selected['descriptor']['path']).read_text())
+    assert descriptor['original_runtime_root'].endswith(prefix.rstrip('/'))
+    with zipfile.ZipFile(selected['runtime_archive']['path']) as packed:
+        assert json.loads(packed.read('authoring/request.json')) == META['request']
     assert selected['source_archive']['path'] == str(archive)
     assert selected['source_archive']['sha256'] == digest
     # A digest-valid result still cannot redirect the archive outside its launch.

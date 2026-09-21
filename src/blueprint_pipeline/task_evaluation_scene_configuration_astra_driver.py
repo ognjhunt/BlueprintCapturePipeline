@@ -11,6 +11,7 @@ import inspect
 import json
 import math
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -447,8 +448,12 @@ def execute_astra_component(*, environment=None, runner=subprocess.run,
         if (archive_actual["sha256"] != archive_record.get("sha256", archive_record.get("digest"))
                 or archive_actual["size_bytes"] != archive_record.get("size_bytes")):
             raise AstraStageError("astra_partial_successor_archive_file_changed")
+        restored_root = Path(partial_descriptor["original_runtime_root"])
+        if restored_root != primary and not (restored_root.parent == attempts
+                and re.fullmatch(r"attempt-[0-9]{4}", restored_root.name)):
+            raise AstraStageError("astra_partial_successor_runtime_root_invalid")
         restore_partial_astra(value=partial_descriptor, request_value=request.model_dump(mode="json"),
-            original_root=primary, verified_lineage=verified_lineage, archive_path=archive_path)
+            original_root=restored_root, verified_lineage=verified_lineage, archive_path=archive_path)
     prior_roots = ([primary] if primary.exists() else []) + sorted(attempts.glob("attempt-????"))
     cross_run = partial_descriptor is not None and len(prior_roots) == 1
     descriptor = configuration.get("astra_phase_adoption")
@@ -467,9 +472,10 @@ def execute_astra_component(*, environment=None, runner=subprocess.run,
         prior_binding = Path(descriptor["prior_runtime"]) / "stage_source_binding.json"
         if not prior_binding.is_file() or _read(prior_binding, code="astra_retained_source_binding_invalid") != source_binding:
             raise AstraStageError("astra_retained_source_or_rights_binding_changed")
-    if len(prior_roots) >= 16:
+    next_attempt = 1 + max((int(p.name.removeprefix("attempt-")) for p in prior_roots if p.parent == attempts), default=0)
+    if len(prior_roots) >= 16 or next_attempt >= 16:
         raise AstraStageError("astra_same_run_resume_limit_reached")
-    runtime = primary if not prior_roots else attempts / f"attempt-{len(prior_roots):04d}"
+    runtime = primary if not prior_roots else attempts / f"attempt-{next_attempt:04d}"
     runtime.parent.mkdir(parents=True, exist_ok=True)
     runtime.mkdir(mode=0o700)
     _write(runtime / "stage_source_binding.json", source_binding)

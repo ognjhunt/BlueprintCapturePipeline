@@ -158,6 +158,46 @@ def test_model_cannot_declare_an_unbuilt_asset_complete(agent_fixture):
     assert not (f.kwargs['output_root'] / 'result.json').exists()
 
 
+def test_unchanged_rejected_candidate_reuses_review_without_another_reservation(agent_fixture):
+    f = agent_fixture
+    class RejectedModel(ScriptedModel):
+        async def get_response(self, **kwargs):
+            if kwargs['output_schema'].json_schema()['title'] == 'AppearanceReview':
+                self.calls.append(kwargs)
+                return reply(dict(source_object_recognizable=True, source_color_and_material_preserved=False,
+                    opaque_surfaces_opaque=True, required_parts_present=True, no_obvious_geometry_artifacts=True,
+                    blockers=['Wrong color'], repair_instructions='Correct the blue material.',
+                    unobserved_surface_limitations=['underside']), len(self.calls))
+            return await super().get_response(**kwargs)
+    f.model = RejectedModel(f.steps + [{'summary': 'No changes.'}] * 2, f.model.physics)
+    invoker, _ = bounded(f)
+    with pytest.raises(author.AssetAuthoringError, match='independent_review_limit'):
+        session.execute_agent_authoring(**f.kwargs, invoker=invoker, model=f.model)
+    titles = [call['output_schema'].json_schema()['title'] for call in f.model.calls]
+    assert titles.count('AppearanceReview') == titles.count('PhysicalPropertyReviewProposal') == 1
+    assert not (f.kwargs['output_root'] / 'result.json').exists()
+
+
+
+def test_rebuilt_candidate_invalidates_rejected_review_cache(agent_fixture):
+    f = agent_fixture
+    class RepairModel(ScriptedModel):
+        async def get_response(self, **kwargs):
+            if kwargs['output_schema'].json_schema()['title'] == 'AppearanceReview' and not getattr(self, 'rejected', False):
+                self.rejected = True
+                self.calls.append(kwargs)
+                return reply(dict(source_object_recognizable=True, source_color_and_material_preserved=False,
+                    opaque_surfaces_opaque=True, required_parts_present=True, no_obvious_geometry_artifacts=True,
+                    blockers=['Wrong color'], repair_instructions='Correct the blue material.',
+                    unobserved_surface_limitations=['underside']), len(self.calls))
+            return await super().get_response(**kwargs)
+    f.model = RepairModel(f.steps + [f.steps[3], f.steps[4], f.steps[5]], f.model.physics)
+    invoker, _ = bounded(f)
+    result = session.execute_agent_authoring(**f.kwargs, invoker=invoker, model=f.model)
+    assert result['status'] == 'candidate_authored_pending_native_qualification'
+    titles = [call['output_schema'].json_schema()['title'] for call in f.model.calls]
+    assert titles.count('AppearanceReview') == titles.count('PhysicalPropertyReviewProposal') == 2
+
 def test_duplicate_tool_call_reuses_retained_outcome_and_rejects_changed_arguments(tmp_path):
     calls = []
     asset = SimpleNamespace(observe_object=lambda value: calls.append(value) or {'status': 'recorded'})
