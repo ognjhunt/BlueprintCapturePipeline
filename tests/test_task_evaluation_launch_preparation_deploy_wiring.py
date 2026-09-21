@@ -39,7 +39,7 @@ def test_no_spend_preparation_worker_has_hardened_service_and_path_unit() -> Non
         "Environment='BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_ALLOWED_URI_PREFIXES_JSON="
         '["s3://blueprint/task-evaluation/production-inputs/",'
         '"s3://blueprint-task-evaluation-artifacts-prod/blueprint/arm-decision-proof-v1/'
-        'configured-scenes/artifacts/",'
+        'configured-scenes/",'
         '"s3://blueprint/blueprint/arm-decision-proof-v1/configured-scenes/"]\''
     ) in service
     assert service.index(
@@ -73,7 +73,7 @@ def test_canonical_environment_documents_bounded_input_prefixes() -> None:
         "BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_ALLOWED_URI_PREFIXES_JSON="
         '["s3://blueprint/task-evaluation/production-inputs/",'
         '"s3://blueprint-task-evaluation-artifacts-prod/blueprint/arm-decision-proof-v1/'
-        'configured-scenes/artifacts/",'
+        'configured-scenes/",'
         '"s3://blueprint/blueprint/arm-decision-proof-v1/configured-scenes/"]'
     ) in environment
     assert "BLUEPRINT_TASK_EVALUATION_SPLAT_RENDER_RUNTIME_ROOT=" in environment
@@ -352,6 +352,14 @@ def test_preparation_and_activation_share_one_allowed_uri_prefix_list() -> None:
         preparation
     )
     assert all(prefix.endswith("/") for prefix in preparation)
+    from blueprint_pipeline.task_evaluation_launch_preparation_worker import _prefix_allowed
+    published = "s3://blueprint-task-evaluation-artifacts-prod/blueprint/arm-decision-proof-v1/configured-scenes/"
+    for artifact in ("website-capture/revision/sha256/abc/revision.json",
+                     "website-capture/configured_scene_bundle/sha256/abc/bundle.zip",
+                     "artifacts/native-runtime-source/sha256/abc/runtime.zip"):
+        assert _prefix_allowed(published + artifact, preparation)
+    assert not _prefix_allowed(published.replace("artifacts-prod", "other-bucket") + "scene/bundle.zip", preparation)
+    assert not _prefix_allowed(published.replace("configured-scenes/", "configured-scenes-other/") + "bundle.zip", preparation)
 
 
 

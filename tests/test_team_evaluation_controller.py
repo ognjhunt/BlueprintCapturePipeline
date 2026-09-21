@@ -88,6 +88,9 @@ def test_controller_provisions_two_independent_runs_without_changing_preparation
     assert len(list(args['scene_root'].glob('scene-*/attempts/*.json'))) == 6
     monkeypatch.setattr(controller.authority, 'evaluation_owner',
         partial(controller.authority.evaluation_owner, now=args['now']))
+    from blueprint_pipeline import task_evaluation_release_identity as release
+    monkeypatch.setattr(release, 'running_release_commit', lambda: COMMIT)
+    monkeypatch.setenv(worker.CONFIG_ENV, str(_put(tmp_path/'controls-config.json', config)))
     materialized=[]
     def materialize(**kw):
         selected_intent=json.loads(kw['intent_path_override'].read_text())

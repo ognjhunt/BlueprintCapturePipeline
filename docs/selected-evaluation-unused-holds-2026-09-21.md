@@ -1,0 +1,11 @@
+# Superseded evaluation holds
+
+ADP-009D / day-21: the browser-selected evaluation retained five sets of per-release construction, controls and placement reservations ($17.30 of its $20 cap). The next policy stage needs a $4 reservation. Older sets could remain unused, but selected evaluations skipped the existing unmaterialized-adoption retirement path.
+
+The selected-evaluation controller now reconciles those old holds before progressing the installed current intent. It binds cancellation to immutable old/current adoption intents, the same evaluation authority, scene and owner, and the actual scoped binding directory. CPU artifacts remain untouched. Any old inference reservation, agent output, checkpoint, final result or ambiguous symlink preserves the whole hold. The current release is excluded. Budget readers and execution admission validate the cancellation, so released authority cannot be spent later.
+
+This does not increase the owner's cap, erase historical attempts, refund confirmed spend, or report CPU/placement evidence as native execution. A controller process bound to a superseded release is not authorized to reconcile current work. The mutable registry file is resolved to its immutable provisioning input before a cancellation is sealed.
+
+Verification covers budget admission after retirement, stale execution refusal, idempotence, CPU/active-work preservation, paid and ambiguous evidence, changed authority, plus the real selected-evaluation controller path. Production execution and actual result delivery remain separate acceptance requirements.
+
+Service-account replay against the retained production inputs identified six cancellable holds totaling $6.92. It preserved the other nine holds and wrote no cancellation. The same controller run then exposed a separate preparation-prefix refusal: the published configured-scene bundle/revision use the physical artifact bucket beneath configured-scenes/<scene>, while the service allowed only configured-scenes/artifacts. Both preparation and activation now allow the publisher-owned configured-scenes root for that exact bucket; reference digest, size and access checks remain required.

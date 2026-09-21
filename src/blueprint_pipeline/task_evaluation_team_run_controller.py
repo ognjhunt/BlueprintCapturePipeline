@@ -69,10 +69,14 @@ def materialize_selected_evaluations(*, intent_root, launch_state_root, progress
             value = validate_configured_controls_autostart_intent(value)
             binding = value['evaluation_authority']
             profile = worker._json(Path(launch_state_root) / binding['source_launch_id'] / 'launch_profile.json')
-            authority.evaluation_owner(source_profile=profile, authority=binding,
+            owner = authority.evaluation_owner(source_profile=profile, authority=binding,
                 source_launch_id=binding['source_launch_id'],
                 configured_scene_revision_digest=binding['configured_scene_revision_digest'],
                 evaluation_run_id=value['evaluation_run_id'])
+            if os.getenv(worker.CONFIG_ENV):
+                from .task_evaluation_unused_team_holds import retire
+                config = worker._json(Path(os.environ[worker.CONFIG_ENV]))
+                retire(config=config, intent_id=owner['intent_id'], current_intent_path=path)
             result = (materializer or materialize_configured_controls_autostart)(
                 source_launch_id=binding['source_launch_id'], launch_state_root=Path(launch_state_root),
                 progression_root=progression_root, plan_root=plan_root, intent_path_override=path)

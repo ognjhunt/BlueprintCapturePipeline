@@ -270,6 +270,10 @@ def validated_cancellation(directory: Path, attempt: Mapping[str, Any]) -> dict[
     if not path.exists() and not path.is_symlink():
         return None
     receipt = _read(path)
+    if receipt.get('schema_version') == 'task_evaluation_unused_team_adoption_cancellation.v1':
+        from .task_evaluation_unused_team_holds import validate
+        validate(receipt=receipt, attempt=attempt)
+        return receipt
     if receipt.get('schema_version') == 'task_evaluation_unused_native_plan_cancellation.v1':
         validate_placement_cancellation(receipt=receipt,attempt=attempt)
         return receipt
