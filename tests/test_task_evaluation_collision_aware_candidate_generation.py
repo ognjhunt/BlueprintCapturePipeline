@@ -412,6 +412,10 @@ def test_remote_curobo_uses_retained_worker_without_allocating(
             assert CUROBO_BACKEND_IDENTITY["source_revision"] in script
             assert CUROBO_BACKEND_IDENTITY["source_tree"] in script
             assert "--no-deps --no-build-isolation" in script
+            # A real CPU build of the pinned source emitted 0.0.0 without this
+            # plugin despite the tag and PRETEND_VERSION; with it, 0.8.0.
+            plugin_install = "/isaac-sim/python.sh -m pip install --no-deps setuptools-scm==8.3.1"
+            assert script.index(plugin_install) < script.index('pip install -e "$root"')
             # nvidia-curobo resolves its version through setuptools_scm from git
             # metadata that a depth-1 fetch of a bare revision does not carry, so
             # the version must be pinned or every provisioning attempt fails the
@@ -420,9 +424,7 @@ def test_remote_curobo_uses_retained_worker_without_allocating(
                 "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_NVIDIA_CUROBO="
                 + CUROBO_BACKEND_IDENTITY["package_version"]
             ) in script
-            # The env var demonstrably does not survive the isaac python
-            # wrapper (run r11 installed 0.0.0 with it set), so the script must
-            # also restore the release tag the digests already prove.
+            # The verified source identity also supplies the release tag.
             assert (
                 "git -C \"$root\" tag -f "
                 + CUROBO_BACKEND_IDENTITY["source_tag"]

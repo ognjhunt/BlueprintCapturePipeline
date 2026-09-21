@@ -161,6 +161,21 @@ def continue_retained_feedback_if_requested(
     )
     value["native_construction_feedback_controller"] = controller
     if controller.get("status") != "controls_completed":
+        value["status"] = "blocked"
+        value["blockers"] = sorted(set(
+            [*value.get("blockers", []), *controller.get("blockers", [])]
+            or ["native_construction_feedback_not_completed"]
+        ))
+        closeout = controller.get("warm_session_closeout") or {}
+        closed = (controller.get("continuing_spend_from_this_run") is False
+                  and closeout.get("provider_instance_absent") is True)
+        value["continuing_spend_from_this_run"] = not closed
+        value["retry_cap"] = 0
+        if "warm_session_closeout" in controller:
+            value["warm_session_closeout"] = controller["warm_session_closeout"]
+        if closed:
+            value["warm_session"] = None
+            value["warm_session_receipt_path"] = None
         return value
     final_native = controller["history"][-1]["execution"]["native_result"]
     qualified_path = (

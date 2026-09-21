@@ -1473,30 +1473,30 @@ def run_retained_native_construction_feedback(**kwargs: Any) -> dict[str, Any]:
                 ],
                 "continuing_spend_from_this_run": True,
             }
+        failure = {
+            "schema_version": (
+                "task_evaluation_native_construction_feedback_failure.v1"
+            ),
+            "status": "blocked",
+            "blockers": [
+                "native_construction_feedback_failed:" + type(exc).__name__
+            ],
+            "warm_session_closeout": closeout,
+            "continuing_spend_from_this_run": closeout.get(
+                "continuing_spend_from_this_run"
+            ),
+            "failure_digest": "",
+        }
+        failure["failure_digest"] = canonical_digest(
+            failure, digest_field="failure_digest"
+        )
         output_root = Path(str(kwargs.get("output_root") or "")).expanduser()
         if output_root.is_absolute():
             output_root.mkdir(parents=True, exist_ok=True)
-            failure = {
-                "schema_version": (
-                    "task_evaluation_native_construction_feedback_failure.v1"
-                ),
-                "status": "blocked",
-                "blockers": [
-                    "native_construction_feedback_failed:" + type(exc).__name__
-                ],
-                "warm_session_closeout": closeout,
-                "continuing_spend_from_this_run": closeout.get(
-                    "continuing_spend_from_this_run"
-                ),
-                "failure_digest": "",
-            }
-            failure["failure_digest"] = canonical_digest(
-                failure, digest_field="failure_digest"
-            )
             write_json(output_root / "feedback-failure.v1.json", failure)
-        raise WarmRobotPlacementExecutorError(
-            "native_construction_feedback_failed:" + type(exc).__name__
-        ) from exc
+        # Preserve the closeout and failure through the allocator's terminal
+        # writer. Raising here used to erase the result after destroying the GPU.
+        return failure
 
 
 __all__ = [
