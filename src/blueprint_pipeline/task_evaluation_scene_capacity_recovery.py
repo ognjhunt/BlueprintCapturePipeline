@@ -11,6 +11,7 @@ from pathlib import Path
 import shutil
 
 from . import task_evaluation_scene_intake as intake
+from . import task_evaluation_authoring_auth_recovery as auth
 from .decision_evidence_contracts import canonical_digest
 from .task_evaluation_public_scene_attempt_factory import record
 from .task_evaluation_scene_configuration_submission_inputs import checked_file, read
@@ -154,6 +155,7 @@ def validate_source(refs, *, prior_attempt, kind="preallocation_capacity"):
             and result.get("status") == "blocked"
             and (result.get("blockers") == [BLOCKER] if kind == KIND
                  else credit_launch_failure(result) if kind == CREDIT_KIND
+                 else auth.initial_authentication_failure(result) is not None if kind == auth.KIND
                  else kind == "provider_dead_machine" and dead_machine_launch_failure(result))
             and type(result.get("provider_mutations_performed")) is int and result["provider_mutations_performed"] == 0
             and type(result.get("retry_cap")) is int and result["retry_cap"] == 0
@@ -162,14 +164,15 @@ def validate_source(refs, *, prior_attempt, kind="preallocation_capacity"):
                 not result.get("instance_id") and not result.get("vast_instance_ids")
                 and result.get("allocation_created") is not True)),
             "capacity_not_zero_provider_failure")
-    if kind == CREDIT_KIND:
+    if kind in {CREDIT_KIND, auth.KIND}:
         from .task_evaluation_retained_controls_evidence import _file
         ref = launch["terminal_evidence"]["artifacts"]["teardown_manifest_path"]
         require(ref.get("exists") is True
                 and _file(safe_path(ref["path"]))["digest"] == ref["digest"], "credit_teardown_changed")
         teardown = read(ref["path"])
         require(teardown.get("schema_version") == "vast_teardown_manifest.v1"
-                and teardown.get("status") == "not_required_prelaunch_inventory_guard_blocked"
+                and teardown.get("status") in ({"not_required_prelaunch_inventory_guard_blocked"}
+                    if kind == CREDIT_KIND else {"not_required_provider_adapter_never_invoked"})
                 and teardown.get("vast_instance_ids") == []
                 and teardown.get("continuing_spend_from_this_run") is False, "credit_teardown_invalid")
         return values
@@ -219,6 +222,8 @@ def observe_failure(*, attempt, link_path, preparation_path, factory_path, confi
             kind = "preallocation_capacity"
         elif credit_launch_failure(result):
             kind = CREDIT_KIND
+        elif auth.initial_authentication_failure(result) is not None:
+            kind = auth.KIND
         elif dead_machine_launch_failure(result):
             kind = "provider_dead_machine"
         if kind is None:
@@ -268,6 +273,8 @@ def capacity_admission(observation, config, now):
             required_usd=observation["values"]["authority"]["provider_compute_spend_cap_usd"],
             reserve_usd=float(os.getenv(RESERVE_ENV, "1")))
         passed = passed and credit["status"] == "admitted"
+    authentication = auth.replacement_admission(result) if observation.get("kind") == auth.KIND else None
+    passed = passed and (authentication is None or authentication["status"] == "admitted")
     value = {"schema_version": "task_evaluation_preallocation_capacity_admission.v1",
              "status": "admitted" if passed else "waiting_for_capacity", "observed_at_epoch": now,
              "cpu_path": str(config["factory_output_root"]), "output_path": str(output_path),
@@ -276,6 +283,8 @@ def capacity_admission(observation, config, now):
              "output_required_free_bytes": output_required + overhead, "output_observed_free_bytes": output_free,
              "whole_chain_admission": chain, "provider_mutation_performed": False,
              "historical_bundle_payload_required": False, "successor_requires_new_sealed_bundle": True}
+    if authentication is not None:
+        value["authoring_authentication_admission"] = authentication
     if credit is not None:
         value["provider_credit_admission"] = credit
     value["capacity_digest"] = canonical_digest(value, digest_field="capacity_digest")
@@ -292,8 +301,8 @@ def retain_failure(*, observation, attempt, output_root, admission):
              "attempt_digest": attempt["attempt_digest"], "failure_kind": KIND, "observed_at_epoch": occurred,
              "producer_result": observation["result"], "construction_records": observation["records"],
              "capacity_admission": admission}
-    if observation.get("kind") == CREDIT_KIND:
-        value["configuration_failure_kind"] = CREDIT_KIND
+    if observation.get("kind") in {CREDIT_KIND, auth.KIND}:
+        value["configuration_failure_kind"] = observation["kind"]
     value["failure_digest"] = canonical_digest(value, digest_field="failure_digest")
     path = output / (value["failure_digest"][7:] + ".json")
     if not path.exists():

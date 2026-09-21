@@ -270,6 +270,12 @@ def budget_retained_hold(receipt: Mapping[str, Any]) -> dict[str, Any]:
                 or teardown.get("continuing_spend_from_this_run") is not False):
             return hold
         if result.get("provider_runtime_output_zip_path") is not None:
+            from .task_evaluation_authoring_auth_recovery import initial_authentication_failure
+            rejected = initial_authentication_failure(result)
+            if rejected and rejected["retained_spend_usd"] <= hold["retained_spend_usd"]:
+                return {"basis": "rejected_initial_authoring_request_upper_bound",
+                        "retained_spend_usd": rejected["retained_spend_usd"],
+                        "counts_as_attempt": hold["counts_as_attempt"]}
             if not authoring_never_entered(result, request):
                 return hold
             return {"basis": "preallocation_unentered_authoring", "retained_spend_usd": 0.0,
