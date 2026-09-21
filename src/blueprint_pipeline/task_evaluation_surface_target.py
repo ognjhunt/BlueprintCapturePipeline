@@ -19,6 +19,27 @@ def require(condition, code):
         raise ValueError(code)
 
 
+def _target_digest_matches(value):
+    if value["target_digest"] in {
+        canonical_digest(value, digest_field="target_digest"),
+        cross_runtime_canonical_digest(value, digest_field="target_digest"),
+    }:
+        return True
+    # JavaScript loses integral float notation (1.0 -> 1). Retain the native
+    # seal without changing values: at most eight numeric fields, 256 variants.
+    keys = ("radius_m", "maximum_tilt_rad", "stable_seconds",
+            "maximum_linear_speed_m_s", "maximum_angular_speed_rad_s")
+    numbers = [value[key] for key in keys] + value["surface_position_world_m"]
+    variants = [(int(n), float(n)) if float(n).is_integer() and float(n) == n else (n,)
+                for n in numbers]
+    for row in product(*variants):
+        candidate = {**value, **dict(zip(keys, row[:5], strict=True)),
+                     "surface_position_world_m": list(row[5:])}
+        if canonical_digest(candidate, digest_field="target_digest") == value["target_digest"]:
+            return True
+    return False
+
+
 def validate_surface_target(value):
     fields = {"schema_version", "shape", "non_colliding", "visible_label", "radius_m",
               "surface_position_world_m", "support_prim_path", "support_source_instance_id",
@@ -40,9 +61,7 @@ def validate_surface_target(value):
         require(type(value[key]) in (int, float) and math.isfinite(value[key])
                 and value[key] > 0, "surface_target_threshold_invalid")
     require(value["radius_m"] <= 0.5 and value["maximum_tilt_rad"] < math.pi / 2
-            and value["target_digest"] in {
-                canonical_digest(value, digest_field="target_digest"),
-                cross_runtime_canonical_digest(value, digest_field="target_digest")},
+            and _target_digest_matches(value),
             "surface_target_digest_invalid")
     return dict(value)
 
