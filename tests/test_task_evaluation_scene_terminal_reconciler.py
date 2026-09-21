@@ -272,11 +272,15 @@ def _publication(projection: dict) -> dict:
     return value
 
 
-def _env(tmp_path: Path, *, commit: str = COMMIT, source_cost: float = 2.0, policy_cost: float = 1.0):
+def _env(tmp_path: Path, *, commit: str = COMMIT, source_cost: float = 2.0, policy_cost: float = 1.0, selected_evaluation: bool = False):
     """Real owner intent + reserved scene/policy attempts + scene_policy binding."""
     now = time.time()
     intake_root = tmp_path / "intents"
     owner = owner_request()
+    if selected_evaluation:
+        owner["task"]["evaluation_source"] = {"evaluation_run_id": owner["submission_id"],
+            "source_launch_id": "completed-scene", "source_profile_digest": "sha256:"+"7"*64,
+            "configured_scene_revision_digest": "sha256:"+"8"*64}
     owner["execution"].update(max_total_spend_usd=8, max_paid_attempts=4,
                               allowed_providers=["vast"], expires_at_epoch=now + 3600)
     owner["consent"]["accepted_at_epoch"] = now - 1
@@ -691,3 +695,31 @@ def test_advance_intent_expiry_without_terminal_receipts_still_blocks(tmp_path):
                                       activation_provisioner=None, now=expired)
     assert progress["status"] == "blocked"
     assert "scene_intake_authority_expired" in progress["blockers"]
+
+
+def test_selected_evaluation_joins_its_own_terminal_result_without_scene_activation(tmp_path):
+    from blueprint_pipeline import task_evaluation_scene_progression as engine
+    env = _env(tmp_path, selected_evaluation=True)
+    projection = _receipts(env)
+    config = dict(env["config"], factory_output_root=str(tmp_path / "factory-output"))
+    def advance():
+        return engine._advance_intent(env["directory"], env["intent"], config, env["release"],
+            resolver=None, publisher=None, submitter=None, status_reader=None,
+            activation_provisioner=None, now=env["now"])
+    result = advance()
+    assert result["status"] == "completed", result
+    assert result["result_reference"]["digest"] == projection["projection_digest"]
+    assert not result["state"].get("activation")
+    assert advance() == result
+
+
+def test_selected_evaluation_cannot_complete_without_terminal_evidence(tmp_path):
+    from blueprint_pipeline import task_evaluation_scene_progression as engine
+    env = _env(tmp_path, selected_evaluation=True)
+    config = dict(env["config"], factory_output_root=str(tmp_path / "factory-output"))
+    result = engine._advance_intent(env["directory"], env["intent"], config, env["release"],
+        resolver=None, publisher=None, submitter=None, status_reader=None,
+        activation_provisioner=None, now=env["now"])
+    assert result["status"] == "awaiting_execution"
+    assert result["phase"] == "selected_team_evaluation"
+    assert result["result_reference"] is None

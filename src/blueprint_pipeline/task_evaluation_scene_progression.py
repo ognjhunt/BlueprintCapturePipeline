@@ -524,7 +524,7 @@ def _advance_intent(directory, intent, config, release, *, resolver, publisher, 
         if terminal is not None:
             state.update(terminal['state'])
             return emit(terminal['status'], terminal['phase'], terminal['blockers'], terminal.get('result_reference'))
-    if not is_preparation_only and config.get("terminal_result_root") and state.get("activation"):
+    if not is_preparation_only and config.get("terminal_result_root") and (state.get("activation") or intent["request"]["task"].get("evaluation_source")):
         from .task_evaluation_scene_terminal_reconciler import reconcile_terminal_owner_result
         terminal = reconcile_terminal_owner_result(intent=intent, config=config, release=release, now=now,
             output=safe_path(Path(config["factory_output_root"]) / intent["intent_id"] / "terminal-reconciliation"))
