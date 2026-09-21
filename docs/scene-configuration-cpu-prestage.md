@@ -58,7 +58,10 @@ staged for a provider:
    allowances, no Isaac allowance) and the host Python on `PATH`. The
    entrypoint materialises the bundled `astra_asset_authoring` wheelhouse
    runtime under `runtime_output/.venv` exactly as it does on the GPU host.
-   Secrets stay outside the work dir; the disk budget role is `cpu_prestage`;
+   Secrets stay outside the work dir. Ambient `OPENAI_API_KEY` and
+   `BLUEPRINT_OPENAI_ADMIN_KEY` values are removed from the child environment;
+   authoring keeps the attempt's scoped secret-file paths and spend gates.
+   The disk budget role is `cpu_prestage`;
    one prestage runs at a time (`<work_dir>/.cpu-prestage.lock`).
 3. The result must be `completed_prefix` for the same run id and source commit
    with a sealed `astra_split_stage_resume_binding.v1`. The runner's prefix
