@@ -864,3 +864,32 @@ def test_already_sealed_service_dir_and_profile_are_not_re_owned(
 
     assert stat.S_IMODE(profile_dir.stat().st_mode) == 0o750
     assert stat.S_IMODE(published.stat().st_mode) == 0o440
+
+
+@pytest.mark.parametrize("mode", [0o400, 0o440])
+def test_service_owned_readonly_mount_inputs_need_no_permission_rewrite(tmp_path, monkeypatch, mode):
+    from types import SimpleNamespace
+
+    parent = tmp_path / "compiled"
+    parent.mkdir(mode=0o700)
+    source = parent / "receipt.json"
+    source.write_bytes(b"sealed receipt")
+    source.chmod(mode)
+    account = pwd.getpwuid(os.geteuid()).pw_name
+    gid = source.stat().st_gid
+    profile = {"immutable_inputs": [{"name": "evaluation_run_spec", "path": str(source),
+        "digest": "sha256:" + hashlib.sha256(source.read_bytes()).hexdigest()}]}
+    monkeypatch.setattr(publisher, "PRODUCTION_LAUNCH_INPUT_ROOTS", (str(tmp_path),))
+    monkeypatch.setattr(publisher.os, "statvfs", lambda path: SimpleNamespace(f_flag=os.ST_RDONLY))
+
+    def refuse(*args, **kwargs):
+        raise OSError(30, "Read-only file system")
+
+    monkeypatch.setattr(Path, "chmod", refuse)
+    monkeypatch.setattr(publisher.os, "chown", refuse)
+    publisher._seal_immutable_input_permissions(profile, target_root=tmp_path / "profiles",
+        account=account, uid=os.geteuid(), gid=gid)
+    profile["immutable_inputs"][0]["digest"] = "sha256:" + "0" * 64
+    with pytest.raises(publisher.TaskEvaluationLaunchError):
+        publisher._seal_immutable_input_permissions(profile, target_root=tmp_path / "profiles",
+            account=account, uid=os.geteuid(), gid=gid)
