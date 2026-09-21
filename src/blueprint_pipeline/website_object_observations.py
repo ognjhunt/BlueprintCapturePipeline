@@ -87,7 +87,7 @@ def materialize_object_observations(*, preparation: Mapping[str, Any], source_ge
         # Check source bytes too, rather than adopting stale copied inputs.
         for row in value["frames"]:
             frame = frames[row["frame_id"]]
-            if (_sha256_file(Path(frame["image_path"])) != row["source_image_digest"]
+            if (_sha256_file(Path(frame["source_image_path"] if row.get("image_basis") == "original_capture" else frame["image_path"])) != row["source_image_digest"]
                     or _sha256_file(Path(frame["geometry_path"])) != row["source_geometry_digest"]):
                 raise ValueError("website_object_observation_source_changed")
         return {"manifest": _record(path), "candidate": _record(_checked(value["candidate"], root=root)),
@@ -140,9 +140,15 @@ def materialize_object_observations(*, preparation: Mapping[str, Any], source_ge
         mesh.CreateSubdivisionSchemeAttr(UsdGeom.Tokens.none)
         mesh.CreateDoubleSidedAttr(True)
         image = root / f"source-{index:04d}.png"
-        shutil.copyfile(frame["image_path"], image)
+        original = "source_image_path" in frame
+        image_path = Path(frame["source_image_path"] if original else frame["image_path"])
+        image_digest = frame["source_image_digest"] if original else frame["image_digest"]
+        if _sha256_file(image_path) != image_digest:
+            raise ValueError("website_object_observation_source_changed")
+        shutil.copyfile(image_path, image)
         retained.append({"frame_id": frame["frame_id"], "timestamp_seconds": frame["timestamp_seconds"],
-                         "image": _record(image, relative_to=root), "source_image_digest": frame["image_digest"],
+                         "image": _record(image, relative_to=root), "source_image_digest": image_digest,
+                         "image_basis": "original_capture" if original else "geometry_input",
                          "source_geometry_digest": frame["geometry_digest"], "triangle_count": len(triangles),
                          "mask_digest": canonical_digest(observation)})
     if not retained:
