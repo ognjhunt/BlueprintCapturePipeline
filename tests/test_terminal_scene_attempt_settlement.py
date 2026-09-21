@@ -392,13 +392,13 @@ def test_preallocation_budget_reduction_requires_bound_nonallocation_evidence(tm
     assert settlement.budget_retained_hold(receipt)["retained_spend_usd"] == 16.76
 
 
-@pytest.mark.parametrize("paid_native", [False, True])
+@pytest.mark.parametrize("paid_native", [False, True, "cpu", "cpu_unproven"])
 def test_bound_unentered_model_failure_releases_only_its_model_allowance(tmp_path, monkeypatch, paid_native):
     fx, receipt, result_path, teardown_path = _website_preallocation_failure(tmp_path, monkeypatch)
     factory = json.loads(Path(fx["factory"]["path"]).read_text())
     request = json.loads(Path(factory["submission_request"]["path"]).read_text())
     result = json.loads(result_path.read_text())
-    if paid_native:
+    if paid_native is True:
         # The fixture's historical recipe has paid preparation. Keep those
         # bounds here and mock only the independently tested archive proof.
         monkeypatch.setattr("blueprint_pipeline.task_evaluation_unentered_authoring_budget.authoring_never_entered",
@@ -408,6 +408,11 @@ def test_bound_unentered_model_failure_releases_only_its_model_allowance(tmp_pat
         teardown["status"] = "completed"
         _write(teardown_path, teardown)
         expected = request["spend"]["provider_compute_spend_cap_usd"]
+    elif paid_native in ("cpu", "cpu_unproven"):
+        monkeypatch.setattr("blueprint_pipeline.task_evaluation_unentered_authoring_budget.authoring_never_entered",
+                            lambda result, request: paid_native == "cpu")
+        result["provider_runtime_output_zip_path"] = "/retained/cpu_prestage_output.zip"
+        expected = 0 if paid_native == "cpu" else 16.76
     else:
         result["blockers"] = ["vast_adapter_failed:ValueError:artifixer_pretraining_first_stage_invalid"]
         expected = 0
@@ -423,4 +428,8 @@ def test_bound_unentered_model_failure_releases_only_its_model_allowance(tmp_pat
     attempt = json.loads((fx["directory"] / "attempts" / (receipt["attempt_id"] + ".json")).read_text())
     receipt = validated_cancellation(fx["directory"], attempt)
     assert settlement.budget_retained_hold(receipt)["retained_spend_usd"] == expected
-    assert _reserve(fx["root"], fx["intent"], "scene-configuration-successor", 17, now=300)["status"] == "reserved"
+    if paid_native == "cpu_unproven":
+        with pytest.raises(SceneIntakeError, match="spend_cap_exhausted"):
+            _reserve(fx["root"], fx["intent"], "scene-configuration-successor", 17, now=300)
+    else:
+        assert _reserve(fx["root"], fx["intent"], "scene-configuration-successor", 17, now=300)["status"] == "reserved"

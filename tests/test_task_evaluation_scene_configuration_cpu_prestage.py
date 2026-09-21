@@ -150,6 +150,31 @@ def test_prefix_runs_the_bundle_entrypoint_at_the_paid_paths_and_archives_only_c
     assert again == receipt
 
 
+def test_prefix_drops_host_raw_credentials_and_preserves_scoped_secret_files(tmp_path):
+    from blueprint_pipeline.task_evaluation_scene_configuration_builtin_producers import (
+        _RAW_SECRET_ENVIRONMENT_NAMES,
+    )
+
+    environment = {name: "host-only-secret" for name in _RAW_SECRET_ENVIRONMENT_NAMES}
+    environment.update({
+        "OPENAI_CONTENT_AGENTS_API_KEY_FILE": str(tmp_path / "scoped-key"),
+        "OPENAI_ADMIN_API_KEY_FILE": str(tmp_path / "admin-key"),
+        "BLUEPRINT_SCENE_CONFIGURATION_OPENAI_MAX_COST_USD": "3",
+    })
+    seen = {}
+    entrypoint = _fake_entrypoint(["stage-1", "stage-2", "stage-3", "stage-4"], seen=seen)
+
+    def checked_entrypoint(*args, **kwargs):
+        assert not set(_RAW_SECRET_ENVIRONMENT_NAMES).intersection(kwargs["env"])
+        return entrypoint(*args, **kwargs)
+
+    _prepare(tmp_path, checked_entrypoint, environment=environment)
+    assert seen["OPENAI_CONTENT_AGENTS_API_KEY_FILE"] == environment["OPENAI_CONTENT_AGENTS_API_KEY_FILE"]
+    assert seen["OPENAI_ADMIN_API_KEY_FILE"] == environment["OPENAI_ADMIN_API_KEY_FILE"]
+    assert seen["BLUEPRINT_SCENE_CONFIGURATION_OPENAI_MAX_COST_USD"] == "3"
+    assert environment["OPENAI_API_KEY"] == "host-only-secret"
+
+
 def test_an_entrypoint_that_did_not_complete_the_prefix_yields_no_capsule_and_clears_the_work_dir(tmp_path):
     with pytest.raises(prestage.CpuPrestageError, match="cpu_prestage_prefix_not_completed:blocked"):
         _prepare(tmp_path, _fake_entrypoint(["stage-1"], status="blocked"))

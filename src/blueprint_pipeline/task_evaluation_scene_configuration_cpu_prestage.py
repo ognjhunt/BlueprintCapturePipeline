@@ -297,6 +297,10 @@ def prepare_stage_prefix_before_gpu(
                 "BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_CLOSURE_RESERVE_SECONDS": str(int(closure_reserve_seconds)),
                 "PATH": str(python_bin) + ":" + str(environment.get("PATH") or "/usr/local/bin:/usr/bin:/bin"),
             }
+            # The host may have ambient credentials; the stage accepts only the
+            # attempt's scoped secret-file paths, just like the native worker.
+            for name in ("OPENAI_API_KEY", "BLUEPRINT_OPENAI_ADMIN_KEY"):
+                values.pop(name, None)
             values.pop(PREFIX_URL_ENV, None)
             log_path = job / "cpu_prestage_entrypoint.log"
             try:

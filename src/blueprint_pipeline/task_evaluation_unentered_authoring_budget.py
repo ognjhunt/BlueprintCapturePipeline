@@ -34,11 +34,12 @@ def _sealed(value, field):
 
 
 def authoring_never_entered(result, request):
-    """Recognize the initial Astra disclosure refusal, never a later failure.
+    """Recognize initial credential/disclosure refusals, never a later failure.
 
 Read the digest-bound complete output archive, not mutable extracted files.
-Only the input, dependency list, lock, and initial refusal log may exist in
-stage 3. A cost ledger, resumed authoring, or any later stage keeps the hold.
+Only the input and dependencies may exist before producer entry; the lock and
+initial refusal log may also exist for the disclosure check. A cost ledger,
+resumed authoring, or any later stage keeps the hold.
 """
     try:
         _sealed(result, "result_digest")
@@ -56,11 +57,12 @@ stage 3. A cost ledger, resumed authoring, or any later stage keeps the hold.
             names = archive.namelist()
             _require(len(names) == len(set(names)))
             prefix = "stages/stage-3/producer/"
-            expected = {prefix + name for name in (
-                ".astra-component.lock", "dependency_results.v1.json",
-                "stage_production_input.v1.json", "stage_producer.log")}
+            initial = {prefix + name for name in (
+                "dependency_results.v1.json", "stage_production_input.v1.json")}
+            expected = initial | {prefix + ".astra-component.lock", prefix + "stage_producer.log"}
             stage3 = {name for name in names if name.startswith("stages/stage-3/")}
-            _require(stage3 == expected and not any(
+            before_producer = stage3 == initial
+            _require((before_producer or stage3 == expected) and not any(
                 name.startswith("stages/stage-") and not name.startswith(
                     ("stages/stage-1/", "stages/stage-2/", "stages/stage-3/")) for name in names))
 
@@ -91,9 +93,15 @@ stage 3. A cost ledger, resumed authoring, or any later stage keeps the hold.
                 _sealed(row, "stage_result_digest")
                 _require(row.get("status") == "completed" and row.get("execution_class") == "no_spend"
                          and row.get("paid_execution_requested") is False and row.get("provider_mutations_performed") == 0)
-            log = read(prefix + "stage_producer.log").decode("utf-8")
-            _require("in build_authoring_request\n" in log and
-                     "blueprint_pipeline.task_evaluation_scene_configuration_astra_driver.AstraStageError: astra_derived_disclosure_not_admitted\n" in log)
+            if before_producer:
+                refusal = ("scene_configuration_provider_failed:TaskEvaluationSceneConfigurationStageProducerError:"
+                           "scene_configuration_raw_secret_environment_forbidden")
+                _require(provider.get("blockers") == [refusal]
+                         and "provider_result_blocker:" + refusal in result.get("blockers", []))
+            else:
+                log = read(prefix + "stage_producer.log").decode("utf-8")
+                _require("in build_authoring_request\n" in log and
+                         "blueprint_pipeline.task_evaluation_scene_configuration_astra_driver.AstraStageError: astra_derived_disclosure_not_admitted\n" in log)
         return True
     except (OSError, ValueError, KeyError, TypeError, AttributeError, zipfile.BadZipFile):
         return False

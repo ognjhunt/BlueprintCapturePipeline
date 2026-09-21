@@ -58,7 +58,10 @@ staged for a provider:
    allowances, no Isaac allowance) and the host Python on `PATH`. The
    entrypoint materialises the bundled `astra_asset_authoring` wheelhouse
    runtime under `runtime_output/.venv` exactly as it does on the GPU host.
-   Secrets stay outside the work dir; the disk budget role is `cpu_prestage`;
+   Secrets stay outside the work dir. Ambient `OPENAI_API_KEY` and
+   `BLUEPRINT_OPENAI_ADMIN_KEY` values are removed from the child environment;
+   authoring keeps the attempt's scoped secret-file paths and spend gates.
+   The disk budget role is `cpu_prestage`;
    one prestage runs at a time (`<work_dir>/.cpu-prestage.lock`).
 3. The result must be `completed_prefix` for the same run id and source commit
    with a sealed `astra_split_stage_resume_binding.v1`. The runner's prefix
@@ -137,3 +140,12 @@ not an authoring or simulator success. Regression coverage lives in
 Use retained-input candidate-code replays for the fix/test loop, batching fixes
 before deployment. A passing replay does not replace the final hands-off test
 against the deployed controller.
+
+The CPU credential-handoff refusal is also recognized before producer entry:
+the complete archive must contain only stage-3 input and dependencies, the
+sealed runner must name that initial refusal, and stages 1-2 must be no-spend.
+Together with the bound teardown proof that no GPU was requested, this releases
+the unused reservation. An archive containing partial authoring, cost records,
+an unknown refusal, or later work keeps the full hold. This closes the retry
+budget gap exposed by the first controller-origin CPU run without changing caps
+or rewriting its historical records.
