@@ -147,7 +147,15 @@ def validate_configured_scene_revision(
         ):
             raise TaskEvaluationConfiguredSceneRevisionError(
                 "configured_scene_revision_human_metadata_status_conflict")
-        if review_status == "paused_ungraded":
+        if review_status == "prepared_scene_ungraded":
+            from .website_scene_publication import WARNING, TRUTH_SOURCE
+            if (presentation.get("selected_from_exact_reviewed_frame_count") != 0
+                    or presentation.get("warning_label") != WARNING
+                    or appearance.get("warning_label") != WARNING
+                    or appearance.get("appearance_truth_source") != TRUTH_SOURCE
+                    or reviewer.get("kind") != "system"):
+                raise TaskEvaluationConfiguredSceneRevisionError("configured_scene_revision_website_preview_invalid")
+        elif review_status == "paused_ungraded":
             if (
                 presentation.get("selected_from_exact_reviewed_frame_count") != 0
                 or presentation.get("warning_label")

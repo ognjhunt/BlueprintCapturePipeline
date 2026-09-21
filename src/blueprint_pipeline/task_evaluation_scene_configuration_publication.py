@@ -614,7 +614,11 @@ def publish_configured_scene_revision(
             "scene_configuration_publication_output_root_invalid"
         )
     namespace = str(request["publication"]["input_namespace"])
-    artifacts = {}
+    website = bool(request["scene"].get("website_native_inputs"))
+    artifacts, thumbnail_selection = {}, None
+    if website:
+        from .website_scene_publication import publication_inputs, WARNING, TRUTH_SOURCE
+        artifacts, thumbnail_selection = publication_inputs(envelope=envelope, stage_results=stage_results, output_root=root)
     for role in (
         "configured_appearance_without_source_object",
         "appearance_removal_receipt",
@@ -629,14 +633,16 @@ def publish_configured_scene_revision(
         "appearance_visual_review_receipt",
         "configured_task_thumbnail",
     ):
-        artifacts[role] = _artifact(stage_results, role=role)[1]
-    thumbnail_selection = _thumbnail_selection(
+        if role not in artifacts:
+            artifacts[role] = _artifact(stage_results, role=role)[1]
+    thumbnail_selection = thumbnail_selection or _thumbnail_selection(
         review_receipt_path=artifacts["appearance_visual_review_receipt"],
         removal_receipt_path=artifacts["appearance_removal_receipt"],
         thumbnail_path=artifacts["configured_task_thumbnail"],
         review_mode=review_mode,
         minimum_frame_count=8,
     )
+    warning = {"warning_label": WARNING} if website else ({"warning_label": PAUSED_UNGRADED_WARNING} if review_mode == PAUSED_UNGRADED_MODE else {})
     human_review_metadata = {key: thumbnail_selection[key] for key in
         ("ai_visual_review_status", "human_approval_digest", "human_reviewer_identity", "known_artifacts") if key in thumbnail_selection}
     bundle = root / "configured_scene_bundle.v1.zip"
@@ -755,16 +761,12 @@ def publish_configured_scene_revision(
                 key: published["configured_appearance"][key]
                 for key in ("uri", "digest", "size_bytes")
             },
-            "appearance_truth_source": "interiorgs_observed_plus_labeled_generated_edit",
+            "appearance_truth_source": TRUTH_SOURCE if website else "interiorgs_observed_plus_labeled_generated_edit",
             "visual_review_status": thumbnail_selection[
                 "appearance_review_status"
             ],
             **human_review_metadata,
-            **(
-                {"warning_label": PAUSED_UNGRADED_WARNING}
-                if review_mode == PAUSED_UNGRADED_MODE
-                else {}
-            ),
+            **warning,
         },
         "geometry": {
             "candidate_collision_source": dict(scene["geometry"]["collision"]),
@@ -852,15 +854,11 @@ def publish_configured_scene_revision(
             ],
             **human_review_metadata,
             "selected_from_exact_reviewed_frame_count": (
-                0 if review_mode == PAUSED_UNGRADED_MODE else json.loads(
+                0 if website or review_mode == PAUSED_UNGRADED_MODE else json.loads(
                     artifacts["appearance_visual_review_receipt"].read_text()
                 )["review_frame_count"]
             ),
-            **(
-                {"warning_label": PAUSED_UNGRADED_WARNING}
-                if review_mode == PAUSED_UNGRADED_MODE
-                else {}
-            ),
+            **warning,
             "derived_appearance_evidence": True,
             "capture_or_physical_evidence": False,
             "image_bytes_modified_after_selection": False,
@@ -963,17 +961,13 @@ def publish_configured_scene_revision(
         "proof_boundary": {
             "thumbnail_is_derived_appearance_evidence": True,
             "thumbnail_is_capture_or_physical_evidence": False,
-            "appearance_visual_review_completed": review_mode == REQUIRED_MODE,
-            "appearance_quality_graded": review_mode == REQUIRED_MODE,
+            "appearance_visual_review_completed": not website and review_mode == REQUIRED_MODE,
+            "appearance_quality_graded": not website and review_mode == REQUIRED_MODE,
             "appearance_review_status": thumbnail_selection[
                 "appearance_review_status"
             ],
             **human_review_metadata,
-            **(
-                {"appearance_warning_label": PAUSED_UNGRADED_WARNING}
-                if review_mode == PAUSED_UNGRADED_MODE
-                else {}
-            ),
+            **({"appearance_warning_label": warning["warning_label"]} if warning else {}),
             "configuration_is_policy_evaluation": False,
             "configuration_is_deployment_or_safety_approval": False,
         },
