@@ -18,6 +18,7 @@ def setup(adopted, tmp_path, monkeypatch):
         {} if Path(path).name == 'catalog.json' else sealed(path, field))
     monkeypatch.setattr(prepare.worker, 'resolve_robot_catalog', lambda *args, **kwargs: {})
     monkeypatch.setattr(prepare.adoption, 'terminal_adoption_source', lambda **kwargs: source)
+    monkeypatch.setattr(prepare.team_runs, 'source_for_evaluation', lambda **kwargs: None)
     calls = []
     def provision(**kwargs):
         calls.append(kwargs)
@@ -46,3 +47,24 @@ def test_deploy_does_not_restart_or_refresh_existing_execution(adopted, tmp_path
                              now=1001 if state == 'expired' else 102)
     assert calls == []
     assert result['rows'] == ([{'intent_id':owner['intent_id'], 'status':'retained_started_materialization'}] if state == 'started' else [])
+
+
+@pytest.mark.parametrize('materialization', ['absent', 'deferred_only', 'paid_started'])
+def test_deploy_refreshes_team_registration_before_worker_restarts(adopted, tmp_path, monkeypatch, materialization):
+    p, config, source, owner, calls = setup(adopted, tmp_path, monkeypatch)
+    monkeypatch.setattr(prepare.team_runs, 'source_for_evaluation', lambda **kwargs: source)
+    monkeypatch.setattr(prepare.adoption, 'terminal_adoption_source',
+        lambda **kwargs: pytest.fail('selected evaluation must retain its own authority'))
+    intent = prepare.worker._scene_intent(Path(config['scene_root'])/owner['intent_id']/'intent.json')
+    binding = Path(config['progression_root'])/source['launch_id']/prepare.scoped_identity(
+        'cpu-robot-binding', intent['request']['submission_id'])
+    if materialization != 'absent':
+        (binding/'deferred-inputs').mkdir(parents=True)
+    if materialization == 'paid_started':
+        put(binding/'placement_inference.json', {})
+    result = prepare.prepare(config_path=p, expected_commit='b'*40, now=102)
+    assert len(calls) == (0 if materialization == 'paid_started' else 1)
+    assert result['rows'][0]['status'] == (
+        'retained_started_materialization' if materialization == 'paid_started' else 'installed_terminal_adoption')
+    assert result['provider_mutation_performed'] is False
+    assert result['model_called'] is False
