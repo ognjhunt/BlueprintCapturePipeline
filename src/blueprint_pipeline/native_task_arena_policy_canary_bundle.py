@@ -98,6 +98,11 @@ def preflight_sealed_policy_canary_bundle(receipt: Mapping[str, Any]) -> dict[st
             root = Path(raw)
             with zipfile.ZipFile(archive_path) as archive:
                 manifest = json.loads(archive.read("provider_runtime/adp_arena_provider_manifest.json"))
+                from .task_evaluation_control_stage_policy import CONTROLS_PAUSED
+                from .native_policy_canary_control_gate import controls_required
+                inputs = json.loads(archive.read("provider_runtime/runtime_inputs/policy_canary_runtime_inputs.json"))
+                if CONTROLS_PAUSED and controls_required(inputs.get("task_success_contract") or {}):
+                    return {**blocked, "blockers": ["task_evaluation_controls_paused_by_owner"]}
                 dependencies = manifest.get("contract_python_dependencies") or []
                 canonicalizer = next((item for item in dependencies if item.get("distribution") == "rfc8785"), {})
                 required = {"rfc8785/__init__.py", "rfc8785/_impl.py", "rfc8785/py.typed", "rfc8785-0.1.4.dist-info/LICENSE"}

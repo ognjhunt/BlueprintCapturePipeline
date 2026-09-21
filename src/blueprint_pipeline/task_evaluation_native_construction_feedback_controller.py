@@ -1805,6 +1805,14 @@ def run_native_construction_feedback_controller(
     receipt["receipt_digest"] = canonical_digest(
         receipt, digest_field="receipt_digest"
     )
+    from .task_evaluation_control_stage_policy import CONTROLS_PAUSED, AUTHORIZATION_REFERENCE
+    if qualified_candidate is not None and CONTROLS_PAUSED:
+        receipt.update(status="construction_completed_controls_omitted",
+                       controls_continuation_required=False,
+                       control_omission_authorization_reference=AUTHORIZATION_REFERENCE,
+                       controls_qualified=False, qualified_comparison_permitted=False)
+        receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+        return receipt
     if qualified_candidate is not None:
         continuation = _validate_controls_continuation(
             continue_to_controls(_copy(receipt)),

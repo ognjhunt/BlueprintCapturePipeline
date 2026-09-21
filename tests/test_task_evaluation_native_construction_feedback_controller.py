@@ -450,7 +450,10 @@ def test_feedback_scans_all_samples_and_maps_native_gate_objectives() -> None:
 
 
 @pytest.mark.parametrize("selection_strategy", ["agents_sdk", "funnel_shortlist_order"])
-def test_one_allocation_runs_feedback_rounds_then_automatically_continues_controls(selection_strategy) -> None:
+@pytest.mark.parametrize("paused", [True, False])
+def test_one_allocation_runs_feedback_rounds_then_automatically_continues_controls(selection_strategy, paused, monkeypatch) -> None:
+    from blueprint_pipeline import task_evaluation_control_stage_policy as policy
+    monkeypatch.setattr(policy, "CONTROLS_PAUSED", paused)
     run_id = "scene-839873-construction-feedback"
     first = _candidate("base-reset-a", 0, x=2.92)
     second = _candidate("entry-clearance-b", 0, x=3.04)
@@ -513,7 +516,7 @@ def test_one_allocation_runs_feedback_rounds_then_automatically_continues_contro
         selection_strategy=selection_strategy,
     )
 
-    assert receipt["status"] == "controls_continuation_queued"
+    assert receipt["status"] == ("construction_completed_controls_omitted" if paused else "controls_continuation_queued")
     assert receipt["round_count"] == 2
     assert receipt["provider_allocations_performed"] == 0
     assert receipt["allocator_retry_cap"] == 0
@@ -522,7 +525,7 @@ def test_one_allocation_runs_feedback_rounds_then_automatically_continues_contro
         second["candidate_digest"],
     ]
     assert receipt["incremental_cost_upper_bound_usd"] == pytest.approx(0.2)
-    assert len(controls_calls) == 1
+    assert len(controls_calls) == (0 if paused else 1)
     assert all(
         row[1]["expected_provider_instance_id"] == 49322931
         for row in execution_calls
@@ -1110,6 +1113,8 @@ def test_live_warm_executor_callsite_retries_exact_candidate_then_runs_controls(
 ) -> None:
     import blueprint_pipeline.task_evaluation_robot_placement_warm_executor as warm
 
+    from blueprint_pipeline import task_evaluation_control_stage_policy as policy
+    monkeypatch.setattr(policy, "CONTROLS_PAUSED", False)  # Retain coverage for explicit future resumption.
     run_id = "scene-839873-live-construction-feedback"
     first = _candidate("first", 0, x=2.92)
     second = _candidate("second", 1, x=3.04)

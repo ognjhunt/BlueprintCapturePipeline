@@ -5195,6 +5195,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             preflight_requested = probe_mode == "runtime_preflight"
             destination_requested = probe_mode == "destination_qualification"
             controls_requested = probe_mode == "controls"
+            from .task_evaluation_control_stage_policy import CONTROLS_PAUSED
+            if controls_requested and CONTROLS_PAUSED:
+                result = {"status": "blocked", "blockers": ["task_evaluation_controls_paused_by_owner"],
+                          "provider_allocations_performed": 0, "continuing_spend_from_this_run": False}
+                write_json(Path(args.adapter_output), result)
+                print(json.dumps({"success": False}, sort_keys=True))
+                return 2
             policy_requested = probe_mode == "policy"
             policy_diagnostic_requested = probe_mode == "policy_diagnostic"
             any_policy_requested = policy_requested or policy_diagnostic_requested
@@ -5202,15 +5209,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             feedback_bootstrap_requested = bool(
                 args.native_task_arena_terminal_feedback_adoption
             )
-            missing = [
-                name
-                for name in (
-                    "native_task_arena_packet",
-                    "native_task_arena_runtime_source_packet",
-                    "adp_job_dir",
-                )
-                if not getattr(args, name, None)
-            ]
+            required_inputs = ("native_task_arena_packet", "native_task_arena_runtime_source_packet", "adp_job_dir")
+            missing = [name for name in required_inputs if not getattr(args, name, None)]
             missing.extend(
                 native_feedback_runtime_blockers(args.native_task_arena_packet)
             )

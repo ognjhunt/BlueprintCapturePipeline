@@ -160,6 +160,19 @@ def continue_retained_feedback_if_requested(
         terminal_feedback_adoption_path=terminal_feedback_adoption_path,
     )
     value["native_construction_feedback_controller"] = controller
+    if controller.get("status") == "construction_completed_controls_omitted":
+        closeout = controller.get("warm_session_closeout") or {}
+        if (controller.get("continuing_spend_from_this_run") is False
+                and closeout.get("provider_instance_absent") is True):
+            final_native = controller["history"][-1]["execution"]["native_result"]
+            final_path = Path(job_dir) / "native-construction-feedback" / "qualified-native-construction-result.v1.json"
+            write_json(final_path, final_native)
+            value.update(status="completed", blockers=[], native_control_result_path=str(final_path),
+                         native_control_result_digest=final_native["result_digest"],
+                         continuing_spend_from_this_run=False, retry_cap=0, warm_session=None,
+                         warm_session_receipt_path=None, warm_session_closeout=closeout,
+                         controls_qualified=False, qualified_comparison_permitted=False)
+            return value
     if controller.get("status") != "controls_completed":
         value["status"] = "blocked"
         value["blockers"] = sorted(set(

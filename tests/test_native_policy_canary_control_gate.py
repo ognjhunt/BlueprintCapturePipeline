@@ -10,6 +10,11 @@ from blueprint_pipeline.native_policy_canary_control_gate import CONTROL_IDS, _f
 from blueprint_pipeline.native_policy_canary_matrix_gate import execute_strict_matrix, RESULT_FILENAME
 
 
+@pytest.fixture(autouse=True)
+def explicitly_resume_controls_for_legacy_execution_tests(monkeypatch):
+    from blueprint_pipeline import task_evaluation_control_stage_policy as policy
+    monkeypatch.setattr(policy, "CONTROLS_PAUSED", False)
+
 def _matrix_case(tmp_path, *, failed_control=None, failed_pair=False, failed_transfer=False, stage="all"):
     inputs = {"candidate_ids": ["pi05_droid", "groot_n17_droid"],
               "runtime_inputs_digest": "sha256:"+"1"*64, "task_success_contract": {},

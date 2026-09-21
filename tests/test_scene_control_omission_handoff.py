@@ -68,8 +68,11 @@ def prepared(tmp_path,monkeypatch):
     return state,directory,path,contract
 
 
-def test_full_handoff_uses_real_construction_without_a_controls_receipt(tmp_path,monkeypatch):
+@pytest.mark.parametrize("platform_default", [True, False])
+def test_full_handoff_uses_real_construction_without_a_controls_receipt(tmp_path,monkeypatch,platform_default):
     state,directory,directive_path,original=prepared(tmp_path,monkeypatch)
+    if platform_default:
+        directive_path.unlink()
     before=(directory/'intent.json').read_bytes()
     webapp=rehearsal._WebApp()
     publisher=rehearsal._Publisher()
@@ -105,7 +108,9 @@ def test_full_handoff_uses_real_construction_without_a_controls_receipt(tmp_path
     assert (directory/'intent.json').read_bytes()==before
     assert rehearsal._advance(tmp_path,state=state,webapp=webapp,publisher=publisher,profile_calls=profile_calls)['status']=='canary_launch_submitted'
     assert len(webapp.calls)==1
-    directive_path.unlink()
+    directive_path.unlink(missing_ok=True)
+    from blueprint_pipeline import task_evaluation_control_stage_policy as stage_policy
+    monkeypatch.setattr(stage_policy, 'CONTROLS_PAUSED', False)
     with pytest.raises(rehearsal.handoff.PolicyCanaryHandoffError,match='omission_authority_changed'):
         rehearsal._advance(tmp_path,state=state,webapp=webapp,publisher=publisher,profile_calls=profile_calls)
     assert len(webapp.calls)==1
