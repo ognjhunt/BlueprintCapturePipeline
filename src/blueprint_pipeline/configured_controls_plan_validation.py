@@ -14,6 +14,7 @@ import stat
 from typing import Any, Callable, Mapping
 
 from .decision_evidence_contracts import canonical_digest
+from .configured_scene_run_identity import evaluation_scope
 
 
 def load_configured_controls_plan(
@@ -22,6 +23,10 @@ def load_configured_controls_plan(
     commit_pattern: re.Pattern[str],
 ) -> dict[str, Any]:
     value = load_json(path, blocker="configured_controls_worker_plan_invalid")
+    try:
+        evaluation_scope(value.get("evaluation_run_id"))
+    except ValueError as exc:
+        raise error_factory(str(exc)) from exc
     schema = value.get("schema_version")
     expected_phases = (
         {"destination", "construction", "controls"}
