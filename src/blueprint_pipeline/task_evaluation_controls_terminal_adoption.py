@@ -75,6 +75,15 @@ def validate_embedded_intent_replacement(*, run_root: Path, original_path: Path,
 
     original = validate_configured_controls_autostart_intent(_json(original_path))
     replacement = validate_configured_controls_autostart_intent(_json(replacement_path))
+    if replacement.get('evaluation_authority') is not None:
+        from .task_evaluation_team_run_authority import evaluation_owner
+        binding = replacement['evaluation_authority']
+        _require(all(original.get(k) == replacement.get(k) for k in ('team_namespace', 'scene_id', 'task_id'))
+            and binding['source_launch_id'] == run_root.name, 'team_evaluation_source_mismatch')
+        evaluation_owner(source_profile=_json(run_root/'launch_profile.json'), authority=binding,
+            source_launch_id=run_root.name, configured_scene_revision_digest=binding['configured_scene_revision_digest'],
+            evaluation_run_id=replacement['evaluation_run_id'])
+        return
     authorization = _json(Path(replacement['phases']['construction']['authorization_path']))
     owner = authorization['scene_owner_attempt']['scene_attempt_binding']
     source = terminal_adoption_source(config={'scene_root': os.environ[ROOT_ENV],
@@ -103,7 +112,11 @@ def provision_terminal_controls_adoption(*, config: Mapping[str, Any], catalog: 
     directory = Path(config['scene_root'])/intent_id
     intent = worker._scene_intent(directory/'intent.json')
     worker._require(intent['authenticated_issuer'] in config['trusted_clients'], 'owner_intent_invalid')
-    source = terminal_adoption_source(config=config, intent_id=intent_id, expected_production_commit=expected_production_commit)
+    from .task_evaluation_team_run_controller import source_for_evaluation
+    source = source_for_evaluation(config=config, intent=intent, now=moment)
+    selected_evaluation = source is not None
+    if source is None:
+        source = terminal_adoption_source(config=config, intent_id=intent_id, expected_production_commit=expected_production_commit)
     if source is None:
         return None
     worker._require(not (directory/'revoked.json').exists(), 'authority_revoked')
@@ -114,15 +127,15 @@ def provision_terminal_controls_adoption(*, config: Mapping[str, Any], catalog: 
     binding, robot_assignment = resolve_controls_robot_binding(
         directory=directory, intent=intent, catalog=catalog, now=moment)
     from . import task_evaluation_completed_placement_adoption as completed
-    completed_placement = completed.discover(config=config,intent_id=intent_id,source=source,
-        expected_commit=expected_production_commit)
+    completed_placement = (None if selected_evaluation else completed.discover(config=config,
+        intent_id=intent_id, source=source, expected_commit=expected_production_commit))
     from . import task_evaluation_visual_review_continuation as visual
-    review_continuation = (None if completed_placement is not None else visual.discover(
+    review_continuation = (None if selected_evaluation or completed_placement is not None else visual.discover(
         config=config,intent_id=intent_id,source=source,expected_commit=expected_production_commit))
     from .task_evaluation_terminal_adoption_retirement import retire_unmaterialized_adoptions
     if completed_placement is not None:
         completed.retire_unused_native(config=config,intent_id=intent_id,packet=completed_placement)
-    else:
+    elif not selected_evaluation:
         retire_unmaterialized_adoptions(config=config, intent_id=intent_id,
             source=source, expected_production_commit=expected_production_commit,
             visual_review_continuation=review_continuation)
@@ -131,7 +144,10 @@ def provision_terminal_controls_adoption(*, config: Mapping[str, Any], catalog: 
     cameras = worker._asset(binding['embodiment_camera_template'])
     runtime = Path(binding['runtime_source_payload_dir'])
     worker._require(worker.payload_digest(runtime) == binding['runtime_digest'], 'runtime_digest_mismatch')
-    original_caps = {a['attempt_id'].rsplit('-', 1)[-1]: a['maximum_spend_usd'] for a in source['retired_attempts']}
+    original_caps = ({'construction': binding.get('phase_hard_cap_usd', producer.DEFAULT_PHASE_HARD_CAP_USD),
+        'controls': binding.get('phase_hard_cap_usd', producer.DEFAULT_PHASE_HARD_CAP_USD),
+        'placement': producer.DEFAULT_MAX_PLACEMENT_INFERENCE_COST_USD} if selected_evaluation else
+        {a['attempt_id'].rsplit('-', 1)[-1]: a['maximum_spend_usd'] for a in source['retired_attempts']})
     worker._require(set(original_caps) == {'construction', 'controls', 'placement'}, 'terminal_adoption_phase_caps_invalid')
     cap = min(float(binding.get('phase_hard_cap_usd', producer.DEFAULT_PHASE_HARD_CAP_USD)),
               float(original_caps['construction']), float(original_caps['controls']))
@@ -139,11 +155,13 @@ def provision_terminal_controls_adoption(*, config: Mapping[str, Any], catalog: 
     if review_continuation is not None:
         cap = min(cap, visual.NATIVE_CAP)
         inference_cap = visual.REVIEW_CAP
-    link = worker._configured_scene_preparation_link(intent=intent, preparation_queue_root=Path(config['preparation_queue_root']), expected_production_commit=source['source_commit'])
+    preparation_queue_root = Path(source.get('preparation_queue_root', config['preparation_queue_root']))
+    link = worker._configured_scene_preparation_link(intent=source.get('source_intent', intent),
+        preparation_queue_root=preparation_queue_root, expected_production_commit=source['source_commit'])
     worker._require(link is not None, 'terminal_adoption_preparation_missing')
     preparation_context = producer._preparation_context(
-        preparation_result_path=Path(config['preparation_queue_root'])/'results'/link['result_filename'],
-        preparation_queue_root=Path(config['preparation_queue_root']),expected_production_commit=source['source_commit'])
+        preparation_result_path=preparation_queue_root/'results'/link['result_filename'],
+        preparation_queue_root=preparation_queue_root,expected_production_commit=source['source_commit'])
     native_phases = producer.phase_names(preparation_context)
     if completed_placement is not None:
         import math
@@ -153,6 +171,8 @@ def provision_terminal_controls_adoption(*, config: Mapping[str, Any], catalog: 
         inference_cap = 0.0
     identity = {'owner_intent_digest': intent['intent_digest'], 'adoption': source['adoption'],
                 'execution_source_commit': expected_production_commit, 'catalog_binding_digest': canonical_digest({k:v for k,v in binding.items() if k not in {'project_spend_reconciliation', 'project_spend_observed_at_epoch'}})}
+    if selected_evaluation:
+        identity['evaluation_authority'] = source['evaluation_authority']
     if robot_assignment is not None:
         identity['robot_assignment_digest'] = robot_assignment['assignment_digest']
     if review_continuation is not None:
@@ -200,8 +220,8 @@ def provision_terminal_controls_adoption(*, config: Mapping[str, Any], catalog: 
             visual_review_continuation=review_continuation,
             completed_placement_adoption=completed_placement,
             configuration_source_commit=source['source_commit'], configuration_adoption=source['adoption'],
-            preparation_result_path=Path(config['preparation_queue_root'])/'results'/link['result_filename'],
-            preparation_queue_root=config['preparation_queue_root'], robot_asset_usd_path=robot,
+            preparation_result_path=preparation_queue_root/'results'/link['result_filename'],
+            preparation_queue_root=preparation_queue_root, robot_asset_usd_path=robot,
             runtime_source_payload_dir=runtime, embodiment_camera_template_path=cameras,
             project_spend_reconciliation_path=retained['spend_path'], controls_root=root/'inputs',
             profile_dir=config['profile_dir'], authorization_reference=authority, authorized_by=request['owner']['user_id'],
@@ -209,7 +229,9 @@ def provision_terminal_controls_adoption(*, config: Mapping[str, Any], catalog: 
             **producer.bounded_native_phase_budget(cap),
             max_inference_cost_usd=inference_cap, authority_valid_seconds=int(expiry-issued),
             now=datetime.fromtimestamp(issued, timezone.utc), external_layer_bucket=binding.get('external_layer_bucket'),
-            scene_phase_attempts=phases, scene_intake_root=config['scene_root'])
+            scene_phase_attempts=phases, scene_intake_root=config['scene_root'],
+            **({'evaluation_run_id': request['submission_id'], 'evaluation_authority': source['evaluation_authority']}
+                if selected_evaluation else {}))
         installed = producer.install_intent_into_registry(intent_path=result['intent_path'], intent_root=config['intent_root'],
             expected_production_commit=expected_production_commit, service_group=config.get('service_group','blueprint'))
         receipt = worker._seal({'status':'installed_terminal_adoption', **identity, 'intent_id':intent_id,

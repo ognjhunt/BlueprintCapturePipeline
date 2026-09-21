@@ -537,6 +537,8 @@ def _advance_intent(directory, intent, config, release, *, resolver, publisher, 
                                               else "scene_intake_authority_expired"])
     if intent["intent_id"] in config.get("paused_intent_ids", []):
         return emit("awaiting_execution", "paused", ["scene_intent_paused"])
+    if intent['request']['task'].get('evaluation_source') is not None:
+        return emit('awaiting_execution', 'selected_team_evaluation')
     if is_preparation_only and state.get("activation"):
         from .website_publication_recovery import reconcile_website_publication
         recovery = reconcile_website_publication(intent=intent, config=config, release=release)
