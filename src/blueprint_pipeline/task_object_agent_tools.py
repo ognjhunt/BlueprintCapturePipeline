@@ -150,6 +150,7 @@ class AssetTools:
                 prompt=build_physical_property_review_prompt(physical) + "\nConstruction constraints: "
                     + self.request.construction_constraints + "\nCAD readback (mm, mm3): " + canonical_json(self.cad["readback"]),
                 output_type=PhysicalPropertyReviewProposal, frames=self.request.source_frames, root=self.root)
+        self.retained_physics = (physical.model_dump(mode="json"), proposal.model_dump(mode="json"))
         physics = review_physical_properties(physical, proposal)
         save_json(self.root / "physical_property_review_result.json", physics.model_dump(mode="json"))
         if physics.accepted is None:
@@ -162,8 +163,13 @@ class AssetTools:
             prompt="Independently compare these studio renders with the ORIGINAL source images and task specification. "
             "Check required parts, shape, color, opacity and texture. Generated variants may differ only as specified; "
             "set requested_specification_satisfied for generated objects. Report actionable corrections. "
-            "Neither a file nor a plausible render proves physical truth or placement.\n" + canonical_json(context),
+            "Assess observable appearance only: native USD import, physics, exact dimensions and scene placement "
+            "are checked independently and missing proof of them is not an appearance defect. "
+            "These are uncalibrated studio views, so perspective alone does not establish a shape mismatch. "
+            "Reject visible contradictions; identify their source-image evidence. Record occluded or blurred "
+            "surfaces as limitations, not observed defects. Never infer physical truth from plausible renders.\n" + canonical_json(context),
             output_type=AppearanceReview, frames=self.request.source_frames + frames, root=attempt))
+        self.retained_visual_review = review.model_dump(mode="json")
         if not appearance_passed(review, generated=self.request.generated_specification is not None):
             return {"accepted": False, "review": review.model_dump(mode="json")}
         self.validate_candidate()
