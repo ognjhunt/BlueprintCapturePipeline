@@ -68,6 +68,7 @@ from .task_evaluation_configured_controls_openai_placement import (
     VISUAL_REVIEW_CREDENTIAL_ROLE,
     configured_controls_robot_placement_openai_gate,
     exclusive_visual_review_cost_scope,
+    validate_placement_openai_environment,
 )
 from .task_evaluation_native_construction_feedback_controller import (
     CANDIDATE_SCHEMA_VERSION as NATIVE_FEEDBACK_CANDIDATE_SCHEMA_VERSION,
@@ -1098,6 +1099,10 @@ def materialize_configured_controls_autostart(
     intent = validate_configured_controls_autostart_intent(
         _read(intent_path, blocker="configured_controls_autostart_intent_invalid")
     )
+    if openai_gate_builder is configured_controls_robot_placement_openai_gate:
+        validate_placement_openai_environment(
+            environment=dict(os.environ if environment is None else environment),
+            placement_authority=intent["placement"]["official_cost_authority"])
     task_run = profile.get("task_evaluation_run")
     if (
         receipt.get("source_commit") != intent["configuration_source_commit"]

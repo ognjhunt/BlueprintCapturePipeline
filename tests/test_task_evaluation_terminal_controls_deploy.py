@@ -68,3 +68,24 @@ def test_deploy_refreshes_team_registration_before_worker_restarts(adopted, tmp_
         'retained_started_materialization' if materialization == 'paid_started' else 'installed_terminal_adoption')
     assert result['provider_mutation_performed'] is False
     assert result['model_called'] is False
+
+
+@pytest.mark.parametrize('paid_file', [None, 'openai_official_cost_run_reservation.v1.json',
+    'openai_official_cost_run_completion.v1.json', 'openai_key_rotation_binding.json'])
+def test_cpu_candidates_and_released_lock_do_not_count_as_paid_execution(tmp_path, paid_file):
+    binding=tmp_path/'binding'
+    put(binding/'cpu-placement-checkpoints'/'digest'/'cpu-placement-checkpoint.v2.json', {})
+    (binding/'agent-placement-attempts-digest'/'attempt_000').mkdir(parents=True)
+    cost=binding/'agent-official-openai-cost'/'agent-placement-attempts-digest'/'attempt_000'
+    put(cost/'openai_scope_lock_acquired.v1.json', {})
+    put(cost/'openai_scope_lock_released.v1.json', {})
+    if paid_file:
+        put(cost/paid_file, {})
+    assert prepare._only_unpaid_preparation(binding) is (paid_file is None)
+
+
+def test_cpu_preparation_symlink_is_not_refreshable(tmp_path):
+    binding=tmp_path/'binding'
+    (binding/'cpu-placement-checkpoints').mkdir(parents=True)
+    (binding/'cpu-placement-checkpoints'/'foreign').symlink_to(tmp_path, target_is_directory=True)
+    assert not prepare._only_unpaid_preparation(binding)

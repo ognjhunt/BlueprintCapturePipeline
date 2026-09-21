@@ -163,20 +163,34 @@ def exclusive_visual_review_cost_scope(
             write_json(root / "openai_scope_lock_released.v1.json", released)
 
 
-def configured_controls_robot_placement_openai_gate(
-    *,
-    environment: Mapping[str, str],
-    placement_authority: Mapping[str, Any],
-    run_id: str,
-    request_digest: str,
-    candidate_digest: str,
-    authorization_receipt_digest: str,
-    output_root: str | Path,
-    transport: Callable[..., Mapping[str, Any]] | None = None,
-    wall_clock: Callable[[], datetime] = lambda: datetime.now(UTC),
-) -> OpenAIOfficialCostRunGate:
-    """Build the exact existing-key official-cost gate, without reserving."""
+KEY_ROTATION_ENV = "BLUEPRINT_OPENAI_PLACEMENT_KEY_ROTATION_FILE"
 
+
+def _credential_rotation(environment, authority, project_id, api_key_id):
+    """Only an explicit operator mapping can replace the sealed credential ID."""
+    if authority.get("api_key_id") == api_key_id or not environment.get(KEY_ROTATION_ENV):
+        return None
+    path = _regular_file(environment, KEY_ROTATION_ENV)
+    if path.stat().st_size > 16384 or path.stat().st_mode & 0o022:
+        raise TaskEvaluationConfiguredControlsOpenAIPlacementError("configured_controls_key_rotation_invalid")
+    try:
+        value = json.loads(path.read_text())
+    except (OSError, ValueError) as exc:
+        raise TaskEvaluationConfiguredControlsOpenAIPlacementError("configured_controls_key_rotation_invalid") from exc
+    expected = {"schema_version": "configured_controls_key_rotation.v1", "project_id": project_id,
+        "credential_role": VISUAL_REVIEW_CREDENTIAL_ROLE, "paid_resource_class": PAID_RESOURCE_CLASS,
+        "from_api_key_id": authority.get("api_key_id"), "to_api_key_id": api_key_id}
+    if (not isinstance(value, dict) or set(value) != set(expected) | {"authorization_reference"}
+            or any(value.get(k) != v for k, v in expected.items())
+            or not isinstance(value.get("authorization_reference"), str)
+            or not value["authorization_reference"].strip()):
+        raise TaskEvaluationConfiguredControlsOpenAIPlacementError("configured_controls_key_rotation_invalid")
+    return {**value, "binding_digest": canonical_digest(value)}
+
+
+def validate_placement_openai_environment(*, environment, placement_authority,
+                                         wall_clock=lambda: datetime.now(UTC)):
+    """Check the entire local credential contract before geometry; no writes or spend."""
     authority = dict(placement_authority)
     project_id = _required(environment, "OPENAI_PROJECT_ID")
     api_key_id = _required(
@@ -197,6 +211,7 @@ def configured_controls_robot_placement_openai_gate(
         raise TaskEvaluationConfiguredControlsOpenAIPlacementError(
             "configured_controls_openai_authority_invalid"
         ) from exc
+    rotation = _credential_rotation(environment, authority, project_id, api_key_id)
     if (
         set(authority)
         != {
@@ -210,7 +225,7 @@ def configured_controls_robot_placement_openai_gate(
         or authority.get("provider_id") != PROVIDER_ID
         or authority.get("credential_role") != VISUAL_REVIEW_CREDENTIAL_ROLE
         or authority.get("project_id") != project_id
-        or authority.get("api_key_id") != api_key_id
+        or (authority.get("api_key_id") != api_key_id and rotation is None)
         or authority.get("paid_resource_class") != PAID_RESOURCE_CLASS
         or not math.isfinite(maximum_cost)
         or maximum_cost <= 0
@@ -218,8 +233,6 @@ def configured_controls_robot_placement_openai_gate(
         raise TaskEvaluationConfiguredControlsOpenAIPlacementError(
             "configured_controls_openai_authority_invalid"
         )
-    root = Path(output_root).expanduser().resolve()
-    root.mkdir(parents=True, exist_ok=True)
     source_attestation_path = _regular_file(
         environment,
         "BLUEPRINT_OPENAI_ARTIFIXER_VISUAL_REVIEW_COST_SCOPE_ATTESTATION_FILE",
@@ -231,6 +244,35 @@ def configured_controls_robot_placement_openai_gate(
         api_key_id=api_key_id,
         now=wall_clock(),
     )
+    _lock_paths(environment)
+    return {"project_id": project_id, "api_key_id": api_key_id,
+        "maximum_cost": maximum_cost, "admin_key_file": admin_key_file,
+        "resolved_attestation": resolved_attestation, "rotation": rotation}
+
+
+def configured_controls_robot_placement_openai_gate(
+    *,
+    environment: Mapping[str, str],
+    placement_authority: Mapping[str, Any],
+    run_id: str,
+    request_digest: str,
+    candidate_digest: str,
+    authorization_receipt_digest: str,
+    output_root: str | Path,
+    transport: Callable[..., Mapping[str, Any]] | None = None,
+    wall_clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+) -> OpenAIOfficialCostRunGate:
+    """Build the exact existing-key official-cost gate, without reserving."""
+
+    validated = validate_placement_openai_environment(environment=environment,
+        placement_authority=placement_authority, wall_clock=wall_clock)
+    project_id, api_key_id = validated["project_id"], validated["api_key_id"]
+    maximum_cost, admin_key_file = validated["maximum_cost"], validated["admin_key_file"]
+    resolved_attestation = validated["resolved_attestation"]
+    root = Path(output_root).expanduser().resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    if validated["rotation"] is not None:
+        write_json(root / "openai_key_rotation_binding.json", validated["rotation"])
     attestation_path = root / "openai_cost_scope_attestation_robot_placement.json"
     attestation_path.write_text(
         json.dumps(resolved_attestation, indent=2, sort_keys=True) + "\n",

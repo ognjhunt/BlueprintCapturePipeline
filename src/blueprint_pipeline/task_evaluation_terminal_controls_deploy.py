@@ -19,6 +19,28 @@ from . import task_evaluation_team_run_controller as team_runs
 from .configured_scene_run_identity import scoped_identity
 
 
+def _only_unpaid_preparation(binding: Path) -> bool:
+    """Preserve CPU evidence, but never supersede an inference reservation or plan."""
+    for path in binding.rglob('*'):
+        if path.is_symlink():
+            return False
+        relative = path.relative_to(binding)
+        first = relative.parts[0]
+        if first in {'deferred-inputs', 'cpu-placement-checkpoints'}:
+            continue
+        if relative.as_posix() == 'configured_collision.usda' and path.is_file():
+            continue
+        if first.startswith('agent-placement-attempts-') and path.is_dir():
+            continue
+        if first == 'agent-official-openai-cost':
+            if path.is_dir():
+                continue
+            if path.name in {'openai_scope_lock_acquired.v1.json', 'openai_scope_lock_released.v1.json'}:
+                continue
+        return False
+    return True
+
+
 def prepare(*, config_path: str | Path, expected_commit: str, now: float | None = None) -> dict[str, Any]:
     config = worker._json(Path(config_path))
     catalog = worker.resolve_robot_catalog(worker._sealed(Path(config['robot_catalog_path']), 'catalog_digest'),
@@ -48,11 +70,9 @@ def prepare(*, config_path: str | Path, expected_commit: str, now: float | None 
         binding = state/source['launch_id']/scoped_identity('cpu-robot-binding', evaluation_id)
         worker._require(not any(p.is_symlink() for p in (path, binding, *binding.parents)), 'terminal_deploy_path_unsafe')
         if selected_evaluation and binding.exists():
-            # Deferred input fetching/geometry validation happens before any
-            # placement inference or native plan. A refusal there may leave only
-            # this directory. Preserve all old holds; do not restart paid work.
-            if any(p.name != 'deferred-inputs' or p.is_symlink() or not p.is_dir()
-                   for p in binding.iterdir()):
+            # Credential failure may leave deterministic CPU artifacts and lock
+            # receipts, but no paid reservation. Retain those bytes and all holds.
+            if not _only_unpaid_preparation(binding):
                 rows.append({'intent_id': intent_id, 'status': 'retained_started_materialization'})
                 continue
         elif binding.exists():
