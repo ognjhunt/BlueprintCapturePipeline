@@ -64,6 +64,17 @@ def materialize_automatic_phase_adoption(*, prior_runtime: Path) -> dict[str, An
         authored = original.parent
     prior_request = json.loads((authored / "request.json").read_text())
     request = validate_request(prior_request)
+    if (authored.parent / "inference/asset_session/binding.json").exists():
+        from .task_object_agent_resume import inspect_agent_candidate
+        state = inspect_agent_candidate(authored.parent, prior_request)
+        value = {"schema_version": AUTOMATIC_SCHEMA_VERSION, "prior_runtime": str(prior_runtime),
+            "phase_root_relative": str(authored.relative_to(prior_runtime)), "run_id": request.run_id,
+            "source_request_digest": request.request_digest, "phases": ["agent_candidate"],
+            "completed_artifacts": ["authoring_result"] if state["completed_result"] else [], "blender_round": state["render_attempts"] - 1,
+            "retained_files": _inventory(prior_runtime), "new_spend_authorized": False,
+            "scientific_identity_relocated": False, "adoption_digest": ""}
+        value["adoption_digest"] = canonical_digest(value, digest_field="adoption_digest")
+        return value
     phases, artifacts = [], []
     if (authored / "source_analysis.json").exists():
         phases.append("source_analysis")
@@ -190,7 +201,10 @@ def prepare_phase_adoption(*, value: Mapping[str, Any] | None, request_value: di
                 review, record = completed_visual_review(authoring_root, prior_request, old_budget,
                     round_index=value["blender_round"], execution=kwargs["adopted_blender_execution"])
                 kwargs.update(adopted_visual_review=review, visual_adoption_record=record)
-            if "authoring_result" in completed:
+            if "authoring_result" in completed and phases == ["agent_candidate"]:
+                from .task_object_agent_resume import inspect_agent_candidate
+                retained_result = inspect_agent_candidate(authoring_root.parent, prior_request)["completed_result"]
+            elif "authoring_result" in completed:
                 from .task_object_astra_authoring import appearance_passed
                 if not appearance_passed(kwargs["adopted_visual_review"]):
                     raise AssetAuthoringError("astra_automatic_completed_review_not_passed")
@@ -268,6 +282,8 @@ def prepare_phase_adoption(*, value: Mapping[str, Any] | None, request_value: di
                 return [remap_records(nested) for nested in item]
             return item
         kwargs = remap_records(kwargs)
+        if phases == ["agent_candidate"] and retained_result is None:
+            kwargs["adopted_agent_root"] = str(snapshot / authoring_root.parent.relative_to(prior))
         if retained_result is not None:
             retained_result = remap_records(retained_result)
             retained_result.update(request_digest=request_value["request_digest"],

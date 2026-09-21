@@ -84,7 +84,7 @@ def tool_definitions(asset, ledger):
 
 def execute_agent_authoring(*, request_value, output_root, budget_root, invoker,
                             cad_executor, blender_runner, blender_executable,
-                            authoring_instructions, model=None, run_agent=None):
+                            authoring_instructions, model=None, run_agent=None, adopted_agent_root=None):
     asset = AssetTools(request_value=request_value, output_root=output_root, cad_executor=cad_executor,
         blender_runner=blender_runner, blender_executable=blender_executable)
     request = asset.request
@@ -95,8 +95,14 @@ def execute_agent_authoring(*, request_value, output_root, budget_root, invoker,
     if binding_path.exists() and json.loads(binding_path.read_text()) != binding:
         raise AssetAuthoringError("authoring_session_input_changed")
     save_json(binding_path, binding)
+    retained = None
+    if adopted_agent_root is not None:
+        from .task_object_agent_resume import restore_agent_candidate
+        retained = restore_agent_candidate(asset, Path(adopted_agent_root), state_root)
     delegate = model or OpenAIProvider().get_model("gpt-6-astra")
     bounded = BudgetedAuthoringModel(delegate=delegate, invoker=invoker, run_id=request.run_id, object_id=request.object_id)
+    if retained:
+        bounded.calls = retained['author_calls']
     # Tools are local and confined; the model sees originals and accumulated
     # observations but never keys, arbitrary shell access or proof-setting tools.
     generic_brief = VisualBrief(object_identity=request.object_id, observed_parts=[], appearance_requirements=[],
@@ -125,9 +131,13 @@ def execute_agent_authoring(*, request_value, output_root, budget_root, invoker,
                                               *image_content(request.source_frames)]}]
     run = run_agent or Runner.run_sync
     try:
-        for _ in range(3):
-            run(agent, input_value, session=session, max_turns=15,
-                run_config=RunConfig(tracing_disabled=True, trace_include_sensitive_data=False))
+        review_slots = 3 - retained['completed_visual_reviews'] if retained else 3
+        if retained and retained['retained_visual_review'] is not None:
+            review_slots += 1  # Consume retained feedback without repeating its paid review.
+        for iteration in range(review_slots):
+            if not retained or iteration:
+                run(agent, input_value, session=session, max_turns=15,
+                    run_config=RunConfig(tracing_disabled=True, trace_include_sensitive_data=False))
             if asset.candidate is None:
                 input_value = "No validated render exists yet. Use the tools to build and inspect the asset."
                 continue

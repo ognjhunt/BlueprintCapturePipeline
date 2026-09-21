@@ -91,7 +91,11 @@ def agent_fixture(authoring_fixture, monkeypatch):  # noqa: F811
         f.executed.append(program)
         if program == 'broken':
             raise author.AssetAuthoringError('CAD compiler failed: unknown fillet radius')
-        return f.cad(brief='agent program', output_root=output_root, dimensions_m=request.dimensions_m)
+        result = f.cad(brief='agent program', output_root=output_root, dimensions_m=request.dimensions_m)
+        script = output_root / 'asset.py'
+        script.write_text(program)
+        result.update(program=author.file_record(script), execution='agent_program_through_pinned_cad_cli')
+        return result
 
     monkeypatch.setenv('BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS', '1')
     f.kwargs = dict(request_value=value, output_root=f.runtime / 'authoring', budget_root=f.runtime / 'inference',
@@ -222,19 +226,26 @@ def test_shared_stage_call_cap_stops_tool_loop(agent_fixture):
     assert f.executed == ['broken']
 
 
-def test_website_driver_uses_sdk_session_inside_existing_cost_gate(component, monkeypatch):  # noqa: F811
+@pytest.mark.parametrize('resume', [False, True])
+def test_website_driver_uses_sdk_session_inside_existing_cost_gate(component, monkeypatch, resume):  # noqa: F811
     path = Path(component.environment[driver._INPUT_ENV])
     value = json.loads(path.read_text())
     value['configuration']['source_observation_kind'] = 'website_capture_frames'
     value['configuration']['dimension_authority'] = 'estimated'
     monkeypatch.setattr('blueprint_pipeline.website_native_inputs.validate_website_authoring_disclosure', lambda **kw: None)
     path.write_text(json.dumps(value))
+    if resume:
+        monkeypatch.setattr(driver, 'prepare_phase_adoption', lambda **kw: {
+            'authoring_kwargs': {'adopted_agent_root': '/fixture/retained-sdk'},
+            'cad_kwargs': {}, 'prior_call_count': 7, 'adoption_digest': 'sha256:' + 'a' * 64,
+            'retained_inference_cost_usd': 0.01})
     prior = component.kwargs.pop('authoring_executor')
     seen = []
     def execute(**kwargs):
         assert 'mac_executor' not in kwargs
         assert kwargs['budget_root'].name == 'inference'
         assert callable(kwargs['cad_executor'])
+        assert kwargs.get('adopted_agent_root') == ('/fixture/retained-sdk' if resume else None)
         seen.append(True)
         return prior(**kwargs)
     monkeypatch.setattr(session, 'execute_agent_authoring', execute)
