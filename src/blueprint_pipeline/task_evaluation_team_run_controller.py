@@ -13,6 +13,8 @@ def source_for_evaluation(*, config, intent, now=None):
     selected = intent['request']['task'].get('evaluation_source')
     if selected is None:
         return None
+    from .task_evaluation_scene_policy_capability import policy_capability_blockers
+    worker._require(not policy_capability_blockers(intent['request']), 'team_evaluation_policy_unavailable')
     binding = {**selected, 'scene_intent_digest': intent['intent_digest']}
     authority.authority_scope(intent['request']['submission_id'], binding)
     launch_root = Path(config.get('launch_state_root') or os.getenv('BLUEPRINT_TASK_EVALUATION_LAUNCH_STATE_ROOT')

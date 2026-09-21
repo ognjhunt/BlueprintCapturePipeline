@@ -137,3 +137,16 @@ def test_refuses_before_reserving_or_provisioning(tmp_path, monkeypatch, mutatio
         adoption.provision_terminal_controls_adoption(config=config, catalog=args['catalog'],
             intent_id=owner['intent_id'], expected_production_commit=COMMIT, now=args['now'])
     assert not list(args['scene_root'].glob('scene-*/attempts/*.json'))
+
+
+def test_unavailable_policy_refuses_before_source_read_or_reservation(tmp_path, monkeypatch):
+    args, config, original_path, selected = _case(tmp_path, monkeypatch)
+    owner=selected('eval-one')
+    intent=intake._read(args['scene_root']/owner['intent_id']/'intent.json','intent_digest')
+    intent['request']['execution']['policy_candidates'][0]['artifact_digest']='sha256:'+'9'*64
+    def forbidden(*a, **kw):
+        raise AssertionError('source or provider must not be inspected')
+    monkeypatch.setattr(progression, '_validate_source', forbidden)
+    with pytest.raises(ValueError, match='team_evaluation_policy_unavailable'):
+        controller.source_for_evaluation(config=config, intent=intent, now=args['now'])
+    assert not list(args['scene_root'].glob('scene-*/attempts/*.json'))
