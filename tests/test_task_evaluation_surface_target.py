@@ -9,7 +9,7 @@ import pytest
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_surface_target import (
     bind_native_surface_target, derive_surface_target, marker_for_surface_target,
-    score_surface_target, validate_surface_target,
+    score_surface_target, validate_surface_target, surface_target_for_web,
 )
 
 
@@ -24,6 +24,21 @@ def target_fixture(**overrides):
 
 
 BOUNDS = {"minimum": [-0.04, -0.03, -0.07], "maximum": [0.04, 0.03, 0.07]}
+
+
+def test_web_target_digest_survives_integral_float_json_normalization():
+    from blueprint_pipeline.decision_evidence_contracts import cross_runtime_canonical_json
+    original = target_fixture()
+    retained = deepcopy(original)
+    published = surface_target_for_web(original)
+    decoded = json.loads(cross_runtime_canonical_json(published))
+    assert validate_surface_target(decoded) == decoded
+    assert original == retained
+    assert published["target_digest"] != original["target_digest"]
+    changed = deepcopy(decoded)
+    changed["surface_position_world_m"][0] += 0.01
+    with pytest.raises(ValueError, match="surface_target_digest_invalid"):
+        validate_surface_target(changed)
 
 
 def episode():

@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 
 from .common import sha256_file, utc_now_iso
+from .clean_plate_removal_response_schema import RESPONSE_SCHEMA
 
 GATE_ENV = "BLUEPRINT_ALLOW_GEMINI_CLEAN_PLATE_ANALYSIS"
 MODEL_ENV = "BLUEPRINT_GEMINI_CLEAN_PLATE_MODEL"
@@ -538,7 +539,7 @@ def _invoke_agentic_video(
             model=model, store=False,
             input=[{"type": "video", "uri": uploaded.uri, "mime_type": mime_type, "processing": ({"type": "static", "fps": STATIC_FPS} if processing == "static" else "agentic")},
                    {"type": "text", "text": prompt}],
-            response_format={"type": "text", "mime_type": "application/json"},
+            response_format={"type": "text", "mime_type": "application/json", "schema": RESPONSE_SCHEMA},
             generation_config={"max_output_tokens": 8192, "thinking_level": "low"},
             timeout=300.0,
         )
@@ -697,7 +698,7 @@ def analyze_removal_targets(*, video_path: Optional[str | Path], model: Optional
     binding = {"kind": "task_video_analysis", "model": model_name, "processing": processing_mode,
                "duration_seconds": duration, "fps": STATIC_FPS if processing_mode == "static" else None,
                "source_digest": sha256_file(path), "prompt": prompt,
-               "max_output_tokens": 8192, "thinking_level": "low"}
+               "max_output_tokens": 8192, "thinking_level": "low", "response_schema": RESPONSE_SCHEMA}
 
     def preflight():
         if not _truthy(os.getenv(GATE_ENV)) or not _api_key()[0]:
@@ -712,7 +713,7 @@ def analyze_removal_targets(*, video_path: Optional[str | Path], model: Optional
 
     # Static input has bounded frame/audio sampling. Include conservative per-second
     # metadata and prompt-byte headroom; agentic keeps the full context reservation.
-    input_tokens = (math.ceil(duration) * (258 * STATIC_FPS + 32 + 64) + len(prompt.encode()) + 4096
+    input_tokens = (math.ceil(duration) * (258 * STATIC_FPS + 32 + 64) + len(prompt.encode()) + len(json.dumps(RESPONSE_SCHEMA)) + 4096
                     if processing_mode == "static" else 1_048_576)
     return retained_gemini_call(output_root=output_root, binding=binding, task_context=task_context,
         maximum_cost_usd=gemini_quote(model=model_name, input_tokens=input_tokens, max_output_tokens=8192),

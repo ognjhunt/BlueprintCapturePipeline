@@ -9,7 +9,7 @@ import math
 from collections.abc import Mapping
 from itertools import product
 
-from .decision_evidence_contracts import canonical_digest
+from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 
 SCHEMA = "task_evaluation_surface_target.v1"
 
@@ -40,9 +40,21 @@ def validate_surface_target(value):
         require(type(value[key]) in (int, float) and math.isfinite(value[key])
                 and value[key] > 0, "surface_target_threshold_invalid")
     require(value["radius_m"] <= 0.5 and value["maximum_tilt_rad"] < math.pi / 2
-            and value["target_digest"] == canonical_digest(value, digest_field="target_digest"),
+            and value["target_digest"] in {
+                canonical_digest(value, digest_field="target_digest"),
+                cross_runtime_canonical_digest(value, digest_field="target_digest")},
             "surface_target_digest_invalid")
     return dict(value)
+
+
+def surface_target_for_web(value):
+    """Publish the same target with a digest stable across JSON runtimes.
+
+    Retained native receipts keep their original Python-owned digest.
+    """
+    result = validate_surface_target(value)
+    result["target_digest"] = cross_runtime_canonical_digest(result, digest_field="target_digest")
+    return result
 
 
 def derive_surface_target(*, destination, support, source_min, source_max, support_instance_id):
