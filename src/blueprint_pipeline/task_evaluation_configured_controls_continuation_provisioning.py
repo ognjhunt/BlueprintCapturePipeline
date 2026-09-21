@@ -30,6 +30,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from .configured_scene_run_identity import evaluation_scope
 from .decision_evidence_contracts import canonical_digest
 from .native_task_isaaclab_launch import NATIVE_TASK_ARENA_IMAGE
 from .task_evaluation_configured_controls_autostart import (
@@ -673,9 +674,11 @@ def provision_configured_controls_continuation(
     configuration_adoption: Mapping[str, Any] | None = None,
     visual_review_continuation: Mapping[str, Any] | None = None,
     completed_placement_adoption: Mapping[str, Any] | None = None,
+    evaluation_run_id: str | None = None,
 ) -> dict[str, Any]:
     """Author, publish, and seal every continuation input; return the intent path."""
 
+    scope = evaluation_scope(evaluation_run_id)
     commit = str(expected_production_commit)
     if _COMMIT.fullmatch(commit) is None:
         raise ConfiguredControlsProvisioningError("configured_controls_provisioning_commit_invalid")
@@ -919,12 +922,14 @@ def provision_configured_controls_continuation(
         "overview_image_paths": {"deferred": OVERVIEW_MODE},
     }
     intent_path = root / configured_controls_autostart_registry_name(
+        **scope,
         team_namespace=context["team_namespace"],
         scene_id=context["scene_id"],
         task_id=context["task_id"],
     )
     try:
         intent = materialize_configured_controls_autostart_intent(
+            **scope,
             configuration_source_commit=configuration_source_commit,
             configuration_adoption=configuration_adoption,
             visual_review_continuation=visual_review_continuation,
@@ -952,6 +957,7 @@ def provision_configured_controls_continuation(
     return {
         "schema_version": "task_evaluation_configured_controls_continuation_provisioning.v1",
         "status": "configured_controls_continuation_provisioned",
+        **scope,
         "expected_production_commit": commit,
         "team_namespace": context["team_namespace"],
         "scene_id": context["scene_id"],
@@ -1004,9 +1010,11 @@ def install_intent_into_registry(
     root.mkdir(parents=True, exist_ok=True, mode=0o750)
     registry_name = (
         configured_controls_autostart_adoption_registry_name(
+            **evaluation_scope(intent.get("evaluation_run_id")),
             team_namespace=intent["team_namespace"], scene_id=intent["scene_id"],
             task_id=intent["task_id"], source_launch_id=adoption["source_launch_id"],
         ) if adoption["mode"] == "explicit_terminal_adoption" else configured_controls_autostart_registry_name(
+        **evaluation_scope(intent.get("evaluation_run_id")),
         team_namespace=intent["team_namespace"],
         scene_id=intent["scene_id"],
         task_id=intent["task_id"],

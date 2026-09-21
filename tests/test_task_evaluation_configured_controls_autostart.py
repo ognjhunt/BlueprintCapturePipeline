@@ -47,7 +47,7 @@ def _release_template() -> bytes:
 
 
 def _intent(
-    tmp_path: Path, *, with_destination: bool = False
+    tmp_path: Path, *, with_destination: bool = False, evaluation_run_id: str | None = None
 ) -> tuple[Path, dict[str, object]]:
     names = (
         "robot_asset_usd_path",
@@ -99,6 +99,7 @@ def _intent(
         output_path=destination,
         openai_project_id="proj_test",
         openai_api_key_id="key_visual_review",
+        **({"evaluation_run_id": evaluation_run_id} if evaluation_run_id is not None else {}),
     )
     return destination, value
 
@@ -919,10 +920,13 @@ def test_native_feedback_universe_expands_cpu_inventory_into_bounded_exact_varia
     )
 
 
+@pytest.mark.parametrize("evaluation_run_id", [None, "robot-team-request-one"])
 def test_autostart_plan_binds_placement_aware_not_prelaunch_world_cameras(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, evaluation_run_id
 ) -> None:
-    intent_path, intent = _intent(tmp_path)
+    from blueprint_pipeline.configured_scene_run_identity import scoped_identity
+    intent_path, intent = _intent(tmp_path, evaluation_run_id=evaluation_run_id)
+    placement_directory = scoped_identity("cpu-robot-binding", evaluation_run_id)
     camera_template_path = Path(intent["paths"]["cameras_path"])
     camera_template_path.write_text(
         json.dumps(_camera_template()) + "\n", encoding="utf-8"
@@ -1104,7 +1108,7 @@ def test_autostart_plan_binds_placement_aware_not_prelaunch_world_cameras(
                 tmp_path
                 / "progression"
                 / source_launch_id
-                / "cpu-robot-binding"
+                / placement_directory
                 / "cpu-placement-checkpoints"
                 / checkpoint_binding_digest.removeprefix("sha256:")
             )
@@ -1181,6 +1185,7 @@ def test_autostart_plan_binds_placement_aware_not_prelaunch_world_cameras(
     )
 
     assert result["intent_digest"] == intent["intent_digest"]
+    assert captured.get("evaluation_run_id") == evaluation_run_id
     assert result["cpu_placement_checkpoint_binding_digest"] == (
         captured["cpu_checkpoint_binding_digest"]
     )
@@ -1188,7 +1193,7 @@ def test_autostart_plan_binds_placement_aware_not_prelaunch_world_cameras(
     # The result is bound to the intent that produced it, so a successor intent
     # derives its own destination instead of failing closed on this one forever.
     assert autostart._autostart_result_path(
-        root=legacy_result_path.parent,
+        root=legacy_result_path.parent.parent / placement_directory,
         intent_digest=str(intent["intent_digest"]),
     ).is_file()
     assert not (

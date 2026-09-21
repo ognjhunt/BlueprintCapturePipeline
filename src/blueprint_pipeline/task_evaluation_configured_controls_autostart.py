@@ -31,6 +31,7 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from .configured_scene_run_identity import evaluation_scope, scoped_identity
 from .decision_evidence_contracts import canonical_digest
 from .openai_official_cost_gate import (
     RUN_COMPLETION_SCHEMA_VERSION,
@@ -426,10 +427,12 @@ def materialize_configured_controls_autostart_intent(
     configuration_adoption: Mapping[str, Any] | None = None,
     visual_review_continuation: Mapping[str, Any] | None = None,
     completed_placement_adoption: Mapping[str, Any] | None = None,
+    evaluation_run_id: str | None = None,
 ) -> dict[str, Any]:
     """Seal all fixed downstream bytes before the configuration launch."""
 
     draft: dict[str, Any] = {
+        **evaluation_scope(evaluation_run_id),
         "schema_version": destination_phases.schema_for_phases(phases),
         "enabled": True,
         "expected_production_commit": expected_production_commit,
@@ -506,10 +509,11 @@ def materialize_configured_controls_autostart_intent(
 
 
 def configured_controls_autostart_registry_name(
-    *, team_namespace: str, scene_id: str, task_id: str
+    *, team_namespace: str, scene_id: str, task_id: str, evaluation_run_id: str | None = None
 ) -> str:
     identity = canonical_digest(
         {
+            **evaluation_scope(evaluation_run_id),
             "team_namespace": team_namespace,
             "scene_id": scene_id,
             "task_id": task_id,
@@ -519,10 +523,12 @@ def configured_controls_autostart_registry_name(
 
 
 def configured_controls_autostart_adoption_registry_name(
-    *, team_namespace: str, scene_id: str, task_id: str, source_launch_id: str
+    *, team_namespace: str, scene_id: str, task_id: str, source_launch_id: str,
+    evaluation_run_id: str | None = None,
 ) -> str:
     identity = canonical_digest(
         {
+            **evaluation_scope(evaluation_run_id),
             "team_namespace": team_namespace,
             "scene_id": scene_id,
             "task_id": task_id,
@@ -540,9 +546,11 @@ def stage_configured_controls_autostart_intent(
     scene_id: str,
     task_id: str,
     output_path: str | Path,
+    evaluation_run_id: str | None = None,
 ) -> dict[str, Any]:
     """Validate a registry intent and copy its exact bytes into a launch set."""
 
+    evaluation_scope(evaluation_run_id)
     source = Path(source_path).expanduser()
     value = validate_configured_controls_autostart_intent(
         _read(source, blocker="configured_controls_autostart_intent_invalid")
@@ -552,6 +560,7 @@ def stage_configured_controls_autostart_intent(
         or value["team_namespace"] != team_namespace
         or value["scene_id"] != scene_id
         or value["task_id"] != task_id
+        or value.get("evaluation_run_id") != evaluation_run_id
     ):
         raise TaskEvaluationConfiguredControlsAutostartError(
             "configured_controls_autostart_intent_identity_mismatch"
@@ -1139,7 +1148,7 @@ def materialize_configured_controls_autostart(
         raise TaskEvaluationConfiguredControlsAutostartError(
             "configured_controls_autostart_adoption_mode_invalid"
         )
-    root = Path(progression_root).expanduser() / source_launch_id / "cpu-robot-binding"
+    root = Path(progression_root).expanduser() / source_launch_id / scoped_identity("cpu-robot-binding", intent.get("evaluation_run_id"))
     root.mkdir(parents=True, exist_ok=True, mode=0o750)
     try:
         paths = deferred_inputs.resolve_deferred_inputs(
@@ -1429,6 +1438,7 @@ def materialize_configured_controls_autostart(
         "phases": intent["phases"],
     }
     plan = dict(plan_materializer(
+        **evaluation_scope(intent.get("evaluation_run_id")),
         source_launch_id=source_launch_id,
         launch_state_root=launch_root,
         expected_production_commit=intent["expected_production_commit"],

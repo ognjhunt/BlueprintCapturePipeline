@@ -13,6 +13,7 @@ import hashlib
 from pathlib import Path
 from typing import Any, Mapping
 
+from .configured_scene_run_identity import evaluation_scope
 from .decision_evidence_contracts import canonical_digest
 from .task_evaluation_retained_controls_evidence import _file, _read
 
@@ -322,6 +323,7 @@ def materialize(
             native_construction_candidate_universe_reference=universe_ref,
         )
     plan = plan_materializer(
+        **evaluation_scope(intent.get("evaluation_run_id")),
         source_launch_id=source_launch_id,
         launch_state_root=launch_root,
         expected_production_commit=intent["expected_production_commit"],
