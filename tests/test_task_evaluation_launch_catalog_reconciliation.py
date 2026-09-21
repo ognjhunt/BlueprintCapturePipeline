@@ -236,6 +236,7 @@ def test_a_symlinked_profile_fails_closed(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("inactive_blocker", ["scene_execution_owner_revoked",
+                                              "scene_execution_owner_expired",
                                               "scene_execution_owner_attempt_cancelled_before_execution",
                                               "scene_execution_owner_store_missing"])
 @pytest.mark.parametrize("extra_blocker", [None, "scene_execution_owner_record_mismatch"])
