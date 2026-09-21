@@ -695,6 +695,7 @@ def build_configured_controls_activation_request(
     authorization: Mapping[str, Any],
     lane: str,
     lineage_artifact_paths: Mapping[str, str | Path] | None = None,
+    activation_id: str | None = None,
 ) -> dict[str, Any]:
     """Build the exact request so coordinator authority can bind its intent."""
 
@@ -764,7 +765,7 @@ def build_configured_controls_activation_request(
     return _activation_request(
         lane=lane,
         expected_production_commit=state["expected_production_commit"],
-        activation_id=(
+        activation_id=activation_id or (
             preparation_request["run_id"]
             + {
                 "native_task_arena_destination_qualification": "-destination",
@@ -796,6 +797,7 @@ def stage_configured_controls_activation(
     queue_root: str | Path,
     submitted_by: str,
     lineage_artifact_paths: Mapping[str, str | Path] | None = None,
+    activation_id: str | None = None,
     activation_stager: ActivationStager | None = None,
 ) -> dict[str, Any]:
     """Queue construction or the combined control pair; never execute either."""
@@ -816,6 +818,7 @@ def stage_configured_controls_activation(
         authorization=authorization,
         lane=lane,
         lineage_artifact_paths=lineage_artifact_paths,
+        activation_id=activation_id,
     )
     if activation_stager is None:
         from .task_evaluation_launch_activation_queue import (

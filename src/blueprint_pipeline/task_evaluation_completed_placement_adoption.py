@@ -129,6 +129,36 @@ def native_submission_absent(*, config: Mapping[str, Any], plan: Mapping[str, An
     )
 
 
+def native_startup_failed(*, config: Mapping[str, Any], plan: Mapping[str, Any]) -> bool:
+    """Reuse placement after a closed startup loss, retaining the spent attempt.
+
+    This permits a corrected release to reuse CPU evidence. It neither cancels
+    the consumed hold nor grants a new allocation; normal intake reserves that.
+    """
+    from .task_evaluation_native_startup_recovery import inspect_failure
+    state = Path(config.get("progression_root") or os.getenv("BLUEPRINT_TASK_EVALUATION_CONFIGURED_CONTROLS_STATE_ROOT")
+        or str(Path(config["scene_root"]).parent / "task-evaluation-configured-controls"))
+    root = state / plan["source_launch_id"] / progression_directory(plan['expected_production_commit'], plan.get('evaluation_run_id'))
+    # Later phases or a pending same-release replacement own their continuation.
+    if (sorted(p.name for p in root.glob("*launch_progression.json")) != ["construction_launch_progression.json"]
+            or sorted(p.name for p in root.glob("*activation_progression.json")) != ["construction_activation_progression.json"]
+            or (root / "startup-recovery").exists()):
+        return False
+    launch = _read(root / "construction_launch_progression.json")
+    activation = _read(root / "construction_activation_progression.json")
+    require(all(v.get("progression_digest") == canonical_digest(v, digest_field="progression_digest")
+        for v in (launch, activation)), "native_progression_changed")
+    require(activation["activation_request"]["activation_id"] == plan["future_outputs"]["construction"]["expected_activation_id"],
+        "native_activation_changed")
+    launch_root = Path(config.get("launch_state_root") or os.getenv("BLUEPRINT_TASK_EVALUATION_LAUNCH_STATE_ROOT")
+        or str(Path(config["scene_root"]).parent / "task-evaluation-launch-runs"))
+    try:
+        return inspect_failure(run_root=launch_root / launch["launch_id"], launch=launch, activation=activation,
+            scene_root=Path(config["scene_root"])) is not None
+    except ValueError:
+        return False  # Execution, unknown cause or unresolved teardown is not reusable here.
+
+
 def discover(
     *, config: Mapping[str, Any], intent_id: str, source: Mapping[str, Any], expected_commit: str
 ) -> dict[str, Any] | None:
@@ -188,7 +218,8 @@ def discover(
         }
         packet["adoption_digest"] = canonical_digest(packet, digest_field="adoption_digest")
         verified = validate_adoption(packet)
-        if native_submission_absent(config=config, plan=verified["plan"]):
+        if (native_submission_absent(config=config, plan=verified["plan"])
+                or native_startup_failed(config=config, plan=verified["plan"])):
             matches.append(packet)
     require(len(matches) <= 1, "ambiguous_sources")
     return matches[0] if matches else None
@@ -206,9 +237,9 @@ def retire_unused_native(
         dry_run or running_release_commit() == packet["execution_commit"],
         "running_release_required",
     )
-    require(
-        native_submission_absent(config=config, plan=source["plan"]), "native_submission_started"
-    )
+    if not native_submission_absent(config=config, plan=source["plan"]):
+        require(native_startup_failed(config=config, plan=source["plan"]), "native_submission_started")
+        return  # The prior GPU cost remains in the owner ledger; never cancel it as unused.
     directory = Path(config["scene_root"]) / intent_id
     with intake._lock(Path(config["scene_root"])):
         for phase in source["intent"]["phases"].values():
