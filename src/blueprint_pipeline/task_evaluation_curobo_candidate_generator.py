@@ -252,20 +252,13 @@ fi
 test "$(git -C "$root" rev-parse HEAD)" = {CUROBO_BACKEND_IDENTITY['source_revision']}
 test "$(git -C "$root" rev-parse 'HEAD^{{tree}}')" = {CUROBO_BACKEND_IDENTITY['source_tree']}
 test "sha256:$(sha256sum "$root/LICENSE" | cut -d' ' -f1)" = {CUROBO_BACKEND_IDENTITY['license_sha256']}
-# setuptools_scm resolves the dynamic version from git metadata, and a depth-1
-# fetch of a bare revision carries no tags, so the built distribution reported
-# 0.0.0 -- and the pretend-version variable below demonstrably did not survive
-# into the isaac python wrapper's build environment (run r11 installed 0.0.0
-# with it set). Restore the tag locally instead: the revision, tree, and
-# LICENSE digests above already prove this is the tagged release, so tagging
-# is bookkeeping, not trust, and it works through any environment scrubbing.
+# Restore the tag only after verifying the immutable source identity.
 git -C "$root" tag -f {CUROBO_BACKEND_IDENTITY['source_tag']} {CUROBO_BACKEND_IDENTITY['source_revision']}
-# nvidia-curobo declares a dynamic version that setuptools_scm resolves from
-# git metadata. The pinned checkout is a depth-1 fetch of a bare revision, so
-# it carries no tags, git describe finds nothing, and the built distribution
-# reports a dev version instead of the release. That made the version check
-# below fail on every provisioning attempt after a clean clone and install.
-# Pin it to the identity the revision, tree and license digests already prove.
+# --no-build-isolation does not install upstream build requirements. Without
+# setuptools_scm, setuptools silently emits 0.0.0 even with the release tag and
+# PRETEND_VERSION present. Install the missing build plugin in Isaac's Python
+# before building, without replacing its existing runtime dependencies.
+/isaac-sim/python.sh -m pip install --no-deps setuptools-scm==8.3.1
 SETUPTOOLS_SCM_PRETEND_VERSION_FOR_NVIDIA_CUROBO={CUROBO_BACKEND_IDENTITY['package_version']} \
   /isaac-sim/python.sh -m pip install -e "$root" --no-deps --no-build-isolation
 PYTHONPATH="$root" /isaac-sim/python.sh - <<'PY'
