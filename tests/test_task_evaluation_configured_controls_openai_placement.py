@@ -165,3 +165,53 @@ def test_busy_vast_slot_refuses_openai_call_and_releases_partial_locks(
             fcntl.flock(first_slot.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             fcntl.flock(first_slot.fileno(), fcntl.LOCK_UN)
 
+
+
+def _rotation(environment, tmp_path, **changes):
+    value={"schema_version":"configured_controls_key_rotation.v1",
+        "project_id":"proj_scene839873", "credential_role":placement.VISUAL_REVIEW_CREDENTIAL_ROLE,
+        "paid_resource_class":placement.PAID_RESOURCE_CLASS,
+        "from_api_key_id":"key_visual_review", "to_api_key_id":"key_rotated",
+        "authorization_reference":"operator-approved-key-renewal"}
+    value.update(changes)
+    environment[placement.KEY_ROTATION_ENV]=str(_file(tmp_path/'rotation.json', json.dumps(value)))
+
+
+def test_rotated_key_requires_explicit_exact_operator_mapping(tmp_path):
+    environment=_environment(tmp_path)
+    environment["OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_ID"]="key_rotated"
+    with pytest.raises(placement.TaskEvaluationConfiguredControlsOpenAIPlacementError, match="authority_invalid"):
+        placement.validate_placement_openai_environment(environment=environment, placement_authority=_authority())
+    _rotation(environment,tmp_path)
+    result=placement.validate_placement_openai_environment(environment=environment, placement_authority=_authority())
+    assert result['maximum_cost']==2.56
+    assert result['api_key_id']=='key_rotated'
+    assert result['rotation']['from_api_key_id']=='key_visual_review'
+    assert result['resolved_attestation']['api_key_id']=='key_rotated'
+    assert list(tmp_path.glob('openai_*'))==[]  # pure preflight creates no receipts
+
+
+@pytest.mark.parametrize('changes',[
+    {'from_api_key_id':'foreign'}, {'to_api_key_id':'foreign'}, {'project_id':'foreign'},
+    {'credential_role':'content_agents'}, {'paid_resource_class':'foreign'},
+    {'authorization_reference':''}, {'maximum_cost_usd':999},
+])
+def test_rotation_cannot_expand_or_replace_other_authority(tmp_path,changes):
+    environment=_environment(tmp_path)
+    environment["OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_ID"]="key_rotated"
+    _rotation(environment,tmp_path,**changes)
+    with pytest.raises(placement.TaskEvaluationConfiguredControlsOpenAIPlacementError, match="rotation_invalid"):
+        placement.validate_placement_openai_environment(environment=environment, placement_authority=_authority())
+
+
+def test_gate_records_rotation_and_keeps_original_cap(tmp_path,monkeypatch):
+    environment=_environment(tmp_path)
+    environment["OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_ID"]="key_rotated"
+    _rotation(environment,tmp_path)
+    monkeypatch.setattr(placement,'build_openai_official_cost_run_gate',lambda **kw:kw)
+    built=placement.configured_controls_robot_placement_openai_gate(environment=environment,
+        placement_authority=_authority(),run_id='run',request_digest='sha256:'+'1'*64,
+        candidate_digest='sha256:'+'2'*64,authorization_receipt_digest='sha256:'+'3'*64,
+        output_root=tmp_path/'gate')
+    assert built['api_key_id']=='key_rotated' and built['max_cost_usd']==2.56
+    assert json.loads((tmp_path/'gate/openai_key_rotation_binding.json').read_text())['binding_digest']

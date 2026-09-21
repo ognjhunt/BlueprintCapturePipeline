@@ -10,21 +10,28 @@ from __future__ import annotations
 import argparse
 from contextlib import nullcontext
 import json
+import os
 from pathlib import Path
 import tempfile
 
 from blueprint_pipeline.task_evaluation_configured_controls_autostart import materialize_configured_controls_autostart
+from blueprint_pipeline.task_evaluation_configured_controls_openai_placement import (
+    configured_controls_robot_placement_openai_gate, validate_placement_openai_environment)
 
 
 class PaidBoundaryReached(RuntimeError):
     pass
 
 
-def _stop_before_paid_gate(**_kwargs):
+def _stop_before_paid_gate(**kwargs):
+    configured_controls_robot_placement_openai_gate(**kwargs)
     raise PaidBoundaryReached('cpu_placement_complete_before_openai_reservation')
 
 
 def rehearse(*, source_launch_id: str, launch_state_root: str, intent: str) -> dict:
+    value = json.loads(Path(intent).read_text())
+    validate_placement_openai_environment(environment=os.environ,
+        placement_authority=value["placement"]["official_cost_authority"])
     root = Path(tempfile.mkdtemp(prefix='blueprint-evaluation-cpu-rehearsal-'))
     try:
         materialize_configured_controls_autostart(source_launch_id=source_launch_id,
