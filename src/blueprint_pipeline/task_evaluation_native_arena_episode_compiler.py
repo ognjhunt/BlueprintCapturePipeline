@@ -922,6 +922,15 @@ def _materialize_native_particlefield_appearance(
                 authoring_receipt_digest=None,
             ),
         }
+    from .native_task_appearance_frame_alignment import usd_geometry_bounds
+    if not nurec_volumes and not particlefields and usd_geometry_bounds(stage) is not None:
+        return {
+            "status": "existing_usd_geometry_selected", "path": str(source_path),
+            "representation": "usd_geometry", "source_configured_appearance_digest": source_digest,
+            "source_configured_appearance_size_bytes": source_size,
+            "representation_conversion_performed": False, "source_bytes_preserved": True,
+            "claim_ceiling": "development_only", "captured_scene_fidelity_proven": False,
+        }
     if len(nurec_volumes) != 1 or particlefields:
         raise TaskEvaluationNativeArenaEpisodeCompilerError(
             "episode_compiler_configured_appearance_representation_unsupported"
@@ -1242,9 +1251,10 @@ def compile_native_arena_episode(
         )
         native_appearance_path = Path(str(native_appearance.get("path") or ""))
         if (
-            native_appearance.get("representation")
-            != "particlefield_3d_gaussian_splat"
-            or native_appearance.get("exact_learned_arrays_preserved") is not True
+            not ((native_appearance.get("representation") == "particlefield_3d_gaussian_splat"
+                  and native_appearance.get("exact_learned_arrays_preserved") is True)
+                 or (native_appearance.get("representation") == "usd_geometry"
+                     and native_appearance.get("source_bytes_preserved") is True))
             or native_appearance_path.is_symlink()
             or not native_appearance_path.is_file()
             or (
@@ -1345,7 +1355,10 @@ def compile_native_arena_episode(
         "physics_frequency_hz": execution.get("physics_frequency_hz"),
         "configured_task_template_adapter": task_adapter,
         "appearance_variant": (
-            {
+            {key: native_appearance[key] for key in (
+                "representation", "source_configured_appearance_digest", "representation_conversion_performed",
+                "source_bytes_preserved", "claim_ceiling", "captured_scene_fidelity_proven")}
+            if native_appearance.get("representation") == "usd_geometry" else {
                 "representation": "particlefield_3d_gaussian_splat",
                 "source_configured_appearance_digest": native_appearance[
                     "source_configured_appearance_digest"

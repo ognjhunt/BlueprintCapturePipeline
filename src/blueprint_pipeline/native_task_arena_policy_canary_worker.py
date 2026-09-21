@@ -27,7 +27,7 @@ from blueprint_pipeline.policy_canary_worker_evidence import (
     _write_indexed_telemetry as _write_policy_canary_telemetry,
 )
 from blueprint_pipeline.appearance_render_backend import (
-    BACKEND_ISAAC_NATIVE_NUREC,
+    BACKEND_ISAAC_NATIVE_NUREC, BACKEND_ISAAC_USD_GEOMETRY,
     BACKEND_PARTICLEFIELD_3DGRUT_TRANSCODE,
     BACKEND_PARTICLEFIELD_BLUEPRINT_PRIVATE,
     AppearanceRenderBackendError,
@@ -185,12 +185,6 @@ def appearance_render_backend_from_plan(
 ) -> dict[str, Any]:
     """Seal the appearance backend the sealed scene plan actually composes.
 
-    Scene 839873's render-only probe named the ParticleField path while this
-    worker launched Isaac with no path and inherited a legacy default.  The
-    backend is now derived from the plan here, passed explicitly to the
-    launcher, and carried by digest through the session receipt so a same-pose
-    parity authority can be bound to exactly this renderer and conversion.
-
     The packet request's ``appearance_variant`` (source Gaussian digest and
     authoring implementation) is the preferred identity source; a plan whose
     ``appearance_frame_alignment`` carries ``source_asset_sha256`` and
@@ -284,7 +278,8 @@ def appearance_render_backend_from_plan(
             )
         else:
             backend = build_appearance_render_backend(
-                kind=BACKEND_ISAAC_NATIVE_NUREC,
+                kind=BACKEND_ISAAC_USD_GEOMETRY if render_path == "usd_geometry" else BACKEND_ISAAC_NATIVE_NUREC,
+                development_only=render_path == "usd_geometry",
                 source_asset_digest=composed_digest,
                 derived_asset_digest=None,
                 renderer_identity=NATIVE_TASK_ARENA_IMAGE,

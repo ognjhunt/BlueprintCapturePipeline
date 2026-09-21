@@ -459,6 +459,22 @@ def test_rigid_construction_contact_paths_bind_exact_usd_rigid_bodies(
         "robot_scene_contact": 18,
     }
 
+    # A support Xform is only resolvable when its collider is unambiguous.
+    affordance["intended_support_prim_paths"] = ["/Scene"]
+    affordance["affordance_digest"] = canonical_digest(affordance, digest_field="affordance_digest")
+    with pytest.raises(NativeTaskArenaScenePlanError, match="rigid_support_body_paths_invalid"):
+        _articulation_plan(contract, task_object_asset_path=task_path, scene_collision_asset_path=scene_path)
+    scene_stage.RemovePrim("/Scene/wall")
+    scene_stage.GetRootLayer().Save()
+    grouped = _articulation_plan(contract, task_object_asset_path=task_path, scene_collision_asset_path=scene_path)
+    assert grouped["support_contact_body_paths"] == ["{ENV_REGEX_NS}/scene_collision/floor"]
+    assert grouped["non_support_scene_contact_body_paths"] == []
+    wall = UsdGeom.Cube.Define(scene_stage, "/Scene/wall").GetPrim()
+    UsdPhysics.CollisionAPI.Apply(wall)
+    scene_stage.GetRootLayer().Save()
+    affordance["intended_support_prim_paths"] = ["/Scene/floor"]
+    affordance["affordance_digest"] = canonical_digest(affordance, digest_field="affordance_digest")
+
     contract["objects"][0]["object_type"] = "ARTICULATION"
     contract["objects"][0]["reset_state"] = {
         "joint_positions": {"display_hinge": 0.0}
