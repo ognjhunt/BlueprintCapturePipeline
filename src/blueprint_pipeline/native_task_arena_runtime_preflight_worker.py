@@ -643,6 +643,13 @@ def _plain_nurec_volume_contract(packet: Path, plan: dict[str, Any]) -> dict[str
     if asset != packet and packet not in asset.parents:
         blockers.append("native_task_arena_nurec_appearance_path_escape")
     alignment = plan.get("appearance_frame_alignment") or {}
+    if (not blockers and alignment.get("status") == "aligned"
+            and alignment.get("representation") == "usd_geometry"
+            and alignment.get("measurement_authority") == "usd_composed_geometry_bounds"):
+        return {"render_path": "usd_geometry", "asset_relative_path": relative,
+                "nurec_volume_signals_present": False, "spg_source_asset_authored": False,
+                "spg_graph_execution_required": False, "renderer_extension_activation_expected": False,
+                "passed": True, "blockers": []}
     particlefield = (
         alignment.get("status") == "aligned"
         and alignment.get("representation")

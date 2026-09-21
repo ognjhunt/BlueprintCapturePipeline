@@ -53,6 +53,7 @@ UPSTREAM_SORTING_MODE_HINTS = frozenset({"zDepth", "cameraDistance", "rayHitDist
 #: is the only authority on which asset the arena composes, so the launch
 #: receipt has to be derived from it rather than chosen by a function default.
 APPEARANCE_REPRESENTATION_RENDER_PATHS: dict[str, str] = {
+    "usd_geometry": "usd_geometry",
     "nurec_volume": "plain_nurec_volume",
     "particlefield_3d_gaussian_splat": "particlefield_3d_gaussian_splat",
 }
