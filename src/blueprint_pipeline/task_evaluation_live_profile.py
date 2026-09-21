@@ -551,6 +551,10 @@ def build_lane_live_profile(
                 profile_binding_identity.encode("utf-8")
             ).hexdigest()[:12]
             profile_id = f"{profile_id}-binding-{binding_digest}"
+    # Website scene/task/revision IDs can exceed the dispatcher's 192 characters.
+    # Preserve existing short IDs and bind every byte of longer valid identities.
+    if len(profile_id) > 192 and all(c.isalnum() or c in "._-" for c in profile_id):
+        profile_id = profile_id[:127] + "-" + hashlib.sha256(profile_id.encode()).hexdigest()
     worst_case = max_hourly_rate_usd * hard_ttl_seconds / 3600.0
     context = LaneLiveProfileContext(
         receipt_path=receipt_path,
