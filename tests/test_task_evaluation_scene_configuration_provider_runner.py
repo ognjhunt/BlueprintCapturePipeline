@@ -73,7 +73,8 @@ def test_provider_runner_redacts_failure_before_retaining_result(
     assert blocker.count("<redacted>") == 2
 
 
-def test_astra_runtime_refusal_is_reported_before_training(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("runtime_mode", ["refused", "packaged", "configured"])
+def test_astra_runtime_preflight_admits_one_runtime_before_stages(tmp_path, monkeypatch, capsys, runtime_mode):
     from blueprint_pipeline import task_evaluation_scene_configuration_astra_driver as astra
     from blueprint_pipeline import task_evaluation_scene_configuration_builtin_producers as producers
     runner = _provider_runner()
@@ -90,19 +91,31 @@ def test_astra_runtime_refusal_is_reported_before_training(tmp_path, monkeypatch
     monkeypatch.setattr(producers, '_validate_toolchain', lambda **_: ({'stages': {
         'content_agents_rigid_replacement': {'component_entrypoint': 'component/run.sh'}}}, []))
     calls = []
+    configured = str(tmp_path / 'installed-blender')
+    monkeypatch.setenv('BLUEPRINT_BLENDER_RUNTIME_ROOT', configured if runtime_mode == 'configured' else '')
 
-    def refusal(**kwargs):
+    def preflight(**kwargs):
         calls.append(kwargs)
-        raise RuntimeError('astra_sandboxed_cad_runtime_preflight_failed')
+        if runtime_mode == 'refused':
+            raise RuntimeError('astra_sandboxed_cad_runtime_preflight_failed')
 
-    monkeypatch.setattr(astra, 'preflight_astra_execution_runtime', refusal)
-    monkeypatch.setattr(runner, 'execute_scene_configuration_stage_chain',
-                        lambda **_: calls.append('training-must-not-run'))
+    def stages(**kwargs):
+        import os
+        calls.append(os.environ['BLUEPRINT_BLENDER_RUNTIME_ROOT'])
+        raise RuntimeError('test_stops_before_stage_execution')
+
+    monkeypatch.setattr(astra, 'preflight_astra_execution_runtime', preflight)
+    monkeypatch.setattr(runner, 'execute_scene_configuration_stage_chain', stages)
     assert runner.main() == 2
-    assert len(calls) == 1 and calls[0]['package'] == runtime/'toolchain/component'
+    assert calls[0]['package'] == runtime/'toolchain/component'
     logged = capsys.readouterr().out
-    assert 'BLUEPRINT_SCENE_CONFIGURATION_FAILURE:' in logged
-    assert 'astra_sandboxed_cad_runtime_preflight_failed' in logged
+    if runtime_mode == 'refused':
+        assert len(calls) == 1
+        assert 'astra_sandboxed_cad_runtime_preflight_failed' in logged
+    else:
+        assert calls[1] == (configured if runtime_mode == 'configured'
+                            else str(output / 'astra_runtime_preflight/packaged_blender'))
+        assert 'BLUEPRINT_SCENE_CONFIGURATION_ASTRA_RUNTIME_PREFLIGHT_PASSED' in logged
 
 
 @pytest.mark.parametrize("changed_asset,stage_limit", [(False, None), (True, None), (False, "stage-4")])

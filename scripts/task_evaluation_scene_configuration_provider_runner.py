@@ -311,6 +311,9 @@ def main() -> int:
             component = toolchain / manifest["stages"]["content_agents_rigid_replacement"]["component_entrypoint"]
             preflight_astra_execution_runtime(package=component.parent,
                 output_root=output / "astra_runtime_preflight")
+            # Stage 3 revalidates the runtime; it need not extract Blender twice.
+            if not os.environ.get("BLUEPRINT_BLENDER_RUNTIME_ROOT", "").strip():
+                os.environ["BLUEPRINT_BLENDER_RUNTIME_ROOT"] = str(output / "astra_runtime_preflight/packaged_blender")
             print("BLUEPRINT_SCENE_CONFIGURATION_ASTRA_RUNTIME_PREFLIGHT_PASSED", flush=True)
         chain = _portable_stage_chain(
             execute_scene_configuration_stage_chain(
