@@ -235,6 +235,23 @@ def _success_bounds(value: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _source_matches_start(source: Mapping[str, Any], start: Sequence[float]) -> bool:
+    if source.get("status") == "frozen_before_scene_configuration_run":
+        return source.get("center_xyz_m") == list(start)
+    # Early website revisions sealed the AABB but omitted status and center.
+    # Read those immutable bytes without rewriting them or upgrading estimates.
+    if not ("status" not in source and "center_xyz_m" not in source
+            and source.get("geometry_origin") == "removed_before_reconstruction"
+            and source.get("complete_object_geometry") is False
+            and source.get("source_object_is_physics_authority") is False
+            and isinstance(source.get("source_object_id"), str) and source["source_object_id"]):
+        return False
+    lower = _vector(source.get("aabb_min_xyz_m"), field="source_object.aabb_min")
+    upper = _vector(source.get("aabb_max_xyz_m"), field="source_object.aabb_max")
+    return all(lo < hi and math.isclose((lo + hi) / 2, value, rel_tol=0, abs_tol=1e-6)
+               for lo, hi, value in zip(lower, upper, start, strict=True))
+
+
 def _runtime_geometry(
     *,
     replacement_identity: Mapping[str, Any],
@@ -253,9 +270,7 @@ def _runtime_geometry(
         or static.get("result_digest")
         != canonical_digest(static, digest_field="result_digest")
         or not isinstance(observed, Mapping)
-        or source_object.get("status")
-        != "frozen_before_scene_configuration_run"
-        or source_object.get("center_xyz_m") != list(start)
+        or not _source_matches_start(source_object, start)
         or native_import.get("status") != "qualified"
         or native_import.get("replacement_identity") != replacement_identity
         or native_import.get("native_simulator_import_qualified") is not True

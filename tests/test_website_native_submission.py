@@ -94,6 +94,10 @@ def test_prepared_capture_materializes_a_publishable_native_request_without_raw_
     # Estimated physics and placement uncertainty ride with the task, so the
     # result can abstain rather than claim feasibility the estimate cannot carry.
     task = json.loads((root / "configuration/task.json").read_text())
+    subject = json.loads((root / "configuration/subject.json").read_text())
+    assert subject["status"] == "frozen_before_scene_configuration_run"
+    assert subject["center_xyz_m"] == task["start_center_xyz_m"]
+    assert subject["source_object_is_physics_authority"] is False
     screen = task["physical_property_screen"]
     assert screen["basis"] == "estimated" and screen["bounds"]["mass_kg"][0] < screen["bounds"]["mass_kg"][1]
     assert screen["sensitivity"] == "awaiting_robot_team_selection"

@@ -159,6 +159,8 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
     success["surface_target"] = target
     selection_ref = stage.json("configuration/subject.json", {
         "schema_version": "task_evaluation_source_object_selection.v1", "scene_id": scene_id,
+        "status": "frozen_before_scene_configuration_run",
+        "center_xyz_m": template["start_center_xyz_m"],
         "source_object_id": construction["configurations"][2]["source_object_identity"],
         "review_label": subject["description"], "geometry_origin": "removed_before_reconstruction",
         "aabb_min_xyz_m": lower, "aabb_max_xyz_m": upper,
