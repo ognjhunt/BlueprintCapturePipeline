@@ -60,6 +60,15 @@ def scene_execution_authority_blockers(
     if (intent.get("intent_digest") != binding["intent_digest"]
             or any(attempt.get(k) != binding[k] for k in required - {"schema_version"})):
         return ["scene_execution_owner_record_mismatch"]
+    from .task_evaluation_scene_scope_restriction import preparation_only
+    try:
+        if (preparation_only(directory=directory, intent=intent)
+                and (attempt['attempt_id'] != 'scene-configuration-' + attempt['input_digest'].removeprefix('sha256:')[:24]
+                     or POLICY_FIELDS.intersection(value)
+                     or value.get('task_evaluation_run', {}).get('run_mode', 'scene_configuration') != 'scene_configuration')):
+            return ['scene_execution_owner_scope_excludes_robot_controls']
+    except (ValueError, OSError, KeyError, TypeError):
+        return ['scene_execution_owner_scope_restriction_invalid']
     from .task_evaluation_scene_execution_budget import validate_attempt_execution_budget
     try:
         validate_attempt_execution_budget(directory, intent, attempt)

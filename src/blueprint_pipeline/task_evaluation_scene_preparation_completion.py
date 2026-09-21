@@ -4,13 +4,13 @@ from pathlib import Path
 
 from . import task_evaluation_scene_intake as intake
 from .decision_evidence_contracts import canonical_digest
-from .task_evaluation_scene_execution_scope import scene_preparation_only
+from .task_evaluation_scene_scope_restriction import preparation_only
 from .task_evaluation_scene_progression_state import safe_path
 from .task_evaluation_public_scene_attempt_factory import record
 
 
 def reconcile_preparation_completion(*, intent, config):
-    if not scene_preparation_only(intent['request']):
+    if not preparation_only(directory=Path(config['intent_root']) / intent['intent_id'], intent=intent):
         return None
     root = safe_path(config['launch_execution_root'])
     for path in sorted(root.glob('*/launch_profile.json'), key=lambda p: p.stat().st_mtime_ns, reverse=True):
