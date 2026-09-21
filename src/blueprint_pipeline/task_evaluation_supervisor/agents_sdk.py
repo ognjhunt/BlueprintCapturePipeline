@@ -116,6 +116,12 @@ class AgentsSDKAgentSpec:
     max_tool_output_bytes: int = 0
     # Opt-in typed image tools with a separately enforced cumulative token bound.
     max_tool_context_tokens: int = 0
+    # A conservative ceiling for an initial multimodal payload. Image
+    # tokenization is provider dependent, so a multimodal caller that wants
+    # more than one turn must declare what its images cost before the call;
+    # without it the growth bound below has no floor to add to and multi-turn
+    # stays refused.
+    max_initial_multimodal_input_tokens: int = 0
     reasoning_effort: Literal["minimal", "low", "medium", "high", "xhigh", "max"] | None = None
     tool_bindings: tuple[RegisteredToolBinding, ...] = ()
     output_type: type[BaseModel] = AgentsSDKCapabilityOutput
@@ -405,6 +411,7 @@ class OpenAIAgentsSDKInvoker:
                     "agents_sdk_multimodal_input_token_ceiling_missing"
                 )
             input_token_ceiling = spec.max_input_tokens
+            initial_input_token_ceiling = spec.max_initial_multimodal_input_tokens
             input_kind = "multimodal"
             input_digest = canonical_digest({"input": input_value})
         else:
@@ -423,10 +430,16 @@ class OpenAIAgentsSDKInvoker:
                 input_token_ceiling = initial_input_token_ceiling
             elif fixed_context_ceiling >= input_token_ceiling:
                 raise AgentsSDKInvocationBlocked("agents_sdk_multimodal_fixed_context_exceeds_ceiling")
+            else:
+                initial_input_token_ceiling += fixed_context_ceiling
             if spec.max_input_tokens is None or input_token_ceiling > spec.max_input_tokens:
                 raise AgentsSDKInvocationBlocked("agents_sdk_input_context_exceeds_declared_ceiling")
         if spec.max_turns > 1:
-            if input_kind == "multimodal":
+            if input_kind == "multimodal" and not (
+                0 < spec.max_initial_multimodal_input_tokens <= (spec.max_input_tokens or 0)
+            ):
+                # An undeclared image payload cannot be added to the growth
+                # bound, so the later turns' reservation would be unprovable.
                 raise AgentsSDKInvocationBlocked(
                     "agents_sdk_multimodal_multi_turn_context_bound_unavailable"
                 )
