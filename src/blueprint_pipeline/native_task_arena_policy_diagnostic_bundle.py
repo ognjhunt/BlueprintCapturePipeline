@@ -9,6 +9,8 @@ remain mandatory and digest-bound.
 
 from __future__ import annotations
 
+from blueprint_pipeline.native_task_nurec_render_setup import camera_site_appearance_required
+
 import json
 import tempfile
 import argparse
@@ -160,7 +162,9 @@ def build_policy_diagnostic_execution_spec(
     ):
         errors.append("native_task_policy_construction_not_qualified")
     try:
-        validate_native_task_policy_start_camera_observability(construction)
+        validate_native_task_policy_start_camera_observability(
+            construction, site_appearance_render_expected=camera_site_appearance_required(scene)
+        )
     except NativeTaskCameraObservabilityError as exc:
         errors.extend(exc.errors)
     if (
@@ -288,7 +292,9 @@ def build_native_task_arena_policy_diagnostic_bundle(
     ):
         errors.append("native_task_policy_diagnostic_binding_invalid")
     try:
-        validate_native_task_policy_start_camera_observability(construction)
+        validate_native_task_policy_start_camera_observability(
+            construction, site_appearance_render_expected=camera_site_appearance_required(scene)
+        )
     except NativeTaskCameraObservabilityError as exc:
         errors.extend(exc.errors)
     if errors:

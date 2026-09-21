@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from blueprint_pipeline.native_task_nurec_render_setup import camera_site_appearance_required
+
 import json
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -155,7 +157,7 @@ def validate_qualified_rigid_construction_result(
     camera_summary: dict[str, Any] | None = None
     try:
         camera_summary = validate_native_task_policy_start_camera_observability(
-            construction
+            construction, site_appearance_render_expected=camera_site_appearance_required(scene)
         )
     except NativeTaskCameraObservabilityError as exc:
         errors.extend(exc.errors)

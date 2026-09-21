@@ -62,6 +62,15 @@ BLOCKER_APPEARANCE_RENDER_PATH_UNRESOLVED = (
 )
 
 
+def camera_site_appearance_required(plan: Mapping[str, Any]) -> bool:
+    """Only a sealed authored-surface plan may omit captured-site radiance."""
+    return not (
+        plan.get("camera_scene_scope") == "authored_development_surface"
+        and (plan.get("claim_boundary") or {}).get("captured_scene_evaluation_allowed") is False
+        and (plan.get("appearance_frame_alignment") or {}).get("representation") == "usd_geometry"
+    )
+
+
 class AppearanceRenderPathError(ValueError):
     """The scene plan does not name a supported appearance backend."""
 
