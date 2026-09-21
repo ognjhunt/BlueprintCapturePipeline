@@ -36,6 +36,16 @@ the generated program's writable sandbox. A repeated tool-call ID reuses its
 saved result; an ambiguous interrupted tool call refuses. Model-declared
 completion without validated artifacts cannot produce an accepted result.
 
+A stopped SDK session with completed CAD, renders and physics review can now
+resume at its missing independent appearance review. The existing same-run
+adoption path verifies the closed SQLite conversation, tool journal, original
+frames, CAD program/exports, inspected render bytes, mesh/USD receipts and
+completed review responses, then restores every inference reservation. CAD and
+Blender are not repeated, and neither the dollar cap nor call count resets.
+Uncheckpointed conversations and changed or uncertain outcomes refuse reuse.
+Retained rejection feedback returns to the same author conversation; a fully
+accepted result takes the existing no-cost result-adoption path.
+
 The separate initial-authentication recovery recognizes the retained first
 401/expired-key failure only when the bound archive proves no preceding model
 completion, no paid preparation, and no GPU allocation. It keeps the rejected

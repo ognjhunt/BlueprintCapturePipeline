@@ -557,11 +557,12 @@ def execute_astra_component(*, environment=None, runner=subprocess.run,
                 authoring_instructions=(cad_root / "text-to-cad/skills/cad/SKILL.md").read_text())
             if (authoring_executor is execute_asset_authoring
                     and configuration.get("source_observation_kind") == "website_capture_frames"
-                    and not adoption.get("adoption_digest")):
+                    and (not adoption.get("adoption_digest") or "adopted_agent_root" in adoption["authoring_kwargs"])):
                 from .task_object_agent_cad import execute_cad_program
                 from .task_object_agent_session import execute_agent_authoring
                 from functools import partial
                 authored = execute_agent_authoring(**arguments, budget_root=runtime / "inference",
+                    **adoption["authoring_kwargs"],
                     cad_executor=partial(execute_cad_program, cad_root=cad_root / "text-to-cad",
                         mac_root=cad_root / "Multi-Agent-CAD", sandbox=sandbox, verified_sources=verified_sources))
             else:

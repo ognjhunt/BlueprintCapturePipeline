@@ -122,7 +122,7 @@ def completed_visual_review(prior_root: Path, request_value: dict, budget_root: 
         "new_provider_call": False}
 
 
-def completed_authoring(prior_root: Path, request_value: dict) -> dict[str, Any]:
+def completed_authoring(prior_root: Path, request_value: dict, *, record_validator=verified) -> dict[str, Any]:
     path = prior_root / "result.json"
     result = json.loads(path.read_text())
     if (result.get("schema_version") != "task_object_astra_authoring_result.v1"
@@ -136,7 +136,7 @@ def completed_authoring(prior_root: Path, request_value: dict) -> dict[str, Any]
     def records(value):
         if isinstance(value, dict):
             if {"path", "sha256", "size_bytes"} <= set(value):
-                verified(value)
+                record_validator(value)
             for item in value.values():
                 records(item)
         elif isinstance(value, list):

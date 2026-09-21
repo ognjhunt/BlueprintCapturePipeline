@@ -32,6 +32,8 @@ class AssetTools:
         blender_runner.preflight()
         save_json(self.root / "request.json", request_value)
         self.brief = self.cad = self.candidate = None
+        self.retained_physics = self.source_evidence_identity = None
+        self.retained_visual_review = None
         self.cad_attempts = self.render_attempts = 0
 
     def observe_object(self, brief):
@@ -44,6 +46,8 @@ class AssetTools:
         (self.root / "CAD_BRIEF.md").write_text(self.brief.cad_brief_markdown + "\n")
         # A revised interpretation invalidates previously reviewed candidates.
         self.cad = self.candidate = None
+        self.retained_physics = self.source_evidence_identity = None
+        self.retained_visual_review = None
         return {"status": "recorded", "dimension_authority": self.request.dimension_authority}
 
     def build_cad(self, program):
@@ -54,6 +58,8 @@ class AssetTools:
         attempt = self.root / f"cad-{self.cad_attempts:02d}"
         self.cad_attempts += 1
         self.cad = self.candidate = None
+        self.retained_physics = None
+        self.retained_visual_review = None
         self.cad = self.cad_executor(program=program, output_root=attempt, request=self.request)
         save_json(self.root / "cad_result.json", self.cad)
         return {"status": "built", "readback": self.cad["readback"]}
@@ -68,6 +74,8 @@ class AssetTools:
         attempt = self.root / f"appearance-{self.render_attempts:02d}"
         self.render_attempts += 1
         self.candidate = None
+        self.retained_physics = None
+        self.retained_visual_review = None
         attempt.mkdir()
         save_json(attempt / "blender_program.json", parsed.model_dump(mode="json"))
         (attempt / "asset_program.py").write_text(parsed.program)
@@ -125,15 +133,23 @@ class AssetTools:
             physical.appearance = self.brief.proposed_appearance
             physical.material_description = self.brief.proposed_material
             record = file_record(self.root / "source_analysis.json")
+            identity = self.source_evidence_identity or dict(uri=Path(record["path"]).as_uri(),
+                sha256=record["sha256"].removeprefix("sha256:"))
             physical.evidence.append(EvidenceReference(evidence_id="source-appearance-analysis",
-                uri=Path(record["path"]).as_uri(), sha256=record["sha256"].removeprefix("sha256:"),
+                uri=identity['uri'], sha256=identity['sha256'],
                 kind="material_observation", excerpt="Candidate interpretation: " + canonical_json({
                     "material": self.brief.proposed_material, "appearance": self.brief.proposed_appearance})))
         save_json(self.root / "physical_review_input.json", physical.model_dump(mode="json"))
-        proposal = invoke_vision(invoker, self.request, capability=f"physical_property_review_{self.render_attempts}",
-            prompt=build_physical_property_review_prompt(physical) + "\nConstruction constraints: "
-                + self.request.construction_constraints + "\nCAD readback (mm, mm3): " + canonical_json(self.cad["readback"]),
-            output_type=PhysicalPropertyReviewProposal, frames=self.request.source_frames, root=self.root)
+        if self.retained_physics is not None:
+            retained_input, retained_proposal = self.retained_physics
+            if physical.model_dump(mode='json') != retained_input:
+                raise AssetAuthoringError('agent_resume_physics_inputs_changed')
+            proposal = PhysicalPropertyReviewProposal.model_validate(retained_proposal)
+        else:
+            proposal = invoke_vision(invoker, self.request, capability=f"physical_property_review_{self.render_attempts}",
+                prompt=build_physical_property_review_prompt(physical) + "\nConstruction constraints: "
+                    + self.request.construction_constraints + "\nCAD readback (mm, mm3): " + canonical_json(self.cad["readback"]),
+                output_type=PhysicalPropertyReviewProposal, frames=self.request.source_frames, root=self.root)
         physics = review_physical_properties(physical, proposal)
         save_json(self.root / "physical_property_review_result.json", physics.model_dump(mode="json"))
         if physics.accepted is None:
@@ -141,12 +157,13 @@ class AssetTools:
         attempt = self.candidate["directory"]
         context = self.request.model_dump(mode="json")
         context.pop("source_frames")
-        review = invoke_vision(invoker, self.request, capability=f"independent_visual_review_{self.render_attempts}",
+        review = (AppearanceReview.model_validate(self.retained_visual_review) if self.retained_visual_review is not None else
+            invoke_vision(invoker, self.request, capability=f"independent_visual_review_{self.render_attempts}",
             prompt="Independently compare these studio renders with the ORIGINAL source images and task specification. "
             "Check required parts, shape, color, opacity and texture. Generated variants may differ only as specified; "
             "set requested_specification_satisfied for generated objects. Report actionable corrections. "
             "Neither a file nor a plausible render proves physical truth or placement.\n" + canonical_json(context),
-            output_type=AppearanceReview, frames=self.request.source_frames + frames, root=attempt)
+            output_type=AppearanceReview, frames=self.request.source_frames + frames, root=attempt))
         if not appearance_passed(review, generated=self.request.generated_specification is not None):
             return {"accepted": False, "review": review.model_dump(mode="json")}
         self.validate_candidate()
