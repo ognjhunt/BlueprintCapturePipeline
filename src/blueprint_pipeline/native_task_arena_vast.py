@@ -194,7 +194,7 @@ def run_native_task_arena_vast(
         provider_bundle_kind=PROVIDER_BUNDLE_KIND,
         result_schema_version=RESULT_SCHEMA_VERSION,
         object_store_key_prefix=DEFAULT_KEY_PREFIX,
-        instance_label_prefix="blueprint-native-task-arena-",
+        instance_label_prefix="blueprint-task-evaluation-native-arena-construction-",
         blocker_prefix="native_task_arena",
         # Construction loads Isaac, NuRec, and one robot/scene but no policy
         # checkpoint. NVIDIA lists 8 GB minimum and 16 GB "good" for Isaac;

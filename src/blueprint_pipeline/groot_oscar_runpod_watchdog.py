@@ -83,6 +83,7 @@ CANARY_NAME_PREFIXES = (
     # sweep matches the instances this lane actually creates.
     "blueprint-task-evaluation-scene-config-",
     "blueprint-task-evaluation-native-arena-preflight-",
+    "blueprint-task-evaluation-native-arena-construction-",
     # Exact SimReady Isaac probes are independently watched under the same
     # collision-free prefix passed to their Vast adapter.
     "blueprint-adp009b-simready-",

@@ -8,20 +8,24 @@ from blueprint_pipeline import native_task_arena_vast as native
 from scripts import gpu_spend_guard as guard
 
 
-def prefix_from_producer(tmp_path, monkeypatch):
+def prefix_from_producer(tmp_path, monkeypatch, lane="runtime_preflight"):
     observed = {}
     monkeypatch.setattr(
         native, "run_arena_native_control_vast", lambda **kwargs: observed.update(kwargs) or {}
     )
-    native.run_native_task_arena_runtime_preflight_vast(
+    producer = (native.run_native_task_arena_vast if lane == "construction_canary"
+                else native.run_native_task_arena_runtime_preflight_vast)
+    producer(
         job_dir=tmp_path,
         execute=False,
         prepared_bundle={
             "schema_version": "native_task_arena_provider_bundle.v1",
-            "execution_mode": "runtime_preflight",
+            "execution_mode": lane,
             "policy_candidate_id": None,
             "candidate_policy_queried": False,
-            "expected_output_filename": "native_task_arena_runtime_preflight.v1.json",
+            "expected_output_filename": ("native_task_arena_construction_result.v1.json"
+                                         if lane == "construction_canary"
+                                         else "native_task_arena_runtime_preflight.v1.json"),
             "container_image": "test",
         },
         paid_resource_admission_grant=None,
@@ -33,14 +37,15 @@ def prefix_from_producer(tmp_path, monkeypatch):
     return observed["instance_label_prefix"]
 
 
+@pytest.mark.parametrize("lane", ["runtime_preflight", "construction_canary"])
 @pytest.mark.parametrize(
     "fault",
     [None, "old_prefix", "dead_owner", "expired", "cancelled", "wrong_deadline", "wrong_directory"],
 )
-def test_retained_v28b_owner_lookup_preserves_orphan_rule(tmp_path, monkeypatch, fault):
+def test_retained_v28b_owner_lookup_preserves_orphan_rule(tmp_path, monkeypatch, fault, lane):
     # Retained V28b ID/deadline/prefix suffix and observed age at the reaper event.
     # Its live armed state is reconstructed offline; terminal records stay untouched.
-    prefix = prefix_from_producer(tmp_path, monkeypatch) + "20260910t233211093709000-"
+    prefix = prefix_from_producer(tmp_path, monkeypatch, lane) + "20260910t233211093709000-"
     if fault == "old_prefix":
         prefix = "blueprint-native-task-arena-preflight-20260910t233211093709000-"
     root = tmp_path / "allocator/attempts/attempt_001/independent_vast_watchdog"
@@ -89,15 +94,16 @@ def test_retained_v28b_owner_lookup_preserves_orphan_rule(tmp_path, monkeypatch,
 
 
 @pytest.mark.slow
+@pytest.mark.parametrize("lane", ["runtime_preflight", "construction_canary"])
 def test_real_watchdog_subprocess_arms_is_owned_and_cancels_without_allocation(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, lane
 ):
     import shlex
     import time
     from pathlib import Path
     from blueprint_pipeline import vast_independent_watchdog_control as control
 
-    prefix = prefix_from_producer(tmp_path, monkeypatch)
+    prefix = prefix_from_producer(tmp_path, monkeypatch, lane)
     monkeypatch.setenv("PYTHONPATH", str(Path(native.__file__).resolve().parents[1]))
     monkeypatch.delenv("INVOCATION_ID", raising=False)
     handoff, handle = control.arm_independent_vast_watchdog(
