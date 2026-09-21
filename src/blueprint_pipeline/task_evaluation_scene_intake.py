@@ -361,6 +361,7 @@ def scene_intent_status(*, queue_root: str | Path, intent_id: str,
     intent = _read(directory / "intent.json", "intent_digest")
     moment = datetime.now(timezone.utc).timestamp() if now is None else now
     status, phase, blockers, result_reference = "accepted", None, [], None
+    result_run_id = None
     progress_path = directory / "progression.json"
     if progress_path.exists():
         progress = _read(progress_path, "progression_digest")
@@ -378,6 +379,8 @@ def scene_intent_status(*, queue_root: str | Path, intent_id: str,
         blockers = sorted({str(b).split(":", 1)[0] for b in raw_blockers
                            if re.fullmatch(r"[a-z][a-z0-9_:-]{0,255}", str(b))})
         result_reference = progress.get("result_reference")
+        result_run_id = (progress.get("state") or {}).get("result_run_id")
+        _require(result_run_id is None or _identifier(result_run_id), "result_run_id_invalid")
         if result_reference is not None:
             _require(isinstance(result_reference, Mapping)
                      and set(result_reference) == {"uri", "digest", "size_bytes"}
@@ -424,6 +427,7 @@ def scene_intent_status(*, queue_root: str | Path, intent_id: str,
         "intent_digest": intent["intent_digest"], "request_digest": canonical_digest(intent["request"]),
         "owner": intent["request"]["owner"], "status": status, "phase": phase, "blockers": blockers,
         "attempts": attempts, "result_reference": result_reference,
+        **({"result_run_id": result_run_id} if result_run_id is not None else {}),
         "effective_execution_budget": effective_execution_budget(directory, intent),
         "provider_mutation_performed_by_status_read": False}, "status_digest")
 

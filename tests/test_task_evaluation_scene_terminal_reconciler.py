@@ -390,6 +390,7 @@ def test_completed_status_reads_back_through_authenticated_website_projection(tm
     assert status["status_digest"] == cross_runtime_canonical_digest(status, digest_field="status_digest")
     assert status["intent_digest"] == env["intent"]["intent_digest"]
     assert status["result_reference"]["digest"] == projection["projection_digest"]
+    assert status["result_run_id"] == projection["run_id"]
     readback = json.loads(
         (Path(env["config"]["terminal_result_root"]) / env["intent_id"] / "policy_canary_webapp_sync.json").read_text())
     assert readback["policy_canary_projection_digest"] == projection["projection_digest"]

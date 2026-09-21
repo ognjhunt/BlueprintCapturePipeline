@@ -498,6 +498,7 @@ def reconcile_terminal_owner_result(*, intent: dict, config: dict, release: dict
     # A8: notification delivery is reported separately, never a completion gate.
     state["terminal_notification_delivery"] = readback.get("notification_delivery")
     state["terminal_resource_closure"] = _record(directory / "provider_zero_closure.json")
+    state["result_run_id"] = projection["run_id"]
 
     join = {
         "schema_version": JOIN_SCHEMA,
