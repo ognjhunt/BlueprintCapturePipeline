@@ -27,6 +27,13 @@ native readback; no native construction success is invented. Simulation checks,
 policy-input media, authority, spending, and teardown remain required. Existing
 started construction runs retain their original closeout requirements.
 
+The direct policy handoff uses the selected team's verified evaluation authority;
+it does not require a legacy site-preparation activation registration. Its existing
+expiry, revocation, budget reservation, and checkpoint checks still apply. The CPU
+setup accepts a bound circular surface target's existing yaw-independent scoring,
+while retaining its tilt, whole-object containment, support, and stability checks.
+Container tasks retain their exact orientation and destination-volume requirements.
+
 Completion evidence for this change: focused owner-binding, controller callback,
 allocator no-launch, native no-execution, and terminal closeout tests. Live proof
 requires deployment and a controller-origin policy run; merge is not that proof.

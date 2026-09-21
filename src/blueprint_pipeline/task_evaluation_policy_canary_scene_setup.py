@@ -384,6 +384,16 @@ def _require_strict_owner_success_contract(
     orientation = _mapping_or_empty(criteria.get("orientation"))
     settling = _mapping_or_empty(criteria.get("settling"))
     gripper = _mapping_or_empty(criteria.get("gripper_state"))
+    surface = task_spec.get("surface_target")
+    if surface is not None:
+        from .task_evaluation_surface_target import validate_surface_target, marker_for_surface_target
+        try:
+            surface = validate_surface_target(surface)
+            if (surface != configured.get("surface_target") or surface != criteria.get("surface_target")
+                    or marker_for_surface_target(surface) != task_spec.get("visible_target_marker")):
+                raise ValueError("surface_target_changed")
+        except ValueError as exc:
+            raise TaskNeutralScoringError(["policy_canary_owner_surface_target_mismatch"]) from exc
     minimum_lift = configured.get("minimum_lift_m")
     force_limit = temporal.get("maximum_task_contact_force_n")
     if (
@@ -400,7 +410,7 @@ def _require_strict_owner_success_contract(
         or support.get("contact_mode") != "required"
         or gripper.get("mode") != "released"
         or _mapping_or_empty(criteria.get("terminal_task_contact")).get("mode") != "cleared"
-        or orientation.get("mode") != "required"
+        or orientation.get("mode") != ("ignored" if surface is not None else "required")
         or settling.get("mode") != "required"
         or not isinstance(minimum_lift, (int, float)) or isinstance(minimum_lift, bool)
         or not math.isfinite(minimum_lift) or minimum_lift <= 0
@@ -423,13 +433,14 @@ def _require_strict_owner_success_contract(
     if any(left != right or right is None for left, right in joins):
         raise TaskNeutralScoringError(["policy_canary_owner_success_contract_native_limits_mismatch"])
     if configured.get("whole_subject_containment_required") is True:
-        # The production scorer uses all eight corners only on this destination-
-        # relative route. Requiring a center-only world box is not equivalent.
-        if task_spec.get("destination_relation") != "inside":
+        # Container and circular-target scorers both use the object's corners.
+        # A center-only world box is not equivalent to either contract.
+        if surface is None and task_spec.get("destination_relation") != "inside":
             raise TaskNeutralScoringError(["policy_canary_owner_success_contract_full_containment_missing"])
-        for key in ("subject_collision_bounds_scoring_frame_m",
-                    "destination_interior_bounds_body_frame_m",
-                    "destination_position_bounds_destination_frame_m"):
+        bounds_keys = ("subject_collision_bounds_scoring_frame_m",) if surface is not None else (
+            "subject_collision_bounds_scoring_frame_m", "destination_interior_bounds_body_frame_m",
+            "destination_position_bounds_destination_frame_m")
+        for key in bounds_keys:
             bounds = _mapping_or_empty(task_spec.get(key))
             lower, upper = bounds.get("minimum"), bounds.get("maximum")
             if (not isinstance(lower, list) or not isinstance(upper, list)
@@ -443,9 +454,10 @@ def _require_strict_owner_success_contract(
     if configured.get("object_must_rest_on_destination_support") is True:
         affordance = _mapping_or_empty(task_spec.get("interaction_affordance"))
         paths = affordance.get("intended_support_prim_paths")
-        if (not task_spec.get("destination_support_asset_id")
+        if ((surface is None and not task_spec.get("destination_support_asset_id"))
                 or not isinstance(paths, list) or len(paths) != 1
-                or not isinstance(paths[0], str) or not paths[0].startswith("/")):
+                or not isinstance(paths[0], str) or not paths[0].startswith("/")
+                or (surface is not None and paths != [surface["support_prim_path"]])):
             raise TaskNeutralScoringError(["policy_canary_owner_success_contract_exact_support_missing"])
     if configured.get("retreat_clearance_required") is True:
         from .adp_rigid_retreat_scoring import validate_retreat_binding

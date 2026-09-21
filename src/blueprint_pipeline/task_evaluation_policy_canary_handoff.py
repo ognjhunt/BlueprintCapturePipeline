@@ -738,29 +738,40 @@ def advance_policy_canary_handoff(
     policy_scene_id = scene_id.removeprefix("interiorgs-")
     if not (team_namespace and scene_id and task_id and preparation_id) or _IDENTIFIER.fullmatch(policy_scene_id) is None:
         raise PolicyCanaryHandoffError("policy_canary_handoff_base_progression_invalid")
-    intent = load_scene_configuration_activation_intent(
-        intent_root=activation_intent_root, team_namespace=team_namespace, scene_id=scene_id, task_id=task_id,
-        expected_production_commit=expected_production_commit,
-    )
-    if intent is None:
-        return {
-            "status": "awaiting_scene_configuration_activation_intent",
-            "source_launch_id": source_launch_id,
-            "team_namespace": team_namespace,
-            "scene_id": scene_id,
-            "task_id": task_id,
-        }
-    if (intent["expected_production_commit"] != expected_production_commit
-            or intent["configuration_source_commit"] != expected_production_commit):
-        raise PolicyCanaryHandoffError("policy_canary_handoff_activation_intent_commit_mismatch")
-    if existing is not None and existing.get("status") == "canary_launch_submitted":
-        verify_completed_ack(state, existing)
-        return _row(existing)
     request_path, launch_request, base_profile_path, _base_profile = _configured_run(launches, source_launch_id)
     authorized_profile = authorization_profile(_base_profile, evaluation_authority,
         source_launch_id=source_launch_id, configured_scene_revision_digest=base["configured_scene_revision_digest"])
     owner = scene_policy.owner_for_profile(authorized_profile,
         now=now.timestamp() if now is not None else None)
+    if direct and owner is not None:
+        # Website evaluation authority already binds the owner, task, saved setup,
+        # expiry and spending. A legacy site-preparation registry is not its owner.
+        authorization = {
+            "reference": "scene-intent:" + owner["intent_digest"],
+            "authorized_by": owner["request"]["owner"]["user_id"],
+            "profile_revision": "scene-" + owner["intent_id"][-16:],
+            "valid_for_seconds": 86400,
+        }
+    else:
+        intent = load_scene_configuration_activation_intent(
+            intent_root=activation_intent_root, team_namespace=team_namespace, scene_id=scene_id, task_id=task_id,
+            expected_production_commit=expected_production_commit,
+        )
+        if intent is None:
+            return {
+                "status": "awaiting_scene_configuration_activation_intent",
+                "source_launch_id": source_launch_id,
+                "team_namespace": team_namespace,
+                "scene_id": scene_id,
+                "task_id": task_id,
+            }
+        if (intent["expected_production_commit"] != expected_production_commit
+                or intent["configuration_source_commit"] != expected_production_commit):
+            raise PolicyCanaryHandoffError("policy_canary_handoff_activation_intent_commit_mismatch")
+        authorization = dict(intent["authorization_template"])
+    if existing is not None and existing.get("status") == "canary_launch_submitted":
+        verify_completed_ack(state, existing)
+        return _row(existing)
     compiled = _compiled_construction(
         Path(episode_compilation_queue_root).expanduser(),
         preparation_id=preparation_id,
@@ -803,7 +814,6 @@ def advance_policy_canary_handoff(
     inputs = state / "policy-canary-inputs"
     profile_id = f"{execution_identity}-internal-policy-canary-{expected_production_commit[:10]}"
     if existing is None:
-        authorization = dict(intent["authorization_template"])
         if owner is not None:
             from .task_evaluation_scene_execution_window import effective_execution_expiry
             owner_root, _ = scene_policy.scene_store()
@@ -992,7 +1002,7 @@ def advance_policy_canary_handoff(
         if pair_blockers:
             raise PolicyCanaryHandoffError(",".join(pair_blockers))
         selection["episode_interpretation"] = scene_policy.interpretation_for_owner(
-            profile=_base_profile, plan=execution_plan, default=EPISODE_INTERPRETATION)
+            profile=authorized_profile, plan=execution_plan, default=EPISODE_INTERPRETATION)
     current_omission = load_for_run(launch_state_root=launches, source_launch_id=source_launch_id,
                                     now=now.timestamp() if now is not None else None, evaluation_authority=evaluation_authority)
     if (current_omission or {}).get("directive_digest") != omission_digest:

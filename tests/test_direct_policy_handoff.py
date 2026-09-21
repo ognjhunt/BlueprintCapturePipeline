@@ -1,6 +1,7 @@
 """Website policy admission uses compiled scene evidence, not scripted success."""
 from copy import deepcopy
 import json
+from pathlib import Path
 
 import pytest
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
@@ -72,6 +73,27 @@ def test_direct_handoff_submits_policy_without_scripted_run(tmp_path, monkeypatc
     assert len(webapp.calls) == 1
 
 
+def test_website_owner_authorizes_direct_policy_without_legacy_scene_registration(tmp_path, monkeypatch):
+    state, directory, lineage = direct_case(tmp_path, monkeypatch)
+    for path in (tmp_path / 'activation-intents').glob('*.json'):
+        path.unlink()
+    webapp = rehearsal._WebApp()
+    result = rehearsal._advance(tmp_path, state=state, webapp=webapp,
+        publisher=rehearsal._Publisher(), profile_calls=[], diagnostic_initial_lineage=lineage)
+    assert result['status'] == 'canary_launch_submitted'
+    owner = json.loads((directory / 'intent.json').read_bytes())
+    params = json.loads((state / 'policy-canary-inputs/presubmission_parameters.json').read_bytes())
+    authority = params['activation_authorization']
+    assert authority['reference'] == 'scene-intent:' + owner['intent_digest']
+    assert authority['authorized_by'] == owner['request']['owner']['user_id']
+    assert 300 <= authority['valid_for_seconds'] <= 86400
+    (directory / 'revoked.json').write_text('{}')
+    with pytest.raises(ValueError, match='revoked'):
+        rehearsal._advance(tmp_path, state=state, webapp=webapp,
+            publisher=rehearsal._Publisher(), profile_calls=[], diagnostic_initial_lineage=lineage)
+    assert len(webapp.calls) == 1
+
+
 @pytest.mark.parametrize('missing', ['launch_receipt.json', 'webapp_sync_succeeded.json', 'post_teardown_provider_zero_receipt.json'])
 def test_direct_handoff_still_requires_scene_preparation_closeout(tmp_path, monkeypatch, missing):
     state, _, lineage = direct_case(tmp_path, monkeypatch)
@@ -99,6 +121,40 @@ def test_initial_policy_lineage_is_diagnostic_only_and_budget_bound():
         bad['lineage'].pop(key)
         with pytest.raises(ValueError):
             validate_launch_activation_request(bad)
+
+
+@pytest.mark.parametrize('defect', [None, 'target', 'marker', 'support', 'bounds', 'tilt'])
+def test_strict_task_accepts_exact_circular_target_without_requiring_container_or_yaw(tmp_path, defect):
+    from tests.test_task_evaluation_policy_canary_scene_setup import _strict_owner_setup_inputs
+    from tests.test_task_evaluation_surface_target import target_fixture
+    from blueprint_pipeline.task_evaluation_surface_target import marker_for_surface_target
+    from blueprint_pipeline.task_evaluation_policy_canary_scene_setup import _require_strict_owner_success_contract
+    kwargs, contract = _strict_owner_setup_inputs(tmp_path)
+    spec = json.loads(Path(kwargs['scene_plan_path']).read_bytes())['task_spec']
+    surface = target_fixture()
+    spec.update(surface_target=surface, visible_target_marker=marker_for_surface_target(surface))
+    spec['configured_success_criteria']['surface_target'] = deepcopy(surface)
+    spec['interaction_affordance']['intended_support_prim_paths'] = [surface['support_prim_path']]
+    for field in ('destination_relation', 'destination_support_asset_id', 'destination_interior_bounds_body_frame_m',
+                  'destination_position_bounds_destination_frame_m'):
+        spec.pop(field, None)
+    contract['criteria']['surface_target'] = deepcopy(surface)
+    contract['criteria']['orientation']['mode'] = 'ignored'
+    if defect == 'target':
+        contract['criteria']['surface_target']['radius_m'] *= 2
+    elif defect == 'marker':
+        spec['visible_target_marker'] = {}
+    elif defect == 'support':
+        spec['interaction_affordance']['intended_support_prim_paths'] = ['/Other']
+    elif defect == 'bounds':
+        spec['subject_collision_bounds_scoring_frame_m'] = {}
+    elif defect == 'tilt':
+        spec['surface_target']['maximum_tilt_rad'] *= 2
+    if defect:
+        with pytest.raises(ValueError):
+            _require_strict_owner_success_contract(task_spec=spec, contract=contract)
+    else:
+        _require_strict_owner_success_contract(task_spec=spec, contract=contract)
 
 
 @pytest.mark.parametrize("compiled", [False, True])
