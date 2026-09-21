@@ -15,6 +15,8 @@ from typing import Any
 from . import task_evaluation_controls_autoprovision as worker
 from . import task_evaluation_controls_terminal_adoption as adoption
 from . import task_evaluation_scene_intake as intake
+from . import task_evaluation_team_run_controller as team_runs
+from .configured_scene_run_identity import scoped_identity
 
 
 def prepare(*, config_path: str | Path, expected_commit: str, now: float | None = None) -> dict[str, Any]:
@@ -34,14 +36,26 @@ def prepare(*, config_path: str | Path, expected_commit: str, now: float | None 
         intent = worker._scene_intent(directory/'intent.json')
         if intake.effective_execution_expiry(directory, intent) <= moment:
             continue
-        source = adoption.terminal_adoption_source(config=config, intent_id=intent_id, expected_production_commit=expected_commit)
+        source = team_runs.source_for_evaluation(config=config, intent=intent, now=moment)
+        selected_evaluation = source is not None
+        if source is None:
+            source = adoption.terminal_adoption_source(config=config, intent_id=intent_id, expected_production_commit=expected_commit)
         if source is None:
             continue
         state = Path(config.get('progression_root') or os.getenv('BLUEPRINT_TASK_EVALUATION_CONFIGURED_CONTROLS_STATE_ROOT')
             or str(Path(config['scene_root']).parent/'task-evaluation-configured-controls'))
-        binding = state/source['launch_id']/'cpu-robot-binding'
+        evaluation_id = intent['request']['submission_id'] if selected_evaluation else None
+        binding = state/source['launch_id']/scoped_identity('cpu-robot-binding', evaluation_id)
         worker._require(not any(p.is_symlink() for p in (path, binding, *binding.parents)), 'terminal_deploy_path_unsafe')
-        if binding.exists():
+        if selected_evaluation and binding.exists():
+            # Deferred input fetching/geometry validation happens before any
+            # placement inference or native plan. A refusal there may leave only
+            # this directory. Preserve all old holds; do not restart paid work.
+            if any(p.name != 'deferred-inputs' or p.is_symlink() or not p.is_dir()
+                   for p in binding.iterdir()):
+                rows.append({'intent_id': intent_id, 'status': 'retained_started_materialization'})
+                continue
+        elif binding.exists():
             from .task_evaluation_completed_placement_adoption import discover as discover_completed
             from .task_evaluation_visual_review_continuation import discover
             continuation = discover_completed(config=config,intent_id=intent_id,source=source,expected_commit=expected_commit)
