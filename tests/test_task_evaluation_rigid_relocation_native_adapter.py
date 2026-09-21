@@ -231,6 +231,35 @@ def _rewrite(
     )
 
 
+@pytest.mark.parametrize("invalid", [None, "center", "status", "authority", "origin"])
+def test_retained_website_bounds_reach_native_adapter_without_rewriting_source(tmp_path, invalid):
+    launch, configured, references, docs = _case(tmp_path)
+    source = copy.deepcopy(docs[SOURCE_OBJECT])
+    source.pop("status")
+    source.pop("center_xyz_m")
+    source.update(source_object_id="blue_container", geometry_origin="removed_before_reconstruction",
+                  complete_object_geometry=False, source_object_is_physics_authority=False)
+    if invalid == "center":
+        source["aabb_max_xyz_m"][0] += .1
+    elif invalid == "status":
+        source["status"] = "unconfirmed"
+    elif invalid == "authority":
+        source["source_object_is_physics_authority"] = True
+    elif invalid == "origin":
+        source["geometry_origin"] = "unknown"
+    _rewrite(tmp_path=tmp_path, configured=configured, references=references,
+             contract_path=SOURCE_OBJECT, document=source)
+    path = Path(references[SOURCE_OBJECT]["materialized_path"])
+    retained = path.read_bytes()
+    if invalid:
+        with pytest.raises(TaskEvaluationRigidRelocationNativeAdapterError, match="executable_geometry_missing"):
+            adapt_rigid_relocation_task_template(configured_revision=configured, materialized_references=references)
+    else:
+        result = adapt_rigid_relocation_task_template(configured_revision=configured, materialized_references=references)
+        assert result["native_task_definition"]["task_spec"]["start_pose_world"][:3] == docs[DEFINITION]["start_center_xyz_m"]
+    assert path.read_bytes() == retained
+
+
 def test_scene839873_task_truth_is_preserved_in_native_packet_inputs(
     tmp_path: Path,
 ) -> None:
