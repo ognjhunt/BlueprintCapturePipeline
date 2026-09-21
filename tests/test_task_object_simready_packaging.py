@@ -15,7 +15,7 @@ from blueprint_pipeline.task_object_physical_property_review import (
 )
 
 
-def _fixture(tmp_path, *, final_mesh=None, mass_kg=None):
+def _fixture(tmp_path, *, final_mesh=None, mass_kg=None, fill_fraction=(.4, 1.)):
     dimensions = [.3, .4, .02]
     mesh = final_mesh if final_mesh is not None else trimesh.creation.box(extents=dimensions)
     if final_mesh is None:
@@ -56,7 +56,7 @@ def _fixture(tmp_path, *, final_mesh=None, mass_kg=None):
         for axis,v in zip(('x_m','y_m','z_m'),dimensions)}, properties=properties,
         optical_material=dict(name='Opaque',transmission=0.,opacity=1.),
         mass_model=dict(method='density_fill',density_kg_m3=dict(lower=750.,upper=850.),
-            envelope_fill_fraction=dict(lower=.4,upper=1.),sheet_count=None,sheet_area_m2=None,
+            envelope_fill_fraction=dict(lower=fill_fraction[0],upper=fill_fraction[1]),sheet_count=None,sheet_area_m2=None,
             grammage_g_m2=None,cover_mass_kg=None,rationale='Fixture',uncertainty='Range',evidence_ids=['fixture']),
         review_rationale='Independent fixture review')
     review_input = PhysicalPropertyReviewInput.model_validate(dict(object_id='fixture',
@@ -149,6 +149,22 @@ def test_cad_based_mass_cannot_be_silently_reused_for_different_final_volume(tmp
     with pytest.raises(AssetAuthoringError,match='mass_inconsistent_with_final_geometry'):
         _package(tmp_path,request,result)
     assert not (tmp_path/'packaged').exists()
+
+
+def test_outer_collision_solid_cannot_replace_reviewed_hollow_object_mass(tmp_path):
+    # The live blue-container review describes an assumed thin shell, while
+    # its CAD/visual mesh encloses the whole object for collision purposes.
+    request, result, _ = _fixture(tmp_path, mass_kg=.1152, fill_fraction=(.03, .15))
+    packaged = _package(tmp_path, request, result)
+    stage = Usd.Stage.Open(packaged['asset']['path'])
+    actual_mass = UsdPhysics.MassAPI(stage.GetDefaultPrim()).GetMassAttr().Get()
+    consistency = packaged['physics_completion']['mass_model_final_geometry_consistency']
+    assert consistency['accepted_mass_kg'] == pytest.approx(actual_mass)
+    assert actual_mass == pytest.approx(.1152)
+    assert consistency['accepted_mass_interval_kg'] == pytest.approx([.1152*.95, .1152*1.04])
+    assert consistency['visual_volume_is_material_volume'] is False
+    assert consistency['physical_truth_claimed'] is False
+    assert consistency['reviewed_envelope_fill_fraction'] == [.03, .15]
 
 
 def test_author_physics_cannot_override_accepted_review(tmp_path):

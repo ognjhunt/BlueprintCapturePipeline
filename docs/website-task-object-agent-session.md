@@ -26,7 +26,7 @@ durable inference ledger before transmission. The adapter counts the complete
 local conversation, tool schemas and actual image dimensions, reserves that
 request's maximum, and reconciles its returned usage. Failed/uncertain calls
 retain their full reservation. The existing stage dollar limit and shared
-15-request maximum cover authoring and independent reviews together. Hidden
+configured request maximum (at most 32) cover authoring and independent reviews together. Hidden
 server conversation state, hosted tools and transport retries are refused.
 This avoids reserving all possible future turns at their full ceiling before
 any actual request, which would otherwise unnecessarily exhaust the $5 stage.
