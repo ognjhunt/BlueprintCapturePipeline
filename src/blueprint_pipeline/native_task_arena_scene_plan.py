@@ -876,6 +876,13 @@ def _articulation_plan(
             )
             for path in affordance["intended_support_prim_paths"]
         ]
+        # A normalized static asset may name an Xform containing one collider.
+        # Resolve that exact descendant; never broaden contact to a whole room.
+        if not destination_support_id:
+            for index, path in enumerate(support_body_paths):
+                descendants = [body for body in scene_contact_body_paths if body.startswith(path + "/")]
+                if path not in scene_contact_body_paths and len(descendants) == 1:
+                    support_body_paths[index] = descendants[0]
         source_support_body_paths = sorted(
             str(prim.GetPath())
             for prim in support_stage.Traverse()
