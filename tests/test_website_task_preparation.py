@@ -153,10 +153,11 @@ def test_registered_estimates_compile_into_an_intake_ready_request(tmp_path):
     assert value["destination"]["position_world_m"][2] == pytest.approx(3.5, abs=1e-6)
     assert value["physics"]["basis"] == "estimated"
     assert value["physics"]["dimensions_m"] == pytest.approx([0.05, 0.1, 0.1], abs=1e-6)
-    assert value["physics"]["sensitivity"] == "robust_within_range"
+    assert value["physics"]["sensitivity"] == "awaiting_robot_team_selection"
     request = value["intake_request"]
     assert request["source"]["kind"] == "gaussian_splat"
-    assert [row["id"] for row in request["execution"]["policy_candidates"]] == ["pi05_droid", "groot_n17_droid"]
+    assert request["execution"]["purpose"] == "scene_preparation"
+    assert request["execution"]["policy_candidates"] == []
     assert value["authoring_inputs"]["dimension_authority"] == "estimated"
     assert value["authoring_inputs"]["source_frames"][0]["role"] == "observed_source"
     composed = json.loads((tmp_path / "out" / "removal_manifest.composed.json").read_text())
@@ -218,10 +219,10 @@ def test_changed_base_scene_bytes_are_refused(tmp_path):
 
 
 def test_physics_screen_escalates_the_smallest_missing_measurement():
-    heavy = preparation.screen_physics([0.3, 0.3, 0.3])
+    heavy = preparation.screen_physics([0.3, 0.3, 0.3], gripper=preparation.GRIPPER)
     assert heavy["sensitivity"] == "blocked_by_estimate"
     assert heavy["measurement_escalation"]["property"] == "smallest_dimension_m"
-    medium = preparation.screen_physics([0.06, 0.06, 0.6])
+    medium = preparation.screen_physics([0.06, 0.06, 0.6], gripper=preparation.GRIPPER)
     assert medium["sensitivity"] == "outcome_depends_on_estimate"
     assert medium["measurement_escalation"]["property"] == "mass_kg"
     assert all(row["basis"] == "estimated" for row in [medium])

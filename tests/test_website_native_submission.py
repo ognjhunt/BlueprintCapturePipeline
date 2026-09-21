@@ -96,9 +96,10 @@ def test_prepared_capture_materializes_a_publishable_native_request_without_raw_
     task = json.loads((root / "configuration/task.json").read_text())
     screen = task["physical_property_screen"]
     assert screen["basis"] == "estimated" and screen["bounds"]["mass_kg"][0] < screen["bounds"]["mass_kg"][1]
-    assert screen["sensitivity"] in {"robust_within_range", "outcome_depends_on_estimate", "blocked_by_estimate"}
+    assert screen["sensitivity"] == "awaiting_robot_team_selection"
     assert screen["feasibility_claim_allowed"] == (screen["sensitivity"] == "robust_within_range")
-    assert screen["reference_gripper"]["model"] == "robotiq_2f85"
+    assert screen["reference_gripper"] is None
+    assert screen["feasibility_claim_allowed"] is False
     assert task["scale_authority"] in {"registration_estimate", "provider_declared_estimate"}
     assert "placement_uncertainty_m" in task and task["physical_world_truth_claimed"] is False
 

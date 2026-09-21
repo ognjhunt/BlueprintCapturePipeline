@@ -211,6 +211,9 @@ def _provision_validated_link(*, link: Mapping[str, Any], scene_root: Path,
     _require(moment < intake.effective_execution_expiry(directory, intent), "authority_expired")
     _require(link["expected_production_commit"] == expected_production_commit, "release_mismatch")
     _require(link["task_id"] == request["task"]["task_id"], "task_mismatch")
+    from .task_evaluation_scene_execution_scope import scene_preparation_only
+    if scene_preparation_only(request):
+        return {"status": "scene_preparation_only", "intent_id": intent["intent_id"]}
     _require(catalog.get("schema_version") == CATALOG_SCHEMA and catalog.get("catalog_digest") ==
              canonical_digest(catalog, digest_field="catalog_digest"), "catalog_invalid")
     from .task_evaluation_scene_robot_assignment import resolve_controls_robot_binding
@@ -556,8 +559,7 @@ def scene_preparation_queue_root(preparation_queue_root: Path, intent_id: str) -
 
 def process_config(config_path: str | Path, *, expected_production_commit: str) -> list[dict[str, Any]]:
     config = _json(Path(config_path))
-    catalog = resolve_robot_catalog(_sealed(Path(config["robot_catalog_path"]), "catalog_digest"),
-                                    source_commit=expected_production_commit)
+    catalog = None
     scene_root = Path(config["scene_root"])
     owned_queue_root = Path(config["preparation_queue_root"])
     rows = []
@@ -568,6 +570,16 @@ def process_config(config_path: str | Path, *, expected_production_commit: str) 
         preparation_queue_root = scene_preparation_queue_root(owned_queue_root, intent_id)
         scene_config = {**config, "preparation_queue_root": str(preparation_queue_root)}
         try:
+            from .task_evaluation_scene_execution_scope import scene_preparation_only
+            intent = _scene_intent(intent_path)
+            _require(intent.get('authenticated_issuer') in set(config['trusted_clients']), 'owner_intent_invalid')
+            intake.validate_request(intent['request'], now=intent['accepted_at_epoch'])
+            if scene_preparation_only(intent['request']):
+                rows.append({'status': 'scene_preparation_only', 'intent_id': intent_id})
+                continue
+            if catalog is None:
+                catalog = resolve_robot_catalog(_sealed(Path(config['robot_catalog_path']), 'catalog_digest'),
+                                                source_commit=expected_production_commit)
             adopted = _registered_terminal_adoption(config=scene_config, intent_id=intent_id,
                 expected_production_commit=expected_production_commit)
             if adopted is None:

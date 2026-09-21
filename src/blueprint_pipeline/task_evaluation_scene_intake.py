@@ -105,31 +105,8 @@ def validate_request(value: Mapping[str, Any], *, now: float) -> dict[str, Any]:
     _require(type(task.get("reuse_completed_stages", True)) is bool, "task_reuse_mode_invalid")
     for key in ("subject", "support", "destination", "success"):
         _require(isinstance(task.get(key), Mapping) and bool(task[key]), "task_" + key + "_missing")
-    execution = value.get("execution")
-    _require(isinstance(execution, Mapping) and set(execution) == {
-        "max_total_spend_usd", "max_paid_attempts", "max_retries", "expires_at_epoch",
-        "allowed_providers", "policy_candidates", "claim_scope"}, "execution_invalid")
-    _require(_number(execution["max_total_spend_usd"])
-             and 0 < execution["max_total_spend_usd"] <= 1000, "spend_invalid")
-    _require(type(execution["max_paid_attempts"]) is int and 1 <= execution["max_paid_attempts"] <= 32
-             and type(execution["max_retries"]) is int and 0 <= execution["max_retries"] <= 3,
-             "attempt_bounds_invalid")
-    _require(_number(execution["expires_at_epoch"])
-             and now < execution["expires_at_epoch"] <= now + 7 * 86400, "authority_expiry_invalid")
-    providers = execution["allowed_providers"]
-    _require(isinstance(providers, list) and bool(providers)
-             and all(isinstance(p, str) and p in {"vast", "runpod", "openai"} for p in providers)
-             and len(providers) == len(set(providers)), "providers_invalid")
-    policies = execution["policy_candidates"]
-    _require(isinstance(policies, list) and len(policies) == 2, "two_policies_required")
-    for policy in policies:
-        _require(isinstance(policy, Mapping) and set(policy) == {"id", "artifact_digest"}
-                 and _identifier(policy["id"]) and isinstance(policy["artifact_digest"], str)
-                 and _DIGEST.fullmatch(policy["artifact_digest"]) is not None, "policy_identity_invalid")
-    _require(policies[0]["id"] != policies[1]["id"], "two_distinct_policies_required")
-    _require([policy["id"] for policy in policies] == list(SUPPORTED_POLICY_CANDIDATE_IDS),
-             "policy_candidates_unsupported")
-    _require(execution["claim_scope"] == "development_only", "claim_scope_invalid")
+    from .task_evaluation_scene_execution_scope import validate_execution
+    validate_execution(value, now=now)
     consent = value.get("consent")
     _require(isinstance(consent, Mapping) and set(consent) == {
         "accepted_by", "accepted_at_epoch", "rights_reference", "provider_terms_reference",
