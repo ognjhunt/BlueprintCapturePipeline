@@ -46,11 +46,19 @@ def scoped(tmp_path, monkeypatch, *, launch_id='source-launch', task_id=None):
     return launches,launch_id,path,directive,root/owner['intent_id'],now
 
 
-def test_directive_is_exact_and_missing_file_keeps_strict_default(tmp_path, monkeypatch):
+def test_directive_is_exact_and_missing_file_uses_platform_pause(tmp_path, monkeypatch):
     launches,launch,path,directive,directory,now=scoped(tmp_path,monkeypatch)
     before=(directory/'intent.json').read_bytes()
     assert omission.load_for_run(launch_state_root=launches,source_launch_id=launch,now=now)==directive
     path.unlink()
+    from blueprint_pipeline import task_evaluation_control_stage_policy as policy
+    automatic = omission.load_for_run(launch_state_root=launches,source_launch_id=launch,now=now)
+    assert automatic['authorized_by'] == policy.AUTHORIZED_BY
+    assert automatic['owner'] == directive['owner']
+    assert automatic['intent_digest'] == directive['intent_digest']
+    assert automatic['qualified_comparison_permitted'] is False
+    assert automatic['directive_digest'] == canonical_digest(automatic, digest_field='directive_digest')
+    monkeypatch.setattr(policy, 'CONTROLS_PAUSED', False)
     assert omission.load_for_run(launch_state_root=launches,source_launch_id=launch,now=now) is None
     assert (directory/'intent.json').read_bytes()==before
 
@@ -137,3 +145,20 @@ def test_worker_omits_controls_before_any_standalone_controls_admission(tmp_path
     with pytest.raises(worker.TaskEvaluationConfiguredControlsProgressionWorkerError,match='omission_after_controls_admission'):
         worker.advance_configured_controls_plan(plan_path=plan_path,launch_state_root=launches,
             progression_root=tmp_path/'progressions',preparation_queue_root=prep,activation_queue_root=tmp_path/'activations')
+
+
+@pytest.mark.parametrize("fault", ["revoked", "expired", "profile_changed"])
+def test_platform_pause_does_not_bypass_owner_authority(tmp_path, monkeypatch, fault):
+    launches, launch, path, _, directory, now = scoped(tmp_path, monkeypatch)
+    path.unlink()
+    if fault == "revoked":
+        (directory / "revoked.json").write_text("{}")
+    elif fault == "expired":
+        now += 3601
+    else:
+        profile_path = launches / launch / "launch_profile.json"
+        profile = json.loads(profile_path.read_bytes())
+        profile["task_evaluation_run"]["task_id"] = "foreign-task"
+        profile_path.write_text(json.dumps(profile))
+    with pytest.raises(ValueError):
+        omission.load_for_run(launch_state_root=launches, source_launch_id=launch, now=now)

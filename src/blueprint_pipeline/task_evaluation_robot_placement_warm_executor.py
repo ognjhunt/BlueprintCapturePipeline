@@ -932,6 +932,8 @@ class WarmNativeConstructionFeedbackExecutor:
     ) -> dict[str, Any]:
         """Run the canonical control pair, then close the retained worker."""
 
+        from .task_evaluation_control_stage_policy import require_controls_enabled
+        require_controls_enabled()
         receipt = json.loads(json.dumps(dict(controller_receipt), allow_nan=False))
         context = self._qualified_context
         if (

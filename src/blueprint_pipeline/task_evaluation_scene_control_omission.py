@@ -27,7 +27,7 @@ def _safe(path: Path):
 
 def load_for_run(*, launch_state_root: str | Path, source_launch_id: str,
                  now: float | None = None) -> dict[str, Any] | None:
-    """Missing opt-in preserves strict progression; malformed opt-in refuses."""
+    """Bind the platform pause or an exact directive to the current owner intent."""
     from . import task_evaluation_scene_policy_binding as policy
     from . import task_evaluation_scene_intake as intake
     _require(intake._identifier(source_launch_id), 'source_id_invalid')
@@ -40,23 +40,38 @@ def load_for_run(*, launch_state_root: str | Path, source_launch_id: str,
         return None
     intent_id = (profile.get('scene_attempt_binding') or {}).get('intent_id')
     _require(intake._identifier(intent_id), 'owner_binding_missing')
-    configured_root = os.getenv(ROOT_ENV)
-    root = Path(configured_root or DEFAULT_ROOT)
-    # An absent optional default does not activate this feature (including on
-    # developer systems where /etc itself is a platform symlink).
-    if not configured_root and not root.exists() and not root.is_symlink():
-        return None
-    _safe(root)
-    path = root / (intent_id + '.json')
-    _safe(path)
-    if not path.exists():
-        return None
-    _require(path.is_file() and not path.stat().st_mode & 0o027, 'directive_file_unsafe')
+    from . import task_evaluation_control_stage_policy as stage_policy
     _require(profile.get('profile_digest') == canonical_digest(profile, digest_field='profile_digest'), 'profile_changed')
     moment = time.time() if now is None else now
     _require(intake._number(moment), 'clock_invalid')
     owner = policy.owner_for_profile(profile, now=moment)
     _require(owner is not None and owner['intent_id'] == intent_id, 'owner_mismatch')
+    configured_root = os.getenv(ROOT_ENV)
+    root = Path(configured_root or DEFAULT_ROOT)
+    path = root / (intent_id + '.json')
+    if root.exists() or root.is_symlink() or configured_root:
+        _safe(root)
+        _safe(path)
+    if not path.exists():
+        if not stage_policy.CONTROLS_PAUSED:
+            return None
+        request = owner['request']
+        directive = {
+            'schema_version': SCHEMA, 'intent_id': intent_id, 'intent_digest': owner['intent_digest'],
+            'owner': request['owner'], 'authenticated_issuer': owner['authenticated_issuer'],
+            'authorized_by': stage_policy.AUTHORIZED_BY,
+            'authorization_reference': stage_policy.AUTHORIZATION_REFERENCE,
+            'user_request': stage_policy.USER_REQUEST,
+            'original_task_digest': cross_runtime_canonical_digest(request['task']),
+            'policy_candidates': request['execution']['policy_candidates'],
+            'expires_at_epoch': request['execution']['expires_at_epoch'],
+            'omitted_controls': OMITTED, 'run_kind': 'internal_policy_canary',
+            'claim_ceiling': 'diagnostic_policy_execution', 'maximum_policy_episodes': 20,
+            'task_scoring_criteria_changed': False, 'qualified_comparison_permitted': False,
+        }
+        directive['directive_digest'] = canonical_digest(directive, digest_field='directive_digest')
+        return directive
+    _require(path.is_file() and not path.stat().st_mode & 0o027, 'directive_file_unsafe')
     directive = json.loads(path.read_bytes())
     request = owner['request']
     _require(isinstance(directive, dict) and directive.get('schema_version') == SCHEMA

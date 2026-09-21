@@ -125,6 +125,8 @@ def _control_candidate(scene_plan: Mapping[str, Any], phase_plan: Mapping[str, A
 def execute_native_controls(*, cell_runtime: Any, built: Any, scene_plan: Mapping[str, Any],
                             gate: Mapping[str, Any], output_root: Path,
                             execution_binding: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    from .task_evaluation_control_stage_policy import require_controls_enabled
+    require_controls_enabled()
     from .adp009d_control_episode import run_task_neutral_controls, validate_task_control_plan
     from .native_task_construction_plan import materialize_rigid_construction_phase_plan
     from .native_task_arena_controls_worker import _control_plan_global_ik_joint_targets

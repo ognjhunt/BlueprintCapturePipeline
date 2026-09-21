@@ -108,6 +108,7 @@ CONTROLS_RUNTIME_MODULE_NAMES = (
     "task_evaluation_surface_target.py",
     "native_rigid_episode_telemetry.py",
     "native_policy_canary_control_gate.py",
+    "task_evaluation_control_stage_policy.py",
     "native_task_arena_controls_worker.py",
     "native_policy_canary_matrix_gate.py",
     "native_policy_canary_witness_delivery.py",

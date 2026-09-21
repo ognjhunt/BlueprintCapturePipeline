@@ -3724,6 +3724,8 @@ def test_canonical_allocator_routes_no_motion_runtime_preflight(
 def test_canonical_allocator_routes_qualified_native_controls_bundle(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, execute: bool
 ) -> None:
+    from blueprint_pipeline import task_evaluation_control_stage_policy as stage_policy
+    monkeypatch.setattr(stage_policy, "CONTROLS_PAUSED", False)  # Historical enabled-mode contract.
     packet, scene = _articulated_packet(tmp_path)
     construction = _qualified_construction(tmp_path, scene)
     source_packet = _runtime_source_packet(tmp_path)
@@ -3825,6 +3827,8 @@ def test_canonical_allocator_routes_qualified_native_controls_bundle(
 def test_canonical_allocator_attaches_controls_without_new_gpu(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from blueprint_pipeline import task_evaluation_control_stage_policy as stage_policy
+    monkeypatch.setattr(stage_policy, "CONTROLS_PAUSED", False)  # Historical enabled-mode contract.
     packet, scene = _articulated_packet(tmp_path)
     construction = _qualified_construction(tmp_path, scene)
     source_packet = _runtime_source_packet(tmp_path)
