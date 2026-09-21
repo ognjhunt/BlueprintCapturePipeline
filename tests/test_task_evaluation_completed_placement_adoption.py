@@ -224,3 +224,46 @@ def test_legacy_checkpoint_alias_is_byte_identical_idempotent_and_never_overwrit
     with pytest.raises(ValueError, match="checkpoint_alias_conflict"):
         adoption.materialize_legacy_checkpoint_alias(intent_path=intent_path, binding_root=binding)
     assert target.read_text() == '{"unrelated": true}'
+
+
+def _lineage_packet(tmp_path, name, parent=None, **changes):
+    result = {'name':name}
+    if parent is not None:
+        result.update(completed_placement_adoption=parent, placement_calls_reexecuted=False)
+    result.update(changes)
+    path = tmp_path/(name+'.json')
+    path.write_text(json.dumps(result))
+    packet = {'source_result':adoption._file(path), 'source_launch_id':'source',
+              'owner_intent_digest':'sha256:'+'a'*64,
+              'source_agent_checkpoint':{'digest':'sha256:'+'b'*64,'path':'retained-checkpoint'}}
+    packet['adoption_digest'] = canonical_digest(packet, digest_field='adoption_digest')
+    return packet
+
+
+def test_discovery_chooses_exact_descendant_after_multiple_release_adoptions(tmp_path):
+    first = _lineage_packet(tmp_path, 'first')
+    middle = _lineage_packet(tmp_path, 'middle', first)
+    last = _lineage_packet(tmp_path, 'last', middle)
+    for matches in ([first,last], [last,first], [first,middle,last,last]):
+        assert adoption._latest_verified_descendant(matches) == last
+    assert adoption._latest_verified_descendant([first,first]) == first
+    assert adoption._latest_verified_descendant([]) is None
+
+
+@pytest.mark.parametrize('defect', ['unrelated', 'branch', 'rerun', 'changed_checkpoint', 'changed_reference'])
+def test_discovery_never_collapses_different_or_changed_placement_lineages(tmp_path, defect):
+    first = _lineage_packet(tmp_path, 'first')
+    second = _lineage_packet(tmp_path, 'second', first)
+    if defect == 'unrelated':
+        second = _lineage_packet(tmp_path, 'second', None)
+    elif defect == 'branch':
+        first = _lineage_packet(tmp_path, 'other-branch', first)
+    elif defect == 'rerun':
+        second = _lineage_packet(tmp_path, 'second', first, placement_calls_reexecuted=True)
+    elif defect == 'changed_checkpoint':
+        second['source_agent_checkpoint'] = {'digest':'sha256:'+'c'*64,'path':'different'}
+        second['adoption_digest'] = canonical_digest(second, digest_field='adoption_digest')
+    elif defect == 'changed_reference':
+        Path(first['source_result']['path']).write_text('{}')
+    with pytest.raises(ValueError, match='ambiguous_sources|lineage_changed|reference_changed'):
+        adoption._latest_verified_descendant([first,second])
