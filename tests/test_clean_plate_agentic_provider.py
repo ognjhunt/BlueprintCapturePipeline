@@ -94,6 +94,12 @@ def test_static_single_pass_has_explicit_mode_and_no_agentic_trace(tmp_path):
     assert calls[0]["input"][0]["processing"] == {"type": "static", "fps": 2}
     assert result["video_processing"]["mode"] == "static"
     assert result["video_processing"]["media_tool_calls"] == 0
+    schema = calls[0]["response_format"]["schema"]
+    import jsonschema
+    jsonschema.validate({"targets": []}, schema)
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate({"targets": [{"target_class": "movable_object", "disposition": "remove"}]}, schema)
+    assert {"target_role", "task_effect", "task_basis_quote", "decision_reason"} <= set(schema["properties"]["targets"]["items"]["required"])
 
 
 @pytest.mark.parametrize(("duration", "expected"), [(13.525, "static"), (300, "static"), (300.1, "agentic")])

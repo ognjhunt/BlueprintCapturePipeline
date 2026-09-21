@@ -19,6 +19,7 @@ from .decision_evidence_contracts import (
 from .task_evaluation_configured_scene_revision import (
     validate_configured_scene_revision,
 )
+from .task_evaluation_surface_target import surface_target_for_web
 from .task_evaluation_configured_scene_public_projection import (
     ConfiguredScenePublicProjectionError,
     build_public_display_projection,
@@ -934,7 +935,7 @@ def publish_configured_scene_revision(
             "kind": task["kind"],
             "strategy": task["strategy"],
             "subject_identity": dict(revision["replacement"]["identity"]),
-            **({"surface_target": dict(revision["task_template"]["surface_target"])}
+            **({"surface_target": surface_target_for_web(revision["task_template"]["surface_target"])}
                if "surface_target" in revision["task_template"] else {}),
             **(
                 {"destination": dict(revision["task_template"]["destination"])}
