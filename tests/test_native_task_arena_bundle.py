@@ -2918,7 +2918,7 @@ def test_construction_vast_adapter_can_retain_warm_instance(
             run_native_task_arena_vast,
             "construction_canary",
             "native_task_arena_construction_result.v1.json",
-            "blueprint-native-task-arena-",
+            "blueprint-task-evaluation-native-arena-construction-",
             None,
         ),
         (
