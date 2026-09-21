@@ -129,19 +129,21 @@ def prepare_partial_astra_successor(*, value: Mapping, request_value: dict, sour
                    for key in ('configuration_sha256', 'source_candidate', 'rights_admission'))):
         raise AssetAuthoringError('astra_partial_successor_source_rights_or_configuration_changed')
     automatic = materialize_automatic_phase_adoption(prior_runtime=prior)
-    if (automatic['phases'] != ['source_analysis', 'physical_review', 'blender_program']
-            or automatic['completed_artifacts'] != ['cad_result', 'blender_execution']
-            or automatic['blender_round'] != 1):
-        raise AssetAuthoringError('astra_partial_successor_requires_pending_second_review')
-    # Preserve and authenticate the rejected first review, including its exact images.
-    cad, _ = completed_cad(prior / 'authoring', old_request)
-    first_program = BlenderProgram.model_validate(json.loads(
-        (prior / 'authoring/appearance-00/blender_author_0.json').read_text())['output'])
-    first_execution = completed_blender(prior / 'authoring', old_request, round_index=0, program=first_program, cad=cad)
-    first_review, _ = completed_visual_review(prior / 'authoring', previous, prior / 'inference',
-                                            round_index=0, execution=first_execution)
-    if appearance_passed(AppearanceReview.model_validate(first_review)):
-        raise AssetAuthoringError('astra_partial_successor_first_review_not_rejected')
+    sdk = automatic['phases'] == ['agent_candidate'] and not automatic['completed_artifacts']
+    if not sdk:
+        if (automatic['phases'] != ['source_analysis', 'physical_review', 'blender_program']
+                or automatic['completed_artifacts'] != ['cad_result', 'blender_execution']
+                or automatic['blender_round'] != 1):
+            raise AssetAuthoringError('astra_partial_successor_requires_pending_second_review')
+        # Preserve and authenticate the rejected first review, including its exact images.
+        cad, _ = completed_cad(prior / 'authoring', old_request)
+        first_program = BlenderProgram.model_validate(json.loads(
+            (prior / 'authoring/appearance-00/blender_author_0.json').read_text())['output'])
+        first_execution = completed_blender(prior / 'authoring', old_request, round_index=0, program=first_program, cad=cad)
+        first_review, _ = completed_visual_review(prior / 'authoring', previous, prior / 'inference',
+                                                round_index=0, execution=first_execution)
+        if appearance_passed(AppearanceReview.model_validate(first_review)):
+            raise AssetAuthoringError('astra_partial_successor_first_review_not_rejected')
     validation_root = budget_root.parent / 'retained_astra_phases/source-validation'
     prepared = prepare_phase_adoption(value=automatic, request_value=previous, package=package,
                                       budget_root=validation_root / 'inference')
@@ -149,8 +151,11 @@ def prepare_partial_astra_successor(*, value: Mapping, request_value: dict, sour
                                          source_run_id=previous['run_id'], successor_run_id=request_value['run_id'])
     if balance['cost_usd'] != prepared['retained_inference_cost_usd'] or balance['call_count'] != prepared['prior_call_count']:
         raise AssetAuthoringError('astra_partial_successor_inference_balance_changed')
-    record = prepared['authoring_kwargs']['adoption_record']
-    record['new_request_digest'] = request_value['request_digest']
+    if sdk:
+        prepared['authoring_kwargs']['adopted_agent_source_request'] = previous
+    else:
+        record = prepared['authoring_kwargs']['adoption_record']
+        record['new_request_digest'] = request_value['request_digest']
     prepared.update(adoption_digest=value['adoption_digest'], retained_inference_cost_usd=balance['cost_usd'],
                     prior_call_count=balance['call_count'])
     lineage = {'schema_version': 'astra_partial_successor_lineage.v1',
@@ -159,7 +164,7 @@ def prepare_partial_astra_successor(*, value: Mapping, request_value: dict, sour
                'source_authoring_root': str(prior / 'authoring'), 'adoption_digest': value['adoption_digest'],
                'owner_intent_lineage': dict(verified_lineage), 'prior_call_count': balance['call_count'],
                'inherited_token_pricing_cost_usd': balance['cost_usd'], 'official_billing_proven': False,
-               'pending_phase': 'independent_visual_review_1'}
+               'pending_phase': f"independent_visual_review_{automatic['blender_round'] + 1 if sdk else 1}"}
     lineage['lineage_digest'] = canonical_digest(lineage, digest_field='lineage_digest')
     (budget_root.parent / 'partial_successor_lineage.json').write_text(json.dumps(lineage, indent=2) + '\n')
     return prepared

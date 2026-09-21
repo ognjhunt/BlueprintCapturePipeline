@@ -37,11 +37,17 @@ def inspect_agent_candidate(runtime: Path, request_value: dict) -> dict:
         raise AssetAuthoringError('agent_resume_request_changed')
     lineage_path = root / 'retained_requests.json'
     lineage = _read(lineage_path) if lineage_path.exists() else []
+    from .task_object_astra_inherited_inference import inherited_balance
+    inherited = inherited_balance(runtime / 'inference', request.run_id)
+    known_runs = {request.run_id, *(row['run_id'] for row in inherited['journals'])}
+    def scientific(value):
+        return {k: v for k, v in relevant(value).items() if k != 'run_id'}
     for ancestor in lineage:
         validate_request(ancestor)
-        if relevant(ancestor) != relevant(previous):
+        if scientific(ancestor) != scientific(previous) or ancestor['run_id'] not in known_runs:
             raise AssetAuthoringError('agent_resume_request_changed')
-    request_digests = {r['request_digest'] for r in [previous, *lineage]}
+    request_runs = {r['request_digest']: r['run_id'] for r in [previous, *lineage]}
+    request_digests = set(request_runs)
     if _read(session / 'binding.json') != dict(request_digest=request.request_digest,
             run_id=request.run_id, object_id=request.object_id):
         raise AssetAuthoringError('agent_resume_binding_changed')
@@ -142,9 +148,12 @@ def inspect_agent_candidate(runtime: Path, request_value: dict) -> dict:
     if aliases and (len(aliases) != 1 or aliases[0]['sha256'] != file_record(root / 'source_analysis.json')['sha256'].removeprefix('sha256:')):
         raise AssetAuthoringError('agent_resume_physics_source_changed')
     completions = [_read(p) for p in (runtime / 'inference/inference_reservations/completed').glob('*.json')]
+    for journal in inherited['journals']:
+        completions.extend(_read(p) for p in (runtime / 'inference' / journal['relative_root'] /
+                           'inference_reservations/completed').glob('*.json'))
     matched = [c for c in completions if c.get('capability') == request.object_id + f'_physical_property_review_{number}'
         and c.get('structured_output_digest') == canonical_digest(proposal.model_dump(mode='json'))
-        and c.get('run_id') == request.run_id and c.get('provider') == 'openai' and c.get('model') == 'gpt-6-astra'
+        and c.get('run_id') == request_runs[physical_phase['request_digest']] and c.get('provider') == 'openai' and c.get('model') == 'gpt-6-astra'
         and c.get('inference_completion_digest') == canonical_digest(c, digest_field='inference_completion_digest')]
     if len(matched) != 1:
         raise AssetAuthoringError('agent_resume_physics_completion_missing')
@@ -159,7 +168,7 @@ def inspect_agent_candidate(runtime: Path, request_value: dict) -> dict:
                 or [r['sha256'] for r in references[len(previous['source_frames']):]] !=
                     [file_record(attempt / n)['sha256'] for n in ('perspective.png', 'top.png', 'side.png')]
                 or len([c for c in completions if c.get('capability') == request.object_id + f'_independent_visual_review_{number}'
-                        and c.get('run_id') == request.run_id and c.get('provider') == 'openai' and c.get('model') == 'gpt-6-astra'
+                        and c.get('run_id') == request_runs[phase['request_digest']] and c.get('provider') == 'openai' and c.get('model') == 'gpt-6-astra'
                         and c.get('structured_output_digest') == canonical_digest(review.model_dump(mode='json'))
                         and c.get('inference_completion_digest') == canonical_digest(c, digest_field='inference_completion_digest')]) != 1):
             raise AssetAuthoringError('agent_resume_final_review_changed')
@@ -198,8 +207,14 @@ def inspect_agent_candidate(runtime: Path, request_value: dict) -> dict:
         'completed_visual_reviews': sum('_independent_visual_review_' in str(c.get('capability')) for c in completions)}
 
 
-def restore_agent_candidate(asset, runtime: Path, state_root: Path) -> dict:
-    state = inspect_agent_candidate(runtime, asset.request.model_dump(mode='json'))
+def restore_agent_candidate(asset, runtime: Path, state_root: Path, *, source_request=None) -> dict:
+    current = asset.request.model_dump(mode='json')
+    if source_request is not None:
+        from .task_evaluation_partial_astra_successor import semantic_request
+        if (_read(runtime / 'authoring/request.json') != source_request
+                or semantic_request(source_request) != semantic_request(current)):
+            raise AssetAuthoringError('agent_resume_successor_inputs_changed')
+    state = inspect_agent_candidate(runtime, source_request or current)
     source = runtime / 'authoring'
     original = Path(state['original_root'])
     for path in source.iterdir():
