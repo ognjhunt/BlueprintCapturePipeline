@@ -34,6 +34,9 @@ def test_scene_progression_uses_pinned_checkout_and_config_gated_periodic_worker
     assert "exec env PYTHONPATH=src" in unit
     assert "-m blueprint_pipeline.task_evaluation_scene_progression" in unit
     assert "paid_resource_allocator" not in unit
+    queue = "Environment=BLUEPRINT_TASK_EVALUATION_SCENE_CONSTRUCTION_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-constructions"
+    assert queue in unit
+    assert queue in _read("blueprint-task-evaluation-launch-dispatcher.service")
     assert "Environment=VAST_API_KEY_FILE=/etc/blueprint/provider-secrets/vast_api_key" in unit
     assert "OnUnitInactiveSec=1min" in _read("blueprint-task-evaluation-scene-progression.timer")
     installer = INSTALL_SCRIPT.read_text()
