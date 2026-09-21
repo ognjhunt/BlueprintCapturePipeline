@@ -24,6 +24,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -62,6 +63,13 @@ CPU_ADAPTERS = frozenset({
     "provided_mesh_appearance_excision", "provided_mesh_rigid_authoring",
     "content_agents_rigid_replacement", "simready_static_rigid_qualification",
 })
+# A credential-shaped name whose value is not a filesystem reference. The paid
+# container never has one: it receives scoped secret *files* only. A ``_FILE``
+# or ``_ID`` suffix names a reference, not a value -- the OpenAI stage gate
+# requires both (``OPENAI_CONTENT_AGENTS_API_KEY_FILE`` and its ``_API_KEY_ID``
+# attestation scope), so dropping those would break stage 3 rather than fix it.
+_CREDENTIAL_NAME = re.compile(r"(?:API_KEY|TOKEN|SECRET|PASSWORD|PASSPHRASE|CREDENTIAL)")
+_REFERENCE_SUFFIXES = ("_FILE", "_ID", "_PATH", "_DIR", "_ROOT")
 _MARKER_NAME = "completed_stage_checkpoint.json"
 _TRANSPORT_NAME = "cpu_prestage_transport.json"
 _BINDING_NAME = "astra_same_run_resume_binding.json"
@@ -183,6 +191,42 @@ def validate_stage_prefix_capsule(archive: Path, *, expected_stage_ids: list[str
     return {**marker, "transport": transport}
 
 
+def _provider_environment(environment: Mapping[str, str],
+                          overrides: Mapping[str, str]) -> tuple[dict[str, str], list[str]]:
+    """Compose the entrypoint's environment the way the paid container's is built.
+
+    The GPU container starts from nothing and is handed scoped secret *file*
+    paths. This host is a long-lived service whose environment carries ambient
+    operator credentials, so passing it through unchanged is what made stage 3
+    refuse with ``scene_configuration_raw_secret_environment_forbidden`` after
+    stages 1-2 had already run. Drop anything carrying a credential value --
+    the producer's own forbidden names, imported rather than copied so the two
+    cannot drift, plus any credential-shaped name that is not a reference --
+    and refuse if one still survives.
+    """
+    from .task_evaluation_scene_configuration_builtin_producers import (
+        _RAW_SECRET_ENVIRONMENT_NAMES,
+    )
+
+    values = {str(k): str(v) for k, v in environment.items()}
+    values.update({str(k): str(v) for k, v in overrides.items()})
+    dropped = []
+    for name in sorted(values):
+        value = values[name]
+        if not value.strip():
+            continue
+        if name in _RAW_SECRET_ENVIRONMENT_NAMES or (
+            _CREDENTIAL_NAME.search(name)
+            and not name.endswith(_REFERENCE_SUFFIXES)
+            and not Path(value).is_absolute()
+        ):
+            dropped.append(name)
+            values.pop(name)
+    _require(not any(str(values.get(name) or "").strip()
+                     for name in _RAW_SECRET_ENVIRONMENT_NAMES), "raw_secret_environment_forbidden")
+    return values, dropped
+
+
 @contextmanager
 def _exclusive_work_dir(work_dir: Path):
     """One prestage at a time: the bundle path under ``work_dir`` is fixed."""
@@ -266,6 +310,30 @@ def prepare_stage_prefix_before_gpu(
         source_unpacked_bytes = sum(row.file_size for row in _safe_infos(zipped))
     peak_bytes = 3 * source_unpacked_bytes + 512 * 1024**2
     root = work / BUNDLE_DIRNAME
+    runtime = root / "provider_runtime"
+    output = root / "runtime_output"
+    checkpoint_path = work / CHECKPOINT_NAME
+    deadline = float(now()) + int(ttl_seconds)
+    parent_deadline = environment.get("BLUEPRINT_SCENE_CONFIGURATION_PARENT_DEADLINE_EPOCH")
+    if parent_deadline:
+        parent_deadline = float(parent_deadline)
+        _require(math.isfinite(parent_deadline), "parent_deadline_invalid")
+        deadline = min(deadline, parent_deadline)
+    _require(deadline > float(now()) + int(closure_reserve_seconds), "parent_deadline_exhausted")
+    # Compose before unpacking: an environment the producer would refuse costs
+    # nothing here, but at stage 3 it costs the bundle unpack and stages 1-2.
+    values, dropped_environment_names = _provider_environment(environment, {
+        "BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS": "1",
+        "BLUEPRINT_VAST_WORK_DIR": str(work),
+        "BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT": str(runtime),
+        "BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_ROOT": str(output),
+        "BLUEPRINT_SCENE_CONFIGURATION_STAGE_CHECKPOINT_PATH": str(checkpoint_path),
+        "BLUEPRINT_SCENE_CONFIGURATION_STAGE_LIMIT": stage_limit,
+        "BLUEPRINT_SCENE_CONFIGURATION_PARENT_DEADLINE_EPOCH": repr(deadline),
+        "BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_CLOSURE_RESERVE_SECONDS": str(int(closure_reserve_seconds)),
+        "PATH": str(python_bin) + ":" + str(environment.get("PATH") or "/usr/local/bin:/usr/bin:/bin"),
+    })
+    values.pop(PREFIX_URL_ENV, None)
     with _exclusive_work_dir(work):
         with reserve_control_plane_disk("cpu_prestage", target_root=work, expected_bytes=peak_bytes,
                                         reservation_root=reservation_root or DEFAULT_RESERVATION_ROOT,
@@ -273,35 +341,8 @@ def prepare_stage_prefix_before_gpu(
             # The exclusive lock proves no cooperating producer owns leftovers.
             _clear_work_products(work)
             _extract(bundle, root)
-            runtime = root / "provider_runtime"
-            output = root / "runtime_output"
             _require((root / ENTRYPOINT).is_file(), "entrypoint_missing")
             output.mkdir(mode=0o750)
-            checkpoint_path = work / CHECKPOINT_NAME
-            deadline = float(now()) + int(ttl_seconds)
-            parent_deadline = environment.get("BLUEPRINT_SCENE_CONFIGURATION_PARENT_DEADLINE_EPOCH")
-            if parent_deadline:
-                parent_deadline = float(parent_deadline)
-                _require(math.isfinite(parent_deadline), "parent_deadline_invalid")
-                deadline = min(deadline, parent_deadline)
-            _require(deadline > float(now()) + int(closure_reserve_seconds), "parent_deadline_exhausted")
-            values = {
-                **{str(k): str(v) for k, v in environment.items()},
-                "BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS": "1",
-                "BLUEPRINT_VAST_WORK_DIR": str(work),
-                "BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT": str(runtime),
-                "BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_ROOT": str(output),
-                "BLUEPRINT_SCENE_CONFIGURATION_STAGE_CHECKPOINT_PATH": str(checkpoint_path),
-                "BLUEPRINT_SCENE_CONFIGURATION_STAGE_LIMIT": stage_limit,
-                "BLUEPRINT_SCENE_CONFIGURATION_PARENT_DEADLINE_EPOCH": repr(deadline),
-                "BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_CLOSURE_RESERVE_SECONDS": str(int(closure_reserve_seconds)),
-                "PATH": str(python_bin) + ":" + str(environment.get("PATH") or "/usr/local/bin:/usr/bin:/bin"),
-            }
-            # The host may have ambient credentials; the stage accepts only the
-            # attempt's scoped secret-file paths, just like the native worker.
-            for name in ("OPENAI_API_KEY", "BLUEPRINT_OPENAI_ADMIN_KEY"):
-                values.pop(name, None)
-            values.pop(PREFIX_URL_ENV, None)
             log_path = job / "cpu_prestage_entrypoint.log"
             try:
                 with log_path.open("wb") as stream:
@@ -359,6 +400,7 @@ def prepare_stage_prefix_before_gpu(
         "capsule_path": str(capsule), "capsule_sha256": _sha(capsule), "capsule_bytes": capsule.stat().st_size,
         "transport_digest": transport["transport_digest"], "provider_result_digest": result.get("result_digest"),
         "entrypoint_returncode": returncode, "entrypoint_log_path": str(log_path),
+        "dropped_ambient_environment_names": dropped_environment_names,
         "prefix_deadline_epoch": deadline, "source_unpacked_bytes": source_unpacked_bytes,
         "reserved_peak_bytes": peak_bytes, "gpu_execution_performed": False,
         "provider_mutations_performed": 0, "execution_site": "control_plane",
