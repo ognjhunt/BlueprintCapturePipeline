@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from .configured_scene_run_identity import evaluation_scope
+from .task_evaluation_team_run_authority import authority_scope
 from .decision_evidence_contracts import canonical_digest
 from .native_task_isaaclab_launch import NATIVE_TASK_ARENA_IMAGE
 from .task_evaluation_configured_controls_autostart import (
@@ -675,10 +676,12 @@ def provision_configured_controls_continuation(
     visual_review_continuation: Mapping[str, Any] | None = None,
     completed_placement_adoption: Mapping[str, Any] | None = None,
     evaluation_run_id: str | None = None,
+    evaluation_authority: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Author, publish, and seal every continuation input; return the intent path."""
 
     scope = evaluation_scope(evaluation_run_id)
+    selected_authority = authority_scope(evaluation_run_id, evaluation_authority)
     commit = str(expected_production_commit)
     if _COMMIT.fullmatch(commit) is None:
         raise ConfiguredControlsProvisioningError("configured_controls_provisioning_commit_invalid")
@@ -930,6 +933,7 @@ def provision_configured_controls_continuation(
     try:
         intent = materialize_configured_controls_autostart_intent(
             **scope,
+            **selected_authority,
             configuration_source_commit=configuration_source_commit,
             configuration_adoption=configuration_adoption,
             visual_review_continuation=visual_review_continuation,
