@@ -823,6 +823,8 @@ def read_configured_scene_object(
     expected_digest = str(reference.get("digest") or "")
     expected_size = reference.get("size_bytes")
     client, configured_bucket = _object_store_client()
+    if parsed.netloc != configured_bucket and any(os.getenv(name) for name in _ARTIFACT_STORE_FILE_ENV.values()):
+        client, configured_bucket = _artifact_object_store_client()
     key = parsed.path.lstrip("/")
     prefix = DEFAULT_KEY_PREFIX.strip("/") + "/"
     if (
