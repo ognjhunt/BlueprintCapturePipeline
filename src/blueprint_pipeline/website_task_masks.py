@@ -156,7 +156,8 @@ def segment_grounded_static_target(*, target: Mapping[str, Any], registry: list[
         {"frame_id": frame["source_frame_id"], "timestamp_seconds": frame["decoded_pts_seconds"]}])
 
 
-def estimate_target_bounds(track: Mapping[str, Any], frames: list[Mapping[str, Any]]) -> dict[str, Any]:
+def estimate_target_bounds(track: Mapping[str, Any], frames: list[Mapping[str, Any]],
+                           *, source_to_target: np.ndarray | None = None) -> dict[str, Any]:
     by_id = {frame["frame_id"]: frame for frame in frames}
     points = []
     for observation in track["observations"]:
@@ -177,7 +178,16 @@ def estimate_target_bounds(track: Mapping[str, Any], frames: list[Mapping[str, A
         points.append(camera_points @ pose[:3, :3].T + pose[:3, 3])
     if not points:
         raise ValueError("task_target_has_no_estimated_geometry")
-    minimum, maximum = np.quantile(np.concatenate(points), [0.01, 0.99], axis=0)
+    observed = np.concatenate(points)
+    if source_to_target is not None:
+        transform = np.asarray(source_to_target, dtype=float)
+        if (transform.shape != (4, 4) or not np.isfinite(transform).all()
+                or not np.allclose(transform[3], [0, 0, 0, 1])):
+            raise ValueError("task_target_coordinate_transform_invalid")
+        # Rotate the observed points before enclosing them. Rotating an AABB
+        # invents empty corners and can make a shallow object appear tall.
+        observed = observed @ transform[:3, :3].T + transform[:3, 3]
+    minimum, maximum = np.quantile(observed, [0.01, 0.99], axis=0)
     return {"minimum": minimum.tolist(), "maximum": maximum.tolist(),
             "center": ((minimum + maximum) / 2).tolist(), "unit": "estimated_meters",
             "basis": "visible_masked_surfaces_with_model_estimated_depth_and_cameras",

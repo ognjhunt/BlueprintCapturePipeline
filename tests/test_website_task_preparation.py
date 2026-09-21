@@ -29,6 +29,10 @@ def _depth():
 
 def _frame(root: Path, index: int):
     depth = _depth()
+    # A non-planar observed object patch above the table; masks must describe
+    # actual points, not an unrelated hand-written bounding box.
+    yy, xx = np.indices((5, 4))
+    depth[20:25, 21:25] = 1.57 + 0.005 * (xx + yy)
     geometry = root / f"frame-{index}.npz"
     np.savez(geometry, depth_m=depth, valid_mask=np.ones_like(depth, dtype=bool))
     image = root / f"frame-{index}.png"
@@ -148,11 +152,11 @@ def test_registered_estimates_compile_into_an_intake_ready_request(tmp_path):
     subject = value["subject"]
     # Source bounds land on the registered table top (runtime y = 2 - 0.5 * 0.5).
     assert subject["aabb_min_xyz"][2] == pytest.approx(3.5, abs=1e-6)
-    assert subject["aabb_max_xyz"][2] == pytest.approx(3.6, abs=1e-6)
+    assert subject["aabb_max_xyz"][2] == pytest.approx(3.71939, abs=1e-6)
     assert value["support"]["top_runtime_units"] == pytest.approx(1.75, abs=1e-6)
     assert value["destination"]["position_world_m"][2] == pytest.approx(3.5, abs=1e-6)
     assert value["physics"]["basis"] == "estimated"
-    assert value["physics"]["dimensions_m"] == pytest.approx([0.05, 0.1, 0.1], abs=1e-6)
+    assert value["physics"]["dimensions_m"] == pytest.approx([0.16150833333333348, 0.0331, 0.21939], abs=1e-6)
     assert value["physics"]["sensitivity"] == "awaiting_robot_team_selection"
     request = value["intake_request"]
     assert request["source"]["kind"] == "gaussian_splat"
@@ -316,7 +320,14 @@ def test_destination_outside_reconstructed_surface_cannot_reach_intake(tmp_path)
 
 def test_source_far_above_support_is_not_snapped_down_to_floor(tmp_path):
     args = _arguments(tmp_path)
-    args["task_masks"]["targets"][0]["estimated_visible_bounds"] = _bounds([.05, -.6, 1.45], [.1, -.5, 1.55])
+    frame = args["source_geometry"]["frames"][0]
+    with np.load(frame["geometry_path"]) as data:
+        depth, valid = data["depth_m"], data["valid_mask"]
+    depth[20:25, 21:25] *= 0.2
+    np.savez(frame["geometry_path"], depth_m=depth, valid_mask=valid)
+    frame["geometry_digest"] = _sha256_file(Path(frame["geometry_path"]))
+    args["source_geometry"]["digest"] = canonical_digest(args["source_geometry"], digest_field="digest")
+    args["task_masks"]["source_geometry_digest"] = args["source_geometry"]["digest"]
     args["task_masks"]["digest"] = canonical_digest(args["task_masks"], digest_field="digest")
     result = preparation.compile_website_scene_preparation(**args)
     assert result["status"] == "needs_input"
@@ -412,7 +423,7 @@ def test_anchored_world_compiles_with_the_declared_scale(tmp_path):
     assert value["status"] == "intake_ready", value["blockers"]
     assert value["registration"]["scale_status"] == "provider_declared_anchor"
     assert value["coordinate_frame"]["declared_meters_per_unit"] == pytest.approx(1 / RUNTIME_SCALE)
-    assert value["physics"]["dimensions_m"] == pytest.approx([0.05, 0.1, 0.1], abs=1e-6)
+    assert value["physics"]["dimensions_m"] == pytest.approx([0.16150833333333348, 0.0331, 0.21939], abs=1e-6)
 
 
 def test_declared_scale_without_an_anchor_must_agree_with_the_registration(tmp_path):

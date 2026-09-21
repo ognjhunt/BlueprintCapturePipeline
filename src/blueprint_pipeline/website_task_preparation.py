@@ -28,7 +28,7 @@ from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .external_scene_frame_registration import _axis_rotations, _sample, _trimmed_rmse
 from .local_reconstruction_adapters import _sha256_file
-from .website_task_masks import decode_track_mask
+from .website_task_masks import decode_track_mask, estimate_target_bounds
 from .website_support_geometry import support_under
 
 SCHEMA_VERSION = "website_scene_preparation.v1"
@@ -394,7 +394,9 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     write_json(registration_path, registration)
     matrix = np.asarray(registration["source_to_runtime"])
     frames_by_id = {frame["frame_id"]: frame for frame in source_geometry["frames"]}
-    subject_min, subject_max = _runtime_bounds(subject_target["estimated_visible_bounds"], matrix)
+    subject_bounds = estimate_target_bounds(subject_target["track"], source_geometry["frames"],
+                                            source_to_target=matrix)
+    subject_min, subject_max = subject_bounds["minimum"], subject_bounds["maximum"]
     import trimesh
     collider = trimesh.load(base_scene["collision_mesh_path"], force="mesh", process=False)
     support = support_under(collider, subject_min, subject_max, up=up, meters_per_unit=mpu, up_sign=up_sign)

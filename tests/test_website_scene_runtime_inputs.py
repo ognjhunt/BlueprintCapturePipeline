@@ -25,7 +25,7 @@ def test_real_native_collision_conversion_preserves_background_and_separate_subj
         base.update(up_axis="-Y", collision_mesh_digest=_sha256_file(path))
     preparation = compile_website_scene_preparation(**args)
     assert preparation["status"] == "intake_ready"
-    assert preparation["subject"]["aabb_min_xyz"] == pytest.approx([2.05, -4.55, 3.5])
+    assert preparation["subject"]["aabb_min_xyz"] == pytest.approx([2.052365, -4.42905, 3.5])
     assert preparation["destination"]["position_world_m"][2] == pytest.approx(3.5)
     kwargs = {"preparation": preparation, "base_scene": args["base_scene"], "source_geometry": args["source_geometry"], "task_masks": args["task_masks"], "output_root": tmp_path / "native"}
     value = prepare_website_runtime_inputs(**kwargs)
@@ -123,7 +123,7 @@ def test_original_observations_reach_existing_authoring_without_background_excis
     meshes = [UsdGeom.Mesh(p) for p in stage.Traverse() if p.IsA(UsdGeom.Mesh)]
     assert len(meshes) == 1 and len(meshes[0].GetFaceVertexCountsAttr().Get()) == 24
     points = np.asarray(meshes[0].GetPointsAttr().Get())
-    assert np.allclose(points[:, 2], 3.5)  # Registered support-frame source patch.
+    assert np.quantile(points[:, 2], [0.01, 0.99]) == pytest.approx([3.5, 3.71939], abs=1e-6)  # Actual observed object patch above support.
     assert not any(p.HasAPI(UsdPhysics.RigidBodyAPI) for p in stage.Traverse())
     _normalize_candidate(candidate, tmp_path / "authoring_candidate.usda")
     observed = json.loads(Path(value["object_authoring"]["observation_manifest"]["path"]).read_text())
