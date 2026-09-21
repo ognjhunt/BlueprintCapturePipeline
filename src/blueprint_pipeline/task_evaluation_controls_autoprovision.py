@@ -318,7 +318,7 @@ def _provision_validated_link(*, link: Mapping[str, Any], scene_root: Path,
             **producer.bounded_native_phase_budget(cap),
             authority_valid_seconds=int(intake.effective_execution_expiry(directory, intent) - issued),
             now=datetime.fromtimestamp(issued, timezone.utc),
-            external_layer_bucket=binding.get("external_layer_bucket"),
+            external_layer_bucket=(producer._live_external_layer_bucket() or binding.get("external_layer_bucket")),
             scene_phase_attempts=scene_phase_attempts, scene_intake_root=scene_root))
         _require(result.get("provider_mutation_performed") is False and
                  result.get("status") == "configured_controls_continuation_provisioned", "producer_result_invalid")

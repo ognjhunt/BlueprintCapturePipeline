@@ -232,7 +232,7 @@ def provision_terminal_controls_adoption(*, config: Mapping[str, Any], catalog: 
             release_reference=authority, openai_project_id=binding['openai_project_id'], openai_api_key_id=binding['openai_api_key_id'],
             **producer.bounded_native_phase_budget(cap),
             max_inference_cost_usd=inference_cap, authority_valid_seconds=int(expiry-issued),
-            now=datetime.fromtimestamp(issued, timezone.utc), external_layer_bucket=binding.get('external_layer_bucket'),
+            now=datetime.fromtimestamp(issued, timezone.utc), external_layer_bucket=(producer._live_external_layer_bucket() or binding.get('external_layer_bucket')),
             scene_phase_attempts=phases, scene_intake_root=config['scene_root'],
             **({'evaluation_run_id': request['submission_id'], 'evaluation_authority': source['evaluation_authority']}
                 if selected_evaluation else {}))

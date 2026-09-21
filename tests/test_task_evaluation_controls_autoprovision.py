@@ -547,3 +547,20 @@ def test_retained_receipt_requires_the_installed_registry_intent(tmp_path, monke
     registry.write_text(registry.read_text().replace("intent_digest", "intent_digest_"))
     with pytest.raises(ValueError):
         worker.provision_link(**kwargs)
+
+
+def test_runtime_layers_use_the_publishers_bucket_without_rewriting_robot_selection(tmp_path, monkeypatch):
+    kwargs = setup(tmp_path)
+    binding = kwargs["catalog"]["bindings"]["franka-droid"]
+    binding["external_layer_bucket"] = "legacy-bucket"
+    kwargs["catalog"] = worker._seal(kwargs["catalog"], "catalog_digest")
+    monkeypatch.setattr(worker.producer, "_live_external_layer_bucket", lambda: "artifact-store")
+    observed = []
+    def provision(**arguments):
+        observed.append(arguments["external_layer_bucket"])
+        raise RuntimeError("stop_before_publication")
+    kwargs["provisioner"] = provision
+    with pytest.raises(RuntimeError, match="stop_before_publication"):
+        worker.provision_link(**kwargs)
+    assert observed == ["artifact-store"]
+    assert binding["external_layer_bucket"] == "legacy-bucket"

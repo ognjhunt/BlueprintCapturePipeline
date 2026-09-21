@@ -14,7 +14,8 @@ from tests.test_task_evaluation_unstarted_controls_reservations import reserved 
 from tests.test_task_evaluation_scene_spend import seed
 
 
-def test_delivered_scene_is_automatically_reprovisioned_without_reconstruction(reserved, tmp_path, monkeypatch):
+@pytest.mark.parametrize("catalog_bucket", [None, "blueprint", "artifact-store"])
+def test_delivered_scene_is_automatically_reprovisioned_without_reconstruction(reserved, tmp_path, monkeypatch, catalog_bucket):
     root, run, owner, _reserve, _old = reserved
     config = {'scene_root':str(root), 'launch_state_root':str(tmp_path), 'trusted_clients':['webapp'],
         'controls_root':str(tmp_path/'controls'), 'intent_root':str(tmp_path/'registry'), 'profile_dir':str(tmp_path/'profiles'),
@@ -44,6 +45,8 @@ def test_delivered_scene_is_automatically_reprovisioned_without_reconstruction(r
         'runtime_digest':worker.payload_digest(payload),'robot_asset_usd':asset('robot.usd'),
         'embodiment_camera_template':asset('camera.json'),'phase_hard_cap_usd':.45,
         'project_spend_current_path':str(pointer),'openai_project_id':'project','openai_api_key_id':'key'}
+    binding['external_layer_bucket'] = catalog_bucket
+    monkeypatch.setattr(producer, '_live_external_layer_bucket', lambda: 'artifact-store')
     catalog=worker._seal({'schema_version':worker.CATALOG_SCHEMA,
         'bindings':{'fixture-franka':binding}}, 'catalog_digest')
     from blueprint_pipeline import task_evaluation_scene_robot_assignment as assignment
@@ -69,6 +72,8 @@ def test_delivered_scene_is_automatically_reprovisioned_without_reconstruction(r
     assert result['status']=='installed_terminal_adoption'
     assert result['robot_assignment_digest']==assigned['assignment_digest']
     args=observed[0]
+    assert args['external_layer_bucket'] == 'artifact-store'
+    assert binding['external_layer_bucket'] == catalog_bucket  # Never rewrite the selected binding.
     assert args['configuration_source_commit']=='d'*40 and args['expected_production_commit']=='c'*40
     assert args['configuration_adoption']['terminal_result_digest']==terminal['result_digest']
     assert args['phase_hard_cap_usd']==.45 and args['max_inference_cost_usd']==2.56
