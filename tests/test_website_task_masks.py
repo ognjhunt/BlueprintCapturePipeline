@@ -349,3 +349,27 @@ def test_visual_masks_defer_kept_support_but_cannot_enter_simulation(tmp_path, m
     with pytest.raises(ValueError, match="support_not_resolved"):
         masks.run_website_task_masks(**kwargs)
     assert provider_calls[0] == provider_calls[1]  # strict continuation reuses identical paid request bindings
+
+
+def test_target_bounds_rotate_observations_not_their_enclosing_box(tmp_path):
+    """A tilted thin patch must not acquire height from empty AABB corners."""
+    from blueprint_pipeline.website_task_preparation import _runtime_bounds
+    path = tmp_path / 'thin.npz'
+    np.savez(path, depth_m=np.full((4, 4), 2.0), valid_mask=np.ones((4, 4), dtype=bool))
+    angle = np.pi / 4
+    pose = np.eye(4)
+    pose[:3, :3] = [[1, 0, 0], [0, np.cos(angle), -np.sin(angle)],
+                    [0, np.sin(angle), np.cos(angle)]]
+    pose[:3, 3] = [10, 20, 30]
+    frame = {'frame_id': 'frame-0', 'geometry_path': str(path), 'geometry_digest': _sha256_file(path),
+             'intrinsics': np.eye(3).tolist(), 'world_from_camera': pose.tolist()}
+    transform = np.linalg.inv(pose)
+    source = estimate_target_bounds(_track(), [frame])
+    old_low, old_high = _runtime_bounds(source, transform)
+    assert old_high[2] - old_low[2] > 1
+    corrected = estimate_target_bounds(_track(), [frame], source_to_target=transform)
+    assert np.subtract(corrected['maximum'], corrected['minimum']) == pytest.approx([2, 2, 0], abs=1e-12)
+    assert corrected['complete_object_dimensions'] is False
+    assert corrected['metric_measurement_proven'] is False
+    with pytest.raises(ValueError, match='coordinate_transform_invalid'):
+        estimate_target_bounds(_track(), [frame], source_to_target=np.ones((4, 4)))
