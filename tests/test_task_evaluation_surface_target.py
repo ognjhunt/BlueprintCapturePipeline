@@ -190,3 +190,17 @@ def test_production_submission_supports_different_object_geometry_without_destin
     assert template["interaction_affordance"]["approach_unit_scoring_frame"] == [0, 0, 1]
     assert template["interaction_affordance"]["jaw_unit_scoring_frame"][2] == 0
     assert not (root / "destination").exists()
+
+
+def test_retained_native_target_seal_survives_javascript_number_roundtrip():
+    from blueprint_pipeline.decision_evidence_contracts import cross_runtime_canonical_json
+    original = target_fixture(success={"stable_seconds": 2.0})
+    decoded = json.loads(cross_runtime_canonical_json(original))
+    assert type(decoded["stable_seconds"]) is int
+    assert validate_surface_target(decoded) == decoded
+    assert decoded["target_digest"] == original["target_digest"]
+    for key in ("stable_seconds", "radius_m"):
+        changed = deepcopy(decoded)
+        changed[key] += 0.01
+        with pytest.raises(ValueError, match="surface_target_digest_invalid"):
+            validate_surface_target(changed)
