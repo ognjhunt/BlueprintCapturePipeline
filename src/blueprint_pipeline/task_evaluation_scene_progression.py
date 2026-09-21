@@ -537,6 +537,11 @@ def _advance_intent(directory, intent, config, release, *, resolver, publisher, 
                                               else "scene_intake_authority_expired"])
     if intent["intent_id"] in config.get("paused_intent_ids", []):
         return emit("awaiting_execution", "paused", ["scene_intent_paused"])
+    if is_preparation_only and state.get("activation"):
+        from .website_publication_recovery import reconcile_website_publication
+        recovery = reconcile_website_publication(intent=intent, config=config, release=release)
+        if recovery is not None:
+            return emit(recovery["status"], recovery["phase"], recovery["blockers"])
     if state.get("activation") and not is_preparation_only:
         from .task_evaluation_controls_autoprovision import CONFIG_ENV as CONTROLS_CONFIG_ENV, _registered_terminal_adoption
         controls_config_path = os.getenv(CONTROLS_CONFIG_ENV)

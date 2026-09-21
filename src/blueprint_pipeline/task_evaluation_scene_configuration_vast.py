@@ -724,7 +724,7 @@ def _publication_envelope(receipt: Mapping[str, Any], *, output_root: Path) -> d
     """Restore only the small, byte-bound inputs the publisher must reopen."""
     envelope = _portable_construction_envelope(receipt)
     original_digest = envelope["envelope_digest"]
-    needed = {"task.definition", "construction.recipe.supplemental_destination.simready_result"}
+    needed = {"task.definition", "scene.source_manifest", "construction.recipe.supplemental_destination.simready_result"}
     root = output_root / "publication_inputs"
     with zipfile.ZipFile(Path(str(receipt["bundle_path"]))) as archive:
         names = archive.namelist()
