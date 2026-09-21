@@ -552,10 +552,20 @@ def execute_astra_component(*, environment=None, runner=subprocess.run,
     authored, failure = None, None
     try:
         with _stage_sdk_environment(key_path.resolve()):
-            authored = authoring_executor(request_value=request.model_dump(mode="json"), output_root=authored_root,
-                invoker=invoker, mac_executor=mac_executor, blender_runner=sandbox, blender_executable=blender["executable"],
-                authoring_instructions=(cad_root / "text-to-cad/skills/cad/SKILL.md").read_text(),
-                **adoption["authoring_kwargs"])
+            arguments = dict(request_value=request.model_dump(mode="json"), output_root=authored_root,
+                invoker=invoker, blender_runner=sandbox, blender_executable=blender["executable"],
+                authoring_instructions=(cad_root / "text-to-cad/skills/cad/SKILL.md").read_text())
+            if (authoring_executor is execute_asset_authoring
+                    and configuration.get("source_observation_kind") == "website_capture_frames"
+                    and not adoption.get("adoption_digest")):
+                from .task_object_agent_cad import execute_cad_program
+                from .task_object_agent_session import execute_agent_authoring
+                from functools import partial
+                authored = execute_agent_authoring(**arguments, budget_root=runtime / "inference",
+                    cad_executor=partial(execute_cad_program, cad_root=cad_root / "text-to-cad",
+                        mac_root=cad_root / "Multi-Agent-CAD", sandbox=sandbox, verified_sources=verified_sources))
+            else:
+                authored = authoring_executor(**arguments, mac_executor=mac_executor, **adoption["authoring_kwargs"])
     except Exception as exc:
         failure = type(exc).__name__
         raise
