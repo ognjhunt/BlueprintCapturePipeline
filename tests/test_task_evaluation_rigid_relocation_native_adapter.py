@@ -443,8 +443,9 @@ def test_pick_and_place_preserves_explicit_grasp_and_builds_native_phases(
     assert phase_ids[:3] == ["pregrasp", "grasp_contact", "lift_clearance"]
     assert "place" in phase_ids
     assert "release" in phase_ids
-def test_surface_region_reaches_native_adapter_and_sealed_owner_contract(tmp_path: Path) -> None:
-    from blueprint_pipeline.task_evaluation_surface_target import derive_surface_target, surface_execution_limits
+@pytest.mark.parametrize('transport', ['native', 'website', 'changed', 'invalid_digest'])
+def test_surface_region_reaches_native_adapter_and_sealed_owner_contract(tmp_path: Path, transport) -> None:
+    from blueprint_pipeline.task_evaluation_surface_target import derive_surface_target, surface_execution_limits, surface_target_for_web
     from blueprint_pipeline.task_evaluation_scene_configuration_submission_records import pick_and_place_task_records
     from blueprint_pipeline.task_evaluation_rigid_owner_contract import _derive_configured_owner_success_contract
     launch, configured, references, docs = _case(tmp_path)
@@ -479,6 +480,20 @@ def test_surface_region_reaches_native_adapter_and_sealed_owner_contract(tmp_pat
     configured["revision_digest"] = canonical_digest(configured, digest_field="revision_digest")
     launch["task"].update(strategy="pick_and_place", surface_target=target,
                          configured_scene_revision_digest=configured["revision_digest"])
+    if transport != 'native':
+        web_target=surface_target_for_web(target)
+        web_target['stable_seconds']=int(web_target['stable_seconds'])
+        if transport == 'changed':
+            web_target['radius_m'] += .001
+            web_target['target_digest']=canonical_digest(web_target,digest_field='target_digest')
+        elif transport == 'invalid_digest':
+            web_target['target_digest']='sha256:'+'0'*64
+        launch['task']['surface_target']=web_target
+    if transport in {'changed','invalid_digest'}:
+        with pytest.raises(ValueError, match='surface_target'):
+            adapt_rigid_relocation_task_template(request=launch, configured_revision=configured,
+                materialized_references=references)
+        return
     result = adapt_rigid_relocation_task_template(request=launch, configured_revision=configured,
                                                   materialized_references=references)
     spec = result["native_task_definition"]["task_spec"]

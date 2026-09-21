@@ -1099,7 +1099,8 @@ def materialize_configured_controls_autostart(
     intent = validate_configured_controls_autostart_intent(
         _read(intent_path, blocker="configured_controls_autostart_intent_invalid")
     )
-    if openai_gate_builder is configured_controls_robot_placement_openai_gate:
+    if (openai_gate_builder is configured_controls_robot_placement_openai_gate
+            and intent.get("completed_placement_adoption") is None):
         validate_placement_openai_environment(
             environment=dict(os.environ if environment is None else environment),
             placement_authority=intent["placement"]["official_cost_authority"])

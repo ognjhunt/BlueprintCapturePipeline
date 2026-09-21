@@ -998,11 +998,21 @@ def adapt_rigid_relocation_task_template(
             PUSH_CONTACT_MAX_DISPLACEMENT_M
         )
     if "surface_target" in template:
-        from .task_evaluation_surface_target import bind_native_surface_target
+        from .task_evaluation_surface_target import bind_native_surface_target, surface_target_for_web
         surface = template["surface_target"]
-        if (surface != success.get("surface_target") or configured_revision is None
-                or surface != configured_revision["task_template"].get("surface_target")
-                or (request is not None and surface != request["task"].get("surface_target"))):
+        # Website JSON normalizes integral floats and uses the cross-runtime
+        # digest. Validate every original seal before comparing their content;
+        # retain the original native target in the compiled evidence.
+        try:
+            expected = surface_target_for_web(surface)
+            candidates = [success.get("surface_target"),
+                configured_revision["task_template"].get("surface_target") if configured_revision is not None else None]
+            if request is not None:
+                candidates.append(request["task"].get("surface_target"))
+            matches = all(surface_target_for_web(candidate) == expected for candidate in candidates)
+        except ValueError:
+            matches = False
+        if not matches:
             raise TaskEvaluationRigidRelocationNativeAdapterError("rigid_relocation_surface_target_binding_mismatch")
         native_task_spec = bind_native_surface_target(task_spec=native_task_spec, target=surface,
             static=documents[STATIC_QUALIFICATION_CONTRACT_PATH], support=documents[SUPPORT_PLANE_CONTRACT_PATH])

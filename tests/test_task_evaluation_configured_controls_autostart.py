@@ -14,6 +14,28 @@ from blueprint_pipeline import task_evaluation_configured_controls_progression_w
 COMMIT = "a" * 40
 
 
+@pytest.mark.parametrize('completed', [False, True])
+def test_validated_placement_reuse_does_not_require_another_paid_call(tmp_path, monkeypatch, completed):
+    intent={'placement':{'official_cost_authority':{'maximum_cost_usd':0 if completed else 2.56}},
+            'configuration_source_commit':COMMIT}
+    if completed:
+        intent['completed_placement_adoption']={'validated':'retained placement'}
+    monkeypatch.setattr(worker,'_validate_source',lambda root: ({},{'source_commit':COMMIT},{}))
+    monkeypatch.setattr(autostart,'_profile_intent',lambda *a,**kw: ({},tmp_path/'intent.json'))
+    monkeypatch.setattr(autostart,'_read',lambda *a,**kw: intent)
+    validated=[]
+    monkeypatch.setattr(autostart,'validate_configured_controls_autostart_intent',
+        lambda value: validated.append(value) or value)
+    def paid_preflight(**kwargs):
+        assert validated
+        raise ValueError('paid_preflight_required')
+    monkeypatch.setattr(autostart,'validate_placement_openai_environment',paid_preflight)
+    expected='source_binding_invalid' if completed else 'paid_preflight_required'
+    with pytest.raises((ValueError,RuntimeError),match=expected):
+        autostart.materialize_configured_controls_autostart(source_launch_id='source',
+            launch_state_root=tmp_path,progression_root=tmp_path/'progression',plan_root=tmp_path/'plans',environment={})
+
+
 def _write(path: Path, payload: bytes = b"{}\n") -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(payload)
