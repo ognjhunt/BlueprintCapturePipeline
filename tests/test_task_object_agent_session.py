@@ -299,7 +299,7 @@ def test_long_retained_session_compacts_before_reserved_request(agent_fixture):
     root = f.kwargs['budget_root'] / 'asset_session'
     root.mkdir(parents=True)
     history = session.SQLiteSession(f.request.object_id, db_path=root / 'conversation.sqlite')
-    retained = [
+    prior_messages = [
         {'role': 'user', 'content': 'Original task: retain uncertainty and blue material.'},
         {'type': 'function_call', 'call_id': 'old', 'name': 'build_cad', 'arguments': json.dumps({'program': 'x' * 90000})},
         {'type': 'function_call_output', 'call_id': 'old', 'output': 'obsolete compiler error'},
@@ -307,7 +307,7 @@ def test_long_retained_session_compacts_before_reserved_request(agent_fixture):
         {'type': 'function_call_output', 'call_id': 'latest', 'output': 'latest compiler error'},
         {'role': 'user', 'content': 'Independent review: correct shape, no native qualification yet.'},
     ]
-    asyncio.run(history.add_items(retained))
+    asyncio.run(history.add_items(prior_messages))
     history.close()
     invoker, _ = bounded(f)
     result = session.execute_agent_authoring(**f.kwargs, invoker=invoker, model=f.model)
