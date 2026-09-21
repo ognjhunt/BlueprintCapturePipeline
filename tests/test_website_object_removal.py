@@ -183,3 +183,24 @@ def test_positive_task_evidence_replaces_unmasked_context_without_reediting(limi
     targets[0].update(task_effect="static_contact", disposition="keep")
     assert replace_unmasked_task_views(selected=selected, frames=frames, task_masks=masks,
                                        targets=targets, limit=limit) == selected
+
+
+def test_tracking_gap_between_video_evidence_and_sam_cannot_enter_reconstruction():
+    from blueprint_pipeline.website_object_removal import replace_unmasked_task_views
+    frames = [{"frame_id": f"f{i}", "image_digest": f"original-{i}", "remaining_pixel_count": 0}
+              for i in range(12)]
+    frames[6]["remaining_pixel_count"] = 20
+    selected = [dict(frame) for frame in frames[:8]]
+    selected[6].update(image_digest="accepted-edit", generated_pixels_present=True, remaining_pixel_count=0)
+    masks = {"source_frame_registry": [{"source_frame_id": f"f{i}", "decoded_pts_seconds": i / 30}
+                                        for i in range(12)],
+             "targets": [{"target_id": "blue", "source_track": {
+                 "observations": [{"source_frame_id": "f6"}, {"source_frame_id": "f8"}]}}]}
+    targets = [{"target_id": "blue", "task_effect": "manipulated", "disposition": "remove",
+                "spatial_evidence": [{"timestamp_seconds": 4 / 30}]}]
+    result = replace_unmasked_task_views(selected=selected, frames=frames, task_masks=masks,
+                                        targets=targets, limit=8)
+    assert len(result) == 8 and len({row["image_digest"] for row in result}) == 8
+    assert not {"f4", "f5", "f7", "f8"}.intersection(row["frame_id"] for row in result)
+    assert next(row for row in result if row["frame_id"] == "f6") == selected[6]
+    assert {"f0", "f11"} <= {row["frame_id"] for row in result}

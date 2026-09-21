@@ -66,14 +66,28 @@ def replace_unmasked_task_views(*, selected: Sequence[Mapping[str, Any]],
     """
     registry = task_masks.get("source_frame_registry") or []
     visible = set()
+    timestamps = {row["source_frame_id"]: row["decoded_pts_seconds"] for row in registry}
+    tracks = {row.get("target_id"): row for row in task_masks.get("targets", []) if row.get("target_id")}
     for target in targets:
         if target.get("task_effect") != "manipulated" or target.get("disposition") != "remove":
             continue
+        observed_times = []
         for evidence in target.get("spatial_evidence", []):
             timestamp = evidence.get("timestamp_seconds")
             if registry and isinstance(timestamp, (float, int)) and np.isfinite(timestamp):
                 nearest = min(registry, key=lambda row: abs(row["decoded_pts_seconds"] - timestamp))
                 visible.add(nearest["source_frame_id"])
+                observed_times.append(nearest["decoded_pts_seconds"])
+        tracked = tracks.get(target.get("target_id"), {})
+        observations = (tracked.get("source_track") or tracked.get("track") or {}).get("observations", [])
+        observed_times.extend(timestamps[row["source_frame_id"]] for row in observations
+                              if row["source_frame_id"] in timestamps)
+        # A tracker can start late or drop an object between observations. An
+        # absent mask inside its observed visibility interval is not clearance.
+        # Replace these views, without inventing masks or editing other objects.
+        if observed_times:
+            visible.update(frame_id for frame_id, timestamp in timestamps.items()
+                           if min(observed_times) <= timestamp <= max(observed_times))
     unsafe = {frame["frame_id"] for frame in frames
               if frame["frame_id"] in visible and not frame["remaining_pixel_count"]}
     if not unsafe.intersection(frame["frame_id"] for frame in selected):
