@@ -105,13 +105,13 @@ def derived_contract(*, packet_request_path: Path, directive: Mapping[str, Any])
     return derived['task_spec']['task_success_contract'], derived['diagnostic_control_omission_authority']
 
 
-def bind_camera_start(*, directive, plan, construction, contract, cells):
+def bind_camera_start(*, directive, plan, contract, cells, construction=None):
     """Reopen exact owner robot calibration, then check every current cell's framing."""
     import hashlib
     from copy import deepcopy
     from . import task_evaluation_controls_autoprovision as controls
     from .task_evaluation_scene_robot_assignment import resolve_controls_robot_binding
-    from .native_task_camera_start_configuration import materialize_camera_start_from_construction, validate_camera_start_configuration
+    from .native_task_camera_start_configuration import materialize_camera_start_from_construction, materialize_camera_start_from_plan, validate_camera_start_configuration
     from .native_task_arena_policy_canary_worker import _resolved_scene_plan
     from . import task_evaluation_scene_intake as intake
     config = controls._json(Path(os.getenv(controls.CONFIG_ENV, '/etc/blueprint/task-evaluation-controls-autoprovision.json')))
@@ -144,7 +144,9 @@ def bind_camera_start(*, directive, plan, construction, contract, cells):
         values.append(json.loads(raw))
     current = deepcopy(plan)
     current['task_spec']['task_success_contract'] = deepcopy(contract)
-    binding = materialize_camera_start_from_construction(plan=current, construction=construction,
+    current['plan_digest'] = canonical_digest(current, digest_field='plan_digest')
+    materialize = materialize_camera_start_from_plan if construction is None else materialize_camera_start_from_construction
+    binding = materialize(plan=current, **({} if construction is None else {'construction': construction}),
         source_binding=values[0], native_reference_gate=values[1], robot_asset_sha256=robot_sha,
         runtime_digest=robot['runtime_digest'], calibration_digest=calibration['calibration_digest'])
     current['policy_canary_camera_start_configuration'] = binding

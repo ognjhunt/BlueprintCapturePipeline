@@ -18,10 +18,14 @@ and per-cell native controls refuse execution while paused. No controls success
 receipt is fabricated. Policy results remain diagnostic and cannot claim a
 controls-qualified comparison. Task scoring criteria are unchanged.
 
-This pause alone does not remove the separate scripted construction prerequisite.
-Separating basic simulation validity from scripted task success remains necessary
-before a failed scripted grasp can proceed to a policy trial. Simulation checks,
-policy-input media, authority, spending, and teardown remain required.
+New website runs proceed from CPU scene compilation to the existing diagnostic
+policy runtime without a scripted construction rehearsal. The runtime still checks
+asset physics, gripper commands, reset state, and cameras before policy queries.
+A failed scripted grasp is not a policy-admission requirement. The camera start is
+computed from the sealed robot plan and validated kinematics, explicitly awaiting
+native readback; no native construction success is invented. Simulation checks,
+policy-input media, authority, spending, and teardown remain required. Existing
+started construction runs retain their original closeout requirements.
 
 Completion evidence for this change: focused owner-binding, controller callback,
 allocator no-launch, native no-execution, and terminal closeout tests. Live proof

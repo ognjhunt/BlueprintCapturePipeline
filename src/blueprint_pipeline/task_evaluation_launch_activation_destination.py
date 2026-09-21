@@ -65,6 +65,8 @@ def lineage_operations(
 ) -> dict[str, str]:
     if lineage["kind"] == "initial_project":
         names = ("project_spend_reconciliation", "initial_provider_zero")
+        if "construction_result" in lineage:
+            names += ("construction_result",)
         return {name: str(materialized[f"lineage.{name}"]) for name in names}
     required = (
         "prior_authority",

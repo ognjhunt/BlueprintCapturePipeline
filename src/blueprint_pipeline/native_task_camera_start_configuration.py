@@ -147,9 +147,7 @@ def validate_camera_start_configuration(plan, value) -> dict[str, Any]:
     return binding
 
 
-def materialize_camera_start_from_construction(*, plan, construction, source_binding,
-        native_reference_gate, robot_asset_sha256, runtime_digest, calibration_digest):
-    """Reuse robot kinematics, binding this scene only to its actual native reset."""
+def _verified_camera_reference(*, source_binding, native_reference_gate, robot_asset_sha256):
     if (source_binding.get('schema_version') != SCHEMA
             or source_binding.get('configuration_digest') != canonical_digest(source_binding, digest_field='configuration_digest')
             or source_binding.get('source_robot_asset_sha256') != robot_asset_sha256
@@ -157,11 +155,7 @@ def materialize_camera_start_from_construction(*, plan, construction, source_bin
             or native_reference_gate.get('gate_digest') != canonical_digest(native_reference_gate, digest_field='gate_digest')
             or source_binding.get('native_reference', {}).get('gate_digest') != native_reference_gate.get('gate_digest')
             or native_reference_gate.get('candidate_policy_queried') is not False
-            or construction.get('schema_version') != 'native_task_arena_construction_result.v1'
-            or construction.get('result_digest') != canonical_digest(construction, digest_field='result_digest')
-            or construction.get('status') != 'completed' or construction.get('construction_gate_qualified') is not True
-            or construction.get('candidate_policy_queried') is not False or construction.get('blockers') not in ([], ())
-            or construction.get('reset_replay', {}).get('passed') is not True):
+):
         raise ValueError('policy_camera_construction_calibration_identity_invalid')
     wrists = [c for c in native_reference_gate.get('snapshot', {}).get('cameras', []) if c.get('role') == 'wrist']
     if len(wrists) != 1:
@@ -170,6 +164,20 @@ def materialize_camera_start_from_construction(*, plan, construction, source_bin
     reference = source_binding['native_reference']
     if not np.allclose(observed, reference['world_from_wrist_camera_opengl'], atol=1e-6, rtol=0):
         raise ValueError('policy_camera_calibration_native_wrist_changed')
+    return reference
+
+
+def materialize_camera_start_from_construction(*, plan, construction, source_binding,
+        native_reference_gate, robot_asset_sha256, runtime_digest, calibration_digest):
+    """Reuse robot kinematics, binding this scene only to its actual native reset."""
+    reference = _verified_camera_reference(source_binding=source_binding,
+        native_reference_gate=native_reference_gate, robot_asset_sha256=robot_asset_sha256)
+    if (construction.get('schema_version') != 'native_task_arena_construction_result.v1'
+            or construction.get('result_digest') != canonical_digest(construction, digest_field='result_digest')
+            or construction.get('status') != 'completed' or construction.get('construction_gate_qualified') is not True
+            or construction.get('candidate_policy_queried') is not False or construction.get('blockers') not in ([], ())
+            or construction.get('reset_replay', {}).get('passed') is not True):
+        raise ValueError('policy_camera_construction_calibration_identity_invalid')
     initial = construction.get('initial_readback') or {}
     names, positions = initial.get('robot_joint_names'), initial.get('robot_joint_positions_rad')
     pose = initial.get('robot_root_pose_world')
@@ -190,5 +198,27 @@ def materialize_camera_start_from_construction(*, plan, construction, source_bin
         'native_qualification_claimed': False, 'official_camera_calibration_preserved': True,
         'construction_result_digest': construction['result_digest'], 'runtime_digest': runtime_digest,
         'source_calibration_digest': calibration_digest, 'historical_scene_visibility_adopted': False}
+    value['configuration_digest'] = canonical_digest(value, digest_field='configuration_digest')
+    return validate_camera_start_configuration(plan, value)
+
+
+def materialize_camera_start_from_plan(*, plan, source_binding, native_reference_gate,
+        robot_asset_sha256, runtime_digest, calibration_digest):
+    """Bind the selected reset without claiming a native rehearsal has occurred."""
+    reference = _verified_camera_reference(source_binding=source_binding,
+        native_reference_gate=native_reference_gate, robot_asset_sha256=robot_asset_sha256)
+    if plan.get('plan_digest') != canonical_digest(plan, digest_field='plan_digest'):
+        raise ValueError('policy_camera_source_plan_changed')
+    joints = plan['robot'].get('joint_reset_positions_rad') or {}
+    value = {'schema_version': SCHEMA, 'source_robot_asset_sha256': robot_asset_sha256,
+        'source_joint_chain': deepcopy(source_binding['source_joint_chain']), 'native_reference': deepcopy(reference),
+        'robot_base_pose_world': deepcopy(plan['robot']['base_pose_world']),
+        'joint_reset_positions_rad': {f'panda_joint{i}': joints.get(f'panda_joint{i}') for i in range(1, 8)},
+        'task_success_contract_digest': plan['task_spec']['task_success_contract']['contract_digest'],
+        'camera_plan_digest': canonical_digest({'cameras': plan['cameras']}),
+        'native_qualification_claimed': False, 'official_camera_calibration_preserved': True,
+        'source_scene_plan_digest': plan['plan_digest'], 'runtime_digest': runtime_digest,
+        'source_calibration_digest': calibration_digest, 'historical_scene_visibility_adopted': False,
+        'reset_authority': 'configured_robot_plan_requires_native_readback'}
     value['configuration_digest'] = canonical_digest(value, digest_field='configuration_digest')
     return validate_camera_start_configuration(plan, value)

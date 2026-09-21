@@ -1471,6 +1471,18 @@ def advance_configured_controls_plan(
     if preparation is None:
         return {"status": "awaiting_episode_preparation", "source_launch_id": plan["source_launch_id"]}
 
+    from .task_evaluation_scene_control_omission import load_for_run
+    omission = load_for_run(launch_state_root=launch_state_root, source_launch_id=plan["source_launch_id"])
+    if omission is not None and not (state / "construction_activation_progression.json").exists():
+        _validate_source(run_root)
+        if not _compilation_ready(preparation=preparation, queue_root=compilation_queue,
+                                  source_commit=plan["expected_production_commit"]):
+            return {"status": "awaiting_construction_compilation", "source_launch_id": plan["source_launch_id"]}
+        return {"status": "controls_omitted_for_diagnostic_policy", "source_launch_id": plan["source_launch_id"],
+                "control_omission_directive_digest": omission["directive_digest"],
+                "construction_rehearsal_performed": False, "controls_qualified": False,
+                "qualified_comparison_permitted": False}
+
     construction_phase = _phase(plan, "construction")
     construction_activation_path = state / "construction_activation_progression.json"
     construction_activation = _sealed_progression(

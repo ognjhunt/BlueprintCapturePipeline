@@ -76,6 +76,9 @@ def _validate_activation_automation(value: Any, *, task_success_contract: Mappin
         "prior_spend_reconciliation",
         "construction_result",
     }
+    direct = lineage.get("kind") == "initial_project"
+    if direct:
+        required_lineage = {"kind", "project_spend_reconciliation", "initial_provider_zero", "construction_result"}
     if (
         set(automation) - {"diagnostic_control_omission_authority"}
         != {
@@ -88,7 +91,8 @@ def _validate_activation_automation(value: Any, *, task_success_contract: Mappin
         or automation.get("mode") != "automatic_after_no_spend_compilation"
         or not _reference(automation.get("release_window_template"))
         or set(lineage) != required_lineage
-        or lineage.get("kind") != "predecessor"
+        or lineage.get("kind") not in {"predecessor", "initial_project"}
+        or (direct and automation.get("diagnostic_control_omission_authority") is None)
         or any(not _reference(lineage.get(name)) for name in required_lineage - {"kind"})
         or set(authorization)
         != {"reference", "authorized_by", "profile_revision", "valid_for_seconds"}

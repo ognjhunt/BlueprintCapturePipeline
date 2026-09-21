@@ -59,7 +59,8 @@
           "properties": {
             "kind": {"const": "initial_project"},
             "project_spend_reconciliation": {"$ref": "#/$defs/reference"},
-            "initial_provider_zero": {"$ref": "#/$defs/reference"}
+            "initial_provider_zero": {"$ref": "#/$defs/reference"},
+            "construction_result": {"$ref": "#/$defs/reference"}
           }
         },
         {
@@ -126,12 +127,13 @@
     }
   },
   "allOf": [
+    {"if": {"properties": {"lane": {"const": "native_task_arena_policy_evaluation"}, "lineage": {"properties": {"kind": {"const": "initial_project"}}}}, "required": ["lane", "lineage"]}, "then": {"required": ["run_kind"], "properties": {"run_kind": {"const": "internal_policy_canary"}, "lineage": {"required": ["construction_result"]}}}},
     {
       "if": {"properties": {"lane": {"enum": ["task_evaluation_scene_configuration", "native_task_arena_destination_qualification", "native_task_arena_construction"]}}},
       "then": {"properties": {"lineage": {"properties": {"kind": {"const": "initial_project"}}}}}
     },
     {
-      "if": {"properties": {"lane": {"not": {"enum": ["task_evaluation_scene_configuration", "native_task_arena_destination_qualification", "native_task_arena_construction"]}}}},
+      "if": {"allOf": [{"properties": {"lane": {"not": {"enum": ["task_evaluation_scene_configuration", "native_task_arena_destination_qualification", "native_task_arena_construction"]}}}}, {"not": {"properties": {"lane": {"const": "native_task_arena_policy_evaluation"}, "run_kind": {"const": "internal_policy_canary"}}, "required": ["lane", "run_kind"]}}]},
       "then": {"properties": {"lineage": {"properties": {"kind": {"const": "predecessor"}}}}}
     },
     {
