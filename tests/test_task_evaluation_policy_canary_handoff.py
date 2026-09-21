@@ -411,8 +411,9 @@ def _model_rights(*, template_path: str, repo_root: str, source_commit: str, sce
     return document
 
 
-def _advance(tmp_path: Path, *, state: Path, webapp: _WebApp, publisher: _Publisher, profile_calls: list[dict]) -> dict:
+def _advance(tmp_path: Path, *, state: Path, webapp: _WebApp, publisher: _Publisher, profile_calls: list[dict], **overrides) -> dict:
     return handoff.advance_policy_canary_handoff(
+        **overrides,
         model_rights_materializer=_model_rights,
         state_root=state,
         source_launch_id=SOURCE_LAUNCH_ID,

@@ -65,18 +65,41 @@ def _owner_scene(tmp_path, monkeypatch, *, wrong_pair=False, cap=20,
     return state, root / staged["intent_id"], pair
 
 
-def _run(tmp_path, state):
+def _run(tmp_path, state, **overrides):
     webapp = rehearsal._WebApp()
     profile_calls = []
     result = rehearsal._advance(tmp_path, state=state, webapp=webapp,
-        publisher=rehearsal._Publisher(), profile_calls=profile_calls)
+        publisher=rehearsal._Publisher(), profile_calls=profile_calls, **overrides)
     profile = json.loads(profile_calls[0]["profile_path"].read_text())
     return result, profile, webapp
 
 
-def test_owner_checkpoint_pair_reaches_real_profile_and_native_specs(tmp_path, monkeypatch):
+@pytest.mark.parametrize("separate_evaluation", [False, True])
+def test_owner_checkpoint_pair_reaches_real_profile_and_native_specs(tmp_path, monkeypatch, separate_evaluation):
     state, owner_dir, pair = _owner_scene(tmp_path, monkeypatch)
-    result, profile, webapp = _run(tmp_path, state)
+    options = {}
+    original_owner_dir = owner_dir
+    original_bytes = {p: p.read_bytes() for p in owner_dir.rglob('*.json')}
+    if separate_evaluation:
+        source_profile = json.loads((tmp_path/'launch-runs'/rehearsal.SOURCE_LAUNCH_ID/'launch_profile.json').read_text())
+        original = intake._read(owner_dir/'intent.json', 'intent_digest')
+        selected = json.loads(json.dumps(original['request']))
+        selected['submission_id'] = 'selected-evaluation-one'
+        selected['task']['robot_binding_id'] = 'selected-franka'
+        source_binding = {'evaluation_run_id':selected['submission_id'],
+            'source_launch_id':rehearsal.SOURCE_LAUNCH_ID,
+            'source_profile_digest':source_profile['profile_digest'],
+            'configured_scene_revision_digest':rehearsal.handoff._base_progression(state)['configured_scene_revision_digest']}
+        selected['task']['evaluation_source'] = source_binding
+        staged = intake.stage_scene_intent(value=selected, queue_root=owner_dir.parent,
+            authenticated_client='webapp', trusted_clients={'webapp'}, now=time.time())
+        owner_dir = owner_dir.parent/staged['intent_id']
+        options = {'evaluation_run_id':selected['submission_id'],
+            'evaluation_authority':{**source_binding, 'scene_intent_digest':staged['intent_digest']}}
+    result, profile, webapp = _run(tmp_path, state, **options)
+    if separate_evaluation:
+        assert all(p.read_bytes() == raw for p, raw in original_bytes.items())
+        assert len(list((original_owner_dir/'attempts').glob('*.json'))) == 1
     assert result["status"] == "canary_launch_submitted"
     assert profile["scene_policy_candidates"] == pair
     plan = profile["internal_policy_canary_execution_plan"]
@@ -85,7 +108,7 @@ def test_owner_checkpoint_pair_reaches_real_profile_and_native_specs(tmp_path, m
     assert binding.profile_binding_blockers(profile) == []
     assert dispatch.policy_canary_execution_plan_blockers(profile) == []
     attempts = list((owner_dir / "attempts").glob("*.json"))
-    assert len(attempts) == 2
+    assert len(attempts) == (1 if separate_evaluation else 2)
     reservation = intake._read(owner_dir / "attempts" / (bound["attempt_id"] + ".json"), "attempt_digest")
     assert reservation["maximum_spend_usd"] == profile["allocator"]["max_spend_usd"] == 4
     assert (reservation["runtime_digest"], reservation["input_digest"]) == binding.policy_attempt_identity(plan, pair)
@@ -138,9 +161,9 @@ def test_owner_checkpoint_pair_reaches_real_profile_and_native_specs(tmp_path, m
             template_path=changed_template, activation_envelope=envelope, output_dir=tmp_path / "must-not-materialize")
     # Restart adopts the same handoff/attempt; it cannot reserve another run.
     again = rehearsal._advance(tmp_path, state=state, webapp=webapp,
-        publisher=rehearsal._Publisher(), profile_calls=[])
+        publisher=rehearsal._Publisher(), profile_calls=[], **options)
     assert again == result
-    assert len(list((owner_dir / "attempts").glob("*.json"))) == 2
+    assert len(list((owner_dir / "attempts").glob("*.json"))) == (1 if separate_evaluation else 2)
 
 
 def test_wrong_owner_checkpoint_refuses_before_policy_publication(tmp_path, monkeypatch):

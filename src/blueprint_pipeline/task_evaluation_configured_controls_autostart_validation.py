@@ -9,6 +9,7 @@ import stat
 from pathlib import Path
 
 from .configured_scene_run_identity import evaluation_scope
+from .task_evaluation_team_run_authority import authority_scope
 from .decision_evidence_contracts import canonical_digest
 from .task_evaluation_configured_controls_autostart_support import (
     TaskEvaluationConfiguredControlsAutostartError, _read, _sha256,
@@ -162,6 +163,7 @@ def validate_configured_controls_autostart_intent(
     intent = json.loads(json.dumps(dict(value), allow_nan=False))
     try:
         evaluation_scope(intent.get("evaluation_run_id"))
+        authority_scope(intent.get("evaluation_run_id"), intent.get("evaluation_authority"))
     except ValueError as exc:
         raise TaskEvaluationConfiguredControlsAutostartError(str(exc)) from exc
     target = intent.get("target_position_world_m")

@@ -69,7 +69,8 @@ def test_invalid_run_scope_is_rejected_before_materialization(tmp_path, run_id):
     assert not (tmp_path / "outputs").exists()
 
 
-def test_plans_for_same_scene_keep_independent_future_launches(tmp_path, monkeypatch):
+@pytest.mark.parametrize("with_authority", [False, True])
+def test_plans_for_same_scene_keep_independent_future_launches(tmp_path, monkeypatch, with_authority):
     from blueprint_pipeline.task_evaluation_configured_controls_plan import materialize_configured_controls_plan
     from blueprint_pipeline.configured_controls_plan_validation import read_configured_controls_plan
     from tests.test_task_evaluation_configured_controls_plan import (
@@ -82,11 +83,17 @@ def test_plans_for_same_scene_keep_independent_future_launches(tmp_path, monkeyp
         bindings=_bindings(tmp_path), plan_root=tmp_path / "plans", profile_dir=tmp_path / "profiles")
     plans = []
     for run_id in ("one", "two"):
-        result = materialize_configured_controls_plan(**inputs, evaluation_run_id=run_id)
+        authority = {"evaluation_run_id":run_id, "source_launch_id":SOURCE_LAUNCH_ID,
+            "source_profile_digest":"sha256:"+"a"*64, "configured_scene_revision_digest":"sha256:"+"b"*64,
+            "scene_intent_digest":"sha256:"+"c"*64}
+        extra = {"evaluation_authority":authority} if with_authority else {}
+        result = materialize_configured_controls_plan(**inputs, evaluation_run_id=run_id, **extra)
         path = Path(result["plan_path"])
         plan = read_configured_controls_plan(path)
         assert plan["evaluation_run_id"] == run_id
-        assert materialize_configured_controls_plan(**inputs, evaluation_run_id=run_id)["status"] == "replayed"
+        assert materialize_configured_controls_plan(**inputs, evaluation_run_id=run_id, **extra)["status"] == "replayed"
+        if with_authority:
+            assert plan["evaluation_authority"] == authority
         plans.append(plan)
     assert plans[0]["future_outputs"] != plans[1]["future_outputs"]
     assert len(list((tmp_path / "plans").glob("*.json"))) == 2

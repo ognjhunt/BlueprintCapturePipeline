@@ -15,6 +15,7 @@ from typing import Any, Callable, Mapping
 
 from .decision_evidence_contracts import canonical_digest
 from .configured_scene_run_identity import evaluation_scope
+from .task_evaluation_team_run_authority import authority_scope
 
 
 def load_configured_controls_plan(
@@ -25,6 +26,7 @@ def load_configured_controls_plan(
     value = load_json(path, blocker="configured_controls_worker_plan_invalid")
     try:
         evaluation_scope(value.get("evaluation_run_id"))
+        authority_scope(value.get("evaluation_run_id"), value.get("evaluation_authority"))
     except ValueError as exc:
         raise error_factory(str(exc)) from exc
     schema = value.get("schema_version")

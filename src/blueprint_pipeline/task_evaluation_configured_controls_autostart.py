@@ -32,6 +32,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .configured_scene_run_identity import evaluation_scope, scoped_identity
+from .task_evaluation_team_run_authority import authority_scope
 from .decision_evidence_contracts import canonical_digest
 from .openai_official_cost_gate import (
     RUN_COMPLETION_SCHEMA_VERSION,
@@ -428,11 +429,13 @@ def materialize_configured_controls_autostart_intent(
     visual_review_continuation: Mapping[str, Any] | None = None,
     completed_placement_adoption: Mapping[str, Any] | None = None,
     evaluation_run_id: str | None = None,
+    evaluation_authority: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Seal all fixed downstream bytes before the configuration launch."""
 
     draft: dict[str, Any] = {
         **evaluation_scope(evaluation_run_id),
+        **authority_scope(evaluation_run_id, evaluation_authority),
         "schema_version": destination_phases.schema_for_phases(phases),
         "enabled": True,
         "expected_production_commit": expected_production_commit,
@@ -1439,6 +1442,7 @@ def materialize_configured_controls_autostart(
     }
     plan = dict(plan_materializer(
         **evaluation_scope(intent.get("evaluation_run_id")),
+        **authority_scope(intent.get("evaluation_run_id"), intent.get("evaluation_authority")),
         source_launch_id=source_launch_id,
         launch_state_root=launch_root,
         expected_production_commit=intent["expected_production_commit"],

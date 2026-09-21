@@ -23,6 +23,7 @@ from blueprint_pipeline.task_evaluation_policy_canary_setup import (
     validate_policy_canary_setup,
 )
 from blueprint_pipeline import task_evaluation_scene_policy_binding as scene_policy
+from blueprint_pipeline.task_evaluation_team_run_authority import authorization_profile
 
 
 def attach_internal_policy_canary_setup(
@@ -89,7 +90,7 @@ def materialize_policy_canary_launch_profile(
         "materialization_digest",
     }
     if (
-        set(wrapper) - {"scene_id", "scene_attempt_binding"} != expected_wrapper_fields
+        set(wrapper) - {"scene_id", "scene_attempt_binding", "evaluation_authority"} != expected_wrapper_fields
         or wrapper.get("schema_version")
         != "task_evaluation_policy_canary_profile_materialization_input.v1"
         or wrapper.get("materialization_digest")
@@ -131,7 +132,9 @@ def materialize_policy_canary_launch_profile(
     if base.get("scene_intent_digest") is not None or binding is not None:
         if not isinstance(binding, Mapping) or not isinstance(wrapper.get("scene_attempt_binding"), Mapping):
             raise ValueError("scene_policy_profile_binding_missing")
-        scene_policy.validate_owner_binding(base, binding, source_commit=wrapper["source_commit"])
+        scene_policy.validate_owner_binding(authorization_profile(base, wrapper.get("evaluation_authority"),
+            source_launch_id=wrapper["configured_source_launch_id"],
+            configured_scene_revision_digest=setup["scene_revision_digest"]), binding, source_commit=wrapper["source_commit"])
         output.update(scene_intent_digest=binding["scene_intent_digest"],
             scene_attempt_id=binding["attempt_id"], scene_policy_candidates=binding["policy_candidates"],
             scene_attempt_binding=wrapper["scene_attempt_binding"])

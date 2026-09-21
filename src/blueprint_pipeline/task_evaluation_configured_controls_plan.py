@@ -14,6 +14,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from .task_evaluation_team_run_authority import authority_scope
 from .decision_evidence_contracts import canonical_digest
 
 
@@ -142,11 +143,12 @@ def materialize_configured_controls_plan(
     plan_root: str | Path,
     profile_dir: str | Path,
     evaluation_run_id: str | None = None,
+    evaluation_authority: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Validate exact source/authority bytes and write one idempotent 0440 plan."""
 
     try:
-        run_scope = evaluation_scope(evaluation_run_id)
+        run_scope = {**evaluation_scope(evaluation_run_id), **authority_scope(evaluation_run_id, evaluation_authority)}
     except ValueError as exc:
         raise TaskEvaluationConfiguredControlsPlanError(str(exc)) from exc
     if (

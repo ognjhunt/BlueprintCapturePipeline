@@ -62,6 +62,7 @@ from .task_evaluation_scene_configuration_activation_automation import (
     load_scene_configuration_activation_intent,
 )
 from . import task_evaluation_scene_policy_binding as scene_policy
+from .task_evaluation_team_run_authority import authorization_profile
 
 __all__ = [
     "PolicyCanaryHandoffError",
@@ -676,10 +677,15 @@ def advance_policy_canary_handoff(
     model_rights_materializer: Callable[..., Mapping[str, Any]] = materialize_policy_canary_model_rights,
     now: datetime | None = None,
     evaluation_run_id: str | None = None,
+    evaluation_authority: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Advance one configured scene from completed controls to a submitted Quick-10 canary."""
 
     run_scope = evaluation_scope(evaluation_run_id)
+    if evaluation_authority is not None:
+        if evaluation_authority.get("evaluation_run_id") != evaluation_run_id or evaluation_run_id is None:
+            raise PolicyCanaryHandoffError("team_evaluation_run_identity_mismatch")
+        run_scope["evaluation_authority"] = dict(evaluation_authority)
     execution_identity = scoped_identity(source_launch_id, evaluation_run_id)
     state = Path(state_root).expanduser()
     launches = Path(launch_state_root).expanduser()
@@ -692,7 +698,8 @@ def advance_policy_canary_handoff(
     existing = _sealed_progression(state_path, statuses=set(_STAGES))
     if existing is not None and (existing.get("source_launch_id") != source_launch_id
             or existing.get("expected_production_commit") != expected_production_commit
-            or existing.get("evaluation_run_id") != evaluation_run_id):
+            or existing.get("evaluation_run_id") != evaluation_run_id
+            or existing.get("evaluation_authority") != evaluation_authority):
         raise PolicyCanaryHandoffError("policy_canary_handoff_progression_invalid")
 
     from .task_evaluation_scene_control_omission import load_for_run, derived_contract
@@ -758,7 +765,9 @@ def advance_policy_canary_handoff(
         }
     lineage, _published_paths = predecessor
     request_path, launch_request, base_profile_path, _base_profile = _configured_run(launches, source_launch_id)
-    owner = scene_policy.owner_for_profile(_base_profile,
+    authorized_profile = authorization_profile(_base_profile, evaluation_authority,
+        source_launch_id=source_launch_id, configured_scene_revision_digest=base["configured_scene_revision_digest"])
+    owner = scene_policy.owner_for_profile(authorized_profile,
         now=now.timestamp() if now is not None else None)
     compiled = _compiled_construction(
         Path(episode_compilation_queue_root).expanduser(),
@@ -809,12 +818,13 @@ def advance_policy_canary_handoff(
                 source_launch_id=source_launch_id,
             ),
         )
-        prefix = f"policy-canary-inputs/{source_launch_id}/{expected_production_commit[:12]}"
+        prefix = f"policy-canary-inputs/{execution_identity}/{expected_production_commit[:12]}"
         # The activation automation binds the template by immutable reference; the
         # canary preparation materializes it back as
         # ``policy_canary_activation.release_window_template``.
         window = _publish(path=window_path, object_name=f"{prefix}/{window_path.name}", publisher=publisher)
         parameters = {
+            **({"evaluation_authority": dict(evaluation_authority)} if evaluation_authority is not None else {}),
             "profile_id": profile_id,
             "source_commit": expected_production_commit,
             "configured_source_launch_id": source_launch_id,
@@ -915,7 +925,7 @@ def advance_policy_canary_handoff(
     wrapper = _load(wrapper_path, blocker="policy_canary_handoff_wrapper_invalid")
     execution_plan = wrapper.get("internal_policy_canary_execution_plan") or {}
     if owner is not None:
-        binding = scene_policy.validate_owner_binding(_base_profile,
+        binding = scene_policy.validate_owner_binding(authorized_profile,
             execution_plan.get("scene_policy_binding") or {}, source_commit=expected_production_commit)
         scene_policy.validate_setup_pair(setup, binding)
 
@@ -1033,5 +1043,6 @@ def advance_policy_canary_handoff_for_plan(
         notification_email=notification_email,
         publisher_factory=publisher_factory,
         **evaluation_scope(plan.get("evaluation_run_id")),
+        **({"evaluation_authority": plan["evaluation_authority"]} if plan.get("evaluation_authority") is not None else {}),
         **overrides,
     )

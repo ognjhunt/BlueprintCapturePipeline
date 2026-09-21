@@ -45,3 +45,14 @@ def test_invalid_evaluation_scope_refuses_before_provider_inspection(tmp_path, r
         raise AssertionError("provider inspection must not happen")
     with pytest.raises(ValueError, match="evaluation_run_id_invalid"):
         _provision(tmp_path, evaluation_run_id=run_id, provider_zero_collector=forbidden)
+
+
+def test_provisioning_preserves_evaluation_authority(tmp_path):
+    authority = {"evaluation_run_id":"selected-run", "source_launch_id":"source-launch",
+        "source_profile_digest":"sha256:"+"a"*64, "configured_scene_revision_digest":"sha256:"+"b"*64,
+        "scene_intent_digest":"sha256:"+"c"*64}
+    result, _ = _provision(tmp_path, evaluation_run_id="selected-run", evaluation_authority=authority)
+    intent = autostart.validate_configured_controls_autostart_intent(json.loads(Path(result["intent_path"]).read_text()))
+    assert intent["evaluation_authority"] == authority
+    with pytest.raises(ValueError, match="team_evaluation_authority_invalid"):
+        _provision(tmp_path/'different', evaluation_run_id="another-run", evaluation_authority=authority)
