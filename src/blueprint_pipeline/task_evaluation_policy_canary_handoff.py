@@ -722,6 +722,8 @@ def advance_policy_canary_handoff(
     if construction_launch is None:
         raise PolicyCanaryHandoffError("policy_canary_handoff_construction_launch_missing")
     controls_launch_id = str(controls_launch["launch_id"]) if controls_launch is not None else None
+    from .task_evaluation_native_startup_recovery import effective_launch
+    construction_launch = effective_launch(state, construction_launch)
     construction_launch_id = str(construction_launch["launch_id"])
 
     base = _base_progression(state)

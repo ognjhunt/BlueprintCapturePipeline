@@ -255,6 +255,7 @@ def _materialize_phase_release_window(
     publisher: Callable[..., Mapping[str, Any]],
     lineage_artifact_paths: Mapping[str, str | Path] | None = None,
     now: datetime | None = None,
+    activation_id: str | None = None,
 ) -> dict[str, Any]:
     """Publish a current window bound to the now-complete activation intent."""
 
@@ -271,6 +272,7 @@ def _materialize_phase_release_window(
         authorization=authorization,
         lane=lane,
         lineage_artifact_paths=lineage_artifact_paths,
+        activation_id=activation_id,
     )
     template = _input(
         phase.get("release_window_template_path"),
@@ -1556,6 +1558,30 @@ def advance_configured_controls_plan(
         )
         _write_immutable(construction_launch_path, result)
         return {"status": result["status"], "source_launch_id": plan["source_launch_id"]}
+
+    from .task_evaluation_controls_autoprovision import CONFIG_ENV
+    if plan.get("evaluation_run_id") and os.getenv(CONFIG_ENV) and construction_activation["lane"] == "native_task_arena_construction":
+        from .task_evaluation_native_startup_recovery import advance as recover_startup, configuration as retry_configuration
+        from .task_evaluation_scene_progression import CONFIG_ENV as PROGRESSION_CONFIG_ENV
+
+        def retry_submitter():
+            if submitter is not None:
+                return submitter
+            if repo_root is None or webapp_secret_file is None:
+                raise TaskEvaluationConfiguredControlsProgressionWorkerError("configured_controls_worker_webapp_configuration_missing")
+            return _production_submitter(repo_root=Path(repo_root), secret_file=Path(webapp_secret_file),
+                endpoint=webapp_endpoint, state_root=state)
+
+        construction_launch, pending = recover_startup(
+            config=retry_configuration(
+                _input(os.environ[CONFIG_ENV], blocker="configured_controls_retry_configuration_missing"),
+                _input(os.getenv(PROGRESSION_CONFIG_ENV), blocker="configured_controls_retry_ownership_configuration_missing")),
+            plan=plan, state=state, launch_root=Path(launch_state_root), launch=construction_launch,
+            activation=construction_activation, phase=construction_phase, base=base, preparation=preparation,
+            activation_queue_root=Path(activation_queue_root), publisher=release_window_publisher_factory,
+            submitter_factory=retry_submitter)
+        if pending:
+            return {"status": pending, "source_launch_id": plan["source_launch_id"]}
 
     from .task_evaluation_scene_control_omission import load_for_run
     omission = load_for_run(launch_state_root=launch_state_root, source_launch_id=plan["source_launch_id"])
