@@ -138,7 +138,7 @@ def execute_agent_authoring(*, request_value, output_root, budget_root, invoker,
                                               *image_content(request.source_frames)]}]
     run = run_agent or Runner.run_sync
     try:
-        review_slots = 3 - retained['completed_visual_reviews'] if retained else 3
+        review_slots = 3 - retained.get('current_scope_visual_reviews', retained['completed_visual_reviews']) if retained else 3
         if retained and retained['retained_visual_review'] is not None:
             review_slots += 1  # Consume retained feedback without repeating its paid review.
         for iteration in range(review_slots):

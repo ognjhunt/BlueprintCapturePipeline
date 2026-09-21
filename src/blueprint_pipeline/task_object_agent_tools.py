@@ -21,6 +21,9 @@ from .task_object_physical_property_review import (
 )
 
 
+APPEARANCE_SCOPE = "observable_v2"
+
+
 class AssetTools:
     def __init__(self, *, request_value, output_root, cad_executor, blender_runner, blender_executable):
         self.request = validate_request(request_value)
@@ -159,7 +162,7 @@ class AssetTools:
         context = self.request.model_dump(mode="json")
         context.pop("source_frames")
         review = (AppearanceReview.model_validate(self.retained_visual_review) if self.retained_visual_review is not None else
-            invoke_vision(invoker, self.request, capability=f"independent_visual_review_{self.render_attempts}",
+            invoke_vision(invoker, self.request, capability=f"independent_visual_review_{self.render_attempts}_{APPEARANCE_SCOPE}",
             prompt="Independently compare these studio renders with the ORIGINAL source images and task specification. "
             "Check required parts, shape, color, opacity and texture. Generated variants may differ only as specified; "
             "set requested_specification_satisfied for generated objects. Report actionable corrections. "

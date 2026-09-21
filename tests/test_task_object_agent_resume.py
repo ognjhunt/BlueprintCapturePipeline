@@ -226,3 +226,45 @@ def test_controller_successor_resumes_sdk_candidate_with_original_costs(agent_fi
     assert audit.manifest()['reservation_count'] == 1
     assert inspect_agent_candidate(output, new)['completed_result']['result_digest'] == result['result_digest']
     assert adoption._inventory(f.runtime) == descriptor['retained_files']
+
+
+def test_obsolete_rejection_gets_current_review_without_rebuilding(agent_fixture, monkeypatch):  # noqa: F811
+    from blueprint_pipeline import task_object_agent_tools as tools
+    f = agent_fixture
+    original_invoke = tools.invoke_vision
+    def old_scope(*args, capability, **kwargs):
+        return original_invoke(*args, capability=capability.removesuffix('_' + tools.APPEARANCE_SCOPE), **kwargs)
+    monkeypatch.setattr(tools, 'invoke_vision', old_scope)
+    original_model = f.model.get_response
+    async def old_rejection(**kwargs):
+        if kwargs['output_schema'].json_schema()['title'] == 'AppearanceReview':
+            return reply(dict(source_object_recognizable=False, source_color_and_material_preserved=True,
+                opaque_surfaces_opaque=True, required_parts_present=True, no_obvious_geometry_artifacts=True,
+                blockers=['Missing native import proof'], repair_instructions='Provide simulator proof',
+                unobserved_surface_limitations=['underside']), 100)
+        return await original_model(**kwargs)
+    f.model.get_response = old_rejection
+    invoker, audit = bounded(f)
+    invoker.maximum_calls = 8
+    with pytest.raises(driver.AstraStageError, match='inference_boundary_refused'):
+        session.execute_agent_authoring(**f.kwargs, invoker=invoker, model=f.model)
+    calls, executions = audit.manifest()['reservation_count'], list(f.executed)
+    snapshot = adoption._inventory(f.runtime)
+    monkeypatch.setattr(tools, 'invoke_vision', original_invoke)
+    state = inspect_agent_candidate(f.runtime, f.request.model_dump(mode='json'))
+    assert state['retained_visual_review'] is None
+    assert state['current_scope_visual_reviews'] == 0
+    assert state['completed_visual_reviews'] == 1
+    output = f.runtime.parent / 'current-review-scope'
+    prepared = prepare(f, output)
+    f.kwargs.update(output_root=output / 'authoring', budget_root=output / 'inference')
+    f.model = ScriptedModel([], f.model.physics)
+    invoker, audit = bounded(f)
+    invoker.prior_calls = prepared['prior_call_count']
+    result = session.execute_agent_authoring(**f.kwargs, **prepared['authoring_kwargs'], invoker=invoker, model=f.model)
+    assert result['status'] == 'candidate_authored_pending_native_qualification'
+    assert len(f.model.calls) == 1
+    assert f.model.calls[0]['output_schema'].json_schema()['title'] == 'AppearanceReview'
+    assert f.executed == executions
+    assert audit.manifest()['reservation_count'] == calls + 1
+    assert adoption._inventory(f.runtime) == snapshot
