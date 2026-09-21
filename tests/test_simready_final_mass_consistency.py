@@ -1,4 +1,4 @@
-"""Mass must describe the body actually shipped, not a superseded hollowness guess."""
+"""Mass evidence must match USD without promoting generated volume to material truth."""
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -21,32 +21,23 @@ def _review(*, mass_kg, fill, density=(2000.0, 2600.0), dims=(0.08142562, 0.0604
                                    z_m=SimpleNamespace(value=dims[2]))))
 
 
-def test_measured_solid_supersedes_the_reviewed_fill_assumption():
-    """Scene 840938 object 219: review said 5-11% hollow, the accepted CAD is 37.87% solid.
-
-    Packaging refused a 3.4x mass disagreement. Density is a material property and
-    survives; the fill fraction was a guess made from source views before any solid
-    existed, so the measured geometry wins and mass is re-derived from it.
-    """
+def test_generated_solid_does_not_supersede_reviewed_mass():
+    """A retained geometry/fill disagreement is exposed, not converted to a new mass."""
 
     mesh = SimpleNamespace(volume=267458.3106265911 / 1e9)
     review = _review(mass_kg=0.06, fill=(0.05, 0.11))
 
     result = packaging._final_mass_consistency(review, mesh)
 
-    assert result["review_fill_assumption_superseded_by_final_geometry"] is True
+    assert result["visual_volume_is_material_volume"] is False
     assert result["final_fill_fraction"] == pytest.approx(0.3787, abs=1e-4)
     assert result["reviewed_envelope_fill_fraction"] == [0.05, 0.11]
-    # Mass now comes from reviewed density x measured volume.
-    assert result["accepted_mass_kg"] == pytest.approx(0.6151, abs=1e-3)
-    assert result["accepted_mass_interval_kg"][0] == pytest.approx(0.5349, abs=1e-3)
-    assert result["accepted_mass_interval_kg"][1] == pytest.approx(0.6954, abs=1e-3)
-    # The superseded number is recorded, not dropped, and no truth is claimed.
-    assert result["superseded_review_mass_kg"] == 0.06
+    assert result["accepted_mass_kg"] == 0.06
+    assert result["accepted_mass_interval_kg"] == pytest.approx([.054, .066])
+    assert result["method"] == "reviewed_mass_preserved_with_unresolved_material_volume"
     assert result["physical_truth_claimed"] is False
     assert result["uncertainty_preserved"] is True
-    # Density stays consistent with the body actually shipped.
-    assert 2000.0 <= result["implied_density_kg_m3"] <= 2600.0
+    assert result["implied_density_kg_m3"] == pytest.approx(.06 / mesh.volume)
 
 
 def test_consistent_review_is_left_untouched():

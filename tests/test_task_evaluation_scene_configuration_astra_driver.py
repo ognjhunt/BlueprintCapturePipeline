@@ -240,6 +240,30 @@ def test_stage_reserves_parent_gate_then_seals_existing_roles_without_nvidia_cla
     assert os.environ.get("OPENAI_API_KEY_FILE") == previous
 
 
+def test_admitted_32_request_limit_reaches_author_and_reviewers_without_raising_spend(component):
+    component.environment["BLUEPRINT_SCENE_CONFIGURATION_OPENAI_MAX_REQUESTS"] = "32"
+    component.environment["BLUEPRINT_SCENE_CONFIGURATION_OPENAI_CONTENT_AGENTS_MAX_COST_USD"] = "5"
+    original = component.kwargs['authoring_executor']
+
+    def author(**kwargs):
+        invoker = kwargs['invoker']
+        assert invoker.maximum_calls == 32
+        result = original(**kwargs)
+        spec = SimpleNamespace(run_id=invoker.run_id, model='gpt-6-astra', max_turns=1,
+            tool_bindings=(), max_output_tokens=12000, max_input_tokens=80000, reasoning_effort='medium')
+        for _ in range(31):
+            invoker.invoke(spec, 'bounded author or independent review')
+        with pytest.raises(driver.AstraStageError, match='inference_boundary_refused'):
+            invoker.invoke(spec, 'over the configured limit')
+        return result
+
+    component.kwargs['authoring_executor'] = author
+    driver.execute_astra_component(**component.kwargs)
+    assert component.events.count('sdk') == 32
+    assert component.seen['budget']['maximum_cost_usd'] == 5
+    assert component.seen['gate']['max_cost_usd'] == 5
+
+
 def test_initial_disclosure_refusal_precedes_model_gate_and_runtime(component, retained):
     rights = json.loads(retained.rights_path.read_text())
     rights["private_provider_processing_allowed"] = False

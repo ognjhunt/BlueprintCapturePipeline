@@ -131,31 +131,22 @@ def _final_mass_consistency(review: PhysicalPropertyReviewResult, mesh: Any) -> 
         envelope = math.prod(getattr(accepted.dimensions, axis).value for axis in ('x_m', 'y_m', 'z_m'))
         fraction = float(mesh.volume) / envelope
         low, high = density.lower * mesh.volume, density.upper * mesh.volume
-        # Density is a material property; the envelope fill fraction is only the
-        # reviewer's assumption about how hollow the object is, inferred from source
-        # views before any solid existed. When the FINAL geometry contradicts that
-        # assumption, the measured solid wins and the mass is re-derived from
-        # reviewed density x measured volume -- which makes mass consistent with
-        # geometry by construction, rather than shipping a mass that disagrees with
-        # the body it describes. Scene 840938 object 219, 2026-09-15: the review
-        # modelled a hollow vessel at 5-11% fill, the accepted CAD solid measures
-        # 37.87%, and packaging refused a 3.4x mass disagreement. The superseded
-        # assumption is recorded, never silently dropped, and no physical truth is
-        # claimed for either number.
-        superseded = not (fill.lower - 1e-10 <= fraction <= fill.upper + 1e-10)
-        if superseded:
-            mass_value = (float(low) + float(high)) / 2.0
+        # A closed exterior/collision mesh can enclose an unobserved hollow
+        # interior. Its generated solid volume is not measured material volume.
+        # Keep the independently reviewed mass that packaging writes to USD;
+        # expose the representation mismatch rather than invent a second mass.
+        representation_mismatch = not (fill.lower - 1e-10 <= fraction <= fill.upper + 1e-10)
+        if representation_mismatch:
             result.update(
-                accepted_mass_kg=mass_value,
-                accepted_mass_interval_kg=[float(low), float(high)],
-                implied_density_kg_m3=mass_value / float(mesh.volume),
-                review_fill_assumption_superseded_by_final_geometry=True,
+                visual_volume_is_material_volume=False,
                 reviewed_envelope_fill_fraction=[fill.lower, fill.upper],
-                superseded_review_mass_kg=mass.value,
+                method='reviewed_mass_preserved_with_unresolved_material_volume',
             )
         elif not low - 1e-10 <= mass.value <= high + 1e-10:
             raise AssetAuthoringError('authoring_packaging_review_mass_inconsistent_with_final_geometry')
-        result.update(method='reviewed_density_times_final_solid_volume', final_fill_fraction=fraction,
+        else:
+            result['method'] = 'reviewed_mass_consistent_with_generated_solid_volume'
+        result.update(final_fill_fraction=fraction,
                       reviewed_density_kg_m3=[density.lower, density.upper],
                       final_geometry_density_mass_interval_kg=[float(low), float(high)])
     else:

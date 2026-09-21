@@ -520,7 +520,7 @@ def execute_astra_component(*, environment=None, runner=subprocess.run,
         stage_cap = float(values["BLUEPRINT_SCENE_CONFIGURATION_OPENAI_CONTENT_AGENTS_MAX_COST_USD"])
         total_cap = float(values["BLUEPRINT_SCENE_CONFIGURATION_OPENAI_MAX_COST_USD"])
         maximum_cost = min(15.0, stage_cap, total_cap)
-        maximum_calls = min(15, int(values["BLUEPRINT_SCENE_CONFIGURATION_OPENAI_MAX_REQUESTS"]))
+        maximum_calls = min(32, int(values["BLUEPRINT_SCENE_CONFIGURATION_OPENAI_MAX_REQUESTS"]))
     except (KeyError, ValueError, TypeError) as exc:
         raise AstraStageError("astra_parent_budget_invalid") from exc
     if any(not math.isfinite(v) or v <= 0 for v in (stage_cap, total_cap)) or maximum_calls <= 0:
