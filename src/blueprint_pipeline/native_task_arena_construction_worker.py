@@ -41,6 +41,7 @@ from blueprint_pipeline.native_task_curobo_path_execution import (
     validated_solver_joint_sequence,
 )
 from blueprint_pipeline.native_task_nurec_render_setup import (
+    camera_site_appearance_required,
     prepare_site_appearance_renderer as _prepare_site_appearance_renderer,
 )
 from blueprint_pipeline.native_task_servo_command_limits import (
@@ -838,6 +839,7 @@ def _camera_snapshot(
     output_root: Path,
     snapshot_id: str,
     framing_expectations: Mapping[str, Any] | None = None,
+    site_appearance_render_expected: bool = SITE_APPEARANCE_RENDER_EXPECTED,
 ) -> dict[str, Any]:
     import numpy as np
     from PIL import Image
@@ -952,7 +954,7 @@ def _camera_snapshot(
             semantic_ids=semantic,
             id_to_labels=labels,
             rgb=rgb_array,
-            site_appearance_render_expected=SITE_APPEARANCE_RENDER_EXPECTED,
+            site_appearance_render_expected=site_appearance_render_expected,
             target_label="task_object",
             minimum_pixels=thresholds["minimum_pixels"],
             minimum_pixel_fraction=thresholds["minimum_pixel_fraction"],
@@ -1262,6 +1264,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         result["packet_receipt_digest"] = receipt["receipt_digest"]
         result["scene_plan_digest"] = plan["plan_digest"]
         result["scenario"] = plan["scenario"]
+        result["camera_scene_scope"] = plan.get("camera_scene_scope", "captured_site")
         from blueprint_pipeline.native_task_construction_plan import (
             materialize_native_task_construction_phase_plan,
         )
@@ -1520,6 +1523,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 output_root=output_root,
                 snapshot_id="reset",
                 framing_expectations=camera_framing_expectations,
+                site_appearance_render_expected=camera_site_appearance_required(plan),
             )
         )
 
@@ -1826,6 +1830,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     output_root=output_root,
                     snapshot_id=phase["phase_id"],
                     framing_expectations=camera_framing_expectations,
+                    site_appearance_render_expected=camera_site_appearance_required(plan),
                 )
             )
             _announce(

@@ -196,6 +196,7 @@ def validate_native_task_policy_start_camera_observability(
     snapshot_id: str = POLICY_START_SNAPSHOT_ID,
     required_roles: Sequence[str] = POLICY_INPUT_CAMERA_ROLES,
     target_visible_roles: Sequence[str] = POLICY_START_TARGET_VISIBLE_ROLES,
+    site_appearance_render_expected: bool = True,
 ) -> dict[str, Any]:
     """Prove the actual policy-start views, never a later scripted best view.
 
@@ -214,6 +215,8 @@ def validate_native_task_policy_start_camera_observability(
     """
 
     requested_snapshot = str(snapshot_id or "").strip()
+    if not isinstance(site_appearance_render_expected, bool):
+        raise NativeTaskCameraObservabilityError(["native_task_camera_site_expectation_invalid"])
     roles = tuple(str(role or "").strip() for role in required_roles)
     semantic_roles = tuple(str(role or "").strip() for role in target_visible_roles)
     errors: list[str] = []
@@ -291,11 +294,12 @@ def validate_native_task_policy_start_camera_observability(
             isinstance(observability, Mapping)
             and observability.get("schema_version") == SCHEMA_VERSION
             and observability.get("render_passed") is True
-            and observability.get("site_appearance_claimed") is True
+            and observability.get("site_appearance_claimed") is site_appearance_render_expected
             and isinstance(render, Mapping)
+            and (site_appearance_render_expected or render.get("site_appearance_render_expected") is False)
             and render.get("passed") is True
             and render.get("frame_rendered") is True
-            and render.get("site_rendered") is True
+            and (not site_appearance_render_expected or render.get("site_rendered") is True)
             and render.get("blockers") == []
             and str(row.get("scene_name") or "")
             and str(row.get("snapshot_id") or "") == requested_snapshot
@@ -310,7 +314,7 @@ def validate_native_task_policy_start_camera_observability(
             observability.get("passed") is True
             and observability.get("semantic_passed") is True
             and observability.get("centroid_within_margin") is True
-            and observability.get("claim") == CLAIM_WITH_SITE
+            and observability.get("claim") == (CLAIM_WITH_SITE if site_appearance_render_expected else CLAIM_WITHOUT_SITE)
             and blockers == []
             and isinstance(bbox, list)
             and len(bbox) == 4
@@ -346,6 +350,7 @@ def validate_native_task_policy_start_camera_observability(
         "passed": True,
         "blockers": [],
         "authority": "construction_result_exact_policy_initial_state_snapshot",
+        "site_appearance_claimed": site_appearance_render_expected,
     }
 
 

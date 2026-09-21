@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from blueprint_pipeline.native_task_nurec_render_setup import camera_site_appearance_required
+
 import json
 from collections.abc import Mapping
 from typing import Any
@@ -76,7 +78,9 @@ def validate_native_task_controls_admission(
             errors.extend(exc.errors)
     else:
         try:
-            validate_native_task_policy_start_camera_observability(construction)
+            validate_native_task_policy_start_camera_observability(
+                construction, site_appearance_render_expected=camera_site_appearance_required(scene)
+            )
         except NativeTaskCameraObservabilityError as exc:
             errors.extend(exc.errors)
 
