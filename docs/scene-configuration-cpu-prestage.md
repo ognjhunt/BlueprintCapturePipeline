@@ -140,3 +140,12 @@ not an authoring or simulator success. Regression coverage lives in
 Use retained-input candidate-code replays for the fix/test loop, batching fixes
 before deployment. A passing replay does not replace the final hands-off test
 against the deployed controller.
+
+The CPU credential-handoff refusal is also recognized before producer entry:
+the complete archive must contain only stage-3 input and dependencies, the
+sealed runner must name that initial refusal, and stages 1-2 must be no-spend.
+Together with the bound teardown proof that no GPU was requested, this releases
+the unused reservation. An archive containing partial authoring, cost records,
+an unknown refusal, or later work keeps the full hold. This closes the retry
+budget gap exposed by the first controller-origin CPU run without changing caps
+or rewriting its historical records.

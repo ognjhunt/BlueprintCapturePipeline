@@ -263,13 +263,17 @@ def budget_retained_hold(receipt: Mapping[str, Any]) -> dict[str, Any]:
                 or type(result.get("provider_mutations_performed")) is not int
                 or result["provider_mutations_performed"] != 0
                 or result.get("continuing_spend_from_this_run") is not False
-                or result.get("provider_runtime_output_zip_path") is not None
                 or teardown.get("schema_version") != "vast_teardown_manifest.v1"
                 or teardown.get("status") not in {"not_required_provider_adapter_never_invoked",
                                                   "not_required_prelaunch_inventory_guard_blocked"}
                 or teardown.get("vast_instance_ids") != []
                 or teardown.get("continuing_spend_from_this_run") is not False):
             return hold
+        if result.get("provider_runtime_output_zip_path") is not None:
+            if not authoring_never_entered(result, request):
+                return hold
+            return {"basis": "preallocation_unentered_authoring", "retained_spend_usd": 0.0,
+                    "counts_as_attempt": hold["counts_as_attempt"]}
         caps = request["spend"]["external_service_caps"]["openai"]["stage_max_cost_usd"]
         bound = round(float(caps["artifixer_semantic_teacher"]) + float(caps["artifixer_visual_review"]), 6)
         if (result.get("result_digest") == canonical_digest(result, digest_field="result_digest")

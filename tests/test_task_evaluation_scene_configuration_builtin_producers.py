@@ -147,6 +147,7 @@ def test_builtin_producer_rejects_raw_secret_environment(tmp_path: Path) -> None
         expected_source_commit=commit,
         toolchain_root=_toolchain(tmp_path, commit),
         environment={"OPENAI_API_KEY": "must-not-cross-runtime-boundary"},
+        runner=lambda *args, **kwargs: pytest.fail("raw credential refusal must precede producer entry"),
     )
     output = tmp_path / "output"
     output.mkdir()
@@ -170,6 +171,9 @@ def test_builtin_producer_rejects_raw_secret_environment(tmp_path: Path) -> None
             dependency_results=(),
             output_root=output,
         )
+    assert {path.name for path in output.iterdir()} == {
+        "stage_production_input.v1.json", "dependency_results.v1.json",
+    }
 
 
 def test_builtin_producer_retains_redacted_partial_output_on_timeout(

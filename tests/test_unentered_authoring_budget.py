@@ -16,7 +16,7 @@ def seal(value, field="result_digest"):
     return value
 
 
-def evidence(tmp_path):
+def evidence(tmp_path, *, before_producer=False):
     identity = {"run_id": "website-run", "source_commit": "a" * 40}
     request = {"run_id": identity["run_id"], "expected_production_commit": identity["source_commit"],
         "spend": {"external_service_caps": {"openai": {"stage_max_cost_usd": {
@@ -37,6 +37,15 @@ def evidence(tmp_path):
     }
     result = {**identity, "status": "blocked", "retry_cap": 0,
         "provider_runtime_output_zip_path": str(tmp_path / "output.zip")}
+    if before_producer:
+        files.pop(prefix + ".astra-component.lock")
+        files.pop(prefix + "stage_producer.log")
+        refusal = ("scene_configuration_provider_failed:TaskEvaluationSceneConfigurationStageProducerError:"
+                   "scene_configuration_raw_secret_environment_forbidden")
+        provider = files["task_evaluation_scene_configuration_provider_result.v1.json"]
+        provider["blockers"] = [refusal]
+        seal(provider)
+        result["blockers"] = ["provider_result_blocker:" + refusal]
     return request, files, result
 
 
@@ -50,15 +59,17 @@ def archive(files, result):
     return seal(result)
 
 
-def test_exact_initial_admission_refusal_proves_unentered_authoring(tmp_path):
-    request, files, result = evidence(tmp_path)
+@pytest.mark.parametrize("before_producer", [False, True])
+def test_exact_initial_admission_refusal_proves_unentered_authoring(tmp_path, before_producer):
+    request, files, result = evidence(tmp_path, before_producer=before_producer)
     assert budget.authoring_never_entered(archive(files, result), request)
 
 
 @pytest.mark.parametrize("mutation", ["model_attempt", "later_stage", "partial_adoption", "pretraining",
     "wrong_run", "unknown_error", "dependency_paid", "exclusion", "archive_changed", "seal_changed", "other_api_cap"])
-def test_incomplete_ambiguous_or_previously_paid_work_keeps_allowance(tmp_path, mutation):
-    request, files, result = evidence(tmp_path)
+@pytest.mark.parametrize("before_producer", [False, True])
+def test_incomplete_ambiguous_or_previously_paid_work_keeps_allowance(tmp_path, mutation, before_producer):
+    request, files, result = evidence(tmp_path, before_producer=before_producer)
     prefix = "stages/stage-3/producer/"
     if mutation == "model_attempt":
         files[prefix + "astra_cad_blender_runtime/reservations.json"] = {}
@@ -71,7 +82,12 @@ def test_incomplete_ambiguous_or_previously_paid_work_keeps_allowance(tmp_path, 
     elif mutation == "wrong_run":
         files[prefix + "stage_production_input.v1.json"]["run_id"] = "other"
     elif mutation == "unknown_error":
-        files[prefix + "stage_producer.log"] = "timeout after model call"
+        if before_producer:
+            provider = files["task_evaluation_scene_configuration_provider_result.v1.json"]
+            provider["blockers"] = ["timeout"]
+            seal(provider)
+        else:
+            files[prefix + "stage_producer.log"] = "timeout after model call"
     elif mutation == "dependency_paid":
         row = files[prefix + "dependency_results.v1.json"][0]
         row["paid_execution_requested"] = True
