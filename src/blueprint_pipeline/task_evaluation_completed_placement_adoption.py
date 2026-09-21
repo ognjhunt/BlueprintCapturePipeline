@@ -13,7 +13,7 @@ import hashlib
 from pathlib import Path
 from typing import Any, Mapping
 
-from .configured_scene_run_identity import evaluation_scope
+from .configured_scene_run_identity import evaluation_scope, scoped_identity, progression_directory
 from .task_evaluation_team_run_authority import authority_scope
 from .decision_evidence_contracts import canonical_digest
 from .task_evaluation_retained_controls_evidence import _file, _read
@@ -104,7 +104,7 @@ def native_submission_absent(*, config: Mapping[str, Any], plan: Mapping[str, An
     root = (
         state
         / plan["source_launch_id"]
-        / f"franka-controls-{plan['expected_production_commit'][:12]}"
+        / progression_directory(plan['expected_production_commit'], plan.get('evaluation_run_id'))
     )
     require(not any(p.is_symlink() for p in (root, *root.parents)), "state_unsafe")
     if any(root.rglob("*launch_progression.json")):
@@ -142,7 +142,9 @@ def discover(
         or os.getenv("BLUEPRINT_TASK_EVALUATION_CONFIGURED_CONTROLS_STATE_ROOT")
         or str(Path(config["scene_root"]).parent / "task-evaluation-configured-controls")
     )
-    binding = state / source["launch_id"] / "cpu-robot-binding"
+    selected = source.get('evaluation_authority')
+    evaluation_id = selected.get('evaluation_run_id') if selected is not None else None
+    binding = state / source["launch_id"] / scoped_identity("cpu-robot-binding", evaluation_id)
     matches = []
     for path in (Path(config["controls_root"]) / "terminal-adoptions" / intent_id).glob(
         "*/terminal_adoption_provisioning.json"
@@ -152,6 +154,8 @@ def discover(
             continue
         old_path = Path(provision["provisioning"]["intent_path"])
         old = _read(old_path)
+        require(old.get('evaluation_authority') == selected
+            and old.get('evaluation_run_id') == evaluation_id, 'evaluation_authority_changed')
         owner = _read(Path(old["phases"]["construction"]["authorization_path"]))[
             "scene_owner_attempt"
         ]["scene_attempt_binding"]
@@ -261,6 +265,8 @@ def materialize(
 
     packet = intent["completed_placement_adoption"]
     source = validate_adoption(packet)
+    require(intent.get('evaluation_run_id') == source['intent'].get('evaluation_run_id')
+        and intent.get('evaluation_authority') == source['intent'].get('evaluation_authority'), 'evaluation_authority_changed')
     old = source["result"]
     inventory = source["inventory"]
     placement = source["placement"]

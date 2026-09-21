@@ -131,8 +131,8 @@ def provision_terminal_controls_adoption(*, config: Mapping[str, Any], catalog: 
         worker._require(request['task']['robot_binding_digest'] == configuration_binding_digest(binding),
             'team_evaluation_robot_binding_changed')
     from . import task_evaluation_completed_placement_adoption as completed
-    completed_placement = (None if selected_evaluation else completed.discover(config=config,
-        intent_id=intent_id, source=source, expected_commit=expected_production_commit))
+    completed_placement = completed.discover(config=config,
+        intent_id=intent_id, source=source, expected_commit=expected_production_commit)
     from . import task_evaluation_visual_review_continuation as visual
     review_continuation = (None if selected_evaluation or completed_placement is not None else visual.discover(
         config=config,intent_id=intent_id,source=source,expected_commit=expected_production_commit))

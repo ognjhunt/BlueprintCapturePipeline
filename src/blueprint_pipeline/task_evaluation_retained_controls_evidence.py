@@ -84,6 +84,8 @@ def validate_placement_adoption(
         and plan["source_configuration_commit"] == intent["configuration_source_commit"],
         "plan_mismatch",
     )
+    _placement_require(plan.get('evaluation_run_id') == intent.get('evaluation_run_id')
+        and plan.get('evaluation_authority') == intent.get('evaluation_authority'), 'evaluation_authority_changed')
     checkpoint = _placement_ref(value["source_agent_checkpoint"])
     _placement_require(
         checkpoint.get("checkpoint_digest")

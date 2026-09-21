@@ -8,7 +8,8 @@ from blueprint_pipeline import task_evaluation_configured_controls_autostart as 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
 
-def test_completed_placement_rebinds_native_plan_without_new_model_or_search(tmp_path, monkeypatch):
+@pytest.mark.parametrize('evaluation_id', [None, 'team-eval-one'])
+def test_completed_placement_rebinds_native_plan_without_new_model_or_search(tmp_path, monkeypatch, evaluation_id):
     scene = {"scene": "fixture"}
     task = {"task": "move-object"}
     trajectory = {"trajectory_digest": "sha256:" + "a" * 64}
@@ -84,6 +85,12 @@ def test_completed_placement_rebinds_native_plan_without_new_model_or_search(tmp
         "profile_dir": str(tmp_path),
         "submitted_by": "fixture",
     }
+    if evaluation_id:
+        binding = {'evaluation_run_id':evaluation_id, 'source_launch_id':'source',
+            'source_profile_digest':'sha256:'+'4'*64,
+            'configured_scene_revision_digest':revision['revision_digest'], 'scene_intent_digest':'sha256:'+'5'*64}
+        intent.update(evaluation_run_id=evaluation_id, evaluation_authority=binding)
+        source['intent'].update(evaluation_run_id=evaluation_id, evaluation_authority=binding)
     paths = {
         k: str(tmp_path / k)
         for k in (
@@ -121,9 +128,13 @@ def test_completed_placement_rebinds_native_plan_without_new_model_or_search(tmp
     ]
     with pytest.raises(ValueError, match="scientific_binding_changed"):
         adoption.materialize(**{**kwargs, "task_binding": {"task": "different"}})
+    if evaluation_id:
+        with pytest.raises(ValueError, match='evaluation_authority_changed'):
+            adoption.materialize(**{**kwargs, 'intent':{**intent, 'evaluation_run_id':'foreign'}})
 
 
-def test_native_submission_prevents_budget_retirement(tmp_path):
+@pytest.mark.parametrize('evaluation_id', [None, 'team-eval-one'])
+def test_native_submission_prevents_budget_retirement(tmp_path, evaluation_id):
     config = {
         "scene_root": str(tmp_path / "owners"),
         "progression_root": str(tmp_path / "progression"),
@@ -134,12 +145,14 @@ def test_native_submission_prevents_budget_retirement(tmp_path):
         "expected_production_commit": "a" * 40,
         "future_outputs": {"construction": {"expected_activation_id": "activation"}},
     }
+    if evaluation_id:
+        plan['evaluation_run_id'] = evaluation_id
     assert adoption.native_submission_absent(config=config, plan=plan)
     marker = (
         tmp_path
         / "progression"
         / "source"
-        / ("franka-controls-" + "a" * 12)
+        / adoption.progression_directory('a'*40, evaluation_id)
         / "construction_activation_progression.json"
     )
     marker.parent.mkdir(parents=True)

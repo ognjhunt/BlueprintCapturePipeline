@@ -73,8 +73,10 @@ def prepare(*, config_path: str | Path, expected_commit: str, now: float | None 
             # Credential failure may leave deterministic CPU artifacts and lock
             # receipts, but no paid reservation. Retain those bytes and all holds.
             if not _only_unpaid_preparation(binding):
-                rows.append({'intent_id': intent_id, 'status': 'retained_started_materialization'})
-                continue
+                from .task_evaluation_completed_placement_adoption import discover as discover_completed
+                if discover_completed(config=config,intent_id=intent_id,source=source,expected_commit=expected_commit) is None:
+                    rows.append({'intent_id': intent_id, 'status': 'retained_started_materialization'})
+                    continue
         elif binding.exists():
             from .task_evaluation_completed_placement_adoption import discover as discover_completed
             from .task_evaluation_visual_review_continuation import discover
