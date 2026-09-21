@@ -691,7 +691,7 @@ def advance_policy_canary_handoff(
     execution_identity = scoped_identity(source_launch_id, evaluation_run_id)
     state = Path(state_root).expanduser()
     launches = Path(launch_state_root).expanduser()
-    repo = Path(repo_root).expanduser()
+    repo = Path(repo_root).expanduser().resolve()
     if _COMMIT.fullmatch(str(expected_production_commit or "")) is None or _IDENTIFIER.fullmatch(source_launch_id) is None:
         raise PolicyCanaryHandoffError("policy_canary_handoff_identity_invalid")
     if not str(notification_email or "").strip() or "@" not in notification_email:
