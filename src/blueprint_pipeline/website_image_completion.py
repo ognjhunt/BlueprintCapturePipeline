@@ -35,7 +35,9 @@ REVIEW_PROMPT = (
     "Only manipulated task objects should disappear. Other objects and supports must remain. Prepared views "
     "must show consistent plausible background surfaces, no residual task-object pieces and no people. "
     "Return JSON with booleans consistent_background, task_objects_removed, people_absent, "
-    "unrelated_objects_preserved, and a short reason. False if uncertain. Targets: "
+    "unrelated_objects_preserved, a short reason, and remaining_task_object_frame_ids: an array of "
+    "the exact prepared-view frame IDs still showing a manipulated task object. Return an empty array "
+    "only when no prepared view shows one. False if uncertain. Targets: "
 )
 
 PROMPT = (
@@ -267,6 +269,12 @@ def _verify_completed_background(*, frames: Sequence[Mapping[str, Any]], origina
     if not response.candidates or response.candidates[0].finish_reason != "STOP":
         raise ValueError("website_image_completion_review_incomplete")
     review = json.loads(response.text)
+    remaining = review.get("remaining_task_object_frame_ids")
+    frame_ids = {frame["frame_id"] for frame in frames}
+    if (not isinstance(remaining, list) or any(not isinstance(item, str) or item not in frame_ids
+            for item in remaining) or len(set(remaining)) != len(remaining)
+            or bool(remaining) == (review.get("task_objects_removed") is True)):
+        raise ValueError("website_image_completion_review_frame_ids_invalid")
     passed = all(review.get(field) is True for field in
                  ("consistent_background", "task_objects_removed", "people_absent", "unrelated_objects_preserved"))
     result = {"status": "passed" if passed else "blocked", "binding": binding, "request_digest": digest,

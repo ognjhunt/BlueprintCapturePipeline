@@ -443,6 +443,28 @@ def run_clean_plate_stage(
                 completion_review = verify_completed_background(
                     frames=selected, original_frames=source_geometry["frames"], plan=plan,
                     output_root=clean_plate_root / "image_completion", task_context=task_context)
+                review = completion_review.get("review") or {}
+                remaining_ids = review.get("remaining_task_object_frame_ids") or []
+                # A missing SAM mask cannot justify keeping a visibly unremoved
+                # task object. The independent review may name exact unedited
+                # views to omit; never conceal a failed edit or another review
+                # failure. One more review verifies the resulting set.
+                if (completion_review.get("status") == "blocked"
+                        and review.get("task_objects_removed") is False
+                        and all(review.get(field) is True for field in (
+                            "consistent_background", "people_absent", "unrelated_objects_preserved"))
+                        and remaining_ids and set(remaining_ids) <= {frame["frame_id"] for frame in selected}
+                        and all(not frame.get("generated_pixels_present") for frame in selected
+                                if frame["frame_id"] in remaining_ids)):
+                    retained = [frame for frame in selected if frame["frame_id"] not in remaining_ids]
+                    if len(retained) >= 2:
+                        first_review = completion_review
+                        selected = retained
+                        completion_review = verify_completed_background(
+                            frames=selected, original_frames=source_geometry["frames"], plan=plan,
+                            output_root=clean_plate_root / "image_completion", task_context=task_context)
+                        completion_review = {**completion_review, "prior_failed_review": first_review,
+                                             "excluded_unmasked_frame_ids": sorted(remaining_ids)}
                 if completion_review.get("status") != "passed":
                     raise ValueError("website_image_completion_review_failed")
             prepared_views = {"schema_version": "website_prepared_views.v1", "status": "ready", "frames": selected,
