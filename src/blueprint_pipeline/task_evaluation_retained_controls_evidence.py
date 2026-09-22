@@ -74,6 +74,7 @@ def validate_placement_adoption(
         expected_scene_binding_digest=result["scene_binding_digest"],
         expected_task_binding_digest=result["task_binding_digest"],
         expected_cpu_checkpoint_binding_digest=result["cpu_placement_checkpoint_binding_digest"],
+        _validated_intent=intent,
     )
     _placement_ref(value["source_plan"])
     plan = _plan(Path(value["source_plan"]["path"]))
