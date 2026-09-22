@@ -439,6 +439,28 @@ def test_target_bounds_rotate_observations_not_their_enclosing_box(tmp_path):
         estimate_target_bounds(_track(), [frame], source_to_target=np.ones((4, 4)))
 
 
+def test_task_supported_under_desk_concept_is_probed_before_more_model_calls(tmp_path, monkeypatch):
+    from blueprint_pipeline import website_task_masks as masks, website_task_grounding as grounding
+
+    target = {"target_id": "pedestal_cabinet", "segmentation_prompt": "filing cabinet",
+              "task_basis_quote": "Open the middle drawer of the cabinet under the desk."}
+    calls = []
+
+    def probe(**kwargs):
+        calls.append(kwargs["concept"])
+        assert kwargs["target"]["segmentation_prompt"] == kwargs["concept"]
+        return masks.CONCEPT_RESOLVED
+
+    monkeypatch.setattr(masks, "probe_segmentation_concept", probe)
+    monkeypatch.setattr(grounding, "ground_task_target", lambda **kwargs: pytest.fail("unexpected model call"))
+    resolved = masks.resolve_video_segmentation_concept(
+        target=target, tracks=[], registry=[], video={}, task_context={},
+        grounding_root=tmp_path / "grounding", probe_root=tmp_path / "probes",
+        failed_concept="cabinet")
+    assert calls == ["under-desk cabinet"]
+    assert resolved["segmentation_prompt"] == "under-desk cabinet"
+
+
 def test_a_concept_that_resolves_only_a_sub_part_is_never_spent_on_a_clip(tmp_path, monkeypatch):
     """`drawers` returns three drawer fronts; none of them is the cabinet."""
     from PIL import Image
