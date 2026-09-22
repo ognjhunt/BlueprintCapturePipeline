@@ -7,7 +7,7 @@ import sys
 import numpy as np
 import pytest
 import torch
-from pxr import Usd, UsdGeom, UsdLux
+from pxr import Tf, Usd, UsdGeom, UsdLux, UsdPhysics
 
 from blueprint_pipeline import native_task_composition_diagnostic as diagnostic
 from blueprint_pipeline import native_task_composition_worker as worker
@@ -32,7 +32,8 @@ def native(tmp_path, monkeypatch):
     field.CreateAttribute('visibility', __import__('pxr').Sdf.ValueTypeNames.Token).Set('inherited')
     for name in ('task_support', 'task_object', 'Robot', 'scene_collision'):
         UsdGeom.Xform.Define(stage, root + '/' + name)
-        UsdGeom.Cube.Define(stage, root + '/' + name + '/geometry')
+        cube = UsdGeom.Cube.Define(stage, root + '/' + name + '/geometry')
+        UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
     UsdGeom.Imageable(stage.GetPrimAtPath(root + '/scene_collision')).MakeInvisible()
     light = UsdLux.DomeLight.Define(stage, root + '/task_support/embedded_light')
     light.CreateIntensityAttr(2.)
@@ -114,8 +115,29 @@ def test_prepolicy_composition_gate_uses_both_views_and_restores_policy_buffers(
         if intrusion and appearance:
             native.camera.data.output['semantic_segmentation'][0, 5, 8, 0] = 9
     native.camera.update = update
-    result = run_native_asset_composition_gate(built=native.built, plan=native.built.plan,
-        output_root=native.output, stage=native.stage)
+    changed_paths = []
+    def record_changes(notice, sender):
+        changed_paths.extend(str(path) for path in [
+            *notice.GetResyncedPaths(), *notice.GetChangedInfoOnlyPaths()])
+    subscription = Tf.Notice.Register(Usd.Notice.ObjectsChanged, record_changes, native.stage)
+    try:
+        result = run_native_asset_composition_gate(built=native.built, plan=native.built.plan,
+            output_root=native.output, stage=native.stage)
+    finally:
+        subscription.Revoke()
+    # Covers writes AND clears, including ones that preserve effective visibility:
+    # neither operation may touch live robot/collider USD in the coverage gate.
+    assert changed_paths
+    assert all(not path.startswith(native.root + '/' + name)
+               for path in changed_paths
+               for name in ('Robot', 'task_object', 'task_support', 'scene_collision')), changed_paths
+    for view in result['views']:
+        receipt = json.loads(__import__('pathlib').Path(view['diagnostic']['path']).read_text())
+        assert [row['pass'] for row in receipt['passes']] == list(diagnostic.COVERAGE_PASSES)
+        comparison = receipt['pixel_comparison']
+        assert comparison['appearance_distance_comparison_available'] is False
+        assert comparison['finite_paired_distance_target_pixel_count'] is None
+        assert not any('appearance_minus_mesh' in row['relative_path'] for row in comparison['artifacts'])
     assert result['passed'] is not intrusion, result
     assert [row['camera_role'] for row in result['views']] == ['external', 'overview']
     assert result['physics_steps'] == 0
@@ -306,3 +328,23 @@ def test_rgba_semantic_keys_reuse_native_decoder_and_measure_occluded_tray(nativ
     assert comparison['native_mesh_target_pixels_occluded_in_full'] == 4
     assert comparison['target_pixel_count'] == 92
     assert result['physics_steps_between_passes'] == 0
+
+
+def test_gate_retains_original_failure_when_restoring_camera_buffers_also_fails(native, monkeypatch):
+    from blueprint_pipeline import native_task_asset_composition_gate as gate
+    native.built.plan['objects'].append({'semantic_role': 'task_support'})
+    def fail_adapter(**kwargs):
+        raise RuntimeError('original capture failure')
+    def fail_refresh(*args, **kwargs):
+        raise RuntimeError('invalidated native view')
+    monkeypatch.setattr(gate, 'make_native_adapters', fail_adapter)
+    native.camera.update = fail_refresh
+    result = gate.run_native_asset_composition_gate(built=native.built, plan=native.built.plan,
+        output_root=native.output, stage=native.stage)
+    assert result['status'] == 'blocked'
+    assert result['full_scene_sensor_buffers_refreshed'] is False
+    assert result['blockers'] == [
+        'composition_gate_buffer_restore_failed:RuntimeError:invalidated native view',
+        'composition_gate_capture_failed:RuntimeError:original capture failure',
+    ]
+    assert json.loads((native.output / 'native_asset_composition_gate/composition_gate.json').read_text()) == result

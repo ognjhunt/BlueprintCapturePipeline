@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .decision_evidence_contracts import canonical_digest
 from .native_task_composition_diagnostic import (
-    PASSES, REQUEST_SCHEMA, file_record, run_composition_diagnostic, seal,
+    COVERAGE_PASSES, REQUEST_SCHEMA, file_record, run_composition_diagnostic, seal,
 )
 from .native_task_composition_worker import make_native_adapters
 
@@ -61,6 +61,7 @@ def run_native_asset_composition_gate(*, built, plan, output_root, stage=None):
     root = Path(output_root) / "native_asset_composition_gate"
     root.mkdir(parents=True, exist_ok=False)
     rows, blockers = [], []
+    buffers_refreshed = False
     if stage is None:
         import omni.usd
         stage = omni.usd.get_context().get_stage()
@@ -72,7 +73,7 @@ def run_native_asset_composition_gate(*, built, plan, output_root, stage=None):
             if role not in built.camera_scene_names:
                 blockers.append("composition_required_camera_missing:" + role)
                 continue
-            request = seal({"schema_version": REQUEST_SCHEMA, "passes": list(PASSES),
+            request = seal({"schema_version": REQUEST_SCHEMA, "passes": list(COVERAGE_PASSES),
                 "camera_role": role, "target_semantic_class": target_class,
                 "policy_queries_permitted": 0, "physics_steps_between_passes_permitted": 0,
                 "source_asset_mutation_permitted": False, "render_refresh_count": 4,
@@ -91,10 +92,14 @@ def run_native_asset_composition_gate(*, built, plan, output_root, stage=None):
     finally:
         # Diagnostic visibility is restored by its finally block. Also replace
         # the last mesh-only sensor buffers before a policy can observe them.
-        for _ in range(4):
-            env.sim.render()
-            for name in built.camera_scene_names.values():
-                env.scene[name].update(0.0, force_recompute=True)
+        try:
+            for _ in range(4):
+                env.sim.render()
+                for name in built.camera_scene_names.values():
+                    env.scene[name].update(0.0, force_recompute=True)
+            buffers_refreshed = True
+        except Exception as exc:
+            blockers.append("composition_gate_buffer_restore_failed:" + type(exc).__name__ + ":" + str(exc))
     if env.sim.get_physics_step_count() != initial_step:
         blockers.append("composition_gate_physics_advanced")
     receipt = seal({"schema_version": "native_task_asset_composition_gate.v1",
@@ -103,7 +108,7 @@ def run_native_asset_composition_gate(*, built, plan, output_root, stage=None):
         "target_semantic_classes": targets,
         "resolved_scene_plan_digest": canonical_digest(plan), "views": rows,
         "policy_queries": 0, "physics_steps": env.sim.get_physics_step_count() - initial_step,
-        "full_scene_sensor_buffers_refreshed": True, "source_assets_mutated": False,
+        "full_scene_sensor_buffers_refreshed": buffers_refreshed, "source_assets_mutated": False,
         "automatic_gaussian_deletion_authorized": False, "occlusion_cause_proven": False,
         "blockers": sorted(set(blockers))})
     (root / "composition_gate.json").write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
