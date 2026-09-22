@@ -12,6 +12,7 @@ RELEASES_ROOT = Path('/opt/blueprint/task-evaluation-control-plane-releases')
 STATE_ROOT = Path('/var/lib/blueprint/pipeline-control-plane')
 RECEIPTS_ROOT = STATE_ROOT / 'deploy-receipts'
 SOURCE_CHECKOUT = Path('/opt/blueprint/BlueprintCapturePipeline')
+CONFIG_TOOLS_ROOT = Path('/opt/blueprint/control-plane-config-tools')
 TRUSTED_UID = 0
 _COMMIT = re.compile(r'[0-9a-f]{40}')
 
@@ -107,11 +108,25 @@ def inspect_active_deployed_release(repo_root: Path, commit: str) -> dict[str, A
                 surfaces = receipt.get('surfaces', [])
                 if not isinstance(intake, dict) or not isinstance(surfaces, list):
                     continue
+                source_rows = [row for row in surfaces if isinstance(row, dict)
+                               and row.get('name') == 'source_checkout' and row.get('head') == commit]
+                if len(source_rows) != 1:
+                    continue
+                source_path = Path(str(source_rows[0].get('path') or ''))
+                # Canonical deploys can use a clean, root-owned config-tools
+                # clone. Bind the receipt to that exact clone, not an arbitrary
+                # caller path or a symlink outside the approved tools root.
+                if source_path != SOURCE_CHECKOUT and not (
+                        source_path.parent == CONFIG_TOOLS_ROOT
+                        and _trusted(CONFIG_TOOLS_ROOT, directory=True)
+                        and _trusted(source_path, directory=True)
+                        and source_path.resolve(strict=True) == source_path):
+                    continue
                 if not (receipt.get('schema_version') == 'control_plane_commit_deploy_receipt.v1'
                         and receipt.get('status') == 'deployed' and receipt.get('release_path') == str(root)
                         and intake.get('source_commit') == commit and intake.get('commit_proven') is True
                         and {'name': 'active_release', 'head': commit, 'path': str(root)} in surfaces
-                        and {'name': 'source_checkout', 'head': commit, 'path': str(SOURCE_CHECKOUT)} in surfaces):
+                        and {'name': 'source_checkout', 'head': commit, 'path': str(source_path)} in surfaces):
                     continue
                 provenance, provenance_digest = _provenance(receipt.get('release_provenance', {}), commit)
                 current = ACTIVE_LINK.lstat()
