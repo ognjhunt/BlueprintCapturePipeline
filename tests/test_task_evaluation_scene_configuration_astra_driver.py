@@ -79,6 +79,13 @@ def test_supplied_primary_evidence_and_measured_values_remain_bound_to_retained_
         driver.build_authoring_request(retained.input, retained.source, [retained.image], retained.rights)
 
 
+def test_articulated_configuration_refuses_before_any_inference(retained):
+    stage_input = json.loads(json.dumps(retained.input))
+    stage_input["configuration"]["schema_version"] = "articulated_replacement_authoring_configuration.v1"
+    with pytest.raises(driver.AstraStageError, match="astra_authoring_configuration_kind_unsupported"):
+        driver.build_authoring_request(stage_input, retained.source, [retained.image], retained.rights)
+
+
 @pytest.mark.parametrize("mutation", ["rights", "disclosure", "uncertainty", "owner", "export_tolerance"])
 def test_invalid_input_refuses_before_authoring(retained, mutation):
     if mutation == "rights":

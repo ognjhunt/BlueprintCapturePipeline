@@ -97,6 +97,13 @@ def build_authoring_request(stage_input: Mapping[str, Any], source_record: Mappi
                             references: list[Path], rights: Mapping[str, Any]) -> AuthoringRequest:
     """Translate retained data without inventing physical measurements or rounding geometry."""
     configuration = stage_input["configuration"]
+    # Fail closed before any inference: this builder briefs one rigid solid.
+    # An articulated assembly configuration needs the articulated brief; a
+    # rigid brief would spend CAD budget on a single body that packaging
+    # and static qualification then refuse.
+    if configuration.get("schema_version") != "rigid_replacement_authoring_configuration.v1":
+        raise AstraStageError("astra_authoring_configuration_kind_unsupported:"
+                              + str(configuration.get("schema_version") or ""))
     disclosure = configuration.get("provider_disclosure") or {}
     website_capture = configuration.get("source_observation_kind") == "website_capture_frames"
     if website_capture:

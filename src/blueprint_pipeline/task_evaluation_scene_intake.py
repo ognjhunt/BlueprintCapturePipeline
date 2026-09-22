@@ -28,6 +28,8 @@ from .task_evaluation_launch_preparation_queue import (
     _write_launch_preparation_record_exclusive_locked as write_exclusive,
 )
 
+TASK_STRATEGIES = ("pick_and_place", "articulated_open_close")
+ARTICULATION_JOINT_TYPES = ("prismatic", "revolute")
 REQUEST_SCHEMA = "task_evaluation_scene_intake_request.v1"
 INTENT_SCHEMA = "task_evaluation_scene_intent.v1"
 ATTEMPT_SCHEMA = "task_evaluation_scene_attempt.v1"
@@ -100,11 +102,20 @@ def validate_request(value: Mapping[str, Any], *, now: float) -> dict[str, Any]:
                  and _DIGEST.fullmatch(companion["rights_reference"]) is not None
                  and companion.get("frame_relation") == "owner_declared_common_frame", "collision_mesh_binding_invalid")
     task = value.get("task")
-    _require(isinstance(task, Mapping) and task.get("strategy") == "pick_and_place"
+    _require(isinstance(task, Mapping) and task.get("strategy") in TASK_STRATEGIES
              and _identifier(task.get("task_id")), "task_invalid")
     _require(type(task.get("reuse_completed_stages", True)) is bool, "task_reuse_mode_invalid")
-    for key in ("subject", "support", "destination", "success"):
+    # A relocation binds a destination; an articulated open/close binds the
+    # mechanism instead (the moving part never leaves its assembly).
+    required = (("subject", "support", "articulation", "success")
+                if task["strategy"] == "articulated_open_close"
+                else ("subject", "support", "destination", "success"))
+    for key in required:
         _require(isinstance(task.get(key), Mapping) and bool(task[key]), "task_" + key + "_missing")
+    if task["strategy"] == "articulated_open_close":
+        _require(task["articulation"].get("joint_type") in ARTICULATION_JOINT_TYPES
+                 and isinstance(task["articulation"].get("part_label"), str)
+                 and task["articulation"]["part_label"].strip() != "", "task_articulation_invalid")
     from .task_evaluation_scene_execution_scope import validate_execution
     validate_execution(value, now=now)
     consent = value.get("consent")

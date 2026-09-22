@@ -91,12 +91,14 @@ def _bounds(minimum, maximum):
             "metric_measurement_proven": False, "complete_object_dimensions": False}
 
 
-def _masks(source_geometry, *, destination=True):
+def _masks(source_geometry, *, destination=True, articulated=False):
     runs = [{"start": row * WIDTH + 21, "length": 4, "probability": 0.9} for row in range(20, 25)]
     track = {"track_id": "t1", "label": "cup", "observations": [
         {"source_frame_id": "frame-0", "height": HEIGHT, "width": WIDTH, "runs": runs}]}
     targets = [{"target_id": "cup-1", "task_effect": "manipulated", "disposition": "remove", "track": track,
-                "estimated_visible_bounds": _bounds([0.05, 0.4, 1.45], [0.10, 0.5, 1.55])}]
+                "estimated_visible_bounds": _bounds([0.05, 0.4, 1.45], [0.10, 0.5, 1.55]),
+                **({"semantic_label": "three-drawer cabinet", "articulated_part": "middle drawer",
+                    "articulation_kind": "prismatic"} if articulated else {})}]
     if destination:
         targets.append({"target_id": "tray-1", "task_effect": "static_contact", "disposition": "keep",
                         "target_role": "destination", "placement_relation": "on", "track": track,
@@ -172,6 +174,49 @@ def test_registered_estimates_compile_into_an_intake_ready_request(tmp_path):
         assert image.size == (thumbnail["width"], thumbnail["height"]) and image.width <= 480 and image.height <= 300
     assert _sha256_file(Path(thumbnail["path"])) == thumbnail["digest"]
     assert preparation.compile_website_scene_preparation(**_arguments(tmp_path))["digest"] == value["digest"]
+
+
+ARTICULATED_REMOVAL = {"schema_version": "clean_plate_removal_manifest.v1", "entries": [
+    {"target_id": "cup-1", "semantic_label": "three-drawer cabinet", "task_effect": "manipulated", "disposition": "remove",
+     "articulated_part": "middle drawer", "articulation_kind": "prismatic",
+     "compose_back": {"replacement_asset_id": None, "pose_world": None, "replacement_asset_frame_registration_uri": None}}]}
+
+
+def test_articulated_assembly_compiles_into_an_open_close_intake(tmp_path):
+    value = _compile(tmp_path, lambda geometry: {"task_masks": _masks(geometry, destination=False, articulated=True),
+                                                 "removal_manifest": ARTICULATED_REMOVAL})
+    assert value["status"] == "intake_ready", value["blockers"]
+    task = value["intake_request"]["task"]
+    assert task["strategy"] == "articulated_open_close" and "destination" not in task
+    mechanism = task["articulation"]
+    assert mechanism["joint_type"] == "prismatic" and mechanism["part_label"] == "middle drawer"
+    assert mechanism["lock_status"] == "unknown" and mechanism["part_observed_open_in_footage"] is False
+    assert mechanism["physical_measurement_proven"] is False
+    normal = np.asarray(mechanism["estimated_front_normal_world"])
+    assert np.linalg.norm(normal) == pytest.approx(1.0) and normal[2] == pytest.approx(0.0)
+    dims = value["physics"]["dimensions_m"]
+    depth = abs(normal[0]) * dims[0] + abs(normal[1]) * dims[1]
+    assert mechanism["estimated_usable_stroke_m"] == pytest.approx(0.75 * depth, abs=1e-4)
+    assert task["success"] == preparation.ARTICULATED_SUCCESS
+    configuration = value["authoring_inputs"]["configuration"]
+    assert configuration["schema_version"] == "articulated_replacement_authoring_configuration.v1"
+    assert configuration["mechanism"]["joint_limits"] == [0.0, mechanism["estimated_usable_stroke_m"]]
+    assert configuration["mechanism"]["passive_dynamics"]["task_joint_drive"] == "none"
+    assert configuration["required_output"]["task_joint_count"] == 1
+    assert value["authoring_inputs"]["adapter"] == "astra_articulated_replacement"
+    assert value["recipe_plan"]["articulated_replacement_authoring"] == "astra_articulated_replacement"
+    assert value["physics"]["sensitivity"] == "awaiting_robot_team_selection"
+    assert value["physics"]["measurement_escalation"]["property"] == "joint_friction"
+    assert value["destination"] is None
+    # The whole assembly still rests on the support beneath its footprint.
+    assert value["support"] is not None
+
+
+def test_articulated_task_refuses_a_destination_row(tmp_path):
+    value = _compile(tmp_path, lambda geometry: {"task_masks": _masks(geometry, destination=True, articulated=True),
+                                                 "removal_manifest": ARTICULATED_REMOVAL})
+    assert value["status"] == "needs_input"
+    assert "website_articulated_task_has_no_destination" in value["blockers"]
 
 
 def test_missing_destination_is_a_typed_blocker_not_a_default(tmp_path):

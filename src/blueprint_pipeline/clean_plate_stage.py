@@ -197,6 +197,8 @@ def _build_removal_manifest(plan: Mapping[str, Any]) -> Dict[str, Any]:
                 "decision_reason": target.get("decision_reason"),
                 "task_basis_quote": target.get("task_basis_quote"),
                 "rebuild_intent": target.get("rebuild_intent"),
+                "articulated_part": target.get("articulated_part") or "",
+                "articulation_kind": target.get("articulation_kind") or "",
                 "spatial_evidence": target.get("spatial_evidence", []),
                 # Filled by the deferred fill machinery / rebuild chain:
                 "mask_track_ref": None,

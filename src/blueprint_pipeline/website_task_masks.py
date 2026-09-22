@@ -370,6 +370,8 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
         selected.append({"target_id": target["target_id"], "target_role": target.get("target_role"),
                          "semantic_label": target["semantic_label"], "task_effect": target["task_effect"],
                          "placement_relation": target.get("placement_relation"),
+                         "articulated_part": target.get("articulated_part") or "",
+                         "articulation_kind": target.get("articulation_kind") or "",
                          "disposition": target["disposition"], "track": track,
                          "estimated_visible_bounds": estimate_target_bounds(track, frames) if geometry_available else None})
         if provider == "meta":

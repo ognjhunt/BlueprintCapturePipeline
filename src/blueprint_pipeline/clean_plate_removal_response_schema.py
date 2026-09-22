@@ -3,7 +3,10 @@
 _properties = {
     **{name: {"type": "string"} for name in (
         "target_id", "semantic_label", "segmentation_prompt", "decision_reason",
-        "task_basis_quote", "clarification_question")},
+        "task_basis_quote", "clarification_question", "articulated_part")},
+    # An articulated assembly (cabinet with a drawer, refrigerator with a door)
+    # is one manipulated target; these name the moving part and its mechanism.
+    "articulation_kind": {"type": "string", "enum": ["", "prismatic", "revolute"]},
     "target_class": {"type": "string", "enum": ["person", "movable_object", "fixed_clutter"]},
     "target_role": {"type": "string", "enum": ["task_object", "support", "destination", "obstacle", "background", "person"]},
     "task_effect": {"type": "string", "enum": ["manipulated", "static_contact", "static_obstacle", "unrelated", "uncertain", "privacy"]},

@@ -132,10 +132,15 @@ def prepare_construction_stages(*, runtime_inputs_path: Path, preparation_path: 
     test = environment(preparation)
     assembly["support_plane"].update(authority="authored_development_surface" if test else "registered_estimated_capture_and_reconstruction",
         physical_scale_measured=False, source_face_indices=preparation["support"]["face_indices"])
+    articulated = third.get("schema_version") == records.ARTICULATED_AUTHORING_SCHEMA_VERSION
     configurations = [first["configuration"], second["configuration"], third,
         records.stage_four_configuration(replacement_identity=identity,
-            dimension_tolerance=third["metric_envelope"]["maximum_dimension_relative_error"]),
-        records.stage_five_configuration(replacement_identity=identity), assembly]
+            dimension_tolerance=third["metric_envelope"]["maximum_dimension_relative_error"], articulated=articulated),
+        records.stage_five_configuration(replacement_identity=identity, articulated=articulated), assembly]
+    if articulated:
+        assembly["replacement"].update(asset_kind="articulated_assembly",
+            front_normal_world=third["mechanism"]["estimated_front_normal_world"],
+            task_joint_reset="closed", swept_volume_must_stay_clear_of_scene_collision=True)
     stages = records.stage_sequence()
     for old, new in zip(stages[:2], (first["stage"], second["stage"]), strict=True):
         old.update(new)

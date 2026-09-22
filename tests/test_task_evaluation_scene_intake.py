@@ -51,6 +51,27 @@ def test_intake_is_idempotent_and_commit_independent(tmp_path):
     assert first["provider_mutation_performed_inside_http_request"] is False
 
 
+def articulated_request():
+    value = request()
+    value["task"] = {"task_id": "open-drawer", "strategy": "articulated_open_close", "subject": {"id": "cabinet"},
+                     "support": {"id": "floor"}, "success": {"minimum_opening_fraction_of_estimated_stroke": 0.6},
+                     "articulation": {"joint_type": "prismatic", "part_label": "middle drawer"}}
+    return value
+
+
+def test_articulated_strategy_binds_the_mechanism_instead_of_a_destination(tmp_path):
+    accepted = stage(tmp_path, articulated_request())
+    assert accepted["provider_mutation_performed_inside_http_request"] is False
+    missing = articulated_request()
+    del missing["task"]["articulation"]
+    with pytest.raises(SceneIntakeError, match="task_articulation_missing"):
+        stage(tmp_path, missing)
+    driven = articulated_request()
+    driven["task"]["articulation"]["joint_type"] = "position_drive"
+    with pytest.raises(SceneIntakeError, match="task_articulation_invalid"):
+        stage(tmp_path, driven)
+
+
 def test_untrusted_database_writer_cannot_issue_intent(tmp_path):
     with pytest.raises(SceneIntakeError, match="issuer_not_authorized"):
         stage_scene_intent(value=request(), queue_root=tmp_path, authenticated_client="db-writer",

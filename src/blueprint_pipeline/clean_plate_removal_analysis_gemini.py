@@ -61,6 +61,7 @@ TARGET_CLASSES = ("person", "movable_object", "fixed_clutter")
 DISPOSITIONS = ("remove", "keep")
 REBUILD_INTENTS = ("rebuild_and_compose", "none")
 TASK_EFFECTS = ("manipulated", "static_contact", "static_obstacle", "unrelated", "uncertain", "privacy")
+ARTICULATION_KINDS = ("prismatic", "revolute")
 
 _API_KEY_ENVS = ("GEMINI_API_KEY", "GOOGLE_GENAI_API_KEY", "GOOGLE_AI_API_KEY")
 _API_KEY_FILE_ENVS = (
@@ -104,6 +105,15 @@ PROMPT_INSTRUCTION = (
     "question. Enumerate task objects, supports, nearby obstacles, people and "
     "plausible task-object alternatives; do not inventory every distant item. "
     "Task objects which the robot manipulates are removed and rebuilt separately. "
+    "When the confirmed task opens, closes, slides or swings a PART of a larger object "
+    "(a drawer of a cabinet, a door of a refrigerator or cupboard, a lid), the manipulated "
+    "target is the WHOLE articulated assembly (for example the complete cabinet including "
+    "all of its drawers), never the moving part alone: report the assembly as one target "
+    "with target_class movable_object, disposition remove and rebuild_intent "
+    "rebuild_and_compose, set 'articulated_part' to the moving part the task names "
+    "(for example 'middle drawer') and 'articulation_kind' to prismatic (sliding) or "
+    "revolute (hinged). The surface the assembly stands on is its support. For every "
+    "other target set articulated_part to '' and articulation_kind to ''. "
     "People are flagged for the privacy stage; this analysis does not clear them. "
     "Return compact JSON only, "
     "an object with a single key 'targets' whose value is a list. Enumerate the "
@@ -246,6 +256,9 @@ def _normalize_target(raw: Mapping[str, Any], index: int) -> Optional[dict[str, 
         "task_basis_quote": _string(raw.get("task_basis_quote")),
         "clarification_question": _string(raw.get("clarification_question")),
         "collision_required": raw.get("task_effect") in {"manipulated", "static_contact", "static_obstacle"},
+        "articulated_part": _string(raw.get("articulated_part"))[:160],
+        "articulation_kind": (_string(raw.get("articulation_kind")).lower()
+                              if _string(raw.get("articulation_kind")).lower() in ARTICULATION_KINDS else ""),
         "disposition": disposition,
         "rebuild_intent": rebuild_intent,
         "spatial_evidence": _normalize_spatial_evidence(raw.get("spatial_evidence")),
@@ -322,6 +335,12 @@ def parse_removal_plan_response(
                     raise ValueError("removal_analysis_task_basis_missing")
                 if raw.get("target_class") != "movable_object":
                     raise ValueError("removal_analysis_task_object_class_invalid")
+            kind = _string(raw.get("articulation_kind")).lower()
+            part = _string(raw.get("articulated_part"))
+            if kind or part:
+                # A mechanism hint is only meaningful on the one manipulated assembly.
+                if kind not in ARTICULATION_KINDS or not part or effect != "manipulated":
+                    raise ValueError("removal_analysis_articulation_hint_invalid")
             if effect == "uncertain" and (
                 raw.get("disposition") != "keep" or raw.get("rebuild_intent") != "none"
                 or role == "person" or not _string(raw.get("clarification_question"))

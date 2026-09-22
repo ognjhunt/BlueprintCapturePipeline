@@ -104,9 +104,33 @@ def _metric_bounds_valid(minimum: Any, maximum: Any) -> bool:
     )
 
 
+def _articulated_check_set_valid(value: Any, expected: Mapping[str, Any]) -> bool:
+    if not isinstance(value, Mapping) or set(value) != set(expected):
+        return False
+    for name, reference in expected.items():
+        if reference is True:
+            if value[name] is not True:
+                return False
+        elif isinstance(reference, (int, float)) and not isinstance(reference, bool):
+            if isinstance(reference, int):
+                if value[name] != reference:
+                    return False
+            elif not _positive_finite(value[name]):
+                return False
+        elif value[name] != reference:
+            return False
+    return True
+
+
 def native_import_checks_valid(value: Any) -> bool:
     """Match the exact native-import driver and adapter check set."""
 
+    from .task_evaluation_scene_configuration_submission_records import (
+        ARTICULATED_NATIVE_IMPORT_CHECKS,
+    )
+
+    if isinstance(value, Mapping) and set(value) == set(ARTICULATED_NATIVE_IMPORT_CHECKS):
+        return _articulated_check_set_valid(value, ARTICULATED_NATIVE_IMPORT_CHECKS)
     if not isinstance(value, Mapping) or set(value) != {
         "stage_import",
         "rigid_body_enabled",
@@ -137,6 +161,12 @@ def native_import_checks_valid(value: Any) -> bool:
 def static_qualification_checks_valid(value: Any) -> bool:
     """Match the exact stage-4 adapter check set."""
 
+    from .task_evaluation_scene_configuration_submission_records import (
+        ARTICULATED_STATIC_CHECKS,
+    )
+
+    if isinstance(value, Mapping) and set(value) == set(ARTICULATED_STATIC_CHECKS):
+        return _articulated_check_set_valid(value, ARTICULATED_STATIC_CHECKS)
     expected = {
         "usd_parses",
         "meters_per_unit",
@@ -382,11 +412,13 @@ def _stage_three_refusal(
     declared_backend = (envelope.get("request") or {}).get("replacement_authoring_backend")
     if declared_backend is not None and configuration.get("authoring_backend", "content_agents") != declared_backend:
         return "authoring_backend_budget_binding"
-    if (
-        configuration.get("schema_version")
-        != "rigid_replacement_authoring_configuration.v1"
-    ):
+    schema_version = configuration.get("schema_version")
+    if schema_version not in {
+        "rigid_replacement_authoring_configuration.v1",
+        "articulated_replacement_authoring_configuration.v1",
+    }:
         return "schema_version"
+    articulated = schema_version == "articulated_replacement_authoring_configuration.v1"
     if (
         not _versioned_identity(identity)
         or identity != (envelope.get("recipe") or {}).get("subject_identity")
@@ -398,7 +430,38 @@ def _stage_three_refusal(
         return "required_output"
     static_bounds = required.get("static_friction_bounds")
     dynamic_bounds = required.get("dynamic_friction_bounds")
-    if (
+    if articulated:
+        mechanism = configuration.get("mechanism")
+        travel_key = {"prismatic": "estimated_usable_stroke_m", "revolute": "estimated_usable_swing_rad"}.get(
+            str((mechanism or {}).get("joint_type")) if isinstance(mechanism, Mapping) else "")
+        if (
+            not isinstance(mechanism, Mapping)
+            or travel_key is None
+            or not _positive_finite(mechanism.get(travel_key))
+            or mechanism.get("joint_limits") != [0.0, mechanism.get(travel_key)]
+            or mechanism.get("closed_reset_position") != 0.0
+            or not str(mechanism.get("task_part_label") or "").strip()
+            or not str(mechanism.get("target_joint_id") or "").strip()
+            or (mechanism.get("passive_dynamics") or {}).get("task_joint_drive") != "none"
+            # Passive joint resistance is a force/damping range, not a coefficient.
+            or not _bounded_pair((mechanism.get("passive_dynamics") or {}).get("joint_friction_bounds"), positive_lower=True)
+            or not _bounded_pair((mechanism.get("passive_dynamics") or {}).get("joint_damping_bounds"), positive_lower=True)
+        ):
+            return "mechanism"
+        if (
+            required.get("format") != "OpenUSD"
+            or required.get("articulation_root") is not True
+            or required.get("single_articulation_root") is not True
+            or required.get("task_joint_count") != 1
+            or required.get("non_task_joints_fixed") is not True
+            or required.get("task_part_handle_required") is not True
+            or required.get("generated_interior_labelled") is not True
+            or required.get("units") != "meters"
+            or required.get("up_axis") != "Z"
+            or not _bounded_pair(required.get("task_part_mass_kg_bounds"), positive_lower=True)
+        ):
+            return "required_output"
+    elif (
         required.get("format") != "OpenUSD"
         or required.get("rigid_body") is not True
         or required.get("single_movable_root") is not True
