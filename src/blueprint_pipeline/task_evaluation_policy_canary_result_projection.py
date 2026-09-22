@@ -230,6 +230,12 @@ def build_policy_canary_result_projection(
                     row.get("policy_outcome_interpretable") is True
                 ),
                 "failure_taxonomy": row.get("typed_harness_failure"),
+                **(
+                    {"runtime_coverage_gaps": deepcopy(row["scientific_reset"]["gaps"])}
+                    if isinstance(row.get("scientific_reset"), Mapping)
+                    and "gaps" in row["scientific_reset"]
+                    else {}
+                ),
                 "interpretation": compact_interpretation(
                     (delivered_episodes.get(episode_id) or {}).get("interpretation")
                 ),

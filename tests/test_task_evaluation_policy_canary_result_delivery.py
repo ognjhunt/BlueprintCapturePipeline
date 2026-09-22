@@ -370,8 +370,9 @@ def test_canary_delivery_projects_non_authoritative_episode_interpretation(
     assert projection["episodes"][0]["interpretation"]["receipt"]["artifact_id"]
 
 
+@pytest.mark.parametrize("runtime_gaps", [None, [], ["unapplied_scenario:bounded_physics"]])
 def test_canary_delivery_projects_path_distinct_byte_identical_episode_evidence(
-    tmp_path: Path,
+    tmp_path: Path, runtime_gaps,
 ) -> None:
     evidence = tmp_path / "evidence"
     evidence.mkdir()
@@ -387,6 +388,8 @@ def test_canary_delivery_projects_path_distinct_byte_identical_episode_evidence(
     second["cell_id"] = "quick-cell-1"
     second["seed"] = 3101
     second["episode"]["episode_id"] = "episode-two"
+    if runtime_gaps is not None:
+        first["scientific_reset"] = {"gaps": runtime_gaps}
 
     ambiguous_roles = ("reset_state", "score_receipt", "task_object_trajectory")
     for role in ambiguous_roles:
@@ -456,6 +459,11 @@ def test_canary_delivery_projects_path_distinct_byte_identical_episode_evidence(
     # An absent optional interpretation must stay absent on the wire. The
     # Website validates any present summary against its complete schema.
     assert "episode_interpretation" not in projection
+    if runtime_gaps is None:
+        assert "runtime_coverage_gaps" not in projection["episodes"][0]
+    else:
+        assert projection["episodes"][0]["runtime_coverage_gaps"] == runtime_gaps
+    assert "runtime_coverage_gaps" not in projection["episodes"][1]
 
     for role in ambiguous_roles:
         delivered = [
