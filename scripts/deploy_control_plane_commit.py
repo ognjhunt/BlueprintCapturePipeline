@@ -1975,7 +1975,9 @@ def _prepare_terminal_controls_adoptions(*, release_path: str | Path, commit: st
         'GIT_CONFIG_COUNT=1', 'GIT_CONFIG_KEY_0=safe.directory', f'GIT_CONFIG_VALUE_0={release}',
         sys.executable, '-m', 'blueprint_pipeline.task_evaluation_terminal_controls_deploy',
         '--config', str(config_path), '--expected-commit', commit]
-    result = subprocess.run(argv, check=True, capture_output=True, text=True, timeout=600)
+    # Retained placement validation exceeded ten minutes on the 4-vCPU host.
+    # Keep the deploy locks and quiescence while the existing worker finishes.
+    result = subprocess.run(argv, check=True, capture_output=True, text=True, timeout=1800)
     try:
         report = json.loads(result.stdout)
     except ValueError as exc:

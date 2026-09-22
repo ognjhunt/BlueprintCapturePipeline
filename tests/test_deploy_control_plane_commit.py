@@ -50,6 +50,7 @@ def test_terminal_controls_are_prepared_as_service_user_before_workers_resume(mo
         assert '--property=User=blueprint' in argv
         assert f'PYTHONPATH={tmp_path / "src"}' in argv
         assert 'blueprint_pipeline.task_evaluation_terminal_controls_deploy' in argv
+        assert kwargs['timeout'] >= 1800  # retained validation exceeded ten minutes on the host
         return SimpleNamespace(stdout=json.dumps({'status':'prepared','source_commit':commit,
             'provider_mutation_performed':False,'model_called':False,'placement_materialized':False}))
     monkeypatch.setattr(deploy.subprocess, 'run', run)
