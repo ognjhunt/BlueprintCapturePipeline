@@ -407,3 +407,28 @@ def test_robot_reset_task_space_rejects_the_prior_behind_floor_pose() -> None:
     assert result["passed"] is False
     assert result["checks"]["finger_midpoint_above_floor"] is False
     assert result["checks"]["finger_midpoint_in_front_of_base"] is False
+
+
+def test_preflight_camera_calls_bind_the_sealed_scene_scope() -> None:
+    """The full preflight and mount sweep must use the same scope as policy runs."""
+    import ast
+    import inspect
+    from blueprint_pipeline import native_task_arena_runtime_preflight_worker as worker
+    from blueprint_pipeline.native_task_nurec_render_setup import camera_site_appearance_required
+
+    calls = [node for node in ast.walk(ast.parse(inspect.getsource(worker)))
+             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+             and node.func.id in {"_camera_snapshot", "camera_snapshot"}]
+    assert len(calls) == 2
+    for call in calls:
+        scope = next((kw.value for kw in call.keywords
+                      if kw.arg == "site_appearance_render_expected"), None)
+        assert scope is not None
+        expression = compile(ast.Expression(scope), "camera-scope", "eval")
+        for plan, expected in [({}, True), ({
+            "camera_scene_scope": "authored_development_surface",
+            "claim_boundary": {"captured_scene_evaluation_allowed": False},
+            "appearance_frame_alignment": {"representation": "usd_geometry"},
+        }, False)]:
+            assert eval(expression, {"camera_site_appearance_required": camera_site_appearance_required,
+                                     "plan": plan}) is expected
