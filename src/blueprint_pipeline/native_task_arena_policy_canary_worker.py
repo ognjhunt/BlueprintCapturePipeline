@@ -1036,14 +1036,8 @@ def _resolved_scene_plan(
                 "application_tolerance": 1.0e-6,
             }
         )
-    if "dynamic_friction" in parameters:
-        coverage_gaps.append(
-            {
-                "family": "bounded_physics",
-                "reason": "runtime_material_link_binding_unavailable",
-                "fallback": "canonical_task_material",
-            }
-        )
+    from blueprint_pipeline.native_rigid_friction_scenario import add_application as add_rigid_friction
+    add_rigid_friction(parameters, subject, applications, coverage_gaps)
     if "material_cousin" in parameters:
         coverage_gaps.append(
             {
