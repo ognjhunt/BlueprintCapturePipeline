@@ -10,9 +10,12 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from .adp_articulated_task_success_contract import (
+    task_kind_of_contract,
+    validate_task_success_contract,
+)
 from .adp_task_scoring import (
     TaskNeutralScoringError,
-    validate_rigid_task_success_contract,
 )
 from .decision_evidence_contracts import (
     canonical_digest,
@@ -65,8 +68,10 @@ def validate_policy_canary_setup(value: Mapping[str, Any]) -> dict[str, Any]:
     if setup["setup_digest"] != policy_canary_setup_digest(setup):
         raise TaskEvaluationPolicyCanarySetupError("policy_canary_setup_digest_mismatch")
     try:
-        success_contract = validate_rigid_task_success_contract(
-            setup["task_success_contract"], require_confirmed=False
+        success_contract = validate_task_success_contract(
+            setup["task_success_contract"],
+            task_kind=task_kind_of_contract(setup["task_success_contract"]),
+            require_confirmed=False,
         )
     except TaskNeutralScoringError as exc:
         raise TaskEvaluationPolicyCanarySetupError(

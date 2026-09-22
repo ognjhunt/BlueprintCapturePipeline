@@ -21,7 +21,6 @@ from typing import Any, Mapping, Sequence
 
 from .adp_task_scoring import (
     TaskNeutralScoringError,
-    validate_rigid_task_success_contract,
 )
 from .articulated_runtime_composition import plan_articulated_runtime_composition
 from .common import write_json
@@ -814,12 +813,14 @@ def materialize_native_task_runtime_contract(
     if task_kind not in TASK_KINDS:
         errors.append("native_task_runtime_task_kind_invalid")
     if (
-        task_kind == "rigid_pick_place"
+        task_kind in {"rigid_pick_place", "articulated_open_close"}
         and task_spec.get("task_success_contract") is not None
     ):
+        from .adp_articulated_task_success_contract import validate_task_success_contract
         try:
-            validate_rigid_task_success_contract(
+            validate_task_success_contract(
                 task_spec["task_success_contract"],
+                task_kind=task_kind,
                 expected_site_id=scene,
                 expected_task_id=task,
             )

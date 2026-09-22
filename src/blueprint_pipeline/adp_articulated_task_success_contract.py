@@ -18,12 +18,20 @@ import math
 from collections.abc import Mapping, Sequence
 from typing import Any, Literal
 
-from .adp_task_scoring import (
-    TASK_KIND_ARTICULATED_OPEN_CLOSE,
-    TaskNeutralScoringError,
-    cross_runtime_canonical_digest,
-    validate_articulated_task_spec,
-)
+try:  # flat provider-bundle layout
+    from adp_task_scoring import (
+        TASK_KIND_ARTICULATED_OPEN_CLOSE,
+        TaskNeutralScoringError,
+        cross_runtime_canonical_digest,
+        validate_articulated_task_spec,
+    )
+except ModuleNotFoundError:  # repository package
+    from .adp_task_scoring import (
+        TASK_KIND_ARTICULATED_OPEN_CLOSE,
+        TaskNeutralScoringError,
+        cross_runtime_canonical_digest,
+        validate_articulated_task_spec,
+    )
 
 SCHEMA_VERSION = "articulated_task_success_contract.v1"
 AUTHOR_SOURCES = {"compatibility_default", "site_robot_team", "task_owner", "agent_proposal"}
@@ -319,25 +327,34 @@ def confirmed_articulated_task_success_contract_matches_published(
     return successor["contract_digest"] == confirmed_contract["contract_digest"]
 
 
+def _rigid(name: str) -> Any:
+    """Resolve one rigid-lane symbol under either package layout."""
+    try:  # flat provider-bundle layout
+        module = __import__("adp_task_scoring")
+    except ModuleNotFoundError:  # repository package
+        from . import adp_task_scoring as module  # type: ignore[no-redef]
+    return getattr(module, name)
+
+
 # --- kind-dispatching facade -------------------------------------------------
 # One entry point per operation, so a call site binds the task kind instead of
 # assuming the rigid lane.
 
 def task_success_contract_schema_version(task_kind: str) -> str:
-    from .adp_task_scoring import RIGID_TASK_SUCCESS_CONTRACT_SCHEMA_VERSION
+    RIGID_TASK_SUCCESS_CONTRACT_SCHEMA_VERSION = _rigid("RIGID_TASK_SUCCESS_CONTRACT_SCHEMA_VERSION")
     return (SCHEMA_VERSION if task_kind == TASK_KIND_ARTICULATED_OPEN_CLOSE
             else RIGID_TASK_SUCCESS_CONTRACT_SCHEMA_VERSION)
 
 
 def validate_task_success_contract(value: Mapping[str, Any], *, task_kind: str, **kwargs: Any) -> Any:
-    from .adp_task_scoring import validate_rigid_task_success_contract
+    validate_rigid_task_success_contract = _rigid("validate_rigid_task_success_contract")
     if task_kind == TASK_KIND_ARTICULATED_OPEN_CLOSE:
         return validate_articulated_task_success_contract(value, **kwargs)
     return validate_rigid_task_success_contract(value, **kwargs)
 
 
 def seal_task_success_contract(*, task_kind: str, **kwargs: Any) -> Any:
-    from .adp_task_scoring import seal_rigid_task_success_contract
+    seal_rigid_task_success_contract = _rigid("seal_rigid_task_success_contract")
     if task_kind == TASK_KIND_ARTICULATED_OPEN_CLOSE:
         return seal_articulated_task_success_contract(**kwargs)
     return seal_rigid_task_success_contract(**kwargs)
@@ -346,7 +363,8 @@ def seal_task_success_contract(*, task_kind: str, **kwargs: Any) -> Any:
 def confirmed_task_success_contract_matches_published(
     *, task_kind: str, published: Mapping[str, Any], selected: Mapping[str, Any]
 ) -> bool:
-    from .adp_task_scoring import confirmed_rigid_task_success_contract_matches_published
+    confirmed_rigid_task_success_contract_matches_published = _rigid(
+        "confirmed_rigid_task_success_contract_matches_published")
     if task_kind == TASK_KIND_ARTICULATED_OPEN_CLOSE:
         return confirmed_articulated_task_success_contract_matches_published(
             published=published, selected=selected)
@@ -356,7 +374,7 @@ def confirmed_task_success_contract_matches_published(
 
 def task_kind_of_contract(value: Mapping[str, Any]) -> str:
     """Read the task kind a contract belongs to, from its own schema."""
-    from .adp_task_scoring import TASK_KIND_RIGID_PICK_PLACE
+    TASK_KIND_RIGID_PICK_PLACE = _rigid("TASK_KIND_RIGID_PICK_PLACE")
     return (TASK_KIND_ARTICULATED_OPEN_CLOSE
             if isinstance(value, Mapping) and value.get("schema_version") == SCHEMA_VERSION
             else TASK_KIND_RIGID_PICK_PLACE)

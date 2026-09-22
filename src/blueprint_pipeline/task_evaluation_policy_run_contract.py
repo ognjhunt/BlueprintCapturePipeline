@@ -17,13 +17,16 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from .adp_articulated_task_success_contract import (
+    task_kind_of_contract,
+    validate_task_success_contract,
+)
 from .adp_task_scoring import (
     TaskNeutralScoringError,
-    validate_rigid_task_success_contract,
 )
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_json
 from .droid_policy_canary_embodiment import DROID_POLICY_CANARY_PRESET_ID
-from .rigid_task_success_contract_schema import rigid_task_success_contract_schema
+from .articulated_task_success_contract_schema import task_success_contract_schema
 
 
 SETUP_SCHEMA_VERSION = "task_evaluation_policy_run_setup.v1"
@@ -122,13 +125,13 @@ def policy_run_setup_schema() -> dict[str, Any]:
 
 def policy_run_configuration_schema() -> dict[str, Any]:
     schema = deepcopy(_schema(CONFIGURATION_SCHEMA_PATH))
-    schema["$defs"]["taskSuccessContract"] = rigid_task_success_contract_schema()
+    schema["$defs"]["taskSuccessContract"] = task_success_contract_schema()
     return schema
 
 
 def policy_run_selection_schema() -> dict[str, Any]:
     schema = deepcopy(_schema(SELECTION_SCHEMA_PATH))
-    schema["$defs"]["taskSuccessContract"] = rigid_task_success_contract_schema()
+    schema["$defs"]["taskSuccessContract"] = task_success_contract_schema()
     return schema
 
 
@@ -350,8 +353,9 @@ def validate_policy_run_selection(value: Mapping[str, Any]) -> dict[str, Any]:
                 "policy_run_selection_canary_notification_invalid"
             )
         try:
-            success_contract = validate_rigid_task_success_contract(
-                selection["task_success_contract"]
+            success_contract = validate_task_success_contract(
+                selection["task_success_contract"],
+                task_kind=task_kind_of_contract(selection["task_success_contract"]),
             )
         except TaskNeutralScoringError as exc:
             raise TaskEvaluationPolicyRunContractError(
@@ -561,8 +565,9 @@ def validate_policy_run_configuration(
     run_kind = configuration.get("run_kind", RUN_KIND_QUALIFIED_EVALUATION)
     if run_kind == RUN_KIND_INTERNAL_POLICY_CANARY:
         try:
-            success_contract = validate_rigid_task_success_contract(
-                configuration["task_success_contract"]
+            success_contract = validate_task_success_contract(
+                configuration["task_success_contract"],
+                task_kind=task_kind_of_contract(configuration["task_success_contract"]),
             )
         except TaskNeutralScoringError as exc:
             raise TaskEvaluationPolicyRunContractError(

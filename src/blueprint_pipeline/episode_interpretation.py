@@ -32,7 +32,10 @@ from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .adp_task_scoring import validate_rigid_task_success_contract
+from .adp_articulated_task_success_contract import (
+    task_kind_of_contract,
+    validate_task_success_contract,
+)
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest, canonical_json
 from .task_evaluation_supervisor.agents_sdk import (
@@ -308,7 +311,7 @@ def build_episode_interpretation_request(
     )
     contract = _read_mapping(contract_path, error="episode_interpretation_task_contract_invalid")
     try:
-        contract = validate_rigid_task_success_contract(contract, require_confirmed=True)
+        contract = validate_task_success_contract(contract, task_kind=task_kind_of_contract(contract), require_confirmed=True)
     except ValueError as exc:
         raise EpisodeInterpretationError(
             "episode_interpretation_task_contract_unconfirmed_or_invalid"
