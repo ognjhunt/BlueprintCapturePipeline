@@ -973,8 +973,13 @@ def validate_launch_request_against_public_catalog(
         blockers.append("launch_profile_public_catalog_source_commit_mismatch")
     public_setup = _mapping(descriptor.get("internal_policy_canary_setup"))
     if public_setup:
+        published_contract = _mapping(public_setup.get("task_success_contract"))
+        # The published contract is the authority, so it names the kind. A
+        # request that answers with the other kind fails the match rather than
+        # being validated as the kind it claims to be.
         if not confirmed_task_success_contract_matches_published(
-            published=_mapping(public_setup.get("task_success_contract")),
+            task_kind=task_kind_of_contract(published_contract),
+            published=published_contract,
             selected=_mapping(request.get("task_success_contract")),
         ):
             blockers.append(
