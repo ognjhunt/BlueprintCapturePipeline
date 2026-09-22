@@ -1700,6 +1700,23 @@ def test_episode_compilation_directory_retry_skips_correct_privileged_mutations(
     assert all(row["mode"] == "0750" for row in receipts)
 
 
+def test_deploy_restores_dispatcher_access_to_old_gc_stranded_queue(tmp_path, monkeypatch):
+    queue = "/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canary-dispatches"
+    expected = {queue, *(f"{queue}/{state}" for state in
+        ("pending", "processing", "completed", "blocked", "stranded"))}
+    assert expected <= set(deploy.DEFAULT_EPISODE_COMPILATION_RUNTIME_DIRECTORIES)
+    stranded = tmp_path / "stranded"
+    stranded.mkdir(mode=0o700)
+    envelope = stranded / "retained.json"
+    envelope.write_bytes(b"immutable queue envelope")
+    envelope.chmod(0o440)
+    monkeypatch.setattr(deploy, "_service_account_ids", lambda _: (os.getuid(), os.getgid()))
+    deploy._install_episode_compilation_runtime_directories(directories=(str(stranded),))
+    assert stranded.stat().st_mode & 0o777 == 0o750
+    assert envelope.read_bytes() == b"immutable queue envelope"
+    assert envelope.stat().st_mode & 0o777 == 0o440
+
+
 def test_configured_controls_prerequisites_skip_correct_cross_owner_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
