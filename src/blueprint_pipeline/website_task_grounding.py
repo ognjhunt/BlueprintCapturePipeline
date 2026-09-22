@@ -47,7 +47,8 @@ def ground_task_target(*, target: Mapping[str, Any], tracks: Sequence[Mapping[st
                        registry: Sequence[Mapping[str, Any]], video: Mapping[str, Any],
                        task_context: Mapping[str, Any], output_root: Path,
                        failed_segmentation_prompt: str | None = None,
-                       also_rejected: Sequence[str] = ()) -> dict[str, Any]:
+                       also_rejected: Sequence[str] = (),
+                       matched_only_part: bool = False) -> dict[str, Any]:
     """One bounded observation; no repeated video analysis or human-selected pixels."""
     path = Path(video["path"])
     if _sha256_file(path) != video["sha256"]:
@@ -89,13 +90,17 @@ def ground_task_target(*, target: Mapping[str, Any], tracks: Sequence[Mapping[st
         prompt += (
             " The second image is an unedited crop around the previously localized target. "
             "The segmentation concept " + json.dumps(failed_segmentation_prompt) +
-            " found no matching instance at that location. "
+            (" selected only a sub-part of the target, not the whole object. The task acts on "
+             "the whole assembly, so name the whole object as one thing, not the part that "
+             "moves and not a class that returns one instance per part. "
+             if matched_only_part else
+             " found no matching instance at that location. ")
         )
         if also_rejected:
             # Without the full list the model re-proposes a near synonym and the
             # search stops one noun in.
             prompt += (
-                "These concepts were also already tried on this target and returned nothing: "
+                "These concepts were also already tried on this target and did not resolve it: "
                 + json.dumps(list(also_rejected)) + ". Do not repeat any of them or a plural, "
                 "hyphenated or reordered form of them. "
             )
@@ -112,6 +117,7 @@ def ground_task_target(*, target: Mapping[str, Any], tracks: Sequence[Mapping[st
     if crop_path is not None:
         binding["concept_recovery"] = {"failed_prompt": failed_segmentation_prompt,
                                       "also_rejected": list(also_rejected),
+                                      "failure_kind": "matched_part" if matched_only_part else "no_instance",
                                       "crop_box_pixels": crop_box, "crop_digest": _sha256_file(crop_path)}
 
     def preflight():

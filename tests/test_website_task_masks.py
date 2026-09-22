@@ -431,3 +431,90 @@ def test_target_bounds_rotate_observations_not_their_enclosing_box(tmp_path):
     assert corrected['metric_measurement_proven'] is False
     with pytest.raises(ValueError, match='coordinate_transform_invalid'):
         estimate_target_bounds(_track(), [frame], source_to_target=np.ones((4, 4)))
+
+
+def test_a_concept_that_resolves_only_a_sub_part_is_never_spent_on_a_clip(tmp_path, monkeypatch):
+    """`drawers` returns three drawer fronts; none of them is the cabinet."""
+    from PIL import Image
+
+    from blueprint_pipeline import website_task_masks as masks, website_task_grounding as grounding
+
+    frame = tmp_path / "grounded.png"
+    Image.new("RGB", (16, 16), (255, 255, 255)).save(frame)
+    # The cabinet is the lower-left quarter of the frame. Each drawer front sits
+    # inside that box, so every one of them overlaps it.
+    target = {"target_id": "pedestal_cabinet", "task_effect": "manipulated", "disposition": "remove",
+              "articulated_part": "middle drawer", "segmentation_prompt": "drawers",
+              "spatial_evidence": [{"timestamp_seconds": 5.0, "box_xywh_normalized": [0.0, 0.5, 0.5, 0.5]}],
+              "grounding": {"source_frame_id": "frame-150", "source_image_path": str(frame),
+                            "image_digest": _sha256_file(frame)}}
+
+    def rows(first, count):
+        return {"source_frame_id": "frame-150", "width": 16, "height": 16,
+                "runs": [{"start": row * 16, "length": 8} for row in range(first, first + count)]}
+
+    concepts, clips = [], []
+
+    def hosted(**kwargs):
+        concept = kwargs["prompts"][0]["text"]
+        concepts.append(concept)
+        if kwargs.get("video_artifact") is not None:
+            clips.append(kwargs)
+        if concept == "drawers":
+            # One front is clearly the best overlap and would be selected, but
+            # it still covers only half the cabinet.
+            return {"tracks": [
+                {"track_id": "front-0", "label": "pedestal_cabinet", "observations": [rows(8, 4)]},
+                {"track_id": "front-1", "label": "pedestal_cabinet", "observations": [rows(12, 2)]},
+                {"track_id": "front-2", "label": "pedestal_cabinet", "observations": [rows(14, 2)]}]}
+        if concept == "mobile pedestal":
+            return {"tracks": [{"track_id": "assembly", "label": "pedestal_cabinet",
+                                "observations": [rows(8, 8)]}]}
+        return {"tracks": []}
+
+    monkeypatch.setattr(masks, "run_meta_sam31", hosted)
+    grounds = []
+
+    def ground(**kwargs):
+        grounds.append(kwargs)
+        return {**target, "segmentation_prompt": "mobile pedestal"}
+
+    monkeypatch.setattr(grounding, "ground_task_target", ground)
+    resolved = masks.resolve_video_segmentation_concept(
+        target=target, tracks=[], registry=[], video={}, task_context={"confirmed": True},
+        grounding_root=tmp_path / "grounding", probe_root=tmp_path / "probes", failed_concept="cabinet")
+
+    assert resolved["segmentation_prompt"] == "mobile pedestal"
+    # Both concepts were proved on one frame; neither bought a clip, and the
+    # part match is reported to the grounding model as a part match.
+    assert concepts == ["drawers", "mobile pedestal"]
+    assert clips == []
+    assert grounds[-1]["matched_only_part"] is True
+    assert list(grounds[-1]["also_rejected"]) == ["cabinet"]
+
+
+def test_a_sub_part_concept_with_no_whole_object_alternative_refuses(tmp_path, monkeypatch):
+    from PIL import Image
+
+    from blueprint_pipeline import website_task_masks as masks, website_task_grounding as grounding
+
+    frame = tmp_path / "grounded.png"
+    Image.new("RGB", (16, 16), (255, 255, 255)).save(frame)
+    target = {"target_id": "pedestal_cabinet", "task_effect": "manipulated", "disposition": "remove",
+              "segmentation_prompt": "drawers",
+              "spatial_evidence": [{"timestamp_seconds": 5.0, "box_xywh_normalized": [0.0, 0.5, 0.5, 0.5]}],
+              "grounding": {"source_frame_id": "frame-150", "source_image_path": str(frame),
+                            "image_digest": _sha256_file(frame)}}
+    monkeypatch.setattr(masks, "run_meta_sam31", lambda **kwargs: {"tracks": [
+        {"track_id": "front", "label": "pedestal_cabinet", "observations": [
+            {"source_frame_id": "frame-150", "width": 16, "height": 16,
+             "runs": [{"start": row * 16, "length": 8} for row in range(8, 12)]}]}]})
+    proposals = iter(["drawer fronts", "drawer handles"])
+    monkeypatch.setattr(grounding, "ground_task_target",
+                        lambda **kwargs: {**target, "segmentation_prompt": next(proposals)})
+    # Every proposal names a part, so the search ends without buying a clip.
+    with pytest.raises(ValueError, match="track_ambiguous:pedestal_cabinet"):
+        masks.resolve_video_segmentation_concept(
+            target=target, tracks=[], registry=[], video={}, task_context={"confirmed": True},
+            grounding_root=tmp_path / "grounding", probe_root=tmp_path / "probes",
+            failed_concept="cabinet")
