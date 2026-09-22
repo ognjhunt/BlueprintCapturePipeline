@@ -950,8 +950,8 @@ def _resolved_scene_plan(
     )
     control = cell.get("control_diagnostic") or {}
     if control.get("mode") == "nonblocking_omitted_by_user":
-        from .native_task_arena_policy_canary_session import validate_control_omission_authority
-        from .native_task_camera_start_configuration import validate_camera_start_configuration
+        from blueprint_pipeline.native_task_arena_policy_canary_session import validate_control_omission_authority
+        from blueprint_pipeline.native_task_camera_start_configuration import validate_camera_start_configuration
         omission = validate_control_omission_authority(control.get("omission_authority") or {},
             contract_digest=task_success_contract["contract_digest"])
         camera_start = omission.get("policy_canary_camera_start_configuration")

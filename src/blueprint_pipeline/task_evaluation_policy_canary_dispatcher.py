@@ -2233,11 +2233,13 @@ def process_policy_canary_dispatch_queue(
             setups / activation_id / "task_evaluation_policy_canary_execution_setup.v1.json",
         )
         setup_path = next((path for path in setup_candidates if path.is_file()), None)
-        if setup_path is None and execution_setup_template_path is not None:
+        if setup_path is None and (execution_setup_template_path is not None or envelope.get("scene_intent_digest")):
             setup_directory = setups / activation_id
             try:
+                from .policy_canary_dispatch_template import resolve_execution_template
                 materialize_scene839873_policy_canary_setup_from_template(
-                    template_path=execution_setup_template_path,
+                    template_path=resolve_execution_template(queue_root=queue, envelope=envelope,
+                        legacy_template=execution_setup_template_path),
                     activation_envelope=envelope,
                     output_dir=setup_directory,
                 )

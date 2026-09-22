@@ -353,7 +353,7 @@ def test_real_canary_bundle_passes_vast_preflight_and_imports_in_isolation(
     )
     probe = textwrap.dedent(
         """
-        import ast, importlib, sys
+        import ast, importlib, json, sys
         runtime = sys.argv[1]
         sys.path[:0] = [runtime]
         package_modules = sys.argv[2].split(",")
@@ -362,6 +362,23 @@ def test_real_canary_bundle_passes_vast_preflight_and_imports_in_isolation(
             importlib.import_module("blueprint_pipeline." + name)
         for name in root_modules:
             importlib.import_module(name)
+        from adp_arena_provider_runner import _resolved_scene_plan
+        from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+        inputs = json.load(open(runtime + '/runtime_inputs/policy_canary_runtime_inputs.json'))
+        plan = json.load(open(runtime + '/native_task_packet/native_task_arena_scene_plan.v1.json'))
+        omission = {
+            'schema_version': 'task_evaluation_diagnostic_control_omission_authority.v1',
+            'run_kind': 'internal_policy_canary', 'claim_ceiling': 'diagnostic_policy_execution',
+            'authorized_by': 'owner', 'authorization_reference': 'explicit-user-request',
+            'omitted_controls': ['zero_action_negative', 'deterministic_scripted_positive'],
+            'source_task_success_contract_digest': 'sha256:' + 'a' * 64,
+            'result_task_success_contract_digest': inputs['task_success_contract_digest'],
+            'task_scoring_criteria_changed': False, 'qualified_comparison_permitted': False,
+        }
+        omission['authority_digest'] = canonical_digest(omission, digest_field='authority_digest')
+        cell = inputs['cells'][0]
+        cell['control_diagnostic'] = {'mode': 'nonblocking_omitted_by_user', 'omission_authority': omission}
+        _resolved_scene_plan(plan, cell, task_success_contract=inputs['task_success_contract'])
         source = open(runtime + "/adp_arena_provider_runner.py", encoding="utf-8").read()
         for node in ast.parse(source).body:
             if isinstance(node, (ast.Import, ast.ImportFrom)):
