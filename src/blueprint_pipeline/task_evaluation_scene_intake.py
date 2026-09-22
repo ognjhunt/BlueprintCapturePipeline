@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from .decision_evidence_contracts import cross_runtime_canonical_digest as canonical_digest
+from .validation_file_digests import file_digest_scope
 from .task_evaluation_scene_execution_window import effective_execution_expiry
 from .task_evaluation_scene_execution_budget import (
     ATTEMPT_GRANT_FIELD, effective_execution_budget, validate_attempt_execution_budget,
@@ -362,6 +363,7 @@ def reserve_scene_attempt(*, queue_root: str | Path, intent_id: str, attempt_id:
         return result
 
 
+@file_digest_scope()
 def scene_intent_status(*, queue_root: str | Path, intent_id: str,
                         now: float | None = None) -> dict[str, Any]:
     """Public projection from retained records; a status read never changes state."""
