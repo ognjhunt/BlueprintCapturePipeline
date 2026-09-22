@@ -898,7 +898,6 @@ def load_public_launch_profile_catalog(
     max_profiles: int = PUBLIC_LAUNCH_PROFILE_CATALOG_MAX_PROFILES,
 ) -> dict[str, Any]:
     """Load a publisher-generated catalog without exposing its filesystem path."""
-
     source_input = Path(path_value).expanduser()
     if source_input.is_symlink():
         raise TaskEvaluationLaunchError("launch_profile_public_catalog_invalid")
