@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 
 from . import task_evaluation_scene_intake as intake
@@ -40,6 +41,8 @@ def _website_team(directory, intent, setup):
     namespace formula or the mutable latest preparation-link pointer. Scanning
     retained events also keeps an older paid run deliverable after a successor.
     """
+    if intent['request']['task'].get('evaluation_source') is not None:
+        return _selected_scene_team(directory, intent, setup)
     paths = sorted((directory / 'progression-events').glob('*.json'))
     if not 1 <= len(paths) <= 10000:
         raise ValueError('owner_delivery_preparation_lineage_missing')
@@ -93,6 +96,51 @@ def _website_team(directory, intent, setup):
     if len(candidates) != 1:
         raise ValueError('owner_delivery_preparation_not_unique')
     return candidates.pop()
+
+
+def _selected_scene_team(directory, intent, setup):
+    """A team evaluates an existing capture; its intent has no creation factory."""
+    request = intent['request']
+    selected = request['task']['evaluation_source']
+    source_id = selected.get('source_launch_id')
+    if (not intake._identifier(source_id)
+            or selected.get('evaluation_run_id') != request['submission_id']
+            or source_id != setup.get('configured_source_launch_id')
+            or source_id != setup['capture_session_id']
+            or selected.get('configured_scene_revision_digest') != setup.get('scene_revision_digest')):
+        raise ValueError('owner_delivery_selected_scene_mismatch')
+    launch_root = Path(os.getenv('BLUEPRINT_TASK_EVALUATION_LAUNCH_STATE_ROOT')
+                       or directory.parent.parent/'task-evaluation-launch-runs')
+    path = launch_root/source_id/'launch_profile.json'
+    if any(p.is_symlink() for p in (path, *path.parents)):
+        raise ValueError('owner_delivery_selected_scene_unsafe')
+    profile = read_preparation_record(path, digest_field='profile_digest')
+    task_run = profile.get('task_evaluation_run') or {}
+    if (profile.get('schema_version') != 'task_evaluation_launch_profile.v1'
+            or profile['profile_digest'] != selected.get('source_profile_digest')
+            or task_run.get('run_mode') != 'scene_configuration'
+            or not intake._identifier(task_run.get('team_namespace'))
+            or task_run.get('scene_id') != setup.get('scene_id')
+            or task_run.get('task_id') != request['task']['task_id']):
+        raise ValueError('owner_delivery_selected_profile_mismatch')
+    _, clients = scene_store()
+    for path in directory.parent.glob('scene-*/intent.json'):
+        if any(p.is_symlink() for p in (path, *path.parents)):
+            raise ValueError('owner_delivery_store_unsafe')
+        original = intake._read(path, 'intent_digest')
+        if original['intent_digest'] != profile.get('scene_intent_digest'):
+            continue
+        source = intake.validate_request(original['request'], now=original['accepted_at_epoch'])
+        if (original.get('authenticated_issuer') not in clients
+                or source['owner'] != request['owner'] or source['source'] != request['source']
+                or source['task'].get('evaluation_source') is not None
+                or any(source['task'].get(k) != request['task'].get(k)
+                       for k in ('task_id', 'strategy', 'subject', 'support', 'destination', 'success', 'articulation'))):
+            raise ValueError('owner_delivery_selected_source_mismatch')
+        # The confirmed selection binds this exact source profile, including
+        # its namespace. No new-scene factory exists on the evaluation intent.
+        return task_run['team_namespace']
+    raise ValueError('owner_delivery_selected_source_missing')
 
 
 def _owner_identity(setup, runtime_inputs, run_id):
