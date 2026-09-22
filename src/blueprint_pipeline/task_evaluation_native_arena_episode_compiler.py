@@ -22,6 +22,9 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
 from .common import write_json
+from .task_evaluation_articulated_open_close_native_adapter import (
+    adapt_articulated_open_close_task_template,
+)
 from .task_evaluation_rigid_owner_contract import _derive_configured_owner_success_contract
 from .decision_evidence_contracts import canonical_digest
 from .gaussian_field_quality import (
@@ -113,6 +116,22 @@ def _runtime_subject_task_spec(value: Mapping[str, Any]) -> dict[str, Any]:
     """Derive a native-safe asset ID while retaining product identity."""
 
     task_spec = json.loads(json.dumps(dict(value)))
+    # An adapter that already bound both spellings has nothing to derive; doing
+    # it again would overwrite the product identity with the runtime name.
+    declared_source = task_spec.get("source_subject_identity")
+    if isinstance(declared_source, str) and declared_source.strip():
+        source_subject_id = declared_source
+        runtime_subject_id = re.sub(r"[^A-Za-z0-9_]", "_", source_subject_id)
+        affordance = task_spec.get("interaction_affordance")
+        if (
+            task_spec.get("subject_asset_id") != runtime_subject_id
+            or not isinstance(affordance, Mapping)
+            or affordance.get("subject_asset_id") != runtime_subject_id
+        ):
+            raise TaskEvaluationNativeArenaEpisodeCompilerError(
+                "episode_compiler_interaction_affordance_invalid"
+            )
+        return task_spec
     source_subject_id = str(task_spec.get("subject_asset_id") or "")
     runtime_subject_id = re.sub(r"[^A-Za-z0-9_]", "_", source_subject_id)
     if not runtime_subject_id or not runtime_subject_id.replace("_", "a").isalnum():
@@ -1098,10 +1117,25 @@ def compile_native_arena_episode(
         "sensors.configuration",
         "task_evaluation_native_sensor_configuration.v1",
     )
-    task_adapter = adapt_rigid_relocation_task_template(
-        request=request,
-        configured_revision=revision,
-        materialized_references=materialized_references,
+    # The configured task names its own kind; the revision-bound template and
+    # the request must agree before either adapter reads a single document.
+    articulated = str(request["task"].get("kind") or "") == "articulated_manipulation"
+    if articulated != (str(request["task"].get("strategy") or "") == "articulated_open_close"):
+        raise TaskEvaluationNativeArenaEpisodeCompilerError(
+            "episode_compiler_task_kind_strategy_mismatch"
+        )
+    task_adapter = (
+        adapt_articulated_open_close_task_template(
+            request=request,
+            configured_revision=revision,
+            materialized_references=materialized_references,
+        )
+        if articulated
+        else adapt_rigid_relocation_task_template(
+            request=request,
+            configured_revision=revision,
+            materialized_references=materialized_references,
+        )
     )
     task_definition = task_adapter["native_task_definition"]
     success = task_adapter["native_success_criteria"]
@@ -1134,7 +1168,8 @@ def compile_native_arena_episode(
             "episode_compiler_task_definition_invalid"
         )
     task_spec = dict(task_spec)
-    task_spec["subject_asset_id"] = request["task"]["subject"]["identity"]["id"]
+    if not articulated:
+        task_spec["subject_asset_id"] = request["task"]["subject"]["identity"]["id"]
     task_spec["manipulation_strategy"] = request["task"]["strategy"]
     task_spec["success_criteria"] = success.get("criteria")
     task_spec = _runtime_subject_task_spec(task_spec)
@@ -1190,7 +1225,11 @@ def compile_native_arena_episode(
             task_spec.update(
                 destination_qualification_probe=True,
             )
-    owner_contract = _derive_configured_owner_success_contract(
+    # The rigid owner contract is built from rigid predicates (lift, placement
+    # tolerance, containment). An articulated task's executable predicate is
+    # the joint interval the adapter froze from qualified geometry, so this
+    # derivation does not apply to it.
+    owner_contract = None if articulated else _derive_configured_owner_success_contract(
         task_spec, site_id=request["scene"]["identity"]["id"],
         task_id=request["task"]["identity"]["id"], team_namespace=request["team_namespace"],
     )
@@ -1291,11 +1330,23 @@ def compile_native_arena_episode(
             },
         }
         if role == "replacement":
+            # An articulated subject must spawn as an articulation and start at
+            # the closed reset the qualifier read back; a rigid spawn would
+            # leave the runtime with no joint to read or score.
+            joint_positions = (
+                dict(task_definition.get("task_object_reset_joint_positions") or {})
+                if articulated
+                else {}
+            )
+            if articulated and not joint_positions:
+                raise TaskEvaluationNativeArenaEpisodeCompilerError(
+                    "episode_compiler_articulated_reset_joints_missing"
+                )
             row.update(
                 asset_id=runtime_subject_asset_id,
                 source_asset_id=source_subject_asset_id,
-                object_type="RIGID",
-                reset_state={"root_pose_world": object_pose, "joint_positions": {}},
+                object_type="ARTICULATION" if articulated else "RIGID",
+                reset_state={"root_pose_world": object_pose, "joint_positions": joint_positions},
             )
         packet_assets.append(row)
     if destination_asset is not None:
