@@ -5,8 +5,11 @@ rehearsal path: semantic visibility alone admitted a tray with background
 ParticleField pixels breaking through its opaque surface. The completion
 artifact is `prepolicy_observation_gate/native_asset_composition_gate/composition_gate.json`.
 
-Before policy loading, the existing warmed scene captures full, appearance-only,
-and native-mesh-only passes at the exact reset external and overview cameras.
+Before policy actions, the existing warmed scene captures full and native-mesh-only
+passes at the exact reset external and overview cameras. It hides only scene
+appearance; it never authors or clears visibility on live robot or task colliders.
+The standalone attribution diagnostic retains its optional appearance-only pass;
+the coverage gate does not need that pass or claim background-distance attribution.
 The passes bind camera calibration, native state, renderer settings, lossless RGB,
 semantic IDs and metric-distance AOVs. No physics steps or policy queries occur.
 Visibility and full-scene sensor buffers are restored before returning.
@@ -35,3 +38,12 @@ Validation: the focused composition/packaging tests cover visibility restoration
 fixed state, stale buffers, native RGBA labels, interior intrusion, and preserved
 geometry/physics. The mandatory lifecycle rehearsal and isolated provider import
 closure cover the modified pre-policy worker and shipped dependency boundary.
+
+The September 22 website development rehearsal reached both policy servers and
+native camera rendering, then failed after diagnostic edits invalidated a Robotiq
+PhysX shape view. Removing robot visibility edits preserves the same full-versus-
+mesh occlusion predicate. Overview also requests metric depth, and a final camera
+refresh failure is retained alongside the original error instead of hiding it.
+CPU USD-notice tests prove native colliders receive no visibility edits; the next
+native run must still establish that the simulator failure is resolved. This is
+ADP-009D day-14/day-28 development evidence, not captured-room integration proof.

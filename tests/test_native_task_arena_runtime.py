@@ -100,6 +100,7 @@ def test_calibrated_cameras_map_to_role_neutral_native_cfg(
     # render; the policies read ``rgb`` and must get the as-is composite.
     assert "rgb_hdr" not in parameters["data_types"]
     assert parameters["data_types"][0] == "rgb"
+    assert "distance_to_camera" in parameters["data_types"]
 
 
 def test_rotation_is_converted_to_xyzw_not_legacy_wxyz() -> None:

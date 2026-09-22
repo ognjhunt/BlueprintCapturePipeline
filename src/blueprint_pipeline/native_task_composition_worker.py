@@ -90,7 +90,11 @@ def make_native_adapters(*, built, stage, request):
     )
     appearance_path = appearance["prim_path"].replace("{ENV_REGEX_NS}", env_path)
     targets = _geometry_visibility_targets(stage, env_path, appearance_path)
-    paths = sorted(set(targets["appearance"] + targets["native_meshes"]))
+    # The live coverage gate never hides native bodies. Even authoring/clearing
+    # their USD visibility opinions can invalidate PhysX articulation views.
+    paths = sorted(set(targets["appearance"] + (
+        targets["native_meshes"] if "appearance_only" in request["passes"] else []
+    )))
     session_layer = stage.GetSessionLayer()
     camera = env.scene[built.camera_scene_names[request["camera_role"]]]
     settings = carb.settings.get_settings()

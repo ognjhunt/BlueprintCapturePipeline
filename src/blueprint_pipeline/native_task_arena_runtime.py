@@ -475,11 +475,7 @@ def camera_runtime_parameters(camera: Mapping[str, Any]) -> dict[str, Any]:
         # radiance up to 60x display white (scene-839873 r13), and that clamp
         # is the exact frame ``read_policy_inputs`` hands the policies.  The
         # retained-frame HDR display encode only ever masked it for reviewers.
-        "data_types": (
-            ["rgb", "distance_to_camera", "semantic_segmentation"]
-            if role in {"external", "wrist"}
-            else ["rgb", "semantic_segmentation"]
-        ),
+        "data_types": ["rgb", "distance_to_camera", "semantic_segmentation"],
         "policy_input": bool(camera["policy_input"]),
         "review_only": bool(camera["review_only"]),
     }

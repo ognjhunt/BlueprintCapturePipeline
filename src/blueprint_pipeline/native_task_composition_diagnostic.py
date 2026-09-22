@@ -12,6 +12,7 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 REQUEST_SCHEMA = 'native_task_composition_diagnostic_request.v1'
 RESULT_SCHEMA = 'native_task_composition_diagnostic.v1'
 PASSES = ('full', 'appearance_only', 'native_meshes_only')
+COVERAGE_PASSES = ('full', 'native_meshes_only')
 
 
 class CompositionDiagnosticError(ValueError):
@@ -43,7 +44,7 @@ def verify_record(path, expected):
 def validate_request(request):
     if (request.get('schema_version') != REQUEST_SCHEMA
             or request.get('request_digest') != canonical_digest(request, digest_field='request_digest')
-            or request.get('passes') != list(PASSES)
+            or request.get('passes') not in (list(PASSES), list(COVERAGE_PASSES))
             or request.get('camera_role') not in {'external', 'overview'}
             or request.get('target_semantic_class') not in {'task_support', 'task_object', 'task_target_marker'}
             or request.get('policy_queries_permitted') != 0
@@ -115,17 +116,21 @@ def compare_pass_pixels(rows, output_root, *, target_class):
         if rgb[name].shape[:2] != mask.shape or depth[name].shape != mask.shape:
             raise CompositionDiagnosticError('composition_paired_aov_shape_mismatch')
     changed = np.any(rgb['full'] != rgb['native_meshes_only'], axis=-1) & mask
-    valid = mask & np.isfinite(depth['appearance_only']) & np.isfinite(depth['native_meshes_only'])
+    # Coverage needs only full vs mesh visibility. Background distance is an
+    # optional diagnostic; do not fabricate it when no appearance-only pass ran.
+    valid = np.zeros(mask.shape, dtype=bool)
     delta = np.full(mask.shape, np.nan, dtype=np.float32)
-    np.subtract(depth['appearance_only'], depth['native_meshes_only'], out=delta,
-                where=np.isfinite(depth['appearance_only']) & np.isfinite(depth['native_meshes_only']))
+    if 'appearance_only' in depth:
+        valid = mask & np.isfinite(depth['appearance_only']) & np.isfinite(depth['native_meshes_only'])
+        np.subtract(depth['appearance_only'], depth['native_meshes_only'], out=delta,
+                    where=np.isfinite(depth['appearance_only']) & np.isfinite(depth['native_meshes_only']))
     output = output_root / 'pixel_comparison'
     output.mkdir()
     artifacts = []
     for name, values in [('full_target_semantic_mask', mask), ('full_vs_mesh_rgb_changed', changed),
                          ('native_mesh_target_semantic_mask', mesh_mask),
                          ('mesh_target_occluded_in_full', occluded),
-                         ('appearance_minus_mesh_distance_m', delta)]:
+                         *([('appearance_minus_mesh_distance_m', delta)] if 'appearance_only' in depth else [])]:
         path = output / (name + '.npy')
         np.save(path, values, allow_pickle=False)
         artifacts.append({'relative_path': str(path.relative_to(output_root)), **file_record(path)})
@@ -133,16 +138,17 @@ def compare_pass_pixels(rows, output_root, *, target_class):
         'target_pixel_count': int(mask.sum()), 'rgb_changed_target_pixel_count': int(changed.sum()),
         'native_mesh_target_pixel_count': int(mesh_mask.sum()),
         'native_mesh_target_pixels_occluded_in_full': int(occluded.sum()),
-        'finite_paired_distance_target_pixel_count': int(valid.sum()),
-        'changed_pixels_appearance_distance_nearer': int((changed & valid & (delta < 0)).sum()),
-        'changed_pixels_appearance_distance_deeper': int((changed & valid & (delta > 0)).sum()),
-        'changed_pixels_distances_equal': int((changed & valid & (delta == 0)).sum()),
+        'appearance_distance_comparison_available': 'appearance_only' in depth,
+        'finite_paired_distance_target_pixel_count': int(valid.sum()) if 'appearance_only' in depth else None,
+        'changed_pixels_appearance_distance_nearer': int((changed & valid & (delta < 0)).sum()) if 'appearance_only' in depth else None,
+        'changed_pixels_appearance_distance_deeper': int((changed & valid & (delta > 0)).sum()) if 'appearance_only' in depth else None,
+        'changed_pixels_distances_equal': int((changed & valid & (delta == 0)).sum()) if 'appearance_only' in depth else None,
         'gaussian_distance_aov_surface_equivalence_qualified': False,
         'rgb_difference_is_not_primary_ray_contribution_proof': True, 'artifacts': artifacts}
 
 
 def run_composition_diagnostic(request, *, output_root, adapters: CompositionAdapters):
-    """Retain all three raw native passes and restore even when a capture fails."""
+    """Retain requested raw native passes and restore even when a capture fails."""
     validate_request(request)
     output_root = Path(output_root)
     if output_root.exists() and any(output_root.iterdir()):
@@ -155,7 +161,7 @@ def run_composition_diagnostic(request, *, output_root, adapters: CompositionAda
     generation = adapters.sensor_generation()
     failure = None
     try:
-        for index, label in enumerate(PASSES):
+        for index, label in enumerate(request['passes']):
             adapters.restore_visibility(visibility)
             adapters.apply_visibility(label)
             if canonical_digest(adapters.read_fixed_state()) != fixed_digest:
@@ -201,7 +207,7 @@ def run_composition_diagnostic(request, *, output_root, adapters: CompositionAda
         'policy_queries': 0,
         'physics_steps_between_passes': final_state['physics_step_index'] - baseline['physics_step_index'],
         'final_fixed_state': final_state, 'source_assets_mutated': False,
-        'metric_depth_usable_for_occlusion': len(rows) == len(PASSES) and all(row['camera']['metric_depth']['status'] == 'valid' for row in rows),
+        'metric_depth_usable_for_occlusion': len(rows) == len(request['passes']) and all(row['camera']['metric_depth']['status'] == 'valid' for row in rows),
         'pixel_cause_proven': False, 'physical_truth_claimed': False,
         'blockers': [] if failure is None else [failure]})
     (output_root / 'composition_diagnostic.json').write_text(json.dumps(result, indent=2, sort_keys=True) + '\n')
