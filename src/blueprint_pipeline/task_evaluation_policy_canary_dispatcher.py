@@ -1216,6 +1216,9 @@ def _resume_materialized_policy_canary_delivery(
     if (
         joined.get("run_kind") != RUN_KIND
         or joined.get("claim_ceiling") != CLAIM_CEILING
+        or joined.get("configuration_digest") != runtime_inputs.get("configuration_digest")
+        or (runtime_inputs.get("run_id") is not None
+            and joined.get("run_id") != runtime_inputs["run_id"])
         or joined.get("status") not in {"completed_unqualified", "blocked", "cancelled"}
         or joined.get("result_digest")
         != canonical_digest(joined, digest_field="result_digest")
@@ -1300,6 +1303,14 @@ def _resume_materialized_policy_canary_delivery(
     )
 
 
+def _has_materialized_delivery(root: Path) -> bool:
+    return all((root / name).is_file() for name in (
+        "allocator_result.json", "policy_canary_session_authority.json",
+        "policy_canary_terminal_result.json", "artifacts/result_delivery/delivery.json",
+        "bundle/native_task_arena_policy_canary_session_bundle_receipt.v1.json",
+    ))
+
+
 def dispatch_policy_canary_activation(
     *,
     activation_result_path: str | Path,
@@ -1307,6 +1318,7 @@ def dispatch_policy_canary_activation(
     output_root: str | Path,
     implementation_commit: str,
     execute: bool = False,
+    retained_delivery_only: bool = False,
     official_billing_receipt_path: str | Path | None = None,
     billing_audit_root: str | Path | None = None,
     hotfix_overlay_path: str | Path | None = None,
@@ -1379,8 +1391,13 @@ def dispatch_policy_canary_activation(
     activation_path = runtime_path.parent / ACTIVATION_FILENAME
     activation = _read(activation_path, code="policy_canary_activation_manifest_invalid")
     resource = runtime_inputs.get("resource_authority")
+    root = Path(output_root).expanduser().resolve()
+    delivery_only = retained_delivery_only or setup["source_commit"] != implementation_commit
+    # A newer controller may publish sealed old-release results, never restart
+    # their provider work. All original authority/bundle/closure checks still run.
+    retained_delivery = execute and _has_materialized_delivery(root)
     if (
-        setup["source_commit"] != implementation_commit
+        (delivery_only and not retained_delivery)
         or setup["activation_digest"] != activation["activation_digest"]
         or setup["scene_revision_digest"] != runtime_inputs.get("scene_revision_digest")
         or setup.get("task_success_contract")
@@ -1391,7 +1408,7 @@ def dispatch_policy_canary_activation(
         != runtime_inputs.get("task_success_contract")
         or activation.get("task_success_contract_digest")
         != runtime_inputs.get("task_success_contract_digest")
-        or activation_result.get("source_commit") != implementation_commit
+        or activation_result.get("source_commit") != setup["source_commit"]
         or not isinstance(resource, Mapping)
         or resource.get("user_confirmed") is not True
         or not str(resource.get("resource_name") or "").startswith(
@@ -1401,7 +1418,6 @@ def dispatch_policy_canary_activation(
         raise TaskEvaluationPolicyCanaryDispatchError(
             "policy_canary_dispatch_activation_setup_mismatch"
         )
-    root = Path(output_root).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
     _event_and_sync(
         root,
@@ -1475,6 +1491,8 @@ def dispatch_policy_canary_activation(
             authority=authority,
         )
     else:
+        if delivery_only:
+            raise TaskEvaluationPolicyCanaryDispatchError("policy_canary_retained_delivery_missing")
         bundle = build_policy_canary_session_bundle(
             job_dir=root / "bundle",
             packet_dir=Path(runtime_inputs["base_native_packet"]["path"]).parent,
@@ -1536,6 +1554,8 @@ def dispatch_policy_canary_activation(
         )
     allocator_invoked = False
     if not adapter_path.is_file():
+        if delivery_only:
+            raise TaskEvaluationPolicyCanaryDispatchError("policy_canary_retained_delivery_missing")
         if execute:
             from .task_evaluation_owner_dispatch_scope import require_owner_dispatch_scope
             require_owner_dispatch_scope(setup)
@@ -1642,6 +1662,8 @@ def dispatch_policy_canary_activation(
     )
     if resumed is not None:
         return resumed
+    if delivery_only:
+        raise TaskEvaluationPolicyCanaryDispatchError("policy_canary_retained_delivery_missing")
 
     if _proves_no_provider_allocation(adapter):
         blockers = list(adapter.get("blockers") or ["policy_canary_provider_not_allocated"])
@@ -2150,7 +2172,24 @@ def process_policy_canary_dispatch_queue(
         return blocked
 
     from .task_evaluation_owner_dispatch_scope import owner_policy_sources
-    for envelope_path in owner_policy_sources(sorted((queue / "pending").glob("*.json")))[:max_messages]:
+    sources = sorted((queue / "pending").glob("*.json"))
+    # Recover delivery stranded by a previous release check. Fresh work stays
+    # first; incomplete/provider-failed attempts are never retried here.
+    if execute:
+        for path in sorted((queue / "blocked").glob("*.json")):
+            try:
+                row = _read(path, code="policy_canary_dispatch_envelope_invalid")
+                identifier = row.get("activation_id", "")
+                if not isinstance(identifier, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,191}", identifier):
+                    continue
+                output = outputs / identifier
+                if (row.get("source_commit") != implementation_commit
+                        and not (output / "dispatch_receipt.json").exists()
+                        and _has_materialized_delivery(output)):
+                    sources.append(path)
+            except (OSError, ValueError, TypeError):
+                continue
+    for envelope_path in owner_policy_sources(sources)[:max_messages]:
         try:
             envelope = _read(
                 envelope_path,
@@ -2287,6 +2326,7 @@ def process_policy_canary_dispatch_queue(
                     output_root=output,
                     implementation_commit=implementation_commit,
                     execute=execute,
+                    retained_delivery_only=envelope_path.parent == queue / "blocked",
                     hotfix_overlay_path=hotfix_overlay_path,
                     machine_avoidlist_path=machine_avoidlist_path,
                     official_billing_receipt_path=(output / "official_billing_reconciliation.json"),
@@ -2348,6 +2388,9 @@ def process_policy_canary_dispatch_queue(
         processed.append(result)
         if (output / "dispatch_receipt.json").is_file():
             os.replace(envelope_path, queue / "completed" / envelope_path.name)
+        elif envelope_path.parent == queue / "blocked" and result.get("allocator_invoked") is False:
+            # Resume notification/readback on the normal path-triggered queue.
+            os.replace(envelope_path, queue / "pending" / envelope_path.name)
         elif (
             result.get("status") == "blocked_without_provider_allocation"
             and result.get("terminal_sync", {}).get("status") == "succeeded"
