@@ -427,6 +427,43 @@ def _explicit(status_blockers: list[str], *, state: dict) -> dict[str, Any]:
             "blockers": sorted(set(status_blockers)), "result_reference": None, "state": state}
 
 
+def _latest_attempt_directory(directory: Path, *, intent: dict, config: dict) -> Path:
+    """Keep old receipts immutable; select by the owner's reserved attempt order."""
+    runs = _safe_path(directory / "runs")
+    if not runs.is_dir():
+        return directory
+    ranked = []
+    for candidate in [directory, *sorted(runs.iterdir())]:
+        _safe_path(candidate)
+        request = _read_json(candidate / "launch_request.json")
+        profile = _read_json(candidate / "launch_profile.json")
+        if request is None and profile is None:
+            continue
+        _require(isinstance(request, dict) and isinstance(profile, dict), "attempt_bridge_incomplete")
+        binding = scene_policy.validate_binding((profile.get("internal_policy_canary_execution_plan") or {}).get("scene_policy_binding"))
+        _require(binding["scene_intent_digest"] == intent["intent_digest"]
+                 and request.get("launch_profile_digest") == profile.get("profile_digest")
+                 and profile.get("profile_digest") == canonical_digest(profile, digest_field="profile_digest"),
+                 "attempt_bridge_invalid")
+        attempt = intake._read(_safe_path(Path(config["intent_root"]) / intent["intent_id"] /
+            "attempts" / (binding["attempt_id"] + ".json")), "attempt_digest")
+        _require(attempt.get("intent_digest") == intent["intent_digest"]
+                 and attempt.get("source_commit") == request.get("source_commit") == profile.get("source_commit")
+                 and attempt.get("runtime_digest") == binding["runtime_digest"]
+                 and attempt.get("input_digest") == binding["input_digest"], "attempt_bridge_unbound")
+        if candidate != directory:
+            _require(candidate.name == hashlib.sha256(str(request.get("run_id") or "").encode()).hexdigest(),
+                     "attempt_directory_invalid")
+        reserved = attempt.get("reserved_at_epoch")
+        _require(intake._number(reserved), "attempt_order_invalid")
+        ranked.append((reserved, candidate))
+    _require(bool(ranked), "attempt_bridge_absent")
+    latest = max(row[0] for row in ranked)
+    selected = [path for reserved, path in ranked if reserved == latest]
+    _require(len(selected) == 1, "attempt_order_ambiguous")
+    return selected[0]
+
+
 def reconcile_terminal_owner_result(*, intent: dict, config: dict, release: dict, now: float,
                                     output: str | Path | None = None) -> dict[str, Any] | None:
     """Return a truthful terminal owner-status descriptor, or ``None``.
@@ -444,6 +481,7 @@ def reconcile_terminal_owner_result(*, intent: dict, config: dict, release: dict
     directory = _safe_path(Path(root) / intent["intent_id"])
     if not directory.is_dir():
         return None
+    directory = _latest_attempt_directory(directory, intent=intent, config=config)
     nonexecution = _nonexecution_owner_result(directory=directory, intent=intent)
     if nonexecution is not None:
         return nonexecution
@@ -554,6 +592,8 @@ def _derive_publication(directory: Path) -> str:
 
 def _write_join(join: dict, *, output: str | Path | None, directory: Path) -> Path:
     target_root = _safe_path(Path(output)) if output is not None else directory
+    if output is not None and directory.parent.name == "runs":
+        target_root = _safe_path(target_root / "runs" / directory.name)
     target_root.mkdir(parents=True, exist_ok=True, mode=0o750)
     path = target_root / TERMINAL_JOIN_FILENAME
     if path.exists() or path.is_symlink():

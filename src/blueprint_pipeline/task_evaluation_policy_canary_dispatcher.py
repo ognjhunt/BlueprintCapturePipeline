@@ -2180,7 +2180,7 @@ def process_policy_canary_dispatch_queue(
     # Recover delivery stranded by a previous release check. Fresh work stays
     # first; incomplete/provider-failed attempts are never retried here.
     if execute:
-        for path in sorted((queue / "blocked").glob("*.json")):
+        for path in sorted([*(queue / "blocked").glob("*.json"), *(queue / "stranded").glob("*.json")]):
             try:
                 row = _read(path, code="policy_canary_dispatch_envelope_invalid")
                 identifier = row.get("activation_id", "")
@@ -2393,7 +2393,7 @@ def process_policy_canary_dispatch_queue(
         processed.append(result)
         if (output / "dispatch_receipt.json").is_file():
             os.replace(envelope_path, queue / "completed" / envelope_path.name)
-        elif envelope_path.parent == queue / "blocked" and result.get("allocator_invoked") is False:
+        elif envelope_path.parent in (queue / "blocked", queue / "stranded") and result.get("allocator_invoked") is False:
             # Resume notification/readback on the normal path-triggered queue.
             os.replace(envelope_path, queue / "pending" / envelope_path.name)
         elif (
