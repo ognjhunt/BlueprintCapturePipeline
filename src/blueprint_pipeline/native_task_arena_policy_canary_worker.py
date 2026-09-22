@@ -579,6 +579,7 @@ def isaac_cell_runtime() -> CellRuntime:
         build_native_task_arena_environment,
     )
     from blueprint_pipeline.native_task_nurec_render_setup import (
+        camera_site_appearance_required,
         prepare_site_appearance_renderer,
     )
     from blueprint_pipeline.native_task_rtx_streaming_guard import (
@@ -709,6 +710,7 @@ def isaac_cell_runtime() -> CellRuntime:
             framing_expectations=(plan.get("task_object_observability") or {}).get(
                 "cameras"
             ),
+            site_appearance_render_expected=camera_site_appearance_required(plan),
         )
         visual = _prepolicy_visual_gate_from_snapshot(
             snapshot=snapshot,
