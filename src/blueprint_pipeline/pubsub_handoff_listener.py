@@ -30,6 +30,7 @@ from .core.security_controls import (
     strict_gcs_bucket,
     strict_identifier,
 )
+from .website_capture_entry import is_website_capture_manifest
 
 logger = logging.getLogger(__name__)
 
@@ -211,7 +212,7 @@ def _preserve_local_website_derivatives(capture_root: Path, uploaded_names: set[
     symlink; retain displaced local artifacts and their hashes under pipeline/.
     Called only by staging under the existing job lease.
     """
-    if _read_optional_json_object(capture_root / "raw/manifest.json").get("capture_source") != "browser_self_capture":
+    if not is_website_capture_manifest(_read_optional_json_object(capture_root / "raw/manifest.json")):
         return
     source = capture_root / "raw/object_index_artifacts"
     if not source.exists() and not source.is_symlink():
@@ -1297,7 +1298,7 @@ def process_handoff_payload(
             # submit a run. They cannot enter the legacy device-job converter,
             # which requires an already-built dataset and a capture-app job ID.
             raw_manifest = _read_optional_json_object(staged_capture_root / "raw" / "manifest.json")
-            website_capture = raw_manifest.get("capture_source") == "browser_self_capture"
+            website_capture = is_website_capture_manifest(raw_manifest)
             run_kwargs: dict[str, Any] = {
                 "capture_root": str(staged_capture_root),
                 "provider": provider,

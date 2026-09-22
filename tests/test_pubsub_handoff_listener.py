@@ -1174,6 +1174,64 @@ def test_website_upload_runs_preparation_before_legacy_robot_job_conversion(tmp_
     assert "robot_eval_job_request" not in calls[0]
 
 
+def test_app_filmed_site_capture_runs_website_preparation_not_device_job_conversion(tmp_path: Path) -> None:
+    prefix = "scenes/site-req-1/captures/walkthrough-req-1"
+    manifest = {
+        "scene_id": "site-req-1", "capture_id": "walkthrough-req-1",
+        "capture_source": "iphone", "capture_profile_id": "iphone_arkit_lidar",
+        "site_submission_id": "req-1",
+        "site_self_capture": {
+            "schema_version": "site_self_capture.v1", "authored_by": "blueprint_webapp",
+            "site_filmed_itself": True, "capture_job_exists": False,
+            "request_id": "req-1", "client": "ios_app_clip",
+        },
+    }
+    client = FakeStorageClient([
+        FakeBlob(f"{prefix}/raw/manifest.json", json.dumps(manifest).encode()),
+        FakeBlob(f"{prefix}/raw/capture_upload_complete.json", b"{}"),
+        FakeBlob(f"{prefix}/raw/walkthrough.mov", b"video"),
+    ])
+    calls = []
+
+    def prepare(**kwargs):
+        calls.append(kwargs)
+        return {"status": "completed"}
+
+    payload = {"bucket": "capture-bucket", "scene_id": "site-req-1", "capture_id": "walkthrough-req-1",
+               "raw_prefix_uri": f"gs://capture-bucket/{prefix}/raw"}
+    result = process_handoff_payload(payload, storage_root=tmp_path, provider="openai", run_e2e=prepare,
+                                     storage_client=client, stage_control_plane=True, run_e2e_enabled=False)
+    assert result["status"] == "processed"
+    assert result["control_plane_staging"] is None
+    assert len(calls) == 1
+    assert calls[0]["pipeline_lane"] == "qualification"
+    assert calls[0]["run_evaluation_prep"] is False
+
+
+def test_forged_site_marker_does_not_leave_the_device_lane(tmp_path: Path) -> None:
+    prefix = "scenes/site-req-1/captures/walkthrough-req-1"
+    manifest = {
+        "scene_id": "site-req-1", "capture_id": "walkthrough-req-1",
+        "capture_source": "iphone", "site_submission_id": "req-1",
+        "site_self_capture": {"schema_version": "site_self_capture.v1", "authored_by": "ios_app_clip",
+                              "site_filmed_itself": True, "capture_job_exists": False, "request_id": "req-1"},
+    }
+    client = FakeStorageClient([
+        FakeBlob(f"{prefix}/raw/manifest.json", json.dumps(manifest).encode()),
+        FakeBlob(f"{prefix}/raw/capture_upload_complete.json", b"{}"),
+        FakeBlob(f"{prefix}/raw/walkthrough.mov", b"video"),
+    ])
+    calls = []
+    payload = {"bucket": "capture-bucket", "scene_id": "site-req-1", "capture_id": "walkthrough-req-1",
+               "raw_prefix_uri": f"gs://capture-bucket/{prefix}/raw"}
+    result = process_handoff_payload(payload, storage_root=tmp_path, provider="openai",
+                                     run_e2e=lambda **kwargs: calls.append(kwargs) or {"status": "completed"},
+                                     storage_client=client, stage_control_plane=False, run_e2e_enabled=False)
+    # Device lane with the e2e run disabled: nothing is prepared as a website capture.
+    assert calls == []
+    assert result["status"] != "failed"
+
+
 def test_partial_pipeline_failures_are_not_acknowledged_as_success():
     disposition, blockers = listener_module._handoff_result_disposition({
         "pipeline_status": "completed_with_lane_failures", "final_bundle_path": "exists"})

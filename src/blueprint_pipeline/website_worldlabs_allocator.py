@@ -12,6 +12,7 @@ from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .provider_preview import WorldLabsPreviewProvider
 from .website_worldlabs import validate_website_prepared_views, validate_website_reconstruction_admission
+from .website_capture_entry import is_website_entry_source
 
 
 def run_website_worldlabs(args: Any, *, load_json: Callable[..., Any],
@@ -25,7 +26,7 @@ def run_website_worldlabs(args: Any, *, load_json: Callable[..., Any],
             raise ValueError("website_reconstruction_inputs_missing")
         descriptor = load_json(Path(args.descriptor).expanduser().resolve())
         capture_root = Path(args.capture_root).expanduser().resolve()
-        if (descriptor.get("metadata") or {}).get("capture_entry_source") != "browser_self_capture":
+        if not is_website_entry_source((descriptor.get("metadata") or {}).get("capture_entry_source")):
             raise ValueError("website_reconstruction_entry_source_invalid")
         _, binding = validate_website_prepared_views(descriptor=descriptor, capture_root=capture_root)
         admission = descriptor["metadata"].get("website_reconstruction_admission") or {}
