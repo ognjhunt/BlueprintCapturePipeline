@@ -489,6 +489,12 @@ def test_policy_canary_activation_materializes_single_session_runtime_inputs(
     }
     assert all(cell["control_diagnostic"] == runtime_inputs["cells"][0]["control_diagnostic"]
                for cell in runtime_inputs["cells"])
+    from blueprint_pipeline.native_policy_canary_diagnostic_continuation import validate_diagnostic_continuation_protocol
+    continuation = validate_diagnostic_continuation_protocol(runtime_inputs)
+    assert (continuation is not None) is omit_controls
+    if continuation is not None:
+        assert continuation["action_admission_changed"] is False
+        assert continuation["qualified_comparison_permitted"] is False
 
 
 def test_configured_revision_rights_substitution_blocks_before_activation(

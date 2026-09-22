@@ -1483,12 +1483,11 @@ def _policy_campaign_activation_result(
             },
             "runtime_inputs_digest": "",
         }
-        runtime_inputs["runtime_inputs_digest"] = canonical_digest(
-            runtime_inputs, digest_field="runtime_inputs_digest"
-        )
-        runtime_inputs_path = (
-            activation_root / "task_evaluation_policy_canary_runtime_inputs.v1.json"
-        )
+        runtime_inputs["runtime_inputs_digest"] = canonical_digest(runtime_inputs, digest_field="runtime_inputs_digest")
+        if control_diagnostic["mode"] == "nonblocking_omitted_by_user":
+            from .native_policy_canary_diagnostic_continuation import bind_diagnostic_continuation_protocol
+            runtime_inputs = bind_diagnostic_continuation_protocol(runtime_inputs)
+        runtime_inputs_path = activation_root / "task_evaluation_policy_canary_runtime_inputs.v1.json"
         write_launch_preparation_record_exclusive(runtime_inputs_path, runtime_inputs)
         website_request_digest_value = preparation_request[
             "policy_run_configuration"
