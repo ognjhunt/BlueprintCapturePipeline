@@ -1174,8 +1174,9 @@ def test_dispatcher_refuses_absent_scene839873_setup_before_allocator(
 
 
 @pytest.mark.parametrize("missing", [None, "allocator_result.json", "artifacts/result_delivery/delivery.json"])
-@pytest.mark.parametrize("from_blocked_queue", [False, True])
-def test_release_change_resumes_only_sealed_delivery_without_allocator(tmp_path, monkeypatch, missing, from_blocked_queue):
+@pytest.mark.parametrize("queue_state", [None, "blocked", "stranded"])
+@pytest.mark.parametrize("readback_pending", [False, True])
+def test_release_change_resumes_only_sealed_delivery_without_allocator(tmp_path, monkeypatch, missing, queue_state, readback_pending):
     from blueprint_pipeline import task_evaluation_policy_canary_dispatcher as dispatcher
 
     activation_result, setup_path, activation_path = _inputs(tmp_path)
@@ -1205,7 +1206,11 @@ def test_release_change_resumes_only_sealed_delivery_without_allocator(tmp_path,
         output_root=root, implementation_commit="b" * 40, execute=True,
         allocator_runner=lambda _argv: pytest.fail("must not allocate after release change"),
         sync_runner=_echoing_website(monkeypatch), progress_sync_runner=lambda **_kwargs: {"status": "succeeded"})
-    if from_blocked_queue:
+    if readback_pending:
+        from blueprint_pipeline import task_evaluation_owner_delivery_readback as owner_delivery
+        monkeypatch.setattr(owner_delivery, "verify_owner_policy_delivery",
+            lambda **kwargs: {"status": "pending", "blockers": ["policy_canary_owner_delivery_readback_pending"]})
+    if queue_state:
         queue = tmp_path / "queue"
         for name in ("pending", "processing", "completed", "blocked"):
             (queue / name).mkdir(parents=True)
@@ -1218,7 +1223,7 @@ def test_release_change_resumes_only_sealed_delivery_without_allocator(tmp_path,
             "provider_mutation_performed": False, "paid_execution_requested": False,
         }
         envelope["envelope_digest"] = canonical_digest(envelope, digest_field="envelope_digest")
-        pending = _write(queue / "blocked" / "retained.json", envelope)
+        pending = _write(queue / queue_state / "retained.json", envelope)
         setups = tmp_path / "setups"
         _write(setups / f"{root.name}.json", json.loads(setup_path.read_text()))
         def resume(**queue_kwargs):
@@ -1230,7 +1235,7 @@ def test_release_change_resumes_only_sealed_delivery_without_allocator(tmp_path,
         assert receipt["processed_count"] == (0 if missing else 1)
         assert pending.exists() is bool(missing)
         if not missing:
-            assert (queue / "completed" / pending.name).exists()
+            assert (queue / ("pending" if readback_pending else "completed") / pending.name).exists()
         assert run["joined_path"].read_bytes() == original
         return
     if missing:
@@ -1238,7 +1243,7 @@ def test_release_change_resumes_only_sealed_delivery_without_allocator(tmp_path,
             dispatch_policy_canary_activation(**kwargs)
     else:
         receipt = dispatch_policy_canary_activation(**kwargs)
-        assert receipt["status"] == "blocked"
+        assert receipt["status"] == ("awaiting_website_download_readback" if readback_pending else "blocked")
         assert receipt["allocator_invoked"] is False
         assert run["joined_path"].read_bytes() == original
 

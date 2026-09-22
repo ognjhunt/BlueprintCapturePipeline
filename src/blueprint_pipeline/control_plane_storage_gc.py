@@ -579,6 +579,12 @@ def build_stranded_queue_manifest(
             if not isinstance(document, Mapping):
                 retained["unsafe"] += 1
                 continue
+            # The dispatcher may still be delivering a completed older run.
+            # It owns release admission and retirement of these queue entries;
+            # moving one here can strand a live, resumable download readback.
+            if document.get("schema_version") == "task_evaluation_policy_canary_dispatch_envelope.v1":
+                retained["owner_managed_delivery"] = retained.get("owner_managed_delivery", 0) + 1
+                continue
             bound = _row_bound_commit(document)
             if not bound:
                 retained["unbound"] += 1
