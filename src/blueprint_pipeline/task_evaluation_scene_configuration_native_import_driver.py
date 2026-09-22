@@ -7,7 +7,7 @@ import json
 import math
 import os
 from collections.abc import Callable, Mapping, Sequence
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
@@ -138,6 +138,27 @@ def _live_pose(omni_physx: Any, prim_path: str) -> tuple[list[float], list[float
     return position, rotation
 
 
+#: A passive drawer may creep a little under gravity while its slide friction
+#: settles; more than this at the closed reset is a start state a policy would
+#: begin from without the part actually being shut.
+TASK_JOINT_RESET_TOLERANCE = 0.005
+
+
+def _live_joint_position(omni_physx: Any, joint_prim_path: str) -> float | None:
+    """Read the task joint's own coordinate from PhysX, never from a caller claim."""
+
+    interface = omni_physx.get_physx_interface()
+    for name in ("get_joint_state", "get_joint_position"):
+        reader = getattr(interface, name, None)
+        if not callable(reader):
+            continue
+        state = reader(joint_prim_path)
+        value = state.get("position") if hasattr(state, "get") else state
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value)):
+            return float(value)
+    return None
+
+
 def _subscribe_body_contact_reports(
     *,
     omni_physx: Any,
@@ -166,11 +187,77 @@ def _subscribe_body_contact_reports(
     return interface.subscribe_contact_report_events(_on_contact_report)
 
 
+def _articulated_joint_observation(
+    *, stage: Any, usd_physics: Any, root_path: str
+) -> dict[str, Any]:
+    """Read the one task joint from the staged bytes, before physics runs.
+
+    The qualifier that admitted this asset proved there is exactly one movable
+    joint with finite limits and a closed reset. Re-derive that from the
+    imported stage so the native receipt names the joint the runtime will read,
+    and refuse a drive that could open the part without the robot.
+    """
+
+    joints = [
+        prim
+        for prim in stage.Traverse()
+        if str(prim.GetPath()).startswith(root_path)
+        and prim.IsA(usd_physics.Joint)
+    ]
+    movable = [prim for prim in joints if not prim.IsA(usd_physics.FixedJoint)]
+    if len(movable) != 1:
+        raise RuntimeError("scene_configuration_native_import_single_task_joint_required")
+    joint = movable[0]
+    if joint.IsA(usd_physics.PrismaticJoint):
+        typed, joint_type = usd_physics.PrismaticJoint(joint), "prismatic"
+    elif joint.IsA(usd_physics.RevoluteJoint):
+        typed, joint_type = usd_physics.RevoluteJoint(joint), "revolute"
+    else:
+        raise RuntimeError("scene_configuration_native_import_task_joint_type_unsupported")
+    lower, upper = typed.GetLowerLimitAttr().Get(), typed.GetUpperLimitAttr().Get()
+    if joint_type == "revolute" and lower is not None and upper is not None:
+        lower, upper = math.radians(float(lower)), math.radians(float(upper))
+    if (
+        lower is None
+        or upper is None
+        or not math.isfinite(float(lower))
+        or not math.isfinite(float(upper))
+        or float(lower) >= float(upper)
+    ):
+        raise RuntimeError("scene_configuration_native_import_task_joint_limits_invalid")
+    for name in ("linear", "angular"):
+        if joint.HasAPI(usd_physics.DriveAPI, name):
+            stiffness = usd_physics.DriveAPI(joint, name).GetStiffnessAttr().Get()
+            if stiffness is not None and float(stiffness) > 0.0:
+                raise RuntimeError(
+                    "scene_configuration_native_import_task_joint_drive_forbidden"
+                )
+    reset = joint.GetCustomDataByKey("blueprint:resetPosition")
+    if (
+        not isinstance(reset, (int, float))
+        or isinstance(reset, bool)
+        or not float(lower) <= float(reset) <= float(upper)
+    ):
+        raise RuntimeError("scene_configuration_native_import_task_joint_reset_invalid")
+    return {
+        "task_joint_prim_path": str(joint.GetPath()),
+        "task_joint_name": PurePosixPath(str(joint.GetPath())).name,
+        "task_joint_type": joint_type,
+        "task_joint_limits": [float(lower), float(upper)],
+        "task_joint_reset_position": float(reset),
+        "fixed_joint_prim_paths": sorted(
+            str(prim.GetPath()) for prim in joints if prim.IsA(usd_physics.FixedJoint)
+        ),
+        "task_joint_drive_forbidden_verified": True,
+    }
+
+
 def _one_native_settle(
     *,
     asset_path: Path,
     duration_seconds: float,
     timestep_seconds: float,
+    articulated: bool = False,
 ) -> dict[str, Any]:
     import omni.physx as omni_physx  # type: ignore
     import omni.usd  # type: ignore
@@ -229,9 +316,35 @@ def _one_native_settle(
     collision_paths = [
         str(prim.GetPath()) for prim in stage.Traverse() if prim.HasAPI(UsdPhysics.CollisionAPI)
     ]
-    if len(rigid_paths) != 1 or not collision_paths:
+    articulation_paths = [
+        str(prim.GetPath())
+        for prim in stage.Traverse()
+        if prim.HasAPI(UsdPhysics.ArticulationRootAPI)
+    ]
+    joint_observation: dict[str, Any] = {}
+    if articulated:
+        # An assembly has one articulation root over several dynamic links; the
+        # settle is measured on the link the anchor grounds, not on a lone body.
+        if len(articulation_paths) != 1 or len(rigid_paths) < 2 or not collision_paths:
+            raise RuntimeError("scene_configuration_native_import_structure_invalid")
+        joint_observation = _articulated_joint_observation(
+            stage=stage, usd_physics=UsdPhysics, root_path=str(replacement.GetPath())
+        )
+        task_joint_path = joint_observation["task_joint_prim_path"]
+        moving_targets = UsdPhysics.Joint(
+            stage.GetPrimAtPath(task_joint_path)
+        ).GetBody1Rel().GetTargets()
+        moving_link_path = str(moving_targets[0]) if len(moving_targets) == 1 else ""
+        if moving_link_path not in rigid_paths:
+            raise RuntimeError("scene_configuration_native_import_task_joint_body_invalid")
+        joint_observation["moving_link_prim_path"] = moving_link_path
+        # Measure settling on a link the task joint does not move, so a drawer
+        # that slides open on its own cannot read as a stable assembly.
+        body_path = next(path for path in sorted(rigid_paths) if path != moving_link_path)
+    elif len(rigid_paths) != 1 or not collision_paths:
         raise RuntimeError("scene_configuration_native_import_structure_invalid")
-    body_path = rigid_paths[0]
+    else:
+        body_path = rigid_paths[0]
     body = stage.GetPrimAtPath(body_path)
     contact_api = PhysxSchema.PhysxContactReportAPI.Apply(body)
     contact_api.CreateThresholdAttr().Set(0.0)
@@ -280,10 +393,25 @@ def _one_native_settle(
         "position_m": [round(value, 7) for value in final_position],
         "orientation_xyzw": [round(value, 7) for value in final_rotation],
     }
+    if articulated:
+        # The joint must still be at its closed reset after the settle: a
+        # passive drawer that crept open under gravity is not a usable start.
+        observed_joint = _live_joint_position(
+            omni_physx, joint_observation["task_joint_prim_path"]
+        )
+        joint_observation["settled_task_joint_position"] = observed_joint
+        joint_observation["task_joint_returned_to_reset"] = (
+            observed_joint is not None
+            and abs(float(observed_joint) - joint_observation["task_joint_reset_position"])
+            <= TASK_JOINT_RESET_TOLERANCE
+        )
     return {
         "asset_imported": True,
         "rigid_body_paths": rigid_paths,
+        "articulation_root_paths": articulation_paths,
+        "settle_measured_body_prim_path": body_path,
         "collision_paths": collision_paths,
+        **({"task_joint": joint_observation} if articulated else {}),
         "support_contact_observed": contact_event_count[0] > 0,
         "contact_report_event_count": contact_event_count[0],
         "settle_translation_m": translation,
@@ -303,6 +431,7 @@ def _run_native_import(
     required_checks: Mapping[str, Any],
     observation_consumer: NativeObservationConsumer,
     destination_asset_path: Path | None = None,
+    articulated: bool = False,
 ) -> dict[str, Any]:
     # Isaac allows one SimulationApp per process, so a supplemental destination
     # is settled inside the same session right after the subject replacement.
@@ -318,6 +447,7 @@ def _run_native_import(
                 asset_path=asset_path,
                 duration_seconds=duration,
                 timestep_seconds=1.0 / 60.0,
+                articulated=articulated,
             )
             for _ in range(repeat_count)
         ]
@@ -378,6 +508,9 @@ def execute_native_import_component(
         raise TaskEvaluationSceneConfigurationNativeImportDriverError(
             "scene_configuration_native_import_input_invalid"
         )
+    # An articulated assembly declares its kind on the stage-5 configuration
+    # that stage_five_configuration emitted; the rigid path is unchanged.
+    articulated = configuration.get("asset_kind") == "articulated_assembly"
     asset_record, asset_path = _artifact(
         dependencies, role="statically_qualified_replacement_asset"
     )
@@ -409,7 +542,9 @@ def execute_native_import_component(
             "scene_configuration_native_import_destination_dependency_invalid"
         )
 
-    def _qualified_repeats(repeats: Any, *, code: str) -> tuple[list[str], float, float]:
+    def _qualified_repeats(
+        repeats: Any, *, code: str, articulated: bool = False
+    ) -> tuple[list[str], float, float]:
         if not isinstance(repeats, list) or len(repeats) != 3:
             raise TaskEvaluationSceneConfigurationNativeImportDriverError(code)
         state_digests = [str(row.get("final_state_digest") or "") for row in repeats]
@@ -417,11 +552,35 @@ def execute_native_import_component(
             float(row.get("settle_translation_m", math.inf)) for row in repeats
         )
         maximum_rotation = max(float(row.get("settle_rotation_rad", math.inf)) for row in repeats)
+        if articulated:
+            # An assembly qualifies on its links plus its one task joint: the
+            # joint has to be readable, limited, undriven, and closed at reset.
+            joints = [row.get("task_joint") for row in repeats]
+            structure_ok = (
+                all(len(row.get("rigid_body_paths") or []) >= 2 for row in repeats)
+                and all(len(row.get("articulation_root_paths") or []) == 1 for row in repeats)
+                and all(isinstance(joint, Mapping) for joint in joints)
+                and len({str((joint or {}).get("task_joint_prim_path") or "") for joint in joints}) == 1
+                and all(str((joint or {}).get("task_joint_prim_path") or "") for joint in joints)
+                and all(
+                    (joint or {}).get("task_joint_drive_forbidden_verified") is True
+                    for joint in joints
+                )
+                and all((joint or {}).get("task_joint_returned_to_reset") is True for joint in joints)
+                and all(
+                    len((joint or {}).get("task_joint_limits") or []) == 2
+                    and float((joint or {}).get("task_joint_limits")[0])
+                    < float((joint or {}).get("task_joint_limits")[1])
+                    for joint in joints
+                )
+            )
+        else:
+            structure_ok = all(len(row.get("rigid_body_paths") or []) == 1 for row in repeats)
         qualified = (
             len(set(state_digests)) == 1
             and all(row.get("asset_imported") is True for row in repeats)
             and all(row.get("support_contact_observed") is True for row in repeats)
-            and all(len(row.get("rigid_body_paths") or []) == 1 for row in repeats)
+            and structure_ok
             and all(bool(row.get("collision_paths")) for row in repeats)
             and maximum_translation <= float(checks["maximum_settle_translation_m"])
             and maximum_rotation <= float(checks["maximum_settle_rotation_rad"])
@@ -475,6 +634,22 @@ def execute_native_import_component(
             "blockers": [],
             "result_digest": "",
         }
+        if articulated and repeats and isinstance(repeats[0], Mapping):
+            joint = dict(repeats[0].get("task_joint") or {})
+            runtime_result.update(
+                asset_kind="articulated_assembly",
+                task_joint_readback={
+                    key: joint.get(key)
+                    for key in (
+                        "task_joint_prim_path", "task_joint_name", "task_joint_type",
+                        "task_joint_limits", "task_joint_reset_position",
+                        "moving_link_prim_path", "fixed_joint_prim_paths",
+                    )
+                },
+                task_joint_drive_forbidden_verified=True,
+                task_joint_closed_at_reset_verified=True,
+                task_joint_travel_is_measured=False,
+            )
         runtime_result["result_digest"] = canonical_digest(
             runtime_result, digest_field="result_digest"
         )
@@ -502,7 +677,8 @@ def execute_native_import_component(
             )
         repeats = observed.get("repeats")
         state_digests, maximum_translation, maximum_rotation = _qualified_repeats(
-            repeats, code="scene_configuration_native_import_execution_invalid"
+            repeats, code="scene_configuration_native_import_execution_invalid",
+            articulated=articulated,
         )
         artifacts = [
             _write_artifact(
@@ -569,6 +745,10 @@ def execute_native_import_component(
         "required_checks": checks,
         "observation_consumer": _seal_observation,
     }
+    if articulated:
+        # Only pass the flag for an articulated asset, so an existing rigid
+        # runner double without the parameter keeps working unchanged.
+        runner_arguments["articulated"] = True
     if destination_asset_path is not None:
         runner_arguments["destination_asset_path"] = destination_asset_path
     return dict(native_runner(**runner_arguments))

@@ -418,3 +418,135 @@ def test_native_driver_refuses_a_declared_destination_without_stage4_artifacts(
             native_runner=runner,
         )
     assert executed is False
+
+
+def _articulated_environment(tmp_path: Path) -> dict[str, str]:
+    from blueprint_pipeline.task_evaluation_scene_configuration_submission_records import (
+        stage_five_configuration,
+    )
+    environment = _environment(tmp_path)
+    stage_input_path = Path(environment["BLUEPRINT_SCENE_CONFIGURATION_STAGE_INPUT"])
+    stage_input = json.loads(stage_input_path.read_text())
+    stage_input["configuration"] = {
+        **stage_five_configuration(replacement_identity={"id": "cabinet", "version": "v1"},
+                                   articulated=True),
+        "schema_version": "replacement_native_import_qualification_configuration.v1",
+    }
+    stage_input_path.write_text(json.dumps(stage_input), encoding="utf-8")
+    return environment
+
+
+def _articulated_observed(**overrides) -> dict:
+    joint = {
+        "task_joint_prim_path": "/World/Placement/Replacement/joints/task_part_joint",
+        "task_joint_name": "task_part_joint", "task_joint_type": "prismatic",
+        "task_joint_limits": [0.0, 0.32], "task_joint_reset_position": 0.0,
+        "moving_link_prim_path": "/World/Placement/Replacement/links/drawer_1",
+        "fixed_joint_prim_paths": ["/World/Placement/Replacement/joints/drawer_0_fixed"],
+        "task_joint_drive_forbidden_verified": True,
+        "settled_task_joint_position": 0.0, "task_joint_returned_to_reset": True,
+        **overrides,
+    }
+    repeats = []
+    for _ in range(3):
+        state = {"position_m": [0.0, 0.0, 0.31], "orientation_xyzw": [0, 0, 0, 1]}
+        repeats.append({
+            "asset_imported": True,
+            "rigid_body_paths": ["/World/Placement/Replacement/links/carcass",
+                                 "/World/Placement/Replacement/links/drawer_0",
+                                 "/World/Placement/Replacement/links/drawer_1"],
+            "articulation_root_paths": ["/World/Placement/Replacement"],
+            "settle_measured_body_prim_path": "/World/Placement/Replacement/links/carcass",
+            "collision_paths": ["/World/Placement/Replacement/links/carcass/collision/FinalVisualShape"],
+            "task_joint": dict(joint),
+            "support_contact_observed": True, "contact_report_event_count": 7,
+            "settle_translation_m": 0.001, "settle_rotation_rad": 0.002,
+            "final_state": state, "final_state_digest": canonical_digest(state),
+        })
+    return {"runtime_identity": {"engine_version": "6.0.1"}, "repeats": repeats}
+
+
+def test_articulated_assembly_qualifies_on_links_and_its_one_task_joint(tmp_path: Path) -> None:
+    environment = _articulated_environment(tmp_path)
+    captured: dict = {}
+
+    def runner(*, observation_consumer, **kwargs):
+        captured.update(kwargs)
+        return observation_consumer(_articulated_observed())
+
+    result = execute_native_import_component(environment=environment, native_runner=runner)
+    assert captured["articulated"] is True
+    artifact = next(row for row in result["artifacts"] if row["role"] == "native_import_runtime_result")
+    runtime = json.loads(Path(artifact["path"]).read_text())
+    assert runtime["status"] == "qualified" and runtime["asset_kind"] == "articulated_assembly"
+    assert runtime["native_simulator_import_qualified"] is True
+    assert runtime["task_joint_readback"]["task_joint_name"] == "task_part_joint"
+    assert runtime["task_joint_readback"]["task_joint_limits"] == [0.0, 0.32]
+    assert runtime["task_joint_drive_forbidden_verified"] is True
+    assert runtime["task_joint_closed_at_reset_verified"] is True
+    assert runtime["task_joint_travel_is_measured"] is False
+    assert runtime["evaluation_episode_executed"] is False
+
+
+@pytest.mark.parametrize("mutation", [
+    {"task_joint_returned_to_reset": False},
+    {"task_joint_drive_forbidden_verified": False},
+    {"task_joint_limits": [0.0, 0.0]},
+])
+def test_articulated_qualification_refuses_a_crept_driven_or_unlimited_joint(
+    tmp_path: Path, mutation: dict
+) -> None:
+    environment = _articulated_environment(tmp_path)
+    runner = _native_runner(_articulated_observed(**mutation))
+    with pytest.raises(TaskEvaluationSceneConfigurationNativeImportDriverError,
+                       match="native_import_qualification_failed"):
+        execute_native_import_component(environment=environment, native_runner=runner)
+
+
+def test_a_single_rigid_body_cannot_satisfy_the_articulated_gate(tmp_path: Path) -> None:
+    """A rigid solid presented for an articulated stage has no joint to read."""
+    environment = _articulated_environment(tmp_path)
+    with pytest.raises(TaskEvaluationSceneConfigurationNativeImportDriverError,
+                       match="native_import_qualification_failed"):
+        execute_native_import_component(environment=environment,
+                                        native_runner=_native_runner(_observed()))
+
+
+def test_rigid_stage_still_refuses_an_articulated_observation(tmp_path: Path) -> None:
+    """The rigid gate keeps its exactly-one-body rule."""
+    with pytest.raises(TaskEvaluationSceneConfigurationNativeImportDriverError,
+                       match="native_import_qualification_failed"):
+        execute_native_import_component(environment=_environment(tmp_path),
+                                        native_runner=_native_runner(_articulated_observed()))
+
+
+def test_native_settle_reads_the_task_joint_and_refuses_a_driven_one() -> None:
+    """The in-Isaac joint read is exercised here against a stage, not on a rented GPU."""
+    from pxr import Usd, UsdGeom, UsdPhysics
+    from blueprint_pipeline.task_evaluation_scene_configuration_native_import_driver import (
+        _articulated_joint_observation,
+    )
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.Xform.Define(stage, "/World/Placement/Replacement")
+    for name in ("carcass", "drawer_1"):
+        UsdPhysics.RigidBodyAPI.Apply(
+            UsdGeom.Xform.Define(stage, f"/World/Placement/Replacement/links/{name}").GetPrim())
+    task = UsdPhysics.PrismaticJoint.Define(stage, "/World/Placement/Replacement/joints/task_part_joint")
+    task.CreateAxisAttr("X")
+    task.CreateLowerLimitAttr(0.0)
+    task.CreateUpperLimitAttr(0.32)
+    task.GetPrim().SetCustomDataByKey("blueprint:resetPosition", 0.0)
+    UsdPhysics.FixedJoint.Define(stage, "/World/Placement/Replacement/joints/drawer_0_fixed")
+    observed = _articulated_joint_observation(
+        stage=stage, usd_physics=UsdPhysics, root_path="/World/Placement/Replacement")
+    assert observed["task_joint_name"] == "task_part_joint"
+    assert observed["task_joint_type"] == "prismatic"
+    # USD stores the limit as float32; the readback keeps the stage's own value.
+    assert observed["task_joint_limits"][0] == 0.0
+    assert observed["task_joint_limits"][1] == pytest.approx(0.32, abs=1e-6)
+    assert observed["fixed_joint_prim_paths"] == ["/World/Placement/Replacement/joints/drawer_0_fixed"]
+    assert observed["task_joint_drive_forbidden_verified"] is True
+    UsdPhysics.DriveAPI.Apply(task.GetPrim(), "linear").CreateStiffnessAttr().Set(250.0)
+    with pytest.raises(RuntimeError, match="task_joint_drive_forbidden"):
+        _articulated_joint_observation(stage=stage, usd_physics=UsdPhysics,
+                                       root_path="/World/Placement/Replacement")
