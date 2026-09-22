@@ -9,7 +9,7 @@ from pathlib import Path
 import re
 import subprocess
 import tempfile
-from typing import Any, Mapping, NamedTuple, Sequence
+from typing import Any, Mapping, Sequence
 from urllib.error import HTTPError
 from urllib.request import Request
 
@@ -151,54 +151,9 @@ def prepare_continuous_video(*, source: Path, source_digest: str, root: Path) ->
     return rows, video
 
 
-class _MaskPayload(NamedTuple):
-    """The four fields the parser's decoder reads, in a form a worker can carry."""
-
-    encoding: str
-    width: int
-    height: int
-    payload: str
-
-
-def _decode_mask_payload(mask: _MaskPayload) -> bytes:
-    from meta_sam_parser import decode_mask_to_raster
-
-    return decode_mask_to_raster(mask)
-
-
-#: Decoding is per pixel in Python and proves canonicality by re-encoding, so a
-#: clip of large masks is the longest CPU stage in the capture lane: 54 megapixels
-#: of backpack took 34 minutes on the shared host. Below this the pool costs more
-#: than it saves.
-PARALLEL_DECODE_PIXEL_FLOOR = 4_000_000
-MAXIMUM_DECODE_WORKERS = 4
-
-
-def _decode_masks(masks: Sequence[_MaskPayload]) -> list[bytes]:
-    """Decode every mask, across processes when there is enough work to justify it.
-
-    Each decode is a pure function of its own payload, so the result does not
-    depend on how the work was divided. A pool that cannot start is not a
-    failure: the same masks decode serially and the caller cannot tell.
-    """
-    if len(masks) < 2 or sum(mask.width * mask.height for mask in masks) < PARALLEL_DECODE_PIXEL_FLOOR:
-        return [_decode_mask_payload(mask) for mask in masks]
-    import multiprocessing
-    from concurrent.futures import ProcessPoolExecutor
-
-    workers = max(1, min(MAXIMUM_DECODE_WORKERS, os.cpu_count() or 1, len(masks)))
-    try:
-        # Spawn, not fork: this runs inside a service that already holds threads.
-        with ProcessPoolExecutor(max_workers=workers,
-                                 mp_context=multiprocessing.get_context("spawn")) as pool:
-            return list(pool.map(_decode_mask_payload, masks, chunksize=1))
-    except Exception:
-        return [_decode_mask_payload(mask) for mask in masks]
-
-
 def parse_tracks(response: Mapping[str, Any], *, prompt: Mapping[str, Any],
                  registry: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    from meta_sam_parser import CompletedOutcome, video_segmentation_format
+    from meta_sam_parser import CompletedOutcome, decode_mask_to_raster, video_segmentation_format
 
     if response.get("status") != "completed":
         raise ValueError("meta_sam_response_incomplete")
@@ -217,7 +172,6 @@ def parse_tracks(response: Mapping[str, Any], *, prompt: Mapping[str, Any],
     if parsed.diagnostics or any(row.kind == "text" and row.text.strip() for row in parsed.records):
         raise ValueError("meta_sam_output_malformed")
     observations: dict[str, dict[int, dict[str, Any]]] = {}
-    admitted: list[tuple[Any, int, tuple[int, int, int, int]]] = []
     for record in parsed.records:
         if record.kind != "mask":
             continue
@@ -230,15 +184,9 @@ def parse_tracks(response: Mapping[str, Any], *, prompt: Mapping[str, Any],
         left, top, right, bottom = map(int, box)
         if not (0 <= left < right <= width and 0 <= top < bottom <= height):
             raise ValueError("meta_sam_mask_bounds_invalid")
-        # Every bound is checked before a single pixel is decoded, so an
-        # oversized mask is refused rather than decoded and then refused.
         if not (0 < record.mask.width * record.mask.height <= width * height):
             raise ValueError("meta_sam_mask_dimensions_invalid")
-        admitted.append((record, index, (left, top, right, bottom)))
-    decoded = _decode_masks([_MaskPayload(record.mask.encoding, record.mask.width, record.mask.height,
-                                          record.mask.payload) for record, _, _ in admitted])
-    for (record, index, (left, top, right, bottom)), raster_bytes in zip(admitted, decoded):
-        raster = np.frombuffer(raster_bytes, dtype=np.uint8).reshape(record.mask.height, record.mask.width)
+        raster = np.frombuffer(decode_mask_to_raster(record.mask), dtype=np.uint8).reshape(record.mask.height, record.mask.width)
         if raster.shape != (bottom - top, right - left):
             raster = np.asarray(Image.fromarray(raster).resize((right - left, bottom - top), Image.Resampling.NEAREST))
         mask = np.zeros((height, width), dtype=np.uint8)
