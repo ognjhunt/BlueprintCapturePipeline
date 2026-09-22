@@ -52,3 +52,28 @@ def test_status_reuses_robot_bytes_across_attempts_but_not_requests(tmp_path, mo
         assert digests.digest_scope_stats() is None
     assert [row["bytes_hashed"] for row in observations] == [robot.stat().st_size] * 4
     assert [row["cache_hits"] for row in observations] == [0, 1, 0, 1]
+
+
+@pytest.mark.parametrize('case', ['validated_parent', 'standalone', 'different_parent', 'changed_intent'])
+def test_result_reuses_only_its_exact_just_validated_parent(monkeypatch, case):
+    from blueprint_pipeline import task_evaluation_configured_controls_autostart_validation as validation
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    parent = {'adoption_digest': 'sha256:' + 'a' * 64}
+    intent = {'completed_placement_adoption': parent}
+    intent['intent_digest'] = canonical_digest(intent, digest_field='intent_digest')
+    result = {'completed_placement_adoption': dict(parent), 'placement_calls_reexecuted': False}
+    calls = []
+    monkeypatch.setattr(retained, 'validate_placement_adoption', lambda value: calls.append(value))
+    kwargs = {'expected_intent_digest': intent['intent_digest'], 'expected_scene_binding_digest': 'scene',
+              'expected_task_binding_digest': 'task', 'expected_cpu_checkpoint_binding_digest': 'checkpoint'}
+    if case != 'standalone':
+        kwargs['_validated_intent'] = intent
+    if case == 'different_parent':
+        result['completed_placement_adoption']['adoption_digest'] = 'sha256:' + 'b' * 64
+    if case == 'changed_intent':
+        intent['changed'] = True
+    # Reusing the parent never bypasses the independent result validation.
+    reason = 'completed_adoption_invalid' if case in {'different_parent', 'changed_intent'} else 'autostart_result_invalid'
+    with pytest.raises(validation.TaskEvaluationConfiguredControlsAutostartError, match=reason):
+        validation._validate_result(result, **kwargs)
+    assert len(calls) == (1 if case == 'standalone' else 0)

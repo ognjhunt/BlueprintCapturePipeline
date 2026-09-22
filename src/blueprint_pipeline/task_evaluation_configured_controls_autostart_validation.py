@@ -339,11 +339,22 @@ def _validate_result(
     expected_scene_binding_digest: str,
     expected_task_binding_digest: str,
     expected_cpu_checkpoint_binding_digest: str,
+    _validated_intent: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     result = json.loads(json.dumps(dict(value), allow_nan=False))
     if result.get('completed_placement_adoption') is not None:
         from .task_evaluation_retained_controls_evidence import validate_placement_adoption as validate_adoption
-        validate_adoption(result['completed_placement_adoption'])
+        if _validated_intent is None:
+            validate_adoption(result['completed_placement_adoption'])
+        elif (
+            _validated_intent.get('intent_digest') != expected_intent_digest
+            or canonical_digest(_validated_intent, digest_field='intent_digest') != expected_intent_digest
+            or _validated_intent.get('completed_placement_adoption') != result['completed_placement_adoption']
+        ):
+            raise TaskEvaluationConfiguredControlsAutostartError('configured_controls_completed_adoption_invalid')
+        # The retained reader has just validated this exact intent, including
+        # its parent adoption. Walking the identical parent from its result
+        # again makes an N-release history take 2**N traversals.
         if result.get('placement_calls_reexecuted') is not False:
             raise TaskEvaluationConfiguredControlsAutostartError('configured_controls_completed_adoption_invalid')
     openai_evidence = result.get("official_openai_cost_evidence")
