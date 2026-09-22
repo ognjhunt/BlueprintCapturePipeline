@@ -370,3 +370,46 @@ def test_unreadable_pointer_is_typed_not_a_crash(tmp_path, monkeypatch):
         assert "terminal_result_publication_pointer_unreadable" in terminal["blockers"]
     finally:
         pointer_path.chmod(0o440)
+
+
+@pytest.mark.parametrize('completed', [False, True])
+def test_later_owner_attempt_retains_both_results_and_selects_its_own_terminal(tmp_path, monkeypatch, completed):
+    from blueprint_pipeline import task_evaluation_scene_intake as intake
+    from blueprint_pipeline import task_evaluation_scene_policy_binding as policy
+    env = _env(tmp_path)
+    first = _bridge(env, _owner_launch_run(tmp_path / 'state', env))
+    run = materialize_canary_root(tmp_path / 'canaries', monkeypatch, run_id=RUN_ID)
+    _canary(env, run['root'])
+    prior_terminal = _reconcile(env)
+    prior_bytes = {p.name: p.read_bytes() for p in Path(first['directory']).iterdir() if p.is_file()}
+    binding = env['binding']
+    attempt = intake.reserve_scene_attempt(queue_root=env['config']['intent_root'], intent_id=env['intent_id'],
+        attempt_id='policy-next', source_commit=env['release']['source_commit'],
+        runtime_digest=binding['runtime_digest'], input_digest='sha256:'+'6'*64,
+        provider='vast', maximum_spend_usd=1, now=env['now']+1)
+    next_env = {**env, 'binding': policy.seal_binding(scene_intent_digest=env['intent']['intent_digest'],
+        attempt_id=attempt['attempt_id'], policy_candidates=binding['policy_candidates'],
+        runtime_digest=attempt['runtime_digest'], input_digest=attempt['input_digest'])}
+    next_id = RUN_ID+'-next'
+    second = _bridge(next_env, _owner_launch_run(tmp_path/'state', next_env, run_id=next_id, launch_id='launch-owner-2'))
+    assert second['directory'] != first['directory']
+    assert _reconcile(env) is None  # An older failed result cannot finish the pending successor.
+    next_run = materialize_canary_root(tmp_path/'canaries-next', monkeypatch, run_id=next_id, completed=completed)
+    indexed = _canary(env, next_run['root'])
+    assert indexed['intent_id'] == env['intent_id']
+    if completed:
+        _offload(next_run['root'])
+    terminal = _reconcile(env)
+    assert terminal['status'] == ('completed' if completed else 'blocked')
+    assert terminal['state']['result_run_id'] == next_id
+    assert terminal['state']['terminal_join']['path'] != prior_terminal['state']['terminal_join']['path']
+    assert {name: (Path(first['directory'])/name).read_bytes() for name in prior_bytes} == prior_bytes
+    assert _reconcile(env) == terminal
+
+
+def test_two_runs_bound_to_the_same_attempt_are_not_arbitrarily_selected(tmp_path):
+    env = _env(tmp_path)
+    _bridge(env, _owner_launch_run(tmp_path/'state', env))
+    _bridge(env, _owner_launch_run(tmp_path/'state', env, run_id=RUN_ID+'-other', launch_id='other'))
+    with pytest.raises(reconciler.TerminalReconciliationError, match='attempt_order_ambiguous'):
+        _reconcile(env)

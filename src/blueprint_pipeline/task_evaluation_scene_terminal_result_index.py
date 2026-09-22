@@ -26,6 +26,8 @@ byte-exact copies (an existing file must be byte-identical):
   the archive members' digests of the persisted projection and the sealed receipt
   -- never from a caller-supplied URI.
 
+Later runs for the same intent live in immutable ``runs/<run-id-hash>/``
+directories; the original flat directory remains readable and unchanged.
 Stages A and B are driven by the launch reconciler tick (retention); stage C by
 the terminal reconciler when a completed-unqualified result has no publication
 yet. The index never launches, retries, tears down, allocates a provider,
@@ -258,6 +260,11 @@ def index_launch_bridge(*, launch_run_root: str | Path, scene_intent_root: str |
     if intent_directory is None:
         return {**base, "status": "owner_intent_unresolved", "scene_intent_digest": binding["scene_intent_digest"]}
     directory = _safe(terminal_result_root) / intent_directory.name
+    existing = directory / "launch_request.json"
+    if existing.exists():
+        prior = _parse(_read_bytes(existing, reason="launch_request_invalid"), reason="launch_request_invalid")
+        if prior.get("run_id") != run_id:
+            directory = _safe(directory / "runs" / hashlib.sha256(run_id.encode()).hexdigest())
     written = _publish(directory, {"launch_request.json": request_raw, "launch_profile.json": profile_raw})
     return {**base, "status": "launch_bridge_indexed", "intent_id": intent_directory.name,
             "directory": str(directory), "files": written}
@@ -268,7 +275,10 @@ def index_launch_bridge(*, launch_run_root: str | Path, scene_intent_root: str |
 
 def _bridge_directory_for_run(terminal_root: Path, run_id: str) -> Path | None:
     matches: list[Path] = []
-    for path in sorted(terminal_root.glob("scene-*/launch_request.json")):
+    paths = [*terminal_root.glob("scene-*/launch_request.json"),
+             *terminal_root.glob("scene-*/runs/*/launch_request.json")]
+    for path in sorted(paths):
+        _safe(path)
         request = _parse(_read_bytes(path, reason="launch_request_invalid"), reason="launch_request_invalid")
         if request.get("run_id") == run_id:
             matches.append(path.parent)
@@ -361,8 +371,12 @@ def index_policy_canary_terminal(*, canary_run_root: str | Path,
         DISPATCH_RECEIPT_FILENAME: receipt_raw,
         STATE_FILENAME: _canonical(state),
     })
-    return {**base, "status": "policy_canary_terminal_indexed", "run_id": run_id, "intent_id": directory.name,
+    return {**base, "status": "policy_canary_terminal_indexed", "run_id": run_id, "intent_id": _indexed_owner(directory),
             "directory": str(directory), "files": written}
+
+
+def _indexed_owner(directory: Path) -> str:
+    return directory.parent.parent.name if directory.parent.name == "runs" else directory.name
 
 
 def _index_nonexecution_record(
@@ -429,7 +443,7 @@ def _index_nonexecution_record(
     bridge = _bridge_directory_for_run(terminal_result_root, run_id) if terminal_result_root.is_dir() else None
     if bridge is None:
         return {**base, "status": "launch_bridge_pending", "run_id": run_id}
-    directory = _safe(terminal_result_root) / bridge.name
+    directory = _safe(bridge)
     raw = _read_bytes(record_path, reason="nonexecution_record_absent")
     state = {
         "schema_version": NONEXECUTION_STATE_SCHEMA,
@@ -451,7 +465,7 @@ def _index_nonexecution_record(
         **base,
         "status": "policy_canary_nonexecution_indexed",
         "run_id": run_id,
-        "intent_id": directory.name,
+        "intent_id": _indexed_owner(directory),
         "directory": str(directory),
         "nonexecution_status": status,
         "files": written,
