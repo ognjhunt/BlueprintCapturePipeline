@@ -40,58 +40,90 @@ def _scene(tmp_path, shares: dict[str, int]):
     return frames, task_masks
 
 
-def test_a_view_whose_mask_has_left_the_target_is_dropped(tmp_path, monkeypatch):
-    # Four views the tracker agrees on, one where it claims four times as much.
-    frames, task_masks = _scene(tmp_path, {"a": 8, "b": 8, "c": 32, "d": 8, "e": 8})
-    asked = []
+def test_the_largest_views_are_adjudicated_until_one_is_corroborated(tmp_path, monkeypatch):
+    """Drift only adds area, so the biggest claims are the ones worth buying."""
+    frames, task_masks = _scene(tmp_path, {"a": 8, "b": 36, "c": 32, "d": 20, "e": 8})
+    asked, independent = [], {"b": 8, "c": 8, "d": 18}
 
     def hosted(**kwargs):
-        asked.append(kwargs["frame_registry"][0]["source_frame_id"])
-        # An independent look at that view finds only the real target.
+        frame_id = kwargs["frame_registry"][0]["source_frame_id"]
+        asked.append(frame_id)
         return {"tracks": [{"track_id": "independent", "label": "pedestal_cabinet",
-                            "observations": [_observation("x", 8)]}]}
+                            "observations": [_observation("x", independent[frame_id])]}]}
 
     monkeypatch.setattr(corroboration, "run_meta_sam31", hosted)
     kept, receipt = corroboration.corroborate_removal_views(
         frames=frames, task_masks=task_masks, task_context={"confirmed": True},
         output_root=tmp_path / "out")
 
-    assert [frame["frame_id"] for frame in kept] == ["a", "b", "d", "e"]
-    # Only the outlier was worth paying to adjudicate.
-    assert asked == ["c"]
-    assert receipt["status"] == "passed"
-    assert receipt["refuted_frame_ids"] == ["c"]
+    # Biggest first, and the moment one agrees the smaller ones are accepted.
+    assert asked == ["b", "c", "d"]
+    assert [frame["frame_id"] for frame in kept] == ["a", "d", "e"]
+    assert receipt["refuted_frame_ids"] == ["b", "c"]
     verdicts = {row["frame_id"]: row["verdict"] for row in receipt["observations"]}
-    assert verdicts == {"a": "within_track_scale", "b": "within_track_scale", "c": "refuted",
-                        "d": "within_track_scale", "e": "within_track_scale"}
+    assert verdicts == {"b": "refuted", "c": "refuted", "d": "corroborated",
+                        "a": "below_corroborated_view", "e": "below_corroborated_view"}
     written = json.loads((tmp_path / "out" / "removal_view_corroboration.json").read_text())
     assert written["digest"] == receipt["digest"]
 
 
-def test_an_outlier_the_second_look_agrees_with_is_kept(tmp_path, monkeypatch):
-    """Apparent size grows when the camera comes closer; that is not drift."""
-    frames, task_masks = _scene(tmp_path, {"a": 8, "b": 8, "c": 16, "d": 8, "e": 8})
-    monkeypatch.setattr(corroboration, "run_meta_sam31", lambda **kwargs: {"tracks": [
-        {"track_id": "independent", "label": "pedestal_cabinet",
-         "observations": [_observation("x", 14)]}]})
+def test_a_healthy_scene_costs_one_second_opinion(tmp_path, monkeypatch):
+    frames, task_masks = _scene(tmp_path, {"a": 8, "b": 20, "c": 12, "d": 8})
+    asked = []
+
+    def hosted(**kwargs):
+        asked.append(kwargs["frame_registry"][0]["source_frame_id"])
+        return {"tracks": [{"track_id": "independent", "label": "pedestal_cabinet",
+                            "observations": [_observation("x", 18)]}]}
+
+    monkeypatch.setattr(corroboration, "run_meta_sam31", hosted)
     kept, receipt = corroboration.corroborate_removal_views(
         frames=frames, task_masks=task_masks, task_context={"confirmed": True},
         output_root=tmp_path / "out")
-    assert [frame["frame_id"] for frame in kept] == ["a", "b", "c", "d", "e"]
-    assert receipt["refuted_frame_ids"] == []
-    assert [row for row in receipt["observations"] if row["frame_id"] == "c"][0]["verdict"] == "corroborated"
+    assert asked == ["b"] and len(kept) == 4 and receipt["refuted_frame_ids"] == []
 
 
-def test_finding_nothing_is_not_a_refutation(tmp_path, monkeypatch):
+def test_finding_nothing_settles_nothing_and_the_next_view_is_still_checked(tmp_path, monkeypatch):
     """A target clipped by the frame edge can be real and still unnamed."""
-    frames, task_masks = _scene(tmp_path, {"a": 8, "b": 8, "c": 32, "d": 8, "e": 8})
-    monkeypatch.setattr(corroboration, "run_meta_sam31", lambda **kwargs: {"tracks": []})
+    frames, task_masks = _scene(tmp_path, {"a": 8, "b": 36, "c": 32})
+    asked, independent = [], {"b": None, "c": 8, "a": 8}
+
+    def hosted(**kwargs):
+        frame_id = kwargs["frame_registry"][0]["source_frame_id"]
+        asked.append(frame_id)
+        rows = independent[frame_id]
+        return {"tracks": [] if rows is None else [
+            {"track_id": "independent", "label": "pedestal_cabinet",
+             "observations": [_observation("x", rows)]}]}
+
+    monkeypatch.setattr(corroboration, "run_meta_sam31", hosted)
     kept, receipt = corroboration.corroborate_removal_views(
         frames=frames, task_masks=task_masks, task_context={"confirmed": True},
         output_root=tmp_path / "out")
-    assert len(kept) == 5
-    assert [row for row in receipt["observations"]
-            if row["frame_id"] == "c"][0]["verdict"] == "no_independent_instance"
+    # Neither "nothing found" nor a refutation settles the question, so the
+    # search keeps going until a view is actually corroborated.
+    assert asked == ["b", "c", "a"]
+    assert [frame["frame_id"] for frame in kept] == ["a", "b"]
+    verdicts = {row["frame_id"]: row["verdict"] for row in receipt["observations"]}
+    assert verdicts == {"b": "no_independent_instance", "c": "refuted", "a": "corroborated"}
+
+
+def test_a_pathological_track_cannot_buy_an_unbounded_number_of_looks(tmp_path, monkeypatch):
+    frames, task_masks = _scene(tmp_path, {name: 36 - index for index, name in enumerate("abcdef")})
+    asked = []
+
+    def hosted(**kwargs):
+        asked.append(kwargs["frame_registry"][0]["source_frame_id"])
+        return {"tracks": []}
+
+    monkeypatch.setattr(corroboration, "run_meta_sam31", hosted)
+    kept, receipt = corroboration.corroborate_removal_views(
+        frames=frames, task_masks=task_masks, task_context={"confirmed": True},
+        output_root=tmp_path / "out")
+    assert len(asked) == corroboration.MAXIMUM_SECOND_OPINIONS
+    assert len(kept) == 6
+    assert [row["verdict"] for row in receipt["observations"]][-2:] == [
+        "second_opinion_budget_spent", "second_opinion_budget_spent"]
 
 
 def test_too_few_trustworthy_views_refuses_rather_than_reconstructing(tmp_path, monkeypatch):
@@ -106,19 +138,6 @@ def test_too_few_trustworthy_views_refuses_rather_than_reconstructing(tmp_path, 
     written = json.loads((tmp_path / "out" / "removal_view_corroboration.json").read_text())
     assert written["status"] == "blocked" and written["retained_view_count"] == 1
     assert written["refuted_frame_ids"] == ["b"]
-
-
-def test_a_track_that_drifted_on_most_views_is_left_to_the_background_review(tmp_path, monkeypatch):
-    """The median is the drifted scale there, so the honest view is the outlier."""
-    frames, task_masks = _scene(tmp_path, {"a": 8, "b": 32, "c": 32, "d": 32})
-    monkeypatch.setattr(corroboration, "run_meta_sam31", lambda **kwargs: {"tracks": [
-        {"track_id": "independent", "label": "pedestal_cabinet",
-         "observations": [_observation("x", 8)]}]})
-    kept, receipt = corroboration.corroborate_removal_views(
-        frames=frames, task_masks=task_masks, task_context={"confirmed": True},
-        output_root=tmp_path / "out")
-    assert len(kept) == 4 and receipt["refuted_frame_ids"] == []
-    assert {row["verdict"] for row in receipt["observations"]} == {"within_track_scale"}
 
 
 def test_a_kept_target_is_never_second_guessed(tmp_path, monkeypatch):

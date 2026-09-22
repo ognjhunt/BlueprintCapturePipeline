@@ -8,12 +8,16 @@ The editor did as it was told and erased the desk, leaving a phone and its
 cables floating against a blank wall. The background review caught that and
 failed the run, which is the right outcome and an expensive place to learn it.
 
-The signal is already in the track. A rigid object filmed by a moving camera
-changes apparent size smoothly; an observation several times the track's own
-typical area is not the same object. That screen is free, so it runs on every
-view and decides nothing on its own. Only the outliers are worth a second
-opinion, and that opinion is one single-frame segmentation of the same real
-pixels, which cannot drift because there is nothing to drift from.
+Drift can only add area. A tracker that loses the object erases too little and
+the leftover is visible; a tracker that swallows the desk erases too much and
+the desk is gone. So the views are adjudicated largest first, and the moment one
+of them is corroborated the rest are accepted, because they claim less than a
+mask already agreed to be the target. In a healthy scene that is one request.
+It costs more only when drift is actually there, which is when it is worth
+paying for.
+
+The adjudicator is one single-frame segmentation of the same real pixels, which
+cannot drift because there is nothing to drift from.
 
 A view whose tracked mask is refuted that way is not used for reconstruction.
 Nothing is substituted: one model's mask never replaces another's. The view is
@@ -28,7 +32,6 @@ before the editor is paid, not so the review can be retired.
 """
 from __future__ import annotations
 
-import statistics
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -43,12 +46,12 @@ from .website_task_masks import decode_track_mask
 
 SCHEMA_VERSION = "website_removal_view_corroboration.v1"
 
-#: An observation this many times the track's own median area is the one worth
-#: paying to adjudicate. Below it, apparent size is just the camera moving.
 #: Apparent area varies by a factor of sixty across a handheld walkthrough, so
-#: no area statistic separates drift from approach on its own. This one only
-#: chooses who gets the second opinion; the second opinion decides.
-SECOND_OPINION_AREA_FACTOR = 1.5
+#: no area statistic separates drift from approach on its own. Size only sets
+#: the order in which views are adjudicated; the second opinion decides.
+#: Bounded so a pathological track cannot buy an unbounded number of looks;
+#: past it the background review is still there.
+MAXIMUM_SECOND_OPINIONS = 4
 
 #: How much larger the tracked mask may be than an independent look at the same
 #: frame before the view stops being trustworthy. Measured on the scene that
@@ -104,55 +107,52 @@ def corroborate_removal_views(*, frames: Sequence[Mapping[str, Any]], task_masks
                               task_context: Mapping[str, Any],
                               output_root: Path) -> tuple[list[Mapping[str, Any]], dict[str, Any]]:
     """Return the views whose removal masks are not refuted, and the receipt saying why."""
-    targets = _removal_targets(task_masks)
+    by_id = {frame["frame_id"]: frame for frame in frames}
     rows: list[dict[str, Any]] = []
     refuted: set[str] = set()
-    for target in targets:
+    for target in _removal_targets(task_masks):
         track = target.get("source_track") or target["track"]
-        by_frame = {row["source_frame_id"]: row for row in track["observations"]}
         shares: dict[str, float] = {}
-        for frame in frames:
-            observation = by_frame.get(frame["frame_id"])
-            if observation is None:
+        for observation in track["observations"]:
+            frame_id = observation["source_frame_id"]
+            if frame_id not in by_id:
                 continue
             mask = decode_track_mask(observation)
-            shares[frame["frame_id"]] = float(mask.sum()) / float(mask.size)
-        if not shares:
-            continue
-        median = statistics.median(shares.values())
-        for frame in frames:
-            share = shares.get(frame["frame_id"])
-            if share is None:
-                continue
-            row: dict[str, Any] = {"target_id": target["target_id"], "frame_id": frame["frame_id"],
-                                   "tracked_share": round(share, 6),
-                                   "track_median_share": round(median, 6)}
-            if median <= 0 or share <= median * SECOND_OPINION_AREA_FACTOR:
-                row["verdict"] = "within_track_scale"
-                rows.append(row)
-                continue
-            image = _upright(frame)
-            independent = _independent_share(target=target, frame=frame, image=image,
-                                             task_context=task_context,
-                                             output_root=output_root / "second_opinion")
-            row["independent_share"] = None if independent is None else round(independent, 6)
-            if independent is None or independent <= 0:
-                # Nothing found is not a refutation: the object can be clipped
-                # by the frame edge or too small to name, and the track may
-                # still be right there.
-                row["verdict"] = "no_independent_instance"
-            elif share > independent * MAXIMUM_TRACKED_OVER_INDEPENDENT:
-                row["verdict"] = "refuted"
-                row["ratio"] = round(share / independent, 3)
-                refuted.add(frame["frame_id"])
+            shares[frame_id] = float(mask.sum()) / float(mask.size)
+        asked = 0
+        settled = False
+        for frame_id, share in sorted(shares.items(), key=lambda item: -item[1]):
+            row: dict[str, Any] = {"target_id": target["target_id"], "frame_id": frame_id,
+                                   "tracked_share": round(share, 6)}
+            if settled:
+                row["verdict"] = "below_corroborated_view"
+            elif asked >= MAXIMUM_SECOND_OPINIONS:
+                row["verdict"] = "second_opinion_budget_spent"
             else:
-                row["verdict"] = "corroborated"
-                row["ratio"] = round(share / independent, 3)
+                asked += 1
+                independent = _independent_share(
+                    target=target, frame=by_id[frame_id], image=_upright(by_id[frame_id]),
+                    task_context=task_context, output_root=output_root / "second_opinion")
+                row["independent_share"] = None if independent is None else round(independent, 6)
+                if independent is None or independent <= 0:
+                    # Nothing found is not a refutation: the object can be
+                    # clipped by the frame edge or too small to name, and the
+                    # track may still be right there. It also settles nothing,
+                    # so the next view is still adjudicated.
+                    row["verdict"] = "no_independent_instance"
+                elif share > independent * MAXIMUM_TRACKED_OVER_INDEPENDENT:
+                    row["verdict"] = "refuted"
+                    row["ratio"] = round(share / independent, 3)
+                    refuted.add(frame_id)
+                else:
+                    row["verdict"] = "corroborated"
+                    row["ratio"] = round(share / independent, 3)
+                    settled = True
             rows.append(row)
     kept = [frame for frame in frames if frame["frame_id"] not in refuted]
     receipt = {"schema_version": SCHEMA_VERSION,
                "status": "passed" if len(kept) >= MINIMUM_CORROBORATED_VIEWS else "blocked",
-               "second_opinion_area_factor": SECOND_OPINION_AREA_FACTOR,
+               "maximum_second_opinions": MAXIMUM_SECOND_OPINIONS,
                "maximum_tracked_over_independent": MAXIMUM_TRACKED_OVER_INDEPENDENT,
                "minimum_corroborated_views": MINIMUM_CORROBORATED_VIEWS,
                "reviewed_view_count": len(frames), "retained_view_count": len(kept),
@@ -167,5 +167,5 @@ def corroborate_removal_views(*, frames: Sequence[Mapping[str, Any]], task_masks
     return kept, receipt
 
 
-__all__ = ["MAXIMUM_TRACKED_OVER_INDEPENDENT", "MINIMUM_CORROBORATED_VIEWS", "SCHEMA_VERSION",
-           "SECOND_OPINION_AREA_FACTOR", "corroborate_removal_views"]
+__all__ = ["MAXIMUM_SECOND_OPINIONS", "MAXIMUM_TRACKED_OVER_INDEPENDENT",
+           "MINIMUM_CORROBORATED_VIEWS", "SCHEMA_VERSION", "corroborate_removal_views"]
