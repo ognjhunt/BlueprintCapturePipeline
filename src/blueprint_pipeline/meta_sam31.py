@@ -13,6 +13,7 @@ import tempfile
 from typing import Any, Mapping, Sequence
 from urllib.error import HTTPError
 from urllib.request import Request
+import zlib
 
 import numpy as np
 from PIL import Image
@@ -76,8 +77,12 @@ def _parse_js_rasters(text: str, accept: Any) -> bool:
                 bounds = row.get("bounds") or {}
                 box = [bounds.get(key) for key in ("left", "top", "right", "bottom")]
                 try:
-                    raster = base64.b64decode(row["raster"], validate=True)
-                except (KeyError, TypeError, ValueError) as error:
+                    if row.get("raster_encoding") != "deflate-raw-base64":
+                        raise ValueError("encoding_invalid")
+                    raster = zlib.decompress(base64.b64decode(row["raster"], validate=True), -15)
+                    if len(raster) != row["width"] * row["height"]:
+                        raise ValueError("raster_size_invalid")
+                except (KeyError, TypeError, ValueError, zlib.error) as error:
                     raise ValueError("meta_sam_js_parser_output_invalid") from error
                 accept(row["object_id"], row["frame_index"], box,
                        row["width"], row["height"], raster)

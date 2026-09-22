@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import { once } from 'node:events';
+import zlib from 'node:zlib';
 import { formats, decodeMaskToRaster } from './dist/index.js';
 
 async function writeLine(stream, value) {
@@ -23,11 +24,12 @@ async function main() {
   for (const record of result.records) {
     if (record.kind !== 'mask') continue;
     const raster = decodeMaskToRaster(record.mask);
+    const packed = zlib.deflateRawSync(Buffer.from(raster), { level: 1 });
     await writeLine(output, {
       kind: 'mask', object_id: record.objectId,
       frame_index: record.frame?.frameIndex ?? -1,
       bounds: record.bounds, width: record.mask.width, height: record.mask.height,
-      raster: Buffer.from(raster).toString('base64'),
+      raster_encoding: 'deflate-raw-base64', raster: packed.toString('base64'),
     });
     count++;
   }
