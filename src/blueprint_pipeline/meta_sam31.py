@@ -7,11 +7,13 @@ import math
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import tempfile
 from typing import Any, Mapping, Sequence
 from urllib.error import HTTPError
 from urllib.request import Request
+import zlib
 
 import numpy as np
 from PIL import Image
@@ -29,6 +31,65 @@ PRICE_PER_FRAME_USD = 0.0002
 PROFILE = {"provider": "meta_model_api", "model": MODEL, "mask_encoding": "one_bit",
            "parser": "meta-sam-parser==0.0.5", "price_per_frame_usd": PRICE_PER_FRAME_USD,
            "minimum_reserved_frames": 50, "single_frame_transport": "input_image", "price_per_image_usd": 0.0025}
+_HOST_NODE = Path("/var/lib/blueprint/task-evaluation-inputs/system-runtime-prerequisites/"
+                  "splat-render-v1/node/bin/node")
+
+
+def _sam_parser_node() -> Path | None:
+    if _HOST_NODE.is_file() and os.access(_HOST_NODE, os.X_OK):
+        return _HOST_NODE
+    found = shutil.which("node")
+    return Path(found) if found else None
+
+
+def _parse_js_rasters(text: str, accept: Any) -> bool:
+    node = _sam_parser_node()
+    if node is None:
+        return False
+    runner = Path(__file__).with_name("_sam_parser_js") / "runner.mjs"
+    if not runner.is_file():
+        raise ValueError("meta_sam_js_parser_bundle_missing")
+    with tempfile.TemporaryDirectory(prefix="sam31-parse-") as temporary:
+        root = Path(temporary)
+        (root / "input.json").write_text(json.dumps({"text": text}))
+        result = subprocess.run(
+            [str(node), str(runner), str(root / "input.json"), str(root / "rasters.jsonl")],
+            capture_output=True, timeout=300, env={"PATH": "/usr/bin:/bin"}, check=False)
+        if result.stderr.strip() == b"sam31_js_parser_output_malformed":
+            raise ValueError("meta_sam_output_malformed")
+        if result.returncode or result.stdout or not (root / "rasters.jsonl").is_file():
+            raise ValueError("meta_sam_js_parser_failed")
+        count = 0
+        ended = False
+        with (root / "rasters.jsonl").open() as stream:
+            begin = json.loads(stream.readline())
+            if begin != {"kind": "begin", "schema": "sam31_rasters.v1"}:
+                raise ValueError("meta_sam_js_parser_output_invalid")
+            for line in stream:
+                row = json.loads(line)
+                if row.get("kind") == "end":
+                    if row.get("mask_count") != count or ended:
+                        raise ValueError("meta_sam_js_parser_output_invalid")
+                    ended = True
+                    continue
+                if ended or row.get("kind") != "mask":
+                    raise ValueError("meta_sam_js_parser_output_invalid")
+                bounds = row.get("bounds") or {}
+                box = [bounds.get(key) for key in ("left", "top", "right", "bottom")]
+                try:
+                    if row.get("raster_encoding") != "deflate-raw-base64":
+                        raise ValueError("encoding_invalid")
+                    raster = zlib.decompress(base64.b64decode(row["raster"], validate=True), -15)
+                    if len(raster) != row["width"] * row["height"]:
+                        raise ValueError("raster_size_invalid")
+                except (KeyError, TypeError, ValueError, zlib.error) as error:
+                    raise ValueError("meta_sam_js_parser_output_invalid") from error
+                accept(row["object_id"], row["frame_index"], box,
+                       row["width"], row["height"], raster)
+                count += 1
+        if not ended:
+            raise ValueError("meta_sam_js_parser_output_invalid")
+    return True
 
 
 def meta_api_key() -> str:
@@ -152,8 +213,12 @@ def prepare_continuous_video(*, source: Path, source_digest: str, root: Path) ->
 
 
 def parse_tracks(response: Mapping[str, Any], *, prompt: Mapping[str, Any],
-                 registry: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    from meta_sam_parser import CompletedOutcome, decode_mask_to_raster, video_segmentation_format
+                 registry: Sequence[Mapping[str, Any]],
+                 backend_out: list[str] | None = None) -> list[dict[str, Any]]:
+    from meta_sam_parser import (CompletedOutcome, InvalidSegmentationMaskError,
+                                 SegmentationMaskIdentity, SegmentationMaskRecord,
+                                 decode_mask_to_raster)
+    from meta_sam_parser._segmentation import _SegmentationParser
 
     if response.get("status") != "completed":
         raise ValueError("meta_sam_response_incomplete")
@@ -166,37 +231,69 @@ def parse_tracks(response: Mapping[str, Any], *, prompt: Mapping[str, Any],
     # The official parser retains box-local bounds, but not the source dimensions.
     if any((int(w), int(h)) != (width, height) for w, h in re.findall(r";w=(\d+);h=(\d+)\|>", text)):
         raise ValueError("meta_sam_source_dimensions_mismatch")
-    parser = video_segmentation_format().create_parser()
-    parser.push(text)
-    parsed = parser.finish(CompletedOutcome()).result
-    if parsed.diagnostics or any(row.kind == "text" and row.text.strip() for row in parsed.records):
-        raise ValueError("meta_sam_output_malformed")
     observations: dict[str, dict[int, dict[str, Any]]] = {}
-    for record in parsed.records:
-        if record.kind != "mask":
-            continue
-        index = record.frame.frame_index if record.frame else -1
+
+    def accept_mask(object_id: str, index: int, box: Sequence[int],
+                    mask_width: int, mask_height: int, decoded: bytes) -> None:
         if not 0 <= index < len(registry):
             raise ValueError("meta_sam_frame_index_invalid")
-        box = [record.bounds.left, record.bounds.top, record.bounds.right, record.bounds.bottom]
         if any(not math.isfinite(v) or int(v) != v for v in box):
             raise ValueError("meta_sam_mask_bounds_invalid")
         left, top, right, bottom = map(int, box)
         if not (0 <= left < right <= width and 0 <= top < bottom <= height):
             raise ValueError("meta_sam_mask_bounds_invalid")
-        if not (0 < record.mask.width * record.mask.height <= width * height):
+        if not (0 < mask_width * mask_height <= width * height):
             raise ValueError("meta_sam_mask_dimensions_invalid")
-        raster = np.frombuffer(decode_mask_to_raster(record.mask), dtype=np.uint8).reshape(record.mask.height, record.mask.width)
+        raster = np.frombuffer(decoded, dtype=np.uint8).reshape(mask_height, mask_width)
         if raster.shape != (bottom - top, right - left):
             raster = np.asarray(Image.fromarray(raster).resize((right - left, bottom - top), Image.Resampling.NEAREST))
         mask = np.zeros((height, width), dtype=np.uint8)
         mask[top:bottom, left:right] = raster
         edges = np.diff(np.pad(mask.reshape(-1).astype(np.int8), (1, 1)))
         starts, ends = np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)
-        observations.setdefault(record.object_id, {})[index] = {
+        observations.setdefault(object_id, {})[index] = {
             "source_frame_id": registry[index]["source_frame_id"], "width": width, "height": height,
             "runs": [{"start": int(start), "length": int(end - start)} for start, end in zip(starts, ends)],
         }
+
+    class _SingleDecodeParser(_SegmentationParser):
+        """The pinned Meta parser's grammar and checks, retaining each verified raster once."""
+
+        def __init__(self) -> None:
+            super().__init__("video")
+
+        def _accept_mask(self, object_id: str, frame: Any, mask: Any, raw: str, bounds: Any) -> None:
+            area = mask.width * mask.height
+            if mask.width <= 0 or mask.height <= 0 or area > (1 << 53) - 1:
+                self._diagnose("invalid_mask_size", "Mask dimensions must be positive.", raw)
+                return
+            try:
+                decoded = decode_mask_to_raster(mask)
+            except InvalidSegmentationMaskError as error:
+                self._diagnose("invalid_mask_payload", str(error), raw)
+                return
+            identity = SegmentationMaskIdentity(
+                media=self._media, frame_index=None if frame is None else frame.frame_index,
+                object_id=object_id)
+            revision = self._revisions.get(identity, 0) + 1
+            self._revisions[identity] = revision
+            record = SegmentationMaskRecord(
+                order=len(self._records), object_id=object_id, frame=frame,
+                identity=identity, revision=revision, mask=mask, bounds=bounds)
+            self._add_record(record)
+            accept_mask(object_id, frame.frame_index if frame else -1,
+                        [bounds.left, bounds.top, bounds.right, bounds.bottom],
+                        mask.width, mask.height, decoded)
+
+    used_js = _parse_js_rasters(text, accept_mask)
+    if not used_js:
+        parser = _SingleDecodeParser()
+        parser.push(text, emit=False)
+        parsed = parser.finish(CompletedOutcome()).result
+        if parsed.diagnostics or any(row.kind == "text" and row.text.strip() for row in parsed.records):
+            raise ValueError("meta_sam_output_malformed")
+    if backend_out is not None:
+        backend_out.append("@meta-sam/parser@0.0.12" if used_js else "meta-sam-parser==0.0.5")
     # No invented confidence; IDs are never stitched across disappearance/occlusion.
     return [{"track_id": f"meta-sam31-{prompt['prompt_id']}-{oid}", "label": prompt["output_label"],
              "label_source": "model_inferred", "observations": [rows[i] for i in sorted(rows)]}
@@ -340,8 +437,9 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
                 raise ValueError("meta_sam_retained_tracks_changed")
             decoded = parsed["tracks"]
         else:
-            decoded = parse_tracks(response, prompt=prompt, registry=frame_registry)
-            parsed = {"binding": parsed_binding, "tracks": decoded}
+            backend: list[str] = []
+            decoded = parse_tracks(response, prompt=prompt, registry=frame_registry, backend_out=backend)
+            parsed = {"binding": parsed_binding, "tracks": decoded, "parser_runtime": backend[0]}
             parsed["digest"] = canonical_digest(parsed, digest_field="digest")
             temporary = parsed_path.with_suffix(".tmp")
             write_json(temporary, parsed)

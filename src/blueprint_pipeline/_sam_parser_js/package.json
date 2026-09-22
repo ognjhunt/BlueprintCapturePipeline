@@ -1,0 +1,43 @@
+{
+  "name": "@meta-sam/parser",
+  "version": "0.0.12",
+  "description": "Streaming SAM 3 segmentation parser for Responses API events",
+  "license": "SEE LICENSE IN LICENSE",
+  "homepage": "https://dev.meta.ai/",
+  "bugs": {
+    "url": "https://github.com/meta-models/meta-sam/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/meta-models/meta-sam.git",
+    "directory": "typescript/packages/parser"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "engines": {
+    "node": "^20.17.0 || >=22.9.0"
+  },
+  "devDependencies": {
+    "openai": "7.10.0"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "prepack": "tsc -b --force",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  }
+}
