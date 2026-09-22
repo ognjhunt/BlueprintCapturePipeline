@@ -107,6 +107,13 @@ def ground_task_target(*, target: Mapping[str, Any], tracks: Sequence[Mapping[st
         prompt += (
             "Inspect the actual appearance and "
             "supply a different short visually supported object concept (shape/material may help). "
+            # Measured on this segmenter: bare category nouns returned nothing
+            # for an object that a compound noun naming it by where it sits
+            # resolved whole, and a part-class noun returned one instance per
+            # part. Say what kind of thing it is and where it belongs.
+            "A bare category often finds nothing where the object's ordinary compound name does, "
+            "so prefer the name a person in this room would use for the whole object, including "
+            "its setting or role when that is how it is normally named. "
             "Do not just repeat the task's noun. Do not invent a category to force a match: "
             "if no alternative is supported, set visible false. Keep coordinates relative to "
             "the FIRST, full image, and preserve the same physical target."

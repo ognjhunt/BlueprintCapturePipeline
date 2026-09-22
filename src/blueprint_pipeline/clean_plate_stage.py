@@ -33,6 +33,7 @@ from .decision_evidence_contracts import canonical_digest
 from .website_scene_geometry import prepare_website_source_frames
 from .website_task_masks import run_website_task_masks
 from .website_object_removal import prepare_object_removal_frames, select_reconstruction_frames, reconstruction_source_frames, replace_unmasked_task_views
+from .website_removal_view_corroboration import corroborate_removal_views
 from .website_reconstruction_profile import reconstruction_profile
 from .website_image_completion import complete_background_images, verify_completed_background
 
@@ -401,6 +402,12 @@ def run_clean_plate_stage(
             reconstruction_frames = reconstruction_source_frames(source_geometry=source_geometry, task_masks=task_masks,
                 source_video=website_source_video, limit=profile["max_input_images"],
                 output_root=clean_plate_root / "reconstruction_source_frames")
+            # A track proved on one frame is not proved on every frame. Drop the
+            # views where a second look says the mask has left the target,
+            # before the editor is paid to erase whatever it covers.
+            reconstruction_frames, corroboration = corroborate_removal_views(
+                frames=reconstruction_frames, task_masks=task_masks, task_context=task_context,
+                output_root=clean_plate_root / "removal_view_corroboration")
             object_removal_frames = prepare_object_removal_frames(
                 frames=reconstruction_frames, task_masks=task_masks,
                 output_root=clean_plate_root / "object_removal_frames",
@@ -434,7 +441,8 @@ def run_clean_plate_stage(
                               "source_geometry_digest": None,
                               "source_frames_digest": (source_geometry or {}).get("digest"),
                               "generated_pixels_present": any(f.get("generated_pixels_present") for f in selected),
-                              "completion_review": completion_review, "claim_ceiling": CLAIM_CEILING}
+                              "completion_review": completion_review,
+                              "view_corroboration": corroboration, "claim_ceiling": CLAIM_CEILING}
             prepared_views["digest"] = canonical_digest(prepared_views, digest_field="digest")
             status = "objects_removed" if int(plan.get("movable_removal_count") or 0) else "noop"
             mode, reason = "prepared_images", None
