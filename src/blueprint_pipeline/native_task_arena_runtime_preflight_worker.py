@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from blueprint_pipeline.native_task_nurec_render_setup import (
+    camera_site_appearance_required,
     setup_and_warm_native_nurec_renderer as _official_nurec_render_setup_and_warmup,
 )
 
@@ -134,6 +135,7 @@ def _run_wrist_camera_mount_sweep(
             camera_scene_names={"wrist": built.camera_scene_names["wrist"]},
             output_root=candidate_root,
             snapshot_id="candidate",
+            site_appearance_render_expected=camera_site_appearance_required(plan),
         )
         measured = snapshot["cameras"][0]
         frame = candidate_root / measured["rgb_png"]["path"]
@@ -961,6 +963,7 @@ def main() -> int:
             camera_scene_names=built.camera_scene_names,
             output_root=output_root,
             snapshot_id="runtime_preflight",
+            site_appearance_render_expected=camera_site_appearance_required(plan),
             framing_expectations=(
                 (plan.get("task_object_observability") or {}).get("cameras")
                 or {}

@@ -171,8 +171,9 @@ def test_registry_tamper_is_refused() -> None:
         validate_wrist_camera_mount_registry(registry)
 
 
+@pytest.mark.parametrize("authored_surface", [False, True])
 def test_runtime_sweep_uses_isaac_view_pose_and_reapplies_selected(
-    tmp_path: Path,
+    tmp_path: Path, authored_surface: bool,
 ) -> None:
     registry = _registry()
 
@@ -203,6 +204,7 @@ def test_runtime_sweep_uses_isaac_view_pose_and_reapplies_selected(
     built = SimpleNamespace(camera_scene_names={"wrist": "wrist_camera"})
 
     def snapshot(*, output_root: Path, **_kwargs) -> dict:
+        assert _kwargs["site_appearance_render_expected"] is not authored_surface
         candidate_id = output_root.name
         index = int(candidate_id.rsplit("_", 1)[-1])
         frame = output_root / "construction_frames/wrist/candidate.png"
@@ -246,7 +248,12 @@ def test_runtime_sweep_uses_isaac_view_pose_and_reapplies_selected(
                 }
             ],
         },
-        plan={"task_spec": {"start_pose_world": [0, 0, 0, 0, 0, 0, 1]}},
+        plan={
+            "task_spec": {"start_pose_world": [0, 0, 0, 0, 0, 0, 1]},
+            "camera_scene_scope": "authored_development_surface" if authored_surface else "captured_scene",
+            "claim_boundary": {"captured_scene_evaluation_allowed": not authored_surface},
+            "appearance_frame_alignment": {"representation": "usd_geometry"},
+        },
         output_root=tmp_path,
         torch=object(),
         body_pose_reader=lambda *_args, **_kwargs: [0, -1, 1, 0, 0, 0, 1],
