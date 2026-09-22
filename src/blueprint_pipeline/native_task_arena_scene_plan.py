@@ -404,6 +404,12 @@ def _apply_scenario_parameters(
                 expected_native_value=float(binding["resolved_value"]),
                 nominal_native_intensity=1500.0,
             )
+        elif target == "EventManager.reset.task_subject_material.dynamic_friction":
+            from .native_rigid_friction_scenario import scenario_application
+            try:
+                application.update(scenario_application(binding, subject, task_object_asset_path))
+            except (AttributeError, RuntimeError, TypeError, ValueError) as exc:
+                raise NativeTaskArenaScenePlanError([str(exc)]) from exc
         elif target == (
             "EventManager.reset.task_subject_link_material.dynamic_friction"
         ):

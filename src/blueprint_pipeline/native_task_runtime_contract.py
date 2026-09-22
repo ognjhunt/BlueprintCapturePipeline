@@ -62,6 +62,7 @@ SUPPORTED_SCENARIO_RUNTIME_TARGETS = frozenset(
         "EventManager.reset.wrist_camera.pose.position.x",
         "EventManager.reset.task_light.intensity_scale",
         "EventManager.reset.task_subject_link_material.dynamic_friction",
+        "EventManager.reset.task_subject_material.dynamic_friction",
     }
 )
 SCENARIO_RUNTIME_TARGET_UNITS = {
@@ -71,6 +72,7 @@ SCENARIO_RUNTIME_TARGET_UNITS = {
     "EventManager.reset.wrist_camera.pose.position.x": "m",
     "EventManager.reset.task_light.intensity_scale": "ratio",
     "EventManager.reset.task_subject_link_material.dynamic_friction": "coefficient",
+    "EventManager.reset.task_subject_material.dynamic_friction": "coefficient",
 }
 TASK_STATE_BINDING_SCHEMA_VERSION = "native_articulated_task_state_binding.v1"
 GRAPH_TASK_STATE_BINDING_SCHEMA_VERSION = (
@@ -743,6 +745,7 @@ def _scenario_parameter_rows(
             or unit != SCENARIO_RUNTIME_TARGET_UNITS[target]
             or not all(math.isfinite(item) for item in (nominal, resolved, tolerance))
             or tolerance <= 0.0
+            or (unit == "coefficient" and (nominal < 0.0 or resolved < 0.0))
         ):
             errors.append(f"native_task_runtime_scenario_parameter_invalid:{index}")
             continue
