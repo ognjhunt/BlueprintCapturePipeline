@@ -77,7 +77,12 @@ def verify(env, overrides):
     results = {}
     for parameter_id, record in overrides.items():
         subject = env.unwrapped.scene[record["runtime_name"]]
-        values = subject.root_physx_view.get_material_properties().tolist()
+        values = subject.root_physx_view.get_material_properties()
+        # PhysX supports NumPy, Torch and Warp frontends. Warp requires a
+        # host-array conversion; Torch's tolist() already handles its device.
+        if not hasattr(values, "tolist"):
+            values = values.numpy()
+        values = values.tolist()
         dynamic = [float(shape[1]) for instance in values for shape in instance]
         expected = record["expected_dynamic_friction"]
         if not dynamic or any(not math.isclose(value, expected, rel_tol=0, abs_tol=1e-6) for value in dynamic):

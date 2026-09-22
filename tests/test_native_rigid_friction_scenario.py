@@ -65,9 +65,13 @@ def test_refuses_to_guess_which_material_or_articulation_to_change(tmp_path, kwa
         prepare(path)
 
 
-def test_native_readback_requires_every_physx_shape_to_receive_the_override():
+@pytest.mark.parametrize('frontend', ['numpy', 'warp'])
+def test_native_readback_requires_every_physx_shape_to_receive_the_override(frontend):
     materials = np.array([[[0.7, 0.45, 0.1], [0.7, 0.45, 0.1]]], dtype=np.float32)
-    subject = SimpleNamespace(root_physx_view=SimpleNamespace(get_material_properties=lambda: materials))
+    # PhysX's Warp frontend exposes numpy(), not tolist(). Preserve that
+    # interface so a NumPy-only test cannot hide a provider readback failure.
+    native = materials if frontend == 'numpy' else SimpleNamespace(numpy=lambda: materials)
+    subject = SimpleNamespace(root_physx_view=SimpleNamespace(get_material_properties=lambda: native))
     env = SimpleNamespace(unwrapped=SimpleNamespace(scene={'task_object': subject}))
     override = {'dynamic_friction': {'runtime_name': 'task_object', 'expected_dynamic_friction': 0.45}}
     result = friction.verify(env, override)
