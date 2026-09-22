@@ -7,7 +7,6 @@ input resolver and the camera candidates can import them without a cycle.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 from collections.abc import Mapping, Sequence
@@ -15,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
+from .validation_file_digests import sha256_file
 from .task_evaluation_robot_placement_trajectory import (
     validate_robot_placement_trajectory,
 )
@@ -30,11 +30,7 @@ class TaskEvaluationConfiguredControlsAutostartError(RuntimeError):
 
 
 def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return "sha256:" + digest.hexdigest()
+    return sha256_file(path)
 
 
 def _read(path: Path, *, blocker: str) -> dict[str, Any]:

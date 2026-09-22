@@ -17,6 +17,7 @@ from . import task_evaluation_controls_terminal_adoption as adoption
 from . import task_evaluation_scene_intake as intake
 from . import task_evaluation_team_run_controller as team_runs
 from .configured_scene_run_identity import scoped_identity
+from .validation_file_digests import file_digest_scope
 
 
 def _only_unpaid_preparation(binding: Path) -> bool:
@@ -41,6 +42,7 @@ def _only_unpaid_preparation(binding: Path) -> bool:
     return True
 
 
+@file_digest_scope()
 def prepare(*, config_path: str | Path, expected_commit: str, now: float | None = None) -> dict[str, Any]:
     config = worker._json(Path(config_path))
     catalog = worker.resolve_robot_catalog(worker._sealed(Path(config['robot_catalog_path']), 'catalog_digest'),
