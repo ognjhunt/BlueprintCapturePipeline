@@ -112,6 +112,69 @@ def test_uncertain_purchase_is_not_repeated(tmp_path):
     assert calls.count("/marble/v1/worlds:generate") == 1
 
 
+def test_controller_recovers_only_recorded_credit_402_with_new_capped_binding(tmp_path, monkeypatch):
+    from blueprint_pipeline import paid_resource_allocator as allocator
+    from blueprint_pipeline import website_task_context as control
+    from blueprint_pipeline.common import write_json
+    descriptor = _descriptor(tmp_path)
+    descriptor["metadata"].pop("website_reconstruction_admission")
+    descriptor["metadata"]["site_task_context"].update({
+        "context_digest": "sha256:" + "b" * 64, "request_id": "request-one",
+        "scene_id": "site-test", "capture_id": "walkthrough-test"})
+    # The prepared view task hash binds the complete task context.
+    prep = descriptor["metadata"]["clean_plate"]["prepared_views"]
+    prep["task_context_sha256"] = sha256(json.dumps(descriptor["metadata"]["site_task_context"],
+        sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    prep["digest"] = canonical_digest(prep, digest_field="digest")
+    monkeypatch.setattr(allocator, "_current_checkout_source_state", lambda: ("1" * 40, True, True))
+    monkeypatch.setattr(allocator, "_source_checkout_blockers", lambda *_a, **_k: ([], "1" * 40))
+    monkeypatch.setattr(provider_preview, "_worldlabs_api_key", lambda: "test")
+    reservations, requests, settlements = [], [], []
+
+    def reserve(**kwargs):
+        reservations.append(kwargs)
+        admission = {"schema_version": "paid_lane_admission.v1", "status": "admitted", "blockers": [],
+                     "resource_class": kwargs["resource_class"], "external_disclosure_allowed": True,
+                     "maximum_cost_usd": kwargs["maximum_cost_usd"],
+                     "allocation_binding_digest": kwargs["binding_digest"],
+                     "task_context_digest": "sha256:" + "b" * 64}
+        return admission, _grant(admission)
+
+    def api(path, **kwargs):
+        requests.append(path)
+        if path.endswith("prepare_upload"):
+            return {"media_asset": {"media_asset_id": "image"},
+                    "upload_info": {"upload_url": "https://example.com/upload"}}
+        if requests.count("/marble/v1/worlds:generate") == 1:
+            raise RuntimeError('worldlabs_api_402:{"detail":"Insufficient API credits to start world generation with model marble-1.1-plus"}')
+        return {"operation_id": "retry-operation", "done": False}
+
+    def settle(**kwargs):
+        command = kwargs["payload"]["settlement"]
+        settlements.append(command)
+        return {**command, "status": "settled", "actual_cost_usd": 0}
+
+    monkeypatch.setattr(control, "reserve_website_preparation_spend", reserve)
+    monkeypatch.setattr(control, "website_webapp_request", settle)
+    monkeypatch.setattr(provider_preview, "_worldlabs_api_request", api)
+    monkeypatch.setattr(provider_preview, "_presigned_upload", lambda *a, **k: None)
+    with pytest.raises(RuntimeError, match="worldlabs_api_402") as error:
+        allocator.submit_sponsored_website_reconstruction(descriptor=descriptor, capture_root=tmp_path)
+    write_json(tmp_path / "pipeline/provider_run_manifest.json", {"status": "failed",
+        "provider_run_id": "", "failure_reason": str(error.value)})
+    result = allocator.submit_sponsored_website_reconstruction(descriptor=descriptor, capture_root=tmp_path)
+    again = allocator.submit_sponsored_website_reconstruction(descriptor=descriptor, capture_root=tmp_path)
+    assert result["provider_run_id"] == again["provider_run_id"] == "retry-operation"
+    assert len(reservations) == 2
+    assert reservations[0]["binding_digest"] != reservations[1]["binding_digest"]
+    assert requests.count("/marble/v1/worlds:generate") == 2
+    assert len(settlements) == 1 and settlements[0]["rejection_code"] == "insufficient_api_credits_before_generation"
+    root = tmp_path / "pipeline/website_reconstruction"
+    assert json.loads((root / "submission.json").read_text())["status"] == "rejected_insufficient_credits"
+    assert json.loads((root / "submission_retry_1.json").read_text())["status"] == "submitted"
+    assert (root / "rejection_evidence.json").is_file()
+
+
 def test_admission_dictionary_cannot_authorize_marble_purchase(tmp_path):
     with pytest.raises(RuntimeError, match="grant_missing"):
         submit_website_prepared_views(descriptor=_descriptor(tmp_path), capture_root=tmp_path,
