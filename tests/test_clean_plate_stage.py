@@ -256,6 +256,57 @@ def test_website_stage_prepares_images_without_waiting_for_geometry(tmp_path, mo
     assert forwarded["prepared_views"] == result["prepared_views"]
 
 
+def test_view_first_plan_precedes_masks_and_supplies_only_selected_views(tmp_path, monkeypatch):
+    capture_root = _make_capture(tmp_path)
+    source = capture_root / "raw/walkthrough.mp4"
+    plan = build_removal_plan(targets=[{
+        "target_id": "box", "semantic_label": "blue box", "target_class": "movable_object",
+        "target_role": "task_object", "task_effect": "manipulated", "disposition": "remove",
+        "rebuild_intent": "rebuild_and_compose", "spatial_evidence": [], "confidence": 0.9,
+    }], status="completed", model="test", processing="agentic")
+    plan["task_context_sha256"] = "task-digest"
+    geometry = {"digest": "geometry-digest", "frames": [{"frame_id": "context"}]}
+    selected = [{"frame_id": "task"}, {"frame_id": "context"}]
+    view_plan = {"digest": "views-digest", "frames": selected,
+                 "binding": {"selected_frame_ids": ["task", "context"]}}
+    order = []
+    monkeypatch.setenv("BLUEPRINT_WEBSITE_VIEW_FIRST_SAM", "true")
+    monkeypatch.setattr(_ANALYSIS_ATTR, lambda **kwargs: plan)
+    monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.prepare_website_source_frames",
+                        lambda **kwargs: geometry)
+
+    def choose(**kwargs):
+        order.append("choose")
+        assert kwargs["limit"] == 8
+        return view_plan
+
+    def segment(**kwargs):
+        order.append("segment")
+        assert kwargs["view_plan"] is view_plan
+        return {"targets": []}
+
+    def prepare(**kwargs):
+        order.append("prepare")
+        assert kwargs["frames"] == selected
+        return [{"frame_id": frame["frame_id"], "image_digest": frame["frame_id"],
+                 "remaining_pixel_count": 0} for frame in selected]
+
+    monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.prepare_mask_view_plan", choose)
+    monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.run_website_task_masks", segment)
+    monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.reconstruction_source_frames",
+                        lambda **kwargs: pytest.fail("full-video view expansion was called"))
+    monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.corroborate_removal_views",
+                        lambda **kwargs: (kwargs["frames"], {"status": "passed"}))
+    monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.prepare_object_removal_frames", prepare)
+    monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.select_reconstruction_frames",
+                        lambda **kwargs: kwargs["frames"])
+    result = run_clean_plate_stage(capture_root=capture_root, website_source_video=source,
+                                   privacy_processing={"status": "pending_website_review"})
+    assert order == ["choose", "segment", "prepare"]
+    assert result["status"] == "objects_removed"
+    assert result["prepared_views"]["mask_view_plan_digest"] == "views-digest"
+
+
 # --------------------------------------------------------------------------- #
 # Fail-closed analysis (no paid call)
 # --------------------------------------------------------------------------- #

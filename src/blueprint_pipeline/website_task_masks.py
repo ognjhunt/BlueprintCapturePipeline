@@ -181,7 +181,8 @@ def probe_segmentation_concept(*, target: Mapping[str, Any], concept: str,
 def resolve_video_segmentation_concept(*, target: Mapping[str, Any], tracks: list[Mapping[str, Any]],
                                        registry: list[Mapping[str, Any]], video: Mapping[str, Any],
                                        task_context: Mapping[str, Any], grounding_root: Path,
-                                       probe_root: Path, failed_concept: str) -> Mapping[str, Any]:
+                                       probe_root: Path, failed_concept: str,
+                                       maximum_probes: int = MAXIMUM_CONCEPT_PROBES) -> Mapping[str, Any]:
     """Return a grounded target whose concept the segmenter actually resolves.
 
     The video-analysis noun already bought a full clip and found nothing. Each
@@ -204,8 +205,10 @@ def resolve_video_segmentation_concept(*, target: Mapping[str, Any], tracks: lis
     task_noun = ("under-desk cabinet" if "cabinet" in task_words
                  and ("under the desk" in task_words or "under-desk" in task_words)
                  else None)
-    remaining_probes = MAXIMUM_CONCEPT_PROBES
-    if task_noun and task_noun.casefold() not in (row.casefold() for row in rejected):
+    if not 0 <= maximum_probes <= MAXIMUM_CONCEPT_PROBES:
+        raise ValueError("website_concept_probe_budget_invalid")
+    remaining_probes = maximum_probes
+    if remaining_probes and task_noun and task_noun.casefold() not in (row.casefold() for row in rejected):
         grounded = {**grounded, "segmentation_prompt": task_noun}
         outcome = probe_segmentation_concept(target=grounded, concept=task_noun,
                                              task_context=task_context, output_root=probe_root)
@@ -339,7 +342,8 @@ def estimate_target_bounds(track: Mapping[str, Any], frames: list[Mapping[str, A
 def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[str, Any],
                           output_root: Path, meta_admission: Mapping[str, Any] | None = None,
                           meta_admission_grant: Any = None, task_context: Mapping[str, Any] | None = None,
-                          source_video: Path | None = None, defer_kept_static: bool = False) -> dict[str, Any]:
+                          source_video: Path | None = None, defer_kept_static: bool = False,
+                          view_plan: Mapping[str, Any] | None = None) -> dict[str, Any]:
     targets = [target for target in plan.get("targets", [])
                if target.get("task_effect") in {"manipulated", "static_contact", "static_obstacle"}]
     if not targets:
@@ -359,22 +363,43 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
                "source_frames_digest": source_geometry["digest"],
                "geometry_input_digest": source_geometry.get("geometry_input_digest"), "task_targets": targets,
                "task_context_sha256": plan["task_context_sha256"], "profile_digest": profile["profile_digest"],
-               "mask_input_pixels": ("continuous_source_video_v1" if source_video else "upright_source_v1")
+               "mask_input_pixels": ("selected_original_views_v1" if view_plan else
+                                     "continuous_source_video_v1" if source_video else "upright_source_v1")
                                     if provider == "meta" else "geometry_v1"}
+    if view_plan is not None:
+        if (provider != "meta" or source_video is None or not task_context
+                or view_plan.get("digest") != canonical_digest(view_plan, digest_field="digest")
+                or view_plan.get("source_frame_registry") is None
+                or view_plan.get("video", {}).get("source_video_digest") !=
+                    source_geometry["binding"]["source_video_digest"]):
+            raise ValueError("website_mask_view_plan_invalid")
+        binding["view_plan_digest"] = view_plan["digest"]
     request_key = canonical_digest(binding)
     root = output_root.resolve() / request_key[7:23]
     root.mkdir(parents=True, exist_ok=True)
     frames = list(source_geometry["frames"])
     registry, artifacts, prompts = [], [], []
+    full_registry = []
     prompt_labels = {}
+    grounded_targets = {}
     video_artifact = None
-    if provider == "meta" and source_video is not None:
+    if view_plan is not None:
+        registry, video_artifact = list(view_plan["sparse_registry"]), dict(view_plan["video"])
+        full_registry = list(view_plan["source_frame_registry"])
+        if any(row["source_frame_id"] not in {full["source_frame_id"] for full in full_registry}
+               for row in registry):
+            raise ValueError("website_mask_view_registry_invalid")
+    elif provider == "meta" and source_video is not None:
         registry, video_artifact = prepare_continuous_video(source=source_video,
             source_digest=source_geometry["binding"]["source_video_digest"], root=root)
+        full_registry = registry
+    if provider == "meta" and source_video is not None:
         by_id = {row["source_frame_id"]: row for row in registry}
         for frame in frames:
             row = by_id.get(frame["frame_id"])
-            if row is None or abs(row["decoded_pts_seconds"] - frame["timestamp_seconds"]) > 0.002:
+            if row is not None and abs(row["decoded_pts_seconds"] - frame["timestamp_seconds"]) > 0.002:
+                raise ValueError("website_sam31_geometry_frame_mapping_invalid")
+            if view_plan is None and row is None:
                 raise ValueError("website_sam31_geometry_frame_mapping_invalid")
     for index, frame in enumerate([] if video_artifact else frames):
         source = Path(frame["source_image_path"] if provider == "meta" else frame["image_path"])
@@ -407,6 +432,25 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
             raise ValueError("task_target_spatial_anchor_missing")
         anchor = min(range(len(registry)), key=lambda i: abs(registry[i]["decoded_pts_seconds"] - evidence[0]["timestamp_seconds"]))
         text = target.get("segmentation_prompt") or target["semantic_label"]
+        if view_plan is not None and target.get("task_effect") == "manipulated":
+            from .website_task_grounding import ground_task_target
+            grounded = ground_task_target(target=target, tracks=[], registry=registry,
+                video=video_artifact, task_context=task_context, output_root=root / "grounding")
+            task_words = str(target.get("task_basis_quote", "")).casefold()
+            concept = ("under-desk cabinet" if "cabinet" in task_words
+                       and ("under the desk" in task_words or "under-desk" in task_words)
+                       else grounded["segmentation_prompt"])
+            initial = probe_segmentation_concept(target=grounded, concept=concept,
+                task_context=task_context, output_root=root / "concept_probes")
+            if initial != CONCEPT_RESOLVED:
+                grounded = resolve_video_segmentation_concept(target=grounded, tracks=[], registry=registry,
+                    video=video_artifact, task_context=task_context, grounding_root=root / "grounding",
+                    probe_root=root / "concept_probes", failed_concept=concept,
+                    maximum_probes=MAXIMUM_CONCEPT_PROBES - 1)
+            else:
+                grounded = {**grounded, "segmentation_prompt": concept}
+            grounded_targets[target["target_id"]] = grounded
+            text = grounded["segmentation_prompt"]
         shared = next((p for p in prompts if p["text"].strip().casefold() == text.strip().casefold()), None) if provider == "meta" else None
         if shared is None:
             shared = {"prompt_id": target["target_id"], "text": text,
@@ -458,11 +502,15 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
         candidates = [{**track, "label": target["target_id"]} for track in identity_tracks
                       if track.get("label") == prompt_labels[target["target_id"]]]
         grounding = None
+        if target["target_id"] in grounded_targets:
+            target = grounded_targets[target["target_id"]]
+            grounding = target["grounding"]
         try:
             identity = select_task_track(target=target, tracks=candidates, frames=identity_frames)
         except ValueError as exc:
             if (str(exc) != f"task_target_track_ambiguous:{target['target_id']}"
-                    or provider != "meta" or not video_artifact or not task_context):
+                    or provider != "meta" or not video_artifact or not task_context
+                    or view_plan is not None):
                 raise
             from .website_task_grounding import ground_task_target
             grounded = ground_task_target(target=target, tracks=candidates, registry=registry,
@@ -534,7 +582,7 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
     if deferred_target_ids:
         manifest.update(status="object_removal_ready", deferred_target_ids=deferred_target_ids)
     if video_artifact:
-        manifest["source_frame_registry"] = registry
+        manifest["source_frame_registry"] = full_registry
         manifest["source_video_digest"] = source_geometry["binding"]["source_video_digest"]
     manifest["digest"] = canonical_digest(manifest, digest_field="digest")
     write_json(root / ("task_masks.object_removal.json" if deferred_target_ids else "task_masks.json"), manifest)
