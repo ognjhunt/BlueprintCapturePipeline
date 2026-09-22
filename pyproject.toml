@@ -467,6 +467,9 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+"blueprint_pipeline._sam_parser_js" = ["runner.mjs", "LICENSE", "README.md", "VENDORED_SOURCE.md", "package.json", "dist/*.js", "dist/*.d.ts"]
+
 [tool.ruff]
 target-version = "py310"
 line-length = 100

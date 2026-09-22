@@ -3,6 +3,7 @@ from __future__ import annotations
 from io import BytesIO
 import json
 from pathlib import Path
+import shutil
 
 import pytest
 from PIL import Image
@@ -40,6 +41,7 @@ def test_each_mask_is_decoded_once_while_preserving_official_validation(monkeypa
     import meta_sam_parser
     from meta_sam_parser import _segmentation
 
+    monkeypatch.setattr(sam, "_sam_parser_node", lambda: None)
     decode = meta_sam_parser.decode_mask_to_raster
     calls = []
 
@@ -51,6 +53,16 @@ def test_each_mask_is_decoded_once_while_preserving_official_validation(monkeypa
     monkeypatch.setattr(_segmentation, "decode_mask_to_raster", counted)
     assert sam.parse_tracks(response(), prompt=PROMPT, registry=registry())
     assert len(calls) == 1
+
+
+def test_official_js_parser_matches_python_track_runs(monkeypatch):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is supplied by the production runtime prerequisite")
+    monkeypatch.setattr(sam, "_sam_parser_node", lambda: None)
+    expected = sam.parse_tracks(response(), prompt=PROMPT, registry=registry())
+    monkeypatch.setattr(sam, "_sam_parser_node", lambda: Path(node))
+    assert sam.parse_tracks(response(), prompt=PROMPT, registry=registry()) == expected
 
 
 @pytest.mark.parametrize("text,error", [
