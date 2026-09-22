@@ -46,7 +46,8 @@ def validate_grounding(value: Mapping[str, Any], *, target: Mapping[str, Any], t
 def ground_task_target(*, target: Mapping[str, Any], tracks: Sequence[Mapping[str, Any]],
                        registry: Sequence[Mapping[str, Any]], video: Mapping[str, Any],
                        task_context: Mapping[str, Any], output_root: Path,
-                       failed_segmentation_prompt: str | None = None) -> dict[str, Any]:
+                       failed_segmentation_prompt: str | None = None,
+                       also_rejected: Sequence[str] = ()) -> dict[str, Any]:
     """One bounded observation; no repeated video analysis or human-selected pixels."""
     path = Path(video["path"])
     if _sha256_file(path) != video["sha256"]:
@@ -88,7 +89,18 @@ def ground_task_target(*, target: Mapping[str, Any], tracks: Sequence[Mapping[st
         prompt += (
             " The second image is an unedited crop around the previously localized target. "
             "The segmentation concept " + json.dumps(failed_segmentation_prompt) +
-            " found no matching instance at that location. Inspect the actual appearance and "
+            " found no matching instance at that location. "
+        )
+        if also_rejected:
+            # Without the full list the model re-proposes a near synonym and the
+            # search stops one noun in.
+            prompt += (
+                "These concepts were also already tried on this target and returned nothing: "
+                + json.dumps(list(also_rejected)) + ". Do not repeat any of them or a plural, "
+                "hyphenated or reordered form of them. "
+            )
+        prompt += (
+            "Inspect the actual appearance and "
             "supply a different short visually supported object concept (shape/material may help). "
             "Do not just repeat the task's noun. Do not invent a category to force a match: "
             "if no alternative is supported, set visible false. Keep coordinates relative to "
@@ -99,6 +111,7 @@ def ground_task_target(*, target: Mapping[str, Any], tracks: Sequence[Mapping[st
                "max_output_tokens": 2048, "media_resolution": "MEDIA_RESOLUTION_HIGH"}
     if crop_path is not None:
         binding["concept_recovery"] = {"failed_prompt": failed_segmentation_prompt,
+                                      "also_rejected": list(also_rejected),
                                       "crop_box_pixels": crop_box, "crop_digest": _sha256_file(crop_path)}
 
     def preflight():
