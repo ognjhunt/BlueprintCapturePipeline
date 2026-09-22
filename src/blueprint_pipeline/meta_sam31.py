@@ -153,7 +153,10 @@ def prepare_continuous_video(*, source: Path, source_digest: str, root: Path) ->
 
 def parse_tracks(response: Mapping[str, Any], *, prompt: Mapping[str, Any],
                  registry: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    from meta_sam_parser import CompletedOutcome, decode_mask_to_raster, video_segmentation_format
+    from meta_sam_parser import (CompletedOutcome, InvalidSegmentationMaskError,
+                                 SegmentationMaskIdentity, SegmentationMaskRecord,
+                                 decode_mask_to_raster)
+    from meta_sam_parser._segmentation import _SegmentationParser
 
     if response.get("status") != "completed":
         raise ValueError("meta_sam_response_incomplete")
@@ -166,15 +169,9 @@ def parse_tracks(response: Mapping[str, Any], *, prompt: Mapping[str, Any],
     # The official parser retains box-local bounds, but not the source dimensions.
     if any((int(w), int(h)) != (width, height) for w, h in re.findall(r";w=(\d+);h=(\d+)\|>", text)):
         raise ValueError("meta_sam_source_dimensions_mismatch")
-    parser = video_segmentation_format().create_parser()
-    parser.push(text)
-    parsed = parser.finish(CompletedOutcome()).result
-    if parsed.diagnostics or any(row.kind == "text" and row.text.strip() for row in parsed.records):
-        raise ValueError("meta_sam_output_malformed")
     observations: dict[str, dict[int, dict[str, Any]]] = {}
-    for record in parsed.records:
-        if record.kind != "mask":
-            continue
+
+    def accept_mask(record: Any, decoded: bytes) -> None:
         index = record.frame.frame_index if record.frame else -1
         if not 0 <= index < len(registry):
             raise ValueError("meta_sam_frame_index_invalid")
@@ -186,7 +183,7 @@ def parse_tracks(response: Mapping[str, Any], *, prompt: Mapping[str, Any],
             raise ValueError("meta_sam_mask_bounds_invalid")
         if not (0 < record.mask.width * record.mask.height <= width * height):
             raise ValueError("meta_sam_mask_dimensions_invalid")
-        raster = np.frombuffer(decode_mask_to_raster(record.mask), dtype=np.uint8).reshape(record.mask.height, record.mask.width)
+        raster = np.frombuffer(decoded, dtype=np.uint8).reshape(record.mask.height, record.mask.width)
         if raster.shape != (bottom - top, right - left):
             raster = np.asarray(Image.fromarray(raster).resize((right - left, bottom - top), Image.Resampling.NEAREST))
         mask = np.zeros((height, width), dtype=np.uint8)
@@ -197,6 +194,39 @@ def parse_tracks(response: Mapping[str, Any], *, prompt: Mapping[str, Any],
             "source_frame_id": registry[index]["source_frame_id"], "width": width, "height": height,
             "runs": [{"start": int(start), "length": int(end - start)} for start, end in zip(starts, ends)],
         }
+
+    class _SingleDecodeParser(_SegmentationParser):
+        """The pinned Meta parser's grammar and checks, retaining each verified raster once."""
+
+        def __init__(self) -> None:
+            super().__init__("video")
+
+        def _accept_mask(self, object_id: str, frame: Any, mask: Any, raw: str, bounds: Any) -> None:
+            area = mask.width * mask.height
+            if mask.width <= 0 or mask.height <= 0 or area > (1 << 53) - 1:
+                self._diagnose("invalid_mask_size", "Mask dimensions must be positive.", raw)
+                return
+            try:
+                decoded = decode_mask_to_raster(mask)
+            except InvalidSegmentationMaskError as error:
+                self._diagnose("invalid_mask_payload", str(error), raw)
+                return
+            identity = SegmentationMaskIdentity(
+                media=self._media, frame_index=None if frame is None else frame.frame_index,
+                object_id=object_id)
+            revision = self._revisions.get(identity, 0) + 1
+            self._revisions[identity] = revision
+            record = SegmentationMaskRecord(
+                order=len(self._records), object_id=object_id, frame=frame,
+                identity=identity, revision=revision, mask=mask, bounds=bounds)
+            self._add_record(record)
+            accept_mask(record, decoded)
+
+    parser = _SingleDecodeParser()
+    parser.push(text, emit=False)
+    parsed = parser.finish(CompletedOutcome()).result
+    if parsed.diagnostics or any(row.kind == "text" and row.text.strip() for row in parsed.records):
+        raise ValueError("meta_sam_output_malformed")
     # No invented confidence; IDs are never stitched across disappearance/occlusion.
     return [{"track_id": f"meta-sam31-{prompt['prompt_id']}-{oid}", "label": prompt["output_label"],
              "label_source": "model_inferred", "observations": [rows[i] for i in sorted(rows)]}

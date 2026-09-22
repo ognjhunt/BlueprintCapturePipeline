@@ -36,6 +36,23 @@ def test_official_decoder_places_local_mask_in_source_image_without_inventing_co
     assert "confidence" not in track
 
 
+def test_each_mask_is_decoded_once_while_preserving_official_validation(monkeypatch):
+    import meta_sam_parser
+    from meta_sam_parser import _segmentation
+
+    decode = meta_sam_parser.decode_mask_to_raster
+    calls = []
+
+    def counted(mask):
+        calls.append(mask)
+        return decode(mask)
+
+    monkeypatch.setattr(meta_sam_parser, "decode_mask_to_raster", counted)
+    monkeypatch.setattr(_segmentation, "decode_mask_to_raster", counted)
+    assert sam.parse_tracks(response(), prompt=PROMPT, registry=registry())
+    assert len(calls) == 1
+
+
 @pytest.mark.parametrize("text,error", [
     (response()["output"][0]["content"][0]["text"].replace("<0f>", "<2f>"), "frame_index"),
     (response()["output"][0]["content"][0]["text"].replace("w=4", "w=5"), "dimensions_mismatch"),
