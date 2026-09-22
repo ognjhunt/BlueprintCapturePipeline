@@ -450,6 +450,19 @@ def test_stranding_skips_a_row_rewritten_after_the_dry_run(tmp_path) -> None:
         gc_module.build_stranded_queue_manifest(queue_roots=[queue], running_commit="", classifier=_noclass)
 
 
+def test_policy_dispatcher_keeps_ownership_of_old_release_delivery(tmp_path):
+    queue = tmp_path / "queue"
+    path = _queue_row(queue, "pending", "delivery", commit=STALE_COMMIT)
+    row = json.loads(path.read_text())
+    row["schema_version"] = "task_evaluation_policy_canary_dispatch_envelope.v1"
+    path.write_text(json.dumps(row))
+    manifest = gc_module.build_stranded_queue_manifest(
+        queue_roots=[queue], running_commit=RUNNING_COMMIT, classifier=_noclass)
+    assert manifest["candidate_count"] == 0
+    gc_module.apply_stranded_queue_manifest(manifest, ack=gc_module.STRANDED_ACK)
+    assert path.exists()
+
+
 def _scratch(root: Path, name: str, *, age: float, now: float, directory: bool = True) -> Path:
     path = root / name
     if directory:

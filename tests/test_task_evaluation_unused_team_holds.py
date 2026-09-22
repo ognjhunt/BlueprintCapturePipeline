@@ -95,3 +95,27 @@ def test_refuses_changed_authority_before_releasing_holds(team, change, monkeypa
         holds.retire(**kwargs)
     directory = Path(kwargs["config"]["scene_root"]) / kwargs["intent_id"] / holds.DIRECTORY
     assert not list(directory.glob("controls-adopted-*.json"))
+
+
+def test_completed_placement_reuse_keeps_native_holds_without_inference_reservation(team):
+    kwargs, old, current, binding, reserve = team
+    old["completed_placement_adoption"] = {"adoption_digest": "sha256:" + "a" * 64}
+    old["intent_digest"] = canonical_digest(old, digest_field="intent_digest")
+    root = Path(kwargs["config"]["controls_root"]) / "terminal-adoptions" / kwargs["intent_id"]
+    import json
+    record = json.loads((root / "old" / "terminal_adoption_provisioning.json").read_text())
+    put(Path(record["provisioning"]["intent_path"]), old)
+    directory = Path(kwargs["config"]["scene_root"]) / kwargs["intent_id"]
+    (directory / "attempts" / "controls-adopted-placement.json").unlink()
+    before = {p: p.read_bytes() for p in directory.rglob("*.json")}
+    assert holds.retire(**kwargs, dry_run=True) == []
+    assert holds.retire(**kwargs) == []
+    assert {p: p.read_bytes() for p in directory.rglob("*.json")} == before
+
+
+def test_missing_required_inference_reservation_still_refuses(team):
+    kwargs, old, current, binding, reserve = team
+    directory = Path(kwargs["config"]["scene_root"]) / kwargs["intent_id"]
+    (directory / "attempts" / "controls-adopted-placement.json").unlink()
+    with pytest.raises(ValueError, match="scene_intake_record_unreadable"):
+        holds.retire(**kwargs, dry_run=True)
