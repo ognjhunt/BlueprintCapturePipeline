@@ -343,7 +343,15 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
                               video_artifact=video_artifact)
     digest = canonical_digest(binding)
     root = output_root / digest[7:]
-    retained = bool(prompts) and all((root / f"response-{i}.json").is_file() for i in range(len(prompts)))
+    pending = [i for i in range(len(prompts)) if not (root / f"response-{i}.json").is_file()]
+    retained = bool(prompts) and not pending
+    # The original grant authorizes one dispatch of the whole prompt set. A
+    # stopped worker may have retained only a prefix of its provider responses;
+    # continuing that prefix needs a distinct, bounded grant for the missing
+    # prompts rather than redispatching the already reserved parent binding.
+    admission_digest = (digest if len(pending) == len(prompts) else canonical_digest({
+        "kind": "meta_sam31_pending_prompts_v1", "request_binding_digest": digest,
+        "pending_prompt_indices": pending}))
     image_request = len(frame_registry) == 1
     unit_cost = 0.0025 if image_request else max(50, len(frame_registry)) * PRICE_PER_FRAME_USD
     if not prompts or len({p["prompt_id"] for p in prompts}) != len(prompts):
@@ -366,17 +374,27 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
                 or clip.stat().st_size > 32 * 1024**2 or max(stream["width"], stream["height"]) > 4096
                 or any((row["width"], row["height"]) != (stream["width"], stream["height"]) for row in frame_registry)):
             raise ValueError("meta_sam_encoded_frame_mapping_invalid")
+    if any((root / f"intent-{i}.json").exists() for i in pending):
+        raise ValueError("meta_sam_submission_requires_reconciliation")
+    clip_digest = _sha256_file(clip)
+    for index in range(len(prompts)):
+        if index in pending:
+            continue
+        receipt = json.loads((root / f"response-{index}.json").read_text())
+        if receipt.get("binding_digest") != digest or receipt.get("clip_digest") != clip_digest:
+            raise ValueError("meta_sam_retained_response_changed")
     if not retained:
         if admission_grant is None and task_context is not None:
             from .website_task_context import reserve_website_sam_spend
-            admission, admission_grant = reserve_website_sam_spend(task_context=task_context, binding_digest=digest,
-                maximum_cost_usd=unit_cost * len(prompts), request_count=len(prompts))
+            admission, admission_grant = reserve_website_sam_spend(task_context=task_context,
+                binding_digest=admission_digest, maximum_cost_usd=unit_cost * len(pending),
+                request_count=len(pending))
         require_paid_resource_admission_grant(admission_grant, resource_class="evaluator_api",
-                                              allocation_binding_digest=digest, require_allocation_binding=True)
+                                              allocation_binding_digest=admission_digest, require_allocation_binding=True)
         budget = admission.get("maximum_cost_usd")
-        if (admission.get("allocation_binding_digest") != digest or admission.get("external_disclosure_allowed") is not True
+        if (admission.get("allocation_binding_digest") != admission_digest or admission.get("external_disclosure_allowed") is not True
                 or isinstance(budget, bool) or not isinstance(budget, (int, float)) or not math.isfinite(budget)
-                or budget < unit_cost * len(prompts)):
+                or budget < unit_cost * len(pending)):
             raise ValueError("meta_sam_authorization_missing")
     media = None
     if not retained:
@@ -404,7 +422,8 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
             request = Request(ENDPOINT, data=json.dumps(payload).encode(), method="POST",
                               headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
             with intent_path.open("x") as file:
-                json.dump({"binding_digest": digest, "clip_digest": _sha256_file(clip)}, file)
+                json.dump({"binding_digest": digest, "clip_digest": _sha256_file(clip),
+                           "allocation_binding_digest": admission_digest}, file)
                 file.flush()
                 os.fsync(file.fileno())
             try:
@@ -417,7 +436,8 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
                 # Never include the request, key or a provider-echoed body in logs.
                 write_json(root / f"failure-{index}.json", {"http_status": exc.code, "binding_digest": digest})
                 raise ValueError(f"meta_sam_http_{exc.code}") from None
-            receipt = {"binding_digest": digest, "clip_digest": _sha256_file(clip), "response": response,
+            receipt = {"binding_digest": digest, "clip_digest": _sha256_file(clip),
+                       "allocation_binding_digest": admission_digest, "response": response,
                        "reserved_cost_usd": unit_cost}
             temporary = result_path.with_suffix(".tmp")
             write_json(temporary, receipt)
