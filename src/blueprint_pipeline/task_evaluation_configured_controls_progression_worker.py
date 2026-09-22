@@ -69,6 +69,7 @@ from .task_evaluation_launch_dispatcher import (
 from .task_evaluation_launch_reconciler import validated_succeeded_webapp_sync_row
 from . import task_evaluation_policy_canary_handoff as policy_canary_handoff
 from .task_evaluation_release_identity import bound_to_other_release, running_release_commit
+from .validation_file_digests import file_digest_scope, sha256_file
 
 
 PLAN_SCHEMA_VERSION = "task_evaluation_configured_controls_progression_plan.v2"
@@ -114,11 +115,7 @@ def _load(path: Path, *, blocker: str) -> dict[str, Any]:
 
 
 def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return "sha256:" + digest.hexdigest()
+    return sha256_file(path)
 
 
 def _write_immutable(path: Path, value: Mapping[str, Any]) -> None:
@@ -1685,6 +1682,7 @@ def advance_configured_controls_plan(
     return {"status": result["status"], "source_launch_id": plan["source_launch_id"]}
 
 
+@file_digest_scope()
 def process_plans(**kwargs: Any) -> dict[str, Any]:
     plan_root = Path(kwargs.pop("plan_root")).expanduser()
     intent_root_value = kwargs.pop("autostart_intent_root", None)
