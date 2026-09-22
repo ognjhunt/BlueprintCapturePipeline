@@ -23,10 +23,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
+from .adp_articulated_task_success_contract import (
+    confirmed_task_success_contract_matches_published,
+    task_kind_of_contract,
+    validate_task_success_contract,
+)
 from .adp_task_scoring import (
     TaskNeutralScoringError,
-    confirmed_rigid_task_success_contract_matches_published,
-    validate_rigid_task_success_contract,
 )
 from .decision_evidence_contracts import cross_runtime_canonical_digest
 from .episode_interpretation_batch_authority import (
@@ -426,8 +429,9 @@ def validate_launch_request(value: Mapping[str, Any]) -> list[str]:
         if not set(request).issubset(allowed_fields):
             blockers.append("policy_canary_launch_request_fields_invalid")
         try:
-            task_success_contract = validate_rigid_task_success_contract(
-                _mapping(request.get("task_success_contract"))
+            task_success_contract = validate_task_success_contract(
+                _mapping(request.get("task_success_contract")),
+                task_kind=task_kind_of_contract(_mapping(request.get("task_success_contract"))),
             )
         except TaskNeutralScoringError as exc:
             blockers.append("policy_canary_task_success_contract_invalid:" + str(exc))
@@ -969,7 +973,7 @@ def validate_launch_request_against_public_catalog(
         blockers.append("launch_profile_public_catalog_source_commit_mismatch")
     public_setup = _mapping(descriptor.get("internal_policy_canary_setup"))
     if public_setup:
-        if not confirmed_rigid_task_success_contract_matches_published(
+        if not confirmed_task_success_contract_matches_published(
             published=_mapping(public_setup.get("task_success_contract")),
             selected=_mapping(request.get("task_success_contract")),
         ):

@@ -19,17 +19,23 @@ import tempfile
 import traceback
 from typing import Any
 
+# This module is sealed into the provider bundle with a flat layout, so every
+# sibling it needs has to resolve both ways or the bundle import closure breaks
+# on a rented GPU rather than here.
 try:  # flat provider-bundle layout
-    from adp_task_scoring import (
-        TaskNeutralScoringError,
-        validate_rigid_task_success_contract,
+    from adp_task_scoring import TaskNeutralScoringError
+    from adp_articulated_task_success_contract import (
+        task_kind_of_contract,
+        validate_task_success_contract,
     )
+    from decision_evidence_contracts import canonical_digest
 except ModuleNotFoundError:  # repository package
-    from .adp_task_scoring import (
-        TaskNeutralScoringError,
-        validate_rigid_task_success_contract,
+    from .adp_task_scoring import TaskNeutralScoringError
+    from .adp_articulated_task_success_contract import (
+        task_kind_of_contract,
+        validate_task_success_contract,
     )
-from .decision_evidence_contracts import canonical_digest
+    from .decision_evidence_contracts import canonical_digest
 
 
 SCHEMA_VERSION = "native_task_arena_policy_canary_session.v1"
@@ -219,8 +225,9 @@ def validate_runtime_input_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
         if not _digest(payload.get(field)):
             raise PolicyCanarySessionError("policy_canary_runtime_input_digest_invalid")
     try:
-        task_success_contract = validate_rigid_task_success_contract(
-            _mapping(payload.get("task_success_contract"))
+        task_success_contract = validate_task_success_contract(
+            _mapping(payload.get("task_success_contract")),
+            task_kind=task_kind_of_contract(_mapping(payload.get("task_success_contract"))),
         )
     except TaskNeutralScoringError as exc:
         raise PolicyCanarySessionError(
@@ -616,8 +623,9 @@ def validate_session_result(
             )
     else:
         try:
-            task_success_contract = validate_rigid_task_success_contract(
-                _mapping(raw_success_contract)
+            task_success_contract = validate_task_success_contract(
+                _mapping(raw_success_contract),
+                task_kind=task_kind_of_contract(_mapping(raw_success_contract)),
             )
         except TaskNeutralScoringError as exc:
             raise PolicyCanarySessionError(

@@ -10,8 +10,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from .adp_task_scoring import (
-    confirmed_rigid_task_success_contract_matches_published,
+from .adp_articulated_task_success_contract import (
+    confirmed_task_success_contract_matches_published,
 )
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 from .droid_policy_canary_embodiment import DROID_POLICY_CANARY_PRESET_ID
@@ -341,7 +341,7 @@ def _validate_selection(
         or selected_resource.get("hard_ttl_seconds") != resource["hard_ttl_seconds"]
         or selection.get("task_success_contract_digest")
         != _mapping(selection.get("task_success_contract")).get("contract_digest")
-        or not confirmed_rigid_task_success_contract_matches_published(
+        or not confirmed_task_success_contract_matches_published(
             published=setup["task_success_contract"],
             selected=_mapping(selection.get("task_success_contract")),
         )

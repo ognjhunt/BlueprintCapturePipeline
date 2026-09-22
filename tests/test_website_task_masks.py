@@ -212,50 +212,108 @@ def test_controller_recovers_ambiguous_video_anchor_with_bounded_exact_frame_evi
     target["spatial_evidence"][0]["box_xywh_normalized"] = [0, 0.5, 0.5, 0.5]
     frame = {"frame_id": "frame-0", "timestamp_seconds": 0, "width": 4, "height": 4}
     registry = [{"source_frame_id": "frame-0", "decoded_pts_seconds": 0, "width": 4, "height": 4}]
+    from PIL import Image
+    grounded_frame = tmp_path / "grounded.png"
+    Image.new("RGB", (4, 4), (255, 255, 255)).save(grounded_frame)
     monkeypatch.setenv("BLUEPRINT_WEBSITE_SAM31_PROVIDER", "meta")
     monkeypatch.setattr(masks, "prepare_continuous_video", lambda **kw: (registry, {"path": "prepared.mp4"}))
-    calls = []
+    clips, probes = [], []
     def hosted(**kw):
-        calls.append(kw)
-        wrong = (recovery != "anchor" and len(calls) == 1) or recovery in {"image", "wrong_instance"}
+        clip = kw.get("video_artifact") is not None
+        (clips if clip else probes).append(kw)
+        wrong = (recovery != "anchor" and clip and len(clips) == 1) or recovery in {"image", "wrong_instance"}
         return {"tracks": [_track(start=2 if wrong else 0)]}
     monkeypatch.setattr(masks, "run_meta_sam31", hosted)
     grounds = []
     def ground(**kw):
         grounds.append(kw)
         concept = "white container" if recovery == "unchanged" or (recovery == "crop" and len(grounds) == 1) else "white book"
-        return {**target, **_target(), "segmentation_prompt": concept, "grounding": {"source_frame_id": "frame-0"}}
+        return {**target, **_target(), "segmentation_prompt": concept,
+                "grounding": {"source_frame_id": "frame-0", "source_image_path": str(grounded_frame),
+                              "image_digest": _sha256_file(grounded_frame)}}
     monkeypatch.setattr(grounding, "ground_task_target", ground)
     image_calls = []
     def image_fallback(**kw):
         image_calls.append(kw)
         if recovery == "wrong_instance":
             raise ValueError("task_target_track_ambiguous:task-cup")
-        assert recovery == "image" and kw["target"]["disposition"] == "keep"
+        assert recovery in {"image", "unchanged"} and kw["target"]["disposition"] == "keep"
         return _track()
     monkeypatch.setattr(masks, "segment_grounded_static_target", image_fallback)
     kwargs = dict(plan={"targets": [target], "task_context_sha256": "task"},
         source_geometry={"digest": "source", "geometry_available": False,
                          "binding": {"source_video_digest": "video"}, "frames": [frame]},
         source_video=tmp_path / "source.mov", task_context={"confirmed": True}, output_root=tmp_path / "masks")
-    if recovery in {"unchanged", "wrong_instance"}:
+    if recovery == "wrong_instance":
         with pytest.raises(ValueError, match="track_ambiguous"):
             masks.run_website_task_masks(**kwargs)
-        assert len(calls) == (1 if recovery == "unchanged" else 2)
-        assert len(grounds) == (2 if recovery == "unchanged" else 1)
+    else:
+        result = masks.run_website_task_masks(**kwargs)
+    # anchor: the grounded box alone resolves it. concept/crop: one probe proves
+    # the noun before the clip is bought. image/unchanged/wrong_instance: no
+    # noun is proved, so no second clip is bought at all.
+    assert (len(clips), len(probes), len(grounds), len(image_calls)) == {
+        "anchor": (1, 0, 1, 0), "concept": (2, 1, 1, 0), "crop": (2, 1, 2, 0),
+        "image": (1, 1, 2, 1), "unchanged": (1, 0, 2, 1), "wrong_instance": (1, 1, 2, 1),
+    }[recovery]
+    if recovery == "wrong_instance":
         return
-    result = masks.run_website_task_masks(**kwargs)
-    assert len(image_calls) == (1 if recovery == "image" else 0)
-    assert len(grounds) == (2 if recovery == "crop" else 1)
-    assert len(calls) == (1 if recovery == "anchor" else 2)
     if recovery == "crop":
         assert grounds[1]["failed_segmentation_prompt"] == "white container"
-    if recovery != "anchor":
-        assert calls[1]["prompts"][0]["text"] == "white book"
-        assert calls[1]["video_artifact"] == calls[0]["video_artifact"]
+        assert list(grounds[1]["also_rejected"]) == []
+    if recovery in {"concept", "crop"}:
+        assert probes[0]["prompts"][0]["text"] == "white book"
+        assert probes[0]["frame_registry"][0]["source_frame_id"] == "frame-0"
+        assert clips[1]["prompts"][0]["text"] == "white book"
+        assert clips[1]["video_artifact"] == clips[0]["video_artifact"]
+    if recovery == "image":
+        assert list(grounds[1]["also_rejected"]) == ["white container"]
     assert result["targets"][0]["disposition"] == "keep"
     assert result["targets"][0]["source_track"]["observations"][0]["runs"][0]["start"] == 0
     assert result["targets"][0]["grounding"]["source_frame_id"] == "frame-0"
+
+
+def test_a_removed_target_never_falls_back_to_one_frame_of_evidence(tmp_path, monkeypatch):
+    """A cabinet that must leave every frame cannot be proved by a single mask."""
+    from blueprint_pipeline import website_task_masks as masks, website_task_grounding as grounding
+    target = {**_target(), "semantic_label": "three-drawer wood-front cabinet",
+              "segmentation_prompt": "cabinet", "task_effect": "manipulated", "disposition": "remove"}
+    target["spatial_evidence"][0]["box_xywh_normalized"] = [0, 0.5, 0.5, 0.5]
+    frame = {"frame_id": "frame-0", "timestamp_seconds": 0, "width": 4, "height": 4}
+    registry = [{"source_frame_id": "frame-0", "decoded_pts_seconds": 0, "width": 4, "height": 4}]
+    from PIL import Image
+    grounded_frame = tmp_path / "grounded.png"
+    Image.new("RGB", (4, 4), (255, 255, 255)).save(grounded_frame)
+    monkeypatch.setenv("BLUEPRINT_WEBSITE_SAM31_PROVIDER", "meta")
+    monkeypatch.setattr(masks, "prepare_continuous_video", lambda **kw: (registry, {"path": "prepared.mp4"}))
+    concepts, clips = [], []
+    def hosted(**kw):
+        concepts.append(kw["prompts"][0]["text"])
+        if kw.get("video_artifact") is not None:
+            clips.append(kw)
+        return {"tracks": []}
+    monkeypatch.setattr(masks, "run_meta_sam31", hosted)
+    grounds = []
+    def ground(**kw):
+        grounds.append(kw)
+        return {**target, "segmentation_prompt": ["cabinet", "file cabinet", "wooden drawer unit"][len(grounds) - 1],
+                "grounding": {"source_frame_id": "frame-0", "source_image_path": str(grounded_frame),
+                              "image_digest": _sha256_file(grounded_frame)}}
+    monkeypatch.setattr(grounding, "ground_task_target", ground)
+    monkeypatch.setattr(masks, "segment_grounded_static_target",
+                        lambda **kw: pytest.fail("a removed target must not be rescued from one frame"))
+    with pytest.raises(ValueError, match="track_ambiguous:task-cup"):
+        masks.run_website_task_masks(plan={"targets": [target], "task_context_sha256": "task"},
+            source_geometry={"digest": "source", "geometry_available": False,
+                             "binding": {"source_video_digest": "video"}, "frames": [frame]},
+            source_video=tmp_path / "source.mov", task_context={"confirmed": True},
+            output_root=tmp_path / "masks")
+    # One clip, then only single-frame probes: no second clip is bought for an
+    # unproven noun, and the search stops at the probe budget.
+    assert len(clips) == 1
+    assert concepts == ["cabinet", "file cabinet", "wooden drawer unit"]
+    assert [row["failed_segmentation_prompt"] for row in grounds[1:]] == ["cabinet", "file cabinet"]
+    assert [list(row["also_rejected"]) for row in grounds[1:]] == [[], ["cabinet"]]
 
 
 @pytest.mark.parametrize("case", ["match", "empty", "wrong_instance", "bad_grid", "changed_image", "manipulated"])

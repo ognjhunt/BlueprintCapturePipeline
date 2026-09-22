@@ -1739,3 +1739,137 @@ def test_native_import_handler_refuses_a_declared_destination_without_its_result
         match="scene_configuration_provider_runtime_artifact_missing:destination_native_import_runtime_result",
     ):
         _run_native_stage(tmp_path, inputs, destination_runtime=None)
+
+
+def _articulated_stage_artifacts(tmp_path):
+    """Really compose an assembly, then seal the exact stage-3 artifacts around it."""
+    import hashlib
+    from blueprint_pipeline.task_object_articulated_packaging import (
+        articulation_graph_from_plan, package_astra_articulated_candidate,
+    )
+    from tests.test_task_object_articulated_packaging import MECHANISM, PHYSICS, fixture
+    from blueprint_pipeline.task_evaluation_scene_configuration_submission_records import (
+        articulated_stage_three_configuration, stage_five_configuration, stage_four_configuration,
+    )
+
+    identity = {"id": "website-subject-cab", "version": "v1"}
+    plan, requests, results, bounds = fixture(tmp_path / "authoring")
+    receipt_value = package_astra_articulated_candidate(requests=requests, authoring_results=results, plan=plan,
+                                                        output_root=tmp_path / "packaged", physics_bounds=bounds)
+    completion = dict(receipt_value["physics_completion"])
+    completion["metric_envelope_validation"] = {"status": "within_preregistered_metric_envelope"}
+    completion["completion_digest"] = canonical_digest(completion, digest_field="completion_digest")
+    asset = Path(receipt_value["asset"]["path"])
+    authoring_configuration = articulated_stage_three_configuration(
+        scene_id="scene-1", replacement_identity=identity, source_instance_id="cabinet",
+        authoring_target="three-drawer wood cabinet", source_min=[-0.21, -0.275, 0.0], source_max=[0.21, 0.275, 0.62],
+        dimension_tolerance=0.2, physics_bounds=PHYSICS, mechanism=MECHANISM)
+    graph = {"schema_version": "task_evaluation_articulated_replacement_graph.v1", "asset_id": identity["id"],
+             "asset_version": identity["version"], "articulation_graph": articulation_graph_from_plan(plan),
+             "task_joint_prim_path": completion["task_joint_prim_path"],
+             "task_link_prim_path": completion["task_link_prim_path"],
+             "fixed_base_body_prim_path": completion["fixed_base_body_prim_path"],
+             "handle_prim_paths": completion["handle_prim_paths"],
+             "handle_grasp_point_link_m": completion["handle_grasp_point_link_m"],
+             "link_prim_paths": {row["link_id"]: row["prim_path"] for row in completion["links"]},
+             "assembly_plan": dict(plan), "physics_bounds": bounds, "physics_authority_granted": False,
+             "authoring_backend": "astra_cad_blender_v1"}
+    authoring = {"schema_version": "task_evaluation_articulated_replacement_authoring_result.v1",
+                 "status": "authored_candidate_pending_qualification", "asset_kind": "articulated_assembly",
+                 "replacement_identity": dict(identity), "source_candidate_digest": "sha256:" + "5" * 64,
+                 "source_candidate_claim": "source_geometry_not_observed_truth_or_physics_authority",
+                 "output_usd": {"sha256": "sha256:" + hashlib.sha256(asset.read_bytes()).hexdigest(),
+                                "size_bytes": asset.stat().st_size},
+                 "candidate_physics_completion": completion, "physics_authority_granted": False, "result_digest": ""}
+    authoring["result_digest"] = canonical_digest(authoring, digest_field="result_digest")
+    graph_path, receipt_path = tmp_path / "graph.json", tmp_path / "authoring.json"
+    graph_path.write_text(json.dumps(graph), encoding="utf-8")
+    receipt_path.write_text(json.dumps(authoring), encoding="utf-8")
+    stage_four = stage_four_configuration(replacement_identity=identity, dimension_tolerance=0.2, articulated=True)
+    stage_five = stage_five_configuration(replacement_identity=identity, articulated=True)
+    return dict(identity=identity, asset=asset, graph=graph, graph_path=graph_path, authoring=authoring,
+                receipt_path=receipt_path, authoring_configuration=authoring_configuration,
+                stage_four=stage_four, stage_five=stage_five, plan=plan, completion=completion)
+
+
+def test_articulated_stage_three_and_four_admit_the_composed_assembly(tmp_path):
+    """The stage-3 gate accepts the passive articulation; stage 4 runs the articulated qualifier."""
+    sealed = _articulated_stage_artifacts(tmp_path)
+    envelope = {"recipe": {"subject_identity": sealed["identity"]}}
+    source_candidate = tmp_path / "source.usda"
+    source_candidate.write_text("#usda 1.0\n", encoding="utf-8")
+    configuration_path = tmp_path / "authoring-configuration.json"
+    configuration_path.write_text(json.dumps(sealed["authoring_configuration"]), encoding="utf-8")
+    sealed["authoring"]["source_candidate_digest"] = sha256(source_candidate)
+    sealed["authoring"]["result_digest"] = ""
+    sealed["authoring"]["result_digest"] = canonical_digest(sealed["authoring"], digest_field="result_digest")
+    sealed["receipt_path"].write_text(json.dumps(sealed["authoring"]), encoding="utf-8")
+    stage_three_output = tmp_path / "stage-three-output"
+    stage_three_output.mkdir()
+    stage_three = execute_content_agents_rigid_replacement(
+        envelope=envelope,
+        stage={"stage_id": "stage-3", "capability": "rigid_replacement_authoring", "execution_class": "gpu_canary"},
+        configuration=sealed["authoring_configuration"], configuration_path=configuration_path,
+        dependency_results=({}, {"output_artifacts": [artifact("source_object_candidate_mesh", source_candidate)]}),
+        output_root=stage_three_output,
+        provider_runtime_artifacts=(
+            artifact("replacement_asset", sealed["asset"]),
+            artifact("replacement_authoring_receipt", sealed["receipt_path"]),
+            artifact("replacement_graph_spec", sealed["graph_path"]),
+        ),
+    )
+    assert {row["role"] for row in stage_three["output_artifacts"]} == {
+        "replacement_asset", "replacement_authoring_receipt", "replacement_graph_spec"}
+
+    stage_four_path = tmp_path / "stage-four.json"
+    stage_four_path.write_text(json.dumps(sealed["stage_four"]), encoding="utf-8")
+    stage_four_output = tmp_path / "stage-four-output"
+    stage_four_output.mkdir()
+    result = execute_simready_static_rigid_qualification(
+        envelope=envelope,
+        stage={"stage_id": "stage-4", "capability": "replacement_static_qualification", "execution_class": "no_spend"},
+        configuration=sealed["stage_four"], configuration_path=stage_four_path,
+        dependency_results=({"output_artifacts": [
+            artifact("replacement_asset", sealed["asset"]),
+            artifact("replacement_authoring_receipt", sealed["receipt_path"]),
+            artifact("replacement_graph_spec", sealed["graph_path"]),
+        ]},),
+        output_root=stage_four_output,
+    )
+    roles = {row["role"]: Path(row["path"]) for row in result["output_artifacts"]}
+    assert set(roles) >= {"statically_qualified_replacement_asset", "static_qualification_receipt"}
+    qualification = json.loads(roles["static_qualification_receipt"].read_text())
+    assert qualification["schema_version"] == "task_evaluation_articulated_replacement_static_qualification.v1"
+    assert qualification["asset_kind"] == "articulated_assembly"
+    assert qualification["task_joint"]["joint_id"] == "task_part_joint"
+    assert qualification["claim_boundary"]["native_simulator_import_qualified"] is False
+    assert result["paid_execution_requested"] is False
+
+
+def test_articulated_stage_three_refuses_a_driven_task_joint_declaration(tmp_path):
+    sealed = _articulated_stage_artifacts(tmp_path)
+    envelope = {"recipe": {"subject_identity": sealed["identity"]}}
+    source_candidate = tmp_path / "source.usda"
+    source_candidate.write_text("#usda 1.0\n", encoding="utf-8")
+    configuration_path = tmp_path / "authoring-configuration.json"
+    configuration_path.write_text(json.dumps(sealed["authoring_configuration"]), encoding="utf-8")
+    driven = json.loads(sealed["graph_path"].read_text())
+    for row in driven["articulation_graph"]["joints"]:
+        if row["role"] == "target":
+            row["drive"] = {"drive_type": "force", "stiffness": 500.0, "damping": 5.0, "maximum_force": 100.0}
+    sealed["graph_path"].write_text(json.dumps(driven), encoding="utf-8")
+    output = tmp_path / "refused-output"
+    output.mkdir()
+    with pytest.raises(TaskEvaluationSceneConfigurationAdapterError, match="content_agents_replacement_result_invalid"):
+        execute_content_agents_rigid_replacement(
+            envelope=envelope,
+            stage={"stage_id": "stage-3", "capability": "rigid_replacement_authoring", "execution_class": "gpu_canary"},
+            configuration=sealed["authoring_configuration"], configuration_path=configuration_path,
+            dependency_results=({}, {"output_artifacts": [artifact("source_object_candidate_mesh", source_candidate)]}),
+            output_root=output,
+            provider_runtime_artifacts=(
+                artifact("replacement_asset", sealed["asset"]),
+                artifact("replacement_authoring_receipt", sealed["receipt_path"]),
+                artifact("replacement_graph_spec", sealed["graph_path"]),
+            ),
+        )

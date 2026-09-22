@@ -103,6 +103,7 @@ CONTROLS_RUNTIME_MODULE_NAMES = (
     "adp009d_isaac_episode_adapter.py",
     "adp009d_task_scoring.py",
     "adp_task_scoring.py",
+    "adp_articulated_task_success_contract.py",
     "adp_rigid_task_scoring.py",
     "adp_rigid_retreat_scoring.py",
     "task_evaluation_surface_target.py",

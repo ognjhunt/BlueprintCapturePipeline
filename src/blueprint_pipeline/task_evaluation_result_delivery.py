@@ -23,9 +23,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .adp_articulated_task_success_contract import (
+    task_kind_of_contract,
+    validate_task_success_contract,
+)
 from .adp_task_scoring import (
     TaskNeutralScoringError,
-    validate_rigid_task_success_contract,
 )
 from .adp_episode_evidence_index import INDEX_FILENAME, INDEX_SCHEMA_VERSION
 from .core.security_controls import strict_identifier
@@ -857,8 +860,9 @@ def materialize_policy_canary_result_delivery(
     if not isinstance(episodes, list) or len(episodes) > 20:
         raise TaskEvaluationResultDeliveryError("policy_canary_result_delivery_episodes_invalid")
     try:
-        task_success_contract = validate_rigid_task_success_contract(
-            result.get("task_success_contract") or {}
+        task_success_contract = validate_task_success_contract(
+            result.get("task_success_contract") or {},
+            task_kind=task_kind_of_contract(result.get("task_success_contract") or {}),
         )
     except TaskNeutralScoringError as exc:
         raise TaskEvaluationResultDeliveryError(

@@ -129,7 +129,13 @@ def _source_document(
     *,
     contract_path: str,
     expected_reference: Mapping[str, Any],
+    expected_schema: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Read one exact configured document, byte-checked against its reference.
+
+    ``expected_schema`` lets a sibling task kind reuse this boundary with its
+    own document schemas; omitting it keeps the rigid relocation map.
+    """
     row = references.get(contract_path)
     unresolved_path = Path(
         str((row or {}).get("materialized_path") or "")
@@ -157,7 +163,8 @@ def _source_document(
         ) from exc
     if (
         not isinstance(value, Mapping)
-        or value.get("schema_version") != SOURCE_SCHEMAS[contract_path]
+        or value.get("schema_version")
+        != (expected_schema if expected_schema is not None else SOURCE_SCHEMAS[contract_path])
     ):
         raise TaskEvaluationRigidRelocationNativeAdapterError(
             f"rigid_relocation_native_adapter_source_contract_invalid:{contract_path}"

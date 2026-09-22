@@ -100,6 +100,79 @@ def select_task_track(*, target: Mapping[str, Any], tracks: list[Mapping[str, An
     return scores[0][1]
 
 
+# A concept that cannot find the target is worth one image price to discover
+# and one frame price per decoded frame to discover the expensive way. Three
+# nouns is a bounded search, not a retry loop: each one must be a new concept
+# the model supported with the crop it was shown.
+MAXIMUM_CONCEPT_PROBES = 3
+
+
+def probe_segmentation_concept(*, target: Mapping[str, Any], concept: str,
+                               task_context: Mapping[str, Any], output_root: Path) -> bool:
+    """Prove on one frame that a concept resolves this target before buying the clip.
+
+    The grounded frame holds the same pixels the video call sees, so a noun that
+    finds nothing here will find nothing there. The answer is checked against the
+    model's own verified box rather than accepted because a mask came back.
+    """
+    grounding = target["grounding"]
+    path = Path(grounding["source_image_path"])
+    if _sha256_file(path) != grounding["image_digest"]:
+        raise ValueError("website_grounded_source_image_changed")
+    with Image.open(path) as image:
+        width, height = image.size
+    frame_id = grounding["source_frame_id"]
+    timestamp = float(target["spatial_evidence"][0]["timestamp_seconds"])
+    registry = [{"source_frame_id": frame_id, "model_frame_index": 0, "width": width, "height": height,
+                 "decoded_pts_seconds": timestamp, "concept_probe": True}]
+    result = run_meta_sam31(frame_registry=registry,
+        frame_artifacts=[{"source_frame_id": frame_id, "path": str(path), "sha256": grounding["image_digest"]}],
+        prompts=[{"prompt_id": target["target_id"], "output_label": target["target_id"], "text": concept}],
+        output_root=output_root, admission={}, task_context=task_context)
+    candidates = [{**track, "label": target["target_id"]} for track in result["tracks"]]
+    try:
+        select_task_track(target=target, tracks=candidates,
+                          frames=[{"frame_id": frame_id, "timestamp_seconds": timestamp}])
+    except ValueError as exc:
+        if str(exc) != f"task_target_track_ambiguous:{target['target_id']}":
+            raise
+        return False
+    return True
+
+
+def resolve_video_segmentation_concept(*, target: Mapping[str, Any], tracks: list[Mapping[str, Any]],
+                                       registry: list[Mapping[str, Any]], video: Mapping[str, Any],
+                                       task_context: Mapping[str, Any], grounding_root: Path,
+                                       probe_root: Path, failed_concept: str) -> Mapping[str, Any]:
+    """Return a grounded target whose concept the segmenter actually resolves.
+
+    The video-analysis noun already bought a full clip and found nothing. Each
+    further noun comes from the model looking at the crop of the target it
+    localized, and is spent on one frame before it is spent on the whole clip.
+    """
+    from .website_task_grounding import ground_task_target
+
+    grounded = target
+    rejected = [failed_concept.strip()]
+    for attempt in range(MAXIMUM_CONCEPT_PROBES):
+        if attempt:
+            grounded = ground_task_target(target=grounded, tracks=tracks, registry=registry, video=video,
+                task_context=task_context, output_root=grounding_root,
+                failed_segmentation_prompt=rejected[-1], also_rejected=rejected[:-1])
+        concept = grounded["segmentation_prompt"].strip()
+        if any(concept.casefold() == row.casefold() for row in rejected):
+            # Repeating a concept after being shown what it missed means the
+            # model has no further supported reading of these pixels.
+            if attempt:
+                break
+            continue
+        if probe_segmentation_concept(target=grounded, concept=concept, task_context=task_context,
+                                      output_root=probe_root / f"{attempt:02d}"):
+            return grounded
+        rejected.append(concept)
+    raise ValueError(f"task_target_track_ambiguous:{target['target_id']}")
+
+
 def segment_grounded_static_target(*, target: Mapping[str, Any], registry: list[Mapping[str, Any]],
                                    task_context: Mapping[str, Any], output_root: Path) -> Mapping[str, Any]:
     """One source-image mask for a static contact surface missed by video SAM.
@@ -336,27 +409,39 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
                 if str(grounded_exc) != f"task_target_track_ambiguous:{target['target_id']}":
                     raise
                 previous_prompt = next(p["text"] for p in prompts if p["output_label"] == prompt_labels[target["target_id"]])
-                if grounded["segmentation_prompt"].casefold() == previous_prompt.casefold():
-                    grounded = ground_task_target(target=grounded, tracks=candidates, registry=registry,
-                        video=video_artifact, task_context=task_context, output_root=root / "grounding",
-                        failed_segmentation_prompt=previous_prompt)
-                    grounding = grounded["grounding"]
-                if grounded["segmentation_prompt"].casefold() == previous_prompt.casefold():
-                    raise
-                # Only one evidence-derived concept refinement. Reuse full-video
-                # transport and admission; never buy repeated identical attempts.
-                refined = run_meta_sam31(frame_registry=registry, frame_artifacts=[],
-                    prompts=[{"prompt_id": target["target_id"], "output_label": target["target_id"],
-                              "text": grounded["segmentation_prompt"]}], output_root=root / "grounded_masks",
-                    admission={}, task_context=task_context, video_artifact=video_artifact)
+                ambiguous = f"task_target_track_ambiguous:{target['target_id']}"
+                # A surface the task only rests on still has the single-frame
+                # rescue; an object that must be removed from every frame does
+                # not, and fails here rather than shipping one frame of evidence.
+                single_frame_rescue = (target.get("task_effect") == "static_contact"
+                                       and target.get("disposition") == "keep")
                 try:
-                    identity = select_task_track(target=grounded, tracks=refined["tracks"], frames=identity_frames)
-                except ValueError as refined_exc:
-                    if (str(refined_exc) != f"task_target_track_ambiguous:{target['target_id']}"
-                            or target.get("task_effect") != "static_contact" or target.get("disposition") != "keep"):
+                    # Bounded concept search, each candidate proved on the
+                    # grounded frame first. Reuse full-video transport and
+                    # admission; never buy repeated identical attempts, and never
+                    # buy a whole clip for a noun the segmenter has not resolved.
+                    grounded = resolve_video_segmentation_concept(target=grounded, tracks=candidates,
+                        registry=registry, video=video_artifact, task_context=task_context,
+                        grounding_root=root / "grounding", probe_root=root / "concept_probes",
+                        failed_concept=previous_prompt)
+                except ValueError as concept_exc:
+                    if str(concept_exc) != ambiguous or not single_frame_rescue:
                         raise
                     identity = segment_grounded_static_target(target=grounded, registry=registry,
                         task_context=task_context, output_root=root / "grounded_static_masks" / target["target_id"])
+                else:
+                    grounding = grounded["grounding"]
+                    refined = run_meta_sam31(frame_registry=registry, frame_artifacts=[],
+                        prompts=[{"prompt_id": target["target_id"], "output_label": target["target_id"],
+                                  "text": grounded["segmentation_prompt"]}], output_root=root / "grounded_masks",
+                        admission={}, task_context=task_context, video_artifact=video_artifact)
+                    try:
+                        identity = select_task_track(target=grounded, tracks=refined["tracks"], frames=identity_frames)
+                    except ValueError as refined_exc:
+                        if str(refined_exc) != ambiguous or not single_frame_rescue:
+                            raise
+                        identity = segment_grounded_static_target(target=grounded, registry=registry,
+                            task_context=task_context, output_root=root / "grounded_static_masks" / target["target_id"])
                 # The concept can change while target id stays fixed; replace the
                 # sampled candidate below from the exact selected full track.
             tracks = [row for row in tracks if row["track_id"] != identity["track_id"]]

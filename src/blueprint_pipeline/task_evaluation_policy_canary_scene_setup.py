@@ -18,10 +18,19 @@ import subprocess  # nosec B404 - fixed runuser/sha256sum argv for service readb
 import tempfile
 from typing import Any, Callable
 
+from .adp_articulated_task_success_contract import (
+    SCHEMA_VERSION as ARTICULATED_TASK_SUCCESS_CONTRACT_SCHEMA_VERSION,
+    seal_task_success_contract,
+    task_kind_of_contract,
+    validate_task_success_contract,
+)
 from .adp_task_scoring import (
     TaskNeutralScoringError,
-    seal_rigid_task_success_contract,
-    validate_rigid_task_success_contract,
+    # Re-exported: the rigid sealer and validator remain this module's public
+    # surface for the rigid lane and its tests, while the facade above selects
+    # between them and the articulated pair by task kind.
+    seal_rigid_task_success_contract,  # noqa: F401
+    validate_rigid_task_success_contract,  # noqa: F401
 )
 from .adp009d_droid_observation import (
     CANDIDATE_REQUIRED_VIEWS,
@@ -341,9 +350,52 @@ def _quick_cells(
     return cells
 
 
+def _require_strict_articulated_owner_contract(
+    *, task_spec: Mapping[str, Any], contract: Mapping[str, Any]
+) -> None:
+    """An owner-strict open/close contract may not weaken the executable threshold."""
+
+    criteria = _mapping_or_empty(contract.get("criteria"))
+    opening = _mapping_or_empty(criteria.get("opening"))
+    hold = _mapping_or_empty(criteria.get("hold"))
+    ledger = _mapping_or_empty(criteria.get("temporal_invariants"))
+    executable = _mapping_or_empty(task_spec.get("executable_opening_threshold"))
+    interval = opening.get("success_interval")
+    expected = executable.get("success_interval")
+    if (
+        contract.get("schema_version") != ARTICULATED_TASK_SUCCESS_CONTRACT_SCHEMA_VERSION
+        or opening.get("mode") != "required"
+        or hold.get("mode") != "required"
+        or _mapping_or_empty(criteria.get("assembly_root")).get("mode") != "required"
+        or criteria.get("safety") != {"mode": "required"}
+        or ledger.get("forbidden_collision_allowed") is not False
+        or ledger.get("joint_limit_violation_allowed") is not False
+        or ledger.get("rebound_below_threshold_allowed") is not False
+    ):
+        raise TaskNeutralScoringError(
+            ["policy_canary_owner_success_contract_articulated_predicate_weakened"]
+        )
+    if expected is not None and (
+        not isinstance(interval, list)
+        or len(interval) != 2
+        or any(abs(float(a) - float(b)) > 1e-9 for a, b in zip(interval, expected, strict=False))
+    ):
+        raise TaskNeutralScoringError(
+            ["policy_canary_owner_success_contract_articulated_threshold_changed"]
+        )
+    if (
+        _mapping_or_empty(task_spec.get("configured_success_criteria")).get(
+            "task_joint_drive_forbidden") is not True
+    ):
+        raise TaskNeutralScoringError(
+            ["policy_canary_owner_success_contract_task_joint_drive_not_forbidden"]
+        )
+
+
 def _require_strict_owner_success_contract(
     *, task_spec: Mapping[str, Any], contract: Mapping[str, Any],
     diagnostic_control_omission_authority: Mapping[str, Any] | None = None,
+    task_kind: str = "rigid_pick_place",
 ) -> None:
     """Reject compatibility or weaker scoring for an explicitly strict task.
 
@@ -355,7 +407,8 @@ def _require_strict_owner_success_contract(
         try:
             omission = validate_control_omission_authority(
                 diagnostic_control_omission_authority, contract_digest=contract["contract_digest"])
-            source = validate_rigid_task_success_contract(task_spec["task_success_contract"])
+            source = validate_task_success_contract(
+                task_spec["task_success_contract"], task_kind=task_kind)
             expected = deepcopy(source)
             expected["criteria"].pop("controls", None)
             expected["contract_digest"] = cross_runtime_canonical_digest(expected, digest_field="contract_digest")
@@ -371,6 +424,14 @@ def _require_strict_owner_success_contract(
     if (provenance.get("author_source") == "compatibility_default"
             or provenance.get("confirmation_status") != "confirmed"):
         raise TaskNeutralScoringError(["policy_canary_owner_success_contract_unconfirmed"])
+    if task_kind == "articulated_open_close":
+        # The remaining checks below read rigid predicates (lift, no-drop,
+        # destination containment) that an open/close contract does not carry.
+        # Enforce the articulated equivalents instead: the drawer has to be
+        # opened past a threshold inside the qualified limits, held, and the
+        # assembly has to stay put.
+        _require_strict_articulated_owner_contract(task_spec=task_spec, contract=contract)
+        return
     if configured.get("per_cell_controls_required") is True:
         from .native_policy_canary_control_gate import controls_required
 
@@ -636,14 +697,21 @@ def materialize_scene839873_policy_canary_setup(
         "plan_digest"
     ) != canonical_digest(scene_plan, digest_field="plan_digest"):
         blockers.append("policy_canary_scene_plan_invalid")
+    # The task kind is the scene plan's own; both admitted kinds run on the
+    # same Franka embodiment, and each names the strategies it supports.
+    plan_task_kind = str(scene_plan.get("task_kind") or "")
+    admitted_strategies = {
+        "rigid_pick_place": {"planar_push", "pick_and_place"},
+        "articulated_open_close": {"articulated_open_close"},
+    }.get(plan_task_kind)
     if (
         scene_plan.get("scene_id") != (
             f"interiorgs-{scene_id}" if scene_id.isdecimal() else scene_id
         )
-        or scene_plan.get("task_kind") != "rigid_pick_place"
+        or admitted_strategies is None
         or scene_plan.get("robot", {}).get("robot_id") != "franka_panda"
         or scene_plan.get("task_spec", {}).get("manipulation_strategy")
-        not in {"planar_push", "pick_and_place"}
+        not in admitted_strategies
     ):
         blockers.append("policy_canary_scene_task_embodiment_incompatible")
     task_spec = _mapping_or_empty(scene_plan.get("task_spec"))
@@ -671,7 +739,8 @@ def materialize_scene839873_policy_canary_setup(
         if raw_success_contract is None and owner_contract_required:
             raise TaskNeutralScoringError(["policy_canary_owner_success_contract_required"])
         if raw_success_contract is None:
-            raw_success_contract = seal_rigid_task_success_contract(
+            raw_success_contract = seal_task_success_contract(
+                task_kind=plan_task_kind,
                 task_spec=scene_plan.get("task_spec", {}),
                 site_id=str(scene_plan.get("scene_id") or ""),
                 task_id=str(scene_plan.get("task_id") or ""),
@@ -679,8 +748,9 @@ def materialize_scene839873_policy_canary_setup(
                 author_id="blueprint:manipulation_strategy_defaults.v1",
                 confirmation_status="confirmed",
             )
-        task_success_contract = validate_rigid_task_success_contract(
+        task_success_contract = validate_task_success_contract(
             raw_success_contract,
+            task_kind=plan_task_kind,
             require_confirmed=explicit_execution_contract or owner_contract_required,
             expected_site_id=str(scene_plan.get("scene_id") or ""),
             expected_task_id=str(scene_plan.get("task_id") or ""),
@@ -688,6 +758,7 @@ def materialize_scene839873_policy_canary_setup(
         _require_strict_owner_success_contract(
             task_spec=task_spec, contract=task_success_contract,
             diagnostic_control_omission_authority=diagnostic_control_omission_authority,
+            task_kind=plan_task_kind,
         )
         if launch_request.get("task_success_contract") is not None and (
             launch_request.get("task_success_contract_digest")
@@ -990,7 +1061,15 @@ def materialize_policy_canary_presubmission_setup(
     action_schema_id = "droid_absolute_joint_position_v1"
     simulator_runtime_id = "isaac_native_arena_v1"
     embodiment_id = DROID_EMBODIMENT_ID
-    task_family_id = "rigid_relocation"
+    # The family a policy is declared compatible with follows the scene plan's
+    # own task kind, read from the exact plan this setup is being built for.
+    task_family_id = (
+        "articulated_open_close"
+        if str(
+            _read(scene_plan_path, code="policy_canary_scene_plan_invalid").get("task_kind") or ""
+        ) == "articulated_open_close"
+        else "rigid_relocation"
+    )
     policies = []
     for candidate_id in CANDIDATE_IDS:
         row = readiness_by_id[candidate_id]
@@ -1702,8 +1781,9 @@ def materialize_scene839873_policy_canary_setup_from_template(
         "task_success_contract_digest"
     ) or activation.get("task_success_contract_digest")
     try:
-        validated_activation_contract = validate_rigid_task_success_contract(
-            activation_task_success_contract
+        validated_activation_contract = validate_task_success_contract(
+            activation_task_success_contract,
+            task_kind=task_kind_of_contract(activation_task_success_contract),
         )
     except TaskNeutralScoringError as exc:
         raise PolicyCanarySetupError(list(exc.errors)) from exc

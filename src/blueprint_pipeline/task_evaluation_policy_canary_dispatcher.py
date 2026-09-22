@@ -28,9 +28,12 @@ import zipfile
 from datetime import datetime, timezone
 from typing import Any, Callable, Mapping, Sequence
 
+from .adp_articulated_task_success_contract import (
+    task_kind_of_contract,
+    validate_task_success_contract,
+)
 from .adp_task_scoring import (
     TaskNeutralScoringError,
-    validate_rigid_task_success_contract,
 )
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
@@ -279,8 +282,9 @@ def validate_policy_canary_execution_setup(
                     "policy_canary_setup_task_success_contract_binding_mismatch"
                 )
     try:
-        success_contract = validate_rigid_task_success_contract(
-            _mapping(setup.get("task_success_contract"))
+        success_contract = validate_task_success_contract(
+            _mapping(setup.get("task_success_contract")),
+            task_kind=task_kind_of_contract(_mapping(setup.get("task_success_contract"))),
         )
     except TaskNeutralScoringError as exc:
         raise TaskEvaluationPolicyCanaryDispatchError(
@@ -2229,8 +2233,9 @@ def process_policy_canary_dispatch_queue(
                 activation_payload.get("task_success_contract_digest"),
             )
             try:
-                envelope_success_contract = validate_rigid_task_success_contract(
-                    _mapping(raw_success_contract)
+                envelope_success_contract = validate_task_success_contract(
+                    _mapping(raw_success_contract),
+                    task_kind=task_kind_of_contract(_mapping(raw_success_contract)),
                 )
             except TaskNeutralScoringError as exc:
                 raise TaskEvaluationPolicyCanaryDispatchError(

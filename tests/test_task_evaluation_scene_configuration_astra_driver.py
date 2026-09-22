@@ -486,3 +486,84 @@ def test_cad_output_budget_fits_the_observed_stage_cost_reservation():
         for cost in observed_input_usd
     )
     assert projected < stage_cap_usd, f"projects {projected:.2f} over the {stage_cap_usd} cap"
+
+
+def _articulated_configuration():
+    from blueprint_pipeline.task_evaluation_scene_configuration_submission_records import (
+        articulated_stage_three_configuration,
+    )
+    from tests.test_task_object_articulated_packaging import MECHANISM, PHYSICS
+    return articulated_stage_three_configuration(
+        scene_id="scene-1", replacement_identity={"id": "source_cabinet", "version": "v1"},
+        source_instance_id="cabinet-1", authoring_target="three-drawer wood cabinet with silver handles",
+        source_min=[-0.21, -0.275, 0.0], source_max=[0.21, 0.275, 0.62], dimension_tolerance=0.2,
+        physics_bounds=PHYSICS, mechanism=MECHANISM)
+
+
+def test_articulated_configuration_authors_each_part_and_seals_one_assembly(component, retained):
+    """Two bounded part sessions, one composed articulation, checkpointed parts on retry."""
+    from tests.test_task_object_articulated_packaging import _part
+    configuration = _articulated_configuration()
+    retained.input["configuration"] = configuration
+    retained.config.clear()
+    retained.config.update(configuration)
+    Path(component.environment[driver._INPUT_ENV]).write_text(json.dumps(retained.input))
+    authored_parts = []
+
+    def author(**kw):
+        assert component.events[-1] in {"reserve", "sdk"}
+        request_value = kw["request_value"]
+        authored_parts.append(request_value["object_id"])
+        spec = SimpleNamespace(run_id=retained.input["run_id"], model="gpt-6-astra", max_turns=1,
+            tool_bindings=(), max_output_tokens=12000, max_input_tokens=80000, reasoning_effort="high")
+        kw["invoker"].invoke(spec, "fake")
+        part_id = request_value["object_id"].rsplit("__", 1)[1]
+        mass, density = (12.0, (60.0, 140.0)) if part_id == "carcass" else (2.0, (30.0, 120.0))
+        bounds = {"mass_kg": [4.0, 40.0] if part_id == "carcass" else [0.5, 6.0], "static_friction": [0.3, 0.8],
+                  "dynamic_friction": [0.2, 0.6], "restitution": [0.0, 0.2]}
+        _, result, _ = _part(kw["output_root"] / "fixture", object_id=request_value["object_id"],
+                             dimensions=request_value["dimensions_m"], mass_kg=mass, density=density, bounds=bounds)
+        result["request_digest"] = request_value["request_digest"]
+        result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+        (kw["output_root"] / "result.json").write_text(json.dumps(result))
+        return result
+
+    component.kwargs["authoring_executor"] = author
+    component.kwargs["package_candidate"] = None  # the real articulated packager composes the USD
+    result = driver.execute_astra_component(**component.kwargs)
+    assert authored_parts == ["source_cabinet__carcass", "source_cabinet__drawer"]
+    assert component.events.count("sdk") == 2 and component.events[-1] == "complete"
+    assert result["asset_kind"] == "articulated_assembly"
+    artifacts = {row["role"]: Path(row["path"]) for row in result["artifacts"]}
+    assert set(artifacts) == {"replacement_asset", "replacement_authoring_receipt", "replacement_graph_spec"}
+    receipt = json.loads(artifacts["replacement_authoring_receipt"].read_text())
+    assert receipt["schema_version"] == driver.ARTICULATED_RECEIPT_SCHEMA_VERSION
+    assert receipt["status"] == "authored_candidate_pending_qualification" and receipt["physics_authority_granted"] is False
+    assert set(receipt["part_authoring_results"]) == {"carcass", "drawer"}
+    completion = receipt["candidate_physics_completion"]
+    assert completion["metric_envelope_validation"]["status"] == "within_preregistered_metric_envelope"
+    assert completion["task_joint_prim_path"] == "/Asset/joints/task_part_joint"
+    graph = json.loads(artifacts["replacement_graph_spec"].read_text())
+    assert graph["schema_version"] == driver.ARTICULATED_GRAPH_SCHEMA_VERSION
+    assert [j["joint_type"] for j in graph["articulation_graph"]["joints"]] == ["fixed", "prismatic", "fixed"]
+    assert graph["fixed_base_body_prim_path"] == "/Asset/links/carcass"
+    from pxr import Usd, UsdPhysics
+    stage = Usd.Stage.Open(str(artifacts["replacement_asset"]))
+    assert stage.GetDefaultPrim().HasAPI(UsdPhysics.ArticulationRootAPI)
+    # A second run of the same job adopts both completed parts without a model call.
+    events_before = len(component.events)
+    result_path = Path(component.environment[driver._RESULT_ENV])
+    result_path.unlink()
+    again = driver.execute_astra_component(**component.kwargs)
+    assert again["asset_kind"] == "articulated_assembly"
+    assert component.events[events_before:].count("sdk") == 0
+    assert len(authored_parts) == 2
+
+
+def test_articulated_configuration_refuses_rigid_phase_adoption(component, retained):
+    configuration = _articulated_configuration()
+    configuration["astra_phase_adoption"] = {"prior_runtime": "/nonexistent", "schema_version": "x"}
+    retained.input["configuration"] = configuration
+    Path(component.environment[driver._INPUT_ENV]).write_text(json.dumps(retained.input))
+    with pytest.raises(driver.AstraStageError, match="astra_articulated_phase_adoption_unsupported"):
+        driver.execute_astra_component(**component.kwargs)
