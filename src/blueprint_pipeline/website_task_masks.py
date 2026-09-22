@@ -499,6 +499,8 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
         if defer_kept_static and target.get("disposition") == "keep" and target.get("task_effect") != "manipulated":
             deferred_target_ids.append(target["target_id"])
             continue
+        selected_prompt = next(p["text"] for p in prompts
+                               if p["output_label"] == prompt_labels[target["target_id"]])
         candidates = [{**track, "label": target["target_id"]} for track in identity_tracks
                       if track.get("label") == prompt_labels[target["target_id"]]]
         grounding = None
@@ -542,6 +544,7 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
                         raise
                     identity = segment_grounded_static_target(target=grounded, registry=registry,
                         task_context=task_context, output_root=root / "grounded_static_masks" / target["target_id"])
+                    selected_prompt = grounded["segmentation_prompt"]
                 else:
                     grounding = grounded["grounding"]
                     refined = run_meta_sam31(frame_registry=registry, frame_artifacts=[],
@@ -555,6 +558,7 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
                             raise
                         identity = segment_grounded_static_target(target=grounded, registry=registry,
                             task_context=task_context, output_root=root / "grounded_static_masks" / target["target_id"])
+                    selected_prompt = grounded["segmentation_prompt"]
                 # The concept can change while target id stays fixed; replace the
                 # sampled candidate below from the exact selected full track.
             tracks = [row for row in tracks if row["track_id"] != identity["track_id"]]
@@ -567,6 +571,7 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
         selected_track_ids.add(track["track_id"])
         selected.append({"target_id": target["target_id"], "target_role": target.get("target_role"),
                          "semantic_label": target["semantic_label"], "task_effect": target["task_effect"],
+                         "segmentation_prompt": selected_prompt,
                          "placement_relation": target.get("placement_relation"),
                          "articulated_part": target.get("articulated_part") or "",
                          "articulation_kind": target.get("articulation_kind") or "",
