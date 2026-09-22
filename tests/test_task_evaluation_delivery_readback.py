@@ -92,3 +92,44 @@ def test_normal_owner_readback_binds_original_owner_request_and_downloads(tmp_pa
         assert state['posts'][0]['schema_version'] == 'task_evaluation_delivery_readback_request.v2'
         assert 'operator_registration_digest' not in state['posts'][0]
         assert result['owner_user_id'] == 'owner-1'
+
+
+def test_downloads_share_limited_intake_capacity_and_resume_after_busy_response(tmp_path):
+    import threading
+    import time
+    from urllib.error import HTTPError
+
+    args, state = fixture(tmp_path, 5)
+    original = args['opener']
+    capacity = threading.Lock()
+    busy_once = {'value': True}
+
+    class LimitedResponse(Response):
+        def __exit__(self, *exc):
+            try:
+                return super().__exit__(*exc)
+            finally:
+                capacity.release()
+
+        def read(self, *args):
+            time.sleep(0.01)
+            return super().read(*args)
+
+    def limited(call, **kwargs):
+        if call.method == 'POST':
+            return original(call, **kwargs)
+        key = urlsplit(call.full_url).path.rsplit('/', 1)[-1]
+        if key == f'{2:032x}' and busy_once['value']:
+            busy_once['value'] = False
+            raise HTTPError(call.full_url, 503, 'busy', {}, None)
+        assert capacity.acquire(blocking=False), 'downloads must leave intake capacity for controller requests'
+        return LimitedResponse(original(call, **kwargs).getvalue())
+
+    args['opener'] = limited
+    pending = verify_website_delivery(**args)
+    assert pending['status'] == 'pending'
+    assert pending['reason'] == 'website_download_http_503'
+    assert pending['verified_artifact_count'] == 2
+    result = verify_website_delivery(**args)
+    assert result['status'] == 'verified'
+    assert len(state['gets']) == len(set(state['gets'])) == 5

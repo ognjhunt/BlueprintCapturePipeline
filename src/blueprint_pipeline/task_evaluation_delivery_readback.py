@@ -1,7 +1,6 @@
 """Verify Website inbox membership and every published download without saving tickets."""
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import os
@@ -165,9 +164,15 @@ def verify_website_delivery(*, run_root, registration=None, owner_execution=None
             value['verification_digest'] = canonical_digest(value, digest_field='verification_digest')
             _atomic(root / (artifact_id + '.json'), value)
             return value
-        with ThreadPoolExecutor(max_workers=4) as pool:
-            for value in pool.map(download, tickets):
-                finished[value['artifact_id']] = value
+        # Downloads share the intake admission pool with controller requests.
+        # Keep one stream open and retain verified progress if the origin is busy.
+        for ticket in tickets:
+            try:
+                value = download(ticket)
+            except error.HTTPError as exc:
+                return {**expected, 'status': 'pending', 'reason': 'website_download_http_' + str(exc.code),
+                        'verified_artifact_count': len(finished), 'required_artifact_count': len(wanted)}
+            finished[value['artifact_id']] = value
     if len(finished) != len(wanted):
         return {**expected, 'status': 'pending', 'reason': 'download_batches_remaining',
                 'verified_artifact_count': len(finished), 'required_artifact_count': len(wanted)}
