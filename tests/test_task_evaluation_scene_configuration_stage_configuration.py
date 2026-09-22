@@ -226,6 +226,48 @@ def test_each_stage_refuses_missing_config_before_provider_mutation(
         )
 
 
+def _articulated_map() -> dict[str, dict]:
+    from blueprint_pipeline.task_evaluation_scene_configuration_submission_records import (
+        articulated_stage_three_configuration, stage_five_configuration, stage_four_configuration,
+    )
+    configurations = _configuration_map()
+    third = configurations["stage-3"]
+    mechanism = {"part_label": "middle drawer", "joint_type": "prismatic", "estimated_usable_stroke_m": 0.3,
+                 "estimated_front_normal_world": [0.0, -1.0, 0.0], "lock_status": "unknown"}
+    physics = {"mass_kg_bounds": [8.0, 30.0], "task_part_mass_kg_bounds": [0.5, 6.0],
+               "static_friction_bounds": [0.3, 0.8], "dynamic_friction_bounds": [0.2, 0.6],
+               "restitution_bounds": [0.0, 0.2], "joint_friction_bounds": [1.0, 15.0],
+               "joint_damping_bounds": [1.0, 30.0]}
+    configurations["stage-3"] = articulated_stage_three_configuration(
+        scene_id=str(third.get("scene_id") or "scene-1"), replacement_identity=third["replacement_identity"], source_instance_id="cabinet-1",
+        authoring_target="three-drawer cabinet", source_min=third["metric_envelope"]["minimum_xyz_m"],
+        source_max=third["metric_envelope"]["maximum_xyz_m"],
+        dimension_tolerance=third["metric_envelope"]["maximum_dimension_relative_error"],
+        physics_bounds=physics, mechanism=mechanism)
+    configurations["stage-4"] = stage_four_configuration(replacement_identity=third["replacement_identity"],
+                                                          dimension_tolerance=0.2, articulated=True)
+    configurations["stage-5"] = stage_five_configuration(replacement_identity=third["replacement_identity"], articulated=True)
+    return configurations
+
+
+def test_articulated_stage_configurations_pass_and_refuse_a_driven_task_joint() -> None:
+    envelope = _envelope()
+    configurations = _articulated_map()
+    validate_immutable_stage_configurations(envelope=envelope, configurations=configurations)
+    driven = json.loads(json.dumps(configurations))
+    driven["stage-3"]["mechanism"]["passive_dynamics"]["task_joint_drive"] = "position"
+    with pytest.raises(ValueError, match="stage-3"):
+        validate_immutable_stage_configurations(envelope=envelope, configurations=driven)
+    relaxed = json.loads(json.dumps(configurations))
+    relaxed["stage-4"]["required_checks"]["non_target_joints_fixed"] = False
+    with pytest.raises(ValueError, match="stage-4"):
+        validate_immutable_stage_configurations(envelope=envelope, configurations=relaxed)
+    assisted = json.loads(json.dumps(configurations))
+    assisted["stage-5"]["required_checks"]["task_joint_drive_forbidden"] = False
+    with pytest.raises(ValueError, match="stage-5"):
+        validate_immutable_stage_configurations(envelope=envelope, configurations=assisted)
+
+
 def test_stage_three_refuses_physically_impossible_friction_bounds() -> None:
     configurations = _configuration_map()
     required = configurations["stage-3"]["required_output"]

@@ -18,10 +18,14 @@ from tests.test_website_native_appearance import inputs
 from tests.test_task_evaluation_scene_configuration_submission import production_fixture, SHA
 
 
-def setup(tmp_path, monkeypatch, *, development=False):
+def setup(tmp_path, monkeypatch, *, development=False, articulated=False):
     capture = tmp_path / "capture"
     capture.mkdir()
     args, _, _ = inputs(capture)
+    if articulated:
+        from tests.test_website_task_preparation import ARTICULATED_REMOVAL, _masks
+        args["task_masks"] = _masks(args["source_geometry"], destination=False, articulated=True)
+        args["removal_manifest"] = ARTICULATED_REMOVAL
     now = time.time()
     args["now"] = now
     args["spend"] = copy.deepcopy(args["spend"])
@@ -106,6 +110,41 @@ def test_prepared_capture_materializes_a_publishable_native_request_without_raw_
     assert screen["feasibility_claim_allowed"] is False
     assert task["scale_authority"] in {"registration_estimate", "provider_declared_estimate"}
     assert "placement_uncertainty_m" in task and task["physical_world_truth_claimed"] is False
+
+
+def test_articulated_open_close_task_materializes_without_a_surface_target(tmp_path, monkeypatch):
+    kwargs, accepted = setup(tmp_path, monkeypatch, articulated=True)
+    preparation = json.loads(Path(kwargs["task"]["preparation"]["path"]).read_text())
+    assert preparation["intake_request"]["task"]["strategy"] == "articulated_open_close"
+    first = materialize_website_submission(**kwargs)
+    assert materialize_website_submission(**kwargs) == first
+    root = kwargs["staging_root"]
+    manifest, rows = _validated_inventory(root, SHA)
+    assert all(row["publication_allowed"] for row in rows)
+    request = json.loads((root / "scene_configuration_preparation_request.v1.json").read_text())
+    assert request["scene_intent_digest"] == accepted["intent_digest"]
+    task = request["task"]
+    assert task["kind"] == "articulated_manipulation" and task["strategy"] == "articulated_open_close"
+    assert "surface_target" not in task and "destination" not in task
+    template = json.loads((root / "configuration/task.json").read_text())
+    assert template["schema_version"] == "task_evaluation_articulated_open_close_template.v1"
+    assert template["mechanism"]["target_joint_id"] == "task_part_joint"
+    assert template["mechanism"]["joint_limits"][0] == 0.0 and template["mechanism"]["joint_limits"][1] > 0
+    assert template["visible_target_label"] == "middle drawer"
+    assert template["success"]["task_joint_drive_forbidden"] is True
+    assert template["success"]["threshold_binding"] == "frozen_from_qualified_asset_joint_limit_before_any_episode"
+    success = json.loads((root / "configuration/success.json").read_text())
+    assert success["minimum_opening_fraction_of_usable_travel"] == 0.6 and success["minimum_hold_seconds"] == 1.0
+    camera = json.loads((root / "configuration/camera.json").read_text())
+    assert "handle_grasp" in camera["target_visibility_required"]
+    stages = [json.loads((root / f"configuration/stage_{i}.json").read_text()) for i in range(3, 6)]
+    assert stages[0]["schema_version"] == "articulated_replacement_authoring_configuration.v1"
+    assert stages[1]["asset_kind"] == stages[2]["asset_kind"] == "articulated_assembly"
+    assert stages[1]["required_checks"]["non_target_joints_fixed"] is True
+    assert stages[2]["required_checks"]["task_joint_drive_forbidden"] is True
+    assembly = json.loads((root / "configuration/stage_6.json").read_text())
+    assert assembly["replacement"]["asset_kind"] == "articulated_assembly"
+    assert assembly["replacement"]["task_joint_reset"] == "closed"
 
 
 def test_publication_rechecks_owner_revocation(tmp_path, monkeypatch):

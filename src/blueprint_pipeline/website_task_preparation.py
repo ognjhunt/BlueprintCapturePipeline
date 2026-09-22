@@ -41,6 +41,13 @@ GRIPPER = {"model": "robotiq_2f85", "full_stroke_m": FULL_STROKE_M,
 SUCCESS = {"control_frequency_hz": 15, "maximum_episode_seconds": 24.0, "minimum_lift_m": 0.05,
            "pregrasp_clearance_m": 0.1, "minimum_planar_displacement_m": 0.1,
            "maximum_final_planar_target_error_m": 0.05, "maximum_retries": 0, "maximum_regrasps": 0}
+ARTICULATED_SUCCESS = {"control_frequency_hz": 15, "maximum_episode_seconds": 30,
+                       "minimum_opening_fraction_of_estimated_stroke": 0.6, "minimum_hold_seconds": 1.0,
+                       "maximum_retries": 0}
+# Usable travel priors for an unobserved mechanism: a drawer on ordinary slides
+# opens about three quarters of its depth; a door swings about a right angle.
+DRAWER_USABLE_STROKE_FRACTION_OF_DEPTH = 0.75
+DOOR_USABLE_SWING_RAD = math.pi / 2
 # Wide rigid-object priors: estimated bounds only, never measured values.
 PHYSICS_PRIORS = {"density_kg_m3": [50.0, 2500.0], "envelope_fill": [0.2, 1.0],
                   "static_friction": [0.2, 0.9], "dynamic_friction": [0.15, 0.8], "restitution": [0.0, 0.3]}
@@ -315,6 +322,63 @@ def screen_physics(dimensions_m: Sequence[float], *, gripper: Mapping[str, Any] 
             "sensitivity": sensitivity, "measurement_escalation": escalation}
 
 
+def screen_articulated_physics(dimensions_m: Sequence[float], *, joint_type: str,
+                               gripper: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Estimate assembly properties; the pull outcome depends on unobserved slide friction."""
+    dims = [float(value) for value in dimensions_m]
+    volume = max(dims[0] * dims[1] * dims[2], 1e-6)
+    bounds = {
+        "mass_kg": [round(max(4.0, 60.0 * volume), 3), round(max(12.0, 250.0 * volume), 3)],
+        "task_part_mass_kg": [0.5, 6.0],
+        "static_friction": [0.3, 0.8], "dynamic_friction": [0.2, 0.6], "restitution": [0.0, 0.2],
+        # Passive slide/hinge resistance the robot must overcome; unobserved.
+        "joint_friction": [1.0, 15.0], "joint_damping": [1.0, 30.0],
+        "handle_thickness_m": [0.008, 0.02], "handle_length_fraction_of_front_width": [0.5, 0.8],
+    }
+    value = {"basis": "estimated", "dimensions_m": dims, "joint_type": joint_type, "bounds": bounds,
+             "dimension_relative_error": DIMENSION_RELATIVE_ERROR, "physical_measurement_proven": False,
+             "measurement_escalation": {"property": "joint_friction",
+                                        "reason": "drawer_slide_resistance_not_observable_in_footage"}}
+    if gripper is None:
+        value["sensitivity"] = "awaiting_robot_team_selection"
+        return value
+    value["gripper"] = dict(gripper)
+    if bounds["handle_thickness_m"][1] * (1 + DIMENSION_RELATIVE_ERROR) > gripper["full_stroke_m"]:
+        value["sensitivity"] = "blocked_by_estimate"
+        value["measurement_escalation"] = {"property": "handle_thickness_m", "reason": "handle_may_exceed_gripper_stroke"}
+    else:
+        value["sensitivity"] = "outcome_depends_on_estimate"
+    return value
+
+
+def estimate_front_normal(track: Mapping[str, Any], frames_by_id: Mapping[str, Mapping[str, Any]],
+                          source_to_runtime: np.ndarray, center_runtime: Sequence[float], *, up: int,
+                          runtime_to_sim: np.ndarray) -> dict[str, Any]:
+    """Estimate which way the assembly faces: toward the camera of its fullest observation.
+
+    A drawer front is only observed from the side the operator filmed. The
+    horizontal direction from the assembly centre to that camera is the front
+    normal estimate; it is an estimate from registered camera poses, never a
+    measured orientation.
+    """
+    best = max(track["observations"], key=lambda row: sum(run["length"] for run in row["runs"]))
+    frame = frames_by_id[best["source_frame_id"]]
+    camera_source = np.asarray(frame["world_from_camera"], dtype=float)[:3, 3]
+    camera_runtime = (np.asarray(source_to_runtime, dtype=float) @ [*camera_source, 1.0])[:3]
+    direction = camera_runtime - np.asarray(center_runtime, dtype=float)
+    direction[up] = 0.0
+    norm = float(np.linalg.norm(direction))
+    if norm < 1e-9:
+        raise ValueError("website_front_normal_undetermined")
+    direction = direction / norm
+    rotation = np.asarray(runtime_to_sim, dtype=float)[:3, :3]
+    sim = rotation @ direction
+    sim = sim / max(float(np.linalg.norm(sim)), 1e-12)
+    return {"estimated_front_normal_world": [float(v) for v in sim], "basis": "registered_camera_pose_of_fullest_observation",
+            "source_frame_id": frame["frame_id"], "timestamp_seconds": frame.get("timestamp_seconds"),
+            "physical_orientation_measured": False}
+
+
 def _thumbnail(track: Mapping[str, Any], frames_by_id: Mapping[str, Mapping[str, Any]], output: Path) -> dict[str, Any]:
     best = max(track["observations"], key=lambda item: sum(run["length"] for run in item["runs"]))
     frame = frames_by_id[best["source_frame_id"]]
@@ -426,7 +490,18 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                    if support else (None, None))
     destination_rows = [row for row in task_masks["targets"] if row.get("target_role") == "destination"]
     destination = None
-    if len(destination_rows) == 1 and not independent_object:
+    articulation_kind = str(subject_entry.get("articulation_kind") or subject_target.get("articulation_kind") or "")
+    articulated = articulation_kind in {"prismatic", "revolute"}
+    if articulated:
+        # The moving part stays inside its assembly: no destination pose exists.
+        # The whole assembly is removed, rebuilt with one task joint, and
+        # placed back on the support beneath its footprint.
+        articulated_part = str(subject_entry.get("articulated_part") or subject_target.get("articulated_part") or "")
+        if not articulated_part:
+            blockers.append("website_articulated_part_label_required")
+        if destination_rows:
+            blockers.append("website_articulated_task_has_no_destination")
+    elif len(destination_rows) == 1 and not independent_object:
         low, high = _runtime_bounds(destination_rows[0]["estimated_visible_bounds"], matrix)
         position = [(low[i] + high[i]) / 2 for i in range(3)]
         position[up] = (high if up_sign == 1 else low)[up]
@@ -470,16 +545,46 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         frame = frames_by_id[observation["source_frame_id"]]
         authoring_frames.append({"path": frame["image_path"], "sha256": frame["image_digest"],
                                  "role": "observed_source", "frame_id": frame["frame_id"]})
-    physics = screen_physics(dimensions_m)
-    from .task_evaluation_scene_configuration_submission_records import stage_three_configuration
-    authoring_configuration = stage_three_configuration(
-        scene_id=task_context["scene_id"],
-        replacement_identity={"id": "website-subject-" + task_context["context_digest"][7:27], "version": "v1"},
-        source_instance_id=subject_entry["target_id"],
-        authoring_target=subject_entry.get("semantic_label") or subject_entry["target_id"],
-        source_min=sim_min, source_max=sim_max, dimension_tolerance=DIMENSION_RELATIVE_ERROR,
-        physics_bounds={key + "_bounds": value for key, value in physics["bounds"].items()},
+    from .task_evaluation_scene_configuration_submission_records import (
+        articulated_stage_three_configuration, stage_three_configuration,
     )
+    mechanism = None
+    if articulated:
+        physics = screen_articulated_physics(dimensions_m, joint_type=articulation_kind)
+        front = estimate_front_normal(track, frames_by_id, matrix,
+                                      [(subject_min[i] + subject_max[i]) / 2 for i in range(3)],
+                                      up=up, runtime_to_sim=runtime_to_sim)
+        normal = front["estimated_front_normal_world"]
+        depth_m = abs(normal[0]) * dimensions_m[0] + abs(normal[1]) * dimensions_m[1]
+        travel = ({"estimated_usable_stroke_m": round(DRAWER_USABLE_STROKE_FRACTION_OF_DEPTH * depth_m, 4)}
+                  if articulation_kind == "prismatic" else {"estimated_usable_swing_rad": DOOR_USABLE_SWING_RAD})
+        mechanism = {"assembly_label": subject_entry.get("semantic_label") or subject_entry["target_id"],
+                     "part_label": articulated_part or "unspecified part", "joint_type": articulation_kind,
+                     **travel, "travel_authority": "object_prior_estimate_from_estimated_visible_bounds",
+                     "estimated_front_normal_world": normal, "front_normal_basis": front["basis"],
+                     "lock_status": "unknown", "part_observed_open_in_footage": False,
+                     "observation_timestamps_seconds": sorted({float(frames_by_id[row["source_frame_id"]].get("timestamp_seconds") or 0.0)
+                                                              for row in track["observations"]}),
+                     "physical_measurement_proven": False}
+        authoring_configuration = articulated_stage_three_configuration(
+            scene_id=task_context["scene_id"],
+            replacement_identity={"id": "website-subject-" + task_context["context_digest"][7:27], "version": "v1"},
+            source_instance_id=subject_entry["target_id"],
+            authoring_target=subject_entry.get("semantic_label") or subject_entry["target_id"],
+            source_min=sim_min, source_max=sim_max, dimension_tolerance=DIMENSION_RELATIVE_ERROR,
+            physics_bounds={key + "_bounds": value for key, value in physics["bounds"].items()},
+            mechanism=mechanism,
+        )
+    else:
+        physics = screen_physics(dimensions_m)
+        authoring_configuration = stage_three_configuration(
+            scene_id=task_context["scene_id"],
+            replacement_identity={"id": "website-subject-" + task_context["context_digest"][7:27], "version": "v1"},
+            source_instance_id=subject_entry["target_id"],
+            authoring_target=subject_entry.get("semantic_label") or subject_entry["target_id"],
+            source_min=sim_min, source_max=sim_max, dimension_tolerance=DIMENSION_RELATIVE_ERROR,
+            physics_bounds={key + "_bounds": value for key, value in physics["bounds"].items()},
+        )
     authoring_configuration.update(
         source_object_identity=subject_entry["target_id"],
         source_observation_kind="website_capture_frames", dimension_authority="estimated",
@@ -491,6 +596,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
             "operator_answers": task_context.get("operator_answers") or {},
             "task_context_digest": task_context["context_digest"],
             "subject_target_id": subject_entry["target_id"], "destination": destination,
+            **({"mechanism": mechanism} if mechanism else {}),
             "rebuild_only_this_subject": True, "non_target_scene_objects_remain_in_background": True,
             "complete_object_dimensions_observed": False,
             "unknown_surfaces": "Generated completion must remain an explicit assumption.",
@@ -513,7 +619,8 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         # The preparation below binds the reconstructed collider and estimated
         # registration. This is not an owner-uploaded companion mesh or an
         # owner declaration of its coordinate frame.
-        "task": {"task_id": "website-" + task_context["context_digest"][7:27], "strategy": "pick_and_place",
+        "task": {"task_id": "website-" + task_context["context_digest"][7:27],
+                 "strategy": "articulated_open_close" if articulated else "pick_and_place",
                  "subject": {"description": subject_entry.get("semantic_label") or subject_entry["target_id"],
                              "aabb_min_xyz": sim_min, "aabb_max_xyz": sim_max,
                              "coordinate_frame": "Z_up_estimated_meters",
@@ -521,8 +628,9 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                              "complete_object_dimensions": False},
                  "support": {"description": subject_entry.get("support_label") or "support surface under subject",
                              "aabb_min_xyz": sim_support[0], "aabb_max_xyz": sim_support[1]},
-                 "destination": destination or {"needs_input": "task_destination_pose_required"},
-                 "success": dict(SUCCESS)},
+                 **({"articulation": mechanism, "success": dict(ARTICULATED_SUCCESS)} if articulated else
+                    {"destination": destination or {"needs_input": "task_destination_pose_required"},
+                     "success": dict(SUCCESS)})},
         "execution": {"purpose": "scene_preparation", "max_total_spend_usd": spend["max_total_spend_usd"],
                       "max_paid_attempts": spend["max_paid_attempts"], "max_retries": 0,
                       "expires_at_epoch": spend["expires_at_epoch"], "allowed_providers": ["vast", "openai"],
@@ -561,7 +669,8 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                                                            "task_coordinates": "Z_up_estimated_meters",
                                                            "runtime_to_simulator": runtime_to_sim.tolist()},
         "subject": request["task"]["subject"], "support": support, "destination": destination,
-        "authoring_inputs": {"adapter": "content_agents_rigid_replacement", "source_frames": authoring_frames,
+        "authoring_inputs": {"adapter": "astra_articulated_replacement" if articulated else "content_agents_rigid_replacement",
+                             "source_frames": authoring_frames,
                              "configuration": authoring_configuration,
                              "metric_envelope": {"minimum_xyz_m": sim_min,
                                                  "maximum_xyz_m": sim_max,
@@ -571,8 +680,11 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         "intake_request": request, "compose_back": compose_back,
         "recipe_plan": {"observed_appearance_object_removal": "satisfied_by_website_clean_plate_before_reconstruction",
                         "collision_object_excision": "not_required_subject_absent_from_reconstruction",
-                        "rigid_replacement_authoring": "content_agents_rigid_replacement",
-                        "replacement_static_qualification": "simready_static_rigid_qualification",
+                        **({"articulated_replacement_authoring": "astra_articulated_replacement",
+                            "replacement_static_qualification": "simready_static_articulated_qualification"}
+                           if articulated else
+                           {"rigid_replacement_authoring": "content_agents_rigid_replacement",
+                            "replacement_static_qualification": "simready_static_rigid_qualification"}),
                         "replacement_native_import_qualification": "simready_native_import_qualification",
                         "scene_assembly": "native_task_scene_assembly"},
         "provider_mutation_performed": False,

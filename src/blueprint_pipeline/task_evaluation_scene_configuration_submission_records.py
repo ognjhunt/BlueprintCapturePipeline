@@ -93,6 +93,50 @@ PLANAR_PUSH_TASK_SPACE_TARGETS = [
     "target_entry_pose",
     "retract_pose",
 ]
+ARTICULATED_OPEN_CLOSE_TASK_SPACE_TARGETS = [
+    "start_pose",
+    "pregrasp_pose",
+    "handle_grasp_pose",
+    "pull_end_pose",
+    "release_pose",
+    "retreat_pose",
+]
+# Static checks for a multi-link replacement: one articulation root, exactly one
+# target joint with finite limits and a closed reset inside them, every other
+# joint fixed, a tagged handle on the moving part, generated interiors labelled.
+ARTICULATED_STATIC_CHECKS = {
+    "usd_parses": True,
+    "meters_per_unit": 1.0,
+    "up_axis": "Z",
+    "single_articulation_root": True,
+    "target_joint_present_with_finite_limits": True,
+    "closed_reset_inside_limits": True,
+    "non_target_joints_fixed": True,
+    "handle_contact_role_tagged_on_moving_link": True,
+    "collision_geometry_present_per_link": True,
+    "collision_geometry_nonempty_and_finite": True,
+    "mass_and_inertia_positive_finite_per_link": True,
+    "materials_within_preregistered_bounds": True,
+    "generated_geometry_provenance_tagged": True,
+    "no_external_unpinned_dependencies": True,
+    "no_scripts_or_credentials": True,
+}
+ARTICULATED_NATIVE_IMPORT_CHECKS = {
+    "stage_import": True,
+    "articulation_root_enabled": True,
+    "collider_enabled": True,
+    "gravity_settle_seconds": 3.0,
+    "maximum_settle_translation_m": 0.01,
+    "maximum_settle_rotation_rad": 0.08,
+    "support_contact_required": True,
+    "explosion_or_tunneling_forbidden": True,
+    "deterministic_reset_required": True,
+    "state_digest_repeat_count": 3,
+    "target_joint_readback_required": True,
+    "target_joint_limits_enforced": True,
+    "target_joint_static_sweep_required": True,
+    "task_joint_drive_forbidden": True,
+}
 OPENAI_STAGE_CAPS_USD = {
     "artifixer_semantic_teacher": MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD,
     "artifixer_visual_review": MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD,
@@ -254,6 +298,8 @@ def robot_mount_interface_plan(*, scene_id: str, strategy: str) -> dict[str, Any
         "task_space_targets": list(
             PICK_AND_PLACE_TASK_SPACE_TARGETS
             if strategy == "pick_and_place"
+            else ARTICULATED_OPEN_CLOSE_TASK_SPACE_TARGETS
+            if strategy == "articulated_open_close"
             else PLANAR_PUSH_TASK_SPACE_TARGETS
         ),
     }
@@ -263,6 +309,8 @@ def camera_calibration_plan(*, scene_id: str, strategy: str) -> dict[str, Any]:
     visibility = (
         ["start", "grasp", "lift", "transport", "place", "release", "retreat"]
         if strategy == "pick_and_place"
+        else ["start", "handle_approach", "handle_grasp", "pull", "hold_open", "release", "retreat"]
+        if strategy == "articulated_open_close"
         else ["start", "first_contact", "maximum_displacement", "target_entry", "retract"]
     )
     return {
@@ -505,25 +553,30 @@ def stage_three_configuration(
 
 
 def stage_four_configuration(
-    *, replacement_identity: Mapping[str, Any], dimension_tolerance: float
+    *, replacement_identity: Mapping[str, Any], dimension_tolerance: float,
+    articulated: bool = False,
 ) -> dict[str, Any]:
     return {
         "schema_version": "replacement_static_qualification_configuration.v1",
         "status": PENDING_STATUS,
         "replacement_identity": dict(replacement_identity),
-        "required_checks": dict(STATIC_CHECKS),
+        "required_checks": dict(ARTICULATED_STATIC_CHECKS if articulated else STATIC_CHECKS),
+        **({"asset_kind": "articulated_assembly"} if articulated else {}),
         "center_of_mass_must_lie_inside_collision_bounds": True,
         "dimension_tolerance_relative": float(dimension_tolerance),
         "physics_authority_on_pass": "static_candidate_only_pending_native_import",
     }
 
 
-def stage_five_configuration(*, replacement_identity: Mapping[str, Any]) -> dict[str, Any]:
+def stage_five_configuration(
+    *, replacement_identity: Mapping[str, Any], articulated: bool = False
+) -> dict[str, Any]:
     return {
         "schema_version": "replacement_native_import_qualification_configuration.v1",
         "status": PENDING_STATUS,
         "replacement_identity": dict(replacement_identity),
-        "required_checks": dict(NATIVE_IMPORT_CHECKS),
+        "required_checks": dict(ARTICULATED_NATIVE_IMPORT_CHECKS if articulated else NATIVE_IMPORT_CHECKS),
+        **({"asset_kind": "articulated_assembly"} if articulated else {}),
         "runtime": {
             "engine": "Isaac Sim",
             "version_must_match_deployed_runtime": True,
@@ -711,6 +764,229 @@ def pick_and_place_task_records(
             "joint_limit_violation",
             "timeout",
         ],
+    }
+    return template, success_record, execution
+
+
+ARTICULATED_AUTHORING_SCHEMA_VERSION = "articulated_replacement_authoring_configuration.v1"
+ARTICULATED_TARGET_JOINT_ID = "task_part_joint"
+
+
+def articulated_stage_three_configuration(
+    *,
+    scene_id: str,
+    replacement_identity: Mapping[str, Any],
+    source_instance_id: str,
+    authoring_target: str,
+    source_min: Sequence[float],
+    source_max: Sequence[float],
+    dimension_tolerance: float,
+    physics_bounds: Mapping[str, Sequence[float]],
+    mechanism: Mapping[str, Any],
+    authoring_backend: str = "astra_cad_blender_v1",
+) -> dict[str, Any]:
+    """Stage-3 configuration for a multi-link assembly with one task joint.
+
+    The moving part (drawer, door) stays inside its assembly; the authored
+    asset is one articulation root whose only free joint is the task joint.
+    Every other part is a fixed joint. Interiors that the footage never shows
+    are generated candidate geometry and must be tagged as such.
+    """
+
+    if authoring_backend not in {"content_agents", "astra_cad_blender_v1"}:
+        raise ValueError("replacement_authoring_backend_invalid")
+    joint_type = str(mechanism.get("joint_type") or "")
+    if joint_type not in {"prismatic", "revolute"}:
+        raise ValueError("articulated_mechanism_joint_type_invalid")
+    travel_key = "estimated_usable_stroke_m" if joint_type == "prismatic" else "estimated_usable_swing_rad"
+    travel = float(mechanism[travel_key])
+    if not math.isfinite(travel) or travel <= 0.0:
+        raise ValueError("articulated_mechanism_travel_invalid")
+    return {
+        "schema_version": ARTICULATED_AUTHORING_SCHEMA_VERSION,
+        "status": PENDING_STATUS,
+        "scene_id": scene_id,
+        "replacement_identity": dict(replacement_identity),
+        "source_object_identity": f"publisher-instance-{source_instance_id}",
+        "authoring_target": authoring_target,
+        "authoring_backend": authoring_backend,
+        "appearance_inputs": "digest_bound_derived_views_from_stage_1_only",
+        "geometry_support": "publisher_metric_bounds_and_exact_SAGE_target_bounds",
+        "metric_envelope": {
+            "minimum_xyz_m": [float(value) for value in source_min],
+            "maximum_xyz_m": [float(value) for value in source_max],
+            "maximum_dimension_relative_error": float(dimension_tolerance),
+        },
+        "mechanism": {
+            "task_part_label": str(mechanism["part_label"]),
+            "joint_type": joint_type,
+            "target_joint_id": ARTICULATED_TARGET_JOINT_ID,
+            # Asset frame: +X points out of the front face (the opening
+            # direction of a drawer), Z up. The world placement rotates this
+            # frame onto the estimated front normal.
+            "front_face_axis_asset_frame": "+X",
+            "opening_axis_asset_frame": [1.0, 0.0, 0.0],
+            "estimated_front_normal_world": [float(v) for v in mechanism["estimated_front_normal_world"]],
+            travel_key: travel,
+            "travel_authority": str(mechanism.get("travel_authority") or "object_prior_estimate"),
+            "joint_limits": [0.0, travel],
+            "closed_reset_position": 0.0,
+            "non_task_parts": "fixed_joints_closed",
+            "lock_status": str(mechanism.get("lock_status") or "unknown"),
+            "passive_dynamics": {
+                "task_joint_drive": "none",
+                "joint_friction_bounds": [float(v) for v in physics_bounds["joint_friction_bounds"]],
+                "joint_damping_bounds": [float(v) for v in physics_bounds["joint_damping_bounds"]],
+            },
+        },
+        "required_output": {
+            "format": "OpenUSD",
+            "units": "meters",
+            "up_axis": "Z",
+            "articulation_root": True,
+            "single_articulation_root": True,
+            "task_joint_count": 1,
+            "non_task_joints_fixed": True,
+            "task_part_handle_required": True,
+            "visual_mesh_separate_from_collision": True,
+            "generated_interior_labelled": True,
+            "mass_kg_bounds": [float(value) for value in physics_bounds["mass_kg_bounds"]],
+            "task_part_mass_kg_bounds": [float(value) for value in physics_bounds["task_part_mass_kg_bounds"]],
+            "static_friction_bounds": [float(value) for value in physics_bounds["static_friction_bounds"]],
+            "dynamic_friction_bounds": [float(value) for value in physics_bounds["dynamic_friction_bounds"]],
+            "restitution_bounds": [float(value) for value in physics_bounds["restitution_bounds"]],
+        },
+        "physics_authority_granted_by_authoring": False,
+        "provider_disclosure": {
+            "derived_views_and_metric_envelope": True,
+            "raw_interiorgs_bytes": False,
+            "provider_training": False,
+            "public_redistribution": False,
+        },
+        "claim_boundary": (
+            "The authoring agent may propose the assembly, but only independent "
+            "static and native-import qualification admit it; interiors and travel "
+            "are candidates, never observed site truth."
+        ),
+    }
+
+
+def articulated_open_close_task_records(
+    *,
+    task_identity: Mapping[str, Any],
+    object_identity: Mapping[str, Any],
+    start_center: Sequence[float],
+    source_min: Sequence[float],
+    source_max: Sequence[float],
+    mechanism: Mapping[str, Any],
+    success: Mapping[str, Any],
+    resolved_seed: int,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Template, success criteria, and execution spec for one open/close task.
+
+    The opening threshold is a fraction of the usable travel. The numeric
+    threshold is frozen from the qualified asset's joint limit before any
+    episode; the estimate here only documents the intent.
+    """
+
+    frequency = float(success["control_frequency_hz"])
+    seconds = float(success["maximum_episode_seconds"])
+    steps = int(round(frequency * seconds))
+    if not math.isclose(steps / frequency, seconds, rel_tol=0.0, abs_tol=1e-9):
+        raise ValueError("articulated_open_close_episode_timing_not_integral")
+    fraction = float(success["minimum_opening_fraction_of_estimated_stroke"])
+    hold_seconds = float(success["minimum_hold_seconds"])
+    if not 0.0 < fraction <= 1.0 or hold_seconds <= 0.0:
+        raise ValueError("articulated_open_close_success_invalid")
+    joint_type = str(mechanism["joint_type"])
+    travel_key = "estimated_usable_stroke_m" if joint_type == "prismatic" else "estimated_usable_swing_rad"
+    travel = float(mechanism[travel_key])
+    bounds = {
+        "authority": "deterministic_simulator_state",
+        "target_joint_id": ARTICULATED_TARGET_JOINT_ID,
+        "joint_type": joint_type,
+        "minimum_opening_fraction_of_usable_travel": fraction,
+        "estimated_minimum_opening": travel * fraction,
+        "estimated_usable_travel": travel,
+        "travel_authority": str(mechanism.get("travel_authority") or "object_prior_estimate"),
+        "threshold_binding": "frozen_from_qualified_asset_joint_limit_before_any_episode",
+        "minimum_hold_seconds": hold_seconds,
+        "maximum_settled_target_speed": 0.02,
+        "locked_joint_motion_tolerance": 0.01,
+        "root_translation_tolerance_m": 0.05,
+        "root_orientation_tolerance_rad": 0.10,
+        "release_required": False,
+        "closing_required": False,
+        "maximum_retries": int(success["maximum_retries"]),
+        "forbidden_collision_allowed": False,
+        "joint_limit_violation_allowed": False,
+        "owner_success_contract_required": True,
+        "per_cell_controls_required": True,
+        "task_joint_drive_forbidden": True,
+    }
+    success_record = {
+        "schema_version": "task_evaluation_articulated_open_close_success_criteria.v1",
+        "status": "preregistered_before_any_episode",
+        **bounds,
+    }
+    front = [float(v) for v in mechanism["estimated_front_normal_world"]]
+    template = {
+        "schema_version": "task_evaluation_articulated_open_close_template.v1",
+        "status": "preregistered_candidate_pending_configured_scene_revision",
+        "task_identity": dict(task_identity),
+        "object_identity": dict(object_identity),
+        "strategy": "articulated_open_close",
+        "start_center_xyz_m": [float(value) for value in start_center],
+        "assembly_bounds_xyz_m": {"minimum": [float(v) for v in source_min], "maximum": [float(v) for v in source_max]},
+        "mechanism": {
+            "task_part_label": str(mechanism["part_label"]),
+            "joint_type": joint_type,
+            "target_joint_id": ARTICULATED_TARGET_JOINT_ID,
+            "opening_axis_asset_frame": [1.0, 0.0, 0.0],
+            "estimated_front_normal_world": front,
+            travel_key: travel,
+            "joint_limits": [0.0, travel],
+            "closed_reset_position": 0.0,
+            "lock_status": str(mechanism.get("lock_status") or "unknown"),
+        },
+        "success": dict(bounds),
+        "control_frequency_hz": success["control_frequency_hz"],
+        "maximum_step_count": steps,
+        "maximum_episode_seconds": seconds,
+        "resolved_seed": int(resolved_seed),
+        "controls_order": ["zero_action", "deterministic_scripted"],
+        "failure_metrics": [
+            "insufficient_opening",
+            "hold_not_sustained",
+            "assembly_displaced",
+            "forbidden_collision",
+            "joint_limit_violation",
+            "timeout",
+        ],
+        "interaction_affordance": {
+            "contact_feature": "task_part_handle",
+            "approach_unit_asset_frame": [-1.0, 0.0, 0.0],
+            "pull_unit_asset_frame": [1.0, 0.0, 0.0],
+            "jaw_unit_asset_frame": [0.0, 0.0, 1.0],
+            "pregrasp_clearance_m": 0.08,
+        },
+        "preregistration_rule": (
+            "Any scientific task, joint, threshold, object, or success-rule change "
+            "creates a new immutable template version before any episode runs."
+        ),
+    }
+    execution = {
+        "schema_version": "task_evaluation_articulated_open_close_execution_spec.v1",
+        "status": "preregistered_before_any_episode",
+        "strategy": "articulated_open_close",
+        "start_center_xyz_m": [float(value) for value in start_center],
+        "control_frequency_hz": success["control_frequency_hz"],
+        "maximum_step_count": steps,
+        "maximum_episode_seconds": seconds,
+        "resolved_seed": int(resolved_seed),
+        "action_bounds_m_per_step": {"minimum": -0.02, "maximum": 0.02},
+        "collision_exclusions": ["robot_self_collision_pairs_declared_by_robot_configuration"],
+        "termination": ["success", "forbidden_collision", "joint_limit_violation", "timeout"],
     }
     return template, success_record, execution
 
@@ -941,6 +1217,10 @@ __all__ = [
     "metric_envelope_tolerance",
     "metric_registration_input",
     "pick_and_place_task_records",
+    "articulated_open_close_task_records",
+    "articulated_stage_three_configuration",
+    "ARTICULATED_STATIC_CHECKS",
+    "ARTICULATED_NATIVE_IMPORT_CHECKS",
     "recipe",
     "renderer_qualification_plan",
     "rights_admission",

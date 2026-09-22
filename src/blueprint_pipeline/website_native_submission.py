@@ -121,26 +121,39 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
     support_record.update(authority="authored_development_surface" if development else "registered_estimated_capture_and_reconstruction",
                           physical_scale_measured=False, source_face_indices=preparation["support"]["face_indices"])
     from .task_evaluation_surface_target import derive_surface_target, surface_execution_limits
-    destination = owner_task["destination"]
-    require(destination.get("mode") == "existing_support_surface", "website_destination_asset_required")
-    target = derive_surface_target(destination={**destination, "kind": "green_region",
-        "radius_m": math.hypot(*[(upper[i] - lower[i]) / 2 for i in (0, 1)]) + 0.01},
-        support=support_record, source_min=lower, source_max=upper, support_instance_id="website-support")
-    position = destination["position_world_m"]
+    strategy = owner_task["strategy"]
+    articulated = strategy == "articulated_open_close"
     task_identity = {"id": owner_task["task_id"], "version": "v1"}
-    template, success, execution = records.pick_and_place_task_records(
-        task_identity=task_identity, object_identity=construction["subject_identity"],
-        start_center=[(a + b) / 2 for a, b in zip(lower, upper, strict=True)],
-        target_center=[position[0], position[1], position[2] + (upper[2] - lower[2]) / 2],
-        source_min=lower, source_max=upper, grasp_axis=2, grasp_sign=1.0,
-        success=surface_execution_limits(success=owner_task["success"], support=support_record),
-        resolved_seed=1, jaw_axis=min(range(2), key=lambda i: upper[i] - lower[i]))
+    if articulated:
+        require("destination" not in owner_task and isinstance(owner_task.get("articulation"), dict),
+                "website_articulated_task_binding_invalid")
+        destination = target = None
+        template, success, execution = records.articulated_open_close_task_records(
+            task_identity=task_identity, object_identity=construction["subject_identity"],
+            start_center=[(a + b) / 2 for a, b in zip(lower, upper, strict=True)],
+            source_min=lower, source_max=upper, mechanism=owner_task["articulation"],
+            success=owner_task["success"], resolved_seed=1)
+    else:
+        destination = owner_task["destination"]
+        require(destination.get("mode") == "existing_support_surface", "website_destination_asset_required")
+        target = derive_surface_target(destination={**destination, "kind": "green_region",
+            "radius_m": math.hypot(*[(upper[i] - lower[i]) / 2 for i in (0, 1)]) + 0.01},
+            support=support_record, source_min=lower, source_max=upper, support_instance_id="website-support")
+        position = destination["position_world_m"]
+        template, success, execution = records.pick_and_place_task_records(
+            task_identity=task_identity, object_identity=construction["subject_identity"],
+            start_center=[(a + b) / 2 for a, b in zip(lower, upper, strict=True)],
+            target_center=[position[0], position[1], position[2] + (upper[2] - lower[2]) / 2],
+            source_min=lower, source_max=upper, grasp_axis=2, grasp_sign=1.0,
+            success=surface_execution_limits(success=owner_task["success"], support=support_record),
+            resolved_seed=1, jaw_axis=min(range(2), key=lambda i: upper[i] - lower[i]))
     # The estimated property ranges, the grasp-hold sensitivity verdict and the
     # registration's task-region residual travel with the task, so a result can
     # abstain from a feasibility claim the estimate cannot support.
     physics = preparation["physics"]
     template.update(instruction=(LABEL + " " if development else "") + context["description"], instruction_subject_label=subject["description"],
-                    visible_target_label=destination["visible_label"], surface_target=target,
+                    visible_target_label=(owner_task["articulation"]["part_label"] if articulated else destination["visible_label"]),
+                    **({} if articulated else {"surface_target": target}),
                     dimension_authority="estimated", physical_world_truth_claimed=False,
                     physical_property_screen={
                         "basis": physics["basis"], "dimensions_m": physics["dimensions_m"],
@@ -155,8 +168,9 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
     template["owner_success_contract_authority"] = {"confirmation_status": "confirmed",
         "accepted_by": intent["request"]["owner"]["user_id"],
         "authority_reference": "scene-intent:" + intent["intent_digest"]}
-    template["success"]["surface_target"] = target
-    success["surface_target"] = target
+    if not articulated:
+        template["success"]["surface_target"] = target
+        success["surface_target"] = target
     selection_ref = stage.json("configuration/subject.json", {
         "schema_version": "task_evaluation_source_object_selection.v1", "scene_id": scene_id,
         "status": "frozen_before_scene_configuration_run",
@@ -176,7 +190,7 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
     robot_ref = plan("robot_mount_interface", supported_robot_classes=["fixed_arm"], robot_qualified=False)
     workspace_ref = plan("workspace_clearance", workspace_clearance_qualified=False)
     camera_ref = stage.json("configuration/camera.json",
-        records.camera_calibration_plan(scene_id=scene_id, strategy="pick_and_place"))
+        records.camera_calibration_plan(scene_id=scene_id, strategy=strategy))
     config_refs = [stage.json(f"configuration/stage_{i + 1}.json", value)
                    for i, value in enumerate(construction["configurations"])]
     output_identity = {"id": scene_id + "-configured", "version": intent["intent_digest"][7:19]}
@@ -211,7 +225,8 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
                 "source_bytes_redistributable": False, "provider_disclosure_scope": "derived_only"}},
         "construction": {"mode": "production_recipe", "recipe": recipe_ref, "output_identity": output_identity},
         "task": {"identity": task_identity, "binding_mode": "define_configuration_template",
-            "kind": "rigid_relocation", "strategy": "pick_and_place", "surface_target": target,
+            "kind": "articulated_manipulation" if articulated else "rigid_relocation", "strategy": strategy,
+            **({} if articulated else {"surface_target": target}),
             "subject": {"mode": "construct_from_scene_object", "identity": construction["subject_identity"],
                 "representation_kind": "simready_usd", "source_object": selection_ref,
                 "rights_admission": rights_ref, "provider_disclosure_allowed": True},
