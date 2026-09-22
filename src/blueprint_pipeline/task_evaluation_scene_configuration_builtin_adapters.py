@@ -1002,15 +1002,11 @@ def _verify_articulated_replacement_result(
     required_output = configuration.get("required_output")
     mechanism = configuration.get("mechanism")
     completion = receipt.get("candidate_physics_completion")
-    shared = (
-        {
-            "static_friction": required_output.get("static_friction_bounds"),
-            "dynamic_friction": required_output.get("dynamic_friction_bounds"),
-            "restitution": required_output.get("restitution_bounds"),
-        }
-        if isinstance(required_output, Mapping)
-        else {}
-    )
+    shared = {
+        "static_friction": required_output.get("static_friction_bounds"),
+        "dynamic_friction": required_output.get("dynamic_friction_bounds"),
+        "restitution": required_output.get("restitution_bounds"),
+    } if isinstance(required_output, Mapping) else {}
     expected_bounds = {
         "carcass": {**shared, "mass_kg": required_output.get("mass_kg_bounds")},
         "drawer": {**shared, "mass_kg": required_output.get("task_part_mass_kg_bounds")},
@@ -1019,9 +1015,8 @@ def _verify_articulated_replacement_result(
         articulation = validate_articulation_graph(graph.get("articulation_graph") or {})
     except (ArticulationGraphContractError, ValueError, TypeError):
         articulation = None
-    target_joints = (
-        [row for row in articulation["joints"] if row["role"] == "target"] if articulation else []
-    )
+    target_joints = [
+        row for row in articulation["joints"] if row["role"] == "target"] if articulation else []
     if (
         identity != envelope["recipe"]["subject_identity"]
         or not isinstance(required_output, Mapping)
