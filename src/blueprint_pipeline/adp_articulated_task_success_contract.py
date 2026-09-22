@@ -363,6 +363,12 @@ def seal_task_success_contract(*, task_kind: str, **kwargs: Any) -> Any:
 def confirmed_task_success_contract_matches_published(
     *, task_kind: str, published: Mapping[str, Any], selected: Mapping[str, Any]
 ) -> bool:
+    """Match a selection against the published contract of a named kind.
+
+    Callers take the kind from the published contract, which is the authority.
+    A selection that answers with the other kind is not validated as the kind it
+    claims to be: the matcher's validator refuses it and the match is false.
+    """
     confirmed_rigid_task_success_contract_matches_published = _rigid(
         "confirmed_rigid_task_success_contract_matches_published")
     if task_kind == TASK_KIND_ARTICULATED_OPEN_CLOSE:

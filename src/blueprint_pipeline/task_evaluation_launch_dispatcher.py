@@ -972,11 +972,10 @@ def validate_launch_request_against_public_catalog(
         blockers.append("launch_profile_public_catalog_source_commit_mismatch")
     public_setup = _mapping(descriptor.get("internal_policy_canary_setup"))
     if public_setup:
+        published = _mapping(public_setup.get("task_success_contract"))
         if not confirmed_task_success_contract_matches_published(
-            task_kind=task_kind_of_contract(_mapping(public_setup.get("task_success_contract"))),
-            published=_mapping(public_setup.get("task_success_contract")),
-            selected=_mapping(request.get("task_success_contract")),
-        ):
+            task_kind=task_kind_of_contract(published), published=published,
+            selected=_mapping(request.get("task_success_contract"))):
             blockers.append(
                 "launch_profile_public_catalog_task_success_contract_mismatch"
             )

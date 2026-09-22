@@ -7,7 +7,7 @@ import math
 import os
 import re
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 import numpy as np
 from PIL import Image
@@ -101,19 +101,55 @@ def select_task_track(*, target: Mapping[str, Any], tracks: list[Mapping[str, An
 
 
 # A concept that cannot find the target is worth one image price to discover
-# and one frame price per decoded frame to discover the expensive way. Three
+# and one frame price per decoded frame to discover the expensive way. Four
 # nouns is a bounded search, not a retry loop: each one must be a new concept
 # the model supported with the crop it was shown.
-MAXIMUM_CONCEPT_PROBES = 3
+#
+# Four because three is provably too few. On the drawer scene the model spends
+# one noun that finds nothing, one that finds a part, and only then has been
+# told about both failures; the noun that can answer is the next one.
+MAXIMUM_CONCEPT_PROBES = 4
+
+# A sub-part of the target always overlaps the target's own box, so overlap
+# alone cannot tell "the cabinet" from "one of its drawer fronts". A concept is
+# only the target's when its mask also covers most of the box the grounding
+# model drew around the whole thing.
+MINIMUM_CONCEPT_BOX_COVERAGE = 0.6
+
+CONCEPT_RESOLVED = "resolved"
+CONCEPT_NO_INSTANCE = "no_instance"
+CONCEPT_MATCHED_PART = "matched_part"
+
+
+def _grounded_box_coverage(track: Mapping[str, Any], *, box: Sequence[float],
+                           width: int, height: int) -> float:
+    """How much of the grounded box the selected mask actually spans."""
+    mask = decode_track_mask(track["observations"][0])
+    rows, columns = np.nonzero(mask)
+    if not len(columns):
+        return 0.0
+    x, y, box_width, box_height = (float(value) for value in box)
+    left, top = x * width, y * height
+    right, bottom = (x + box_width) * width, (y + box_height) * height
+    scale_x, scale_y = width / mask.shape[1], height / mask.shape[0]
+    mask_left, mask_top = columns.min() * scale_x, rows.min() * scale_y
+    mask_right, mask_bottom = (columns.max() + 1) * scale_x, (rows.max() + 1) * scale_y
+    overlap = (max(0.0, min(right, mask_right) - max(left, mask_left))
+               * max(0.0, min(bottom, mask_bottom) - max(top, mask_top)))
+    area = (right - left) * (bottom - top)
+    return overlap / area if area > 0 else 0.0
 
 
 def probe_segmentation_concept(*, target: Mapping[str, Any], concept: str,
-                               task_context: Mapping[str, Any], output_root: Path) -> bool:
+                               task_context: Mapping[str, Any], output_root: Path) -> str:
     """Prove on one frame that a concept resolves this target before buying the clip.
 
     The grounded frame holds the same pixels the video call sees, so a noun that
-    finds nothing here will find nothing there. The answer is checked against the
-    model's own verified box rather than accepted because a mask came back.
+    finds nothing here will find nothing there. Two ways to fail are worth
+    telling apart: the concept found no instance at all, or it found a part of
+    the target and not the target. `drawers` returns three drawer fronts on a
+    three-drawer cabinet, each one overlapping the cabinet's own box, and the
+    largest would be selected on overlap alone.
     """
     grounding = target["grounding"]
     path = Path(grounding["source_image_path"])
@@ -131,13 +167,15 @@ def probe_segmentation_concept(*, target: Mapping[str, Any], concept: str,
         output_root=output_root, admission={}, task_context=task_context)
     candidates = [{**track, "label": target["target_id"]} for track in result["tracks"]]
     try:
-        select_task_track(target=target, tracks=candidates,
-                          frames=[{"frame_id": frame_id, "timestamp_seconds": timestamp}])
+        selected = select_task_track(target=target, tracks=candidates,
+                                     frames=[{"frame_id": frame_id, "timestamp_seconds": timestamp}])
     except ValueError as exc:
         if str(exc) != f"task_target_track_ambiguous:{target['target_id']}":
             raise
-        return False
-    return True
+        return CONCEPT_NO_INSTANCE
+    coverage = _grounded_box_coverage(selected, box=target["spatial_evidence"][0]["box_xywh_normalized"],
+                                      width=width, height=height)
+    return CONCEPT_RESOLVED if coverage >= MINIMUM_CONCEPT_BOX_COVERAGE else CONCEPT_MATCHED_PART
 
 
 def resolve_video_segmentation_concept(*, target: Mapping[str, Any], tracks: list[Mapping[str, Any]],
@@ -150,24 +188,33 @@ def resolve_video_segmentation_concept(*, target: Mapping[str, Any], tracks: lis
     further noun comes from the model looking at the crop of the target it
     localized, and is spent on one frame before it is spent on the whole clip.
     """
-    from .website_task_grounding import ground_task_target
+    from .website_task_grounding import ground_task_target as _ground
 
-    grounded = target
-    rejected = [failed_concept.strip()]
-    for attempt in range(MAXIMUM_CONCEPT_PROBES):
-        if attempt:
-            grounded = ground_task_target(target=grounded, tracks=tracks, registry=registry, video=video,
+    def tried(value: Mapping[str, Any]) -> bool:
+        concept = value["segmentation_prompt"].strip().casefold()
+        return any(concept == row.casefold() for row in rejected)
+
+    grounded, rejected, outcome = target, [failed_concept.strip()], CONCEPT_NO_INSTANCE
+    # The budget counts probes, not turns. A grounding that hands back a noun
+    # already tried costs nothing and must not use one up, or the two nouns
+    # already known to fail would spend the whole search before the model is
+    # ever told what went wrong with them.
+    for _ in range(MAXIMUM_CONCEPT_PROBES):
+        if tried(grounded):
+            grounded = _ground(target=grounded, tracks=tracks, registry=registry, video=video,
                 task_context=task_context, output_root=grounding_root,
-                failed_segmentation_prompt=rejected[-1], also_rejected=rejected[:-1])
-        concept = grounded["segmentation_prompt"].strip()
-        if any(concept.casefold() == row.casefold() for row in rejected):
-            # Repeating a concept after being shown what it missed means the
-            # model has no further supported reading of these pixels.
-            if attempt:
+                failed_segmentation_prompt=rejected[-1], also_rejected=rejected[:-1],
+                matched_only_part=outcome == CONCEPT_MATCHED_PART)
+            if tried(grounded):
+                # Named every noun that failed and shown the crop, the model
+                # still has no other supported reading of these pixels.
                 break
-            continue
-        if probe_segmentation_concept(target=grounded, concept=concept, task_context=task_context,
-                                      output_root=probe_root / f"{attempt:02d}"):
+        concept = grounded["segmentation_prompt"].strip()
+        # Rooted by the request digest alone, so the same concept is never
+        # bought twice however late in the search it is proposed.
+        outcome = probe_segmentation_concept(target=grounded, concept=concept,
+                                             task_context=task_context, output_root=probe_root)
+        if outcome == CONCEPT_RESOLVED:
             return grounded
         rejected.append(concept)
     raise ValueError(f"task_target_track_ambiguous:{target['target_id']}")
