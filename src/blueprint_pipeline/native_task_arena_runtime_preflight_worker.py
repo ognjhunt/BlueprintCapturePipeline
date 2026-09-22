@@ -819,6 +819,7 @@ def main() -> int:
         )
         from blueprint_pipeline.native_task_arena_readback import (
             read_native_task_arena_object_reset_state,
+            read_native_task_arena_scenario_parameters,
         )
 
         _announce("environment_build")
@@ -845,6 +846,10 @@ def main() -> int:
         env = built.env
         seed = int(plan["scenario"]["seed"])
         env.reset(seed=seed)
+        result["scenario_parameter_readback"] = read_native_task_arena_scenario_parameters(built)
+        if not result["scenario_parameter_readback"]["passed"]:
+            result["blockers"].append("native_task_arena_preflight_scenario_application_failed")
+            raise RuntimeError("native_task_arena_preflight_scenario_application_failed")
         result["object_reset_readback"] = (
             read_native_task_arena_object_reset_state(built)
         )

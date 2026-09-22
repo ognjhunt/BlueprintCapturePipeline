@@ -93,3 +93,47 @@ def test_articulated_subject_keeps_explicit_link_binding_gap():
     assert applications == []
     assert gaps == [{'family': 'bounded_physics', 'reason': 'runtime_material_link_binding_unavailable',
                      'fallback': 'canonical_task_material'}]
+
+
+@pytest.mark.parametrize('nominal,accepted', [(0.25, True), (0.5, False)])
+def test_rigid_friction_compiles_through_shared_scene_contract(tmp_path, nominal, accepted):
+    from blueprint_pipeline.native_task_arena_scene_plan import _apply_scenario_parameters, NativeTaskArenaScenePlanError
+    from blueprint_pipeline.native_task_runtime_contract import _scenario_parameter_rows
+    path = tmp_path/'source.usda'
+    source_asset(path)
+    original = path.read_bytes()
+    errors = []
+    bindings = _scenario_parameter_rows([{
+        'parameter_id': 'dynamic_friction',
+        'runtime_target': 'EventManager.reset.task_subject_material.dynamic_friction',
+        'unit': 'coefficient', 'nominal_value': nominal, 'resolved_value': 0.45,
+        'application_tolerance': 1e-6,
+    }], errors=errors)
+    assert errors == []
+    def compile():
+        return _apply_scenario_parameters(objects=[{'name': 'task_object', 'task_subject': True}],
+                                         cameras=[], bindings=bindings, task_object_asset_path=path)
+    if accepted:
+        rows = compile()
+        assert rows[0]['readback_kind'] == friction.KIND
+        assert rows[0]['expected_native_value'] == 0.45
+        assert rows[0]['runtime_name'] == 'task_object'
+        assert rows[0]['source_material_prim_path'] == '/Object/materials/physics0'
+    else:
+        with pytest.raises(NativeTaskArenaScenePlanError, match='nominal_mismatch'):
+            compile()
+    assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize('change', [{'nominal_value': -0.1}, {'resolved_value': -0.1},
+                                    {'runtime_selector': {'task_link_id': 'door'}}])
+def test_rigid_friction_contract_rejects_invalid_values_and_link_selector(change):
+    from blueprint_pipeline.native_task_runtime_contract import _scenario_parameter_rows
+    errors = []
+    rows = _scenario_parameter_rows([{
+        'parameter_id': 'dynamic_friction',
+        'runtime_target': 'EventManager.reset.task_subject_material.dynamic_friction',
+        'unit': 'coefficient', 'nominal_value': 0.25, 'resolved_value': 0.45,
+        'application_tolerance': 1e-6, **change,
+    }], errors=errors)
+    assert rows == [] and errors

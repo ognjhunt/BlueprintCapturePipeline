@@ -22,23 +22,9 @@ def add_application(parameters, subject, applications, coverage_gaps):
         "application_tolerance": 1.0e-6})
 
 
-def prepare(runtime_objects, applications):
-    selected = [row for row in applications if row.get("readback_kind") == KIND]
-    if not selected:
-        return {}
-    if len(selected) != 1:
-        raise ValueError("rigid_friction_scenario_not_unique")
-    application = selected[0]
-    subjects = [row for row in runtime_objects if row.get("task_subject") is True]
-    if len(subjects) != 1:
-        raise ValueError("rigid_friction_subject_not_unique")
-    subject = subjects[0]
-    value = float(application["expected_native_value"])
-    if not math.isfinite(value) or value < 0:
-        raise ValueError("rigid_friction_value_invalid")
+def _source_material(source):
     from pxr import Usd, UsdPhysics, UsdShade
 
-    source = Path(subject["usd_path"]).resolve()
     stage = Usd.Stage.Open(str(source))
     materials = set()
     for prim in stage.Traverse():
@@ -53,6 +39,37 @@ def prepare(runtime_objects, applications):
         raise ValueError("rigid_friction_material_not_unique")
     material_path = materials.pop()
     before = float(UsdPhysics.MaterialAPI(stage.GetPrimAtPath(material_path)).GetDynamicFrictionAttr().Get())
+    return stage, material_path, before
+
+
+def scenario_application(binding, subject, source):
+    if source is None:
+        raise ValueError("rigid_friction_material_asset_missing")
+    _, material_path, before = _source_material(source)
+    if not math.isclose(before, binding["nominal_value"], rel_tol=0, abs_tol=binding["application_tolerance"]):
+        raise ValueError("rigid_friction_nominal_mismatch")
+    return {**binding, "readback_kind": KIND, "expected_native_value": binding["resolved_value"],
+            "runtime_name": subject["name"], "source_material_prim_path": material_path}
+
+
+def prepare(runtime_objects, applications):
+    selected = [row for row in applications if row.get("readback_kind") == KIND]
+    if not selected:
+        return {}
+    if len(selected) != 1:
+        raise ValueError("rigid_friction_scenario_not_unique")
+    application = selected[0]
+    subjects = [row for row in runtime_objects if row.get("task_subject") is True]
+    if len(subjects) != 1:
+        raise ValueError("rigid_friction_subject_not_unique")
+    subject = subjects[0]
+    value = float(application["expected_native_value"])
+    if not math.isfinite(value) or value < 0:
+        raise ValueError("rigid_friction_value_invalid")
+    from pxr import Usd, UsdPhysics
+
+    source = Path(subject["usd_path"]).resolve()
+    stage, material_path, before = _source_material(source)
     fd, name = tempfile.mkstemp(prefix="blueprint-rigid-friction-", suffix=".usda")
     os.close(fd)
     destination = Path(name)
