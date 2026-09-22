@@ -1530,15 +1530,10 @@ def build_capture_bundle_records(
     raw_root = resolve_gs_uri_to_path(raw_prefix_uri, gcs_root)
     capture_root = raw_root.parent
     initial_intake_verification = intake_readiness.get("intake_verification", {})
-    initial_intake_verification_recorded = bool(
-        isinstance(initial_intake_verification, Mapping)
-        and initial_intake_verification.get("status")
-    )
-    initial_intake_digest = (
-        initial_intake_verification.get("intake_digest")
-        if isinstance(initial_intake_verification, Mapping)
-        else None
-    )
+    if not isinstance(initial_intake_verification, Mapping):
+        initial_intake_verification = {}
+    initial_intake_verification_recorded = bool(initial_intake_verification.get("status"))
+    initial_intake_digest = initial_intake_verification.get("intake_digest")
 
     manifest_path = raw_root / "manifest.json"
     intake_path = raw_root / "intake_packet.json"

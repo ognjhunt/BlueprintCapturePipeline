@@ -4825,8 +4825,7 @@ def run_qualification_pipeline(
             )
         )
         worldlabs_input = apply_clean_plate_to_reconstruction_input(
-            worldlabs_input, clean_plate,
-            required=is_website_entry_source((descriptor.metadata or {}).get("capture_entry_source")),
+            worldlabs_input, clean_plate, required=website_capture,
         )
         if website_capture and clean_plate.get("status") not in {"noop", "objects_removed"}:
             raise StageError("clean_plate", ",".join(clean_plate.get("blockers") or ["website_preparation_pending"]))
