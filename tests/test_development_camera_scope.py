@@ -93,3 +93,50 @@ def test_plain_surface_keeps_real_frame_and_target_requirements(tmp_path, blank,
     # Default captured-site admission must still refuse these same frames.
     with pytest.raises(NativeTaskCameraObservabilityError):
         validate_native_task_policy_start_camera_observability(construction)
+
+
+@pytest.mark.parametrize('authored,blank,missing_object', [(True, False, False), (False, False, False),
+                                                          (True, True, False), (True, False, True)])
+def test_production_policy_gate_uses_sealed_scene_scope(tmp_path, monkeypatch, authored, blank, missing_object):
+    import sys
+    from types import SimpleNamespace
+    from blueprint_pipeline.native_task_arena_policy_canary_worker import isaac_cell_runtime
+    import blueprint_pipeline.native_task_asset_composition_gate as composition
+
+    # Keep native camera measurement and production orchestration; replace only
+    # Isaac's sensor/body data and the independently tested composition renderer.
+    monkeypatch.setitem(sys.modules, 'torch', SimpleNamespace())
+    monkeypatch.setattr(composition, 'run_native_asset_composition_gate',
+                        lambda **kwargs: {'passed': True, 'blockers': []})
+    cameras = {}
+    for index, role in enumerate(('external', 'wrist', 'overview')):
+        rgb = np.full((64, 64, 3), 220, dtype=np.uint8)
+        rgb[20:44, 20:44] = np.random.default_rng(index).integers(20, 140, (24, 24, 3), dtype=np.uint8)
+        if blank:
+            rgb[:] = 0
+        semantic = np.zeros((64, 64), dtype=np.int32)
+        if not missing_object:
+            semantic[20:44, 20:44] = 7
+        cameras[role] = SimpleNamespace(
+            data=_FakeCameraData(rgb=rgb, semantic=semantic, labels={'7': {'class': 'task_object'}}),
+            _view=SimpleNamespace(_use_fabric=True), cfg=SimpleNamespace(update_latest_camera_pose=True))
+    cameras['robot'] = SimpleNamespace(joint_names=['joint'], data=SimpleNamespace(joint_pos=np.array([[0.0]])))
+    env = _FakeEnv(cameras)
+    env.reset = lambda **kwargs: None
+    built = SimpleNamespace(env=env, cfg=SimpleNamespace(num_rerenders_on_reset=1),
+                            camera_scene_names={k: k for k in ('external', 'wrist', 'overview')})
+    plan = {'scenario': {'seed': 1}, 'robot': {'joint_reset_positions_rad': {'joint': 0.0}},
+            'task_spec': {}, 'objects': [{'semantic_role': 'scene_appearance', 'sha256': '1' * 64}],
+            'appearance_frame_alignment': {'representation': 'usd_geometry', 'status': 'aligned'},
+            'policy_canary_embodiment_profile': {'preserve_official_policy_camera_calibration': True,
+                'policy_camera_roles': ['external', 'wrist'], 'arena_source': {}, 'robot_preset_id': 'fixture'}}
+    if authored:
+        plan.update(camera_scene_scope='authored_development_surface',
+                    claim_boundary={'captured_scene_evaluation_allowed': False})
+    result = isaac_cell_runtime().prepolicy_camera_gate(
+        simulation_app=object(), built=built, packet_request={}, plan=plan, output_root=tmp_path)
+    assert result['policy_observation_integrity_passed'] is (authored and not blank and not missing_object)
+    assert result['candidate_policy_queried'] is False
+    assert result['scene_promotion_permitted'] is False
+    if authored and not blank and not missing_object:
+        assert all(row['observability']['site_appearance_claimed'] is False for row in result['snapshot']['cameras'])
