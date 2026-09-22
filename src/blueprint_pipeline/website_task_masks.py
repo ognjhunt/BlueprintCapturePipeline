@@ -184,26 +184,32 @@ def resolve_video_segmentation_concept(*, target: Mapping[str, Any], tracks: lis
     further noun comes from the model looking at the crop of the target it
     localized, and is spent on one frame before it is spent on the whole clip.
     """
-    from .website_task_grounding import ground_task_target
+    from .website_task_grounding import ground_task_target as _ground
 
-    grounded = target
-    rejected = [failed_concept.strip()]
-    outcome = CONCEPT_NO_INSTANCE
-    for attempt in range(MAXIMUM_CONCEPT_PROBES):
-        if attempt:
-            grounded = ground_task_target(target=grounded, tracks=tracks, registry=registry, video=video,
+    def tried(value: Mapping[str, Any]) -> bool:
+        concept = value["segmentation_prompt"].strip().casefold()
+        return any(concept == row.casefold() for row in rejected)
+
+    grounded, rejected, outcome = target, [failed_concept.strip()], CONCEPT_NO_INSTANCE
+    # The budget counts probes, not turns. A grounding that hands back a noun
+    # already tried costs nothing and must not use one up, or the two nouns
+    # already known to fail would spend the whole search before the model is
+    # ever told what went wrong with them.
+    for _ in range(MAXIMUM_CONCEPT_PROBES):
+        if tried(grounded):
+            grounded = _ground(target=grounded, tracks=tracks, registry=registry, video=video,
                 task_context=task_context, output_root=grounding_root,
                 failed_segmentation_prompt=rejected[-1], also_rejected=rejected[:-1],
                 matched_only_part=outcome == CONCEPT_MATCHED_PART)
-        concept = grounded["segmentation_prompt"].strip()
-        if any(concept.casefold() == row.casefold() for row in rejected):
-            # Repeating a concept after being shown what it missed means the
-            # model has no further supported reading of these pixels.
-            if attempt:
+            if tried(grounded):
+                # Named every noun that failed and shown the crop, the model
+                # still has no other supported reading of these pixels.
                 break
-            continue
-        outcome = probe_segmentation_concept(target=grounded, concept=concept, task_context=task_context,
-                                             output_root=probe_root / f"{attempt:02d}")
+        concept = grounded["segmentation_prompt"].strip()
+        # Rooted by the request digest alone, so the same concept is never
+        # bought twice however late in the search it is proposed.
+        outcome = probe_segmentation_concept(target=grounded, concept=concept,
+                                             task_context=task_context, output_root=probe_root)
         if outcome == CONCEPT_RESOLVED:
             return grounded
         rejected.append(concept)

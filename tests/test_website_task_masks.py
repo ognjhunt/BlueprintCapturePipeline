@@ -294,9 +294,11 @@ def test_a_removed_target_never_falls_back_to_one_frame_of_evidence(tmp_path, mo
         return {"tracks": []}
     monkeypatch.setattr(masks, "run_meta_sam31", hosted)
     grounds = []
+    proposals = ["cabinet", "file cabinet", "wooden drawer unit"]
+
     def ground(**kw):
         grounds.append(kw)
-        return {**target, "segmentation_prompt": ["cabinet", "file cabinet", "wooden drawer unit"][len(grounds) - 1],
+        return {**target, "segmentation_prompt": proposals[min(len(grounds) - 1, len(proposals) - 1)],
                 "grounding": {"source_frame_id": "frame-0", "source_image_path": str(grounded_frame),
                               "image_digest": _sha256_file(grounded_frame)}}
     monkeypatch.setattr(grounding, "ground_task_target", ground)
@@ -312,8 +314,12 @@ def test_a_removed_target_never_falls_back_to_one_frame_of_evidence(tmp_path, mo
     # unproven noun, and the search stops at the probe budget.
     assert len(clips) == 1
     assert concepts == ["cabinet", "file cabinet", "wooden drawer unit"]
-    assert [row["failed_segmentation_prompt"] for row in grounds[1:]] == ["cabinet", "file cabinet"]
-    assert [list(row["also_rejected"]) for row in grounds[1:]] == [[], ["cabinet"]]
+    # The fourth grounding repeats a noun already rejected, which ends the
+    # search rather than spending a fourth probe on it.
+    assert [row["failed_segmentation_prompt"] for row in grounds[1:]] == [
+        "cabinet", "file cabinet", "wooden drawer unit"]
+    assert [list(row["also_rejected"]) for row in grounds[1:]] == [
+        [], ["cabinet"], ["cabinet", "file cabinet"]]
 
 
 @pytest.mark.parametrize("case", ["match", "empty", "wrong_instance", "bad_grid", "changed_image", "manipulated"])
