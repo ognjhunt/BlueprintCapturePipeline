@@ -282,6 +282,7 @@ def materialize_canary_root(
     run_id: str = "scene-839873-canary-resume",
     completed: bool = False,
     sync_runner=None,
+    configuration_digest: str = "sha256:" + "d" * 64,
 ) -> dict[str, object]:
     """Drive the REAL resume path over a sealed provider delivery.
 
@@ -358,7 +359,7 @@ def materialize_canary_root(
         "run_kind": "internal_policy_canary",
         "claim_ceiling": "diagnostic_policy_execution",
         "status": status,
-        "configuration_digest": "sha256:" + "d" * 64,
+        "configuration_digest": configuration_digest,
         "episodes": episodes,
         "blockers": [] if completed else ["policy_canary_episode_runner_failed"],
         "task_success_contract": contract,
@@ -1170,6 +1171,76 @@ def test_dispatcher_refuses_absent_scene839873_setup_before_allocator(
             implementation_commit=COMMIT,
             allocator_runner=lambda _argv: pytest.fail("allocator must not run"),
         )
+
+
+@pytest.mark.parametrize("missing", [None, "allocator_result.json", "artifacts/result_delivery/delivery.json"])
+@pytest.mark.parametrize("from_blocked_queue", [False, True])
+def test_release_change_resumes_only_sealed_delivery_without_allocator(tmp_path, monkeypatch, missing, from_blocked_queue):
+    from blueprint_pipeline import task_evaluation_policy_canary_dispatcher as dispatcher
+
+    activation_result, setup_path, activation_path = _inputs(tmp_path)
+    activation = json.loads(activation_path.read_text())
+    run = materialize_canary_root(tmp_path, monkeypatch,
+        run_id=activation["run_id"], configuration_digest="sha256:" + "1" * 64,
+        sync_runner=lambda **_kwargs: {"status": "failed"})
+    root = run["root"]
+    runtime_path = Path(json.loads(activation_result.read_text())["policy_canary_runtime_inputs_path"])
+    runtime = json.loads(runtime_path.read_text())
+    resource = runtime["resource_authority"]
+    authority = dispatcher.build_session_authority(activation_manifest=activation,
+        activation_record=_record(activation_path.resolve()), runtime_inputs=runtime,
+        runtime_input_record=_record(runtime_path.resolve()), resource_name=resource["resource_name"],
+        hard_cap_usd=resource["hard_cap_usd"], hard_ttl_seconds=resource["hard_ttl_seconds"])
+    dispatcher._write_exclusive(root / "policy_canary_session_authority.json", authority)
+    _write(root / "allocator_result.json", {"teardown_manifest_path": str(root / "teardown.json")})
+    _write(root / "bundle/native_task_arena_policy_canary_session_bundle_receipt.v1.json",
+        {"bundle_sha256": "sha256:" + "b" * 64})
+    monkeypatch.setattr(dispatcher, "validate_provider_bundle", lambda value, **_kwargs: value)
+    monkeypatch.setattr(dispatcher, "build_policy_canary_session_bundle",
+        lambda **_kwargs: pytest.fail("must not rebuild a retained bundle"))
+    if missing:
+        (root / missing).unlink()
+    original = run["joined_path"].read_bytes()
+    kwargs = dict(activation_result_path=activation_result, execution_setup_path=setup_path,
+        output_root=root, implementation_commit="b" * 40, execute=True,
+        allocator_runner=lambda _argv: pytest.fail("must not allocate after release change"),
+        sync_runner=_echoing_website(monkeypatch), progress_sync_runner=lambda **_kwargs: {"status": "succeeded"})
+    if from_blocked_queue:
+        queue = tmp_path / "queue"
+        for name in ("pending", "processing", "completed", "blocked"):
+            (queue / name).mkdir(parents=True)
+        envelope = {
+            "schema_version": "task_evaluation_policy_canary_dispatch_envelope.v1",
+            "activation_id": root.name, "run_kind": "internal_policy_canary",
+            "claim_ceiling": "diagnostic_policy_execution", "source_commit": COMMIT,
+            "activation_result": _record(activation_result), "maximum_provider_allocations": 1,
+            "retry_cap": 0, "automatic_retry_authorized": False,
+            "provider_mutation_performed": False, "paid_execution_requested": False,
+        }
+        envelope["envelope_digest"] = canonical_digest(envelope, digest_field="envelope_digest")
+        pending = _write(queue / "blocked" / "retained.json", envelope)
+        setups = tmp_path / "setups"
+        _write(setups / f"{root.name}.json", json.loads(setup_path.read_text()))
+        def resume(**queue_kwargs):
+            return dispatch_policy_canary_activation(**{**kwargs, **queue_kwargs})
+        monkeypatch.setattr(dispatcher, "dispatch_policy_canary_activation", resume)
+        receipt = process_policy_canary_dispatch_queue(dispatch_queue_root=queue,
+            execution_setup_root=setups, dispatch_root=root.parent,
+            implementation_commit="b" * 40, execute=True)
+        assert receipt["processed_count"] == (0 if missing else 1)
+        assert pending.exists() is bool(missing)
+        if not missing:
+            assert (queue / "completed" / pending.name).exists()
+        assert run["joined_path"].read_bytes() == original
+        return
+    if missing:
+        with pytest.raises(TaskEvaluationPolicyCanaryDispatchError, match="policy_canary_dispatch_activation_setup_mismatch"):
+            dispatch_policy_canary_activation(**kwargs)
+    else:
+        receipt = dispatch_policy_canary_activation(**kwargs)
+        assert receipt["status"] == "blocked"
+        assert receipt["allocator_invoked"] is False
+        assert run["joined_path"].read_bytes() == original
 
 
 def test_allocator_invocation_marker_prevents_unrecorded_retry(

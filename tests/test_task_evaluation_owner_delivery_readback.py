@@ -60,6 +60,59 @@ def _readback(**kwargs):
     return result
 
 
+@pytest.mark.parametrize('corruption', [None, 'owner', 'profile', 'revision'])
+def test_selected_scene_evaluation_reads_original_capture_namespace(tmp_path, monkeypatch, corruption):
+    from blueprint_pipeline.task_evaluation_owner_delivery_readback import _owner_identity
+    args, queue, original = _inputs(tmp_path, monkeypatch)
+    expected = _owner_identity(args['setup'], args['runtime_inputs'], args['projection']['run_id'])
+    source_id = 'configured-source-launch'
+    profile = {'schema_version':'task_evaluation_launch_profile.v1',
+        'allocator':{'max_spend_usd':4.0},
+        'scene_intent_digest':original['intent_digest'], 'task_evaluation_run':{
+            'run_mode':'scene_configuration', 'configuration_run_id':args['setup']['capture_session_id'],
+            'team_namespace':expected['team_namespace'], 'scene_id':'scene-one',
+            'task_id':original['request']['task']['task_id']}}
+    profile['profile_digest'] = canonical_digest(profile, digest_field='profile_digest')
+    launch_root = tmp_path/'launches'
+    path = launch_root/source_id/'launch_profile.json'
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(profile))
+    monkeypatch.setenv('BLUEPRINT_TASK_EVALUATION_LAUNCH_STATE_ROOT', str(launch_root))
+    request = copy.deepcopy(original['request'])
+    request['submission_id'] = 'team-eval-one'
+    request['task']['robot_binding_id'] = 'robot-one'
+    request['task']['evaluation_source'] = {'evaluation_run_id':'team-eval-one',
+        'source_launch_id':source_id, 'source_profile_digest':profile['profile_digest'],
+        'configured_scene_revision_digest':'sha256:'+'a'*64}
+    if corruption == 'owner':
+        request['owner']['user_id'] = request['consent']['accepted_by'] = 'other-owner'
+    if corruption == 'profile':
+        request['task']['evaluation_source']['source_profile_digest'] = 'sha256:'+'b'*64
+    now = original['accepted_at_epoch']
+    receipt = intake.stage_scene_intent(value=request, queue_root=queue,
+        authenticated_client=original['authenticated_issuer'],
+        trusted_clients={original['authenticated_issuer']}, now=now)
+    selected = json.loads((queue/receipt['intent_id']/'intent.json').read_text())
+    reserved = attempt(queue, selected, now=now+1)
+    args['setup'].update(scene_intent_digest=selected['intent_digest'],
+        scene_attempt_binding={**{k:reserved[k] for k in ('intent_digest','attempt_id','source_commit','runtime_digest','input_digest')},
+                               'intent_id':selected['intent_id']},
+        capture_session_id=source_id, configured_source_launch_id=source_id,
+        scene_revision_digest='sha256:'+('c' if corruption == 'revision' else 'a')*64,
+        scene_id='scene-one')
+    calls = []
+    def reader(**kwargs):
+        calls.append(kwargs)
+        return _readback(**kwargs)
+    result = verify_owner_policy_delivery(**args, readback_runner=reader)
+    assert result['status'] == ('pending' if corruption else 'verified')
+    if corruption:
+        assert calls == []
+    else:
+        assert calls[0]['owner_execution']['team_namespace'] == expected['team_namespace']
+        assert calls[0]['owner_execution']['owner_user_id'] == original['request']['owner']['user_id']
+
+
 def test_expired_or_revoked_execution_keeps_delivery_reachable_and_resume_reuses_proof(tmp_path, monkeypatch):
     args, queue, admitted = _inputs(tmp_path, monkeypatch)
     (queue/admitted['intent_id']/'revoked.json').write_text('{}')
