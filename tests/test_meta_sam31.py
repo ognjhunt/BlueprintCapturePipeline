@@ -123,6 +123,82 @@ def test_exact_request_is_retained_and_replay_does_not_charge_again(tmp_path, mo
         assert "fixture-meta-secret" not in file.read_text()
 
 
+def test_partial_prompt_resume_reserves_only_missing_response(tmp_path, monkeypatch):
+    from blueprint_pipeline import website_task_context
+
+    monkeypatch.setenv("META_MODEL_API_KEY", "fixture-meta-secret")
+    args = inputs(tmp_path)
+    prompts = [{**PROMPT, "prompt_id": f"target-{i}", "text": f"object {i}"} for i in range(3)]
+    args.update(prompts=prompts, admission={}, admission_grant=None,
+                task_context={"capture_id": "fixture"})
+    digest = canonical_digest(sam.request_binding(frame_registry=args["frame_registry"],
+        frame_artifacts=args["frame_artifacts"], prompts=prompts))
+    root = args["output_root"] / digest[7:]
+    root.mkdir(parents=True)
+    clip = sam.encode_clip(registry=args["frame_registry"], artifacts=args["frame_artifacts"], root=root)
+    for index in (0, 1):
+        sam.write_json(root / f"intent-{index}.json", {
+            "binding_digest": digest, "clip_digest": _sha256_file(clip)})
+        sam.write_json(root / f"response-{index}.json", {
+            "binding_digest": digest, "clip_digest": _sha256_file(clip),
+            "response": response(), "reserved_cost_usd": 0.0025})
+    original_bytes = [(root / f"response-{index}.json").read_bytes() for index in (0, 1)]
+    reservations = []
+
+    def reserve(**kwargs):
+        reservations.append(kwargs)
+        value = {**build_paid_lane_admission(resource_class="evaluator_api"),
+                 "allocation_binding_digest": kwargs["binding_digest"],
+                 "maximum_cost_usd": kwargs["maximum_cost_usd"],
+                 "external_disclosure_allowed": True}
+        return value, require_paid_resource_admission(value, resource_class="evaluator_api",
+            expected_schema_version="paid_lane_admission.v1")
+
+    monkeypatch.setattr(website_task_context, "reserve_website_sam_spend", reserve)
+    calls = []
+
+    def opener(request, **kwargs):
+        calls.append(json.loads(request.data)["input"][0]["content"][0]["text"])
+        return BytesIO(json.dumps(response()).encode())
+
+    result = sam.run_meta_sam31(**args, opener=opener)
+    assert result["status"] == "completed"
+    assert calls == ["object 2"]
+    assert len(reservations) == 1
+    assert reservations[0]["request_count"] == 1
+    assert reservations[0]["maximum_cost_usd"] == 0.0025
+    assert reservations[0]["binding_digest"] != digest
+    assert json.loads((root / "response-2.json").read_text())["allocation_binding_digest"] == reservations[0]["binding_digest"]
+    assert [(root / f"response-{index}.json").read_bytes() for index in (0, 1)] == original_bytes
+    assert sam.run_meta_sam31(**{**args, "task_context": None}, opener=lambda *a, **kw: pytest.fail("retained")) == result
+    assert len(reservations) == 1
+
+
+def test_partial_prompt_resume_refuses_uncertain_missing_prompt_before_reservation(tmp_path, monkeypatch):
+    monkeypatch.setenv("META_MODEL_API_KEY", "fixture-meta-secret")
+    args = inputs(tmp_path)
+    prompts = [{**PROMPT, "prompt_id": f"target-{i}"} for i in range(2)]
+    args.update(prompts=prompts, admission={}, admission_grant=None, task_context={"capture_id": "fixture"})
+    digest = canonical_digest(sam.request_binding(frame_registry=args["frame_registry"],
+        frame_artifacts=args["frame_artifacts"], prompts=prompts))
+    root = args["output_root"] / digest[7:]
+    root.mkdir(parents=True)
+    clip = sam.encode_clip(registry=args["frame_registry"], artifacts=args["frame_artifacts"], root=root)
+    sam.write_json(root / "response-0.json", {"binding_digest": digest,
+        "clip_digest": _sha256_file(clip), "response": response()})
+    sam.write_json(root / "intent-1.json", {"binding_digest": digest, "clip_digest": _sha256_file(clip)})
+    monkeypatch.setattr("blueprint_pipeline.website_task_context.reserve_website_sam_spend",
+        lambda **kwargs: pytest.fail("uncertain provider call must not get another grant"))
+    with pytest.raises(ValueError, match="requires_reconciliation"):
+        sam.run_meta_sam31(**args, opener=lambda *a, **kw: pytest.fail("uncertain provider call"))
+    (root / "intent-1.json").unlink()
+    saved = json.loads((root / "response-0.json").read_text())
+    saved["clip_digest"] = "sha256:changed"
+    sam.write_json(root / "response-0.json", saved)
+    with pytest.raises(ValueError, match="retained_response_changed"):
+        sam.run_meta_sam31(**args, opener=lambda *a, **kw: pytest.fail("tampered provider response"))
+
+
 def test_timeout_is_not_retried_and_missing_grant_cannot_call_provider(tmp_path, monkeypatch):
     monkeypatch.setenv("META_MODEL_API_KEY", "fixture-meta-secret")
     calls = []
