@@ -249,12 +249,20 @@ DEFAULT_SCENE_OBJECT_DISCOVERY_RUNTIME_DIRECTORIES = (
 DEFAULT_EPISODE_COMPILATION_QUEUE_ROOT = (
     "/var/lib/blueprint/pipeline-control-plane/task-evaluation-episode-compilations"
 )
+DEFAULT_POLICY_DISPATCH_QUEUE_ROOT = (
+    "/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canary-dispatches"
+)
 DEFAULT_EPISODE_COMPILATION_RUNTIME_DIRECTORIES = (
     DEFAULT_EPISODE_COMPILATION_QUEUE_ROOT,
     *(
         f"{DEFAULT_EPISODE_COMPILATION_QUEUE_ROOT}/{name}"
         for name in ("pending", "processing", "completed", "blocked")
     ),
+    # Older root-run GC created stranded/ under umask 0077. The owning
+    # dispatcher must be able to discover and resume its sealed deliveries.
+    DEFAULT_POLICY_DISPATCH_QUEUE_ROOT,
+    *(f"{DEFAULT_POLICY_DISPATCH_QUEUE_ROOT}/{name}" for name in
+      ("pending", "processing", "completed", "blocked", "stranded")),
 )
 DEFAULT_CONFIGURED_CONTROLS_PLAN_ROOT = (
     "/etc/blueprint/task-evaluation-configured-controls-plans"
