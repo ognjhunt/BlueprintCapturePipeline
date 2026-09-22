@@ -129,6 +129,25 @@ def test_graph_spec_and_completion_must_agree_with_the_actual_bytes(tmp_path):
     assert "replacement_graph_spec_invalid" in error.value.codes
 
 
+def test_a_grasp_point_outside_the_handle_is_refused(tmp_path):
+    """The runtime reaches for this point; it has to be on the handle the bytes actually carry."""
+    asset, graph, authoring = _sealed(tmp_path)
+    ok = qualify_scene_configuration_articulated_asset_static(
+        asset_path=asset, graph_spec=graph, authoring_receipt=authoring,
+        replacement_identity=IDENTITY, output_path=tmp_path / "ok.json")
+    point = ok["task_contact"]["contact_point_link_m"]
+    assert ok["task_contact"]["handle_prim_paths"] == ["/Asset/links/drawer_1/collision/handle"]
+    bounds = ok["observed_structure"]["task_contact"]["handle_bounds_link_frame_m"]
+    assert all(bounds["minimum"][i] - 1e-6 <= point[i] <= bounds["maximum"][i] + 1e-6 for i in range(3))
+    assert [row["joint_id"] for row in ok["articulation_graph"]["joints"] if row["role"] == "target"] == ["task_part_joint"]
+    moved = dict(graph, handle_grasp_point_link_m=[point[0] + 0.5, point[1], point[2]])
+    with pytest.raises(TaskEvaluationSceneConfigurationStaticQualificationError) as error:
+        qualify_scene_configuration_articulated_asset_static(
+            asset_path=asset, graph_spec=moved, authoring_receipt=authoring,
+            replacement_identity=IDENTITY, output_path=tmp_path / "moved.json")
+    assert "replacement_handle_grasp_point_outside_handle" in error.value.codes
+
+
 def test_a_rigid_single_solid_cannot_pass_the_articulated_gate(tmp_path):
     from tests.test_task_object_articulated_packaging import _part
     from blueprint_pipeline.task_object_simready_packaging import package_astra_candidate

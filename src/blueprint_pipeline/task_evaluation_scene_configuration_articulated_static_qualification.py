@@ -153,6 +153,8 @@ def _usd_findings(path: Path, *, graph: Mapping[str, Any], physics_bounds: Mappi
     link_rows: dict[str, dict[str, Any]] = {}
     material_bounds_ok = True
     handle_found = False
+    handle_paths: list[str] = []
+    handle_link_corners: list[Any] = []
     for prim in bodies:
         link_id = prim.GetName()
         part_id = link_parts.get(link_id, "")
@@ -182,6 +184,13 @@ def _usd_findings(path: Path, *, graph: Mapping[str, Any], physics_bounds: Mappi
             if collider.GetCustomDataByKey(TASK_CONTACT_ROLE_ATTRIBUTE) == HANDLE_ROLE:
                 if task_child is not None and prim == task_child:
                     handle_found = True
+                    handle_paths.append(str(collider.GetPath()))
+                    handle_bound = cache.ComputeWorldBound(collider).ComputeAlignedRange()
+                    if not handle_bound.IsEmpty():
+                        lo, hi = handle_bound.GetMin(), handle_bound.GetMax()
+                        handle_link_corners.extend(
+                            inverse.Transform(Gf.Vec3d(float(x), float(y), float(z)))
+                            for x in (lo[0], hi[0]) for y in (lo[1], hi[1]) for z in (lo[2], hi[2]))
                 else:
                     findings.append("replacement_handle_on_non_target_link:" + str(collider.GetPath()))
             bound, _ = UsdShade.MaterialBindingAPI(collider).ComputeBoundMaterial(materialPurpose="physics")
@@ -233,8 +242,15 @@ def _usd_findings(path: Path, *, graph: Mapping[str, Any], physics_bounds: Mappi
         findings.append("replacement_physics_material_bounds_invalid")
     if task_child is not None and not handle_found:
         findings.append("replacement_handle_contact_role_missing")
+    handle_bounds = None
+    if handle_link_corners and all(_finite([float(c[i]) for i in range(3)]) for c in handle_link_corners):
+        handle_bounds = {"minimum": [min(float(c[i]) for c in handle_link_corners) for i in range(3)],
+                         "maximum": [max(float(c[i]) for c in handle_link_corners) for i in range(3)]}
     return findings, {
         "default_prim": str(root.GetPath()), "articulation_root": str(root.GetPath()),
+        "task_contact": {"contact_link_id": task_child.GetName() if task_child is not None else "",
+                         "handle_prim_paths": sorted(handle_paths),
+                         "handle_bounds_link_frame_m": handle_bounds},
         "links": link_rows, "task_joint": observed_joint,
         "joint_prim_paths": [str(prim.GetPath()) for prim in joints],
         "collision_prim_paths": [str(prim.GetPath()) for prim in collision_prims],
@@ -302,6 +318,18 @@ def qualify_scene_configuration_articulated_asset_static(
                    or sorted(row["collision_prim_paths"]) != sorted(observed["links"][row["link_id"]]["collision_prim_paths"])
                    for row in completion.get("links", []) if isinstance(row, Mapping))):
         findings.append("replacement_physics_completion_invalid")
+    # The grasp point the runtime will reach for must sit inside the handle the
+    # qualifier actually found, in the moving link's own frame.
+    grasp_point = graph_spec.get("handle_grasp_point_link_m")
+    contact = (observed.get("task_contact") or {}) if observed else {}
+    handle_bounds = contact.get("handle_bounds_link_frame_m")
+    if (not isinstance(grasp_point, Sequence) or isinstance(grasp_point, (str, bytes))
+            or len(list(grasp_point)) != 3 or not _finite(list(grasp_point))
+            or sorted(graph_spec.get("handle_prim_paths") or []) != contact.get("handle_prim_paths")
+            or not isinstance(handle_bounds, Mapping)
+            or any(not handle_bounds["minimum"][index] - 1e-6 <= float(list(grasp_point)[index])
+                   <= handle_bounds["maximum"][index] + 1e-6 for index in range(3))):
+        findings.append("replacement_handle_grasp_point_outside_handle")
     if findings:
         raise TaskEvaluationSceneConfigurationStaticQualificationError(findings)
     result: dict[str, Any] = {
@@ -312,8 +340,13 @@ def qualify_scene_configuration_articulated_asset_static(
         "replacement_usd": {"path": str(asset), "sha256": digest, "size_bytes": size},
         "checks": dict(ARTICULATED_STATIC_CHECKS),
         "observed_structure": observed,
+        # Published so downstream compilation binds a graph this qualifier has
+        # already checked against the exact bytes, not the authoring proposal.
+        "articulation_graph": graph,
+        "link_prim_paths": {link_id: row["prim_path"] for link_id, row in observed["links"].items()},
         "task_joint": {"joint_id": graph["joints"][[row["role"] for row in graph["joints"]].index("target")]["joint_id"],
                        **observed["task_joint"]},
+        "task_contact": {**contact, "contact_point_link_m": [float(value) for value in grasp_point]},
         "authored_structure_statically_qualified": True,
         "structural_findings": [],
         "claim_boundary": {"native_simulator_import_qualified": False, "physical_equivalence_proven": False,
