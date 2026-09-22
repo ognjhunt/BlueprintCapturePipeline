@@ -269,6 +269,8 @@ def test_controller_recovers_ambiguous_video_anchor_with_bounded_exact_frame_evi
     if recovery == "image":
         assert list(grounds[1]["also_rejected"]) == ["white container"]
     assert result["targets"][0]["disposition"] == "keep"
+    assert result["targets"][0]["segmentation_prompt"] == (
+        "white container" if recovery in {"anchor", "unchanged"} else "white book")
     assert result["targets"][0]["source_track"]["observations"][0]["runs"][0]["start"] == 0
     assert result["targets"][0]["grounding"]["source_frame_id"] == "frame-0"
 
