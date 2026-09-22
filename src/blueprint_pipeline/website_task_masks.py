@@ -101,10 +101,14 @@ def select_task_track(*, target: Mapping[str, Any], tracks: list[Mapping[str, An
 
 
 # A concept that cannot find the target is worth one image price to discover
-# and one frame price per decoded frame to discover the expensive way. Three
+# and one frame price per decoded frame to discover the expensive way. Four
 # nouns is a bounded search, not a retry loop: each one must be a new concept
 # the model supported with the crop it was shown.
-MAXIMUM_CONCEPT_PROBES = 3
+#
+# Four because three is provably too few. On the drawer scene the model spends
+# one noun that finds nothing, one that finds a part, and only then has been
+# told about both failures; the noun that can answer is the next one.
+MAXIMUM_CONCEPT_PROBES = 4
 
 # A sub-part of the target always overlaps the target's own box, so overlap
 # alone cannot tell "the cabinet" from "one of its drawer fronts". A concept is

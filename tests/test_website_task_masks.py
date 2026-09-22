@@ -515,12 +515,22 @@ def test_a_sub_part_concept_with_no_whole_object_alternative_refuses(tmp_path, m
         {"track_id": "front", "label": "pedestal_cabinet", "observations": [
             {"source_frame_id": "frame-150", "width": 16, "height": 16,
              "runs": [{"start": row * 16, "length": 8} for row in range(8, 12)]}]}]})
-    proposals = iter(["drawer fronts", "drawer handles"])
-    monkeypatch.setattr(grounding, "ground_task_target",
-                        lambda **kwargs: {**target, "segmentation_prompt": next(proposals)})
+    proposals = ["drawer fronts", "drawer handles", "drawer pulls"]
+    grounds = []
+
+    def ground(**kwargs):
+        grounds.append(kwargs)
+        return {**target, "segmentation_prompt": proposals[min(len(grounds) - 1, len(proposals) - 1)]}
+
+    monkeypatch.setattr(grounding, "ground_task_target", ground)
     # Every proposal names a part, so the search ends without buying a clip.
     with pytest.raises(ValueError, match="track_ambiguous:pedestal_cabinet"):
         masks.resolve_video_segmentation_concept(
             target=target, tracks=[], registry=[], video={}, task_context={"confirmed": True},
             grounding_root=tmp_path / "grounding", probe_root=tmp_path / "probes",
             failed_concept="cabinet")
+    # Four nouns are proved on one frame and every grounding is told the last
+    # one matched only a part, so no clip is ever bought.
+    assert [row["matched_only_part"] for row in grounds] == [True, True, True]
+    assert [list(row["also_rejected"]) for row in grounds] == [
+        ["cabinet"], ["cabinet", "drawers"], ["cabinet", "drawers", "drawer fronts"]]
