@@ -991,6 +991,92 @@ def execute_artifixer3d_diagnostic_object_removal(
     return result
 
 
+def _verify_articulated_replacement_result(
+    *, configuration, envelope, receipt, graph, asset, asset_record, source_candidate_record
+) -> None:
+    """Seal an articulated assembly candidate: one passive task joint, per-part bounds, no authority."""
+
+    from .articulation_graph_contract import ArticulationGraphContractError, validate_articulation_graph
+
+    identity = configuration.get("replacement_identity")
+    required_output = configuration.get("required_output")
+    mechanism = configuration.get("mechanism")
+    completion = receipt.get("candidate_physics_completion")
+    shared = (
+        {
+            "static_friction": required_output.get("static_friction_bounds"),
+            "dynamic_friction": required_output.get("dynamic_friction_bounds"),
+            "restitution": required_output.get("restitution_bounds"),
+        }
+        if isinstance(required_output, Mapping)
+        else {}
+    )
+    expected_bounds = {
+        "carcass": {**shared, "mass_kg": required_output.get("mass_kg_bounds")},
+        "drawer": {**shared, "mass_kg": required_output.get("task_part_mass_kg_bounds")},
+    } if isinstance(required_output, Mapping) else {}
+    try:
+        articulation = validate_articulation_graph(graph.get("articulation_graph") or {})
+    except (ArticulationGraphContractError, ValueError, TypeError):
+        articulation = None
+    target_joints = (
+        [row for row in articulation["joints"] if row["role"] == "target"] if articulation else []
+    )
+    if (
+        identity != envelope["recipe"]["subject_identity"]
+        or not isinstance(required_output, Mapping)
+        or not isinstance(mechanism, Mapping)
+        or required_output.get("format") != "OpenUSD"
+        or required_output.get("articulation_root") is not True
+        or required_output.get("single_articulation_root") is not True
+        or required_output.get("task_joint_count") != 1
+        or required_output.get("units") != "meters"
+        or required_output.get("up_axis") != "Z"
+        or configuration.get("physics_authority_granted_by_authoring") is not False
+        or asset.suffix.lower() != ".usdz"
+        or receipt.get("schema_version")
+        != "task_evaluation_articulated_replacement_authoring_result.v1"
+        or receipt.get("status") != "authored_candidate_pending_qualification"
+        or receipt.get("asset_kind") != "articulated_assembly"
+        or receipt.get("replacement_identity") != identity
+        or receipt.get("source_candidate_digest") != source_candidate_record.get("digest")
+        or receipt.get("source_candidate_claim") not in ACCEPTED_SOURCE_CANDIDATE_CLAIMS
+        or receipt.get("output_usd", {}).get("sha256") != asset_record.get("digest")
+        or receipt.get("output_usd", {}).get("size_bytes") != asset_record.get("size_bytes")
+        or receipt.get("physics_authority_granted") is not False
+        or receipt.get("result_digest") != canonical_digest(receipt, digest_field="result_digest")
+        or not isinstance(completion, Mapping)
+        or completion.get("schema_version")
+        != "task_evaluation_articulated_candidate_physics_completion.v1"
+        or completion.get("status") != "bounded_candidate_completed"
+        or completion.get("asset_kind") != "articulated_assembly"
+        or completion.get("physics_bounds") != expected_bounds
+        or completion.get("candidate_prior_only") is not True
+        or completion.get("physical_truth_claimed") is not False
+        or completion.get("intra_assembly_collision_filtered") is not True
+        or completion.get("completion_digest") != canonical_digest(completion, digest_field="completion_digest")
+        or not str(completion.get("task_joint_prim_path") or "").startswith("/Asset/joints/")
+        or not str(completion.get("fixed_base_body_prim_path") or "").startswith("/Asset/links/")
+        or graph.get("schema_version") != "task_evaluation_articulated_replacement_graph.v1"
+        or graph.get("asset_id") != identity.get("id")
+        or graph.get("asset_version") != identity.get("version")
+        or articulation is None
+        or len(target_joints) != 1
+        or target_joints[0]["joint_type"] != mechanism.get("joint_type")
+        or target_joints[0]["limits"] != [float(v) for v in mechanism.get("joint_limits") or []]
+        or target_joints[0]["drive"]["drive_type"] != "none"
+        or target_joints[0]["drive"]["stiffness"] != 0.0
+        or any(row["joint_type"] != "fixed" for row in articulation["joints"] if row["role"] != "target")
+        or graph.get("task_joint_prim_path") != completion.get("task_joint_prim_path")
+        or graph.get("fixed_base_body_prim_path") != completion.get("fixed_base_body_prim_path")
+        or graph.get("physics_bounds") != expected_bounds
+        or graph.get("physics_authority_granted") is not False
+    ):
+        raise TaskEvaluationSceneConfigurationAdapterError(
+            "content_agents_replacement_result_invalid"
+        )
+
+
 def execute_content_agents_rigid_replacement(
     *,
     envelope: Mapping[str, Any],
@@ -1039,7 +1125,11 @@ def execute_content_agents_rigid_replacement(
         else {}
     )
     completion = receipt.get("candidate_physics_completion")
-    if (
+    if configuration.get("schema_version") == "articulated_replacement_authoring_configuration.v1":
+        _verify_articulated_replacement_result(
+            configuration=configuration, envelope=envelope, receipt=receipt, graph=graph,
+            asset=asset, asset_record=asset_record, source_candidate_record=source_candidate_record)
+    elif (
         configuration.get("schema_version")
         != "rigid_replacement_authoring_configuration.v1"
         or identity != envelope["recipe"]["subject_identity"]
@@ -1242,6 +1332,10 @@ def execute_simready_static_rigid_qualification(
     checks = configuration.get("required_checks")
     identity = configuration.get("replacement_identity")
     graph = graph_spec.get("articulation_graph") if isinstance(graph_spec, Mapping) else None
+    # An articulated assembly declares its kind on both the stage configuration
+    # and the stage-3 graph spec; its joints are the point, so the rigid
+    # "joints == []" clause is replaced by the articulated qualifier's own gate.
+    articulated = configuration.get("asset_kind") == "articulated_assembly"
     if (
         configuration.get("schema_version")
         != "replacement_static_qualification_configuration.v1"
@@ -1252,7 +1346,12 @@ def execute_simready_static_rigid_qualification(
         is not True
         or graph_spec.get("asset_id") != identity.get("id")
         or not isinstance(graph, Mapping)
-        or graph.get("joints") != []
+        or (
+            graph_spec.get("schema_version")
+            != "task_evaluation_articulated_replacement_graph.v1"
+            if articulated
+            else graph.get("joints") != []
+        )
         or authoring.get("output_usd", {}).get("sha256")
         != _sha256_and_size(asset)[0]
         or authoring.get("output_usd", {}).get("size_bytes")
@@ -1262,7 +1361,17 @@ def execute_simready_static_rigid_qualification(
             "simready_static_rigid_configuration_or_binding_invalid"
         )
     qualification_path = output_root / "static_qualification_receipt.v1.json"
-    qualification = qualify_scene_configuration_rigid_asset_static(
+    if articulated:
+        from .task_evaluation_scene_configuration_articulated_static_qualification import (
+            SCHEMA_VERSION as ARTICULATED_STATIC_QUALIFICATION_SCHEMA_VERSION,
+            qualify_scene_configuration_articulated_asset_static,
+        )
+        qualifier = qualify_scene_configuration_articulated_asset_static
+        expected_schema = ARTICULATED_STATIC_QUALIFICATION_SCHEMA_VERSION
+    else:
+        qualifier = qualify_scene_configuration_rigid_asset_static
+        expected_schema = STATIC_QUALIFICATION_SCHEMA_VERSION
+    qualification = qualifier(
         asset_path=asset,
         graph_spec=graph_spec,
         authoring_receipt=authoring,
@@ -1270,8 +1379,7 @@ def execute_simready_static_rigid_qualification(
         output_path=qualification_path,
     )
     if (
-        qualification.get("schema_version")
-        != STATIC_QUALIFICATION_SCHEMA_VERSION
+        qualification.get("schema_version") != expected_schema
         or qualification.get("result_digest")
         != canonical_digest(qualification, digest_field="result_digest")
         or qualification.get("status")

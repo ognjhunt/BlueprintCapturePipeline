@@ -41,12 +41,22 @@ from .task_evaluation_scene_configuration_render_inputs import _materialized
 from .task_evaluation_scene_configuration_stage_tool import (
     COMPONENT_RESULT_SCHEMA_VERSION, _validate_dependencies, _validate_input,
 )
+from .task_object_articulated_packaging import (
+    AUTHORING_RESULT_SCHEMA_VERSION as ARTICULATED_AUTHORING_RESULT_SCHEMA_VERSION,
+    COMPLETION_SCHEMA_VERSION as ARTICULATED_COMPLETION_SCHEMA_VERSION,
+    HANDLE_PROTRUSION_M, articulation_graph_from_plan, package_astra_articulated_candidate,
+    plan_articulated_assembly,
+)
 from .task_object_astra_authoring import (
+    AssetAuthoringError,
     AuthoringRequest, budgeted_invoker, execute_asset_authoring, file_record, validate_request,
 )
 from .task_object_physical_property_review import EvidenceReference
 
 BACKEND = "astra_cad_blender_v1"
+ARTICULATED_AUTHORING_SCHEMA_VERSION = "articulated_replacement_authoring_configuration.v1"
+ARTICULATED_GRAPH_SCHEMA_VERSION = "task_evaluation_articulated_replacement_graph.v1"
+ARTICULATED_RECEIPT_SCHEMA_VERSION = "task_evaluation_articulated_replacement_authoring_result.v1"
 BLENDER_ROOT_ENV = "BLUEPRINT_BLENDER_RUNTIME_ROOT"
 _CAD_PACKAGE_FILES = ("text_to_cad_skills_source.zip", "multi_agent_cad_source.zip",
                       "cad_skill_source_receipt.json", "multi_agent_cad_skill.md")
@@ -213,6 +223,278 @@ def build_authoring_request(stage_input: Mapping[str, Any], source_record: Mappi
                      for evidence_id in prop.evidence_ids)):
             raise AstraStageError("astra_measured_property_evidence_invalid")
     return request
+
+
+def _articulated_physics_bounds(configuration: Mapping[str, Any]) -> dict[str, dict[str, list[float]]]:
+    """Per-part admitted bounds: the carcass carries the assembly mass, the moving part its own."""
+    shared = _physics_bounds(configuration)
+    required = configuration.get("required_output") or {}
+    task_part = required.get("task_part_mass_kg_bounds")
+    if (not isinstance(task_part, list) or len(task_part) != 2
+            or not all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in task_part)
+            or not 0 < task_part[0] <= task_part[1]):
+        raise AstraStageError("astra_articulated_task_part_mass_bounds_invalid")
+    return {"carcass": {**shared}, "drawer": {**shared, "mass_kg": [float(task_part[0]), float(task_part[1])]}}
+
+
+def build_articulated_authoring_requests(stage_input: Mapping[str, Any], source_record: Mapping[str, Any],
+                                         references: list[Path], rights: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, AuthoringRequest]]:
+    """One exact per-part brief per assembly part; the assembly plan binds their rest poses and the task joint."""
+    configuration = stage_input["configuration"]
+    if configuration.get("schema_version") != ARTICULATED_AUTHORING_SCHEMA_VERSION:
+        raise AstraStageError("astra_authoring_configuration_kind_unsupported:" + str(configuration.get("schema_version") or ""))
+    disclosure = configuration.get("provider_disclosure") or {}
+    website_capture = configuration.get("source_observation_kind") == "website_capture_frames"
+    if website_capture:
+        from .website_native_inputs import validate_website_authoring_disclosure
+        validate_website_authoring_disclosure(envelope=stage_input["construction_envelope"],
+            configuration=configuration, rights=rights)
+    elif (rights.get("status") != "admitted_for_internal_development"
+            or rights.get("private_provider_processing_allowed") is not True
+            or rights.get("provider_training_allowed") is not False
+            or rights.get("public_redistribution_allowed") is not False):
+        raise AstraStageError("astra_derived_disclosure_not_admitted")
+    if (configuration.get("authoring_backend") != BACKEND
+            or disclosure.get("derived_views_and_metric_envelope") is not True
+            or disclosure.get("provider_training") is not False
+            or disclosure.get("public_redistribution") is not False):
+        raise AstraStageError("astra_derived_disclosure_not_admitted")
+    if website_capture and configuration.get("dimension_authority") != "estimated":
+        raise AstraStageError("astra_website_dimensions_must_remain_estimated")
+    envelope = _metric_envelope_spec(configuration)
+    tolerance = float(envelope["maximum_dimension_relative_error"])
+    try:
+        plan = plan_articulated_assembly(configuration)
+    except AssetAuthoringError as exc:
+        raise AstraStageError("astra_" + str(exc)) from exc
+    identity = configuration["replacement_identity"]
+    owner = str(configuration.get("authoring_target") or "").strip()
+    source_identity = configuration.get("source_object_identity")
+    if not owner or not source_identity or not references:
+        raise AstraStageError("astra_owner_identity_or_reference_missing")
+    bounds = _articulated_physics_bounds(configuration)
+    uncertainty_note = ("Assembly envelope relative tolerance used as an explicit uncertainty proxy for each part; "
+                        "part dimensions derive from the estimated envelope projected on the estimated front normal "
+                        "and object-prior construction assumptions. None is measured.")
+    frames = []
+    base_evidence = [{"evidence_id": "retained_source_geometry", "uri": str(source_record["path"]),
+                      "sha256": str(source_record["digest"]).removeprefix("sha256:"), "kind": "source_geometry",
+                      "excerpt": "Retained source object identity and metric envelope: " + canonical_json({
+                          "source_object_identity": source_identity, "metric_envelope": envelope})}]
+    for index, reference in enumerate(references):
+        record = file_record(reference)
+        frames.append({"path": record["path"], "sha256": record["sha256"], "role": "observed_source",
+                       "description": (f"Original website capture frame {index}: the whole assembly, closed. Retain observed "
+                                       "front appearance (wood-grain fronts, silver bar handles, grey carcass edges); the "
+                                       "interior is unobserved." if website_capture else
+                                       f"Digest-bound stage-1 appearance view {index}; derived source render, not physical truth.")})
+        base_evidence.append({"evidence_id": f"retained_source_view_{index}", "uri": record["path"],
+                              "sha256": record["sha256"].removeprefix("sha256:"), "kind": "material_observation",
+                              "excerpt": "Task-selected assembly in the original website capture frame." if website_capture
+                              else "Owner-described assembly shown in the retained source-derived appearance view."})
+    base_evidence.extend(_verify_physical_evidence(configuration.get("physical_evidence", []), stage_input["construction_envelope"]))
+    if len({row["evidence_id"] for row in base_evidence}) != len(base_evidence):
+        raise AstraStageError("astra_duplicate_physical_evidence")
+    requests: dict[str, AuthoringRequest] = {}
+    for part_id, spec in plan["parts"].items():
+        dimensions = [float(v) for v in spec["dimensions_m"]]
+        uncertainty = [d * tolerance for d in dimensions]
+        part_object_id = f"{identity['id']}__{part_id}"
+        material = (f"Infer material conservatively from the retained assembly description and reference views: {owner}. "
+                    + ("Grey painted steel or laminate carcass." if part_id == "carcass" else
+                       "Wood-grain laminate drawer front with a brushed silver metal bar handle; plain box behind."))
+        physical = {
+            "object_id": part_object_id, "object_description": f"{spec['link_role']} of {owner}: {spec['description']}",
+            "material_description": material, "appearance": configuration.get("appearance", "unknown"), "dimensions": {},
+            "measured": dict.fromkeys(("mass_kg", "static_friction", "dynamic_friction", "restitution")),
+            "proposed": None, "optical_material": {"name": material, "transmission": 0.0, "opacity": 1.0},
+            "admitted_restitution": dict(zip(("lower", "upper"), bounds[part_id]["restitution"])),
+            "evidence": [dict(row) for row in base_evidence],
+        }
+        for index, axis in enumerate(("x_m", "y_m", "z_m")):
+            physical["dimensions"][axis] = {"value": dimensions[index], "basis": "estimated",
+                "interval": {"lower": dimensions[index] - uncertainty[index], "upper": dimensions[index] + uncertainty[index]},
+                "rationale": "Part envelope derived from the estimated assembly envelope and construction assumptions.",
+                "uncertainty": uncertainty_note, "evidence_ids": ["retained_source_geometry"]}
+        constraints = {"owner_description": owner, "assembly_part_id": part_id, "link_role": spec["link_role"],
+            "part_description": spec["description"], "assembly_frame": plan["assembly_frame"],
+            "assembly_dimensions_m": plan["assembly_dimensions_m"], "bay_count": plan["bay_count"],
+            "task_bay_index": plan["task_bay_index"], "exact_nominal_dimensions_m": dimensions,
+            "part_frame": "center_XY_bottom_Z_with_the_front_face_at_+X",
+            "source_uncertainty_note": uncertainty_note, "construction_assumptions": plan["construction_assumptions"],
+            "required_output": configuration["required_output"],
+            **({"handle": spec["handle"]} if "handle" in spec else {}),
+            "additional_constraints": configuration.get("construction_constraints", "")}
+        value = {
+            "schema_version": "task_object_astra_authoring_request.v1", "run_id": stage_input["run_id"],
+            "object_id": part_object_id, "owner_description": f"{spec['link_role']} of {owner}",
+            "role": "task_object", "dimensions_m": dimensions,
+            "dimension_authority": "estimated" if website_capture else "source_geometry",
+            "dimension_source_digest": source_record["digest"],
+            "dimension_uncertainty_m": uncertainty, "coordinate_frame": "object_center_xy_bottom_z_z_up_meters",
+            "maximum_export_error_m": configuration.get("maximum_export_error_m", 0.00001),
+            "source_frames": frames, "physical_review_input": physical,
+            "construction_constraints": canonical_json(constraints),
+            "private_provider_processing_allowed": True, "provider_training_allowed": False,
+            "public_redistribution_allowed": False, "expected_production_commit": stage_input["source_commit"],
+            "request_digest": "sha256:" + "0" * 64,
+        }
+        value = AuthoringRequest.model_validate(value).model_dump(mode="json")
+        value["request_digest"] = canonical_digest(value, digest_field="request_digest")
+        request = validate_request(value)
+        if request.maximum_export_error_m * 1000 > 0.1:
+            raise AstraStageError("astra_cad_export_tolerance_unsupported")
+        requests[part_id] = request
+    return plan, requests
+
+
+def _articulated_stage_source_binding(part_requests: Mapping[str, AuthoringRequest], stage_input, source_record, rights_path):
+    semantics = {}
+    for part_id, request in part_requests.items():
+        semantic = request.model_dump(mode="json")
+        for key in ("request_digest", "expected_production_commit"):
+            semantic.pop(key)
+        semantics[part_id] = semantic
+    run_id = next(iter(part_requests.values())).run_id
+    value = {"schema_version": "astra_same_run_source_binding.v1", "run_id": run_id,
+        "authoring_input_digest": canonical_digest(semantics), "source_candidate": dict(source_record),
+        "rights_admission": file_record(rights_path), "configuration_sha256": stage_input["configuration_sha256"],
+        "assembly_parts": sorted(part_requests)}
+    value["binding_digest"] = canonical_digest(value, digest_field="binding_digest")
+    return value
+
+
+def _reuse_prior_part_result(prior_roots: list[Path], part_id: str, request: AuthoringRequest) -> dict[str, Any] | None:
+    """Adopt a completed part from the latest same-run attempt when its exact inputs and bytes still hold."""
+    for prior in reversed(prior_roots):
+        path = prior / "authoring" / "parts" / part_id / "result.json"
+        if not path.is_file():
+            continue
+        try:
+            result = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        if (result.get("request_digest") != request.request_digest
+                or result.get("status") != "candidate_authored_pending_native_qualification"
+                or result.get("result_digest") != canonical_digest(result, digest_field="result_digest")):
+            return None
+        for key in ("asset", "final_visual_mesh", "final_visual_mesh_receipt", "physical_review",
+                    "physical_review_input", "geometry_readback"):
+            record = result.get(key)
+            if not isinstance(record, Mapping) or not Path(str(record.get("path") or "")).is_file():
+                return None
+            actual = file_record(Path(record["path"]))
+            if any(actual.get(field) != record.get(field) for field in ("sha256", "size_bytes")):
+                return None
+        return result
+    return None
+
+
+def _author_articulated_parts(*, plan, part_requests, authored_root, runtime, prior_roots, invoker, sandbox, blender,
+                              cad_root, verified_sources, authoring_instructions, configuration, authoring_executor,
+                              mac_executor) -> dict[str, Any]:
+    """Author each part in its own bounded session; completed parts are checkpoints for a retry."""
+    parts: dict[str, Any] = {}
+    reused: list[str] = []
+    for part_id, part_request in part_requests.items():
+        part_root = authored_root / "parts" / part_id
+        prior = _reuse_prior_part_result(prior_roots, part_id, part_request)
+        if prior is not None:
+            part_root.mkdir(parents=True, exist_ok=True)
+            _write(part_root / "request.json", part_request.model_dump(mode="json"))
+            _write(part_root / "result.json", prior)
+            _write(part_root / "part_adoption.json", {"status": "completed_part_adopted_from_same_run",
+                "result_digest": prior["result_digest"], "new_provider_calls": 0})
+            parts[part_id] = prior
+            reused.append(part_id)
+            continue
+        arguments = dict(request_value=part_request.model_dump(mode="json"), output_root=part_root, invoker=invoker,
+                         blender_runner=sandbox, blender_executable=blender["executable"],
+                         authoring_instructions=authoring_instructions)
+        if authoring_executor is execute_asset_authoring and configuration.get("source_observation_kind") == "website_capture_frames":
+            from functools import partial
+            from .task_object_agent_cad import execute_cad_program
+            from .task_object_agent_session import execute_agent_authoring
+            parts[part_id] = execute_agent_authoring(**arguments, budget_root=runtime / "inference" / "parts" / part_id,
+                cad_executor=partial(execute_cad_program, cad_root=cad_root / "text-to-cad",
+                    mac_root=cad_root / "Multi-Agent-CAD", sandbox=sandbox, verified_sources=verified_sources))
+        else:
+            parts[part_id] = authoring_executor(**arguments, mac_executor=mac_executor)
+    authored = {"schema_version": ARTICULATED_AUTHORING_RESULT_SCHEMA_VERSION,
+                "status": "parts_authored_pending_native_qualification", "model": "gpt-6-astra",
+                "plan": dict(plan), "parts": parts, "reused_part_ids": reused,
+                "part_request_digests": {part_id: request.request_digest for part_id, request in part_requests.items()},
+                "claim_ceiling": "development_only", "native_import_qualified": False,
+                "scene_placement_qualified": False, "physical_equivalence_proven": False}
+    authored["result_digest"] = canonical_digest(authored, digest_field="result_digest")
+    _write(authored_root / "result.json", authored)
+    return authored
+
+
+def _finish_articulated_component(*, plan, part_requests, authored, output, physics_bounds, configuration,
+                                  source_record, stage_input, rights_record, cad_runtime, blender, authored_root,
+                                  result_path, package_candidate):
+    output.mkdir(parents=True, exist_ok=True)
+    packaged = package_candidate(requests=part_requests, authoring_results=authored["parts"], plan=plan,
+                                 output_root=output, physics_bounds=physics_bounds)
+    asset = Path(packaged["asset"]["path"])
+    asset_record = {"path": packaged["asset"]["path"],
+                    "digest": packaged["asset"].get("digest") or packaged["asset"].get("sha256"),
+                    "size_bytes": packaged["asset"]["size_bytes"]}
+    if asset.is_symlink() or not asset.resolve().is_relative_to(output) or _file_record(asset) != asset_record:
+        raise AstraStageError("astra_packaged_asset_binding_invalid")
+    completion = packaged["physics_completion"]
+    if completion.get("schema_version") != ARTICULATED_COMPLETION_SCHEMA_VERSION:
+        raise AstraStageError("astra_articulated_completion_schema_invalid")
+    dims = plan["assembly_dimensions_m"]
+    expected = [dims["depth_x"] + HANDLE_PROTRUSION_M, dims["width_y"], dims["height_z"]]
+    observed = completion["collision_dimensions_m"]
+    tolerance = float(configuration["metric_envelope"]["maximum_dimension_relative_error"])
+    errors = [abs(observed[i] - expected[i]) / expected[i] for i in range(3)]
+    if any(error > tolerance for error in errors):
+        raise AstraStageError("astra_articulated_assembly_envelope_mismatch")
+    completion["metric_envelope_validation"] = {
+        "status": "within_preregistered_metric_envelope", "frame": "assembly_frame_closed_plus_handle_protrusion",
+        "expected_dimensions_m": expected, "observed_collision_dimensions_m": observed,
+        "dimension_relative_errors": errors, "maximum_dimension_relative_error": tolerance}
+    completion["completion_digest"] = canonical_digest(completion, digest_field="completion_digest")
+    identity = configuration["replacement_identity"]
+    graph = {"schema_version": ARTICULATED_GRAPH_SCHEMA_VERSION, "asset_id": identity["id"],
+        "asset_version": identity["version"], "articulation_graph": articulation_graph_from_plan(plan),
+        "task_joint_prim_path": completion["task_joint_prim_path"], "task_link_prim_path": completion["task_link_prim_path"],
+        "fixed_base_body_prim_path": completion["fixed_base_body_prim_path"],
+        "handle_prim_paths": completion["handle_prim_paths"],
+        "handle_grasp_point_link_m": completion["handle_grasp_point_link_m"],
+        "link_prim_paths": {row["link_id"]: row["prim_path"] for row in completion["links"]},
+        "assembly_plan": dict(plan), "physics_bounds": physics_bounds, "physics_authority_granted": False,
+        "authoring_backend": BACKEND}
+    graph_path = output / "replacement_graph_spec.v1.json"
+    _write(graph_path, graph)
+    receipt = {"schema_version": ARTICULATED_RECEIPT_SCHEMA_VERSION,
+        "status": "authored_candidate_pending_qualification", "authoring_backend": BACKEND, "model": "gpt-6-astra",
+        "asset_kind": "articulated_assembly", "replacement_identity": identity,
+        "source_candidate_digest": source_record["digest"],
+        "source_candidate_claim": "source_geometry_not_observed_truth_or_physics_authority",
+        "source_commit": stage_input["source_commit"], "toolchain_digest": stage_input["toolchain_digest"],
+        "source_rights_admission": dict(rights_record), "cad_skill_runtime": cad_runtime, "blender_runtime": blender,
+        "astra_authoring_result": _file_record(authored_root / "result.json"),
+        "part_authoring_results": {part_id: _file_record(authored_root / "parts" / part_id / "result.json")
+                                   for part_id in part_requests},
+        "output_usd": {"sha256": _sha256(asset), "size_bytes": asset.stat().st_size},
+        "candidate_physics_completion": completion, "physics_authority_granted": False, "result_digest": ""}
+    receipt["result_digest"] = canonical_digest(receipt, digest_field="result_digest")
+    receipt_path = output / "replacement_authoring_receipt.v1.json"
+    _write(receipt_path, receipt)
+    result = {"schema_version": COMPONENT_RESULT_SCHEMA_VERSION, "status": "completed", "adapter_id": _ADAPTER_ID,
+        "stage_id": stage_input["stage"]["stage_id"], "provider_mutations_performed": 0,
+        "nested_paid_execution_requested": False, "authoring_backend": BACKEND, "model": "gpt-6-astra",
+        "asset_kind": "articulated_assembly",
+        "artifacts": [{"role": role, **_file_record(path)} for role, path in (
+            ("replacement_asset", asset), ("replacement_authoring_receipt", receipt_path), ("replacement_graph_spec", graph_path))],
+        "result_digest": ""}
+    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+    _write(result_path, result)
+    return result
 
 
 #: The geometric architect emits every section sketch and build step in ONE reply,
@@ -424,9 +706,17 @@ def execute_astra_component(*, environment=None, runner=subprocess.run,
     source_record, _ = _dependency_candidate(dependencies)
     references = _reference_frames(stage_input, dependencies)
     rights_record, rights_path = _materialized(envelope, contract_path="scene.rights.admission")
-    request = build_authoring_request(stage_input, source_record, references,
-                                     _read(rights_path, code="astra_rights_invalid"))
-    physics_bounds = _physics_bounds(configuration)
+    articulated = configuration.get("schema_version") == ARTICULATED_AUTHORING_SCHEMA_VERSION
+    plan = part_requests = None
+    if articulated:
+        plan, part_requests = build_articulated_authoring_requests(
+            stage_input, source_record, references, _read(rights_path, code="astra_rights_invalid"))
+        request = next(iter(part_requests.values()))
+        physics_bounds = _articulated_physics_bounds(configuration)
+    else:
+        request = build_authoring_request(stage_input, source_record, references,
+                                         _read(rights_path, code="astra_rights_invalid"))
+        physics_bounds = _physics_bounds(configuration)
     output = _required_path(values, _OUTPUT_ENV)
     result_path = _required_path(values, _RESULT_ENV)
     package = _required_path(values, _PACKAGE_ENV)
@@ -437,6 +727,11 @@ def execute_astra_component(*, environment=None, runner=subprocess.run,
     partial_envelope = envelope.get("partial_astra_successor")
     partial_descriptor = None
     verified_lineage = None
+    if articulated and (partial_envelope is not None or configuration.get("astra_phase_adoption") is not None
+                        or retained_runtime is not None):
+        # Assembly parts are adopted per part from the same run root; the rigid
+        # phase-adoption descriptors describe one solid and do not apply.
+        raise AstraStageError("astra_articulated_phase_adoption_unsupported")
     if partial_envelope is not None:
         from .task_evaluation_partial_astra_successor import restore_partial_astra
         if configuration.get("astra_phase_adoption") is not None or retained_runtime is not None:
@@ -471,10 +766,11 @@ def execute_astra_component(*, environment=None, runner=subprocess.run,
     if prior_roots and not cross_run:
         if descriptor is not None and Path(descriptor["prior_runtime"]) != prior_roots[-1]:
             raise AstraStageError("astra_resume_cannot_skip_latest_budget_journal")
-        descriptor = descriptor or materialize_automatic_phase_adoption(prior_runtime=prior_roots[-1])
+        descriptor = descriptor or (None if articulated else materialize_automatic_phase_adoption(prior_runtime=prior_roots[-1]))
     if no_cost_replay and (descriptor is None or "authoring_result" not in descriptor.get("completed_artifacts", [])):
         raise AstraStageError("astra_no_cost_replay_requires_completed_authoring")
-    source_binding = _stage_source_binding(request, stage_input, source_record, rights_path)
+    source_binding = (_articulated_stage_source_binding(part_requests, stage_input, source_record, rights_path)
+                      if articulated else _stage_source_binding(request, stage_input, source_record, rights_path))
     if descriptor is not None and descriptor.get("schema_version") == "task_evaluation_retained_astra_artifacts.v1":
         prior_binding = Path(descriptor["prior_runtime"]) / "stage_source_binding.json"
         if not prior_binding.is_file() or _read(prior_binding, code="astra_retained_source_binding_invalid") != source_binding:
@@ -505,7 +801,7 @@ def execute_astra_component(*, environment=None, runner=subprocess.run,
         _write(runtime / "retained_artifact_contract.json", descriptor)
     if package_candidate is None:
         from .task_object_simready_packaging import package_astra_candidate
-        package_candidate = package_astra_candidate
+        package_candidate = package_astra_articulated_candidate if articulated else package_astra_candidate
     authored_root = runtime / "authoring"
     authored_root.mkdir()
     if adoption.get("completed_authoring_result") is not None:
@@ -568,7 +864,13 @@ def execute_astra_component(*, environment=None, runner=subprocess.run,
             arguments = dict(request_value=request.model_dump(mode="json"), output_root=authored_root,
                 invoker=invoker, blender_runner=sandbox, blender_executable=blender["executable"],
                 authoring_instructions=(cad_root / "text-to-cad/skills/cad/SKILL.md").read_text())
-            if (authoring_executor is execute_asset_authoring
+            if articulated:
+                authored = _author_articulated_parts(plan=plan, part_requests=part_requests, authored_root=authored_root,
+                    runtime=runtime, prior_roots=prior_roots, invoker=invoker, sandbox=sandbox, blender=blender,
+                    cad_root=cad_root, verified_sources=verified_sources,
+                    authoring_instructions=arguments["authoring_instructions"], configuration=configuration,
+                    authoring_executor=authoring_executor, mac_executor=mac_executor)
+            elif (authoring_executor is execute_asset_authoring
                     and configuration.get("source_observation_kind") == "website_capture_frames"
                     and (not adoption.get("adoption_digest") or "adopted_agent_root" in adoption["authoring_kwargs"])):
                 from .task_object_agent_cad import execute_cad_program
@@ -589,6 +891,12 @@ def execute_astra_component(*, environment=None, runner=subprocess.run,
         finally:
             gate.complete(provider_call_performed=invoker.calls > 0,
                           runtime_result_digest=(authored or {}).get("result_digest"), runtime_exception_type=failure)
+    if articulated:
+        return _finish_articulated_component(plan=plan, part_requests=part_requests, authored=authored,
+            output=delivery_output, physics_bounds=physics_bounds, configuration=configuration,
+            source_record=source_record, stage_input=stage_input, rights_record=rights_record,
+            cad_runtime=cad_runtime, blender=blender, authored_root=authored_root, result_path=result_path,
+            package_candidate=package_candidate)
     return _finish_component(request=request, authored=authored, package_candidate=package_candidate,
         output=delivery_output, physics_bounds=physics_bounds, configuration=configuration,
         source_record=source_record, stage_input=stage_input, rights_record=rights_record,
