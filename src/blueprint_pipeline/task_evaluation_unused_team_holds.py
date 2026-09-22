@@ -121,6 +121,12 @@ def retire(*, config: Mapping[str, Any], intent_id: str, current_intent_path: Pa
             if old.get("expected_production_commit") == current["expected_production_commit"]:
                 continue
             require(provision["execution_source_commit"] == old.get("expected_production_commit"), "source_changed")
+            # Reused placement has no inference reservation. Its native holds
+            # belong to completed_placement_adoption.retire_unused_native, which
+            # verifies native execution history; this unpaid-authoring check
+            # must neither invent a placement hold nor release those GPU holds.
+            if old.get("completed_placement_adoption") is not None:
+                continue
             if not is_unpaid(binding, old["intent_digest"]):
                 continue
             old_owner = _read(Path(old["phases"]["construction"]["authorization_path"]))["scene_owner_attempt"]["scene_attempt_binding"]
