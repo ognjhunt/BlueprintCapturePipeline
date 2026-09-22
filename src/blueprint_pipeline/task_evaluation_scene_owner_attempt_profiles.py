@@ -227,6 +227,10 @@ def record_owner_attempt(
     activation_root: Path,
 ) -> None:
     """Retain the native ("native") or configuration ("config") owner attempt into ``operations``."""
+    # Policy dispatch reopens its separately reserved scene-policy attempt.
+    # This adapter carries only construction/destination/controls reservations.
+    if mode == "native" and activation_request["lane"] == "native_task_arena_policy_evaluation":
+        return
     retain = retain_native_owner_attempt if mode == "native" else reserve_configuration_owner_attempt
     attempt = retain(
         activation_request=activation_request,
