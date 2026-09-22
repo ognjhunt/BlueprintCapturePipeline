@@ -194,7 +194,7 @@ def verify_owner_policy_delivery(*, root, setup, runtime_inputs, delivery, proje
         else:
             runner = readback_runner or verify_website_delivery
             readback = runner(run_root=root, owner_execution=authority, result_delivery=delivery,
-                              policy_canary_result=projection, publication=publication)
+                              policy_canary_result=projection, publication=publication, maximum_batches=64)
         if not delivery_readback_matches(readback, identity=identity, artifacts=delivery['artifacts'],
                 team_namespace=authority['team_namespace'], owner_user_id=authority['owner_user_id']):
             return {'status': 'pending', 'blockers': ['policy_canary_owner_delivery_readback_pending']}

@@ -122,6 +122,7 @@ def test_expired_or_revoked_execution_keeps_delivery_reachable_and_resume_reuses
         return _readback(**kwargs)
     result = verify_owner_policy_delivery(**args, readback_runner=reader)
     assert result['status'] == 'verified'
+    assert calls[0]['maximum_batches'] == 64
     assert calls[0]['owner_execution']['owner_user_id'] == 'u1'
     assert calls[0]['owner_execution']['team_namespace'].startswith('scene-')
     assert calls[0]['owner_execution']['team_namespace'] != 'org1'
@@ -228,7 +229,6 @@ def test_another_scene_run_cannot_borrow_this_preparation_namespace(tmp_path, mo
 
 def test_v2_request_uses_factory_namespace_and_hashes_every_download_after_expiry(tmp_path, monkeypatch):
     from datetime import datetime, timezone
-    from functools import partial
     from tests.test_task_evaluation_delivery_readback import fixture, Response
     from blueprint_pipeline.task_evaluation_delivery_readback import verify_website_delivery
     from blueprint_pipeline.task_evaluation_owner_delivery_readback import _owner_identity
@@ -261,8 +261,10 @@ def test_v2_request_uses_factory_namespace_and_hashes_every_download_after_expir
         result = json.loads(response.read())
         result['inbox']['team_namespace'] = expected['team_namespace']
         return Response(json.dumps(result).encode())
-    reader = partial(verify_website_delivery, endpoint_url=http_args['endpoint_url'],
-                     token=http_args['token'], opener=opener, maximum_batches=1)
+    def reader(**kwargs):
+        kwargs['maximum_batches'] = 1  # Exercise durable resume with a deliberately small pass.
+        return verify_website_delivery(**kwargs, endpoint_url=http_args['endpoint_url'],
+                                       token=http_args['token'], opener=opener)
     assert verify_owner_policy_delivery(**args, readback_runner=reader)['status'] == 'pending'
     assert len(state['gets']) == 12
     assert verify_owner_policy_delivery(**args, readback_runner=reader)['status'] == 'pending'
