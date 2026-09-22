@@ -319,14 +319,9 @@ def test_resolved_scene_plan_binds_policy_cadence_and_supported_variations() -> 
         "object_yaw_delta_degrees",
         "external_camera_x_delta_m",
         "task_light_intensity_scale",
+        "dynamic_friction",
     }
-    assert resolved["scenario"]["runtime_coverage_gaps"] == [
-        {
-            "family": "bounded_physics",
-            "reason": "runtime_material_link_binding_unavailable",
-            "fallback": "canonical_task_material",
-        }
-    ]
+    assert resolved["scenario"]["runtime_coverage_gaps"] == []
     assert resolved["plan_digest"] == canonical_digest(
         resolved, digest_field="plan_digest"
     )

@@ -743,6 +743,7 @@ def read_native_task_arena_scenario_parameters(
         elif kind in {
             "task_light_intensity_scale",
             "task_subject_link_dynamic_friction",
+            "task_subject_rigid_dynamic_friction",
         }:
             parameter_id = application["parameter_id"]
             try:
@@ -750,8 +751,10 @@ def read_native_task_arena_scenario_parameters(
                 if kind == "task_light_intensity_scale":
                     observed = float(native["observed_intensity_scale"])
                 else:
-                    if native["task_link_id"] != application["task_link_id"]:
+                    if kind == "task_subject_link_dynamic_friction" and native["task_link_id"] != application["task_link_id"]:
                         raise KeyError("task_link_id")
+                    if kind == "task_subject_rigid_dynamic_friction" and native["source"] != "physx_material_properties":
+                        raise KeyError("physx_material_properties")
                     observed = float(native["observed_dynamic_friction"])
             except (KeyError, TypeError, ValueError) as exc:
                 raise NativeTaskArenaReadbackError(

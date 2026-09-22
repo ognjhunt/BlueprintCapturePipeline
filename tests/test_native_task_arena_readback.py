@@ -686,7 +686,8 @@ def test_inactive_replacement_mutation_fails_reset_replay() -> None:
     assert inactive["passed"] is False
 
 
-def test_native_scenario_parameter_readback_uses_live_object_and_camera_state() -> None:
+@pytest.mark.parametrize('rigid', [False, True])
+def test_native_scenario_parameter_readback_uses_live_object_and_camera_state(rigid) -> None:
     built = _built()
     built.plan["scenario"] = {
         "parameter_applications": [
@@ -727,7 +728,7 @@ def test_native_scenario_parameter_readback_uses_live_object_and_camera_state() 
                 "unit": "coefficient",
                 "resolved_value": 0.45,
                 "application_tolerance": 1.0e-6,
-                "readback_kind": "task_subject_link_dynamic_friction",
+                "readback_kind": "task_subject_rigid_dynamic_friction" if rigid else "task_subject_link_dynamic_friction",
                 "expected_native_value": 0.45,
                 "task_link_id": "door",
             },
@@ -744,6 +745,7 @@ def test_native_scenario_parameter_readback_uses_live_object_and_camera_state() 
                 "light_intensity_scale": {"observed_intensity_scale": 0.9},
                 "object_dynamic_friction": {
                     "task_link_id": "door",
+                    "source": "physx_material_properties",
                     "observed_dynamic_friction": 0.45,
                 },
             },
