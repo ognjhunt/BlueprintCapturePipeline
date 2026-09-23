@@ -296,6 +296,18 @@ def test_malformed_resealed_completion_fails_with_a_typed_finding(tmp_path):
     assert "replacement_physics_completion_invalid" in error.value.codes
 
 
+def test_resealed_completion_cannot_hide_an_assembly_depth_change(tmp_path):
+    asset, graph, authoring = _sealed(tmp_path)
+    authoring["candidate_physics_completion"]["collision_dimensions_m"][0] += 0.1
+    _reseal(authoring["candidate_physics_completion"], "completion_digest")
+    _reseal(authoring)
+    with pytest.raises(TaskEvaluationSceneConfigurationStaticQualificationError) as error:
+        qualify_scene_configuration_articulated_asset_static(
+            asset_path=asset, graph_spec=graph, authoring_receipt=authoring,
+            replacement_identity=IDENTITY, output_path=tmp_path / "tampered.json")
+    assert "replacement_physics_completion_invalid" in error.value.codes
+
+
 @pytest.mark.parametrize(("change", "expected_code"), [
     ("joint_axis", "replacement_target_joint_axis_mismatch"),
     ("fixed_joint_body", "replacement_joint_graph_topology_mismatch:drawer_0_fixed"),
