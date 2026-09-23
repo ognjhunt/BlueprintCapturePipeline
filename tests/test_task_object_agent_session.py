@@ -18,7 +18,7 @@ from blueprint_pipeline import task_object_agent_session as session
 from blueprint_pipeline import task_object_astra_authoring as author
 from blueprint_pipeline import task_evaluation_scene_configuration_astra_driver as driver
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
-from blueprint_pipeline.task_object_agent_model import context_ceiling
+from blueprint_pipeline.task_object_agent_model import bounded_authoring_input, context_ceiling
 from blueprint_pipeline.task_object_agent_tools import AssetTools
 from blueprint_pipeline.task_evaluation_supervisor.agents_sdk import AgentsSDKInvocationBlocked
 from tests.test_astra_automatic_resume import authoring_fixture, FixtureInvoker  # noqa: F401
@@ -372,3 +372,39 @@ def test_context_preserves_entire_current_reasoning_tool_turn():
     assert not any(row.get('call_id') == 'old' for row in compact)
     assert json.dumps(rows) == before
     assert compact_authoring_history(older) == older  # No boundary: do not prune.
+
+
+def test_context_omits_old_inspection_media_before_refusing_drawer_repair():
+    original = {'role': 'user', 'content': 'original frames and task' + 's' * 30000}
+    current = [{'role': 'user', 'content': 'independent review requires repair' + 'r' * 10000},
+               {'type': 'reasoning', 'id': 'current-reasoning', 'encrypted_content': 'c' * 5000}]
+    history = [original,
+               {'type': 'function_call', 'call_id': 'render', 'name': 'render_candidate',
+                'arguments': '{"program":"' + 'p' * 10000 + '"}'},
+               {'type': 'function_call_output', 'call_id': 'render', 'output': 'rendered'},
+               {'type': 'function_call', 'call_id': 'inspect', 'name': 'inspect_candidate', 'arguments': '{}'},
+               {'type': 'function_call_output', 'call_id': 'inspect', 'output': 'old image' + 'i' * 30000},
+               *current]
+    selected, ceiling = bounded_authoring_input({
+        'instructions': 'authoring contract' + 'a' * 8000, 'input': history,
+        'tools': [], 'output_schema': None})
+    assert ceiling <= 80000
+    assert selected[0] == original and selected[-len(current):] == current
+    assert 'p' * 10000 in json.dumps(selected)
+    assert 'old image' not in json.dumps(selected)
+    assert history[4]['output'].startswith('old image')  # Durable history is untouched.
+
+
+def test_context_can_keep_current_turn_when_even_prior_program_is_too_large():
+    original = {'role': 'user', 'content': 'original task' + 's' * 60000}
+    current = {'role': 'user', 'content': 'review repair' + 'r' * 3000}
+    history = [original,
+               {'type': 'function_call', 'call_id': 'render', 'name': 'render_candidate',
+                'arguments': '{"program":"' + 'p' * 15000 + '"}'},
+               {'type': 'function_call_output', 'call_id': 'render', 'output': 'rendered'},
+               current]
+    selected, ceiling = bounded_authoring_input({
+        'instructions': 'authoring contract' + 'a' * 8000, 'input': history,
+        'tools': [], 'output_schema': None})
+    assert ceiling <= 80000
+    assert selected == [original, current]
