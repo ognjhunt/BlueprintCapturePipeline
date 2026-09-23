@@ -122,3 +122,14 @@ def test_revoke_token_removes_it(tmp_path: Path) -> None:
     assert TokenStore(path).verify(f"Bearer {GOOD}") is None
     with pytest.raises(TokenStoreError, match="token_name_unknown"):
         revoke_token(path, name="cloud")
+
+
+def test_token_file_written_as_root_takes_the_directory_group(tmp_path: Path, monkeypatch) -> None:
+    import operator_door.auth as auth
+
+    calls: list[tuple[str, int, int]] = []
+    monkeypatch.setattr(auth.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(auth.os, "chown", lambda path, uid, gid: calls.append((str(path), uid, gid)))
+    path = tmp_path / "tokens.json"
+    add_token(path, name="cloud", sha256=hash_token(GOOD), scopes=["read"])
+    assert calls and calls[-1][1:] == (0, tmp_path.stat().st_gid)

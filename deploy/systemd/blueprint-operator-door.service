@@ -8,8 +8,9 @@ ConditionPathExists=/opt/blueprint/operator-door/operator_door/__main__.py
 Type=simple
 User=blueprint
 Group=blueprint
-# Journal reads only; the door never sources an EnvironmentFile.
-SupplementaryGroups=systemd-journal
+# Journal reads, and the one group allowed to write the request spool's pending/.
+# The door never sources an EnvironmentFile.
+SupplementaryGroups=systemd-journal blueprint-door
 UMask=0077
 Environment=PYTHONPATH=/opt/blueprint/operator-door
 Environment=PYTHONDONTWRITEBYTECODE=1

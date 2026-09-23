@@ -38,6 +38,12 @@ from operator_door.secrets_guard import REDACTED, redact_lines, refused_name, sc
         "token_budget.json",
         "openai_api_key_semantic",
         "api-key.txt",
+        ".env-local",
+        ".env_prod",
+        "settings.env~",
+        "env.production",
+        ".envrc",
+        ".git",
     ],
 )
 def test_secret_looking_names_are_refused(name: str) -> None:
@@ -87,6 +93,15 @@ def test_ordinary_run_state_names_are_allowed(name: str) -> None:
         (b"https://discord.com/api/webhooks/123/abcdefghijklmnopqrst", "webhook_url"),
         (b"postgres://svc:hunter2hunter2@db.internal:5432/app", "url_credentials"),
         (b"GET /files?id=4&access_token=abcdefghijklmnopqrstuvwx HTTP/1.1", "url_query_secret"),
+        (b"users:\n- user:\n    client-key-data: " + b"Q" * 64, "kubeconfig_key_data"),
+        (b'{"auths": {"ghcr.io": {"auth": "dXNlcjpwYXNzd29yZDEyMw=="}}}', "docker_auth"),
+        (b"SERVICE_ACCOUNT_B64=eyJ0eXBlIjoi\n", "env_secret_assignment"),
+        (b"DB_PASS=hunter2\n", "env_secret_assignment"),
+        (b"database:\n  password: s3cretvalue\n", "config_secret_line"),
+        (b"[auth]\ntoken = abcdefghijkl\n", "config_secret_line"),
+        (b"ntn_" + b"a" * 46, "notion_token"),
+        (b"hf_" + b"b" * 34, "huggingface_token"),
+        (b"redis://:s3cretpw@cache.internal:6379/0", "url_credentials"),
     ],
 )
 def test_credential_shaped_content_is_detected(payload: bytes, reason: str) -> None:
@@ -115,3 +130,22 @@ def test_ordinary_content_is_not_flagged(payload: bytes) -> None:
 def test_redact_lines_replaces_only_matching_lines() -> None:
     text = "stage ok\nGEMINI_API_KEY=abcdefgh123\nnext stage\n"
     assert redact_lines(text) == f"stage ok\n{REDACTED}\nnext stage\n"
+
+
+def test_multi_line_private_keys_are_redacted_whole() -> None:
+    text = "before\n-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkq\nhkiG9w0BAQEFAASC\n-----END PRIVATE KEY-----\nafter\n"
+    assert redact_lines(text) == f"before\n{REDACTED}\n{REDACTED}\n{REDACTED}\n{REDACTED}\nafter\n"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [b"\n" * (1 << 20), b"\r\n" * (1 << 19), b"a." * (1 << 19), b"A" * (1 << 20), b'"' * (1 << 20),
+     b"a:" * (1 << 19), b"eyJ" * 349_525, b"-" * (1 << 20), b" \t" * (1 << 19), bytes(range(256)) * 4096],
+)
+def test_pathological_megabytes_scan_in_linear_time(payload: bytes) -> None:
+    import time
+
+    started = time.perf_counter()
+    scan_bytes(payload)
+    redact_lines(payload.decode("latin-1")[: 1 << 18])
+    assert time.perf_counter() - started < 3.0

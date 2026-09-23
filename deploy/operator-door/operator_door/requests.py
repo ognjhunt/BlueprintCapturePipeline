@@ -7,11 +7,16 @@ in the spool by anything else still has to pass these schemas.
 
 Spool layout under ``<state_root>/requests``::
 
-    pending/<id>.json       written by the door (atomic rename, mode 0644)
-    processing/<id>.json    claimed by the runner
+    pending/<id>.json       written by the door (group-writable by the door only)
+    processing/<id>.json    claimed by the runner   (root-owned from here on)
     completed/<id>.json     after the runner acted or refused
     results/<id>.json       the runner's result
     results/<id>.outcome.json, results/<id>.log   written by transient scripts
+
+Only commits already on ``origin/main`` can be deployed: a ``deploy`` token lets
+its holder get merged code running as root, and nothing more. Arbitrary pushed
+branches (canary deploys) and candidate-code stage replays are deliberately not
+offered, because either would run unreviewed code as root.
 """
 
 from __future__ import annotations
@@ -33,13 +38,13 @@ from .secrets_guard import redact_lines
 SCHEMA = "blueprint_operator_door_request.v1"
 MAX_SPOOL_FILE = 64 * 1024
 STATES = ("pending", "processing", "completed")
-_SCOPES = {"deploy": "deploy", "unit": "operate", "stage-replay": "operate", "door-upgrade": "deploy"}
-_COMMIT = re.compile(r"^[0-9a-f]{40}$")
-_CHILD = re.compile(r"^sam31-[a-f0-9]{8,64}$")
-_PARENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{3,159}$")
-_REQUEST_ID = re.compile(r"^[0-9]{8}T[0-9]{6}Z-(deploy|unit|stage-replay|door-upgrade)-[0-9a-f]{8}$")
+_SCOPES = {"deploy": "deploy", "unit": "operate", "door-upgrade": "deploy"}
+_COMMIT = re.compile(r"[0-9a-f]{40}")
+_REQUEST_ID = re.compile(r"[0-9]{8}T[0-9]{6}Z-(deploy|unit|door-upgrade)-[0-9a-f]{8}")
 _UNIT_ACTIONS = ("start", "reset-failed", "stop", "restart")
 _TRIGGER_ONLY_ACTIONS = ("stop", "restart")
+# Timers that protect money or cleanup are never paused through the door.
+_SAFETY_CRITICAL = re.compile(r"spend-guard|watchdog|teardown|reaper|provider-zero")
 _LOG_TAIL_LINES = 200
 
 
@@ -64,7 +69,7 @@ def _only(body: dict[str, Any], allowed: tuple[str, ...]) -> None:
 
 def _commit(body: dict[str, Any]) -> str:
     commit = body.get("commit")
-    if not isinstance(commit, str) or not _COMMIT.match(commit):
+    if not isinstance(commit, str) or not _COMMIT.fullmatch(commit):
         raise RequestRefused("commit_invalid")
     return commit
 
@@ -78,37 +83,27 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
     if kind not in _SCOPES:
         raise RequestRefused("kind_unknown")
     if kind == "deploy":
-        _only(body, ("kind", "commit", "mode", "wait_for_idle"))
-        mode = body.get("mode", "main")
-        if mode not in ("main", "canary"):
-            raise RequestRefused("mode_invalid")
+        _only(body, ("kind", "commit", "wait_for_idle"))
         wait = body.get("wait_for_idle", True)
         if not isinstance(wait, bool):
             raise RequestRefused("wait_for_idle_invalid")
-        return {"kind": kind, "commit": _commit(body), "mode": mode, "wait_for_idle": wait}
+        return {"kind": kind, "commit": _commit(body), "wait_for_idle": wait}
     if kind == "unit":
         _only(body, ("kind", "unit", "action"))
         unit, action = body.get("unit"), body.get("action")
-        if not isinstance(unit, str) or not UNIT_NAME.match(unit):
+        if not isinstance(unit, str) or not UNIT_NAME.fullmatch(unit):
             raise RequestRefused("unit_name_invalid")
         if unit.startswith("blueprint-operator-door"):
             raise RequestRefused("unit_is_door")
         if action not in _UNIT_ACTIONS:
             raise RequestRefused("unit_action_invalid")
-        if action in _TRIGGER_ONLY_ACTIONS and not unit.endswith((".timer", ".path")):
+        if action in _TRIGGER_ONLY_ACTIONS:
             # Pausing a trigger never kills a running job; stopping a service could.
-            raise RequestRefused("unit_action_not_allowed")
+            if not unit.endswith((".timer", ".path")):
+                raise RequestRefused("unit_action_not_allowed")
+            if _SAFETY_CRITICAL.search(unit):
+                raise RequestRefused("unit_safety_critical")
         return {"kind": kind, "unit": unit, "action": action}
-    if kind == "stage-replay":
-        _only(body, ("kind", "commit", "child", "parent"))
-        child, parent = body.get("child"), body.get("parent")
-        if (child is None) == (parent is None):
-            raise RequestRefused("replay_target_invalid")
-        if child is not None and (not isinstance(child, str) or not _CHILD.match(child)):
-            raise RequestRefused("replay_target_invalid")
-        if parent is not None and (not isinstance(parent, str) or not _PARENT.match(parent)):
-            raise RequestRefused("replay_target_invalid")
-        return {"kind": kind, "commit": _commit(body), "child": child, "parent": parent}
     _only(body, ("kind", "commit"))
     return {"kind": kind, "commit": _commit(body)}
 
@@ -119,7 +114,7 @@ def new_request_id(kind: str, now: _dt.datetime | None = None) -> str:
 
 
 def validate_request_id(request_id: str) -> str:
-    if not isinstance(request_id, str) or not _REQUEST_ID.match(request_id):
+    if not isinstance(request_id, str) or not _REQUEST_ID.fullmatch(request_id):
         raise RequestRefused("request_id_invalid")
     return request_id
 
@@ -147,17 +142,25 @@ def enqueue(config: DoorConfig, request: dict[str, Any], *, requested_by: str) -
     return request_id
 
 
-def load_request_file(path: Path) -> dict[str, Any]:
-    """Read a spool file defensively: no symlinks, regular files, bounded size."""
+def _open_regular(path: Path) -> tuple[int, os.stat_result]:
+    """Open without following symlinks or blocking on FIFOs; regular files only."""
 
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except OSError as error:
         raise RequestRefused("spool_file_unsafe") from error
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode):
+        os.close(fd)
+        raise RequestRefused("spool_file_unsafe")
+    return fd, info
+
+
+def load_request_file(path: Path) -> dict[str, Any]:
+    """Read a spool file defensively: no symlinks, regular files, bounded size."""
+
+    fd, info = _open_regular(path)
     try:
-        info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode):
-            raise RequestRefused("spool_file_unsafe")
         if info.st_size > MAX_SPOOL_FILE:
             raise RequestRefused("spool_file_too_large")
         data = os.read(fd, MAX_SPOOL_FILE + 1)
@@ -181,13 +184,15 @@ def _json_or_none(path: Path) -> Any:
 
 def _tail(path: Path) -> str | None:
     try:
-        with path.open("rb") as stream:
-            stream.seek(0, os.SEEK_END)
-            size = stream.tell()
-            stream.seek(max(0, size - 256 * 1024))
-            text = stream.read().decode("utf-8", "replace")
-    except OSError:
+        fd, info = _open_regular(path)
+    except RequestRefused:
         return None
+    try:
+        start = max(0, info.st_size - 256 * 1024)
+        os.lseek(fd, start, os.SEEK_SET)
+        text = os.read(fd, 256 * 1024 + 1).decode("utf-8", "replace")
+    finally:
+        os.close(fd)
     return redact_lines("\n".join(text.splitlines()[-_LOG_TAIL_LINES:]) + "\n")
 
 
@@ -218,8 +223,12 @@ def list_requests(config: DoorConfig, limit: int = 20) -> list[dict[str, Any]]:
     found: list[tuple[float, str, str]] = []
     for state in STATES:
         for path in (spool / state).glob("*.json"):
-            if _REQUEST_ID.match(path.stem):
+            if not _REQUEST_ID.fullmatch(path.stem):
+                continue
+            try:
                 found.append((path.stat().st_mtime, path.stem, state))
+            except FileNotFoundError:
+                continue  # moved by the runner between listing and stat
     found.sort(reverse=True)
     return [{"id": request_id, "state": state, "kind": request_id.split("-", 1)[1].rsplit("-", 1)[0]}
             for _, request_id, state in found[:limit]]

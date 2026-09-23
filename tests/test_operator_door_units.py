@@ -28,7 +28,8 @@ def test_door_runs_the_installed_package_on_system_python() -> None:
     service = _unit(DOOR)["Service"]
     assert service["ExecStart"] == "/usr/bin/python3 -m operator_door serve"
     assert f"PYTHONPATH={DoorConfig().install_root}" in DOOR.read_text(encoding="utf-8")
-    assert service["User"] == "blueprint" and service["SupplementaryGroups"] == "systemd-journal"
+    assert service["User"] == "blueprint"
+    assert service["SupplementaryGroups"] == "systemd-journal blueprint-door"
 
 
 def test_door_hides_every_secret_location_except_its_own_token_store() -> None:
@@ -51,7 +52,8 @@ def test_runner_is_a_sandboxed_root_oneshot_without_network() -> None:
     service = _unit(RUNNER)["Service"]
     assert service["Type"] == "oneshot" and service["User"] == "root"
     assert service["ExecStart"] == "/usr/bin/python3 -m operator_door run-spool"
-    assert service["CapabilityBoundingSet"] == "CAP_DAC_OVERRIDE"
+    assert service["CapabilityBoundingSet"] == "" and service["AmbientCapabilities"] == ""
+    assert _unit(RUNNER)["Unit"]["StartLimitIntervalSec"] == "0"
     assert service["PrivateNetwork"] == "true" and service["RestrictAddressFamilies"] == "AF_UNIX"
     assert service["ReadWritePaths"] == DoorConfig().spool_root
 

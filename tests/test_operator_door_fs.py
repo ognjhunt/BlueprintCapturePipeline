@@ -200,3 +200,65 @@ def test_archive_of_a_hidden_directory_is_refused(tree: dict[str, Path]) -> None
     with pytest.raises(FsRefused) as caught:
         _view(tree).stream_archive(str(tree["hidden"]), io.BytesIO().write)
     assert caught.value.code == "path_hidden"
+
+
+def _etc_view(tree: dict[str, Path]) -> tuple[FileView, Path]:
+    etc = tree["root"] / "etc-blueprint"
+    etc.mkdir()
+    (etc / "task-evaluation-scene-progression.json").write_text('{"scene_root": "/x"}', encoding="utf-8")
+    (etc / "c71-execute").write_text("K=1\n", encoding="utf-8")
+    (etc / "notes.txt").write_text("hello\n", encoding="utf-8")
+    view = FileView(DoorConfig(read_roots=(str(tree["root"]),), hidden_paths=(str(tree["hidden"]),),
+                               json_only_roots=(str(etc),)))
+    return view, etc
+
+
+def test_json_only_roots_serve_only_json(tree: dict[str, Path]) -> None:
+    view, etc = _etc_view(tree)
+    data, _ = view.read_range(str(etc / "task-evaluation-scene-progression.json"))
+    assert json.loads(data) == {"scene_root": "/x"}
+    for name in ("c71-execute", "notes.txt"):
+        with pytest.raises(FsRefused) as caught:
+            view.read_range(str(etc / name))
+        assert caught.value.code == "json_only_root"
+    entries = {e["name"]: e for e in view.list_dir(str(etc))["entries"]}
+    assert entries["notes.txt"] == {"name": "notes.txt", "type": "file", "refused": "json_only_root"}
+
+
+def test_compressed_files_are_scanned_after_decompression(tree: dict[str, Path]) -> None:
+    import gzip
+    import zipfile
+
+    folder = tree["root"] / "bundles"
+    folder.mkdir()
+    (folder / "clean.log.gz").write_bytes(gzip.compress(b"stage ok\n" * 1000))
+    (folder / "leaky.log.gz").write_bytes(gzip.compress(b"OPENAI_API_KEY=sk-live-abcdefghijklmnopqrstu\n"))
+    with zipfile.ZipFile(folder / "runtime.zip", "w") as bundle:
+        bundle.writestr("runtime_output/result.json", '{"ok": true}')
+    with zipfile.ZipFile(folder / "leaky.zip", "w") as bundle:
+        bundle.writestr("config/release.env", "A=1\n")
+    (folder / "blob.zst").write_bytes(b"\x28\xb5\x2f\xfd" + b"\x00" * 64)
+    view = _view(tree)
+    assert view.read_range(str(folder / "clean.log.gz"))[1]["size"] > 0
+    assert view.read_range(str(folder / "runtime.zip"))[1]["size"] > 0
+    for name, code in (("leaky.log.gz", "secret_content_refused:env_secret_assignment"),
+                       ("leaky.zip", "secret_content_refused:zip_member_name"),
+                       ("blob.zst", "secret_content_refused:compressed_unscannable:zstd")):
+        with pytest.raises(FsRefused) as caught:
+            view.read_range(str(folder / name))
+        assert caught.value.code == code
+
+
+def test_git_internals_are_refused(tree: dict[str, Path]) -> None:
+    git = tree["root"] / "checkout" / ".git" / "objects"
+    git.mkdir(parents=True)
+    (git / "pack.idx").write_bytes(b"x")
+    with pytest.raises(FsRefused) as caught:
+        _view(tree).read_range(str(git / "pack.idx"))
+    assert caught.value.code == "secret_name_refused"
+
+
+def test_archive_refusals_happen_before_streaming(tree: dict[str, Path]) -> None:
+    with pytest.raises(FsRefused) as caught:
+        _view(tree).prepare_archive(str(tree["root"] / "runs" / "scene-1" / "progression.json"))
+    assert caught.value.code == "not_a_directory"

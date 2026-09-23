@@ -5,17 +5,31 @@ and outside every hidden path, so neither ``..`` nor a symlink can escape.
 Files are opened with ``O_NOFOLLOW`` and must be regular. Names and content go
 through the secret guard; an archive skips what the guard refuses and says so
 in a manifest member instead of failing the whole download.
+
+Two extra rules close what name and content patterns alone would miss:
+
+* under a JSON-only root (``/etc/blueprint``, which holds about 150 env files and
+  backups) only ``*.json`` files can be read;
+* compressed content (gzip, zip, xz, bzip2) is scanned after decompression, with
+  the verdict cached per file version; formats the standard library cannot
+  decompress (zstd, 7z, rar) are refused.
 """
 
 from __future__ import annotations
 
+import bz2
 import fnmatch
+import gzip
 import io
 import json
+import lzma
 import os
 import stat
 import tarfile
-from typing import Any, Callable
+import tempfile
+import threading
+import zipfile
+from typing import Any, BinaryIO, Callable
 
 from .config import DoorConfig
 from .secrets_guard import refused_name, scan_bytes
@@ -23,6 +37,17 @@ from .secrets_guard import refused_name, scan_bytes
 MANIFEST_NAME = ".operator-door-manifest.json"
 _SCAN_OVERLAP = 4096
 _CHUNK = 1024 * 1024
+_MAX_DECOMPRESSED = 2 * 1024 * 1024 * 1024
+_MAGIC: tuple[tuple[bytes, str], ...] = (
+    (b"\x1f\x8b", "gzip"),
+    (b"PK\x03\x04", "zip"),
+    (b"\xfd7zXZ\x00", "xz"),
+    (b"BZh", "bzip2"),
+    (b"\x28\xb5\x2f\xfd", "zstd"),
+    (b"7z\xbc\xaf\x27\x1c", "7z"),
+    (b"Rar!", "rar"),
+)
+_STREAMABLE = {"gzip": gzip.GzipFile, "xz": lzma.LZMAFile, "bzip2": bz2.BZ2File}
 
 
 class FsRefused(Exception):
@@ -35,6 +60,58 @@ def _within(path: str, root: str) -> bool:
     return path == root or path.startswith(root.rstrip("/") + "/")
 
 
+def compression_kind(head: bytes) -> str | None:
+    for magic, kind in _MAGIC:
+        if head.startswith(magic):
+            return kind
+    return None
+
+
+def _scan_stream(stream: BinaryIO, budget: list[int]) -> str | None:
+    """Scan a decompressed stream in overlapping chunks; ``budget`` counts bytes left."""
+
+    tail = b""
+    while True:
+        chunk = stream.read(_CHUNK)
+        if not chunk:
+            return None
+        budget[0] -= len(chunk)
+        if budget[0] < 0:
+            raise FsRefused("compressed_too_large_to_scan")
+        reason = scan_bytes(tail + chunk)
+        if reason is not None:
+            return reason
+        tail = chunk[-_SCAN_OVERLAP:]
+
+
+def _scan_compressed(fd: int, kind: str) -> str | None:
+    """Verdict for a compressed file: a rule name, or None when it is clean."""
+
+    budget = [_MAX_DECOMPRESSED]
+    with os.fdopen(os.dup(fd), "rb") as raw:
+        raw.seek(0)
+        try:
+            if kind in _STREAMABLE:
+                with _STREAMABLE[kind](fileobj=raw) if kind == "gzip" else _STREAMABLE[kind](raw) as stream:
+                    return _scan_stream(stream, budget)
+            if kind == "zip":
+                with zipfile.ZipFile(raw) as archive:
+                    for info in archive.infolist():
+                        if refused_name(info.filename):
+                            return "zip_member_name"
+                        with archive.open(info) as member:
+                            head = member.read(8)
+                            if compression_kind(head):
+                                return "nested_compressed_member"
+                            reason = scan_bytes(head) or _scan_stream(member, budget)
+                            if reason is not None:
+                                return reason
+                    return None
+        except (OSError, EOFError, zipfile.BadZipFile, lzma.LZMAError, ValueError, RuntimeError):
+            return "compressed_unreadable"
+    return f"compressed_unscannable:{kind}"
+
+
 class FileView:
     def __init__(self, config: DoorConfig) -> None:
         self._config = config
@@ -42,6 +119,9 @@ class FileView:
         self._real_roots = [os.path.realpath(root) for root in config.read_roots]
         hidden = [os.path.normpath(path) for path in config.hidden_paths]
         self._hidden = sorted(set(hidden + [os.path.realpath(path) for path in hidden]))
+        self._json_only = [os.path.realpath(root) for root in config.json_only_roots]
+        self._verdicts: dict[tuple[str, int, int, int], str | None] = {}
+        self._verdict_lock = threading.Lock()
 
     # -- resolution ---------------------------------------------------------
 
@@ -76,6 +156,9 @@ class FileView:
         if refused_name(self._below_root(real)):
             raise FsRefused("secret_name_refused")
 
+    def _json_only_violation(self, real: str) -> bool:
+        return any(_within(real, root) for root in self._json_only) and not real.endswith(".json")
+
     # -- listing ------------------------------------------------------------
 
     def _entry(self, directory: str, item: os.DirEntry[str]) -> dict[str, Any]:
@@ -94,6 +177,8 @@ class FileView:
             return {"name": item.name, "type": kind, "refused": "hidden"}
         if refused_name(item.name):
             return {"name": item.name, "type": kind, "refused": "secret_name"}
+        if kind == "file" and self._json_only_violation(full):
+            return {"name": item.name, "type": kind, "refused": "json_only_root"}
         entry: dict[str, Any] = {"name": item.name, "type": kind, "mtime": int(info.st_mtime)}
         if kind == "file":
             entry["size"] = info.st_size
@@ -112,6 +197,8 @@ class FileView:
         except FileNotFoundError as error:
             raise FsRefused("not_found") from error
         if not stat.S_ISDIR(info.st_mode):
+            if self._json_only_violation(real):
+                raise FsRefused("json_only_root")
             kind = "file" if stat.S_ISREG(info.st_mode) else "other"
             return {"path": raw, "realpath": real, "type": kind, "size": info.st_size,
                     "mtime": int(info.st_mtime), "entries": None, "truncated": False}
@@ -148,13 +235,36 @@ class FileView:
             raise FsRefused("not_regular_file")
         return fd, info
 
-    def read_range(self, raw: str, offset: int = 0, length: int | None = None) -> tuple[bytes, dict[str, Any]]:
+    def _compressed_verdict(self, real: str, fd: int, info: os.stat_result, kind: str) -> str | None:
+        key = (real, info.st_ino, info.st_size, info.st_mtime_ns)
+        with self._verdict_lock:
+            if key in self._verdicts:
+                return self._verdicts[key]
+        verdict = _scan_compressed(fd, kind)
+        with self._verdict_lock:
+            if len(self._verdicts) >= 256:
+                self._verdicts.pop(next(iter(self._verdicts)))
+            self._verdicts[key] = verdict
+        return verdict
+
+    def _check_readable(self, raw: str) -> str:
         real = self.resolve(raw)
         self._refuse_secret_name(real)
+        if self._json_only_violation(real):
+            raise FsRefused("json_only_root")
+        return real
+
+    def read_range(self, raw: str, offset: int = 0, length: int | None = None) -> tuple[bytes, dict[str, Any]]:
+        real = self._check_readable(raw)
         if offset < 0 or (length is not None and length < 0):
             raise FsRefused("range_invalid")
         fd, info = self._open_regular(real)
         try:
+            kind = compression_kind(os.pread(fd, 8, 0))
+            if kind is not None:
+                verdict = self._compressed_verdict(real, fd, info, kind)
+                if verdict is not None:
+                    raise FsRefused(f"secret_content_refused:{verdict}")
             size = info.st_size
             wanted = self._config.max_read_bytes if length is None else min(length, self._config.max_read_bytes)
             start = min(offset, size)
@@ -173,31 +283,22 @@ class FileView:
 
     # -- archives -----------------------------------------------------------
 
-    def _clean(self, fd: int) -> str | None:
-        """Scan a whole file in overlapping chunks; return a rule name or None."""
+    def prepare_archive(self, raw: str) -> str:
+        """Every refusal an archive can hit, raised before any response byte is sent."""
 
-        os.lseek(fd, 0, os.SEEK_SET)
-        tail = b""
-        while True:
-            chunk = os.read(fd, _CHUNK)
-            if not chunk:
-                return None
-            reason = scan_bytes(tail + chunk)
-            if reason is not None:
-                return reason
-            tail = chunk[-_SCAN_OVERLAP:]
-
-    def stream_archive(self, raw: str, write: Callable[[bytes], Any]) -> dict[str, Any]:
         real = self.resolve(raw)
         self._refuse_secret_name(real)
         if not os.path.isdir(real):
             raise FsRefused("not_a_directory")
+        return real
+
+    def stream_archive(self, raw: str, write: Callable[[bytes], Any]) -> dict[str, Any]:
+        real = self.prepare_archive(raw)
         manifest: dict[str, Any] = {
             "schema": "blueprint_operator_door_archive_manifest.v1",
             "root": raw, "files_included": 0, "bytes_included": 0,
             "skipped": [], "truncated": False,
         }
-        budget = self._config.max_archive_bytes
         with tarfile.open(fileobj=_Sink(write), mode="w|gz") as archive:
             for directory, dirnames, filenames in os.walk(real, followlinks=False):
                 relative_dir = os.path.relpath(directory, real)
@@ -217,15 +318,11 @@ class FileView:
                 for name in sorted(filenames):
                     full = os.path.join(directory, name)
                     rel = os.path.normpath(os.path.join(relative_dir, name))
-                    reason = self._archive_member(archive, full, rel, manifest, budget)
-                    if reason == "archive_limit_exceeded":
-                        manifest["truncated"] = True
-                        manifest["skipped"].append({"path": rel, "reason": reason})
-                        break
+                    reason = self._archive_member(archive, full, rel, manifest)
                     if reason is not None:
                         manifest["skipped"].append({"path": rel, "reason": reason})
-                if manifest["truncated"]:
-                    break
+                        if reason == "archive_budget_exceeded":
+                            manifest["truncated"] = True
             payload = json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8")
             info = tarfile.TarInfo(MANIFEST_NAME)
             info.size = len(payload)
@@ -233,7 +330,7 @@ class FileView:
         return manifest
 
     def _archive_member(
-        self, archive: tarfile.TarFile, full: str, rel: str, manifest: dict[str, Any], budget: int
+        self, archive: tarfile.TarFile, full: str, rel: str, manifest: dict[str, Any]
     ) -> str | None:
         if os.path.islink(full):
             return "symlink"
@@ -241,25 +338,42 @@ class FileView:
             return "hidden"
         if refused_name(rel):
             return "secret_name"
+        if self._json_only_violation(full):
+            return "json_only_root"
         try:
             fd, info = self._open_regular(full)
         except FsRefused as refusal:
             return refusal.code
         try:
-            if manifest["bytes_included"] + info.st_size > budget:
-                return "archive_limit_exceeded"
-            reason = self._clean(fd)
-            if reason is not None:
-                return f"secret_content:{reason}"
-            os.lseek(fd, 0, os.SEEK_SET)
-            member = tarfile.TarInfo(rel)
-            member.size = info.st_size
-            member.mtime = int(info.st_mtime)
-            member.mode = 0o644
-            with os.fdopen(os.dup(fd), "rb") as stream:
-                archive.addfile(member, stream)
+            if manifest["bytes_included"] + info.st_size > self._config.max_archive_bytes:
+                return "archive_budget_exceeded"  # skip it; smaller files may still fit
+            kind = compression_kind(os.pread(fd, 8, 0))
+            if kind is not None:
+                verdict = self._compressed_verdict(full, fd, info, kind)
+                if verdict is not None:
+                    return f"secret_content:{verdict}"
+            # One read: the bytes scanned are exactly the bytes sent.
+            with tempfile.SpooledTemporaryFile(max_size=64 * 1024 * 1024) as copy:
+                os.lseek(fd, 0, os.SEEK_SET)
+                tail, copied = b"", 0
+                while copied < info.st_size:
+                    chunk = os.read(fd, min(_CHUNK, info.st_size - copied))
+                    if not chunk:
+                        break
+                    reason = scan_bytes(tail + chunk)
+                    if reason is not None:
+                        return f"secret_content:{reason}"
+                    copy.write(chunk)
+                    copied += len(chunk)
+                    tail = chunk[-_SCAN_OVERLAP:]
+                copy.seek(0)
+                member = tarfile.TarInfo(rel)
+                member.size = copied
+                member.mtime = int(info.st_mtime)
+                member.mode = 0o644
+                archive.addfile(member, copy)
             manifest["files_included"] += 1
-            manifest["bytes_included"] += info.st_size
+            manifest["bytes_included"] += copied
             return None
         finally:
             os.close(fd)

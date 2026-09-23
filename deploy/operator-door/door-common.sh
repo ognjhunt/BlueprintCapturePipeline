@@ -39,10 +39,10 @@ document = {
     "finished_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
 }
 document.update(dict(zip(pairs[0::2], pairs[1::2])))
-tmp = path + ".tmp"
-with open(tmp, "w", encoding="utf-8") as stream:
+tmp = "%s.tmp.%d" % (path, os.getpid())
+fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+with os.fdopen(fd, "w", encoding="utf-8") as stream:
     json.dump(document, stream, sort_keys=True)
-os.chmod(tmp, 0o644)
 os.replace(tmp, path)
 PY
   DOOR_OUTCOME_WRITTEN=1
@@ -86,10 +86,6 @@ door_prepare_source() {
 
 door_require_on_main() {
   git -C "$DOOR_SOURCE_CLONE" merge-base --is-ancestor "$DOOR_COMMIT" origin/main || door_fail commit_not_on_main
-}
-
-door_require_pushed() {
-  [ -n "$(git -C "$DOOR_SOURCE_CLONE" branch -r --contains "$DOOR_COMMIT")" ] || door_fail commit_not_pushed
 }
 
 # A throwaway worktree at the target commit, so scripts run from the new code

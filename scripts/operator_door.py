@@ -10,8 +10,7 @@ laptop too. Standard library only.
     python3 scripts/operator_door.py cat /var/lib/blueprint/pipeline-control-plane/gpu_spend_guard/latest.json
     python3 scripts/operator_door.py pull <host path> <local path>    # file, or directory as an archive
     python3 scripts/operator_door.py journal blueprint-task-evaluation-scene-progression.service -n 200
-    python3 scripts/operator_door.py deploy <sha> [--mode canary] --wait
-    python3 scripts/operator_door.py replay --child sam31-<digest> --commit <sha> --wait
+    python3 scripts/operator_door.py deploy <sha on main> --wait
     python3 scripts/operator_door.py unit start blueprint-pubsub-handoff-listener.timer
 
 Authentication: in a cloud session the egress proxy adds the bearer token, so
@@ -42,7 +41,7 @@ from typing import Any
 
 DEFAULT_URL = "https://paperclip.tryblueprint.io/api/live-pipeline/operator/v1"
 DEFAULT_TOKEN_FILE = "~/.blueprint-secrets/operator_door_token"
-_TERMINAL_OK = {"deployed", "replayed", "upgraded"}
+_TERMINAL_OK = {"deployed", "upgraded"}
 
 
 class DoorError(Exception):
@@ -131,6 +130,8 @@ def _pull_directory(remote: str, local: Path) -> dict[str, Any]:
             shutil.copyfileobj(response, buffer)
         buffer.seek(0)
         with tarfile.open(fileobj=buffer, mode="r:gz") as archive:
+            if ".operator-door-manifest.json" not in archive.getnames():
+                raise DoorError(5, "archive incomplete: the door's manifest is missing (stream cut short)")
             archive.extractall(local, members=list(_safe_members(archive, local)))  # nosec B202 - filtered
     manifest_path = local / ".operator-door-manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -218,17 +219,10 @@ def build_parser() -> argparse.ArgumentParser:
     unit = commands.add_parser("unit")
     unit.add_argument("action", choices=("start", "reset-failed", "stop", "restart"))
     unit.add_argument("unit")
-    deploy = commands.add_parser("deploy")
+    deploy = commands.add_parser("deploy", help="deploy a commit that is on origin/main")
     deploy.add_argument("commit")
-    deploy.add_argument("--mode", choices=("main", "canary"), default="main")
     deploy.add_argument("--no-wait-for-idle", action="store_true")
     _add_wait(deploy, 3 * 3600)
-    replay = commands.add_parser("replay")
-    target = replay.add_mutually_exclusive_group(required=True)
-    target.add_argument("--child")
-    target.add_argument("--parent")
-    replay.add_argument("--commit", required=True)
-    _add_wait(replay, 3600)
     upgrade = commands.add_parser("upgrade-door")
     upgrade.add_argument("commit")
     _add_wait(upgrade, 1800)
@@ -268,12 +262,8 @@ def run(args: argparse.Namespace) -> int:
     elif command == "unit":
         return _submit({"kind": "unit", "unit": args.unit, "action": args.action}, args)
     elif command == "deploy":
-        return _submit({"kind": "deploy", "commit": args.commit, "mode": args.mode,
+        return _submit({"kind": "deploy", "commit": args.commit,
                         "wait_for_idle": not args.no_wait_for_idle}, args)
-    elif command == "replay":
-        body = {"kind": "stage-replay", "commit": args.commit}
-        body.update({"child": args.child} if args.child else {"parent": args.parent})
-        return _submit(body, args)
     elif command == "upgrade-door":
         return _submit({"kind": "door-upgrade", "commit": args.commit}, args)
     elif command == "request":

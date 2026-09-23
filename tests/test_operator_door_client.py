@@ -143,21 +143,20 @@ def test_journal_prints_text(door: dict[str, Any]) -> None:
 
 
 def test_deploy_spools_a_request_and_request_shows_it(door: dict[str, Any]) -> None:
-    code, out = _run("deploy", SHA, "--mode", "canary", "--no-wait-for-idle")
+    code, out = _run("deploy", SHA, "--no-wait-for-idle")
     request_id = json.loads(out)["id"]
     assert code == 0
     spooled = json.loads((door["state"] / "requests" / "pending" / f"{request_id}.json").read_text())
-    assert spooled["request"] == {"kind": "deploy", "commit": SHA, "mode": "canary", "wait_for_idle": False}
+    assert spooled["request"] == {"kind": "deploy", "commit": SHA, "wait_for_idle": False}
     code, out = _run("request", request_id)
     assert code == 0 and json.loads(out)["state"] == "pending"
 
 
-def test_unit_and_replay_and_upgrade_requests(door: dict[str, Any]) -> None:
+def test_unit_and_upgrade_requests(door: dict[str, Any]) -> None:
     assert _run("unit", "start", "blueprint-gpu-spend-guard.service")[0] == 0
-    assert _run("replay", "--child", "sam31-" + "ab" * 16, "--commit", SHA)[0] == 0
     assert _run("upgrade-door", SHA)[0] == 0
     kinds = sorted(item["kind"] for item in json.loads(_run("requests")[1])["requests"])
-    assert kinds == ["door-upgrade", "stage-replay", "unit"]
+    assert kinds == ["door-upgrade", "unit"]
 
 
 def test_wait_returns_when_the_outcome_lands(door: dict[str, Any]) -> None:

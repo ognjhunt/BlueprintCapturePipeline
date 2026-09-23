@@ -22,7 +22,7 @@ from .config import DoorConfigError, load_config
 DEFAULT_CONFIG = "/etc/blueprint-operator-door/door.json"
 
 
-def _self_test(config_path: str) -> int:
+def _self_test(config_path: str, *, allow_no_tokens: bool = False) -> int:
     report: dict[str, object] = {}
     try:
         config = load_config(config_path)
@@ -34,18 +34,16 @@ def _self_test(config_path: str) -> int:
         report["tokens"] = len(list_tokens(config.token_file))
     except Exception as error:  # noqa: BLE001
         report["tokens"] = f"error:{type(error).__name__}"
+    # Run as the service account (the installer does), this proves the door can read its tokens.
+    report["token_file_readable"] = os.access(config.token_file, os.R_OK)
     report["read_roots"] = {root: os.path.isdir(root) for root in config.read_roots}
-    state = Path(config.state_root)
-    report["state_root_writable"] = state.is_dir() and os.access(state, os.W_OK)
     spool = Path(config.spool_root)
     report["spool_dirs"] = {
         name: (spool / name).is_dir() for name in ("pending", "processing", "completed", "results")
     }
     print(json.dumps(report, sort_keys=True))
-    healthy = (
-        isinstance(report["tokens"], int) and report["tokens"] > 0
-        and report["state_root_writable"] and all(report["spool_dirs"].values())  # type: ignore[union-attr]
-    )
+    tokens_ok = isinstance(report["tokens"], int) and (report["tokens"] > 0 or allow_no_tokens)
+    healthy = tokens_ok and report["token_file_readable"] and all(report["spool_dirs"].values())  # type: ignore[union-attr]
     return 0 if healthy else 1
 
 
@@ -56,6 +54,9 @@ def main(argv: list[str] | None = None) -> int:
     for name in ("serve", "run-spool", "self-test", "hash-token"):
         sub = commands.add_parser(name)
         sub.add_argument("--config", default=argparse.SUPPRESS)
+        if name == "self-test":
+            sub.add_argument("--allow-no-tokens", action="store_true",
+                             help="a fresh install has no tokens yet; everything else must pass")
     caddy = commands.add_parser("caddy-patch")
     caddy.add_argument("source")
     caddy.add_argument("target")
@@ -79,7 +80,7 @@ def main(argv: list[str] | None = None) -> int:
         print(hash_token(value))
         return 0
     if args.command == "self-test":
-        return _self_test(args.config)
+        return _self_test(args.config, allow_no_tokens=args.allow_no_tokens)
     if args.command == "caddy-patch":
         from .caddy import patch_caddyfile
 

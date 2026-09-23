@@ -115,6 +115,10 @@ def _write_document(path: Path, document: dict[str, Any]) -> None:
         with os.fdopen(handle, "w", encoding="utf-8") as stream:
             json.dump(document, stream, indent=2, sort_keys=True)
             stream.write("\n")
+        if os.geteuid() == 0:
+            # Run as root, mkstemp would leave root:root 0640, which the door
+            # (the service account) cannot read: every request would be a 401.
+            os.chown(temporary, 0, path.parent.stat().st_gid)
         os.chmod(temporary, 0o640)
         os.replace(temporary, path)
     except BaseException:

@@ -49,6 +49,8 @@ class DoorConfig:
         f"{_CONTROL_PLANE}/agent-execution-rollout",
         f"{_CONTROL_PLANE}/episode-interpreter-service-account.json",
     )
+    # Only *.json is readable here: /etc/blueprint holds ~150 env files and backups.
+    json_only_roots: tuple[str, ...] = ("/etc/blueprint",)
     intake_version_url: str = "http://127.0.0.1:8765/api/live-pipeline/version"
     control_plane_state: str = _CONTROL_PLANE
     active_release_link: str = "/opt/blueprint/task-evaluation-control-plane"
@@ -92,7 +94,7 @@ class DoorConfig:
         return str(Path(self.state_root) / "audit" / "audit.jsonl")
 
 
-_PATH_TUPLES = ("read_roots", "hidden_paths")
+_PATH_TUPLES = ("read_roots", "hidden_paths", "json_only_roots")
 _LOOPBACK = {"127.0.0.1", "::1", "localhost"}
 
 

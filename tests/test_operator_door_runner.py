@@ -54,7 +54,7 @@ def _spooled(config: DoorConfig, body: dict) -> str:
 
 
 def test_deploy_launches_the_door_deploy_script_with_validated_parameters(config: DoorConfig) -> None:
-    request_id = _spooled(config, {"kind": "deploy", "commit": SHA, "mode": "canary", "wait_for_idle": False})
+    request_id = _spooled(config, {"kind": "deploy", "commit": SHA, "wait_for_idle": False})
     runner = FakeRunner()
     assert process_spool(config, runner=runner) == 0
     launch = [call for call in runner.calls if call[0] == "systemd-run"][0]
@@ -64,7 +64,7 @@ def test_deploy_launches_the_door_deploy_script_with_validated_parameters(config
     assert launch[-2:] == ["/bin/bash", "/opt/blueprint/operator-door/door-deploy.sh"]
     env = dict(part.removeprefix("--setenv=").split("=", 1) for part in launch if part.startswith("--setenv="))
     assert env["DOOR_REQUEST_ID"] == request_id and env["DOOR_COMMIT"] == SHA
-    assert env["DOOR_MODE"] == "canary" and env["DOOR_WAIT_FOR_IDLE"] == "0"
+    assert "DOOR_MODE" not in env and env["DOOR_WAIT_FOR_IDLE"] == "0"
     assert env["DOOR_SOURCE_CLONE"] == DoorConfig().source_clone
     assert env["DOOR_RESULTS_DIR"] == str(Path(config.spool_root) / "results")
     result = _result(config, request_id)
@@ -96,17 +96,6 @@ def test_unit_actions_use_no_block_systemctl(config: DoorConfig) -> None:
     process_spool(config, runner=runner)
     assert ["systemctl", "--no-block", "start", "--", "blueprint-pubsub-handoff-listener.timer"] in runner.calls
     assert _result(config, request_id)["status"] == "done"
-
-
-def test_stage_replay_launches_the_replay_script(config: DoorConfig) -> None:
-    child = "sam31-" + "cd" * 16
-    request_id = _spooled(config, {"kind": "stage-replay", "commit": SHA, "child": child})
-    runner = FakeRunner()
-    process_spool(config, runner=runner)
-    launch = [call for call in runner.calls if call[0] == "systemd-run"][0]
-    assert f"--unit=blueprint-operator-door-replay-{request_id[-8:]}" in launch
-    assert "--setenv=DOOR_CHILD=" + child in launch and "--setenv=DOOR_PARENT=" in launch
-    assert launch[-1] == "/opt/blueprint/operator-door/door-replay.sh"
 
 
 def test_door_upgrade_launches_the_upgrade_script(config: DoorConfig) -> None:
@@ -171,3 +160,40 @@ def test_old_requests_and_results_are_pruned(config: DoorConfig) -> None:
         os.utime(path, (1_000_000, 1_000_000))
     process_spool(config, runner=FakeRunner())
     assert not old_request.exists() and not old_log.exists() and fresh.exists()
+
+
+def test_unreadable_and_late_files_are_drained(config: DoorConfig) -> None:
+    spool = Path(config.spool_root)
+    first = _spooled(config, {"kind": "unit", "unit": "blueprint-gpu-spend-guard.service", "action": "start"})
+    locked = spool / "pending" / "20260923T000000Z-unit-0000beef.json"
+    locked.write_text("{}", encoding="utf-8")
+    locked.chmod(0o000)
+    runner = FakeRunner()
+    arrived: list[str] = []
+
+    def late_arrival(argv, timeout):
+        if argv[:2] == ["systemctl", "--no-block"] and not arrived:
+            arrived.append(_spooled(config, {"kind": "unit", "unit": "blueprint-gpu-spend-guard.service",
+                                              "action": "reset-failed"}))
+        return FakeRunner.run(runner, argv, timeout)
+
+    runner.run = late_arrival  # type: ignore[method-assign]
+    try:
+        process_spool(config, runner=runner)
+    finally:
+        for path in (spool / "completed").glob("*beef*"):
+            path.chmod(0o644)
+    assert not list((spool / "pending").glob("*.json"))
+    assert _result(config, first)["status"] == "done"
+    assert sum(call[:3] == ["systemctl", "--no-block", "reset-failed"] for call in runner.calls) == 1
+
+
+def test_stranded_claims_are_failed_after_an_hour(config: DoorConfig) -> None:
+    spool = Path(config.spool_root)
+    stranded = spool / "processing" / "20260923T000000Z-deploy-0000cafe.json"
+    stranded.write_text("{}", encoding="utf-8")
+    os.utime(stranded, (1_000_000, 1_000_000))
+    process_spool(config, runner=FakeRunner())
+    assert not stranded.exists()
+    assert _result(config, "20260923T000000Z-deploy-0000cafe") == {
+        **_result(config, "20260923T000000Z-deploy-0000cafe"), "status": "failed", "code": "stranded"}

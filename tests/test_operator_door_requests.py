@@ -36,9 +36,9 @@ def config(tmp_path: Path) -> DoorConfig:
     return DoorConfig(state_root=str(tmp_path))
 
 
-def test_deploy_defaults_to_main_mode_and_waiting_for_idle() -> None:
+def test_deploy_defaults_to_waiting_for_idle() -> None:
     assert validate_request({"kind": "deploy", "commit": SHA}) == {
-        "kind": "deploy", "commit": SHA, "mode": "main", "wait_for_idle": True,
+        "kind": "deploy", "commit": SHA, "wait_for_idle": True,
     }
     assert required_scope("deploy") == "deploy"
 
@@ -48,7 +48,9 @@ def test_deploy_defaults_to_main_mode_and_waiting_for_idle() -> None:
     [
         ({"kind": "deploy", "commit": SHA[:12]}, "commit_invalid"),
         ({"kind": "deploy", "commit": SHA.upper()}, "commit_invalid"),
-        ({"kind": "deploy", "commit": SHA, "mode": "promote"}, "mode_invalid"),
+        ({"kind": "deploy", "commit": SHA, "mode": "canary"}, "request_key_unknown:mode"),
+        ({"kind": "deploy", "commit": SHA + "\n"}, "commit_invalid"),
+        ({"kind": "stage-replay", "commit": SHA, "child": "sam31-" + "ab" * 16}, "kind_unknown"),
         ({"kind": "deploy", "commit": SHA, "wait_for_idle": "yes"}, "wait_for_idle_invalid"),
         ({"kind": "deploy", "commit": SHA, "flags": "--arm-path-units"}, "request_key_unknown:flags"),
         ({"kind": "shell", "command": "id"}, "kind_unknown"),
@@ -79,27 +81,15 @@ def test_unit_actions_are_limited_to_safe_shapes() -> None:
         ("sshd.service", "start", "unit_name_invalid"),
         ("blueprint-operator-door-runner.path", "stop", "unit_is_door"),
         ("blueprint-operator-door.service", "start", "unit_is_door"),
+        ("blueprint-gpu-spend-guard.timer", "stop", "unit_safety_critical"),
+        ("blueprint-existing-policy-canary-watchdog.timer", "restart", "unit_safety_critical"),
+        ("blueprint-gpu-spend-guard.timer\n", "start", "unit_name_invalid"),
     ],
 )
 def test_unsafe_unit_actions_are_refused(unit: str, action: str, code: str) -> None:
     with pytest.raises(RequestRefused) as caught:
         validate_request({"kind": "unit", "unit": unit, "action": action})
     assert caught.value.code == code
-
-
-def test_stage_replay_needs_exactly_one_target_and_a_commit() -> None:
-    child = "sam31-" + "ab" * 16
-    assert validate_request({"kind": "stage-replay", "commit": SHA, "child": child}) == {
-        "kind": "stage-replay", "commit": SHA, "child": child, "parent": None,
-    }
-    assert required_scope("stage-replay") == "operate"
-    for body in (
-        {"kind": "stage-replay", "commit": SHA},
-        {"kind": "stage-replay", "commit": SHA, "child": child, "parent": "prep-1234"},
-        {"kind": "stage-replay", "commit": SHA, "child": "sam31-../../etc"},
-    ):
-        with pytest.raises(RequestRefused):
-            validate_request(body)
 
 
 def test_door_upgrade_needs_a_commit() -> None:
@@ -113,7 +103,7 @@ def test_enqueue_writes_an_atomic_world_readable_spool_file(config: DoorConfig) 
     path = Path(config.spool_root) / "pending" / f"{request_id}.json"
     document = json.loads(path.read_text(encoding="utf-8"))
     assert document["id"] == request_id and document["requested_by"] == "cloud"
-    assert document["request"] == {"kind": "deploy", "commit": SHA, "mode": "main", "wait_for_idle": True}
+    assert document["request"] == {"kind": "deploy", "commit": SHA, "wait_for_idle": True}
     assert oct(path.stat().st_mode & 0o777) == oct(0o644)
     assert [p.name for p in (Path(config.spool_root) / "pending").iterdir()] == [path.name]
 

@@ -202,7 +202,8 @@ def test_production_systemd_units_run_nonroot_with_strict_resource_isolation() -
             # reads as the service account, with journal access, in a read-only,
             # loopback-only sandbox that hides every known secret location.
             text = unit.read_text(encoding="utf-8")
-            for control in ("User=blueprint", "Group=blueprint", "SupplementaryGroups=systemd-journal",
+            for control in ("User=blueprint", "Group=blueprint",
+                            "SupplementaryGroups=systemd-journal blueprint-door\n",
                             "UMask=0077", "NoNewPrivileges=true", "PrivateTmp=true", "PrivateDevices=true",
                             "ProtectSystem=strict", "ProtectHome=true", "ProtectProc=invisible",
                             "ProtectKernelTunables=true", "ProtectKernelModules=true",
@@ -218,11 +219,12 @@ def test_production_systemd_units_run_nonroot_with_strict_resource_isolation() -
             continue
         if unit.name == "blueprint-operator-door-runner.service":
             # Root oneshot behind the door's spool: revalidates each request and
-            # only runs systemctl --no-block or starts a fixed transient unit.
+            # only runs systemctl --no-block or starts a fixed transient unit. It
+            # owns the directories it writes, so it holds no capability at all.
             text = unit.read_text(encoding="utf-8")
             assert "User=root" in text
-            assert "CapabilityBoundingSet=CAP_DAC_OVERRIDE\n" in text
-            assert "AmbientCapabilities=CAP_DAC_OVERRIDE\n" in text
+            assert "CapabilityBoundingSet=\n" in text and "AmbientCapabilities=\n" in text
+            assert "StartLimitIntervalSec=0" in text
             for control in ("NoNewPrivileges=true", "ProtectSystem=strict", "ProtectHome=true",
                             "PrivateNetwork=true", "RestrictAddressFamilies=AF_UNIX\n",
                             "SystemCallFilter=@system-service", "TasksMax=32", "MemoryMax=256M",

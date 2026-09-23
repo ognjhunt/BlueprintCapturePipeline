@@ -6,7 +6,8 @@ symlinks, bounded in size, checked against its own id and revalidated with the
 same schemas the door used. It then either runs ``systemctl --no-block`` for a
 unit action or starts one transient unit running a script installed with the
 door, passing only validated values as environment variables. Every pending
-file is drained, even junk, so the path unit can never spin.
+file is drained, even junk or an unreadable file, so the path unit can never
+spin; only ``pending/`` is writable by the door, everything after it is root's.
 """
 
 from __future__ import annotations
@@ -64,22 +65,16 @@ def _script_env(config: DoorConfig, request_id: str, request: dict[str, Any]) ->
         "DOOR_STATE_ROOT": config.control_plane_state,
     }
     if request["kind"] == "deploy":
-        values["DOOR_MODE"] = request["mode"]
         values["DOOR_WAIT_FOR_IDLE"] = "1" if request["wait_for_idle"] else "0"
         values["DOOR_IDLE_UNITS"] = ",".join(config.idle_wait_units)
         values["DOOR_IDLE_WAIT_SECONDS"] = str(config.idle_wait_seconds)
-    if request["kind"] == "stage-replay":
-        values["DOOR_CHILD"] = request["child"] or ""
-        values["DOOR_PARENT"] = request["parent"] or ""
     return [f"--setenv={key}={value}" for key, value in values.items()]
 
 
 def _launch(config: DoorConfig, runner: CommandRunner, request_id: str, request: dict[str, Any]) -> dict[str, Any]:
-    kind, short = request["kind"], request_id[-8:]
-    if kind == "deploy":
+    short = request_id[-8:]
+    if request["kind"] == "deploy":
         unit, script, timeout = f"blueprint-operator-door-deploy-{request['commit'][:12]}-{short}", "door-deploy.sh", "3h"
-    elif kind == "stage-replay":
-        unit, script, timeout = f"blueprint-operator-door-replay-{short}", "door-replay.sh", "1h"
     else:
         unit, script, timeout = f"blueprint-operator-door-upgrade-{request['commit'][:12]}-{short}", "door-upgrade.sh", "30min"
     argv = [
@@ -145,10 +140,23 @@ def _process_one(config: DoorConfig, runner: CommandRunner, claimed: Path, reque
     _write_result(results, request_id, outcome)
 
 
-def _prune(spool: Path, retention_days: int) -> None:
-    """Finished requests and their results are kept for a while, then dropped."""
+def _quarantine(spool: Path, path: Path) -> None:
+    """Move an unprocessable file out of the way; delete it if even that fails."""
 
-    cutoff = time.time() - retention_days * 86400
+    try:
+        os.replace(path, spool / "completed" / f"{path.name}.invalid-{secrets.token_hex(4)}")
+    except OSError:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+
+
+def _prune(spool: Path, retention_days: int) -> None:
+    """Drop old finished requests, fail stranded claims, clear abandoned temp files."""
+
+    now = time.time()
+    cutoff = now - retention_days * 86400
     for state in ("completed", "results"):
         for path in (spool / state).iterdir():
             try:
@@ -156,6 +164,20 @@ def _prune(spool: Path, retention_days: int) -> None:
                     path.unlink()
             except OSError:
                 continue
+    for path in (spool / "processing").glob("*.json"):
+        try:
+            if path.lstat().st_mtime < now - 3600:
+                request_id = validate_request_id(path.stem)
+                os.replace(path, spool / "completed" / path.name)
+                _write_result(spool / "results", request_id, {"status": "failed", "code": "stranded"})
+        except (OSError, RequestRefused):
+            _quarantine(spool, path)
+    for path in (spool / "pending").glob(".*.tmp"):
+        try:
+            if path.lstat().st_mtime < now - 3600:
+                path.unlink()
+        except OSError:
+            continue
 
 
 def process_spool(config: DoorConfig, *, runner: CommandRunner | None = None) -> int:
@@ -164,21 +186,26 @@ def process_spool(config: DoorConfig, *, runner: CommandRunner | None = None) ->
     for state in ("pending", "processing", "completed", "results"):
         (spool / state).mkdir(parents=True, exist_ok=True)
     _prune(spool, config.spool_retention_days)
-    pending = sorted(
-        spool.joinpath("pending").glob("*.json"),
-        key=lambda path: (path.lstat().st_mtime, path.name),
-    )
-    for path in pending:
-        try:
-            request_id = validate_request_id(path.stem)
-        except RequestRefused:
-            junk = spool / "completed" / f"{path.name}.invalid-{secrets.token_hex(4)}"
-            os.replace(path, junk)
-            continue
-        claimed = spool / "processing" / path.name
-        try:
-            os.replace(path, claimed)
-        except FileNotFoundError:
-            continue  # another runner instance claimed it
-        _process_one(config, runner, claimed, request_id)
+    for _ in range(100):  # requests that arrive while we work are picked up too
+        pending = sorted(spool.joinpath("pending").glob("*.json"), key=lambda path: path.name)
+        if not pending:
+            break
+        for path in pending:
+            try:
+                request_id = validate_request_id(path.stem)
+            except RequestRefused:
+                _quarantine(spool, path)
+                continue
+            claimed = spool / "processing" / path.name
+            try:
+                os.replace(path, claimed)
+            except FileNotFoundError:
+                continue  # another runner instance claimed it
+            except OSError:
+                _quarantine(spool, path)
+                continue
+            try:
+                _process_one(config, runner, claimed, request_id)
+            except OSError:
+                _quarantine(spool, claimed)
     return 0

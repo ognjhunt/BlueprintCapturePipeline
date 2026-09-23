@@ -6,8 +6,11 @@ egress through an HTTPS proxy, so `ssh root@<host>` has no path from them. The
 door gives those sessions the host access a website scene run actually used,
 measured from 11,749 SSH commands across the September 2026 runs: run-state
 reads, directory listings, unit state and journals, the deploy cycle, starting
-controller oneshots, pausing timers around deploys, downloading receipts and
-artifacts, and isolated stage replays. It deliberately offers no shell.
+controller oneshots, pausing timers around deploys, and downloading receipts
+and artifacts. It deliberately offers no shell, and it never runs unreviewed
+code as root: only commits already on `origin/main` can be deployed, and there
+is no candidate-code stage replay. Replay a failed stage in the cloud session
+instead, against inputs pulled through the door (see "Using it").
 
 Code: `deploy/operator-door/` (standard library only), units in
 `deploy/systemd/blueprint-operator-door*`, client `scripts/operator_door.py`,
@@ -22,10 +25,11 @@ cloud session ──HTTPS──▶ Caddy /api/live-pipeline/operator/* ──▶
                                                                     │ writes validated request
                                                                     ▼
                                              /var/lib/blueprint-operator-door/requests/pending/
+                                             (root:blueprint-door 2770; only the door has that group)
                                                                     │ PathExistsGlob
                                                                     ▼
                                              blueprint-operator-door-runner.service (root oneshot,
-                                             no network, CAP_DAC_OVERRIDE only): revalidates, then
+                                             no network, no capabilities): revalidates, then
                                              `systemctl --no-block …` or `systemd-run` of a fixed script
 ```
 
@@ -37,13 +41,16 @@ cloud session ──HTTPS──▶ Caddy /api/live-pipeline/operator/* ──▶
   journal reads. `ProtectSystem=strict` with only its state directory writable,
   `IPAddressAllow=localhost`, no capabilities, and `InaccessiblePaths=` for every
   known secret location. `systemd-analyze security` exposure 1.4.
-- **Runner.** Root oneshot with `CAP_DAC_OVERRIDE` only, `PrivateNetwork=true`,
-  writable spool only. It trusts nothing in the spool: no symlinks, bounded
-  size, id must match the file name, and the same schemas the door used are
-  applied again. Exposure 1.6.
-- **Transient scripts.** Deploys, replays and upgrades run as transient units
-  (`blueprint-operator-door-{deploy,replay,upgrade}-…`) that receive only
-  validated values as `DOOR_*` environment variables, and write
+- **Runner.** Root oneshot with no capabilities, `PrivateNetwork=true`, writable
+  spool only, and `StartLimitIntervalSec=0` so a burst of requests cannot stop
+  the path unit. It trusts nothing in `pending/`: no symlinks or FIFOs, bounded
+  size, id must match the file name, the door's schemas are applied again, and
+  anything unreadable is quarantined rather than retried forever. `processing/`,
+  `completed/` and `results/` are root-owned, so no service-account process can
+  plant a link where root writes.
+- **Transient scripts.** Deploys and door upgrades run as transient units
+  (`blueprint-operator-door-{deploy,upgrade}-…`) that receive only validated
+  values as `DOOR_*` environment variables, and write
   `results/<id>.outcome.json` and `results/<id>.log`.
 
 ## Secrets never leave
@@ -62,6 +69,14 @@ are readable by the service account. Three layers keep them out of responses:
    scanned for credential-shaped content (private keys, service-account and
    OAuth fields, provider key formats, JWTs, signed URLs, bearer headers and
    `NAME_KEY=`/`_TOKEN=`/`_SECRET=` assignments).
+
+Two more rules close what patterns alone would miss. Under `/etc/blueprint`
+only `*.json` files can be read at all. Compressed files (gzip, zip, xz,
+bzip2) are scanned after decompression, with the verdict cached per file
+version; zip members are also judged by name, nested archives are refused, and
+formats the standard library cannot decompress (zstd, 7z, rar) are refused.
+Anything under a `.git` directory is refused, since packed objects hide content.
+Every pattern is bounded, so pathological input scans in linear time.
 
 Over-refusal is the accepted failure mode. A refused file is reported by name
 and rule, never by content; an archive lists what it skipped and why in a
@@ -95,10 +110,13 @@ Request kinds:
 
 | Kind | Scope | Body | What the runner does |
 |---|---|---|---|
-| `deploy` | deploy | `commit`, `mode` `main`\|`canary`, `wait_for_idle` | refuses while any `blueprint-*deploy*` unit is active; otherwise `door-deploy.sh` |
-| `unit` | operate | `unit` (`blueprint-*`), `action` `start`\|`reset-failed`\|`stop`\|`restart` | `systemctl --no-block <action> -- <unit>`; `stop`/`restart` only for `.timer`/`.path`, never the door's own units |
-| `stage-replay` | operate | `commit` and one of `child` (`sam31-…`) or `parent` | `door-replay.sh`: `task_evaluation_stage_replay --isolate`, never `--allow-paid` |
-| `door-upgrade` | deploy | `commit` on main | `door-upgrade.sh`: that commit's `install.sh --upgrade`, rolled back on a failed health check |
+| `deploy` | deploy | `commit` on `origin/main`, `wait_for_idle` | refuses while any `blueprint-*deploy*` unit is active; otherwise `door-deploy.sh` |
+| `unit` | operate | `unit` (`blueprint-*`), `action` `start`\|`reset-failed`\|`stop`\|`restart` | `systemctl --no-block <action> -- <unit>`; `stop`/`restart` only for `.timer`/`.path`, never the door's own units or a spend-guard, watchdog, teardown or reaper trigger |
+| `door-upgrade` | deploy | `commit` on `origin/main` | `door-upgrade.sh`: that commit's `install.sh --upgrade`, rolled back on a failed health check |
+
+**`deploy` is root-equivalent.** Whoever holds it can get code that is on
+`origin/main` running as root, which is what a deploy is. Give it only to
+tokens that should be able to ship; `read` and `operate` never run code.
 
 ### What a door deploy does
 
@@ -109,12 +127,10 @@ Request kinds:
 2. fetch every branch into one long-lived source clone,
    `/opt/blueprint/control-plane-config-tools/operator-door-source` (origin is
    GitHub, so the deploy tool's pushed-commit checks see real refs);
-3. `main` mode requires the commit to be an ancestor of `origin/main`;
-   `canary` mode requires any pushed ref;
+3. require the commit to be an ancestor of `origin/main`;
 4. run the **target commit's** `scripts/deploy_control_plane_commit.py` from a
-   throwaway worktree with `--iteration [--canary]
-   --preserve-configured-controls-state`, receipt
-   `deploy-receipts/{iteration,canary}_<sha12>_door.json`.
+   throwaway worktree with `--iteration --preserve-configured-controls-state`,
+   receipt `deploy-receipts/iteration_<sha12>_door.json`.
 
 `--preserve-configured-controls-state` keeps the owner's configured-controls
 pause across the deploy; `deploy_control_plane_iteration.sh` and
@@ -138,13 +154,17 @@ bash /tmp/operator-door-install/deploy/operator-door/install.sh
 rm -rf /tmp/operator-door-install
 ```
 
-The installer stages and import-checks the code, swaps it into place (keeping
-`.previous`), creates the state directories and an empty token store (never
-overwriting an existing one), installs and starts the units, health-checks the
-door, then patches `/etc/caddy/Caddyfile` in place (the live file names the
-host literally and differs from the repository copy), validates it, reloads
-Caddy and confirms the route through Caddy's admin API, restoring the backup
-on any failure.
+The installer stages and import-checks the code, backs up the current unit
+files, swaps the code into place (keeping `.previous`), creates the
+`blueprint-door` group, the state directories and an empty token store (never
+replacing an existing one), installs and starts the units, and health-checks
+the door: `/healthz` must answer and `self-test` must pass as the `blueprint`
+user, which proves the door can read its token file. Any failure after the swap
+restores the previous code and units and restarts the previous door, or
+disables a first install. It then patches `/etc/caddy/Caddyfile` in place (the
+live file names the host literally and differs from the repository copy),
+validates it, reloads Caddy and confirms the route through Caddy's admin API,
+restoring the backup on any failure.
 
 Issue a token on the operator's own machine, so the plaintext never reaches the
 host or any transcript:
@@ -186,9 +206,16 @@ python3 scripts/operator_door.py cat /var/lib/blueprint/pipeline-control-plane/t
 python3 scripts/operator_door.py pull /var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs/<launch> ./launch
 python3 scripts/operator_door.py journal blueprint-task-evaluation-scene-progression.service -n 200 --since -1h
 python3 scripts/operator_door.py unit start blueprint-task-evaluation-scene-progression.service
-python3 scripts/operator_door.py deploy <sha> --wait
-python3 scripts/operator_door.py replay --child sam31-<digest> --commit <sha> --wait
+python3 scripts/operator_door.py deploy <sha on main> --wait
 ```
+
+To replay a failed stage against candidate code, pull the child's retained job
+and inputs (`pull` of the `sam31-preparation-executions/<state>/<child>` job and
+the prepared-reference directory it names), then run
+`python -m blueprint_pipeline.task_evaluation_stage_replay --child <id>` in the
+cloud session with `--queue-root`, `--input-root`, `--replay-root` and
+`--approved-root` pointing at the pulled copy. It runs your branch's code with
+no host secrets and no paid calls, and nothing unreviewed runs on the host.
 
 Exit codes: 0 success; 1 a waited-for request did not succeed; 2 refused (rule
 on stderr); 3 unauthorized or missing scope; 4 network; 5 server error. The

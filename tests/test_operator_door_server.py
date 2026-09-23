@@ -110,9 +110,10 @@ def test_healthz_needs_no_token_and_reveals_nothing(door: dict[str, Any]) -> Non
 def test_missing_or_unknown_tokens_are_unauthorized_and_audited(door: dict[str, Any], token: str | None) -> None:
     status, headers, body = _call(door, "/status", token=token)
     assert status == 401 and json.loads(body) == {"error": "unauthorized"}
-    audit = Path(door["config"].audit_path).read_text(encoding="utf-8").splitlines()
-    entry = json.loads(audit[-1])
+    denied = Path(door["config"].audit_path).with_name("denied.jsonl").read_text(encoding="utf-8").splitlines()
+    entry = json.loads(denied[-1])
     assert entry["outcome"] == "denied" and entry["token"] is None and entry["status"] == 401
+    assert not Path(door["config"].audit_path).exists()  # a 401 flood cannot rotate real history away
 
 
 def test_every_response_is_uncacheable_and_nosniff(door: dict[str, Any]) -> None:
@@ -258,8 +259,40 @@ def test_audit_log_rotates_when_large(tmp_path: Path) -> None:
         request = urllib.request.Request(f"http://127.0.0.1:{server.server_address[1]}{API_PREFIX}/whoami",
                                          headers={"Authorization": f"Bearer {READER}"})
         urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=10).read()
-        assert audit.with_name("audit.jsonl.1").stat().st_size == 1001
+        import time
+
+        rotated = audit.with_name("audit.jsonl.1")
+        for _ in range(100):  # allowed requests are audited just after the reply is sent
+            if rotated.exists() and audit.exists():
+                break
+            time.sleep(0.02)
+        assert rotated.stat().st_size == 1001
         assert json.loads(audit.read_text(encoding="utf-8").splitlines()[-1])["route"] == "/whoami"
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_duplicate_query_keys_are_refused(door: dict[str, Any]) -> None:
+    run = door["data"] / "run"
+    status, _, body = _call(door, f"/fs/read?path={run / 'progression.json'}&path={run / 'release.env'}")
+    assert status == 400 and json.loads(body) == {"error": "query_duplicate_key"}
+
+
+def test_archive_of_a_file_is_refused_before_streaming(door: dict[str, Any]) -> None:
+    status, headers, body = _call(door, f"/fs/archive?path={door['data'] / 'run' / 'progression.json'}")
+    assert status == 403 and json.loads(body) == {"error": "not_a_directory"}
+
+
+def test_negative_content_length_is_refused(door: dict[str, Any]) -> None:
+    import http.client
+
+    port = int(door["url"].split(":")[2].split("/")[0])
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+    connection.putrequest("POST", f"{API_PREFIX}/requests")
+    connection.putheader("Authorization", f"Bearer {DEPLOYER}")
+    connection.putheader("Content-Length", "-1")
+    connection.endheaders()
+    response = connection.getresponse()
+    assert response.status == 400 and json.loads(response.read()) == {"error": "length_invalid"}
+    connection.close()

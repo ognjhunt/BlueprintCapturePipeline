@@ -20,9 +20,10 @@ from typing import Any, Callable, Protocol, Sequence
 from .config import DoorConfig
 from .secrets_guard import redact_lines
 
-UNIT_NAME = re.compile(r"^blueprint-[A-Za-z0-9@_.:-]{1,200}\.(service|timer|path)$")
-UNIT_PATTERN = re.compile(r"^blueprint-[A-Za-z0-9@_.:*-]{0,200}$")
-SINCE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z :+.-]{0,39}$|^-[0-9]{1,6}[smhdw]$")
+# Always used with fullmatch: `$` would also accept a trailing newline.
+UNIT_NAME = re.compile(r"blueprint-[A-Za-z0-9@_.:-]{1,200}\.(?:service|timer|path)")
+UNIT_PATTERN = re.compile(r"blueprint-[A-Za-z0-9@_.:*-]{0,200}")
+SINCE = re.compile(r"[0-9A-Za-z][0-9A-Za-z :+.-]{0,39}|-[0-9]{1,6}[smhdw]")
 SHOW_PROPERTIES = (
     "Id", "Description", "ActiveState", "SubState", "Result", "ExecMainStatus",
     "ExecMainStartTimestamp", "ActiveEnterTimestamp", "InactiveEnterTimestamp",
@@ -70,7 +71,7 @@ def _fetch_json(url: str) -> dict[str, Any]:
 
 
 def validate_unit(unit: str) -> str:
-    if not isinstance(unit, str) or not UNIT_NAME.match(unit):
+    if not isinstance(unit, str) or not UNIT_NAME.fullmatch(unit):
         raise HostRefused("unit_name_invalid")
     return unit
 
@@ -113,7 +114,7 @@ class HostInfo:
         return blocks
 
     def list_units(self, pattern: str = "blueprint-*", states: Sequence[str] = ()) -> list[dict[str, str]]:
-        if not UNIT_PATTERN.match(pattern):
+        if not UNIT_PATTERN.fullmatch(pattern):
             raise HostRefused("unit_pattern_invalid")
         argv = ["systemctl", "list-units", "--all", "--plain", "--no-legend", "--no-pager"]
         if states:
@@ -135,7 +136,7 @@ class HostInfo:
         count = max(1, min(int(lines), self.config.max_journal_lines))
         argv = ["journalctl", "-u", unit, "-n", str(count), "--no-pager", "-o", "short-iso"]
         if since is not None:
-            if not SINCE.match(since):
+            if not SINCE.fullmatch(since):
                 raise HostRefused("journal_since_invalid")
             argv.append(f"--since={since}")
         result = self.runner.run(argv, timeout=30)

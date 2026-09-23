@@ -1,22 +1,21 @@
 #!/bin/bash
-# Deploy one pushed commit to the control plane (operator door, transient root unit).
+# Deploy one commit on origin/main to the control plane (operator door, transient root unit).
 #
 # Mirrors the deploy the agent lanes have been running by hand over SSH: the
 # target commit's own scripts/deploy_control_plane_commit.py with --iteration
 # and --preserve-configured-controls-state (the owner's controls pause survives
 # the deploy; the repo's wrapper scripts do not pass it, so they are not used).
-# main mode requires an ancestor of origin/main; canary mode (--canary) allows
-# any pushed ref. The deploy tool's own guards still apply: it refuses while a
-# paid launch holds a Vast lock, refuses dirty or unpushed sources, and proves
-# every surface moved.
+# Only merged code is deployed: the commit must be an ancestor of origin/main.
+# The deploy tool's own guards still apply: it holds the paid-launch locks for
+# the whole deploy, refuses dirty or unpushed sources, and proves every surface
+# moved.
 set -euo pipefail
 umask 022
 # shellcheck source-path=SCRIPTDIR source=door-common.sh
 . "$(dirname "$0")/door-common.sh"
 
 door_init deploy
-: "${DOOR_MODE:?}" "${DOOR_STATE_ROOT:?}"
-case "$DOOR_MODE" in main|canary) ;; *) door_fail mode_invalid ;; esac
+: "${DOOR_STATE_ROOT:?}"
 
 if [ "${DOOR_WAIT_FOR_IDLE:-1}" = "1" ]; then
   deadline=$((SECONDS + ${DOOR_IDLE_WAIT_SECONDS:-1800}))
@@ -35,18 +34,10 @@ if [ "${DOOR_WAIT_FOR_IDLE:-1}" = "1" ]; then
 fi
 
 door_prepare_source
-if [ "$DOOR_MODE" = "main" ]; then
-  door_require_on_main
-  prefix=iteration
-  flags=(--iteration --preserve-configured-controls-state)
-else
-  door_require_pushed
-  prefix=canary
-  flags=(--iteration --canary --preserve-configured-controls-state)
-fi
+door_require_on_main
 door_add_tool
 
-receipt="$DOOR_STATE_ROOT/deploy-receipts/${prefix}_${DOOR_COMMIT:0:12}_door.json"
+receipt="$DOOR_STATE_ROOT/deploy-receipts/iteration_${DOOR_COMMIT:0:12}_door.json"
 set +e
 PYTHONDONTWRITEBYTECODE=1 "$DOOR_VENV_PYTHON" "$DOOR_TOOL/scripts/deploy_control_plane_commit.py" \
   --source-repo "$DOOR_SOURCE_CLONE" \
@@ -54,14 +45,14 @@ PYTHONDONTWRITEBYTECODE=1 "$DOOR_VENV_PYTHON" "$DOOR_TOOL/scripts/deploy_control
   --release-root /opt/blueprint/task-evaluation-control-plane-releases \
   --state-root "$DOOR_STATE_ROOT" \
   --active-link /opt/blueprint/task-evaluation-control-plane \
-  "${flags[@]}" \
+  --iteration --preserve-configured-controls-state \
   --receipt-out "$receipt"
 rc=$?
 set -e
 
 if [ "$rc" -eq 0 ]; then
-  door_outcome deployed "" "$rc" receipt "$receipt" mode "$DOOR_MODE"
+  door_outcome deployed "" "$rc" receipt "$receipt"
 else
-  door_outcome failed "deploy_tool_exit_$rc" "$rc" receipt "$receipt" mode "$DOOR_MODE"
+  door_outcome failed "deploy_tool_exit_$rc" "$rc" receipt "$receipt"
 fi
 exit "$rc"

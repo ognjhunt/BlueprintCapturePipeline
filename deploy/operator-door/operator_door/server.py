@@ -11,6 +11,7 @@ from __future__ import annotations
 import datetime as _dt
 import json
 import re
+import sys
 import threading
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -37,9 +38,14 @@ class DoorApp:
         self.files = FileView(config)
         self._audit_lock = threading.Lock()
 
-    def audit(self, entry: dict[str, Any]) -> None:
+    def audit(self, entry: dict[str, Any], *, denied: bool = False) -> None:
+        # Unauthenticated denials get their own file, so a flood from the internet
+        # cannot rotate the authenticated history away.
         path = Path(self.config.audit_path)
+        if denied:
+            path = path.with_name("denied.jsonl")
         line = json.dumps(entry, sort_keys=True) + "\n"
+        sys.stderr.write("operator-door " + line)  # one journald line per request
         with self._audit_lock:
             try:
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -48,7 +54,7 @@ class DoorApp:
                 with path.open("a", encoding="utf-8") as stream:
                     stream.write(line)
             except OSError:
-                pass  # auditing must never take the door down; journald still has the access line
+                pass  # auditing must never take the door down; journald has the line
 
 
 def _caller(identity: TokenIdentity) -> dict[str, Any]:
@@ -86,25 +92,26 @@ def make_handler(app: DoorApp) -> type[BaseHTTPRequestHandler]:
             self._status = status
 
         def _audit(self, identity: TokenIdentity | None, status: int, outcome: str) -> None:
-            parsed = urllib.parse.urlsplit(self.path)
-            query = urllib.parse.parse_qs(parsed.query)
+            route, query, _ = self._route()
             app.audit({
                 "ts": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
                 "remote": self.headers.get("X-Forwarded-For") or self.client_address[0],
                 "token": identity.name if identity else None,
                 "method": self.command,
-                "route": parsed.path[len(API_PREFIX):] if parsed.path.startswith(API_PREFIX) else parsed.path,
-                "path": (query.get("path") or query.get("unit") or [None])[0],
+                "route": route or urllib.parse.urlsplit(self.path).path[:200],
+                # The same parsed value the handler used (duplicate keys are refused).
+                "path": query.get("path") or query.get("unit"),
                 "status": status,
                 "outcome": outcome,
-            })
+            }, denied=identity is None)
 
-        def _route(self) -> tuple[str, dict[str, str]]:
+        def _route(self) -> tuple[str, dict[str, str], bool]:
             parsed = urllib.parse.urlsplit(self.path)
             if not parsed.path.startswith(API_PREFIX):
-                return "", {}
-            query = {key: values[-1] for key, values in urllib.parse.parse_qs(parsed.query).items()}
-            return parsed.path[len(API_PREFIX):] or "/", query
+                return "", {}, False
+            pairs = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+            query = dict(pairs)
+            return parsed.path[len(API_PREFIX):] or "/", query, len(query) != len(pairs)
 
         def _identity(self) -> TokenIdentity | None:
             try:
@@ -113,7 +120,8 @@ def make_handler(app: DoorApp) -> type[BaseHTTPRequestHandler]:
                 return None
 
         def _dispatch(self, method: str) -> None:
-            route, query = self._route()
+            route, query, duplicated = self._route()
+            self._streaming = False
             if method == "GET" and route == "/healthz":
                 self._send_json(200, {"ok": True, "version": VERSION})
                 return
@@ -125,6 +133,8 @@ def make_handler(app: DoorApp) -> type[BaseHTTPRequestHandler]:
             self._status = 500
             outcome = "allowed"
             try:
+                if duplicated:
+                    raise _BadRequest(400, "query_duplicate_key")
                 if method == "POST" and route == "/requests":
                     self._post_request(identity)
                 elif method == "GET":
@@ -133,25 +143,32 @@ def make_handler(app: DoorApp) -> type[BaseHTTPRequestHandler]:
                     self._get(route, query, identity)
                 else:
                     self._send_json(404, {"error": "not_found"})
-            except _Denied as denied:
-                outcome = "denied"
-                self._send_json(403, {"error": denied.code})
-            except (FsRefused, HostRefused, RequestRefused) as refusal:
-                outcome = "refused"
-                status = 404 if refusal.code == "not_found" else 403
-                self._send_json(status, {"error": refusal.code})
-            except _BadRequest as bad:
-                outcome = "refused"
-                self._send_json(bad.status, {"error": bad.code})
             except (BrokenPipeError, ConnectionResetError):
                 outcome = "client_gone"
-            except Exception:  # noqa: BLE001 - never leak internals to the caller
-                outcome = "error"
-                try:
-                    self._send_json(500, {"error": "internal_error"})
-                except OSError:
-                    pass
+            except Exception as error:  # noqa: BLE001 - never leak internals to the caller
+                outcome = self._fail(error)
             self._audit(identity, self._status, outcome)
+
+        def _fail(self, error: Exception) -> str:
+            if self._streaming:
+                # Headers and part of a body are already out; a JSON error written now
+                # would corrupt the stream. Close instead; the client sees a truncation.
+                self.close_connection = True
+                return "stream_failed"
+            try:
+                if isinstance(error, _Denied):
+                    self._send_json(403, {"error": error.code})
+                    return "denied"
+                if isinstance(error, (FsRefused, HostRefused, RequestRefused)):
+                    self._send_json(404 if error.code == "not_found" else 403, {"error": error.code})
+                    return "refused"
+                if isinstance(error, _BadRequest):
+                    self._send_json(error.status, {"error": error.code})
+                    return "refused"
+                self._send_json(500, {"error": "internal_error"})
+            except OSError:
+                pass
+            return "error"
 
         # -- routes -----------------------------------------------------
 
@@ -210,12 +227,13 @@ def make_handler(app: DoorApp) -> type[BaseHTTPRequestHandler]:
 
         def _archive(self, query: dict[str, str]) -> None:
             path = _required(query, "path")
-            app.files.resolve(path)  # refuse before any byte of the response is sent
+            app.files.prepare_archive(path)  # every refusal happens before any response byte
             if not _ARCHIVE_SLOTS.acquire(blocking=False):
                 raise _BadRequest(429, "archive_busy")
             try:
                 self._headers(200, "application/gzip", None, {"Connection": "close"})
                 self._status = 200
+                self._streaming = True
                 app.files.stream_archive(path, self.wfile.write)
             finally:
                 _ARCHIVE_SLOTS.release()
@@ -228,6 +246,8 @@ def make_handler(app: DoorApp) -> type[BaseHTTPRequestHandler]:
                 length = int(length_header)
             except ValueError as error:
                 raise _BadRequest(400, "length_invalid") from error
+            if length < 0:
+                raise _BadRequest(400, "length_invalid")
             if length > app.config.max_request_body:
                 raise _BadRequest(413, "body_too_large")
             raw = self.rfile.read(length)

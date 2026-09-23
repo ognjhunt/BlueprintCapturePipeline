@@ -3,7 +3,6 @@
 # Covers (for impacted-test selection):
 #   deploy/operator-door/door-common.sh
 #   deploy/operator-door/door-deploy.sh
-#   deploy/operator-door/door-replay.sh
 #   deploy/operator-door/door-upgrade.sh
 #   deploy/operator-door/install.sh
 
@@ -11,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import stat
 import subprocess
 from pathlib import Path
@@ -20,7 +20,6 @@ import pytest
 DOOR = Path(__file__).resolve().parents[1] / "deploy" / "operator-door"
 SHA = "0123456789abcdef0123456789abcdef01234567"
 DEPLOY_ID = "20260923T120000Z-deploy-0000abcd"
-REPLAY_ID = "20260923T120000Z-stage-replay-0000abcd"
 
 GIT_STUB = r"""#!/bin/bash
 echo "git $*" >> "$STUB_LOG"
@@ -106,8 +105,7 @@ def _tool_call(calls: list[str]) -> str:
 
 
 def test_main_deploy_runs_the_target_commits_deploy_tool(env: dict[str, str]) -> None:
-    rc, outcome, calls = _run("door-deploy.sh", env, DOOR_REQUEST_ID=DEPLOY_ID, DOOR_MODE="main",
-                              DOOR_WAIT_FOR_IDLE="1")
+    rc, outcome, calls = _run("door-deploy.sh", env, DOOR_REQUEST_ID=DEPLOY_ID, DOOR_WAIT_FOR_IDLE="1")
     assert rc == 0 and outcome["status"] == "deployed" and outcome["exit_code"] == 0
     tool = _tool_call(calls)
     assert "/scripts/deploy_control_plane_commit.py" in tool
@@ -121,77 +119,46 @@ def test_main_deploy_runs_the_target_commits_deploy_tool(env: dict[str, str]) ->
     assert (Path(env["DOOR_RESULTS_DIR"]) / f"{DEPLOY_ID}.log").exists()
 
 
-def test_canary_deploy_passes_canary_and_requires_a_pushed_ref(env: dict[str, str]) -> None:
-    rc, outcome, calls = _run("door-deploy.sh", env, DOOR_REQUEST_ID=DEPLOY_ID, DOOR_MODE="canary",
-                              DOOR_WAIT_FOR_IDLE="0", FAKE_PUSHED="1")
-    assert rc == 0 and "--iteration --canary --preserve-configured-controls-state" in _tool_call(calls)
-    rc, outcome, _ = _run("door-deploy.sh", env, DOOR_REQUEST_ID=DEPLOY_ID, DOOR_MODE="canary",
-                          DOOR_WAIT_FOR_IDLE="0")
-    assert rc == 2 and outcome["code"] == "commit_not_pushed"
-
-
 def test_main_deploy_of_an_unmerged_commit_is_refused(env: dict[str, str]) -> None:
-    rc, outcome, calls = _run("door-deploy.sh", env, DOOR_REQUEST_ID=DEPLOY_ID, DOOR_MODE="main",
-                              DOOR_WAIT_FOR_IDLE="0", FAKE_ON_MAIN_RC="1")
+    rc, outcome, calls = _run("door-deploy.sh", env, DOOR_REQUEST_ID=DEPLOY_ID, DOOR_WAIT_FOR_IDLE="0", FAKE_ON_MAIN_RC="1")
     assert rc == 2 and outcome == {**outcome, "status": "refused", "code": "commit_not_on_main"}
     assert not any(call.startswith("venv-python") for call in calls)
 
 
 def test_deploy_waits_for_busy_controller_units(env: dict[str, str]) -> None:
-    rc, outcome, calls = _run("door-deploy.sh", env, DOOR_REQUEST_ID=DEPLOY_ID, DOOR_MODE="main",
-                              DOOR_WAIT_FOR_IDLE="1", FAKE_BUSY_UNIT="blueprint-b.service", FAKE_BUSY_POLLS="2")
+    rc, outcome, calls = _run("door-deploy.sh", env, DOOR_REQUEST_ID=DEPLOY_ID, DOOR_WAIT_FOR_IDLE="1", FAKE_BUSY_UNIT="blueprint-b.service", FAKE_BUSY_POLLS="2")
     assert rc == 0 and outcome["status"] == "deployed"
     assert sum("is-active blueprint-b.service" in call for call in calls) == 3
 
 
 def test_deploy_gives_up_when_units_stay_busy(env: dict[str, str]) -> None:
-    rc, outcome, calls = _run("door-deploy.sh", env, DOOR_REQUEST_ID=DEPLOY_ID, DOOR_MODE="main",
-                              DOOR_WAIT_FOR_IDLE="1", DOOR_IDLE_WAIT_SECONDS="0",
+    rc, outcome, calls = _run("door-deploy.sh", env, DOOR_REQUEST_ID=DEPLOY_ID, DOOR_WAIT_FOR_IDLE="1", DOOR_IDLE_WAIT_SECONDS="0",
                               FAKE_BUSY_UNIT="blueprint-a.service", FAKE_BUSY_POLLS="99")
     assert rc == 2 and outcome["code"] == "idle_wait_timeout:blueprint-a.service"
     assert not any(call.startswith("git ") for call in calls)
 
 
 def test_a_failing_deploy_tool_is_reported(env: dict[str, str]) -> None:
-    rc, outcome, _ = _run("door-deploy.sh", env, DOOR_REQUEST_ID=DEPLOY_ID, DOOR_MODE="main",
-                          DOOR_WAIT_FOR_IDLE="0", FAKE_TOOL_RC="2")
+    rc, outcome, _ = _run("door-deploy.sh", env, DOOR_REQUEST_ID=DEPLOY_ID, DOOR_WAIT_FOR_IDLE="0", FAKE_TOOL_RC="2")
     assert rc == 2 and outcome["status"] == "failed" and outcome["code"] == "deploy_tool_exit_2"
 
 
 @pytest.mark.parametrize(
     ("overrides", "code"),
-    [({"DOOR_COMMIT": "not-a-sha"}, "commit_invalid"), ({"DOOR_MODE": "promote"}, "mode_invalid")],
+    [({"DOOR_COMMIT": "not-a-sha"}, "commit_invalid"), ({"DOOR_COMMIT": "0" * 39}, "commit_invalid")],
 )
 def test_deploy_rechecks_its_inputs(env: dict[str, str], overrides: dict[str, str], code: str) -> None:
-    values = {"DOOR_REQUEST_ID": DEPLOY_ID, "DOOR_MODE": "main", "DOOR_WAIT_FOR_IDLE": "0", **overrides}
+    values = {"DOOR_REQUEST_ID": DEPLOY_ID, "DOOR_WAIT_FOR_IDLE": "0", **overrides}
     rc, outcome, calls = _run("door-deploy.sh", env, **values)
     assert rc == 2 and outcome["code"] == code and not calls
 
 
 def test_deploy_refuses_a_malformed_request_id_before_touching_any_path(env: dict[str, str]) -> None:
-    rc, _, calls = _run("door-deploy.sh", env, DOOR_REQUEST_ID="../../etc/x", DOOR_MODE="main")
+    rc, _, calls = _run("door-deploy.sh", env, DOOR_REQUEST_ID="../../etc/x")
     assert rc == 2 and not calls and not list(Path(env["DOOR_RESULTS_DIR"]).iterdir())
 
 
-def test_replay_runs_isolated_from_the_candidate_tree(env: dict[str, str]) -> None:
-    child = "sam31-" + "ab" * 16
-    rc, outcome, calls = _run("door-replay.sh", env, DOOR_REQUEST_ID=REPLAY_ID, DOOR_CHILD=child,
-                              DOOR_PARENT="", FAKE_PUSHED="1")
-    tool = _tool_call(calls)
-    assert rc == 0 and outcome["status"] == "replayed"
-    assert f"-m blueprint_pipeline.task_evaluation_stage_replay --child {child} --isolate --json-out" in tool
-    assert "--allow-paid" not in tool
-    assert outcome["report"].endswith(f"{REPLAY_ID}.replay.json")
-
-
-def test_replay_refuses_a_bad_target(env: dict[str, str]) -> None:
-    rc, outcome, _ = _run("door-replay.sh", env, DOOR_REQUEST_ID=REPLAY_ID, DOOR_CHILD="sam31-..",
-                          DOOR_PARENT="")
-    assert rc == 2 and outcome["code"] == "replay_target_invalid"
-
-
-@pytest.mark.parametrize("script", ["door-common.sh", "door-deploy.sh", "door-replay.sh", "door-upgrade.sh",
-                                    "install.sh"])
+@pytest.mark.parametrize("script", ["door-common.sh", "door-deploy.sh", "door-upgrade.sh", "install.sh"])
 def test_scripts_parse(script: str) -> None:
     assert subprocess.run(["/bin/bash", "-n", str(DOOR / script)], check=False).returncode == 0
 
@@ -204,7 +171,7 @@ def test_no_script_uses_the_wrapper_deploys_or_allow_paid() -> None:
             assert "deploy_control_plane_iteration.sh" not in line, script.name
             assert "deploy_control_plane_canary.sh" not in line, script.name
             assert "--allow-paid" not in line, script.name
-        assert "set -euo pipefail" in text or script.name == "door-common.sh"
+        assert re.search(r"set -e[A-Za-z]*uo pipefail", text) or script.name == "door-common.sh"
 
 
 def test_installer_never_overwrites_tokens_and_validates_caddy_first() -> None:
@@ -212,3 +179,24 @@ def test_installer_never_overwrites_tokens_and_validates_caddy_first() -> None:
     assert 'if [ ! -e "$config_dir/tokens.json" ]; then' in text
     assert text.index("caddy validate") < text.index("systemctl reload caddy")
     assert "cp -p \"$backup\" \"$caddyfile\"" in text
+
+
+def test_installer_keeps_root_writes_out_of_service_account_reach() -> None:
+    text = (DOOR / "install.sh").read_text(encoding="utf-8")
+    assert 'install -d -o root -g blueprint-door -m 2770 "$state_root/requests/pending"' in text
+    assert 'install -d -o root -g root -m 0755 "$state_root/requests/$sub"' in text
+    assert 'chown root:blueprint "$config_dir/tokens.json"' in text
+
+
+def test_installer_rolls_back_code_and_units_and_checks_as_the_service_account() -> None:
+    text = (DOOR / "install.sh").read_text(encoding="utf-8")
+    assert "trap 'rollback; exit 1' ERR" in text and "set -eEuo pipefail" in text
+    assert '"$units_backup/$unit"' in text and 'mv "$install_root.previous" "$install_root"' in text
+    assert "runuser -u blueprint --" in text and "self-test --allow-no-tokens" in text
+
+
+def test_deploy_script_only_deploys_main() -> None:
+    text = (DOOR / "door-deploy.sh").read_text(encoding="utf-8")
+    code = [line for line in text.splitlines() if not line.lstrip().startswith("#")]
+    assert not any("--canary" in line for line in code)
+    assert any("door_require_on_main" in line for line in code)
