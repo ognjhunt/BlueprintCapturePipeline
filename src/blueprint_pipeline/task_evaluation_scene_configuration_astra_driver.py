@@ -630,13 +630,21 @@ def prepare_astra_execution_runtime(*, runtime, package, authored_root, values,
     sandbox.preflight()
     probe_root = authored_root / 'tmp' / 'runtime-probe'
     probe_root.mkdir(parents=True, exist_ok=True)
-    cad_probe = sandbox([sys.executable, "-c", "import build123d; from langgraph.graph import StateGraph; "
-                         "from cadpy.generation import run_script_generator; "
-                         "assert abs(build123d.Box(1,2,3).volume - 6) < 1e-8"],
-        cwd=probe_root, env={"HOME": str(probe_root), "PYTHONPATH": os.pathsep.join(dict.fromkeys([
-            str(cad_root / "Multi-Agent-CAD/packages/cadpy/src"),
-            str(cad_root / "text-to-cad/packages/cadpy/src"), *map(str, runtime_loader)]))},
-        capture_output=True, text=True, check=False, timeout=60)
+    cad_probe_timeout_seconds = 180
+    try:
+        cad_probe = sandbox([sys.executable, "-c", "import build123d; from langgraph.graph import StateGraph; "
+                             "from cadpy.generation import run_script_generator; "
+                             "assert abs(build123d.Box(1,2,3).volume - 6) < 1e-8"],
+            cwd=probe_root, env={"HOME": str(probe_root), "PYTHONPATH": os.pathsep.join(dict.fromkeys([
+                str(cad_root / "Multi-Agent-CAD/packages/cadpy/src"),
+                str(cad_root / "text-to-cad/packages/cadpy/src"), *map(str, runtime_loader)]))},
+            capture_output=True, text=True, check=False, timeout=cad_probe_timeout_seconds)
+    except subprocess.TimeoutExpired as exc:
+        _write(runtime / "cad_runtime_preflight_failure.json", {
+            "status": "timed_out", "timeout_seconds": cad_probe_timeout_seconds,
+            "sandboxed_execution": True,
+        })
+        raise AstraStageError("astra_sandboxed_cad_runtime_preflight_timeout") from exc
     if cad_probe.returncode:
         _write(runtime / "cad_runtime_preflight_failure.json", {"returncode": cad_probe.returncode,
             "stdout": cad_probe.stdout[-4000:], "stderr": cad_probe.stderr[-4000:]})
