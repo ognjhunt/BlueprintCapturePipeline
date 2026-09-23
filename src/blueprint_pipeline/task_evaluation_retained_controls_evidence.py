@@ -193,6 +193,7 @@ def _visual_ref(value: Mapping[str, Any]) -> dict[str, Any]:
 
 def validate_visual_continuation(value: Mapping[str, Any], *, expected_commit: str | None = None) -> dict[str, Any]:
     from .task_evaluation_configured_controls_autostart_validation import validate_configured_controls_autostart_intent
+    from .task_evaluation_robot_placement_agent import ROBOT_PLACEMENT_RETAINED_MODELS
     _visual_require(value.get('schema_version') == VISUAL_SCHEMA
         and value.get('continuation_digest') == canonical_digest(value,digest_field='continuation_digest')
         and value.get('maximum_reviewer_calls') == 1
@@ -210,7 +211,9 @@ def validate_visual_continuation(value: Mapping[str, Any], *, expected_commit: s
     inventory = _visual_ref(value['source_inventory'])
     _visual_require(receipt.get('receipt_digest') == canonical_digest(receipt,digest_field='receipt_digest')
         and receipt.get('status') == 'blocked' and receipt.get('accepted_pose') is None
-        and receipt.get('model') == 'gpt-6-sol' and receipt.get('reasoning_effort') == 'high'
+        and receipt.get('model') in ROBOT_PLACEMENT_RETAINED_MODELS
+        and receipt.get('model') == (old.get('placement') or {}).get('agent_model', receipt.get('model'))
+        and receipt.get('reasoning_effort') == 'high'
         and receipt.get('native_attempt_count') == 0 and receipt.get('model_grades_controls') is False
         and inventory.get('checkpoint_digest') == canonical_digest(inventory,digest_field='checkpoint_digest')
         and inventory.get('candidate_inventory_digest') == receipt.get('candidate_inventory_digest'), 'source_invalid')

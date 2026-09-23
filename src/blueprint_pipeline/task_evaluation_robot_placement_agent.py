@@ -36,6 +36,7 @@ from .task_evaluation_robot_placement_trajectory import (
 
 
 ROBOT_PLACEMENT_AGENT_MODEL = "gpt-6-sol"
+ROBOT_PLACEMENT_RETAINED_MODELS = frozenset({ROBOT_PLACEMENT_AGENT_MODEL, "gpt-5.6-sol"})
 ROBOT_PLACEMENT_AGENT_REASONING_EFFORT = "high"
 ROBOT_PLACEMENT_AGENT_MAX_OUTPUT_TOKENS = 8_000
 ROBOT_PLACEMENT_AGENT_SCHEMA_VERSION = "task_evaluation_robot_placement_agent.v1"
@@ -1103,7 +1104,7 @@ def validate_robot_placement_receipt(
         receipt.get("schema_version") != ROBOT_PLACEMENT_RECEIPT_SCHEMA_VERSION
         or receipt.get("status") != "accepted"
         or (
-            receipt.get("model") == ROBOT_PLACEMENT_AGENT_MODEL
+            receipt.get("model") in ROBOT_PLACEMENT_RETAINED_MODELS
             and receipt.get("reasoning_effort")
             != ROBOT_PLACEMENT_AGENT_REASONING_EFFORT
         )
@@ -1112,7 +1113,7 @@ def validate_robot_placement_receipt(
             and receipt.get("reasoning_effort") != "none"
         )
         or receipt.get("model")
-        not in {ROBOT_PLACEMENT_AGENT_MODEL, DETERMINISTIC_ROBOT_PLACEMENT_MODEL}
+        not in {*ROBOT_PLACEMENT_RETAINED_MODELS, DETERMINISTIC_ROBOT_PLACEMENT_MODEL}
         or receipt.get("candidate_may_self_authorize") is not False
         or receipt.get("physical_execution_authorized") is not False
         or not isinstance(receipt.get("native_construction_required"), bool)
