@@ -154,7 +154,7 @@ def test_continuation_cannot_silently_change_configuration_or_disclosure(tmp_pat
     elif change == "tool_digests":
         values["instructions"] = "Changed tool instructions"
     else:
-        values[change] = "gpt-6-astra" if change == "model" else "b" * 40
+        values[change] = "gpt-6-luna" if change == "model" else "b" * 40
     followup = AgentTask(**values)
     with pytest.raises(AgentExecutionError, match="configuration_changed|prior_context_not_admitted"):
         run.continue_task(followup)

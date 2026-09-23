@@ -291,10 +291,10 @@ def test_production_invoker_constructs_openai_agents_sdk_agent_without_network(
     monkeypatch.setattr(agents.Runner, "run_sync", staticmethod(_fake_run_sync))
     invoker = OpenAIAgentsSDKInvoker(
         OpenAIAgentsSDKConfig(
-            model="gpt-5.6-terra",
+            model="gpt-6-sol",
             allow_live_invocation=True,
             tracing_disabled=True,
-            max_inference_cost_usd=1.0,
+            max_inference_cost_usd=2.0,
         )
     )
     result = invoker.invoke(
@@ -303,7 +303,7 @@ def test_production_invoker_constructs_openai_agents_sdk_agent_without_network(
             capability=CapabilityKind.CLAIM_TASK_INTERPRETER,
             name="Blueprint Claim Interpreter",
             instructions="Return a typed proposal only.",
-            model="gpt-5.6-terra",
+            model="gpt-6-sol",
             max_turns=2,
             max_output_tokens=1_000,
             max_input_tokens=100_000,
@@ -369,7 +369,7 @@ def test_production_invoker_constructs_openai_agents_sdk_agent_without_network(
             capability="fixture_multimodal_review",
             name="Blueprint fixture visual reviewer",
             instructions="Return a typed fixture result only.",
-            model="gpt-5.6-terra",
+            model="gpt-6-sol",
             max_turns=1,
             max_output_tokens=1_000,
             max_input_tokens=250_000,
@@ -377,7 +377,7 @@ def test_production_invoker_constructs_openai_agents_sdk_agent_without_network(
         multimodal_input,
     )
     assert captured["input"] == multimodal_input
-    assert multimodal.usage["projected_max_cost_usd"] == pytest.approx(0.512)
+    assert multimodal.usage["projected_max_cost_usd"] == pytest.approx(1.02)
 
 
 def test_live_sdk_refuses_unbounded_multi_turn_context(
@@ -386,7 +386,7 @@ def test_live_sdk_refuses_unbounded_multi_turn_context(
     monkeypatch.setenv("BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS", "true")
     invoker = OpenAIAgentsSDKInvoker(
         OpenAIAgentsSDKConfig(
-            model="gpt-5.6-terra",
+            model="gpt-6-sol",
             allow_live_invocation=True,
             max_inference_cost_usd=5.0,
         )
@@ -396,7 +396,7 @@ def test_live_sdk_refuses_unbounded_multi_turn_context(
         capability=CapabilityKind.CLAIM_TASK_INTERPRETER,
         name="Unbounded multi-turn",
         instructions="Return a typed proposal only.",
-        model="gpt-5.6-terra",
+        model="gpt-6-sol",
         max_turns=2,
         max_output_tokens=1_000,
     )
@@ -427,7 +427,7 @@ def test_multimodal_sdk_invocation_requires_explicit_input_token_ceiling(
                 capability="fixture_multimodal_review",
                 name="Blueprint fixture visual reviewer",
                 instructions="No provider call should occur.",
-                model="gpt-5.6-terra",
+                model="gpt-6-sol",
                 max_turns=1,
                 max_output_tokens=1_000,
             ),
@@ -520,7 +520,7 @@ def test_live_sdk_requires_and_enforces_inference_budget(
                 capability=CapabilityKind.CLAIM_TASK_INTERPRETER,
                 name="Budget test",
                 instructions="No live call should occur.",
-                model="gpt-5.6-terra",
+                model="gpt-6-sol",
                 max_turns=1,
                 max_output_tokens=1_000,
             ),
@@ -593,7 +593,7 @@ def test_inference_completion_is_bound_to_reserved_identity_and_release(
     identity = {
         "run_id": "bound-run",
         "capability": "claim_task_interpreter",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6-sol",
         "input_digest": "sha256:" + "b" * 64,
         "max_turns": 1,
         "max_output_tokens": 1_000,
@@ -623,7 +623,7 @@ def test_inference_completion_is_bound_to_reserved_identity_and_release(
         "run_id": "bound-run",
         "capability": "claim_task_interpreter",
         "provider": "openai",
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6-sol",
         "cache_policy": reservation["cache_policy"],
         "breakpoint_digests": reservation["breakpoint_digests"],
         "projected_max_cost_usd": 0.5,
@@ -633,7 +633,7 @@ def test_inference_completion_is_bound_to_reserved_identity_and_release(
     }
     for field, invalid_value, message in (
         ("run_id", "other-run", "inference_completion_run_id_mismatch"),
-        ("model", "gpt-5.6-terra", "inference_completion_model_mismatch"),
+        ("model", "gpt-6-luna", "inference_completion_model_mismatch"),
         ("projected_max_cost_usd", 0.4, "projected_cost_mismatch"),
         ("released_reservation_usd", 0.3, "released_reservation_mismatch"),
         ("cache_policy", {"policy_digest": policy_digest, "status": "disabled"}, "cache_policy_mismatch"),
@@ -2685,7 +2685,7 @@ def test_failed_live_manager_call_preserves_reservation_and_reports_unknown_bill
     monkeypatch.setattr(agents.Runner, "run_sync", staticmethod(_provider_failure))
     execution = TaskEvaluationSupervisor(
         allow_live_agents_sdk=True,
-        agent_inference_budget_usd=1.0,
+        agent_inference_budget_usd=3.0,
     ).run(
         _context(),
         output_dir=tmp_path / "failed-live-manager",
@@ -6327,11 +6327,11 @@ def _invalid_structured_sdk_fixture(tmp_path, monkeypatch, *, token_usage=True, 
     monkeypatch.delenv("OPENAI_API_KEY_FILE", raising=False)
     monkeypatch.setattr(agents.Runner, "run_sync", staticmethod(fake_run))
     audit = InferenceReservationAudit(run_root=tmp_path, run_id="invalid-structured")
-    invoker = OpenAIAgentsSDKInvoker(OpenAIAgentsSDKConfig(allow_live_invocation=True, max_inference_cost_usd=.02))
+    invoker = OpenAIAgentsSDKInvoker(OpenAIAgentsSDKConfig(allow_live_invocation=True, max_inference_cost_usd=.03))
     invoker.configure_reservation_audit(record_reservation=audit.record_reservation,
         record_completion=audit.record_completion, restored_reserved_cost_usd=0.)
     spec = AgentsSDKAgentSpec(run_id="invalid-structured", capability=CapabilityKind.CLAIM_TASK_INTERPRETER,
-        name="Invalid structured output accounting", instructions="Typed output", model="gpt-5.6-terra",
+        name="Invalid structured output accounting", instructions="Typed output", model="gpt-6-sol",
         max_turns=1, max_output_tokens=1000)
     return invoker, audit, spec, error, run_data, calls
 
@@ -6347,7 +6347,7 @@ def test_invalid_structured_provider_response_records_cost_without_output_claim(
     assert manifest["in_flight_unknown_count"] == 0
     completion = json.loads(next(audit.completed_root.glob("*.json")).read_text())
     assert completion["status"] == completion["provider_outcome"] == "invalid_structured_output"
-    assert completion["reconciled_actual_cost_usd"] == pytest.approx(.000064)
+    assert completion["reconciled_actual_cost_usd"] == pytest.approx(.000112)
     assert completion["released_reservation_usd"] > 0
     assert completion["cost_basis"] == "actual_token_usage"
     assert completion["usage"]["cost_is_actual"] is True

@@ -37,7 +37,7 @@ def make_task(tools=(), **changes):
         task_id="sdk_fixture", run_id="run_fixture", capability="test_investigation",
         context_revision=digest({"revision": 1}), source_commit="a" * 40,
         instructions="Use admitted tools and return the declared object.",
-        model="gpt-5.6-terra", input=inputs, input_digests=(digest(inputs),),
+        model="gpt-6-sol", input=inputs, input_digests=(digest(inputs),),
         output_schema=Answer.model_json_schema(), tool_ids=tuple(t.tool_id for t in tools),
         tool_digests={t.tool_id: t.tool_digest for t in tools}, admission=admission,
         deadline=time.time() + 30, max_tool_output_bytes=1000,
@@ -49,7 +49,7 @@ def make_task(tools=(), **changes):
 def response(output=None, *, output_tokens=32, number=1):
     return httpx.Response(200, json={
         "id": f"resp_fixture_{number}", "object": "response", "created_at": int(time.time()),
-        "status": "completed", "model": "gpt-5.6-terra", "parallel_tool_calls": False,
+        "status": "completed", "model": "gpt-6-sol", "parallel_tool_calls": False,
         "output": output if output is not None else [{
             "type": "message", "id": f"msg_{number}", "role": "assistant", "status": "completed",
             "content": [{"type": "output_text", "text": '{"answer":7}', "annotations": []}],
@@ -85,7 +85,7 @@ def test_scoped_client_real_sdk_reservation_and_result(tmp_path, monkeypatch):
         assert request.headers["Authorization"] == "Bearer sk-fixture"
         payload = json.loads(request.content)
         assert payload["store"] is False
-        assert payload["model"] == "gpt-5.6-terra"
+        assert payload["model"] == "gpt-6-sol"
         assert runtime._audit(task).manifest()["in_flight_unknown_count"] == 1
         return response()
 

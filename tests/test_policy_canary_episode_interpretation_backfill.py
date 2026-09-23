@@ -71,7 +71,7 @@ def _projection(*, interpreted: bool) -> dict:
             "provider_call_count": 20,
             "provider_invocation_attempt_count": 20,
             "input_bundle_unavailable_count": 0,
-            "interpreter": {"model": "gpt-5.6-luna"},
+            "interpreter": {"model": "gpt-6-luna"},
             "interpreter_profile_digest": "sha256:" + "6" * 64,
             "official_cost_completion_error_type": None,
             "closeout_error_type": None,

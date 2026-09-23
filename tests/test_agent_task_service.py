@@ -120,7 +120,7 @@ def test_invalid_continuation_cannot_reserve_or_poison_successor_slot(tmp_path):
                                validate_admission=lambda _: None, clock=lambda: 1000)
     before = len(api.calls)
     with pytest.raises(AgentExecutionError, match="configuration_changed"):
-        service.enqueue(successor(task, model="gpt-6-astra"))
+        service.enqueue(successor(task, model="gpt-6-luna"))
     assert run.journal.successor(task.task_id) is None
     assert len(api.calls) == before
     service.request_cleanup(task.task_id)

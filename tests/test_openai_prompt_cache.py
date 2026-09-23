@@ -11,12 +11,13 @@ from blueprint_pipeline.openai_prompt_cache import (
     explicit_cache_request_kwargs,
     usage_and_cost_receipt,
     worst_case_reservation_usd,
+    pricing_for_model,
 )
 
 
 def _policy(**overrides):
     values = {
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6-sol",
         "family": "task_aware_robot_placement_proposal",
         "contract_version": "placement-proposal-v1",
         "stable_prefix": "stable contract " * 700,
@@ -35,9 +36,16 @@ def _policy(**overrides):
     return create_prompt_cache_policy(**values)
 
 
+def test_successor_pricing_keeps_legacy_receipts_readable() -> None:
+    assert pricing_for_model("gpt-6-sol").uncached_input_per_million_usd == 2.0
+    assert pricing_for_model("gpt-6-luna").output_per_million_usd == 0.5
+    assert pricing_for_model("gpt-6-astra").output_per_million_usd == 50.0
+    assert pricing_for_model("gpt-5.6-sol").output_per_million_usd == 20.0
+
+
 def test_economic_decision_disables_one_off_and_below_break_even() -> None:
     one_off = decide_prompt_cache_policy(
-        model="gpt-5.6-sol",
+        model="gpt-6-sol",
         stable_prefix_tokens=2_000,
         expected_reuse_probability=0.0,
         expected_reuse_count=0,
@@ -46,7 +54,7 @@ def test_economic_decision_disables_one_off_and_below_break_even() -> None:
         explicit_breakpoint_available=True,
     )
     below_break_even = decide_prompt_cache_policy(
-        model="gpt-5.6-sol",
+        model="gpt-6-sol",
         stable_prefix_tokens=2_000,
         expected_reuse_probability=0.27,
         expected_reuse_count=1,
@@ -55,7 +63,7 @@ def test_economic_decision_disables_one_off_and_below_break_even() -> None:
         explicit_breakpoint_available=True,
     )
     repeated = decide_prompt_cache_policy(
-        model="gpt-5.6-sol",
+        model="gpt-6-sol",
         stable_prefix_tokens=2_000,
         expected_reuse_probability=0.28,
         expected_reuse_count=1,
@@ -84,7 +92,7 @@ def test_economic_decision_disables_one_off_and_below_break_even() -> None:
 )
 def test_economic_decision_fail_closed_gates(changes, reason) -> None:
     values = {
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6-sol",
         "stable_prefix_tokens": 2_000,
         "expected_reuse_probability": 1.0,
         "expected_reuse_count": 1,
@@ -104,7 +112,7 @@ def test_stable_key_ignores_dynamic_suffix_but_versions_every_stable_contract() 
     changed_contract = _policy(contract_version="placement-proposal-v2")
     changed_tools = _policy(tool_schema=[{"name": "inspect"}])
     changed_output = _policy(output_schema={"type": "object", "required": ["pose"]})
-    changed_model = _policy(model="gpt-5.6-terra")
+    changed_model = _policy(model="gpt-6-luna")
     changed_effort = _policy(reasoning_effort="xhigh")
     changed_privacy = _policy(privacy_scope="different_tenant_scope")
     changed_region = _policy(processing_region="eu")
@@ -195,28 +203,28 @@ def test_usage_receipt_prices_write_read_uncached_and_output_separately() -> Non
             output_tokens_details=SimpleNamespace(reasoning_tokens=40),
         ),
     )
-    receipt = usage_and_cost_receipt(response, model="gpt-5.6-sol")
+    receipt = usage_and_cost_receipt(response, model="gpt-6-sol")
 
     assert receipt["uncached_input_tokens"] == 2_000
-    assert receipt["cached_read_cost_usd"] == pytest.approx(0.0024)
-    assert receipt["cache_write_cost_usd"] == pytest.approx(0.01)
-    assert receipt["uncached_input_cost_usd"] == pytest.approx(0.008)
-    assert receipt["output_cost_usd"] == pytest.approx(0.002)
-    assert receipt["estimated_total_cost_usd"] == pytest.approx(0.0224)
-    assert receipt["estimated_cost_without_caching_usd"] == pytest.approx(0.042)
-    assert receipt["estimated_savings_usd"] == pytest.approx(0.0196)
+    assert receipt["cached_read_cost_usd"] == pytest.approx(0.0012)
+    assert receipt["cache_write_cost_usd"] == pytest.approx(0.005)
+    assert receipt["uncached_input_cost_usd"] == pytest.approx(0.004)
+    assert receipt["output_cost_usd"] == pytest.approx(0.001)
+    assert receipt["estimated_total_cost_usd"] == pytest.approx(0.0112)
+    assert receipt["estimated_cost_without_caching_usd"] == pytest.approx(0.021)
+    assert receipt["estimated_savings_usd"] == pytest.approx(0.0098)
     assert receipt["provider_response_id"] == "resp_test"
 
 
 def test_reservation_assumes_a_write_and_long_context_tier_not_a_hit() -> None:
     policy = _policy(stable_prefix_tokens=2_000)
     cost = worst_case_reservation_usd(
-        model="gpt-5.6-sol",
+        model="gpt-6-sol",
         input_token_ceiling=300_000,
         max_output_tokens=8_000,
         cache_policy=policy,
     )
-    expected = (2_000 * 10 + 298_000 * 8 + 8_000 * 30) / 1_000_000
+    expected = (2_000 * 5 + 298_000 * 4 + 8_000 * 15) / 1_000_000
     assert cost == pytest.approx(expected)
 
 
@@ -244,11 +252,11 @@ def test_aggregate_usage_applies_long_context_pricing_per_request() -> None:
             "output_tokens_details": {"reasoning_tokens": 0},
             "request_usage_entries": entries,
         },
-        model="gpt-5.6-sol",
+        model="gpt-6-sol",
     )
 
     assert receipt["request_count"] == 3
-    assert receipt["uncached_input_cost_usd"] == pytest.approx(1.2)
+    assert receipt["uncached_input_cost_usd"] == pytest.approx(0.6)
     assert all(
         row["long_context_pricing_applied"] is False
         for row in receipt["per_request_costs"]

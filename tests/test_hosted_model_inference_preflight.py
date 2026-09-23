@@ -18,7 +18,7 @@ def test_inference_preflight_requires_actual_bounded_completion(tmp_path: Path) 
         observed.update(endpoint=endpoint, headers=headers, payload=json.loads(payload))
         return (
             200,
-            b'{"model":"gpt-5.6-luna","choices":[{"message":{"content":'
+            b'{"model":"gpt-6-luna","choices":[{"message":{"content":'
             b"\"{\\\"dominant_color\\\":\\\"red\\\"}\"}}],"
             b'"usage":{"prompt_tokens":20,"completion_tokens":4,"total_tokens":24}}',
         )
@@ -27,7 +27,7 @@ def test_inference_preflight_requires_actual_bounded_completion(tmp_path: Path) 
     result = materialize_hosted_model_inference_preflight(
         output_path=output,
         backend="openai",
-        model="gpt-5.6-luna",
+        model="gpt-6-luna",
         reasoning_effort="max",
         generated_at="2026-08-10T00:00:00+00:00",
         secret_loader=lambda backend: ("secret-value", "fixture"),
@@ -36,7 +36,7 @@ def test_inference_preflight_requires_actual_bounded_completion(tmp_path: Path) 
 
     assert result["status"] == "qualified"
     assert result["credential_validated"] is True
-    assert result["model"] == "gpt-5.6-luna"
+    assert result["model"] == "gpt-6-luna"
     assert result["reasoning_effort"] == "max"
     assert result["probe_response_validated"] is True
     assert result["verified_capabilities"] == ["image_input", "structured_json"]
@@ -150,7 +150,7 @@ def test_openai_default_is_luna_xhigh_not_legacy_gpt41(tmp_path: Path) -> None:
         observed.update(json.loads(payload))
         return (
             200,
-            b'{"model":"gpt-5.6-luna","choices":[{"message":{"content":'
+            b'{"model":"gpt-6-luna","choices":[{"message":{"content":'
             b"\"{\\\"dominant_color\\\":\\\"red\\\"}\"}}]}"
         )
 
@@ -161,7 +161,7 @@ def test_openai_default_is_luna_xhigh_not_legacy_gpt41(tmp_path: Path) -> None:
         http_post=fake_post,
     )
 
-    assert result["model"] == "gpt-5.6-luna"
+    assert result["model"] == "gpt-6-luna"
     assert result["reasoning_effort"] == "xhigh"
-    assert observed["model"] == "gpt-5.6-luna"
+    assert observed["model"] == "gpt-6-luna"
     assert observed["reasoning_effort"] == "xhigh"

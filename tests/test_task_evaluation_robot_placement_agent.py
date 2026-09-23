@@ -254,7 +254,7 @@ def test_production_config_pins_sol_high_agent_contract() -> None:
         tracing_disabled=True,
     )
 
-    assert config.model == "gpt-5.6-sol"
+    assert config.model == "gpt-6-sol"
     assert config.max_inference_cost_usd == 0.5
     assert config.input_cost_per_million_tokens_usd == 4.0
     assert config.output_cost_per_million_tokens_usd == 20.0

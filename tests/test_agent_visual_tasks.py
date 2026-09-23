@@ -36,7 +36,7 @@ def build(tmp_path):
         final_review_input_digest=digest({"original_16_views": [view.sha256 for view in views]}),
         rights_path=str(rights_path), rights_sha256=digest({"placeholder": True}))
     rights = {"schema_version": "blueprint_visual_investigation_rights.v1", "input_manifest_digest": binding.input_manifest_digest,
-        "candidate_digest": binding.candidate_digest, "runtime": "openai_agents_api", "model": "gpt-5.6-terra",
+        "candidate_digest": binding.candidate_digest, "runtime": "openai_agents_api", "model": "gpt-6-sol",
         "agent_runtime_policy": {"project_id": config["project_id"], "disclosure_scope": guard["disclosure_scope"],
             "budget_policy": guard["budget_policy"], "session_retention": guard["session_retention"],
             "trace_retention": guard["trace_retention"], "region": "us", "project_guard_receipt_digest": digest(guard)},

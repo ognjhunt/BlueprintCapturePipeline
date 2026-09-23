@@ -1,4 +1,4 @@
-"""Deterministic GPT-5.6 prompt-cache policy, request layout, and cost receipts.
+"""Deterministic GPT-6 prompt-cache policy, request layout, and cost receipts.
 
 The model never decides whether its own prompt is cached.  Callers declare a
 stable prefix and expected reuse; this module makes the economic decision,
@@ -41,7 +41,8 @@ class OpenAIModelPricing(BaseModel):
 
 
 _GPT56_PRICING: dict[str, OpenAIModelPricing] = {
-    # Standard API rates verified 2026-09-10 against the official model page.
+    # Standard API rates verified 2026-09-23 against
+    # https://developers.openai.com/api/docs/pricing and the model pages.
     # Authoring callers stay below the long-context threshold and use no Fast tier.
     "astra": OpenAIModelPricing(
         model_family="gpt-6-astra",
@@ -51,13 +52,20 @@ _GPT56_PRICING: dict[str, OpenAIModelPricing] = {
         output_per_million_usd=50.0,
     ),
     "sol": OpenAIModelPricing(
+        model_family="gpt-6-sol",
+        uncached_input_per_million_usd=2.0,
+        cache_write_per_million_usd=2.5,
+        cached_read_per_million_usd=0.2,
+        output_per_million_usd=10.0,
+    ),
+    "old_sol": OpenAIModelPricing(
         model_family="gpt-5.6-sol",
         uncached_input_per_million_usd=4.0,
         cache_write_per_million_usd=5.0,
         cached_read_per_million_usd=0.4,
         output_per_million_usd=20.0,
     ),
-    "terra": OpenAIModelPricing(
+    "old_terra": OpenAIModelPricing(
         model_family="gpt-5.6-terra",
         uncached_input_per_million_usd=2.0,
         cache_write_per_million_usd=2.5,
@@ -65,6 +73,13 @@ _GPT56_PRICING: dict[str, OpenAIModelPricing] = {
         output_per_million_usd=12.0,
     ),
     "luna": OpenAIModelPricing(
+        model_family="gpt-6-luna",
+        uncached_input_per_million_usd=0.1,
+        cache_write_per_million_usd=0.125,
+        cached_read_per_million_usd=0.01,
+        output_per_million_usd=0.5,
+    ),
+    "old_luna": OpenAIModelPricing(
         model_family="gpt-5.6-luna",
         uncached_input_per_million_usd=0.2,
         cache_write_per_million_usd=0.25,
@@ -78,12 +93,16 @@ def pricing_for_model(model: str) -> OpenAIModelPricing | None:
     normalized = model.strip().lower()
     if normalized == "gpt-6-astra" or normalized.startswith("gpt-6-astra-"):
         return _GPT56_PRICING["astra"]
-    if normalized in {"gpt-5.6", "gpt-5.6-sol"} or normalized.startswith("gpt-5.6-sol-"):
+    if normalized == "gpt-6-sol" or normalized.startswith("gpt-6-sol-"):
         return _GPT56_PRICING["sol"]
-    if normalized == "gpt-5.6-terra" or normalized.startswith("gpt-5.6-terra-"):
-        return _GPT56_PRICING["terra"]
-    if normalized == "gpt-5.6-luna" or normalized.startswith("gpt-5.6-luna-"):
+    if normalized == "gpt-6-luna" or normalized.startswith("gpt-6-luna-"):
         return _GPT56_PRICING["luna"]
+    if normalized in {"gpt-5.6", "gpt-5.6-sol"} or normalized.startswith("gpt-5.6-sol-"):
+        return _GPT56_PRICING["old_sol"]
+    if normalized == "gpt-5.6-terra" or normalized.startswith("gpt-5.6-terra-"):
+        return _GPT56_PRICING["old_terra"]
+    if normalized == "gpt-5.6-luna" or normalized.startswith("gpt-5.6-luna-"):
+        return _GPT56_PRICING["old_luna"]
     return None
 
 
@@ -188,7 +207,7 @@ def decide_prompt_cache_policy(
     privacy_compatible: bool,
     explicit_breakpoint_available: bool,
 ) -> PromptCacheDecision:
-    """Apply GPT-5.6 write/read economics without model judgment."""
+    """Apply GPT-6 write/read economics without model judgment."""
 
     if isinstance(stable_prefix_tokens, bool) or stable_prefix_tokens < 0:
         raise ValueError("stable_prefix_tokens_invalid")
@@ -343,7 +362,7 @@ def create_prompt_cache_policy(
 
 
 def explicit_cache_request_kwargs(policy: PromptCachePolicy) -> dict[str, Any]:
-    """Return GPT-5.6 request kwargs; explicit/no-breakpoint is the write-off switch."""
+    """Return GPT-6 request kwargs; explicit/no-breakpoint is the write-off switch."""
 
     if not supports_explicit_prompt_caching(policy.model_family):
         return {}

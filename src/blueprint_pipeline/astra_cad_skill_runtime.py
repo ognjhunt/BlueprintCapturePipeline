@@ -226,7 +226,7 @@ class _SDKChatBridge:
         if len(payload.encode()) > self.max_input_tokens:
             raise AstraCADRuntimeBlocked("cad_input_token_ceiling_exceeded")
         index = len(self.calls)
-        record: dict[str, Any] = {"index": index, "model": "gpt-6-astra", "max_turns": 1,
+        record: dict[str, Any] = {"index": index, "model": "gpt-6-sol", "max_turns": 1,
                                   "input_sha256": hashlib.sha256(payload.encode()).hexdigest()}
         self.calls.append(record)  # Failed calls consume the local allowance, too.
         _save(self.root / f"invocation-{index:02d}-input.json", json.loads(payload))
@@ -249,7 +249,7 @@ class _SDKChatBridge:
         spec = AgentsSDKAgentSpec(
             run_id=self.run_id, capability=f"astra_cad_candidate:{self.object_label}", name="Astra CAD candidate",
             instructions=instructions,
-            model="gpt-6-astra", reasoning_effort=self.reasoning_effort, max_turns=1,
+            model="gpt-6-sol", reasoning_effort=self.reasoning_effort, max_turns=1,
             max_input_tokens=self.max_input_tokens, max_output_tokens=self.max_output_tokens,
             output_type=_TextOutput, tool_bindings=(),
             stable_developer_prefix=stable_prefix, cache_policy=policy,
@@ -351,7 +351,7 @@ def _adopt_completed_phases(source: Path, budget_root: Path, parameters: dict[st
         row = json.loads(path.read_text())
         if (row.get("run_id") == parameters["run_id"]
                 and row.get("capability") == "astra_cad_candidate:" + parameters["object_label"]
-                and row.get("model") == "gpt-6-astra" and row.get("provider") == "openai"
+                and row.get("model") == "gpt-6-sol" and row.get("provider") == "openai"
                 and row.get("inference_completion_digest") == canonical_digest(row, digest_field="inference_completion_digest")):
             completions.append((path, row))
     adopted, evidence = {}, []
@@ -417,7 +417,7 @@ def _adopt_completed_coder(source: Path, budget_root: Path, parameters: dict[str
             row = json.loads(completion_path.read_text())
             if (row.get("run_id") != parameters["run_id"]
                     or row.get("capability") != "astra_cad_candidate:" + parameters["object_label"]
-                    or row.get("provider") != "openai" or row.get("model") != "gpt-6-astra"
+                    or row.get("provider") != "openai" or row.get("model") != "gpt-6-sol"
                     or row.get("structured_output_digest") != canonical_digest({"content": raw})
                     or row.get("inference_completion_digest") != canonical_digest(row, digest_field="inference_completion_digest")):
                 continue
@@ -525,7 +525,7 @@ def execute_mac_candidate(
         nodes._CFG_MAX_RETRIES = repair_budget + 1  # one initial QA + at most two repairs
         nodes._CFG_MAX_EXEC_RETRIES = 0
         graph._MAX_SELF_RETRIES = 1
-        nodes._SP_MODEL = nodes._ARCH_MODEL = nodes._CODER_MODEL = nodes._REPAIR_MODEL = "gpt-6-astra"
+        nodes._SP_MODEL = nodes._ARCH_MODEL = nodes._CODER_MODEL = nodes._REPAIR_MODEL = "gpt-6-sol"
         nodes._SPEC_PLANNER_KWARGS = nodes._ARCHITECT_KWARGS = nodes._CODER_KWARGS = nodes._REPAIR_KWARGS = {}
         original_json = nodes._call_llm_json_with_retry
         nodes._call_llm_json_with_retry = lambda *a, **kw: original_json(*a, **{**kw, "max_retries": 1})

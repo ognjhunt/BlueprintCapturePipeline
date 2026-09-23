@@ -142,7 +142,7 @@ class Invoker:
 
     def invoke(self, spec, text):
         self.events.append('model_call')
-        assert spec.model == 'gpt-5.6-sol'
+        assert spec.model == 'gpt-6-sol'
         assert spec.max_turns == 1 and not spec.tool_bindings
         assert spec.reasoning_effort == 'high'
         payload = json.loads(text)
@@ -314,7 +314,7 @@ def test_model_cannot_replace_the_cad_or_task_actor(inputs, tmp_path):
             output_path=tmp_path/'rejected-request.json')
 
 
-@pytest.mark.parametrize('field,value', [('model', 'gpt-5.6-terra'), ('maximum_cost_usd', .5),
+@pytest.mark.parametrize('field,value', [('model', 'gpt-6-luna'), ('maximum_cost_usd', .5),
                                        ('automatic_retries', 1), ('automatic_retries', False)])
 def test_resigned_profile_cannot_expand_invocation_scope(inputs, tmp_path, field, value):
     p = inputs[2]
@@ -363,7 +363,7 @@ def test_successor_preserves_natural_task_and_records_actual_sdk_proposal(inputs
     assert successor['success'] == result['success']
     authority = successor['success_contract_authority']
     assert authority['author_source'] == 'agent_proposal'
-    assert authority['author_id'] == 'openai_agents_sdk:gpt-5.6-sol'
+    assert authority['author_id'] == 'openai_agents_sdk:gpt-6-sol'
     assert authority['proposal_digest'] == result['proposal_digest']
     assert authority['confirmed_by_team_id'] == original['team_namespace']
     assert authority['agent_proposal'] == result

@@ -502,8 +502,8 @@ def test_openai_adapter_uses_agents_sdk_and_discloses_frame_sampling_gap(
     invoker = _FakeAgentsSDKInvoker(_output(data))
     interpreter = OpenAIMultimodalEpisodeInterpreter(
         invoker=invoker,
-        model="gpt-5.6-terra",
-        model_version="gpt-5.6-terra-2026-09-03",
+        model="gpt-6-sol",
+        model_version="gpt-6-sol-2026-09-03",
         max_frames=2,
         run_id="quick10-interpretation-batch",
     )
@@ -582,8 +582,8 @@ def test_openai_adapter_preserves_first_terminal_and_event_nearby_camera_groups(
     ]
     interpreter = OpenAIMultimodalEpisodeInterpreter(
         invoker=_FakeAgentsSDKInvoker(_output(data)),
-        model="gpt-5.6-luna",
-        model_version="gpt-5.6-luna",
+        model="gpt-6-luna",
+        model_version="gpt-6-luna",
         max_frames=9,
     )
 

@@ -29,7 +29,7 @@ from .task_object_physical_property_review import (
     build_physical_property_review_prompt, review_physical_properties,
 )
 
-MODEL = 'gpt-6-astra'
+MODEL = 'gpt-6-sol'
 MAX_AUTHORING_ROUNDS = 2
 
 

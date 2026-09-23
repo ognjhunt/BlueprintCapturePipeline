@@ -997,7 +997,7 @@ def test_selected_task_thumbnail_is_an_exact_reviewed_frame_copy(
             "kind": "ai",
             "identity": "artifixer-independent-vision-reviewer-v1",
             "runtime": "openai_agents_sdk",
-            "model": "gpt-5.6-terra",
+            "model": "gpt-6-sol",
         },
     }
     destination = tmp_path / "configured_task_thumbnail.png"

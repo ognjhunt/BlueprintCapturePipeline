@@ -71,7 +71,7 @@ def test_episode_sdk_uses_images_and_collects_sealed_interpretation(tmp_path, mo
         external_disclosure_authorized=True, accepted_by="fixture-owner", accepted_on="2026-09-11",
         authority_reference="test-only", source_rights_admission_digest=digest({"owned_fixture": True}), output_path=rights)
     record = ep.prepare_episode_task(service, task_id="sdk_episode", run_id="sdk_run", request=request,
-        rights_path=rights, owner_client_id="fixture-client", runtime="openai_agents_sdk", inference_budget_usd=1)
+        rights_path=rights, owner_client_id="fixture-client", runtime="openai_agents_sdk", inference_budget_usd=3)
     before = data["score_path"].read_bytes()
     calls = [("read_episode_context", {}),
         ("read_episode_trace", {"role": "state_trace", "start_step": 0, "end_step": 20, "limit": 100}),
@@ -100,7 +100,7 @@ def test_sdk_visual_inspection_keeps_all_required_views(tmp_path, monkeypatch, m
     binding = VisualTaskBinding.model_validate({**binding.model_dump(), "rights_path": str(path),
         "rights_sha256": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()})
     record = prepare_visual_task(service, binding=binding, task_id="sdk_visual", run_id="sdk_run",
-        owner_client_id="fixture-client", inference_budget_usd=1, runtime="openai_agents_sdk")
+        owner_client_id="fixture-client", inference_budget_usd=3, runtime="openai_agents_sdk")
     calls = [("inspect_evidence_image", {"image_id": f"view_{i}", "crop": None}) for i in range(15 if missing else 16)]
     output = {"status": "inspected", "summary": "Inspected admitted views", "findings": [], "evidence_gaps": [], "final_acceptance_granted": False}
     runtime, _ = drive_sdk(service, record, calls, output, monkeypatch)
@@ -118,11 +118,11 @@ def test_image_context_uses_pixels_not_compressed_bytes_and_rejects_external_url
     data = io.BytesIO()
     Image.new("RGB", (1024,1024), "white").save(data, format="PNG")
     url = "data:image/png;base64," + base64.b64encode(data.getvalue()).decode()
-    output, tokens = encode_tool_output([{"type": "input_image", "image_url": url}], model="gpt-5.6-terra")
+    output, tokens = encode_tool_output([{"type": "input_image", "image_url": url}], model="gpt-6-sol")
     assert tokens == 1229 + 1 + 256
     assert output[0].image_url == url
     with pytest.raises(ValueError, match="source_invalid"):
-        encode_tool_output([{"type": "input_image", "image_url": "https://private.invalid/a.png"}], model="gpt-5.6-terra")
+        encode_tool_output([{"type": "input_image", "image_url": "https://private.invalid/a.png"}], model="gpt-6-sol")
     with pytest.raises(ValueError, match="model_or_content_invalid"):
         encode_tool_output([{"type": "input_image", "image_url": url}], model="unqualified-model")
 

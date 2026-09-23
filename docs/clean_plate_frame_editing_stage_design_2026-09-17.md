@@ -19,7 +19,7 @@ kinds of content corrupt the fixed stage:
   didn't move, so movers become ghosts/floaters (plus a privacy problem).
 - **Manipulable task objects** (totes, bins, parts) → we do **not** want these
   baked into the immovable stage. They are rebuilt separately as individual,
-  physics-ready 3D assets (image→3D via **`gpt-6-astra`**) from the **original**
+  physics-ready 3D assets (image→3D via **`gpt-6-sol`**) from the **original**
   frames and composed back at their real pose.
 
 Removing them in 2D **before** reconstruction beats carving them out of a

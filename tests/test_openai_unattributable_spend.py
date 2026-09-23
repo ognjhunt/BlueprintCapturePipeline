@@ -77,7 +77,7 @@ def _call(tmp_path: Path, **overrides: Any) -> dict[str, Any]:
         "run_id": "sam31-ai-visual-review-abc123",
         "reservation_manifest_path": _manifest(tmp_path),
         "authority_cap_usd": 1.0,
-        "model_id": "gpt-5.6-terra",
+        "model_id": "gpt-6-sol",
         "attribution_unavailable_reason": "no_pre_run_zero_baseline",
         "output_path": tmp_path / "out" / "reservation.json",
     }
@@ -173,7 +173,7 @@ def test_refuses_a_run_id_that_does_not_match_the_manifest(tmp_path: Path) -> No
 
 def test_records_the_model_that_incurred_the_spend(tmp_path: Path) -> None:
     receipt = _call(tmp_path)
-    assert receipt["model_id"] == "gpt-5.6-terra"
+    assert receipt["model_id"] == "gpt-6-sol"
 
 
 def test_receipt_states_the_structural_cause_in_words(tmp_path: Path) -> None:

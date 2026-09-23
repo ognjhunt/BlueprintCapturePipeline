@@ -27,7 +27,7 @@ def prefix():
 def test_policy_uses_astra_high_canonical_explicit_write_read_options(prefix):
     policy = cache.asset_cache_policy(family="cad", output_type=Candidate, stable_prefix=prefix)
     assert policy.status == "enabled"
-    assert policy.model_family == "gpt-6-astra"
+    assert policy.model_family == "gpt-6-sol"
     assert policy.reasoning_effort == "high"
     assert policy.ttl == "30m"
     assert policy.expected_reuse_count == 2
@@ -71,9 +71,9 @@ def test_schema_privacy_prefix_and_stage_each_isolate_cache_identity(prefix):
 
 def test_model_and_effort_are_bound_into_canonical_identity(prefix, monkeypatch):
     original = cache.asset_cache_policy(family="cad", output_type=Candidate, stable_prefix=prefix)
-    monkeypatch.setattr(cache, "ASSET_CACHE_MODEL", "gpt-5.6-terra")
+    monkeypatch.setattr(cache, "ASSET_CACHE_MODEL", "gpt-6-luna")
     assert cache.asset_cache_policy(family="cad", output_type=Candidate, stable_prefix=prefix).cache_key != original.cache_key
-    monkeypatch.setattr(cache, "ASSET_CACHE_MODEL", "gpt-6-astra")
+    monkeypatch.setattr(cache, "ASSET_CACHE_MODEL", "gpt-6-sol")
     monkeypatch.setattr(cache, "ASSET_CACHE_REASONING_EFFORT", "medium")
     assert cache.asset_cache_policy(family="cad", output_type=Candidate, stable_prefix=prefix).cache_key != original.cache_key
 

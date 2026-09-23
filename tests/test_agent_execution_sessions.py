@@ -42,7 +42,7 @@ def make_task(tools=(), **changes):
         task_id="task_fixture", run_id="run_fixture", capability="test_investigation",
         context_revision=digest({"revision": 1}), source_commit="a" * 40,
         instructions="Use the supplied tools and return the declared object.",
-        model="gpt-5.6-terra", input=inputs, input_digests=(digest(inputs),),
+        model="gpt-6-sol", input=inputs, input_digests=(digest(inputs),),
         output_schema=json.loads(json.dumps(OUTPUT_SCHEMA)), tool_ids=tuple(t.tool_id for t in tools),
         tool_digests={t.tool_id: t.tool_digest for t in tools}, admission=admission,
         deadline=1900,

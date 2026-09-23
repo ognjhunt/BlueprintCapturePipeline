@@ -808,7 +808,7 @@ def test_sam31_submission_binds_real_source_geometry_before_any_render(tmp_path:
     _write_json(fixture["task_request"], task)
     profile = _write_json(tmp_path / "sam-profile.json", _digested({
         "schema_version": "task_evaluation_sam31_preparation_profile.v1",
-        "source_commit": SHA, "review_model": "gpt-5.6-terra", "review_maximum_cost_usd": 1.0,
+        "source_commit": SHA, "review_model": "gpt-6-sol", "review_maximum_cost_usd": 1.25,
         "candidate_policy_queried": False,
     }, "profile_digest"))
     result = _materialize(fixture, sam31_server_profile_path=profile)

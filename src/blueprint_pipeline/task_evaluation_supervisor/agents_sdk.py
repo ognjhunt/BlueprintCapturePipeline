@@ -40,7 +40,7 @@ from .tools import (
 )
 
 
-DEFAULT_SUPERVISOR_AGENT_MODEL = "gpt-5.6-terra"
+DEFAULT_SUPERVISOR_AGENT_MODEL = "gpt-6-sol"
 DEFAULT_AGENT_MODEL = DEFAULT_SUPERVISOR_AGENT_MODEL
 AGENTS_SDK_HARNESS_ID = "blueprint_task_evaluation_supervisor"
 OPENAI_API_KEY_FILE_ENV = "OPENAI_API_KEY_FILE"
@@ -204,7 +204,7 @@ def _resolve_cache_policy(spec: AgentsSDKAgentSpec) -> PromptCachePolicy:
         return spec.cache_policy
     stable_prefix = spec.stable_developer_prefix or (
         "Prompt caching is disabled for this one-off request. No content block carries a "
-        "breakpoint, so GPT-5.6 explicit-only mode cannot create a cache write."
+        "breakpoint, so GPT-6 explicit-only mode cannot create a cache write."
     )
     tool_schema = [
         {

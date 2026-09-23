@@ -59,7 +59,7 @@ CONTROLLER_RECEIPT_SCHEMA_VERSION = (
     "task_evaluation_native_construction_feedback_controller_receipt.v1"
 )
 
-CONTROLLER_MODEL = "gpt-5.6-sol"
+CONTROLLER_MODEL = "gpt-6-sol"
 CONTROLLER_REASONING_EFFORT = "high"
 CONTROLLER_MAX_OUTPUT_TOKENS = 4_000
 

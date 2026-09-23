@@ -172,5 +172,5 @@ def test_openai_wam_episode_consistency_uses_responses_without_writing_secret(
 
 
 def test_openai_consistency_labeler_defaults_to_luna_xhigh() -> None:
-    assert consistency_labeler.DEFAULT_MODEL == "gpt-5.6-luna"
+    assert consistency_labeler.DEFAULT_MODEL == "gpt-6-luna"
     assert consistency_labeler.OPENAI_REASONING_EFFORT == "xhigh"

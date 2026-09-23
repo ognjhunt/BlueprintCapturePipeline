@@ -35,7 +35,7 @@ from .task_evaluation_robot_placement_trajectory import (
 )
 
 
-ROBOT_PLACEMENT_AGENT_MODEL = "gpt-5.6-sol"
+ROBOT_PLACEMENT_AGENT_MODEL = "gpt-6-sol"
 ROBOT_PLACEMENT_AGENT_REASONING_EFFORT = "high"
 ROBOT_PLACEMENT_AGENT_MAX_OUTPUT_TOKENS = 8_000
 ROBOT_PLACEMENT_AGENT_SCHEMA_VERSION = "task_evaluation_robot_placement_agent.v1"

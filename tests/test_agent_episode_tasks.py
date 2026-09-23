@@ -43,7 +43,7 @@ def setup(tmp_path):
         "region": "us", "project_guard_receipt_digest": digest(guard)}
     materialize_episode_interpretation_rights(
         episode_id=request.episode_id, input_bundle_digest=request.input_receipt["input_bundle_digest"],
-        identity=ep.interpreter_identity("openai_agents_api", "gpt-5.6-terra"), allowed_artifact_roles=ep.ROLES,
+        identity=ep.interpreter_identity("openai_agents_api", "gpt-6-sol"), allowed_artifact_roles=ep.ROLES,
         external_disclosure_authorized=True, accepted_by="fixture-owner", accepted_on="2026-09-10",
         authority_reference="test-only", source_rights_admission_digest=digest({"owned_fixture": True}),
         output_path=rights_path, agent_runtime_policy=policy)

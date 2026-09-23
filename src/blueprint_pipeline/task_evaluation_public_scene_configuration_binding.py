@@ -28,7 +28,7 @@ def _owner(intent):
         "private_derived_frame_disclosure_authorized": True, "provider_retention_terms_accepted": True,
         "provider_training_terms_accepted": True, "provider_training_authorized": False,
         "task_success_contract_confirmed": True, "source_calibration_gpu_render_authorized": True,
-        "sam31_visual_review_authorized": True, "sam31_visual_review_maximum_cost_usd": 1.0}
+        "sam31_visual_review_authorized": True, "sam31_visual_review_maximum_cost_usd": 1.25}
 
 
 def _seed(intent, choice, commit):

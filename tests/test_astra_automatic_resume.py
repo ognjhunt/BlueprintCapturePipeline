@@ -56,7 +56,7 @@ class FixtureInvoker:
                 opaque_surfaces_opaque=True, required_parts_present=self.first_review_passed or capability.endswith("_1"),
                 no_obvious_geometry_artifacts=True, blockers=[], repair_instructions="", unobserved_surface_limitations=["underside"])
         policy = {"policy_digest": "sha256:" + "b" * 64}
-        identity = {"run_id": spec.run_id, "capability": spec.capability, "model": "gpt-6-astra",
+        identity = {"run_id": spec.run_id, "capability": spec.capability, "model": "gpt-6-sol",
             "input_digest": canonical_digest(inputs), "max_turns": 1, "max_output_tokens": 12000,
             "cache_policy_digest": policy["policy_digest"]}
         reservation = {**identity, "schema_version": "task_evaluation_inference_reservation.v1",
@@ -64,7 +64,7 @@ class FixtureInvoker:
             "cache_policy": policy, "breakpoint_digests": []}
         reservation["inference_reservation_digest"] = canonical_digest(reservation, digest_field="inference_reservation_digest")
         completion = {"schema_version": "task_evaluation_inference_completion.v1", "reservation_id": reservation["reservation_id"],
-            "run_id": spec.run_id, "capability": spec.capability, "model": "gpt-6-astra", "provider": "openai",
+            "run_id": spec.run_id, "capability": spec.capability, "model": "gpt-6-sol", "provider": "openai",
             "cache_policy": policy, "breakpoint_digests": [], "projected_max_cost_usd": 1.4,
             "reconciled_actual_cost_usd": .1, "released_reservation_usd": 1.3,
             "structured_output_digest": canonical_digest(output.model_dump(mode="json"))}
@@ -72,7 +72,7 @@ class FixtureInvoker:
         audit = InferenceReservationAudit(run_root=self.budget, run_id=spec.run_id)
         audit.record_reservation(reservation)
         audit.record_completion(completion)
-        return SimpleNamespace(output=output, model="gpt-6-astra", provider="openai", usage={}, cost_usd=.1, cost_status="fixture")
+        return SimpleNamespace(output=output, model="gpt-6-sol", provider="openai", usage={}, cost_usd=.1, cost_status="fixture")
 
 
 @pytest.fixture

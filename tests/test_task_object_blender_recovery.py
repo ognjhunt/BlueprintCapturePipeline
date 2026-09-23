@@ -53,10 +53,10 @@ def test_blender_program_adoption_requires_unchanged_request_and_completed_sdk_d
                'dimensions_m': [1,2,3]}
     program = {'program': 'import bpy\nbpy.ops.rigidbody.object_add()', 'explanation': 'candidate',
                'generated_surface_assumptions': ['unknown underside']}
-    phase = {'request_digest': request['request_digest'], 'model': 'gpt-6-astra', 'provider': 'openai',
+    phase = {'request_digest': request['request_digest'], 'model': 'gpt-6-sol', 'provider': 'openai',
              'references': [], 'output': program}
     completion = {'run_id': 'same-run', 'capability': f'book_blender_author_{round_index}',
-                  'provider': 'openai', 'model': 'gpt-6-astra',
+                  'provider': 'openai', 'model': 'gpt-6-sol',
                   'structured_output_digest': canonical_digest(program)}
     completion['inference_completion_digest'] = canonical_digest(completion, digest_field='inference_completion_digest')
     author.save_json(prior / 'request.json', request)

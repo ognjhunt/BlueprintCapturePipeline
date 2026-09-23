@@ -131,7 +131,7 @@ def test_intent_binds_every_fixed_cpu_and_paid_boundary_input(tmp_path: Path) ->
 
     assert path.stat().st_mode & 0o777 == 0o440
     assert value["paid_execution_requested"] is True
-    assert value["placement"]["agent_model"] == "gpt-5.6-sol"
+    assert value["placement"]["agent_model"] == "gpt-6-sol"
     assert value["placement"]["reasoning_effort"] == "high"
     assert value["provider_mutation_performed"] is False
     assert set(value["artifact_inventory"]) == {
@@ -1019,7 +1019,7 @@ def test_autostart_plan_binds_placement_aware_not_prelaunch_world_cameras(
         "rounds": [
             {
                 "proposal_usage": {
-                    "model": "gpt-5.6-sol",
+                    "model": "gpt-6-sol",
                     "input_tokens": 2_000,
                     "cached_tokens": 0,
                     "cache_write_tokens": 1_200,
@@ -1041,7 +1041,7 @@ def test_autostart_plan_binds_placement_aware_not_prelaunch_world_cameras(
                     "breakpoint_digests": ["sha256:" + "c" * 64],
                     "cache_policy": {
                         "status": "enabled",
-                        "model_family": "gpt-5.6-sol",
+                        "model_family": "gpt-6-sol",
                         "family": "task_aware_robot_placement_proposal",
                         "contract_version": "robot-placement-proposal-v2",
                         "stable_prefix_digest": "sha256:" + "c" * 64,

@@ -468,7 +468,7 @@ def compile_diagnostic_native_arena_packet(
                 f"diagnostic_native_compiler_robot_placement_invalid:{exc}"
             ) from exc
         base_pose = accepted_placement_receipt["accepted_pose"]
-        base_derivation_method = "gpt_5_6_sol_high_bounded_geometry_and_visual_gate"
+        base_derivation_method = "gpt_6_sol_high_bounded_geometry_and_visual_gate"
     else:
         # A prior diagnostic compiler copied only the source standoff, reflected
         # it along a new task direction, and never re-ran collision/support

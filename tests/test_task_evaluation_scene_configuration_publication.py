@@ -57,7 +57,7 @@ def _thumbnail_artifacts(root: Path) -> list[dict[str, object]]:
             "kind": "ai",
             "identity": "artifixer-independent-vision-reviewer-v1",
             "runtime": "openai_agents_sdk",
-            "model": "gpt-5.6-terra",
+            "model": "gpt-6-sol",
         },
         "receipt_digest": "",
     }
@@ -144,7 +144,7 @@ def test_thumbnail_size_ceiling_matches_private_website_delivery(
                 "kind": "ai",
                 "identity": "artifixer-independent-vision-reviewer-v1",
                 "runtime": "openai_agents_sdk",
-                "model": "gpt-5.6-terra",
+                "model": "gpt-6-sol",
             },
             "receipt_digest": "",
         }

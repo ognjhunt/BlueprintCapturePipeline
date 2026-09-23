@@ -95,7 +95,7 @@ def _inputs(tmp_path: Path) -> tuple[Path, Path]:
             "kind": "ai",
             "identity": "artifixer-independent-vision-reviewer-v1",
             "runtime": "openai_agents_sdk",
-            "model": "gpt-5.6-terra",
+            "model": "gpt-6-sol",
         },
         "frames": [
             {

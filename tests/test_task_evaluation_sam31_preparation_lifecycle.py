@@ -37,7 +37,7 @@ def test_real_cpu_sam_review_mask_freeze_cutout_lifecycle(
     task_value["human_authority"] = {
         "accepted_by": "nijelhunt_1", "accepted_on": "2026-09-05",
         "authority_reference": "hermetic-current-task-authority",
-        "sam31_visual_review_authorized": True, "sam31_visual_review_maximum_cost_usd": 1.,
+        "sam31_visual_review_authorized": True, "sam31_visual_review_maximum_cost_usd": 1.25,
         "private_derived_frame_disclosure_authorized": True,
         "provider_retention_terms_accepted": True, "provider_training_terms_accepted": True,
         "provider_training_authorized": False,

@@ -10,7 +10,7 @@ from blueprint_pipeline.task_evaluation_openai_inference_usage import (
 
 def _placement_receipt() -> dict:
     usage = {
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6-sol",
         "input_tokens": 2_000,
         "cached_tokens": 1_200,
         "cache_write_tokens": 0,
@@ -35,7 +35,7 @@ def _placement_receipt() -> dict:
         ],
         "cache_policy": {
             "status": "enabled",
-            "model_family": "gpt-5.6-sol",
+            "model_family": "gpt-6-sol",
             "family": "task_aware_robot_placement_proposal",
             "contract_version": "robot-placement-proposal-v2",
             "stable_prefix_digest": "sha256:" + "c" * 64,

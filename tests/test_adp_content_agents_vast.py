@@ -1402,7 +1402,7 @@ def test_codex_advisory_review_is_metadata_only_and_cannot_upgrade_claims(
 
     def fake_runner(config):
         calls.append(config)
-        assert config.model == "gpt-5.6-luna"
+        assert config.model == "gpt-6-luna"
         assert config.sandbox == "read-only"
         assert config.codex_ephemeral is True
         assert config.codex_ignore_user_config is True

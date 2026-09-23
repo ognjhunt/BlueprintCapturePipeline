@@ -421,7 +421,7 @@ def _author_articulated_parts(*, plan, part_requests, authored_root, runtime, pr
         else:
             parts[part_id] = authoring_executor(**arguments, mac_executor=mac_executor)
     authored = {"schema_version": ARTICULATED_AUTHORING_RESULT_SCHEMA_VERSION,
-                "status": "parts_authored_pending_native_qualification", "model": "gpt-6-astra",
+                "status": "parts_authored_pending_native_qualification", "model": "gpt-6-sol",
                 "plan": dict(plan), "parts": parts, "reused_part_ids": reused,
                 "part_request_digests": {part_id: request.request_digest for part_id, request in part_requests.items()},
                 "claim_ceiling": "development_only", "native_import_qualified": False,
@@ -471,7 +471,7 @@ def _finish_articulated_component(*, plan, part_requests, authored, output, phys
     graph_path = output / "replacement_graph_spec.v1.json"
     _write(graph_path, graph)
     receipt = {"schema_version": ARTICULATED_RECEIPT_SCHEMA_VERSION,
-        "status": "authored_candidate_pending_qualification", "authoring_backend": BACKEND, "model": "gpt-6-astra",
+        "status": "authored_candidate_pending_qualification", "authoring_backend": BACKEND, "model": "gpt-6-sol",
         "asset_kind": "articulated_assembly", "replacement_identity": identity,
         "source_candidate_digest": source_record["digest"],
         "source_candidate_claim": "source_geometry_not_observed_truth_or_physics_authority",
@@ -487,7 +487,7 @@ def _finish_articulated_component(*, plan, part_requests, authored, output, phys
     _write(receipt_path, receipt)
     result = {"schema_version": COMPONENT_RESULT_SCHEMA_VERSION, "status": "completed", "adapter_id": _ADAPTER_ID,
         "stage_id": stage_input["stage"]["stage_id"], "provider_mutations_performed": 0,
-        "nested_paid_execution_requested": False, "authoring_backend": BACKEND, "model": "gpt-6-astra",
+        "nested_paid_execution_requested": False, "authoring_backend": BACKEND, "model": "gpt-6-sol",
         "asset_kind": "articulated_assembly",
         "artifacts": [{"role": role, **_file_record(path)} for role, path in (
             ("replacement_asset", asset), ("replacement_authoring_receipt", receipt_path), ("replacement_graph_spec", graph_path))],
@@ -520,7 +520,7 @@ class _StageInvoker:
         self.prior_calls = prior_calls
 
     def invoke(self, spec, input_value):
-        if (self.calls + self.prior_calls >= self.maximum_calls or spec.run_id != self.run_id or spec.model != "gpt-6-astra"
+        if (self.calls + self.prior_calls >= self.maximum_calls or spec.run_id != self.run_id or spec.model != "gpt-6-sol"
                 or spec.max_turns != 1 or spec.tool_bindings
                 or spec.max_output_tokens > CAD_MAX_OUTPUT_TOKENS
                 or spec.max_input_tokens is None or spec.max_input_tokens > 80000
@@ -933,7 +933,7 @@ def _finish_component(*, request, authored, package_candidate, output, physics_b
     graph_path = output / "replacement_graph_spec.v1.json"
     _write(graph_path, graph)
     receipt = {"schema_version": "task_evaluation_rigid_replacement_authoring_result.v1",
-        "status": "authored_candidate_pending_qualification", "authoring_backend": BACKEND, "model": "gpt-6-astra",
+        "status": "authored_candidate_pending_qualification", "authoring_backend": BACKEND, "model": "gpt-6-sol",
         "replacement_identity": identity, "source_candidate_digest": source_record["digest"],
         "source_candidate_claim": "source_geometry_not_observed_truth_or_physics_authority",
         "source_commit": stage_input["source_commit"], "toolchain_digest": stage_input["toolchain_digest"],
@@ -946,7 +946,7 @@ def _finish_component(*, request, authored, package_candidate, output, physics_b
     _write(receipt_path, receipt)
     result = {"schema_version": COMPONENT_RESULT_SCHEMA_VERSION, "status": "completed", "adapter_id": _ADAPTER_ID,
         "stage_id": stage_input["stage"]["stage_id"], "provider_mutations_performed": 0,
-        "nested_paid_execution_requested": False, "authoring_backend": BACKEND, "model": "gpt-6-astra",
+        "nested_paid_execution_requested": False, "authoring_backend": BACKEND, "model": "gpt-6-sol",
         "artifacts": [{"role": role, **_file_record(path)} for role, path in (
             ("replacement_asset", asset), ("replacement_authoring_receipt", receipt_path), ("replacement_graph_spec", graph_path))],
         "result_digest": ""}

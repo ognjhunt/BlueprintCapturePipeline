@@ -28,7 +28,7 @@ from .exact_workcell_variation_matrix import (
 from .task_evaluation_supervisor.agents_sdk import AgentsSDKAgentSpec, AgentsSDKInvoker
 
 
-DEFAULT_VARIATION_AGENT_MODEL = "gpt-5.6-luna"
+DEFAULT_VARIATION_AGENT_MODEL = "gpt-6-luna"
 DEFAULT_VARIATION_AGENT_REASONING_EFFORT = "max"
 
 

@@ -624,8 +624,8 @@ def test_named_ai_visual_review_accepts_exact_media_for_calibrated_masks(
         "kind": "ai",
         "identity": "blueprint-openai-agents-sdk-sam31-visual-reviewer",
         "runtime": "openai_agents_sdk",
-        "model": "gpt-5.6-terra",
-        "model_version": "gpt-5.6-terra",
+        "model": "gpt-6-sol",
+        "model_version": "gpt-6-sol",
         "sdk_version": receipt["reviewer"]["sdk_version"],
         "method": AI_REVIEW_METHOD,
     }
@@ -674,7 +674,7 @@ def test_named_ai_visual_review_accepts_exact_media_for_calibrated_masks(
         ("tracing_disabled", False),
         ("trace_sensitive_data_included", True),
         ("frame_publication_authorized", True),
-        ("max_inference_spend_usd", 1.01),
+        ("max_inference_spend_usd", 1.26),
     ):
         invalid_rights = json.loads(original_rights)
         invalid_rights[field] = invalid_value
@@ -893,7 +893,7 @@ def test_ai_visual_review_refuses_under_reservation_and_over_cap(tmp_path: Path)
             candidate_path=tmp_path / "not-read.json",
             rights_attestation_path=tmp_path / "not-read-rights.json",
             output_root=tmp_path / "over-cap",
-            max_cost_usd=1.01,
+            max_cost_usd=1.26,
         )
     with pytest.raises(RuntimeError, match="model_must_be_fixed"):
         run_sam31_ai_visual_review(

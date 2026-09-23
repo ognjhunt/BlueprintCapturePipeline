@@ -218,5 +218,5 @@ def test_openai_wam_success_labeler_uses_responses_without_writing_secret(
 
 
 def test_openai_success_labeler_defaults_to_luna_xhigh() -> None:
-    assert openai_labeler.DEFAULT_MODEL == "gpt-5.6-luna"
+    assert openai_labeler.DEFAULT_MODEL == "gpt-6-luna"
     assert openai_labeler.OPENAI_REASONING_EFFORT == "xhigh"
