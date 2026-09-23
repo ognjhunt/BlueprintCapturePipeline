@@ -128,6 +128,32 @@ def test_cpu_source_preflight_runs_the_actual_authoring_request_contract(tmp_pat
         validate_scene_configuration_source_preflight(envelope=envelope, configurations=configs)
 
 
+def test_cpu_source_preflight_uses_two_part_authoring_for_drawer(tmp_path, monkeypatch):
+    from blueprint_pipeline import task_evaluation_scene_configuration_astra_driver as driver
+    from blueprint_pipeline.website_native_inputs import preflight_website_authoring_request
+
+    envelope, configs = packet(tmp_path)
+    configs["stage-3"]["schema_version"] = driver.ARTICULATED_AUTHORING_SCHEMA_VERSION
+    observed = {}
+
+    def articulated(stage_input, source, frames, rights):
+        observed.update(stage_input=stage_input, source=source, frames=frames, rights=rights)
+        return {"parts": ["carcass", "drawer"]}
+
+    def rigid(*_args):
+        pytest.fail("an articulated fixture must not use the one-solid CAD brief")
+
+    monkeypatch.setattr(driver, "build_articulated_authoring_requests", articulated)
+    monkeypatch.setattr(driver, "build_authoring_request", rigid)
+    assert preflight_website_authoring_request(envelope=envelope, configurations=configs) == {
+        "parts": ["carcass", "drawer"]
+    }
+    assert observed["stage_input"]["configuration"] is configs["stage-3"]
+    assert observed["source"]["path"]
+    assert len(observed["frames"]) == len(envelope["request"]["scene"]["website_native_inputs"]["frames"])
+    assert observed["rights"]["private_provider_processing_allowed"] is True
+
+
 @pytest.mark.parametrize("change", ["subject", "frame_binding", "legacy_adapter", "render_binding", "configuration"])
 def test_preflight_cannot_adopt_different_task_or_input_contract(tmp_path, change):
     envelope, configs = packet(tmp_path)
