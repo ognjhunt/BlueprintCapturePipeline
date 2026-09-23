@@ -54,7 +54,6 @@ def validate_website_native_inputs(*, envelope, configurations, require_render_i
     runtime = _runtime(runtime_path)
     authoring = runtime["object_authoring"]
     _require(runtime_row["digest"] == first["runtime_inputs_digest"]
-             and third == authoring["configuration"]
              and recipe["subject_identity"] == third["replacement_identity"], "object_configuration_changed")
     manifest_row, manifest_path = reference("scene.source_manifest")
     preparation = json.loads(manifest_path.read_text())
@@ -86,6 +85,10 @@ def validate_website_native_inputs(*, envelope, configurations, require_render_i
              and receipt.get("renderer_qualified") is False
              and receipt.get("physical_measurement_proven") is False, "appearance_binding_invalid")
     observed_row, observed_path = reference(PREFIX + ".observations", authoring["observation_manifest"])
+    from .website_native_background import derived_stage_three_configuration
+    _require(third == derived_stage_three_configuration(
+        runtime=runtime, preparation=preparation, observation_manifest_path=observed_path),
+        "object_configuration_transition_invalid")
     observed = json.loads(observed_path.read_text())
     _require(observed.get("schema_version") == OBSERVATIONS_SCHEMA
              and observed.get("digest") == canonical_digest(observed, digest_field="digest")

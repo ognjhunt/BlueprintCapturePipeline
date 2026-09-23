@@ -128,11 +128,22 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
         require("destination" not in owner_task and isinstance(owner_task.get("articulation"), dict),
                 "website_articulated_task_binding_invalid")
         destination = target = None
+        stage_three = construction["configurations"][2]
+        derived_mechanism = owner_task["articulation"]
+        if stage_three.get("development_geometry_hypothesis"):
+            derived_mechanism = {**derived_mechanism,
+                "estimated_usable_stroke_m": stage_three["mechanism"]["estimated_usable_stroke_m"],
+                "travel_authority": stage_three["mechanism"]["travel_authority"]}
         template, success, execution = records.articulated_open_close_task_records(
             task_identity=task_identity, object_identity=construction["subject_identity"],
             start_center=[(a + b) / 2 for a, b in zip(lower, upper, strict=True)],
-            source_min=lower, source_max=upper, mechanism=owner_task["articulation"],
+            source_min=lower, source_max=upper, mechanism=derived_mechanism,
             success=owner_task["success"], resolved_seed=1)
+        if stage_three.get("development_geometry_hypothesis"):
+            hypothesis = stage_three["development_geometry_hypothesis"]
+            require(success["estimated_usable_travel"] == hypothesis["estimated_usable_stroke_m"]
+                    and success["estimated_minimum_opening"] == hypothesis["estimated_minimum_opening_m"],
+                    "website_articulated_depth_opening_criterion_mismatch")
     else:
         destination = owner_task["destination"]
         require(destination.get("mode") == "existing_support_surface", "website_destination_asset_required")

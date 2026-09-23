@@ -267,6 +267,18 @@ def build_articulated_authoring_requests(stage_input: Mapping[str, Any], source_
         plan = plan_articulated_assembly(configuration)
     except AssetAuthoringError as exc:
         raise AstraStageError("astra_" + str(exc)) from exc
+    hypothesis = plan.get("development_geometry_hypothesis")
+    if hypothesis is not None:
+        retained_frame_digests = {file_record(path)["sha256"] for path in references}
+        if not set(hypothesis["evidence_frame_sha256s"]).issubset(retained_frame_digests):
+            raise AstraStageError("astra_articulated_depth_hypothesis_frame_mismatch")
+    plan["source_geometry_receipt"] = {
+        "source_candidate_digest": source_record["digest"],
+        "construction_envelope_digest": stage_input["construction_envelope"].get("envelope_digest"),
+        "configuration_digest": stage_input.get("configuration_sha256"),
+        "source_aabb_min_xyz_m": list(configuration["metric_envelope"]["minimum_xyz_m"]),
+        "source_aabb_max_xyz_m": list(configuration["metric_envelope"]["maximum_xyz_m"]),
+    }
     identity = configuration["replacement_identity"]
     owner = str(configuration.get("authoring_target") or "").strip()
     source_identity = configuration.get("source_object_identity")
@@ -276,6 +288,10 @@ def build_articulated_authoring_requests(stage_input: Mapping[str, Any], source_
     uncertainty_note = ("Assembly envelope relative tolerance used as an explicit uncertainty proxy for each part; "
                         "part dimensions derive from the estimated envelope projected on the estimated front normal "
                         "and object-prior construction assumptions. None is measured.")
+    if hypothesis is not None:
+        uncertainty_note = ("Cabinet depth uses a development-only estimate with an explicit interval that disagrees "
+                            "with the retained source AABB; other axes use source-envelope tolerance proxies. "
+                            "No part dimension is physically measured.")
     frames = []
     base_evidence = [{"evidence_id": "retained_source_geometry", "uri": str(source_record["path"]),
                       "sha256": str(source_record["digest"]).removeprefix("sha256:"), "kind": "source_geometry",
@@ -299,6 +315,10 @@ def build_articulated_authoring_requests(stage_input: Mapping[str, Any], source_
     for part_id, spec in plan["parts"].items():
         dimensions = [float(v) for v in spec["dimensions_m"]]
         uncertainty = [d * tolerance for d in dimensions]
+        if hypothesis is not None:
+            depth_interval = hypothesis["depth_interval_m"]
+            uncertainty[0] = max(dimensions[0] - float(depth_interval[0]),
+                                 float(depth_interval[1]) - dimensions[0])
         part_object_id = f"{identity['id']}__{part_id}"
         material = (f"Infer material conservatively from the retained assembly description and reference views: {owner}. "
                     + ("Grey painted steel or laminate carcass." if part_id == "carcass" else
@@ -312,9 +332,16 @@ def build_articulated_authoring_requests(stage_input: Mapping[str, Any], source_
             "evidence": [dict(row) for row in base_evidence],
         }
         for index, axis in enumerate(("x_m", "y_m", "z_m")):
+            interval = ({"lower": float(hypothesis["depth_interval_m"][0]),
+                         "upper": float(hypothesis["depth_interval_m"][1])}
+                        if hypothesis is not None and part_id == "carcass" and index == 0 else
+                        {"lower": dimensions[index] - uncertainty[index],
+                         "upper": dimensions[index] + uncertainty[index]})
             physical["dimensions"][axis] = {"value": dimensions[index], "basis": "estimated",
-                "interval": {"lower": dimensions[index] - uncertainty[index], "upper": dimensions[index] + uncertainty[index]},
-                "rationale": "Part envelope derived from the estimated assembly envelope and construction assumptions.",
+                "interval": interval,
+                "rationale": ("Development-only cabinet-depth hypothesis; retained source depth disagreement recorded in assembly plan."
+                              if hypothesis is not None and index == 0 else
+                              "Part envelope derived from the estimated assembly envelope and construction assumptions."),
                 "uncertainty": uncertainty_note, "evidence_ids": ["retained_source_geometry"]}
         constraints = {"owner_description": owner, "assembly_part_id": part_id, "link_role": spec["link_role"],
             "part_description": spec["description"], "assembly_frame": plan["assembly_frame"],
@@ -322,6 +349,8 @@ def build_articulated_authoring_requests(stage_input: Mapping[str, Any], source_
             "task_bay_index": plan["task_bay_index"], "exact_nominal_dimensions_m": dimensions,
             "part_frame": "center_XY_bottom_Z_with_the_front_face_at_+X",
             "source_uncertainty_note": uncertainty_note, "construction_assumptions": plan["construction_assumptions"],
+            "source_geometry_receipt": plan["source_geometry_receipt"],
+            **({"development_geometry_hypothesis": hypothesis} if hypothesis is not None else {}),
             "required_output": configuration["required_output"],
             **({"handle": spec["handle"]} if "handle" in spec else {}),
             "additional_constraints": configuration.get("construction_constraints", "")}
@@ -455,9 +484,17 @@ def _finish_articulated_component(*, plan, part_requests, authored, output, phys
     if any(error > tolerance for error in errors):
         raise AstraStageError("astra_articulated_assembly_envelope_mismatch")
     completion["metric_envelope_validation"] = {
-        "status": "within_preregistered_metric_envelope", "frame": "assembly_frame_closed_plus_handle_protrusion",
+        "status": "within_development_geometry_hypothesis" if plan.get("development_geometry_hypothesis")
+                  else "within_preregistered_metric_envelope",
+        "frame": "assembly_frame_closed_plus_handle_protrusion",
         "expected_dimensions_m": expected, "observed_collision_dimensions_m": observed,
         "dimension_relative_errors": errors, "maximum_dimension_relative_error": tolerance}
+    if plan.get("development_geometry_hypothesis"):
+        completion["metric_envelope_validation"]["source_aabb_disagreement"] = {
+            "source_projected_depth_m": plan["source_geometry"]["projected_depth_m"],
+            "estimated_depth_m": dims["depth_x"],
+            "depth_disagreement_m": plan["development_geometry_hypothesis"]["depth_disagreement_m"],
+            "physical_measurement_proven": False}
     completion["completion_digest"] = canonical_digest(completion, digest_field="completion_digest")
     identity = configuration["replacement_identity"]
     graph = {"schema_version": ARTICULATED_GRAPH_SCHEMA_VERSION, "asset_id": identity["id"],

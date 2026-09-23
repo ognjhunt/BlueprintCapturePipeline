@@ -11,7 +11,8 @@ from blueprint_pipeline.articulation_graph_contract import validate_articulation
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_object_articulated_packaging import (
     PROVENANCE_ATTRIBUTE, TASK_CONTACT_ROLE_ATTRIBUTE, TARGET_JOINT_ID,
-    articulation_graph_from_plan, package_astra_articulated_candidate, plan_articulated_assembly,
+    articulation_graph_from_plan, derived_website_cabinet_depth_hypothesis,
+    package_astra_articulated_candidate, plan_articulated_assembly,
 )
 from blueprint_pipeline.task_object_astra_authoring import AssetAuthoringError, file_record
 from blueprint_pipeline.task_object_physical_property_review import (
@@ -143,6 +144,73 @@ def test_plan_places_three_bays_with_one_prismatic_task_joint_and_records_assump
                                                                      "estimated_usable_swing_rad": 1.2}})
     with pytest.raises(AssetAuthoringError, match="position_unresolved"):
         plan_articulated_assembly({**configuration(), "mechanism": {**MECHANISM, "task_part_label": "the drawer"}})
+
+
+def _thin_website_cabinet():
+    from blueprint_pipeline.website_drawer_depth_prior import PRIOR
+
+    value = configuration()
+    value["scene_id"] = PRIOR["scene_id"]
+    value["replacement_identity"] = PRIOR["subject_identity"]
+    value["source_observation_kind"] = "website_capture_frames"
+    value["dimension_authority"] = "estimated"
+    value["metric_envelope"] = {"minimum_xyz_m": [-0.21, -0.0815, 0.0],
+                                "maximum_xyz_m": [0.21, 0.0815, 0.62],
+                                "maximum_dimension_relative_error": 0.2}
+    value["mechanism"]["estimated_usable_stroke_m"] = 0.12
+    value["mechanism"]["joint_limits"] = [0.0, 0.12]
+    return value
+
+
+def _depth_prior(value):
+    return derived_website_cabinet_depth_hypothesis(
+        value, [{"role": "observed_source", "sha256": "sha256:" + "a" * 64}], 0.6)
+
+
+def test_thin_website_drawer_requires_explicit_depth_hypothesis_before_authoring():
+    value = _thin_website_cabinet()
+    with pytest.raises(AssetAuthoringError, match="depth_implausible_hypothesis_required"):
+        plan_articulated_assembly(value)
+    value["development_geometry_hypothesis"] = _depth_prior(value)
+    value["mechanism"]["estimated_usable_stroke_m"] = 0.4125
+    value["mechanism"]["joint_limits"] = [0.0, 0.4125]
+    value["required_output"]["mass_kg_bounds"] = [4.0, 30.0]
+    value["required_output"]["task_part_mass_kg_bounds"] = [0.5, 9.0]
+    plan = plan_articulated_assembly(value)
+    assert plan["source_geometry"]["projected_depth_m"] == pytest.approx(0.163)
+    assert plan["source_geometry"]["aabb_min_xyz_m"] == value["metric_envelope"]["minimum_xyz_m"]
+    assert plan["assembly_dimensions_m"]["depth_x"] == pytest.approx(0.55)
+    assert plan["assembly_dimensions_m"]["authority"] == "development_only_depth_hypothesis"
+    assert plan["development_geometry_hypothesis"]["depth_disagreement_m"] == pytest.approx(0.387)
+    assert plan["development_geometry_hypothesis"]["physical_measurement_proven"] is False
+    assert plan["parts"]["carcass"]["dimensions_m"][0] == pytest.approx(0.55)
+    assert plan["task_joint"]["limits_m"] == [0.0, 0.4125]
+    assert plan["development_geometry_hypothesis"]["estimated_minimum_opening_m"] == 0.2475
+
+
+@pytest.mark.parametrize("change", ["source", "interval", "basis", "nominal", "rationale", "scene"])
+def test_depth_hypothesis_refuses_unbound_or_unbounded_estimates(change):
+    value = _thin_website_cabinet()
+    hypothesis = _depth_prior(value)
+    if change == "source":
+        hypothesis["source_aabb_max_xyz_m"] = [0.21, 0.5, 0.62]
+    elif change == "interval":
+        hypothesis["depth_interval_m"] = [0.35, 1.5]
+    elif change == "basis":
+        hypothesis["basis"] = "uncited_guess"
+    elif change == "nominal":
+        hypothesis["estimated_depth_m"] = 0.9
+    elif change == "rationale":
+        hypothesis["rationale"] = "assumed"
+    value["development_geometry_hypothesis"] = hypothesis
+    value["mechanism"]["estimated_usable_stroke_m"] = 0.4125
+    value["mechanism"]["joint_limits"] = [0.0, 0.4125]
+    value["required_output"]["mass_kg_bounds"] = [4.0, 30.0]
+    value["required_output"]["task_part_mass_kg_bounds"] = [0.5, 9.0]
+    if change == "scene":
+        value["scene_id"] = "another-scene"
+    with pytest.raises(AssetAuthoringError, match="depth_hypothesis"):
+        plan_articulated_assembly(value)
 
 
 def test_reviewed_parts_compose_into_a_passive_prismatic_assembly(tmp_path):
