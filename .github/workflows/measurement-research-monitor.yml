@@ -133,4 +133,4 @@ jobs:
             ${{ runner.temp }}/blueprint-ci/measurement-drake-bootstrap.json
             ${{ runner.temp }}/blueprint-ci/measurement-chrono-bootstrap.json
           if-no-files-found: error
-          retention-days: 90
+          retention-days: 7
