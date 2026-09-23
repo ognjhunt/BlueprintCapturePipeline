@@ -102,6 +102,9 @@ def test_ordinary_run_state_names_are_allowed(name: str) -> None:
         (b"ntn_" + b"a" * 46, "notion_token"),
         (b"hf_" + b"b" * 34, "huggingface_token"),
         (b"redis://:s3cretpw@cache.internal:6379/0", "url_credentials"),
+        # Only the deploy tool's exact lease key is exempt, not keys that merely contain it.
+        (b'{"disk_reservation_token": "0123456789abcdef0123"}', "json_secret_field"),
+        (b'{"lease_token": "0123456789abcdef0123"}', "json_secret_field"),
     ],
 )
 def test_credential_shaped_content_is_detected(payload: bytes, reason: str) -> None:
@@ -120,6 +123,8 @@ def test_credential_shaped_content_is_detected(payload: bytes, reason: str) -> N
         b"progress: 42% of attempts; bearer tokens are refused unless legacy mode",
         b"https://paperclip.tryblueprint.io/api/live-pipeline/version?token_hint=no",
         b"git@github.com:ognjhunt/BlueprintCapturePipeline.git",
+        # Every deploy receipt carries the disk budget's lease id (a uuid4 hex).
+        b'{"disk_reservation": {"reservation_token": "0123456789abcdef0123456789abcdef"}}',
         b"",
     ],
 )
