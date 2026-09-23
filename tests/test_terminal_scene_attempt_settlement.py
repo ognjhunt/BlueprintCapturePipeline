@@ -1,8 +1,10 @@
 """Terminal attempts settle their rows conservatively; live or tampered evidence fails closed."""
 
 import copy
+import hashlib
 import json
 from pathlib import Path
+import zipfile
 
 import pytest
 
@@ -13,6 +15,7 @@ from blueprint_pipeline.task_evaluation_retained_controls_evidence import valida
 from blueprint_pipeline.task_evaluation_scene_intake import (
     SceneIntakeError, reserve_scene_attempt, stage_scene_intent,
 )
+from blueprint_pipeline.task_evaluation_scene_configuration_output_archive import EXCLUDED_PARTS
 from tests.test_task_evaluation_scene_intake import request
 
 COMMIT = "d" * 40
@@ -390,6 +393,57 @@ def test_preallocation_budget_reduction_requires_bound_nonallocation_evidence(tm
     if changed != "allocated":
         (result if changed == "result" else teardown).write_text("{}")
     assert settlement.budget_retained_hold(receipt)["retained_spend_usd"] == 16.76
+
+
+@pytest.mark.parametrize("changed", [None, "long_blocker", "stage_started", "stage_file", "archive_digest", "blocker"])
+def test_cpu_prestage_before_first_stage_releases_hold_only_with_bound_zero_spend_proof(
+        tmp_path, monkeypatch, changed):
+    fx, receipt, result_path, _ = _website_preallocation_failure(tmp_path, monkeypatch)
+    result = json.loads(result_path.read_text())
+    blocker = "scene_configuration_provider_failed:TimeoutExpired"
+    if changed == "long_blocker":
+        blocker += ":" + "x" * 400
+    provider = _seal({
+        "schema_version": "task_evaluation_scene_configuration_provider_result.v1",
+        "status": "blocked", "run_id": result["run_id"], "source_commit": COMMIT,
+        "first_stage_started": changed == "stage_started",
+        "evaluation_episode_executed": False, "candidate_policy_queried": False,
+        "blockers": [blocker],
+    }, "result_digest")
+    archive_path = result_path.parent / "cpu_prestage_output.zip"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr("provider_output_zip_exclusions.json", json.dumps({
+            "schema_version": "task_evaluation_scene_configuration_provider_output_zip_exclusions.v1",
+            "excluded_directory_names": sorted(EXCLUDED_PARTS)}))
+        archive.writestr("task_evaluation_scene_configuration_provider_result.v1.json", json.dumps(provider))
+        if changed == "stage_file":
+            archive.writestr("stages/stage-1/result.json", "{}")
+    with archive_path.open("rb") as stream:
+        archive_digest = "sha256:" + hashlib.file_digest(stream, "sha256").hexdigest()
+    result.update(retry_cap=0, api_pretraining=None, cpu_prestage=None,
+                  provider_runtime_output_zip_path=str(archive_path),
+                  provider_runtime_output_zip_sha256=("sha256:" + "0" * 64 if changed == "archive_digest"
+                                                      else archive_digest),
+                  blockers=["provider_result_blocker:" + (
+                      "different" if changed == "blocker" else
+                      blocker[:297] + "..." if len(blocker) > 300 else blocker)])
+    _write(result_path, _seal(result, "result_digest"))
+    launch_path = fx["launches"] / fx["launch_id"] / "launch_receipt.json"
+    launch = json.loads(launch_path.read_text())
+    launch["terminal_evidence"]["result"] = {**settlement._file(result_path), "exists": True}
+    _write(launch_path, launch)
+    (fx["directory"] / "cancelled-unstarted-controls" / (receipt["attempt_id"] + ".json")).unlink()
+    _settle(fx, source_factory=fx["factory"])
+    attempt = json.loads((fx["directory"] / "attempts" / (receipt["attempt_id"] + ".json")).read_text())
+    receipt = validated_cancellation(fx["directory"], attempt)
+    assert receipt["settled_spend"]["retained_spend_usd"] == 16.76
+    expected = 0.0 if changed in (None, "long_blocker") else 16.76
+    assert settlement.budget_retained_hold(receipt)["retained_spend_usd"] == expected
+    if expected == 0.0:
+        assert _reserve(fx["root"], fx["intent"], "scene-configuration-successor", 17, now=300)["status"] == "reserved"
+    else:
+        with pytest.raises(SceneIntakeError, match="spend_cap_exhausted"):
+            _reserve(fx["root"], fx["intent"], "scene-configuration-successor", 17, now=300)
 
 
 @pytest.mark.parametrize("paid_native", [False, True, "cpu", "cpu_unproven"])
