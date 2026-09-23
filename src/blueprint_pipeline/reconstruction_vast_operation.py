@@ -617,11 +617,10 @@ def run_reconstruction_vast_operation(
                     # terminal provider state twice before ending a dead run;
                     # a failed status request must never count as an exit.
                     if operation == "website_mapanything" and fetch_attempts % 6 == 1:
-                        diagnostic = getattr(provider, "worker_log_diagnostic", None)
-                        if callable(diagnostic):
-                            snapshot = diagnostic(instance_id)
-                            if snapshot.get("status") == "observed":
-                                write_json(root / "website_worker_log_diagnostic.json", snapshot)
+                        from .website_vast_diagnostics import worker_log_diagnostic
+                        snapshot = worker_log_diagnostic(instance_id)
+                        if snapshot.get("status") == "observed":
+                            write_json(root / "website_worker_log_diagnostic.json", snapshot)
                     try:
                         observed = provider.inspect(instance_id)
                     except Exception:  # noqa: BLE001 - an observation failure is not death.

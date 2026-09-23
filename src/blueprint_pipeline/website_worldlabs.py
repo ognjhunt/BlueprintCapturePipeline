@@ -92,6 +92,26 @@ def rejected_generation_binding(*, capture_root: Path, base_binding: Mapping[str
     return {**base_binding, "rejected_attempt_digest": rejected_digest}, rejected_digest
 
 
+def website_reconstruction_retry_state(*, descriptor: Mapping[str, Any], capture_root: Path,
+                                       base_binding: Mapping[str, Any], provider: Any
+                                       ) -> tuple[dict[str, Any], str | None, dict[str, Any] | None]:
+    """Retain old operations and admit only an explicit pre-generation 402 retry."""
+    root = capture_root / "pipeline" / "website_reconstruction"
+    if not (root / "submission.json").is_file():
+        return dict(base_binding), None, None
+    reconcile_website_credit_rejection(capture_root=capture_root, base_binding=base_binding,
+        task_context=descriptor["metadata"]["site_task_context"])
+    retry = rejected_generation_binding(capture_root=capture_root, base_binding=base_binding)
+    if retry is None:
+        return dict(base_binding), None, provider.submit(descriptor=descriptor, capture_root=capture_root)
+    binding, retry_digest = retry
+    if (root / "submission_retry_1.json").is_file():
+        prepared = {**descriptor, "metadata": {**descriptor["metadata"],
+            "website_reconstruction_retry_digest": retry_digest}}
+        return binding, retry_digest, provider.submit(descriptor=prepared, capture_root=capture_root)
+    return binding, retry_digest, None
+
+
 def reconcile_website_credit_rejection(*, capture_root: Path, base_binding: Mapping[str, Any],
                                        task_context: Mapping[str, Any]) -> bool:
     """Release a full reservation only for the controller's exact recorded HTTP 402."""
