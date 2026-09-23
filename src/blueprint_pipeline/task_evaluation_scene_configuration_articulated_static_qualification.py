@@ -538,6 +538,13 @@ def qualify_scene_configuration_articulated_asset_static(
             or completion.get("handle_grasp_point_link_m") != graph_spec.get("handle_grasp_point_link_m")
             or not completion_rows_valid
             or not observed
+            or not _close_sequence(completion.get("collision_dimensions_m"),
+                                   observed.get("collision_dimensions_m"))
+            or not isinstance(completion.get("collision_bounds_asset_frame_closed_m"), Mapping)
+            or not all(_close_sequence(
+                completion["collision_bounds_asset_frame_closed_m"].get(bound),
+                (observed.get("collision_bounds_asset_frame_closed_m") or {}).get(bound))
+                for bound in ("minimum", "maximum"))
             or completion.get("task_joint_prim_path") != observed.get("task_joint", {}).get("prim_path")
             or {row["joint_id"] for row in completion.get("joints", []) if isinstance(row, Mapping)}
             != {row["joint_id"] for row in graph["joints"]}
@@ -548,6 +555,7 @@ def qualify_scene_configuration_articulated_asset_static(
                    for row in completion.get("joints", []) if isinstance(row, Mapping)
                    for expected in graph["joints"] if expected["joint_id"] == row["joint_id"])
             or {row["link_id"]: row for row in completion.get("links", []) if isinstance(row, Mapping)}.keys() != observed["links"].keys()
+            or len(completion_links) != len(observed["links"])
             or any(row.get("prim_path") != observed["links"][row["link_id"]]["prim_path"]
                    or row.get("part_id") != observed["links"][row["link_id"]]["part_id"]
                    or not _close_sequence([row["mass_kg"]], [observed["links"][row["link_id"]]["mass_kg"]])
