@@ -446,9 +446,14 @@ def test_cpu_prestage_before_first_stage_releases_hold_only_with_bound_zero_spen
             _reserve(fx["root"], fx["intent"], "scene-configuration-successor", 17, now=300)
 
 
+@pytest.mark.parametrize("exception_type,marker", [
+    ("AgentsSDKInvocationBlocked", "agents_sdk_inference_budget_ceiling_exceeded"),
+    ("RateLimitError", "credit_balance_exhausted"),
+    ("AssetAuthoringError", "AssetAuthoringError"),
+])
 @pytest.mark.parametrize("changed", [None, "archive_digest", "later_stage", "reservation_cap",
                                      "reservation_digest", "completion_digest", "wrong_blocker", "model_log"])
-def test_cpu_articulated_budget_refusal_retains_full_authoring_cap(tmp_path, changed):
+def test_cpu_articulated_budget_refusal_retains_full_authoring_cap(tmp_path, changed, exception_type, marker):
     from blueprint_pipeline.task_evaluation_unentered_authoring_budget import prestage_authoring_cap_upper_bound
 
     run_id = "website-two-part-drawer"
@@ -474,7 +479,7 @@ def test_cpu_articulated_budget_refusal_retains_full_authoring_cap(tmp_path, cha
     completion = _seal({"schema_version": "openai_official_cost_run_completion.v1",
                         "run_id": run_id, "reservation_receipt_digest": reservation["reservation_receipt_digest"],
                         "provider_call_performed": True,
-                        "runtime_exception_type": "AgentsSDKInvocationBlocked"}, "completion_receipt_digest")
+                        "runtime_exception_type": exception_type}, "completion_receipt_digest")
     if changed == "completion_digest":
         completion["completion_receipt_digest"] = "sha256:" + "0" * 64
     prefix = "stages/stage-3/producer/astra_cad_blender_runtime/official_openai_cost/"
@@ -487,7 +492,7 @@ def test_cpu_articulated_budget_refusal_retains_full_authoring_cap(tmp_path, cha
         archive.writestr(prefix + "openai_official_cost_run_reservation.v1.json", json.dumps(reservation))
         archive.writestr(prefix + "openai_official_cost_run_completion.v1.json", json.dumps(completion))
         archive.writestr("stages/stage-3/producer/stage_producer.log",
-                         "other failure" if changed == "model_log" else "agents_sdk_inference_budget_ceiling_exceeded")
+                         "other failure" if changed == "model_log" else marker)
         if changed == "later_stage":
             archive.writestr("stages/stage-4/result.json", "{}")
     with archive_path.open("rb") as stream:

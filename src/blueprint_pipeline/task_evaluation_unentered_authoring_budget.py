@@ -216,10 +216,15 @@ def prestage_authoring_cap_upper_bound(result, request):
                      and completion.get("schema_version") == "openai_official_cost_run_completion.v1"
                      and completion.get("run_id") == request["run_id"]
                      and completion.get("reservation_receipt_digest") == reservation["reservation_receipt_digest"]
-                     and completion.get("provider_call_performed") is True
-                     and completion.get("runtime_exception_type") == "AgentsSDKInvocationBlocked")
+                     and completion.get("provider_call_performed") is True)
             log = read("stages/stage-3/producer/stage_producer.log").decode("utf-8")
-            _require("agents_sdk_inference_budget_ceiling_exceeded" in log)
+            failure_markers = {
+                "AgentsSDKInvocationBlocked": "agents_sdk_inference_budget_ceiling_exceeded",
+                "RateLimitError": "credit_balance_exhausted",
+                "AssetAuthoringError": "AssetAuthoringError",
+            }
+            marker = failure_markers.get(completion.get("runtime_exception_type"))
+            _require(marker is not None and marker in log)
         return cap
     except (OSError, ValueError, KeyError, TypeError, AttributeError, UnicodeError, zipfile.BadZipFile):
         return None
