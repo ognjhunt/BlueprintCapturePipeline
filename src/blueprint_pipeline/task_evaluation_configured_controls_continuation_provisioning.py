@@ -273,12 +273,49 @@ def _preparation_context(
         documents["task_definition"]["path"],
         blocker="configured_controls_provisioning_task_template_invalid",
     )
-    target = template.get("target_center_xyz_m")
+    schema = template.get("schema_version")
+    if schema == "task_evaluation_rigid_relocation_template.v1":
+        target = template.get("target_center_xyz_m")
+    elif schema == "task_evaluation_articulated_open_close_template.v1":
+        # The placement target is the fixture's estimated middle-drawer front.
+        # It is a robot approach hint, never a measured handle pose or success
+        # criterion. The native joint and contact readback remain authoritative.
+        center = template.get("start_center_xyz_m")
+        bounds = template.get("assembly_bounds_xyz_m")
+        normal = (template.get("mechanism") or {}).get("estimated_front_normal_world")
+        if (
+            not isinstance(center, list) or len(center) != 3
+            or not isinstance(bounds, Mapping)
+            or not isinstance(normal, list) or len(normal) != 3
+        ):
+            raise ConfiguredControlsProvisioningError(
+                "configured_controls_provisioning_task_template_invalid"
+            )
+        minimum, maximum = bounds.get("minimum"), bounds.get("maximum")
+        if not isinstance(minimum, list) or not isinstance(maximum, list) or len(minimum) != 3 or len(maximum) != 3:
+            raise ConfiguredControlsProvisioningError(
+                "configured_controls_provisioning_task_template_invalid"
+            )
+        vectors = (center, minimum, maximum, normal)
+        if any(isinstance(x, bool) or not isinstance(x, (int, float)) or not math.isfinite(float(x))
+               for vector in vectors for x in vector):
+            raise ConfiguredControlsProvisioningError(
+                "configured_controls_provisioning_task_template_invalid"
+            )
+        if any(lo >= hi for lo, hi in zip(minimum, maximum)) or not 0.99 <= math.sqrt(sum(float(x) ** 2 for x in normal)) <= 1.01:
+            raise ConfiguredControlsProvisioningError(
+                "configured_controls_provisioning_task_template_invalid"
+            )
+        target = [float(c) + float(n) * sum(abs(float(nj)) * (float(hi) - float(lo)) / 2
+                                               for nj, lo, hi in zip(normal, minimum, maximum))
+                  for c, n in zip(center, normal)]
+    else:
+        target = None
     if (
-        template.get("schema_version") != "task_evaluation_rigid_relocation_template.v1"
-        or not isinstance(target, list)
+        not isinstance(target, list)
         or len(target) != 3
-        or not all(isinstance(item, (int, float)) and math.isfinite(float(item)) for item in target)
+        or not all(isinstance(item, (int, float)) and not isinstance(item, bool)
+                   and math.isfinite(float(item)) for item in target)
     ):
         raise ConfiguredControlsProvisioningError(
             "configured_controls_provisioning_task_template_invalid"
