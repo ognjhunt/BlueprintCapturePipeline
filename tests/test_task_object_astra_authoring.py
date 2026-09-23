@@ -9,12 +9,12 @@ from blueprint_pipeline import task_object_astra_authoring as author
 from blueprint_pipeline.openai_prompt_cache import usage_and_cost_receipt, worst_case_reservation_usd
 
 
-def test_sol_standard_prices_cover_input_output_and_cached_input():
-    assert worst_case_reservation_usd(model='gpt-6-sol', input_token_ceiling=80000,
-                                     max_output_tokens=12000, cache_policy=None) == pytest.approx(0.28)
+def test_astra_standard_prices_cover_input_output_and_cached_input():
+    assert worst_case_reservation_usd(model='gpt-6-astra', input_token_ceiling=80000,
+                                     max_output_tokens=12000, cache_policy=None) == pytest.approx(1.4)
     receipt = usage_and_cost_receipt({'input_tokens': 1000, 'output_tokens': 100,
-        'input_tokens_details': {'cached_tokens': 0}}, model='gpt-6-sol')
-    assert receipt['estimated_total_cost_usd'] == pytest.approx(.003)
+        'input_tokens_details': {'cached_tokens': 0}}, model='gpt-6-astra')
+    assert receipt['estimated_total_cost_usd'] == pytest.approx(.015)
 
 
 def test_dimension_readback_rejects_previous_rounded_book_and_transparency():

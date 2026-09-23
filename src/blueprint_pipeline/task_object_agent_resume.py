@@ -177,7 +177,8 @@ def inspect_agent_candidate(runtime: Path, request_value: dict) -> dict:
                            'inference_reservations/completed').glob('*.json'))
     matched = [c for c in completions if c.get('capability') == request.object_id + f'_physical_property_review_{number}'
         and c.get('structured_output_digest') == canonical_digest(proposal.model_dump(mode='json'))
-        and c.get('run_id') == request_runs[physical_phase['request_digest']] and c.get('provider') == 'openai' and c.get('model') == 'gpt-6-sol'
+        and c.get('run_id') == request_runs[physical_phase['request_digest']] and c.get('provider') == 'openai'
+        and physical_phase.get('model') in {'gpt-6-astra', 'gpt-6-sol'} and c.get('model') == physical_phase['model']
         and c.get('inference_completion_digest') == canonical_digest(c, digest_field='inference_completion_digest')]
     if len(matched) != 1:
         raise AssetAuthoringError('agent_resume_physics_completion_missing')
@@ -196,7 +197,8 @@ def inspect_agent_candidate(runtime: Path, request_value: dict) -> dict:
                 or [r['sha256'] for r in references[len(previous['source_frames']):]] !=
                     [file_record(attempt / n)['sha256'] for n in ('perspective.png', 'top.png', 'side.png')]
                 or len([c for c in completions if c.get('capability') == request.object_id + '_' + review_path.stem
-                        and c.get('run_id') == request_runs[phase['request_digest']] and c.get('provider') == 'openai' and c.get('model') == 'gpt-6-sol'
+                        and c.get('run_id') == request_runs[phase['request_digest']] and c.get('provider') == 'openai'
+                        and phase.get('model') in {'gpt-6-astra', 'gpt-6-sol'} and c.get('model') == phase['model']
                         and c.get('structured_output_digest') == canonical_digest(review.model_dump(mode='json'))
                         and c.get('inference_completion_digest') == canonical_digest(c, digest_field='inference_completion_digest')]) != 1):
             raise AssetAuthoringError('agent_resume_final_review_changed')

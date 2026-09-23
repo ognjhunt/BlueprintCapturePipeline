@@ -16,7 +16,7 @@ from collections.abc import Mapping
 
 from PIL import Image
 
-MODELS = frozenset({"gpt-6-sol", "gpt-6-luna"})
+MODELS = frozenset({"gpt-6-astra", "gpt-6-sol", "gpt-6-luna"})
 
 
 def encode_tool_output(value, *, model):

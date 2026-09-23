@@ -97,7 +97,8 @@ def completed_visual_review(prior_root: Path, request_value: dict, budget_root: 
     digest = canonical_digest(output.model_dump(mode="json"))
     references = phase.get("references") or []
     source = request_value["source_frames"]
-    if (phase.get("request_digest") != request_value["request_digest"] or phase.get("model") != "gpt-6-sol"
+    if (phase.get("request_digest") != request_value["request_digest"]
+            or phase.get("model") not in {"gpt-6-astra", "gpt-6-sol"}
             or phase.get("provider") != "openai" or references[:len(source)] != source
             or len(references) != len(source) + 3):
         raise AssetAuthoringError("astra_retained_visual_review_inputs_changed")
@@ -108,7 +109,7 @@ def completed_visual_review(prior_root: Path, request_value: dict, budget_root: 
     matches = []
     for candidate in (budget_root / "inference_reservations/completed").glob("*.json"):
         row = json.loads(candidate.read_text())
-        if (row.get("run_id") == request_value["run_id"] and row.get("model") == "gpt-6-sol" and row.get("provider") == "openai"
+        if (row.get("run_id") == request_value["run_id"] and row.get("model") == phase["model"] and row.get("provider") == "openai"
                 and row.get("capability") == request_value["object_id"] + f"_independent_visual_review_{round_index}"
                 and row.get("structured_output_digest") == digest
                 and row.get("inference_completion_digest") == canonical_digest(row, digest_field="inference_completion_digest")):
@@ -128,7 +129,8 @@ def completed_authoring(prior_root: Path, request_value: dict, *, record_validat
     if (result.get("schema_version") != "task_object_astra_authoring_result.v1"
             or result.get("status") != "candidate_authored_pending_native_qualification"
             or result.get("request_digest") != request_value["request_digest"]
-            or result.get("object_id") != request_value["object_id"] or result.get("model") != "gpt-6-sol"
+            or result.get("object_id") != request_value["object_id"]
+            or result.get("model") not in {"gpt-6-astra", "gpt-6-sol"}
             or result.get("claim_ceiling") != "development_only"
             or any(result.get(key) is not False for key in ("native_import_qualified", "scene_placement_qualified", "physical_equivalence_proven"))
             or result.get("result_digest") != canonical_digest(result, digest_field="result_digest")):

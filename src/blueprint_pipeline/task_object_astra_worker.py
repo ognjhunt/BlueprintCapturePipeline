@@ -157,7 +157,8 @@ def verify_source_analysis_adoption(*, prior_root: Path, request_value: dict,
         raise AssetAuthoringError('authoring_adoption_source_inputs_changed')
     phase = prior_root / 'source_analysis.json'
     record = json.loads(phase.read_text())
-    if record.get('request_digest') != prior_request['request_digest'] or record.get('model') != 'gpt-6-sol':
+    if (record.get('request_digest') != prior_request['request_digest']
+            or record.get('model') not in {'gpt-6-astra', 'gpt-6-sol'}):
         raise AssetAuthoringError('authoring_adoption_phase_binding_invalid')
     output = VisualBrief.model_validate(record['output'])
     output_digest = canonical_digest(output.model_dump(mode='json'))
@@ -167,6 +168,7 @@ def verify_source_analysis_adoption(*, prior_root: Path, request_value: dict,
         completion = json.loads(path.read_text())
         if ((completion.get('run_id') == request_value['run_id'] or 'inherited' in path.relative_to(budget_root).parts)
             and completion.get('capability') == request_value['object_id'] + '_source_analysis'
+            and completion.get('model') == record['model'] and completion.get('provider') == 'openai'
             and completion.get('structured_output_digest') == output_digest
             and completion.get('inference_completion_digest') == canonical_digest(
                 completion, digest_field='inference_completion_digest')):
@@ -189,7 +191,8 @@ def verify_physical_review_adoption(*, prior_root: Path, request_value: dict, bu
             raise AssetAuthoringError('authoring_physical_adoption_source_inputs_changed')
     phase = prior_root / 'physical_property_review.json'
     record = json.loads(phase.read_text())
-    if record.get('request_digest') != prior_request['request_digest'] or record.get('model') != 'gpt-6-sol':
+    if (record.get('request_digest') != prior_request['request_digest']
+            or record.get('model') not in {'gpt-6-astra', 'gpt-6-sol'}):
         raise AssetAuthoringError('authoring_physical_adoption_phase_binding_invalid')
     output = PhysicalPropertyReviewProposal.model_validate(record['output'])
     output_digest = canonical_digest(output.model_dump(mode='json'))
@@ -199,6 +202,7 @@ def verify_physical_review_adoption(*, prior_root: Path, request_value: dict, bu
         row = json.loads(path.read_text())
         if ((row.get('run_id') == request_value['run_id'] or 'inherited' in path.relative_to(budget_root).parts)
             and row.get('capability') == request_value['object_id'] + '_physical_property_review'
+            and row.get('model') == record['model'] and row.get('provider') == 'openai'
             and row.get('structured_output_digest') == output_digest
             and row.get('inference_completion_digest') == canonical_digest(row, digest_field='inference_completion_digest')):
             matches.append(path)
@@ -227,7 +231,7 @@ def verify_blender_program_adoption(*, prior_root: Path, request_value: dict, bu
     phase = prior_root / f'appearance-{round_index:02d}/blender_author_{round_index}.json'
     record = json.loads(phase.read_text())
     if (record.get('request_digest') != prior_request['request_digest']
-            or record.get('model') != 'gpt-6-sol' or record.get('provider') != 'openai'
+            or record.get('model') not in {'gpt-6-astra', 'gpt-6-sol'} or record.get('provider') != 'openai'
             or record.get('references') != prior_request['source_frames']):
         raise AssetAuthoringError('authoring_blender_adoption_phase_binding_invalid')
     output = BlenderProgram.model_validate(record['output'])
@@ -238,7 +242,7 @@ def verify_blender_program_adoption(*, prior_root: Path, request_value: dict, bu
         row = json.loads(path.read_text())
         if ((row.get('run_id') == request_value['run_id'] or 'inherited' in path.relative_to(budget_root).parts)
             and row.get('capability') == request_value['object_id'] + f'_blender_author_{round_index}'
-            and row.get('model') == 'gpt-6-sol' and row.get('provider') == 'openai'
+            and row.get('model') == record['model'] and row.get('provider') == 'openai'
             and row.get('structured_output_digest') == output_digest
             and row.get('inference_completion_digest') == canonical_digest(row, digest_field='inference_completion_digest')):
             matches.append(path)
