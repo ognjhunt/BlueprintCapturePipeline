@@ -107,7 +107,7 @@ def test_invalid_input_refuses_before_authoring(retained, mutation):
 def test_shared_stage_invoker_denies_extra_calls_wrong_identity_or_unbounded_tools(reasoning_effort):
     seen = []
     invoker = driver._StageInvoker(SimpleNamespace(invoke=lambda *args: seen.append(args)), "shared", 1)
-    spec = SimpleNamespace(run_id="other", model="gpt-6-sol", max_turns=1, tool_bindings=(),
+    spec = SimpleNamespace(run_id="other", model="gpt-6-astra", max_turns=1, tool_bindings=(),
                            max_output_tokens=12000, max_input_tokens=80000, reasoning_effort=reasoning_effort)
     with pytest.raises(driver.AstraStageError):
         invoker.invoke(spec, "input")
@@ -210,10 +210,10 @@ def component(retained, monkeypatch):
         assert events[-1] == "reserve"
         seen["request"] = kw["request_value"]
         assert os.environ["OPENAI_API_KEY_FILE"] == str(key)
-        spec = SimpleNamespace(run_id=retained.input["run_id"], model="gpt-6-sol", max_turns=1,
+        spec = SimpleNamespace(run_id=retained.input["run_id"], model="gpt-6-astra", max_turns=1,
             tool_bindings=(), max_output_tokens=12000, max_input_tokens=80000, reasoning_effort="high")
         kw["invoker"].invoke(spec, "fake")
-        result = {"result_digest": "sha256:" + "2" * 64, "model": "gpt-6-sol"}
+        result = {"result_digest": "sha256:" + "2" * 64, "model": "gpt-6-astra"}
         (kw["output_root"] / "result.json").write_text(json.dumps(result))
         return result
 
@@ -242,7 +242,7 @@ def test_stage_reserves_parent_gate_then_seals_existing_roles_without_nvidia_cla
     assert {r["role"] for r in result["artifacts"]} == {"replacement_asset", "replacement_authoring_receipt", "replacement_graph_spec"}
     receipt = json.loads(Path(next(row["path"] for row in result["artifacts"] if row["role"] == "replacement_authoring_receipt")).read_text())
     assert receipt["status"] == "authored_candidate_pending_qualification"
-    assert receipt["authoring_backend"] == driver.BACKEND and receipt["model"] == "gpt-6-sol"
+    assert receipt["authoring_backend"] == driver.BACKEND and receipt["model"] == "gpt-6-astra"
     assert "content_agents_runtime_result" not in receipt
     assert receipt["physics_authority_granted"] is False
     assert os.environ.get("OPENAI_API_KEY_FILE") == previous
@@ -257,7 +257,7 @@ def test_admitted_32_request_limit_reaches_author_and_reviewers_without_raising_
         invoker = kwargs['invoker']
         assert invoker.maximum_calls == 32
         result = original(**kwargs)
-        spec = SimpleNamespace(run_id=invoker.run_id, model='gpt-6-sol', max_turns=1,
+        spec = SimpleNamespace(run_id=invoker.run_id, model='gpt-6-astra', max_turns=1,
             tool_bindings=(), max_output_tokens=12000, max_input_tokens=80000, reasoning_effort='medium')
         for _ in range(31):
             invoker.invoke(spec, 'bounded author or independent review')
@@ -466,7 +466,7 @@ def test_stage_invoker_admits_the_cad_output_budget_and_refuses_above_it():
 
     def spec(tokens):
         return SimpleNamespace(
-            run_id="run", model="gpt-6-sol", max_turns=1, tool_bindings=(),
+            run_id="run", model="gpt-6-astra", max_turns=1, tool_bindings=(),
             max_output_tokens=tokens, max_input_tokens=80000, reasoning_effort="high",
         )
 
@@ -534,7 +534,7 @@ def test_articulated_configuration_authors_each_part_and_seals_one_assembly(comp
         assert component.events[-1] in {"reserve", "sdk"}
         request_value = kw["request_value"]
         authored_parts.append(request_value["object_id"])
-        spec = SimpleNamespace(run_id=retained.input["run_id"], model="gpt-6-sol", max_turns=1,
+        spec = SimpleNamespace(run_id=retained.input["run_id"], model="gpt-6-astra", max_turns=1,
             tool_bindings=(), max_output_tokens=12000, max_input_tokens=80000, reasoning_effort="high")
         kw["invoker"].invoke(spec, "fake")
         part_id = request_value["object_id"].rsplit("__", 1)[1]
@@ -544,6 +544,7 @@ def test_articulated_configuration_authors_each_part_and_seals_one_assembly(comp
         _, result, _ = _part(kw["output_root"] / "fixture", object_id=request_value["object_id"],
                              dimensions=request_value["dimensions_m"], mass_kg=mass, density=density, bounds=bounds)
         result["request_digest"] = request_value["request_digest"]
+        result["model"] = "gpt-6-astra"
         result["result_digest"] = canonical_digest(result, digest_field="result_digest")
         (kw["output_root"] / "result.json").write_text(json.dumps(result))
         return result
@@ -553,12 +554,14 @@ def test_articulated_configuration_authors_each_part_and_seals_one_assembly(comp
     result = driver.execute_astra_component(**component.kwargs)
     assert authored_parts == ["source_cabinet__carcass", "source_cabinet__drawer"]
     assert component.events.count("sdk") == 2 and component.events[-1] == "complete"
+    receipt = json.loads(Path(result["artifacts"][1]["path"]).read_text())
+    assert receipt["part_models"] == {"carcass": "gpt-6-astra", "drawer": "gpt-6-astra"}
     assert result["asset_kind"] == "articulated_assembly"
     artifacts = {row["role"]: Path(row["path"]) for row in result["artifacts"]}
     assert set(artifacts) == {"replacement_asset", "replacement_authoring_receipt", "replacement_graph_spec"}
     receipt = json.loads(artifacts["replacement_authoring_receipt"].read_text())
     assert receipt["schema_version"] == driver.ARTICULATED_RECEIPT_SCHEMA_VERSION
-    assert receipt["model"] == result["model"] == "gpt-6-sol"
+    assert receipt["model"] == result["model"] == "gpt-6-astra"
     assert receipt["status"] == "authored_candidate_pending_qualification" and receipt["physics_authority_granted"] is False
     assert set(receipt["part_authoring_results"]) == {"carcass", "drawer"}
     completion = receipt["candidate_physics_completion"]
