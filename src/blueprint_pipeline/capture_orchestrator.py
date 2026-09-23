@@ -46,6 +46,7 @@ from .robot_eval_job_request_contract import (
     ROBOT_EVAL_JOB_REQUEST_SCHEMA_VERSION,
 )
 from .scenario_variation_instantiator import SCENARIO_VARIATION_NAMES
+from .agent_execution_offer import publish_agent_execution_offer
 from .simulation_automation import (
     SIMULATOR_FRAMEWORKS,
     WORLD_MODEL_ENGINE_TARGETS,
@@ -1535,6 +1536,10 @@ def run_capture_pipeline(
             )
             if automation_result is None:
                 continue
+            # Website captures publish what a self-serve robot-team run needs
+            # from here (capture root, the one scenario, episode count). Best
+            # effort: a missing offer only keeps the WebApp plan unpayable.
+            publish_agent_execution_offer(capture_root)
             robot_eval_jobs = _run_lane_call(
                 selected_lane,
                 _run_robot_eval_job_inbox_if_ready,
