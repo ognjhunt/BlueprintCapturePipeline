@@ -133,7 +133,7 @@ class ClaudeNativeToolLoop:
                 "initial_content_digest": canonical_digest({"content": initial_content}),
                 "max_turns": self.max_turns}
 
-    def verify_existing(self, initial_content: str | list[dict[str, Any]]) -> None:
+    def verify_existing(self, initial_content: str | list[dict[str, Any]]) -> bool:
         """Validate the retained transcript chain without dispatching a call."""
         initial = _user_blocks(initial_content)
         if _read(self.root / "binding.json") != self._binding(initial):
@@ -162,7 +162,7 @@ class ClaudeNativeToolLoop:
                 if not result_path.exists():
                     if prefix.with_suffix(".started.json").exists():
                         raise ClaudeAuthoringBlocked("claude_tool_outcome_unknown")
-                    return  # Provider response is complete; run() may start this tool.
+                    return True  # run() may execute this not-yet-started tool.
                 results.append(_read(result_path)["tool_result"])
             if results:
                 messages.append({"role": "user", "content": results})
@@ -176,6 +176,7 @@ class ClaudeNativeToolLoop:
             if response.get("stop_reason") == "end_turn" and (results or feedback_path.exists()
                     or (self.root / f"turn-{turn + 1:02d}-request.json").exists()):
                 raise ClaudeAuthoringBlocked("claude_transcript_continued_after_final")
+        return False
 
     def completed_tool_history(self) -> list[tuple[str, dict[str, Any], Any]]:
         """Verify paid turns and both tool journals before restoring asset state."""
@@ -512,8 +513,9 @@ def execute_claude_agent_authoring(*, request_value, output_root, budget_root,
         run_id=request.run_id, object_id=request.object_id, invoker=invoker,
         system=instructions, tools=tools)
     feedback = None
+    pending_tool = False
     if restoring:
-        loop.verify_existing(initial)
+        pending_tool = loop.verify_existing(initial)
         _restore_asset_state(asset, loop)
     last_render_attempts = asset.render_attempts
 
@@ -528,7 +530,7 @@ def execute_claude_agent_authoring(*, request_value, output_root, budget_root,
         return reviewed["result"]
 
     try:
-        if asset.candidate is not None:
+        if asset.candidate is not None and not pending_tool:
             reviewed = asset.independent_review(invoker)
             if reviewed["accepted"]:
                 return accept(reviewed)
@@ -572,6 +574,8 @@ def inspect_completed_claude_authoring(*, output_root: Path, budget_root: Path,
                "object_id": request.object_id, "provider": "anthropic", "model": MODEL}
     if _read(state_root / "binding.json") != binding:
         raise ClaudeAuthoringBlocked("claude_completed_binding_changed")
+    if not (state_root / "tools").is_dir():
+        raise ClaudeAuthoringBlocked("claude_completed_tool_ledger_missing")
 
     class ReadOnlyRunner:
         def preflight(self):
@@ -602,7 +606,8 @@ def inspect_completed_claude_authoring(*, output_root: Path, budget_root: Path,
         initial.extend([{"type": "input_text", "text": frame.description},
             {"type": "input_image", "image_url": "data:image/png;base64," +
              base64.b64encode(path.read_bytes()).decode()}])
-    loop.verify_existing(initial)
+    if loop.verify_existing(initial):
+        raise ClaudeAuthoringBlocked("claude_completed_tool_pending")
     _restore_asset_state(asset, loop)
     if (asset.candidate is None or asset.retained_physics is None
             or asset.retained_visual_review is None):

@@ -33,11 +33,18 @@ agent. That path uses the OpenAI Agents SDK's local SQLite conversation. Its
 item format drops Claude's signed thinking blocks, so direct model swapping
 would corrupt the conversation.
 
-To enable a future scene, bind the controller's signed Anthropic provider
-authority, scoped host secret, model selection, and website provenance. Run an
-explicitly authorized provider canary before any paid scene.
-The current scene has no
-Anthropic authorization, so it cannot be switched in place.
+To enable a future scene, the website and controller must sign Anthropic into
+the *new* scene's provider list and terms decision, bind a separate Anthropic
+stage cap within the owner and per-attempt limits, and transport that authority
+into the CPU child. Today `website_task_preparation` emits only `vast/openai`,
+`task_evaluation_scene_execution_scope` rejects `anthropic`, and the paid
+configuration authority/bundle and CPU stage-3 driver carry only the OpenAI
+external-service cap, key scope, and cost gate. The driver also labels final
+CAD/Blender receipts as GPT-6 Astra. An environment flag or a local key cannot
+override these signed boundaries. The current scene has no Anthropic
+authorization and cannot be switched in place. A future route also needs an
+explicitly authorized provider canary and verification that the package and
+retained-stage validators accept Claude-labelled evidence.
 
 Claude Managed Agents does not meet this run's hard $7 per-attempt guard by
 itself: its session budget is checked between model requests and Anthropic

@@ -62,6 +62,19 @@ def test_live_call_requires_authority_before_key_or_network(tmp_path):
     assert audit.manifest()["reservation_count"] == 0
 
 
+def test_signed_permission_without_scoped_key_refuses_before_network(monkeypatch, tmp_path):
+    monkeypatch.delenv("ANTHROPIC_API_KEY_FILE", raising=False)
+    audit = InferenceReservationAudit(run_root=tmp_path, run_id="future-scene")
+    invoker = ClaudeOpusAuthoringInvoker(ClaudeAuthoringConfig(
+        run_id="future-scene", maximum_cost_usd=7, maximum_calls=4,
+        allow_live_invocation=True), audit=audit,
+        verify_authority=_authority,
+        send=lambda *_: pytest.fail("network called"))
+    with pytest.raises(ClaudeAuthoringBlocked, match="claude_key_file_missing"):
+        invoker.invoke(_spec(), "Draft a brief")
+    assert audit.manifest()["reservation_count"] == 0
+
+
 def test_bounded_opus_call_retains_provider_receipts(monkeypatch, tmp_path):
     _key(monkeypatch, tmp_path)
     audit = InferenceReservationAudit(run_root=tmp_path, run_id="future-scene")

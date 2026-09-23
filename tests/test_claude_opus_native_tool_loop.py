@@ -113,3 +113,41 @@ def test_interrupted_tool_is_not_reexecuted(monkeypatch, tmp_path):
     with pytest.raises(ClaudeAuthoringBlocked, match="claude_tool_outcome_unknown"):
         loop.run(initial_content="Build one drawer", final_type=Final)
     assert len(sends) == 1
+
+
+def test_unstarted_tool_can_resume_from_paid_response(monkeypatch, tmp_path):
+    sends, executions = [], []
+
+    def send(payload, _key):
+        sends.append(payload)
+        if len(sends) == 1:
+            return {"id": "msg_one", "model": MODEL, "stop_reason": "tool_use",
+                "content": [{"type": "thinking", "thinking": "", "signature": "signed"},
+                            {"type": "tool_use", "id": "tool_one", "name": "build_cad",
+                             "input": {"program": "box()"}}],
+                "usage": {"input_tokens": 100, "output_tokens": 50}}
+        return {"id": "msg_two", "model": MODEL, "stop_reason": "end_turn",
+            "content": [{"type": "text", "text": '{"summary":"done"}'}],
+            "usage": {"input_tokens": 120, "output_tokens": 20}}
+
+    async def handler(_context, _arguments):
+        executions.append(1)
+        return '{"status":"built"}'
+
+    invoker = _invoker(monkeypatch, tmp_path, send)
+    first = ClaudeNativeToolLoop(root=tmp_path / "transcript", run_id="future-scene",
+        object_id="middle_drawer", invoker=invoker, system="Build.", tools=[_tool(handler)])
+    original = first._tool_result
+
+    def interrupt_before_tool(*_args, **_kwargs):
+        raise TimeoutError("before local tool")
+
+    first._tool_result = interrupt_before_tool
+    with pytest.raises(TimeoutError):
+        first.run(initial_content="Build", final_type=Final)
+    second = ClaudeNativeToolLoop(root=tmp_path / "transcript", run_id="future-scene",
+        object_id="middle_drawer", invoker=invoker, system="Build.", tools=[_tool(handler)])
+    assert second.verify_existing("Build") is True
+    assert second.run(initial_content="Build", final_type=Final).summary == "done"
+    assert len(sends) == 2 and executions == [1]
+    first._tool_result = original
