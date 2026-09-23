@@ -25,7 +25,12 @@ APPEARANCE_SCOPE = "observable_v2"
 
 
 class AssetTools:
-    def __init__(self, *, request_value, output_root, cad_executor, blender_runner, blender_executable):
+    def __init__(self, *, request_value, output_root, cad_executor, blender_runner, blender_executable,
+                 author_model="gpt-6-sol", author_provider="openai"):
+        if (author_model, author_provider) not in {
+                ("gpt-6-sol", "openai"), ("claude-opus-5-5", "anthropic")}:
+            raise AssetAuthoringError("authoring_model_provider_invalid")
+        self.author_model, self.author_provider = author_model, author_provider
         self.request = validate_request(request_value)
         self.root = Path(output_root)
         self.root.mkdir(parents=True, exist_ok=True)
@@ -42,7 +47,8 @@ class AssetTools:
     def observe_object(self, brief):
         """Record the author's interpretation; original image bytes remain authoritative."""
         self.brief = VisualBrief.model_validate(brief)
-        save_json(self.root / "source_analysis.json", {"model": "gpt-6-sol", "provider": "openai",
+        save_json(self.root / "source_analysis.json", {"model": self.author_model,
+            "provider": self.author_provider,
             "request_digest": self.request.request_digest,
             "references": [f.model_dump(mode="json") for f in self.request.source_frames],
             "output": self.brief.model_dump(mode="json"), "origin": "asset_authoring_session"})
@@ -178,7 +184,7 @@ class AssetTools:
         self.validate_candidate()
         generated = self.request.generated_specification
         result = {"schema_version": "task_object_astra_authoring_result.v1",
-            "status": "candidate_authored_pending_native_qualification", "model": "gpt-6-sol",
+            "status": "candidate_authored_pending_native_qualification", "model": self.author_model,
             "request_digest": self.request.request_digest, "object_id": self.request.object_id,
             "claim_ceiling": "development_only", "asset": file_record(attempt / "candidate.usdc"),
             "blend": file_record(attempt / "candidate.blend"), "cad": self.cad,

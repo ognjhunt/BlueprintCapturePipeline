@@ -21,6 +21,11 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_object_agent_model import bounded_authoring_input, context_ceiling
 from blueprint_pipeline.task_object_agent_tools import AssetTools
 from blueprint_pipeline.task_evaluation_supervisor.agents_sdk import AgentsSDKInvocationBlocked
+from blueprint_pipeline.claude_opus_authoring_invoker import (
+    ClaudeAuthoringConfig, ClaudeOpusAuthoringInvoker, MODEL as CLAUDE_MODEL,
+)
+from blueprint_pipeline.claude_opus_native_tool_loop import execute_claude_agent_authoring
+from blueprint_pipeline.task_evaluation_supervisor.inference_reservations import InferenceReservationAudit
 from tests.test_astra_automatic_resume import authoring_fixture, FixtureInvoker  # noqa: F401
 from tests.test_task_evaluation_scene_configuration_astra_driver import retained, component  # noqa: F401
 
@@ -136,6 +141,52 @@ def test_real_sdk_keeps_images_error_and_repair_in_one_session(agent_fixture):
     assert all(json.loads(p.read_text())['max_turns'] == 1 for p in records)
     assert (f.kwargs['budget_root'] / 'asset_session/conversation.sqlite').is_file()
     assert (f.kwargs['budget_root'] / 'asset_session/completion.json').is_file()
+
+
+def test_native_claude_loop_uses_real_cad_blender_tools_and_independent_review(agent_fixture, monkeypatch):
+    f = agent_fixture
+    key = f.runtime / 'test-anthropic-key'
+    key.write_text('test-only-placeholder')
+    key.chmod(0o600)
+    monkeypatch.setenv('ANTHROPIC_API_KEY_FILE', str(key))
+    author_steps = list(f.steps[:4])
+    seen = []
+    reviews = []
+
+    def send(payload, _key):
+        seen.append(payload)
+        if payload.get('tools'):
+            name, arguments = author_steps.pop(0)
+            return {'id': f'msg_author_{len(seen)}', 'model': CLAUDE_MODEL, 'stop_reason': 'tool_use',
+                'content': [{'type': 'thinking', 'thinking': '', 'signature': f'signed_{len(seen)}'},
+                            {'type': 'tool_use', 'id': f'tool_{len(seen)}', 'name': name,
+                             'input': arguments}],
+                'usage': {'input_tokens': 500, 'output_tokens': 100}}
+        reviews.append(payload)
+        text = json.dumps(f.model.physics if len(reviews) == 1 else
+            dict(source_object_recognizable=True, source_color_and_material_preserved=True,
+                opaque_surfaces_opaque=True, required_parts_present=True, no_obvious_geometry_artifacts=True,
+                blockers=[], repair_instructions='', unobserved_surface_limitations=['underside']))
+        return {'id': f'msg_review_{len(seen)}', 'model': CLAUDE_MODEL, 'stop_reason': 'end_turn',
+            'content': [{'type': 'text', 'text': text}],
+            'usage': {'input_tokens': 500, 'output_tokens': 100}}
+
+    audit = InferenceReservationAudit(run_root=f.kwargs['budget_root'], run_id=f.request.run_id)
+    def authority(run, _digest):
+        return dict(run_id=run, allowed_providers=['anthropic'],
+            private_provider_processing_allowed=True, provider_training_allowed=False,
+            authority_digest='sha256:' + 'a' * 64, provider_terms_digest='sha256:' + 'b' * 64)
+    invoker = ClaudeOpusAuthoringInvoker(ClaudeAuthoringConfig(run_id=f.request.run_id,
+        maximum_cost_usd=7, maximum_calls=8, allow_live_invocation=True),
+        audit=audit, verify_authority=authority, send=send)
+    result = execute_claude_agent_authoring(**f.kwargs, invoker=invoker)
+    assert result['model'] == CLAUDE_MODEL
+    assert result['status'] == 'candidate_authored_pending_native_qualification'
+    assert f.executed == ['broken', 'repaired', 'cad', 'blender']
+    assert not author_steps and len(seen) == 6
+    assert seen[1]['messages'][1]['content'][0]['signature'] == 'signed_1'
+    assert audit.manifest()['reservation_count'] == 6
+    assert json.loads((f.kwargs['output_root'] / 'source_analysis.json').read_text())['provider'] == 'anthropic'
 
 
 def test_render_hands_off_before_later_brief_mutation_can_clear_candidate(agent_fixture):

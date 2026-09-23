@@ -194,6 +194,15 @@ def _cost(usage: Mapping[str, Any]) -> float:
                  * _US_GEO_MULTIPLIER / 1_000_000, 9)
 
 
+def _contains_key(value: Any, forbidden: set[str]) -> bool:
+    if isinstance(value, Mapping):
+        return any(key in forbidden or _contains_key(part, forbidden)
+                   for key, part in value.items())
+    if isinstance(value, list):
+        return any(_contains_key(part, forbidden) for part in value)
+    return False
+
+
 class ClaudeOpusAuthoringInvoker:
     """Implements the existing authoring invoker shape without changing defaults.
 
@@ -208,6 +217,123 @@ class ClaudeOpusAuthoringInvoker:
                  send: Callable[[Mapping[str, Any], str], Mapping[str, Any]] = _post_message):
         self.config, self.audit = config, audit
         self.verify_authority, self.send = verify_authority, send
+
+    def invoke_tool_turn(self, *, capability: str, payload: Mapping[str, Any]) -> Mapping[str, Any]:
+        """One native Messages tool turn with the same hard admission ledger.
+
+        The caller owns a durable transcript and must retain the entire raw
+        content array, including signed thinking blocks, before tool execution.
+        """
+        if not self.config.allow_live_invocation or self.verify_authority is None:
+            raise ClaudeAuthoringBlocked("claude_live_authority_missing")
+        if (not capability or payload.get("model") != MODEL
+                or payload.get("inference_geo") != "us"
+                or type(payload.get("max_tokens")) is not int
+                or not 1 <= payload["max_tokens"] <= 12_000
+                or not isinstance(payload.get("messages"), list)
+                or not isinstance(payload.get("tools"), list)
+                or payload.get("output_config") != {"effort": "medium"}
+                or _contains_key(payload, {"cache_control", "mcp_servers",
+                                           "context_management", "speed"})
+                or any(not isinstance(tool, dict)
+                       or set(tool) != {"name", "description", "input_schema", "strict"}
+                       or tool["strict"] is not True
+                       or not isinstance(tool["name"], str)
+                       or not isinstance(tool["description"], str)
+                       or not isinstance(tool["input_schema"], dict)
+                       for tool in payload["tools"])):
+            raise ClaudeAuthoringBlocked("claude_tool_payload_invalid")
+        encoded = json.dumps(payload, ensure_ascii=True, allow_nan=False).encode()
+        if len(encoded) > _MAX_REQUEST_BYTES:
+            raise ClaudeAuthoringBlocked("claude_request_bytes_exceeded")
+        input_digest = canonical_digest({"request": payload})
+        authority = dict(self.verify_authority(self.config.run_id, input_digest))
+        if (authority.get("run_id") != self.config.run_id
+                or PROVIDER not in authority.get("allowed_providers", [])
+                or authority.get("private_provider_processing_allowed") is not True
+                or authority.get("provider_training_allowed") is not False
+                or not _SHA.fullmatch(str(authority.get("authority_digest") or ""))
+                or not _SHA.fullmatch(str(authority.get("provider_terms_digest") or ""))):
+            raise ClaudeAuthoringBlocked("claude_provider_authority_invalid")
+        projected = round((_MODEL_INPUT_CONTEXT_TOKENS * _INPUT_RATE
+                           + payload["max_tokens"] * _OUTPUT_RATE)
+                          * _US_GEO_MULTIPLIER / 1_000_000, 9)
+        key = _scoped_key()
+        identity = {"run_id": self.config.run_id, "capability": capability,
+                    "model": MODEL, "provider": PROVIDER,
+                    "input_digest": input_digest, "max_turns": 1,
+                    "max_output_tokens": payload["max_tokens"]}
+        cache_policy = {"status": "disabled", "policy_digest": canonical_digest({
+            "provider": PROVIDER, "model": MODEL, "cache_control": "absent"})}
+        reservation_id = canonical_digest({**identity,
+            "cache_policy_digest": cache_policy["policy_digest"]})
+        reservation = {"schema_version": INFERENCE_RESERVATION_SCHEMA_VERSION,
+            "reservation_id": reservation_id, **identity,
+            "input_token_ceiling": _MODEL_INPUT_CONTEXT_TOKENS,
+            "projected_max_cost_usd": projected,
+            "cache_policy": cache_policy, "cache_policy_digest": cache_policy["policy_digest"],
+            "breakpoint_digests": {}, "authority_digest": authority["authority_digest"],
+            "provider_terms_digest": authority["provider_terms_digest"],
+            "billing_status": "worst_case_reserved_before_provider_call", "proof_effect": "none"}
+        reservation["inference_reservation_digest"] = canonical_digest(
+            reservation, digest_field="inference_reservation_digest")
+        with _admission_lock(self.audit):
+            manifest = self.audit.manifest()
+            if manifest["reservation_count"] >= self.config.maximum_calls:
+                raise ClaudeAuthoringBlocked("claude_call_cap_exhausted")
+            if manifest["reserved_max_cost_usd"] + projected > self.config.maximum_cost_usd:
+                raise ClaudeAuthoringBlocked("claude_spend_cap_exhausted")
+            self.audit.record_reservation(reservation)
+        try:
+            response = dict(self.send(payload, key))
+        except Exception as exc:
+            raise ClaudeAuthoringBlocked("claude_provider_outcome_unknown") from exc
+        usage = response.get("usage")
+        if not isinstance(usage, Mapping):
+            raise ClaudeAuthoringBlocked("claude_usage_missing")
+        actual = _cost(usage)
+        if (actual > projected + 1e-9 or usage["input_tokens"] > _MODEL_INPUT_CONTEXT_TOKENS
+                or usage["output_tokens"] > payload["max_tokens"]):
+            raise ClaudeAuthoringBlocked("claude_provider_usage_exceeds_reserved_maximum")
+        valid = (response.get("model") == MODEL and isinstance(response.get("id"), str)
+                 and response.get("stop_reason") in {"tool_use", "end_turn"}
+                 and isinstance(response.get("content"), list)
+                 and all(isinstance(block, dict) and block.get("type") in
+                         {"thinking", "text", "tool_use"} for block in response["content"]))
+        if valid:
+            allowed_names = {tool["name"] for tool in payload["tools"]}
+            tool_ids = [block.get("id") for block in response["content"]
+                        if block["type"] == "tool_use"]
+            valid = (all(isinstance(block.get("signature"), str) and block["signature"]
+                         for block in response["content"] if block["type"] == "thinking")
+                     and all(isinstance(block.get("text"), str)
+                             for block in response["content"] if block["type"] == "text")
+                     and all(block.get("name") in allowed_names
+                             and isinstance(block.get("input"), dict)
+                             for block in response["content"] if block["type"] == "tool_use")
+                     and all(isinstance(call_id, str) and call_id for call_id in tool_ids)
+                     and len(set(tool_ids)) == len(tool_ids))
+        completion = {"schema_version": INFERENCE_COMPLETION_SCHEMA_VERSION,
+            "reservation_id": reservation_id, "run_id": self.config.run_id,
+            "capability": capability, "model": MODEL, "provider": PROVIDER,
+            "status": "completed" if valid else "invalid_model_output",
+            "provider_outcome": response.get("stop_reason"),
+            "provider_response_id": response.get("id"), "usage": dict(usage),
+            "cost_basis": "provider_reported_usage_list_price",
+            "reconciled_actual_cost_usd": actual, "observed_actual_cost_usd": actual,
+            "projected_max_cost_usd": projected,
+            "released_reservation_usd": max(0.0, projected - actual),
+            "cache_policy": cache_policy, "breakpoint_digests": {},
+            "authority_digest": authority["authority_digest"],
+            "provider_terms_digest": authority["provider_terms_digest"],
+            "response_output_digest": canonical_digest({"content": response.get("content")}),
+            "proof_effect": "none"}
+        completion["inference_completion_digest"] = canonical_digest(
+            completion, digest_field="inference_completion_digest")
+        self.audit.record_completion(completion)
+        if not valid:
+            raise ClaudeAuthoringBlocked("claude_model_output_invalid")
+        return response
 
     def invoke(self, spec: AgentsSDKAgentSpec,
                input_value: str | list[dict[str, Any]]) -> AgentsSDKInvocationResult:

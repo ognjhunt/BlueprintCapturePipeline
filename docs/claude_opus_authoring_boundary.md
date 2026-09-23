@@ -12,23 +12,28 @@ published one-million-token input window plus the configured maximum output
 before dispatch. The unknown-outcome reservation stays charged; it is never
 silently replayed. Model output never approves its own geometry or physics.
 
-This does **not** replace the website capture's current persistent CAD/Blender
-agent. That path uses the OpenAI Agents SDK's local SQLite conversation and
-four confined CAD/Blender tools. Opus 5.5 returns signed `thinking` blocks
-with tool calls. Anthropic requires those blocks to be replayed unmodified
-with tool results. The current SQLite item format drops them. Routing a
-Claude model through that format would corrupt the conversation.
+The optional `ClaudeNativeToolLoop` journals each raw model turn and its local
+tool result before the next turn. It replays Opus 5.5's signed `thinking`
+blocks unmodified with the matching tool result. It invokes the existing four
+confined CAD/Blender tool definitions and pauses on a valid render for the
+existing independent review. Unknown model or tool outcomes fail closed. A
+new process can verify and replay completed model/tool turns; the complete
+asset-state restore path is not yet connected. A fake-provider lifecycle test
+exercises original-image interpretation, failed CAD repair, successful CAD,
+Blender render, and independent physics/appearance reviews without an
+Anthropic call.
 
-To make a future scene's Claude tool loop runnable, build a native Messages
-transcript journal that atomically retains every provider response block,
-including signed thinking, before executing a local tool. Bind each tool call
-and tool result to its message ID and immutable transcript digest; on resume,
-prove every call/result pair and refuse unknown dispatch outcomes. Keep the
-existing confined CAD/Blender tool implementations and independent validators.
-Each Messages turn must pass through the same per-request worst-case ledger.
-Then extend retained-phase validation and the controller's signed provider
-authority, scoped secret wiring, model selection, and website provenance.
-Run a no-network lifecycle rehearsal before any separately authorized scene.
+This does **not** replace the website capture's current persistent CAD/Blender
+agent. That path uses the OpenAI Agents SDK's local SQLite conversation. Its
+item format drops Claude's signed thinking blocks, so direct model swapping
+would corrupt the conversation.
+
+To enable a future scene, extend retained-phase validation and complete
+asset-state restoration after interruption. Then bind the controller's signed
+Anthropic provider authority, scoped host secret, model selection, and website
+provenance. Run an explicitly authorized provider canary before any paid scene.
+The current scene has no
+Anthropic authorization, so it cannot be switched in place.
 
 Claude Managed Agents does not meet this run's hard $7 per-attempt guard by
 itself: its session budget is checked between model requests and Anthropic
