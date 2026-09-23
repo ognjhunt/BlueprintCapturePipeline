@@ -143,6 +143,9 @@ class AssetTools:
                 kind="material_observation", excerpt="Candidate interpretation: " + canonical_json({
                     "material": self.brief.proposed_material, "appearance": self.brief.proposed_appearance})))
         save_json(self.root / "physical_review_input.json", physical.model_dump(mode="json"))
+        prompt = (build_physical_property_review_prompt(physical) + "\nConstruction constraints: "
+                  + self.request.construction_constraints + "\nCAD readback (mm, mm3): "
+                  + canonical_json(self.cad["readback"]))
         if self.retained_physics is not None:
             retained_input, retained_proposal = self.retained_physics
             if physical.model_dump(mode='json') != retained_input:
@@ -150,12 +153,28 @@ class AssetTools:
             proposal = PhysicalPropertyReviewProposal.model_validate(retained_proposal)
         else:
             proposal = invoke_vision(invoker, self.request, capability=f"physical_property_review_{self.render_attempts}",
-                prompt=build_physical_property_review_prompt(physical) + "\nConstruction constraints: "
-                    + self.request.construction_constraints + "\nCAD readback (mm, mm3): " + canonical_json(self.cad["readback"]),
+                prompt=prompt,
                 output_type=PhysicalPropertyReviewProposal, frames=self.request.source_frames, root=self.root)
-        self.retained_physics = (physical.model_dump(mode="json"), proposal.model_dump(mode="json"))
         physics = review_physical_properties(physical, proposal)
+        retried_identity = self.retained_physics is None and physics.blockers == ['object_identity_changed']
+        if retried_identity:
+            # A response that changes only the identifier is a schema error,
+            # not evidence against this render. Keep the rejected response and
+            # deterministic verdict, then spend at most one distinct model call.
+            save_json(self.root / f"physical_property_review_{self.render_attempts}_identity_rejection.json",
+                physics.model_dump(mode="json"))
+            proposal = invoke_vision(invoker, self.request,
+                capability=f"physical_property_review_{self.render_attempts}_identity_retry_1",
+                prompt=prompt + "\nThe immediately prior proposal was rejected solely because its object_id "
+                    "did not match the request. Return the exact object_id " + json.dumps(physical.object_id)
+                    + ". Preserve all evidence-bounded physical estimates; never reinterpret the identifier.",
+                output_type=PhysicalPropertyReviewProposal, frames=self.request.source_frames, root=self.root)
+            physics = review_physical_properties(physical, proposal)
+        self.retained_physics = (physical.model_dump(mode="json"), proposal.model_dump(mode="json"))
         save_json(self.root / "physical_property_review_result.json", physics.model_dump(mode="json"))
+        if 'object_identity_changed' in physics.blockers:
+            raise AssetAuthoringError('authoring_physical_review_identity_retry_exhausted'
+                if retried_identity else 'authoring_physical_review_identity_mismatch')
         if physics.accepted is None:
             return {"accepted": False, "blockers": list(physics.blockers)}
         attempt = self.candidate["directory"]

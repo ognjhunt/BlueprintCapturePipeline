@@ -146,7 +146,9 @@ def build_physical_property_review_prompt(request: PhysicalPropertyReviewInput) 
         "fabricate supporting facts. Keep static friction >= dynamic friction and restitution "
         "inside admitted bounds. Opaque paper or plastic must have transmission=0 and "
         "opacity=1 and cannot use a clear-glass material. Do not silently clamp or substitute "
-        "midpoints. This is only a development_only candidate, never physical qualification.\n"
+        "midpoints. This is only a development_only candidate, never physical qualification. "
+        "Copy the exact object_id without adding or removing characters: "
+        + json.dumps(request.object_id) + ".\n"
         + json.dumps(request.model_dump(mode="json"), sort_keys=True, allow_nan=False)
     )
 
