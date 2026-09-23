@@ -172,7 +172,46 @@ def test_controller_recovers_only_recorded_credit_402_with_new_capped_binding(tm
     root = tmp_path / "pipeline/website_reconstruction"
     assert json.loads((root / "submission.json").read_text())["status"] == "rejected_insufficient_credits"
     assert json.loads((root / "submission_retry_1.json").read_text())["status"] == "submitted"
+    assert json.loads((root / "controller_admission.json").read_text())["allocation_binding_digest"] == reservations[0]["binding_digest"]
+    assert json.loads((root / "controller_admission_retry_1.json").read_text())["allocation_binding_digest"] == reservations[1]["binding_digest"]
     assert (root / "rejection_evidence.json").is_file()
+
+
+@pytest.mark.parametrize("legacy_retry_path", [False, True])
+def test_retry_settlement_uses_its_own_admission_and_recovers_prior_path_error(tmp_path, monkeypatch, legacy_retry_path):
+    from blueprint_pipeline import website_task_context as control
+    from blueprint_pipeline.common import write_json
+    from blueprint_pipeline.website_worldlabs import settle_website_reconstruction
+    root = tmp_path / "pipeline/website_reconstruction"
+    root.mkdir(parents=True)
+    initial_digest, retry_digest = "sha256:" + "a" * 64, "sha256:" + "c" * 64
+    context_digest = "sha256:" + "b" * 64
+    write_json(root / "submission.json", {"request_digest": initial_digest,
+        "status": "rejected_insufficient_credits"})
+    write_json(root / "rejection_settlement.json", {"allocation_binding_digest": initial_digest,
+        "status": "settled", "actual_cost_usd": 0})
+    write_json(root / "submission_retry_1.json", {"request_digest": retry_digest,
+        "operation_id": "retry-operation", "status": "submitted"})
+    admission_path = root / ("controller_admission.json" if legacy_retry_path else "controller_admission_retry_1.json")
+    write_json(admission_path, {"allocation_binding_digest": retry_digest,
+        "task_context_digest": context_digest})
+    write_json(root / "operation.json", {"operation_id": "retry-operation", "done": True,
+        "cost": {"total_credits": 1600}})
+
+    def receipt(**kwargs):
+        command = kwargs["payload"]["settlement"]
+        return {**command, "status": "settled", "actual_cost_usd": 1.28}
+
+    monkeypatch.setattr(control, "website_webapp_request", receipt)
+    result = settle_website_reconstruction(
+        provider_run={"provider_run_id": "retry-operation",
+            "worldlabs_operation_manifest_uri": str(root / "operation.json")},
+        capture_root=tmp_path,
+        task_context={"capture_id": "walkthrough-test", "request_id": "test",
+            "scene_id": "site-test", "context_digest": context_digest})
+    assert result["allocation_binding_digest"] == retry_digest
+    assert result["actual_cost_usd"] == 1.28
+    assert (root / "settlement_retry_1.json").is_file()
 
 
 def test_admission_dictionary_cannot_authorize_marble_purchase(tmp_path):

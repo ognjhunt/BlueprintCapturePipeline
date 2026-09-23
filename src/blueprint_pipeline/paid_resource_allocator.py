@@ -787,7 +787,7 @@ def submit_sponsored_website_reconstruction(*, descriptor: Mapping[str, Any], ca
         resource_class="provider_reconstruction_api", provider="world_labs", retained_admission=retained)
     admission = {**admission, "source_commit": commit}
     root.mkdir(parents=True, exist_ok=True)
-    write_json(root / "controller_admission.json", admission)
+    write_json(retained_path, admission)
     prepared = {**descriptor, "metadata": {**descriptor["metadata"],
         "website_reconstruction_admission": admission,
         **({"website_reconstruction_retry_digest": retry_digest} if retry_digest else {})}}

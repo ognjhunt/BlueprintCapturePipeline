@@ -28,6 +28,16 @@ def settle_website_reconstruction(*, provider_run: Mapping[str, Any], capture_ro
     submission_path = root / ("submission_retry_1.json" if retry else "submission.json")
     admission_path = root / ("controller_admission_retry_1.json" if retry else "controller_admission.json")
     operation_path = Path(provider_run.get("worldlabs_operation_manifest_uri") or root / "missing")
+    if retry and not admission_path.is_file() and submission_path.is_file():
+        # The first deployed retry controller wrote its new admission at the
+        # original path. Recognize only that exact binding, with the first
+        # rejection already settled, so its completed operation can bill.
+        legacy_path = root / "controller_admission.json"
+        if legacy_path.is_file() and (root / "rejection_settlement.json").is_file():
+            candidate = json.loads(legacy_path.read_text())
+            submission = json.loads(submission_path.read_text())
+            if candidate.get("allocation_binding_digest") == submission.get("request_digest"):
+                admission_path = legacy_path
     if not submission_path.is_file() or not admission_path.is_file() or not operation_path.is_file():
         return None  # No settled bill means the full reservation remains charged.
     if not operation_path.resolve().is_relative_to(capture_root.resolve() / "pipeline"):
