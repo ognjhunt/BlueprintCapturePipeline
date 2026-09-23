@@ -1025,6 +1025,10 @@ def _build_scene_configuration_context(
         "openai_content_agents_max_cost_usd": preparation_request["spend"][
             "external_service_caps"
         ]["openai"]["stage_max_cost_usd"]["content_agents"],
+        "anthropic_max_cost_usd": (preparation_request["spend"]["external_service_caps"]
+                                   .get("anthropic") or {}).get("maximum_cost_usd", 0.0),
+        "anthropic_max_requests": (preparation_request["spend"]["external_service_caps"]
+                                   .get("anthropic") or {}).get("maximum_requests", 0),
         "hard_ttl_seconds": preparation_request["spend"]["hard_ttl_seconds"],
         "container_image": preparation_request["runtime"]["oci_image"],
         "scene_id": preparation_request["scene"]["identity"]["id"],

@@ -226,7 +226,10 @@ class _SDKChatBridge:
         if len(payload.encode()) > self.max_input_tokens:
             raise AstraCADRuntimeBlocked("cad_input_token_ceiling_exceeded")
         index = len(self.calls)
-        record: dict[str, Any] = {"index": index, "model": "gpt-6-sol", "max_turns": 1,
+        selected_model = getattr(self.invoker, 'model', 'gpt-6-sol')
+        if selected_model not in {'gpt-6-sol', 'claude-opus-5-5'}:
+            raise AstraCADRuntimeBlocked('cad_authoring_model_unsupported')
+        record: dict[str, Any] = {"index": index, "model": selected_model, "max_turns": 1,
                                   "input_sha256": hashlib.sha256(payload.encode()).hexdigest()}
         self.calls.append(record)  # Failed calls consume the local allowance, too.
         _save(self.root / f"invocation-{index:02d}-input.json", json.loads(payload))
@@ -240,7 +243,7 @@ class _SDKChatBridge:
             "Use only requested schema fields and keep narrative concise. "
             "In build123d selector expressions, length, area and volume are properties, not methods.")
         stable_prefix = instructions + '\n' + self.stable_prefix if self.stable_prefix else None
-        if stable_prefix:
+        if stable_prefix and selected_model == 'gpt-6-sol':
             from .asset_authoring_prompt_cache import asset_cache_policy
             policy = asset_cache_policy(family='cad', output_type=_TextOutput,
                 stable_prefix=stable_prefix, reasoning_effort=self.reasoning_effort)
@@ -249,7 +252,7 @@ class _SDKChatBridge:
         spec = AgentsSDKAgentSpec(
             run_id=self.run_id, capability=f"astra_cad_candidate:{self.object_label}", name="Astra CAD candidate",
             instructions=instructions,
-            model="gpt-6-sol", reasoning_effort=self.reasoning_effort, max_turns=1,
+            model=selected_model, reasoning_effort=self.reasoning_effort, max_turns=1,
             max_input_tokens=self.max_input_tokens, max_output_tokens=self.max_output_tokens,
             output_type=_TextOutput, tool_bindings=(),
             stable_developer_prefix=stable_prefix, cache_policy=policy,
@@ -339,7 +342,8 @@ def _read_step(step: Path, expected: tuple[float, float, float], tolerance: floa
     return result
 
 
-def _adopt_completed_phases(source: Path, budget_root: Path, parameters: dict[str, Any], nodes: Any):
+def _adopt_completed_phases(source: Path, budget_root: Path, parameters: dict[str, Any], nodes: Any,
+                            *, provider: str = 'openai', model_id: str = 'gpt-6-sol'):
     """Authenticate retained typed outputs against completed SDK receipts."""
     source = source.resolve(strict=True)
     previous = json.loads((source / "parameters.json").read_text())
@@ -351,7 +355,7 @@ def _adopt_completed_phases(source: Path, budget_root: Path, parameters: dict[st
         row = json.loads(path.read_text())
         if (row.get("run_id") == parameters["run_id"]
                 and row.get("capability") == "astra_cad_candidate:" + parameters["object_label"]
-                and row.get("model") == "gpt-6-sol" and row.get("provider") == "openai"
+                and row.get("model") == model_id and row.get("provider") == provider
                 and row.get("inference_completion_digest") == canonical_digest(row, digest_field="inference_completion_digest")):
             completions.append((path, row))
     adopted, evidence = {}, []
@@ -398,7 +402,8 @@ def _compact_coder_prompt(**kwargs: Any) -> str:
                       separators=(",", ":"))
 
 
-def _adopt_completed_coder(source: Path, budget_root: Path, parameters: dict[str, Any]):
+def _adopt_completed_coder(source: Path, budget_root: Path, parameters: dict[str, Any],
+                           *, provider: str = 'openai', model_id: str = 'gpt-6-sol'):
     previous = json.loads((source / "parameters.json").read_text())
     for key in ("brief", "expected_dimensions_mm", "run_id", "object_label"):
         if previous.get(key) != parameters[key]:
@@ -417,14 +422,15 @@ def _adopt_completed_coder(source: Path, budget_root: Path, parameters: dict[str
             row = json.loads(completion_path.read_text())
             if (row.get("run_id") != parameters["run_id"]
                     or row.get("capability") != "astra_cad_candidate:" + parameters["object_label"]
-                    or row.get("provider") != "openai" or row.get("model") != "gpt-6-sol"
+                    or row.get("provider") != provider or row.get("model") != model_id
                     or row.get("structured_output_digest") != canonical_digest({"content": raw})
                     or row.get("inference_completion_digest") != canonical_digest(row, digest_field="inference_completion_digest")):
                 continue
             reservation_path = budget_root / "inference_reservations/reserved" / completion_path.name
             reservation = json.loads(reservation_path.read_text())
+            input_field = ('caller_input_digest' if provider == 'anthropic' else 'input_digest')
             if (reservation.get("reservation_id") != row.get("reservation_id")
-                    or reservation.get("input_digest") != canonical_digest({"input_text": json.dumps(request)})
+                    or reservation.get(input_field) != canonical_digest({"input_text": json.dumps(request)})
                     or reservation.get("inference_reservation_digest") != canonical_digest(reservation, digest_field="inference_reservation_digest")):
                 raise AstraCADRuntimeBlocked("cad_coder_adoption_reservation_mismatch")
             matches.append((raw, {"source_output": str(raw_path), "source_output_sha256": _digest(raw_path),
@@ -525,7 +531,11 @@ def execute_mac_candidate(
         nodes._CFG_MAX_RETRIES = repair_budget + 1  # one initial QA + at most two repairs
         nodes._CFG_MAX_EXEC_RETRIES = 0
         graph._MAX_SELF_RETRIES = 1
-        nodes._SP_MODEL = nodes._ARCH_MODEL = nodes._CODER_MODEL = nodes._REPAIR_MODEL = "gpt-6-sol"
+        selected_model = getattr(invoker, 'model', 'gpt-6-sol')
+        if selected_model not in {'gpt-6-sol', 'claude-opus-5-5'}:
+            raise AstraCADRuntimeBlocked('cad_authoring_model_unsupported')
+        selected_provider = 'anthropic' if selected_model == 'claude-opus-5-5' else 'openai'
+        nodes._SP_MODEL = nodes._ARCH_MODEL = nodes._CODER_MODEL = nodes._REPAIR_MODEL = selected_model
         nodes._SPEC_PLANNER_KWARGS = nodes._ARCHITECT_KWARGS = nodes._CODER_KWARGS = nodes._REPAIR_KWARGS = {}
         original_json = nodes._call_llm_json_with_retry
         nodes._call_llm_json_with_retry = lambda *a, **kw: original_json(*a, **{**kw, "max_retries": 1})
@@ -589,12 +599,14 @@ def execute_mac_candidate(
             if adoption_budget_root is None or adopt_state_from is None:
                 raise AstraCADRuntimeBlocked("cad_coder_adoption_verified_phases_required")
             bridge.adopted_coder_output, coder_receipt = _adopt_completed_coder(
-                Path(adopt_coder_from), Path(adoption_budget_root), parameters)
+                Path(adopt_coder_from), Path(adoption_budget_root), parameters,
+                provider=selected_provider, model_id=selected_model)
             _save(root / "coder-adoption-receipt.json", coder_receipt)
         if adopt_state_from is not None:
             if adoption_budget_root is None:
                 raise AstraCADRuntimeBlocked("cad_adoption_budget_root_required")
-            adopted, adoption_receipt = _adopt_completed_phases(Path(adopt_state_from), Path(adoption_budget_root), parameters, nodes)
+            adopted, adoption_receipt = _adopt_completed_phases(Path(adopt_state_from), Path(adoption_budget_root),
+                parameters, nodes, provider=selected_provider, model_id=selected_model)
             _save(root / "adoption-receipt.json", adoption_receipt)
         for name in ("node_spec_planner", "node_geometric_architect", "node_python_coder", "node_autonomous_skill_loop"):
             original = getattr(nodes, name)

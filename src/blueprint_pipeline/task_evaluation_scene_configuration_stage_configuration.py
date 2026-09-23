@@ -409,9 +409,19 @@ def _stage_three_refusal(
     required = configuration.get("required_output")
     if configuration.get("authoring_backend", "content_agents") not in {"content_agents", "astra_cad_blender_v1"}:
         return "authoring_backend"
+    authoring_provider = configuration.get("authoring_model_provider", "openai")
+    if authoring_provider not in {"openai", "anthropic"}:
+        return "authoring_model_provider"
+    if authoring_provider == "anthropic" and (
+            configuration.get("authoring_backend") != "astra_cad_blender_v1"
+            or configuration.get("source_observation_kind") != "website_capture_frames"):
+        return "anthropic_authoring_scope"
     declared_backend = (envelope.get("request") or {}).get("replacement_authoring_backend")
     if declared_backend is not None and configuration.get("authoring_backend", "content_agents") != declared_backend:
         return "authoring_backend_budget_binding"
+    declared_provider = (envelope.get("request") or {}).get("replacement_authoring_model_provider", "openai")
+    if authoring_provider != declared_provider:
+        return "authoring_provider_budget_binding"
     schema_version = configuration.get("schema_version")
     if schema_version not in {
         "rigid_replacement_authoring_configuration.v1",

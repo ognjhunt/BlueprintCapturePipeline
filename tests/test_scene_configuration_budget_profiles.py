@@ -102,6 +102,7 @@ def test_paid_authority_materialization_and_reopen_use_the_bound_backend(tmp_pat
     zero_path = tmp_path / "zero.json"
     zero_path.write_text('{"fixture":true}')
     monkeypatch.setattr(module, "load_scene_configuration_provider_bundle_receipt", lambda *args, **kwargs: receipt)
+    monkeypatch.setattr(module, "bundle_requires_artifixer", lambda _receipt: True)
     monkeypatch.setattr(module, "validate_project_spend_reconciliation", lambda path, **kwargs: ({"total_cost_usd": 100}, module._record(Path(path))))
     monkeypatch.setattr(module, "_provider_zero", lambda path: {"observed_at_utc": "2026-09-10T12:00:00Z", "provider_zero_digest": "sha256:" + "e" * 64})
     quote = spend_block(backend, authoring_max_cost_usd=author_cap)
@@ -127,6 +128,47 @@ def test_paid_authority_materialization_and_reopen_use_the_bound_backend(tmp_pat
         legacy_receipt = {**receipt, "replacement_authoring_backend": "content_agents"}
         with pytest.raises(module.TaskEvaluationSceneConfigurationAuthorityError, match="authority_contract_invalid"):
             module.validate_scene_configuration_paid_authority(result, bundle_receipt=legacy_receipt)
+
+
+def test_future_anthropic_authority_is_separate_from_openai_cap(tmp_path, monkeypatch):
+    from blueprint_pipeline import task_evaluation_scene_configuration_paid_authority as module
+    from blueprint_pipeline.task_evaluation_scene_configuration_runtime_budget import REQUIRED_PARENT_TTL_SECONDS
+
+    receipt = {"replacement_authoring_backend": "astra_cad_blender_v1",
+        "replacement_authoring_model_provider": "anthropic", "source_commit": "a" * 40,
+        "bundle_sha256": "sha256:" + "b" * 64,
+        "portable_construction_envelope_digest": "sha256:" + "c" * 64,
+        "toolchain_digest": "sha256:" + "d" * 64, "run_id": "future-anthropic"}
+    receipt_path = tmp_path / "bundle.json"
+    receipt_path.write_text(json.dumps(receipt))
+    project_path = tmp_path / "project.json"
+    project_path.write_text('{"fixture":true}')
+    zero_path = tmp_path / "zero.json"
+    zero_path.write_text('{"fixture":true}')
+    monkeypatch.setattr(module, "load_scene_configuration_provider_bundle_receipt", lambda *args, **kwargs: receipt)
+    monkeypatch.setattr(module, "bundle_requires_artifixer", lambda _receipt: False)
+    monkeypatch.setattr(module, "validate_project_spend_reconciliation",
+        lambda path, **kwargs: ({"total_cost_usd": 100}, module._record(Path(path))))
+    monkeypatch.setattr(module, "_provider_zero",
+        lambda path: {"observed_at_utc": "2026-09-10T12:00:00Z",
+                      "provider_zero_digest": "sha256:" + "e" * 64})
+    args = dict(bundle_receipt_path=receipt_path,
+        project_spend_reconciliation_path=project_path,
+        initial_provider_zero_path=zero_path,
+        authorization_reference="fixture-owner-authorization", authorized_by="fixture-owner",
+        authorized_on="2026-09-10T12:05:00Z", source_commit="a" * 40,
+        container_image=module.SCENE_CONFIGURATION_PROVIDER_IMAGE,
+        resource_name="adp-future-anthropic-20260910", max_hourly_rate_usd=0.5,
+        hard_cap_usd=13, hard_ttl_seconds=REQUIRED_PARENT_TTL_SECONDS,
+        output_path=tmp_path / "authority.json", provider_compute_spend_cap_usd=6,
+        anthropic_max_cost_usd=7, anthropic_max_requests=32)
+    result = module.materialize_scene_configuration_paid_authority(**args)
+    assert module.validate_scene_configuration_paid_authority(result, bundle_receipt=receipt) == result
+    assert result["external_service_spend_caps"]["openai"]["maximum_cost_usd"] == 0
+    assert result["external_service_spend_caps"]["anthropic"]["maximum_cost_usd"] == 7
+    with pytest.raises(module.TaskEvaluationSceneConfigurationAuthorityError, match="configuration_invalid"):
+        module.materialize_scene_configuration_paid_authority(**{**args, "anthropic_max_cost_usd": 7.01,
+            "output_path": tmp_path / "refused.json"})
 
 
 def test_scene_configuration_submission_requests_the_astra_authoring_ceiling():

@@ -66,6 +66,10 @@ class InferenceReservationAudit:
             "max_turns": reservation.get("max_turns"),
             "max_output_tokens": reservation.get("max_output_tokens"),
         }
+        # Legacy OpenAI reservations omitted provider from their identity. New
+        # provider reservations bind it without invalidating retained records.
+        if "provider" in reservation:
+            reservation_identity["provider"] = reservation["provider"]
         if "reasoning_effort" in reservation:
             reservation_identity["reasoning_effort"] = reservation.get(
                 "reasoning_effort"
@@ -114,7 +118,7 @@ class InferenceReservationAudit:
                 raise InferenceReservationError(
                     f"inference_completion_{field}_mismatch"
                 )
-        if completion.get("provider") != "openai":
+        if completion.get("provider") != reservation.get("provider", "openai"):
             raise InferenceReservationError("inference_completion_provider_mismatch")
         if completion.get("cache_policy") != reservation.get("cache_policy"):
             raise InferenceReservationError("inference_completion_cache_policy_mismatch")
