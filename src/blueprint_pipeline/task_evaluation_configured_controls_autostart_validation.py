@@ -14,7 +14,9 @@ from .decision_evidence_contracts import canonical_digest
 from .task_evaluation_configured_controls_autostart_support import (
     TaskEvaluationConfiguredControlsAutostartError, _read, _sha256,
 )
-from .task_evaluation_robot_placement_agent import ROBOT_PLACEMENT_AGENT_MODEL, ROBOT_PLACEMENT_AGENT_REASONING_EFFORT
+from .task_evaluation_robot_placement_agent import (
+    ROBOT_PLACEMENT_AGENT_REASONING_EFFORT, ROBOT_PLACEMENT_RETAINED_MODELS,
+)
 from .task_evaluation_shared_mutation_window import TaskEvaluationSharedMutationWindowError, validate_shared_mutation_window_template
 from .task_evaluation_configured_controls_openai_placement import (
     PAID_RESOURCE_CLASS as OPENAI_PLACEMENT_PAID_RESOURCE_CLASS, VISUAL_REVIEW_CREDENTIAL_ROLE,
@@ -224,7 +226,7 @@ def validate_configured_controls_autostart_intent(
             or placement.get('max_input_tokens') != visual.MAX_INPUT_TOKENS))
         or not inference_usage.prompt_cache_placement_intent_valid(placement)
         or placement.get("agent_selection_required") is not True
-        or placement.get("agent_model") != ROBOT_PLACEMENT_AGENT_MODEL
+        or placement.get("agent_model") not in ROBOT_PLACEMENT_RETAINED_MODELS
         or placement.get("reasoning_effort")
         != ROBOT_PLACEMENT_AGENT_REASONING_EFFORT
         or not isinstance(placement_authority, Mapping)
@@ -392,7 +394,9 @@ def _validate_result(
             str(result.get("placement_agent_receipt_digest") or "")
         )
         is None
-        or result.get("placement_agent_model") != ROBOT_PLACEMENT_AGENT_MODEL
+        or result.get("placement_agent_model") not in ROBOT_PLACEMENT_RETAINED_MODELS
+        or (_validated_intent is not None and result.get("placement_agent_model")
+            != _validated_intent["placement"]["agent_model"])
         or result.get("placement_agent_reasoning_effort")
         != ROBOT_PLACEMENT_AGENT_REASONING_EFFORT
         or result.get("placement_agent_selected_exact_inventory_member") is not True

@@ -152,6 +152,19 @@ def test_intent_binds_every_fixed_cpu_and_paid_boundary_input(tmp_path: Path) ->
     }
 
 
+def test_signed_legacy_placement_model_remains_readable_after_model_upgrade(tmp_path: Path) -> None:
+    _path, value = _intent(tmp_path)
+    value["placement"]["agent_model"] = "gpt-5.6-sol"
+    value["intent_digest"] = autostart.canonical_digest(value, digest_field="intent_digest")
+    assert autostart.validate_configured_controls_autostart_intent(value) == value
+
+    value["placement"]["agent_model"] = "unadmitted-model"
+    value["intent_digest"] = autostart.canonical_digest(value, digest_field="intent_digest")
+    with pytest.raises(autostart.TaskEvaluationConfiguredControlsAutostartError,
+                       match="configured_controls_autostart_intent_invalid"):
+        autostart.validate_configured_controls_autostart_intent(value)
+
+
 def test_destination_intent_binds_prequalification_as_first_paid_phase(
     tmp_path: Path,
 ) -> None:
