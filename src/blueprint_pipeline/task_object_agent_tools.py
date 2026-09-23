@@ -26,7 +26,7 @@ APPEARANCE_SCOPE = "observable_v2"
 
 class AssetTools:
     def __init__(self, *, request_value, output_root, cad_executor, blender_runner, blender_executable,
-                 author_model="gpt-6-astra", author_provider="openai"):
+                 author_model="gpt-6-astra", author_provider="openai", restore=False):
         if (author_model, author_provider) not in {
                 ("gpt-6-astra", "openai"), ("gpt-6-sol", "openai"),
                 ("claude-opus-5-5", "anthropic")}:
@@ -34,12 +34,18 @@ class AssetTools:
         self.author_model, self.author_provider = author_model, author_provider
         self.request = validate_request(request_value)
         self.root = Path(output_root)
-        self.root.mkdir(parents=True, exist_ok=True)
-        if any(p.name not in {"tmp", "xdg", "cache"} for p in self.root.iterdir()):
-            raise AssetAuthoringError("authoring_output_already_used")
+        if restore:
+            if (not self.root.is_dir() or not (self.root / "request.json").is_file()
+                    or json.loads((self.root / "request.json").read_text()) != request_value):
+                raise AssetAuthoringError("authoring_restore_request_changed")
+        else:
+            self.root.mkdir(parents=True, exist_ok=True)
+            if any(p.name not in {"tmp", "xdg", "cache"} for p in self.root.iterdir()):
+                raise AssetAuthoringError("authoring_output_already_used")
         self.cad_executor, self.blender_runner, self.blender_executable = cad_executor, blender_runner, blender_executable
         blender_runner.preflight()
-        save_json(self.root / "request.json", request_value)
+        if not restore:
+            save_json(self.root / "request.json", request_value)
         self.brief = self.cad = self.candidate = None
         self.retained_physics = self.source_evidence_identity = None
         self.retained_visual_review = None

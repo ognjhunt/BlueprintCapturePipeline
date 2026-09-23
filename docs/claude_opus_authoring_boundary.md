@@ -17,21 +17,25 @@ tool result before the next turn. It replays Opus 5.5's signed `thinking`
 blocks unmodified with the matching tool result. It invokes the existing four
 confined CAD/Blender tool definitions and pauses on a valid render for the
 existing independent review. Unknown model or tool outcomes fail closed. A
-new process can verify and replay completed model/tool turns; the complete
-asset-state restore path is not yet connected. A fake-provider lifecycle test
+new process verifies the transcript, tool receipts, CAD/Blender artifacts and
+independent-review receipts, then restores completed asset state without
+repeating those operations. In-flight provider or tool outcomes remain blocked
+until independently reconciled. A fake-provider lifecycle test
 exercises original-image interpretation, failed CAD repair, successful CAD,
-Blender render, and independent physics/appearance reviews without an
-Anthropic call.
+Blender render, interruption after render, restoration, and independent
+physics/appearance reviews without an Anthropic call.
+`inspect_completed_claude_authoring` provides a read-only retained-result
+gate; the default OpenAI retained-result validator still rejects Claude
+unless that explicit gate has passed.
 
 This does **not** replace the website capture's current persistent CAD/Blender
 agent. That path uses the OpenAI Agents SDK's local SQLite conversation. Its
 item format drops Claude's signed thinking blocks, so direct model swapping
 would corrupt the conversation.
 
-To enable a future scene, extend retained-phase validation and complete
-asset-state restoration after interruption. Then bind the controller's signed
-Anthropic provider authority, scoped host secret, model selection, and website
-provenance. Run an explicitly authorized provider canary before any paid scene.
+To enable a future scene, bind the controller's signed Anthropic provider
+authority, scoped host secret, model selection, and website provenance. Run an
+explicitly authorized provider canary before any paid scene.
 The current scene has no
 Anthropic authorization, so it cannot be switched in place.
 

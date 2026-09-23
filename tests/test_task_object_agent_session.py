@@ -22,9 +22,11 @@ from blueprint_pipeline.task_object_agent_model import bounded_authoring_input, 
 from blueprint_pipeline.task_object_agent_tools import AssetTools
 from blueprint_pipeline.task_evaluation_supervisor.agents_sdk import AgentsSDKInvocationBlocked
 from blueprint_pipeline.claude_opus_authoring_invoker import (
-    ClaudeAuthoringConfig, ClaudeOpusAuthoringInvoker, MODEL as CLAUDE_MODEL,
+    ClaudeAuthoringBlocked, ClaudeAuthoringConfig, ClaudeOpusAuthoringInvoker, MODEL as CLAUDE_MODEL,
 )
-from blueprint_pipeline.claude_opus_native_tool_loop import execute_claude_agent_authoring
+from blueprint_pipeline.claude_opus_native_tool_loop import (
+    execute_claude_agent_authoring, inspect_completed_claude_authoring,
+)
 from blueprint_pipeline.task_evaluation_supervisor.inference_reservations import InferenceReservationAudit
 from tests.test_astra_automatic_resume import authoring_fixture, FixtureInvoker  # noqa: F401
 from tests.test_task_evaluation_scene_configuration_astra_driver import retained, component  # noqa: F401
@@ -179,6 +181,16 @@ def test_native_claude_loop_uses_real_cad_blender_tools_and_independent_review(a
     invoker = ClaudeOpusAuthoringInvoker(ClaudeAuthoringConfig(run_id=f.request.run_id,
         maximum_cost_usd=7, maximum_calls=8, allow_live_invocation=True),
         audit=audit, verify_authority=authority, send=send)
+    original_review = AssetTools.independent_review
+
+    def interrupted_review(_asset, _invoker):
+        raise TimeoutError('simulated interruption after valid render')
+
+    monkeypatch.setattr(AssetTools, 'independent_review', interrupted_review)
+    with pytest.raises(TimeoutError, match='simulated interruption'):
+        execute_claude_agent_authoring(**f.kwargs, invoker=invoker)
+    assert len(seen) == 4
+    monkeypatch.setattr(AssetTools, 'independent_review', original_review)
     result = execute_claude_agent_authoring(**f.kwargs, invoker=invoker)
     assert result['model'] == CLAUDE_MODEL
     assert result['status'] == 'candidate_authored_pending_native_qualification'
@@ -187,6 +199,23 @@ def test_native_claude_loop_uses_real_cad_blender_tools_and_independent_review(a
     assert seen[1]['messages'][1]['content'][0]['signature'] == 'signed_1'
     assert audit.manifest()['reservation_count'] == 6
     assert json.loads((f.kwargs['output_root'] / 'source_analysis.json').read_text())['provider'] == 'anthropic'
+    replay = execute_claude_agent_authoring(**f.kwargs, invoker=invoker)
+    assert replay['result_digest'] == result['result_digest']
+    assert len(seen) == 6
+    inspected = inspect_completed_claude_authoring(output_root=f.kwargs['output_root'],
+        budget_root=f.kwargs['budget_root'], request_value=f.kwargs['request_value'])
+    assert inspected['result_digest'] == result['result_digest']
+    review_path = f.kwargs['output_root'] / 'appearance-00/independent_visual_review_1_observable_v2.json'
+    original_review = review_path.read_text()
+    changed = json.loads(original_review)
+    changed['provider'] = 'openai'
+    review_path.write_text(json.dumps(changed))
+    with pytest.raises(ClaudeAuthoringBlocked, match='claude_restored_review_changed'):
+        execute_claude_agent_authoring(**f.kwargs, invoker=invoker)
+    with pytest.raises(ClaudeAuthoringBlocked, match='claude_restored_review_changed'):
+        inspect_completed_claude_authoring(output_root=f.kwargs['output_root'],
+            budget_root=f.kwargs['budget_root'], request_value=f.kwargs['request_value'])
+    review_path.write_text(original_review)
 
 
 def test_render_hands_off_before_later_brief_mutation_can_clear_candidate(agent_fixture):
