@@ -8,7 +8,8 @@ from pxr import Usd, UsdPhysics
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_scene_configuration_articulated_static_qualification import (
-    SCHEMA_VERSION, qualify_scene_configuration_articulated_asset_static,
+    SCHEMA_VERSION, _development_hypothesis_findings,
+    qualify_scene_configuration_articulated_asset_static,
 )
 from blueprint_pipeline.task_evaluation_scene_configuration_static_qualification import (
     TaskEvaluationSceneConfigurationStaticQualificationError,
@@ -21,13 +22,58 @@ from blueprint_pipeline.task_object_articulated_packaging import (
 IDENTITY = {"id": "website-subject-cab", "version": "v1"}
 
 
-def _sealed(tmp_path):
+def _sealed(tmp_path, *, development_hypothesis=False):
     from tests.test_task_object_articulated_packaging import fixture
     plan, requests, results, bounds = fixture(tmp_path)
+    if development_hypothesis:
+        plan = json.loads(json.dumps(plan))
+        dimensions = plan["assembly_dimensions_m"]
+        depth = dimensions["depth_x"]
+        source_depth = depth - 0.287
+        source_min = [-source_depth / 2, -dimensions["width_y"] / 2, 0.0]
+        source_max = [source_depth / 2, dimensions["width_y"] / 2, dimensions["height_z"]]
+        plan["source_geometry"] = {
+            "aabb_min_xyz_m": source_min, "aabb_max_xyz_m": source_max,
+            "projected_depth_m": source_depth, "projected_width_m": dimensions["width_y"],
+            "height_m": dimensions["height_z"],
+            "authority": "retained_source_envelope_not_physical_measurement"}
+        plan["development_geometry_hypothesis"] = {
+            "schema_version": "articulated_cabinet_depth_hypothesis.v1",
+            "claim_ceiling": "development_only", "basis": "bounded_cabinet_prior",
+            "status": "development_only_estimate_disagrees_with_source",
+            "source_aabb_min_xyz_m": source_min, "source_aabb_max_xyz_m": source_max,
+            "estimated_depth_m": depth, "depth_interval_m": [depth - 0.1, depth + 0.1],
+            "source_projected_depth_m": source_depth, "depth_disagreement_m": 0.287,
+            "whole_assembly_mass_interval_kg": [15.0, 50.0],
+            "revised_part_mass_bounds_kg": {part: row["mass_kg"] for part, row in bounds.items()},
+            "estimated_usable_stroke_m": plan["task_joint"]["limits_m"][1],
+            "minimum_opening_fraction": 0.6,
+            "estimated_minimum_opening_m": round(0.6 * plan["task_joint"]["limits_m"][1], 5),
+            "prior_record_schema_version": "website_drawer_depth_prior.v1",
+            "reference_retrieved_date": "2026-09-23",
+            "manufacturer_examples": [{"source": "fixture"}],
+            "prior_comparison": {"reference_models_are_exact_match": False},
+            "physical_measurement_proven": False,
+        }
     receipt = package_astra_articulated_candidate(requests=requests, authoring_results=results, plan=plan,
                                                   output_root=tmp_path / "packaged", physics_bounds=bounds)
     completion = dict(receipt["physics_completion"])
-    completion["metric_envelope_validation"] = {"status": "within_preregistered_metric_envelope"}
+    if development_hypothesis:
+        from blueprint_pipeline.task_object_articulated_packaging import HANDLE_PROTRUSION_M
+        expected = [depth + HANDLE_PROTRUSION_M, dimensions["width_y"], dimensions["height_z"]]
+        actual = completion["collision_dimensions_m"]
+        completion["metric_envelope_validation"] = {
+            "status": "within_development_geometry_hypothesis",
+            "frame": "assembly_frame_closed_plus_handle_protrusion",
+            "expected_dimensions_m": expected, "observed_collision_dimensions_m": actual,
+            "dimension_relative_errors": [abs(actual[i] - expected[i]) / expected[i] for i in range(3)],
+            "maximum_dimension_relative_error": 0.2,
+            "source_aabb_disagreement": {
+                "source_projected_depth_m": source_depth,
+                "estimated_depth_m": depth, "depth_disagreement_m": 0.287,
+                "physical_measurement_proven": False}}
+    else:
+        completion["metric_envelope_validation"] = {"status": "within_preregistered_metric_envelope"}
     completion["completion_digest"] = canonical_digest(completion, digest_field="completion_digest")
     graph = {"schema_version": "task_evaluation_articulated_replacement_graph.v1", "asset_id": IDENTITY["id"],
              "asset_version": IDENTITY["version"], "articulation_graph": articulation_graph_from_plan(plan),
@@ -169,3 +215,176 @@ def test_a_rigid_single_solid_cannot_pass_the_articulated_gate(tmp_path):
             replacement_identity=IDENTITY, output_path=tmp_path / "rigid.json")
     assert "replacement_single_target_joint_required" in error.value.codes
     assert "replacement_link_set_disagrees_with_graph" in error.value.codes
+
+
+@pytest.mark.parametrize(("change", "expected_code"), [
+    ("target_parent", "replacement_target_joint_bodies_invalid"),
+    ("target_axis", "replacement_target_joint_axis_mismatch"),
+    ("fixed_joint_body", "replacement_joint_graph_topology_mismatch:drawer_0_fixed"),
+    ("link_path", "replacement_graph_link_paths_disagree_with_usd"),
+    ("collision_filter", "replacement_collision_filter_disagrees_with_graph"),
+    ("assembly_plan", "replacement_assembly_plan_disagrees_with_usd"),
+])
+def test_resealed_graph_cannot_relabel_the_exact_jointed_asset(tmp_path, change, expected_code):
+    asset, graph, authoring = _sealed(tmp_path)
+    graph = json.loads(json.dumps(graph))
+    joints = graph["articulation_graph"]["joints"]
+    if change == "target_parent":
+        next(row for row in joints if row["role"] == "target")["parent_link_id"] = "drawer_0"
+    elif change == "target_axis":
+        next(row for row in joints if row["role"] == "target")["axis"] = [0.0, 1.0, 0.0]
+    elif change == "fixed_joint_body":
+        next(row for row in joints if row["joint_id"] == "drawer_0_fixed")["parent_link_id"] = "drawer_2"
+    elif change == "link_path":
+        graph["link_prim_paths"]["drawer_1"] = "/Asset/links/other"
+    elif change == "collision_filter":
+        graph["articulation_graph"]["collision_pairs"][0]["collision_enabled"] = True
+    else:
+        graph["assembly_plan"]["links"][0]["rest_translation_m"][0] += 0.01
+    with pytest.raises(TaskEvaluationSceneConfigurationStaticQualificationError) as error:
+        qualify_scene_configuration_articulated_asset_static(
+            asset_path=asset, graph_spec=graph, authoring_receipt=authoring,
+            replacement_identity=IDENTITY, output_path=tmp_path / "tampered.json")
+    assert expected_code in error.value.codes
+
+
+@pytest.mark.parametrize("field", ["physics_material", "collision_bounds_link_frame_m", "part_id"])
+def test_resealed_completion_cannot_change_per_link_physics_or_identity(tmp_path, field):
+    asset, graph, authoring = _sealed(tmp_path)
+    authoring = json.loads(json.dumps(authoring))
+    link = next(row for row in authoring["candidate_physics_completion"]["links"]
+                if row["link_id"] == "drawer_1")
+    if field == "physics_material":
+        link[field]["static_friction"] = 0.5
+    elif field == "collision_bounds_link_frame_m":
+        link[field]["maximum"][0] += 0.02
+    else:
+        link[field] = "other_part"
+    _reseal(authoring["candidate_physics_completion"], "completion_digest")
+    _reseal(authoring)
+    with pytest.raises(TaskEvaluationSceneConfigurationStaticQualificationError) as error:
+        qualify_scene_configuration_articulated_asset_static(
+            asset_path=asset, graph_spec=graph, authoring_receipt=authoring,
+            replacement_identity=IDENTITY, output_path=tmp_path / "tampered.json")
+    assert "replacement_physics_completion_invalid" in error.value.codes
+
+
+def test_resealed_completion_cannot_relabel_the_task_joint(tmp_path):
+    asset, graph, authoring = _sealed(tmp_path)
+    authoring = json.loads(json.dumps(authoring))
+    target = next(row for row in authoring["candidate_physics_completion"]["joints"]
+                  if row["role"] == "target")
+    target["limits"][1] -= 0.01
+    _reseal(authoring["candidate_physics_completion"], "completion_digest")
+    _reseal(authoring)
+    with pytest.raises(TaskEvaluationSceneConfigurationStaticQualificationError) as error:
+        qualify_scene_configuration_articulated_asset_static(
+            asset_path=asset, graph_spec=graph, authoring_receipt=authoring,
+            replacement_identity=IDENTITY, output_path=tmp_path / "tampered.json")
+    assert "replacement_physics_completion_invalid" in error.value.codes
+
+
+def test_malformed_resealed_completion_fails_with_a_typed_finding(tmp_path):
+    asset, graph, authoring = _sealed(tmp_path)
+    authoring["candidate_physics_completion"]["links"] = None
+    _reseal(authoring["candidate_physics_completion"], "completion_digest")
+    _reseal(authoring)
+    with pytest.raises(TaskEvaluationSceneConfigurationStaticQualificationError) as error:
+        qualify_scene_configuration_articulated_asset_static(
+            asset_path=asset, graph_spec=graph, authoring_receipt=authoring,
+            replacement_identity=IDENTITY, output_path=tmp_path / "tampered.json")
+    assert "replacement_physics_completion_invalid" in error.value.codes
+
+
+@pytest.mark.parametrize(("change", "expected_code"), [
+    ("joint_axis", "replacement_target_joint_axis_mismatch"),
+    ("fixed_joint_body", "replacement_joint_graph_topology_mismatch:drawer_0_fixed"),
+    ("link_part", "replacement_link_identity_or_part_mismatch:drawer_1"),
+])
+def test_resealed_usdz_still_has_to_match_the_declared_assembly(tmp_path, change, expected_code):
+    from pxr import Sdf, UsdUtils
+
+    asset, graph, authoring = _sealed(tmp_path)
+    flattened = tmp_path / "edited.usdc"
+    assert Usd.Stage.Open(str(asset)).Flatten().Export(str(flattened))
+    edited = Usd.Stage.Open(str(flattened))
+    if change == "joint_axis":
+        UsdPhysics.PrismaticJoint(edited.GetPrimAtPath(
+            "/Asset/joints/task_part_joint")).GetAxisAttr().Set("Y")
+    elif change == "fixed_joint_body":
+        UsdPhysics.Joint(edited.GetPrimAtPath(
+            "/Asset/joints/drawer_0_fixed")).GetBody0Rel().SetTargets(
+                [Sdf.Path("/Asset/links/drawer_2")])
+    else:
+        edited.GetPrimAtPath("/Asset/links/drawer_1").SetCustomDataByKey(
+            "blueprint:partId", "different_part")
+    edited.GetRootLayer().Save()
+    modified = tmp_path / "edited.usdz"
+    assert UsdUtils.CreateNewUsdzPackage(Sdf.AssetPath(str(flattened)), str(modified))
+    authoring["output_usd"] = {"sha256": "sha256:" + hashlib.sha256(modified.read_bytes()).hexdigest(),
+                               "size_bytes": modified.stat().st_size}
+    _reseal(authoring)
+    with pytest.raises(TaskEvaluationSceneConfigurationStaticQualificationError) as error:
+        qualify_scene_configuration_articulated_asset_static(
+            asset_path=modified, graph_spec=graph, authoring_receipt=authoring,
+            replacement_identity=IDENTITY, output_path=tmp_path / "tampered.json")
+    assert expected_code in error.value.codes
+
+
+def test_development_depth_hypothesis_binds_usd_dimensions_mass_and_source_disagreement(tmp_path):
+    asset, graph, authoring = _sealed(tmp_path, development_hypothesis=True)
+    result = qualify_scene_configuration_articulated_asset_static(
+        asset_path=asset, graph_spec=graph, authoring_receipt=authoring,
+        replacement_identity=IDENTITY, output_path=tmp_path / "qualified.json")
+    observed = result["observed_structure"]
+    assert observed["whole_assembly_mass_kg"] > 15.0
+    assert observed["collision_dimensions_m"][0] > graph["assembly_plan"]["source_geometry"]["projected_depth_m"]
+    assert authoring["candidate_physics_completion"]["metric_envelope_validation"]["source_aabb_disagreement"][
+        "physical_measurement_proven"] is False
+
+    graph["assembly_plan"]["development_geometry_hypothesis"]["whole_assembly_mass_interval_kg"] = [1.0, 2.0]
+    with pytest.raises(TaskEvaluationSceneConfigurationStaticQualificationError) as error:
+        qualify_scene_configuration_articulated_asset_static(
+            asset_path=asset, graph_spec=graph, authoring_receipt=authoring,
+            replacement_identity=IDENTITY, output_path=tmp_path / "tampered.json")
+    assert "replacement_development_geometry_hypothesis_invalid" in error.value.codes
+
+
+def test_final_website_depth_prior_plan_matches_stage_four_schema():
+    from tests.test_task_object_articulated_packaging import _depth_prior, _thin_website_cabinet
+    from blueprint_pipeline.task_object_articulated_packaging import plan_articulated_assembly
+
+    configuration = _thin_website_cabinet()
+    hypothesis = _depth_prior(configuration)
+    configuration["development_geometry_hypothesis"] = hypothesis
+    configuration["mechanism"]["estimated_usable_stroke_m"] = hypothesis["estimated_usable_stroke_m"]
+    configuration["mechanism"]["joint_limits"] = [0.0, hypothesis["estimated_usable_stroke_m"]]
+    configuration["required_output"]["mass_kg_bounds"] = [4.0, 30.0]
+    configuration["required_output"]["task_part_mass_kg_bounds"] = [0.5, 9.0]
+    plan = plan_articulated_assembly(configuration)
+    graph = articulation_graph_from_plan(plan)
+    dimensions = [0.58, 0.42, 0.62]
+    completion = {
+        "collision_dimensions_m": dimensions,
+        "metric_envelope_validation": {
+            "status": "within_development_geometry_hypothesis",
+            "frame": "assembly_frame_closed_plus_handle_protrusion",
+            "expected_dimensions_m": dimensions,
+            "observed_collision_dimensions_m": dimensions,
+            "dimension_relative_errors": [0.0, 0.0, 0.0],
+            "maximum_dimension_relative_error": 0.2,
+            "source_aabb_disagreement": {
+                "source_projected_depth_m": plan["source_geometry"]["projected_depth_m"],
+                "estimated_depth_m": plan["assembly_dimensions_m"]["depth_x"],
+                "depth_disagreement_m": plan["development_geometry_hypothesis"]["depth_disagreement_m"],
+                "physical_measurement_proven": False}}}
+    observed = {"collision_dimensions_m": dimensions,
+                "links": {"carcass": {"mass_kg": 12.0},
+                          **{f"drawer_{index}": {"mass_kg": 4.0} for index in range(3)}}}
+    physics_bounds = {part: {"mass_kg": interval}
+                      for part, interval in hypothesis["revised_part_mass_bounds_kg"].items()}
+    assert plan["assembly_dimensions_m"]["depth_x"] == 0.55
+    assert plan["source_geometry"]["projected_depth_m"] == 0.163
+    assert _development_hypothesis_findings(
+        plan=plan, completion=completion, observed=observed,
+        graph=graph, physics_bounds=physics_bounds) == []
