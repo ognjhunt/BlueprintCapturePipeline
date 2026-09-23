@@ -8,7 +8,8 @@ from pxr import Usd, UsdPhysics
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_scene_configuration_articulated_static_qualification import (
-    SCHEMA_VERSION, qualify_scene_configuration_articulated_asset_static,
+    SCHEMA_VERSION, _development_hypothesis_findings,
+    qualify_scene_configuration_articulated_asset_static,
 )
 from blueprint_pipeline.task_evaluation_scene_configuration_static_qualification import (
     TaskEvaluationSceneConfigurationStaticQualificationError,
@@ -347,3 +348,43 @@ def test_development_depth_hypothesis_binds_usd_dimensions_mass_and_source_disag
             asset_path=asset, graph_spec=graph, authoring_receipt=authoring,
             replacement_identity=IDENTITY, output_path=tmp_path / "tampered.json")
     assert "replacement_development_geometry_hypothesis_invalid" in error.value.codes
+
+
+def test_final_website_depth_prior_plan_matches_stage_four_schema():
+    from tests.test_task_object_articulated_packaging import _depth_prior, _thin_website_cabinet
+    from blueprint_pipeline.task_object_articulated_packaging import plan_articulated_assembly
+
+    configuration = _thin_website_cabinet()
+    hypothesis = _depth_prior(configuration)
+    configuration["development_geometry_hypothesis"] = hypothesis
+    configuration["mechanism"]["estimated_usable_stroke_m"] = hypothesis["estimated_usable_stroke_m"]
+    configuration["mechanism"]["joint_limits"] = [0.0, hypothesis["estimated_usable_stroke_m"]]
+    configuration["required_output"]["mass_kg_bounds"] = [4.0, 30.0]
+    configuration["required_output"]["task_part_mass_kg_bounds"] = [0.5, 9.0]
+    plan = plan_articulated_assembly(configuration)
+    graph = articulation_graph_from_plan(plan)
+    dimensions = [0.58, 0.42, 0.62]
+    completion = {
+        "collision_dimensions_m": dimensions,
+        "metric_envelope_validation": {
+            "status": "within_development_geometry_hypothesis",
+            "frame": "assembly_frame_closed_plus_handle_protrusion",
+            "expected_dimensions_m": dimensions,
+            "observed_collision_dimensions_m": dimensions,
+            "dimension_relative_errors": [0.0, 0.0, 0.0],
+            "maximum_dimension_relative_error": 0.2,
+            "source_aabb_disagreement": {
+                "source_projected_depth_m": plan["source_geometry"]["projected_depth_m"],
+                "estimated_depth_m": plan["assembly_dimensions_m"]["depth_x"],
+                "depth_disagreement_m": plan["development_geometry_hypothesis"]["depth_disagreement_m"],
+                "physical_measurement_proven": False}}}
+    observed = {"collision_dimensions_m": dimensions,
+                "links": {"carcass": {"mass_kg": 12.0},
+                          **{f"drawer_{index}": {"mass_kg": 4.0} for index in range(3)}}}
+    physics_bounds = {part: {"mass_kg": interval}
+                      for part, interval in hypothesis["revised_part_mass_bounds_kg"].items()}
+    assert plan["assembly_dimensions_m"]["depth_x"] == 0.55
+    assert plan["source_geometry"]["projected_depth_m"] == 0.163
+    assert _development_hypothesis_findings(
+        plan=plan, completion=completion, observed=observed,
+        graph=graph, physics_bounds=physics_bounds) == []
