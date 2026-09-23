@@ -1017,6 +1017,23 @@ def _verify_articulated_replacement_result(
         articulation = None
     target_joints = [
         row for row in articulation["joints"] if row["role"] == "target"] if articulation else []
+    hypothesis = configuration.get("development_geometry_hypothesis")
+    plan = graph.get("assembly_plan")
+    planned_hypothesis = plan.get("development_geometry_hypothesis") if isinstance(plan, Mapping) else None
+    source_geometry = plan.get("source_geometry") if isinstance(plan, Mapping) else None
+    source_envelope = configuration.get("metric_envelope")
+    if ((hypothesis is None) != (planned_hypothesis is None)
+            or (hypothesis is not None and (
+                not isinstance(hypothesis, Mapping)
+                or not isinstance(planned_hypothesis, Mapping)
+                or any(planned_hypothesis.get(key) != value for key, value in hypothesis.items())
+                or not isinstance(source_geometry, Mapping)
+                or not isinstance(source_envelope, Mapping)
+                or source_geometry.get("aabb_min_xyz_m") != source_envelope.get("minimum_xyz_m")
+                or source_geometry.get("aabb_max_xyz_m") != source_envelope.get("maximum_xyz_m")))):
+        raise TaskEvaluationSceneConfigurationAdapterError(
+            "content_agents_articulated_development_hypothesis_binding_invalid"
+        )
     # A planned stroke shorter than the captured task stroke changes the task.
     # Keep this refusal distinct from a malformed authoring result so the
     # preregistered configuration can be corrected before another paid attempt.

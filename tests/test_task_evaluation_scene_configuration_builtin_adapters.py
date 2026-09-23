@@ -1910,3 +1910,36 @@ def test_articulated_stage_three_names_a_planned_stroke_mismatch_before_paid_ret
                 artifact("replacement_graph_spec", sealed["graph_path"]),
             ),
         )
+
+
+def test_articulated_stage_three_refuses_an_unbound_depth_hypothesis(tmp_path):
+    sealed = _articulated_stage_artifacts(tmp_path)
+    source_candidate = tmp_path / "source.usda"
+    source_candidate.write_text("#usda 1.0\n", encoding="utf-8")
+    configuration = json.loads(json.dumps(sealed["authoring_configuration"]))
+    configuration["development_geometry_hypothesis"] = {
+        "schema_version": "articulated_cabinet_depth_hypothesis.v1",
+        "estimated_depth_m": 0.45, "claim_ceiling": "development_only"}
+    configuration_path = tmp_path / "authoring-configuration.json"
+    configuration_path.write_text(json.dumps(configuration), encoding="utf-8")
+    sealed["authoring"]["source_candidate_digest"] = sha256(source_candidate)
+    sealed["authoring"]["result_digest"] = canonical_digest(
+        sealed["authoring"], digest_field="result_digest")
+    sealed["receipt_path"].write_text(json.dumps(sealed["authoring"]), encoding="utf-8")
+    output = tmp_path / "stage-three-output"
+    output.mkdir()
+    with pytest.raises(TaskEvaluationSceneConfigurationAdapterError,
+                       match="content_agents_articulated_development_hypothesis_binding_invalid"):
+        execute_content_agents_rigid_replacement(
+            envelope={"recipe": {"subject_identity": sealed["identity"]}},
+            stage={"stage_id": "stage-3", "capability": "rigid_replacement_authoring",
+                   "execution_class": "gpu_canary"},
+            configuration=configuration, configuration_path=configuration_path,
+            dependency_results=({}, {"output_artifacts": [artifact("source_object_candidate_mesh", source_candidate)]}),
+            output_root=output,
+            provider_runtime_artifacts=(
+                artifact("replacement_asset", sealed["asset"]),
+                artifact("replacement_authoring_receipt", sealed["receipt_path"]),
+                artifact("replacement_graph_spec", sealed["graph_path"]),
+            ),
+        )
