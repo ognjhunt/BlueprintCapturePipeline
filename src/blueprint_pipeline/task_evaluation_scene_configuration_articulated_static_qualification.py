@@ -43,13 +43,14 @@ _DYNAMIC_MESH_COLLISION_APPROXIMATIONS = {"convexDecomposition", "convexHull"}
 
 
 def _bounds_valid(value: Any) -> bool:
-    return (isinstance(value, Mapping) and _finite(value.get("mass_kg") or [])
+    return (isinstance(value, Mapping)
             and all(_finite(value.get(name) or []) and len(value.get(name) or []) == 2
+                    and value[name][0] <= value[name][1]
                     for name in ("mass_kg", "static_friction", "dynamic_friction", "restitution")))
 
 
 def _usd_findings(path: Path, *, graph: Mapping[str, Any], physics_bounds: Mapping[str, Mapping[str, Sequence[float]]],
-                  link_parts: Mapping[str, str]) -> tuple[list[str], dict[str, Any]]:
+                  link_parts: Mapping[str, str], plan: Mapping[str, Any]) -> tuple[list[str], dict[str, Any]]:
     try:
         from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade, UsdUtils
     except ImportError as exc:  # pragma: no cover - provider image owns OpenUSD
@@ -75,6 +76,8 @@ def _usd_findings(path: Path, *, graph: Mapping[str, Any], physics_bounds: Mappi
         findings.append("replacement_stage_frame_invalid")
     prims = list(stage.Traverse())
     root = stage.GetDefaultPrim()
+    if root.GetCustomDataByKey("blueprint:articulatedAssemblyPlanDigest") != canonical_digest(dict(plan)):
+        findings.append("replacement_assembly_plan_disagrees_with_usd")
     roots = [prim for prim in prims if prim.HasAPI(UsdPhysics.ArticulationRootAPI)]
     if len(roots) != 1 or roots[0] != root:
         findings.append("replacement_single_articulation_root_required")
@@ -89,6 +92,8 @@ def _usd_findings(path: Path, *, graph: Mapping[str, Any], physics_bounds: Mappi
     graph_links = {row["link_id"] for row in graph["links"]}
     if {prim.GetName() for prim in bodies} != graph_links:
         findings.append("replacement_link_set_disagrees_with_graph")
+    graph_link_rows = {row["link_id"]: row for row in graph["links"]}
+    plan_link_rows = {row["link_id"]: row for row in plan["links"]}
 
     joints = [prim for prim in prims if prim.IsA(UsdPhysics.Joint)]
     moving = [prim for prim in joints if not prim.IsA(UsdPhysics.FixedJoint)]
@@ -126,24 +131,69 @@ def _usd_findings(path: Path, *, graph: Mapping[str, Any], physics_bounds: Mappi
         targets1 = UsdPhysics.Joint(task_joint).GetBody1Rel().GetTargets()
         if (len(targets0) != 1 or len(targets1) != 1 or str(targets0[0]) not in body_by_path
                 or str(targets1[0]) not in body_by_path
+                or body_by_path[str(targets0[0])].GetName() != target_row["parent_link_id"]
                 or body_by_path[str(targets1[0])].GetName() != target_row["child_link_id"]):
             findings.append("replacement_target_joint_bodies_invalid")
         else:
             task_child = body_by_path[str(targets1[0])]
+        if typed is not None:
+            axis_token = str(typed.GetAxisAttr().Get() or "").upper()
+            axis_value = task_joint.GetCustomDataByKey("blueprint:graphAxis")
+            declared_axis = list(target_row["axis"])
+            token_vector = {"X": [1.0, 0.0, 0.0], "Y": [0.0, 1.0, 0.0],
+                            "Z": [0.0, 0.0, 1.0]}.get(axis_token)
+            try:
+                axis_components = [float(v) for v in axis_value]
+            except (TypeError, ValueError):
+                axis_components = []
+            if (token_vector is None or not _close_sequence(axis_components, declared_axis)
+                    or not _close_sequence(token_vector, declared_axis)):
+                findings.append("replacement_target_joint_axis_mismatch")
+        declared_drive = target_row["drive"]
+        linear_drive = (UsdPhysics.DriveAPI(task_joint, "linear")
+                        if task_joint.HasAPI(UsdPhysics.DriveAPI, "linear") else None)
+        if (task_joint.GetCustomDataByKey("blueprint:declaredDriveType") != "none"
+                or declared_drive["drive_type"] != "none"
+                or task_joint.HasAPI(UsdPhysics.DriveAPI, "angular")
+                or (linear_drive is None and declared_drive["damping"] != 0.0)
+                or (linear_drive is not None and (
+                    str(linear_drive.GetTypeAttr().Get()) != "force"
+                    or not _close_sequence([linear_drive.GetStiffnessAttr().Get()], [0.0])
+                    or not _close_sequence([linear_drive.GetDampingAttr().Get()],
+                                           [declared_drive["damping"]])))):
+            findings.append("replacement_target_joint_drive_mismatch")
         observed_joint = {"prim_path": str(task_joint.GetPath()), "joint_type": target_row["joint_type"],
                           "limits": [float(lower), float(upper)] if lower is not None and upper is not None else None,
                           "reset_position": reset}
+    expected_joints = {row["joint_id"]: row for row in graph["joints"]}
     for prim in joints:
+        expected = expected_joints.get(prim.GetName())
+        joint = UsdPhysics.Joint(prim)
+        targets0 = joint.GetBody0Rel().GetTargets()
+        targets1 = joint.GetBody1Rel().GetTargets()
+        if (expected is None or str(prim.GetPath()) != "/Asset/joints/" + prim.GetName()
+                or len(targets0) != 1 or len(targets1) != 1
+                or str(targets0[0]) not in body_by_path or str(targets1[0]) not in body_by_path
+                or body_by_path[str(targets0[0])].GetName() != expected["parent_link_id"]
+                or body_by_path[str(targets1[0])].GetName() != expected["child_link_id"]):
+            findings.append("replacement_joint_graph_topology_mismatch:" + prim.GetName())
         if prim is task_joint:
             continue
         if not prim.IsA(UsdPhysics.FixedJoint):
             findings.append("replacement_non_target_joint_not_fixed:" + prim.GetName())
-        joint = UsdPhysics.Joint(prim)
-        if any(len(rel.GetTargets()) != 1 or str(rel.GetTargets()[0]) not in body_by_path
-               for rel in (joint.GetBody0Rel(), joint.GetBody1Rel())):
-            findings.append("replacement_fixed_joint_bodies_invalid:" + prim.GetName())
     if len(joints) != len(graph["joints"]):
         findings.append("replacement_joint_count_disagrees_with_graph")
+    for pair in graph["collision_pairs"]:
+        first, second = (body_by_path.get("/Asset/links/" + pair[name]) for name in ("link_a", "link_b"))
+        if first is None or second is None:
+            findings.append("replacement_collision_pair_link_missing")
+            continue
+        filtered = (first.HasAPI(UsdPhysics.FilteredPairsAPI)
+                    and second.GetPath() in UsdPhysics.FilteredPairsAPI(first).GetFilteredPairsRel().GetTargets())
+        filtered = filtered or (second.HasAPI(UsdPhysics.FilteredPairsAPI)
+                                and first.GetPath() in UsdPhysics.FilteredPairsAPI(second).GetFilteredPairsRel().GetTargets())
+        if filtered == pair["collision_enabled"]:
+            findings.append("replacement_collision_filter_disagrees_with_graph")
 
     collision_prims = [prim for prim in prims if prim.HasAPI(UsdPhysics.CollisionAPI)]
     cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(),
@@ -159,12 +209,22 @@ def _usd_findings(path: Path, *, graph: Mapping[str, Any], physics_bounds: Mappi
         link_id = prim.GetName()
         part_id = link_parts.get(link_id, "")
         bounds = physics_bounds.get(part_id)
+        if (str(prim.GetPath()) != "/Asset/links/" + link_id
+                or prim.GetCustomDataByKey("blueprint:partId") != part_id
+                or prim.GetCustomDataByKey("blueprint:semanticRole")
+                != (graph_link_rows.get(link_id) or {}).get("semantic_role")
+                or prim.GetCustomDataByKey("blueprint:semanticRole")
+                != (plan_link_rows.get(link_id) or {}).get("semantic_role")):
+            findings.append("replacement_link_identity_or_part_mismatch:" + link_id)
         own = [c for c in collision_prims if str(c.GetPath()).startswith(str(prim.GetPath()) + "/")]
         if not own:
             findings.append("replacement_link_collision_missing:" + link_id)
         corners: list[Any] = []
+        materials: list[dict[str, float]] = []
         inverse = xform_cache.GetLocalToWorldTransform(prim).GetInverse()
         for collider in own:
+            if UsdPhysics.CollisionAPI(collider).GetCollisionEnabledAttr().Get() is False:
+                findings.append("replacement_link_collision_disabled:" + link_id)
             aligned = cache.ComputeWorldBound(collider).ComputeAlignedRange()
             if aligned.IsEmpty():
                 findings.append("replacement_collision_geometry_invalid:" + link_id)
@@ -207,6 +267,8 @@ def _usd_findings(path: Path, *, graph: Mapping[str, Any], physics_bounds: Mappi
                 if (not row or bounds is None or row["dynamic_friction"] > row["static_friction"]
                         or any(not bounds[name][0] <= row[name] <= bounds[name][1] for name in row)):
                     material_bounds_ok = False
+                if row:
+                    materials.append(row)
         visual = stage.GetPrimAtPath(prim.GetPath().AppendChild("visual"))
         if not visual or visual.GetCustomDataByKey(PROVENANCE_ATTRIBUTE) not in {OBSERVED_PROVENANCE, GENERATED_PROVENANCE}:
             findings.append("replacement_visual_provenance_untagged:" + link_id)
@@ -237,7 +299,8 @@ def _usd_findings(path: Path, *, graph: Mapping[str, Any], physics_bounds: Mappi
         link_rows[link_id] = {"prim_path": str(prim.GetPath()), "part_id": part_id, "mass_kg": mass_value,
                               "center_of_mass_m": center, "diagonal_inertia_kg_m2": inertia,
                               "collision_prim_paths": [str(c.GetPath()) for c in own],
-                              "collision_bounds_link_frame_m": link_bounds}
+                              "collision_bounds_link_frame_m": link_bounds,
+                              "physics_materials": materials}
     if not material_bounds_ok:
         findings.append("replacement_physics_material_bounds_invalid")
     if task_child is not None and not handle_found:
@@ -282,6 +345,12 @@ def qualify_scene_configuration_articulated_asset_static(
     plan = graph_spec.get("assembly_plan")
     link_parts = ({row["link_id"]: row["part_id"] for row in plan.get("links", []) if isinstance(row, Mapping)}
                   if isinstance(plan, Mapping) else {})
+    plan_links = plan.get("links") if isinstance(plan, Mapping) else None
+    graph_links = graph.get("links") if isinstance(graph, Mapping) else None
+    if (not isinstance(plan_links, list) or not isinstance(graph_links, list)
+            or len(link_parts) != len(plan_links)
+            or {row["link_id"] for row in graph_links} != set(link_parts)):
+        findings.append("replacement_assembly_plan_links_invalid")
     if (graph_spec.get("schema_version") != GRAPH_SCHEMA_VERSION
             or graph_spec.get("asset_id") != replacement_identity.get("id")
             or graph_spec.get("asset_version") != replacement_identity.get("version")
@@ -300,22 +369,52 @@ def qualify_scene_configuration_articulated_asset_static(
             or not isinstance(output_usd, Mapping) or output_usd.get("sha256") != digest or output_usd.get("size_bytes") != size):
         findings.append("replacement_authoring_receipt_invalid")
     observed: dict[str, Any] = {}
-    if asset.is_file() and graph is not None and bounds_valid and link_parts:
-        usd_findings, observed = _usd_findings(asset, graph=graph, physics_bounds=physics_bounds, link_parts=link_parts)
+    if asset.is_file() and graph is not None and bounds_valid and link_parts and "replacement_assembly_plan_links_invalid" not in findings:
+        usd_findings, observed = _usd_findings(asset, graph=graph, physics_bounds=physics_bounds,
+                                               link_parts=link_parts, plan=plan)
         findings.extend(usd_findings)
+    expected_link_paths = {link_id: row["prim_path"] for link_id, row in observed.get("links", {}).items()}
+    root_link_id = next((row["link_id"] for row in graph["links"] if row["is_root"]), None) if graph else None
+    if (not observed or graph_spec.get("link_prim_paths") != expected_link_paths
+            or graph_spec.get("fixed_base_body_prim_path") != expected_link_paths.get(root_link_id)
+            or graph_spec.get("task_link_prim_path")
+            != expected_link_paths.get(next((row["child_link_id"] for row in graph["joints"]
+                                            if row["role"] == "target"), None) if graph else None)):
+        findings.append("replacement_graph_link_paths_disagree_with_usd")
     if (not isinstance(completion, Mapping) or completion.get("schema_version") != COMPLETION_SCHEMA_VERSION
             or completion.get("status") != "bounded_candidate_completed"
             or completion.get("candidate_prior_only") is not True or completion.get("physical_truth_claimed") is not False
             or completion.get("completion_digest") != canonical_digest(completion, digest_field="completion_digest")
             or completion.get("task_joint_prim_path") != graph_spec.get("task_joint_prim_path")
+            or completion.get("task_link_prim_path") != graph_spec.get("task_link_prim_path")
             or completion.get("fixed_base_body_prim_path") != graph_spec.get("fixed_base_body_prim_path")
+            or completion.get("physics_bounds") != graph_spec.get("physics_bounds")
+            or completion.get("intra_assembly_collision_filtered") is not True
+            or completion.get("handle_prim_paths") != graph_spec.get("handle_prim_paths")
+            or completion.get("handle_grasp_point_link_m") != graph_spec.get("handle_grasp_point_link_m")
             or not observed
             or completion.get("task_joint_prim_path") != observed.get("task_joint", {}).get("prim_path")
+            or {row["joint_id"] for row in completion.get("joints", []) if isinstance(row, Mapping)}
+            != {row["joint_id"] for row in graph["joints"]}
+            or len(completion.get("joints", [])) != len(graph["joints"])
+            or any(row.get("prim_path") != "/Asset/joints/" + row["joint_id"]
+                   or any(row.get(key) != expected.get(key) for key in (
+                       "joint_type", "parent_link_id", "child_link_id", "role", "limits", "reset_position"))
+                   for row in completion.get("joints", []) if isinstance(row, Mapping)
+                   for expected in graph["joints"] if expected["joint_id"] == row["joint_id"])
             or {row["link_id"]: row for row in completion.get("links", []) if isinstance(row, Mapping)}.keys() != observed["links"].keys()
-            or any(not _close_sequence([row["mass_kg"]], [observed["links"][row["link_id"]]["mass_kg"]])
+            or any(row.get("prim_path") != observed["links"][row["link_id"]]["prim_path"]
+                   or row.get("part_id") != observed["links"][row["link_id"]]["part_id"]
+                   or not _close_sequence([row["mass_kg"]], [observed["links"][row["link_id"]]["mass_kg"]])
                    or not _close_sequence(row["center_of_mass_m"], observed["links"][row["link_id"]]["center_of_mass_m"])
                    or not _close_sequence(row["diagonal_inertia_kg_m2"], observed["links"][row["link_id"]]["diagonal_inertia_kg_m2"])
                    or sorted(row["collision_prim_paths"]) != sorted(observed["links"][row["link_id"]]["collision_prim_paths"])
+                   or not all(_close_sequence(row["collision_bounds_link_frame_m"][bound],
+                                              observed["links"][row["link_id"]]["collision_bounds_link_frame_m"][bound])
+                              for bound in ("minimum", "maximum"))
+                   or any(not all(abs(material[key] - row["physics_material"][key]) <= 1e-6
+                                  for key in ("static_friction", "dynamic_friction", "restitution"))
+                          for material in observed["links"][row["link_id"]]["physics_materials"])
                    for row in completion.get("links", []) if isinstance(row, Mapping))):
         findings.append("replacement_physics_completion_invalid")
     # The grasp point the runtime will reach for must sit inside the handle the

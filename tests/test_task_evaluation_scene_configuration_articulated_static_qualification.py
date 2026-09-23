@@ -169,3 +169,105 @@ def test_a_rigid_single_solid_cannot_pass_the_articulated_gate(tmp_path):
             replacement_identity=IDENTITY, output_path=tmp_path / "rigid.json")
     assert "replacement_single_target_joint_required" in error.value.codes
     assert "replacement_link_set_disagrees_with_graph" in error.value.codes
+
+
+@pytest.mark.parametrize(("change", "expected_code"), [
+    ("target_parent", "replacement_target_joint_bodies_invalid"),
+    ("target_axis", "replacement_target_joint_axis_mismatch"),
+    ("fixed_joint_body", "replacement_joint_graph_topology_mismatch:drawer_0_fixed"),
+    ("link_path", "replacement_graph_link_paths_disagree_with_usd"),
+    ("collision_filter", "replacement_collision_filter_disagrees_with_graph"),
+    ("assembly_plan", "replacement_assembly_plan_disagrees_with_usd"),
+])
+def test_resealed_graph_cannot_relabel_the_exact_jointed_asset(tmp_path, change, expected_code):
+    asset, graph, authoring = _sealed(tmp_path)
+    graph = json.loads(json.dumps(graph))
+    joints = graph["articulation_graph"]["joints"]
+    if change == "target_parent":
+        next(row for row in joints if row["role"] == "target")["parent_link_id"] = "drawer_0"
+    elif change == "target_axis":
+        next(row for row in joints if row["role"] == "target")["axis"] = [0.0, 1.0, 0.0]
+    elif change == "fixed_joint_body":
+        next(row for row in joints if row["joint_id"] == "drawer_0_fixed")["parent_link_id"] = "drawer_2"
+    elif change == "link_path":
+        graph["link_prim_paths"]["drawer_1"] = "/Asset/links/other"
+    elif change == "collision_filter":
+        graph["articulation_graph"]["collision_pairs"][0]["collision_enabled"] = True
+    else:
+        graph["assembly_plan"]["links"][0]["rest_translation_m"][0] += 0.01
+    with pytest.raises(TaskEvaluationSceneConfigurationStaticQualificationError) as error:
+        qualify_scene_configuration_articulated_asset_static(
+            asset_path=asset, graph_spec=graph, authoring_receipt=authoring,
+            replacement_identity=IDENTITY, output_path=tmp_path / "tampered.json")
+    assert expected_code in error.value.codes
+
+
+@pytest.mark.parametrize("field", ["physics_material", "collision_bounds_link_frame_m", "part_id"])
+def test_resealed_completion_cannot_change_per_link_physics_or_identity(tmp_path, field):
+    asset, graph, authoring = _sealed(tmp_path)
+    authoring = json.loads(json.dumps(authoring))
+    link = next(row for row in authoring["candidate_physics_completion"]["links"]
+                if row["link_id"] == "drawer_1")
+    if field == "physics_material":
+        link[field]["static_friction"] = 0.5
+    elif field == "collision_bounds_link_frame_m":
+        link[field]["maximum"][0] += 0.02
+    else:
+        link[field] = "other_part"
+    _reseal(authoring["candidate_physics_completion"], "completion_digest")
+    _reseal(authoring)
+    with pytest.raises(TaskEvaluationSceneConfigurationStaticQualificationError) as error:
+        qualify_scene_configuration_articulated_asset_static(
+            asset_path=asset, graph_spec=graph, authoring_receipt=authoring,
+            replacement_identity=IDENTITY, output_path=tmp_path / "tampered.json")
+    assert "replacement_physics_completion_invalid" in error.value.codes
+
+
+def test_resealed_completion_cannot_relabel_the_task_joint(tmp_path):
+    asset, graph, authoring = _sealed(tmp_path)
+    authoring = json.loads(json.dumps(authoring))
+    target = next(row for row in authoring["candidate_physics_completion"]["joints"]
+                  if row["role"] == "target")
+    target["limits"][1] -= 0.01
+    _reseal(authoring["candidate_physics_completion"], "completion_digest")
+    _reseal(authoring)
+    with pytest.raises(TaskEvaluationSceneConfigurationStaticQualificationError) as error:
+        qualify_scene_configuration_articulated_asset_static(
+            asset_path=asset, graph_spec=graph, authoring_receipt=authoring,
+            replacement_identity=IDENTITY, output_path=tmp_path / "tampered.json")
+    assert "replacement_physics_completion_invalid" in error.value.codes
+
+
+@pytest.mark.parametrize(("change", "expected_code"), [
+    ("joint_axis", "replacement_target_joint_axis_mismatch"),
+    ("fixed_joint_body", "replacement_joint_graph_topology_mismatch:drawer_0_fixed"),
+    ("link_part", "replacement_link_identity_or_part_mismatch:drawer_1"),
+])
+def test_resealed_usdz_still_has_to_match_the_declared_assembly(tmp_path, change, expected_code):
+    from pxr import Sdf, UsdUtils
+
+    asset, graph, authoring = _sealed(tmp_path)
+    flattened = tmp_path / "edited.usdc"
+    assert Usd.Stage.Open(str(asset)).Flatten().Export(str(flattened))
+    edited = Usd.Stage.Open(str(flattened))
+    if change == "joint_axis":
+        UsdPhysics.PrismaticJoint(edited.GetPrimAtPath(
+            "/Asset/joints/task_part_joint")).GetAxisAttr().Set("Y")
+    elif change == "fixed_joint_body":
+        UsdPhysics.Joint(edited.GetPrimAtPath(
+            "/Asset/joints/drawer_0_fixed")).GetBody0Rel().SetTargets(
+                [Sdf.Path("/Asset/links/drawer_2")])
+    else:
+        edited.GetPrimAtPath("/Asset/links/drawer_1").SetCustomDataByKey(
+            "blueprint:partId", "different_part")
+    edited.GetRootLayer().Save()
+    modified = tmp_path / "edited.usdz"
+    assert UsdUtils.CreateNewUsdzPackage(Sdf.AssetPath(str(flattened)), str(modified))
+    authoring["output_usd"] = {"sha256": "sha256:" + hashlib.sha256(modified.read_bytes()).hexdigest(),
+                               "size_bytes": modified.stat().st_size}
+    _reseal(authoring)
+    with pytest.raises(TaskEvaluationSceneConfigurationStaticQualificationError) as error:
+        qualify_scene_configuration_articulated_asset_static(
+            asset_path=modified, graph_spec=graph, authoring_receipt=authoring,
+            replacement_identity=IDENTITY, output_path=tmp_path / "tampered.json")
+    assert expected_code in error.value.codes
