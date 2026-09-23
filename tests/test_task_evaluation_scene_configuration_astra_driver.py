@@ -87,6 +87,39 @@ def test_articulated_configuration_refuses_before_any_inference(retained):
         driver.build_authoring_request(stage_input, retained.source, [retained.image], retained.rights)
 
 
+def test_articulated_depth_hypothesis_binds_original_frame_and_source_receipt(retained, monkeypatch):
+    from tests.test_task_object_articulated_packaging import _depth_prior, _thin_website_cabinet
+    from blueprint_pipeline import website_native_inputs
+
+    monkeypatch.setattr(website_native_inputs, "validate_website_authoring_disclosure", lambda **_: None)
+    config = _thin_website_cabinet()
+    config.update(authoring_backend=driver.BACKEND,
+                  provider_disclosure={"derived_views_and_metric_envelope": True,
+                                       "provider_training": False, "public_redistribution": False})
+    hypothesis = _depth_prior(config)
+    hypothesis["basis"] = "original_capture_frames"
+    hypothesis["evidence_frame_sha256s"] = [driver._sha256(retained.image)]
+    config["development_geometry_hypothesis"] = hypothesis
+    config["mechanism"]["estimated_usable_stroke_m"] = hypothesis["estimated_usable_stroke_m"]
+    config["mechanism"]["joint_limits"] = [0.0, hypothesis["estimated_usable_stroke_m"]]
+    config["required_output"]["mass_kg_bounds"] = [4.0, 30.0]
+    config["required_output"]["task_part_mass_kg_bounds"] = [0.5, 9.0]
+    retained.input["configuration"] = config
+    plan, requests = driver.build_articulated_authoring_requests(
+        retained.input, retained.source, [retained.image], retained.rights)
+    assert plan["source_geometry_receipt"]["source_candidate_digest"] == retained.source["digest"]
+    assert plan["source_geometry_receipt"]["construction_envelope_digest"] == retained.input["construction_envelope"]["envelope_digest"]
+    assert requests["carcass"].dimensions_m[0] == pytest.approx(0.55)
+    assert requests["carcass"].dimension_authority == "estimated"
+    assert requests["carcass"].physical_review_input.dimensions.x_m.interval.lower == pytest.approx(0.45)
+    assert requests["carcass"].physical_review_input.dimensions.x_m.interval.upper == pytest.approx(0.65)
+    assert "development_geometry_hypothesis" in requests["carcass"].construction_constraints
+    config["development_geometry_hypothesis"]["evidence_frame_sha256s"] = ["sha256:" + "0" * 64]
+    with pytest.raises(driver.AstraStageError, match="depth_hypothesis_frame_mismatch"):
+        driver.build_articulated_authoring_requests(
+            retained.input, retained.source, [retained.image], retained.rights)
+
+
 @pytest.mark.parametrize("mutation", ["rights", "disclosure", "uncertainty", "owner", "export_tolerance"])
 def test_invalid_input_refuses_before_authoring(retained, mutation):
     if mutation == "rights":

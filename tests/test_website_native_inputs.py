@@ -6,7 +6,10 @@ import pytest
 
 from blueprint_pipeline.common import write_json
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
-from blueprint_pipeline.website_native_background import prepare_construction_stages, construction_rights_admission
+from blueprint_pipeline.website_native_background import (
+    construction_rights_admission, derived_stage_three_configuration, prepare_construction_stages,
+)
+from blueprint_pipeline.website_drawer_depth_prior import PRIOR as DRAWER_DEPTH_PRIOR
 from blueprint_pipeline.website_native_inputs import INPUT_STATUS, validate_website_native_inputs
 from blueprint_pipeline.website_object_observations import _record
 from blueprint_pipeline.website_scene_runtime_inputs import prepare_website_runtime_inputs
@@ -17,6 +20,51 @@ from blueprint_pipeline.task_evaluation_scene_configuration_disclosure import re
 from blueprint_pipeline.task_evaluation_scene_configuration_submission_records import recipe
 from blueprint_pipeline.task_evaluation_scene_construction_recipe import validate_scene_construction_recipe
 from tests.test_website_native_appearance import inputs
+
+
+def test_exact_drawer_successor_changes_only_stage_three_and_freezes_stroke(tmp_path, monkeypatch):
+    from tests.test_task_object_articulated_packaging import _thin_website_cabinet
+    from blueprint_pipeline import website_drawer_depth_prior
+
+    original = _thin_website_cabinet()
+    original["scene_id"] = DRAWER_DEPTH_PRIOR["scene_id"]
+    original["replacement_identity"] = DRAWER_DEPTH_PRIOR["subject_identity"]
+    observed = {"schema_version": "website_object_observations.v1",
+                "preparation_digest": DRAWER_DEPTH_PRIOR["preparation_digest"],
+                "frames": [{"frame_id": str(i), "image_basis": "original_capture",
+                            "image": {"digest": digest}}
+                           for i, digest in enumerate(DRAWER_DEPTH_PRIOR["original_frame_sha256s"])],
+                "digest": ""}
+    observed["digest"] = canonical_digest(observed, digest_field="digest")
+    manifest_path = tmp_path / "observations.json"
+    manifest_path.write_text(json.dumps(observed))
+    record = _record(manifest_path)
+    prior = copy.deepcopy(DRAWER_DEPTH_PRIOR)
+    prior["observation_manifest_digest"] = record["digest"]
+    monkeypatch.setattr(website_drawer_depth_prior, "PRIOR", prior)
+    runtime = {"object_authoring": {"configuration": original, "observation_manifest": record},
+               "stage_one_marker": "completed", "stage_two_marker": "completed"}
+    preparation = {"digest": DRAWER_DEPTH_PRIOR["preparation_digest"],
+                   "development_test": {"kind": "development_drawer_fixture",
+                                        "captured_scene_evaluation_allowed": False},
+                   "authoring_inputs": {"source_frames": [
+                       {"role": "observed_source", "sha256": digest}
+                       for digest in DRAWER_DEPTH_PRIOR["original_frame_sha256s"]]},
+                   "intake_request": {"task": {"success": {
+                       "minimum_opening_fraction_of_estimated_stroke": 0.6}}}}
+    before = json.dumps(runtime, sort_keys=True)
+    successor = derived_stage_three_configuration(runtime=runtime, preparation=preparation)
+    assert derived_stage_three_configuration(runtime=runtime, preparation=preparation) == successor
+    assert json.dumps(runtime, sort_keys=True) == before
+    assert successor["metric_envelope"] == original["metric_envelope"]
+    assert successor["development_geometry_hypothesis"]["estimated_depth_m"] == 0.55
+    assert successor["mechanism"]["joint_limits"] == [0.0, 0.4125]
+    assert successor["development_geometry_hypothesis"]["estimated_minimum_opening_m"] == 0.2475
+    assert successor["required_output"]["mass_kg_bounds"] == [4.0, 30.0]
+    assert successor["required_output"]["task_part_mass_kg_bounds"] == [0.5, 9.0]
+    observed["frames"][0]["image"]["digest"] = "sha256:" + "0" * 64
+    manifest_path.write_text(json.dumps(observed))
+    assert derived_stage_three_configuration(runtime=runtime, preparation=preparation) == original
 
 
 def packet(tmp_path):
