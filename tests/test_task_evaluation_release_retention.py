@@ -699,6 +699,48 @@ def test_catalog_disabled_unavailable_profile_does_not_block_safe_retention(
     assert (profile_dir / "unavailable-profile.json").is_file()
 
 
+@pytest.mark.parametrize("catalog_disabled", [True, False])
+def test_cancelled_owner_profile_requires_a_matching_disabled_catalog(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, catalog_disabled: bool
+) -> None:
+    active = "a" * 40
+    stale = "c" * 40
+    state = _base_state(tmp_path, commits=[active, stale], active_commit=active)
+    profile_dir = state["profile_dir"]
+    catalog = state["public_catalog"]
+    assert isinstance(profile_dir, Path)
+    assert isinstance(catalog, Path)
+    profile = _profile(tmp_path, profile_id="cancelled-profile", commit=stale)
+    _write_json(profile_dir / "cancelled-profile.json", profile)
+    _rewrite_catalog(profile_dir, catalog)
+    blocker = "scene_execution_owner_attempt_cancelled_before_execution"
+    if catalog_disabled:
+        descriptors = json.loads(catalog.read_text(encoding="utf-8"))
+        descriptors[0]["execution_admission"]["live_enabled"] = False
+        descriptors[0]["execution_admission"]["blockers"] = [blocker]
+        _write_json(catalog, descriptors)
+    monkeypatch.setattr(retention, "validate_launch_profile", lambda _profile: [blocker])
+
+    if not catalog_disabled:
+        with pytest.raises(
+            ReleaseRetentionError,
+            match="release_retention_unavailable_profile_catalog_not_fail_closed",
+        ):
+            build_release_retention_plan(
+                **state, current_deploy_commit=active  # type: ignore[arg-type]
+            )
+        return
+
+    plan = build_release_retention_plan(
+        **state, current_deploy_commit=active  # type: ignore[arg-type]
+    )
+    assert [row["source_commit"] for row in plan["eligible_commits"]] == [stale]
+    assert plan["catalog_disabled_unavailable_profiles"][0][
+        "unavailable_blockers"
+    ] == [blocker]
+    assert (profile_dir / "cancelled-profile.json").is_file()
+
+
 def test_unavailable_profile_must_be_disabled_in_the_bound_catalog(
     tmp_path: Path,
 ) -> None:

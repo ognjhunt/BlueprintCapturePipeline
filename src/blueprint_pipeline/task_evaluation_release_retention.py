@@ -99,6 +99,9 @@ DEFAULT_LIVE_REFERENCE_ROOTS = tuple(
 )
 MANAGED_RUNTIME_COMPONENTS = ("splat-render", "scene-configuration")
 DEFAULT_MINIMUM_AGE_SECONDS = 24 * 60 * 60
+_TERMINAL_OWNER_PROFILE_BLOCKERS = frozenset({
+    "scene_execution_owner_attempt_cancelled_before_execution",
+})
 
 _COMMIT_RE = re.compile(r"[0-9a-f]{40}")
 _COMMIT_SEARCH_RE = re.compile(r"(?<![0-9a-f])[0-9a-f]{40}(?![0-9a-f])")
@@ -404,10 +407,16 @@ def _profiles_and_catalog(
         else:
             blockers = validate_launch_profile(profile)
             if blockers:
-                raise ReleaseRetentionError(
-                    f"release_retention_profile_invalid:{path.name}:"
-                    + ",".join(blockers)
-                )
+                if set(blockers).issubset(_TERMINAL_OWNER_PROFILE_BLOCKERS):
+                    # A cancelled owner attempt is permanently unreachable. The
+                    # catalog check below still requires this exact blocker and
+                    # live_enabled=false before its release can be retired.
+                    unavailable_profiles[profile_id] = sorted(set(blockers))
+                else:
+                    raise ReleaseRetentionError(
+                        f"release_retention_profile_invalid:{path.name}:"
+                        + ",".join(blockers)
+                    )
         profiles[profile_id] = profile
         documents.append(evidence)
 
