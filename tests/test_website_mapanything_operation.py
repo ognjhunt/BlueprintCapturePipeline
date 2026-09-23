@@ -155,6 +155,32 @@ def test_bootstrap_installs_only_bundle_bound_runtime_files(packet, tmp_path, mo
     assert len(commands) == 2
 
 
+def test_bootstrap_failure_upload_is_bound_and_does_not_send_signed_url(monkeypatch):
+    from blueprint_pipeline import website_mapanything_bootstrap as bootstrap
+
+    captured = []
+    class Response:
+        def __enter__(self):
+            return self
+        def __exit__(self, *_args):
+            return None
+    monkeypatch.setattr(bootstrap.urllib.request, "urlopen", lambda request, **_kwargs: (
+        captured.append(request) or Response()))
+    monkeypatch.setenv("BLUEPRINT_RECONSTRUCTION_OUTPUT_BUNDLE_PUT_URL", "https://objects.example/put?secret=hidden")
+    monkeypatch.setenv("BLUEPRINT_RECONSTRUCTION_OPERATION_REQUEST_DIGEST", DIGEST)
+    monkeypatch.setenv("BLUEPRINT_RECONSTRUCTION_INPUT_BUNDLE_DIGEST", DIGEST)
+    monkeypatch.setenv("BLUEPRINT_SOURCE_COMMIT", SHA)
+    bootstrap._phase("dependency_install")
+    bootstrap._report_failure(ValueError("website_worker_runtime_missing"))
+    assert len(captured) == 1 and captured[0].get_method() == "PUT"
+    assert not captured[0].has_header("Content-type")
+    body = json.loads(captured[0].data)
+    assert body["phase"] == "dependency_install"
+    assert body["code"] == "website_worker_runtime_missing"
+    assert body["operation_request_digest"] == DIGEST
+    assert "hidden" not in json.dumps(body)
+
+
 def _controller_profile(tmp_path, monkeypatch):
     from blueprint_pipeline import website_geometry_dispatch as dispatch
     value = {"schema_version": "website_mapanything_runtime.v1", "source_commit": SHA,
@@ -303,6 +329,44 @@ def test_controller_allows_one_new_release_after_verified_failed_rental(packet, 
     write_json(operation_root / "reconstruction_vast_operation_execution.json", execution)
     with pytest.raises(ValueError, match="requires_reconciliation"):
         dispatch.dispatch_geometry(**args)
+
+
+def test_controller_allows_second_retry_only_after_distinct_release_and_zero_teardown(packet, tmp_path, monkeypatch):
+    from blueprint_pipeline import website_geometry_dispatch as dispatch
+
+    path, _, _ = packet
+    inputs = json.loads(path.read_text())
+    output = tmp_path / "geometry"
+    state = {"input_digest": inputs["digest"], "task_context_digest": DIGEST}
+    commits = [SHA, "b" * 40]
+    for index, commit in enumerate(commits):
+        root = output / ("controller_geometry" if index == 0 else "controller_geometry_retry_1")
+        operation_root = root / "reconstruction_vast_operation"
+        operation_root.mkdir(parents=True)
+        write_json(root / "dispatch.json", state)
+        write_json(root / "request.json", {"request_digest": DIGEST, "source_commit_sha": commit})
+        provider_zero = {"status": "PASS"}
+        provider_zero["provider_zero_digest"] = canonical_digest(provider_zero, digest_field="provider_zero_digest")
+        teardown = {"provider_zero_verified": True}
+        teardown["teardown_receipt_digest"] = canonical_digest(teardown, digest_field="teardown_receipt_digest")
+        execution = {"status": "failed", "request_digest": DIGEST, "provider_zero_verified": True,
+                     "blockers": ["reconstruction_vast_operation_output_not_accepted"],
+                     "provider_zero_digest": provider_zero["provider_zero_digest"],
+                     "teardown_receipt_digest": teardown["teardown_receipt_digest"]}
+        execution["execution_result_digest"] = canonical_digest(execution, digest_field="execution_result_digest")
+        write_json(operation_root / "provider_zero_verification.json", provider_zero)
+        write_json(operation_root / "teardown_receipt.json", teardown)
+        write_json(operation_root / "reconstruction_vast_operation_execution.json", execution)
+    second_retry = output / "controller_geometry_retry_2"
+    monkeypatch.setattr(dispatch, "_reuse", lambda root, _inputs: (
+        {"status": "estimated", "retry_root": str(root)} if root == second_retry else
+        (_ for _ in ()).throw(ValueError("website_mapanything_existing_attempt_requires_reconciliation"))))
+    args = dict(input_manifest=path, output_root=output, task_context={"context_digest": DIGEST},
+                source_commit="c" * 40, allocate=lambda *_a, **_k: pytest.fail("rental already dispatched"))
+    write_json(second_retry / "dispatch.json", state)
+    assert dispatch.dispatch_geometry(**args)["retry_root"] == str(second_retry)
+    with pytest.raises(ValueError, match="requires_reconciliation"):
+        dispatch.dispatch_geometry(**{**args, "source_commit": "b" * 40})
 
 
 def test_runtime_upgrade_preserves_prior_bundle_and_reuses_identical_bytes(packet, tmp_path):

@@ -27,6 +27,7 @@ from .wam_provider_object_store import stage_wam_provider_bundle_object_store, c
 from .website_mapanything_operation import compile_input_bundle
 from .website_scene_geometry import load_website_geometry_result
 from .website_task_context import reserve_website_preparation_spend, load_website_scene_sponsorship
+from .website_vast_billing import settle_prior_website_vast_attempts
 
 
 def load_profile(*, source_commit: str, profile_path: str | Path | None = None) -> dict[str, Any]:
@@ -125,9 +126,12 @@ def dispatch_geometry(*, input_manifest: Path, output_root: Path, task_context: 
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             raise ValueError("website_mapanything_controller_already_running") from exc
-        root = first_root
-        state_path = root / "dispatch.json"
-        if state_path.is_file():
+        for attempt_index in range(3):
+            root = first_root if attempt_index == 0 else output_root / f"controller_geometry_retry_{attempt_index}"
+            root.mkdir(parents=True, exist_ok=True)
+            state_path = root / "dispatch.json"
+            if not state_path.is_file():
+                break
             state = json.loads(state_path.read_text())
             if state["input_digest"] != inputs["digest"] or state["task_context_digest"] != task_context["context_digest"]:
                 raise ValueError("website_mapanything_controller_inputs_changed")
@@ -135,17 +139,12 @@ def dispatch_geometry(*, input_manifest: Path, output_root: Path, task_context: 
                 return _reuse(root, inputs)
             except ValueError as exc:
                 if (str(exc) != "website_mapanything_existing_attempt_requires_reconciliation"
+                        or attempt_index == 2
                         or not _failed_attempt_safe_to_retry(root, source_commit=source_commit)):
                     raise
-            root = output_root / "controller_geometry_retry_1"
-            root.mkdir(parents=True, exist_ok=True)
-            state_path = root / "dispatch.json"
-            if state_path.is_file():
-                retry_state = json.loads(state_path.read_text())
-                if (retry_state["input_digest"] != inputs["digest"]
-                        or retry_state["task_context_digest"] != task_context["context_digest"]):
-                    raise ValueError("website_mapanything_controller_inputs_changed")
-                return _reuse(root, inputs)
+        if attempt_index:
+            settle_prior_website_vast_attempts(output_root=output_root,
+                attempted_count=attempt_index, task_context=dict(task_context))
         profile = load_profile(source_commit=source_commit)
         binding = canonical_digest({"input_digest": inputs["digest"], "runtime": profile,
                                     "task_context_digest": task_context["context_digest"]})

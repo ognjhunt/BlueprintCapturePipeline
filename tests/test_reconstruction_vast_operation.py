@@ -196,6 +196,23 @@ def _fetcher(_url: str, destination: Path) -> SafeHttpFileTransfer:
     )
 
 
+def test_website_bootstrap_failure_is_typed_and_binding_checked(tmp_path: Path) -> None:
+    request = {"operation_request_digest": D[1], "operation_input_bundle_digest": D[2],
+               "source_commit_sha": SHA}
+    path = tmp_path / "failure.json"
+    failure = {"schema_version": "website_mapanything_bootstrap_failure.v1", "status": "failed",
+               "phase": "model_download", "code": "network_or_timeout", "exception_type": "TimeoutError",
+               **request}
+    path.write_text(json.dumps(failure))
+    assert vast_operation._website_bootstrap_failure(path, request)["phase"] == "model_download"
+    failure["operation_input_bundle_digest"] = D[3]
+    path.write_text(json.dumps(failure))
+    assert vast_operation._website_bootstrap_failure(path, request) == {
+        "status": "invalid", "code": "binding_invalid"}
+    path.write_bytes(b"x" * (16 * 1024 + 1))
+    assert vast_operation._website_bootstrap_failure(path, request) is None
+
+
 def _validator(**_kwargs):
     return _validated_output()
 

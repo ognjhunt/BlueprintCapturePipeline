@@ -10,8 +10,17 @@ import os
 from pathlib import Path, PurePosixPath
 import subprocess
 import sys
+import urllib.error
 import urllib.request
 import zipfile
+
+
+_PHASE = "start"
+
+
+def _phase(name):
+    global _PHASE
+    _PHASE = name
 
 
 def _sha(path):
@@ -39,6 +48,7 @@ def _download(url, path, digest, limit):
 def install_runtime(root):
     root.mkdir(parents=True, exist_ok=False)
     receipt_path, bundle_path = root / "receipt.json", root / "inputs.zip"
+    _phase("receipt_download")
     _download(os.environ["BLUEPRINT_RECONSTRUCTION_INPUT_RECEIPT_GET_URL"], receipt_path,
               os.environ["BLUEPRINT_RECONSTRUCTION_INPUT_RECEIPT_FILE_DIGEST"], 8 * 1024**2)
     receipt = json.loads(receipt_path.read_text())
@@ -50,8 +60,10 @@ def install_runtime(root):
     size = receipt.get("bundle_bytes")
     if type(size) is not int or not 0 < size <= 512 * 1024**2:
         raise ValueError("website_worker_input_size_invalid")
+    _phase("bundle_download")
     _download(os.environ["BLUEPRINT_RECONSTRUCTION_INPUT_BUNDLE_GET_URL"], bundle_path,
               os.environ["BLUEPRINT_RECONSTRUCTION_INPUT_BUNDLE_DIGEST"], size)
+    _phase("runtime_verification")
     files = {}
     with zipfile.ZipFile(bundle_path) as archive:
         if len(archive.namelist()) != len(set(archive.namelist())):
@@ -75,8 +87,10 @@ def install_runtime(root):
         raise ValueError("website_worker_runtime_missing")
     # The pinned PyTorch image uses Ubuntu's externally managed Python. This
     # disposable worker owns its interpreter; allow the sealed overlay there.
+    _phase("dependency_install")
     subprocess.run([sys.executable, "-m", "pip", "install", "--break-system-packages", "--no-deps", "--require-hashes",
                     "--no-cache-dir", "-r", str(dependencies[0])], check=True)
+    _phase("wheel_install")
     subprocess.run([sys.executable, "-m", "pip", "install", "--break-system-packages", "--no-deps", "--no-cache-dir", *map(str, wheels)], check=True)
     return root
 
@@ -87,6 +101,7 @@ def main():
         MODEL_ROOT, MODEL_REVISION, MODEL_CHECKPOINT_DIGEST, MODEL_CONFIG_DIGEST,
     )
     MODEL_ROOT.mkdir(parents=True, exist_ok=True)
+    _phase("model_download")
     for name, digest, limit in (("model.safetensors", MODEL_CHECKPOINT_DIGEST, 5 * 1024**3),
                                 ("config.json", MODEL_CONFIG_DIGEST, 1024**2)):
         target = MODEL_ROOT / name
@@ -96,6 +111,7 @@ def main():
     # exact source archive so that call cannot silently select newer code.
     revision = "7764ea0f912e53c92e82eb78a2a1631e92725fc8"
     archive_path = root / "dinov2.zip"
+    _phase("encoder_download")
     _download("https://codeload.github.com/facebookresearch/dinov2/zip/" + revision, archive_path,
               "sha256:04276715cddb29d45d05bff3a6fc132224dc27749b279ac98ad2ce4620e20d48", 8 * 1024**2)
     os.environ["TORCH_HOME"] = str(root / "torch")
@@ -113,9 +129,47 @@ def main():
                 target.write_bytes(archive.read(member))
     os.environ["HF_HUB_OFFLINE"] = "1"
     # Model acquisition above is explicit and hash-verified; inference is local.
+    _phase("geometry_inference")
     from blueprint_pipeline.reconstruction_gpu_operation_bootstrap import run_reconstruction_gpu_operation_bootstrap
     run_reconstruction_gpu_operation_bootstrap(environment=os.environ, work_root=root / "operation")
 
 
+def _failure_code(exc):
+    if isinstance(exc, ValueError) and str(exc).startswith("website_worker_"):
+        return str(exc)[:100]
+    if isinstance(exc, subprocess.CalledProcessError):
+        return "subprocess_failed"
+    if isinstance(exc, (TimeoutError, urllib.error.URLError)):
+        return "network_or_timeout"
+    return "worker_exception"
+
+
+def _report_failure(exc):
+    """Return a small bound failure artifact through the admitted output URL."""
+    payload = {
+        "schema_version": "website_mapanything_bootstrap_failure.v1",
+        "status": "failed",
+        "phase": _PHASE,
+        "code": _failure_code(exc),
+        "exception_type": type(exc).__name__,
+        "operation_request_digest": os.environ["BLUEPRINT_RECONSTRUCTION_OPERATION_REQUEST_DIGEST"],
+        "operation_input_bundle_digest": os.environ["BLUEPRINT_RECONSTRUCTION_INPUT_BUNDLE_DIGEST"],
+        "source_commit_sha": os.environ["BLUEPRINT_SOURCE_COMMIT"],
+    }
+    raw = (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    request = urllib.request.Request(os.environ["BLUEPRINT_RECONSTRUCTION_OUTPUT_BUNDLE_PUT_URL"],
+                                     data=raw, method="PUT")
+    with urllib.request.urlopen(request, timeout=30):
+        pass
+    print("BLUEPRINT_WEBSITE_MAPANYTHING_BOOTSTRAP_FAILURE:" + payload["phase"] + ":" + payload["code"])
+
+
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as error:
+        try:
+            _report_failure(error)
+        except Exception:
+            print("BLUEPRINT_WEBSITE_MAPANYTHING_BOOTSTRAP_FAILURE_REPORT_FAILED:" + _PHASE)
+        sys.exit(1)
