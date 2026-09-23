@@ -109,3 +109,46 @@ resumed authoring, or any later stage keeps the hold.
         return True
     except (OSError, ValueError, KeyError, TypeError, AttributeError, zipfile.BadZipFile):
         return False
+
+
+def prestage_before_first_stage(result, request):
+    """Prove a CPU preflight stopped before any stage or model allowance began."""
+    try:
+        _sealed(result, "result_digest")
+        _require(result.get("status") == "blocked" and result.get("retry_cap") == 0
+                 and result.get("provider_mutations_performed") == 0
+                 and result.get("api_pretraining") is None and result.get("cpu_prestage") is None)
+        path = Path(result["provider_runtime_output_zip_path"])
+        _require(path.is_file() and not path.is_symlink())
+        with path.open("rb") as stream:
+            digest = "sha256:" + hashlib.file_digest(stream, "sha256").hexdigest()
+        _require(digest == result["provider_runtime_output_zip_sha256"])
+        with zipfile.ZipFile(path) as archive:
+            names = archive.namelist()
+            _require(len(names) == len(set(names)) and not any(name.startswith("stages/") for name in names))
+            def read(name):
+                _require(archive.getinfo(name).file_size <= 2 * 1024**2)
+                return archive.read(name)
+            exclusions = json.loads(read("provider_output_zip_exclusions.json"))
+            from .task_evaluation_scene_configuration_output_archive import EXCLUDED_PARTS
+            _require(exclusions == {
+                "schema_version": "task_evaluation_scene_configuration_provider_output_zip_exclusions.v1",
+                "excluded_directory_names": sorted(EXCLUDED_PARTS)})
+            provider = _sealed(json.loads(read("task_evaluation_scene_configuration_provider_result.v1.json")),
+                               "result_digest")
+            _require(provider.get("status") == "blocked" and provider.get("first_stage_started") is False
+                     and provider.get("evaluation_episode_executed") is False
+                     and provider.get("candidate_policy_queried") is False
+                     and provider.get("run_id") == result.get("run_id") == request["run_id"]
+                     and provider.get("source_commit") == result.get("source_commit")
+                     == request["expected_production_commit"])
+            blockers = provider.get("blockers") or []
+            from .core.common import redacted_failure_text
+            detail = " ".join(redacted_failure_text(blockers[0]).split()) if len(blockers) == 1 else ""
+            if len(detail) > 300:
+                detail = detail[:297] + "..."
+            _require(len(blockers) == 1 and blockers[0].startswith("scene_configuration_provider_failed:")
+                     and "provider_result_blocker:" + detail in result.get("blockers", []))
+        return True
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, zipfile.BadZipFile):
+        return False
