@@ -172,17 +172,26 @@ def validate_website_authoring_disclosure(*, envelope, configuration, rights):
 def preflight_website_authoring_request(*, envelope, configurations):
     """Run the actual stage-3 request translation on CPU before renting a worker."""
     from .task_evaluation_scene_configuration_source_preflight import _reference
-    from .task_evaluation_scene_configuration_astra_driver import build_authoring_request
+    from .task_evaluation_scene_configuration_astra_driver import (
+        ARTICULATED_AUTHORING_SCHEMA_VERSION,
+        build_articulated_authoring_requests,
+        build_authoring_request,
+    )
 
     stage = envelope["recipe"]["stage_sequence"][2]
     candidate, candidate_path = _reference(envelope, PREFIX + ".candidate")
     frames = [_reference(envelope, PREFIX + f".frames.{index}")[1]
               for index in range(len(envelope["request"]["scene"]["website_native_inputs"]["frames"]))]
     _, rights_path = _reference(envelope, "scene.rights.admission")
-    return build_authoring_request(
-        {"run_id": envelope["run_id"], "source_commit": envelope["expected_production_commit"],
-         "construction_envelope": envelope, "configuration": configurations[stage["stage_id"]]},
-        {**candidate, "path": str(candidate_path)}, frames, json.loads(rights_path.read_text()))
+    configuration = configurations[stage["stage_id"]]
+    stage_input = {"run_id": envelope["run_id"],
+                   "source_commit": envelope["expected_production_commit"],
+                   "construction_envelope": envelope, "configuration": configuration}
+    source = {**candidate, "path": str(candidate_path)}
+    rights = json.loads(rights_path.read_text())
+    if configuration.get("schema_version") == ARTICULATED_AUTHORING_SCHEMA_VERSION:
+        return build_articulated_authoring_requests(stage_input, source, frames, rights)
+    return build_authoring_request(stage_input, source, frames, rights)
 
 
 def materialize_website_inputs(*, envelope, stage_one_configuration, output_root):
