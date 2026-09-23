@@ -16,6 +16,7 @@ import json
 import os
 import secrets
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -144,11 +145,25 @@ def _process_one(config: DoorConfig, runner: CommandRunner, claimed: Path, reque
     _write_result(results, request_id, outcome)
 
 
+def _prune(spool: Path, retention_days: int) -> None:
+    """Finished requests and their results are kept for a while, then dropped."""
+
+    cutoff = time.time() - retention_days * 86400
+    for state in ("completed", "results"):
+        for path in (spool / state).iterdir():
+            try:
+                if path.is_file() and not path.is_symlink() and path.lstat().st_mtime < cutoff:
+                    path.unlink()
+            except OSError:
+                continue
+
+
 def process_spool(config: DoorConfig, *, runner: CommandRunner | None = None) -> int:
     runner = runner or SubprocessRunner()
     spool = Path(config.spool_root)
     for state in ("pending", "processing", "completed", "results"):
         (spool / state).mkdir(parents=True, exist_ok=True)
+    _prune(spool, config.spool_retention_days)
     pending = sorted(
         spool.joinpath("pending").glob("*.json"),
         key=lambda path: (path.lstat().st_mtime, path.name),

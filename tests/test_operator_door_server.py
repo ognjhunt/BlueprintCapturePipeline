@@ -220,3 +220,46 @@ def test_self_test_command(tmp_path: Path) -> None:
     report = json.loads(done.stdout)
     assert report["config"] == "ok" and report["tokens"] == 0
     assert done.returncode == 1  # no tokens configured yet is a failure worth surfacing
+
+
+
+def _small_server(tmp_path: Path, **overrides: Any) -> tuple[Any, DoorConfig]:
+    tokens = tmp_path / "tokens-small.json"
+    add_token(tokens, name="reader", sha256=hash_token(READER), scopes=["read"])
+    config = DoorConfig(read_roots=(str(tmp_path),), hidden_paths=(str(tmp_path / "hidden"),),
+                        state_root=str(tmp_path / "small-door"), token_file=str(tokens), listen_port=0,
+                        **overrides)
+    host = HostInfo(config, runner=FakeRunner(), proc_locks_path=str(tmp_path / "none"),
+                    fetch_json=lambda url: {})
+    server = make_server(config, host=host)
+    threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True).start()
+    return server, config
+
+
+def test_idle_connections_time_out(tmp_path: Path) -> None:
+    import socket
+
+    server, _ = _small_server(tmp_path.resolve(), request_timeout_seconds=1)
+    try:
+        with socket.create_connection(("127.0.0.1", server.server_address[1]), timeout=5) as idle:
+            idle.settimeout(10)
+            assert idle.recv(1) == b""  # closed by the door, not held open
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_audit_log_rotates_when_large(tmp_path: Path) -> None:
+    server, config = _small_server(tmp_path.resolve(), audit_rotate_bytes=1000)
+    try:
+        audit = Path(config.audit_path)
+        audit.parent.mkdir(parents=True, exist_ok=True)
+        audit.write_text("x" * 1001, encoding="utf-8")
+        request = urllib.request.Request(f"http://127.0.0.1:{server.server_address[1]}{API_PREFIX}/whoami",
+                                         headers={"Authorization": f"Bearer {READER}"})
+        urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=10).read()
+        assert audit.with_name("audit.jsonl.1").stat().st_size == 1001
+        assert json.loads(audit.read_text(encoding="utf-8").splitlines()[-1])["route"] == "/whoami"
+    finally:
+        server.shutdown()
+        server.server_close()

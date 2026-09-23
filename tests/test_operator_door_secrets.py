@@ -83,6 +83,10 @@ def test_ordinary_run_state_names_are_allowed(name: str) -> None:
         (b"export PIPELINE_SYNC_TOKEN='abc123456'\n", "env_secret_assignment"),
         (b"DB_PASSWORD=hunter2hunter2\n", "env_secret_assignment"),
         (b"BLUEPRINT_LIVE_PIPELINE_CLIENT_SECRETS_JSON={\"a\":\"b\"}\n", "env_secret_assignment"),
+        (b'{"alert": "https://hooks.slack.com/services/T000/B000/abcdefghijklmnop"}', "webhook_url"),
+        (b"https://discord.com/api/webhooks/123/abcdefghijklmnopqrst", "webhook_url"),
+        (b"postgres://svc:hunter2hunter2@db.internal:5432/app", "url_credentials"),
+        (b"GET /files?id=4&access_token=abcdefghijklmnopqrstuvwx HTTP/1.1", "url_query_secret"),
     ],
 )
 def test_credential_shaped_content_is_detected(payload: bytes, reason: str) -> None:
@@ -99,6 +103,8 @@ def test_credential_shaped_content_is_detected(payload: bytes, reason: str) -> N
         b"VAST_API_KEY_FILE=/etc/blueprint/provider-secrets/vast_api_key\n",
         b'{"secret_values_exposed": false, "api_key": ""}',
         b"progress: 42% of attempts; bearer tokens are refused unless legacy mode",
+        b"https://paperclip.tryblueprint.io/api/live-pipeline/version?token_hint=no",
+        b"git@github.com:ognjhunt/BlueprintCapturePipeline.git",
         b"",
     ],
 )

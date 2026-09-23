@@ -158,3 +158,16 @@ def test_results_are_world_readable_for_the_door(config: DoorConfig) -> None:
     process_spool(config, runner=FakeRunner())
     path = Path(config.spool_root) / "results" / f"{request_id}.json"
     assert oct(path.stat().st_mode & 0o777) == oct(0o644)
+
+
+def test_old_requests_and_results_are_pruned(config: DoorConfig) -> None:
+    spool = Path(config.spool_root)
+    old_request = spool / "completed" / "20250101T000000Z-deploy-00000001.json"
+    old_log = spool / "results" / "20250101T000000Z-deploy-00000001.log"
+    fresh = spool / "results" / "20260923T000000Z-deploy-00000002.json"
+    for path in (old_request, old_log, fresh):
+        path.write_text("{}", encoding="utf-8")
+    for path in (old_request, old_log):
+        os.utime(path, (1_000_000, 1_000_000))
+    process_spool(config, runner=FakeRunner())
+    assert not old_request.exists() and not old_log.exists() and fresh.exists()

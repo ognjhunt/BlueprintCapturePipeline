@@ -70,6 +70,9 @@ class DoorConfig:
     max_list_entries: int = 2000
     max_journal_lines: int = 2000
     max_request_body: int = 64 * 1024
+    request_timeout_seconds: int = 30
+    audit_rotate_bytes: int = 64 * 1024 * 1024
+    spool_retention_days: int = 30
     source_clone: str = "/opt/blueprint/control-plane-config-tools/operator-door-source"
     reference_repo: str = "/opt/blueprint/BlueprintCapturePipeline"
     upstream_url: str = "https://github.com/ognjhunt/BlueprintCapturePipeline.git"

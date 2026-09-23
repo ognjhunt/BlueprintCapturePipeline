@@ -43,6 +43,8 @@ class DoorApp:
         with self._audit_lock:
             try:
                 path.parent.mkdir(parents=True, exist_ok=True)
+                if path.exists() and path.stat().st_size > self.config.audit_rotate_bytes:
+                    path.replace(path.with_name(path.name + ".1"))  # keep one previous file
                 with path.open("a", encoding="utf-8") as stream:
                     stream.write(line)
             except OSError:
@@ -57,6 +59,8 @@ def make_handler(app: DoorApp) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         server_version = "blueprint-operator-door/" + VERSION
         sys_version = ""
+        # A silent or slow client must not hold one of the door's few threads.
+        timeout = app.config.request_timeout_seconds
 
         # -- plumbing ---------------------------------------------------
 

@@ -58,6 +58,21 @@ _CONTENT_RULES: tuple[tuple[str, re.Pattern[bytes]], ...] = (
     ("blueprint_agent_key", re.compile(rb"\bbpk_[A-Za-z0-9_-]{32,}")),
     ("jwt", re.compile(rb"\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}")),
     (
+        "webhook_url",
+        re.compile(
+            rb"https://hooks\.slack\.com/services/[A-Za-z0-9/_-]{10,}"
+            rb"|https://(?:discord|discordapp)\.com/api/webhooks/[0-9]+/[A-Za-z0-9_-]{10,}"
+        ),
+    ),
+    ("url_credentials", re.compile(rb"\b[a-z][a-z0-9+.-]*://[^\s/:@'\"]+:[^\s/@'\"]{3,}@")),
+    (
+        "url_query_secret",
+        re.compile(
+            rb"(?i)[?&](?:access_token|refresh_token|id_token|token|api_key|apikey|key|secret"
+            rb"|client_secret|password|auth)=[A-Za-z0-9._~%+/=-]{16,}"
+        ),
+    ),
+    (
         "signed_url",
         re.compile(rb"(?i)[?&](?:x-goog-signature|x-amz-signature|signature|sig)=[0-9a-z%+/=_-]{32,}"),
     ),
