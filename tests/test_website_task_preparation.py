@@ -454,6 +454,17 @@ def test_anchor_view_absent_from_the_estimate_is_refused(tmp_path):
             collision_mesh_path=Path(base["collision_mesh_path"]), anchor=_anchor(base, frame_id="frame-9"))
 
 
+def test_missing_anchor_refuses_before_decoding_depth_maps(tmp_path, monkeypatch):
+    geometry = _source_geometry(tmp_path)
+    base = _anchored_base_scene(tmp_path, geometry)
+    def expensive_depth_decode(*_args, **_kwargs):
+        pytest.fail("missing declared anchor must be checked first")
+    monkeypatch.setattr(preparation, "_source_points", expensive_depth_decode)
+    with pytest.raises(ValueError, match="website_registration_anchor_frame_missing"):
+        preparation.register_source_to_runtime(source_geometry=geometry,
+            collision_mesh_path=Path(base["collision_mesh_path"]), anchor=_anchor(base, frame_id="frame-9"))
+
+
 def test_world_that_does_not_follow_its_declared_anchor_is_a_typed_refusal(tmp_path):
     geometry = _source_geometry(tmp_path)
     base = _anchored_base_scene(tmp_path, geometry, rotation=RUNTIME_ROTATION, translation=(0.0, 0.0, 0.0),

@@ -20,6 +20,8 @@ from .website_object_observations import _record, materialize_object_observation
 KIND = "authored_surface_component_test"
 ENV = "BLUEPRINT_WEBSITE_DEVELOPMENT_TEST_TASK_DIGESTS"
 LABEL = "Development test on an authored surface; captured scene integration pending."
+DRAWER_KIND = "development_drawer_fixture"
+DRAWER_LABEL = "Development drawer fixture; captured scene integration pending."
 
 
 def enabled(context_digest: str) -> bool:
@@ -38,10 +40,12 @@ def environment(preparation):
                 or preparation.get("intake_request", {}).get("source", {}).get("binding_id", "").startswith("website-development-")):
             raise ValueError("website_development_test_binding_invalid")
         return None
-    if (value.get("kind") != KIND or value.get("claim_scope") != "development_only"
+    kind_and_label = ((DRAWER_KIND, DRAWER_LABEL) if
+                      preparation.get("intake_request", {}).get("task", {}).get("strategy") == "articulated_open_close"
+                      else (KIND, LABEL))
+    if ((value.get("kind"), value.get("label")) != kind_and_label or value.get("claim_scope") != "development_only"
             or value.get("captured_scene_evaluation_allowed") is not False
             or value.get("captured_scene_integration") != "pending"
-            or value.get("label") != LABEL
             or value.get("source_task_context_digest") != preparation["binding"]["task_context_digest"]
             or preparation["intake_request"]["task"]["subject"].get("test_environment") != value):
         raise ValueError("website_development_test_binding_invalid")
@@ -106,7 +110,9 @@ def prepare_development_test(*, preparation, source_geometry, task_masks, output
     cube.AddScaleOp().Set(Gf.Vec3d(*(upper - lower)))
     cube.CreateDisplayColorAttr([(0.55, 0.55, 0.55)])
     stage.GetRootLayer().Save()
-    test = {"kind": KIND, "label": LABEL, "claim_scope": "development_only",
+    articulated = value["intake_request"]["task"]["strategy"] == "articulated_open_close"
+    test = {"kind": DRAWER_KIND if articulated else KIND,
+            "label": DRAWER_LABEL if articulated else LABEL, "claim_scope": "development_only",
             "source_task_context_digest": preparation["binding"]["task_context_digest"],
             "source_preparation_digest": preparation["digest"],
             "captured_scene_integration": "pending", "captured_scene_evaluation_allowed": False,
@@ -134,7 +140,7 @@ def prepare_development_test(*, preparation, source_geometry, task_masks, output
     subject = value["subject"]
     subject.update(aabb_min_xyz=new_low.tolist(), aabb_max_xyz=new_high.tolist(), test_environment=test)
     value["support"] = support
-    destination = {"relation": "on", "visible_label": "development test target on authored surface",
+    destination = None if articulated else {"relation": "on", "visible_label": "development test target on authored surface",
         "mode": "existing_support_surface", "position_world_m": finish.tolist(),
         "orientation_xyzw": [0.0, 0.0, 0.0, 1.0]}
     value["destination"] = destination
@@ -143,7 +149,9 @@ def prepare_development_test(*, preparation, source_geometry, task_masks, output
                          "content_digest": _record(mesh)["digest"]}
     request["task"].update(task_id=request["task"]["task_id"] + "-development", subject=subject,
         support={"description": "authored development surface, not captured support",
-                 "aabb_min_xyz": lower.tolist(), "aabb_max_xyz": upper.tolist()}, destination=destination)
+                 "aabb_min_xyz": lower.tolist(), "aabb_max_xyz": upper.tolist()})
+    if destination is not None:
+        request["task"]["destination"] = destination
     # Keep submission_id, owner and execution authority unchanged: one native
     # reservation, never a second budget for a diagnostic sibling.
     validate_request(request, now=preparation["intake_request"]["consent"]["accepted_at_epoch"])
@@ -152,7 +160,9 @@ def prepare_development_test(*, preparation, source_geometry, task_masks, output
     config["scene_id"] += "-development"
     for envelope in (config["metric_envelope"], authoring["metric_envelope"]):
         envelope.update(minimum_xyz_m=new_low.tolist(), maximum_xyz_m=new_high.tolist())
-    config["construction_constraints"].update(destination=destination, test_environment=test)
+    config["construction_constraints"].update(test_environment=test)
+    if destination is not None:
+        config["construction_constraints"]["destination"] = destination
     value["digest"] = canonical_digest(value, digest_field="digest")
     environment(value)
     write_json(output_root / "preparation.json", value)

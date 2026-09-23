@@ -153,6 +153,10 @@ def register_source_to_runtime(*, source_geometry: Mapping[str, Any], collision_
     reported; an unconstrained pose that clearly fits better is a conflict, not
     a silent override. Without it the unconstrained search must be unambiguous.
     """
+    # Refuse a missing declared anchor before decoding every depth map and
+    # searching collider poses. A surrogate camera cannot establish the
+    # provider's first-view frame.
+    anchor_pose = _anchor_prior(source_geometry, anchor) if anchor is not None else None
     source = _sample(_source_points(source_geometry), cap=sample_cap, seed=601)
     target = _sample(_mesh_vertices(collision_mesh_path), cap=sample_cap, seed=602)
     target_tree = cKDTree(target)
@@ -207,7 +211,7 @@ def register_source_to_runtime(*, source_geometry: Mapping[str, Any], collision_
             raise ValueError("website_registration_ambiguous")
         metres_per_runtime_unit = 1.0 / best[1]
     else:
-        mpu, camera_from_world = _anchor_prior(source_geometry, anchor)
+        mpu, camera_from_world = anchor_pose
         anchored = []
         for roll in _ROLLS:
             prior = (1.0 / mpu, _roll(roll) @ camera_from_world[:3, :3], (_roll(roll) @ camera_from_world[:3, 3]) / mpu)

@@ -147,6 +147,22 @@ def test_articulated_open_close_task_materializes_without_a_surface_target(tmp_p
     assert assembly["replacement"]["task_joint_reset"] == "closed"
 
 
+def test_development_drawer_fixture_retains_articulated_success_and_identity(tmp_path, monkeypatch):
+    from blueprint_pipeline.website_development_test import DRAWER_LABEL
+    kwargs, _ = setup(tmp_path, monkeypatch, development=True, articulated=True)
+    materialize_website_submission(**kwargs)
+    root = kwargs['staging_root']
+    request = json.loads((root / 'scene_configuration_preparation_request.v1.json').read_text())
+    task = json.loads((root / 'configuration/task.json').read_text())
+    assert request['scene']['identity']['id'].endswith('-development')
+    assert task['instruction'].startswith(DRAWER_LABEL)
+    assert task['test_environment']['captured_scene_evaluation_allowed'] is False
+    assert task['strategy'] == 'articulated_open_close'
+    assert task['visible_target_label'] == 'middle drawer'
+    assert 'surface_target' not in task and 'destination' not in task
+    assert task['success']['task_joint_drive_forbidden'] is True
+
+
 def test_publication_rechecks_owner_revocation(tmp_path, monkeypatch):
     kwargs, _ = setup(tmp_path, monkeypatch)
     materialize_website_submission(**kwargs)
