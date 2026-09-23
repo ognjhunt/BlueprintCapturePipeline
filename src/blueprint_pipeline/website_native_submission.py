@@ -241,7 +241,15 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
             "mounts": [{"source": release_ref, "container_path": "/inputs/release-binding.json", "mode": "read_only"},
                        {"container_path": "/outputs", "mode": "output"}], "output_limit_bytes": 20_000_000_000},
         "execution_adapter": {"kind": "scene_configuration_pipeline", "version": "v1", "runtime_source_bundle": release_ref},
-        "publication": {"input_namespace": namespace, "service_account_readback_required": True}, "spend": records.spend_block(construction["configurations"][2]["authoring_backend"], requires_artifixer=False)}
+        "publication": {"input_namespace": namespace, "service_account_readback_required": True},
+        # A drawer fixture authors a cabinet and a separate drawer. The rigid
+        # one-part $5 default stopped after both CAD candidates had been made:
+        # fourteen calls cost $3.74, but the next $1.40 reservation exceeded it.
+        # Keep the scene's $20 ceiling and quote this two-part stage at $7.
+        "spend": records.spend_block(
+            construction["configurations"][2]["authoring_backend"],
+            authoring_max_cost_usd=7.0 if articulated else None,
+            requires_artifixer=False)}
     request["replacement_authoring_backend"] = construction["configurations"][2]["authoring_backend"]
     require(request["spend"]["hard_cap_usd"] <= intent["request"]["execution"]["max_total_spend_usd"],
             "website_native_construction_budget_exceeds_authority")

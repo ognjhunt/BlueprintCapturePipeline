@@ -275,6 +275,12 @@ def budget_retained_hold(receipt: Mapping[str, Any]) -> dict[str, Any]:
             if prestage_before_first_stage(result, request):
                 return {"basis": "preallocation_unentered_authoring", "retained_spend_usd": 0.0,
                         "counts_as_attempt": hold["counts_as_attempt"]}
+            from .task_evaluation_unentered_authoring_budget import prestage_authoring_cap_upper_bound
+            authoring_bound = prestage_authoring_cap_upper_bound(result, request)
+            if authoring_bound is not None and authoring_bound <= hold["retained_spend_usd"]:
+                return {"basis": "preallocation_authoring_cap_upper_bound",
+                        "retained_spend_usd": authoring_bound,
+                        "counts_as_attempt": hold["counts_as_attempt"]}
             from .task_evaluation_authoring_auth_recovery import initial_authentication_failure
             rejected = initial_authentication_failure(result)
             if rejected and rejected["retained_spend_usd"] <= hold["retained_spend_usd"]:

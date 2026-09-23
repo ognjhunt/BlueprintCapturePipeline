@@ -125,6 +125,9 @@ def test_articulated_open_close_task_materializes_without_a_surface_target(tmp_p
     assert request["scene_intent_digest"] == accepted["intent_digest"]
     task = request["task"]
     assert task["kind"] == "articulated_manipulation" and task["strategy"] == "articulated_open_close"
+    assert request["spend"]["external_service_caps"]["openai"]["stage_max_cost_usd"] == {
+        "artifixer_semantic_teacher": 0.0, "artifixer_visual_review": 0.0, "content_agents": 7.0}
+    assert request["spend"]["hard_cap_usd"] == 13.0
     assert "surface_target" not in task and "destination" not in task
     template = json.loads((root / "configuration/task.json").read_text())
     assert template["schema_version"] == "task_evaluation_articulated_open_close_template.v1"
