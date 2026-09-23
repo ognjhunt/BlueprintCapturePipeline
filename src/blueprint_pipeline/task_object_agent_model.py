@@ -42,6 +42,20 @@ def context_ceiling(value):
     return len(text.encode()) + images + 4096
 
 
+def bounded_authoring_input(envelope):
+    """Choose the smallest safe view before reserving a paid model request."""
+    from .task_object_agent_context import compact_authoring_history
+
+    original = envelope['input']
+    for mode in (None, 'full', 'essential', 'current'):
+        if mode is not None:
+            envelope['input'] = compact_authoring_history(original, mode=mode)
+        ceiling = context_ceiling(envelope)
+        if ceiling <= 80_000:
+            return envelope['input'], ceiling
+    raise AssetAuthoringError('authoring_session_context_ceiling_exceeded')
+
+
 class BudgetedAuthoringModel(Model):
     def __init__(self, *, delegate, invoker, run_id, object_id):
         self.delegate, self.invoker = delegate, invoker
@@ -62,14 +76,7 @@ class BudgetedAuthoringModel(Model):
         schema = output_schema.json_schema() if output_schema else None
         envelope = {"instructions": system_instructions, "input": input, "output_schema": schema,
             "tools": [{"name": t.name, "description": t.description, "parameters": t.params_json_schema} for t in tools]}
-        ceiling = context_ceiling(envelope)
-        if ceiling > 80_000:
-            from .task_object_agent_context import compact_authoring_history
-            input = compact_authoring_history(input)
-            envelope["input"] = input
-            ceiling = context_ceiling(envelope)
-        if ceiling > 80_000:
-            raise AssetAuthoringError("authoring_session_context_ceiling_exceeded")
+        input, ceiling = bounded_authoring_input(envelope)
         if not model_settings.max_tokens or model_settings.max_tokens > 12000:
             raise AssetAuthoringError("authoring_output_limit_required")
         async with self._lock:
