@@ -43,9 +43,45 @@ from .adp_isaac_lab_arena_vast import (
 )
 
 
+REQUIRE_INTEGRATION_CANARY_ENV = "BLUEPRINT_REQUIRE_POLICY_INTEGRATION_CANARY"
+
+
 def add_policy_canary_allocator_arguments(parser: Any) -> None:
     parser.add_argument("--native-task-arena-policy-canary-session-authority")
     parser.add_argument("--native-task-arena-policy-canary-session-bundle-receipt")
+    parser.add_argument(
+        "--native-task-arena-policy-integration-canary-receipt",
+        help="A sealed integration canary receipt for these candidates (ADP-050).",
+    )
+    parser.add_argument(
+        "--require-policy-integration-canary",
+        action="store_true",
+        help="Refuse to allocate without a passing, fresh integration canary receipt.",
+    )
+
+
+def _integration_canary_gate(args: Any, authority: Mapping[str, Any]) -> tuple[list[str], str | None]:
+    """Blockers from the integration canary, and the receipt digest it bound.
+
+    A supplied receipt is always checked, so a failing canary never spends.
+    Requiring one is explicit (flag or environment) until a reference-task
+    runner produces receipts routinely.
+    """
+
+    from .policy_integration_canary import integration_canary_blockers
+
+    path = getattr(args, "native_task_arena_policy_integration_canary_receipt", None)
+    required = bool(getattr(args, "require_policy_integration_canary", False)) or str(
+        os.getenv(REQUIRE_INTEGRATION_CANARY_ENV) or ""
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    if not path:
+        return (["policy_integration_canary_receipt_missing"] if required else []), None
+    try:
+        receipt = _load(path)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return ["policy_integration_canary_receipt_invalid"], None
+    blockers = integration_canary_blockers(receipt, candidate_ids=list(authority.get("candidate_ids") or []))
+    return blockers, str(receipt.get("receipt_digest") or "") or None
 
 
 def _load(path: str) -> dict[str, Any]:
@@ -133,6 +169,10 @@ def run_policy_canary_allocator_lane(
                 blockers.append("policy_canary_session_resource_bounds_mismatch")
         except (OSError, ValueError, json.JSONDecodeError):
             blockers.append("policy_canary_session_contract_invalid")
+    integration_canary_digest = None
+    if not blockers and authority is not None:
+        canary_blockers, integration_canary_digest = _integration_canary_gate(args, authority)
+        blockers.extend(canary_blockers)
     if not blockers and authority is not None and prepared_bundle is not None:
         blockers.extend(_launch_environment_blockers(args, authority, prepared_bundle))
         from .native_task_arena_policy_canary_bundle import preflight_sealed_policy_canary_bundle
@@ -158,6 +198,8 @@ def run_policy_canary_allocator_lane(
         "hard_cap_usd": args.adp_max_spend_usd,
         "hard_ttl_seconds": args.adp_hard_ttl_seconds,
     }
+    if integration_canary_digest:
+        binding["integration_canary_receipt_digest"] = integration_canary_digest
     binding_digest = "sha256:" + hashlib.sha256(
         json.dumps(binding, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
