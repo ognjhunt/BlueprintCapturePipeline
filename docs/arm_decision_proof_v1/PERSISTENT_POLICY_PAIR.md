@@ -17,7 +17,10 @@ The checkpoint identity mapping is:
 
 An inventory digest binds the actual checkpoint file inventory and immutable
 publisher release. A model-name hash, source commit, or setup digest is not an
-acceptable substitute. Candidate order may differ in the original request;
+acceptable substitute. The public canary setup may also list candidates a
+team cannot pick yet (`readiness.status = "unavailable"`, see
+`POLICY_CANDIDATE_REGISTRY.md`); only its `verified_runnable` rows are compared
+with the owner pair. Candidate order may differ in the original request;
 identity-to-artifact mappings must match exactly, with no duplicate IDs.
 
 The real presubmission producer compares its actual checkpoint candidates with

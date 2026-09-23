@@ -49,6 +49,9 @@ from .droid_policy_canary_embodiment import (
     DROID_POLICY_CANARY_PRESET_ID,
     concrete_droid_task_instruction,
 )
+from .task_evaluation_policy_candidate_registry import (
+    unavailable_candidates as unavailable_policy_candidates,
+)
 from .native_task_arena_policy_bundle import _candidate_runtime_binding
 from .native_task_isaaclab_launch import NATIVE_TASK_ARENA_IMAGE
 from .host_resident_launch_inputs import PRODUCTION_LAUNCH_INPUT_ROOTS
@@ -1113,6 +1116,31 @@ def materialize_policy_canary_presubmission_setup(
                     "receipt": readiness_ref,
                     "reason": None,
                 },
+            }
+        )
+    # The rest of the registry is listed, not offered: each row says exactly why
+    # a team cannot pick it yet, and none carries a readiness receipt.
+    for pending in unavailable_policy_candidates():
+        policies.append(
+            {
+                "candidate_id": pending.candidate_id,
+                "display_name": pending.display_name,
+                "checkpoint": {
+                    "uri": pending.checkpoint_uri,
+                    "digest": pending.checkpoint_digest,
+                    "size_bytes": pending.checkpoint_total_bytes,
+                },
+                "adapter_id": pending.adapter_id,
+                "license_id": pending.license_id,
+                "compatibility": {
+                    "robot_preset_ids": [EMBODIMENT_ID],
+                    "embodiment_ids": [embodiment_id],
+                    "observation_schema_ids": [pending.observation_schema_id],
+                    "action_schema_ids": [pending.action_schema_id],
+                    "simulator_runtime_ids": [simulator_runtime_id],
+                    "task_family_ids": [task_family_id],
+                },
+                "readiness": {"status": "unavailable", "receipt": None, "reason": pending.reason},
             }
         )
     quick = verified["quick_10"]

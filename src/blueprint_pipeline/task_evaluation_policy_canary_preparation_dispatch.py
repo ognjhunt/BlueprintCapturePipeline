@@ -314,11 +314,25 @@ def _validate_selection(
         for row in setup["robot_presets"]
         if row["robot_preset_id"] == selection.get("robot_preset_id")
     ]
-    selected_candidates = (
-        [row["candidate_id"] for row in matching_robots[0]["policy_candidates"]]
+    # Two of the robot's runnable candidates, in catalog order. The catalog
+    # also lists candidates a team cannot pick yet; those never qualify.
+    runnable_candidates = (
+        [
+            row["candidate_id"]
+            for row in matching_robots[0]["policy_candidates"]
+            if _mapping(row.get("readiness")).get("status") == "verified_runnable"
+        ]
         if len(matching_robots) == 1
         else []
     )
+    requested = list(selection.get("candidate_ids") or ())
+    selected_candidates = (
+        [candidate_id for candidate_id in runnable_candidates if candidate_id in requested]
+        if len(requested) == 2 and len(set(requested)) == 2
+        else []
+    )
+    if len(selected_candidates) != 2:
+        selected_candidates = [None]  # never equal to a request
     notification = _mapping(selection.get("notification"))
     selected_resource = _mapping(selection.get("resource_authority"))
     if (

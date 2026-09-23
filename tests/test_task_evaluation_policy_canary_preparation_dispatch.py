@@ -4,6 +4,8 @@ import copy
 import json
 from pathlib import Path
 
+import pytest
+
 from blueprint_pipeline.adp_task_scoring import seal_rigid_task_success_contract
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_launch_dispatcher import (
@@ -14,6 +16,10 @@ from blueprint_pipeline.task_evaluation_launch_dispatcher import (
 from blueprint_pipeline.task_evaluation_policy_run_contract import (
     build_policy_campaign_activation_manifest,
     build_policy_run_plan,
+)
+from blueprint_pipeline.task_evaluation_policy_canary_preparation_dispatch import (
+    PolicyCanaryPreparationDispatchError,
+    _validate_selection,
 )
 from blueprint_pipeline.task_evaluation_policy_canary_setup import (
     policy_canary_setup_digest,
@@ -536,3 +542,40 @@ def test_policy_canary_launch_request_rejects_unknown_fields(tmp_path: Path) -> 
     assert "policy_canary_launch_request_fields_invalid" in (
         validate_launch_request(request)
     )
+
+
+def _selection_with_unavailable_policy(tmp_path: Path) -> tuple[dict, dict, dict]:
+    """The catalog also lists a policy a team cannot pick yet."""
+
+    profile, request = _profile_and_request(tmp_path)
+    setup = copy.deepcopy(profile["internal_policy_canary_setup"])
+    robot = setup["robot_presets"][0]
+    pending = copy.deepcopy(robot["policy_candidates"][0])
+    pending.update({
+        "candidate_id": "cosmos3_nano_policy_droid",
+        "display_name": "Cosmos 3 Nano Policy DROID",
+        "readiness": {"status": "unavailable", "receipt": None, "reason": "Coming soon."},
+    })
+    robot["policy_candidates"].append(pending)
+    setup["setup_digest"] = policy_canary_setup_digest(setup)
+    request["setup_digest"] = setup["setup_digest"]
+    return request, setup, profile["internal_policy_canary_execution_plan"]
+
+
+def test_a_run_is_any_two_runnable_policies_in_catalog_order(tmp_path: Path) -> None:
+    request, setup, plan = _selection_with_unavailable_policy(tmp_path)
+    selection = _validate_selection(request, setup=setup, plan=plan)
+    assert selection["candidate_ids"] == ["pi05_droid", "groot_n17_droid"]
+
+    for refused in (
+        ["pi05_droid", "cosmos3_nano_policy_droid"],
+        ["pi05_droid", "pi05_droid"],
+        ["groot_n17_droid", "pi05_droid"],
+        ["pi05_droid"],
+    ):
+        request["policy_candidate_ids"] = refused
+        with pytest.raises(
+            PolicyCanaryPreparationDispatchError,
+            match="policy_canary_launch_selection_invalid",
+        ):
+            _validate_selection(request, setup=setup, plan=plan)

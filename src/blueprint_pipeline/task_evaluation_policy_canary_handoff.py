@@ -616,7 +616,11 @@ def _selection(
     if len(presets) != 1 or presets[0].get("availability") != "enabled" or len(robots) != 1:
         raise PolicyCanaryHandoffError("policy_canary_handoff_setup_quick10_unavailable")
     quick = presets[0]
-    candidates = [row["candidate_id"] for row in robots[0].get("policy_candidates") or []]
+    candidates = [
+        row["candidate_id"]
+        for row in robots[0].get("policy_candidates") or []
+        if (row.get("readiness") or {}).get("status") == "verified_runnable"
+    ]
     if candidates != ["pi05_droid", "groot_n17_droid"]:
         raise PolicyCanaryHandoffError("policy_canary_handoff_setup_candidates_invalid")
     contract = setup.get("task_success_contract")

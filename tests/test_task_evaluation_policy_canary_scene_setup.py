@@ -721,6 +721,24 @@ def test_presubmission_setup_is_activation_independent_and_profile_ready(
         ).read_text(encoding="utf-8")
     )
     robot = setup["robot_presets"][0]
+    # The registry's other policies are listed with a reason, never offered.
+    runnable = [
+        row["candidate_id"]
+        for row in robot["policy_candidates"]
+        if row["readiness"]["status"] == "verified_runnable"
+    ]
+    assert runnable == ["pi05_droid", "groot_n17_droid"]
+    pending = {
+        row["candidate_id"]: row
+        for row in robot["policy_candidates"]
+        if row["readiness"]["status"] != "verified_runnable"
+    }
+    assert sorted(pending) == ["cosmos3_nano_policy_droid", "flux3_action_droid", "molmoact2_droid"]
+    assert all(
+        row["readiness"]["receipt"] is None and row["readiness"]["reason"]
+        for row in pending.values()
+    )
+    assert pending["flux3_action_droid"]["license_id"] == "flux-kommunity-1.0"
     assert sorted(setup) == shape["top_level_keys"]
     assert sorted(robot) == shape["robot_keys"]
     assert sorted(robot["policy_candidates"][0]) == shape["candidate_keys"]
