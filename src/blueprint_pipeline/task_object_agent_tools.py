@@ -113,7 +113,7 @@ class AssetTools:
         self.candidate = {"directory": attempt, "artifacts": artifacts,
             "cad_digest": canonical_digest(self.cad), "brief_digest": canonical_digest(self.brief.model_dump(mode="json"))}
         return {"status": "rendered_pending_independent_review", "measurement": measurement,
-                "views": ["perspective", "top", "side"]}
+                "views": ["perspective", "top", "side"], "artifacts": artifacts}
 
     def candidate_frames(self):
         if self.candidate is None:

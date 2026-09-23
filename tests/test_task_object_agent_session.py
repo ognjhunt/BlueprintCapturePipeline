@@ -121,21 +121,35 @@ def test_real_sdk_keeps_images_error_and_repair_in_one_session(agent_fixture):
     assert result['status'] == 'candidate_authored_pending_native_qualification'
     assert not result['scene_placement_qualified'] and not result['native_import_qualified']
     assert f.executed == ['broken', 'repaired', 'cad', 'blender']
-    assert len(f.model.calls) == invoker.calls == 8  # six author turns and two independent reviewers
-    last = json.dumps(f.model.calls[5]['input'])
-    assert 'unknown fillet radius' in last
-    assert 'data:image/png;base64,' in last
-    # Original and all three generated views survive as image content, not path strings.
-    assert last.count('data:image/png;base64,') == 4
-    assert f.model.calls[6]['output_schema'].json_schema()['title'] == 'PhysicalPropertyReviewProposal'
-    assert f.model.calls[7]['output_schema'].json_schema()['title'] == 'AppearanceReview'
+    assert len(f.model.calls) == invoker.calls == 6  # four author turns and two independent reviewers
+    assert 'unknown fillet radius' in json.dumps(f.model.calls[2]['input'])
+    # The render hands off directly. Original and all three generated views go
+    # to the independent reviewer before the author can invalidate the asset.
+    review_input = json.dumps(f.model.calls[5]['input'])
+    assert review_input.count('data:image/png;base64,') == 4
+    assert f.model.calls[4]['output_schema'].json_schema()['title'] == 'PhysicalPropertyReviewProposal'
+    assert f.model.calls[5]['output_schema'].json_schema()['title'] == 'AppearanceReview'
     manifest = audit.manifest()
     assert manifest['reserved_max_cost_usd'] < 5
     records = list((f.kwargs['budget_root'] / 'inference_reservations/reserved').glob('*.json'))
-    assert len(records) == 8
+    assert len(records) == 6
     assert all(json.loads(p.read_text())['max_turns'] == 1 for p in records)
     assert (f.kwargs['budget_root'] / 'asset_session/conversation.sqlite').is_file()
     assert (f.kwargs['budget_root'] / 'asset_session/completion.json').is_file()
+
+
+def test_render_hands_off_before_later_brief_mutation_can_clear_candidate(agent_fixture):
+    f = agent_fixture
+    # This sequence reproduces the drawer CPU failure: a valid render followed
+    # by observe_object would clear asset.candidate before independent review.
+    later_brief = f.steps[0]
+    f.model.steps = f.steps[:4] + [later_brief]
+    invoker, _ = bounded(f)
+    result = session.execute_agent_authoring(**f.kwargs, invoker=invoker, model=f.model)
+    assert result['status'] == 'candidate_authored_pending_native_qualification'
+    assert f.model.steps == [later_brief]
+    tools = list((f.kwargs['budget_root'] / 'asset_session/tools').glob('*.started.json'))
+    assert len(tools) == 4
 
 
 def test_budget_refuses_before_unaffordable_model_request(agent_fixture):
@@ -323,7 +337,7 @@ def test_long_retained_session_compacts_before_reserved_request(agent_fixture):
     history = session.SQLiteSession(f.request.object_id, db_path=root / 'conversation.sqlite')
     assert 'x' * 90000 in json.dumps(asyncio.run(history.get_items()))
     history.close()
-    assert len(f.model.calls) == 8  # no summarization model calls
+    assert len(f.model.calls) == 6  # no summarization model calls
 
 
 def test_uncompactable_current_evidence_fails_before_model(agent_fixture):
