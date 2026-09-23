@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
-from blueprint_pipeline.website_development_test import ENV, prepare_development_test, LABEL
+from blueprint_pipeline.website_development_test import ENV, prepare_development_test, LABEL, DRAWER_KIND, DRAWER_LABEL
 from blueprint_pipeline.website_native_background import prepare_construction_stages
 from tests.test_website_native_appearance import inputs
 
@@ -124,6 +124,33 @@ def test_registered_room_failure_does_not_block_authorized_object_preparation(tm
     args['base_scene']['meters_per_unit'] = 500.0
     again = compiler.compile_website_scene_preparation(**args)
     np.testing.assert_allclose(before, np.subtract(again['subject']['aabb_max_xyz'], again['subject']['aabb_min_xyz']))
+
+
+def test_missing_marble_anchor_uses_separately_named_drawer_fixture(tmp_path, monkeypatch):
+    from blueprint_pipeline import website_task_preparation as compiler
+    from tests.test_website_task_preparation import _arguments, _masks, ARTICULATED_REMOVAL
+    args = _arguments(tmp_path)
+    args['task_masks'] = _masks(args['source_geometry'], destination=False, articulated=True)
+    args['removal_manifest'] = ARTICULATED_REMOVAL
+    monkeypatch.setenv(ENV, json.dumps([args['task_context']['context_digest']]))
+    def refused(**_):
+        raise ValueError('website_registration_anchor_frame_missing')
+    monkeypatch.setattr(compiler, 'register_source_to_runtime', refused)
+    original = compiler.compile_website_scene_preparation(**args)
+    assert original['status'] == 'needs_input'
+    assert original['registration']['captured_scene_integration'] == 'pending'
+    assert 'website_registration_anchor_frame_missing' in original['blockers']
+    prepared, runtime = prepare_development_test(preparation=original, source_geometry=args['source_geometry'],
+        task_masks=args['task_masks'], output_root=tmp_path / 'drawer-fixture')
+    task = prepared['intake_request']['task']
+    assert prepared['development_test']['kind'] == DRAWER_KIND
+    assert prepared['development_test']['label'] == DRAWER_LABEL
+    assert prepared['development_test']['captured_scene_evaluation_allowed'] is False
+    assert task['strategy'] == 'articulated_open_close' and 'destination' not in task
+    assert task['articulation']['part_label'] == 'middle drawer'
+    assert prepared['destination'] is None
+    assert runtime['simulator_ready'] is False
+    assert runtime['object_authoring']['configuration']['schema_version'] == 'articulated_replacement_authoring_configuration.v1'
 
 
 @pytest.mark.parametrize('authorized,reason', [

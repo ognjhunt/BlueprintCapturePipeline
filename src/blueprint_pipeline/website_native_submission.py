@@ -79,7 +79,7 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
                                   release_admission_mode, staging_root):
     intent, preparation, context, rights, construction, paths = verified_submission_inputs(task)
     owner_task = intent["request"]["task"]
-    from .website_development_test import environment, LABEL
+    from .website_development_test import environment
     development = environment(preparation)
     scene_id = construction["scene_identity"]["id"]
     commit = expected_production_commit
@@ -151,7 +151,7 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
     # registration's task-region residual travel with the task, so a result can
     # abstain from a feasibility claim the estimate cannot support.
     physics = preparation["physics"]
-    template.update(instruction=(LABEL + " " if development else "") + context["description"], instruction_subject_label=subject["description"],
+    template.update(instruction=(development["label"] + " " if development else "") + context["description"], instruction_subject_label=subject["description"],
                     visible_target_label=(owner_task["articulation"]["part_label"] if articulated else destination["visible_label"]),
                     **({} if articulated else {"surface_target": target}),
                     dimension_authority="estimated", physical_world_truth_claimed=False,
