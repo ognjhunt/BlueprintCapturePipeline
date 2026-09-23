@@ -210,7 +210,7 @@ def validate_visual_continuation(value: Mapping[str, Any], *, expected_commit: s
     inventory = _visual_ref(value['source_inventory'])
     _visual_require(receipt.get('receipt_digest') == canonical_digest(receipt,digest_field='receipt_digest')
         and receipt.get('status') == 'blocked' and receipt.get('accepted_pose') is None
-        and receipt.get('model') == 'gpt-5.6-sol' and receipt.get('reasoning_effort') == 'high'
+        and receipt.get('model') == 'gpt-6-sol' and receipt.get('reasoning_effort') == 'high'
         and receipt.get('native_attempt_count') == 0 and receipt.get('model_grades_controls') is False
         and inventory.get('checkpoint_digest') == canonical_digest(inventory,digest_field='checkpoint_digest')
         and inventory.get('candidate_inventory_digest') == receipt.get('candidate_inventory_digest'), 'source_invalid')

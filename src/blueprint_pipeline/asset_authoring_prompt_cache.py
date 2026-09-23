@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from .openai_prompt_cache import PromptCachePolicy, create_prompt_cache_policy
 
 AssetCacheFamily = Literal["cad", "source_analysis", "blender_author", "physics", "visual_review"]
-ASSET_CACHE_MODEL = "gpt-6-astra"
+ASSET_CACHE_MODEL = "gpt-6-sol"
 ASSET_CACHE_REASONING_EFFORT = "high"
 ASSET_CACHE_CONTRACT_VERSION = "asset_authoring_prompt_cache.v1"
 PREFIX_TOKEN_COUNT_BASIS = "utf8_byte_upper_bound_not_measured_tokens"

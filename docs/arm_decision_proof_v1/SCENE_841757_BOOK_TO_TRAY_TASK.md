@@ -72,7 +72,7 @@ A reasonable initial CAD proposal is an outer footprint near
 short side when centered. These are proposal dimensions only. They are not a
 qualified asset, pose, or success boundary.
 
-The production authoring agent uses `gpt-5.6-sol` with the exact pinned `cad`
+The production authoring agent uses `gpt-6-sol` with the exact pinned `cad`
 skill source. It receives the owner-authored metric constraints and writes the
 STEP-first build123d generator; it is not allowed to browse the web or alter
 the dimensions. The production executor statically rejects file, process,

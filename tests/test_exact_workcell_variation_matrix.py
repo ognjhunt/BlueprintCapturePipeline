@@ -550,11 +550,11 @@ def test_autonomous_builder_uses_canonical_agents_sdk_adapter() -> None:
 
     assert invoker.spec.capability == "exact_workcell_variation_proposal"
     assert invoker.spec.output_type is ExactWorkcellVariationAgentOutput
-    assert invoker.spec.model == "gpt-5.6-luna"
+    assert invoker.spec.model == "gpt-6-luna"
     assert invoker.spec.reasoning_effort == "max"
     assert '"brief"' in invoker.input_value
     assert request["agent_proposal"]["model_identity"] == (
-        "openai-agents-sdk:gpt-5.6-luna:reasoning=max@0.19.1"
+        "openai-agents-sdk:gpt-6-luna:reasoning=max@0.19.1"
     )
     assert matrix["agent_role"]["mode"] == "bounded_proposal"
     assert matrix["cell_count"] == 100

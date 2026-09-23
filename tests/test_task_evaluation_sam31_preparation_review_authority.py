@@ -38,7 +38,7 @@ def authority_inputs(tmp_path):
     task['human_authority'] = {
         'accepted_by': review.AI_REVIEW_ACCEPTED_BY, 'accepted_on': '2026-09-05',
         'authority_reference': 'current-user-directive-scene841757',
-        'sam31_visual_review_authorized': True, 'sam31_visual_review_maximum_cost_usd': 1.,
+        'sam31_visual_review_authorized': True, 'sam31_visual_review_maximum_cost_usd': 1.25,
         'private_derived_frame_disclosure_authorized': True,
         'provider_retention_terms_accepted': True, 'provider_training_terms_accepted': True,
         'provider_training_authorized': False,
@@ -92,7 +92,7 @@ def test_current_task_scope_materializes_before_candidate_exists(authority_input
     assert v['human_review_required'] is False
     assert v['track_selection_accepted'] is False
     assert v['review_frame_count'] == 16
-    assert v['max_inference_spend_usd'] == 1.
+    assert v['max_inference_spend_usd'] == 1.25
 
 
 def test_real_candidate_gets_fresh_exact_rights_and_derivation(authority_inputs, tmp_path):

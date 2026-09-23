@@ -719,7 +719,7 @@ def test_provider_config_routes_replaceable_hosted_model_backend(
     config = joint_vast._provider_config(
         {"config": {"path": str(path)}},
         model_backend="openai",
-        model_id="gpt-5.6-luna",
+        model_id="gpt-6-luna",
         model_options={"reasoning_effort": "max"},
     )
 
@@ -730,12 +730,12 @@ def test_provider_config_routes_replaceable_hosted_model_backend(
         ("identify_asset", "vlm"),
     ):
         assert config["steps"][step][key]["backend"] == "openai"
-        assert config["steps"][step][key]["model"] == "gpt-5.6-luna"
+        assert config["steps"][step][key]["model"] == "gpt-6-luna"
         assert config["steps"][step][key]["reasoning_effort"] == "max"
     assert config["steps"]["analyze_structure"]["llm"]["temperature"] == 0
     assert config["steps"]["future_nested_step"]["workers"][0]["vlm"] == {
         "backend": "openai",
-        "model": "gpt-5.6-luna",
+        "model": "gpt-6-luna",
         "reasoning_effort": "max",
         "custom": "retained",
     }
@@ -747,7 +747,7 @@ def test_joint_model_admission_accepts_capability_proven_model_not_static_defaul
         "status": "qualified",
         "backend": "openai",
         "endpoint": "https://api.openai.com/v1/chat/completions",
-        "model": "gpt-5.6-luna",
+        "model": "gpt-6-luna",
         "credential_validated": True,
         "inference_http_status": 200,
         "choice_count": 1,
@@ -765,7 +765,7 @@ def test_joint_model_admission_accepts_capability_proven_model_not_static_defaul
     assert joint_vast._admitted_hosted_model(receipt) == (
         "openai",
         "openai",
-        "gpt-5.6-luna",
+        "gpt-6-luna",
         {"reasoning_effort": "max"},
     )
 
@@ -900,7 +900,7 @@ def test_canonical_allocator_binds_joint_agent_bundle_and_grant(
         receipt["model_preflight_receipt_digest"] = "sha256:" + "2" * 64
         receipt["model"] = {
             "backend": "openai",
-            "id": "gpt-5.6-luna",
+            "id": "gpt-6-luna",
             "options": {"reasoning_effort": "xhigh"},
             "capability_preflight": {
                 "schema_version": "hosted_model_inference_preflight.v2",

@@ -41,7 +41,7 @@ from .task_evaluation_supervisor.agents_sdk import (
 
 REQUEST_SCHEMA_VERSION = "task_evaluation_passive_destination_cad_request.v2"
 RESULT_SCHEMA_VERSION = "task_evaluation_passive_destination_cad_result.v1"
-MODEL = "gpt-5.6-sol"
+MODEL = "gpt-6-sol"
 REASONING_EFFORT = "high"
 MAX_OUTPUT_TOKENS = 12_000
 DEFAULT_MAX_COST_USD = 0.75

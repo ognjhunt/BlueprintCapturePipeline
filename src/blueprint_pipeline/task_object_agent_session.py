@@ -73,7 +73,7 @@ def tool_definitions(asset, ledger):
                     # an allowance to disable checks. A new call can repair it.
                     result = {"status": "repair_needed", "error": str(exc)[:8000]}
                 save_json(saved, result)
-            encoded, _ = encode_tool_output(result, model="gpt-6-astra")
+            encoded, _ = encode_tool_output(result, model="gpt-6-sol")
             return encoded if encoded is not None else canonical_json(result)
         schema = ensure_strict_json_schema({"type": "object", "properties": properties,
             "required": list(properties), "additionalProperties": False})
@@ -101,7 +101,7 @@ def execute_agent_authoring(*, request_value, output_root, budget_root, invoker,
         from .task_object_agent_resume import restore_agent_candidate
         retained = restore_agent_candidate(asset, Path(adopted_agent_root), state_root,
                                            source_request=adopted_agent_source_request)
-    delegate = model or OpenAIProvider().get_model("gpt-6-astra")
+    delegate = model or OpenAIProvider().get_model("gpt-6-sol")
     bounded = BudgetedAuthoringModel(delegate=delegate, invoker=invoker, run_id=request.run_id, object_id=request.object_id)
     if retained:
         bounded.calls = retained['author_calls']

@@ -21,7 +21,7 @@ def test_reviewer_runs_once_without_repeating_proposal_or_overriding_veto(tmp_pa
     inventory={'candidate_inventory_digest':'sha256:'+'e'*64,'trajectory_digest':trajectory['trajectory_digest']}
     old={'scene_binding_digest':canonical_digest(scene),'task_binding_digest':canonical_digest(task),
         'task_trajectory_digest':trajectory['trajectory_digest'],'candidate_inventory_digest':inventory['candidate_inventory_digest'],
-        'rounds':[{'proposal_model':'gpt-5.6-sol','preview_images':[]}]}
+        'rounds':[{'proposal_model':'gpt-6-sol','preview_images':[]}]}
     source={'execution_commit':'b'*40,'continuation_digest':'sha256:'+'f'*64,'source_placement_receipt':{'path':'retained','digest':'sha256:'+'a'*64}}
     monkeypatch.setattr(review.continuation,'validate',lambda *args,**kwargs:{'receipt':old,'proposal':proposal})
     monkeypatch.setattr(identity,'running_release_commit',lambda:'b'*40)
@@ -56,7 +56,7 @@ def test_reviewer_runs_once_without_repeating_proposal_or_overriding_veto(tmp_pa
                 robot_supported_by_declared_surface=True,robot_not_visibly_clipping_site_geometry=True,
                 robot_faces_task_workspace=True,task_workspace_visually_reachable=True,
                 camera_views_are_sufficient=verdict=='passed',reason='Fixture visual verdict.',revision_guidance=[]),
-                provider='openai',model='gpt-5.6-sol',sdk_version='fixture',usage={},trace_id=None)
+                provider='openai',model='gpt-6-sol',sdk_version='fixture',usage={},trace_id=None)
     result=review.run(source=source,run_id='review',scene_binding=scene,task_binding=task,task_trajectory=trajectory,
         inventory=inventory,overview_images=[],output_dir=tmp_path,artifacts=[],validate_candidate=lambda p:gate,
         render_candidate=lambda *args:images,placement_scene_owner={},max_inference_cost_usd=.15,invoker_factory=Invoker)

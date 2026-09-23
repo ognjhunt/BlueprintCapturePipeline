@@ -10,12 +10,12 @@ from blueprint_pipeline import task_evaluation_scene_intake as intake
 from blueprint_pipeline import task_evaluation_scene_execution_authority as execution
 from blueprint_pipeline import task_evaluation_unstarted_controls_reservations as cancellations
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
-from tests.test_task_evaluation_terminal_adoption_retirement import adopted as adopted
+from tests.test_task_evaluation_terminal_adoption_retirement import adopted as adopted  # noqa: F811
 from tests.test_task_evaluation_unstarted_controls_reservations import reserved as reserved, put
 
 
 @pytest.fixture
-def failed_review(adopted, tmp_path):
+def failed_review(adopted, tmp_path):  # noqa: F811
     config, source, owner, old, old_path, reserve, run = adopted
     config["plan_root"] = str(tmp_path / "plans")
     root = Path(config["progression_root"]) / source["launch_id"] / "cpu-robot-binding"
@@ -40,7 +40,7 @@ def failed_review(adopted, tmp_path):
         "schema_version": "task_evaluation_robot_placement_receipt.v1",
         "status": "blocked",
         "accepted_pose": None,
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6-sol",
         "reasoning_effort": "high",
         "native_attempt_count": 0,
         "model_grades_controls": False,
@@ -51,7 +51,7 @@ def failed_review(adopted, tmp_path):
         "rounds": [
             {
                 "proposal": proposal,
-                "proposal_model": "gpt-5.6-sol",
+                "proposal_model": "gpt-6-sol",
                 "geometry_gate": {"status": "passed"},
                 "visual_review": {"camera_views_are_sufficient": False, "status": "uncertain"},
                 "native_attempt": None,

@@ -42,7 +42,7 @@ class AssetTools:
     def observe_object(self, brief):
         """Record the author's interpretation; original image bytes remain authoritative."""
         self.brief = VisualBrief.model_validate(brief)
-        save_json(self.root / "source_analysis.json", {"model": "gpt-6-astra", "provider": "openai",
+        save_json(self.root / "source_analysis.json", {"model": "gpt-6-sol", "provider": "openai",
             "request_digest": self.request.request_digest,
             "references": [f.model_dump(mode="json") for f in self.request.source_frames],
             "output": self.brief.model_dump(mode="json"), "origin": "asset_authoring_session"})
@@ -178,7 +178,7 @@ class AssetTools:
         self.validate_candidate()
         generated = self.request.generated_specification
         result = {"schema_version": "task_object_astra_authoring_result.v1",
-            "status": "candidate_authored_pending_native_qualification", "model": "gpt-6-astra",
+            "status": "candidate_authored_pending_native_qualification", "model": "gpt-6-sol",
             "request_digest": self.request.request_digest, "object_id": self.request.object_id,
             "claim_ceiling": "development_only", "asset": file_record(attempt / "candidate.usdc"),
             "blend": file_record(attempt / "candidate.blend"), "cad": self.cad,

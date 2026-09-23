@@ -26,7 +26,7 @@ class FakeInvoker:
         return SimpleNamespace(output=runtime._TextOutput(content="# complete candidate\nx = 1\n"),
                                usage={"input_tokens": 10, "output_tokens": 8}, cost_usd=0.01,
                                cost_status="observed", trace_id="fake", provider="openai",
-                               sdk_version="fake", model="gpt-6-astra")
+                               sdk_version="fake", model="gpt-6-sol")
 
 
 class FakeRunner:
@@ -56,7 +56,7 @@ def test_sdk_bridge_preserves_exact_brief_and_has_one_turn(tmp_path):
     bridge = runtime._SDKChatBridge(invoker, tmp_path, "width 12.34567 mm", "shared-parent", 4000, 512, 1, "tray")
     bridge.create(messages=[{"role": "user", "content": "make JSON"}], model="qwen", max_tokens=99999)
     spec, payload = invoker.calls[0]
-    assert spec.model == "gpt-6-astra" and spec.reasoning_effort == "high"
+    assert spec.model == "gpt-6-sol" and spec.reasoning_effort == "high"
     assert spec.max_turns == 1 and spec.max_output_tokens == 512 and not spec.tool_bindings
     assert spec.run_id == "shared-parent" and spec.capability == "astra_cad_candidate:tray"
     assert json.loads(payload)["object_label"] == "tray"
@@ -428,7 +428,7 @@ def test_adoption_requires_matching_completed_sdk_output_and_exact_parameters(tm
         if index == 0:
             retained['user_request_raw'] = parameters['brief']
         runtime._save(source / f'node-{node}.json', {field: retained})
-        completion = {'run_id': parameters['run_id'], 'model': 'gpt-6-astra', 'provider': 'openai',
+        completion = {'run_id': parameters['run_id'], 'model': 'gpt-6-sol', 'provider': 'openai',
                       'capability': 'astra_cad_candidate:book',
                       'structured_output_digest': canonical_digest({'content': raw})}
         completion['inference_completion_digest'] = canonical_digest(completion, digest_field='inference_completion_digest')
@@ -521,7 +521,7 @@ def test_coder_adoption_binds_completed_output_to_original_budgeted_input(tmp_pa
                    'input_digest': canonical_digest({'input_text': json.dumps(request)})}
     reservation['inference_reservation_digest'] = canonical_digest(reservation, digest_field='inference_reservation_digest')
     completion = {'reservation_id': 'reservation', 'run_id': params['run_id'], 'provider': 'openai',
-                  'model': 'gpt-6-astra', 'capability': 'astra_cad_candidate:book',
+                  'model': 'gpt-6-sol', 'capability': 'astra_cad_candidate:book',
                   'structured_output_digest': canonical_digest({'content': raw})}
     completion['inference_completion_digest'] = canonical_digest(completion, digest_field='inference_completion_digest')
     runtime._save(budget / 'reserved/receipt.json', reservation)

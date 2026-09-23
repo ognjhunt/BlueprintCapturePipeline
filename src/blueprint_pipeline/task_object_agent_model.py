@@ -31,7 +31,7 @@ def context_ceiling(value):
             item = item.model_dump(mode="json")
         if isinstance(item, dict):
             if item.get("type") == "input_image":
-                _, count = encode_tool_output([{"type": "input_image", "image_url": item.get("image_url")}], model="gpt-6-astra")
+                _, count = encode_tool_output([{"type": "input_image", "image_url": item.get("image_url")}], model="gpt-6-sol")
                 images += count
                 return {"type": "input_image", "image_tokens_reserved": count}
             return {key: normalized(part) for key, part in item.items()}
@@ -79,7 +79,7 @@ class BudgetedAuthoringModel(Model):
             self.calls += 1
             spec = AgentsSDKAgentSpec(run_id=self.run_id, capability=f"{self.object_id}_author_turn_{self.calls:03d}",
                 name="Persistent asset author", instructions="Record this SDK response receipt.",
-                model="gpt-6-astra", max_turns=1, max_input_tokens=ceiling,
+                model="gpt-6-sol", max_turns=1, max_input_tokens=ceiling,
                 max_output_tokens=model_settings.max_tokens, reasoning_effort="medium", output_type=_ResponseReceipt)
             responses = []
             loop = asyncio.get_running_loop()

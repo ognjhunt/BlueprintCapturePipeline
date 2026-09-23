@@ -30,7 +30,7 @@ def test_production_shape_canary_reuses_both_families_without_gpu(
             policy = {
                 "schema_version": "openai_prompt_cache_policy.v1",
                 "status": "enabled",
-                "model_family": "gpt-5.6-sol",
+                "model_family": "gpt-6-sol",
                 "mode": "explicit",
                 "family": family,
                 "contract_version": spec.prompt_contract_version,
@@ -52,7 +52,7 @@ def test_production_shape_canary_reuses_both_families_without_gpu(
                 "policy_digest": "sha256:" + "e" * 64,
             }
             usage = {
-                "model": "gpt-5.6-sol",
+                "model": "gpt-6-sol",
                 "input_tokens": 3_300,
                 "cached_tokens": cached,
                 "cache_write_tokens": written,
@@ -104,7 +104,7 @@ def test_production_shape_canary_reuses_both_families_without_gpu(
             return AgentsSDKInvocationResult(
                 output=output,
                 provider="openai",
-                model="gpt-5.6-sol",
+                model="gpt-6-sol",
                 sdk_version="0.19.1",
                 latency_seconds=0.01,
                 usage=usage,

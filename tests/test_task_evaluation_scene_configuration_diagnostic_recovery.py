@@ -178,7 +178,7 @@ def _recovery_fixture(tmp_path: Path) -> dict[str, Path]:
         "reviewer": {
             "identity": "independent-vlm-reviewer-v1",
             "runtime": "openai_agents_sdk",
-            "model": "gpt-5.6-terra",
+            "model": "gpt-6-sol",
         },
         "receipt_digest": "",
     }

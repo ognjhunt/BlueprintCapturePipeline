@@ -173,7 +173,7 @@ def test_rollout_vision_retains_usage_before_malformed_output(
     calls: list[dict] = []
     with pytest.raises(json.JSONDecodeError):
         vision._openai_label(
-            model="gpt-5.6-luna",
+            model="gpt-6-luna",
             label={"label_id": "l1", "attempt_id": "a1"},
             clip={"clip_id": "c1", "scenario_id": "s1"},
             keyframe_path=keyframe,
@@ -256,5 +256,5 @@ def test_rollout_vision_main_reports_status(monkeypatch, tmp_path: Path, capsys)
 
 
 def test_rollout_vision_defaults_to_luna_xhigh() -> None:
-    assert vision.DEFAULT_MODEL == "gpt-5.6-luna"
+    assert vision.DEFAULT_MODEL == "gpt-6-luna"
     assert vision.OPENAI_REASONING_EFFORT == "xhigh"

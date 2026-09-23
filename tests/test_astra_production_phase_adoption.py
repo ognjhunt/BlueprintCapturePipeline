@@ -27,9 +27,9 @@ def prior_runtime(root, request, package):
         unknown_regions=["underside"], cad_brief_markdown="Exact supplied dimensions",
         proposed_material="paper", proposed_appearance="opaque")
     _save(prior / "authoring/source_analysis.json", {"request_digest": request["request_digest"],
-        "model": "gpt-6-astra", "output": brief.model_dump(mode="json")})
+        "model": "gpt-6-sol", "output": brief.model_dump(mode="json")})
     identity = {"run_id": request["run_id"], "capability": request["object_id"] + "_source_analysis",
-        "model": "gpt-6-astra", "input_digest": "sha256:" + "a" * 64, "max_turns": 1, "max_output_tokens": 12000}
+        "model": "gpt-6-sol", "input_digest": "sha256:" + "a" * 64, "max_turns": 1, "max_output_tokens": 12000}
     policy = {"policy_digest": "sha256:" + "b" * 64}
     reservation = {**identity, "schema_version": "task_evaluation_inference_reservation.v1",
         "reservation_id": canonical_digest(identity), "projected_max_cost_usd": 1.4,
@@ -40,7 +40,7 @@ def prior_runtime(root, request, package):
     reservation["inference_reservation_digest"] = canonical_digest(reservation, digest_field="inference_reservation_digest")
     completion = {"schema_version": "task_evaluation_inference_completion.v1",
         "reservation_id": reservation["reservation_id"], "run_id": request["run_id"],
-        "capability": identity["capability"], "model": "gpt-6-astra", "provider": "openai",
+        "capability": identity["capability"], "model": "gpt-6-sol", "provider": "openai",
         "cache_policy": policy, "breakpoint_digests": [], "projected_max_cost_usd": 1.4,
         "reconciled_actual_cost_usd": .1, "released_reservation_usd": 1.3,
         "structured_output_digest": canonical_digest(brief.model_dump(mode="json"))}
@@ -116,7 +116,7 @@ def test_driver_supplies_verified_adoption_before_parent_gate(phase_fixture):
 def test_prior_calls_consume_the_existing_request_ceiling():
     invoker = driver._StageInvoker(SimpleNamespace(invoke=lambda *args: pytest.fail("no new call allowed")),
                                    "same-run", 1, prior_calls=1)
-    spec = SimpleNamespace(run_id="same-run", model="gpt-6-astra", max_turns=1, tool_bindings=(),
+    spec = SimpleNamespace(run_id="same-run", model="gpt-6-sol", max_turns=1, tool_bindings=(),
         max_output_tokens=12000, max_input_tokens=80000, reasoning_effort="high")
     with pytest.raises(driver.AstraStageError, match="inference_boundary_refused"):
         invoker.invoke(spec, "input")

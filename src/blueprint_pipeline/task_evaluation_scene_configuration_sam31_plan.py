@@ -34,8 +34,8 @@ def build_sam31_preparation_plan(
     profile = read(server_profile_path, digest_field="profile_digest")
     require(profile.get("schema_version") == PROFILE_SCHEMA and
             profile.get("source_commit") == source_commit, "sam31_profile_commit_mismatch")
-    require(profile.get("review_model") == "gpt-5.6-terra" and
-            profile.get("review_maximum_cost_usd") == 1.0 and
+    require(profile.get("review_model") == "gpt-6-sol" and
+            profile.get("review_maximum_cost_usd") == 1.25 and
             profile.get("candidate_policy_queried") is False,
             "sam31_profile_scope_invalid")
     plan = {
@@ -43,7 +43,7 @@ def build_sam31_preparation_plan(
         "task_identity": task["task_identity"], "scene_identity": task["scene_identity"],
         "publisher_scene_id": task["publisher_scene_id"],
         "phase_sequence": list(PHASES), "review_kind": "ai",
-        "review_model": "gpt-5.6-terra", "human_review_required": False,
+        "review_model": "gpt-6-sol", "human_review_required": False,
         "host_inputs": {name: file_record(path) for name, path in host_inputs.items()},
         # Only a digest crosses publication. Operator secret/configuration paths
         # are resolved from the service environment, never from client parameters.
@@ -76,7 +76,7 @@ def validate_sam31_preparation_plan(
     require(plan.get("schema_version") == SCHEMA and plan.get("source_commit") == source_commit
             and plan.get("phase_sequence") == list(PHASES)
             and plan.get("review_kind") == "ai" and plan.get("human_review_required") is False
-            and plan.get("review_model") == "gpt-5.6-terra"
+            and plan.get("review_model") == "gpt-6-sol"
             and plan.get("plan_digest") == canonical_digest(plan, digest_field="plan_digest"),
             "sam31_plan_invalid")
     boundary = plan.get("claim_boundary", {})

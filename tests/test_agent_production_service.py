@@ -55,7 +55,7 @@ def fixture(tmp_path):
     task = AgentTask(task_id="prod_task", run_id=context.run_id, capability="capture_testbed_supervisor",
                      context_revision=context_revision(context), source_commit="a" * 40,
                      instructions="Inspect the requested status and report supported next actions.",
-                     model="gpt-5.6-terra", input=inputs, input_digests=(status["status_digest"],),
+                     model="gpt-6-sol", input=inputs, input_digests=(status["status_digest"],),
                      output_schema=OperationalDiagnosis.model_json_schema(), tool_ids=(tool.tool_id,),
                      tool_digests={tool.tool_id: tool.tool_digest}, admission=admission,
                      deadline=time.time() + 300, max_model_turns=2, max_tool_output_bytes=10_000)
@@ -70,7 +70,7 @@ def fixture(tmp_path):
     write(config_path, {"schema_version": "blueprint_agent_production_config.v1",
                         "state_root": str(tmp_path / "state"), "task_store_root": str(tmp_path / "admitted"),
                         "source_commit": "a" * 40, "project_id": "proj_fixture", "credential_id": "key_fixture",
-                        "credential_file": str(key_path), "allowed_models": ["gpt-5.6-terra"],
+                        "credential_file": str(key_path), "allowed_models": ["gpt-6-sol"],
                         "max_task_budget_usd": 10})
     service = ProductionAgentService(config_path, source_commit="a" * 40)
     return service, task, record_path, config_path

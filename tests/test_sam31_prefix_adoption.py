@@ -111,7 +111,7 @@ def prefix(tmp_path):
             for name in ("task_request", "installation_receipt", "publisher_intake", "source_preparation_receipt", "interiorgs_terms")}
     provider = write(tmp_path / "sam-provider.json", {"model": "fixture-only"})
     profile = {"schema_version": adoption.PROFILE_SCHEMA, "source_commit": OLD,
-               "review_model": "gpt-5.6-terra", "review_maximum_cost_usd": 1., "candidate_policy_queried": False,
+               "review_model": "gpt-6-sol", "review_maximum_cost_usd": 1.25, "candidate_policy_queried": False,
                "artifact_references": {"sam31_provider_profile": provider}}
     profile_ref = write(tmp_path / "profile.json", profile, "profile_digest")
     request, _ = production_request_with_fetchable_bytes()

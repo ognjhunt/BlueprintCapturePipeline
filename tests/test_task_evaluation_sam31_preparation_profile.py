@@ -146,7 +146,7 @@ def test_materializer_binds_evidence_without_reading_secrets(inputs, monkeypatch
     assert validate_sam31_preparation_plan(plan, source_commit=inputs['source_commit'],
                                          approved_roots=(tmp_path,)) == plan
     assert plan['human_review_required'] is False
-    assert plan['review_model'] == 'gpt-5.6-terra'
+    assert plan['review_model'] == 'gpt-6-sol'
     tampered = json.loads(json.dumps(plan))
     tampered["camera_policy"]["views"][0]["position_offset_m"][0] += 0.1
     tampered["plan_digest"] = canonical_digest(tampered, digest_field="plan_digest")
@@ -196,7 +196,7 @@ def test_profile_reopens_and_rejects_drift(inputs, defect, code, tmp_path):
 
 @pytest.mark.parametrize('field,value', [('issued_by_agent', True), ('agent_accepted_terms', True),
     ('raw_source_splat_or_dataset_bytes_included', True), ('frame_redistribution_authorized', True),
-    ('model', 'gpt-5.6-luna'), ('max_inference_spend_usd', 2.)])
+    ('model', 'gpt-6-luna'), ('max_inference_spend_usd', 2.)])
 def test_resigned_rights_cannot_expand_scope(inputs, field, value):
     p = inputs['sam31_review_rights_attestation_path']
     v = json.loads(p.read_text())

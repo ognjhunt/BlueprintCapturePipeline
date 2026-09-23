@@ -1,4 +1,4 @@
-"""Bounded five-call GPT-5.6 Sol explicit prompt-cache mechanics canary."""
+"""Bounded five-call GPT-6 Sol explicit prompt-cache mechanics canary."""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ from .openai_prompt_cache import (
 
 
 SCHEMA_VERSION = "openai_prompt_cache_mechanics_canary.v1"
-DEFAULT_MODEL = "gpt-5.6-sol"
+DEFAULT_MODEL = "gpt-6-sol"
 EXACT_REQUEST_COUNT = 5
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
 
@@ -106,7 +106,7 @@ def run_mechanics_canary(
     verify_source_commit: bool = True,
 ) -> dict[str, Any]:
     if model != DEFAULT_MODEL:
-        raise OpenAIPromptCacheCanaryError("canary_model_must_be_gpt_5_6_sol")
+        raise OpenAIPromptCacheCanaryError("canary_model_must_be_gpt_6_sol")
     if not 0 < max_total_cost_usd <= 1.0:
         raise OpenAIPromptCacheCanaryError("canary_cost_cap_invalid")
     if _COMMIT.fullmatch(source_commit) is None:

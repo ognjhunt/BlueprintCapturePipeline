@@ -58,7 +58,7 @@ def _response(*, response_id: str, cached: int, written: int) -> Response:
             "object": "response",
             "created_at": 0,
             "status": "completed",
-            "model": "gpt-5.6-sol",
+            "model": "gpt-6-sol",
             "output": [
                 {
                     "id": f"msg_{response_id}",
@@ -119,7 +119,7 @@ def test_agents_sdk_serializes_stable_explicit_prefix_and_key(
         sort_keys=True,
     )
     config = OpenAIAgentsSDKConfig(
-        model="gpt-5.6-sol",
+        model="gpt-6-sol",
         allow_live_invocation=True,
         tracing_disabled=True,
         max_inference_cost_usd=1.0,
@@ -133,7 +133,7 @@ def test_agents_sdk_serializes_stable_explicit_prefix_and_key(
                 capability="task_aware_robot_placement_proposal",
                 name="Blueprint placement transport spy",
                 instructions="Return only the declared structured output.",
-                model="gpt-5.6-sol",
+                model="gpt-6-sol",
                 max_turns=1,
                 max_output_tokens=256,
                 max_input_tokens=10_000,

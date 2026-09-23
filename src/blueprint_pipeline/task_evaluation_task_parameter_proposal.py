@@ -36,7 +36,7 @@ from .task_evaluation_supervisor.inference_reservations import InferenceReservat
 REQUEST_SCHEMA = "task_evaluation_task_parameter_proposal_request.v1"
 PROFILE_SCHEMA = "task_evaluation_task_parameter_proposal_profile.v1"
 RESULT_SCHEMA = "task_evaluation_task_parameter_proposal.v1"
-MODEL = "gpt-5.6-sol"
+MODEL = "gpt-6-sol"
 MAX_COST_USD = .25
 MAX_INPUT_TOKENS = 16_000
 MAX_OUTPUT_TOKENS = 4_000

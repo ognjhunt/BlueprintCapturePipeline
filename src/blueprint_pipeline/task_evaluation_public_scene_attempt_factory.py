@@ -452,7 +452,7 @@ def materialize_public_scene_attempt(*, intent_path, source_binding_path, machin
             private_derived_frame_disclosure_authorized=True, provider_retention_terms_accepted=True,
             provider_training_terms_accepted=True, provider_training_authorized=False,
             task_success_contract_confirmed=True, source_calibration_gpu_render_authorized=True,
-            sam31_visual_review_authorized=True, sam31_visual_review_maximum_cost_usd=1.0)
+            sam31_visual_review_authorized=True, sam31_visual_review_maximum_cost_usd=1.25)
         if descriptive is not None:
             task["task_identity"]["id"] = request["task"]["task_id"]
             task["owner_description_seed_binding"] = {"source_binding": record(source_binding_path), "match": descriptive}
