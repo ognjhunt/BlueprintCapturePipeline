@@ -5,6 +5,10 @@
 # hostname and forwards ONLY the live-pipeline API surface. Every other path
 # answers with a static string so a rebuilt host never exposes a second surface.
 #
+# Within that surface, /api/live-pipeline/operator/* goes to the operator door
+# (deploy/operator-door, loopback 127.0.0.1:8767): the token-gated HTTPS window
+# cloud agent sessions use in place of SSH. See docs/OPERATOR_DOOR.md.
+#
 # The hostname is supplied by BLUEPRINT_PIPELINE_PUBLIC_HOSTNAME rather than
 # baked in, because a rebuilt droplet gets a new address. Set one or more
 # comma-separated names, for example:
@@ -19,6 +23,10 @@
 # scripts/install_live_pipeline_control_plane.sh.
 
 {$BLUEPRINT_PIPELINE_PUBLIC_HOSTNAME} {
+	handle /api/live-pipeline/operator/* {
+		reverse_proxy 127.0.0.1:8767
+	}
+
 	handle /api/live-pipeline/* {
 		reverse_proxy 127.0.0.1:8765
 	}

@@ -5,6 +5,7 @@
 ``self-test``  check config, tokens and state directories; exit 1 on problems
 ``token``      add, list or revoke token hashes (``add`` takes a hash, never a token)
 ``hash-token`` read a token on stdin and print its hash, so plaintext never hits argv
+``caddy-patch`` write a copy of a Caddyfile with the operator route added (exit 3 if present)
 """
 
 from __future__ import annotations
@@ -55,6 +56,9 @@ def main(argv: list[str] | None = None) -> int:
     for name in ("serve", "run-spool", "self-test", "hash-token"):
         sub = commands.add_parser(name)
         sub.add_argument("--config", default=argparse.SUPPRESS)
+    caddy = commands.add_parser("caddy-patch")
+    caddy.add_argument("source")
+    caddy.add_argument("target")
     token = commands.add_parser("token")
     token.add_argument("--config", default=argparse.SUPPRESS)
     token_commands = token.add_subparsers(dest="token_command", required=True)
@@ -76,6 +80,14 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "self-test":
         return _self_test(args.config)
+    if args.command == "caddy-patch":
+        from .caddy import patch_caddyfile
+
+        patched = patch_caddyfile(Path(args.source).read_text(encoding="utf-8"))
+        if patched is None:
+            return 3
+        Path(args.target).write_text(patched, encoding="utf-8")
+        return 0
     config = load_config(args.config)
     if args.command == "serve":
         from .hostinfo import HostInfo
