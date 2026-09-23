@@ -16,6 +16,7 @@ from .decision_evidence_contracts import canonical_digest, cross_runtime_canonic
 from .safe_outbound_http import pinned_api_policy, request as safe_request
 from .task_evaluation_launch_webapp_sync import load_pipeline_sync_token
 from .webapp_sync import _pipeline_sync_headers, validated_https_sync_url
+from .website_capture_entry import is_website_entry_source
 
 
 def validate_website_task_context(
@@ -132,7 +133,7 @@ def publish_website_visual_scene(*, descriptor: Mapping[str, Any], world: Mappin
     """Publish the first viewable world before mesh downloads or native authoring."""
     metadata = descriptor.get("metadata") or {}
     context = metadata.get("site_task_context") or {}
-    if (metadata.get("capture_entry_source") != "browser_self_capture"
+    if (not is_website_entry_source(metadata.get("capture_entry_source"))
             or (metadata.get("clean_plate") or {}).get("privacy_verified") is not True):
         raise ValueError("website_visual_scene_preparation_missing")
     validate_website_task_context(context, request_id=context.get("request_id", ""),

@@ -79,6 +79,7 @@ from .world_model_policy import (
     build_presentation_derivation_policy,
     build_provenance_record,
 )
+from .website_capture_entry import is_website_entry_source
 
 
 @dataclass
@@ -2694,7 +2695,7 @@ def _geometry_advisory_payload(geometry_artifacts: Mapping[str, Any]) -> Dict[st
 
 
 def _should_run_default_geometry_stage(descriptor: CaptureDescriptor) -> bool:
-    if descriptor.metadata.get("capture_entry_source") == "browser_self_capture":
+    if is_website_entry_source(descriptor.metadata.get("capture_entry_source")):
         # Original-view geometry is already inferred by the website preparation.
         return False
     if descriptor.capture_source == "iphone" and descriptor.arkit_poses_uri:
@@ -4415,7 +4416,7 @@ def run_qualification_pipeline(
         pipeline_prefix = to_pipeline_prefix(scene_id, capture_id)
         pipeline_dir = storage_root / pipeline_prefix
         ensure_dir(pipeline_dir)
-        if descriptor.metadata.get("capture_entry_source") == "browser_self_capture":
+        if is_website_entry_source(descriptor.metadata.get("capture_entry_source")):
             stage = "website_task_context"
             task_context = load_current_website_task_context(
                 request_id=str(descriptor.site_submission_id or descriptor.metadata.get("site_submission_id") or ""),
@@ -4701,7 +4702,7 @@ def run_qualification_pipeline(
         )
         stage = "gemini_capture_review"
         raw_video_path = _resolve_optional_uri_to_path(descriptor.raw_video_uri, storage_root)
-        website_capture = (descriptor.metadata or {}).get("capture_entry_source") == "browser_self_capture"
+        website_capture = is_website_entry_source((descriptor.metadata or {}).get("capture_entry_source"))
         if website_capture:
             capture_fidelity_review = {"status": "not_run", "reason": "website_task_analysis_owns_media_review"}
         else:
@@ -4824,8 +4825,7 @@ def run_qualification_pipeline(
             )
         )
         worldlabs_input = apply_clean_plate_to_reconstruction_input(
-            worldlabs_input, clean_plate,
-            required=(descriptor.metadata or {}).get("capture_entry_source") == "browser_self_capture",
+            worldlabs_input, clean_plate, required=website_capture,
         )
         if website_capture and clean_plate.get("status") not in {"noop", "objects_removed"}:
             raise StageError("clean_plate", ",".join(clean_plate.get("blockers") or ["website_preparation_pending"]))

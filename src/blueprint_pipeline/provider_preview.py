@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Mapping, Optional, Protocol
 from .common import resolve_gs_uri_to_path, utc_now_iso, write_json
 from .launch_proof_policy import production_launch_mode
 from .local_capture import resolve_local_capture_context
+from .website_capture_entry import is_website_entry_source
 
 # ---------------------------------------------------------------------------
 # World Labs API helpers
@@ -669,7 +670,7 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
         provider_adapter_input: Mapping[str, Any] | None = None,
     ) -> Dict[str, Any]:
         started_at = time.time()
-        if (descriptor.get("metadata") or {}).get("capture_entry_source") == "browser_self_capture":
+        if is_website_entry_source((descriptor.get("metadata") or {}).get("capture_entry_source")):
             from .website_worldlabs import submit_website_prepared_views
 
             return submit_website_prepared_views(
@@ -886,7 +887,7 @@ def run_preview_provider(
     try:
         provider = resolve_preview_provider(provider_name)
         if (isinstance(provider, WorldLabsPreviewProvider)
-                and (descriptor.get("metadata") or {}).get("capture_entry_source") == "browser_self_capture"):
+                and is_website_entry_source((descriptor.get("metadata") or {}).get("capture_entry_source"))):
             from .paid_resource_allocator import submit_sponsored_website_reconstruction
             submitted = submit_sponsored_website_reconstruction(descriptor=descriptor, capture_root=capture_root)
         elif provider_adapter_input is not None:
@@ -951,7 +952,7 @@ def run_preview_provider(
             normalized["operation_terminal_status"] = poll_result.get("operation_terminal_status") or poll_result.get("status")
 
             if (normalized.get("status") == "ready" and isinstance(worldlabs_world, Mapping)
-                    and (descriptor.get("metadata") or {}).get("capture_entry_source") == "browser_self_capture"):
+                    and is_website_entry_source((descriptor.get("metadata") or {}).get("capture_entry_source"))):
                 from .website_task_context import publish_website_visual_scene
                 try:
                     publication = publish_website_visual_scene(descriptor=descriptor, world=worldlabs_world,
@@ -976,7 +977,7 @@ def run_preview_provider(
                 worldlabs_asset_materialization = materialize_worldlabs_assets(
                     capture_root=capture_root,
                     world_manifest=worldlabs_world_manifest_path,
-                    scene_preparation=(descriptor.get("metadata") or {}).get("capture_entry_source") == "browser_self_capture",
+                    scene_preparation=is_website_entry_source((descriptor.get("metadata") or {}).get("capture_entry_source")),
                 )
                 artifact_uris = dict(normalized.get("artifact_uris") or {})
                 artifact_uris.update(

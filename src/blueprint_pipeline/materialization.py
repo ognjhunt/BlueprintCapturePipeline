@@ -47,6 +47,8 @@ from .common import (
 from .consent_normalization import resolve_consent_signals, strict_allow_bool
 from .ios_manifest import verify_canonical_raw_bundle_path
 from .temporal_alignment import align_frame_pose_streams
+from .intake_packet_fields import normalize_intake_packet
+from .website_capture_entry import capture_entry_source
 
 _IPHONE_POSE_MATCH_RATE_MIN = 0.65
 _IPHONE_P95_POSE_DELTA_MAX = 0.2
@@ -1528,15 +1530,10 @@ def build_capture_bundle_records(
     raw_root = resolve_gs_uri_to_path(raw_prefix_uri, gcs_root)
     capture_root = raw_root.parent
     initial_intake_verification = intake_readiness.get("intake_verification", {})
-    initial_intake_verification_recorded = bool(
-        isinstance(initial_intake_verification, Mapping)
-        and initial_intake_verification.get("status")
-    )
-    initial_intake_digest = (
-        initial_intake_verification.get("intake_digest")
-        if isinstance(initial_intake_verification, Mapping)
-        else None
-    )
+    if not isinstance(initial_intake_verification, Mapping):
+        initial_intake_verification = {}
+    initial_intake_verification_recorded = bool(initial_intake_verification.get("status"))
+    initial_intake_digest = initial_intake_verification.get("intake_digest")
 
     manifest_path = raw_root / "manifest.json"
     intake_path = raw_root / "intake_packet.json"
@@ -1546,7 +1543,7 @@ def build_capture_bundle_records(
     context_path = raw_root / "capture_context.json"
 
     manifest = _merge_manifest_with_sidecars(_read_optional_json(manifest_path), raw_root)
-    intake = _read_optional_json(intake_path)
+    intake = normalize_intake_packet(_read_optional_json(intake_path))
     capture_intake_envelope = _read_optional_json(capture_intake_envelope_path)
     capture_intake_admission: Dict[str, Any] = {}
     capture_intake_verified_object_count = 0
@@ -1761,7 +1758,7 @@ def build_capture_bundle_records(
     ]
     metadata: Dict[str, Any] = {
         "site_submission_id": site_submission_id,
-        "capture_entry_source": str(manifest.get("capture_source") or ""),
+        "capture_entry_source": capture_entry_source(manifest),
         "site_task_context": dict(manifest["site_task_context"])
         if isinstance(manifest.get("site_task_context"), Mapping) else None,
         "buyer_request_id": buyer_request_id,
