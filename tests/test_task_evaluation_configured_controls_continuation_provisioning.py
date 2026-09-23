@@ -77,11 +77,24 @@ def _reference_row(path: Path, contract_path: str) -> dict:
 
 def _preparation(
     tmp_path: Path, *, run_mode: str = "scene_configuration", commit: str = COMMIT,
-    destination: dict | None = None,
+    destination: dict | None = None, articulated: bool = False,
+    front_normal: list[float] | None = None,
 ) -> Path:
     prepared = tmp_path / "prepared-references" / PREPARATION_ID
-    template = _write(
-        prepared / "task_template.json",
+    task_template = (
+        {
+            "schema_version": "task_evaluation_articulated_open_close_template.v1",
+            "strategy": "articulated_open_close",
+            "start_center_xyz_m": [1.0, 2.0, 0.8],
+            "assembly_bounds_xyz_m": {
+                "minimum": [0.7, 1.9, 0.4],
+                "maximum": [1.3, 2.1, 1.2],
+            },
+            "mechanism": {"estimated_front_normal_world": (
+                front_normal if front_normal is not None else [0.0, -1.0, 0.0]
+            )},
+        }
+        if articulated else
         {
             "schema_version": "task_evaluation_rigid_relocation_template.v1",
             "task_identity": {"id": TASK_ID, "version": "v1"},
@@ -89,7 +102,11 @@ def _preparation(
             "strategy": "pick_and_place",
             "start_center_xyz_m": [3.25, -6.56, 0.29],
             "target_center_xyz_m": [3.25, -6.2673, 0.29],
-        },
+        }
+    )
+    template = _write(
+        prepared / "task_template.json",
+        task_template,
     )
     mount = _write(prepared / "robot_mount_interface_plan.json", {"schema_version": "task_evaluation_robot_mount_interface_plan.v1"})
     calibration = _write(prepared / "camera_calibration_plan.json", {"schema_version": "task_evaluation_scene_camera_calibration_plan.v1"})
@@ -136,6 +153,28 @@ def _preparation(
     }
     result["result_digest"] = canonical_digest(result, digest_field="result_digest")
     return _write(queue / "results" / f"{PREPARATION_ID}-{suffix}.json", result)
+
+
+def test_articulated_drawer_uses_estimated_front_for_robot_placement(tmp_path: Path) -> None:
+    result = _preparation(tmp_path, articulated=True)
+    context = provisioning._preparation_context(
+        preparation_result_path=result,
+        preparation_queue_root=tmp_path / "preparations",
+        expected_production_commit=COMMIT,
+    )
+    assert context["target_position_world_m"] == pytest.approx([1.0, 1.9, 0.8])
+    assert context["requires_destination_qualification"] is False
+
+
+@pytest.mark.parametrize("bad_normal", [[0.0, 0.0, 0.0], [float("nan"), 0.0, 0.0]])
+def test_articulated_drawer_rejects_invalid_front_normal(tmp_path: Path, bad_normal: list[float]) -> None:
+    result = _preparation(tmp_path, articulated=True, front_normal=bad_normal)
+    with pytest.raises(provisioning.ConfiguredControlsProvisioningError, match="task_template_invalid"):
+        provisioning._preparation_context(
+            preparation_result_path=result,
+            preparation_queue_root=tmp_path / "preparations",
+            expected_production_commit=COMMIT,
+        )
 
 
 def _embodiment_camera_template(tmp_path: Path) -> Path:
