@@ -152,3 +152,74 @@ def prestage_before_first_stage(result, request):
         return True
     except (OSError, ValueError, KeyError, TypeError, AttributeError, zipfile.BadZipFile):
         return False
+
+
+def prestage_authoring_cap_upper_bound(result, request):
+    """Retain the full model cap when bounded CPU authoring failed before GPU.
+
+    This is an upper bound, not a claim of final API billing. The archived
+    official reservation must prove that the stage actually used the cap in
+    the signed request; no later stage or provider allocation may have run.
+    """
+    try:
+        _sealed(result, "result_digest")
+        _require(result.get("status") == "blocked" and result.get("retry_cap") == 0
+                 and result.get("provider_mutations_performed") == 0
+                 and result.get("api_pretraining") is None and result.get("cpu_prestage") is None)
+        caps = request["spend"]["external_service_caps"]["openai"]["stage_max_cost_usd"]
+        _require(set(caps) == {"artifixer_semantic_teacher", "artifixer_visual_review", "content_agents"}
+                 and caps["artifixer_semantic_teacher"] == caps["artifixer_visual_review"] == 0)
+        cap = float(caps["content_agents"])
+        _require(0 < cap <= request["spend"]["external_service_caps"]["openai"]["maximum_cost_usd"])
+        path = Path(result["provider_runtime_output_zip_path"])
+        _require(path.is_file() and not path.is_symlink())
+        with path.open("rb") as stream:
+            _require("sha256:" + hashlib.file_digest(stream, "sha256").hexdigest()
+                     == result["provider_runtime_output_zip_sha256"])
+        with zipfile.ZipFile(path) as archive:
+            names = archive.namelist()
+            _require(len(names) == len(set(names)) and not any(
+                name.startswith("stages/stage-") and not name.startswith(
+                    ("stages/stage-1/", "stages/stage-2/", "stages/stage-3/")) for name in names))
+
+            def read(name):
+                _require(archive.getinfo(name).file_size <= 2 * 1024**2)
+                return archive.read(name)
+
+            exclusions = json.loads(read("provider_output_zip_exclusions.json"))
+            from .task_evaluation_scene_configuration_output_archive import EXCLUDED_PARTS
+            _require(exclusions == {
+                "schema_version": "task_evaluation_scene_configuration_provider_output_zip_exclusions.v1",
+                "excluded_directory_names": sorted(EXCLUDED_PARTS)})
+            provider = _sealed(json.loads(read("task_evaluation_scene_configuration_provider_result.v1.json")),
+                               "result_digest")
+            blocker = "scene_configuration_provider_failed:TaskEvaluationSceneConfigurationStageProducerError:" \
+                      "scene_configuration_stage_producer_failed:content_agents_rigid_replacement:1"
+            _require(provider.get("status") == "blocked" and provider.get("first_stage_started") is True
+                     and provider.get("evaluation_episode_executed") is False
+                     and provider.get("candidate_policy_queried") is False
+                     and provider.get("run_id") == result.get("run_id") == request["run_id"]
+                     and provider.get("source_commit") == result.get("source_commit")
+                     == request["expected_production_commit"]
+                     and provider.get("blockers") == [blocker]
+                     and "provider_result_blocker:" + blocker in result.get("blockers", []))
+            prefix = "stages/stage-3/producer/astra_cad_blender_runtime/official_openai_cost/"
+            reservation = _sealed(json.loads(read(prefix + "openai_official_cost_run_reservation.v1.json")),
+                                  "reservation_receipt_digest")
+            completion = _sealed(json.loads(read(prefix + "openai_official_cost_run_completion.v1.json")),
+                                 "completion_receipt_digest")
+            _require(reservation.get("schema_version") == "openai_official_cost_run_reservation.v1"
+                     and reservation.get("status") == "reserved_before_openai_call"
+                     and reservation.get("run_id") == request["run_id"]
+                     and reservation.get("lane_id") == "task_evaluation_scene_configuration_content_agents"
+                     and reservation.get("maximum_cost_usd") == cap
+                     and completion.get("schema_version") == "openai_official_cost_run_completion.v1"
+                     and completion.get("run_id") == request["run_id"]
+                     and completion.get("reservation_receipt_digest") == reservation["reservation_receipt_digest"]
+                     and completion.get("provider_call_performed") is True
+                     and completion.get("runtime_exception_type") == "AgentsSDKInvocationBlocked")
+            log = read("stages/stage-3/producer/stage_producer.log").decode("utf-8")
+            _require("agents_sdk_inference_budget_ceiling_exceeded" in log)
+        return cap
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, UnicodeError, zipfile.BadZipFile):
+        return None

@@ -446,6 +446,83 @@ def test_cpu_prestage_before_first_stage_releases_hold_only_with_bound_zero_spen
             _reserve(fx["root"], fx["intent"], "scene-configuration-successor", 17, now=300)
 
 
+@pytest.mark.parametrize("changed", [None, "archive_digest", "later_stage", "reservation_cap",
+                                     "reservation_digest", "completion_digest", "wrong_blocker", "model_log"])
+def test_cpu_articulated_budget_refusal_retains_full_authoring_cap(tmp_path, changed):
+    from blueprint_pipeline.task_evaluation_unentered_authoring_budget import prestage_authoring_cap_upper_bound
+
+    run_id = "website-two-part-drawer"
+    blocker = ("scene_configuration_provider_failed:TaskEvaluationSceneConfigurationStageProducerError:"
+               "scene_configuration_stage_producer_failed:content_agents_rigid_replacement:1")
+    request = {"run_id": run_id, "expected_production_commit": COMMIT,
+               "spend": {"external_service_caps": {"openai": {
+                   "maximum_cost_usd": 5.0, "stage_max_cost_usd": {
+                       "artifixer_semantic_teacher": 0.0, "artifixer_visual_review": 0.0,
+                       "content_agents": 5.0}}}}}
+    provider = _seal({"schema_version": "task_evaluation_scene_configuration_provider_result.v1",
+                      "status": "blocked", "run_id": run_id, "source_commit": COMMIT,
+                      "first_stage_started": True, "evaluation_episode_executed": False,
+                      "candidate_policy_queried": False,
+                      "blockers": ["different" if changed == "wrong_blocker" else blocker]}, "result_digest")
+    reservation = _seal({"schema_version": "openai_official_cost_run_reservation.v1",
+                         "status": "reserved_before_openai_call", "run_id": run_id,
+                         "lane_id": "task_evaluation_scene_configuration_content_agents",
+                         "maximum_cost_usd": 6.0 if changed == "reservation_cap" else 5.0},
+                        "reservation_receipt_digest")
+    if changed == "reservation_digest":
+        reservation["reservation_receipt_digest"] = "sha256:" + "0" * 64
+    completion = _seal({"schema_version": "openai_official_cost_run_completion.v1",
+                        "run_id": run_id, "reservation_receipt_digest": reservation["reservation_receipt_digest"],
+                        "provider_call_performed": True,
+                        "runtime_exception_type": "AgentsSDKInvocationBlocked"}, "completion_receipt_digest")
+    if changed == "completion_digest":
+        completion["completion_receipt_digest"] = "sha256:" + "0" * 64
+    prefix = "stages/stage-3/producer/astra_cad_blender_runtime/official_openai_cost/"
+    archive_path = tmp_path / "cpu_prestage_output.zip"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr("provider_output_zip_exclusions.json", json.dumps({
+            "schema_version": "task_evaluation_scene_configuration_provider_output_zip_exclusions.v1",
+            "excluded_directory_names": sorted(EXCLUDED_PARTS)}))
+        archive.writestr("task_evaluation_scene_configuration_provider_result.v1.json", json.dumps(provider))
+        archive.writestr(prefix + "openai_official_cost_run_reservation.v1.json", json.dumps(reservation))
+        archive.writestr(prefix + "openai_official_cost_run_completion.v1.json", json.dumps(completion))
+        archive.writestr("stages/stage-3/producer/stage_producer.log",
+                         "other failure" if changed == "model_log" else "agents_sdk_inference_budget_ceiling_exceeded")
+        if changed == "later_stage":
+            archive.writestr("stages/stage-4/result.json", "{}")
+    with archive_path.open("rb") as stream:
+        archive_digest = "sha256:" + hashlib.file_digest(stream, "sha256").hexdigest()
+    result = _seal({"status": "blocked", "retry_cap": 0, "provider_mutations_performed": 0,
+                    "api_pretraining": None, "cpu_prestage": None,
+                    "provider_runtime_output_zip_path": str(archive_path),
+                    "provider_runtime_output_zip_sha256": ("sha256:" + "0" * 64 if changed == "archive_digest"
+                                                           else archive_digest),
+                    "run_id": run_id, "source_commit": COMMIT,
+                    "blockers": ["provider_result_blocker:" + blocker]}, "result_digest")
+    assert prestage_authoring_cap_upper_bound(result, request) == (5.0 if changed is None else None)
+
+
+def test_terminal_cpu_authoring_failure_projects_verified_cap_without_changing_settlement(tmp_path, monkeypatch):
+    fx, receipt, result_path, _ = _website_preallocation_failure(tmp_path, monkeypatch)
+    result = json.loads(result_path.read_text())
+    result["provider_runtime_output_zip_path"] = "/retained/verified-cpu-output.zip"
+    _write(result_path, _seal(result, "result_digest"))
+    launch_path = Path(receipt["execution_terminal"]["launch_receipt"]["path"])
+    launch = json.loads(launch_path.read_text())
+    launch["terminal_evidence"]["result"] = {**settlement._file(result_path), "exists": True}
+    _write(launch_path, launch)
+    (fx["directory"] / "cancelled-unstarted-controls" / (receipt["attempt_id"] + ".json")).unlink()
+    _settle(fx, source_factory=fx["factory"])
+    attempt = json.loads((fx["directory"] / "attempts" / (receipt["attempt_id"] + ".json")).read_text())
+    receipt = validated_cancellation(fx["directory"], attempt)
+    monkeypatch.setattr("blueprint_pipeline.task_evaluation_unentered_authoring_budget."
+                        "prestage_authoring_cap_upper_bound", lambda result, request: 5.0)
+    assert settlement.retained_hold(receipt)["retained_spend_usd"] == 16.76
+    assert settlement.budget_retained_hold(receipt) == {
+        "basis": "preallocation_authoring_cap_upper_bound", "retained_spend_usd": 5.0,
+        "counts_as_attempt": False}
+
+
 @pytest.mark.parametrize("paid_native", [False, True, "cpu", "cpu_unproven"])
 def test_bound_unentered_model_failure_releases_only_its_model_allowance(tmp_path, monkeypatch, paid_native):
     fx, receipt, result_path, teardown_path = _website_preallocation_failure(tmp_path, monkeypatch)
