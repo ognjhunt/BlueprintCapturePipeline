@@ -181,3 +181,13 @@ def test_status_survives_a_failing_section(host_tree: dict[str, Path]) -> None:
     status = build_status(_config(host_tree), _host(host_tree, FakeRunner({}), OSError("refused")), caller={})
     assert status["deployed"] == {"error": "version_unavailable:OSError"}
     assert status["active_release"]["commit"] == "a" * 40
+
+
+def test_a_receipt_with_credential_shaped_content_names_the_refusal(host_tree: dict[str, Path]) -> None:
+    receipt = host_tree["state"] / "deploy-receipts" / "iteration_dddddddddddd.json"
+    receipt.write_text(json.dumps({"status": "deployed", "api_key": "abcdefghijklmnop12"}), encoding="utf-8")
+    os.utime(receipt, (2_000, 2_000))
+    status = build_status(_config(host_tree), _host(host_tree, FakeRunner({})), caller={})
+    newest = status["deploys"]["recent_receipts"][0]
+    assert newest["name"] == receipt.name and newest["error"] == "secret_content_refused"
+    assert "status" not in newest

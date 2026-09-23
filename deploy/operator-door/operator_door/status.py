@@ -31,12 +31,16 @@ def _section(builder: Callable[[], Any], code: str) -> Any:
         return {"error": f"{code}:{type(error).__name__}"}
 
 
+class SecretContentRefused(PermissionError):
+    """The file holds credential-shaped content, so none of it is served."""
+
+
 def _small_json(path: Path) -> Any:
     data = path.read_bytes()[: _MAX_JSON_BYTES + 1]
     if len(data) > _MAX_JSON_BYTES:
         raise ValueError("too_large")
     if scan_bytes(data) is not None:
-        raise PermissionError("secret_content")
+        raise SecretContentRefused("secret_content")
     return json.loads(data)
 
 
@@ -64,6 +68,8 @@ def _recent_receipts(config: DoorConfig, limit: int = 5) -> list[dict[str, Any]]
             document = _small_json(path)
             if isinstance(document, dict):
                 entry.update({key: document[key] for key in _RECEIPT_KEYS if key in document})
+        except SecretContentRefused:
+            entry["error"] = "secret_content_refused"
         except Exception as error:  # noqa: BLE001
             entry["error"] = type(error).__name__
         summaries.append(entry)

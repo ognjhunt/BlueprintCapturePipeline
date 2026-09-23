@@ -42,7 +42,9 @@ _CONTENT_RULES: tuple[tuple[str, re.Pattern[bytes]], ...] = (
     (
         "json_secret_field",
         re.compile(
-            rb'(?i)"[a-z0-9_]{0,64}(?:token|secret|password|passwd|private_key|api_key|apikey)"'
+            # `reservation_token` is the disk budget's lease id (a uuid4) in every deploy
+            # receipt; exempting that exact key keeps receipts readable.
+            rb'(?i)"(?!reservation_token")[a-z0-9_]{0,64}(?:token|secret|password|passwd|private_key|api_key|apikey)"'
             rb'[ \t]{0,8}:[ \t]{0,8}"(?!/)[^"]{8,4096}"'
         ),
     ),
