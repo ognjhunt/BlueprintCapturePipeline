@@ -197,6 +197,38 @@ def test_production_systemd_units_run_nonroot_with_strict_resource_isolation() -
                     "/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-intents/.lock",
                 }
             continue
+        if unit.name == "blueprint-operator-door.service":
+            # Cloud agents' HTTPS window onto this host (deploy/operator-door). It
+            # reads as the service account, with journal access, in a read-only,
+            # loopback-only sandbox that hides every known secret location.
+            text = unit.read_text(encoding="utf-8")
+            for control in ("User=blueprint", "Group=blueprint", "SupplementaryGroups=systemd-journal",
+                            "UMask=0077", "NoNewPrivileges=true", "PrivateTmp=true", "PrivateDevices=true",
+                            "ProtectSystem=strict", "ProtectHome=true", "ProtectProc=invisible",
+                            "ProtectKernelTunables=true", "ProtectKernelModules=true",
+                            "ProtectKernelLogs=true", "ProtectControlGroups=true", "RestrictSUIDSGID=true",
+                            "CapabilityBoundingSet=\n", "AmbientCapabilities=\n",
+                            "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6", "IPAddressDeny=any",
+                            "IPAddressAllow=localhost", "SystemCallFilter=@system-service",
+                            "ReadWritePaths=/var/lib/blueprint-operator-door\n", "TasksMax=64",
+                            "MemoryMax=1G", "CPUQuota=100%"):
+                assert control in text, (unit.name, control)
+            assert "InaccessiblePaths=-/etc/blueprint/provider-secrets" in text
+            assert "ReadWritePaths=/var/lib/blueprint\n" not in text
+            continue
+        if unit.name == "blueprint-operator-door-runner.service":
+            # Root oneshot behind the door's spool: revalidates each request and
+            # only runs systemctl --no-block or starts a fixed transient unit.
+            text = unit.read_text(encoding="utf-8")
+            assert "User=root" in text
+            assert "CapabilityBoundingSet=CAP_DAC_OVERRIDE\n" in text
+            assert "AmbientCapabilities=CAP_DAC_OVERRIDE\n" in text
+            for control in ("NoNewPrivileges=true", "ProtectSystem=strict", "ProtectHome=true",
+                            "PrivateNetwork=true", "RestrictAddressFamilies=AF_UNIX\n",
+                            "SystemCallFilter=@system-service", "TasksMax=32", "MemoryMax=256M",
+                            "ReadWritePaths=/var/lib/blueprint-operator-door/requests\n"):
+                assert control in text, (unit.name, control)
+            continue
         if unit.name == "blueprint-control-plane-storage-gc.service":
             text = unit.read_text(encoding="utf-8")
             assert "User=root" in text
