@@ -1,5 +1,8 @@
 """Privileged requests: strict schemas and a spool the root runner can trust."""
 
+# Covers (for impacted-test selection):
+#   deploy/operator-door/operator_door/requests.py
+
 from __future__ import annotations
 
 import json

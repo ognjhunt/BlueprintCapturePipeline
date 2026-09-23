@@ -125,13 +125,14 @@ def _matching_tests(
     # example service.py inside live_pipeline_intake_service.py). Preserve
     # literal file-loader references without creating that false dependency.
     tokens = {changed_path, f'"{path.name}"', f"'{path.name}'"}
+    if path.name == "__init__.py":
+        # Every package shares this basename, so only a test naming this exact
+        # file (or, under src, importing this package) counts as coverage.
+        tokens = {changed_path}
     module_patterns: list[str] = []
     if changed_path.startswith("src/blueprint_pipeline/") and path.suffix == ".py":
         module = changed_path.removeprefix("src/").removesuffix(".py").replace("/", ".")
         if path.name == "__init__.py":
-            # Every package shares this basename. Match consumers of this
-            # package, rather than every unrelated test mentioning __init__.py.
-            tokens = {changed_path}
             module = module.removesuffix(".__init__")
         parent, _, module_name = module.rpartition(".")
         module_patterns = [

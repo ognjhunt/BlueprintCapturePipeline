@@ -49,7 +49,7 @@ git -C "$repo_root" rev-parse HEAD >"$stage/INSTALLED_COMMIT" 2>/dev/null || ech
 find "$stage" -name '__pycache__' -prune -exec rm -rf {} +
 chown -R root:root "$stage"
 chmod -R u=rwX,go=rX "$stage"
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$stage" python3 -c 'import operator_door.server, operator_door.runner'
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$stage" python3 -c 'import operator_door.server, operator_door.spool_runner'
 
 # 2. Swap code, keeping the previous version for rollback.
 if [ -d "$install_root" ]; then

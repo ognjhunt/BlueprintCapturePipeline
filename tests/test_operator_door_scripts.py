@@ -1,5 +1,12 @@
 """The door's transient scripts, run for real against stub git/systemctl/python."""
 
+# Covers (for impacted-test selection):
+#   deploy/operator-door/door-common.sh
+#   deploy/operator-door/door-deploy.sh
+#   deploy/operator-door/door-replay.sh
+#   deploy/operator-door/door-upgrade.sh
+#   deploy/operator-door/install.sh
+
 from __future__ import annotations
 
 import json

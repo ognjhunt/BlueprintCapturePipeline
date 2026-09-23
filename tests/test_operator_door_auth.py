@@ -1,5 +1,8 @@
 """Bearer tokens: hashes on disk, constant-time checks, explicit scopes."""
 
+# Covers (for impacted-test selection):
+#   deploy/operator-door/operator_door/auth.py
+
 from __future__ import annotations
 
 import json

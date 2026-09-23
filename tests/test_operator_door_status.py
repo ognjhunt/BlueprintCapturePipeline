@@ -1,5 +1,9 @@
 """Host facts and the status document, with every host command faked."""
 
+# Covers (for impacted-test selection):
+#   deploy/operator-door/operator_door/hostinfo.py
+#   deploy/operator-door/operator_door/status.py
+
 from __future__ import annotations
 
 import json

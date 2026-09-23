@@ -1,5 +1,8 @@
 """The secret guard: refuse secret-looking names, detect credential-shaped bytes."""
 
+# Covers (for impacted-test selection):
+#   deploy/operator-door/operator_door/secrets_guard.py
+
 from __future__ import annotations
 
 import sys

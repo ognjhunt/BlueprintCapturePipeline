@@ -1,5 +1,8 @@
 """File access through the door: confined to read roots, never a credential."""
 
+# Covers (for impacted-test selection):
+#   deploy/operator-door/operator_door/fsview.py
+
 from __future__ import annotations
 
 import io

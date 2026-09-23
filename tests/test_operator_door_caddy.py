@@ -1,5 +1,9 @@
 """The installer's Caddyfile patch: one route, anchored, idempotent."""
 
+# Covers (for impacted-test selection):
+#   deploy/operator-door/operator_door/caddy.py
+#   deploy/caddy/Caddyfile
+
 from __future__ import annotations
 
 import sys

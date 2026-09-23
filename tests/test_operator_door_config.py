@@ -1,5 +1,9 @@
 """The operator door's configuration: safe defaults, strict overrides."""
 
+# Covers (for impacted-test selection):
+#   deploy/operator-door/operator_door/__init__.py
+#   deploy/operator-door/operator_door/config.py
+
 from __future__ import annotations
 
 import json

@@ -1,5 +1,8 @@
 """The root runner: revalidate spooled requests, then run fixed commands only."""
 
+# Covers (for impacted-test selection):
+#   deploy/operator-door/operator_door/spool_runner.py
+
 from __future__ import annotations
 
 import json
@@ -15,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "deploy" / "operato
 from operator_door.config import DoorConfig  # noqa: E402
 from operator_door.hostinfo import CommandResult  # noqa: E402
 from operator_door.requests import SCHEMA, enqueue, validate_request  # noqa: E402
-from operator_door.runner import process_spool  # noqa: E402
+from operator_door.spool_runner import process_spool  # noqa: E402
 
 SHA = "0123456789abcdef0123456789abcdef01234567"
 

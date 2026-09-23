@@ -100,7 +100,7 @@ def main(argv: list[str] | None = None) -> int:
             server.server_close()
         return 0
     if args.command == "run-spool":
-        from .runner import process_spool
+        from .spool_runner import process_spool
 
         return process_spool(config)
     if args.token_command == "add":

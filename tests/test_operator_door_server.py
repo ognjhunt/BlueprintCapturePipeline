@@ -1,5 +1,9 @@
 """The door's HTTP surface, exercised through a real server on a loopback port."""
 
+# Covers (for impacted-test selection):
+#   deploy/operator-door/operator_door/server.py
+#   deploy/operator-door/operator_door/__main__.py
+
 from __future__ import annotations
 
 import io

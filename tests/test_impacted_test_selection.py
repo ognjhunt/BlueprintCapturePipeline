@@ -77,6 +77,17 @@ def test_package_initializer_maps_its_consumers_not_every_initializer(tmp_path: 
     }
 
 
+def test_initializer_outside_src_maps_only_tests_naming_it(tmp_path: Path) -> None:
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_door.py").write_text("# deploy/operator-door/operator_door/__init__.py\n")
+    for index in range(MODULE.MAX_IMPACTED_TEST_FILES + 1):
+        (tests / f"test_unrelated_{index}.py").write_text('filename = "__init__.py"\n')
+    plan = MODULE.build_plan(tmp_path, ["deploy/operator-door/operator_door/__init__.py"])
+    assert plan["requires_full_suite"] is False
+    assert set(plan["selected_tests"]) == set(MODULE.SENTINEL_TESTS) | {"tests/test_door.py"}
+
+
 def test_source_basename_is_not_a_dependency_on_a_longer_filename(tmp_path: Path) -> None:
     tests = tmp_path / "tests"
     tests.mkdir()
