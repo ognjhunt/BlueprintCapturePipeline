@@ -31,6 +31,7 @@ from .common import (
 from .local_capture import resolve_local_capture_context
 from .decision_evidence_contracts import canonical_digest
 from .website_scene_geometry import prepare_website_source_frames
+from .website_mask_view_plan import prepare_mask_view_plan
 from .website_task_masks import run_website_task_masks
 from .website_object_removal import prepare_object_removal_frames, select_reconstruction_frames, reconstruction_source_frames, replace_unmasked_task_views
 from .website_removal_view_corroboration import corroborate_removal_views
@@ -323,6 +324,8 @@ def run_clean_plate_stage(
     task_masks: Optional[Dict[str, Any]] = None
     object_removal_frames: Optional[list[Dict[str, Any]]] = None
     prepared_views: Optional[Dict[str, Any]] = None
+    mask_view_plan: Optional[Dict[str, Any]] = None
+    profile: Optional[Dict[str, Any]] = None
 
     if privacy_status == "failed_closed":
         # Fail safe: never proceed on a capture whose privacy pipeline failed.
@@ -385,12 +388,19 @@ def run_clean_plate_stage(
         for target in plan.get("targets", [])
     ):
         try:
+            profile = reconstruction_profile(reconstruction_capabilities)
+            if website_source_video is not None and parse_bool(
+                    os.getenv("BLUEPRINT_WEBSITE_VIEW_FIRST_SAM"), default=False):
+                mask_view_plan = prepare_mask_view_plan(
+                    source_video=website_source_video, source_geometry=source_geometry, plan=plan,
+                    source_geometry_root=clean_plate_root / "source_geometry",
+                    output_root=clean_plate_root / "mask_view_plan", limit=profile["max_input_images"])
             task_masks = run_website_task_masks(plan=plan, source_geometry=source_geometry, defer_kept_static=True,
                                                 output_root=clean_plate_root / "task_masks",
                                                 meta_admission=meta_sam_admission,
                                                 meta_admission_grant=meta_sam_admission_grant,
                                                 task_context=task_context,
-                                                source_video=website_source_video)
+                                                source_video=website_source_video, view_plan=mask_view_plan)
         except Exception as exc:
             status, mode = "blocked", "task_masks_blocked"
             reason = "website_task_masks_unavailable"
@@ -398,10 +408,10 @@ def run_clean_plate_stage(
 
     if task_masks is not None and source_geometry is not None and not blockers:
         try:
-            profile = reconstruction_profile(reconstruction_capabilities)
-            reconstruction_frames = reconstruction_source_frames(source_geometry=source_geometry, task_masks=task_masks,
-                source_video=website_source_video, limit=profile["max_input_images"],
-                output_root=clean_plate_root / "reconstruction_source_frames")
+            reconstruction_frames = (mask_view_plan["frames"] if mask_view_plan else
+                reconstruction_source_frames(source_geometry=source_geometry, task_masks=task_masks,
+                    source_video=website_source_video, limit=profile["max_input_images"],
+                    output_root=clean_plate_root / "reconstruction_source_frames"))
             # A track proved on one frame is not proved on every frame. Drop the
             # views where a second look says the mask has left the target,
             # before the editor is paid to erase whatever it covers.
@@ -433,10 +443,33 @@ def run_clean_plate_stage(
                 completion_review = verify_completed_background(
                     frames=selected, original_frames=source_geometry["frames"], plan=plan,
                     output_root=clean_plate_root / "image_completion", task_context=task_context)
+                review = completion_review.get("review") or {}
+                remaining_ids = review.get("remaining_task_object_frame_ids") or []
+                # A missing SAM mask cannot justify keeping a visibly unremoved
+                # task object. The independent review may name exact unedited
+                # views to omit; never conceal a failed edit or another review
+                # failure. One more review verifies the resulting set.
+                if (completion_review.get("status") == "blocked"
+                        and review.get("task_objects_removed") is False
+                        and all(review.get(field) is True for field in (
+                            "consistent_background", "people_absent", "unrelated_objects_preserved"))
+                        and remaining_ids and set(remaining_ids) <= {frame["frame_id"] for frame in selected}
+                        and all(not frame.get("generated_pixels_present") for frame in selected
+                                if frame["frame_id"] in remaining_ids)):
+                    retained = [frame for frame in selected if frame["frame_id"] not in remaining_ids]
+                    if len(retained) >= 2:
+                        first_review = completion_review
+                        selected = retained
+                        completion_review = verify_completed_background(
+                            frames=selected, original_frames=source_geometry["frames"], plan=plan,
+                            output_root=clean_plate_root / "image_completion", task_context=task_context)
+                        completion_review = {**completion_review, "prior_failed_review": first_review,
+                                             "excluded_unmasked_frame_ids": sorted(remaining_ids)}
                 if completion_review.get("status") != "passed":
                     raise ValueError("website_image_completion_review_failed")
             prepared_views = {"schema_version": "website_prepared_views.v1", "status": "ready", "frames": selected,
                               "reconstruction_profile": profile,
+                              "mask_view_plan_digest": mask_view_plan["digest"] if mask_view_plan else None,
                               "task_context_sha256": plan.get("task_context_sha256"),
                               "source_geometry_digest": None,
                               "source_frames_digest": (source_geometry or {}).get("digest"),
@@ -484,6 +517,9 @@ def run_clean_plate_stage(
         "source_geometry": None,
         "source_frames": source_geometry,
         "task_masks": task_masks,
+        "mask_view_plan": {"digest": mask_view_plan["digest"],
+                           "selected_frame_ids": mask_view_plan["binding"]["selected_frame_ids"]}
+                          if mask_view_plan else None,
         "object_removal_frames": object_removal_frames,
         "prepared_views": prepared_views,
         "removal_plan_uri": _stage_uri(ctx, REMOVAL_PLAN_FILENAME),

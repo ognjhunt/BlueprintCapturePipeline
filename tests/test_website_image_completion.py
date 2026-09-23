@@ -150,7 +150,8 @@ def test_background_review_keeps_client_alive_until_response(tmp_path, monkeypat
         state["calls"] += 1
         return NS(candidates=[NS(finish_reason="STOP")], text=json.dumps({
             "consistent_background": True, "task_objects_removed": True,
-            "people_absent": True, "unrelated_objects_preserved": True}))
+            "people_absent": True, "unrelated_objects_preserved": True,
+            "remaining_task_object_frame_ids": []}))
     class Client:
         def __init__(self, **kwargs):
             self.models = NS(generate_content=generate)

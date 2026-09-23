@@ -69,6 +69,40 @@ def test_current_iteration_ignores_moving_unfetched_main_without_claim_upgrade(d
     assert allocator.release_promotion_eligible(COMMIT) is False
 
 
+def test_root_owned_config_tools_clone_in_exact_receipt_is_admitted(deployed, monkeypatch):
+    tools_root = deployed['root'] / 'config-tools'
+    tools_root.mkdir()
+    clone = tools_root / 'drawer-release'
+    clone.mkdir()
+    monkeypatch.setattr(release, 'CONFIG_TOOLS_ROOT', tools_root)
+    deployed['receipt']['surfaces'][1]['path'] = str(clone)
+    _write(deployed['receipt_path'], deployed['receipt'])
+    result = release.inspect_active_deployed_release(deployed['checkout'], COMMIT)
+    assert result['status'] == 'verified_active_release'
+    assert result['promotion_eligible'] is False
+
+
+@pytest.mark.parametrize('source_kind', ['outside', 'symlink', 'nested'])
+def test_receipt_source_clone_outside_approved_root_is_refused(deployed, monkeypatch, source_kind):
+    tools_root = deployed['root'] / 'config-tools'
+    tools_root.mkdir()
+    monkeypatch.setattr(release, 'CONFIG_TOOLS_ROOT', tools_root)
+    outside = deployed['root'] / 'outside'
+    outside.mkdir()
+    if source_kind == 'outside':
+        source = outside
+    elif source_kind == 'symlink':
+        source = tools_root / 'link'
+        source.symlink_to(outside, target_is_directory=True)
+    else:
+        source = tools_root / 'nested' / 'clone'
+        source.mkdir(parents=True)
+    deployed['receipt']['surfaces'][1]['path'] = str(source)
+    _write(deployed['receipt_path'], deployed['receipt'])
+    assert release.inspect_active_deployed_release(deployed['checkout'], COMMIT)['blockers'] == [
+        'gpu_canary_deployed_release_receipt_unverified']
+
+
 @pytest.mark.parametrize('defect', [None, 'claim_upgrade', 'binding_status', 'extra_authority'])
 def test_current_canary_uses_exact_root_receipt_without_promotion(deployed, defect):
     value = deployed['provenance']

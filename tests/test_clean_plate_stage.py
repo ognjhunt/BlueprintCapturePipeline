@@ -179,7 +179,7 @@ def test_website_preparation_preserves_original_frames_without_geometry(tmp_path
         assert result["blockers"] == []
 
 
-@pytest.mark.parametrize("fill_result", ["unneeded", "passed", "blocked"])
+@pytest.mark.parametrize("fill_result", ["unneeded", "passed", "blocked", "review_repair", "review_repair_edited"])
 def test_website_stage_prepares_images_without_waiting_for_geometry(tmp_path, monkeypatch, fill_result):
     capture_root = _make_capture(tmp_path)
     source = capture_root / "raw/walkthrough.mp4"
@@ -226,10 +226,23 @@ def test_website_stage_prepares_images_without_waiting_for_geometry(tmp_path, mo
         order.append("completion")
         assert len(kwargs["frames"]) == 8
         assert sum(f["remaining_pixel_count"] > 0 for f in kwargs["frames"]) == 2
-        return [{**frame, "remaining_pixel_count": 0, "generated_pixels_present": True} for frame in kwargs["frames"]]
+        return [{**frame, "remaining_pixel_count": 0,
+                 "generated_pixels_present": bool(frame["remaining_pixel_count"])} for frame in kwargs["frames"]]
 
     def review(**kwargs):
         order.append("review")
+        if fill_result in {"review_repair", "review_repair_edited"}:
+            ids = [frame["frame_id"] for frame in kwargs["frames"]]
+            if len(ids) == 8:
+                remaining = "f0" if fill_result == "review_repair_edited" else "f2"
+                assert remaining in ids
+                return {"status": "blocked", "review": {"consistent_background": True,
+                    "task_objects_removed": False, "people_absent": True,
+                    "unrelated_objects_preserved": True,
+                    "remaining_task_object_frame_ids": [remaining]}}
+            assert "f2" not in ids and len(ids) == 7
+            return {"status": "passed", "review": {"task_objects_removed": True,
+                "remaining_task_object_frame_ids": []}}
         return {"status": fill_result}
 
     monkeypatch.setattr(_ANALYSIS_ATTR, analyze)
@@ -243,17 +256,73 @@ def test_website_stage_prepares_images_without_waiting_for_geometry(tmp_path, mo
     assert result["privacy_verified"] is True
     assert result["source_geometry"] is None
     assert result["source_frames"] == geometry
-    assert order == ["analysis", "source_frames", "masks", "mask_preparation"] + ([] if fill_result == "unneeded" else ["completion", "review"])
-    if fill_result == "blocked":
+    assert order == ["analysis", "source_frames", "masks", "mask_preparation"] + (
+        [] if fill_result == "unneeded" else ["completion", "review"] +
+        (["review"] if fill_result == "review_repair" else []))
+    if fill_result in {"blocked", "review_repair_edited"}:
         assert result["status"] == "blocked"
         assert result["prepared_views"] is None
         assert "website_image_completion_review_failed" in result["blockers"]
         return
     assert result["status"] == "objects_removed"
-    assert len(result["prepared_views"]["frames"]) == 8
+    assert len(result["prepared_views"]["frames"]) == (7 if fill_result == "review_repair" else 8)
+    if fill_result == "review_repair":
+        assert result["prepared_views"]["completion_review"]["excluded_unmasked_frame_ids"] == ["f2"]
+        assert result["prepared_views"]["completion_review"]["prior_failed_review"]["status"] == "blocked"
     forwarded = apply_clean_plate_to_reconstruction_input({"output_video_uri": "gs://raw.mov"}, result, required=True)
     assert forwarded["output_video_uri"] is None
     assert forwarded["prepared_views"] == result["prepared_views"]
+
+
+def test_view_first_plan_precedes_masks_and_supplies_only_selected_views(tmp_path, monkeypatch):
+    capture_root = _make_capture(tmp_path)
+    source = capture_root / "raw/walkthrough.mp4"
+    plan = build_removal_plan(targets=[{
+        "target_id": "box", "semantic_label": "blue box", "target_class": "movable_object",
+        "target_role": "task_object", "task_effect": "manipulated", "disposition": "remove",
+        "rebuild_intent": "rebuild_and_compose", "spatial_evidence": [], "confidence": 0.9,
+    }], status="completed", model="test", processing="agentic")
+    plan["task_context_sha256"] = "task-digest"
+    geometry = {"digest": "geometry-digest", "frames": [{"frame_id": "context"}]}
+    selected = [{"frame_id": "task"}, {"frame_id": "context"}]
+    view_plan = {"digest": "views-digest", "frames": selected,
+                 "binding": {"selected_frame_ids": ["task", "context"]}}
+    order = []
+    monkeypatch.setenv("BLUEPRINT_WEBSITE_VIEW_FIRST_SAM", "true")
+    monkeypatch.setattr(_ANALYSIS_ATTR, lambda **kwargs: plan)
+    monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.prepare_website_source_frames",
+                        lambda **kwargs: geometry)
+
+    def choose(**kwargs):
+        order.append("choose")
+        assert kwargs["limit"] == 8
+        return view_plan
+
+    def segment(**kwargs):
+        order.append("segment")
+        assert kwargs["view_plan"] is view_plan
+        return {"targets": []}
+
+    def prepare(**kwargs):
+        order.append("prepare")
+        assert kwargs["frames"] == selected
+        return [{"frame_id": frame["frame_id"], "image_digest": frame["frame_id"],
+                 "remaining_pixel_count": 0} for frame in selected]
+
+    monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.prepare_mask_view_plan", choose)
+    monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.run_website_task_masks", segment)
+    monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.reconstruction_source_frames",
+                        lambda **kwargs: pytest.fail("full-video view expansion was called"))
+    monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.corroborate_removal_views",
+                        lambda **kwargs: (kwargs["frames"], {"status": "passed"}))
+    monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.prepare_object_removal_frames", prepare)
+    monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.select_reconstruction_frames",
+                        lambda **kwargs: kwargs["frames"])
+    result = run_clean_plate_stage(capture_root=capture_root, website_source_video=source,
+                                   privacy_processing={"status": "pending_website_review"})
+    assert order == ["choose", "segment", "prepare"]
+    assert result["status"] == "objects_removed"
+    assert result["prepared_views"]["mask_view_plan_digest"] == "views-digest"
 
 
 # --------------------------------------------------------------------------- #

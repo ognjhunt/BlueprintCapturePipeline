@@ -749,22 +749,37 @@ def submit_sponsored_website_reconstruction(*, descriptor: Mapping[str, Any], ca
     """
     from .provider_preview import WorldLabsPreviewProvider, _worldlabs_api_key
     from .website_task_context import reserve_website_preparation_spend
-    from .website_worldlabs import MAX_GENERATION_COST_USD, validate_website_prepared_views
+    from .website_worldlabs import (MAX_GENERATION_COST_USD, reconcile_website_credit_rejection,
+                                    rejected_generation_binding, validate_website_prepared_views)
 
     _, binding = validate_website_prepared_views(descriptor=descriptor, capture_root=capture_root)
     root = capture_root / "pipeline" / "website_reconstruction"
     provider = WorldLabsPreviewProvider()
+    retry_digest = None
     if (root / "submission.json").is_file():
-        # The adapter checks exact input identity and refuses unknown outcomes.
-        # With a retained operation it makes no new billable provider request.
-        return provider.submit(descriptor=descriptor, capture_root=capture_root)
+        # A World Labs 402 explicitly rejected generation before an operation
+        # existed. Keep the failed attempt and settle its reservation before
+        # requesting one new, separately bound, capped attempt.
+        reconcile_website_credit_rejection(capture_root=capture_root, base_binding=binding,
+            task_context=descriptor["metadata"]["site_task_context"])
+        retry = rejected_generation_binding(capture_root=capture_root, base_binding=binding)
+        if retry is None:
+            # Retained operation is read-only; unknown POST outcomes fail closed.
+            return provider.submit(descriptor=descriptor, capture_root=capture_root)
+        binding, retry_digest = retry
+        if (root / "submission_retry_1.json").is_file():
+            # This single retry either retained an operation or has an unknown
+            # outcome. Never issue a third generation request.
+            prepared = {**descriptor, "metadata": {**descriptor["metadata"],
+                "website_reconstruction_retry_digest": retry_digest}}
+            return provider.submit(descriptor=prepared, capture_root=capture_root)
     commit, _, _ = _current_checkout_source_state()
     blockers, _ = _source_checkout_blockers(commit)
     if blockers:
         raise ValueError("website_reconstruction_release_not_admitted:" + ",".join(blockers))
     if not _worldlabs_api_key():
         raise ValueError("website_reconstruction_api_key_missing")
-    retained_path = root / "controller_admission.json"
+    retained_path = root / ("controller_admission_retry_1.json" if retry_digest else "controller_admission.json")
     retained = json.loads(retained_path.read_text()) if retained_path.is_file() else None
     admission, grant = reserve_website_preparation_spend(
         task_context=descriptor["metadata"]["site_task_context"], binding_digest=canonical_digest(binding),
@@ -772,8 +787,10 @@ def submit_sponsored_website_reconstruction(*, descriptor: Mapping[str, Any], ca
         resource_class="provider_reconstruction_api", provider="world_labs", retained_admission=retained)
     admission = {**admission, "source_commit": commit}
     root.mkdir(parents=True, exist_ok=True)
-    write_json(root / "controller_admission.json", admission)
-    prepared = {**descriptor, "metadata": {**descriptor["metadata"], "website_reconstruction_admission": admission}}
+    write_json(retained_path, admission)
+    prepared = {**descriptor, "metadata": {**descriptor["metadata"],
+        "website_reconstruction_admission": admission,
+        **({"website_reconstruction_retry_digest": retry_digest} if retry_digest else {})}}
     return provider.submit(descriptor=prepared, capture_root=capture_root,
                            provider_adapter_input={"paid_resource_admission_grant": grant})
 

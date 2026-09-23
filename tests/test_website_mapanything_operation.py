@@ -213,6 +213,10 @@ def test_controller_owns_geometry_funding_allocator_and_restart_without_second_r
     def stage(**kwargs):
         events.append("stage")
         assert "reserve" in events
+        artifact = Path(kwargs["bundle_path"])
+        if artifact.name == "reconstruction_gpu_operation_bundle.zip":
+            receipt = json.loads((artifact.parents[2] / "operation_bundle_receipt.json").read_text())
+            assert "sha256:" + sha256_file(artifact) == receipt["operation_input_bundle_digest"]
         return {"status": "completed"}
     monkeypatch.setattr(dispatch, "stage_wam_provider_bundle_object_store", stage)
     def close(**kwargs):
@@ -238,6 +242,9 @@ def test_controller_owns_geometry_funding_allocator_and_restart_without_second_r
         return {"status": "completed", "instance_id": 7, "provider_zero_verified": True}
     args = dict(input_manifest=path, output_root=tmp_path / "controller", task_context=task,
                 source_commit=SHA, allocate=allocate)
+    stale = args["output_root"] / "controller_geometry/bundle/000-old/reconstruction_gpu_operation_bundle.zip"
+    stale.parent.mkdir(parents=True)
+    stale.write_bytes(b"old bundle from the previous release")
     if uncertain:
         with pytest.raises(TimeoutError):
             dispatch.dispatch_geometry(**args)
@@ -255,6 +262,47 @@ def test_controller_owns_geometry_funding_allocator_and_restart_without_second_r
     assert events[:3] == ["watchdog", "capacity", "reserve"]
     with pytest.raises(ValueError, match="inputs_changed"):
         dispatch.dispatch_geometry(**{**args, "task_context": {"context_digest": "changed"}})
+
+
+def test_controller_allows_one_new_release_after_verified_failed_rental(packet, tmp_path, monkeypatch):
+    from blueprint_pipeline import website_geometry_dispatch as dispatch
+
+    path, _, _ = packet
+    inputs = json.loads(path.read_text())
+    output = tmp_path / "geometry"
+    first = output / "controller_geometry"
+    retry = output / "controller_geometry_retry_1"
+    operation_root = first / "reconstruction_vast_operation"
+    operation_root.mkdir(parents=True)
+    retry.mkdir(parents=True)
+    state = {"input_digest": inputs["digest"], "task_context_digest": DIGEST}
+    write_json(first / "dispatch.json", state)
+    write_json(retry / "dispatch.json", state)
+    write_json(first / "request.json", {"request_digest": DIGEST, "source_commit_sha": SHA})
+    provider_zero = {"status": "PASS"}
+    provider_zero["provider_zero_digest"] = canonical_digest(provider_zero, digest_field="provider_zero_digest")
+    teardown = {"provider_zero_verified": True}
+    teardown["teardown_receipt_digest"] = canonical_digest(teardown, digest_field="teardown_receipt_digest")
+    execution = {"status": "failed", "request_digest": DIGEST, "provider_zero_verified": True,
+                 "blockers": ["reconstruction_vast_operation_output_not_accepted"],
+                 "provider_zero_digest": provider_zero["provider_zero_digest"],
+                 "teardown_receipt_digest": teardown["teardown_receipt_digest"]}
+    execution["execution_result_digest"] = canonical_digest(execution, digest_field="execution_result_digest")
+    write_json(operation_root / "provider_zero_verification.json", provider_zero)
+    write_json(operation_root / "teardown_receipt.json", teardown)
+    write_json(operation_root / "reconstruction_vast_operation_execution.json", execution)
+    monkeypatch.setattr(dispatch, "_reuse", lambda root, _inputs: (
+        {"status": "estimated", "retry_root": str(root)} if root == retry else
+        (_ for _ in ()).throw(ValueError("website_mapanything_existing_attempt_requires_reconciliation"))))
+    args = dict(input_manifest=path, output_root=output, task_context={"context_digest": DIGEST},
+                source_commit="c" * 40, allocate=lambda *_a, **_k: pytest.fail("rental already dispatched"))
+    assert dispatch.dispatch_geometry(**args)["retry_root"] == str(retry)
+    with pytest.raises(ValueError, match="requires_reconciliation"):
+        dispatch.dispatch_geometry(**{**args, "source_commit": SHA})
+    execution["provider_zero_verified"] = False
+    write_json(operation_root / "reconstruction_vast_operation_execution.json", execution)
+    with pytest.raises(ValueError, match="requires_reconciliation"):
+        dispatch.dispatch_geometry(**args)
 
 
 def test_runtime_upgrade_preserves_prior_bundle_and_reuses_identical_bytes(packet, tmp_path):

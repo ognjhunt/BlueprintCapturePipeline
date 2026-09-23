@@ -24,8 +24,20 @@ def settle_website_reconstruction(*, provider_run: Mapping[str, Any], capture_ro
                                   task_context: Mapping[str, Any]) -> dict[str, Any] | None:
     """Return unused quote capacity only from the retained terminal provider bill."""
     root = capture_root / "pipeline" / "website_reconstruction"
-    submission_path, admission_path = root / "submission.json", root / "controller_admission.json"
+    retry = (root / "submission_retry_1.json").is_file()
+    submission_path = root / ("submission_retry_1.json" if retry else "submission.json")
+    admission_path = root / ("controller_admission_retry_1.json" if retry else "controller_admission.json")
     operation_path = Path(provider_run.get("worldlabs_operation_manifest_uri") or root / "missing")
+    if retry and not admission_path.is_file() and submission_path.is_file():
+        # The first deployed retry controller wrote its new admission at the
+        # original path. Recognize only that exact binding, with the first
+        # rejection already settled, so its completed operation can bill.
+        legacy_path = root / "controller_admission.json"
+        if legacy_path.is_file() and (root / "rejection_settlement.json").is_file():
+            candidate = json.loads(legacy_path.read_text())
+            submission = json.loads(submission_path.read_text())
+            if candidate.get("allocation_binding_digest") == submission.get("request_digest"):
+                admission_path = legacy_path
     if not submission_path.is_file() or not admission_path.is_file() or not operation_path.is_file():
         return None  # No settled bill means the full reservation remains charged.
     if not operation_path.resolve().is_relative_to(capture_root.resolve() / "pipeline"):
@@ -51,8 +63,84 @@ def settle_website_reconstruction(*, provider_run: Mapping[str, Any], capture_ro
     if (any(receipt.get(key) != value for key, value in command.items())
             or receipt.get("status") != "settled" or receipt.get("actual_cost_usd") != credits / 1250):
         raise ValueError("website_reconstruction_settlement_receipt_invalid")
-    write_json(root / "settlement.json", receipt)
+    write_json(root / ("settlement_retry_1.json" if retry else "settlement.json"), receipt)
     return receipt
+
+
+def rejected_generation_binding(*, capture_root: Path, base_binding: Mapping[str, Any]) -> tuple[dict[str, Any], str] | None:
+    """Bind one retry to the retained, explicit pre-generation credit rejection."""
+    root = capture_root / "pipeline" / "website_reconstruction"
+    first_path = root / "submission.json"
+    if not first_path.is_file():
+        return None
+    first = json.loads(first_path.read_text())
+    if first.get("request_digest") != canonical_digest(base_binding):
+        raise ValueError("website_reconstruction_already_bound_to_other_inputs")
+    if first.get("status") != "rejected_insufficient_credits" or first.get("operation_id"):
+        return None
+    rejection = first.get("provider_rejection") or {}
+    if (rejection.get("code") != "worldlabs_api_402"
+            or not str(rejection.get("detail") or "").startswith("Insufficient API credits to start world generation")
+            or not (root / "rejection_settlement.json").is_file()):
+        raise ValueError("website_reconstruction_rejection_evidence_invalid")
+    settlement = json.loads((root / "rejection_settlement.json").read_text())
+    if (settlement.get("status") != "settled" or settlement.get("actual_cost_usd") != 0
+            or settlement.get("allocation_binding_digest") != first["request_digest"]
+            or settlement.get("rejection_code") != "insufficient_api_credits_before_generation"):
+        raise ValueError("website_reconstruction_rejection_settlement_invalid")
+    rejected_digest = canonical_digest(first)
+    return {**base_binding, "rejected_attempt_digest": rejected_digest}, rejected_digest
+
+
+def reconcile_website_credit_rejection(*, capture_root: Path, base_binding: Mapping[str, Any],
+                                       task_context: Mapping[str, Any]) -> bool:
+    """Release a full reservation only for the controller's exact recorded HTTP 402."""
+    root = capture_root / "pipeline" / "website_reconstruction"
+    path = root / "submission.json"
+    if not path.is_file():
+        return False
+    first = json.loads(path.read_text())
+    if first.get("request_digest") != canonical_digest(base_binding):
+        raise ValueError("website_reconstruction_already_bound_to_other_inputs")
+    if first.get("status") == "rejected_insufficient_credits":
+        return True
+    if first.get("status") != "submitting" or first.get("operation_id"):
+        return False
+    provider_path = capture_root / "pipeline" / "provider_run_manifest.json"
+    admission_path = root / "controller_admission.json"
+    if not provider_path.is_file() or not admission_path.is_file():
+        return False
+    provider = json.loads(provider_path.read_text())
+    admission = json.loads(admission_path.read_text())
+    failure = str(provider.get("failure_reason") or "")
+    if (provider.get("status") != "failed" or provider.get("provider_run_id")
+            or admission.get("allocation_binding_digest") != first["request_digest"]
+            or not failure.startswith("worldlabs_api_402:")):
+        return False
+    try:
+        error = json.loads(failure.partition(":")[2])
+    except json.JSONDecodeError:
+        return False
+    detail = error.get("detail") if isinstance(error, dict) else None
+    if not str(detail or "").startswith("Insufficient API credits to start world generation"):
+        return False
+    rejection = {"code": "worldlabs_api_402", "detail": detail,
+                 "provider_run_manifest_digest": canonical_digest(provider)}
+    first = {**first, "status": "rejected_insufficient_credits", "provider_rejection": rejection}
+    write_json(root / "rejection_evidence.json", provider)
+    command = {"task_context_digest": task_context["context_digest"],
+               "allocation_binding_digest": first["request_digest"], "provider": "world_labs",
+               "rejection_code": "insufficient_api_credits_before_generation",
+               "provider_receipt_digest": canonical_digest(rejection)}
+    from .website_task_context import website_webapp_request
+    receipt = website_webapp_request(capture_id=task_context["capture_id"], operation="preparation-settlement",
+        payload={"request_id": task_context["request_id"], "scene_id": task_context["scene_id"], "settlement": command})
+    if (any(receipt.get(key) != value for key, value in command.items())
+            or receipt.get("status") != "settled" or receipt.get("actual_cost_usd") != 0):
+        raise ValueError("website_reconstruction_rejection_settlement_receipt_invalid")
+    write_json(root / "rejection_settlement.json", receipt)
+    write_json(path, first)
+    return True
 
 
 def validate_website_prepared_views(*, descriptor: Mapping[str, Any], capture_root: Path) -> tuple[list[Path], dict[str, Any]]:
@@ -102,10 +190,16 @@ def submit_website_prepared_views(*, descriptor: Mapping[str, Any], capture_root
     image_paths, binding = validate_website_prepared_views(descriptor=descriptor, capture_root=capture_root)
     metadata = descriptor["metadata"]
     frames = metadata["clean_plate"]["prepared_views"]["frames"]
+    retry_digest = metadata.get("website_reconstruction_retry_digest")
+    if retry_digest:
+        retry_binding = rejected_generation_binding(capture_root=capture_root, base_binding=binding)
+        if retry_binding is None or retry_binding[1] != retry_digest:
+            raise ValueError("website_reconstruction_retry_binding_invalid")
+        binding = retry_binding[0]
     request_digest = canonical_digest(binding)
     root = capture_root / "pipeline" / "website_reconstruction"
     root.mkdir(parents=True, exist_ok=True)
-    state_path = root / "submission.json"
+    state_path = root / ("submission_retry_1.json" if retry_digest else "submission.json")
     with (root / "submission.lock").open("a") as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)

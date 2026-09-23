@@ -68,6 +68,49 @@ def test_full_video_identity_is_selected_before_geometry_sampling(tmp_path, monk
     assert len(result["targets"][0]["source_track"]["observations"]) == 2
 
 
+def test_view_first_proves_task_noun_before_short_hosted_clip(tmp_path, monkeypatch):
+    from blueprint_pipeline import website_task_masks as masks, website_task_grounding as grounding
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+
+    target = {**_target(), "semantic_label": "three-drawer cabinet", "segmentation_prompt": "cabinet",
+              "task_basis_quote": "Open the middle drawer of the cabinet under the desk.",
+              "task_effect": "manipulated", "disposition": "remove"}
+    source = {"digest": "source", "geometry_available": False,
+              "binding": {"source_video_digest": "video"},
+              "frames": [{"frame_id": "frame-0", "timestamp_seconds": 0, "width": 4, "height": 4}]}
+    sparse = [{"source_frame_id": "frame-0", "model_frame_index": 0, "decoded_pts_seconds": 0,
+               "width": 4, "height": 4}]
+    plan = {"sparse_registry": sparse, "source_frame_registry": sparse,
+            "video": {"path": "selected.mp4", "sha256": "clip", "source_video_digest": "video"}}
+    plan["digest"] = canonical_digest(plan, digest_field="digest")
+    calls = []
+
+    def ground(**kwargs):
+        calls.append("ground")
+        return {**target, "grounding": {"source_frame_id": "frame-0"}}
+
+    def probe(**kwargs):
+        calls.append("probe:" + kwargs["concept"])
+        return masks.CONCEPT_RESOLVED
+
+    def hosted(**kwargs):
+        calls.append("clip:" + kwargs["prompts"][0]["text"])
+        assert len(kwargs["frame_registry"]) == 1
+        return {"tracks": [_track()]}
+
+    monkeypatch.setenv("BLUEPRINT_WEBSITE_SAM31_PROVIDER", "meta")
+    monkeypatch.setattr(grounding, "ground_task_target", ground)
+    monkeypatch.setattr(masks, "probe_segmentation_concept", probe)
+    monkeypatch.setattr(masks, "run_meta_sam31", hosted)
+    result = masks.run_website_task_masks(
+        plan={"targets": [target], "task_context_sha256": "task"}, source_geometry=source,
+        source_video=tmp_path / "source.mov", output_root=tmp_path / "masks",
+        task_context={"description": "Open drawer"}, view_plan=plan)
+    assert calls == ["ground", "probe:under-desk cabinet", "clip:under-desk cabinet"]
+    assert result["binding"]["mask_input_pixels"] == "selected_original_views_v1"
+    assert result["source_frame_registry"] == sparse
+
+
 @pytest.mark.parametrize("tracks", [[], [_track(start=2)], [_track("a"), _track("b")], [_track(label="other-target")]])
 def test_missing_or_ambiguous_instance_holds_editing(tracks):
     with pytest.raises(ValueError, match="track_ambiguous"):
@@ -269,6 +312,8 @@ def test_controller_recovers_ambiguous_video_anchor_with_bounded_exact_frame_evi
     if recovery == "image":
         assert list(grounds[1]["also_rejected"]) == ["white container"]
     assert result["targets"][0]["disposition"] == "keep"
+    assert result["targets"][0]["segmentation_prompt"] == (
+        "white container" if recovery in {"anchor", "unchanged"} else "white book")
     assert result["targets"][0]["source_track"]["observations"][0]["runs"][0]["start"] == 0
     assert result["targets"][0]["grounding"]["source_frame_id"] == "frame-0"
 
@@ -437,6 +482,28 @@ def test_target_bounds_rotate_observations_not_their_enclosing_box(tmp_path):
     assert corrected['metric_measurement_proven'] is False
     with pytest.raises(ValueError, match='coordinate_transform_invalid'):
         estimate_target_bounds(_track(), [frame], source_to_target=np.ones((4, 4)))
+
+
+def test_task_supported_under_desk_concept_is_probed_before_more_model_calls(tmp_path, monkeypatch):
+    from blueprint_pipeline import website_task_masks as masks, website_task_grounding as grounding
+
+    target = {"target_id": "pedestal_cabinet", "segmentation_prompt": "filing cabinet",
+              "task_basis_quote": "Open the middle drawer of the cabinet under the desk."}
+    calls = []
+
+    def probe(**kwargs):
+        calls.append(kwargs["concept"])
+        assert kwargs["target"]["segmentation_prompt"] == kwargs["concept"]
+        return masks.CONCEPT_RESOLVED
+
+    monkeypatch.setattr(masks, "probe_segmentation_concept", probe)
+    monkeypatch.setattr(grounding, "ground_task_target", lambda **kwargs: pytest.fail("unexpected model call"))
+    resolved = masks.resolve_video_segmentation_concept(
+        target=target, tracks=[], registry=[], video={}, task_context={},
+        grounding_root=tmp_path / "grounding", probe_root=tmp_path / "probes",
+        failed_concept="cabinet")
+    assert calls == ["under-desk cabinet"]
+    assert resolved["segmentation_prompt"] == "under-desk cabinet"
 
 
 def test_a_concept_that_resolves_only_a_sub_part_is_never_spent_on_a_clip(tmp_path, monkeypatch):
