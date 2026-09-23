@@ -66,20 +66,46 @@ door_on_exit() {
 
 # Keep one long-lived source clone whose origin is GitHub, so every deploy's
 # release worktree has a stable parent and pushed-commit checks see real refs.
+#
+# The repository is private and the host has no other GitHub credential, so a
+# GitHub origin is fetched over SSH with the door's read-only deploy key. The
+# settings live in the source clone's own config, where the deploy tool's
+# `git fetch origin main` finds them too; origin itself stays the HTTPS URL.
+door_git_auth() {
+  DOOR_GIT_SSH=""
+  case "$DOOR_UPSTREAM_URL" in
+    https://github.com/*) ;;
+    *) return 0 ;;
+  esac
+  [ -r "${DOOR_GITHUB_KEY:-}" ] || door_fail github_deploy_key_missing
+  [ -s "${DOOR_GITHUB_KNOWN_HOSTS:-}" ] || door_fail github_known_hosts_missing
+  DOOR_GIT_SSH="ssh -i $DOOR_GITHUB_KEY -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$DOOR_GITHUB_KNOWN_HOSTS"
+}
+
 door_prepare_source() {
   local src="$DOOR_SOURCE_CLONE"
+  local auth=()
+  door_git_auth
+  if [ -n "$DOOR_GIT_SSH" ]; then
+    auth=(--config "core.sshCommand=$DOOR_GIT_SSH" --config "url.git@github.com:.insteadOf=https://github.com/")
+  fi
   if [ ! -d "$src/.git" ]; then
     echo "creating source clone $src"
     mkdir -p "$(dirname "$src")"
     if [ -d "${DOOR_REFERENCE_REPO:-}/.git" ]; then
-      git clone --quiet --no-checkout --reference "$DOOR_REFERENCE_REPO" --dissociate "$DOOR_UPSTREAM_URL" "$src"
+      git clone --quiet --no-checkout ${auth[@]+"${auth[@]}"} --reference "$DOOR_REFERENCE_REPO" --dissociate \
+        "$DOOR_UPSTREAM_URL" "$src" || door_fail clone_failed
     else
-      git clone --quiet --no-checkout "$DOOR_UPSTREAM_URL" "$src"
+      git clone --quiet --no-checkout ${auth[@]+"${auth[@]}"} "$DOOR_UPSTREAM_URL" "$src" || door_fail clone_failed
     fi
     # Nothing runs from a brand-new clone yet, so checking it out here is safe.
     git -C "$src" checkout --quiet --detach "$DOOR_COMMIT" || door_fail commit_not_found
   fi
   git -C "$src" remote set-url origin "$DOOR_UPSTREAM_URL"
+  if [ -n "$DOOR_GIT_SSH" ]; then
+    git -C "$src" config core.sshCommand "$DOOR_GIT_SSH"
+    git -C "$src" config url.git@github.com:.insteadOf https://github.com/
+  fi
   git -C "$src" fetch --quiet --prune origin '+refs/heads/*:refs/remotes/origin/*' || door_fail fetch_failed
   git -C "$src" cat-file -e "${DOOR_COMMIT}^{commit}" 2>/dev/null || door_fail commit_not_found
 }

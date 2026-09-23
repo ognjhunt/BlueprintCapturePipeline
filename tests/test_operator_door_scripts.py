@@ -72,6 +72,10 @@ def env(tmp_path: Path) -> dict[str, str]:
     _write_stub(tmp_path / "venv-python", PYTHON_STUB)
     results = tmp_path / "results"
     results.mkdir()
+    key_dir = tmp_path / "deploy-key"
+    key_dir.mkdir()
+    (key_dir / "github").write_text("not a real key\n", encoding="utf-8")
+    (key_dir / "known_hosts").write_text("github.com ssh-ed25519 AAAA\n", encoding="utf-8")
     return {
         **os.environ,
         "PATH": f"{stubs}:{os.environ['PATH']}",
@@ -83,6 +87,8 @@ def env(tmp_path: Path) -> dict[str, str]:
         "DOOR_REFERENCE_REPO": str(tmp_path / "no-reference"),
         "DOOR_UPSTREAM_URL": "https://github.com/example/BlueprintCapturePipeline.git",
         "DOOR_VENV_PYTHON": str(tmp_path / "venv-python"),
+        "DOOR_GITHUB_KEY": str(key_dir / "github"),
+        "DOOR_GITHUB_KNOWN_HOSTS": str(key_dir / "known_hosts"),
         "DOOR_STATE_ROOT": str(tmp_path / "state"),
         "DOOR_IDLE_UNITS": "blueprint-a.service,blueprint-b.service",
         "DOOR_IDLE_WAIT_SECONDS": "30",
@@ -200,3 +206,43 @@ def test_deploy_script_only_deploys_main() -> None:
     code = [line for line in text.splitlines() if not line.lstrip().startswith("#")]
     assert not any("--canary" in line for line in code)
     assert any("door_require_on_main" in line for line in code)
+
+
+def test_github_upstream_fetches_with_the_door_deploy_key(env: dict[str, str]) -> None:
+    """The repository is private and the host has no other GitHub credential."""
+
+    rc, outcome, calls = _run("door-deploy.sh", env, DOOR_REQUEST_ID=DEPLOY_ID, DOOR_WAIT_FOR_IDLE="0")
+    assert rc == 0 and outcome["status"] == "deployed"
+    ssh = (f"ssh -i {env['DOOR_GITHUB_KEY']} -o IdentitiesOnly=yes -o BatchMode=yes"
+           f" -o StrictHostKeyChecking=yes -o UserKnownHostsFile={env['DOOR_GITHUB_KNOWN_HOSTS']}")
+    clone = next(call for call in calls if call.startswith("git clone"))
+    assert f"--config core.sshCommand={ssh}" in clone
+    assert "--config url.git@github.com:.insteadOf=https://github.com/" in clone
+    source = env["DOOR_SOURCE_CLONE"]
+    configured = calls.index(f"git -C {source} config core.sshCommand {ssh}")
+    rewritten = calls.index(f"git -C {source} config url.git@github.com:.insteadOf https://github.com/")
+    fetch = next(index for index, call in enumerate(calls) if call.startswith(f"git -C {source} fetch"))
+    assert configured < fetch and rewritten < fetch
+
+
+def test_github_upstream_without_a_deploy_key_is_refused(env: dict[str, str]) -> None:
+    Path(env["DOOR_GITHUB_KEY"]).unlink()
+    rc, outcome, calls = _run("door-deploy.sh", env, DOOR_REQUEST_ID=DEPLOY_ID, DOOR_WAIT_FOR_IDLE="0")
+    assert rc == 2 and outcome["code"] == "github_deploy_key_missing"
+    assert not any(call.startswith(("git clone", "venv-python")) or " fetch " in call for call in calls)
+
+
+def test_non_github_upstream_needs_no_deploy_key(env: dict[str, str]) -> None:
+    Path(env["DOOR_GITHUB_KEY"]).unlink()
+    rc, outcome, calls = _run("door-deploy.sh", env, DOOR_REQUEST_ID=DEPLOY_ID, DOOR_WAIT_FOR_IDLE="0",
+                              DOOR_UPSTREAM_URL="/srv/mirror/BlueprintCapturePipeline.git")
+    assert rc == 0 and outcome["status"] == "deployed"
+    assert not any("sshCommand" in call for call in calls)
+
+
+def test_installer_creates_the_deploy_key_once_and_root_only() -> None:
+    text = (DOOR / "install.sh").read_text(encoding="utf-8")
+    assert 'install -d -o root -g root -m 0700 "$key_dir"' in text
+    assert 'if [ ! -e "$key_dir/github" ]; then' in text
+    assert "ssh-keygen -q -t ed25519 -N ''" in text
+    assert "https://api.github.com/meta" in text

@@ -66,6 +66,8 @@ def test_deploy_launches_the_door_deploy_script_with_validated_parameters(config
     assert env["DOOR_REQUEST_ID"] == request_id and env["DOOR_COMMIT"] == SHA
     assert "DOOR_MODE" not in env and env["DOOR_WAIT_FOR_IDLE"] == "0"
     assert env["DOOR_SOURCE_CLONE"] == DoorConfig().source_clone
+    assert env["DOOR_GITHUB_KEY"] == DoorConfig().github_deploy_key
+    assert env["DOOR_GITHUB_KNOWN_HOSTS"] == DoorConfig().github_known_hosts
     assert env["DOOR_RESULTS_DIR"] == str(Path(config.spool_root) / "results")
     result = _result(config, request_id)
     assert result["status"] == "launched" and result["unit"] == unit

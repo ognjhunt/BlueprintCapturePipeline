@@ -78,6 +78,10 @@ class DoorConfig:
     source_clone: str = "/opt/blueprint/control-plane-config-tools/operator-door-source"
     reference_repo: str = "/opt/blueprint/BlueprintCapturePipeline"
     upstream_url: str = "https://github.com/ognjhunt/BlueprintCapturePipeline.git"
+    # The repository is private and the host has no other GitHub credential: a
+    # read-only deploy key in a root-only directory the door process cannot enter.
+    github_deploy_key: str = "/etc/blueprint-operator-door/deploy-key/github"
+    github_known_hosts: str = "/etc/blueprint-operator-door/deploy-key/known_hosts"
     venv_python: str = "/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python"
     idle_wait_units: tuple[str, ...] = (
         "blueprint-task-evaluation-scene-progression.service",
@@ -95,6 +99,10 @@ class DoorConfig:
 
 
 _PATH_TUPLES = ("read_roots", "hidden_paths", "json_only_roots")
+_PATH_SCALARS = (
+    "state_root", "token_file", "install_root", "control_plane_state", "active_release_link",
+    "source_clone", "reference_repo", "github_deploy_key", "github_known_hosts", "venv_python",
+)
 _LOOPBACK = {"127.0.0.1", "::1", "localhost"}
 
 
@@ -135,6 +143,9 @@ def load_config(path: str | os.PathLike[str] = "/etc/blueprint-operator-door/doo
 def _validated(config: DoorConfig) -> DoorConfig:
     for name in _PATH_TUPLES:
         if not all(os.path.isabs(item) for item in getattr(config, name)):
+            raise DoorConfigError(f"door_config_path_not_absolute:{name}")
+    for name in _PATH_SCALARS:
+        if not os.path.isabs(getattr(config, name)):
             raise DoorConfigError(f"door_config_path_not_absolute:{name}")
     if config.listen_host not in _LOOPBACK:
         raise DoorConfigError("door_config_listener_not_loopback")

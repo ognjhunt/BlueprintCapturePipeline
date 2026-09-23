@@ -89,3 +89,17 @@ def test_derived_spool_paths_follow_the_state_root(tmp_path: Path) -> None:
     config = load_config(path)
     assert config.spool_root == str(tmp_path / "state" / "requests")
     assert config.audit_path == str(tmp_path / "state" / "audit" / "audit.jsonl")
+
+
+def test_github_deploy_key_lives_in_a_root_only_directory() -> None:
+    config = DoorConfig()
+    assert config.github_deploy_key == "/etc/blueprint-operator-door/deploy-key/github"
+    assert config.github_known_hosts == "/etc/blueprint-operator-door/deploy-key/known_hosts"
+
+
+@pytest.mark.parametrize("key", ["github_deploy_key", "github_known_hosts", "source_clone", "token_file", "state_root"])
+def test_single_paths_must_be_absolute(tmp_path: Path, key: str) -> None:
+    path = tmp_path / "door.json"
+    path.write_text(json.dumps({key: "relative/path"}), encoding="utf-8")
+    with pytest.raises(DoorConfigError, match=f"door_config_path_not_absolute:{key}"):
+        load_config(path)

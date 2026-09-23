@@ -4,9 +4,10 @@
 #   bash deploy/operator-door/install.sh [--upgrade] [--no-caddy]
 #
 # Installs the door code to /opt/blueprint/operator-door (independent of pipeline
-# releases), its three units, its state directories and an empty token store
-# (an existing store is never replaced), then adds one Caddy route for
-# /api/live-pipeline/operator/* to the live Caddyfile.
+# releases), its three units, its state directories, an empty token store (an
+# existing store is never replaced) and a read-only GitHub deploy key (generated
+# once; register the printed public half on the repository), then adds one Caddy
+# route for /api/live-pipeline/operator/* to the live Caddyfile.
 #
 # Any failure after the code swap restores the previous code and unit files and
 # restarts the previous door (or disables a first install), so a bad install or
@@ -113,6 +114,27 @@ fi
 chown root:blueprint "$config_dir/tokens.json"
 chmod 0640 "$config_dir/tokens.json"
 
+# 3b. The repository is private and the host has no other GitHub credential, so
+#     deploys fetch with a read-only deploy key. It is generated once, never
+#     replaced (its public half is registered on GitHub), and kept in a root-only
+#     directory the door process cannot enter. GitHub's host keys come from its
+#     API over verified TLS; without them door deploys refuse rather than trust
+#     whatever key github.com presents.
+key_dir="$config_dir/deploy-key"
+install -d -o root -g root -m 0700 "$key_dir"
+if [ ! -e "$key_dir/github" ]; then
+  ssh-keygen -q -t ed25519 -N '' -C "operator-door@$(hostname -s) read-only" -f "$key_dir/github"
+fi
+chmod 0600 "$key_dir/github"
+if curl -fsS --max-time 20 https://api.github.com/meta \
+  | python3 -c 'import json, sys; keys = json.load(sys.stdin)["ssh_keys"]; assert keys; print("\n".join("github.com " + key for key in keys))' \
+  >"$key_dir/known_hosts.new"; then
+  mv "$key_dir/known_hosts.new" "$key_dir/known_hosts"
+else
+  rm -f "$key_dir/known_hosts.new"
+  echo "warning: could not fetch GitHub's host keys; door deploys refuse until $key_dir/known_hosts exists" >&2
+fi
+
 # 4. Units.
 for unit in "${units[@]}"; do
   install -o root -g root -m 0644 "$units_dir/$unit" "$systemd_dir/$unit"
@@ -156,4 +178,5 @@ if [ "$caddy" -eq 1 ] && ! grep -q 'handle /api/live-pipeline/operator/\*' "$cad
   fi
 fi
 
+echo "deploy key (register on GitHub as a read-only deploy key): $(cat "$key_dir/github.pub")"
 echo "{\"installed\": \"$(cat "$install_root/INSTALLED_COMMIT")\", \"upgrade\": $upgrade, \"caddy\": $caddy}"

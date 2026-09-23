@@ -61,6 +61,8 @@ def _script_env(config: DoorConfig, request_id: str, request: dict[str, Any]) ->
         "DOOR_SOURCE_CLONE": config.source_clone,
         "DOOR_REFERENCE_REPO": config.reference_repo,
         "DOOR_UPSTREAM_URL": config.upstream_url,
+        "DOOR_GITHUB_KEY": config.github_deploy_key,
+        "DOOR_GITHUB_KNOWN_HOSTS": config.github_known_hosts,
         "DOOR_VENV_PYTHON": config.venv_python,
         "DOOR_STATE_ROOT": config.control_plane_state,
     }

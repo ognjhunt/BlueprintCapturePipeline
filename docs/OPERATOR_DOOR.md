@@ -126,7 +126,8 @@ tokens that should be able to ship; `read` and `operate` never run code.
    configured-controls progression are idle;
 2. fetch every branch into one long-lived source clone,
    `/opt/blueprint/control-plane-config-tools/operator-door-source` (origin is
-   GitHub, so the deploy tool's pushed-commit checks see real refs);
+   GitHub, so the deploy tool's pushed-commit checks see real refs), with the
+   door's read-only deploy key;
 3. require the commit to be an ancestor of `origin/main`;
 4. run the **target commit's** `scripts/deploy_control_plane_commit.py` from a
    throwaway worktree with `--iteration --preserve-configured-controls-state`,
@@ -145,13 +146,20 @@ see them.
 
 ## Install, tokens, upgrade, removal
 
-Install from a pushed commit, as root on the host:
+Install from a commit on `main`. The repository is private and, until the
+door's own deploy key exists, the host has no GitHub credential, so the first
+install ships a bundle from the operator's machine:
 
 ```bash
-git clone --quiet https://github.com/ognjhunt/BlueprintCapturePipeline.git /tmp/operator-door-install
-git -C /tmp/operator-door-install checkout --quiet <commit>
+# on the operator's machine
+git fetch origin main && git bundle create /tmp/operator-door.bundle origin/main
+scp /tmp/operator-door.bundle root@<host>:/tmp/
+# as root on the host
+git init --quiet /tmp/operator-door-install
+git -C /tmp/operator-door-install fetch --quiet /tmp/operator-door.bundle 'refs/remotes/origin/main:refs/remotes/origin/main'
+git -C /tmp/operator-door-install checkout --quiet --detach <commit>
 bash /tmp/operator-door-install/deploy/operator-door/install.sh
-rm -rf /tmp/operator-door-install
+rm -rf /tmp/operator-door-install /tmp/operator-door.bundle
 ```
 
 The installer stages and import-checks the code, backs up the current unit
@@ -165,6 +173,24 @@ disables a first install. It then patches `/etc/caddy/Caddyfile` in place (the
 live file names the host literally and differs from the repository copy),
 validates it, reloads Caddy and confirms the route through Caddy's admin API,
 restoring the backup on any failure.
+
+The installer also creates the door's GitHub deploy key,
+`/etc/blueprint-operator-door/deploy-key/github`: generated once and never
+replaced, root-only, in a directory the door process cannot enter. It pins
+GitHub's SSH host keys from `api.github.com/meta` beside it, and prints the
+public half. Register that once, read-only:
+
+```bash
+gh repo deploy-key add <public key file> --repo ognjhunt/BlueprintCapturePipeline \
+  --title "operator-door <host> (read-only)"
+```
+
+Door deploys and upgrades fetch with it. The source clone's `core.sshCommand`
+names the key, and a `url.git@github.com:.insteadOf` rewrite keeps origin's
+HTTPS URL, so the deploy tool's own `git fetch origin main` works too. Without
+the key a deploy is refused with `github_deploy_key_missing`. Unregistered, it
+fails with `fetch_failed`. Revoke it under the repository's Settings → Deploy
+keys.
 
 Issue a token on the operator's own machine, so the plaintext never reaches the
 host or any transcript:
@@ -194,7 +220,8 @@ Upgrade from a session with the `deploy` scope:
 blueprint-operator-door.service blueprint-operator-door-runner.path`, delete the
 `handle /api/live-pipeline/operator/*` block from the live Caddyfile and reload
 Caddy, then remove `/opt/blueprint/operator-door*`,
-`/var/lib/blueprint-operator-door` and `/etc/blueprint-operator-door`.
+`/var/lib/blueprint-operator-door` and `/etc/blueprint-operator-door`, and delete
+the deploy key from the repository's Settings → Deploy keys.
 
 ## Using it
 
