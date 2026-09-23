@@ -210,7 +210,15 @@ def _part_physics(*, request: AuthoringRequest, authoring_result: Mapping[str, A
     for name in ("mass_kg", "static_friction", "dynamic_friction", "restitution"):
         value = getattr(properties, name)
         lower, upper = physics_bounds[name]
-        if not lower <= value.interval.lower <= value.value <= value.interval.upper <= upper:
+        # USD receives one mass value. The uncertainty interval describes the
+        # unknown photographed object's possible mass; it is not a set of
+        # masses the simulator will silently sample. Keep that interval in the
+        # completion receipt, including any portion outside the admitted
+        # simulation value range. Contact parameters retain their stricter
+        # full-interval admission because they affect the policy interaction.
+        inside = (lower <= value.value <= upper if name == "mass_kg" and value.basis == "estimated"
+                  else lower <= value.interval.lower <= value.value <= value.interval.upper <= upper)
+        if not inside:
             raise AssetAuthoringError("authoring_packaging_estimate_outside_admitted_bounds:" + name)
     measurement = json.loads(_verified(authoring_result["geometry_readback"]).read_text())
     validate_geometry_readback(request, measurement, review_input.appearance)
@@ -236,6 +244,8 @@ def _part_physics(*, request: AuthoringRequest, authoring_result: Mapping[str, A
         rotation[:, 0] *= -1
     return {"mesh": mesh, "source_path": source_path, "review_path": review_path, "mesh_receipt": mesh_receipt,
             "geometry_sources": geometry_sources, "consistency": consistency, "mass_kg": mass_kg,
+            "mass_interval_kg": [float(properties.mass_kg.interval.lower), float(properties.mass_kg.interval.upper)],
+            "mass_basis": properties.mass_kg.basis,
             "center_of_mass_m": [float(v) for v in mesh.center_mass], "principal_inertia": [float(v) for v in principal],
             "principal_rotation": rotation, "static_friction": float(properties.static_friction.value),
             "dynamic_friction": float(properties.dynamic_friction.value), "restitution": float(properties.restitution.value),
@@ -346,7 +356,12 @@ def package_astra_articulated_candidate(*, requests: Mapping[str, AuthoringReque
             handle_grasp_point = [float(v) for v in handle["grasp_point_link_m"]]
         link_rows[link_id] = {"link_id": link_id, "part_id": part_id, "prim_path": path, "semantic_role": link["semantic_role"],
                               "rest_translation_m": [float(v) for v in link["rest_translation_m"]],
-                              "mass_kg": physics["mass_kg"], "center_of_mass_m": physics["center_of_mass_m"],
+                              "mass_kg": physics["mass_kg"], "mass_basis": physics["mass_basis"],
+                              "mass_uncertainty_interval_kg": physics["mass_interval_kg"],
+                              "mass_interval_exceeds_admitted_simulation_bounds": (
+                                  physics["mass_interval_kg"][0] < physics_bounds[part_id]["mass_kg"][0]
+                                  or physics["mass_interval_kg"][1] > physics_bounds[part_id]["mass_kg"][1]),
+                              "center_of_mass_m": physics["center_of_mass_m"],
                               "diagonal_inertia_kg_m2": physics["principal_inertia"],
                               "collision_bounds_link_frame_m": physics["collision_bounds_part_frame_m"],
                               "collision_prim_paths": collision_paths,

@@ -200,3 +200,24 @@ def test_changed_part_dimensions_or_missing_part_are_refused(tmp_path):
     with pytest.raises(AssetAuthoringError, match="part_set_mismatch"):
         package_astra_articulated_candidate(requests={"carcass": requests["carcass"]}, authoring_results=results,
                                             plan=plan, output_root=tmp_path / "p2", physics_bounds=bounds)
+
+
+def test_articulated_mass_bound_applies_to_simulated_value_and_retains_source_uncertainty(tmp_path):
+    plan, requests, results, bounds = fixture(tmp_path)
+    # The generated USD has one 12 kg carcass. Its reviewed 11.4–12.48 kg
+    # uncertainty must remain visible even though this scene admits at most
+    # 12 kg for the simulated value.
+    bounds["carcass"]["mass_kg"] = [4.0, 12.0]
+    receipt = package_astra_articulated_candidate(
+        requests=requests, authoring_results=results, plan=plan,
+        output_root=tmp_path / "bounded", physics_bounds=bounds)
+    base = next(row for row in receipt["physics_completion"]["links"] if row["link_id"] == "carcass")
+    assert base["mass_kg"] == 12.0
+    assert base["mass_basis"] == "estimated"
+    assert base["mass_uncertainty_interval_kg"] == pytest.approx([11.4, 12.48])
+    assert base["mass_interval_exceeds_admitted_simulation_bounds"] is True
+    bounds["carcass"]["mass_kg"] = [4.0, 11.9]
+    with pytest.raises(AssetAuthoringError, match="estimate_outside_admitted_bounds:mass_kg"):
+        package_astra_articulated_candidate(
+            requests=requests, authoring_results=results, plan=plan,
+            output_root=tmp_path / "rejected", physics_bounds=bounds)
