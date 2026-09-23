@@ -101,6 +101,31 @@ def _canonical_receipt_file(root: Path, receipt: Mapping[str, Any]) -> tuple[Pat
     return path, "sha256:" + hashlib.sha256(payload).hexdigest()
 
 
+def _website_bootstrap_failure(path: Path, request: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Recognize a bound failure envelope; it can never count as worker success."""
+    if path.stat().st_size > 16 * 1024:
+        return None
+    try:
+        value = json.loads(path.read_text())
+    except (OSError, UnicodeError, ValueError):
+        return None
+    if not isinstance(value, dict) or value.get("schema_version") != "website_mapanything_bootstrap_failure.v1":
+        return None
+    expected = (("operation_request_digest", "operation_request_digest"),
+                ("operation_input_bundle_digest", "operation_input_bundle_digest"),
+                ("source_commit_sha", "source_commit_sha"))
+    if (value.get("status") != "failed"
+            or any(value.get(field) != request.get(source) for field, source in expected)
+            or not re.fullmatch(r"[a-z][a-z0-9_]{2,80}", str(value.get("phase") or ""))
+            or not re.fullmatch(r"[a-z][a-z0-9_]{2,100}", str(value.get("code") or ""))):
+        return {"status": "invalid", "code": "binding_invalid"}
+    return {"status": "failed", "phase": value["phase"], "code": value["code"],
+            "exception_type": str(value.get("exception_type") or "")[:80],
+            "operation_request_digest": value["operation_request_digest"],
+            "operation_input_bundle_digest": value["operation_input_bundle_digest"],
+            "source_commit_sha": value["source_commit_sha"]}
+
+
 def _watchdog_valid(
     watchdog: Mapping[str, Any], *, now_epoch: float, hard_ttl_seconds: int, resource_name: str | None = None
 ) -> bool:
@@ -591,6 +616,11 @@ def run_reconstruction_vast_operation(
                     # Missing output alone is normal during work. Confirm a
                     # terminal provider state twice before ending a dead run;
                     # a failed status request must never count as an exit.
+                    if operation == "website_mapanything" and fetch_attempts % 6 == 1:
+                        from .website_vast_diagnostics import worker_log_diagnostic
+                        snapshot = worker_log_diagnostic(instance_id)
+                        if snapshot.get("status") == "observed":
+                            write_json(root / "website_worker_log_diagnostic.json", snapshot)
                     try:
                         observed = provider.inspect(instance_id)
                     except Exception:  # noqa: BLE001 - an observation failure is not death.
@@ -618,6 +648,16 @@ def run_reconstruction_vast_operation(
                         f"reconstruction_vast_operation_output_fetch_failed:{type(exc).__name__}"
                     )
                     break
+                if operation == "website_mapanything":
+                    failure = _website_bootstrap_failure(attempt_path, request)
+                    if failure is not None:
+                        failure["output_digest"] = retrieved_transfer.sha256
+                        write_json(root / "website_mapanything_bootstrap_failure.json", failure)
+                        blockers.append("website_mapanything_bootstrap_" + (
+                            failure["phase"] + "_" + failure["code"] if failure["status"] == "failed"
+                            else "binding_invalid"))
+                        output_retrieved_before_teardown = True
+                        break
                 try:
                     if canonical_splatfacto:
                         validated_output_receipt, runtime_result = (
