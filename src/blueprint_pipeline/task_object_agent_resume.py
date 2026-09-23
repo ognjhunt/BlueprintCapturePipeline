@@ -161,12 +161,25 @@ def inspect_agent_candidate(runtime: Path, request_value: dict) -> dict:
     if images != expected_images or measurement != latest['render_candidate'][2]['measurement']:
         raise AssetAuthoringError('agent_resume_inspected_render_changed')
     physics_input = _read(root / 'physical_review_input.json')
-    physical_phase = _read(root / f'physical_property_review_{number}.json')
+    review_input = PhysicalPropertyReviewInput.model_validate(physics_input)
+    first_name = f'physical_property_review_{number}'
+    phases = [(first_name, _read(root / (first_name + '.json')))]
+    retry_name = first_name + '_identity_retry_1'
+    retry_path = root / (retry_name + '.json')
+    rejection_path = root / (first_name + '_identity_rejection.json')
+    if retry_path.exists():
+        first_proposal = PhysicalPropertyReviewProposal.model_validate(phases[0][1]['output'])
+        rejected = review_physical_properties(review_input, first_proposal)
+        if (rejected.blockers != ['object_identity_changed'] or not rejection_path.exists()
+                or rejected.model_dump(mode='json') != _read(rejection_path)):
+            raise AssetAuthoringError('agent_resume_physics_identity_rejection_changed')
+        phases.append((retry_name, _read(retry_path)))
+    elif rejection_path.exists():
+        raise AssetAuthoringError('agent_resume_physics_identity_retry_missing')
+    physical_phase = phases[-1][1]
     proposal = PhysicalPropertyReviewProposal.model_validate(physical_phase['output'])
-    physics = review_physical_properties(PhysicalPropertyReviewInput.model_validate(physics_input), proposal)
-    if (physics.accepted is None or physics.model_dump(mode='json') != _read(root / 'physical_property_review_result.json')
-            or physical_phase.get('request_digest') not in request_digests
-            or physical_phase.get('references') != previous['source_frames']):
+    physics = review_physical_properties(review_input, proposal)
+    if physics.accepted is None or physics.model_dump(mode='json') != _read(root / 'physical_property_review_result.json'):
         raise AssetAuthoringError('agent_resume_physics_review_changed')
     aliases = [e for e in physics_input['evidence'] if e['evidence_id'] == 'source-appearance-analysis']
     if aliases and (len(aliases) != 1 or aliases[0]['sha256'] != file_record(root / 'source_analysis.json')['sha256'].removeprefix('sha256:')):
@@ -175,13 +188,18 @@ def inspect_agent_candidate(runtime: Path, request_value: dict) -> dict:
     for journal in inherited['journals']:
         completions.extend(_read(p) for p in (runtime / 'inference' / journal['relative_root'] /
                            'inference_reservations/completed').glob('*.json'))
-    matched = [c for c in completions if c.get('capability') == request.object_id + f'_physical_property_review_{number}'
-        and c.get('structured_output_digest') == canonical_digest(proposal.model_dump(mode='json'))
-        and c.get('run_id') == request_runs[physical_phase['request_digest']] and c.get('provider') == 'openai'
-        and physical_phase.get('model') in {'gpt-6-astra', 'gpt-6-sol'} and c.get('model') == physical_phase['model']
-        and c.get('inference_completion_digest') == canonical_digest(c, digest_field='inference_completion_digest')]
-    if len(matched) != 1:
-        raise AssetAuthoringError('agent_resume_physics_completion_missing')
+    for phase_name, phase in phases:
+        if (phase.get('request_digest') not in request_digests
+                or phase.get('references') != previous['source_frames']):
+            raise AssetAuthoringError('agent_resume_physics_review_changed')
+        phase_proposal = PhysicalPropertyReviewProposal.model_validate(phase['output'])
+        matched = [c for c in completions if c.get('capability') == request.object_id + '_' + phase_name
+            and c.get('structured_output_digest') == canonical_digest(phase_proposal.model_dump(mode='json'))
+            and c.get('run_id') == request_runs[phase['request_digest']] and c.get('provider') == 'openai'
+            and phase.get('model') in {'gpt-6-astra', 'gpt-6-sol'} and c.get('model') == phase['model']
+            and c.get('inference_completion_digest') == canonical_digest(c, digest_field='inference_completion_digest')]
+        if len(matched) != 1:
+            raise AssetAuthoringError('agent_resume_physics_completion_missing')
     completed_result, retained_visual_review = None, None
     from .task_object_agent_tools import APPEARANCE_SCOPE
     current_review = f'independent_visual_review_{number}_{APPEARANCE_SCOPE}'

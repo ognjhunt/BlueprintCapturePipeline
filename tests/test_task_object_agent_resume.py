@@ -10,7 +10,7 @@ from blueprint_pipeline.task_object_agent_resume import inspect_agent_candidate
 from blueprint_pipeline.task_object_astra_authoring import AssetAuthoringError, validate_request
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from tests.test_task_object_agent_session import (  # noqa: F401
-    agent_fixture, bounded, ScriptedModel, reply,
+    agent_fixture, bounded, IdentitySlipModel, ScriptedModel, reply,
     authoring_fixture, retained, component,
 )
 
@@ -51,6 +51,39 @@ def test_resume_calls_only_missing_reviewer_and_preserves_spend_history(agent_fi
     assert audit.manifest()['reserved_max_cost_usd'] > before['reserved_max_cost_usd']
     assert prepared['retained_inference_cost_usd'] == before['reserved_max_cost_usd']
     assert adoption._inventory(f.runtime) == snapshot
+
+
+def test_identity_retry_resumes_only_missing_visual_review(agent_fixture):  # noqa: F811
+    f = agent_fixture
+    f.model = IdentitySlipModel(f.steps, f.model.physics)
+    invoker, audit = bounded(f)
+    invoker.maximum_calls = 6  # four author calls, rejected ID and corrected ID
+    with pytest.raises(driver.AstraStageError, match='inference_boundary_refused'):
+        session.execute_agent_authoring(**f.kwargs, invoker=invoker, model=f.model)
+    assert audit.manifest()['reservation_count'] == 6
+    output = f.runtime.parent / 'identity-retry-resume'
+    prepared = prepare(f, output)
+    f.kwargs.update(output_root=output / 'authoring', budget_root=output / 'inference')
+    f.model = ScriptedModel([], f.model.physics)
+    invoker, _ = bounded(f)
+    invoker.prior_calls = prepared['prior_call_count']
+    result = session.execute_agent_authoring(**f.kwargs, **prepared['authoring_kwargs'], invoker=invoker, model=f.model)
+    assert result['status'] == 'candidate_authored_pending_native_qualification'
+    assert len(f.model.calls) == 1
+    assert f.model.calls[0]['output_schema'].json_schema()['title'] == 'AppearanceReview'
+
+
+def test_identity_retry_rejection_tamper_refuses_adoption(agent_fixture):  # noqa: F811
+    f = agent_fixture
+    f.model = IdentitySlipModel(f.steps, f.model.physics)
+    invoker, _ = bounded(f)
+    session.execute_agent_authoring(**f.kwargs, invoker=invoker, model=f.model)
+    path = f.runtime / 'authoring/physical_property_review_1_identity_rejection.json'
+    value = json.loads(path.read_text())
+    value['blockers'] = []
+    path.write_text(json.dumps(value))
+    with pytest.raises(AssetAuthoringError, match='agent_resume_physics_identity_rejection_changed'):
+        inspect_agent_candidate(f.runtime, f.request.model_dump(mode='json'))
 
 
 @pytest.mark.parametrize('change', ['program', 'usd', 'physics', 'history', 'render', 'wal', 'cad_program', 'source_evidence'])

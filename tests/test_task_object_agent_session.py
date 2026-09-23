@@ -64,6 +64,17 @@ class ScriptedModel(Model):
         raise AssertionError('No streaming')
 
 
+class IdentitySlipModel(ScriptedModel):
+    async def get_response(self, **kwargs):
+        if (kwargs['output_schema'].json_schema()['title'] == 'PhysicalPropertyReviewProposal'
+                and not getattr(self, 'slipped', False)):
+            self.slipped = True
+            self.calls.append(kwargs)
+            wrong = {**self.physics, 'object_id': self.physics['object_id'] + 'extra'}
+            return reply(wrong, len(self.calls))
+        return await super().get_response(**kwargs)
+
+
 class Provider(ModelProvider):
     def __init__(self, model): self.model = model
     def get_model(self, model_name): return self.model
@@ -221,6 +232,41 @@ def test_native_claude_loop_uses_real_cad_blender_tools_and_independent_review(a
             budget_root=f.kwargs['budget_root'], request_value=f.kwargs['request_value'],
             session_root=f.kwargs.get('session_root'))
     review_path.write_text(original_review)
+
+def test_wrong_physical_id_gets_one_bounded_retry_before_visual_review(agent_fixture):
+    f = agent_fixture
+    f.model = IdentitySlipModel(f.steps, f.model.physics)
+    invoker, audit = bounded(f)
+    result = session.execute_agent_authoring(**f.kwargs, invoker=invoker, model=f.model)
+    assert result['status'] == 'candidate_authored_pending_native_qualification'
+    titles = [call['output_schema'].json_schema()['title'] for call in f.model.calls]
+    assert titles.count('PhysicalPropertyReviewProposal') == 2
+    assert titles.count('AppearanceReview') == 1
+    root = f.kwargs['output_root']
+    rejected = json.loads((root / 'physical_property_review_1_identity_rejection.json').read_text())
+    assert rejected['blockers'] == ['object_identity_changed'] and rejected['accepted'] is None
+    assert (root / 'physical_property_review_1_identity_retry_1.json').is_file()
+    assert json.loads((root / 'physical_property_review_result.json').read_text())['accepted'] is not None
+    assert audit.manifest()['reservation_count'] == 7
+
+
+def test_repeated_wrong_physical_id_stops_after_one_retry(agent_fixture):
+    f = agent_fixture
+    class AlwaysWrongId(ScriptedModel):
+        async def get_response(self, **kwargs):
+            if kwargs['output_schema'].json_schema()['title'] == 'PhysicalPropertyReviewProposal':
+                self.calls.append(kwargs)
+                return reply({**self.physics, 'object_id': self.physics['object_id'] + 'extra'}, len(self.calls))
+            return await super().get_response(**kwargs)
+    f.model = AlwaysWrongId(f.steps, f.model.physics)
+    invoker, audit = bounded(f)
+    with pytest.raises(author.AssetAuthoringError, match='physical_review_identity_retry_exhausted'):
+        session.execute_agent_authoring(**f.kwargs, invoker=invoker, model=f.model)
+    titles = [call['output_schema'].json_schema()['title'] for call in f.model.calls]
+    assert titles.count('PhysicalPropertyReviewProposal') == 2
+    assert titles.count('AppearanceReview') == 0
+    assert audit.manifest()['reservation_count'] == len(f.model.calls)
+    assert len(list(f.kwargs['output_root'].glob('appearance-[0-9][0-9]'))) == 1
 
 
 def test_render_hands_off_before_later_brief_mutation_can_clear_candidate(agent_fixture):
