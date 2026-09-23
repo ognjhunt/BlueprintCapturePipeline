@@ -89,22 +89,63 @@ def _reuse(root: Path, inputs: Mapping[str, Any]) -> dict[str, Any]:
     return load_website_geometry_result(manifest_path=destination / "artifacts/source_geometry.json", inputs=inputs)
 
 
+def _failed_attempt_safe_to_retry(root: Path, *, source_commit: str) -> bool:
+    """Admit one new release only after the old rental has failed and torn down."""
+    try:
+        request = json.loads((root / "request.json").read_text())
+        operation = root / "reconstruction_vast_operation"
+        execution = json.loads((operation / "reconstruction_vast_operation_execution.json").read_text())
+        provider_zero = json.loads((operation / "provider_zero_verification.json").read_text())
+        teardown = json.loads((operation / "teardown_receipt.json").read_text())
+    except (OSError, ValueError, KeyError):
+        return False
+    return (
+        request.get("source_commit_sha") != source_commit
+        and execution.get("status") == "failed"
+        and execution.get("request_digest") == request.get("request_digest")
+        and execution.get("provider_zero_verified") is True
+        and "reconstruction_vast_operation_output_not_accepted" in execution.get("blockers", [])
+        and execution.get("execution_result_digest") == canonical_digest(execution, digest_field="execution_result_digest")
+        and execution.get("provider_zero_digest") == provider_zero.get("provider_zero_digest")
+        and provider_zero.get("provider_zero_digest") == canonical_digest(provider_zero, digest_field="provider_zero_digest")
+        and provider_zero.get("status") == "PASS"
+        and execution.get("teardown_receipt_digest") == teardown.get("teardown_receipt_digest")
+        and teardown.get("teardown_receipt_digest") == canonical_digest(teardown, digest_field="teardown_receipt_digest")
+        and teardown.get("provider_zero_verified") is True
+    )
+
+
 def dispatch_geometry(*, input_manifest: Path, output_root: Path, task_context: Mapping[str, Any],
                       source_commit: str, allocate: Callable[..., Mapping[str, Any]]) -> dict[str, Any]:
     inputs = json.loads(input_manifest.read_text())
-    root = output_root / "controller_geometry"
-    root.mkdir(parents=True, exist_ok=True)
-    with (root / "dispatch.lock").open("a") as lock:
+    first_root = output_root / "controller_geometry"
+    first_root.mkdir(parents=True, exist_ok=True)
+    with (first_root / "dispatch.lock").open("a") as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             raise ValueError("website_mapanything_controller_already_running") from exc
+        root = first_root
         state_path = root / "dispatch.json"
         if state_path.is_file():
             state = json.loads(state_path.read_text())
             if state["input_digest"] != inputs["digest"] or state["task_context_digest"] != task_context["context_digest"]:
                 raise ValueError("website_mapanything_controller_inputs_changed")
-            return _reuse(root, inputs)
+            try:
+                return _reuse(root, inputs)
+            except ValueError as exc:
+                if (str(exc) != "website_mapanything_existing_attempt_requires_reconciliation"
+                        or not _failed_attempt_safe_to_retry(root, source_commit=source_commit)):
+                    raise
+            root = output_root / "controller_geometry_retry_1"
+            root.mkdir(parents=True, exist_ok=True)
+            state_path = root / "dispatch.json"
+            if state_path.is_file():
+                retry_state = json.loads(state_path.read_text())
+                if (retry_state["input_digest"] != inputs["digest"]
+                        or retry_state["task_context_digest"] != task_context["context_digest"]):
+                    raise ValueError("website_mapanything_controller_inputs_changed")
+                return _reuse(root, inputs)
         profile = load_profile(source_commit=source_commit)
         binding = canonical_digest({"input_digest": inputs["digest"], "runtime": profile,
                                     "task_context_digest": task_context["context_digest"]})
@@ -146,7 +187,11 @@ def dispatch_geometry(*, input_manifest: Path, output_root: Path, task_context: 
             admission, _ = reserve_website_preparation_spend(task_context=task_context, binding_digest=binding,
                 maximum_cost_usd=profile["maximum_cost_usd"], request_count=1, resource_class="gpu_render", provider="vast")
             write_json(root / "controller_admission.json", admission)
-            for folder, artifact in (("transport", next((root / "bundle").rglob("reconstruction_gpu_operation_bundle.zip"))),
+            bundle = root / "bundle" / receipt["bundle_artifact_reference"]
+            if (not bundle.is_file() or "sha256:" + sha256_file(bundle) != receipt["operation_input_bundle_digest"]
+                    or bundle.stat().st_size != receipt["bundle_bytes"]):
+                raise ValueError("website_mapanything_exact_bundle_changed")
+            for folder, artifact in (("transport", bundle),
                                      ("receipt-transport", canonical_receipt)):
                 path = root / folder
                 staged.append(path)
