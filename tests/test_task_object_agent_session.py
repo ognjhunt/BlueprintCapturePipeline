@@ -145,8 +145,11 @@ def test_real_sdk_keeps_images_error_and_repair_in_one_session(agent_fixture):
     assert (f.kwargs['budget_root'] / 'asset_session/completion.json').is_file()
 
 
-def test_native_claude_loop_uses_real_cad_blender_tools_and_independent_review(agent_fixture, monkeypatch):
+@pytest.mark.parametrize('separate_session', [False, True])
+def test_native_claude_loop_uses_real_cad_blender_tools_and_independent_review(agent_fixture, monkeypatch, separate_session):
     f = agent_fixture
+    if separate_session:
+        f.kwargs['session_root'] = f.kwargs['budget_root'] / 'parts' / 'middle_drawer' / 'asset_session'
     key = f.runtime / 'test-anthropic-key'
     key.write_text('test-only-placeholder')
     key.chmod(0o600)
@@ -203,7 +206,8 @@ def test_native_claude_loop_uses_real_cad_blender_tools_and_independent_review(a
     assert replay['result_digest'] == result['result_digest']
     assert len(seen) == 6
     inspected = inspect_completed_claude_authoring(output_root=f.kwargs['output_root'],
-        budget_root=f.kwargs['budget_root'], request_value=f.kwargs['request_value'])
+        budget_root=f.kwargs['budget_root'], request_value=f.kwargs['request_value'],
+        session_root=f.kwargs.get('session_root'))
     assert inspected['result_digest'] == result['result_digest']
     review_path = f.kwargs['output_root'] / 'appearance-00/independent_visual_review_1_observable_v2.json'
     original_review = review_path.read_text()
@@ -214,7 +218,8 @@ def test_native_claude_loop_uses_real_cad_blender_tools_and_independent_review(a
         execute_claude_agent_authoring(**f.kwargs, invoker=invoker)
     with pytest.raises(ClaudeAuthoringBlocked, match='claude_restored_review_changed'):
         inspect_completed_claude_authoring(output_root=f.kwargs['output_root'],
-            budget_root=f.kwargs['budget_root'], request_value=f.kwargs['request_value'])
+            budget_root=f.kwargs['budget_root'], request_value=f.kwargs['request_value'],
+            session_root=f.kwargs.get('session_root'))
     review_path.write_text(original_review)
 
 

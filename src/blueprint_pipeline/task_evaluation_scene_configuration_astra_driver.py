@@ -421,7 +421,7 @@ def _author_articulated_parts(*, plan, part_requests, authored_root, runtime, pr
         else:
             parts[part_id] = authoring_executor(**arguments, mac_executor=mac_executor)
     authored = {"schema_version": ARTICULATED_AUTHORING_RESULT_SCHEMA_VERSION,
-                "status": "parts_authored_pending_native_qualification", "model": "gpt-6-astra",
+                "status": "parts_authored_pending_native_qualification", "model": next(iter(parts.values()))["model"],
                 "plan": dict(plan), "parts": parts, "reused_part_ids": reused,
                 "part_models": {part_id: part["model"] for part_id, part in parts.items()},
                 "part_request_digests": {part_id: request.request_digest for part_id, request in part_requests.items()},
@@ -472,7 +472,8 @@ def _finish_articulated_component(*, plan, part_requests, authored, output, phys
     graph_path = output / "replacement_graph_spec.v1.json"
     _write(graph_path, graph)
     receipt = {"schema_version": ARTICULATED_RECEIPT_SCHEMA_VERSION,
-        "status": "authored_candidate_pending_qualification", "authoring_backend": BACKEND, "model": "gpt-6-astra",
+        "status": "authored_candidate_pending_qualification", "authoring_backend": BACKEND, "model": authored["model"],
+        **({"provider": "anthropic"} if authored["model"] == "claude-opus-5-5" else {}),
         "part_models": authored["part_models"],
         "asset_kind": "articulated_assembly", "replacement_identity": identity,
         "source_candidate_digest": source_record["digest"],
@@ -489,7 +490,8 @@ def _finish_articulated_component(*, plan, part_requests, authored, output, phys
     _write(receipt_path, receipt)
     result = {"schema_version": COMPONENT_RESULT_SCHEMA_VERSION, "status": "completed", "adapter_id": _ADAPTER_ID,
         "stage_id": stage_input["stage"]["stage_id"], "provider_mutations_performed": 0,
-        "nested_paid_execution_requested": False, "authoring_backend": BACKEND, "model": "gpt-6-astra",
+        "nested_paid_execution_requested": False, "authoring_backend": BACKEND, "model": authored["model"],
+        **({"provider": "anthropic"} if authored["model"] == "claude-opus-5-5" else {}),
         "asset_kind": "articulated_assembly",
         "artifacts": [{"role": role, **_file_record(path)} for role, path in (
             ("replacement_asset", asset), ("replacement_authoring_receipt", receipt_path), ("replacement_graph_spec", graph_path))],
@@ -697,6 +699,120 @@ def preflight_astra_execution_runtime(*, package, output_root, environment=None)
         "status": "passed", "model_calls_performed": 0, "provider_allocations_performed": 0})
 
 
+def _claude_stage_authority(*, values, rights, stage_input, request):
+    """Bind a future website scene's signed disclosure to its paid child cap."""
+    from .claude_opus_authoring_invoker import ClaudeAuthoringBlocked
+
+    execution = rights.get("execution_authority") or {}
+    consent = rights.get("consent") or {}
+    terms = consent.get("provider_terms_reference")
+    authority_digest = values.get("BLUEPRINT_SCENE_CONFIGURATION_AUTHORITY_DIGEST")
+    if (stage_input["configuration"].get("authoring_model_provider") != "anthropic"
+            or stage_input["configuration"].get("source_observation_kind") != "website_capture_frames"
+            or values.get("BLUEPRINT_SCENE_CONFIGURATION_AUTHORING_PROVIDER") != "anthropic"
+            or rights.get("schema_version") != "website_native_rights_admission.v1"
+            or rights.get("digest") != canonical_digest(rights, digest_field="digest")
+            or "anthropic" not in execution.get("allowed_providers", [])
+            or rights.get("private_provider_processing_allowed") is not True
+            or rights.get("provider_training_allowed") is not False
+            or not isinstance(terms, str) or not terms.startswith("anthropic:")
+            or not isinstance(authority_digest, str) or re.fullmatch(r"sha256:[0-9a-f]{64}", authority_digest) is None
+            or not request.run_id == stage_input["run_id"]):
+        raise ClaudeAuthoringBlocked("claude_stage_signed_provider_authority_missing")
+    try:
+        maximum_cost = float(values["BLUEPRINT_SCENE_CONFIGURATION_ANTHROPIC_MAX_COST_USD"])
+        maximum_calls = int(values["BLUEPRINT_SCENE_CONFIGURATION_ANTHROPIC_MAX_REQUESTS"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ClaudeAuthoringBlocked("claude_stage_paid_cap_missing") from exc
+    if not math.isfinite(maximum_cost) or not 5.0 <= maximum_cost <= 7.0 or not 1 <= maximum_calls <= 32:
+        raise ClaudeAuthoringBlocked("claude_stage_paid_cap_invalid")
+
+    def verify(run_id, input_digest):
+        if run_id != request.run_id or re.fullmatch(r"sha256:[0-9a-f]{64}", input_digest) is None:
+            raise ClaudeAuthoringBlocked("claude_stage_request_identity_changed")
+        return {"run_id": run_id, "allowed_providers": ["anthropic"],
+                "private_provider_processing_allowed": True,
+                "provider_training_allowed": False,
+                "authority_digest": canonical_digest({
+                    "paid_authority_digest": authority_digest, "rights_digest": rights["digest"],
+                    "stage_input_digest": _sha256(_required_path(values, _INPUT_ENV)),
+                    "input_digest": input_digest}),
+                "provider_terms_digest": canonical_digest({"anthropic_terms_reference": terms})}
+    return maximum_cost, maximum_calls, verify
+
+
+def _execute_claude_stage(*, values, stage_input, rights, request, articulated, plan, part_requests,
+                          runtime, authored_root, output, physics_bounds, configuration, source_record,
+                          rights_record, cad_runtime, cad_root, verified_sources, blender, sandbox,
+                          result_path, package_candidate):
+    from functools import partial
+    from .claude_opus_authoring_invoker import ClaudeAuthoringConfig, ClaudeOpusAuthoringInvoker
+    from .claude_opus_native_tool_loop import (
+        execute_claude_agent_authoring, inspect_completed_claude_authoring,
+    )
+    from .task_evaluation_supervisor.inference_reservations import InferenceReservationAudit
+    from .task_object_agent_cad import execute_cad_program
+
+    maximum_cost, maximum_calls, verify = _claude_stage_authority(
+        values=values, rights=rights, stage_input=stage_input, request=request)
+    budget_root = runtime / "inference"
+    audit = InferenceReservationAudit(run_root=budget_root, run_id=request.run_id)
+    invoker = ClaudeOpusAuthoringInvoker(ClaudeAuthoringConfig(
+        run_id=request.run_id, maximum_cost_usd=maximum_cost,
+        maximum_calls=maximum_calls, allow_live_invocation=True),
+        audit=audit, verify_authority=verify)
+    cad_executor = partial(execute_cad_program, cad_root=cad_root / "text-to-cad",
+        mac_root=cad_root / "Multi-Agent-CAD", sandbox=sandbox, verified_sources=verified_sources)
+    instructions = (cad_root / "text-to-cad/skills/cad/SKILL.md").read_text()
+    try:
+        if articulated:
+            parts = {}
+            for part_id, part_request in part_requests.items():
+                part_root = authored_root / "parts" / part_id
+                session_root = budget_root / "parts" / part_id / "asset_session"
+                parts[part_id] = execute_claude_agent_authoring(
+                    request_value=part_request.model_dump(mode="json"),
+                    output_root=part_root,
+                    budget_root=budget_root,
+                    session_root=session_root,
+                    invoker=invoker, cad_executor=cad_executor, blender_runner=sandbox,
+                    blender_executable=blender["executable"], authoring_instructions=instructions)
+                if inspect_completed_claude_authoring(output_root=part_root, budget_root=budget_root,
+                        session_root=session_root,
+                        request_value=part_request.model_dump(mode="json")) != parts[part_id]:
+                    raise AstraStageError("claude_part_retained_validation_changed")
+            authored = {"schema_version": ARTICULATED_AUTHORING_RESULT_SCHEMA_VERSION,
+                "status": "parts_authored_pending_native_qualification", "model": "claude-opus-5-5",
+                "provider": "anthropic", "plan": dict(plan), "parts": parts, "reused_part_ids": [],
+                "part_models": {part_id: part["model"] for part_id, part in parts.items()},
+                "part_request_digests": {part_id: item.request_digest for part_id, item in part_requests.items()},
+                "claim_ceiling": "development_only", "native_import_qualified": False,
+                "scene_placement_qualified": False, "physical_equivalence_proven": False}
+            authored["result_digest"] = canonical_digest(authored, digest_field="result_digest")
+            _write(authored_root / "result.json", authored)
+        else:
+            authored = execute_claude_agent_authoring(
+                request_value=request.model_dump(mode="json"), output_root=authored_root,
+                budget_root=budget_root, invoker=invoker, cad_executor=cad_executor,
+                blender_runner=sandbox, blender_executable=blender["executable"],
+                authoring_instructions=instructions)
+            if inspect_completed_claude_authoring(output_root=authored_root,
+                    budget_root=budget_root, request_value=request.model_dump(mode="json")) != authored:
+                raise AstraStageError("claude_retained_validation_changed")
+    finally:
+        _write(runtime / "inference_audit.json", audit.manifest())
+    if articulated:
+        return _finish_articulated_component(plan=plan, part_requests=part_requests, authored=authored,
+            output=output, physics_bounds=physics_bounds, configuration=configuration,
+            source_record=source_record, stage_input=stage_input, rights_record=rights_record,
+            cad_runtime=cad_runtime, blender=blender, authored_root=authored_root,
+            result_path=result_path, package_candidate=package_candidate)
+    return _finish_component(request=request, authored=authored, package_candidate=package_candidate,
+        output=output, physics_bounds=physics_bounds, configuration=configuration,
+        source_record=source_record, stage_input=stage_input, rights_record=rights_record,
+        cad_runtime=cad_runtime, blender=blender, authored_root=authored_root, result_path=result_path)
+
+
 @_locked_component
 def execute_astra_component(*, environment=None, runner=subprocess.run,
                             cost_gate_factory=scene_configuration_openai_stage_gate,
@@ -713,6 +829,9 @@ def execute_astra_component(*, environment=None, runner=subprocess.run,
     if manifest["toolchain_digest"] != stage_input["toolchain_digest"]:
         raise AstraStageError("astra_parent_toolchain_digest_mismatch")
     configuration, envelope = stage_input["configuration"], stage_input["construction_envelope"]
+    authoring_provider = configuration.get("authoring_model_provider", "openai")
+    if authoring_provider not in {"openai", "anthropic"}:
+        raise AstraStageError("astra_authoring_provider_invalid")
     source_record, _ = _dependency_candidate(dependencies)
     references = _reference_frames(stage_input, dependencies)
     rights_record, rights_path = _materialized(envelope, contract_path="scene.rights.admission")
@@ -767,6 +886,10 @@ def execute_astra_component(*, environment=None, runner=subprocess.run,
         restore_partial_astra(value=partial_descriptor, request_value=request.model_dump(mode="json"),
             original_root=restored_root, verified_lineage=verified_lineage, archive_path=archive_path)
     prior_roots = ([primary] if primary.exists() else []) + sorted(attempts.glob("attempt-????"))
+    if authoring_provider == "anthropic" and (prior_roots or partial_descriptor is not None
+            or configuration.get("astra_phase_adoption") is not None
+            or no_cost_replay or retained_runtime is not None):
+        raise AstraStageError("claude_cross_attempt_adoption_not_qualified")
     cross_run = partial_descriptor is not None and len(prior_roots) == 1
     descriptor = configuration.get("astra_phase_adoption")
     if retained_runtime is not None:
@@ -831,6 +954,16 @@ def execute_astra_component(*, environment=None, runner=subprocess.run,
     cad_runtime, cad_root, verified_sources, blender, sandbox = prepare_astra_execution_runtime(
         runtime=runtime, package=package, authored_root=authored_root, values=values,
         runner=runner, sandbox_factory=sandbox_factory, blender_validator=blender_validator)
+    if authoring_provider == "anthropic":
+        return _execute_claude_stage(values=values, stage_input=stage_input,
+            rights=_read(rights_path, code="astra_rights_invalid"), request=request,
+            articulated=articulated, plan=plan, part_requests=part_requests,
+            runtime=runtime, authored_root=authored_root, output=delivery_output,
+            physics_bounds=physics_bounds, configuration=configuration,
+            source_record=source_record, rights_record=rights_record,
+            cad_runtime=cad_runtime, cad_root=cad_root, verified_sources=verified_sources,
+            blender=blender, sandbox=sandbox, result_path=result_path,
+            package_candidate=package_candidate)
     scope = scene_configuration_openai_stage_scope(values, stage="content_agents")
     key_path = Path(scope["api_key_file"]).expanduser()
     if key_path.is_symlink() or not key_path.is_file() or key_path.stat().st_mode & 0o077 or not key_path.read_text().strip():
@@ -935,7 +1068,8 @@ def _finish_component(*, request, authored, package_candidate, output, physics_b
     graph_path = output / "replacement_graph_spec.v1.json"
     _write(graph_path, graph)
     receipt = {"schema_version": "task_evaluation_rigid_replacement_authoring_result.v1",
-        "status": "authored_candidate_pending_qualification", "authoring_backend": BACKEND, "model": "gpt-6-astra",
+        "status": "authored_candidate_pending_qualification", "authoring_backend": BACKEND, "model": authored["model"],
+        **({"provider": "anthropic"} if authored["model"] == "claude-opus-5-5" else {}),
         "replacement_identity": identity, "source_candidate_digest": source_record["digest"],
         "source_candidate_claim": "source_geometry_not_observed_truth_or_physics_authority",
         "source_commit": stage_input["source_commit"], "toolchain_digest": stage_input["toolchain_digest"],
@@ -948,7 +1082,8 @@ def _finish_component(*, request, authored, package_candidate, output, physics_b
     _write(receipt_path, receipt)
     result = {"schema_version": COMPONENT_RESULT_SCHEMA_VERSION, "status": "completed", "adapter_id": _ADAPTER_ID,
         "stage_id": stage_input["stage"]["stage_id"], "provider_mutations_performed": 0,
-        "nested_paid_execution_requested": False, "authoring_backend": BACKEND, "model": "gpt-6-astra",
+        "nested_paid_execution_requested": False, "authoring_backend": BACKEND, "model": authored["model"],
+        **({"provider": "anthropic"} if authored["model"] == "claude-opus-5-5" else {}),
         "artifacts": [{"role": role, **_file_record(path)} for role, path in (
             ("replacement_asset", asset), ("replacement_authoring_receipt", receipt_path), ("replacement_graph_spec", graph_path))],
         "result_digest": ""}

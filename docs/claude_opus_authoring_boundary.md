@@ -1,7 +1,7 @@
 # Claude Opus 5.5 authoring boundary
 
-Status: optional future-scene preparation only. No live controller routing or
-provider invocation is enabled by this change.
+Status: optional future-scene website and controller route, implemented but not
+deployed or provider tested. The current signed drawer scene remains on OpenAI.
 
 The local `ClaudeOpusAuthoringInvoker` can make one bounded Claude Messages
 request for an image interpretation, CAD subtask, or independent review. It
@@ -28,23 +28,25 @@ physics/appearance reviews without an Anthropic call.
 gate; the default OpenAI retained-result validator still rejects Claude
 unless that explicit gate has passed.
 
-This does **not** replace the website capture's current persistent CAD/Blender
-agent. That path uses the OpenAI Agents SDK's local SQLite conversation. Its
-item format drops Claude's signed thinking blocks, so direct model swapping
-would corrupt the conversation.
+This does **not** swap Claude into the website capture's current OpenAI Agents
+SDK SQLite conversation. Its item format drops Claude's signed thinking blocks.
+The opt-in route uses its own durable Messages transcript and the same local
+CAD/Blender tools. The website must record an exact `anthropic:` provider terms
+reference in the fresh scene's owner consent and select
+`authoring_provider: anthropic`. The website then signs Anthropic into that scene's execution scope,
+requests an Anthropic-only network and `_FILE` secret scope, and quotes $7 for
+Anthropic plus $6 for compute under the existing $20 simulation authority.
+The paid authority and CPU stage enforce those separate caps; absent authority,
+terms, or a scoped key file fails closed. Default scenes still use OpenAI.
 
-To enable a future scene, the website and controller must sign Anthropic into
-the *new* scene's provider list and terms decision, bind a separate Anthropic
-stage cap within the owner and per-attempt limits, and transport that authority
-into the CPU child. Today `website_task_preparation` emits only `vast/openai`,
-`task_evaluation_scene_execution_scope` rejects `anthropic`, and the paid
-configuration authority/bundle and CPU stage-3 driver carry only the OpenAI
-external-service cap, key scope, and cost gate. The driver also labels final
-CAD/Blender receipts as GPT-6 Astra. An environment flag or a local key cannot
-override these signed boundaries. The current scene has no Anthropic
-authorization and cannot be switched in place. A future route also needs an
-explicitly authorized provider canary and verification that the package and
-retained-stage validators accept Claude-labelled evidence.
+This has only hermetic fake-provider coverage. A new authorized scene and a
+provider canary are still needed to prove Anthropic authentication, exact API
+behavior, successful CAD/Blender output, native qualification, and billing.
+One operational boundary remains: a completed native session can be inspected
+after a process interruption, but the enclosing scene stage currently refuses
+cross-attempt Claude adoption. An attempt that fails after CPU authoring must
+be reconciled rather than blindly replayed. Do not interpret the code or tests
+as a completed drawer policy run or an approved mid-scene model switch.
 
 Claude Managed Agents does not meet this run's hard $7 per-attempt guard by
 itself: its session budget is checked between model requests and Anthropic

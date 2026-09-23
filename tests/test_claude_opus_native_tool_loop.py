@@ -1,5 +1,6 @@
 """Native Opus tool history preserves signed thinking and never replays uncertainty."""
 import json
+from types import SimpleNamespace
 
 from agents import FunctionTool
 from pydantic import BaseModel
@@ -10,6 +11,11 @@ from blueprint_pipeline.claude_opus_authoring_invoker import (
 )
 from blueprint_pipeline.claude_opus_native_tool_loop import ClaudeNativeToolLoop
 from blueprint_pipeline.task_evaluation_supervisor.inference_reservations import InferenceReservationAudit
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.task_evaluation_scene_configuration_astra_driver import _claude_stage_authority
+from blueprint_pipeline.task_evaluation_scene_configuration_submission_records import spend_block
+from blueprint_pipeline.task_evaluation_scene_configuration_vast import _provider_runtime_inputs
+from blueprint_pipeline.task_evaluation_scene_configuration_provider_artifacts import TaskEvaluationSceneConfigurationVastError
 
 
 SHA = "sha256:" + "a" * 64
@@ -151,3 +157,52 @@ def test_unstarted_tool_can_resume_from_paid_response(monkeypatch, tmp_path):
     assert second.run(initial_content="Build", final_type=Final).summary == "done"
     assert len(sends) == 2 and executions == [1]
     first._tool_result = original
+
+
+def test_future_scene_stage_authority_is_signed_and_bounded(tmp_path):
+    stage = tmp_path / "stage.json"
+    stage.write_text("{}")
+    rights = {"schema_version": "website_native_rights_admission.v1",
+        "execution_authority": {"allowed_providers": ["vast", "anthropic"]},
+        "consent": {"provider_terms_reference": "anthropic:opus-5-5-private-processing-v1"},
+        "private_provider_processing_allowed": True, "provider_training_allowed": False}
+    rights["digest"] = canonical_digest(rights, digest_field="digest")
+    values = {"BLUEPRINT_SCENE_CONFIGURATION_AUTHORITY_DIGEST": SHA,
+        "BLUEPRINT_SCENE_CONFIGURATION_AUTHORING_PROVIDER": "anthropic",
+        "BLUEPRINT_SCENE_CONFIGURATION_ANTHROPIC_MAX_COST_USD": "7",
+        "BLUEPRINT_SCENE_CONFIGURATION_ANTHROPIC_MAX_REQUESTS": "32",
+        "BLUEPRINT_SCENE_CONFIGURATION_STAGE_INPUT": str(stage)}
+    from blueprint_pipeline.task_evaluation_scene_configuration_content_agents_driver import _INPUT_ENV
+    values[_INPUT_ENV] = str(stage)
+    bound = {"run_id": "future-scene", "configuration": {
+        "authoring_model_provider": "anthropic", "source_observation_kind": "website_capture_frames"}}
+    cost, calls, verify = _claude_stage_authority(values=values, rights=rights,
+        stage_input=bound, request=SimpleNamespace(run_id="future-scene"))
+    assert (cost, calls) == (7, 32)
+    assert verify("future-scene", SHA)["provider_terms_digest"].startswith("sha256:")
+    for changed in ({**rights, "consent": {"provider_terms_reference": "generic"}},
+                    {**rights, "execution_authority": {"allowed_providers": ["vast", "openai"]}}):
+        with pytest.raises(ClaudeAuthoringBlocked, match="signed_provider_authority_missing"):
+            _claude_stage_authority(values=values, rights=changed,
+                stage_input=bound, request=SimpleNamespace(run_id="future-scene"))
+
+
+def test_future_scene_quote_and_scoped_secret_have_no_openai_fallback(monkeypatch, tmp_path):
+    quote = spend_block("astra_cad_blender_v1", authoring_max_cost_usd=7,
+        requires_artifixer=False, authoring_provider="anthropic")
+    assert quote["external_service_caps"]["openai"]["maximum_cost_usd"] == 0
+    assert quote["external_service_caps"]["anthropic"]["maximum_cost_usd"] == 7
+    assert quote["hard_cap_usd"] == 13
+    authority = {"authority_digest": SHA, "external_service_spend_caps": {
+        "openai": {"maximum_cost_usd": 0},
+        "anthropic": {"maximum_cost_usd": 7, "maximum_requests": 32}}}
+    monkeypatch.delenv("ANTHROPIC_API_KEY_FILE", raising=False)
+    with pytest.raises(TaskEvaluationSceneConfigurationVastError, match="anthropic_secret_configuration_missing"):
+        _provider_runtime_inputs(authority)
+    key = tmp_path / "anthropic-key"
+    key.write_text("test-only-placeholder")
+    key.chmod(0o640)
+    monkeypatch.setenv("ANTHROPIC_API_KEY_FILE", str(key))
+    paths, environment = _provider_runtime_inputs(authority)
+    assert paths == {"ANTHROPIC_API_KEY_FILE": str(key)}
+    assert environment["BLUEPRINT_SCENE_CONFIGURATION_AUTHORING_PROVIDER"] == "anthropic"

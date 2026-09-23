@@ -269,6 +269,11 @@ def _validate_launch_preparation_request(
         except AppearanceReviewContractError as exc:
             raise TaskEvaluationLaunchPreparationContractError(str(exc)) from exc
         openai = spend["external_service_caps"]["openai"]
+        anthropic_selected = request.get("replacement_authoring_model_provider") == "anthropic"
+        anthropic = spend["external_service_caps"].get("anthropic")
+        if anthropic_selected != (anthropic is not None):
+            raise TaskEvaluationLaunchPreparationContractError(
+                "launch_preparation_anthropic_authority_mismatch")
         stage_caps = openai["stage_max_cost_usd"]
         openai_cap = float(openai["maximum_cost_usd"])
         request_count = int(openai["maximum_requests"])
@@ -276,25 +281,32 @@ def _validate_launch_preparation_request(
         # The construction consumer verifies this declaration against the
         # sealed recipe and native-input evidence before paid authority.
         prepared_website = request["scene"].get("website_native_inputs") is not None
+        if anthropic_selected and (not prepared_website
+                or request.get("replacement_authoring_backend") != "astra_cad_blender_v1"
+                or request["runtime"]["network"]["allowlist"] != ["api.anthropic.com"]
+                or request["runtime"]["secret_refs"] != ["secret-file:anthropic_api_key"]):
+            raise TaskEvaluationLaunchPreparationContractError(
+                "launch_preparation_anthropic_authoring_scope_invalid")
+        anthropic_cap = float(anthropic["maximum_cost_usd"]) if anthropic_selected else 0.0
         minimum_stage_caps = {
             "artifixer_semantic_teacher": (
                 0.0 if prepared_website else scene_budget.semantic_teacher_minimum
             ),
             "artifixer_visual_review": 0.0 if prepared_website else scene_budget.visual_review_minimum,
-            "content_agents": scene_budget.content_agents_minimum,
+            "content_agents": 0.0 if anthropic_selected else scene_budget.content_agents_minimum,
         }
         if spend["hard_ttl_seconds"] != scene_budget.parent_ttl_seconds:
             raise TaskEvaluationLaunchPreparationContractError(
                 "launch_preparation_scene_configuration_parent_runtime_budget_invalid"
             )
         if (
-            float(spend["provider_compute_spend_cap_usd"]) + openai_cap
+            float(spend["provider_compute_spend_cap_usd"]) + openai_cap + anthropic_cap
             > float(spend["hard_cap_usd"]) + 1e-9
             or float(spend["provider_compute_spend_cap_usd"]) + 1e-9
             < float(spend["maximum_hourly_rate_usd"])
             * scene_budget.parent_ttl_seconds
             / 3_600
-            or openai_cap > scene_budget.external_maximum
+            or openai_cap + anthropic_cap > scene_budget.external_maximum
             or float(spend["hard_cap_usd"]) > scene_budget.attempt_maximum
             or sum(float(value) for value in stage_caps.values())
             > openai_cap + 1e-9
@@ -303,6 +315,10 @@ def _validate_launch_preparation_request(
                 for stage, minimum in minimum_stage_caps.items()
             )
             or (openai_cap == 0) != (request_count == 0)
+            or (anthropic_selected and (anthropic_cap < scene_budget.content_agents_minimum
+                or stage_caps["content_agents"] != 0
+                or stage_caps["artifixer_semantic_teacher"] != 0
+                or stage_caps["artifixer_visual_review"] != 0))
         ):
             raise TaskEvaluationLaunchPreparationContractError(
                 "launch_preparation_scene_configuration_external_spend_invalid"
@@ -310,6 +326,8 @@ def _validate_launch_preparation_request(
     else:
         if "replacement_authoring_backend" in request:
             raise TaskEvaluationLaunchPreparationContractError("launch_preparation_episode_authoring_backend_forbidden")
+        if "replacement_authoring_model_provider" in request:
+            raise TaskEvaluationLaunchPreparationContractError("launch_preparation_episode_authoring_provider_forbidden")
         if request.get("appearance_review_override") is not None:
             raise TaskEvaluationLaunchPreparationContractError(
                 "launch_preparation_episode_appearance_review_override_forbidden"

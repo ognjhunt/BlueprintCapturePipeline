@@ -448,7 +448,8 @@ def _restore_asset_state(asset, loop: ClaudeNativeToolLoop) -> None:
 def execute_claude_agent_authoring(*, request_value, output_root, budget_root,
                                    invoker: ClaudeOpusAuthoringInvoker,
                                    cad_executor, blender_runner, blender_executable,
-                                   authoring_instructions: str = ""):
+                                   authoring_instructions: str = "",
+                                   session_root: Path | None = None):
     """Opt-in local CAD/Blender authoring for a separately admitted future scene.
 
     This is intentionally not selected by the website stage driver yet. The
@@ -472,7 +473,7 @@ def execute_claude_agent_authoring(*, request_value, output_root, budget_root,
     request = asset.request
     if request.run_id != invoker.config.run_id:
         raise ClaudeAuthoringBlocked("claude_authoring_run_mismatch")
-    state_root = Path(budget_root) / "asset_session"
+    state_root = Path(session_root) if session_root is not None else Path(budget_root) / "asset_session"
     state_root.mkdir(parents=True, exist_ok=True)
     binding = {"request_digest": request.request_digest, "run_id": request.run_id,
                "object_id": request.object_id, "provider": "anthropic", "model": MODEL}
@@ -554,7 +555,7 @@ def execute_claude_agent_authoring(*, request_value, output_root, budget_root,
 
 
 def inspect_completed_claude_authoring(*, output_root: Path, budget_root: Path,
-                                       request_value: dict) -> dict[str, Any]:
+                                       request_value: dict, session_root: Path | None = None) -> dict[str, Any]:
     """Read-only adoption gate for one completed native-Claude asset session."""
     from .task_object_agent_session import tool_definitions
     from .task_object_agent_tools import AssetTools
@@ -569,7 +570,7 @@ def inspect_completed_claude_authoring(*, output_root: Path, budget_root: Path,
     from .task_evaluation_supervisor.inference_reservations import InferenceReservationAudit
 
     request = validate_request(request_value)
-    state_root = Path(budget_root) / "asset_session"
+    state_root = Path(session_root) if session_root is not None else Path(budget_root) / "asset_session"
     binding = {"request_digest": request.request_digest, "run_id": request.run_id,
                "object_id": request.object_id, "provider": "anthropic", "model": MODEL}
     if _read(state_root / "binding.json") != binding:

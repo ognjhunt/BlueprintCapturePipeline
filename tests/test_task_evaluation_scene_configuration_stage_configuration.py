@@ -268,6 +268,20 @@ def test_articulated_stage_configurations_pass_and_refuse_a_driven_task_joint() 
         validate_immutable_stage_configurations(envelope=envelope, configurations=assisted)
 
 
+def test_anthropic_stage_requires_the_same_launch_request_provider() -> None:
+    envelope = _envelope()
+    configurations = _articulated_map()
+    authoring = configurations["stage-3"]
+    authoring["authoring_backend"] = "astra_cad_blender_v1"
+    authoring["authoring_model_provider"] = "anthropic"
+    authoring["source_observation_kind"] = "website_capture_frames"
+    with pytest.raises(ValueError, match="authoring_provider_budget_binding"):
+        validate_immutable_stage_configurations(envelope=envelope, configurations=configurations)
+    envelope["request"] = {"replacement_authoring_backend": "astra_cad_blender_v1",
+                           "replacement_authoring_model_provider": "anthropic"}
+    validate_immutable_stage_configurations(envelope=envelope, configurations=configurations)
+
+
 def test_stage_three_refuses_physically_impossible_friction_bounds() -> None:
     configurations = _configuration_map()
     required = configurations["stage-3"]["required_output"]

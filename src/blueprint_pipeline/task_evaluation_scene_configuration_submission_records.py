@@ -177,13 +177,23 @@ def stage_sequence() -> list[dict[str, Any]]:
     return rows
 
 
-def spend_block(authoring_backend: str = "content_agents", *, authoring_max_cost_usd: float | None = None, requires_artifixer: bool = True) -> dict[str, Any]:
+def spend_block(authoring_backend: str = "content_agents", *, authoring_max_cost_usd: float | None = None,
+                requires_artifixer: bool = True, authoring_provider: str = "openai") -> dict[str, Any]:
+    if authoring_provider not in {"openai", "anthropic"} or (authoring_provider == "anthropic"
+            and (authoring_backend != "astra_cad_blender_v1" or requires_artifixer)):
+        raise ValueError("scene_configuration_authoring_provider_invalid")
     profile = scene_configuration_budget_profile(authoring_backend)
     caps = profile.stage_caps(authoring_max_cost_usd)
     if not requires_artifixer:
         caps["artifixer_semantic_teacher"] = 0.0
         caps["artifixer_visual_review"] = 0.0
-    external_cap = round(sum(caps.values()), 6)
+    anthropic_cap = float(caps["content_agents"]) if authoring_provider == "anthropic" else 0.0
+    if anthropic_cap > 7.0:
+        raise ValueError("scene_configuration_anthropic_authoring_cap_invalid")
+    if authoring_provider == "anthropic":
+        caps["content_agents"] = 0.0
+    openai_cap = round(sum(caps.values()), 6)
+    external_cap = round(openai_cap + anthropic_cap, 6)
     return {
         "maximum_hourly_rate_usd": MAX_HOURLY_RATE_USD,
         "hard_cap_usd": (MAX_ATTEMPT_SPEND_USD if authoring_backend == "content_agents"
@@ -192,10 +202,13 @@ def spend_block(authoring_backend: str = "content_agents", *, authoring_max_cost
         "provider_compute_spend_cap_usd": MAX_PROVIDER_COMPUTE_SPEND_USD,
         "external_service_caps": {
             "openai": {
-                "maximum_cost_usd": external_cap,
-                "maximum_requests": 32,
+                "maximum_cost_usd": openai_cap,
+                "maximum_requests": 32 if openai_cap else 0,
                 "stage_max_cost_usd": caps,
-            }
+            },
+            **({"anthropic": {"maximum_cost_usd": anthropic_cap,
+                              "maximum_requests": 32}}
+               if authoring_provider == "anthropic" else {}),
         },
         "retry_cap": 0,
         "selected_provider": "vast",

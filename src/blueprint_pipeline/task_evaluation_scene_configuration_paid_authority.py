@@ -62,6 +62,7 @@ def _required_external_stage_minima(
     historical_terminal_evidence: bool = False,
     production_semantic_reuse: bool = False,
     authoring_backend: str = "content_agents",
+    authoring_provider: str = "openai",
     requires_artifixer: bool = True,
 ) -> dict[str, float]:
     try:
@@ -90,7 +91,7 @@ def _required_external_stage_minima(
         ),
         "content_agents": (
             0.0
-            if diagnostic_only and carried_stage_count >= 3
+            if authoring_provider == "anthropic" or (diagnostic_only and carried_stage_count >= 3)
             else budget_profile.content_agents_minimum
         ),
     }
@@ -226,6 +227,8 @@ def materialize_scene_configuration_paid_authority(
     openai_artifixer_semantic_teacher_max_cost_usd: float = 0.0,
     openai_artifixer_visual_review_max_cost_usd: float = 0.0,
     openai_content_agents_max_cost_usd: float = 0.0,
+    anthropic_max_cost_usd: float = 0.0,
+    anthropic_max_requests: int = 0,
 ) -> dict[str, Any]:
     """Seal one fresh project-spend-derived authority; retries are impossible."""
 
@@ -258,7 +261,10 @@ def materialize_scene_configuration_paid_authority(
         if provider_compute_spend_cap_usd is not None
         else float(hard_cap_usd)
     )
-    external_cap = float(openai_max_cost_usd)
+    authoring_provider = receipt.get("replacement_authoring_model_provider", "openai")
+    anthropic_cap = float(anthropic_max_cost_usd)
+    openai_cap = float(openai_max_cost_usd)
+    external_cap = openai_cap + anthropic_cap
     stage_caps = {
         "artifixer_semantic_teacher": float(
             openai_artifixer_semantic_teacher_max_cost_usd
@@ -282,8 +288,10 @@ def materialize_scene_configuration_paid_authority(
         carried_stage_count=carried_stage_count,
         production_semantic_reuse=production_semantic_reuse,
         authoring_backend=receipt.get("replacement_authoring_backend", "content_agents"),
+        authoring_provider=authoring_provider,
     )
-    minimum_external_cap = sum(required_stage_minima.values())
+    minimum_external_cap = sum(required_stage_minima.values()) + (
+        5.0 if authoring_provider == "anthropic" else 0.0)
     budget_profile = scene_configuration_budget_profile(receipt.get("replacement_authoring_backend", "content_agents"))
     diagnostic_budget_blockers = (
         diagnostic_parent_runtime_budget_blockers(
@@ -324,12 +332,18 @@ def materialize_scene_configuration_paid_authority(
             or carried_stage_count < 3
             or stage_caps["content_agents"] == 0
         )
-        and sum(stage_caps.values()) <= external_cap + 1e-9
+        and sum(stage_caps.values()) <= openai_cap + 1e-9
+        and (authoring_provider == "openai" and anthropic_cap == 0 and anthropic_max_requests == 0
+             or authoring_provider == "anthropic" and not requires_artifixer
+             and openai_cap == 0 and openai_max_requests == 0
+             and all(value == 0 for value in stage_caps.values())
+             and 5.0 <= anthropic_cap <= 7.0
+             and type(anthropic_max_requests) is int and 1 <= anthropic_max_requests <= 32)
         and isinstance(openai_max_requests, int)
         and not isinstance(openai_max_requests, bool)
         and (
-            (external_cap == 0 and openai_max_requests == 0)
-            or (external_cap > 0 and 1 <= openai_max_requests <= 100)
+            (openai_cap == 0 and openai_max_requests == 0)
+            or (openai_cap > 0 and 1 <= openai_max_requests <= 100)
         )
         and (
             (diagnostic_only and 0 < compute_cap <= MAX_PROVIDER_COMPUTE_SPEND_USD)
@@ -425,11 +439,15 @@ def materialize_scene_configuration_paid_authority(
         "provider_compute_spend_cap_usd": compute_cap,
         "external_service_spend_caps": {
             "openai": {
-                "maximum_cost_usd": external_cap,
+                "maximum_cost_usd": openai_cap,
                 "maximum_requests": openai_max_requests,
                 "stage_max_cost_usd": stage_caps,
                 "credentials_via_ephemeral_private_file_only": True,
-            }
+            },
+            **({"anthropic": {"maximum_cost_usd": anthropic_cap,
+                              "maximum_requests": anthropic_max_requests,
+                              "credentials_via_ephemeral_private_file_only": True}}
+               if authoring_provider == "anthropic" else {}),
         },
         "maximum_hourly_rate_usd": max_hourly_rate_usd,
         "maximum_single_resource_ttl_seconds": hard_ttl_seconds,
@@ -493,9 +511,12 @@ def validate_scene_configuration_paid_authority(
     authority = dict(value)
     errors: list[str] = []
     external = (authority.get("external_service_spend_caps") or {}).get("openai")
+    authoring_provider = bundle_receipt.get("replacement_authoring_model_provider", "openai")
+    anthropic = (authority.get("external_service_spend_caps") or {}).get("anthropic")
     compute_cap = authority.get("provider_compute_spend_cap_usd")
     total_cap = authority.get("hard_attempt_spend_cap_usd")
     external_cost = external.get("maximum_cost_usd") if isinstance(external, Mapping) else None
+    anthropic_cost = anthropic.get("maximum_cost_usd") if isinstance(anthropic, Mapping) else 0.0
     external_requests = external.get("maximum_requests") if isinstance(external, Mapping) else None
     stage_caps = external.get("stage_max_cost_usd") if isinstance(external, Mapping) else None
     diagnostic_only = bundle_receipt.get("diagnostic_only") is True
@@ -519,10 +540,12 @@ def validate_scene_configuration_paid_authority(
         historical_terminal_evidence=historical_terminal_evidence,
         production_semantic_reuse=production_semantic_reuse,
         authoring_backend=bundle_receipt.get("replacement_authoring_backend", "content_agents"),
+        authoring_provider=authoring_provider,
     )
     if historical_terminal_evidence and not diagnostic_only:
         errors.append("historical_terminal_evidence_scope_invalid")
-    minimum_external_cap = sum(required_stage_minima.values())
+    minimum_external_cap = sum(required_stage_minima.values()) + (
+        5.0 if authoring_provider == "anthropic" else 0.0)
     budget_profile = scene_configuration_budget_profile(bundle_receipt.get("replacement_authoring_backend", "content_agents"))
     diagnostic_budget_blockers = (
         diagnostic_parent_runtime_budget_blockers(
@@ -535,6 +558,9 @@ def validate_scene_configuration_paid_authority(
         else []
     )
     external_contract_valid = (
+        set(authority.get("external_service_spend_caps") or {})
+        == ({"openai", "anthropic"} if authoring_provider == "anthropic" else {"openai"})
+        and
         isinstance(compute_cap, (int, float))
         and not isinstance(compute_cap, bool)
         and math.isfinite(float(compute_cap))
@@ -543,9 +569,19 @@ def validate_scene_configuration_paid_authority(
         and isinstance(external_cost, (int, float))
         and not isinstance(external_cost, bool)
         and math.isfinite(float(external_cost))
+        and isinstance(anthropic_cost, (int, float))
+        and not isinstance(anthropic_cost, bool)
+        and math.isfinite(float(anthropic_cost))
         and minimum_external_cap
-        <= float(external_cost)
+        <= float(external_cost) + float(anthropic_cost)
         <= budget_profile.external_maximum
+        and (authoring_provider == "openai" and anthropic is None
+             or authoring_provider == "anthropic" and isinstance(anthropic, Mapping)
+             and not requires_artifixer and float(external_cost) == 0
+             and float(anthropic_cost) >= 5.0 and float(anthropic_cost) <= 7.0
+             and type(anthropic.get("maximum_requests")) is int
+             and 1 <= anthropic["maximum_requests"] <= 32
+             and anthropic.get("credentials_via_ephemeral_private_file_only") is True)
         and isinstance(external_requests, int)
         and not isinstance(external_requests, bool)
         and (
@@ -593,6 +629,7 @@ def validate_scene_configuration_paid_authority(
         )
         and sum(float(value) for value in stage_caps.values())
         <= float(external_cost) + 1e-9
+        and (authoring_provider != "anthropic" or all(float(value) == 0 for value in stage_caps.values()))
         and (
             (
                 diagnostic_only
@@ -607,7 +644,8 @@ def validate_scene_configuration_paid_authority(
         and (
             (
                 diagnostic_only
-                and abs(float(total_cap) - (float(compute_cap) + float(external_cost)))
+                and abs(float(total_cap) - (float(compute_cap) + float(external_cost)
+                                              + float(anthropic_cost)))
                 <= 1e-9
             )
             or (
@@ -617,7 +655,7 @@ def validate_scene_configuration_paid_authority(
                      else 0 < float(total_cap) <= budget_profile.attempt_maximum)
             )
         )
-        and float(compute_cap) + float(external_cost)
+        and float(compute_cap) + float(external_cost) + float(anthropic_cost)
         <= float(total_cap) + 1e-9
         and external.get("credentials_via_ephemeral_private_file_only") is True
     )
@@ -775,6 +813,8 @@ def main(argv: list[str] | None = None) -> int:
         "--openai-artifixer-visual-review-max-cost-usd", type=float, default=0.0
     )
     parser.add_argument("--openai-content-agents-max-cost-usd", type=float, default=0.0)
+    parser.add_argument("--anthropic-max-cost-usd", type=float, default=0.0)
+    parser.add_argument("--anthropic-max-requests", type=int, default=0)
     parser.add_argument("--output", required=True)
     args = parser.parse_args(argv)
     authority = materialize_scene_configuration_paid_authority(
@@ -801,6 +841,8 @@ def main(argv: list[str] | None = None) -> int:
             args.openai_artifixer_visual_review_max_cost_usd
         ),
         openai_content_agents_max_cost_usd=args.openai_content_agents_max_cost_usd,
+        anthropic_max_cost_usd=args.anthropic_max_cost_usd,
+        anthropic_max_requests=args.anthropic_max_requests,
     )
     print(json.dumps(authority, sort_keys=True, separators=(",", ":")))
     return 0
