@@ -426,11 +426,15 @@ def test_native_driver_refuses_a_declared_destination_without_stage4_artifacts(
     assert executed is False
 
 
-def _articulated_environment(tmp_path: Path) -> dict[str, str]:
+def _articulated_environment(
+    tmp_path: Path, *, with_destination: bool = False
+) -> dict[str, str]:
     from blueprint_pipeline.task_evaluation_scene_configuration_submission_records import (
         stage_five_configuration,
     )
-    environment = _environment(tmp_path)
+    environment = (
+        _destination_environment(tmp_path) if with_destination else _environment(tmp_path)
+    )
     stage_input_path = Path(environment["BLUEPRINT_SCENE_CONFIGURATION_STAGE_INPUT"])
     stage_input = json.loads(stage_input_path.read_text())
     stage_input["configuration"] = {
@@ -438,6 +442,10 @@ def _articulated_environment(tmp_path: Path) -> dict[str, str]:
                                    articulated=True),
         "schema_version": "replacement_native_import_qualification_configuration.v1",
     }
+    if with_destination:
+        stage_input["construction_envelope"]["recipe"]["subject_identity"] = {
+            "id": "cabinet", "version": "v1"
+        }
     stage_input_path.write_text(json.dumps(stage_input), encoding="utf-8")
     output = Path(environment["BLUEPRINT_SCENE_CONFIGURATION_STAGE_OUTPUT_ROOT"])
     asset = output / "qualified.usda"
@@ -540,6 +548,49 @@ def test_articulated_assembly_qualifies_on_links_and_its_one_task_joint(tmp_path
     assert runtime["task_joint_closed_at_reset_verified"] is True
     assert runtime["task_joint_travel_is_measured"] is False
     assert runtime["evaluation_episode_executed"] is False
+
+
+def test_articulated_subject_with_rigid_destination_seals_both_results(
+    tmp_path: Path,
+) -> None:
+    environment = _articulated_environment(tmp_path, with_destination=True)
+    observed = _articulated_observed()
+    observed["destination_repeats"] = _destination_observed()["destination_repeats"]
+    result = execute_native_import_component(
+        environment=environment, native_runner=_native_runner(observed)
+    )
+    artifacts = {row["role"]: row for row in result["artifacts"]}
+    subject = json.loads(Path(artifacts["native_import_runtime_result"]["path"]).read_text())
+    destination = json.loads(
+        Path(artifacts["destination_native_import_runtime_result"]["path"]).read_text()
+    )
+    assert subject["asset_kind"] == "articulated_assembly"
+    assert destination["replacement_identity"] == DESTINATION_IDENTITY
+    assert "link_physics_readback" not in destination
+    assert destination["result_digest"] == canonical_digest(
+        destination, digest_field="result_digest"
+    )
+
+
+def test_articulated_native_rejects_matching_but_wrong_fixed_joint_paths(
+    tmp_path: Path,
+) -> None:
+    observed = _articulated_observed()
+    for repeat in observed["repeats"]:
+        wrong = [
+            "/World/Placement/Replacement/joints/wrong_0",
+            "/World/Placement/Replacement/joints/wrong_2",
+        ]
+        repeat["fixed_joint_prim_paths"] = wrong
+        repeat["task_joint"]["fixed_joint_prim_paths"] = wrong
+    with pytest.raises(
+        TaskEvaluationSceneConfigurationNativeImportDriverError,
+        match="native_import_qualification_failed",
+    ):
+        execute_native_import_component(
+            environment=_articulated_environment(tmp_path),
+            native_runner=_native_runner(observed),
+        )
 
 
 @pytest.mark.parametrize("mutation", [

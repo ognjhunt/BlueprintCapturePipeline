@@ -333,11 +333,18 @@ def _articulated_repeat_matches_static(
                 return False
         joint = row["task_joint"]
         task = receipt["task_joint"]
+        expected_fixed_paths = sorted(
+            _imported_path(path)
+            for path in receipt["observed_structure"]["joint_prim_paths"]
+            if path != task["prim_path"]
+        )
         if (joint["task_joint_name"] != task["joint_id"]
                 or joint["task_joint_reset_position"] != task["reset_position"]
                 or any(not math.isclose(float(a), float(b), rel_tol=1e-5, abs_tol=1e-7)
                        for a, b in zip(joint["task_joint_limits"], task["limits"], strict=True))
-                or sorted(joint["fixed_joint_prim_paths"]) != sorted(row["fixed_joint_prim_paths"])):
+                or len(expected_fixed_paths) != 2
+                or sorted(joint["fixed_joint_prim_paths"]) != expected_fixed_paths
+                or sorted(row["fixed_joint_prim_paths"]) != expected_fixed_paths):
             return False
         return True
     except (KeyError, TypeError, ValueError, RuntimeError, OverflowError):
@@ -858,6 +865,7 @@ def execute_native_import_component(
 
     def _runtime_result(
         *,
+        articulated_result: bool,
         identity: Mapping[str, Any],
         asset_digest: str,
         static_digest: str,
@@ -899,7 +907,7 @@ def execute_native_import_component(
             "blockers": [],
             "result_digest": "",
         }
-        if articulated and repeats and isinstance(repeats[0], Mapping):
+        if articulated_result and repeats and isinstance(repeats[0], Mapping):
             joint = dict(repeats[0].get("task_joint") or {})
             runtime_result.update(
                 asset_kind="articulated_assembly",
@@ -955,6 +963,7 @@ def execute_native_import_component(
                 role="native_import_runtime_result",
                 filename=RUNTIME_RESULT_SCHEMA_VERSION,
                 value=_runtime_result(
+                    articulated_result=articulated,
                     identity=configuration["replacement_identity"],
                     asset_digest=asset_record["digest"],
                     static_digest=static_record["digest"],
@@ -981,6 +990,7 @@ def execute_native_import_component(
                     role=DESTINATION_RUNTIME_RESULT_ROLE,
                     filename=f"destination_{RUNTIME_RESULT_SCHEMA_VERSION}",
                     value=_runtime_result(
+                        articulated_result=False,
                         identity=destination["identity"],
                         asset_digest=destination_asset_record["digest"],
                         static_digest=destination_static_record["digest"],
