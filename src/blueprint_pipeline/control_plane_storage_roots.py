@@ -136,6 +136,12 @@ STORAGE_ROOTS: tuple[StorageRoot, ...] = (
     StorageRoot("/opt/blueprint/task-evaluation-control-plane", "release", "root", "active release link"),
     StorageRoot("/opt/blueprint/BlueprintCapturePipeline", "release", "root", "mutable source checkout and venv"),
     StorageRoot("/opt/blueprint/BlueprintCapturePipeline-staging", "staging", "root", "staging checkout"),
+    # --- operator door (deploy/operator-door): installed apart from pipeline releases
+    StorageRoot("/var/lib/blueprint-operator-door", "container", "blueprint", "operator door state"),
+    StorageRoot("/var/lib/blueprint-operator-door/requests", "work", "blueprint", "operator door request spool, results and logs"),
+    StorageRoot("/var/lib/blueprint-operator-door/audit", "evidence_hot", "blueprint", "operator door access audit log"),
+    StorageRoot("/opt/blueprint/operator-door", "release", "root", "operator door code"),
+    StorageRoot("/opt/blueprint/control-plane-config-tools/operator-door-source", "release", "root", "operator door deploy source clone"),
     StorageRoot(f"{_CONTROL_PLANE}/release-retention", "evidence_hot", "root", "release retirement plans and receipts"),
     StorageRoot(f"{_CONTROL_PLANE}/capacity", "evidence_hot", "root", "capacity controller reports"),
     StorageRoot(f"{_CONTROL_PLANE}/preflight", "evidence_hot", "root", "chain preflight reports"),

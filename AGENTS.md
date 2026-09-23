@@ -274,6 +274,16 @@ dependent step as blocked instead of guessing.
   `scripts/manage_output_artifact_retention.py`; `~/.claude` is bounded by
   Claude Code's built-in `cleanupPeriodDays` cleanup.
 
+## Cloud Agent Sessions
+
+Claude Code cloud sessions cannot SSH to the control-plane host. They read run
+state, pull inputs, start units and deploy commits already on `main` through
+the operator door ([`docs/OPERATOR_DOOR.md`](docs/OPERATOR_DOOR.md)) with
+`python3 scripts/operator_door.py`, never by putting SSH keys or tunnels into a
+cloud environment. A failed stage is replayed in the session against pulled
+inputs, not on the host. Session setup and the scene procedure live in the sibling
+Blueprint-WebApp checkout's `docs/runbooks/cloud-scene-runs.md`.
+
 ## Commands
 
 Paid resource allocation:

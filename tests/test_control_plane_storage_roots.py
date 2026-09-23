@@ -26,7 +26,12 @@ _NOT_STORAGE = ("/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python",)
 def test_every_root_named_by_a_production_unit_is_classified() -> None:
     unclassified: set[str] = set()
     for unit in sorted(SYSTEMD_DIR.glob("blueprint-*")):
-        for match in _HOST_PATH.findall(unit.read_text(encoding="utf-8")):
+        # A path a unit is denied (InaccessiblePaths=) is not storage it uses.
+        text = "\n".join(
+            line for line in unit.read_text(encoding="utf-8").splitlines()
+            if not line.startswith("InaccessiblePaths=")
+        )
+        for match in _HOST_PATH.findall(text):
             path = match.rstrip("/")
             if path in _NOT_STORAGE:
                 continue

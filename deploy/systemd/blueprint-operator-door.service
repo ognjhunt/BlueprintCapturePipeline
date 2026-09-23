@@ -1,0 +1,56 @@
+[Unit]
+Description=Blueprint operator door (token-gated HTTPS window for cloud agent sessions)
+Documentation=file:///opt/blueprint/operator-door/INSTALLED_COMMIT
+After=network.target
+ConditionPathExists=/opt/blueprint/operator-door/operator_door/__main__.py
+
+[Service]
+Type=simple
+User=blueprint
+Group=blueprint
+# Journal reads, and the one group allowed to write the request spool's pending/.
+# The door never sources an EnvironmentFile.
+SupplementaryGroups=systemd-journal blueprint-door
+UMask=0077
+Environment=PYTHONPATH=/opt/blueprint/operator-door
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 -m operator_door serve
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=any
+IPAddressAllow=localhost
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+ReadWritePaths=/var/lib/blueprint-operator-door
+# The file view refuses these too; hiding them here keeps a door bug from reaching them.
+InaccessiblePaths=-/etc/blueprint/provider-secrets -/etc/blueprint/credentials -/etc/blueprint/secrets -/etc/blueprint/agent-execution-admissions -/var/lib/blueprint/spend-authority -/var/lib/blueprint/spend-authority-home -/var/lib/blueprint/pipeline-control-plane/agent-execution-rollout -/var/lib/blueprint/pipeline-control-plane/episode-interpreter-service-account.json
+TasksMax=64
+MemoryMax=1G
+CPUQuota=100%
+CPUWeight=20
+IOWeight=20
+Nice=10
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target

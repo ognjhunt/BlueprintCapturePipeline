@@ -18,6 +18,8 @@ INTAKE_SERVICE = REPO_ROOT / "deploy" / "systemd" / "blueprint-pipeline-intake.s
 
 # The intake service binds loopback only; the edge is the sole public surface.
 INTAKE_UPSTREAM = "127.0.0.1:8765"
+# The operator door (deploy/operator-door) also binds loopback only.
+DOOR_UPSTREAM = "127.0.0.1:8767"
 PUBLIC_HOSTNAME_ENV = "BLUEPRINT_PIPELINE_PUBLIC_HOSTNAME"
 SOURCE_COMMIT_ENV = "BLUEPRINT_SOURCE_COMMIT"
 
@@ -54,12 +56,18 @@ def test_caddy_edge_hostname_is_configurable_not_hardcoded() -> None:
     assert "206.81.11.69" not in text
 
 
+def test_caddy_edge_forwards_operator_routes_to_the_loopback_door() -> None:
+    text = _caddyfile()
+    assert "handle /api/live-pipeline/operator/*" in text
+    assert f"reverse_proxy {DOOR_UPSTREAM}" in text
+
+
 def test_caddy_edge_does_not_expose_surfaces_beyond_the_live_pipeline_api() -> None:
     text = _caddyfile()
-    proxied = [line for line in text.splitlines() if "reverse_proxy" in line]
+    proxied = sorted(line.strip() for line in text.splitlines() if "reverse_proxy" in line)
     assert proxied, "expected at least one reverse_proxy directive"
-    assert all(INTAKE_UPSTREAM in line for line in proxied), (
-        "the edge must not proxy anything except the loopback intake service"
+    assert proxied == sorted([f"reverse_proxy {DOOR_UPSTREAM}", f"reverse_proxy {INTAKE_UPSTREAM}"]), (
+        "the edge proxies exactly two loopback services: the intake and the operator door"
     )
 
 
