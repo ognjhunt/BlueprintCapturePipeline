@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import inspect
 import json
 import os
+import subprocess
 
 import pytest
 
@@ -350,6 +351,25 @@ def test_cad_import_failure_refuses_before_reservation_or_model(component):
     component.kwargs["sandbox_factory"] = BrokenSandbox
     with pytest.raises(driver.AstraStageError, match="sandboxed_cad_runtime_preflight_failed"):
         driver.execute_astra_component(**component.kwargs)
+    assert component.events == []
+    assert "budget" not in component.seen and "gate" not in component.seen
+
+
+def test_cad_import_timeout_is_bounded_and_reported_without_launcher_arguments(component):
+    class SlowSandbox:
+        def __init__(self, **kw): pass
+        def preflight(self): pass
+        def __call__(self, argv, **kw):
+            assert kw["timeout"] == 180
+            raise subprocess.TimeoutExpired(argv, kw["timeout"])
+
+    component.kwargs["sandbox_factory"] = SlowSandbox
+    with pytest.raises(driver.AstraStageError, match="^astra_sandboxed_cad_runtime_preflight_timeout$"):
+        driver.execute_astra_component(**component.kwargs)
+    failure = Path(component.environment[driver._OUTPUT_ENV]) / "astra_cad_blender_runtime/cad_runtime_preflight_failure.json"
+    assert json.loads(failure.read_text()) == {
+        "status": "timed_out", "timeout_seconds": 180, "sandboxed_execution": True,
+    }
     assert component.events == []
     assert "budget" not in component.seen and "gate" not in component.seen
 
