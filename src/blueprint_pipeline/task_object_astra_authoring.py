@@ -29,7 +29,7 @@ from .task_object_physical_property_review import (
     build_physical_property_review_prompt, review_physical_properties,
 )
 
-MODEL = 'gpt-6-sol'
+MODEL = 'gpt-6-astra'
 MAX_AUTHORING_ROUNDS = 2
 
 
@@ -390,7 +390,13 @@ def execute_asset_authoring(*, request_value: dict, output_root: Path, invoker,
                 if file_record(aliased)['sha256'] != alias['sha256']:
                     raise AssetAuthoringError('authoring_source_evidence_alias_changed')
                 original_phase = json.loads(aliased.read_text())
-                if original_phase.get('model') != getattr(invoker, 'model', MODEL) or original_phase.get('output') != brief.model_dump(mode='json'):
+                selected_model = getattr(invoker, 'model', MODEL)
+                allowed_models = ({'gpt-6-astra', 'gpt-6-sol'} if selected_model != 'claude-opus-5-5'
+                                  else {'claude-opus-5-5'})
+                selected_provider = 'anthropic' if selected_model == 'claude-opus-5-5' else 'openai'
+                if (original_phase.get('model') not in allowed_models
+                        or original_phase.get('provider') != selected_provider
+                        or original_phase.get('output') != brief.model_dump(mode='json')):
                     raise AssetAuthoringError('authoring_source_evidence_alias_output_mismatch')
                 evidence_uri, evidence_sha = alias['uri'], alias['sha256']
             physical_input.appearance = brief.proposed_appearance

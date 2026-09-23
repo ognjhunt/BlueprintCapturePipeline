@@ -73,7 +73,7 @@ def tool_definitions(asset, ledger):
                     # an allowance to disable checks. A new call can repair it.
                     result = {"status": "repair_needed", "error": str(exc)[:8000]}
                 save_json(saved, result)
-            encoded, _ = encode_tool_output(result, model="gpt-6-sol")
+            encoded, _ = encode_tool_output(result, model="gpt-6-astra")
             return encoded if encoded is not None else canonical_json(result)
         schema = ensure_strict_json_schema({"type": "object", "properties": properties,
             "required": list(properties), "additionalProperties": False})
@@ -101,7 +101,7 @@ def execute_agent_authoring(*, request_value, output_root, budget_root, invoker,
         from .task_object_agent_resume import restore_agent_candidate
         retained = restore_agent_candidate(asset, Path(adopted_agent_root), state_root,
                                            source_request=adopted_agent_source_request)
-    delegate = model or OpenAIProvider().get_model("gpt-6-sol")
+    delegate = model or OpenAIProvider().get_model("gpt-6-astra")
     bounded = BudgetedAuthoringModel(delegate=delegate, invoker=invoker, run_id=request.run_id, object_id=request.object_id)
     if retained:
         bounded.calls = retained['author_calls']
@@ -121,6 +121,10 @@ def execute_agent_authoring(*, request_value, output_root, budget_root, invoker,
         "Use the supplied evidence and explicitly label unobserved completion as an assumption. "
         "Appearance feedback concerns visible shape and material; physics, native import and scene placement "
         "are separate controller checks, not requirements for the author to prove from a studio image. "
+        "For a photographed surface, use a two-dimensional unobstructed patch of that same surface, "
+        "exclude handles and neighboring objects, preserve the observed grain direction, and inspect the "
+        "render at ordinary viewing scale before review. Do not stretch a narrow image strip over a broad face. "
+        "Match observed bright metal hardware in the rendered view while keeping its specified geometry. "
         "If visible evidence contradicts a binding constraint, state that conflict precisely without claiming success. "
         "Call tools sequentially. When satisfied, return a concise candidate summary; an independent reviewer "
         "will accept it or provide corrections in this same conversation. You cannot approve physics, placement, "
