@@ -5,7 +5,7 @@ import base64
 import json
 from pathlib import Path
 
-from agents import Agent, FunctionTool, ModelSettings, RunConfig, Runner, SQLiteSession
+from agents import Agent, FunctionTool, ModelSettings, RunConfig, Runner, SQLiteSession, StopAtTools
 from agents.models.openai_provider import OpenAIProvider
 from agents.strict_schema import ensure_strict_json_schema
 from pydantic import BaseModel, ConfigDict
@@ -44,7 +44,7 @@ def tool_definitions(asset, ledger):
             {"brief": VisualBrief.model_json_schema()}, lambda v: asset.observe_object(v["brief"])),
         "build_cad": ("Compile/validate a complete build123d program with the pinned CAD skill. " + _CAD_PROGRAM_CONTRACT,
             {"program": {"type": "string"}}, lambda v: asset.build_cad(v["program"])),
-        "render_candidate": ("Run the Blender program, export USD, and check geometry. Inspect candidate images next. "
+        "render_candidate": ("Run the Blender program, export USD, and check geometry. The independent reviewer sees the renders next. "
             "Use CAD_BASE, DIMENSIONS, SOURCE_IMAGES. The trusted wrapper owns export and studio rendering.",
             {"program": BlenderProgram.model_json_schema()}, lambda v: asset.render_candidate(v["program"])),
         "inspect_candidate": ("See the latest generated perspective, top and side renders to identify needed corrections.",
@@ -114,7 +114,8 @@ def execute_agent_authoring(*, request_value, output_root, budget_root, invoker,
         "Create the specified task asset using the source images and the CAD/Blender tools. "
         "Keep the supplied exact nominal envelope, units and origin; its authority/uncertainty is unchanged. "
         "Inspect the images yourself. Record your interpretation with observe_object, then build CAD, "
-        "render, inspect the renders and repair as needed. Tool errors are feedback: fix the program and retry. "
+        "render, then await independent review. If it rejects the candidate, inspect the renders and repair. "
+        "Tool errors are feedback: fix the program and retry. "
         "Use only task-relevant details. For generated variants follow the explicit specification and label invented regions. "
         "This is an unattended job: do not ask the user for more images or wait for a reply. "
         "Use the supplied evidence and explicitly label unobserved completion as an assumption. "
@@ -128,6 +129,10 @@ def execute_agent_authoring(*, request_value, output_root, budget_root, invoker,
         + blender_author_prompt(request, generic_brief, ""))
     agent = Agent(name="Blueprint task asset author", model=bounded, instructions=instructions,
         tools=tool_definitions(asset, state_root / "tools"), output_type=CandidateReady,
+        # A model that keeps editing the brief after a valid render clears
+        # asset.candidate and can exhaust all review slots without one review.
+        # Hand off each completed render before the model can mutate its inputs.
+        tool_use_behavior=StopAtTools(stop_at_tool_names=["render_candidate"]),
         model_settings=ModelSettings(max_tokens=12000, reasoning={"effort": "medium"},
             parallel_tool_calls=False, store=False, include_usage=True, retry={"max_retries": 0},
             verbosity="low", prompt_cache_options={"mode": "explicit", "ttl": "30m"}))

@@ -17,10 +17,10 @@ from tests.test_task_object_agent_session import (  # noqa: F401
 
 def interrupted(f):
     invoker, audit = bounded(f)
-    invoker.maximum_calls = 7  # all author tools and physics; final visual review is next
+    invoker.maximum_calls = 5  # render handoff and physics; final visual review is next
     with pytest.raises(driver.AstraStageError, match='inference_boundary_refused'):
         session.execute_agent_authoring(**f.kwargs, invoker=invoker, model=f.model)
-    assert audit.manifest()['reservation_count'] == 7
+    assert audit.manifest()['reservation_count'] == 5
     assert audit.manifest()['in_flight_unknown_count'] == 0
     return audit.manifest()
 
@@ -129,7 +129,7 @@ def test_candidate_can_resume_again_after_release_change_and_budget_refusal(agen
     with pytest.raises(driver.AstraStageError, match='inference_boundary_refused'):
         session.execute_agent_authoring(**f.kwargs, **prepared['authoring_kwargs'], invoker=invoker, model=f.model)
     state = inspect_agent_candidate(output, value)
-    assert state['author_calls'] == 6
+    assert state['author_calls'] == 4
     assert not f.model.calls
 
 
@@ -161,13 +161,13 @@ def test_retained_rejection_returns_to_author_without_repeating_review(agent_fix
         return await original(**kwargs)
     f.model.get_response = reject
     invoker, _ = bounded(f)
-    invoker.maximum_calls = 8  # completed rejection; next author call cannot start
+    invoker.maximum_calls = 6  # completed rejection; next author call cannot start
     with pytest.raises(driver.AstraStageError, match='inference_boundary_refused'):
         session.execute_agent_authoring(**f.kwargs, invoker=invoker, model=f.model)
     output = f.runtime.parent / 'rejected-review-resume'
     prepared = prepare(f, output)
     f.kwargs.update(output_root=output / 'authoring', budget_root=output / 'inference')
-    f.model = ScriptedModel([f.steps[3], f.steps[4], {'summary': 'Corrected the blue.'}], f.model.physics)
+    f.model = ScriptedModel([f.steps[3]], f.model.physics)
     resumed_response = f.model.get_response
     async def unique_call_ids(**kwargs):
         response = await resumed_response(**kwargs)
@@ -181,7 +181,7 @@ def test_retained_rejection_returns_to_author_without_repeating_review(agent_fix
     result = session.execute_agent_authoring(**f.kwargs, **prepared['authoring_kwargs'], invoker=invoker, model=f.model)
     assert result['status'] == 'candidate_authored_pending_native_qualification'
     assert 'Darken the blue' in json.dumps(f.model.calls[0]['input'])
-    assert len(f.model.calls) == 5  # author render/inspect/summary and two new reviews
+    assert len(f.model.calls) == 3  # author render and two new reviews
     assert f.executed.count('cad') == 1
 
 
@@ -245,7 +245,7 @@ def test_obsolete_rejection_gets_current_review_without_rebuilding(agent_fixture
         return await original_model(**kwargs)
     f.model.get_response = old_rejection
     invoker, audit = bounded(f)
-    invoker.maximum_calls = 8
+    invoker.maximum_calls = 6
     with pytest.raises(driver.AstraStageError, match='inference_boundary_refused'):
         session.execute_agent_authoring(**f.kwargs, invoker=invoker, model=f.model)
     calls, executions = audit.manifest()['reservation_count'], list(f.executed)

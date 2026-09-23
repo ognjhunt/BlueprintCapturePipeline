@@ -73,13 +73,17 @@ def inspect_agent_candidate(runtime: Path, request_value: dict) -> dict:
             raise AssetAuthoringError('agent_resume_tool_history_changed')
         outcome = _read(session / 'tools' / (token + '.result.json'))
         latest[name] = (index, started['arguments'], outcome)
-    names = ('observe_object', 'build_cad', 'render_candidate', 'inspect_candidate')
+    names = ('observe_object', 'build_cad', 'render_candidate')
     if (any(n not in latest for n in names)
             or [latest[n][0] for n in names] != sorted(latest[n][0] for n in names)
+            or (latest.get('inspect_candidate', (latest['render_candidate'][0],))[0]
+                < latest['render_candidate'][0])
             or latest['observe_object'][2].get('status') != 'recorded'
             or latest['build_cad'][2].get('status') != 'built'
             or latest['render_candidate'][2].get('status') != 'rendered_pending_independent_review'
-            or not messages or messages[-1].get('role') not in {'assistant', 'user'}):
+            or not messages or (messages[-1].get('role') not in {'assistant', 'user'}
+                and not (messages[-1].get('type') == 'function_call_output'
+                    and messages[-1].get('call_id') == messages[latest['render_candidate'][0]].get('call_id')))):
         raise AssetAuthoringError('agent_resume_candidate_not_completed')
     source = _read(root / 'source_analysis.json')
     brief = VisualBrief.model_validate(source['output'])
@@ -128,12 +132,32 @@ def inspect_agent_candidate(runtime: Path, request_value: dict) -> dict:
             or receipt.get('mesh_sha256') != file_record(attempt / 'final_visual_mesh.json')['sha256']
             or receipt.get('candidate_usd_sha256') != file_record(attempt / 'candidate.usdc')['sha256']):
         raise AssetAuthoringError('agent_resume_render_receipt_changed')
-    for name in ('candidate.blend', 'perspective.png', 'top.png', 'side.png'):
-        file_record(attempt / name)
-    inspected = latest['inspect_candidate'][2]
-    images = [v.get('image_url') for v in inspected if v.get('type') == 'input_image']
-    expected_images = ['data:image/png;base64,' + base64.b64encode((attempt / name).read_bytes()).decode()
-                       for name in ('perspective.png', 'top.png', 'side.png')]
+    render_artifacts = latest['render_candidate'][2].get('artifacts')
+    if render_artifacts is not None:
+        expected = {'candidate.usdc', 'candidate.blend', 'final_visual_mesh.json',
+                    'final_visual_mesh_receipt.json', 'geometry_readback.json',
+                    'perspective.png', 'top.png', 'side.png'}
+        if set(render_artifacts) != expected or any(
+                Path(record['path']).name != name
+                or Path(record['path']).parent.name != attempt.name
+                or any(file_record(attempt / name)[key] != record[key]
+                       for key in ('sha256', 'size_bytes'))
+                for name, record in render_artifacts.items()):
+            raise AssetAuthoringError('agent_resume_render_artifacts_changed')
+    elif 'inspect_candidate' not in latest:
+        # A direct render-to-review handoff needs digest-bound views. Earlier
+        # sessions can use the inspected image bytes recorded in the tool log.
+        raise AssetAuthoringError('agent_resume_render_artifacts_missing')
+    else:
+        for name in ('candidate.blend', 'perspective.png', 'top.png', 'side.png'):
+            file_record(attempt / name)
+    if 'inspect_candidate' in latest:
+        inspected = latest['inspect_candidate'][2]
+        images = [v.get('image_url') for v in inspected if v.get('type') == 'input_image']
+        expected_images = ['data:image/png;base64,' + base64.b64encode((attempt / name).read_bytes()).decode()
+                           for name in ('perspective.png', 'top.png', 'side.png')]
+    else:
+        images = expected_images = []  # The render now hands off directly to independent review.
     if images != expected_images or measurement != latest['render_candidate'][2]['measurement']:
         raise AssetAuthoringError('agent_resume_inspected_render_changed')
     physics_input = _read(root / 'physical_review_input.json')
