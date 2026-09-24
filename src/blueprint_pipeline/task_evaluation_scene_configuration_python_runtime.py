@@ -167,8 +167,12 @@ for name, module in list(sys.modules.items()):
         result = subprocess.run(
             [sys.executable, "-I", "-S", "-B", "-c", code, str(root), json.dumps(RUNTIME_PROFILE_IMPORTS["astra_asset_authoring"]),
              str(_ASTRA_SOURCE_ROOT), json.dumps(_ASTRA_STAGE_MODULES)],
-            cwd=root, env={"PATH": os.defpath}, capture_output=True, text=True, timeout=90, check=False,
+            cwd=root, env={"PATH": os.defpath}, capture_output=True, text=True, timeout=300, check=False,
         )
+    except subprocess.TimeoutExpired as exc:
+        raise TaskEvaluationSceneConfigurationPythonRuntimeError(
+            "scene_configuration_python_import_preflight_timed_out"
+        ) from exc
     except (OSError, subprocess.SubprocessError) as exc:
         raise TaskEvaluationSceneConfigurationPythonRuntimeError("scene_configuration_python_import_preflight_failed") from exc
     if result.returncode:
