@@ -829,6 +829,23 @@ class WorldLabsPreviewProvider(StubPreviewProvider):
             str(operation.get("failure_reason") or "")
         ).strip() or None
 
+        if done and error:
+            cost = operation.get("cost") or {}
+            credits = cost.get("total_credits") if isinstance(cost, Mapping) else None
+            settled = isinstance(credits, int) and not isinstance(credits, bool) and credits >= 0
+            return {
+                "provider_run_id": run_id,
+                "status": "failed",
+                "operation_done": True,
+                "world_id": world_id or None,
+                "launch_url": None,
+                "failure_reason": failure_reason or "worldlabs_operation_error",
+                "operation_terminal_status": "failed",
+                "worldlabs_operation": operation,
+                "worldlabs_world": None,
+                "billing_status": "settled" if settled else "unreported",
+                **({"cost_credits": credits, "cost_usd": credits / 1250} if settled else {}),
+            }
         if done:
             world = dict(response) if response else {}
             if not world and world_id:
@@ -968,6 +985,7 @@ def run_preview_provider(
         worldlabs_asset_materialization: Dict[str, Any] | None = None
         if (
             isinstance(provider, WorldLabsPreviewProvider)
+            and normalized.get("status") == "ready"
             and worldlabs_world_manifest_path.is_file()
             and normalized.get("world_id")
         ):
@@ -1007,6 +1025,7 @@ def run_preview_provider(
         marble_sim_asset_handoff: Dict[str, Any] | None = None
         if (
             isinstance(provider, WorldLabsPreviewProvider)
+            and normalized.get("status") == "ready"
             and worldlabs_world_manifest_path.is_file()
             and normalized.get("world_id")
         ):

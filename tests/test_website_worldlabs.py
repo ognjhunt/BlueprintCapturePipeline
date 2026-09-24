@@ -289,6 +289,26 @@ def test_marble_poll_reports_settled_provider_cost_without_inventing_zero(monkey
         assert "cost_usd" not in result
 
 
+def test_marble_terminal_error_refuses_placeholder_world_url_without_a_bill(monkeypatch):
+    def operation_only(path, **_kwargs):
+        assert path == "/marble/v1/operations/operation"
+        return {
+            "done": True,
+            "metadata": {"world_id": "world"},
+            "response": {"world_id": "world", "world_marble_url": "https://marble.worldlabs.ai/world/world"},
+            "error": {"code": 500, "message": "An error has happened, please retry it."},
+            "cost": None,
+        }
+
+    monkeypatch.setattr(provider_preview, "_worldlabs_api_request", operation_only)
+    result = WorldLabsPreviewProvider().poll(run_id="operation")
+    assert result["status"] == result["operation_terminal_status"] == "failed"
+    assert result["operation_done"] is True
+    assert result["failure_reason"] == "An error has happened, please retry it."
+    assert result["launch_url"] is None and result["worldlabs_world"] is None
+    assert result["billing_status"] == "unreported" and "cost_usd" not in result
+
+
 def test_controller_allocator_reserves_once_and_reuses_retained_marble_operation(tmp_path, monkeypatch):
     from blueprint_pipeline import paid_resource_allocator as allocator
     from blueprint_pipeline import website_task_context as control
