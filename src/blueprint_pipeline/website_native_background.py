@@ -20,6 +20,57 @@ PREFIX = "scene.website_native_inputs"
 APPEARANCE_ADAPTER_ID = "website_prepared_appearance"
 
 
+def derived_stage_three_configuration(*, runtime: Mapping[str, Any],
+                                      preparation: Mapping[str, Any],
+                                      observation_manifest_path: Path | None = None) -> dict[str, Any]:
+    """Recompile only stage 3 from the retained exact-scene evidence on retry."""
+    from .task_object_articulated_packaging import derived_website_cabinet_depth_hypothesis
+    from .website_drawer_depth_prior import PRIOR
+
+    original = runtime["object_authoring"]["configuration"]
+    config = dict(original)
+    observation_record = runtime["object_authoring"]["observation_manifest"]
+    if (preparation.get("digest") != PRIOR["preparation_digest"]
+            or original.get("scene_id") != PRIOR["scene_id"]
+            or original.get("replacement_identity") != PRIOR["subject_identity"]
+            or (preparation.get("development_test") or {}).get("kind") != "development_drawer_fixture"
+            or (preparation.get("development_test") or {}).get("captured_scene_evaluation_allowed") is not False
+            or observation_record.get("digest") != PRIOR["observation_manifest_digest"]):
+        return config
+    manifest_path = observation_manifest_path or Path(observation_record["path"])
+    if not manifest_path.is_file():
+        return config
+    checked = _record(manifest_path)
+    if (checked["digest"] != observation_record["digest"]
+            or checked["size_bytes"] != observation_record["size_bytes"]):
+        return config
+    observed = json.loads(manifest_path.read_text())
+    if (observed.get("digest") != canonical_digest(observed, digest_field="digest")
+            or observed.get("preparation_digest") != preparation["digest"]):
+        return config
+    original_frames = observed.get("frames") or []
+    hashes = {row.get("image", {}).get("digest") for row in original_frames
+              if row.get("image_basis") == "original_capture"}
+    if len(original_frames) != len(hashes) or hashes != set(PRIOR["original_frame_sha256s"]):
+        return config
+    frames = [{"role": "observed_source", "sha256": digest} for digest in sorted(hashes)]
+    fraction = (preparation.get("intake_request", {}).get("task", {}).get("success") or {}).get(
+        "minimum_opening_fraction_of_estimated_stroke")
+    hypothesis = derived_website_cabinet_depth_hypothesis(original, frames, fraction)
+    if hypothesis is None:
+        return config  # The stage-3 no-spend plausibility gate still refuses the thin box.
+    stroke = hypothesis["estimated_usable_stroke_m"]
+    config["mechanism"] = {**original["mechanism"], "estimated_usable_stroke_m": stroke,
+                           "joint_limits": [0.0, stroke],
+                           "travel_authority": "development_only_bounded_cabinet_depth_prior"}
+    mass = hypothesis["revised_part_mass_bounds_kg"]
+    config["required_output"] = {**original["required_output"],
+                                  "mass_kg_bounds": mass["carcass"],
+                                  "task_part_mass_kg_bounds": mass["drawer"]}
+    config["development_geometry_hypothesis"] = hypothesis
+    return config
+
+
 def collision_configuration_refusal(configuration: Mapping[str, Any], envelope: Mapping[str, Any]) -> str | None:
     if (configuration.get("schema_version") != SCHEMA
             or configuration.get("operation") != "reuse_background_without_excision"
@@ -113,7 +164,7 @@ def prepare_construction_stages(*, runtime_inputs_path: Path, preparation_path: 
             or preparation["digest"] != runtime["preparation_digest"]):
         raise ValueError("website_native_construction_preparation_changed")
     first, second = prepare_appearance_stage(runtime_inputs_path), prepare_collision_stage(runtime_inputs_path)
-    third = runtime["object_authoring"]["configuration"]
+    third = derived_stage_three_configuration(runtime=runtime, preparation=preparation)
     identity = third["replacement_identity"]
     scene_identity = {"id": third["scene_id"], "version": "v1"}
     subject = runtime["subject"]

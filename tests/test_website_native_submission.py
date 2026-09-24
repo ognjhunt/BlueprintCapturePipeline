@@ -10,7 +10,9 @@ from blueprint_pipeline.common import write_json
 from blueprint_pipeline.task_evaluation_public_scene_attempt_factory import record
 from blueprint_pipeline.task_evaluation_scene_intake import stage_scene_intent
 from blueprint_pipeline.task_evaluation_scene_configuration_submission_publication import _validated_inventory
-from blueprint_pipeline.website_native_submission import materialize_website_submission
+from blueprint_pipeline.website_native_submission import (
+    _validate_development_opening_criterion, materialize_website_submission,
+)
 from blueprint_pipeline.website_scene_runtime_inputs import prepare_website_runtime_inputs
 from blueprint_pipeline.website_task_preparation import compile_website_scene_preparation
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
@@ -164,6 +166,19 @@ def test_development_drawer_fixture_retains_articulated_success_and_identity(tmp
     assert task['visible_target_label'] == 'middle drawer'
     assert 'surface_target' not in task and 'destination' not in task
     assert task['success']['task_joint_drive_forbidden'] is True
+
+
+def test_development_opening_criterion_accepts_float_rounding_but_rejects_changed_threshold():
+    # Retained drawer inputs: 0.4125 m stroke, 60% opening. The compiler's
+    # multiplication is 0.24749999999999997; the sealed prior rounds to 0.2475.
+    hypothesis = {"estimated_usable_stroke_m": 0.4125, "estimated_minimum_opening_m": 0.2475}
+    success = {"estimated_usable_travel": 0.4125,
+               "estimated_minimum_opening": 0.4125 * 0.6}
+    _validate_development_opening_criterion(success, hypothesis)
+    with pytest.raises(ValueError, match="website_articulated_depth_opening_criterion_mismatch"):
+        _validate_development_opening_criterion({**success, "estimated_minimum_opening": 0.25}, hypothesis)
+    with pytest.raises(ValueError, match="website_articulated_depth_opening_criterion_mismatch"):
+        _validate_development_opening_criterion({**success, "estimated_usable_travel": 0.40}, hypothesis)
 
 
 def test_publication_rechecks_owner_revocation(tmp_path, monkeypatch):

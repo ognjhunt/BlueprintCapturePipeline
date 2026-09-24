@@ -21,6 +21,15 @@ from .task_evaluation_scene_configuration_submission_inputs import (
 from .website_native_background import prepare_construction_stages, construction_rights_admission, PREFIX
 
 
+def _validate_development_opening_criterion(success, hypothesis):
+    """Allow only floating-point representation noise in the frozen estimate."""
+    require(success["estimated_usable_travel"] == hypothesis["estimated_usable_stroke_m"]
+            and math.isclose(success["estimated_minimum_opening"],
+                             hypothesis["estimated_minimum_opening_m"],
+                             rel_tol=0.0, abs_tol=1e-8),
+            "website_articulated_depth_opening_criterion_mismatch")
+
+
 def verified_submission_inputs(task, *, now=None):
     from .task_evaluation_scene_owner_authority import reopen_scene_intent
     intent = reopen_scene_intent(task["scene_intent_authority"], now=now)
@@ -128,11 +137,20 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
         require("destination" not in owner_task and isinstance(owner_task.get("articulation"), dict),
                 "website_articulated_task_binding_invalid")
         destination = target = None
+        stage_three = construction["configurations"][2]
+        derived_mechanism = owner_task["articulation"]
+        if stage_three.get("development_geometry_hypothesis"):
+            derived_mechanism = {**derived_mechanism,
+                "estimated_usable_stroke_m": stage_three["mechanism"]["estimated_usable_stroke_m"],
+                "travel_authority": stage_three["mechanism"]["travel_authority"]}
         template, success, execution = records.articulated_open_close_task_records(
             task_identity=task_identity, object_identity=construction["subject_identity"],
             start_center=[(a + b) / 2 for a, b in zip(lower, upper, strict=True)],
-            source_min=lower, source_max=upper, mechanism=owner_task["articulation"],
+            source_min=lower, source_max=upper, mechanism=derived_mechanism,
             success=owner_task["success"], resolved_seed=1)
+        if stage_three.get("development_geometry_hypothesis"):
+            hypothesis = stage_three["development_geometry_hypothesis"]
+            _validate_development_opening_criterion(success, hypothesis)
     else:
         destination = owner_task["destination"]
         require(destination.get("mode") == "existing_support_surface", "website_destination_asset_required")

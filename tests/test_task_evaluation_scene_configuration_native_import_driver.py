@@ -141,6 +141,7 @@ def test_native_settle_uses_contact_callback_instead_of_unsafe_polling() -> None
                 1: "/World/Placement/Replacement/Body/Collider",
                 2: "/World/Ground",
                 3: "/World/Other",
+                4: "/World/Placement/Replacement/Drawer",
             }.get(value, "")
 
     event_count = [0]
@@ -148,6 +149,7 @@ def test_native_settle_uses_contact_callback_instead_of_unsafe_polling() -> None
         omni_physx=OmniPhysx,
         physics_schema_tools=PhysicsSchemaTools,
         body_path="/World/Placement/Replacement/Body",
+        support_path="/World/Ground",
         event_count=event_count,
     )
     assert subscription is not None
@@ -158,6 +160,10 @@ def test_native_settle_uses_contact_callback_instead_of_unsafe_polling() -> None
     )
     OmniPhysx.interface.callback(
         [SimpleNamespace(actor0=3, actor1=2, collider0=0, collider1=0)],
+        [],
+    )
+    OmniPhysx.interface.callback(
+        [SimpleNamespace(actor0=1, actor1=4, collider0=0, collider1=0)],
         [],
     )
     assert event_count == [1]
@@ -420,11 +426,15 @@ def test_native_driver_refuses_a_declared_destination_without_stage4_artifacts(
     assert executed is False
 
 
-def _articulated_environment(tmp_path: Path) -> dict[str, str]:
+def _articulated_environment(
+    tmp_path: Path, *, with_destination: bool = False
+) -> dict[str, str]:
     from blueprint_pipeline.task_evaluation_scene_configuration_submission_records import (
         stage_five_configuration,
     )
-    environment = _environment(tmp_path)
+    environment = (
+        _destination_environment(tmp_path) if with_destination else _environment(tmp_path)
+    )
     stage_input_path = Path(environment["BLUEPRINT_SCENE_CONFIGURATION_STAGE_INPUT"])
     stage_input = json.loads(stage_input_path.read_text())
     stage_input["configuration"] = {
@@ -432,7 +442,47 @@ def _articulated_environment(tmp_path: Path) -> dict[str, str]:
                                    articulated=True),
         "schema_version": "replacement_native_import_qualification_configuration.v1",
     }
+    if with_destination:
+        stage_input["construction_envelope"]["recipe"]["subject_identity"] = {
+            "id": "cabinet", "version": "v1"
+        }
     stage_input_path.write_text(json.dumps(stage_input), encoding="utf-8")
+    output = Path(environment["BLUEPRINT_SCENE_CONFIGURATION_STAGE_OUTPUT_ROOT"])
+    asset = output / "qualified.usda"
+    links = {
+        name: {
+            "prim_path": f"/Asset/links/{name}", "mass_kg": 1.0,
+            "center_of_mass_m": [0.0, 0.0, 0.0],
+            "diagonal_inertia_kg_m2": [0.1, 0.1, 0.1],
+            "collision_prim_paths": [f"/Asset/links/{name}/collision/shape"],
+        }
+        for name in ("carcass", "drawer_0", "drawer_1", "drawer_2")
+    }
+    links["drawer_1"]["collision_prim_paths"].append("/Asset/links/drawer_1/collision/handle")
+    static = {
+        "schema_version": "task_evaluation_articulated_replacement_static_qualification.v1",
+        "status": "authored_structure_statically_qualified",
+        "asset_kind": "articulated_assembly",
+        "replacement_identity": {"id": "cabinet", "version": "v1"},
+        "replacement_usd": {"sha256": _sha256(asset), "size_bytes": asset.stat().st_size},
+        "structural_findings": [],
+        "observed_structure": {
+            "links": links,
+            "joint_prim_paths": ["/Asset/joints/task_part_joint", "/Asset/joints/drawer_0_fixed", "/Asset/joints/drawer_2_fixed"],
+        },
+        "task_joint": {"joint_id": "task_part_joint", "prim_path": "/Asset/joints/task_part_joint", "joint_type": "prismatic", "limits": [0.0, 0.32], "reset_position": 0.0},
+        "task_contact": {"contact_link_id": "drawer_1", "handle_prim_paths": ["/Asset/links/drawer_1/collision/handle"]},
+        "articulation_graph": {"joints": [{"joint_id": "task_part_joint", "role": "target", "child_link_id": "drawer_1", "axis": [1.0, 0.0, 0.0]}]},
+        "result_digest": "",
+    }
+    static["result_digest"] = canonical_digest(static, digest_field="result_digest")
+    static_path = output / "static.json"
+    static_path.write_text(json.dumps(static), encoding="utf-8")
+    dependencies_path = Path(environment["BLUEPRINT_SCENE_CONFIGURATION_STAGE_DEPENDENCIES"])
+    dependencies = json.loads(dependencies_path.read_text())
+    static_artifact = dependencies[0]["output_artifacts"][1]
+    static_artifact.update(digest=_sha256(static_path), size_bytes=static_path.stat().st_size)
+    dependencies_path.write_text(json.dumps(dependencies), encoding="utf-8")
     return environment
 
 
@@ -442,26 +492,38 @@ def _articulated_observed(**overrides) -> dict:
         "task_joint_name": "task_part_joint", "task_joint_type": "prismatic",
         "task_joint_limits": [0.0, 0.32], "task_joint_reset_position": 0.0,
         "moving_link_prim_path": "/World/Placement/Replacement/links/drawer_1",
-        "fixed_joint_prim_paths": ["/World/Placement/Replacement/joints/drawer_0_fixed"],
+        "fixed_joint_prim_paths": ["/World/Placement/Replacement/joints/drawer_0_fixed", "/World/Placement/Replacement/joints/drawer_2_fixed"],
+        "task_joint_axis": "X", "initial_task_joint_position": 0.0,
         "task_joint_drive_forbidden_verified": True,
         "settled_task_joint_position": 0.0, "task_joint_returned_to_reset": True,
         **overrides,
     }
     repeats = []
     for _ in range(3):
-        state = {"position_m": [0.0, 0.0, 0.31], "orientation_xyzw": [0, 0, 0, 1]}
+        state = {"position_m": [0.0, 0.0, 0.31], "orientation_xyzw": [0, 0, 0, 1], "task_joint_position_m": round(float(joint["settled_task_joint_position"]), 7)}
+        links = {
+            name: {"prim_path": f"/World/Placement/Replacement/links/{name}", "mass_kg": 1.0,
+                   "center_of_mass_m": [0.0, 0.0, 0.0], "diagonal_inertia_kg_m2": [0.1, 0.1, 0.1],
+                   "collision_prim_paths": [f"/World/Placement/Replacement/links/{name}/collision/shape"]}
+            for name in ("carcass", "drawer_0", "drawer_1", "drawer_2")
+        }
+        links["drawer_1"]["collision_prim_paths"].append(
+            "/World/Placement/Replacement/links/drawer_1/collision/handle"
+        )
         repeats.append({
             "asset_imported": True,
-            "rigid_body_paths": ["/World/Placement/Replacement/links/carcass",
-                                 "/World/Placement/Replacement/links/drawer_0",
-                                 "/World/Placement/Replacement/links/drawer_1"],
+            "rigid_body_paths": [row["prim_path"] for row in links.values()],
             "articulation_root_paths": ["/World/Placement/Replacement"],
             "settle_measured_body_prim_path": "/World/Placement/Replacement/links/carcass",
             "collision_paths": ["/World/Placement/Replacement/links/carcass/collision/FinalVisualShape"],
+            "fixed_joint_prim_paths": joint["fixed_joint_prim_paths"],
+            "link_physics_readback": links,
+            "handle_prim_paths": ["/World/Placement/Replacement/links/drawer_1/collision/handle"],
             "task_joint": dict(joint),
             "support_contact_observed": True, "contact_report_event_count": 7,
             "settle_translation_m": 0.001, "settle_rotation_rad": 0.002,
             "final_state": state, "final_state_digest": canonical_digest(state),
+            "task_joint_trace_digest": "sha256:" + "a" * 64,
         })
     return {"runtime_identity": {"engine_version": "6.0.1"}, "repeats": repeats}
 
@@ -486,6 +548,49 @@ def test_articulated_assembly_qualifies_on_links_and_its_one_task_joint(tmp_path
     assert runtime["task_joint_closed_at_reset_verified"] is True
     assert runtime["task_joint_travel_is_measured"] is False
     assert runtime["evaluation_episode_executed"] is False
+
+
+def test_articulated_subject_with_rigid_destination_seals_both_results(
+    tmp_path: Path,
+) -> None:
+    environment = _articulated_environment(tmp_path, with_destination=True)
+    observed = _articulated_observed()
+    observed["destination_repeats"] = _destination_observed()["destination_repeats"]
+    result = execute_native_import_component(
+        environment=environment, native_runner=_native_runner(observed)
+    )
+    artifacts = {row["role"]: row for row in result["artifacts"]}
+    subject = json.loads(Path(artifacts["native_import_runtime_result"]["path"]).read_text())
+    destination = json.loads(
+        Path(artifacts["destination_native_import_runtime_result"]["path"]).read_text()
+    )
+    assert subject["asset_kind"] == "articulated_assembly"
+    assert destination["replacement_identity"] == DESTINATION_IDENTITY
+    assert "link_physics_readback" not in destination
+    assert destination["result_digest"] == canonical_digest(
+        destination, digest_field="result_digest"
+    )
+
+
+def test_articulated_native_rejects_matching_but_wrong_fixed_joint_paths(
+    tmp_path: Path,
+) -> None:
+    observed = _articulated_observed()
+    for repeat in observed["repeats"]:
+        wrong = [
+            "/World/Placement/Replacement/joints/wrong_0",
+            "/World/Placement/Replacement/joints/wrong_2",
+        ]
+        repeat["fixed_joint_prim_paths"] = wrong
+        repeat["task_joint"]["fixed_joint_prim_paths"] = wrong
+    with pytest.raises(
+        TaskEvaluationSceneConfigurationNativeImportDriverError,
+        match="native_import_qualification_failed",
+    ):
+        execute_native_import_component(
+            environment=_articulated_environment(tmp_path),
+            native_runner=_native_runner(observed),
+        )
 
 
 @pytest.mark.parametrize("mutation", [
@@ -520,6 +625,51 @@ def test_rigid_stage_still_refuses_an_articulated_observation(tmp_path: Path) ->
                                         native_runner=_native_runner(_articulated_observed()))
 
 
+@pytest.mark.parametrize("damage", ["missing_drawer", "mass", "handle", "joint_state_digest"])
+def test_articulated_native_readback_must_match_the_qualified_parts(
+    tmp_path: Path, damage: str
+) -> None:
+    environment = _articulated_environment(tmp_path)
+    observation = _articulated_observed()
+    for repeat in observation["repeats"]:
+        if damage == "missing_drawer":
+            del repeat["link_physics_readback"]["drawer_2"]
+            repeat["rigid_body_paths"].remove("/World/Placement/Replacement/links/drawer_2")
+        elif damage == "mass":
+            repeat["link_physics_readback"]["drawer_1"]["mass_kg"] = 0.01
+        elif damage == "handle":
+            repeat["handle_prim_paths"] = ["/World/Placement/Replacement/links/carcass/collision/shape"]
+        else:
+            repeat["final_state"]["task_joint_position_m"] = 0.02
+    with pytest.raises(TaskEvaluationSceneConfigurationNativeImportDriverError,
+                       match="native_import_qualification_failed"):
+        execute_native_import_component(environment=environment,
+                                        native_runner=_native_runner(observation))
+
+
+def test_articulated_native_import_refuses_unbound_static_receipt_before_runtime(tmp_path: Path) -> None:
+    environment = _articulated_environment(tmp_path)
+    static_path = Path(environment["BLUEPRINT_SCENE_CONFIGURATION_STAGE_OUTPUT_ROOT"]) / "static.json"
+    receipt = json.loads(static_path.read_text())
+    receipt["replacement_usd"]["sha256"] = "sha256:" + "0" * 64
+    receipt["result_digest"] = canonical_digest(receipt, digest_field="result_digest")
+    static_path.write_text(json.dumps(receipt), encoding="utf-8")
+    dependencies_path = Path(environment["BLUEPRINT_SCENE_CONFIGURATION_STAGE_DEPENDENCIES"])
+    dependencies = json.loads(dependencies_path.read_text())
+    dependencies[0]["output_artifacts"][1].update(digest=_sha256(static_path), size_bytes=static_path.stat().st_size)
+    dependencies_path.write_text(json.dumps(dependencies), encoding="utf-8")
+    invoked = False
+
+    def runner(**_kwargs):
+        nonlocal invoked
+        invoked = True
+
+    with pytest.raises(TaskEvaluationSceneConfigurationNativeImportDriverError,
+                       match="native_import_static_receipt_invalid"):
+        execute_native_import_component(environment=environment, native_runner=runner)
+    assert invoked is False
+
+
 def test_native_settle_reads_the_task_joint_and_refuses_a_driven_one() -> None:
     """The in-Isaac joint read is exercised here against a stage, not on a rented GPU."""
     from pxr import Usd, UsdGeom, UsdPhysics
@@ -550,3 +700,98 @@ def test_native_settle_reads_the_task_joint_and_refuses_a_driven_one() -> None:
     with pytest.raises(RuntimeError, match="task_joint_drive_forbidden"):
         _articulated_joint_observation(stage=stage, usd_physics=UsdPhysics,
                                        root_path="/World/Placement/Replacement")
+
+
+def test_imported_articulation_reads_exact_four_link_physics_and_handle(tmp_path: Path) -> None:
+    """Exercise the composed USD readback before any Isaac allocation."""
+    from pxr import Gf, Usd, UsdGeom, UsdPhysics
+    environment = _articulated_environment(tmp_path)
+    static_path = Path(environment["BLUEPRINT_SCENE_CONFIGURATION_STAGE_OUTPUT_ROOT"]) / "static.json"
+    receipt = json.loads(static_path.read_text())
+    root = "/World/Placement/Replacement"
+    stage = Usd.Stage.CreateInMemory()
+    UsdPhysics.ArticulationRootAPI.Apply(UsdGeom.Xform.Define(stage, root).GetPrim())
+    for name, row in receipt["observed_structure"]["links"].items():
+        path = f"{root}/links/{name}"
+        prim = UsdGeom.Xform.Define(stage, path).GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(prim)
+        mass = UsdPhysics.MassAPI.Apply(prim)
+        mass.CreateMassAttr().Set(row["mass_kg"])
+        mass.CreateCenterOfMassAttr().Set(Gf.Vec3f(*row["center_of_mass_m"]))
+        mass.CreateDiagonalInertiaAttr().Set(Gf.Vec3f(*row["diagonal_inertia_kg_m2"]))
+        for collider in row["collision_prim_paths"]:
+            imported = root + collider[len("/Asset"):]
+            UsdPhysics.CollisionAPI.Apply(UsdGeom.Cube.Define(stage, imported).GetPrim())
+    task = UsdPhysics.PrismaticJoint.Define(stage, root + "/joints/task_part_joint")
+    task.CreateAxisAttr("X")
+    task.CreateLowerLimitAttr(0.0)
+    task.CreateUpperLimitAttr(0.32)
+    task.CreateBody0Rel().SetTargets([root + "/links/carcass"])
+    task.CreateBody1Rel().SetTargets([root + "/links/drawer_1"])
+    task.GetPrim().SetCustomDataByKey("blueprint:resetPosition", 0.0)
+    task.GetPrim().SetCustomDataByKey("blueprint:graphAxis", Gf.Vec3d(1.0, 0.0, 0.0))
+    for name in ("drawer_0", "drawer_2"):
+        fixed = UsdPhysics.FixedJoint.Define(stage, root + f"/joints/{name}_fixed")
+        fixed.CreateBody0Rel().SetTargets([root + "/links/carcass"])
+        fixed.CreateBody1Rel().SetTargets([root + f"/links/{name}"])
+    receipt["articulation_graph"]["joints"].extend([
+        {"joint_id": f"{name}_fixed", "role": "locked", "parent_link_id": "carcass", "child_link_id": name}
+        for name in ("drawer_0", "drawer_2")
+    ])
+    observed = driver._articulated_structure_observation(
+        stage=stage, usd_physics=UsdPhysics, static_receipt=receipt)
+    assert set(observed["link_physics_readback"]) == {"carcass", "drawer_0", "drawer_1", "drawer_2"}
+    assert observed["task_joint"]["task_joint_axis"] == "X"
+    assert observed["handle_prim_paths"] == [root + "/links/drawer_1/collision/handle"]
+    UsdPhysics.MassAPI(stage.GetPrimAtPath(root + "/links/drawer_1")).GetMassAttr().Set(0.5)
+    with pytest.raises(RuntimeError, match="link_physics_mismatch"):
+        driver._articulated_structure_observation(
+            stage=stage, usd_physics=UsdPhysics, static_receipt=receipt)
+
+
+def test_joint_numeric_readback_uses_initialized_isaac_articulation() -> None:
+    class FakeArticulation:
+        dof_names = ["task_part_joint"]
+
+        def get_dof_index(self, name):
+            assert name == "task_part_joint"
+            return 0
+
+        def get_joint_positions(self):
+            return [0.003]
+
+    assert driver._live_joint_position(FakeArticulation(), "task_part_joint") == 0.003
+    with pytest.raises(RuntimeError, match="joint_dof_unresolved"):
+        driver._live_joint_position(FakeArticulation(), "other")
+
+
+def test_native_structure_readback_matches_actual_packaged_and_statically_qualified_asset(
+    tmp_path: Path,
+) -> None:
+    from pxr import Usd, UsdGeom, UsdPhysics
+    from tests.test_task_evaluation_scene_configuration_articulated_static_qualification import (
+        IDENTITY, _sealed,
+    )
+    from blueprint_pipeline.task_evaluation_scene_configuration_articulated_static_qualification import (
+        qualify_scene_configuration_articulated_asset_static,
+    )
+
+    asset, graph, authoring = _sealed(tmp_path)
+    receipt = qualify_scene_configuration_articulated_asset_static(
+        asset_path=asset, graph_spec=graph, authoring_receipt=authoring,
+        replacement_identity=IDENTITY, output_path=tmp_path / "static.json",
+    )
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.Xform.Define(stage, "/World")
+    UsdGeom.Xform.Define(stage, "/World/Placement")
+    replacement = stage.DefinePrim("/World/Placement/Replacement", "Xform")
+    replacement.GetReferences().AddReference(str(asset), "/Asset")
+    stage.Load()
+    observed = driver._articulated_structure_observation(
+        stage=stage, usd_physics=UsdPhysics, static_receipt=receipt,
+    )
+    assert set(observed["link_physics_readback"]) == {"carcass", "drawer_0", "drawer_1", "drawer_2"}
+    assert len(observed["fixed_joint_prim_paths"]) == 2
+    assert observed["handle_prim_paths"] == [
+        "/World/Placement/Replacement/links/drawer_1/collision/handle"
+    ]

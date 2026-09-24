@@ -51,6 +51,7 @@ SLIDE_CLEARANCE_M = 0.013
 BACK_CLEARANCE_M = 0.02
 MINIMUM_RETAINED_DEPTH_M = 0.05
 PASSIVE_JOINT_DAMPING_N_S_PER_M = 5.0
+DEPTH_HYPOTHESIS_SCHEMA_VERSION = "articulated_cabinet_depth_hypothesis.v1"
 
 _ORDINALS = {
     0: ("top", "upper", "uppermost", "first", "1st", "highest"),
@@ -58,6 +59,144 @@ _ORDINALS = {
     2: ("bottom", "lower", "lowest", "third", "3rd", "last"),
 }
 _COUNT_WORDS = {"two": 2, "2": 2, "three": 3, "3": 3, "four": 4, "4": 4}
+
+
+def derived_website_cabinet_depth_hypothesis(configuration: Mapping[str, Any],
+                                             source_frames: Sequence[Mapping[str, Any]],
+                                             opening_fraction: float) -> dict[str, Any] | None:
+    """Deterministic no-spend successor from signed visible bounds and retained frames."""
+    from .website_drawer_depth_prior import PRIOR
+    if (configuration.get("schema_version") != "articulated_replacement_authoring_configuration.v1"
+            or configuration.get("source_observation_kind") != "website_capture_frames"
+            or (configuration.get("mechanism") or {}).get("joint_type") != "prismatic"
+            or configuration.get("scene_id") != PRIOR["scene_id"]
+            or configuration.get("replacement_identity") != PRIOR["subject_identity"]
+            or configuration.get("development_geometry_hypothesis") is not None):
+        return None
+    envelope = configuration.get("metric_envelope") or {}
+    try:
+        lower, upper = envelope["minimum_xyz_m"], envelope["maximum_xyz_m"]
+        extents = [float(upper[i]) - float(lower[i]) for i in range(3)]
+        normal = configuration["mechanism"]["estimated_front_normal_world"]
+        horizontal = math.hypot(float(normal[0]), float(normal[1]))
+        nx, ny = float(normal[0]) / horizontal, float(normal[1]) / horizontal
+        depth = abs(nx) * extents[0] + abs(ny) * extents[1]
+        width = abs(ny) * extents[0] + abs(nx) * extents[1]
+        height = extents[2]
+    except (KeyError, IndexError, TypeError, ValueError, ZeroDivisionError):
+        return None
+    if not (height >= 0.35 and width >= 0.30 and depth < 0.25 and depth / width < 0.5):
+        return None
+    nominal = PRIOR["nominal_depth_m"]
+    if nominal / width > 1.5:
+        return None  # A wider prior is not defensible for this object; request review.
+    hashes = sorted({str(frame.get("sha256") or "") for frame in source_frames
+                     if frame.get("role") == "observed_source"})
+    if not hashes or any(re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None for digest in hashes):
+        return None
+    source_stroke = configuration["mechanism"].get("estimated_usable_stroke_m")
+    if (not isinstance(source_stroke, (int, float)) or isinstance(source_stroke, bool)
+            or not math.isfinite(source_stroke) or source_stroke <= 0
+            or not isinstance(opening_fraction, (int, float)) or isinstance(opening_fraction, bool)
+            or not math.isfinite(opening_fraction) or not 0 < opening_fraction <= 1):
+        return None
+    stroke = round(0.75 * nominal, 4)
+    return {"schema_version": DEPTH_HYPOTHESIS_SCHEMA_VERSION,
+            "claim_ceiling": "development_only", "basis": "bounded_cabinet_prior",
+            "source_aabb_min_xyz_m": list(lower), "source_aabb_max_xyz_m": list(upper),
+            "estimated_depth_m": nominal,
+            "depth_interval_m": list(PRIOR["depth_interval_m"]),
+            "source_estimated_usable_stroke_m": source_stroke,
+            "estimated_usable_stroke_m": stroke,
+            "minimum_opening_fraction": opening_fraction,
+            "estimated_minimum_opening_m": round(stroke * opening_fraction, 5),
+            "manufacturer_examples": list(PRIOR["manufacturer_examples"]),
+            "reference_retrieved_date": PRIOR["reference_retrieved_date"],
+            "prior_record_schema_version": PRIOR["schema_version"],
+            "prior_comparison": {
+                "example_depth_range_m": PRIOR["example_depth_range_m"],
+                "example_width_range_m": PRIOR["example_width_range_m"],
+                "example_height_range_m": PRIOR["example_height_range_m"],
+                "example_weight_range_kg_approx": PRIOR["example_weight_range_kg_approx"],
+                "source_width_m": round(width, 5), "source_height_m": round(height, 5),
+                "width_status": "outside_examples_review_needed" if width > PRIOR["example_width_range_m"][1] else "within_example_range",
+                "height_status": "outside_examples_review_needed" if height > PRIOR["example_height_range_m"][1] else "within_example_range",
+                "reference_models_are_exact_match": False,
+            },
+            "whole_assembly_mass_interval_kg": list(PRIOR["whole_assembly_mass_interval_kg"]),
+            "revised_part_mass_bounds_kg": dict(PRIOR["revised_part_mass_bounds_kg"]),
+            "rationale": ("Original closed-drawer frames identify an office cabinet but do not show its back. "
+                          "A broad cabinet construction prior supplies candidate depth; physical depth is unmeasured."),
+            "evidence_frame_sha256s": hashes}
+
+
+def _depth_hypothesis(configuration: Mapping[str, Any], *, source_depth: float,
+                      width: float, height: float) -> dict[str, Any] | None:
+    """Admit an explicit development estimate while retaining the source box intact."""
+    from .website_drawer_depth_prior import PRIOR
+    raw = configuration.get("development_geometry_hypothesis")
+    implausibly_thin = height >= 0.35 and width >= 0.30 and source_depth < 0.25 and source_depth / width < 0.5
+    if raw is None:
+        if configuration.get("source_observation_kind") == "website_capture_frames" and implausibly_thin:
+            raise AssetAuthoringError("articulated_cabinet_depth_implausible_hypothesis_required")
+        return None
+    if not isinstance(raw, Mapping) or set(raw) != {
+        "schema_version", "claim_ceiling", "basis", "source_aabb_min_xyz_m", "source_aabb_max_xyz_m",
+        "estimated_depth_m", "depth_interval_m", "rationale", "evidence_frame_sha256s",
+        "source_estimated_usable_stroke_m", "estimated_usable_stroke_m",
+        "minimum_opening_fraction", "estimated_minimum_opening_m",
+        "manufacturer_examples", "reference_retrieved_date", "prior_comparison",
+        "whole_assembly_mass_interval_kg", "revised_part_mass_bounds_kg", "prior_record_schema_version",
+    } or raw.get("schema_version") != DEPTH_HYPOTHESIS_SCHEMA_VERSION or raw.get("claim_ceiling") != "development_only":
+        raise AssetAuthoringError("articulated_cabinet_depth_hypothesis_invalid")
+    envelope = configuration["metric_envelope"]
+    if (raw["source_aabb_min_xyz_m"] != envelope["minimum_xyz_m"]
+            or raw["source_aabb_max_xyz_m"] != envelope["maximum_xyz_m"]):
+        raise AssetAuthoringError("articulated_cabinet_depth_hypothesis_source_mismatch")
+    basis = raw.get("basis")
+    frames = raw.get("evidence_frame_sha256s")
+    interval = raw.get("depth_interval_m")
+    nominal = raw.get("estimated_depth_m")
+    stroke = raw.get("estimated_usable_stroke_m")
+    source_stroke = raw.get("source_estimated_usable_stroke_m")
+    fraction = raw.get("minimum_opening_fraction")
+    opening = raw.get("estimated_minimum_opening_m")
+    mechanism = configuration["mechanism"]
+    if (configuration.get("source_observation_kind") != "website_capture_frames"
+            or configuration.get("scene_id") != PRIOR["scene_id"]
+            or configuration.get("replacement_identity") != PRIOR["subject_identity"]
+            or basis not in {"original_capture_frames", "bounded_cabinet_prior"}
+            or not isinstance(frames, list) or len(frames) != len(set(map(str, frames)))
+            or not frames
+            or any(not isinstance(v, str) or re.fullmatch(r"sha256:[0-9a-f]{64}", v) is None for v in frames)
+            or not isinstance(raw.get("rationale"), str) or len(raw["rationale"].strip()) < 20
+            or not isinstance(interval, list) or len(interval) != 2
+            or any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v)
+                   for v in [nominal, *interval, stroke, source_stroke, fraction, opening])
+            or not 0.25 <= interval[0] < nominal < interval[1] <= 0.80
+            or not 0.4 <= nominal / width <= 1.5
+            or not 0 < fraction <= 1
+            or not math.isclose(stroke, round(0.75 * nominal, 4), abs_tol=1e-8)
+            or not math.isclose(opening, round(stroke * fraction, 5), abs_tol=1e-8)
+            or mechanism.get("estimated_usable_stroke_m") != stroke
+            or mechanism.get("joint_limits") != [0.0, stroke]
+            or raw.get("whole_assembly_mass_interval_kg") != PRIOR["whole_assembly_mass_interval_kg"]
+            or raw.get("revised_part_mass_bounds_kg") != PRIOR["revised_part_mass_bounds_kg"]
+            or configuration.get("required_output", {}).get("mass_kg_bounds") != PRIOR["revised_part_mass_bounds_kg"]["carcass"]
+            or configuration.get("required_output", {}).get("task_part_mass_kg_bounds") != PRIOR["revised_part_mass_bounds_kg"]["drawer"]
+            or raw.get("reference_retrieved_date") != PRIOR["reference_retrieved_date"]
+            or raw.get("prior_record_schema_version") != PRIOR["schema_version"]
+            or not isinstance(raw.get("manufacturer_examples"), list)
+            or len(raw["manufacturer_examples"]) != 4
+            or not isinstance(raw.get("prior_comparison"), Mapping)
+            or raw["prior_comparison"].get("source_width_m") != round(width, 5)
+            or raw["prior_comparison"].get("source_height_m") != round(height, 5)
+            or raw["prior_comparison"].get("reference_models_are_exact_match") is not False):
+        raise AssetAuthoringError("articulated_cabinet_depth_hypothesis_invalid")
+    return {**dict(raw), "source_projected_depth_m": round(source_depth, 5),
+            "depth_disagreement_m": round(nominal - source_depth, 5),
+            "status": "development_only_estimate_disagrees_with_source" if abs(nominal - source_depth) > 1e-5
+            else "development_only_estimate_agrees_with_source", "physical_measurement_proven": False}
 
 
 def _resolve_bay_layout(assembly_label: str, part_label: str) -> tuple[int, int, list[str]]:
@@ -98,9 +237,11 @@ def plan_articulated_assembly(configuration: Mapping[str, Any]) -> dict[str, Any
     if horizontal < 1e-9:
         raise AssetAuthoringError("articulated_front_normal_invalid")
     nx, ny = normal[0] / horizontal, normal[1] / horizontal
-    depth = abs(nx) * extents[0] + abs(ny) * extents[1]
+    source_depth = abs(nx) * extents[0] + abs(ny) * extents[1]
     width = abs(ny) * extents[0] + abs(nx) * extents[1]
     height = extents[2]
+    hypothesis = _depth_hypothesis(configuration, source_depth=source_depth, width=width, height=height)
+    depth = float(hypothesis["estimated_depth_m"]) if hypothesis else source_depth
     if min(depth, width, height) <= 6 * PANEL_THICKNESS_M:
         raise AssetAuthoringError("articulated_assembly_envelope_too_small")
     count, task_index, assumptions = _resolve_bay_layout(
@@ -115,6 +256,8 @@ def plan_articulated_assembly(configuration: Mapping[str, Any]) -> dict[str, Any
     drawer_y = bay_width - BAY_CLEARANCE_M
     drawer_z = bay_height - BAY_CLEARANCE_M
     stroke = min(float(mechanism["estimated_usable_stroke_m"]), box_depth - MINIMUM_RETAINED_DEPTH_M)
+    if hypothesis is not None and not math.isclose(stroke, hypothesis["estimated_usable_stroke_m"], abs_tol=1e-8):
+        raise AssetAuthoringError("articulated_depth_hypothesis_stroke_clamped")
     if stroke <= 0.02:
         raise AssetAuthoringError("articulated_usable_stroke_infeasible")
     handle_length = round(HANDLE_LENGTH_FRACTION_OF_FRONT * drawer_y, 4)
@@ -133,7 +276,13 @@ def plan_articulated_assembly(configuration: Mapping[str, Any]) -> dict[str, Any
                            "world_yaw_rad_from_estimated_front_normal": yaw,
                            "estimated_front_normal_world": normal},
         "assembly_dimensions_m": {"depth_x": round(depth, 5), "width_y": round(width, 5), "height_z": round(height, 5),
-                                  "authority": "estimated_envelope_projected_on_estimated_front_normal"},
+                                  "authority": "development_only_depth_hypothesis" if hypothesis else
+                                               "estimated_envelope_projected_on_estimated_front_normal"},
+        "source_geometry": {"aabb_min_xyz_m": list(lower), "aabb_max_xyz_m": list(upper),
+                            "projected_depth_m": round(source_depth, 5),
+                            "projected_width_m": round(width, 5), "height_m": round(height, 5),
+                            "authority": "retained_source_envelope_not_physical_measurement"},
+        **({"development_geometry_hypothesis": hypothesis} if hypothesis else {}),
         "bay_count": count, "task_bay_index": task_index,
         "construction_assumptions": [
             f"panel_thickness_m={t}", f"front_panel_thickness_m={FRONT_PANEL_THICKNESS_M}",
@@ -210,7 +359,15 @@ def _part_physics(*, request: AuthoringRequest, authoring_result: Mapping[str, A
     for name in ("mass_kg", "static_friction", "dynamic_friction", "restitution"):
         value = getattr(properties, name)
         lower, upper = physics_bounds[name]
-        if not lower <= value.interval.lower <= value.value <= value.interval.upper <= upper:
+        # USD receives one mass value. The uncertainty interval describes the
+        # unknown photographed object's possible mass; it is not a set of
+        # masses the simulator will silently sample. Keep that interval in the
+        # completion receipt, including any portion outside the admitted
+        # simulation value range. Contact parameters retain their stricter
+        # full-interval admission because they affect the policy interaction.
+        inside = (lower <= value.value <= upper if name == "mass_kg" and value.basis == "estimated"
+                  else lower <= value.interval.lower <= value.value <= value.interval.upper <= upper)
+        if not inside:
             raise AssetAuthoringError("authoring_packaging_estimate_outside_admitted_bounds:" + name)
     measurement = json.loads(_verified(authoring_result["geometry_readback"]).read_text())
     validate_geometry_readback(request, measurement, review_input.appearance)
@@ -236,6 +393,8 @@ def _part_physics(*, request: AuthoringRequest, authoring_result: Mapping[str, A
         rotation[:, 0] *= -1
     return {"mesh": mesh, "source_path": source_path, "review_path": review_path, "mesh_receipt": mesh_receipt,
             "geometry_sources": geometry_sources, "consistency": consistency, "mass_kg": mass_kg,
+            "mass_interval_kg": [float(properties.mass_kg.interval.lower), float(properties.mass_kg.interval.upper)],
+            "mass_basis": properties.mass_kg.basis,
             "center_of_mass_m": [float(v) for v in mesh.center_mass], "principal_inertia": [float(v) for v in principal],
             "principal_rotation": rotation, "static_friction": float(properties.static_friction.value),
             "dynamic_friction": float(properties.dynamic_friction.value), "restitution": float(properties.restitution.value),
@@ -346,7 +505,12 @@ def package_astra_articulated_candidate(*, requests: Mapping[str, AuthoringReque
             handle_grasp_point = [float(v) for v in handle["grasp_point_link_m"]]
         link_rows[link_id] = {"link_id": link_id, "part_id": part_id, "prim_path": path, "semantic_role": link["semantic_role"],
                               "rest_translation_m": [float(v) for v in link["rest_translation_m"]],
-                              "mass_kg": physics["mass_kg"], "center_of_mass_m": physics["center_of_mass_m"],
+                              "mass_kg": physics["mass_kg"], "mass_basis": physics["mass_basis"],
+                              "mass_uncertainty_interval_kg": physics["mass_interval_kg"],
+                              "mass_interval_exceeds_admitted_simulation_bounds": (
+                                  physics["mass_interval_kg"][0] < physics_bounds[part_id]["mass_kg"][0]
+                                  or physics["mass_interval_kg"][1] > physics_bounds[part_id]["mass_kg"][1]),
+                              "center_of_mass_m": physics["center_of_mass_m"],
                               "diagonal_inertia_kg_m2": physics["principal_inertia"],
                               "collision_bounds_link_frame_m": physics["collision_bounds_part_frame_m"],
                               "collision_prim_paths": collision_paths,
