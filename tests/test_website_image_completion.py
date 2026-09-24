@@ -311,9 +311,17 @@ def test_controller_reserves_image_edits_and_restart_reuses_outputs_without_new_
         return {"succeeded": True, "generated": stream.getvalue(),
                 "usage": _normalized_usage({"output_tokens_details": {"image_tokens": 100}})}
 
+    settlements = []
+
+    def webapp(**kwargs):
+        assert kwargs["operation"] == "preparation-settlement"
+        settlements.append(kwargs["payload"]["settlement"])
+        return {**kwargs["payload"]["settlement"], "status": "settled"}
+
     monkeypatch.setattr(control, "reserve_website_preparation_spend", reserve)
+    monkeypatch.setattr(control, "website_webapp_request", webapp)
     monkeypatch.setattr(completion, "_execute_frame_request", edit)
-    context = {"context_digest": "task"}
+    context = {"context_digest": "task", "capture_id": "cap", "request_id": "req", "scene_id": "scene"}
     task_digest = completion.sha256(json.dumps(context, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     _, _, backend_digest = completion._validated_backend(completion.REGISTRY_PATH, backend_id=completion.BACKEND_ID)
     admission["allocation_binding_digest"] = canonical_digest(completion.completion_binding(
@@ -322,16 +330,74 @@ def test_controller_reserves_image_edits_and_restart_reuses_outputs_without_new_
                 output_root=tmp_path / "edits", admission={}, token="test")
     outputs = completion.complete_background_images(**args)
     assert len(reservations) == 1 and len(calls) == 2
+    # The completed batch releases its quote down to the receipted charge, once.
+    assert len(settlements) == 1
+    assert settlements[0]["allocation_binding_digest"] == admission["allocation_binding_digest"]
+    assert settlements[0]["provider"] == "openai" and settlements[0]["completed_request_count"] == 2
+    receipts = sorted((tmp_path / "edits").rglob("[0-9].json"))
+    assert settlements[0]["provider_charge_amount_usd"] == round(sum(json.loads(p.read_text())["cost_usd"] for p in receipts), 6)
     assert reservations[0]["provider"] == "openai"
     assert reservations[0]["binding_digest"] == admission["allocation_binding_digest"]
     assert reservations[0]["request_count"] == 2
     # No key or admission survives the controller restart. Reuse needs neither.
     assert completion.complete_background_images(**{**args, "token": ""}) == outputs
-    assert len(reservations) == 1 and len(calls) == 2
+    assert len(reservations) == 1 and len(calls) == 2 and len(settlements) == 1
     Image.new("RGB", (10, 20), "green").save(outputs[0]["image_path"])
     with pytest.raises(ValueError, match="output_changed"):
         completion.complete_background_images(**args)
     assert len(reservations) == 1 and len(calls) == 2
+
+
+def test_prior_completed_batch_is_settled_before_a_new_reservation(tmp_path, monkeypatch):
+    from blueprint_pipeline import website_task_context as control
+    output_root = tmp_path / "edits"
+    done, partial = output_root / ("a" * 64), output_root / ("b" * 64)
+    done.mkdir(parents=True)
+    partial.mkdir()
+    for index, cost in enumerate((0.07, 0.06)):
+        (done / f"{index}.json").write_text(json.dumps({"status": "completed", "request_digest": "sha256:" + "a" * 64,
+                                                        "cost_usd": cost}))
+    (partial / "0.json").write_text(json.dumps({"status": "completed", "request_digest": "sha256:" + "b" * 64,
+                                                "cost_usd": 0.07}))
+    (partial / "1.json").write_text(json.dumps({"status": "submitting", "request_digest": "sha256:" + "b" * 64}))
+    (output_root / "gemini_reviews").mkdir()
+    order = []
+
+    def webapp(**kwargs):
+        order.append(("settle", kwargs["payload"]["settlement"]))
+        return {**kwargs["payload"]["settlement"], "status": "settled"}
+
+    frames, admission = _inputs(tmp_path)
+    context = {"context_digest": "task", "capture_id": "cap", "request_id": "req", "scene_id": "scene"}
+    task_digest = completion.sha256(json.dumps(context, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    _, _, backend_digest = completion._validated_backend(completion.REGISTRY_PATH, backend_id=completion.BACKEND_ID)
+    admission["allocation_binding_digest"] = canonical_digest(completion.completion_binding(
+        frames, task_digest=task_digest, backend_digest=backend_digest))
+
+    def reserve(**kwargs):
+        order.append(("reserve", kwargs["binding_digest"]))
+        return admission, _grant(admission)
+
+    def edit(**kwargs):
+        stream = BytesIO()
+        Image.new("RGB", kwargs["expected_size"], "blue").save(stream, format="PNG")
+        return {"succeeded": True, "generated": stream.getvalue(),
+                "usage": _normalized_usage({"output_tokens_details": {"image_tokens": 100}})}
+
+    monkeypatch.setattr(control, "reserve_website_preparation_spend", reserve)
+    monkeypatch.setattr(control, "website_webapp_request", webapp)
+    monkeypatch.setattr(completion, "_execute_frame_request", edit)
+    completion.complete_background_images(frames=frames, task_digest=task_digest, task_context=context,
+                                          output_root=output_root, admission={}, token="test")
+    # The earlier finished batch is released before the new quote is reserved; the
+    # batch with an uncertain request keeps its full hold.
+    assert order[0][0] == "settle" and order[0][1]["allocation_binding_digest"] == "sha256:" + "a" * 64
+    assert order[0][1]["completed_request_count"] == 2 and order[0][1]["provider_charge_amount_usd"] == 0.13
+    assert order[1] == ("reserve", admission["allocation_binding_digest"])
+    settled = {row[1]["allocation_binding_digest"] for row in order if row[0] == "settle"}
+    assert "sha256:" + "b" * 64 not in settled
+    assert json.loads((done / "settlement.json").read_text())["status"] == "settled"
+    assert [row[0] for row in order].count("settle") == 2  # the old batch once, the new batch once
 
 
 def test_another_controller_cannot_rebuy_reserved_image_work(tmp_path, monkeypatch):

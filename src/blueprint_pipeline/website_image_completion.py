@@ -14,6 +14,7 @@ import fcntl
 import json
 import math
 import os
+import re
 from io import BytesIO
 from hashlib import sha256
 from pathlib import Path
@@ -102,6 +103,52 @@ def _canvas(image: Image.Image) -> tuple[Image.Image, tuple[int, int, int, int]]
     return canvas, box
 
 
+def settle_completed_image_batches(*, output_root: Path, task_context: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Release each fully completed edit batch's reservation down to its receipted charge.
+
+    A batch is settled only when every receipt in it is completed; the WebApp also
+    requires the receipt count to equal the reserved request count, so a batch with
+    an uncertain in-flight request keeps its full hold. Settlements are idempotent.
+    """
+    from .website_task_context import website_webapp_request
+    settled = []
+    for root in sorted(output_root.iterdir()) if output_root.is_dir() else []:
+        if not root.is_dir() or not re.fullmatch(r"[0-9a-f]{64}", root.name):
+            continue
+        settlement_path = root / "settlement.json"
+        if settlement_path.is_file():
+            settled.append(json.loads(settlement_path.read_text()))
+            continue
+        receipt_paths = sorted((path for path in root.glob("*.json") if path.stem.isdigit()), key=lambda path: int(path.stem))
+        receipts = [json.loads(path.read_text()) for path in receipt_paths]
+        if not receipts or any(receipt.get("status") != "completed"
+                               or receipt.get("request_digest") != "sha256:" + root.name for receipt in receipts):
+            continue
+        costs = [receipt.get("cost_usd") for receipt in receipts]
+        if any(isinstance(cost, bool) or not isinstance(cost, (int, float)) or not math.isfinite(cost) or cost < 0
+               for cost in costs):
+            raise ValueError("website_image_completion_receipt_invalid")
+        command = {"task_context_digest": task_context["context_digest"],
+                   "allocation_binding_digest": "sha256:" + root.name, "provider": "openai",
+                   "completed_request_count": len(receipts),
+                   "provider_charge_amount_usd": round(sum(costs), 6),
+                   "usage_receipt_digest": canonical_digest({"receipts": receipts})}
+        try:
+            receipt = website_webapp_request(capture_id=task_context["capture_id"], operation="preparation-settlement",
+                payload={"request_id": task_context["request_id"], "scene_id": task_context["scene_id"],
+                         "settlement": command})
+        except ValueError as exc:
+            # A batch the WebApp cannot match to a whole reservation keeps its hold.
+            if "settlement_invalid" in str(exc):
+                continue
+            raise
+        if any(receipt.get(key) != value for key, value in command.items()) or receipt.get("status") != "settled":
+            raise ValueError("website_image_completion_settlement_receipt_invalid")
+        write_json(settlement_path, receipt)
+        settled.append(receipt)
+    return settled
+
+
 def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_digest: str,
                                output_root: Path, admission: Mapping[str, Any],
                                token: str, admission_grant: PaidResourceAdmissionGrant | None = None,
@@ -155,6 +202,8 @@ def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_dige
                 if sha256(json.dumps(dict(task_context), sort_keys=True, separators=(",", ":")).encode()).hexdigest() != task_digest:
                     raise ValueError("website_image_completion_task_mismatch")
                 from .website_task_context import reserve_website_preparation_spend
+                # Completed earlier batches hold their full quote until settled.
+                settle_completed_image_batches(output_root=output_root, task_context=task_context)
                 admission, admission_grant = reserve_website_preparation_spend(
                     task_context=task_context, binding_digest=request_digest,
                     maximum_cost_usd=len(edited_indices) * cap, request_count=len(edited_indices),
@@ -236,6 +285,8 @@ def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_dige
                             "generated_region": "full_frame",
                             "remaining_pixel_count": 0, "completion_receipt": str(receipt_path),
                             "view_consistency": "requires_review", "physical_evidence": False})
+        if task_context is not None:
+            settle_completed_image_batches(output_root=output_root, task_context=task_context)
         return results
 
 
