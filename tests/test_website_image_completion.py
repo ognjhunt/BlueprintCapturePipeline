@@ -62,7 +62,9 @@ def test_completion_sends_plain_frame_keeps_whole_edit_references_first_edit_and
     sent = np.asarray(Image.open(BytesIO(calls[0]["image_bytes"])).convert("RGB"))
     assert sent.shape == (1536, 1024, 3) and not np.any(np.all(sent == [255, 255, 255], axis=-1))
     assert np.all(sent[:, 256:768][sent[:, 256:768].any(axis=-1)] == [255, 0, 0])
-    assert "shadows, reflections" in calls[0]["prompt"] and "Change nothing else" in calls[0]["prompt"]
+    assert "shadows" in calls[0]["prompt"] and "Change nothing else" in calls[0]["prompt"]
+    # Contents of a removed object must go with it rather than float in mid-air.
+    assert "anything inside them or resting on them" in calls[0]["prompt"]
     for original, output in zip(frames, outputs):
         image = np.asarray(Image.open(output["image_path"]))
         # The whole edited frame is kept: no silhouette paste-back.

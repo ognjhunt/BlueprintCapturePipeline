@@ -56,7 +56,8 @@ CONSISTENCY_DIAGNOSIS_PROMPT = (
 
 PROMPT = (
     "Edit only the FIRST image. Remove the task objects listed below completely and naturally, together "
-    "with their shadows, reflections and any motion blur, and show the room surfaces that were behind them "
+    "with anything inside them or resting on them (for example dishes in a dishwasher rack), their shadows, "
+    "reflections and any motion blur, and show the room surfaces that were behind them "
     "as a realistic continuation of the surrounding room. Change nothing else. Preserve all other objects, "
     "including movable objects unrelated to the task, supports, and obstacles. "
     "Preserve the original camera, framing, perspective, lighting, materials and object positions. "
