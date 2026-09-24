@@ -17,11 +17,19 @@ from .episode_visual_evidence import (
     finalize_multicamera_visual_evidence,
     persist_multicamera_observation,
 )
+from .native_g1_navigation_goal import (
+    score_g1_navigation_episode,
+    validate_g1_navigation_goal,
+)
 
 
 G1_BOX_CANDIDATES = frozenset({
     "humanoidarena_dp_g1_dex3_sonic",
     "humanoidarena_pi05_g1_dex3_sonic",
+})
+G1_NAVIGATION_CANDIDATES = frozenset({
+    "humanoidarena_dp_g1_dex3_sonic_vision_navi",
+    "humanoidarena_pi05_g1_dex3_sonic_vision_navi",
 })
 
 
@@ -43,16 +51,22 @@ def run_g1_shared_scene_episode(
     """
 
     plan = getattr(environment, "plan", None)
+    navigation = candidate_id in G1_NAVIGATION_CANDIDATES
+    expected_prompt = (
+        validate_g1_navigation_goal(plan.get("task_spec") or {})["task_instruction"]
+        if navigation and isinstance(plan, Mapping)
+        else (plan.get("task_spec") or {}).get("prompt") if isinstance(plan, Mapping) else None
+    )
     if (
         not isinstance(plan, Mapping)
         or (plan.get("robot") or {}).get("robot_id") != "unitree_g1"
-        or candidate_id not in G1_BOX_CANDIDATES
+        or candidate_id not in G1_BOX_CANDIDATES | G1_NAVIGATION_CANDIDATES
         or not isinstance(max_steps, int)
         or isinstance(max_steps, bool)
         or not 1 <= max_steps <= 3000
         or not isinstance(task_prompt, str)
         or not task_prompt.strip()
-        or task_prompt != (plan.get("task_spec") or {}).get("prompt")
+        or task_prompt != expected_prompt
         or not isinstance(output_dir, Path)
         or not callable(read_task_sample)
     ):
@@ -203,24 +217,22 @@ def run_g1_built_scene_policy_episode(
     to_tensor: Callable[[Any], Any],
     make_action_tensor: Callable[..., Any],
 ) -> dict[str, Any]:
-    """Score a G1 box episode from the same native scene and task readback.
+    """Score a G1 manipulation or navigation episode from the same scene.
 
     This executes the shared scene but does not attest the running policy
     server, model loaded in its process, or physical outcome. The existing
     qualified policy worker must own those gates before promotion.
     """
 
-    from .adp_task_scoring import score_task_episode_from_spec
     from .native_g1_joint_episode_environment import NativeG1JointEpisodeEnvironment
     from .native_g1_run_preflight import preflight_g1_shared_scene_run
-    from .native_task_arena_readback import NativeRigidTaskArenaReadback
 
     plan = getattr(built, "plan", None)
     if (
         not isinstance(plan, Mapping)
         or (plan.get("robot") or {}).get("robot_id") != "unitree_g1"
         or plan.get("task_kind") != "rigid_pick_place"
-        or candidate_id not in G1_BOX_CANDIDATES
+        or candidate_id not in G1_BOX_CANDIDATES | G1_NAVIGATION_CANDIDATES
     ):
         raise ValueError("g1_built_scene_policy_configuration_invalid")
     preflight = preflight_g1_shared_scene_run(**preflight_inputs)
@@ -229,26 +241,43 @@ def run_g1_built_scene_policy_episode(
         or preflight.get("robot_id") != "unitree_g1"
         or preflight.get("candidate_id") != candidate_id
         or preflight.get("scene_plan_digest") != plan.get("plan_digest")
-        or preflight.get("policy_role") != "manipulation"
+        or preflight.get("policy_role")
+        != ("movement_navigation" if candidate_id in G1_NAVIGATION_CANDIDATES else "manipulation")
     ):
         raise ValueError("g1_built_scene_policy_preflight_binding_invalid")
     environment = NativeG1JointEpisodeEnvironment(
         built=built, to_tensor=to_tensor, make_action_tensor=make_action_tensor
     )
-    readback = NativeRigidTaskArenaReadback(built)
+    if candidate_id in G1_NAVIGATION_CANDIDATES:
+        goal = validate_g1_navigation_goal(plan["task_spec"])
 
-    def read_task_sample() -> dict[str, Any]:
-        return {
-            **readback.read_task_sample(),
-            "step_index": environment.read_state()["step_index"],
-        }
+        def read_task_sample() -> dict[str, Any]:
+            state = environment.read_state()
+            return {
+                "step_index": state["step_index"],
+                "root_position_world_m": state["root_position_world_m"],
+            }
+
+        task_prompt = goal["task_instruction"]
+    else:
+        from .native_task_arena_readback import NativeRigidTaskArenaReadback
+
+        readback = NativeRigidTaskArenaReadback(built)
+
+        def read_task_sample() -> dict[str, Any]:
+            return {
+                **readback.read_task_sample(),
+                "step_index": environment.read_state()["step_index"],
+            }
+
+        task_prompt = str(plan["task_spec"]["prompt"])
 
     trace = run_g1_shared_scene_episode(
         environment=environment,
         policy_client=policy_client,
         sonic_bridge=sonic_bridge,
         candidate_id=candidate_id,
-        task_prompt=str(plan["task_spec"]["prompt"]),
+        task_prompt=task_prompt,
         max_steps=max_steps,
         output_dir=output_dir,
         read_task_sample=read_task_sample,
@@ -260,7 +289,12 @@ def run_g1_built_scene_policy_episode(
         stream.write("\n")
     samples = [trace["initial_task_sample"]]
     samples.extend(row["task_sample"] for row in trace["steps"])
-    score = score_task_episode_from_spec(task_spec=plan["task_spec"], samples=samples)
+    if candidate_id in G1_NAVIGATION_CANDIDATES:
+        score = score_g1_navigation_episode(task_spec=plan["task_spec"], samples=samples)
+    else:
+        from .adp_task_scoring import score_task_episode_from_spec
+
+        score = score_task_episode_from_spec(task_spec=plan["task_spec"], samples=samples)
     if not isinstance(score, Mapping) or score.get("status") != "scored":
         raise ValueError("g1_built_scene_task_score_incomplete")
     result = {
@@ -268,6 +302,10 @@ def run_g1_built_scene_policy_episode(
         "status": "development_only_scored_episode",
         "scene_plan_digest": plan["plan_digest"],
         "candidate_id": candidate_id,
+        "evaluation_task_kind": (
+            "g1_navigation_goal" if candidate_id in G1_NAVIGATION_CANDIDATES
+            else "rigid_pick_place"
+        ),
         "preflight_receipt_digest": canonical_digest(preflight),
         "trace_digest": trace["trace_digest"],
         "trace_relative_path": trace_path.name,

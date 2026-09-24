@@ -202,3 +202,63 @@ def test_built_g1_scene_uses_same_task_samples_and_scorer(tmp_path: Path, monkey
     assert result["policy_runtime_identity_verified"] is False
     assert (tmp_path / "native_g1_shared_scene_episode_trace.v1.json").is_file()
     assert (tmp_path / "native_g1_built_scene_policy_episode.v1.json").is_file()
+
+
+def test_navigation_candidate_uses_same_scene_and_measured_goal_score(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from blueprint_pipeline import native_g1_joint_episode_environment as g1_environment
+    from blueprint_pipeline import native_g1_run_preflight
+    from blueprint_pipeline.native_g1_navigation_goal import PUBLISHED_TASK_INSTRUCTION
+
+    candidate = "humanoidarena_dp_g1_dex3_sonic_vision_navi"
+    scene, bridge = _Scene(), _Bridge()
+    scene.plan = {
+        **scene.plan,
+        "task_kind": "rigid_pick_place",
+        "task_spec": {
+            "task_kind": "rigid_pick_place",
+            "prompt": "pick the box",
+            "visible_target_marker": {
+                "schema_version": "native_task_target_marker.v1",
+                "shape": "flat_yellow_disc", "non_colliding": True,
+                "surface_position_world_m": [2.0, 0.0, 0.0], "radius_m": 0.4,
+            },
+            "g1_navigation_goal": {
+                "schema_version": "native_g1_navigation_goal.v1",
+                "center_world_m": [2.0, 0.0, 0.0],
+                "acceptance_radius_m": 0.3,
+                "max_root_height_drift_m": 0.2,
+                "settle_window_samples": 2,
+                "task_instruction": PUBLISHED_TASK_INSTRUCTION,
+            },
+        },
+    }
+    scene.read_state = lambda: {
+        "step_index": scene.step,
+        "root_position_world_m": [0.0 if scene.step == 0 else 1.8 + 0.1 * (scene.step - 1), 0.0, 0.85],
+    }
+
+    class NavigationPolicy(_Policy):
+        def infer_chunk(self, *, front_rgb, observation_state, task):
+            assert task == PUBLISHED_TASK_INSTRUCTION
+            self.queries += 1
+            return [[0.0] * 40, [0.0] * 40]
+
+    monkeypatch.setattr(native_g1_run_preflight, "preflight_g1_shared_scene_run", lambda **kwargs: {
+        "status": "staged_inputs_verified", "robot_id": "unitree_g1",
+        "candidate_id": candidate, "scene_plan_digest": scene.plan["plan_digest"],
+        "policy_role": "movement_navigation",
+    })
+    monkeypatch.setattr(g1_environment, "NativeG1JointEpisodeEnvironment", lambda **kwargs: scene)
+    result = run_g1_built_scene_policy_episode(
+        built=type("Built", (), {"plan": scene.plan})(),
+        policy_client=NavigationPolicy(), sonic_bridge=bridge,
+        candidate_id=candidate, max_steps=2, output_dir=tmp_path,
+        preflight_inputs={}, to_tensor=lambda value: value,
+        make_action_tensor=lambda value, **kwargs: value,
+    )
+    assert result["evaluation_task_kind"] == "g1_navigation_goal"
+    assert result["score"]["outcome"] == "success"
+    assert result["score"]["obstacle_clearance_scored"] is False
+    assert result["ranking_eligible"] is False

@@ -209,3 +209,32 @@ def test_output_cannot_mutate_sealed_packet(tmp_path: Path) -> None:
     else:
         raise AssertionError("output was allowed inside the sealed packet")
     assert not (packet / "episode-output").exists()
+
+
+def test_navigation_candidate_requires_visible_goal_before_launch(
+    tmp_path: Path, monkeypatch
+) -> None:
+    request = _request(tmp_path)
+    candidate = "humanoidarena_dp_g1_dex3_sonic_vision_navi"
+    request["candidate_id"] = candidate
+    request["rights_review"]["candidate_id"] = candidate
+    request["rights_review"]["rights_review_digest"] = canonical_digest(
+        request["rights_review"], digest_field="rights_review_digest"
+    )
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+    monkeypatch.setattr(worker, "_verify_packet", _packet)
+    monkeypatch.setattr(worker, "preflight_g1_shared_scene_run", lambda **kwargs: {
+        **_preflight(**kwargs), "candidate_id": candidate,
+        "policy_role": "movement_navigation",
+    })
+
+    def must_not_launch(**kwargs):
+        raise AssertionError("launched without visible navigation goal")
+
+    monkeypatch.setattr(worker, "_launch_scene", must_not_launch)
+    result = worker.run_g1_development_worker(
+        request=request, output_dir=tmp_path / "no-navigation-goal"
+    )
+    assert result["status"] == "blocked"
+    assert result["phase_reached"] == "navigation_goal_validation"
+    assert result["blocker"]["message"] == "g1_navigation_goal_or_visible_marker_missing"
