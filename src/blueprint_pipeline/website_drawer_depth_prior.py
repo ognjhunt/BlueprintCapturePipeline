@@ -62,7 +62,28 @@ BC15_PRIOR = {
     ],
 }
 
-ADDITIONAL_PRIORS: tuple[Mapping[str, Any], ...] = (BC15_PRIOR,)
+CC48_PRIOR = {
+    # Same original video and public cabinet comparisons, with this website
+    # scene's own fixture packet, object identity and observed-frame receipt.
+    **PRIOR,
+    "scene_id": "site-capture-cc484026-f6ba-4b9e-9a16-aca0a0163b8d-development",
+    "preparation_digest": "sha256:6943e1f45cab6f7764a52a60e00ad4e24c8d974ab40c1161e0b878f7a2caabf7",
+    "observation_manifest_digest": "sha256:4d3d7498376ca741fe0a11dcf1b80a0a9fe4d1a39a0f6fa788892d34a45475c2",
+    "subject_identity": {"id": "website-subject-aa9aaf64b6fe08ffe2bd", "version": "v1"},
+    # Owner reported these tape measurements in this task on 2026-09-24.
+    # They are direct owner input, not dimensions recovered from the video.
+    "owner_reported_dimensions_m": {"depth": 0.508, "width": 0.4064, "height": 0.5842},
+    "nominal_depth_m": 0.508,
+    "original_frame_sha256s": [
+        "sha256:0205303c4faa9892114349af39bc5908b07c145dcc58eaeedd9b5fb74e4336af",
+        "sha256:7c711762f672a41fd90803b4c5c658a81ee23e9dc3b0fcc71dd57ed243bfcc4a",
+        "sha256:aba7b9e216a351510bf07b16bc8362ec0a68306c94306bbf705f60a0e8874157",
+        "sha256:afba0d20718721e00312255a4be823a42af42f36e6640598008eee2e2bbe01f9",
+        "sha256:b6f03d21cf7d274c7cc4228fca289e242e9eeb347f97986c4af39d2e00812a25",
+    ],
+}
+
+ADDITIONAL_PRIORS: tuple[Mapping[str, Any], ...] = (BC15_PRIOR, CC48_PRIOR)
 
 
 def prior_for(*, scene_id: str, subject_identity: Mapping[str, Any]) -> Mapping[str, Any] | None:

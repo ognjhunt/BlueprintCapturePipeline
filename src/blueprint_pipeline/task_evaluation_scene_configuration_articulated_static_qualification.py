@@ -146,6 +146,14 @@ def _development_hypothesis_findings(
             or not hypothesis["manufacturer_examples"]
             or not isinstance(hypothesis.get("prior_comparison"), Mapping)
             or hypothesis["prior_comparison"].get("reference_models_are_exact_match") is not False
+            or (hypothesis["prior_comparison"].get("owner_reported_dimensions_m") is not None
+                and (not isinstance(hypothesis["prior_comparison"]["owner_reported_dimensions_m"], Mapping)
+                     or hypothesis["prior_comparison"].get("owner_reported_source") != "cabinet_owner_chat_2026-09-24"
+                     or not _close_sequence(
+                         [dimensions.get("depth_x"), dimensions.get("width_y"), dimensions.get("height_z")],
+                         [hypothesis["prior_comparison"]["owner_reported_dimensions_m"].get(axis)
+                          for axis in ("depth", "width", "height")])
+                     or dimensions.get("authority") != "development_only_owner_reported_dimensions"))
             or hypothesis.get("status") != "development_only_estimate_disagrees_with_source"
             or hypothesis.get("physical_measurement_proven") is not False
             or source.get("authority") != "retained_source_envelope_not_physical_measurement"
