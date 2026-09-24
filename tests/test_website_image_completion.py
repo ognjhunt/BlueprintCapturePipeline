@@ -241,11 +241,63 @@ def test_consistency_diagnosis_is_exactly_one_retained_view(tmp_path, monkeypatc
         assert result["diagnosis"]["inconsistent_background_frame_ids"] == ["0"]
         assert calls[0]["binding"]["prior_review_digest"] == "sha256:prior"
         assert calls[0]["binding"]["kind"] == "background_consistency_diagnosis"
+        assert calls[0]["binding"]["revision"] == 2
+        assert calls[0]["binding"]["max_output_tokens"] == 8192
         assert calls[0]["maximum_cost_usd"] > 0
     else:
         with pytest.raises(ValueError, match="diagnosis_invalid"):
             completion.diagnose_inconsistent_background(**args)
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize("prior_status,expected_revision", [("completed", 1), ("submitting", 2)])
+def test_consistency_diagnosis_preserves_or_supersedes_exact_prior_receipt(
+        tmp_path, monkeypatch, prior_status, expected_revision):
+    from hashlib import sha256
+    from blueprint_pipeline import website_gemini_receipts as receipts
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+
+    frames, _ = _inputs(tmp_path)
+    task = {"request_id": "request", "scene_id": "scene", "capture_id": "capture",
+            "context_digest": "sha256:task-context"}
+    image_digests = [digest for frame in frames
+                     for digest in (frame["image_digest"], frame["image_digest"])]
+    prior_binding = {"kind": "background_consistency_diagnosis", "model": completion.DEFAULT_MODEL,
+        "prior_review_digest": "sha256:prior", "image_digests": image_digests,
+        "frame_ids": [frame["frame_id"] for frame in frames],
+        "prompt": completion.CONSISTENCY_DIAGNOSIS_PROMPT,
+        "media_resolution": "MEDIA_RESOLUTION_HIGH", "revision": 1, "max_output_tokens": 1024}
+    text_bytes = len(completion.CONSISTENCY_DIAGNOSIS_PROMPT.encode()) + 1024
+    text_bytes += sum(len(str(frame["frame_id"]).encode()) * 2 + 32 for frame in frames)
+    prior_request = {"binding": prior_binding, "task_context_digest": task["context_digest"],
+        "maximum_cost_usd": receipts.gemini_quote(model=completion.DEFAULT_MODEL,
+            input_tokens=text_bytes + 1120 * len(image_digests), max_output_tokens=1024)}
+    prior_digest = canonical_digest(prior_request)
+    review_dir = tmp_path / "review" / "gemini_reviews"
+    review_dir.mkdir(parents=True)
+    (review_dir / f"{prior_digest[7:]}.json").write_text(json.dumps({
+        "status": prior_status, "request_digest": prior_digest, "request": prior_request}))
+    seen = []
+    def retained(**kwargs):
+        seen.append(kwargs)
+        return {"status": "completed", "binding": kwargs["binding"],
+                "diagnosis": {"inconsistent_background_frame_ids": [frames[0]["frame_id"]],
+                              "visual_evidence": "invented panel"}}
+    monkeypatch.setattr(receipts, "retained_gemini_call", retained)
+    result = completion.diagnose_inconsistent_background(
+        frames=frames, original_frames=frames,
+        plan={"task_context_sha256": sha256(json.dumps(task, sort_keys=True,
+            separators=(",", ":")).encode()).hexdigest()},
+        failed_review={"status": "blocked", "request_digest": "sha256:prior", "review": {
+            "consistent_background": False, "task_objects_removed": True,
+            "people_absent": True, "unrelated_objects_preserved": True,
+            "remaining_task_object_frame_ids": []}},
+        output_root=tmp_path / "review", task_context=task)
+    assert result["status"] == "completed"
+    assert seen[0]["binding"]["revision"] == expected_revision
+    assert seen[0]["binding"]["max_output_tokens"] == (1024 if expected_revision == 1 else 8192)
+    if prior_status == "submitting":
+        assert seen[0]["binding"]["supersedes_incomplete_request_digest"] == prior_digest
 
 
 def test_controller_reserves_image_edits_and_restart_reuses_outputs_without_new_grant(tmp_path, monkeypatch):
