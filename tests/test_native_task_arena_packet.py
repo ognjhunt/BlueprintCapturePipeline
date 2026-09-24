@@ -625,6 +625,10 @@ def Xform "G1"
     def Xform "pelvis" (prepend apiSchemas = ["PhysicsRigidBodyAPI"]) {}
     def Xform "right_finger_tip" (prepend apiSchemas = ["PhysicsRigidBodyAPI"]) {}
     def Xform "attachment" (references = @attachment.usda@</Attachment>) {}
+    def Shader "Material" {
+        uniform token info:implementationSource = "sourceAsset"
+        uniform asset info:mdl:sourceAsset = @OmniPBR.mdl@
+    }
 }
 ''',
         encoding="utf-8",
@@ -676,10 +680,17 @@ def Xform "G1"
         "sha256": f"sha256:{sha256_file(dependency)}",
     }]
     assert plan["robot"]["usd_path"] == "assets/robot_unitree_g1.usda"
+    assert plan["robot"]["usd_runtime_asset_dependencies"] == ["OmniPBR.mdl"]
+    assert receipt["robot_asset_binding"]["runtime_asset_dependencies"] == ["OmniPBR.mdl"]
     assert _resolve_portable_robot(plan, bundle_root=output)["usd_path"] == str(
         output / "assets" / "robot_unitree_g1.usda"
     )
     assert validate_native_task_arena_runtime_plan(plan, bundle_root=output) == plan
+    for invalid in (["unlisted.mdl"], [["OmniPBR.mdl"]], ["OmniPBR.mdl", "OmniPBR.mdl"]):
+        bad_plan = json.loads(json.dumps(plan))
+        bad_plan["robot"]["usd_runtime_asset_dependencies"] = invalid
+        with pytest.raises(ValueError, match="robot_runtime_asset_manifest_invalid"):
+            _resolve_portable_robot(bad_plan, bundle_root=output)
     (output / "assets" / "attachment.usda").write_text("tampered")
     with pytest.raises(ValueError, match="robot_dependency_identity_mismatch"):
         _resolve_portable_robot(plan, bundle_root=output)

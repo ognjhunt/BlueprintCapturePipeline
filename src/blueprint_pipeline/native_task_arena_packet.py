@@ -24,7 +24,10 @@ from .native_task_arena_scene_plan import (
     materialize_native_task_arena_scene_plan,
 )
 from .native_task_arena_runtime import author_gpu_compatible_scene_collision
-from .native_g1_usd_dependency_closure import robot_usd_dependency_sources
+from .native_g1_usd_dependency_closure import (
+    G1_KIT_RUNTIME_ASSETS,
+    robot_usd_dependency_sources,
+)
 from .native_task_execution_admission import seal_native_task_execution_admission
 from .native_task_runtime_contract import materialize_native_task_runtime_contract
 from .nvidia_3dgrut_particlefield_transcode import (
@@ -494,10 +497,13 @@ def _stage_robot_configuration(
         raise NativeTaskArenaPacketError(["native_task_arena_packet_robot_copy_mismatch"])
     dependency_bindings: list[dict[str, Any]] = []
     try:
-        dependency_sources = robot_usd_dependency_sources(source)
+        closure = robot_usd_dependency_sources(
+            source,
+            allowed_runtime_assets=G1_KIT_RUNTIME_ASSETS if robot_id == "unitree_g1" else frozenset(),
+        )
     except ValueError as exc:
         raise NativeTaskArenaPacketError([str(exc)]) from exc
-    for dependency, relative in dependency_sources:
+    for dependency, relative in closure.sources:
         staged = assets_dir.joinpath(*relative.parts)
         if staged.exists() or staged == destination:
             raise NativeTaskArenaPacketError(["native_task_arena_packet_robot_dependency_collision"])
@@ -513,24 +519,29 @@ def _stage_robot_configuration(
             "sha256": dependency_digest,
         })
     try:
-        staged_closure = robot_usd_dependency_sources(destination)
+        staged_closure = robot_usd_dependency_sources(
+            destination,
+            allowed_runtime_assets=G1_KIT_RUNTIME_ASSETS if robot_id == "unitree_g1" else frozenset(),
+        )
     except ValueError as exc:
         raise NativeTaskArenaPacketError(["native_task_arena_packet_robot_staged_closure_invalid"]) from exc
-    if [relative.as_posix() for _, relative in staged_closure] != [
+    if [relative.as_posix() for _, relative in staged_closure.sources] != [
         row["relative_path"].removeprefix("assets/") for row in dependency_bindings
-    ]:
+    ] or staged_closure.runtime_assets != closure.runtime_assets:
         raise NativeTaskArenaPacketError(["native_task_arena_packet_robot_staged_closure_mismatch"])
     configuration = json.loads(json.dumps(raw))
     configuration.pop("asset_source")
     configuration["usd_path"] = str(destination)
     configuration["usd_size_bytes"] = size
     configuration["usd_dependency_bindings"] = dependency_bindings
+    configuration["usd_runtime_asset_dependencies"] = list(closure.runtime_assets)
     return configuration, {
         "source": dict(raw["asset_source"]),
         "staged_relative_path": f"assets/{filename}",
         "staged_size_bytes": size,
         "staged_sha256": digest,
         "dependency_bindings": dependency_bindings,
+        "runtime_asset_dependencies": list(closure.runtime_assets),
     }
 
 
