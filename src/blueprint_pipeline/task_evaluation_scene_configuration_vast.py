@@ -76,6 +76,15 @@ from .task_evaluation_scene_configuration_provider_artifacts import (
     _sha256,
     extract_provider_output_with_capacity_guard,
 )
+from .task_evaluation_scene_configuration_openai_runtime_scope import (
+    MANAGED_GUARD_FILE_ENV,
+    OPENAI_RUNTIME_FILE_ENVS as _OPENAI_RUNTIME_FILE_ENVS,
+    OPENAI_RUNTIME_VALUE_ENVS as _OPENAI_RUNTIME_VALUE_ENVS,
+    OPENAI_STAGE_SCOPE_BINDINGS as _OPENAI_STAGE_SCOPE_BINDINGS,
+    OPENAI_STAGE_SCOPE_DISTINCT_GROUPS as _OPENAI_STAGE_SCOPE_DISTINCT_GROUPS,
+    managed_asset_scope,
+    validate_managed_project_guard,
+)
 from .task_evaluation_scene_configuration_paid_authority import (
     validate_scene_configuration_paid_authority,
 )
@@ -134,72 +143,6 @@ _VAST_MUTATION_ENV = (
     "BLUEPRINT_ALLOW_VAST_API_CALLS",
     "BLUEPRINT_ALLOW_VAST_INSTANCE_LAUNCH",
 )
-# One exclusive (key file, key id, operator attestation) triple per OpenAI
-# stage. The official-cost gate binds the observed same-day baseline for each
-# ``(project_id, api_key_id)`` and charges only this stage's later delta.
-_OPENAI_RUNTIME_FILE_ENVS = (
-    "OPENAI_ADMIN_API_KEY_FILE",
-    "OPENAI_ARTIFIXER_SEMANTIC_TEACHER_API_KEY_FILE",
-    "OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_FILE",
-    "OPENAI_CONTENT_AGENTS_API_KEY_FILE",
-    "BLUEPRINT_OPENAI_ARTIFIXER_SEMANTIC_TEACHER_COST_SCOPE_ATTESTATION_FILE",
-    "BLUEPRINT_OPENAI_ARTIFIXER_VISUAL_REVIEW_COST_SCOPE_ATTESTATION_FILE",
-    "BLUEPRINT_OPENAI_CONTENT_AGENTS_COST_SCOPE_ATTESTATION_FILE",
-)
-_OPENAI_RUNTIME_VALUE_ENVS = (
-    "OPENAI_PROJECT_ID",
-    "OPENAI_ARTIFIXER_SEMANTIC_TEACHER_API_KEY_ID",
-    "OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_ID",
-    "OPENAI_CONTENT_AGENTS_API_KEY_ID",
-)
-# Managed asset authoring uses a dedicated project/key without changing the
-# host's legacy OpenAI project for unrelated scene stages. These operator-set
-# inputs are copied into the canonical provider environment only after the
-# signed project guard and cost-scope attestation bind their exact identities.
-_AGENTS_API_SCOPED_ENVS = {
-    "OPENAI_PROJECT_ID": "BLUEPRINT_SCENE_CONFIGURATION_AGENTS_API_PROJECT_ID",
-    "OPENAI_CONTENT_AGENTS_API_KEY_FILE": "BLUEPRINT_SCENE_CONFIGURATION_AGENTS_API_KEY_FILE",
-    "OPENAI_CONTENT_AGENTS_API_KEY_ID": "BLUEPRINT_SCENE_CONFIGURATION_AGENTS_API_KEY_ID",
-    "BLUEPRINT_OPENAI_CONTENT_AGENTS_COST_SCOPE_ATTESTATION_FILE": (
-        "BLUEPRINT_SCENE_CONFIGURATION_AGENTS_API_COST_SCOPE_ATTESTATION_FILE"
-    ),
-}
-_OPENAI_STAGE_SCOPE_DISTINCT_GROUPS = (
-    (
-        "OPENAI_ARTIFIXER_SEMANTIC_TEACHER_API_KEY_FILE",
-        "OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_FILE",
-        "OPENAI_CONTENT_AGENTS_API_KEY_FILE",
-    ),
-    (
-        "BLUEPRINT_OPENAI_ARTIFIXER_SEMANTIC_TEACHER_COST_SCOPE_ATTESTATION_FILE",
-        "BLUEPRINT_OPENAI_ARTIFIXER_VISUAL_REVIEW_COST_SCOPE_ATTESTATION_FILE",
-        "BLUEPRINT_OPENAI_CONTENT_AGENTS_COST_SCOPE_ATTESTATION_FILE",
-    ),
-    (
-        "OPENAI_ARTIFIXER_SEMANTIC_TEACHER_API_KEY_ID",
-        "OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_ID",
-        "OPENAI_CONTENT_AGENTS_API_KEY_ID",
-    ),
-)
-_OPENAI_STAGE_SCOPE_BINDINGS = (
-    (
-        "artifixer_semantic_teacher",
-        "OPENAI_ARTIFIXER_SEMANTIC_TEACHER_API_KEY_ID",
-        "BLUEPRINT_OPENAI_ARTIFIXER_SEMANTIC_TEACHER_COST_SCOPE_ATTESTATION_FILE",
-    ),
-    (
-        "artifixer_visual_review",
-        "OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_ID",
-        "BLUEPRINT_OPENAI_ARTIFIXER_VISUAL_REVIEW_COST_SCOPE_ATTESTATION_FILE",
-    ),
-    (
-        "content_agents",
-        "OPENAI_CONTENT_AGENTS_API_KEY_ID",
-        "BLUEPRINT_OPENAI_CONTENT_AGENTS_COST_SCOPE_ATTESTATION_FILE",
-    ),
-)
-
-
 def _stage_owner_only_runtime_secrets(
     *, job_dir: Path, secret_paths: Mapping[str, str]
 ) -> tuple[dict[str, str], Path | None]:
@@ -368,26 +311,17 @@ def _provider_runtime_inputs(
     for _stage, key_id, attestation in active_bindings:
         file_names.update((key_id.removesuffix("_ID") + "_FILE", attestation))
         value_names.add(key_id)
-    managed_asset = (receipt or {}).get("replacement_authoring_agent_runtime") == "openai_agents_api"
+    managed_scope = managed_asset_scope(receipt, stage_caps)
+    managed_asset = managed_scope is not None
     if managed_asset:
-        if ((receipt or {}).get("replacement_authoring_model") != "gpt-6-sol"
-                or (receipt or {}).get("replacement_authoring_model_provider", "openai") != "openai"):
-            raise TaskEvaluationSceneConfigurationVastError("scene_configuration_agents_api_selection_invalid")
-        if any(float(stage_caps[stage]) != 0 for stage in (
-                "artifixer_semantic_teacher", "artifixer_visual_review")):
-            raise TaskEvaluationSceneConfigurationVastError(
-                "scene_configuration_agents_api_requires_content_only_scope")
-        file_names.add("BLUEPRINT_SCENE_CONFIGURATION_AGENTS_API_PROJECT_GUARD_FILE")
-    def scoped_value(name: str) -> str:
-        selected = _AGENTS_API_SCOPED_ENVS.get(name) if managed_asset else None
-        return str(os.environ.get(selected or name) or "").strip()
-
-    secret_paths = {name: scoped_value(name)
+        file_names.add(MANAGED_GUARD_FILE_ENV)
+    secret_paths = {name: (managed_scope.get(name) if managed_asset and name in managed_scope
+                           else str(os.environ.get(name) or "").strip())
                     for name in _OPENAI_RUNTIME_FILE_ENVS if name in file_names}
     if managed_asset:
-        name = "BLUEPRINT_SCENE_CONFIGURATION_AGENTS_API_PROJECT_GUARD_FILE"
-        secret_paths[name] = str(os.environ.get(name) or "").strip()
-    values = {name: scoped_value(name)
+        secret_paths[MANAGED_GUARD_FILE_ENV] = managed_scope[MANAGED_GUARD_FILE_ENV]
+    values = {name: (managed_scope.get(name) if managed_asset and name in managed_scope
+                     else str(os.environ.get(name) or "").strip())
               for name in _OPENAI_RUNTIME_VALUE_ENVS if name in value_names}
     if not all(secret_paths.values()) or not all(values.values()):
         raise TaskEvaluationSceneConfigurationVastError(
@@ -450,24 +384,9 @@ def _provider_runtime_inputs(
                 f"scene_configuration_openai_stage_scope_attestation_invalid:{stage}"
             ) from exc
     if managed_asset:
-        from .agent_execution.contracts import AgentExecutionError
-        from .task_object_agents_api_stage import validate_managed_asset_guard
-        policy = (receipt or {}).get("replacement_authoring_agents_api_policy")
-        if not isinstance(policy, Mapping) or type(policy.get("ttl_seconds")) is not int:
-            raise TaskEvaluationSceneConfigurationVastError(
-                "scene_configuration_agents_api_policy_missing")
-        now_epoch = datetime.now(UTC).timestamp()
-        try:
-            validate_managed_asset_guard(policy=policy,
-                guard_file=Path(secret_paths["BLUEPRINT_SCENE_CONFIGURATION_AGENTS_API_PROJECT_GUARD_FILE"]),
-                project_id=values["OPENAI_PROJECT_ID"],
-                credential_id=values["OPENAI_CONTENT_AGENTS_API_KEY_ID"],
-                maximum_cost_usd=min(15.0, float(stage_caps["content_agents"]),
-                                     float(openai["maximum_cost_usd"])),
-                deadline=now_epoch + policy["ttl_seconds"], now=now_epoch)
-        except (AgentExecutionError, KeyError, TypeError, ValueError) as exc:
-            raise TaskEvaluationSceneConfigurationVastError(
-                "scene_configuration_agents_api_project_guard_invalid") from exc
+        validate_managed_project_guard(receipt=receipt, secret_paths=secret_paths,
+            values=values, stage_caps=stage_caps,
+            openai_maximum_cost_usd=float(openai["maximum_cost_usd"]))
     now = datetime.now(UTC)
     day_start = datetime(now.year, now.month, now.day, tzinfo=UTC)
     runtime_window_end = now + timedelta(hours=1)
