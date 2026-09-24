@@ -28,6 +28,9 @@ MODEL = "sam-3.1"
 ENDPOINT = "https://api.meta.ai/v1/responses"
 # https://dev.meta.ai/docs/pricing-rate-limits#sam-pricing (2026-09-19).
 PRICE_PER_FRAME_USD = 0.0002
+# Continuous website clips use POST /v1/files, whose provider limit is 1 GiB.
+# Keep a smaller local bound because the multipart uploader buffers the clip.
+FILES_API_VIDEO_LIMIT_BYTES = 128 * 1024**2
 PROFILE = {"provider": "meta_model_api", "model": MODEL, "mask_encoding": "one_bit",
            "parser": "meta-sam-parser==0.0.5", "price_per_frame_usd": PRICE_PER_FRAME_USD,
            "minimum_reserved_frames": 50, "single_frame_transport": "input_image", "price_per_image_usd": 0.0025}
@@ -189,8 +192,8 @@ def prepare_continuous_video(*, source: Path, source_digest: str, root: Path) ->
     if len(encoded["frames"]) != len(original["frames"]):
         raise ValueError("meta_sam_encoded_frame_mapping_invalid")
     width, height = encoded["streams"][0]["width"], encoded["streams"][0]["height"]
-    if min(width, height) <= 0 or max(width, height) > 4096 or partial.stat().st_size > 32 * 1024**2:
-        raise ValueError("meta_sam_inline_video_limits_exceeded")
+    if min(width, height) <= 0 or max(width, height) > 4096 or partial.stat().st_size > FILES_API_VIDEO_LIMIT_BYTES:
+        raise ValueError("meta_sam_files_api_video_limits_exceeded")
     source_start = float(original["frames"][0]["best_effort_timestamp_time"])
     encoded_start = float(encoded["frames"][0]["best_effort_timestamp_time"])
     rows = []
@@ -371,7 +374,7 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
         probe = _probe_video(clip)
         stream = probe["streams"][0]
         if (len(probe["frames"]) != len(frame_registry) or not 2 <= len(frame_registry) <= 15000
-                or clip.stat().st_size > 32 * 1024**2 or max(stream["width"], stream["height"]) > 4096
+                or clip.stat().st_size > FILES_API_VIDEO_LIMIT_BYTES or max(stream["width"], stream["height"]) > 4096
                 or any((row["width"], row["height"]) != (stream["width"], stream["height"]) for row in frame_registry)):
             raise ValueError("meta_sam_encoded_frame_mapping_invalid")
     if any((root / f"intent-{i}.json").exists() for i in pending):

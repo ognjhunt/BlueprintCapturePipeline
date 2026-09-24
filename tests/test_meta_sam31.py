@@ -297,6 +297,25 @@ def test_completed_continuous_video_reuses_cpu_work_and_rejects_tampering(tmp_pa
         sam.prepare_continuous_video(**kwargs)
 
 
+def test_continuous_files_api_clip_can_exceed_old_inline_limit(tmp_path, monkeypatch):
+    source = tmp_path / "source.mov"
+    source.write_bytes(b"source")
+    probe = {"streams": [{"width": 1920, "height": 1080}],
+             "frames": [{"best_effort_timestamp_time": str(i)} for i in range(2)]}
+    monkeypatch.setattr(sam, "_probe_video", lambda _: probe)
+
+    def encode(argv, **_kwargs):
+        with Path(argv[-1]).open("wb") as output:
+            output.truncate(33 * 1024**2)
+
+    monkeypatch.setattr(sam.subprocess, "run", encode)
+    rows, video = sam.prepare_continuous_video(
+        source=source, source_digest=_sha256_file(source), root=tmp_path / "continuous")
+    assert len(rows) == 2
+    assert Path(video["path"]).stat().st_size == 33 * 1024**2
+    assert video["encoding"] == "upright_h264_crf18_veryfast_threads2_all_source_frames_v2"
+
+
 def test_failed_encoder_cannot_publish_partial_video(tmp_path, monkeypatch):
     source = tmp_path / "source.mov"
     source.write_bytes(b"source")
