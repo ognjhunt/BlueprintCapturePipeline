@@ -24,7 +24,9 @@ from tests.test_website_native_appearance import inputs
 
 def test_cc48_drawer_depth_prior_is_bound_to_its_own_source_evidence():
     from blueprint_pipeline.website_drawer_depth_prior import CC48_PRIOR, prior_for
-    from blueprint_pipeline.task_object_articulated_packaging import derived_website_cabinet_depth_hypothesis
+    from blueprint_pipeline.task_object_articulated_packaging import (
+        derived_website_cabinet_depth_hypothesis, plan_articulated_assembly)
+    from tests.test_task_object_articulated_packaging import _thin_website_cabinet
 
     configuration = {
         "schema_version": "articulated_replacement_authoring_configuration.v1",
@@ -41,12 +43,28 @@ def test_cc48_drawer_depth_prior_is_bound_to_its_own_source_evidence():
     assert prior_for(scene_id=configuration["scene_id"],
                      subject_identity=configuration["replacement_identity"]) is CC48_PRIOR
     hypothesis = derived_website_cabinet_depth_hypothesis(configuration, frames, 0.6)
-    assert hypothesis["estimated_depth_m"] == 0.55
-    assert hypothesis["estimated_usable_stroke_m"] == 0.4125
-    assert hypothesis["estimated_minimum_opening_m"] == 0.2475
+    assert hypothesis["estimated_depth_m"] == 0.508
+    assert hypothesis["estimated_usable_stroke_m"] == 0.381
+    assert hypothesis["estimated_minimum_opening_m"] == 0.2286
+    assert hypothesis["prior_comparison"]["owner_reported_dimensions_m"] == {
+        "depth": 0.508, "width": 0.4064, "height": 0.5842}
     assert hypothesis["prior_comparison"]["reference_models_are_exact_match"] is False
     assert prior_for(scene_id=configuration["scene_id"],
                      subject_identity=DRAWER_DEPTH_PRIOR["subject_identity"]) is None
+    authored = _thin_website_cabinet()
+    authored.update(scene_id=configuration["scene_id"], replacement_identity=configuration["replacement_identity"],
+                    metric_envelope=configuration["metric_envelope"])
+    authored["mechanism"]["estimated_front_normal_world"] = configuration["mechanism"]["estimated_front_normal_world"]
+    authored["mechanism"]["estimated_usable_stroke_m"] = 0.381
+    authored["mechanism"]["joint_limits"] = [0.0, 0.381]
+    authored["required_output"]["mass_kg_bounds"] = [4.0, 30.0]
+    authored["required_output"]["task_part_mass_kg_bounds"] = [0.5, 9.0]
+    authored["development_geometry_hypothesis"] = hypothesis
+    plan = plan_articulated_assembly(authored)
+    assert plan["assembly_dimensions_m"] == {
+        "depth_x": 0.508, "width_y": 0.4064, "height_z": 0.5842,
+        "authority": "development_only_owner_reported_dimensions"}
+    assert plan["source_geometry"]["projected_width_m"] != 0.4064
 
 
 def test_exact_drawer_successor_changes_only_stage_three_and_freezes_stroke(tmp_path, monkeypatch):

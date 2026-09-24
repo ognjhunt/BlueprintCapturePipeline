@@ -165,6 +165,9 @@ def derived_website_cabinet_depth_hypothesis(configuration: Mapping[str, Any],
                 "width_status": "outside_examples_review_needed" if width > prior["example_width_range_m"][1] else "within_example_range",
                 "height_status": "outside_examples_review_needed" if height > prior["example_height_range_m"][1] else "within_example_range",
                 "reference_models_are_exact_match": False,
+                **({"owner_reported_dimensions_m": dict(prior["owner_reported_dimensions_m"]),
+                    "owner_reported_source": "cabinet_owner_chat_2026-09-24"}
+                   if "owner_reported_dimensions_m" in prior else {}),
             },
             "whole_assembly_mass_interval_kg": list(prior["whole_assembly_mass_interval_kg"]),
             "revised_part_mass_bounds_kg": dict(prior["revised_part_mass_bounds_kg"]),
@@ -236,7 +239,10 @@ def _depth_hypothesis(configuration: Mapping[str, Any], *, source_depth: float,
             or not isinstance(raw.get("prior_comparison"), Mapping)
             or raw["prior_comparison"].get("source_width_m") != round(width, 5)
             or raw["prior_comparison"].get("source_height_m") != round(height, 5)
-            or raw["prior_comparison"].get("reference_models_are_exact_match") is not False):
+            or raw["prior_comparison"].get("reference_models_are_exact_match") is not False
+            or ("owner_reported_dimensions_m" in prior and
+                (raw["prior_comparison"].get("owner_reported_dimensions_m") != prior["owner_reported_dimensions_m"]
+                 or raw["prior_comparison"].get("owner_reported_source") != "cabinet_owner_chat_2026-09-24"))):
         raise AssetAuthoringError("articulated_cabinet_depth_hypothesis_invalid")
     return {**dict(raw), "source_projected_depth_m": round(source_depth, 5),
             "depth_disagreement_m": round(nominal - source_depth, 5),
@@ -752,6 +758,9 @@ def _plan_stacked_drawer_cabinet(configuration: Mapping[str, Any], contract: Map
     source_depth, width, height = source["depth"], source["width"], source["height"]
     hypothesis = _depth_hypothesis(configuration, source_depth=source_depth, width=width, height=height)
     depth = float(hypothesis["estimated_depth_m"]) if hypothesis else source_depth
+    owner_dimensions = (hypothesis.get("prior_comparison") or {}).get("owner_reported_dimensions_m") if hypothesis else None
+    if owner_dimensions:
+        width, height = float(owner_dimensions["width"]), float(owner_dimensions["height"])
     if min(depth, width, height) <= 6 * PANEL_THICKNESS_M:
         raise AssetAuthoringError("articulated_assembly_envelope_too_small")
     count, task_index, assumptions = _resolve_bay_layout(
@@ -786,11 +795,12 @@ def _plan_stacked_drawer_cabinet(configuration: Mapping[str, Any], contract: Map
                            "world_yaw_rad_from_estimated_front_normal": yaw,
                            "estimated_front_normal_world": normal},
         "assembly_dimensions_m": {"depth_x": round(depth, 5), "width_y": round(width, 5), "height_z": round(height, 5),
-                                  "authority": "development_only_depth_hypothesis" if hypothesis else
+                                  "authority": ("development_only_owner_reported_dimensions" if owner_dimensions else
+                                                "development_only_depth_hypothesis") if hypothesis else
                                                "estimated_envelope_projected_on_estimated_front_normal"},
         "source_geometry": {"aabb_min_xyz_m": list(lower), "aabb_max_xyz_m": list(upper),
                             "projected_depth_m": round(source_depth, 5),
-                            "projected_width_m": round(width, 5), "height_m": round(height, 5),
+                            "projected_width_m": round(source["width"], 5), "height_m": round(source["height"], 5),
                             "authority": "retained_source_envelope_not_physical_measurement"},
         **({"development_geometry_hypothesis": hypothesis} if hypothesis else {}),
         "bay_count": count, "task_bay_index": task_index,
