@@ -457,6 +457,47 @@ def test_rigid_readback_uses_live_physical_pad_centers_when_available(monkeypatc
     assert sample["destination_pose_world"] == measured_pose
 
 
+def test_g1_rigid_readback_requires_exact_dex3_grasp_bodies() -> None:
+    built = _built()
+    built.plan["task_kind"] = "rigid_pick_place"
+    built.plan["task_sample_binding"] = {"joint_ids": []}
+    built.plan["task_spec"] = {
+        "task_kind": "rigid_pick_place",
+        "interaction_affordance": {
+            "asset_root_from_scoring_frame": {
+                "position_m": [0.0, 0.0, 0.0],
+                "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+            }
+        },
+    }
+    built.plan["articulation"]["non_support_scene_contact_body_paths"] = []
+    built.contact_sensor_names["task_support_contact"] = ("task_scene_contact",)
+    del built.contact_sensor_names["task_scene_contact"]
+    built.plan["robot"] = {
+        "robot_id": "unitree_g1",
+        "task_contact_body_paths": [
+            "{ENV_REGEX_NS}/Robot/right_hand_index_1_link",
+            "{ENV_REGEX_NS}/Robot/right_hand_thumb_2_link",
+        ],
+    }
+    with pytest.raises(NativeTaskArenaReadbackError, match="g1_grasp_frame_invalid"):
+        NativeRigidTaskArenaReadback(built)
+
+    built.plan["robot"]["grasp_frame"] = {
+        "kind": "body_midpoint",
+        "body_names": ["right_hand_index_1_link", "right_hand_thumb_2_link"],
+    }
+    robot = built.env.unwrapped.scene["robot"]
+    robot.data.body_names = ["right_hand_index_1_link", "right_hand_thumb_2_link"]
+    robot.data.body_pose_w = [[
+        [1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0],
+        [1.0, 2.1, 3.0, 0.0, 0.0, 0.0, 1.0],
+    ]]
+    sample = NativeRigidTaskArenaReadback(built).read_task_sample()
+    assert sample["grasp_frame_position_world_m"] == pytest.approx([1.0, 2.05, 3.0])
+    assert sample["finger_separation_m"] == pytest.approx(0.1)
+    assert sample["grasp_frame_position_source"] == "native_g1_dex3_body_origin_midpoint"
+
 def test_rigid_articulation_readback_monitors_every_locked_joint_during_motion() -> None:
     built = _built()
     built.plan["task_kind"] = "rigid_pick_place"

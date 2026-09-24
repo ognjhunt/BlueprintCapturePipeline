@@ -1037,6 +1037,23 @@ class NativeRigidTaskArenaReadback:
             raise NativeTaskArenaReadbackError(
                 ["native_task_arena_readback_task_kind_invalid"]
             )
+        robot = built.plan.get("robot") or {}
+        if robot.get("robot_id") == "unitree_g1" and gripper_pad_readback_callback is None:
+            grasp = robot.get("grasp_frame") or {}
+            names = grasp.get("body_names")
+            contacts = robot.get("task_contact_body_paths")
+            if (
+                grasp.get("kind") != "body_midpoint"
+                or not isinstance(names, (list, tuple))
+                or len(names) != 2
+                or any(not isinstance(name, str) or not name for name in names)
+                or len(set(names)) != 2
+                or not isinstance(contacts, (list, tuple))
+                or any(f"{{ENV_REGEX_NS}}/Robot/{name}" not in contacts for name in names)
+            ):
+                raise NativeTaskArenaReadbackError(
+                    ["native_task_arena_g1_grasp_frame_invalid"]
+                )
 
     def read_task_sample(self) -> dict[str, Any]:
         env = getattr(self._built.env, "unwrapped", self._built.env)
@@ -1180,7 +1197,9 @@ class NativeRigidTaskArenaReadback:
                     ["native_task_arena_measured_gripper_pads_invalid"]
                 )
             grasp_position_source = (
-                "native_franka_pose_servo.live_physical_pad_centers"
+                "native_g1_measured_pad_centers"
+                if self._built.plan["robot"].get("robot_id") == "unitree_g1"
+                else "native_franka_pose_servo.live_physical_pad_centers"
             )
         else:
             grasp_frame = self._built.plan["robot"]["grasp_frame"]
@@ -1196,7 +1215,11 @@ class NativeRigidTaskArenaReadback:
                 raise NativeTaskArenaReadbackError(
                     ["native_task_arena_grasp_frame_invalid"]
                 )
-            grasp_position_source = "native_inner_finger_body_origin_midpoint"
+            grasp_position_source = (
+                "native_g1_dex3_body_origin_midpoint"
+                if self._built.plan["robot"].get("robot_id") == "unitree_g1"
+                else "native_inner_finger_body_origin_midpoint"
+            )
         asset_root_pose = [
                 *[float(value) for value in native_pose[:3]],
                 *_native_xyzw_to_contract_xyzw(native_pose[3:7]),

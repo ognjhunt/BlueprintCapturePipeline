@@ -120,6 +120,7 @@ def build_g1_embodiment(robot: Mapping[str, Any], *, enable_cameras: bool, pose_
     )
     cfg = embodiment.scene_config.robot
     cfg.spawn.usd_path = robot["usd_path"]
+    cfg.init_state.joint_pos = dict(robot["joint_reset_positions_rad"])
     parameters = robot["actuator_parameters"]
     cfg.actuators = {
         "whole_body_and_hands": IdealPDActuatorCfg(
