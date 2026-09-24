@@ -28,6 +28,8 @@ from blueprint_pipeline.claude_opus_authoring_invoker import (
 from blueprint_pipeline.claude_opus_native_tool_loop import (
     execute_claude_agent_authoring, inspect_completed_claude_authoring,
 )
+from blueprint_pipeline import claude_opus_native_tool_loop as native_claude
+from blueprint_pipeline import task_object_agent_cad as agent_cad
 from blueprint_pipeline.claude_opus_sdk_session import (
     execute_claude_sdk_agent_authoring, inspect_completed_claude_sdk_authoring,
 )
@@ -314,6 +316,99 @@ def test_sdk_claude_uses_real_tools_signed_calls_and_retained_reviews(agent_fixt
     with pytest.raises(ClaudeAuthoringBlocked, match='tool_output_changed|conversation_request_changed'):
         inspect_completed_claude_sdk_authoring(output_root=f.kwargs['output_root'],
             budget_root=f.kwargs['budget_root'], request_value=f.kwargs['request_value'])
+
+
+def test_future_scene_sdk_stage_rehearsal_keeps_signed_cap_and_reuses_asset(agent_fixture, monkeypatch):
+    """Test-only SDK substitution through the real Claude stage boundary."""
+    f = agent_fixture
+    key = f.runtime / 'test-anthropic-key'
+    key.write_text('test-only-placeholder')
+    key.chmod(0o600)
+    monkeypatch.setenv('ANTHROPIC_API_KEY_FILE', str(key))
+    stage_file = f.runtime / 'future-scene-input.json'
+    stage_file.write_text('{"fixture":"future-scene"}')
+    rights = {'schema_version': 'website_native_rights_admission.v1',
+        'execution_authority': {'allowed_providers': ['vast', 'anthropic']},
+        'consent': {'provider_terms_reference': 'anthropic:opus-5-5-private-processing-v1'},
+        'private_provider_processing_allowed': True, 'provider_training_allowed': False}
+    rights['digest'] = canonical_digest(rights, digest_field='digest')
+    values = {'BLUEPRINT_SCENE_CONFIGURATION_STAGE_INPUT': str(stage_file),
+        'BLUEPRINT_SCENE_CONFIGURATION_AUTHORITY_DIGEST': 'sha256:' + 'a' * 64,
+        'BLUEPRINT_SCENE_CONFIGURATION_AUTHORING_PROVIDER': 'anthropic',
+        'BLUEPRINT_SCENE_CONFIGURATION_ANTHROPIC_MAX_COST_USD': '7',
+        'BLUEPRINT_SCENE_CONFIGURATION_ANTHROPIC_MAX_REQUESTS': '8'}
+    stage_input = {'run_id': f.request.run_id, 'configuration': {
+        'authoring_model_provider': 'anthropic',
+        'source_observation_kind': 'website_capture_frames'}}
+    names = list(f.steps[:4])
+    sent, reviews = [], []
+
+    def fake_send(payload, _key):
+        sent.append(payload)
+        if payload.get('tools'):
+            name, arguments = names.pop(0)
+            return {'id': f'author_{len(sent)}', 'model': CLAUDE_MODEL, 'stop_reason': 'tool_use',
+                'content': [{'type': 'thinking', 'thinking': '', 'signature': f'signed_{len(sent)}'},
+                            {'type': 'tool_use', 'id': f'tool_{len(sent)}', 'name': name,
+                             'input': arguments}],
+                'usage': {'input_tokens': 500, 'output_tokens': 100}}
+        reviews.append(payload)
+        output = f.model.physics if len(reviews) == 1 else {
+            'source_object_recognizable': True, 'source_color_and_material_preserved': True,
+            'opaque_surfaces_opaque': True, 'required_parts_present': True,
+            'no_obvious_geometry_artifacts': True, 'blockers': [],
+            'repair_instructions': '', 'unobserved_surface_limitations': ['underside']}
+        return {'id': f'review_{len(sent)}', 'model': CLAUDE_MODEL, 'stop_reason': 'end_turn',
+            'content': [{'type': 'text', 'text': json.dumps(output)}],
+            'usage': {'input_tokens': 500, 'output_tokens': 100}}
+
+    original_init = ClaudeOpusAuthoringInvoker.__init__
+    def fake_invoker_init(self, config, *, audit, verify_authority=None, send=None):
+        original_init(self, config, audit=audit, verify_authority=verify_authority, send=fake_send)
+    monkeypatch.setattr(ClaudeOpusAuthoringInvoker, '__init__', fake_invoker_init)
+    # The deployed selector remains native. This substitution exercises the
+    # prospective SDK implementation without changing paid stage routing.
+    monkeypatch.setattr(native_claude, 'execute_claude_agent_authoring',
+                        execute_claude_sdk_agent_authoring)
+    monkeypatch.setattr(native_claude, 'inspect_completed_claude_authoring',
+                        inspect_completed_claude_sdk_authoring)
+    def fake_cad(*, program, output_root, request, **_kwargs):
+        return f.kwargs['cad_executor'](program=program, output_root=output_root, request=request)
+    monkeypatch.setattr(agent_cad, 'execute_cad_program', fake_cad)
+    monkeypatch.setattr(driver, '_finish_component',
+        lambda **kwargs: {'status': 'stage_rehearsal_completed',
+                          'result_digest': kwargs['authored']['result_digest']})
+    cad_root = f.runtime / 'cad-skills'
+    skill = cad_root / 'text-to-cad/skills/cad/SKILL.md'
+    skill.parent.mkdir(parents=True)
+    skill.write_text('Pinned fixture CAD skill')
+    arguments = dict(values=values, stage_input=stage_input, rights=rights,
+        request=f.request, articulated=False, plan=None, part_requests=None,
+        runtime=f.runtime, authored_root=f.kwargs['output_root'],
+        output=f.runtime / 'delivery', physics_bounds={}, configuration={},
+        source_record={}, rights_record={}, cad_runtime={}, cad_root=cad_root,
+        verified_sources={}, blender={'executable': 'fixture'},
+        sandbox=f.kwargs['blender_runner'], result_path=f.runtime / 'scene-result.json',
+        package_candidate=lambda **_kwargs: {})
+    first = driver._execute_claude_stage(**arguments)
+    second = driver._execute_claude_stage(**arguments)
+    assert first == second and first['status'] == 'stage_rehearsal_completed'
+    assert f.executed == ['broken', 'repaired', 'cad', 'blender']
+    assert len(sent) == 6 and not names
+    audit = json.loads((f.runtime / 'inference_audit.json').read_text())
+    assert audit['reservation_count'] == 6 and audit['in_flight_unknown_count'] == 0
+    assert audit['reserved_max_cost_usd'] < 7
+    assert json.loads((f.kwargs['budget_root'] / 'asset_session/completion.json').read_text())[
+        'agent_runtime'] == 'local_openai_agents_sdk'
+    for changed in (
+            {**arguments, 'stage_input': {**stage_input, 'configuration': {
+                **stage_input['configuration'], 'authoring_model_provider': 'openai'}}},
+            {**arguments, 'rights': {**rights, 'provider_training_allowed': True}},
+            {**arguments, 'values': {**values,
+                'BLUEPRINT_SCENE_CONFIGURATION_ANTHROPIC_MAX_COST_USD': '7.01'}}):
+        with pytest.raises(ClaudeAuthoringBlocked, match='signed_provider_authority_missing|paid_cap_invalid'):
+            driver._execute_claude_stage(**changed)
+    assert len(sent) == 6
 
 
 def test_wrong_physical_id_gets_one_bounded_retry_before_visual_review(agent_fixture):
