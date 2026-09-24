@@ -130,3 +130,17 @@ accepts only the box-manipulation candidates, and navigation still needs a
 site-grounded task/goal and score contract. The π0.5 upstream configs also
 contain absolute base-model references that need a verified loader mapping
 before their servers can be admitted.
+
+For an authorized development run, `start_g1_policy_server` in
+`native_g1_policy_server_supervisor.py` owns the pinned HumanoidArena HTTP
+server as a child process. It reruns the staged-input check, requires the
+official checkout at the inventory's exact source revision with no local
+changes, refuses an unverified absolute π0.5 base-model reference, launches
+the selected checkpoint on loopback, checks that the child owns the listener,
+and requires the official `/reset` acknowledgement. Its lease must be closed
+in `finally`; closing it waits for that child to exit. The receipt records
+the launch command, interpreter hash, candidate, scene, and listener PID.
+The server's response does not expose loaded-weight identity, so the receipt
+keeps `loaded_checkpoint_identity_observed=false` and makes no inference or
+task-success claim. A run worker still needs to own this lease and the SONIC
+controller through the terminal episode and teardown receipt.

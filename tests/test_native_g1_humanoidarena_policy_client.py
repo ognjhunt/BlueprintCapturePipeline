@@ -24,7 +24,7 @@ def test_exact_upstream_request_and_action_chunk() -> None:
 
     def transport(path, payload):
         requests.append((path, payload))
-        return {} if path == "/reset" else {"action_chunk": [_action(), _action()]}
+        return {"ok": True} if path == "/reset" else {"action_chunk": [_action(), _action()]}
 
     client = NativeG1HumanoidArenaPolicyClient(
         base_url="http://127.0.0.1:18080", transport=transport
@@ -74,3 +74,11 @@ def test_inference_refuses_latents_bad_rows_and_unbound_input() -> None:
         )
     with pytest.raises(ValueError, match="endpoint_invalid"):
         NativeG1HumanoidArenaPolicyClient(base_url="http://untrusted.example:18080")
+
+
+def test_reset_requires_official_server_ack() -> None:
+    client = NativeG1HumanoidArenaPolicyClient(
+        base_url="http://127.0.0.1:18080", transport=lambda path, payload: {"error": "failed"}
+    )
+    with pytest.raises(ValueError, match="reset_ack_invalid"):
+        client.reset(seed=7)
