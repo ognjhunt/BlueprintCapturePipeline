@@ -46,18 +46,19 @@ rigid readback checks this relation before an episode and derives the grasp
 midpoint from those two live Dex3 bodies. The G1 spawn adapter applies all 43
 configured reset joint positions to the Arena articulation's initial state.
 
-`native_g1_shared_scene_episode.py` can sequence either pinned HumanoidArena
-box-manipulation candidate through the same Arena scene. It binds the prompt to
-the scene task, uses the observed head camera and 64-value state for each policy
+`native_g1_shared_scene_episode.py` can sequence pinned HumanoidArena
+manipulation and vision-navigation candidates through the same Arena scene. It
+binds the prompt to the scene task or explicit navigation goal, uses the
+observed head camera and 64-value state for each policy
 query, sends every returned action through the pinned SONIC target bridge, and
 retains calibrated lossless head input and head/overview review PNGs plus a task
 sample at each step. The shared media finalizer seals derived H.264 review
 videos for both cameras, linked to the immutable frame manifest. Its result is
 still an unscored development trace: the production worker must attest the
 executing checkpoint and controller, score the bounded task, and retain a
-terminal episode receipt before either candidate is offered as runnable.
-Movement policies require their own verified action/controller binding; the
-box-manipulation candidates do not prove movement-policy support.
+terminal episode receipt before any candidate is offered as runnable. The
+navigation candidates use the same semantic-v3 action and SONIC controller
+binding, but exact checkpoint inference remains unobserved.
 
 `run_g1_built_scene_policy_episode` now connects that loop to the existing
 native G1 joint environment, live rigid-task scene readback, and shared task
@@ -66,8 +67,8 @@ reset sample before the first policy query, then writes a trace and a scored
 development receipt after the episode. A scored failure is still a valid
 observed outcome. The receipt keeps `ranking_eligible` and policy-runtime
 identity false: the qualified worker has not yet bound the running server to
-the checkpoint or admitted G1 in the published bundle/run path. Navigation
-remains outside this box-task scorer.
+the checkpoint or admitted G1 in the published bundle/run path. The separate
+navigation-goal score has the same development-only ceiling.
 
 The two box checkpoints are separately pinned in
 `configs/g1_humanoidarena_checkpoint_inventory.v1.json`. A team can stage one
@@ -96,9 +97,9 @@ use the same front image, 64-value observation state, 40-value semantic action,
 and SONIC controller interface as the box candidates. Stage either with the
 same fetch command and its candidate id. These are navigation checkpoints for
 moving to a marked area; their file identities do not establish a runnable
-navigation task in Blueprint's captured site. A site-grounded movement task
-contract, checkpoint/server attestation, and live episode evidence are still
-required before offering them in the run configurator.
+navigation task in Blueprint's captured site. The explicit goal and visible
+marker below supply a development task contract; checkpoint/server attestation
+and live episode evidence are still required before offering them as runnable.
 
 Before a local or container attempt, run the same offline preflight against
 the staged packet and runtime inputs. `--bundle-root` is the root holding the
@@ -125,9 +126,8 @@ PYTHONPATH=src python scripts/preflight_g1_shared_scene_run.py \
 The receipt says `staged_inputs_verified` and records the exact selected
 candidate, scene digest, and file identities. It explicitly reports that no
 server or SONIC process was attested and no episode or score exists. It does
-not make a movement candidate runnable: the shared episode loop currently
-accepts only the box-manipulation candidates, and navigation still needs a
-site-grounded task/goal and score contract. The π0.5 upstream configs also
+not make a movement candidate runnable: the shared episode loop and
+navigation score still need a live checkpoint/controller run. The π0.5 upstream configs also
 contain absolute base-model references that need a verified loader mapping
 before their servers can be admitted.
 
@@ -153,7 +153,7 @@ worker does not invoke this assembly yet, and no GPU run has verified it.
 development worker for that assembly. It consumes the same sealed
 `native_task_arena_packet` that the Franka path uses. Its request schema is
 `native_g1_development_episode_request.v1`; it names the packet root, selected
-box candidate, checkpoint inventory/root, pinned server and SONIC sources,
+candidate, checkpoint inventory/root, pinned server and SONIC sources,
 encoder/decoder paths and hashes, policy-server Python executable, loopback
 port, `cuda:0`, maximum steps, and the existing Isaac runtime provisioning
 receipt. The request and embedded rights review both carry canonical digests.
@@ -170,5 +170,47 @@ in that packet, checks the device readback, runs the supervised episode, and
 closes the environment and simulator even after failure. The worker writes
 `native_g1_development_worker_result.v1.json` with the episode receipt and
 teardown states. This is a development simulator path. The published policy
-bundle, container launch profile, live checkpoint inference, movement task,
-and public video approval remain separate gates.
+bundle, container launch profile, live checkpoint inference, movement
+clearance, and public video approval remain separate gates.
+
+For the two pinned `HSI_vision_navi` candidates, the same rigid-task packet
+may include a `task_spec.g1_navigation_goal` side objective. The task still
+uses its original site, object, scene plan, and manipulation prompt. The
+movement candidate receives its published instruction, “Avoid obstacles and
+move to the yellow marked area.” The goal contract requires a measured world
+center, acceptance radius, maximum root-height drift, and settle window. It
+must exactly match an explicit non-colliding `flat_yellow_disc` target marker
+in `task_spec.visible_target_marker`. The Arena builder renders that marker
+in the same scene and leaves the captured site assets untouched.
+
+For example, add these two fields to the existing rigid task spec before
+sealing the packet (the coordinates must come from that site's measured goal):
+
+```json
+{
+  "visible_target_marker": {
+    "schema_version": "native_task_target_marker.v1",
+    "shape": "flat_yellow_disc",
+    "non_colliding": true,
+    "surface_position_world_m": [2.0, 0.0, 0.0],
+    "radius_m": 0.4
+  },
+  "g1_navigation_goal": {
+    "schema_version": "native_g1_navigation_goal.v1",
+    "center_world_m": [2.0, 0.0, 0.0],
+    "acceptance_radius_m": 0.3,
+    "max_root_height_drift_m": 0.2,
+    "settle_window_samples": 2,
+    "task_instruction": "Avoid obstacles and move to the yellow marked area."
+  }
+}
+```
+
+The navigation scorer reads G1 root position from Isaac at reset and after
+each SONIC-controlled action. It requires the robot to start outside the goal
+and hold inside the visible target for the terminal settle window without a
+large root-height drop. The receipt reports measured distance, first settled
+step, and terminal hold. It explicitly leaves obstacle-clearance scoring
+false, so it cannot establish the full “avoid obstacles” behavior or physical
+navigation readiness. Navigation remains development-only until a compatible
+checkpoint runs and the goal/clearance evidence is inspected.

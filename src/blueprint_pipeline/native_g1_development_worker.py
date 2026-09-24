@@ -16,9 +16,10 @@ from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
 from .native_g1_policy_server_supervisor import PINNED_SOURCE_REVISION
+from .native_g1_navigation_goal import validate_g1_navigation_goal
 from .native_g1_runtime_assembly import run_g1_supervised_built_scene_episode
 from .native_g1_run_preflight import preflight_g1_shared_scene_run
-from .native_g1_shared_scene_episode import G1_BOX_CANDIDATES
+from .native_g1_shared_scene_episode import G1_BOX_CANDIDATES, G1_NAVIGATION_CANDIDATES
 
 
 REQUEST_SCHEMA = "native_g1_development_episode_request.v1"
@@ -41,7 +42,7 @@ def _request(value: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("g1_worker_request_invalid")
     if (
         request.get("schema_version") != REQUEST_SCHEMA
-        or request.get("candidate_id") not in G1_BOX_CANDIDATES
+        or request.get("candidate_id") not in G1_BOX_CANDIDATES | G1_NAVIGATION_CANDIDATES
         or request.get("device") != "cuda:0"
         or isinstance(request.get("port"), bool)
         or not isinstance(request.get("port"), int)
@@ -206,7 +207,8 @@ def run_g1_development_worker(
             or preflight.get("scene_plan_digest")
             != packet_receipt.get("arena_scene_plan_digest")
             or preflight.get("robot_id") != "unitree_g1"
-            or preflight.get("policy_role") != "manipulation"
+            or preflight.get("policy_role")
+            != ("movement_navigation" if sealed["candidate_id"] in G1_NAVIGATION_CANDIDATES else "manipulation")
         ):
             raise ValueError("g1_worker_preflight_incomplete")
         phase = "rights_review"
@@ -218,6 +220,9 @@ def run_g1_development_worker(
             or (plan.get("robot") or {}).get("robot_id") != "unitree_g1"
         ):
             raise ValueError("g1_worker_scene_changed_after_preflight")
+        if sealed["candidate_id"] in G1_NAVIGATION_CANDIDATES:
+            phase = "navigation_goal_validation"
+            validate_g1_navigation_goal(plan.get("task_spec") or {})
         phase = "simulator_launch"
         app, launch = _launch_scene(request=sealed, plan=plan)
         phase = "scene_build"

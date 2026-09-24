@@ -187,6 +187,7 @@ POLICY_EXTRA_RUNTIME_MODULE_NAMES = (
     "native_g1_humanoidarena_interface.py",
     "native_g1_humanoidarena_policy_client.py",
     "native_g1_joint_episode_environment.py",
+    "native_g1_navigation_goal.py",
     "native_g1_official_sonic_target_bridge.py",
     "native_g1_run_preflight.py",
     "native_g1_shared_scene_episode.py",

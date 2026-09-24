@@ -72,7 +72,7 @@ def visible_target_marker_parameters(plan: Mapping[str, Any]) -> tuple[tuple[flo
     if marker is None:
         return None
     try:
-        if not isinstance(marker, Mapping) or marker.get("non_colliding") is not True or marker.get("shape") != "flat_green_disc":
+        if not isinstance(marker, Mapping) or marker.get("non_colliding") is not True or marker.get("shape") not in {"flat_green_disc", "flat_yellow_disc"}:
             raise ValueError("shape")
         radius = float(marker["radius_m"])
         if explicit:
@@ -1352,6 +1352,11 @@ def build_native_task_arena_environment(
     marker_parameters = visible_target_marker_parameters(plan)
     if marker_parameters is not None:
         marker_position, marker_radius = marker_parameters
+        explicit_marker = (plan.get("task_spec") or {}).get("visible_target_marker")
+        yellow_marker = (
+            isinstance(explicit_marker, Mapping)
+            and explicit_marker.get("shape") == "flat_yellow_disc"
+        )
         marker = SpawnerObject(
             name="policy_target_marker",
             prim_path="{ENV_REGEX_NS}/policy_target_marker",
@@ -1363,8 +1368,8 @@ def build_native_task_arena_environment(
                 collision_props=None,
                 rigid_props=None,
                 visual_material=sim_utils.PreviewSurfaceCfg(
-                    diffuse_color=(0.03, 0.8, 0.12),
-                    emissive_color=(0.0, 0.12, 0.0),
+                    diffuse_color=(0.95, 0.78, 0.04) if yellow_marker else (0.03, 0.8, 0.12),
+                    emissive_color=(0.12, 0.08, 0.0) if yellow_marker else (0.0, 0.12, 0.0),
                     roughness=0.8,
                 ),
             ),
