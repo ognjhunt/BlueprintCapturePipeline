@@ -77,6 +77,48 @@ def test_completion_sends_plain_frame_keeps_whole_edit_references_first_edit_and
     assert len(calls) == 2
 
 
+def test_largest_removal_view_is_the_edited_anchor_for_every_other_view(tmp_path, monkeypatch):
+    frames = []
+    for index, count in enumerate((5, 20, 10)):
+        image, mask = tmp_path / f"source-{index}.png", tmp_path / f"mask-{index}.png"
+        Image.new("RGB", (10, 20), ("red", "green", "blue")[index]).save(image)
+        pixels = np.zeros((20, 10), dtype=np.uint8)
+        pixels.reshape(-1)[:count] = 255
+        Image.fromarray(pixels).save(mask)
+        frames.append({"frame_id": str(index), "image_path": str(image), "image_digest": _sha256_file(image),
+                       "remaining_mask_path": str(mask), "remaining_mask_digest": _sha256_file(mask),
+                       "remaining_pixel_count": count})
+    _, _, digest = completion._validated_backend(completion.REGISTRY_PATH, backend_id=completion.BACKEND_ID)
+    admission = {"schema_version": "paid_lane_admission.v1", "status": "admitted", "blockers": [],
+                 "resource_class": "openai_api_candidate", "external_disclosure_allowed": True,
+                 "allocation_binding_digest": canonical_digest(completion.completion_binding(
+                     frames, task_digest="task", backend_digest=digest)), "maximum_cost_usd": 1.0}
+    calls = []
+
+    def edit(**kwargs):
+        calls.append(kwargs)
+        stream = BytesIO()
+        Image.new("RGB", kwargs["expected_size"], ("white", "black", "gray")[len(calls) - 1]).save(stream, format="PNG")
+        return {"succeeded": True, "generated": stream.getvalue(),
+                "usage": _normalized_usage({"output_tokens_details": {"image_tokens": 100}})}
+
+    monkeypatch.setattr(completion, "_execute_frame_request", edit)
+    outputs = completion.complete_background_images(frames=frames, task_digest="task", output_root=tmp_path / "edits",
+                                                    admission=admission, admission_grant=_grant(admission), token="test")
+    # Frame 1 shows the most of the object: it is edited first, against an original view.
+    first = np.asarray(Image.open(BytesIO(calls[0]["image_bytes"])).convert("RGB"))
+    assert np.all(first[first.any(axis=-1)] == [0, 128, 0])
+    assert calls[0]["reference_images"] == [Path(frames[0]["image_path"]).read_bytes()]
+    # Every other view references that edited anchor, never the previous edit.
+    anchor = Path(outputs[1]["image_path"]).read_bytes()
+    assert [call["reference_images"] for call in calls[1:]] == [[anchor], [anchor]]
+    assert [output["frame_id"] for output in outputs] == ["0", "1", "2"]
+    # The rules name the open bay for built-in objects, in the edit and in the review.
+    assert "leave the empty bay it occupied open to its full depth" in calls[0]["prompt"]
+    assert "never fill that space with cabinets, doors, drawers, panels" in calls[0]["prompt"]
+    assert "not new cabinets, doors, drawers or panels" in completion.REVIEW_PROMPT
+
+
 @pytest.mark.parametrize("fault", ["binding", "rights", "budget", "changed_source"])
 def test_completion_holds_before_provider_mutation(tmp_path, monkeypatch, fault):
     frames, admission = _inputs(tmp_path)
