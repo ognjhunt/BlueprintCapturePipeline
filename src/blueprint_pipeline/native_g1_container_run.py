@@ -131,6 +131,8 @@ def prepare_g1_container_run(
         "docker", "run", "--rm", "--pull", "never", "--gpus", "device=0",
         "--network", "none", "--shm-size", "8g",
         "--env", "ACCEPT_EULA=Y", "--env", "PRIVACY_CONSENT=Y",
+        "--env", "GIT_OPTIONAL_LOCKS=0",
+        "--env", "NO_PROXY=127.0.0.1,localhost",
         "--env", f"PYTHONPATH={SOURCE_ROOT}",
         "--workdir", str(OUTPUT_ROOT),
         "--mount", f"type=bind,src={source},dst={SOURCE_ROOT},readonly",
