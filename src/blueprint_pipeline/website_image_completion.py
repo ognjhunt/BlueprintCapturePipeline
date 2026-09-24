@@ -1,7 +1,10 @@
-"""Fill only unseen task-object background through the existing image adapter.
+"""Remove task objects from website views through the existing image adapter.
 
-ADP-009B, public_scene_day_14: source pixels outside the missing region are
-copied exactly. Generated repairs remain estimates and require review before
+The editor receives the plain frame, without a mask, and a prompt naming the
+objects to remove. Confining the fill to a segmentation silhouette left the
+object's outline, shadow and reflections behind, so the whole edited frame is
+kept and marked as generated. SAM masks still choose which views need an edit.
+Generated views remain estimates and require the independent review before
 reconstruction. A retained request is never purchased twice on a retry.
 """
 
@@ -18,7 +21,6 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 from PIL import Image, ImageOps
-from scipy.ndimage import distance_transform_edt
 
 from .common import write_json
 from .clean_plate_removal_analysis_gemini import DEFAULT_MODEL, _api_key
@@ -53,10 +55,11 @@ CONSISTENCY_DIAGNOSIS_PROMPT = (
 )
 
 PROMPT = (
-    "Edit only the FIRST image. Complete the transparent masked holes with realistic background surfaces "
-    "continuing from the surrounding room. Remove the task object completely in those holes. Preserve "
-    "all other objects, including movable objects unrelated to the task, supports, and obstacles. "
-    "Preserve the original camera, perspective, lighting, materials and object positions. "
+    "Edit only the FIRST image. Remove the task objects listed below completely and naturally, together "
+    "with their shadows, reflections and any motion blur, and show the room surfaces that were behind them "
+    "as a realistic continuation of the surrounding room. Change nothing else. Preserve all other objects, "
+    "including movable objects unrelated to the task, supports, and obstacles. "
+    "Preserve the original camera, framing, perspective, lighting, materials and object positions. "
     "Additional images show other views of this SAME room, either original or already edited: use them as "
     "appearance references for consistent revealed surfaces, never as replacement camera viewpoints. "
     "Original reference views may still contain the removal targets; do not recreate those objects. "
@@ -74,8 +77,8 @@ def _completion_prompt(targets: Sequence[Mapping[str, Any]]) -> str:
 
 def completion_binding(frames: Sequence[Mapping[str, Any]], *, task_digest: str, backend_digest: str,
                        targets: Sequence[Mapping[str, Any]] = ()) -> dict[str, Any]:
-    return {"schema_version": "website_image_completion_request.v1", "task_digest": task_digest,
-            "backend_digest": backend_digest, "prompt": _completion_prompt(targets),
+    return {"schema_version": "website_image_completion_request.v2", "task_digest": task_digest,
+            "backend_digest": backend_digest, "prompt": _completion_prompt(targets), "edit_region": "full_frame",
             "frames": [{**{key: frame[key] for key in ("frame_id", "image_digest", "remaining_mask_digest")},
                         "edge_feather_pixels": frame.get("edge_feather_pixels", 0)}
                        for frame in frames]}
@@ -87,7 +90,7 @@ def _png(image: Image.Image) -> bytes:
     return stream.getvalue()
 
 
-def _canvas(image: Image.Image, mask: Image.Image) -> tuple[Image.Image, Image.Image, tuple[int, int, int, int]]:
+def _canvas(image: Image.Image) -> tuple[Image.Image, tuple[int, int, int, int]]:
     # Letterbox rather than stretch camera geometry into a provider output size.
     size = (1024, 1536) if image.height > image.width else (1536, 1024)
     fitted = ImageOps.contain(image, size, Image.Resampling.LANCZOS)
@@ -95,11 +98,7 @@ def _canvas(image: Image.Image, mask: Image.Image) -> tuple[Image.Image, Image.I
     box = (x, y, x + fitted.width, y + fitted.height)
     canvas = Image.new("RGB", size)
     canvas.paste(fitted, (x, y))
-    alpha = Image.new("L", size, 255)
-    alpha.paste(ImageOps.invert(mask.resize(fitted.size, Image.Resampling.NEAREST)), (x, y))
-    edit_mask = Image.new("RGBA", size, (0, 0, 0, 255))
-    edit_mask.putalpha(alpha)
-    return canvas, edit_mask, box
+    return canvas, box
 
 
 def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_digest: str,
@@ -174,9 +173,6 @@ def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_dige
             source = Image.open(source_path).convert("RGB")
             mask = Image.open(mask_path).convert("L")
             editable = np.asarray(mask) == 255
-            feather_pixels = frame.get("edge_feather_pixels", 0)
-            if isinstance(feather_pixels, bool) or not isinstance(feather_pixels, int) or feather_pixels < 0:
-                raise ValueError("website_image_completion_feather_invalid")
             if mask.size != source.size or set(np.unique(mask)) - {0, 255} or int(editable.sum()) != frame["remaining_pixel_count"]:
                 raise ValueError("website_image_completion_mask_invalid")
             if not editable.any():
@@ -193,7 +189,7 @@ def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_dige
             else:
                 if spent + cap > budget:
                     raise ValueError("website_image_completion_budget_exhausted")
-                canvas, edit_mask, box = _canvas(source, mask)
+                canvas, box = _canvas(source)
                 # Retain intent before the paid call, including its reference.
                 with receipt_path.open("x") as stream:
                     json.dump({"status": "submitting", "request_digest": request_digest,
@@ -210,7 +206,7 @@ def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_dige
                             raise ValueError("website_image_completion_source_changed")
                         reference = other_path.read_bytes()
                 response = _execute_frame_request(execution=execution, prompt=binding["prompt"], request_digest=request_digest,
-                                                  image_bytes=_png(canvas), mask_bytes=_png(edit_mask),
+                                                  image_bytes=_png(canvas), mask_bytes=None,
                                                   expected_size=canvas.size, token=token, opener=opener,
                                                   reference_images=([reference] if reference else []))
                 if not response["succeeded"]:
@@ -220,15 +216,12 @@ def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_dige
                 cost = _usage_cost(response["usage"], execution["pricing_binding"])
                 spent += cost
                 generated = Image.open(BytesIO(response["generated"])).convert("RGB").crop(box).resize(source.size, Image.Resampling.LANCZOS)
-                # Blend only inside the expanded mask. The original object is
-                # fully replaced; the transition lies on surrounding background.
-                alpha = (np.clip(distance_transform_edt(editable) / feather_pixels, 0, 1)
-                         if feather_pixels else editable.astype(float))[..., None]
-                pixels = np.rint(np.asarray(source) * (1 - alpha) + np.asarray(generated) * alpha).astype(np.uint8)
-                Image.fromarray(pixels).save(destination)
+                # Keep the whole edited frame. Pasting the fill back through the
+                # object's silhouette leaves its outline, shadow and reflections.
+                generated.save(destination)
                 receipt = {"status": "completed", "request_digest": request_digest, "frame_id": frame["frame_id"],
                            "image_digest": _sha256_file(destination), "cost_usd": cost, "usage": response["usage"],
-                           "backend_digest": backend_digest, "generated_pixel_count": int(editable.sum())}
+                           "backend_digest": backend_digest, "generated_pixel_count": source.width * source.height}
                 temporary = receipt_path.with_suffix(".tmp")
                 write_json(temporary, receipt)
                 os.replace(temporary, receipt_path)
@@ -239,7 +232,7 @@ def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_dige
             reference = destination.read_bytes()
             results.append({**frame, "image_path": str(destination), "image_digest": receipt["image_digest"],
                             "generated_pixels_present": True, "generated_pixel_count": receipt["generated_pixel_count"],
-                            "generated_mask_path": str(mask_path), "generated_mask_digest": frame["remaining_mask_digest"],
+                            "generated_region": "full_frame",
                             "remaining_pixel_count": 0, "completion_receipt": str(receipt_path),
                             "view_consistency": "requires_review", "physical_evidence": False})
         return results

@@ -256,7 +256,7 @@ def _multipart(
     *,
     fields: Mapping[str, Any],
     image_bytes: bytes,
-    mask_bytes: bytes,
+    mask_bytes: bytes | None,
     boundary: str,
     reference_images: Sequence[bytes] = (),
 ) -> bytes:
@@ -273,7 +273,10 @@ def _multipart(
         )
     media = [("image[]" if reference_images else "image", "input.png", image_bytes)]
     media.extend(("image[]", f"reference-{i}.png", data) for i, data in enumerate(reference_images))
-    media.append(("mask", "mask.png", mask_bytes))
+    # Without a mask the editor may change the whole first image; the caller's
+    # prompt names what to remove.
+    if mask_bytes is not None:
+        media.append(("mask", "mask.png", mask_bytes))
     for field_name, filename, payload in media:
         chunks.extend(
             (
@@ -375,7 +378,7 @@ def _execute_frame_request(
     prompt: str,
     request_digest: str,
     image_bytes: bytes,
-    mask_bytes: bytes,
+    mask_bytes: bytes | None,
     expected_size: tuple[int, int],
     token: str,
     opener: Callable[..., Any],
