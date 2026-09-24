@@ -243,7 +243,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: full-test-lane-shard-${{ matrix.shard_index }}-${{ github.run_id }}
-          retention-days: 7
+          retention-days: 90
           if-no-files-found: error
           path: |
             ${{ runner.temp }}/blueprint-ci/full-test-lane-collection.txt
@@ -318,7 +318,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: full-test-lane-${{ github.run_id }}
-          retention-days: 7
+          retention-days: 90
           if-no-files-found: error
           path: |
             ${{ runner.temp }}/blueprint-ci/
