@@ -12,9 +12,11 @@ import pytest
 
 from blueprint_pipeline.claude_opus_authoring_invoker import (
     ClaudeAuthoringBlocked, ClaudeAuthoringConfig, ClaudeOpusAuthoringInvoker, MODEL,
+    _payload,
 )
 from blueprint_pipeline import astra_cad_skill_runtime as cad_runtime
 from blueprint_pipeline import task_object_astra_authoring as author
+from blueprint_pipeline.task_object_physical_property_review import PhysicalPropertyReviewProposal
 from blueprint_pipeline.task_evaluation_supervisor.agents_sdk import AgentsSDKAgentSpec
 from blueprint_pipeline.task_evaluation_supervisor.inference_reservations import InferenceReservationAudit
 
@@ -96,6 +98,7 @@ def test_bounded_opus_call_retains_provider_receipts(monkeypatch, tmp_path):
     assert result.output.content == "drawer brief"
     assert (result.provider, result.model) == ("anthropic", MODEL)
     assert observed[0]["max_tokens"] == 12_000
+    assert observed[0]["output_config"]["format"]["type"] == "json_schema"
     assert "cache_control" not in json.dumps(observed[0])
     assert observed[0]["messages"][0]["content"][1]["type"] == "image"
     manifest = audit.manifest()
@@ -109,6 +112,21 @@ def test_bounded_opus_call_retains_provider_receipts(monkeypatch, tmp_path):
     assert reserved["projected_max_cost_usd"] == pytest.approx(
         (1_000_000 * 4 + 12_000 * 20) * 1.1 / 1_000_000)
     assert result.cost_usd == pytest.approx((1000 * 4 + 100 * 20) * 1.1 / 1_000_000)
+
+
+def test_physical_review_uses_supported_provider_json_schema():
+    spec = replace(_spec(), output_type=PhysicalPropertyReviewProposal,
+                   capability="drawer_physical_property_review_1")
+    payload, _ = _payload(spec, "Review the drawer's estimated physical properties")
+    output = payload["output_config"]["format"]
+    assert output["type"] == "json_schema"
+    schema = output["schema"]
+    assert schema["properties"]["object_id"]["type"] == "string"
+    assert schema["additionalProperties"] is False
+    assert "minLength" not in schema["properties"]["object_id"]
+    assert "maximum" not in schema["$defs"]["OpticalMaterial"]["properties"]["opacity"]
+    assert schema["$defs"]["OpticalMaterial"]["additionalProperties"] is False
+    assert "minLength" in payload["system"]
 
 
 def test_cap_refuses_before_dispatch_and_reservation(monkeypatch, tmp_path):
@@ -201,6 +219,26 @@ def test_invalid_json_retains_usage_receipt(monkeypatch, tmp_path):
     with pytest.raises(ClaudeAuthoringBlocked, match="claude_output_invalid"):
         invoker.invoke(_spec(), "Draft a brief")
     assert audit.manifest()["in_flight_unknown_count"] == 0
+    completed = json.loads(next((tmp_path / "inference_reservations/completed").glob("*.json")).read_text())
+    assert completed["invalid_output_reason"] == "json_syntax"
+    assert completed["validation_error_paths"] == []
+
+
+def test_schema_error_retains_field_path_without_model_text(monkeypatch, tmp_path):
+    _key(monkeypatch, tmp_path)
+    audit = InferenceReservationAudit(run_root=tmp_path, run_id="future-scene")
+    invoker = ClaudeOpusAuthoringInvoker(ClaudeAuthoringConfig(
+        run_id="future-scene", maximum_cost_usd=7, maximum_calls=1,
+        allow_live_invocation=True), audit=audit, verify_authority=_authority,
+        send=lambda *_: {"id": "msg_missing", "model": MODEL, "stop_reason": "end_turn",
+            "content": [{"type": "text", "text": "{}"}],
+            "usage": {"input_tokens": 20, "output_tokens": 10}})
+    with pytest.raises(ClaudeAuthoringBlocked, match="claude_output_invalid"):
+        invoker.invoke(_spec(), "Draft a brief")
+    completed = json.loads(next((tmp_path / "inference_reservations/completed").glob("*.json")).read_text())
+    assert completed["invalid_output_reason"] == "schema_validation"
+    assert completed["validation_error_paths"] == ["content"]
+    assert "response_text" not in completed
 
 
 def test_existing_asset_authoring_vision_uses_selected_claude_model(tmp_path):
