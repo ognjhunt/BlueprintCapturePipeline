@@ -1567,3 +1567,27 @@ def test_explicit_marker_gets_distinct_visual_semantics(monkeypatch):
     assert captured[-1]["semantic_tags"] == [("class", "task_target_marker")]
     assert captured[-1]["collision_props"] is None
     assert captured[-1]["rigid_props"] is None
+
+
+def test_yellow_navigation_goal_marker_is_visible_and_non_colliding(monkeypatch):
+    _install_fake_native_runtime(monkeypatch)
+    import sys
+    captured = []
+
+    def cylinder(**kwargs):
+        captured.append(kwargs)
+        return SimpleNamespace(**kwargs)
+
+    monkeypatch.setattr(sys.modules["isaaclab.sim"], "CylinderCfg", cylinder)
+    plan = _sealed_scene_plan()
+    plan.setdefault("task_spec", {})["visible_target_marker"] = {
+        "schema_version": "native_task_target_marker.v1",
+        "shape": "flat_yellow_disc", "non_colliding": True,
+        "radius_m": 0.4, "surface_position_world_m": [1.0, 2.0, 0.0],
+    }
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+    build_native_task_arena_environment(plan)
+    marker = captured[-1]
+    assert marker["collision_props"] is None
+    assert marker["visual_material"].diffuse_color == pytest.approx((0.95, 0.78, 0.04))
+    assert marker["semantic_tags"] == [("class", "task_target_marker")]
