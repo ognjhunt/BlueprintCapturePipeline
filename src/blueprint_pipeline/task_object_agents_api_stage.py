@@ -169,6 +169,28 @@ def run_managed_asset_authoring(*, request_value: dict, output_root: Path, budge
                 return
             sleep(2)
         raise AgentExecutionError("asset_api_session_cleanup_unverified")
+    def settle_exception(task_id: str) -> None:
+        """Cancel safely, then delete only after journal and provider settle."""
+        try:
+            observed = runtime.inspect(task_id)
+        except Exception as exc:
+            raise AgentExecutionError("asset_api_exception_state_unresolved") from exc
+        if observed["state"] in {"completed", "failed", "cancelled"}:
+            cleanup_verified(task_id)
+            return
+        try:
+            runtime.cancel(task_id)
+            for _ in range(10):
+                observed = runtime.step(task_id)
+                if observed["state"] in {"completed", "failed", "cancelled"}:
+                    cleanup_verified(task_id)
+                    return
+                if observed["state"] in {"creation_unresolved", "reconciling"}:
+                    break
+                sleep(2)
+        except Exception as exc:
+            raise AgentExecutionError("asset_api_exception_cleanup_unresolved") from exc
+        raise AgentExecutionError("asset_api_exception_cleanup_unresolved")
     initial = asset_input(request)
     admitted_digests = [digest(initial)]
     def admission() -> AgentAdmission:
@@ -188,51 +210,54 @@ def run_managed_asset_authoring(*, request_value: dict, output_root: Path, budge
     task_ids = []
     for review_index in range(policy["maximum_review_cycles"]):
         task_ids.append(task.task_id)
-        if review_index:
-            runtime.continue_task(task)
-        else:
-            runtime.start(task)
-        while True:
-            state = runtime.step(task.task_id)
-            if state["state"] in {"completed", "failed", "cancelled"}:
-                break
-            if state["state"] in {"creation_unresolved", "reconciling"}:
-                raise AgentExecutionError("asset_api_session_or_tool_outcome_unresolved")
-            if clock() >= deadline:
-                runtime.cancel(task.task_id)
-                cleanup_verified(task.task_id)
-                raise AgentExecutionError("asset_api_authoring_deadline")
-            sleep(2)
-        if state["state"] != "completed":
-            cleanup_verified(task.task_id)
-            raise AgentExecutionError("asset_api_author_turn_failed")
-        reviewed = tools.review(task_state=state, invoker=review_invoker)
-        if reviewed["accepted"]:
-            cleanup_verified(task.task_id)
-            result = reviewed["result"]
-            receipt = {"schema_version": "task_asset_agents_api_stage_receipt.v1",
-                "run_id": tools.request.run_id, "object_id": tools.request.object_id,
-                "provider": "openai", "model": "gpt-6-sol", "runtime": "openai_agents_api",
-                "authority_digest": authority_digest, "project_guard_digest": guard_digest,
-                "session_id": state["session_id"], "task_ids": task_ids,
-                "review_cycles": review_index + 1, "review_digest": digest(reviewed),
-                "result_digest": result["result_digest"], "session_cleanup": "deleted",
-                "claim_ceiling": "development_only"}
-            receipt["receipt_digest"] = canonical_digest(receipt)
-            path = budget_root / "agents_api_stage_receipt.json"
-            if path.exists() or path.is_symlink():
-                if _read_private(path) != receipt:
-                    raise AgentExecutionError("asset_api_stage_receipt_changed")
+        try:
+            if review_index:
+                runtime.continue_task(task)
             else:
-                _write_once(path, receipt)
-            return result
-        if review_index + 1 == policy["maximum_review_cycles"]:
-            cleanup_verified(task.task_id)
-            raise AgentExecutionError("asset_api_independent_review_limit_reached")
-        feedback = [{"role": "user", "content": [{"type": "input_text", "text":
-            "Independent review rejected the candidate. Repair within the existing tool limits: "
-            + canonical_json(reviewed)}]}]
-        admitted_digests.append(digest(feedback))
-        task = prepare_repair_task(previous=task, reviewed=reviewed, tools=tools,
-            admission=admission(), task_id=prefix + f"_{review_index + 1}", deadline=deadline)
+                runtime.start(task)
+            while True:
+                state = runtime.step(task.task_id)
+                if state["state"] in {"completed", "failed", "cancelled"}:
+                    break
+                if state["state"] in {"creation_unresolved", "reconciling"}:
+                    raise AgentExecutionError("asset_api_session_or_tool_outcome_unresolved")
+                if clock() >= deadline:
+                    runtime.cancel(task.task_id)
+                    raise AgentExecutionError("asset_api_authoring_deadline")
+                sleep(2)
+            if state["state"] != "completed":
+                cleanup_verified(task.task_id)
+                raise AgentExecutionError("asset_api_author_turn_failed")
+            reviewed = tools.review(task_state=state, invoker=review_invoker)
+            if reviewed["accepted"]:
+                cleanup_verified(task.task_id)
+                result = reviewed["result"]
+                receipt = {"schema_version": "task_asset_agents_api_stage_receipt.v1",
+                    "run_id": tools.request.run_id, "object_id": tools.request.object_id,
+                    "provider": "openai", "model": "gpt-6-sol", "runtime": "openai_agents_api",
+                    "authority_digest": authority_digest, "project_guard_digest": guard_digest,
+                    "session_id": state["session_id"], "task_ids": task_ids,
+                    "review_cycles": review_index + 1, "review_digest": digest(reviewed),
+                    "result_digest": result["result_digest"], "session_cleanup": "deleted",
+                    "claim_ceiling": "development_only"}
+                receipt["receipt_digest"] = canonical_digest(receipt)
+                path = budget_root / "agents_api_stage_receipt.json"
+                if path.exists() or path.is_symlink():
+                    if _read_private(path) != receipt:
+                        raise AgentExecutionError("asset_api_stage_receipt_changed")
+                else:
+                    _write_once(path, receipt)
+                return result
+            if review_index + 1 == policy["maximum_review_cycles"]:
+                cleanup_verified(task.task_id)
+                raise AgentExecutionError("asset_api_independent_review_limit_reached")
+            feedback = [{"role": "user", "content": [{"type": "input_text", "text":
+                "Independent review rejected the candidate. Repair within the existing tool limits: "
+                + canonical_json(reviewed)}]}]
+            admitted_digests.append(digest(feedback))
+            task = prepare_repair_task(previous=task, reviewed=reviewed, tools=tools,
+                admission=admission(), task_id=prefix + f"_{review_index + 1}", deadline=deadline)
+        except Exception:
+            settle_exception(task_ids[-1])
+            raise
     raise AgentExecutionError("asset_api_review_loop_invalid")

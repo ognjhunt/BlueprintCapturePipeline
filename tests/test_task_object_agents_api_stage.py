@@ -140,6 +140,73 @@ def test_rejected_review_continues_same_managed_session_with_bounded_revision(
     assert receipt["project_guard_digest"] == digest(guard)
 
 
+@pytest.mark.parametrize("fault", ["review", "step_once", "step_terminal", "step_stuck"])
+def test_managed_exception_cancels_and_deletes_only_a_settled_session(
+        tmp_path, agent_fixture, monkeypatch, fault):  # noqa: F811
+    _guard_value, guard_path, policy = _guard(tmp_path)
+    events = []
+
+    class FakeRuntime:
+        def __init__(self, **_kwargs):
+            self.state = "queued"
+            self.failed_once = False
+
+        def start(self, task):
+            self.state = "running"
+            events.append("start")
+
+        def step(self, task_id):
+            events.append("step")
+            if fault == "step_terminal" and not self.failed_once:
+                self.failed_once = True
+                self.state = "completed"
+                raise RuntimeError("injected step failure")
+            if fault in {"step_once", "step_stuck"} and (fault == "step_stuck" or not self.failed_once):
+                self.failed_once = True
+                raise RuntimeError("injected step failure")
+            self.state = "cancelled" if self.state == "cancelling" else "completed"
+            return {"state": self.state, "session_id": "session-fixture"}
+
+        def inspect(self, task_id):
+            events.append("inspect")
+            return {"state": self.state}
+
+        def cancel(self, task_id):
+            events.append("cancel")
+            self.state = "cancelling"
+
+        def cleanup(self, task_id):
+            assert self.state in {"completed", "cancelled"}
+            events.append("cleanup")
+            return {"cleanup_state": "deleted"}
+
+    def review(self, *, task_state, invoker):
+        events.append("review")
+        raise RuntimeError("injected review failure")
+
+    monkeypatch.setattr(managed, "OpenAIAgentsRuntime", FakeRuntime)
+    monkeypatch.setattr(managed.AgentsAPIAssetTools, "review", review)
+    f = agent_fixture
+    kwargs = dict(request_value=f.kwargs["request_value"], output_root=f.kwargs["output_root"],
+        budget_root=tmp_path / "budget", cad_executor=f.kwargs["cad_executor"],
+        blender_runner=f.kwargs["blender_runner"], blender_executable=f.kwargs["blender_executable"],
+        review_invoker=object(), policy=policy, authority_digest="sha256:" + "b" * 64,
+        source_commit="c" * 40, project_id="proj_fixture", credential_id="key_fixture",
+        guard_file=guard_path, maximum_cost_usd=5.0,
+        transport=SimpleNamespace(project_id="proj_fixture"), clock=lambda: 1100,
+        sleep=lambda _seconds: None)
+    if fault == "step_stuck":
+        with pytest.raises(AgentExecutionError, match="exception_cleanup_unresolved"):
+            managed.run_managed_asset_authoring(**kwargs)
+        assert "cancel" in events and "cleanup" not in events
+    else:
+        with pytest.raises(RuntimeError, match="injected .* failure"):
+            managed.run_managed_asset_authoring(**kwargs)
+        assert events[-1] == "cleanup"
+        assert ("cancel" in events) == (fault == "step_once")
+    assert not (tmp_path / "budget/agents_api_stage_receipt.json").exists()
+
+
 def test_signed_agents_api_stage_routes_to_managed_authoring_then_existing_packaging(tmp_path, monkeypatch):
     guard, guard_path, policy = _guard(tmp_path)
     rights = {"schema_version": "website_native_rights_admission.v1",
