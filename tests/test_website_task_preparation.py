@@ -206,7 +206,8 @@ def _covered(masks, source_geometry, root: Path, *, views=DRAWER_VIEWS):
                        "geometry_frame": frame_id.startswith("frame-"), "path": str(path), "sha256": _sha256_file(path)})
     answer = {"hinge_edge": None, "task_part_components": sorted({"drawer_interior", "handle", "middle_drawer_front"}
                                                                  & {part for row in views for part in row[4]}),
-              "frames": [{"frame_id": row[0], "visible_parts": row[4], "task_part_state": row[2], "view": row[3]}
+              "frames": [{"frame_id": row[0], "visible_parts": row[4], "task_part_state": row[2], "view": row[3],
+                          "label_text": []}
                          for row in views]}
     labels = coverage.validate_classification(answer, frame_ids=[row[0] for row in views], articulation_kind="prismatic")
     classified = {"frames": [{**frame, **label} for frame, label in zip(frames, labels["frames"])],

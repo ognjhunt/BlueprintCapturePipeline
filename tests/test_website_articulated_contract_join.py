@@ -57,7 +57,8 @@ def _classified(views, root: Path, *, kind: str, hinge: str | None, components):
         frames.append({"frame_id": frame_id, "timestamp_seconds": timestamp, "mask_area_fraction": 0.02,
                        "geometry_frame": frame_id.startswith("frame-"), "path": str(path), "sha256": _sha256_file(path)})
     answer = {"hinge_edge": hinge, "task_part_components": components,
-              "frames": [{"frame_id": row[0], "visible_parts": row[4], "task_part_state": row[2], "view": row[3]}
+              "frames": [{"frame_id": row[0], "visible_parts": row[4], "task_part_state": row[2], "view": row[3],
+                         "label_text": []}
                          for row in views]}
     labels = coverage.validate_classification(answer, frame_ids=[row[0] for row in views], articulation_kind=kind)
     return {"frames": [{**frame, **label} for frame, label in zip(frames, labels["frames"])],

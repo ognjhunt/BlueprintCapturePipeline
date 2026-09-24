@@ -39,7 +39,7 @@ MIN_CANDIDATE_SPACING_SECONDS = 0.4
 MIN_MASK_AREA_FRACTION = 0.01
 CLASSIFY_BATCH = 12
 CLASSIFIER_MODEL = "gemini-3.8-flash"
-CLASSIFIER_REVISION = 1
+CLASSIFIER_REVISION = 2
 # Selection output shape; a change recomputes records while replaying retained
 # classifier receipts for free.
 SELECTION_REVISION = 2
@@ -52,6 +52,8 @@ OPEN_STATES = frozenset({"open", "partially_open"})
 VIEWS = ("front", "left_oblique", "right_oblique", "top_down", "interior")
 HINGE_EDGES = ("bottom", "left", "right", "top")
 _PART = re.compile(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)*\Z")
+MAX_LABEL_TEXTS = 8
+MAX_LABEL_TEXT_CHARS = 120
 # Estimated-metre tolerances on MapAnything depth, not measured accuracies.
 FRONT_PLANE_TOLERANCE_M = 0.02
 FRONT_SLAB_M = 0.1
@@ -73,12 +75,17 @@ PROMPT = (
     "task_part_state, the state of the task part in that frame (closed, partially_open, open, "
     "not_visible), and view (front, left_oblique, right_oblique, top_down, interior). List in "
     "task_part_components every returned part name that is the task part or moves with it. "
+    "Give label_text, every legible piece of text printed on THIS object that names its brand or "
+    "model, each exactly as printed (same characters, case and spacing), or an empty list. Never "
+    "guess or complete partly legible text, and never return a serial number, barcode or other "
+    "identifier of this one unit. "
 )
 REVOLUTE_PROMPT = ("Give hinge_edge, the edge of the task part it rotates about (bottom, left, right, "
                    "top), or not_visible when no frame shows the task part move or its hinge. ")
 PRISMATIC_PROMPT = "The task part slides; set hinge_edge to null. "
 RESPONSE_SHAPE = ('Return JSON only: {"hinge_edge": ..., "task_part_components": [...], "frames": '
-                  '[{"frame_id": ..., "visible_parts": [...], "task_part_state": ..., "view": ...}]}. ')
+                  '[{"frame_id": ..., "visible_parts": [...], "task_part_state": ..., "view": ..., '
+                  '"label_text": [...]}]}. ')
 
 
 def _subject_box(observation: Mapping[str, Any]) -> tuple[float, list[float] | None]:
@@ -192,6 +199,15 @@ def _parts(value: Any) -> list[str]:
     return sorted(value)
 
 
+def _label_text(value: Any) -> list[str]:
+    """Verbatim printed text: order kept, nothing normalized."""
+    if (not isinstance(value, list) or len(value) > MAX_LABEL_TEXTS or len(set(value)) != len(value)
+            or any(not isinstance(text, str) or not 0 < len(text) <= MAX_LABEL_TEXT_CHARS
+                   or text != text.strip() or not text.isprintable() for text in value)):
+        raise ValueError("website_assembly_coverage_classification_invalid")
+    return list(value)
+
+
 def validate_classification(value: Any, *, frame_ids: Sequence[str], articulation_kind: str) -> dict[str, Any]:
     """Strict: any malformed or out-of-vocabulary answer refuses the whole batch."""
     if not isinstance(value, Mapping) or set(value) != {"hinge_edge", "task_part_components", "frames"}:
@@ -206,11 +222,12 @@ def validate_classification(value: Any, *, frame_ids: Sequence[str], articulatio
         raise ValueError("website_assembly_coverage_classification_invalid")
     frames = []
     for row in rows:
-        if (set(row) != {"frame_id", "visible_parts", "task_part_state", "view"}
+        if (set(row) != {"frame_id", "visible_parts", "task_part_state", "view", "label_text"}
                 or row["task_part_state"] not in STATES or row["view"] not in VIEWS):
             raise ValueError("website_assembly_coverage_classification_invalid")
         frames.append({"frame_id": row["frame_id"], "visible_parts": _parts(row["visible_parts"]),
-                       "part_state": row["task_part_state"], "view": row["view"]})
+                       "part_state": row["task_part_state"], "view": row["view"],
+                       "label_text": _label_text(row["label_text"])})
     components = _parts(value["task_part_components"])
     if set(components) - {part for row in frames for part in row["visible_parts"]}:
         raise ValueError("website_assembly_coverage_classification_invalid")
@@ -474,6 +491,9 @@ def coverage_record(*, target_id: str, binding: Mapping[str, Any], articulation_
              "missing_parts": missing,
              "part_observed_open": any(row["part_state"] in OPEN_STATES for row in frames),
              "hinge_edge": hinge, "body_bounds": dict(body_bounds) if body_bounds else None,
+             "label_readings": [{"frame_id": row["frame_id"], "label_text": list(row["label_text"]),
+                                 "path": row["path"], "sha256": row["sha256"], "view": row["view"]}
+                                for row in frames if row.get("label_text")],
              "blockers": blockers, "candidate_frame_count": candidate_count,
              "reference_frame_cap": MAX_REFERENCE_FRAMES,
              "classifier": {"model": CLASSIFIER_MODEL, "revision": CLASSIFIER_REVISION,
@@ -491,7 +511,7 @@ def empty_record(*, target_id: str, binding: Mapping[str, Any], articulation_kin
              "binding": dict(binding), "articulation_kind": articulation_kind, "observed_parts": [],
              "task_part_components": [], "observed_states": [], "selected_frames": [], "missing_parts": [],
              "part_observed_open": False, "hinge_edge": None, "body_bounds": None,
-             "blockers": [blocker], "candidate_frame_count": 0,
+             "label_readings": [], "blockers": [blocker], "candidate_frame_count": 0,
              "reference_frame_cap": MAX_REFERENCE_FRAMES,
              "classifier": {"model": CLASSIFIER_MODEL, "revision": CLASSIFIER_REVISION, "receipts": []},
              "claim_ceiling": "development_only", "physical_measurement_proven": False}
