@@ -10,6 +10,11 @@ import json
 from pathlib import Path
 import sys
 
+# Keep the 960px review detail; denoising permits fewer CPU samples. The
+# three-view render exceeded 600s on the four-core control host at 32 samples.
+STUDIO_RENDER_SAMPLES = 16
+STUDIO_RENDER_TIMEOUT_SECONDS = 900
+
 
 def mesh_facts(vertices, faces):
     """Measure the exported evaluated triangles, independently of model claims."""
@@ -215,7 +220,7 @@ def main(root: Path) -> None:
     scene = bpy.context.scene
     scene.render.engine = 'CYCLES'
     scene.cycles.device = 'CPU'
-    scene.cycles.samples = 32
+    scene.cycles.samples = STUDIO_RENDER_SAMPLES
     scene.cycles.use_denoising = True
     scene.render.resolution_x = 960
     scene.render.resolution_y = 960
