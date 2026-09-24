@@ -26,7 +26,7 @@ def validate_execution(value, *, now):
              and now < execution["expires_at_epoch"] <= now + 7 * 86400, "authority_expiry_invalid")
     providers = execution["allowed_providers"]
     _require(isinstance(providers, list) and bool(providers)
-             and all(isinstance(p, str) and p in {"vast", "runpod", "openai"} for p in providers)
+             and all(isinstance(p, str) and p in {"vast", "runpod", "openai", "anthropic"} for p in providers)
              and len(providers) == len(set(providers)), "providers_invalid")
     _require("purpose" not in execution or execution["purpose"] == "scene_preparation", "execution_purpose_invalid")
     _require(execution["claim_scope"] == "development_only", "claim_scope_invalid")

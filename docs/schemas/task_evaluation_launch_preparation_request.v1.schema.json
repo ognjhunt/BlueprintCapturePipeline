@@ -1252,6 +1252,15 @@
                   }
                 }
               }
+            },
+            "anthropic": {
+              "type": "object",
+              "required": ["maximum_cost_usd", "maximum_requests"],
+              "additionalProperties": false,
+              "properties": {
+                "maximum_cost_usd": {"type": "number", "exclusiveMinimum": 0, "maximum": 7},
+                "maximum_requests": {"type": "integer", "minimum": 1, "maximum": 32}
+              }
             }
           }
         },
@@ -1290,7 +1299,8 @@
         "content_agents",
         "astra_cad_blender_v1"
       ]
-    }
+    },
+    "replacement_authoring_model_provider": {"const": "anthropic"}
   },
   "allOf": [
     {

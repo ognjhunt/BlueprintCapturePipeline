@@ -123,14 +123,15 @@ def completed_visual_review(prior_root: Path, request_value: dict, budget_root: 
         "new_provider_call": False}
 
 
-def completed_authoring(prior_root: Path, request_value: dict, *, record_validator=verified) -> dict[str, Any]:
+def completed_authoring(prior_root: Path, request_value: dict, *, record_validator=verified,
+                        allowed_models=frozenset({"gpt-6-astra", "gpt-6-sol"})) -> dict[str, Any]:
     path = prior_root / "result.json"
     result = json.loads(path.read_text())
     if (result.get("schema_version") != "task_object_astra_authoring_result.v1"
             or result.get("status") != "candidate_authored_pending_native_qualification"
             or result.get("request_digest") != request_value["request_digest"]
             or result.get("object_id") != request_value["object_id"]
-            or result.get("model") not in {"gpt-6-astra", "gpt-6-sol"}
+            or result.get("model") not in allowed_models
             or result.get("claim_ceiling") != "development_only"
             or any(result.get(key) is not False for key in ("native_import_qualified", "scene_placement_qualified", "physical_equivalence_proven"))
             or result.get("result_digest") != canonical_digest(result, digest_field="result_digest")):
