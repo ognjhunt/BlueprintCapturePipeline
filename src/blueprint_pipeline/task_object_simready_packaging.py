@@ -33,8 +33,9 @@ def _verified(record: Mapping[str, Any]) -> Path:
 
 
 
-def _final_visual_mesh(*, request: AuthoringRequest, authoring_result: Mapping[str, Any], source: Any):
-    """Independently verify mesh/receipt/visual triangle equivalence in metric space."""
+def _final_visual_mesh(*, request: AuthoringRequest, authoring_result: Mapping[str, Any], source: Any,
+                       allow_compound_solid: bool = False):
+    """Verify metric visual triangles and closed solids before deriving physics."""
     import numpy as np
     import trimesh
     from scipy.spatial import cKDTree
@@ -73,11 +74,26 @@ def _final_visual_mesh(*, request: AuthoringRequest, authoring_result: Mapping[s
             or len(faces) < 4 or faces.dtype.kind not in 'iu' or faces.min() < 0 or faces.max() >= len(vertices)):
         raise AssetAuthoringError('authoring_packaging_final_mesh_topology_invalid')
     mesh = trimesh.Trimesh(vertices=vertices, faces=faces, process=False)
-    if (not mesh.is_watertight or not mesh.is_winding_consistent or mesh.body_count != 1
+    if (not mesh.is_watertight or not mesh.is_winding_consistent
             or not math.isfinite(mesh.volume) or mesh.volume <= 0 or np.any(mesh.area_faces <= 0)):
         raise AssetAuthoringError('authoring_packaging_final_mesh_not_single_watertight_solid')
+    component_count = mesh.body_count
+    if allow_compound_solid:
+        # One articulated link may contain a closed drawer shell, front, and
+        # handle as separate visual solids. They still move as one rigid body.
+        # Check each component rather than accepting a globally closed mesh
+        # whose reversed or degenerate pieces could corrupt mass and inertia.
+        if not 1 <= component_count <= 32:
+            raise AssetAuthoringError('authoring_packaging_final_mesh_component_count_invalid')
+        if any(not part.is_watertight or not part.is_winding_consistent
+               or not math.isfinite(part.volume) or part.volume <= 0
+               or np.any(part.area_faces <= 0)
+               for part in mesh.split(only_watertight=False)):
+            raise AssetAuthoringError('authoring_packaging_final_mesh_component_invalid')
+    elif component_count != 1:
+        raise AssetAuthoringError('authoring_packaging_final_mesh_not_single_watertight_solid')
     if (receipt.get('watertight') is not True or receipt.get('winding_consistent') is not True
-            or receipt.get('connected_components') != 1
+            or receipt.get('connected_components') != component_count
             or not isinstance(receipt.get('volume_m3'), (int, float))
             or not math.isclose(mesh.volume, receipt['volume_m3'], rel_tol=1e-8, abs_tol=1e-12)
             or len(receipt.get('dimensions_m', [])) != 3
@@ -91,7 +107,12 @@ def _final_visual_mesh(*, request: AuthoringRequest, authoring_result: Mapping[s
     cache = UsdGeom.XformCache(Usd.TimeCode.Default())
     if not np.allclose(np.asarray(cache.GetLocalToWorldTransform(source.GetDefaultPrim())), np.eye(4), rtol=0, atol=1e-12):
         raise AssetAuthoringError('authoring_packaging_visual_root_transform_invalid')
-    tree, visual_faces = cKDTree(vertices), []
+    # Distinct closed pieces can share an exact corner or seam while retaining
+    # separate vertex indices. Compare geometric triangles after canonicalizing
+    # those coincident positions; a nearest-neighbour lookup against raw indices
+    # arbitrarily chooses one duplicate and falsely reports a USD mismatch.
+    unique_vertices, canonical_ids = np.unique(vertices, axis=0, return_inverse=True)
+    tree, visual_faces = cKDTree(unique_vertices), []
     for prim in source.Traverse():
         if not prim.IsA(UsdGeom.Mesh):
             continue
@@ -110,7 +131,8 @@ def _final_visual_mesh(*, request: AuthoringRequest, authoring_result: Mapping[s
             raise AssetAuthoringError('authoring_packaging_visual_mesh_mismatch')
         visual_faces.extend(ids[indices.reshape(-1, 3)].tolist())
     # Vertex order and mesh names may change on USD export; the triangles may not.
-    if not visual_faces or sorted(map(tuple, np.sort(visual_faces, axis=1))) != sorted(map(tuple, np.sort(faces, axis=1))):
+    if (not visual_faces or sorted(map(tuple, np.sort(visual_faces, axis=1)))
+            != sorted(map(tuple, np.sort(canonical_ids[faces], axis=1)))):
         raise AssetAuthoringError('authoring_packaging_visual_mesh_mismatch')
     return mesh, receipt, {'mesh': file_record(mesh_path), 'receipt': file_record(receipt_path),
                            'author_program': program, 'source_visual': file_record(asset), 'source_cad_stl': file_record(cad)}

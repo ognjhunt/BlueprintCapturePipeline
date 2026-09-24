@@ -382,7 +382,8 @@ def _part_physics(*, request: AuthoringRequest, authoring_result: Mapping[str, A
                 or prim.IsA(UsdPhysics.Joint)
                 or any(prop.GetName().startswith(("physics:", "physx")) for prop in prim.GetProperties())):
             raise AssetAuthoringError("authoring_packaging_unreviewed_physics_in_visual")
-    mesh, mesh_receipt, geometry_sources = _final_visual_mesh(request=request, authoring_result=authoring_result, source=source)
+    mesh, mesh_receipt, geometry_sources = _final_visual_mesh(
+        request=request, authoring_result=authoring_result, source=source, allow_compound_solid=True)
     consistency = _final_mass_consistency(review, mesh)
     mass_kg = float(properties.mass_kg.value)
     tensor = np.asarray(mesh.moment_inertia, dtype=float) * (mass_kg / mesh.mass)

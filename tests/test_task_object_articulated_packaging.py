@@ -39,10 +39,18 @@ def configuration():
         physics_bounds=PHYSICS, mechanism=MECHANISM)
 
 
-def _part(root, *, object_id, dimensions, mass_kg, density, bounds):
+def _part(root, *, object_id, dimensions, mass_kg, density, bounds, compound=False):
     root.mkdir(parents=True, exist_ok=True)
-    mesh = trimesh.creation.box(extents=dimensions)
-    mesh.apply_translation([0, 0, dimensions[2] / 2])
+    if compound:
+        halves = []
+        for sign in (-1, 1):
+            half = trimesh.creation.box(extents=[dimensions[0] / 2, *dimensions[1:]])
+            half.apply_translation([sign * dimensions[0] / 4, 0, dimensions[2] / 2])
+            halves.append(half)
+        mesh = trimesh.util.concatenate(halves)
+    else:
+        mesh = trimesh.creation.box(extents=dimensions)
+        mesh.apply_translation([0, 0, dimensions[2] / 2])
     stage = Usd.Stage.CreateNew(str(root / "candidate.usdc"))
     asset_root = UsdGeom.Xform.Define(stage, "/Asset")
     stage.SetDefaultPrim(asset_root.GetPrim())
@@ -65,7 +73,8 @@ def _part(root, *, object_id, dimensions, mass_kg, density, bounds):
         candidate_usd_file="candidate.usdc", candidate_usd_sha256=file_record(root / "candidate.usdc")["sha256"],
         author_program_file="asset_program.py", author_program_sha256=file_record(root / "asset_program.py")["sha256"],
         source_cad_stl_sha256=file_record(root / "cad.stl")["sha256"], dimensions_m=mesh.extents.tolist(),
-        volume_m3=float(mesh.volume), watertight=True, winding_consistent=True, connected_components=1,
+        volume_m3=float(mesh.volume), watertight=True, winding_consistent=True,
+        connected_components=mesh.body_count,
         physics_authority="packaging_accepted_physical_review_only", exported_rigid_body_count=0)
     receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
     (root / "final_visual_mesh_receipt.json").write_text(json.dumps(receipt))
@@ -107,7 +116,7 @@ def _part(root, *, object_id, dimensions, mass_kg, density, bounds):
     return request, result, bounds
 
 
-def fixture(tmp_path):
+def fixture(tmp_path, *, compound_drawer=False, drawer_mass=2.0, drawer_density=(30.0, 120.0)):
     plan = plan_articulated_assembly(configuration())
     carcass_dims = plan["parts"]["carcass"]["dimensions_m"]
     drawer_dims = plan["parts"]["drawer"]["dimensions_m"]
@@ -115,12 +124,30 @@ def fixture(tmp_path):
                     mass_kg=12.0, density=(60.0, 140.0),
                     bounds={"mass_kg": [4.0, 40.0], "static_friction": [0.3, 0.8], "dynamic_friction": [0.2, 0.6], "restitution": [0.0, 0.2]})
     drawer = _part(tmp_path / "drawer", object_id="website-subject-cab__drawer", dimensions=drawer_dims,
-                   mass_kg=2.0, density=(30.0, 120.0),
-                   bounds={"mass_kg": [0.5, 6.0], "static_friction": [0.3, 0.8], "dynamic_friction": [0.2, 0.6], "restitution": [0.0, 0.2]})
+                   mass_kg=drawer_mass, density=drawer_density,
+                   bounds={"mass_kg": [0.5, 6.0], "static_friction": [0.3, 0.8], "dynamic_friction": [0.2, 0.6], "restitution": [0.0, 0.2]},
+                   compound=compound_drawer)
     requests = {"carcass": carcass[0], "drawer": drawer[0]}
     results = {"carcass": carcass[1], "drawer": drawer[1]}
     bounds = {"carcass": carcass[2], "drawer": drawer[2]}
     return plan, requests, results, bounds
+
+
+def test_articulated_drawer_keeps_closed_disconnected_visual_pieces_in_one_link(tmp_path):
+    plan, requests, results, bounds = fixture(tmp_path, compound_drawer=True)
+    receipt = package_astra_articulated_candidate(
+        requests=requests, authoring_results=results, plan=plan,
+        output_root=tmp_path / "packaged", physics_bounds=bounds)
+    stage = Usd.Stage.Open(receipt["asset"]["path"])
+    drawer_link = stage.GetPrimAtPath("/Asset/links/drawer_1")
+    collision = UsdGeom.Mesh.Get(stage, "/Asset/links/drawer_1/collision/FinalVisualShape")
+    mesh = trimesh.Trimesh(
+        vertices=np.asarray(collision.GetPointsAttr().Get(), dtype=float),
+        faces=np.asarray(collision.GetFaceVertexIndicesAttr().Get(), dtype=int).reshape(-1, 3),
+        process=False)
+    assert drawer_link.HasAPI(UsdPhysics.RigidBodyAPI)
+    assert mesh.body_count == 2 and mesh.is_watertight
+    assert len([prim for prim in stage.Traverse() if prim.IsA(UsdPhysics.PrismaticJoint)]) == 1
 
 
 def test_plan_places_three_bays_with_one_prismatic_task_joint_and_records_assumptions():
