@@ -203,6 +203,9 @@ def test_future_scene_quote_and_scoped_secret_have_no_openai_fallback(monkeypatc
     key.write_text("test-only-placeholder")
     key.chmod(0o640)
     monkeypatch.setenv("ANTHROPIC_API_KEY_FILE", str(key))
+    with pytest.raises(TaskEvaluationSceneConfigurationVastError, match="anthropic_secret_configuration_invalid"):
+        _provider_runtime_inputs(authority)
+    key.chmod(0o600)
     paths, environment = _provider_runtime_inputs(authority)
     assert paths == {"ANTHROPIC_API_KEY_FILE": str(key)}
     assert environment["BLUEPRINT_SCENE_CONFIGURATION_AUTHORING_PROVIDER"] == "anthropic"

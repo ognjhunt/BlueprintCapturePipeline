@@ -328,8 +328,9 @@ def _provider_runtime_inputs(
             try:
                 metadata = os.fstat(descriptor)
                 if (not stat.S_ISREG(metadata.st_mode)
-                        or stat.S_IMODE(metadata.st_mode) & ~0o640
-                        or not stat.S_IMODE(metadata.st_mode) & 0o440
+                        or metadata.st_uid != os.geteuid()
+                        or stat.S_IMODE(metadata.st_mode) & 0o077
+                        or not stat.S_IMODE(metadata.st_mode) & 0o400
                         or not 0 < metadata.st_size <= 16_384):
                     raise ValueError("anthropic_secret_invalid")
             finally:
