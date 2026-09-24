@@ -20,11 +20,23 @@ def _adapter():
     robot = SimpleNamespace(joint_names=names, data=data)
     head = SimpleNamespace(
         frame=[0],
-        data=SimpleNamespace(output={"rgb": np.zeros((1, 480, 640, 4), dtype=np.uint8)}),
+        data=SimpleNamespace(
+            output={"rgb": np.zeros((1, 480, 640, 4), dtype=np.uint8)},
+            intrinsic_matrices=np.eye(3)[None],
+            pos_w=np.array([[1.0, 2.0, 3.0]]),
+            quat_w_opengl=np.array([[0.0, 0.0, 0.0, 1.0]]),
+        ),
+        cfg=SimpleNamespace(spawn=SimpleNamespace(clipping_range=(0.01, 20.0))),
     )
     overview = SimpleNamespace(
         frame=[0],
-        data=SimpleNamespace(output={"rgb": np.zeros((1, 360, 640, 3), dtype=np.uint8)}),
+        data=SimpleNamespace(
+            output={"rgb": np.zeros((1, 360, 640, 3), dtype=np.uint8)},
+            intrinsic_matrices=np.eye(3)[None],
+            pos_w=np.array([[0.0, 0.0, 4.0]]),
+            quat_w_opengl=np.array([[0.0, 0.0, 0.0, 1.0]]),
+        ),
+        cfg=SimpleNamespace(spawn=SimpleNamespace(clipping_range=(0.01, 20.0))),
     )
     calls = []
     env = SimpleNamespace(
@@ -39,7 +51,7 @@ def _adapter():
     plan = {"robot": {
         "robot_id": "unitree_g1",
         "joint_position_limits_rad": {name: [-1.0, 1.0] for name in names},
-    }}
+    }, "cadence": {"control_frequency_hz": 50.0}}
     adapter = NativeG1JointEpisodeEnvironment(
         built=SimpleNamespace(
             plan=plan, env=env,
@@ -94,6 +106,24 @@ def test_head_policy_frame_and_review_frame_are_exact_and_fresh() -> None:
         adapter.read_policy_inputs()
     adapter._env.unwrapped.scene["head_camera"].frame = [1]
     assert adapter.read_policy_inputs()["sensor_freshness"]["sensor_frame_index"] == 1
+
+
+def test_g1_camera_metadata_binds_head_and_overview_to_scene_time() -> None:
+    adapter, _, _ = _adapter()
+    adapter.reset(seed=4)
+    adapter.read_policy_inputs()
+    policy = adapter.read_observation_metadata(("head",))
+    assert policy["timestamp_ns"] == 0
+    assert policy["calibrations"]["head"]["resolution"] == [640, 480]
+    assert policy["calibrations"]["head"]["world_from_camera"][0][3] == 1.0
+    adapter.step_controller_targets({name: 0.0 for name in PROTOCOL_V4_FULL_JOINT_ORDER})
+    adapter._env.unwrapped.scene["head_camera"].frame = [1]
+    adapter._env.unwrapped.scene["overview_camera"].frame = [1]
+    adapter.read_review_inputs()
+    review = adapter.read_observation_metadata(("head", "overview"))
+    assert review["timestamp_ns"] == 20_000_000
+    assert set(review["calibrations"]) == {"head", "overview"}
+    assert review["synchronizations"]["overview"]["host_bytes_ready"] is True
 
 
 def test_policy_camera_rejects_non_uint8_or_wrong_resolution() -> None:
