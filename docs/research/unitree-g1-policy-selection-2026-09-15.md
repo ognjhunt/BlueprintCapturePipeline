@@ -301,3 +301,11 @@ finite semantic-v3 action chunks. It rejects latent64 and DROID-shaped
 responses. Its `/reset` call can bind each episode seed, but the upstream
 response does not attest which checkpoint served inference; runtime process
 and checkpoint identity remain a separate required gate before publication.
+The pinned-source SONIC target bridge now accepts a semantic-v3 action without
+calling HumanoidArena's `get_action`, which would advance physics outside the
+shared episode. It presents native XYZW root state to SONIC as WXYZ, calls the
+publisher's reference path and encoder/decoder, and admits named 43-joint
+targets only after both ONNX sessions actually run and every target is inside
+the sealed joint limits. Source and ONNX bytes are checked by digest. The
+bridge has hermetic tests with a provider double; it has not yet been exercised
+with the official provider on a GPU or connected to the shared episode worker.
