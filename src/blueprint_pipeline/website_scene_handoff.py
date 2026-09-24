@@ -34,27 +34,44 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
     try:
         if clean_plate.get("privacy_verified") is not True or clean_plate.get("status") not in {"noop", "objects_removed"}:
             raise ValueError("website_scene_preparation_pending")
-        if provider_run.get("status") not in {"ready", "completed"}:
-            raise ValueError("website_reconstruction_pending")
-        path = Path((provider_run.get("worldlabs_asset_materialization") or {}).get("manifest_path") or root / "missing")
-        if not path.resolve().is_relative_to(capture_root.resolve() / "pipeline") or not path.is_file():
-            raise ValueError("website_reconstruction_assets_pending")
-        assets = json.loads(path.read_text())
-        if assets.get("world_id") != provider_run.get("world_id"):
-            raise ValueError("website_reconstruction_world_mismatch")
-        rows = assets.get("downloads") or []
-        collision = next((row for row in rows if row.get("kind") == "collider_mesh_glb"), None)
-        splat = next((row for row in rows if row.get("kind") in {"splat_ply", "splat_spz"}), None)
-        if collision is None or splat is None:
-            raise ValueError("website_reconstruction_assets_pending")
-        for row in (collision, splat):
-            artifact = Path(row["local_path"])
-            if (not artifact.resolve().is_relative_to(capture_root.resolve() / "pipeline")
-                    or not artifact.is_file() or _sha256_file(artifact) != "sha256:" + row["sha256"]):
-                raise ValueError("website_reconstruction_asset_changed")
         context = metadata.get("site_task_context") or {}
         if context.get("capture_id") != descriptor["capture_id"] or context.get("scene_id") != descriptor["scene_id"]:
             raise ValueError("website_scene_task_identity_mismatch")
+        from .website_development_test import enabled
+        failed_fixture = (provider_run.get("status") == "failed"
+            and provider_run.get("operation_terminal_status") == "failed"
+            and enabled(context["context_digest"]))
+        if failed_fixture:
+            operation_path = Path(provider_run.get("worldlabs_operation_manifest_uri") or root / "missing")
+            if (not operation_path.resolve().is_relative_to(capture_root.resolve() / "pipeline")
+                    or not operation_path.is_file()):
+                raise ValueError("website_reconstruction_failure_evidence_missing")
+            operation = json.loads(operation_path.read_text())
+            if (operation.get("done") is not True or not operation.get("error")
+                    or operation.get("operation_id") != provider_run.get("provider_run_id")):
+                raise ValueError("website_reconstruction_failure_evidence_invalid")
+            result["captured_scene_reconstruction"] = {"status": "failed", "operation_id": operation["operation_id"],
+                "operation_digest": canonical_digest(operation), "claim_ceiling": "development_only"}
+            assets = None
+        else:
+            if provider_run.get("status") not in {"ready", "completed"}:
+                raise ValueError("website_reconstruction_pending")
+            path = Path((provider_run.get("worldlabs_asset_materialization") or {}).get("manifest_path") or root / "missing")
+            if not path.resolve().is_relative_to(capture_root.resolve() / "pipeline") or not path.is_file():
+                raise ValueError("website_reconstruction_assets_pending")
+            assets = json.loads(path.read_text())
+            if assets.get("world_id") != provider_run.get("world_id"):
+                raise ValueError("website_reconstruction_world_mismatch")
+            rows = assets.get("downloads") or []
+            collision = next((row for row in rows if row.get("kind") == "collider_mesh_glb"), None)
+            splat = next((row for row in rows if row.get("kind") in {"splat_ply", "splat_spz"}), None)
+            if collision is None or splat is None:
+                raise ValueError("website_reconstruction_assets_pending")
+            for row in (collision, splat):
+                artifact = Path(row["local_path"])
+                if (not artifact.resolve().is_relative_to(capture_root.resolve() / "pipeline")
+                        or not artifact.is_file() or _sha256_file(artifact) != "sha256:" + row["sha256"]):
+                    raise ValueError("website_reconstruction_asset_changed")
         from .website_worldlabs import settle_website_reconstruction
         settlement = settle_website_reconstruction(provider_run=provider_run, capture_root=capture_root,
                                                     task_context=context)
@@ -93,28 +110,40 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
         # factor = metres; ground at y = offset after scaling), and the world
         # is generated from the prepared views in submission order, so the
         # first view's camera anchors registration. None of it is measured.
-        semantics: dict[str, Any] = {}
-        world_path = Path(assets.get("source_world_manifest") or root / "missing")
-        if world_path.resolve().is_relative_to(capture_root.resolve() / "pipeline") and world_path.is_file():
-            from .marble_sim_assets import _semantics_metadata
-            world = json.loads(world_path.read_text())
-            if world.get("world_id") == assets["world_id"]:
-                semantics = _semantics_metadata(world)
-        prepared = ((clean_plate.get("prepared_views") or (metadata.get("clean_plate") or {}).get("prepared_views")
-                     or {}).get("frames") or [])
-        declared = semantics.get("metric_scale_factor")
-        base = {
-            "splat_path": splat["local_path"], "splat_digest": "sha256:" + splat["sha256"],
-            "splat_binding_id": "website-splat-" + splat["sha256"][:32],
-            "collision_mesh_path": collision["local_path"], "collision_mesh_digest": "sha256:" + collision["sha256"],
-            "collision_binding_id": "website-collider-" + collision["sha256"][:32],
-            "up_axis": "-Y", "meters_per_unit": declared, "provider": "world_labs",
-            "scale_authority": "provider_declared_estimate" if declared else "registration_estimate",
-            "ground_plane_offset_m": semantics.get("ground_plane_offset") if declared else None,
-            "anchor": ({"kind": "first_input_view_camera", "frame_id": prepared[0]["frame_id"]}
-                       if declared and prepared else None),
-            "operation_id": provider_run.get("provider_run_id"), "world_id": assets["world_id"],
-        }
+        if failed_fixture:
+            import trimesh
+            seed_path = root / "development_fixture_seed.glb"
+            if not seed_path.is_file():
+                seed_path.write_bytes(trimesh.creation.box(extents=(1.0, 1.0, 0.1)).export(file_type="glb"))
+            seed_digest = _sha256_file(seed_path)
+            base = {"mode": "development_fixture_seed", "provider": "blueprint_authored_development_seed",
+                "reconstruction_blocker": "website_reconstruction_failed", "collision_mesh_path": str(seed_path),
+                "collision_mesh_digest": seed_digest, "collision_binding_id": "website-development-seed-" + seed_digest[7:39],
+                "up_axis": "Z", "meters_per_unit": 1.0, "scale_authority": "model_estimated_object_frame",
+                "operation_id": provider_run.get("provider_run_id"), "physical_registration_proven": False}
+        else:
+            semantics: dict[str, Any] = {}
+            world_path = Path(assets.get("source_world_manifest") or root / "missing")
+            if world_path.resolve().is_relative_to(capture_root.resolve() / "pipeline") and world_path.is_file():
+                from .marble_sim_assets import _semantics_metadata
+                world = json.loads(world_path.read_text())
+                if world.get("world_id") == assets["world_id"]:
+                    semantics = _semantics_metadata(world)
+            prepared = ((clean_plate.get("prepared_views") or (metadata.get("clean_plate") or {}).get("prepared_views")
+                         or {}).get("frames") or [])
+            declared = semantics.get("metric_scale_factor")
+            base = {
+                "splat_path": splat["local_path"], "splat_digest": "sha256:" + splat["sha256"],
+                "splat_binding_id": "website-splat-" + splat["sha256"][:32],
+                "collision_mesh_path": collision["local_path"], "collision_mesh_digest": "sha256:" + collision["sha256"],
+                "collision_binding_id": "website-collider-" + collision["sha256"][:32],
+                "up_axis": "-Y", "meters_per_unit": declared, "provider": "world_labs",
+                "scale_authority": "provider_declared_estimate" if declared else "registration_estimate",
+                "ground_plane_offset_m": semantics.get("ground_plane_offset") if declared else None,
+                "anchor": ({"kind": "first_input_view_camera", "frame_id": prepared[0]["frame_id"]}
+                           if declared and prepared else None),
+                "operation_id": provider_run.get("provider_run_id"), "world_id": assets["world_id"],
+            }
         write_json(root / "base_scene.json", base)
         authority = metadata.get("website_scene_execution_authority") or {}
         if not all(key in authority for key in ("max_total_spend_usd", "max_paid_attempts", "expires_at_epoch")):

@@ -9,6 +9,7 @@ REGISTRATION_REFUSALS = frozenset({
     "website_registration_ambiguous", "website_registration_conflicts_provider_anchor",
     "website_registration_anchor_deviation", "website_registration_ground_plane_inconsistent",
     "website_registration_poor_fit", "website_registration_anchor_frame_missing",
+    "website_reconstruction_failed",
 })
 
 
