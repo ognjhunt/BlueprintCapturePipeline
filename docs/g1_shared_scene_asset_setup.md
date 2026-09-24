@@ -265,3 +265,27 @@ and terminal hold only; it records that obstacle clearance and physical
 outcome are unscored. A caller-supplied reviewer name records a decision but
 does not itself prove the reviewer had authority. The separate rights review
 and live checkpoint/episode gates still apply.
+
+To attempt both policies for one objective on the same sealed task/site, create
+one worker request per candidate. Keep every runtime and scene field identical;
+only `candidate_id`, its candidate-specific `rights_review`, and the resulting
+`request_digest` may differ. For navigation, both requests must carry the same
+team-confirmed goal authority. Validate the pair without starting Isaac or a
+container:
+
+```bash
+PYTHONPATH=src python -m blueprint_pipeline.native_g1_development_pair \
+  --request "$SEALED_G1_DP_REQUEST" --request "$SEALED_G1_PI05_REQUEST"
+```
+
+On a provisioned local Isaac/LeRobot host, add `--execute --output-dir
+"$NEW_G1_PAIR_DIR"`. On a Linux NVIDIA Docker host, also add `--mode container`
+with `--source-receipt`, `--source-packet`, and `--policy-runtime-root` using the
+same verified inputs described above. The wrapper executes the DP candidate
+first, then π0.5 only if the first worker completes; it stops after an
+infrastructure block to avoid a second unproductive GPU attempt. It keeps the
+two worker receipts, scores, media trees, and any container logs under separate
+candidate directories, plus a digest-bound pair receipt at the output root.
+Scored task failure still counts as a completed development episode. Neither
+this comparison nor a successful simulator score makes a candidate qualified
+or available in the public Task Evaluation Run.
