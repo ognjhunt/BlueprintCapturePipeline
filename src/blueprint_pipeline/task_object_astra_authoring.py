@@ -230,7 +230,10 @@ def invoke_vision(invoker, request: AuthoringRequest, *, capability: str,
                          'preserve the task purpose and label unobserved choices as generated.')
     stable_prefix = instructions + '\n' + cache_prefix if cache_prefix else None
     reasoning_effort = 'medium' if output_type is BlenderProgram else 'high'
-    if stable_prefix:
+    selected_model = getattr(invoker, 'model', MODEL)
+    if selected_model not in {MODEL, 'claude-opus-5-5'}:
+        raise AssetAuthoringError('authoring_model_unsupported')
+    if stable_prefix and selected_model == MODEL:
         from .asset_authoring_prompt_cache import asset_cache_policy
         family = {'VisualBrief': 'source_analysis', 'BlenderProgram': 'blender_author',
                   'PhysicalPropertyReviewProposal': 'physics',
@@ -241,7 +244,7 @@ def invoke_vision(invoker, request: AuthoringRequest, *, capability: str,
         cache_policy = None
     spec = AgentsSDKAgentSpec(
         run_id=request.run_id, capability=f'{request.object_id}_{capability}',
-        name=f'Blueprint {capability}', instructions=instructions, model=MODEL,
+        name=f'Blueprint {capability}', instructions=instructions, model=selected_model,
         max_turns=1, max_output_tokens=(8192 if output_type is AppearanceReview else 12000), max_input_tokens=80000,
         reasoning_effort=reasoning_effort, output_type=output_type,
         stable_developer_prefix=stable_prefix, cache_policy=cache_policy,
@@ -387,8 +390,12 @@ def execute_asset_authoring(*, request_value: dict, output_root: Path, invoker,
                 if file_record(aliased)['sha256'] != alias['sha256']:
                     raise AssetAuthoringError('authoring_source_evidence_alias_changed')
                 original_phase = json.loads(aliased.read_text())
-                if (original_phase.get('model') not in {'gpt-6-astra', 'gpt-6-sol'}
-                        or original_phase.get('provider') != 'openai'
+                selected_model = getattr(invoker, 'model', MODEL)
+                allowed_models = ({'gpt-6-astra', 'gpt-6-sol'} if selected_model != 'claude-opus-5-5'
+                                  else {'claude-opus-5-5'})
+                selected_provider = 'anthropic' if selected_model == 'claude-opus-5-5' else 'openai'
+                if (original_phase.get('model') not in allowed_models
+                        or original_phase.get('provider') != selected_provider
                         or original_phase.get('output') != brief.model_dump(mode='json')):
                     raise AssetAuthoringError('authoring_source_evidence_alias_output_mismatch')
                 evidence_uri, evidence_sha = alias['uri'], alias['sha256']
@@ -542,7 +549,7 @@ def execute_asset_authoring(*, request_value: dict, output_root: Path, invoker,
         result = {
             'schema_version': 'task_object_astra_authoring_result.v1',
             'status': 'candidate_authored_pending_native_qualification',
-            'request_digest': request.request_digest, 'model': MODEL,
+            'request_digest': request.request_digest, 'model': getattr(invoker, 'model', MODEL),
             'object_id': request.object_id, 'claim_ceiling': 'development_only',
             'asset': file_record(selected / 'candidate.usdc'),
             'blend': file_record(selected / 'candidate.blend'),

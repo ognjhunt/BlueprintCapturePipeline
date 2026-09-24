@@ -111,6 +111,8 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
         "schema_version": "website_scene_processing_terms.v1",
         "rights_reference": rights["consent"]["rights_reference"],
         "provider_terms_reference": rights["consent"]["provider_terms_reference"],
+        **({"anthropic_provider_terms_reference": rights["anthropic_provider_terms_reference"]}
+           if "anthropic_provider_terms_reference" in rights else {}),
         "public_redistribution_allowed": False, "provider_training_allowed": False})
     refs = {}
     for index, row in enumerate(construction["references"]):
@@ -255,7 +257,12 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
         "runtime": {"identity": {"id": "task-evaluation-scene-configuration-provider", "version": commit[:8]},
             "oci_image": NATIVE_TASK_ARENA_IMAGE, "entrypoint": ["/opt/blueprint/run-task-evaluation-scene-configuration"],
             "health_protocol": health_ref, "requirements": {"cpu_cores": 8, "memory_gib": 32, "gpu_count": 1, "disk_gib": 64},
-            "network": {"default": "deny", "allowlist": ["api.openai.com"]}, "secret_refs": ["secret-file:openai_api_key"],
+            "network": {"default": "deny", "allowlist": (["api.anthropic.com"]
+                if construction["configurations"][2].get("authoring_model_provider") == "anthropic"
+                else ["api.openai.com"])},
+            "secret_refs": (["secret-file:anthropic_api_key"]
+                if construction["configurations"][2].get("authoring_model_provider") == "anthropic"
+                else ["secret-file:openai_api_key"]),
             "mounts": [{"source": release_ref, "container_path": "/inputs/release-binding.json", "mode": "read_only"},
                        {"container_path": "/outputs", "mode": "output"}], "output_limit_bytes": 20_000_000_000},
         "execution_adapter": {"kind": "scene_configuration_pipeline", "version": "v1", "runtime_source_bundle": release_ref},
@@ -267,8 +274,11 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
         "spend": records.spend_block(
             construction["configurations"][2]["authoring_backend"],
             authoring_max_cost_usd=7.0 if articulated else None,
-            requires_artifixer=False)}
+            requires_artifixer=False,
+            authoring_provider=construction["configurations"][2].get("authoring_model_provider", "openai"))}
     request["replacement_authoring_backend"] = construction["configurations"][2]["authoring_backend"]
+    if construction["configurations"][2].get("authoring_model_provider") == "anthropic":
+        request["replacement_authoring_model_provider"] = "anthropic"
     require(request["spend"]["hard_cap_usd"] <= intent["request"]["execution"]["max_total_spend_usd"],
             "website_native_construction_budget_exceeds_authority")
     validate_launch_preparation_request(request)

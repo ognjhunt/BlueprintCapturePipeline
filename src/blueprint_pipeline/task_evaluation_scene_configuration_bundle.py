@@ -1121,6 +1121,9 @@ def build_scene_configuration_provider_bundle(
         "replacement_authoring_backend": next((value["authoring_backend"]
             for value in configuration_values.values()
             if value.get("authoring_backend") == "astra_cad_blender_v1"), "content_agents"),
+        **({"replacement_authoring_model_provider": "anthropic"}
+           if any(value.get("authoring_model_provider") == "anthropic"
+                  for value in configuration_values.values()) else {}),
         "provider_python_runtime_manifest": (
             "toolchain/"
             + _PROVIDER_PYTHON_WHEELHOUSE_RELATIVE.as_posix()
@@ -1728,6 +1731,7 @@ def load_scene_configuration_provider_bundle_receipt(
         "toolchain_digest",
         "provider_python_runtime_required",
         "replacement_authoring_backend",
+        "replacement_authoring_model_provider",
         "provider_python_runtime_manifest",
         "provider_python_runtime_digest",
         "provider_python_runtime_python_version",

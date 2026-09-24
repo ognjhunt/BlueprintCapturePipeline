@@ -20,7 +20,7 @@ from tests.test_website_native_appearance import inputs
 from tests.test_task_evaluation_scene_configuration_submission import production_fixture, SHA
 
 
-def setup(tmp_path, monkeypatch, *, development=False, articulated=False):
+def setup(tmp_path, monkeypatch, *, development=False, articulated=False, anthropic=False):
     capture = tmp_path / "capture"
     capture.mkdir()
     args, _, _ = inputs(capture)
@@ -33,6 +33,10 @@ def setup(tmp_path, monkeypatch, *, development=False, articulated=False):
     args["spend"] = copy.deepcopy(args["spend"])
     args["spend"]["expires_at_epoch"] = now + 3600
     args["spend"]["consent"]["accepted_at_epoch"] = now - 1
+    if anthropic:
+        terms = "sha256:" + "a" * 64
+        args["spend"]["authoring_provider"] = "anthropic"
+        args["spend"]["anthropic_provider_terms_reference"] = terms
     preparation = compile_website_scene_preparation(**args)
     if development:
         from blueprint_pipeline.website_development_test import prepare_development_test, ENV
@@ -150,6 +154,28 @@ def test_articulated_open_close_task_materializes_without_a_surface_target(tmp_p
     assembly = json.loads((root / "configuration/stage_6.json").read_text())
     assert assembly["replacement"]["asset_kind"] == "articulated_assembly"
     assert assembly["replacement"]["task_joint_reset"] == "closed"
+
+
+def test_new_signed_website_drawer_can_quote_anthropic_authoring_without_spend(tmp_path, monkeypatch):
+    kwargs, _ = setup(tmp_path, monkeypatch, articulated=True, anthropic=True)
+    materialize_website_submission(**kwargs)
+    root = kwargs["staging_root"]
+    request = json.loads((root / "scene_configuration_preparation_request.v1.json").read_text())
+    assert request["replacement_authoring_model_provider"] == "anthropic"
+    assert request["runtime"]["network"]["allowlist"] == ["api.anthropic.com"]
+    assert request["runtime"]["secret_refs"] == ["secret-file:anthropic_api_key"]
+    assert request["spend"]["external_service_caps"] == {
+        "openai": {"maximum_cost_usd": 0, "maximum_requests": 0,
+                   "stage_max_cost_usd": {"artifixer_semantic_teacher": 0,
+                                           "artifixer_visual_review": 0, "content_agents": 0}},
+        "anthropic": {"maximum_cost_usd": 7, "maximum_requests": 32}}
+    assert request["spend"]["hard_cap_usd"] == 13
+    rights = json.loads((root / "rights/admission.json").read_text())
+    assert "anthropic" in rights["execution_authority"]["allowed_providers"]
+    preparation = json.loads(Path(kwargs["task"]["preparation"]["path"]).read_text())
+    assert rights["consent"]["provider_terms_reference"] == preparation["intake_request"]["consent"]["provider_terms_reference"]
+    assert rights["anthropic_provider_terms_reference"] == "sha256:" + "a" * 64
+    assert json.loads((root / "rights/terms.json").read_text())["anthropic_provider_terms_reference"] == rights["anthropic_provider_terms_reference"]
 
 
 def test_development_drawer_fixture_retains_articulated_success_and_identity(tmp_path, monkeypatch):

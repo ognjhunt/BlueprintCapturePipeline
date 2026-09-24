@@ -234,6 +234,8 @@ def construction_rights_admission(*, preparation: Mapping[str, Any], task_contex
              "task_context_digest": task_context["context_digest"],
              "capture_id": task_context["capture_id"], "scene_id": task_context["scene_id"],
              "owner": request["owner"], "consent": consent,
+             **({"anthropic_provider_terms_reference": preparation["authoring_provider_terms_reference"]}
+                if request["execution"]["allowed_providers"][-1:] == ["anthropic"] else {}),
              "execution_authority": request["execution"],
              "provider_disclosure": {"captured_frame_derivatives_allowed": True,
                  "prepared_background_allowed": True, "raw_capture_video_allowed": False,

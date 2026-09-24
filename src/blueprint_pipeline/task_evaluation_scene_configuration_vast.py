@@ -311,6 +311,39 @@ def _collect_openai_cost_snapshot(
 def _provider_runtime_inputs(
     authority: Mapping[str, Any],
 ) -> tuple[dict[str, str], dict[str, str]]:
+    anthropic = authority["external_service_spend_caps"].get("anthropic")
+    if anthropic is not None:
+        openai = authority["external_service_spend_caps"]["openai"]
+        if (float(openai["maximum_cost_usd"]) != 0
+                or float(anthropic["maximum_cost_usd"]) <= 0):
+            raise TaskEvaluationSceneConfigurationVastError(
+                "scene_configuration_anthropic_spend_scope_invalid")
+        unresolved = str(os.environ.get("ANTHROPIC_API_KEY_FILE") or "").strip()
+        path = Path(unresolved)
+        if not unresolved or not path.is_absolute():
+            raise TaskEvaluationSceneConfigurationVastError(
+                "scene_configuration_anthropic_secret_configuration_missing")
+        try:
+            descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            try:
+                metadata = os.fstat(descriptor)
+                if (not stat.S_ISREG(metadata.st_mode)
+                        or metadata.st_uid != os.geteuid()
+                        or stat.S_IMODE(metadata.st_mode) & 0o077
+                        or not stat.S_IMODE(metadata.st_mode) & 0o400
+                        or not 0 < metadata.st_size <= 16_384):
+                    raise ValueError("anthropic_secret_invalid")
+            finally:
+                os.close(descriptor)
+        except (OSError, ValueError) as exc:
+            raise TaskEvaluationSceneConfigurationVastError(
+                "scene_configuration_anthropic_secret_configuration_invalid") from exc
+        return {"ANTHROPIC_API_KEY_FILE": str(path)}, {
+            "BLUEPRINT_SCENE_CONFIGURATION_AUTHORITY_DIGEST": str(authority["authority_digest"]),
+            "BLUEPRINT_SCENE_CONFIGURATION_AUTHORING_PROVIDER": "anthropic",
+            "BLUEPRINT_SCENE_CONFIGURATION_ANTHROPIC_MAX_COST_USD": str(anthropic["maximum_cost_usd"]),
+            "BLUEPRINT_SCENE_CONFIGURATION_ANTHROPIC_MAX_REQUESTS": str(anthropic["maximum_requests"]),
+        }
     openai = authority["external_service_spend_caps"]["openai"]
     if float(openai["maximum_cost_usd"]) <= 0:
         return {}, {}
@@ -1223,9 +1256,8 @@ def run_scene_configuration_vast(
         resource_class="vast_provider_adapter",
         require_allocation_binding=True,
     )
-    external_cap = float(
-        authority["external_service_spend_caps"]["openai"]["maximum_cost_usd"]
-    )
+    external_cap = sum(float(provider["maximum_cost_usd"])
+                       for provider in authority["external_service_spend_caps"].values())
     provider_all_in_cap = float(authority["hard_attempt_spend_cap_usd"]) - external_cap
     live_minutes = ceil_live_minutes(ttl)
     bundle_path = Path(str(receipt["bundle_path"])).resolve()

@@ -731,6 +731,10 @@ def _scene_configuration_steps() -> tuple[LaneStep, ...]:
                 "{openai_artifixer_visual_review_max_cost_usd}",
                 "--openai-content-agents-max-cost-usd",
                 "{openai_content_agents_max_cost_usd}",
+                "--anthropic-max-cost-usd",
+                "{anthropic_max_cost_usd}",
+                "--anthropic-max-requests",
+                "{anthropic_max_requests}",
                 "--hard-ttl-seconds",
                 "{hard_ttl_seconds}",
                 "--output",
@@ -1544,6 +1548,8 @@ def _context_from_args(args: argparse.Namespace) -> dict[str, Any]:
         "openai_content_agents_max_cost_usd": _arg_text(
             args.openai_content_agents_max_cost_usd
         ),
+        "anthropic_max_cost_usd": _arg_text(args.anthropic_max_cost_usd),
+        "anthropic_max_requests": _arg_text(args.anthropic_max_requests),
         "hard_ttl_seconds": _arg_text(args.hard_ttl_seconds),
         "aggregate_goal_spend_before_usd": _arg_text(
             args.aggregate_goal_spend_before_usd
@@ -2537,6 +2543,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--openai-artifixer-visual-review-max-cost-usd", type=float
     )
     parser.add_argument("--openai-content-agents-max-cost-usd", type=float)
+    parser.add_argument("--anthropic-max-cost-usd", type=float, default=0.0)
+    parser.add_argument("--anthropic-max-requests", type=int, default=0)
     parser.add_argument("--hard-ttl-seconds", type=int)
     parser.add_argument("--aggregate-goal-spend-before-usd", type=float)
     parser.add_argument("--aggregate-goal-spend-cap-usd", type=float)

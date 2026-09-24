@@ -611,6 +611,18 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     # paid simulation authorization or accept provider terms on the owner's behalf.
     owner = dict(spend.get("owner") or {})
     consent = dict(spend.get("consent") or {})
+    authoring_provider = spend.get("authoring_provider", "openai")
+    if authoring_provider not in {"openai", "anthropic"}:
+        raise ValueError("website_authoring_provider_invalid")
+    if authoring_provider == "anthropic":
+        # This must come from the website's fresh owner-authorized execution
+        # authority. A local key or worker environment cannot opt a scene in.
+        terms = spend.get("anthropic_provider_terms_reference")
+        if (not isinstance(terms, str) or re.fullmatch(r"sha256:[0-9a-f]{64}", terms) is None
+                or not isinstance(consent.get("provider_terms_reference"), str)
+                or not consent["provider_terms_reference"]):
+            blockers.append("website_anthropic_provider_terms_authority_required")
+        authoring_configuration["authoring_model_provider"] = "anthropic"
     if not owner or not consent:
         blockers.append("website_scene_execution_authority_required")
     rights = task_context.get("capture_rights") or {}
@@ -637,7 +649,9 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                      "success": dict(SUCCESS)})},
         "execution": {"purpose": "scene_preparation", "max_total_spend_usd": spend["max_total_spend_usd"],
                       "max_paid_attempts": spend["max_paid_attempts"], "max_retries": 0,
-                      "expires_at_epoch": spend["expires_at_epoch"], "allowed_providers": ["vast", "openai"],
+                      "expires_at_epoch": spend["expires_at_epoch"],
+                      "allowed_providers": (["vast", "openai", "anthropic"]
+                                            if authoring_provider == "anthropic" else ["vast", "openai"]),
                       "policy_candidates": [],
                       "claim_scope": CLAIM_CEILING},
         "consent": consent,
@@ -659,6 +673,8 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     value = {
         "schema_version": SCHEMA_VERSION, "status": "needs_input" if blockers else "intake_ready",
         "blockers": blockers, "claim_ceiling": CLAIM_CEILING,
+        **({"authoring_provider_terms_reference": terms} if authoring_provider == "anthropic" and
+            isinstance(terms, str) else {}),
         "binding": {"task_context_digest": task_context["context_digest"], "task_masks_digest": task_masks["digest"],
                     "source_geometry_digest": source_geometry["digest"],
                     "removal_manifest_digest": canonical_digest(removal_manifest),

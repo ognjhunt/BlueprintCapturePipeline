@@ -486,8 +486,10 @@ def materialize_scene_configuration_submission(
             "health_protocol": stage.json("release/runtime_health_protocol.v1.json",
                                          records.runtime_health_protocol(source_commit=commit)),
             "requirements": {"cpu_cores": 8, "memory_gib": 32, "gpu_count": 1, "disk_gib": 64},
-            "network": {"default": "deny", "allowlist": ["api.openai.com"]},
-            "secret_refs": ["secret-file:openai_api_key"],
+            "network": {"default": "deny", "allowlist": (["api.anthropic.com"]
+                if configs[2].get("authoring_model_provider") == "anthropic" else ["api.openai.com"])},
+            "secret_refs": (["secret-file:anthropic_api_key"]
+                if configs[2].get("authoring_model_provider") == "anthropic" else ["secret-file:openai_api_key"]),
             "mounts": [{"source": release_ref, "container_path": "/inputs/release-binding.json",
                         "mode": "read_only"}, {"container_path": "/outputs", "mode": "output"}],
             "output_limit_bytes": 20_000_000_000},
@@ -506,13 +508,16 @@ def materialize_scene_configuration_submission(
         # already sanctions the maximum; ask for it rather than for the floor.
         "spend": records.spend_block(
             configs[2].get("authoring_backend", "content_agents"),
-            authoring_max_cost_usd=_authoring_spend_request(
-                configs[2].get("authoring_backend", "content_agents")
-            ),
+            authoring_max_cost_usd=(7.0 if configs[2].get("authoring_model_provider") == "anthropic" else
+                _authoring_spend_request(configs[2].get("authoring_backend", "content_agents"))),
+            requires_artifixer=configs[2].get("authoring_model_provider") != "anthropic",
+            authoring_provider=configs[2].get("authoring_model_provider", "openai"),
         ),
     }
     if configs[2].get("authoring_backend", "content_agents") != "content_agents":
         request["replacement_authoring_backend"] = configs[2]["authoring_backend"]
+    if configs[2].get("authoring_model_provider") == "anthropic":
+        request["replacement_authoring_model_provider"] = "anthropic"
     if sam_plan_ref is not None:
         request["runtime"]["mounts"].append({
             "source": sam_plan_ref, "container_path": "/inputs/sam31-preparation-plan.json",
