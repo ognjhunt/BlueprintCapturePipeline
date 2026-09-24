@@ -203,7 +203,11 @@ def test_new_signed_website_drawer_selects_sol_managed_runtime_without_spend(tmp
     assert authoring["authoring_agent_runtime"] == "openai_agents_api"
     assert authoring["agents_api_policy"]["project_guard_receipt_digest"] == "sha256:" + "f" * 64
     assert request["runtime"]["network"]["allowlist"] == ["api.openai.com"]
-    assert request["spend"]["external_service_caps"]["openai"]["stage_max_cost_usd"]["content_agents"] == 7
+    assert request["spend"]["external_service_caps"]["openai"] == {
+        "maximum_cost_usd": 7.0, "maximum_requests": 32,
+        "stage_max_cost_usd": {"artifixer_semantic_teacher": 0.0,
+                               "artifixer_visual_review": 0.0, "content_agents": 7.0}}
+    assert request["spend"]["hard_cap_usd"] == 13.0
 
 
 def test_development_drawer_fixture_retains_articulated_success_and_identity(tmp_path, monkeypatch):

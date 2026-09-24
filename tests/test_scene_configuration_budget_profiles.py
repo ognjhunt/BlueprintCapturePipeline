@@ -42,6 +42,19 @@ def test_shared_profile_quote_and_schema_contract_match():
         spend_block("astra_cad_blender_v1", authoring_max_cost_usd=15.01)
 
 
+def test_content_only_astra_quote_preserves_the_separate_default() -> None:
+    sol = spend_block("astra_cad_blender_v1", authoring_max_cost_usd=7,
+                      requires_artifixer=False)
+    assert sol["external_service_caps"]["openai"] == {
+        "maximum_cost_usd": 7.0, "maximum_requests": 32,
+        "stage_max_cost_usd": {"artifixer_semantic_teacher": 0.0,
+                               "artifixer_visual_review": 0.0, "content_agents": 7.0}}
+    assert sol["hard_cap_usd"] == 13.0
+    assert spend_block("astra_cad_blender_v1", authoring_max_cost_usd=15)["hard_cap_usd"] == 26.76
+    assert spend_block("astra_cad_blender_v1", authoring_max_cost_usd=7,
+                       requires_artifixer=False, authoring_provider="anthropic")["hard_cap_usd"] == 13.0
+
+
 @pytest.mark.parametrize("author_cap", [5, 10, 15])
 def test_explicit_astra_requests_are_admitted_without_rewriting_proposed_caps(author_cap):
     value = request()
