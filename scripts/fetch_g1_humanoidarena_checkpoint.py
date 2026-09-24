@@ -67,6 +67,11 @@ def _candidate(inventory: dict[str, Any], candidate_id: str) -> dict[str, Any]:
         ):
             raise ValueError("g1_checkpoint_file_inventory_invalid")
         seen.add(relative.as_posix())
+    inventory_digest = "sha256:" + hashlib.sha256(
+        json.dumps(files, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    ).hexdigest()
+    if candidate.get("inventory_digest") != inventory_digest:
+        raise ValueError("g1_checkpoint_candidate_inventory_digest_invalid")
     return candidate
 
 
@@ -125,6 +130,8 @@ def materialize_candidate(
     return {
         "status": "checkpoint_bytes_verified",
         "candidate_id": candidate_id,
+        "candidate_inventory_digest": candidate["inventory_digest"],
+        "policy_role": candidate.get("policy_role"),
         "inventory_file_sha256": "sha256:" + _sha256_and_size(inventory_path)[0],
         "files": verified,
     }

@@ -78,3 +78,14 @@ only after the inventory SHA-256 and byte size match. This is checkpoint
 storage proof, not a running or licensed policy. Verify the applicable model
 terms and bind the executing server process to these bytes before admitting
 either candidate to an evaluation run.
+
+The same inventory also pins two `HSI_vision_navi` movement candidates:
+`humanoidarena_dp_g1_dex3_sonic_vision_navi` and
+`humanoidarena_pi05_g1_dex3_sonic_vision_navi`. Their published configurations
+use the same front image, 64-value observation state, 40-value semantic action,
+and SONIC controller interface as the box candidates. Stage either with the
+same fetch command and its candidate id. These are navigation checkpoints for
+moving to a marked area; their file identities do not establish a runnable
+navigation task in Blueprint's captured site. A site-grounded movement task
+contract, checkpoint/server attestation, and live episode evidence are still
+required before offering them in the run configurator.
