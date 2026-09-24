@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -502,3 +503,57 @@ def test_declared_scale_without_an_anchor_must_agree_with_the_registration(tmp_p
         return {"base_scene": {**scene, "meters_per_unit": 8.0}}
     value = _compile(tmp_path, base)
     assert "website_registration_scale_conflicts_declared" in value["blockers"]
+
+
+def _levelled_room_seen_from_a_pitched_camera(tmp_path, monkeypatch, *, pitch_degrees):
+    """A gravity-levelled generated room (Y down, floor 1.5 m below the first
+    camera) observed by a first camera pitched down, as phone walkthroughs are."""
+    rng = np.random.default_rng(0)
+    half_x, half_z, count = 2.0, 1.5, 1500
+    floor = np.c_[rng.uniform(-half_x, half_x, 2 * count), np.full(2 * count, 1.5), rng.uniform(-half_z, half_z, 2 * count)]
+    ceiling = np.c_[rng.uniform(-half_x, half_x, count), np.full(count, -1.2), rng.uniform(-half_z, half_z, count)]
+    walls = []
+    for side in (-1, 1):
+        walls.append(np.c_[np.full(count // 2, side * half_x), rng.uniform(-1.2, 1.5, count // 2),
+                           rng.uniform(-half_z, half_z, count // 2)])
+        walls.append(np.c_[rng.uniform(-half_x, half_x, count // 2), rng.uniform(-1.2, 1.5, count // 2),
+                           np.full(count // 2, side * half_z)])
+    counter = np.c_[rng.uniform(0.5, half_x, count // 2), np.full(count // 2, 0.6),
+                    rng.uniform(half_z - 0.6, half_z, count // 2)]
+    world = np.concatenate([floor, ceiling, *walls, counter])
+    c, s = math.cos(math.radians(pitch_degrees)), math.sin(math.radians(pitch_degrees))
+    camera_from_world = np.array([[1.0, 0.0, 0.0], [0.0, c, -s], [0.0, s, c]])
+    # The estimate's world is the pitched first camera; the generated world is levelled.
+    monkeypatch.setattr(preparation, "_source_points", lambda _geometry: world @ camera_from_world.T)
+    mpu = 1.25
+    mesh_path = tmp_path / "levelled-collider.glb"
+    vertices = world / mpu
+    faces = np.c_[np.arange(len(vertices) - 2), np.arange(1, len(vertices) - 1), np.arange(2, len(vertices))]
+    trimesh.Trimesh(vertices=vertices, faces=faces, process=False).export(mesh_path)
+    geometry = {"frames": [{"frame_id": "frame-0", "world_from_camera": np.eye(4).tolist()}], "digest": "sha256:" + "0" * 64}
+    anchor = {"kind": "first_input_view_camera", "frame_id": "frame-0", "meters_per_unit": mpu,
+              "up_axis": "-Y", "ground_plane_offset_m": 1.5}
+    return geometry, mesh_path, anchor
+
+
+def test_pitched_first_camera_is_levelled_by_the_observed_declared_floor(tmp_path, monkeypatch):
+    geometry, mesh_path, anchor = _levelled_room_seen_from_a_pitched_camera(tmp_path, monkeypatch, pitch_degrees=30)
+    value = preparation.register_source_to_runtime(source_geometry=geometry, collision_mesh_path=mesh_path,
+                                                   anchor=anchor)
+    report = value["anchor"]
+    assert report["hypothesis_axis"] == "declared_up"
+    assert report["levelled_tilt_degrees"] == pytest.approx(30, abs=1)
+    assert report["roll_degrees"] == 0 and report["rotation_deviation_degrees"] < 1
+    assert report["scale_ratio_to_declared"] == pytest.approx(1.0, abs=0.01)
+    assert value["ground_plane"]["checked"] is True and value["ground_plane"]["residual_m"] < 0.05
+    assert value["runner_up_ratio"] >= 1.2
+
+
+def test_unlevelled_prior_from_a_pitched_camera_stays_a_typed_refusal(tmp_path, monkeypatch):
+    # Without an observed floor at the declared height, the camera's own axes are
+    # the only prior; the pitched view must refuse rather than guess a pose.
+    geometry, mesh_path, anchor = _levelled_room_seen_from_a_pitched_camera(tmp_path, monkeypatch, pitch_degrees=30)
+    monkeypatch.setattr(preparation, "_observed_declared_ground", lambda *_args: None)
+    with pytest.raises(ValueError, match="website_registration_"):
+        preparation.register_source_to_runtime(source_geometry=geometry, collision_mesh_path=mesh_path,
+                                               anchor=anchor)

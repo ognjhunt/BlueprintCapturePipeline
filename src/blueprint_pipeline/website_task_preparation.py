@@ -130,6 +130,61 @@ def _rotation_degrees(a: np.ndarray, b: np.ndarray) -> float:
     return math.degrees(math.acos(max(-1.0, min(1.0, (np.trace(a @ b.T) - 1.0) / 2.0))))
 
 
+def _about(axis: int, degrees: float) -> np.ndarray:
+    c, s = math.cos(math.radians(degrees)), math.sin(math.radians(degrees))
+    i, j = [k for k in range(3) if k != axis]
+    turn = np.eye(3)
+    turn[i, i], turn[i, j], turn[j, i], turn[j, j] = c, -s, s, c
+    return turn
+
+
+def _rotation_between(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    a, b = a / np.linalg.norm(a), b / np.linalg.norm(b)
+    v, c = np.cross(a, b), float(a @ b)
+    if c < -1 + 1e-9:
+        raise ValueError("website_registration_anchor_frame_invalid")
+    k = np.array([[0.0, -v[2], v[1]], [v[2], 0.0, -v[0]], [-v[1], v[0], 0.0]])
+    return np.eye(3) + k + k @ k / (1.0 + c)
+
+
+GROUND_SEARCH_MAX_TILT_DEGREES = 45.0
+GROUND_SEARCH_TOLERANCE_M = 0.03
+
+
+def _observed_declared_ground(source: np.ndarray, camera_to_world: np.ndarray, offset_m: float) -> np.ndarray | None:
+    """Unit downward normal of the dominant downward-facing plane, if it lies at the declared camera height.
+
+    A generated world that declares a ground plane at ``y = offset`` is
+    gravity-levelled: its origin is the first view's camera centre but its
+    axes are not the camera's tilted axes. The source must show that floor
+    (below the camera, within the declared-scale tolerance of the declared
+    height) for the camera's tilt to be removed; otherwise ``None``.
+    """
+    centre, camera_down = camera_to_world[:3, 3], camera_to_world[:3, 1]
+    low, high = (bound * offset_m for bound in ANCHOR_SCALE_RATIO_BOUNDS)
+    rng = np.random.default_rng(604)
+    best, best_count = None, int(0.03 * len(source))
+    for _ in range(2000):
+        a, b, c = source[rng.choice(len(source), 3, replace=False)]
+        normal = np.cross(b - a, c - a)
+        if np.linalg.norm(normal) <= 1e-9:
+            continue
+        normal = normal / np.linalg.norm(normal)
+        normal = normal if normal @ camera_down >= 0 else -normal
+        if normal @ camera_down < math.cos(math.radians(GROUND_SEARCH_MAX_TILT_DEGREES)) or normal @ (a - centre) <= 0:
+            continue
+        count = int(np.sum(np.abs((source - a) @ normal) <= GROUND_SEARCH_TOLERANCE_M))
+        if count > best_count:
+            best, best_count = (a, normal), count
+    if best is None:
+        return None
+    inliers = source[np.abs((source - best[0]) @ best[1]) <= GROUND_SEARCH_TOLERANCE_M]
+    normal = np.linalg.svd(inliers - inliers.mean(axis=0))[2][-1]
+    normal = normal if normal @ camera_down >= 0 else -normal
+    # The dominant downward-facing surface is the floor only at the declared height.
+    return normal if low <= float(normal @ (inliers.mean(axis=0) - centre)) <= high else None
+
+
 def _anchor_prior(source_geometry: Mapping[str, Any], anchor: Mapping[str, Any]) -> tuple[float, np.ndarray]:
     """The provider world is anchored at its first input view's camera, in the same OpenCV convention."""
     frame = next((row for row in source_geometry["frames"] if row["frame_id"] == anchor.get("frame_id")), None)
@@ -212,9 +267,24 @@ def register_source_to_runtime(*, source_geometry: Mapping[str, Any], collision_
         metres_per_runtime_unit = 1.0 / best[1]
     else:
         mpu, camera_from_world = anchor_pose
+        up = _UP_INDEX[anchor["up_axis"]]
+        offset = anchor.get("ground_plane_offset_m")
+        floor = (None if offset is None else
+                 _observed_declared_ground(source, np.linalg.inv(camera_from_world), float(offset)))
+        if floor is None:
+            # No observed floor at the declared height: the camera frame is the only prior.
+            level, turn = np.eye(3), _roll
+        else:
+            # Remove the first camera's pitch and roll: the declared floor
+            # normal becomes the world's down axis; heading stays ambiguous.
+            down = np.zeros(3)
+            down[up] = 1.0 if anchor["up_axis"] == "-Y" else -1.0
+            level = _rotation_between(camera_from_world[:3, :3] @ floor, down)
+            turn = lambda degrees: _about(up, degrees)  # noqa: E731
         anchored = []
         for roll in _ROLLS:
-            prior = (1.0 / mpu, _roll(roll) @ camera_from_world[:3, :3], (_roll(roll) @ camera_from_world[:3, 3]) / mpu)
+            rotation = turn(roll) @ level
+            prior = (1.0 / mpu, rotation @ camera_from_world[:3, :3], (rotation @ camera_from_world[:3, 3]) / mpu)
             anchored.append((score(*_refine_registration(fit_source, target, *prior)), roll, prior))
         anchored.sort(key=lambda row: row[0][0])
         best, roll, prior = anchored[0]
@@ -228,7 +298,11 @@ def register_source_to_runtime(*, source_geometry: Mapping[str, Any], collision_
         better = [row for row in rows if row[0] < best[0]]
         # An unconstrained pose that fits materially and clearly better than
         # the anchored one means the world does not follow its declared anchor.
+        # Only poses at a scale the anchor admits are evidence: a generated
+        # world that extends past the observed footage rewards inflated-scale
+        # poses, which the declared scale already refuses.
         if any(row[0] * 1.2 < best[0] and best[0] - row[0] > 0.005 * extent_norm
+               and ANCHOR_SCALE_RATIO_BOUNDS[0] <= row[1] * mpu <= ANCHOR_SCALE_RATIO_BOUNDS[1]
                for row in better if not same_hypothesis(row)):
             raise ValueError("website_registration_conflicts_provider_anchor")
         # The same pose reached from an unconstrained seed is the same
@@ -237,6 +311,8 @@ def register_source_to_runtime(*, source_geometry: Mapping[str, Any], collision_
         if same_pose:
             best = min(same_pose, key=lambda row: row[0])
         anchor_report = {"kind": anchor.get("kind"), "frame_id": anchor["frame_id"], "roll_degrees": roll,
+                         "hypothesis_axis": "camera_optical" if floor is None else "declared_up",
+                         "levelled_tilt_degrees": _rotation_degrees(level, np.eye(3)),
                          "rotation_deviation_degrees": _rotation_degrees(best[2], prior[1]),
                          "translation_deviation_m": float(np.linalg.norm(best[3] - prior[2]) * mpu),
                          "scale_ratio_to_declared": float(best[1] * mpu),
@@ -245,9 +321,7 @@ def register_source_to_runtime(*, source_geometry: Mapping[str, Any], collision_
                 or not ANCHOR_SCALE_RATIO_BOUNDS[0] <= anchor_report["scale_ratio_to_declared"] <= ANCHOR_SCALE_RATIO_BOUNDS[1]):
             raise ValueError("website_registration_anchor_deviation")
         metres_per_runtime_unit = mpu
-        offset = anchor.get("ground_plane_offset_m")
         if offset is not None:
-            up = _UP_INDEX[anchor["up_axis"]]
             down = (1 if anchor["up_axis"] == "-Y" else -1) * moved_by(best)[:, up]
             floor_raw = float(np.percentile(down, 98))
             fraction = float(np.mean(np.abs(down - floor_raw) <= 0.10 / mpu))
