@@ -143,6 +143,10 @@ def _upload_video(*, clip: Path, root: Path, token: str, opener: Any) -> str:
     return file_id
 
 
+_CONTINUOUS_CRF_LADDER = (18, 23, 28)
+_CONTINUOUS_VIDEO_MAX_BYTES = 32 * 1024**2
+
+
 def _probe_video(path: Path) -> dict[str, Any]:
     result = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_frames",
         "-show_entries", "stream=width,height:frame=best_effort_timestamp_time", "-of", "json", str(path)],
@@ -157,12 +161,13 @@ def prepare_continuous_video(*, source: Path, source_digest: str, root: Path) ->
     root.mkdir(parents=True, exist_ok=True)
     destination = root / "continuous-upright.mp4"
     receipt_path = root / "continuous-video.json"
-    encoding = "upright_h264_crf18_veryfast_threads2_all_source_frames_v2"
+    encodings = {crf: f"upright_h264_crf{crf}_veryfast_threads2_all_source_frames_v2" for crf in _CONTINUOUS_CRF_LADDER}
     if receipt_path.is_file():
         receipt = json.loads(receipt_path.read_text())
         video = receipt.get("video") or {}
         if (receipt.get("digest") != canonical_digest(receipt, digest_field="digest")
-                or video.get("source_video_digest") != source_digest or video.get("encoding") != encoding
+                or video.get("source_video_digest") != source_digest
+                or video.get("encoding") not in encodings.values()
                 or video.get("path") != str(destination) or not destination.is_file()
                 or _sha256_file(destination) != video.get("sha256")):
             raise ValueError("meta_sam_prepared_video_receipt_invalid")
@@ -173,23 +178,34 @@ def prepare_continuous_video(*, source: Path, source_digest: str, root: Path) ->
     # Full-resolution, every-frame tracking input; use the CPU preset rather
     # than x264's slower default. Allow for the shared service's CPU quota/load;
     # the former two-minute wall limit expired even for a 13-second walkthrough.
-    # Never publish a timed-out partial as ready.
-    fd, temporary = tempfile.mkstemp(prefix="continuous-", suffix=".mp4", dir=root)
-    os.close(fd)
-    partial = Path(temporary)
-    try:
-        subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(source), "-map", "0:v:0", "-an",
-            "-fps_mode", "passthrough", "-c:v", "libx264", "-preset", "veryfast", "-threads", "2",
-            "-crf", "18", "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(partial)],
-            check=True, timeout=600, capture_output=True)
-        encoded = _probe_video(partial)
-    except Exception:
+    # Never publish a timed-out partial as ready. A long or detailed walkthrough
+    # can exceed the upload bound at CRF 18 (a 30-second 1080p HEVC phone clip
+    # re-encodes to ~50 MB), so step down a fixed quality ladder; resolution and
+    # frame identity never change, and the chosen rung is recorded in `encoding`.
+    for crf in _CONTINUOUS_CRF_LADDER:
+        fd, temporary = tempfile.mkstemp(prefix="continuous-", suffix=".mp4", dir=root)
+        os.close(fd)
+        partial = Path(temporary)
+        try:
+            subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(source), "-map", "0:v:0", "-an",
+                "-fps_mode", "passthrough", "-c:v", "libx264", "-preset", "veryfast", "-threads", "2",
+                "-crf", str(crf), "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(partial)],
+                check=True, timeout=600, capture_output=True)
+            encoded = _probe_video(partial)
+        except Exception:
+            partial.unlink(missing_ok=True)
+            raise
+        if len(encoded["frames"]) != len(original["frames"]):
+            partial.unlink(missing_ok=True)
+            raise ValueError("meta_sam_encoded_frame_mapping_invalid")
+        width, height = encoded["streams"][0]["width"], encoded["streams"][0]["height"]
+        if min(width, height) <= 0 or max(width, height) > 4096:
+            partial.unlink(missing_ok=True)
+            raise ValueError("meta_sam_inline_video_limits_exceeded")
+        if partial.stat().st_size <= _CONTINUOUS_VIDEO_MAX_BYTES:
+            break
         partial.unlink(missing_ok=True)
-        raise
-    if len(encoded["frames"]) != len(original["frames"]):
-        raise ValueError("meta_sam_encoded_frame_mapping_invalid")
-    width, height = encoded["streams"][0]["width"], encoded["streams"][0]["height"]
-    if min(width, height) <= 0 or max(width, height) > 4096 or partial.stat().st_size > 32 * 1024**2:
+    else:
         raise ValueError("meta_sam_inline_video_limits_exceeded")
     source_start = float(original["frames"][0]["best_effort_timestamp_time"])
     encoded_start = float(encoded["frames"][0]["best_effort_timestamp_time"])
@@ -203,7 +219,7 @@ def prepare_continuous_video(*, source: Path, source_digest: str, root: Path) ->
                      "retained_video_digest": source_digest})
     partial.replace(destination)
     video = {"path": str(destination), "sha256": _sha256_file(destination),
-             "source_video_digest": source_digest, "encoding": encoding}
+             "source_video_digest": source_digest, "encoding": encodings[crf]}
     receipt = {"registry": rows, "video": video}
     receipt["digest"] = canonical_digest(receipt, digest_field="digest")
     temporary_receipt = receipt_path.with_suffix(".tmp")

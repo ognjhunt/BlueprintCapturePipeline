@@ -315,6 +315,46 @@ def test_failed_encoder_cannot_publish_partial_video(tmp_path, monkeypatch):
     assert not list(root.glob("*.mp4"))
 
 
+def _oversize_encoder(tmp_path, monkeypatch, oversize_crfs):
+    source = tmp_path / "source.mov"
+    source.write_bytes(b"source")
+    frames = {"streams": [{"width": 1080, "height": 1920}],
+              "frames": [{"best_effort_timestamp_time": "0.0"}, {"best_effort_timestamp_time": "0.033"}]}
+    monkeypatch.setattr(sam, "_probe_video", lambda _: frames)
+    crfs = []
+    def encode(argv, **kwargs):
+        crf = int(argv[argv.index("-crf") + 1])
+        crfs.append(crf)
+        size = sam._CONTINUOUS_VIDEO_MAX_BYTES + 1 if crf in oversize_crfs else 1024
+        with open(argv[-1], "wb") as file:
+            file.truncate(size)
+    monkeypatch.setattr(sam.subprocess, "run", encode)
+    return source, crfs
+
+
+def test_oversized_continuous_video_steps_down_quality_ladder(tmp_path, monkeypatch):
+    source, crfs = _oversize_encoder(tmp_path, monkeypatch, {18})
+    root = tmp_path / "output"
+    registry, video = sam.prepare_continuous_video(source=source, source_digest=_sha256_file(source), root=root)
+    assert crfs == [18, 23]
+    assert video["encoding"] == "upright_h264_crf23_veryfast_threads2_all_source_frames_v2"
+    assert [(row["width"], row["height"]) for row in registry] == [(1080, 1920)] * 2
+    assert Path(video["path"]).stat().st_size == 1024
+    assert sorted(path.name for path in root.glob("*.mp4")) == ["continuous-upright.mp4"]
+    # The recorded rung is accepted on reuse.
+    assert sam.prepare_continuous_video(source=source, source_digest=_sha256_file(source), root=root)[1] == video
+
+
+def test_continuous_video_over_bound_at_every_rung_fails_closed(tmp_path, monkeypatch):
+    source, crfs = _oversize_encoder(tmp_path, monkeypatch, set(sam._CONTINUOUS_CRF_LADDER))
+    root = tmp_path / "output"
+    with pytest.raises(ValueError, match="meta_sam_inline_video_limits_exceeded"):
+        sam.prepare_continuous_video(source=source, source_digest=_sha256_file(source), root=root)
+    assert crfs == list(sam._CONTINUOUS_CRF_LADDER)
+    assert not list(root.glob("*.mp4"))
+    assert not (root / "continuous-video.json").exists()
+
+
 def test_decoded_mask_cache_is_bound_to_retained_provider_bytes(tmp_path, monkeypatch):
     monkeypatch.setenv("META_MODEL_API_KEY", "fixture")
     args = inputs(tmp_path)
