@@ -12,6 +12,7 @@ remain separate claims.
 from __future__ import annotations
 
 import math
+import struct
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -41,6 +42,15 @@ GRAPH_SCHEMA_VERSION = "task_evaluation_articulated_replacement_graph.v1"
 RECEIPT_SCHEMA_VERSION = "task_evaluation_articulated_replacement_authoring_result.v1"
 COMPLETION_SCHEMA_VERSION = "task_evaluation_articulated_candidate_physics_completion.v1"
 _DYNAMIC_MESH_COLLISION_APPROXIMATIONS = {"convexDecomposition", "convexHull"}
+
+
+def _close_authored_float32_sequence(expected: Any, observed: Any) -> bool:
+    """Compare a receipt value with the exact precision authored into USD float attrs."""
+    try:
+        rounded = [struct.unpack('f', struct.pack('f', float(value)))[0] for value in expected]
+    except (OverflowError, ValueError, TypeError, struct.error):
+        return False
+    return all(math.isfinite(value) for value in rounded) and _close_sequence(rounded, observed)
 
 
 def _bounds_valid(value: Any) -> bool:
@@ -558,9 +568,9 @@ def qualify_scene_configuration_articulated_asset_static(
             or len(completion_links) != len(observed["links"])
             or any(row.get("prim_path") != observed["links"][row["link_id"]]["prim_path"]
                    or row.get("part_id") != observed["links"][row["link_id"]]["part_id"]
-                   or not _close_sequence([row["mass_kg"]], [observed["links"][row["link_id"]]["mass_kg"]])
-                   or not _close_sequence(row["center_of_mass_m"], observed["links"][row["link_id"]]["center_of_mass_m"])
-                   or not _close_sequence(row["diagonal_inertia_kg_m2"], observed["links"][row["link_id"]]["diagonal_inertia_kg_m2"])
+                   or not _close_authored_float32_sequence([row["mass_kg"]], [observed["links"][row["link_id"]]["mass_kg"]])
+                   or not _close_authored_float32_sequence(row["center_of_mass_m"], observed["links"][row["link_id"]]["center_of_mass_m"])
+                   or not _close_authored_float32_sequence(row["diagonal_inertia_kg_m2"], observed["links"][row["link_id"]]["diagonal_inertia_kg_m2"])
                    or sorted(row["collision_prim_paths"]) != sorted(observed["links"][row["link_id"]]["collision_prim_paths"])
                    or not all(_close_sequence(row["collision_bounds_link_frame_m"][bound],
                                               observed["links"][row["link_id"]]["collision_bounds_link_frame_m"][bound])
