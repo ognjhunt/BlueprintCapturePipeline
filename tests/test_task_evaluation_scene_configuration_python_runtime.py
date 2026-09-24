@@ -4,6 +4,7 @@ import hashlib
 import importlib
 import io
 import json
+import subprocess
 import sys
 import zipfile
 from pathlib import Path
@@ -271,6 +272,20 @@ def test_astra_materialization_imports_sealed_profile_and_rejects_wrong_profile(
         runtime_python=(3, 12), runtime_platform="linux", runtime_machine="x86_64", profile="astra_asset_authoring")
     assert (installed / "build123d/__init__.py").is_file()
     assert not list(installed.rglob("*.pyc"))
+
+
+def test_slow_sealed_import_has_bounded_headroom_and_typed_timeout(tmp_path, monkeypatch):
+    observed = {}
+
+    def timed_out(*args, **kwargs):
+        observed["timeout"] = kwargs["timeout"]
+        raise subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+
+    monkeypatch.setattr(runtime_module.subprocess, "run", timed_out)
+    with pytest.raises(TaskEvaluationSceneConfigurationPythonRuntimeError,
+                       match="scene_configuration_python_import_preflight_timed_out"):
+        runtime_module._validate_astra_imports(tmp_path)
+    assert observed["timeout"] == 300
 
 
 @pytest.mark.parametrize("missing", ["build123d", "langgraph", "trimesh", "pillow", "rfc8785"])
