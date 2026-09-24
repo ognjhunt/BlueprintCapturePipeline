@@ -1015,7 +1015,7 @@ def test_corrupt_job_ledger_fails_closed_without_execution_or_overwrite(
     assert ledger_path.read_bytes() == b'{"status":"processing"'
 
 
-def test_pull_and_process_nacks_retryable_result(
+def test_pull_and_process_defers_retryable_result_without_ack(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -1058,7 +1058,11 @@ def test_pull_and_process_nacks_retryable_result(
         max_messages=1,
     ) == 0
     assert subscriber.acknowledged == []
-    assert subscriber.ack_deadline_requests[-1]["ack_deadline_seconds"] == 0
+    assert subscriber.ack_deadline_requests[-1]["ack_deadline_seconds"] == 600
+    assert all(
+        request["ack_deadline_seconds"] != 0
+        for request in subscriber.ack_deadline_requests
+    )
     exhausted = list(
         (
             tmp_path
@@ -1070,6 +1074,106 @@ def test_pull_and_process_nacks_retryable_result(
     record = json.loads(exhausted[0].read_text(encoding="utf-8"))
     assert record["delivery_attempt"] == 5
     assert record["blockers"] == ["dependency_unavailable"]
+
+
+def test_retryable_old_scene_is_deferred_and_new_scene_can_finish_next_pull(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    pubsub_v1 = types.SimpleNamespace()
+    monkeypatch.setattr(google.cloud, "pubsub_v1", pubsub_v1, raising=False)
+
+    def handoff(scene: str, ack_id: str) -> object:
+        payload = json.dumps(
+            {
+                "bucket": "capture-bucket",
+                "scene_id": scene,
+                "capture_id": f"capture-{scene}",
+                "raw_prefix_uri": (
+                    f"gs://capture-bucket/scenes/{scene}/captures/capture-{scene}/raw"
+                ),
+            }
+        ).encode()
+        return types.SimpleNamespace(
+            ack_id=ack_id,
+            delivery_attempt=1,
+            message=types.SimpleNamespace(message_id=f"msg-{scene}", data=payload, attributes={}),
+        )
+
+    class BatchedSubscriber(FakeSubscriber):
+        def __init__(self) -> None:
+            super().__init__([])
+            self.batches = [[handoff("old", "ack-old")], [handoff("new", "ack-new")]]
+
+        def pull(self, *, request: dict, timeout: int) -> object:
+            self.pull_requests.append({"request": request, "timeout": timeout})
+            return types.SimpleNamespace(received_messages=self.batches.pop(0))
+
+    subscriber = BatchedSubscriber()
+    monkeypatch.setattr(pubsub_v1, "SubscriberClient", lambda: subscriber, raising=False)
+    processed: list[str] = []
+
+    def process(payload: bytes, **_kwargs: object) -> dict:
+        scene = json.loads(payload)["scene_id"]
+        processed.append(scene)
+        if scene == "old":
+            return {"status": "retryable_blocked", "queue_disposition": "retryable"}
+        return {"status": "processed", "queue_disposition": "terminal_success"}
+
+    monkeypatch.setattr(listener_module, "process_handoff_payload", process)
+
+    kwargs = {
+        "subscription": "projects/p/subscriptions/s",
+        "storage_root": tmp_path,
+        "provider": "openai",
+        "max_messages": 1,
+    }
+    assert pull_and_process(**kwargs) == 0
+    assert subscriber.acknowledged == []
+    assert subscriber.ack_deadline_requests[-1]["ack_ids"] == ["ack-old"]
+    assert subscriber.ack_deadline_requests[-1]["ack_deadline_seconds"] == 600
+    assert pull_and_process(**kwargs) == 1
+    assert processed == ["old", "new"]
+    assert subscriber.acknowledged == ["ack-new"]
+
+
+def test_processing_exception_is_deferred_without_ack(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    pubsub_v1 = types.SimpleNamespace()
+    monkeypatch.setattr(google.cloud, "pubsub_v1", pubsub_v1, raising=False)
+    payload = json.dumps(
+        {
+            "bucket": "capture-bucket",
+            "scene_id": "scene-1",
+            "capture_id": "capture-1",
+            "raw_prefix_uri": "gs://capture-bucket/scenes/scene-1/captures/capture-1/raw",
+        }
+    ).encode()
+    subscriber = FakeSubscriber(
+        [
+            types.SimpleNamespace(
+                ack_id="ack-error",
+                delivery_attempt=2,
+                message=types.SimpleNamespace(message_id="msg-error", data=payload, attributes={}),
+            )
+        ]
+    )
+    monkeypatch.setattr(pubsub_v1, "SubscriberClient", lambda: subscriber, raising=False)
+
+    def fail(*_args: object, **_kwargs: object) -> dict:
+        raise RuntimeError("temporary failure")
+
+    monkeypatch.setattr(listener_module, "process_handoff_payload", fail)
+    assert pull_and_process(
+        subscription="projects/p/subscriptions/s",
+        storage_root=tmp_path,
+        provider="openai",
+        max_messages=1,
+    ) == 0
+    assert subscriber.acknowledged == []
+    assert subscriber.ack_deadline_requests[-1]["ack_deadline_seconds"] == 600
 
 
 def test_stage_handoff_synthesizes_missing_pipeline_handoff(tmp_path: Path) -> None:
