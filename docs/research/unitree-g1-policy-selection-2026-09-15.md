@@ -292,3 +292,9 @@ Arena articulation and applies only bounded, complete controller target maps
 in the action manager's declared order. A 40-value semantic policy action
 cannot be passed into that actuator seam. Controller provenance and real
 simulation stepping still require a GPU runtime receipt.
+The pinned HumanoidArena `/infer` client now sends the exact RGB-front,
+64-value state, task and `unitree_g1_refpose_v3_1` request and admits only
+finite semantic-v3 action chunks. It rejects latent64 and DROID-shaped
+responses. Its `/reset` call can bind each episode seed, but the upstream
+response does not attest which checkpoint served inference; runtime process
+and checkpoint identity remain a separate required gate before publication.

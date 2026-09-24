@@ -38,6 +38,8 @@ if set(CANONICAL_BODY_JOINT_NAMES_29) != set(PROTOCOL_V4_BODY_JOINT_NAMES):
 def _vector(value: Any, width: int, code: str) -> list[float]:
     if isinstance(value, (str, bytes, bytearray)) or not isinstance(value, Sequence):
         raise ValueError(code)
+    if any(isinstance(item, bool) for item in value):
+        raise ValueError(code)
     try:
         result = [float(item) for item in value]
     except (TypeError, ValueError, OverflowError) as exc:
