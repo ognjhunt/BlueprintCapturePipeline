@@ -24,8 +24,9 @@ from blueprint_pipeline.task_evaluation_scene_configuration_submission_records i
 from blueprint_pipeline.task_object_articulated_packaging import (
     CAVITY_COLLISION_WALL_BOXES, REQUIRED_PARTS_ATTRIBUTE, TARGET_JOINT_ID, articulation_graph_from_plan,
     box_collision_piece, cavity_wall_boxes, collision_cavity_findings, interior_cavity_findings,
-    package_astra_articulated_candidate, plan_articulated_assembly, required_part_findings,
+    package_astra_articulated_candidate, plan_articulated_assembly, planned_cavity_findings, required_part_findings,
 )
+from blueprint_pipeline import task_object_articulated_packaging as packaging
 from blueprint_pipeline.task_object_astra_authoring import AssetAuthoringError
 from tests.test_task_object_articulated_packaging import _part, configuration as drawer_configuration, open_front_shell
 
@@ -222,6 +223,10 @@ def test_drawer_contract_parts_map_onto_carcass_and_drawers():
         {"part_id": "middle_drawer", "label": "Middle drawer", "role": "task_part", "observed_frame_ids": []},
         {"part_id": "middle_drawer_handle", "label": "Handle", "role": "door_feature", "observed_frame_ids": []},
         {"part_id": "top_drawer", "label": "Top drawer", "role": "fixed_interior", "observed_frame_ids": []}]
+    # A familyless (legacy) drawer plan is origin/main's; it cannot carry a contract.
+    with pytest.raises(AssetAuthoringError, match="articulated_assembly_family_undeclared"):
+        plan_articulated_assembly(value)
+    value["assembly_family"] = "stacked_drawer_cabinet"
     plan = plan_articulated_assembly(value)
     assert {row["part_id"]: row["link_id"] for row in plan["required_parts"]} == {
         "carcass": "carcass", "middle_drawer": "drawer_1", "middle_drawer_handle": "drawer_1", "top_drawer": "drawer_0"}
@@ -248,6 +253,65 @@ def test_cavity_probe_passes_hollow_open_front_and_fails_solid_slab_or_open_back
     shallow = open_front_shell(dims, [{**cavities[0], "inner_depth_m": 0.2}])
     assert interior_cavity_findings(shallow.vertices, shallow.faces, cavities) == ["body_interior_cavity_closed:tub"]
     assert interior_cavity_findings(hollow.vertices, hollow.faces, []) == ["body_interior_cavity_unplanned"]
+
+
+def _with_tub_hardware():
+    value = dishwasher()
+    value["required_parts"] += [
+        {"part_id": part, "label": label, "role": "fixed_interior", "observed_frame_ids": []}
+        for part, label in (("lower_spray_arm", "Lower spray arm"), ("upper_spray_arm", "Upper spray arm"),
+                            ("filter", "Filter"))]
+    return value
+
+
+def _fixture_boxes(plan, names):
+    features = plan["parts"]["body"]["features"]
+    pieces = []
+    for name in names:
+        lo, hi = np.asarray(features[name]["minimum"]), np.asarray(features[name]["maximum"])
+        box = trimesh.creation.box(extents=hi - lo)
+        box.apply_translation((lo + hi) / 2)
+        pieces.append(box)
+    return pieces
+
+
+def test_body_built_to_plan_with_spray_arms_and_filter_keeps_its_tub_open(tmp_path):
+    plan = plan_articulated_assembly(_with_tub_hardware())
+    dims, cavities = plan["parts"]["body"]["dimensions_m"], plan["interior_cavities"]
+    hardware = ["floor_filter", "lower_spray_arm", "upper_spray_arm"]
+    assert [row["fixture_id"] for row in cavities[0]["declared_fixtures"]] == hardware
+    built = trimesh.util.concatenate([open_front_shell(dims, cavities), *_fixture_boxes(plan, hardware)])
+    assert interior_cavity_findings(built.vertices, built.faces, cavities) == []
+    # The same geometry is an obstruction when the cavity does not declare it.
+    undeclared = [{k: v for k, v in cavities[0].items() if k != "declared_fixtures"}]
+    assert interior_cavity_findings(built.vertices, built.faces, undeclared) == ["body_interior_cavity_closed:tub"]
+    # A declaration never excuses anything outside its own box.
+    solid = trimesh.creation.box(extents=dims)
+    solid.apply_translation([0, 0, dims[2] / 2])
+    assert interior_cavity_findings(solid.vertices, solid.faces, cavities) == ["body_interior_cavity_closed:tub"]
+    shelf = trimesh.creation.box(extents=[0.05, 0.4, 0.03])
+    shelf.apply_translation([0.0, 0.0, cavities[0]["opening_center_link_m"][2] + 0.1])
+    blocked = trimesh.util.concatenate([built, shelf])
+    assert interior_cavity_findings(blocked.vertices, blocked.faces, cavities) == ["body_interior_cavity_closed:tub"]
+    oversized = copy.deepcopy(cavities)
+    oversized[0]["declared_fixtures"][0]["box_link_m"] = {"minimum": [-0.2, -0.27, 0.2], "maximum": [0.26, 0.27, 0.7]}
+    assert interior_cavity_findings(built.vertices, built.faces, oversized) == [
+        "body_interior_cavity_fixture_invalid:tub"]
+    # The reviewed mesh check in the packager passes the body built to plan.
+    receipt, _ = _package(tmp_path, plan, body_mesh=built)
+    assert receipt["physics_completion"]["interior_cavity_check"]["cavity_ids"] == ["tub"]
+
+
+def test_plan_that_fails_its_own_cavity_probe_is_refused_before_any_spend(monkeypatch):
+    plan = plan_articulated_assembly(_with_tub_hardware())
+    features = plan["parts"]["body"]["features"]
+    assert planned_cavity_findings(features, plan["interior_cavities"]) == []
+    undeclared = [{k: v for k, v in plan["interior_cavities"][0].items() if k != "declared_fixtures"}]
+    assert planned_cavity_findings(features, undeclared) == ["body_interior_cavity_closed:tub"]
+    # With the fixture declaration inadmissible, the planner itself refuses.
+    monkeypatch.setattr(packaging, "CAVITY_FIXTURE_MAXIMUM_VOLUME_FRACTION", 1e-6)
+    with pytest.raises(AssetAuthoringError, match="articulated_plan_body_interior_cavity_fixture_invalid:tub"):
+        plan_articulated_assembly(_with_tub_hardware())
 
 
 def test_required_part_check_names_each_missing_part():

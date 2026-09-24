@@ -620,6 +620,34 @@ def test_articulated_configuration_authors_each_part_and_seals_one_assembly(comp
     assert len(authored_parts) == 2
 
 
+# Computed on origin/main 8f22c8801 with this exact fixture (paths normalized,
+# request_digest dropped): a legacy drawer's plan and part requests must not
+# move, or an already-bought carcass is bought again.
+LEGACY_DRAWER_GOLDEN = {
+    "plan": "sha256:5f264447d01a683f03e8add84e88c17ad326e17c2ae602bf4155343840cc39f2",
+    "carcass": "sha256:745142dc8f6a68411a4ff8343cb15cae81414625741af3fa3f08ae5d502f8d85",
+    "drawer": "sha256:9ccdd4ea76e43c23a59a564be5db148541e3b2157e38319443178446ade18d35",
+}
+
+
+def test_legacy_drawer_plan_and_part_requests_match_origin_main(retained):
+    retained.input["configuration"] = _articulated_configuration()
+    assert "assembly_family" not in retained.input["configuration"]
+    plan, requests = driver.build_articulated_authoring_requests(
+        retained.input, retained.source, [retained.image], retained.rights)
+
+    def normalized(value):
+        return canonical_digest(json.loads(json.dumps(value).replace(str(retained.root), "<root>")))
+
+    observed = {"plan": normalized(plan)}
+    for part_id, request in requests.items():
+        value = request.model_dump(mode="json")
+        value.pop("request_digest")
+        observed[part_id] = normalized(value)
+    assert observed == LEGACY_DRAWER_GOLDEN
+    assert "interior_cavities_must_stay_hollow_and_open_front" not in requests["carcass"].construction_constraints
+
+
 def test_articulated_configuration_refuses_rigid_phase_adoption(component, retained):
     configuration = _articulated_configuration()
     configuration["astra_phase_adoption"] = {"prior_runtime": "/nonexistent", "schema_version": "x"}

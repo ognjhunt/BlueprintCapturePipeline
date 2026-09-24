@@ -158,7 +158,7 @@ def fixture(tmp_path, *, compound_drawer=False, drawer_mass=2.0, drawer_density=
     carcass_dims = plan["parts"]["carcass"]["dimensions_m"]
     drawer_dims = plan["parts"]["drawer"]["dimensions_m"]
     carcass = _part(tmp_path / "carcass", object_id="website-subject-cab__carcass", dimensions=carcass_dims,
-                    mass_kg=12.0, density=(60.0, 140.0), mesh=open_front_shell(carcass_dims, plan["interior_cavities"]),
+                    mass_kg=12.0, density=(60.0, 140.0),  # a legacy plan plans no cavity: solid is fine
                     bounds={"mass_kg": [4.0, 40.0], "static_friction": [0.3, 0.8], "dynamic_friction": [0.2, 0.6], "restitution": [0.0, 0.2]})
     drawer = _part(tmp_path / "drawer", object_id="website-subject-cab__drawer", dimensions=drawer_dims,
                    mass_kg=drawer_mass, density=drawer_density,
@@ -185,6 +185,21 @@ def test_articulated_drawer_keeps_closed_disconnected_visual_pieces_in_one_link(
     assert drawer_link.HasAPI(UsdPhysics.RigidBodyAPI)
     assert mesh.body_count == 2 and mesh.is_watertight
     assert len([prim for prim in stage.Traverse() if prim.IsA(UsdPhysics.PrismaticJoint)]) == 1
+
+
+def test_legacy_drawer_keeps_a_solid_carcass_but_a_coverage_plan_must_plan_its_bays(tmp_path):
+    plan, requests, results, bounds = fixture(tmp_path)
+    assert not {"interior_cavities", "required_parts", "root_link_id"} & set(plan)
+    receipt = package_astra_articulated_candidate(
+        requests=requests, authoring_results=results, plan=plan,
+        output_root=tmp_path / "packaged", physics_bounds=bounds)
+    assert receipt["physics_completion"]["interior_cavity_check"] == {
+        "status": "not_planned_legacy_drawer_configuration"}
+    coverage = {**configuration(), "assembly_family": "stacked_drawer_cabinet"}
+    stripped = {key: value for key, value in plan_articulated_assembly(coverage).items() if key != "interior_cavities"}
+    with pytest.raises(AssetAuthoringError, match="articulated_body_interior_cavity_unplanned"):
+        package_astra_articulated_candidate(requests=requests, authoring_results=results, plan=stripped,
+                                            output_root=tmp_path / "stripped", physics_bounds=bounds)
 
 
 def test_plan_places_three_bays_with_one_prismatic_task_joint_and_records_assumptions():

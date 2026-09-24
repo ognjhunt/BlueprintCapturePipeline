@@ -83,6 +83,11 @@ HINGE_RESET_TOLERANCE_RAD = 0.02
 CAVITY_PROBE_STANDOFF_M = 0.01
 CAVITY_MINIMUM_CLEAR_FRACTION = 0.6
 CAVITY_PROBE_OFFSETS = (-0.3, 0.0, 0.3)
+# Tub hardware the plan fixes inside a cavity is declared on it with its box;
+# the probe ignores hits within that box (plus this margin) and nothing else.
+# A declaration must sit inside the cavity and stay a small part of it.
+CAVITY_FIXTURE_MARGIN_M = 0.01
+CAVITY_FIXTURE_MAXIMUM_VOLUME_FRACTION = 0.1
 # A hollow body's collider must stay hollow in PhysX, not only in its render
 # mesh. convexHull fills the cavity and convexDecomposition's pieces are only
 # known after cooking; a triangle mesh cooks only for a static or kinematic
@@ -621,6 +626,17 @@ def _plan_hinged_door_appliance(configuration: Mapping[str, Any], contract: Mapp
              "left": [depth / 2, -width / 2, base + door_h / 2], "right": [depth / 2, width / 2, base + door_h / 2]}[hinge]
     label = str(mechanism["task_part_label"])
     features = {row["feature"] for row in placed.values()}
+    tub = {"cavity_id": "tub", "link_id": BODY_LINK_ID,
+           "opening_center_link_m": [round(body_x / 2, 5), 0.0, round((tub_floor + tub_ceiling) / 2, 5)],
+           "opening_width_m": round(tub_w, 5), "opening_height_m": round(tub_h, 5),
+           "inner_depth_m": round(tub_depth, 5)}
+    if fixtures:
+        tub["declared_fixtures"] = [{"fixture_id": fixture, "part_id": part_id, "box_link_m": body_features[fixture]}
+                                    for part_id, fixture in sorted(fixtures.items(), key=lambda item: item[1])]
+    # The plan must pass its own probe before any part is bought.
+    refused = planned_cavity_findings(body_features, [tub])
+    if refused:
+        raise AssetAuthoringError("articulated_plan_" + refused[0])
     return {
         "schema_version": PLAN_SCHEMA_VERSION, "family": HINGED_FAMILY, "root_link_id": BODY_LINK_ID,
         "assembly_frame": {"front_axis": "+X", "up_axis": "Z", "origin": "closed_envelope_center_xy_bottom_z",
@@ -689,11 +705,7 @@ def _plan_hinged_door_appliance(configuration: Mapping[str, Any], contract: Mapp
                        "drive": {"drive_type": "none", "stiffness": 0.0, "damping": PASSIVE_HINGE_DAMPING_N_M_S_PER_RAD,
                                  "maximum_force": 0.0, "implementation": "passive_torque_damper",
                                  "damping_units": "N_m_s_per_rad"}},
-        "interior_cavities": [{"cavity_id": "tub", "link_id": BODY_LINK_ID,
-                               "opening_center_link_m": [round(body_x / 2, 5), 0.0,
-                                                         round((tub_floor + tub_ceiling) / 2, 5)],
-                               "opening_width_m": round(tub_w, 5), "opening_height_m": round(tub_h, 5),
-                               "inner_depth_m": round(tub_depth, 5)}],
+        "interior_cavities": [tub],
         "cavity_collision_approximation": CAVITY_COLLISION_WALL_BOXES,
         "required_parts": [{**row, **placed[row["part_id"]]} for row in contract["required_parts"]],
         "source_observation": "captured" if contract["captured"] else NOT_CAPTURED_KIND,
@@ -701,6 +713,15 @@ def _plan_hinged_door_appliance(configuration: Mapping[str, Any], contract: Mapp
         "lock_status": str(mechanism.get("lock_status") or "unknown"),
         "physical_measurement_proven": False,
     }
+
+
+_CONTRACT_KEYS = ("required_parts", "reference_frames", "body_depth", "body_extent_m", "hinge_edge")
+
+
+def legacy_drawer_plan(plan: Mapping[str, Any]) -> bool:
+    """origin/main's drawer plan shape: no contract parts, no planned cavities (none were ever checked)."""
+    return plan.get("family") == DRAWER_FAMILY and not {"interior_cavities", "required_parts",
+                                                        "root_link_id"} & set(plan)
 
 
 def plan_articulated_assembly(configuration: Mapping[str, Any]) -> dict[str, Any]:
@@ -713,6 +734,9 @@ def plan_articulated_assembly(configuration: Mapping[str, Any]) -> dict[str, Any
     """
     family = assembly_family(configuration)
     contract = assembly_contract(configuration, family)
+    # A legacy (familyless) drawer plan is origin/main's and would drop them.
+    if "assembly_family" not in configuration and any(configuration.get(key) for key in _CONTRACT_KEYS):
+        raise AssetAuthoringError("articulated_assembly_family_undeclared")
     if family == HINGED_FAMILY:
         return _plan_hinged_door_appliance(configuration, contract)
     return _plan_stacked_drawer_cabinet(configuration, contract)
@@ -752,35 +776,9 @@ def _plan_stacked_drawer_cabinet(configuration: Mapping[str, Any], contract: Map
                      "rest_translation_m": [round(depth / 2 - drawer_x / 2 + HANDLE_PROTRUSION_M, 5), 0.0,
                                             round(floor_z + BAY_CLEARANCE_M / 2, 5)]})
     yaw = source["yaw"]
-    carcass_features = dict.fromkeys(("link", "left_side_panel", "right_side_panel", "top_panel", "back_panel",
-                                      "open_front_bays"), "carcass_panel")
-    drawer_features = dict.fromkeys(("link", "handle", "drawer_front", "drawer_box"), "drawer_solid")
-    placed = {**_place_role_rows([r for r in contract["required_parts"] if r["role"] in {"body", "body_feature"}],
-                                 link_id=CARCASS_LINK_ID, vocabulary=_CARCASS_FEATURES, whole_role="body",
-                                 features=carcass_features),
-              **_place_role_rows([r for r in contract["required_parts"] if r["role"] in {"task_part", "door_feature"}],
-                                 link_id=f"drawer_{task_index}", vocabulary=_DRAWER_FEATURES, whole_role="task_part",
-                                 features=drawer_features)}
-    for row in contract["required_parts"]:
-        if row["role"] != "fixed_interior":
-            continue
-        words = _tokens(row["part_id"]) + _tokens(row["label"])
-        index = next((k for k, names in _ORDINALS.items() if any(w in names for w in words)), None)
-        index = count - 1 if index == 2 and count > 3 else index
-        if index is None or index == task_index or index >= count or "drawer" not in words:
-            raise AssetAuthoringError("articulated_required_part_unplanned:" + row["part_id"])
-        placed[row["part_id"]] = {"link_id": f"drawer_{index}", "feature": "link"}
-    return {
+    plan = {
         "schema_version": PLAN_SCHEMA_VERSION,
-        "family": DRAWER_FAMILY, "root_link_id": CARCASS_LINK_ID,
-        "closed_collision_dimensions_m": [round(depth + HANDLE_PROTRUSION_M, 5), round(width, 5), round(height, 5)],
-        "interior_cavities": [{"cavity_id": f"bay_{bay['bay_index']}", "link_id": CARCASS_LINK_ID,
-                               "opening_center_link_m": [round(depth / 2, 5), 0.0,
-                                                         round(t + (count - 1 - bay["bay_index"]) * (bay_height + t)
-                                                               + bay_height / 2, 5)],
-                               "opening_width_m": round(bay_width, 5), "opening_height_m": round(bay_height, 5),
-                               "inner_depth_m": round(depth - t, 5)} for bay in bays],
-        "required_parts": [{**row, **placed[row["part_id"]]} for row in contract["required_parts"]],
+        "family": DRAWER_FAMILY,
         "assembly_frame": {"front_axis": "+X", "up_axis": "Z", "origin": "carcass_center_xy_bottom_z",
                            "world_yaw_rad_from_estimated_front_normal": yaw,
                            "estimated_front_normal_world": normal},
@@ -805,7 +803,6 @@ def _plan_stacked_drawer_cabinet(configuration: Mapping[str, Any], contract: Map
         "parts": {
             CARCASS_LINK_ID: {
                 "link_role": "carcass", "dimensions_m": [round(depth, 5), round(width, 5), round(height, 5)],
-                "features": carcass_features,
                 "description": (f"Open-front cabinet carcass: top, bottom, back, left and right panels {t} m thick "
                                 f"plus {count - 1} horizontal dividers forming {count} equal drawer bays "
                                 f"({round(bay_width, 4)} m wide x {round(bay_height, 4)} m tall x {round(depth - t, 4)} m deep). "
@@ -813,7 +810,6 @@ def _plan_stacked_drawer_cabinet(configuration: Mapping[str, Any], contract: Map
             },
             "drawer": {
                 "link_role": "task_part", "dimensions_m": [round(drawer_x, 5), round(drawer_y, 5), round(drawer_z, 5)],
-                "features": drawer_features,
                 "description": (f"One drawer: a front panel {FRONT_PANEL_THICKNESS_M} m thick spanning the full Y width and Z height "
                                 f"at the +X end, a centred horizontal bar handle {handle_length} m long with a {HANDLE_SECTION_M} m "
                                 f"square section protruding {HANDLE_PROTRUSION_M} m in +X from the front panel (its bar centre at "
@@ -839,6 +835,41 @@ def _plan_stacked_drawer_cabinet(configuration: Mapping[str, Any], contract: Map
         "intra_assembly_collision": "filtered_joints_constrain_mechanism",
         "lock_status": str(mechanism.get("lock_status") or "unknown"),
         "physical_measurement_proven": False,
+    }
+    if "assembly_family" not in configuration:
+        # A legacy configuration keeps origin/main's exact plan, so its part
+        # requests (and any carcass already bought for them) are unchanged.
+        return plan
+    carcass_features = dict.fromkeys(("link", "left_side_panel", "right_side_panel", "top_panel", "back_panel",
+                                      "open_front_bays"), "carcass_panel")
+    drawer_features = dict.fromkeys(("link", "handle", "drawer_front", "drawer_box"), "drawer_solid")
+    placed = {**_place_role_rows([r for r in contract["required_parts"] if r["role"] in {"body", "body_feature"}],
+                                 link_id=CARCASS_LINK_ID, vocabulary=_CARCASS_FEATURES, whole_role="body",
+                                 features=carcass_features),
+              **_place_role_rows([r for r in contract["required_parts"] if r["role"] in {"task_part", "door_feature"}],
+                                 link_id=f"drawer_{task_index}", vocabulary=_DRAWER_FEATURES, whole_role="task_part",
+                                 features=drawer_features)}
+    for row in contract["required_parts"]:
+        if row["role"] != "fixed_interior":
+            continue
+        words = _tokens(row["part_id"]) + _tokens(row["label"])
+        index = next((k for k, names in _ORDINALS.items() if any(w in names for w in words)), None)
+        index = count - 1 if index == 2 and count > 3 else index
+        if index is None or index == task_index or index >= count or "drawer" not in words:
+            raise AssetAuthoringError("articulated_required_part_unplanned:" + row["part_id"])
+        placed[row["part_id"]] = {"link_id": f"drawer_{index}", "feature": "link"}
+    plan["parts"][CARCASS_LINK_ID]["features"] = carcass_features
+    plan["parts"]["drawer"]["features"] = drawer_features
+    return {
+        **plan, "root_link_id": CARCASS_LINK_ID,
+        "closed_collision_dimensions_m": [round(depth + HANDLE_PROTRUSION_M, 5), round(width, 5), round(height, 5)],
+        "interior_cavities": [{"cavity_id": f"bay_{bay['bay_index']}", "link_id": CARCASS_LINK_ID,
+                               "opening_center_link_m": [round(depth / 2, 5), 0.0,
+                                                         round(t + (count - 1 - bay["bay_index"]) * (bay_height + t)
+                                                               + bay_height / 2, 5)],
+                               "opening_width_m": round(bay_width, 5), "opening_height_m": round(bay_height, 5),
+                               "inner_depth_m": round(depth - t, 5)} for bay in bays],
+        "required_parts": [{**row, **placed[row["part_id"]]} for row in contract["required_parts"]],
     }
 
 
@@ -874,13 +905,77 @@ def required_part_findings(plan: Mapping[str, Any], observed: Mapping[str, Mappi
                   for part_id, feature in rows.items() if (observed.get(link_id) or {}).get(part_id) != feature)
 
 
+def _declared_fixture_boxes(cavity: Mapping[str, Any]) -> list[tuple[list[float], list[float]]] | None:
+    """A cavity's declared fixture boxes, or None when any is malformed, outside it or too large."""
+    rows = cavity.get("declared_fixtures", [])
+    if not isinstance(rows, list):
+        return None
+    cx, cy, cz = (float(v) for v in cavity["opening_center_link_m"])
+    depth, half_w, half_h = (float(cavity[k]) for k in ("inner_depth_m", "opening_width_m", "opening_height_m"))
+    half_w, half_h = half_w / 2, half_h / 2
+    c_lo, c_hi = [cx - depth, cy - half_w, cz - half_h], [cx, cy + half_w, cz + half_h]
+    boxes = []
+    for row in rows:
+        box = row.get("box_link_m") if isinstance(row, Mapping) else None
+        try:
+            lo, hi = [float(v) for v in box["minimum"]], [float(v) for v in box["maximum"]]
+        except (KeyError, TypeError, ValueError):
+            return None
+        if (len(lo) != 3 or len(hi) != 3 or not all(map(math.isfinite, lo + hi))
+                or any(not c_lo[i] - 1e-4 <= lo[i] < hi[i] <= c_hi[i] + 1e-4 for i in range(3))  # 5 dp rounding
+                or math.prod(hi[i] - lo[i] for i in range(3))
+                > CAVITY_FIXTURE_MAXIMUM_VOLUME_FRACTION * depth * 4 * half_w * half_h):
+            return None
+        boxes.append((lo, hi))
+    return boxes
+
+
+def _box_mesh(boxes: Sequence[tuple[Sequence[float], Sequence[float]]]) -> tuple[list[list[float]], list[int]]:
+    """Closed axis-aligned boxes as one triangle soup (12 outward triangles each)."""
+    corners = [(i, j, k) for i in (0, 1) for j in (0, 1) for k in (0, 1)]
+    quads = ((0, 1, 3, 2), (4, 6, 7, 5), (0, 4, 5, 1), (2, 3, 7, 6), (0, 2, 6, 4), (1, 5, 7, 3))
+    vertices: list[list[float]] = []
+    faces: list[int] = []
+    for lo, hi in boxes:
+        base = len(vertices)
+        vertices.extend([[float((lo, hi)[s][axis]) for axis, s in enumerate(corner)] for corner in corners])
+        for q in quads:
+            faces.extend(base + v for v in (q[0], q[1], q[2], q[0], q[2], q[3]))
+    return vertices, faces
+
+
+# Planned features that are not solids for the self-probe: the link envelope,
+# the void itself, and the front frame (a ring around the opening, not a slab).
+_PLANNED_NON_SOLID_FEATURES = frozenset({"link", "tub_cavity", "front_frame"})
+
+
+def planned_cavity_findings(features: Mapping[str, Any], cavities: Sequence[Mapping[str, Any]]) -> list[str]:
+    """The cavity probe on a link's own plan: its wall boxes plus every planned solid feature box.
+
+    Run at planning time so a plan whose own geometry would fail the probe is
+    refused before any part is bought.
+    """
+    try:
+        walls = cavity_wall_boxes(features["link"], cavities)
+    except AssetAuthoringError as exc:
+        return [str(exc).removeprefix("articulated_")]
+    boxes = [([c - s / 2 for c, s in zip(w["center_m"], w["size_m"])],
+              [c + s / 2 for c, s in zip(w["center_m"], w["size_m"])]) for w in walls]
+    boxes += [(box["minimum"], box["maximum"]) for name, box in features.items()
+              if isinstance(box, Mapping) and name not in _PLANNED_NON_SOLID_FEATURES]
+    vertices, faces = _box_mesh(boxes)
+    return interior_cavity_findings(vertices, faces, cavities)
+
+
 def interior_cavity_findings(vertices: Any, faces: Any, cavities: Sequence[Mapping[str, Any]]) -> list[str]:
     """Rays from just outside each planned opening, along -X, must travel into a hollow and hit a closed back.
 
     Mesh coordinates are in the cavity's link frame. The first hit of every
     probe ray must lie at least ``CAVITY_MINIMUM_CLEAR_FRACTION`` of the planned
     inner depth past the opening; a solid block or a thin slab stops the ray
-    early, a missing back lets it escape.
+    early, a missing back lets it escape. Hits inside a box the cavity declares
+    under ``declared_fixtures`` (planned tub hardware) are not obstructions;
+    an undeclared, oversized or out-of-cavity box is.
     """
     import numpy as np
 
@@ -892,21 +987,31 @@ def interior_cavity_findings(vertices: Any, faces: Any, cavities: Sequence[Mappi
     e1, e2 = b[:, 1:] - a[:, 1:], c[:, 1:] - a[:, 1:]
     det = e1[:, 0] * e2[:, 1] - e1[:, 1] * e2[:, 0]
     usable = np.abs(det) > 1e-14
-    def clear_depth(origin_x: float, y: float, z: float) -> float | None:
+    m = CAVITY_FIXTURE_MARGIN_M
+
+    def clear_depth(origin_x: float, y: float, z: float, fixtures) -> float | None:
         rel = np.array([y, z]) - a[:, 1:]
         with np.errstate(divide="ignore", invalid="ignore"):
             u = (rel[:, 0] * e2[:, 1] - rel[:, 1] * e2[:, 0]) / det
             v = (e1[:, 0] * rel[:, 1] - e1[:, 1] * rel[:, 0]) / det
             inside = usable & (u >= -1e-9) & (v >= -1e-9) & (u + v <= 1 + 1e-9)
         hit_x = a[inside, 0] + u[inside] * (b[inside, 0] - a[inside, 0]) + v[inside] * (c[inside, 0] - a[inside, 0])
-        ahead = hit_x[hit_x < origin_x]
+        keep = hit_x < origin_x
+        for lo, hi in fixtures:
+            if lo[1] - m <= y <= hi[1] + m and lo[2] - m <= z <= hi[2] + m:
+                keep &= (hit_x < lo[0] - m) | (hit_x > hi[0] + m)
+        ahead = hit_x[keep]
         return float(origin_x - ahead.max()) - CAVITY_PROBE_STANDOFF_M if len(ahead) else None
 
     findings = []
     for cavity in cavities:
         cx, cy, cz = (float(v) for v in cavity["opening_center_link_m"])
         half_w, half_h = float(cavity["opening_width_m"]) / 2, float(cavity["opening_height_m"]) / 2
-        depths = [clear_depth(cx + CAVITY_PROBE_STANDOFF_M, cy + dy * half_w, cz + dz * half_h)
+        fixtures = _declared_fixture_boxes(cavity)
+        if fixtures is None:
+            findings.append("body_interior_cavity_fixture_invalid:" + str(cavity["cavity_id"]))
+            continue
+        depths = [clear_depth(cx + CAVITY_PROBE_STANDOFF_M, cy + dy * half_w, cz + dz * half_h, fixtures)
                   for dy in CAVITY_PROBE_OFFSETS for dz in CAVITY_PROBE_OFFSETS]
         if any(depth is None for depth in depths):
             findings.append("body_interior_cavity_back_open:" + str(cavity["cavity_id"]))
@@ -1090,8 +1195,9 @@ def package_astra_articulated_candidate(*, requests: Mapping[str, AuthoringReque
         raise AssetAuthoringError("articulated_required_part_unplanned:" + sorted(
             part for link in set(required_by_link) - set(link_part) for part in required_by_link[link])[0])
     root_id = root_link_id(plan)
+    legacy = legacy_drawer_plan(plan)  # origin/main's drawer plan never planned or checked a cavity
     cavities = plan.get("interior_cavities") or []
-    if not cavities or any(row.get("link_id") not in link_part for row in cavities):
+    if (not cavities and not legacy) or any(row.get("link_id") not in link_part for row in cavities):
         raise AssetAuthoringError("articulated_body_interior_cavity_unplanned")
     parts = {part_id: _part_physics(request=requests[part_id], authoring_result=authoring_results[part_id],
                                     physics_bounds=physics_bounds[part_id]) for part_id in plan["parts"]}
@@ -1326,9 +1432,10 @@ def package_astra_articulated_candidate(*, requests: Mapping[str, AuthoringReque
         "handle_prim_paths": [p for p in task_link["collision_prim_paths"] if p.endswith("/handle")],
         "handle_grasp_point_link_m": task_link["handle_grasp_point_link_m"],
         "required_parts_by_link": required_by_link,
-        "interior_cavity_check": {"status": "hollow_open_front_verified_on_reviewed_mesh",
-                                  "cavity_ids": [row["cavity_id"] for row in cavities],
-                                  "minimum_clear_fraction": CAVITY_MINIMUM_CLEAR_FRACTION},
+        "interior_cavity_check": ({"status": "not_planned_legacy_drawer_configuration"} if legacy else
+                                  {"status": "hollow_open_front_verified_on_reviewed_mesh",
+                                   "cavity_ids": [row["cavity_id"] for row in cavities],
+                                   "minimum_clear_fraction": CAVITY_MINIMUM_CLEAR_FRACTION}),
         "collision_bounds_asset_frame_closed_m": {"minimum": lows, "maximum": highs},
         "collision_dimensions_m": [highs[i] - lows[i] for i in range(3)],
         "intra_assembly_collision_filtered": True,
@@ -1395,7 +1502,8 @@ __all__ = [
     "PLAN_SCHEMA_VERSION",
     "PROVENANCE_ATTRIBUTE", "REQUIRED_PARTS_ATTRIBUTE", "TASK_CONTACT_ROLE_ATTRIBUTE", "TARGET_JOINT_ID",
     "articulation_graph_from_plan", "assembly_contract", "assembly_family", "box_collision_piece",
-    "cavity_wall_boxes", "collision_cavity_findings", "interior_cavity_findings",
-    "package_astra_articulated_candidate", "plan_articulated_assembly", "required_part_findings",
+    "cavity_wall_boxes", "collision_cavity_findings", "interior_cavity_findings", "legacy_drawer_plan",
+    "package_astra_articulated_candidate", "plan_articulated_assembly", "planned_cavity_findings",
+    "required_part_findings",
     "required_parts_by_link", "root_link_id", "task_joint_limits",
 ]

@@ -41,6 +41,7 @@ from .task_object_articulated_packaging import (
     box_collision_piece,
     collision_cavity_findings,
     interior_cavity_findings,
+    legacy_drawer_plan,
     required_part_findings,
 )
 
@@ -475,7 +476,10 @@ def _usd_findings(path: Path, *, graph: Mapping[str, Any], physics_bounds: Mappi
     findings.extend("replacement_" + code for code in required_part_findings(plan, placed))
     # The body must be hollow behind an open front on the exact collision bytes.
     cavities = plan.get("interior_cavities")
-    if not isinstance(cavities, list) or not cavities:
+    legacy = legacy_drawer_plan(plan)  # origin/main's drawer plan: no cavity was ever planned or checked
+    if legacy:
+        cavities = []
+    elif not isinstance(cavities, list) or not cavities:
         findings.append("replacement_body_interior_cavity_unplanned")
         cavities = []
     cavity_collision_policy = plan.get("cavity_collision_approximation")
@@ -531,6 +535,7 @@ def _usd_findings(path: Path, *, graph: Mapping[str, Any], physics_bounds: Mappi
         **({"body_cavity_collision": {"approximation": cavity_collision_policy, "links": cavity_collision,
                                       "cavity_preserved_on_collision_geometry": True}}
            if cavity_collision_policy is not None else {}),
+        **({"body_interior_cavity_check": "not_planned_legacy_drawer_configuration"} if legacy else {}),
     }
 
 
