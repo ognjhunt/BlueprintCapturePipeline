@@ -281,3 +281,9 @@ asset references still needs an admitted dependency closure and exact runtime
 validation. The DROID-specific episode loop, SONIC execution, checkpoint
 inference, scoring, published G1 setup, deployed WebApp path, and review video
 remain unverified. Neither simulator nor physical G1 task success is claimed.
+
+The pinned HumanoidArena semantic-v3 boundary now builds its 64-wide policy
+state from named joints and explicitly converts native XYZW root quaternions
+to the publisher's heading-canonical WXYZ rotation representation. It checks
+40-wide policy references and keeps them out of the direct motor-target path.
+This is a tested interface adapter, not policy inference or SONIC execution.
