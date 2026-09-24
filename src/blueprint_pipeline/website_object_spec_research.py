@@ -398,6 +398,18 @@ def _matches_evidence(model: Any, identity: Mapping[str, Any]) -> bool:
                                                  for token in _MODEL_TOKEN.findall(text)) for text in evidence)
 
 
+_ATTRIBUTE_WORDS = {"width": {"width", "wide", "w"}, "height": {"height", "high", "tall", "h"},
+                    "depth": {"depth", "deep", "d"}, "weight": {"weight", "weighs", "mass"},
+                    "load": {"load", "capacity"}}
+
+
+def _quote_names_attribute(quote: str, name: str) -> bool:
+    """A figure's quote must name its attribute; single letters count only as whole words (W x H x D)."""
+    words = set(re.findall(r"[a-z]+", quote.lower()))
+    attributes = [key for key in _ATTRIBUTE_WORDS if key in name.split("_")]
+    return not attributes or any(words & _ATTRIBUTE_WORDS[key] for key in attributes)
+
+
 def verify_findings(findings: Mapping[str, Any], *, fetch_log: Sequence[Mapping[str, Any]],
                     identity: Mapping[str, Any], articulation_kind: str) -> dict[str, Any]:
     """Deterministic: the agent's figures count only when the fetched page says them."""
@@ -431,6 +443,10 @@ def verify_findings(findings: Mapping[str, Any], *, fetch_log: Sequence[Mapping[
             if not all(any(math.isclose(reading, bound, rel_tol=QUOTE_VALUE_TOLERANCE) for reading in readings)
                        for bound in span):
                 reason = "quote_value_mismatch"
+            elif not _quote_names_attribute(figure["quote"], figure["name"]):
+                # The right number beside the wrong attribute (a width quoted as a
+                # depth) is not evidence for this figure.
+                reason = "quote_attribute_mismatch"
         if reason:
             dropped.append({**{key: figure[key] for key in ("name", "value", "unit", "source_url", "quote")},
                             "reason": reason})

@@ -348,3 +348,13 @@ def test_harness_refuses_hosted_tools_without_a_per_call_budget(tmp_path, monkey
     spec = replace(research._agent_spec("sha256:" + "d" * 64, fetcher), hosted_tool_call_usd=0.0)
     with pytest.raises(AgentsSDKInvocationBlocked, match="agents_sdk_hosted_tool_budget_missing"):
         invoker.invoke(spec, [{"role": "user", "content": [{"type": "input_text", "text": "x"}]}])
+
+
+def test_right_number_beside_the_wrong_attribute_is_dropped(tmp_path, website):
+    # 59.8 cm is on the page, but as the width: it is no evidence of the depth.
+    figures = [_figure("overall_width", 59.8, "cm", SPEC, "Width 23 9/16 in (59.8 cm)"),
+               _figure("overall_depth", 59.8, "cm", SPEC, "Width 23 9/16 in (59.8 cm)")]
+    record = _research(tmp_path, website, _Invoker(_findings(figures)))
+    assert "overall_depth" not in record["specs"] and "overall_width" in record["specs"]
+    assert record["unsourced_dropped"][0]["name"] == "overall_depth"
+    assert record["unsourced_dropped"][0]["reason"] == "quote_attribute_mismatch"

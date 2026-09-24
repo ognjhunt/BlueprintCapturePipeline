@@ -351,3 +351,16 @@ def test_frames_that_cannot_fit_fail_closed(tmp_path):
     Image.new("RGB", (64, 48)).save(small)
     with pytest.raises(budget.FrameBudgetError, match="count_exceeds_provider_cap"):
         budget.check_transmitted_frames([small] * 9, provider="anthropic")
+
+
+def test_published_size_conflict_holds_compile_before_anything_is_bought(tmp_path):
+    spec = {**_published_spec(door_weight=_weight(8.0, "exact_model")),
+            "blockers": ["website_object_spec_dimension_conflict"]}
+    spec.pop("digest")
+    spec["digest"] = canonical_digest(spec, digest_field="digest")
+    args = _arguments(tmp_path)
+    args.update(_dishwasher_inputs(tmp_path, object_spec=spec))
+    args["removal_manifest"] = DISHWASHER_REMOVAL
+    preparation = compile_website_scene_preparation(**args)
+    assert preparation["status"] == "needs_input"
+    assert "website_object_spec_dimension_conflict" in preparation["blockers"]

@@ -733,6 +733,9 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         physics["bounds"].update({key.removesuffix("_bounds"): value for key, value in masses.items()
                                   if key.endswith("_mass_kg_bounds") or key == "mass_kg_bounds"})
         physics["mass_authority"] = masses["mass_authority"]
+        # A published size that contradicts the measured body, or unreconciled
+        # research, holds the build; it is never silently resolved here.
+        blockers.extend((subject_target.get("object_spec") or {}).get("blockers") or [])
         travel = ({"estimated_usable_stroke_m": round(DRAWER_USABLE_STROKE_FRACTION_OF_DEPTH * depth_m, 4)}
                   if articulation_kind == "prismatic" else {"estimated_usable_swing_rad": DOOR_USABLE_SWING_RAD})
         mechanism = {"assembly_label": subject_entry.get("semantic_label") or subject_entry["target_id"],
