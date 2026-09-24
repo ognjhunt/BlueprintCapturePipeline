@@ -426,6 +426,27 @@ def test_native_driver_refuses_a_declared_destination_without_stage4_artifacts(
     assert executed is False
 
 
+def _drawer_graph() -> dict:
+    """The qualified graph a real drawer-cabinet receipt carries (carcass root, one slide)."""
+    drive = {"drive_type": "none", "stiffness": 0.0, "damping": 0.0, "maximum_force": 0.0}
+    links = ("carcass", "drawer_0", "drawer_1", "drawer_2")
+    return {
+        "schema_version": "adp_articulation_graph.v1",
+        "links": [{"link_id": name, "is_root": name == "carcass", "semantic_role": name} for name in links],
+        "joints": [
+            {"joint_id": "task_part_joint", "role": "target", "joint_type": "prismatic",
+             "parent_link_id": "carcass", "child_link_id": "drawer_1", "axis": [1.0, 0.0, 0.0],
+             "limits": [0.0, 0.32], "reset_position": 0.0, "reset_tolerance": 0.005, "drive": dict(drive)},
+            *[{"joint_id": f"{name}_fixed", "role": "locked", "joint_type": "fixed",
+               "parent_link_id": "carcass", "child_link_id": name, "axis": [0.0, 0.0, 0.0],
+               "limits": [0.0, 0.0], "reset_position": 0.0, "reset_tolerance": 0.005, "drive": dict(drive)}
+              for name in ("drawer_0", "drawer_2")],
+        ],
+        "collision_pairs": [],
+        "success_predicate": {"combination": "all", "joint_intervals": {"task_part_joint": [0.192, 0.32]}},
+    }
+
+
 def _articulated_environment(
     tmp_path: Path, *, with_destination: bool = False
 ) -> dict[str, str]:
@@ -472,7 +493,7 @@ def _articulated_environment(
         },
         "task_joint": {"joint_id": "task_part_joint", "prim_path": "/Asset/joints/task_part_joint", "joint_type": "prismatic", "limits": [0.0, 0.32], "reset_position": 0.0},
         "task_contact": {"contact_link_id": "drawer_1", "handle_prim_paths": ["/Asset/links/drawer_1/collision/handle"]},
-        "articulation_graph": {"joints": [{"joint_id": "task_part_joint", "role": "target", "child_link_id": "drawer_1", "axis": [1.0, 0.0, 0.0]}]},
+        "articulation_graph": _drawer_graph(),
         "result_digest": "",
     }
     static["result_digest"] = canonical_digest(static, digest_field="result_digest")
@@ -734,10 +755,6 @@ def test_imported_articulation_reads_exact_four_link_physics_and_handle(tmp_path
         fixed = UsdPhysics.FixedJoint.Define(stage, root + f"/joints/{name}_fixed")
         fixed.CreateBody0Rel().SetTargets([root + "/links/carcass"])
         fixed.CreateBody1Rel().SetTargets([root + f"/links/{name}"])
-    receipt["articulation_graph"]["joints"].extend([
-        {"joint_id": f"{name}_fixed", "role": "locked", "parent_link_id": "carcass", "child_link_id": name}
-        for name in ("drawer_0", "drawer_2")
-    ])
     observed = driver._articulated_structure_observation(
         stage=stage, usd_physics=UsdPhysics, static_receipt=receipt)
     assert set(observed["link_physics_readback"]) == {"carcass", "drawer_0", "drawer_1", "drawer_2"}

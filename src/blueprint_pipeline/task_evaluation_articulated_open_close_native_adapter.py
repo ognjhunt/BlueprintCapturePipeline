@@ -112,6 +112,25 @@ def _revision_bound_task(
     }
 
 
+def _jaw_across_handle_bar(contact: Mapping[str, Any], *, revolute: bool) -> list[float]:
+    """Close the jaw across the qualified handle bar: Z for a Y bar, Y for a Z bar.
+
+    A drawer keeps its historical Z jaw when no bounds were sealed; a hinged
+    door's bar runs along Y or Z depending on its hinge edge, so it must be
+    read from the exact handle geometry.
+    """
+    bounds = contact.get("handle_bounds_link_frame_m")
+    try:
+        extents = [float(bounds["maximum"][i]) - float(bounds["minimum"][i]) for i in range(3)]
+    except (KeyError, IndexError, TypeError, ValueError):
+        if revolute:
+            raise _error("handle_bar_axis_unresolved") from None
+        return [0.0, 0.0, 1.0]
+    if not all(math.isfinite(value) and value > 0.0 for value in extents) or extents[1] == extents[2]:
+        raise _error("handle_bar_axis_unresolved")
+    return [0.0, 0.0, 1.0] if extents[1] > extents[2] else [0.0, 1.0, 0.0]
+
+
 def _qualified_mechanism(
     *, static: Mapping[str, Any], native_import: Mapping[str, Any],
     replacement_identity: Mapping[str, Any], template: Mapping[str, Any],
@@ -147,6 +166,7 @@ def _qualified_mechanism(
     if (
         joint.get("joint_id") != target["joint_id"]
         or joint.get("joint_type") != target["joint_type"]
+        or target["joint_type"] not in {"prismatic", "revolute"}
         or not isinstance(link_paths, Mapping)
         or set(link_paths) != {row["link_id"] for row in graph["links"]}
         or any(not str(path).startswith("/") for path in link_paths.values())
@@ -168,6 +188,8 @@ def _qualified_mechanism(
             raise _error("success_threshold_disagrees_with_qualified_limit")
     return {
         "graph": graph,
+        "jaw_unit_asset_root": _jaw_across_handle_bar(contact, revolute=target["joint_type"] == "revolute"),
+        "target_joint_axis": [float(value) for value in target["axis"]],
         "target_joint_id": str(target["joint_id"]),
         "target_joint_type": str(target["joint_type"]),
         "target_joint_prim_path": str(joint.get("prim_path") or ""),
@@ -262,6 +284,12 @@ def adapt_articulated_open_close_task_template(
             raise _error("configured_task_timing_mismatch")
     if success.get("task_joint_drive_forbidden") is not True:
         raise _error("task_joint_drive_not_forbidden")
+    revolute = success.get("joint_type") == "revolute"
+    # A hinge is scored in radians: its settle speed and locked tolerance must
+    # be declared angular, and a slide must never carry angular units.
+    units = (success.get("joint_coordinate_units"), success.get("settled_target_speed_units"))
+    if units != (("rad", "rad_per_s") if revolute else (None, None)):
+        raise _error("success_units_invalid")
     control_frequency = _number(execution["control_frequency_hz"])
     maximum_steps = int(execution["maximum_step_count"])
     maximum_seconds = _number(execution["maximum_episode_seconds"])
@@ -280,6 +308,8 @@ def adapt_articulated_open_close_task_template(
         replacement_identity=revision["replacement"]["identity"],
         template=template,
     )
+    if mechanism["target_joint_type"] != success.get("joint_type"):
+        raise _error("success_joint_type_mismatch")
     hold_seconds = _number(success["minimum_hold_seconds"])
     settle_window_samples = max(1, int(round(hold_seconds * control_frequency)))
     if settle_window_samples > maximum_steps:
@@ -310,11 +340,15 @@ def adapt_articulated_open_close_task_template(
         "handle_prim_paths": list(mechanism["handle_prim_paths"]),
         # The drawer is pulled along its own opening axis; the gripper closes on
         # the handle bar across that axis. Both are asset-frame, matching the
-        # joint axis the qualifier read back from the bytes.
+        # joint axis the qualifier read back from the bytes. A hinged door's
+        # free edge also leaves along +X from closed, then follows the arc
+        # about its hinge axis; the contact point rides the door link.
         "approach_unit_asset_root": [-1.0, 0.0, 0.0],
         "retreat_unit_asset_root": [-1.0, 0.0, 0.0],
         "pull_unit_asset_root": [1.0, 0.0, 0.0],
-        "jaw_unit_asset_root": [0.0, 0.0, 1.0],
+        "jaw_unit_asset_root": mechanism["jaw_unit_asset_root"],
+        **({"pull_follows_arc_about_axis_asset_root": mechanism["target_joint_axis"]}
+           if mechanism["target_joint_type"] == "revolute" else {}),
         "precontact_clearance_m": PRECONTACT_CLEARANCE_M,
         "retreat_clearance_m": PRECONTACT_CLEARANCE_M,
         "task_joint_drive_forbidden": True,
@@ -355,6 +389,9 @@ def adapt_articulated_open_close_task_template(
             "hold_window_samples": settle_window_samples,
             "authority": "frozen_from_static_qualification_of_exact_asset_bytes",
             "travel_is_measured": False,
+            **({"coordinate_units": "rad", "opening_fraction_of_swing": round(
+                mechanism["target_success_interval"][0] / mechanism["target_joint_limits"][1], 6)}
+               if mechanism["target_joint_type"] == "revolute" else {}),
         },
     }
     owner_authority = template.get("owner_success_contract_authority")

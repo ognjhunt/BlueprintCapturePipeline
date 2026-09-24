@@ -83,6 +83,12 @@ HINGE_RESET_TOLERANCE_RAD = 0.02
 CAVITY_PROBE_STANDOFF_M = 0.01
 CAVITY_MINIMUM_CLEAR_FRACTION = 0.6
 CAVITY_PROBE_OFFSETS = (-0.3, 0.0, 0.3)
+# A hollow body's collider must stay hollow in PhysX, not only in its render
+# mesh. convexHull fills the cavity and convexDecomposition's pieces are only
+# known after cooking; a triangle mesh cooks only for a static or kinematic
+# body, and the root link is dynamic. The hinged body is therefore authored as
+# exact analytic boxes: its collision envelope minus the planned cavity.
+CAVITY_COLLISION_WALL_BOXES = "analytic_wall_boxes"
 
 _ORDINALS = {
     0: ("top", "upper", "uppermost", "first", "1st", "highest"),
@@ -622,6 +628,7 @@ def _plan_hinged_door_appliance(configuration: Mapping[str, Any], contract: Mapp
                                                          round((tub_floor + tub_ceiling) / 2, 5)],
                                "opening_width_m": round(tub_w, 5), "opening_height_m": round(tub_h, 5),
                                "inner_depth_m": round(tub_depth, 5)}],
+        "cavity_collision_approximation": CAVITY_COLLISION_WALL_BOXES,
         "required_parts": [{**row, **placed[row["part_id"]]} for row in contract["required_parts"]],
         "source_observation": "captured" if contract["captured"] else NOT_CAPTURED_KIND,
         "intra_assembly_collision": "filtered_joints_constrain_mechanism",
@@ -850,6 +857,78 @@ def interior_cavity_findings(vertices: Any, faces: Any, cavities: Sequence[Mappi
     return findings
 
 
+def cavity_wall_boxes(bounds: Mapping[str, Sequence[float]],
+                      cavities: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Axis-aligned boxes filling a link's collision envelope except its one open-front cavity.
+
+    ``bounds`` is the link-frame collision envelope; the cavity runs from its
+    planned back to the envelope's +X face. Every wall must have positive
+    thickness, so the union is exactly the envelope minus the cavity.
+    """
+    if len(cavities) != 1:
+        raise AssetAuthoringError("articulated_body_cavity_collision_infeasible")
+    lo = [float(v) for v in bounds["minimum"]]
+    hi = [float(v) for v in bounds["maximum"]]
+    cavity = cavities[0]
+    cx, cy, cz = (float(v) for v in cavity["opening_center_link_m"])
+    half_w, half_h = float(cavity["opening_width_m"]) / 2, float(cavity["opening_height_m"]) / 2
+    c_lo = [cx - float(cavity["inner_depth_m"]), cy - half_w, cz - half_h]
+    c_hi = [hi[0], cy + half_w, cz + half_h]
+    if not (lo[0] < c_lo[0] < c_hi[0] and all(lo[i] < c_lo[i] < c_hi[i] < hi[i] for i in (1, 2))):
+        raise AssetAuthoringError("articulated_body_cavity_collision_infeasible")
+    walls = {"wall_back": (lo, [c_lo[0], hi[1], hi[2]]),
+             "wall_left": ([c_lo[0], lo[1], lo[2]], [hi[0], c_lo[1], hi[2]]),
+             "wall_right": ([c_lo[0], c_hi[1], lo[2]], hi),
+             "wall_floor": ([c_lo[0], c_lo[1], lo[2]], [hi[0], c_hi[1], c_lo[2]]),
+             "wall_ceiling": ([c_lo[0], c_lo[1], c_hi[2]], [hi[0], c_hi[1], hi[2]])}
+    return [{"name": name, "center_m": [(a + b) / 2 for a, b in zip(low, high)],
+             "size_m": [b - a for a, b in zip(low, high)]} for name, (low, high) in walls.items()]
+
+
+def box_collision_piece(center: Sequence[float], size: Sequence[float]) -> dict[str, Any]:
+    """An analytic box collider as link-frame triangles, for the cavity probe."""
+    import trimesh
+
+    box = trimesh.creation.box(extents=[float(v) for v in size])
+    box.apply_translation([float(v) for v in center])
+    return {"approximation": "analytic_box", "vertices": box.vertices.tolist(), "faces": box.faces.tolist()}
+
+
+def collision_cavity_findings(pieces: Sequence[Mapping[str, Any]],
+                              cavities: Sequence[Mapping[str, Any]]) -> list[str]:
+    """Probe each planned cavity on the geometry PhysX will collide with, per declared approximation.
+
+    Pieces are link-frame triangles. An ``analytic_box`` is exact, a
+    ``convexHull`` mesh is probed as its hull, and any other approximation
+    (``convexDecomposition``, a triangle mesh on a dynamic body) cannot be
+    proven hollow before cooking, so it fails closed.
+    """
+    import numpy as np
+    import trimesh
+
+    vertices: list[Any] = []
+    faces: list[Any] = []
+    unproven = []
+    for piece in pieces:
+        approximation = str(piece.get("approximation") or "")
+        points = np.asarray(piece.get("vertices") or [], dtype=float).reshape(-1, 3)
+        triangles = np.asarray(piece.get("faces") or [], dtype=int).reshape(-1, 3)
+        if approximation == "convexHull" and len(points) >= 4:
+            hull = trimesh.Trimesh(points, triangles, process=False).convex_hull
+            points, triangles = np.asarray(hull.vertices), np.asarray(hull.faces)
+        elif approximation != "analytic_box":
+            unproven.append("body_cavity_collision_approximation_unproven:" + (approximation or "unspecified"))
+            continue
+        faces.append(triangles + sum(len(v) for v in vertices))
+        vertices.append(points)
+    if unproven:
+        return sorted(set(unproven))
+    if not vertices:
+        return ["body_cavity_collision_missing"]
+    codes = interior_cavity_findings(np.concatenate(vertices), np.concatenate(faces), cavities)
+    return [code.replace("body_interior_cavity_", "body_cavity_collision_", 1) for code in codes]
+
+
 def _part_physics(*, request: AuthoringRequest, authoring_result: Mapping[str, Any],
                   physics_bounds: Mapping[str, Sequence[float]]) -> dict[str, Any]:
     """Re-verify one part exactly as the rigid packager does, without writing USD."""
@@ -967,6 +1046,17 @@ def package_astra_articulated_candidate(*, requests: Mapping[str, AuthoringReque
                                             [row for row in cavities if row["link_id"] == link_id])
         if findings:
             raise AssetAuthoringError("articulated_" + findings[0])
+    walls: dict[str, list[dict[str, Any]]] = {}
+    cavity_collision = plan.get("cavity_collision_approximation")
+    if cavity_collision not in {None, CAVITY_COLLISION_WALL_BOXES}:
+        raise AssetAuthoringError("articulated_body_cavity_collision_unsupported")
+    for link_id in sorted({row["link_id"] for row in cavities}) if cavity_collision else []:
+        rows = [row for row in cavities if row["link_id"] == link_id]
+        walls[link_id] = cavity_wall_boxes(parts[link_part[link_id]]["collision_bounds_part_frame_m"], rows)
+        findings = collision_cavity_findings(
+            [box_collision_piece(box["center_m"], box["size_m"]) for box in walls[link_id]], rows)
+        if findings:
+            raise AssetAuthoringError("articulated_" + findings[0])
     task_joint = plan["task_joint"]
     limits = task_joint_limits(task_joint)
     output_root.mkdir(parents=True, exist_ok=True)
@@ -1016,19 +1106,30 @@ def package_astra_articulated_candidate(*, requests: Mapping[str, AuthoringReque
             contact.CreateRestitutionAttr(physics["restitution"])
             materials[part_id] = material
         mesh = physics["mesh"]
-        collision = UsdGeom.Mesh.Define(stage, f"{path}/collision/FinalVisualShape")
-        collision.CreatePointsAttr([Gf.Vec3f(*[float(c) for c in v]) for v in mesh.vertices.tolist()])
-        collision.CreateFaceVertexCountsAttr([3] * len(mesh.faces))
-        collision.CreateFaceVertexIndicesAttr(mesh.faces.reshape(-1).tolist())
-        collision.CreateSubdivisionSchemeAttr("none")
-        collision.CreatePurposeAttr("guide")
-        collision.CreateVisibilityAttr("invisible")
-        UsdPhysics.CollisionAPI.Apply(collision.GetPrim()).CreateCollisionEnabledAttr(True)
-        UsdPhysics.MeshCollisionAPI.Apply(collision.GetPrim()).CreateApproximationAttr("convexDecomposition")
-        UsdShade.MaterialBindingAPI.Apply(collision.GetPrim()).Bind(materials[part_id], UsdShade.Tokens.weakerThanDescendants, "physics")
-        collision.GetPrim().SetCustomDataByKey(PROVENANCE_ATTRIBUTE, GENERATED_PROVENANCE)
-        collision.GetPrim().SetCustomDataByKey("blueprint:collisionGeometryOnly", True)
-        collision_paths = [str(collision.GetPath())]
+        collision_paths = []
+        for box in walls.get(link_id, []):
+            wall = UsdGeom.Cube.Define(stage, f"{path}/collision/{box['name']}")
+            wall.CreateSizeAttr(1.0)
+            wall.AddTranslateOp().Set(Gf.Vec3d(*box["center_m"]))
+            wall.AddScaleOp(UsdGeom.XformOp.PrecisionDouble).Set(Gf.Vec3d(*box["size_m"]))
+            collision_paths.append(str(wall.GetPath()))
+        if not collision_paths:
+            shape = UsdGeom.Mesh.Define(stage, f"{path}/collision/FinalVisualShape")
+            shape.CreatePointsAttr([Gf.Vec3f(*[float(c) for c in v]) for v in mesh.vertices.tolist()])
+            shape.CreateFaceVertexCountsAttr([3] * len(mesh.faces))
+            shape.CreateFaceVertexIndicesAttr(mesh.faces.reshape(-1).tolist())
+            shape.CreateSubdivisionSchemeAttr("none")
+            UsdPhysics.MeshCollisionAPI.Apply(shape.GetPrim()).CreateApproximationAttr("convexDecomposition")
+            collision_paths.append(str(shape.GetPath()))
+        for collider_path in collision_paths:
+            collision = UsdGeom.Gprim(stage.GetPrimAtPath(collider_path))
+            collision.CreatePurposeAttr("guide")
+            collision.CreateVisibilityAttr("invisible")
+            UsdPhysics.CollisionAPI.Apply(collision.GetPrim()).CreateCollisionEnabledAttr(True)
+            UsdShade.MaterialBindingAPI.Apply(collision.GetPrim()).Bind(
+                materials[part_id], UsdShade.Tokens.weakerThanDescendants, "physics")
+            collision.GetPrim().SetCustomDataByKey(PROVENANCE_ATTRIBUTE, GENERATED_PROVENANCE)
+            collision.GetPrim().SetCustomDataByKey("blueprint:collisionGeometryOnly", True)
         handle_grasp_point = None
         if is_task_link:
             handle = plan["parts"][part_id]["handle"]
@@ -1175,7 +1276,16 @@ def package_astra_articulated_candidate(*, requests: Mapping[str, AuthoringReque
         "intra_assembly_collision_filtered": True,
         "center_of_mass_authority": "constant_density_final_visual_candidate_per_link",
         "inertia_authority": "constant_density_final_visual_candidate_scaled_to_reviewed_mass_per_link",
-        "collision_approximation": "convexDecomposition_per_link_plus_tagged_handle_box",
+        "collision_approximation": ("analytic_wall_boxes_hollow_body_convexDecomposition_other_links_plus_tagged_handle_box"
+                                    if walls else "convexDecomposition_per_link_plus_tagged_handle_box"),
+        **({"cavity_collision": {
+            "approximation": CAVITY_COLLISION_WALL_BOXES,
+            "status": "cavity_preserved_on_declared_collision_geometry",
+            "collider_prim_paths": {link_id: [f"{link_paths[link_id]}/collision/{box['name']}" for box in rows]
+                                    for link_id, rows in walls.items()},
+            "reason": ("convexHull fills a hollow, convexDecomposition is unknown before cooking, and a "
+                       "triangle mesh cannot collide on a dynamic root link"),
+        }} if walls else {}),
         "native_collision_cooking_qualified": False,
         "part_reviews": {part_id: {"astra_review": file_record(parts[part_id]["review_path"]),
                                    "final_visual_solid_volume_m3": float(parts[part_id]["mesh"].volume),
@@ -1223,9 +1333,11 @@ def articulation_graph_from_plan(plan: Mapping[str, Any], *, opening_fraction: f
 
 
 __all__ = [
-    "AUTHORING_RESULT_SCHEMA_VERSION", "COMPLETION_SCHEMA_VERSION", "PLAN_SCHEMA_VERSION",
+    "AUTHORING_RESULT_SCHEMA_VERSION", "CAVITY_COLLISION_WALL_BOXES", "COMPLETION_SCHEMA_VERSION",
+    "PLAN_SCHEMA_VERSION",
     "PROVENANCE_ATTRIBUTE", "REQUIRED_PARTS_ATTRIBUTE", "TASK_CONTACT_ROLE_ATTRIBUTE", "TARGET_JOINT_ID",
-    "articulation_graph_from_plan", "assembly_contract", "assembly_family", "interior_cavity_findings",
+    "articulation_graph_from_plan", "assembly_contract", "assembly_family", "box_collision_piece",
+    "cavity_wall_boxes", "collision_cavity_findings", "interior_cavity_findings",
     "package_astra_articulated_candidate", "plan_articulated_assembly", "required_part_findings",
     "required_parts_by_link", "root_link_id", "task_joint_limits",
 ]

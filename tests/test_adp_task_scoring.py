@@ -112,6 +112,9 @@ def test_articulated_scripted_positive_requires_release_retreat_and_settle() -> 
     assert report["outcome_rank"] == 4
     assert report["task_succeeded"] is True
     assert all(report["predicates"].values())
+    # The reported threshold is the target's success interval, not the hard
+    # limits of whichever joint the limit sweep visited last.
+    assert report["thresholds"]["target_success_interval_rad"] == [0.785398163, 1.396263402]
 
 
 def test_opened_then_rebounded_cannot_pass() -> None:

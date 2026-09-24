@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 import trimesh
-from pxr import Gf, Usd, UsdPhysics
+from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
 from blueprint_pipeline.articulation_graph_contract import validate_articulation_graph
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
@@ -22,7 +22,8 @@ from blueprint_pipeline.task_evaluation_scene_configuration_submission_records i
     ARTICULATED_STATIC_CHECKS, articulated_stage_three_configuration,
 )
 from blueprint_pipeline.task_object_articulated_packaging import (
-    REQUIRED_PARTS_ATTRIBUTE, TARGET_JOINT_ID, articulation_graph_from_plan, interior_cavity_findings,
+    CAVITY_COLLISION_WALL_BOXES, REQUIRED_PARTS_ATTRIBUTE, TARGET_JOINT_ID, articulation_graph_from_plan,
+    box_collision_piece, cavity_wall_boxes, collision_cavity_findings, interior_cavity_findings,
     package_astra_articulated_candidate, plan_articulated_assembly, required_part_findings,
 )
 from blueprint_pipeline.task_object_astra_authoring import AssetAuthoringError
@@ -367,7 +368,7 @@ def test_static_qualification_refuses_a_hollow_plan_the_bytes_do_not_have(tmp_pa
     receipt, bounds = _package(tmp_path, plan)
     asset, graph, authoring = _seal(plan, receipt, bounds)
     stage = Usd.Stage.Open(str(asset))
-    assert stage.GetPrimAtPath("/Asset/links/body/collision/FinalVisualShape")
+    assert stage.GetPrimAtPath("/Asset/links/body/collision/wall_back")
     # A plan claiming a deeper cavity and an extra part that the authored bytes lack fails both new checks.
     deeper = copy.deepcopy(plan)
     deeper["interior_cavities"][0]["inner_depth_m"] = 0.9
@@ -378,5 +379,310 @@ def test_static_qualification_refuses_a_hollow_plan_the_bytes_do_not_have(tmp_pa
         qualify_scene_configuration_articulated_asset_static(
             asset_path=asset, graph_spec=graph, authoring_receipt=authoring,
             replacement_identity=IDENTITY, output_path=tmp_path / "static.json")
-    assert "replacement_body_interior_cavity_closed:tub" in error.value.codes
+    assert "replacement_body_cavity_collision_closed:tub" in error.value.codes
     assert "replacement_required_part_missing:spray_arm" in error.value.codes
+
+
+# --- collision that PhysX will actually use -----------------------------------
+
+def test_body_collision_is_exact_wall_boxes_that_keep_the_tub_hollow(tmp_path):
+    plan = plan_articulated_assembly(dishwasher())
+    assert plan["cavity_collision_approximation"] == CAVITY_COLLISION_WALL_BOXES
+    dims, cavities = plan["parts"]["body"]["dimensions_m"], plan["interior_cavities"]
+    bounds = {"minimum": [-dims[0] / 2, -dims[1] / 2, 0.0], "maximum": [dims[0] / 2, dims[1] / 2, dims[2]]}
+    walls = cavity_wall_boxes(bounds, cavities)
+    boxes = [box_collision_piece(row["center_m"], row["size_m"]) for row in walls]
+    assert collision_cavity_findings(boxes, cavities) == []
+    shell = open_front_shell(dims, cavities)
+    # The render mesh is hollow, but PhysX's hull of it is a solid block and its
+    # decomposition is unknown before cooking: neither proves the cavity.
+    assert interior_cavity_findings(shell.vertices, shell.faces, cavities) == []
+    mesh = {"vertices": shell.vertices.tolist(), "faces": shell.faces.tolist()}
+    assert collision_cavity_findings([{**mesh, "approximation": "convexHull"}], cavities) == [
+        "body_cavity_collision_closed:tub"]
+    assert collision_cavity_findings([{**mesh, "approximation": "convexDecomposition"}], cavities) == [
+        "body_cavity_collision_approximation_unproven:convexDecomposition"]
+    assert collision_cavity_findings([{**mesh, "approximation": "none"}], cavities) == [
+        "body_cavity_collision_approximation_unproven:none"]
+    assert collision_cavity_findings([b for b, w in zip(boxes, walls) if w["name"] != "wall_back"],
+                                     cavities) == ["body_cavity_collision_back_open:tub"]
+    with pytest.raises(AssetAuthoringError, match="body_cavity_collision_infeasible"):
+        cavity_wall_boxes(bounds, [{**cavities[0], "opening_width_m": dims[1]}])
+    receipt, _ = _package(tmp_path, plan)
+    stage = Usd.Stage.Open(receipt["asset"]["path"])
+    colliders = sorted(str(p.GetPath()) for p in stage.Traverse()
+                       if p.HasAPI(UsdPhysics.CollisionAPI) and str(p.GetPath()).startswith("/Asset/links/body/"))
+    assert colliders == [f"/Asset/links/body/collision/wall_{n}" for n in ("back", "ceiling", "floor", "left", "right")]
+    assert all(stage.GetPrimAtPath(path).IsA(UsdGeom.Cube) for path in colliders)
+    completion = receipt["physics_completion"]
+    assert completion["cavity_collision"]["approximation"] == CAVITY_COLLISION_WALL_BOXES
+    assert sorted(completion["cavity_collision"]["collider_prim_paths"]["body"]) == colliders
+    body = next(row for row in completion["links"] if row["link_id"] == "body")
+    assert body["collision_bounds_link_frame_m"]["maximum"] == pytest.approx(bounds["maximum"], abs=1e-9)
+
+
+@pytest.mark.parametrize("approximation, code", [
+    ("convexHull", "replacement_body_cavity_collision_closed:tub"),
+    ("convexDecomposition", "replacement_body_cavity_collision_approximation_unproven:convexDecomposition"),
+])
+def test_static_qualification_refuses_a_body_collider_that_fills_the_tub(tmp_path, approximation, code):
+    from pxr import Sdf, UsdShade, UsdUtils
+    plan = plan_articulated_assembly(dishwasher())
+    receipt, bounds = _package(tmp_path, plan)
+    flat = Path(receipt["asset"]["path"]).parent / "astra_articulated_candidate.flat.usdc"
+    stage = Usd.Stage.Open(str(flat))
+    for name in ("back", "ceiling", "floor", "left", "right"):
+        stage.RemovePrim(f"/Asset/links/body/collision/wall_{name}")
+    shell = open_front_shell(plan["parts"]["body"]["dimensions_m"], plan["interior_cavities"])
+    mesh = UsdGeom.Mesh.Define(stage, "/Asset/links/body/collision/FinalVisualShape")
+    mesh.CreatePointsAttr([Gf.Vec3f(*v) for v in shell.vertices.tolist()])
+    mesh.CreateFaceVertexCountsAttr([3] * len(shell.faces))
+    mesh.CreateFaceVertexIndicesAttr(shell.faces.reshape(-1).tolist())
+    mesh.CreatePurposeAttr("guide")
+    UsdPhysics.CollisionAPI.Apply(mesh.GetPrim())
+    UsdPhysics.MeshCollisionAPI.Apply(mesh.GetPrim()).CreateApproximationAttr(approximation)
+    UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(
+        UsdShade.Material(stage.GetPrimAtPath("/Asset/Looks/ReviewedPhysics_body")),
+        UsdShade.Tokens.weakerThanDescendants, "physics")
+    mesh.GetPrim().SetCustomDataByKey("blueprint:articulatedReplacement:provenance", "generated_candidate_geometry")
+    edited = tmp_path / "edited.usdc"
+    stage.GetRootLayer().Export(str(edited))
+    asset = tmp_path / "filled_body.usdz"
+    assert UsdUtils.CreateNewUsdzPackage(Sdf.AssetPath(str(edited)), str(asset))
+    receipt = {**receipt, "asset": {"path": str(asset)}}
+    asset, graph, authoring = _seal(plan, receipt, bounds)
+    with pytest.raises(TaskEvaluationSceneConfigurationStaticQualificationError) as error:
+        qualify_scene_configuration_articulated_asset_static(
+            asset_path=asset, graph_spec=graph, authoring_receipt=authoring,
+            replacement_identity=IDENTITY, output_path=tmp_path / "static.json")
+    assert code in error.value.codes
+
+
+# --- native import: one path for body/door/racks and carcass/drawers -----------
+
+def _qualified(tmp_path, hinge="bottom"):
+    plan = plan_articulated_assembly(dishwasher(hinge))
+    receipt, bounds = _package(tmp_path, plan)
+    asset, graph, authoring = _seal(plan, receipt, bounds)
+    static_path = tmp_path / "static.json"
+    static = qualify_scene_configuration_articulated_asset_static(
+        asset_path=asset, graph_spec=graph, authoring_receipt=authoring,
+        replacement_identity=IDENTITY, output_path=static_path)
+    return plan, asset, graph, static, static_path
+
+
+def _imported_structure(asset, static):
+    from blueprint_pipeline import task_evaluation_scene_configuration_native_import_driver as driver
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.Xform.Define(stage, "/World/Placement")
+    stage.DefinePrim("/World/Placement/Replacement", "Xform").GetReferences().AddReference(str(asset), "/Asset")
+    stage.Load()
+    return driver._articulated_structure_observation(stage=stage, usd_physics=UsdPhysics, static_receipt=static)
+
+
+def _native_environment(tmp_path, asset, static_path):
+    from tests.test_task_evaluation_scene_configuration_native_import_driver import _environment
+    from blueprint_pipeline.task_evaluation_scene_configuration_submission_records import stage_five_configuration
+    tmp_path.mkdir(parents=True)
+    environment = _environment(tmp_path)
+    stage_input_path = Path(environment["BLUEPRINT_SCENE_CONFIGURATION_STAGE_INPUT"])
+    stage_input = json.loads(stage_input_path.read_text())
+    stage_input["configuration"] = {**stage_five_configuration(replacement_identity=IDENTITY, articulated=True),
+                                    "schema_version": "replacement_native_import_qualification_configuration.v1"}
+    stage_input_path.write_text(json.dumps(stage_input))
+    rows = [{"role": role, "path": str(path), "size_bytes": path.stat().st_size,
+             "digest": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()}
+            for role, path in (("statically_qualified_replacement_asset", Path(asset)),
+                               ("static_qualification_receipt", static_path))]
+    Path(environment["BLUEPRINT_SCENE_CONFIGURATION_STAGE_DEPENDENCIES"]).write_text(
+        json.dumps([{"output_artifacts": rows}]))
+    return environment
+
+
+def _native_observation(structure, settled):
+    joint = {**structure["task_joint"], "initial_task_joint_position": 0.0,
+             "settled_task_joint_position": settled, "task_joint_returned_to_reset": True}
+    state = {"position_m": [0.0, 0.0, 0.43], "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+             "task_joint_position_m": round(settled, 7)}
+    repeat = {"asset_imported": True, "rigid_body_paths": structure["rigid_body_paths"],
+              "articulation_root_paths": structure["articulation_root_paths"],
+              "settle_measured_body_prim_path": structure["settle_measured_body_prim_path"],
+              "collision_paths": structure["collision_paths"],
+              "fixed_joint_prim_paths": structure["fixed_joint_prim_paths"],
+              "link_physics_readback": structure["link_physics_readback"],
+              "handle_prim_paths": structure["handle_prim_paths"], "task_joint": joint,
+              "support_contact_observed": True, "contact_report_event_count": 5,
+              "settle_translation_m": 0.001, "settle_rotation_rad": 0.002,
+              "final_state": state, "final_state_digest": canonical_digest(state),
+              "task_joint_trace_digest": "sha256:" + "b" * 64}
+    return {"runtime_identity": {"engine_version": "6.0.1"},
+            "repeats": [copy.deepcopy(repeat) for _ in range(3)]}
+
+
+@pytest.mark.parametrize("hinge, token", [("bottom", "Y"), ("left", "Z")])
+def test_dishwasher_passes_native_import_structure_and_seals_a_radian_reset(tmp_path, hinge, token):
+    from blueprint_pipeline.task_evaluation_scene_configuration_native_import_driver import (
+        TaskEvaluationSceneConfigurationNativeImportDriverError, execute_native_import_component,
+    )
+    _plan, asset, _graph, static, static_path = _qualified(tmp_path / "asset", hinge)
+    structure = _imported_structure(asset, static)
+    root = "/World/Placement/Replacement"
+    assert set(structure["link_physics_readback"]) == {"body", "door", "upper_rack", "lower_rack", "cutlery_basket"}
+    assert structure["settle_measured_body_prim_path"] == root + "/links/body"
+    assert sorted(structure["fixed_joint_prim_paths"]) == [
+        root + f"/joints/{name}_fixed" for name in ("cutlery_basket", "lower_rack", "upper_rack")]
+    joint = structure["task_joint"]
+    assert joint["task_joint_type"] == "revolute" and joint["task_joint_axis"] == token
+    assert joint["task_joint_limits"] == pytest.approx([0.0, 1.4], abs=1e-6)  # radians, read from USD degrees
+    assert joint["moving_link_prim_path"] == root + "/links/door"
+    assert structure["handle_prim_paths"] == [root + "/links/door/collision/handle"]
+    assert structure["link_physics_readback"]["body"]["collision_prim_paths"] == [
+        root + f"/links/body/collision/wall_{n}" for n in ("back", "ceiling", "floor", "left", "right")]
+
+    def runner(settled):
+        return lambda *, observation_consumer, **kwargs: observation_consumer(_native_observation(structure, settled))
+
+    # 0.015 rad sits inside the hinge's 0.02 rad graph reset tolerance.
+    result = execute_native_import_component(
+        environment=_native_environment(tmp_path / "ok", asset, static_path), native_runner=runner(0.015))
+    runtime = json.loads(Path(result["artifacts"][0]["path"]).read_text())
+    assert runtime["status"] == "qualified" and runtime["task_joint_coordinate_units"] == "rad"
+    assert runtime["task_joint_readback"]["task_joint_type"] == "revolute"
+    assert runtime["task_joint_readback"]["task_joint_axis"] == token
+    assert runtime["task_joint_reset_numeric_readbacks"] == [0.015] * 3
+    with pytest.raises(TaskEvaluationSceneConfigurationNativeImportDriverError, match="qualification_failed"):
+        execute_native_import_component(
+            environment=_native_environment(tmp_path / "ajar", asset, static_path), native_runner=runner(0.03))
+
+
+def test_drawer_reset_tolerance_stays_five_millimetres(tmp_path):
+    from tests.test_task_evaluation_scene_configuration_native_import_driver import (
+        _articulated_environment, _articulated_observed, _native_runner,
+    )
+    from blueprint_pipeline.task_evaluation_scene_configuration_native_import_driver import (
+        TaskEvaluationSceneConfigurationNativeImportDriverError, execute_native_import_component,
+    )
+    with pytest.raises(TaskEvaluationSceneConfigurationNativeImportDriverError, match="qualification_failed"):
+        execute_native_import_component(
+            environment=_articulated_environment(tmp_path),
+            native_runner=_native_runner(_articulated_observed(settled_task_joint_position=0.015)))
+
+
+# --- open/close task: radians, fraction of swing, jaw across the handle bar ---
+
+def _revolute_case(tmp_path, hinge="bottom"):
+    from tests.test_task_evaluation_articulated_open_close_native_adapter import _case
+    plan, asset, graph, static, _ = _qualified(tmp_path / "asset", hinge)
+    mechanism = {"part_label": "dishwasher door", "joint_type": "revolute", "estimated_usable_swing_rad": 1.4,
+                 "estimated_front_normal_world": plan["assembly_frame"]["estimated_front_normal_world"],
+                 "lock_status": "unknown", "travel_authority": "object_prior_estimate", "hinge_edge": hinge}
+    return _case(tmp_path, assembly=(asset, graph, static), mechanism=mechanism)
+
+
+@pytest.mark.parametrize("hinge, jaw", [("bottom", [0.0, 0.0, 1.0]), ("left", [0.0, 1.0, 0.0])])
+def test_revolute_task_freezes_radian_thresholds_and_a_door_handle_grasp(tmp_path, hinge, jaw):
+    from tests.test_task_evaluation_articulated_open_close_native_adapter import materialize_contract_and_plan
+    from blueprint_pipeline.task_evaluation_articulated_open_close_native_adapter import (
+        adapt_articulated_open_close_task_template,
+    )
+    case = _revolute_case(tmp_path, hinge)
+    success = case["documents"]["scene.configured_revision.task_template.success_criteria"]
+    assert success["joint_coordinate_units"] == "rad" and success["maximum_settled_target_speed"] == 0.03
+    assert case["documents"]["scene.configured_revision.task_template.definition"][
+        "interaction_affordance"]["jaw_unit_asset_frame"] == jaw
+    adapted = adapt_articulated_open_close_task_template(
+        configured_revision=case["configured"], materialized_references=case["references"])
+    spec = adapted["native_task_definition"]["task_spec"]
+    threshold = spec["executable_opening_threshold"]
+    assert threshold["joint_type"] == "revolute" and threshold["coordinate_units"] == "rad"
+    assert threshold["success_interval"] == pytest.approx([0.84, 1.4]) and threshold["opening_fraction_of_swing"] == 0.6
+    assert threshold["qualified_joint_limits"] == pytest.approx([0.0, 1.4], abs=1e-6)
+    plan = plan_articulated_assembly(dishwasher(hinge))
+    affordance = spec["interaction_affordance"]
+    assert affordance["contact_link_id"] == "door" and affordance["jaw_unit_asset_root"] == jaw
+    assert affordance["handle_prim_paths"] == ["/Asset/links/door/collision/handle"]
+    assert affordance["contact_point_link_m"] == plan["parts"]["door"]["handle"]["grasp_point_link_m"]
+    assert affordance["pull_follows_arc_about_axis_asset_root"] == plan["task_joint"]["axis_asset_frame"]
+    assert spec["movement_epsilon"] == pytest.approx(0.014, abs=1e-6)
+    contract, arena = materialize_contract_and_plan(case, adapted, tmp_path)
+    assert contract["task_sample_binding"]["native_coordinate_joint_ids"] == [TARGET_JOINT_ID]
+    assert sorted(contract["task_sample_binding"]["fixed_joint_ids"]) == [
+        "cutlery_basket_fixed", "lower_rack_fixed", "upper_rack_fixed"]
+    assert arena["interaction_link_native_body_name"] == "door"
+    assert arena["gpu_collision_qualification"]["status"] == "qualified"
+
+
+def test_revolute_success_scores_in_radians(tmp_path):
+    from blueprint_pipeline.adp_articulated_task_success_contract import compatibility_articulated_success_criteria
+    from blueprint_pipeline.adp_task_scoring import TaskNeutralScoringError, score_articulated_task_episode
+    from blueprint_pipeline.task_evaluation_articulated_open_close_native_adapter import (
+        adapt_articulated_open_close_task_template,
+    )
+    case = _revolute_case(tmp_path)
+    spec = adapt_articulated_open_close_task_template(
+        configured_revision=case["configured"], materialized_references=case["references"],
+    )["native_task_definition"]["task_spec"]
+    criteria = compatibility_articulated_success_criteria(spec)
+    assert criteria["opening"]["success_interval"] == pytest.approx([0.84, 1.4])
+    assert criteria["opening"]["joint_hard_limits"] == pytest.approx([0.0, 1.4])
+    assert criteria["reset"]["tolerance"] == 0.02 and criteria["hold"]["maximum_settled_target_speed"] == 0.03
+    fixed = ["cutlery_basket_fixed", "lower_rack_fixed", "upper_rack_fixed"]
+
+    def episode(angles, *, start=0.0):
+        positions = [start, *angles]
+        return score_articulated_task_episode(task_spec=spec, samples=[
+            {"step_index": step,
+             "joint_positions": {TARGET_JOINT_ID: angle, **dict.fromkeys(fixed, 0.0)},
+             "joint_velocities_per_s": {TARGET_JOINT_ID: 0.0, **dict.fromkeys(fixed, 0.0)},
+             "task_contact_active": step < len(positions) - 15, "joint_limit_violation": False,
+             "containment_violation": False, "robot_collision_failure": False,
+             "scene_collision_failure": False, "retreat_completed": step == len(positions) - 1}
+            for step, angle in enumerate(positions)])
+
+    ramp = [0.05 * k for k in range(1, 21)]
+    opened = episode(ramp + [1.0] * 15)
+    assert opened["task_succeeded"] is True and opened["outcome"] == "opened_and_settled"
+    assert opened["thresholds"]["target_success_interval_rad"] == pytest.approx([0.84, 1.4])
+    # 0.7 rad is half the swing: below the 0.6 fraction threshold.
+    short = episode(ramp[:14] + [0.7] * 15)
+    assert short["task_succeeded"] is False and short["outcome"] == "moved_below_threshold"
+    assert episode(ramp + [1.0] * 15, start=0.015)["task_succeeded"] is True
+    with pytest.raises(TaskNeutralScoringError, match="reset_readback_mismatch"):
+        episode(ramp + [1.0] * 15, start=0.03)
+
+
+def test_revolute_task_without_angular_units_is_refused(tmp_path, monkeypatch):
+    import tests.test_task_evaluation_articulated_open_close_native_adapter as adapter_tests
+    from blueprint_pipeline.task_evaluation_articulated_open_close_native_adapter import (
+        TaskEvaluationArticulatedOpenCloseNativeAdapterError, adapt_articulated_open_close_task_template,
+    )
+    records = adapter_tests.articulated_open_close_task_records
+
+    def metre_flavoured(**kwargs):
+        template, success, execution = records(**kwargs)
+        for document in (success, template["success"]):
+            document.pop("joint_coordinate_units")
+        return template, success, execution
+
+    monkeypatch.setattr(adapter_tests, "articulated_open_close_task_records", metre_flavoured)
+    case = _revolute_case(tmp_path)
+    with pytest.raises(TaskEvaluationArticulatedOpenCloseNativeAdapterError, match="success_units_invalid"):
+        adapt_articulated_open_close_task_template(
+            configured_revision=case["configured"], materialized_references=case["references"])
+
+
+def test_prismatic_task_records_keep_their_metre_fields():
+    from blueprint_pipeline.task_evaluation_scene_configuration_submission_records import (
+        articulated_open_close_task_records,
+    )
+    template, success, _ = articulated_open_close_task_records(
+        task_identity={"id": "t", "version": "v1"}, object_identity=IDENTITY, start_center=[0, 0, 0.4],
+        source_min=[-0.2, -0.2, 0.0], source_max=[0.2, 0.2, 0.8],
+        mechanism={"part_label": "middle drawer", "joint_type": "prismatic", "estimated_usable_stroke_m": 0.3,
+                   "estimated_front_normal_world": [1.0, 0.0, 0.0]},
+        success={"control_frequency_hz": 15, "maximum_episode_seconds": 30,
+                 "minimum_opening_fraction_of_estimated_stroke": 0.6, "minimum_hold_seconds": 1.0,
+                 "maximum_retries": 0}, resolved_seed=1)
+    assert success["maximum_settled_target_speed"] == 0.02 and success["locked_joint_motion_tolerance"] == 0.01
+    assert "joint_coordinate_units" not in success and "pull_follows_hinge_arc" not in template["interaction_affordance"]
+    assert template["interaction_affordance"]["jaw_unit_asset_frame"] == [0.0, 0.0, 1.0]

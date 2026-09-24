@@ -888,6 +888,16 @@ def articulated_stage_three_configuration(
     }
 
 
+#: A hinge's settle speed and locked-joint tolerance are angular. 0.03 rad/s
+#: moves a handle about 0.7 m from the hinge line at the drawer's 0.02 m/s.
+REVOLUTE_MAXIMUM_SETTLED_TARGET_SPEED_RAD_S = 0.03
+REVOLUTE_LOCKED_JOINT_MOTION_TOLERANCE_RAD = 0.01
+#: Seen from the front, a bottom/top hinge's handle bar runs along Y and a side
+#: hinge's along Z; the jaw closes across the bar.
+_HINGE_JAW_UNIT_ASSET_FRAME = {"bottom": [0.0, 0.0, 1.0], "top": [0.0, 0.0, 1.0],
+                               "left": [0.0, 1.0, 0.0], "right": [0.0, 1.0, 0.0]}
+
+
 def articulated_open_close_task_records(
     *,
     task_identity: Mapping[str, Any],
@@ -916,8 +926,14 @@ def articulated_open_close_task_records(
     if not 0.0 < fraction <= 1.0 or hold_seconds <= 0.0:
         raise ValueError("articulated_open_close_success_invalid")
     joint_type = str(mechanism["joint_type"])
+    if joint_type not in {"prismatic", "revolute"}:
+        raise ValueError("articulated_open_close_joint_type_invalid")
+    revolute = joint_type == "revolute"
     travel_key = "estimated_usable_stroke_m" if joint_type == "prismatic" else "estimated_usable_swing_rad"
     travel = float(mechanism[travel_key])
+    hinge_edge = mechanism.get("hinge_edge")
+    if revolute and hinge_edge is not None and hinge_edge not in _HINGE_JAW_UNIT_ASSET_FRAME:
+        raise ValueError("articulated_open_close_hinge_edge_invalid")
     bounds = {
         "authority": "deterministic_simulator_state",
         "target_joint_id": ARTICULATED_TARGET_JOINT_ID,
@@ -928,8 +944,11 @@ def articulated_open_close_task_records(
         "travel_authority": str(mechanism.get("travel_authority") or "object_prior_estimate"),
         "threshold_binding": "frozen_from_qualified_asset_joint_limit_before_any_episode",
         "minimum_hold_seconds": hold_seconds,
-        "maximum_settled_target_speed": 0.02,
-        "locked_joint_motion_tolerance": 0.01,
+        "maximum_settled_target_speed": REVOLUTE_MAXIMUM_SETTLED_TARGET_SPEED_RAD_S if revolute else 0.02,
+        "locked_joint_motion_tolerance": REVOLUTE_LOCKED_JOINT_MOTION_TOLERANCE_RAD if revolute else 0.01,
+        # Drawer records keep their historical, implicitly-metre fields.
+        **({"joint_coordinate_units": "rad", "settled_target_speed_units": "rad_per_s",
+            "opening_is_fraction_of_swing_closed_at_zero": True} if revolute else {}),
         "root_translation_tolerance_m": 0.05,
         "root_orientation_tolerance_rad": 0.10,
         "release_required": False,
@@ -984,7 +1003,10 @@ def articulated_open_close_task_records(
             "contact_feature": "task_part_handle",
             "approach_unit_asset_frame": [-1.0, 0.0, 0.0],
             "pull_unit_asset_frame": [1.0, 0.0, 0.0],
-            "jaw_unit_asset_frame": [0.0, 0.0, 1.0],
+            **({"jaw_unit_asset_frame": [0.0, 0.0, 1.0]} if not revolute else
+               {"jaw_unit_asset_frame": list(_HINGE_JAW_UNIT_ASSET_FRAME[hinge_edge])} if hinge_edge else
+               {"jaw_binding": "frozen_from_qualified_handle_bar"}),
+            **({"pull_follows_hinge_arc": True} if revolute else {}),
             "pregrasp_clearance_m": 0.08,
         },
         "preregistration_rule": (
