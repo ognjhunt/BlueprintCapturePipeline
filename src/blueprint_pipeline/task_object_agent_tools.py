@@ -21,7 +21,7 @@ from .task_object_physical_property_review import (
 )
 
 
-APPEARANCE_SCOPE = "observable_v2"
+APPEARANCE_SCOPE = "observable_v3"
 
 
 class AssetTools:
@@ -188,6 +188,12 @@ class AssetTools:
             "Assess observable appearance only: native USD import, physics, exact dimensions and scene placement "
             "are checked independently and missing proof of them is not an appearance defect. "
             "These are uncalibrated studio views, so perspective alone does not establish a shape mismatch. "
+            "Treat modest wood-grain scale, hue, or brightness differences as optional cosmetic feedback when "
+            "the source object, material family, color structure, and task-relevant affordances remain recognizable; "
+            "do not put only such differences in blockers. Keep the source_color_and_material_preserved field true "
+            "only when that material and color structure is preserved. Record optional cosmetic feedback in "
+            "repair_instructions. Reject clear material or color-family changes, missing or altered handles or "
+            "other required parts, changed geometry, opacity errors, and conspicuous texture artifacts. "
             "Reject visible contradictions; identify their source-image evidence. Record occluded or blurred "
             "surfaces as limitations, not observed defects. Never infer physical truth from plausible renders.\n" + canonical_json(context),
             output_type=AppearanceReview, frames=self.request.source_frames + frames, root=attempt))

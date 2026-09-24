@@ -199,6 +199,19 @@ def test_render_hands_off_before_later_brief_mutation_can_clear_candidate(agent_
     assert len(tools) == 4
 
 
+def test_visual_review_requests_cosmetic_tolerance_but_keeps_structural_rejection(agent_fixture):
+    f = agent_fixture
+    invoker, _ = bounded(f)
+    session.execute_agent_authoring(**f.kwargs, invoker=invoker, model=f.model)
+    review = next(call for call in f.model.calls
+                  if call['output_schema'].json_schema()['title'] == 'AppearanceReview')
+    prompt = str(review['input'])
+    assert 'wood-grain scale' in prompt
+    assert 'do not put only such differences in blockers' in prompt
+    assert 'missing or altered handles' in prompt
+    assert 'conspicuous texture artifacts' in prompt
+
+
 def test_budget_refuses_before_unaffordable_model_request(agent_fixture):
     f = agent_fixture
     invoker, audit = bounded(f, .0001)
