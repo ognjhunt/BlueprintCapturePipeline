@@ -16,7 +16,10 @@ from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
 from .native_g1_policy_server_supervisor import PINNED_SOURCE_REVISION
-from .native_g1_navigation_goal import validate_g1_navigation_goal
+from .native_g1_navigation_goal import (
+    validate_g1_navigation_goal,
+    validate_g1_navigation_goal_authority,
+)
 from .native_g1_runtime_assembly import run_g1_supervised_built_scene_episode
 from .native_g1_run_preflight import preflight_g1_shared_scene_run
 from .native_g1_shared_scene_episode import G1_BOX_CANDIDATES, G1_NAVIGATION_CANDIDATES
@@ -191,6 +194,7 @@ def run_g1_development_worker(
     preflight = None
     packet_receipt = None
     rights = None
+    navigation_authority = None
     launch = None
     device_binding = None
     episode = None
@@ -223,6 +227,10 @@ def run_g1_development_worker(
         if sealed["candidate_id"] in G1_NAVIGATION_CANDIDATES:
             phase = "navigation_goal_validation"
             validate_g1_navigation_goal(plan.get("task_spec") or {})
+            phase = "navigation_goal_authority_validation"
+            navigation_authority = validate_g1_navigation_goal_authority(
+                sealed.get("navigation_goal_authority"), plan=plan
+            )
         phase = "simulator_launch"
         app, launch = _launch_scene(request=sealed, plan=plan)
         phase = "scene_build"
@@ -285,6 +293,9 @@ def run_g1_development_worker(
             "candidate_id": sealed["candidate_id"],
             "preflight_receipt_digest": canonical_digest(preflight) if preflight else None,
             "rights_review_digest": rights.get("rights_review_digest") if rights else None,
+            "navigation_goal_authority_digest": (
+                navigation_authority["authority_digest"] if navigation_authority else None
+            ),
             "isaaclab_launch": launch,
             "device_binding": device_binding,
             "supervised_episode": supervised,

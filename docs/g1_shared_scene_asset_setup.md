@@ -252,3 +252,16 @@ step, and terminal hold. It explicitly leaves obstacle-clearance scoring
 false, so it cannot establish the full “avoid obstacles” behavior or physical
 navigation readiness. Navigation remains development-only until a compatible
 checkpoint runs and the goal/clearance evidence is inspected.
+
+Before a navigation candidate can launch, the site/robot team must confirm
+that exact measured goal for this task. After that decision is recorded, use
+`seal_g1_navigation_goal_authority` in `native_g1_navigation_goal.py` with the
+sealed scene plan, confirming team id, and human reviewer. Put the resulting
+`native_g1_navigation_goal_authority.v1` object in the worker request as
+`navigation_goal_authority` and reseal the request digest. The worker checks
+the confirmed rigid-task contract, team, site, task, scene-plan digest, and
+goal bytes before Isaac starts. The authority explicitly confirms goal arrival
+and terminal hold only; it records that obstacle clearance and physical
+outcome are unscored. A caller-supplied reviewer name records a decision but
+does not itself prove the reviewer had authority. The separate rights review
+and live checkpoint/episode gates still apply.

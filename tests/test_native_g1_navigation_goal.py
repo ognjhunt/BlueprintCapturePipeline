@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+import copy
+
 import pytest
 
+from blueprint_pipeline.adp_task_scoring import seal_rigid_task_success_contract
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.native_g1_navigation_goal import (
     PUBLISHED_TASK_INSTRUCTION,
     score_g1_navigation_episode,
+    seal_g1_navigation_goal_authority,
     validate_g1_navigation_goal,
+    validate_g1_navigation_goal_authority,
 )
+from tests.test_task_evaluation_policy_canary_setup import _setup as canary_setup
 
 
 def _task_spec() -> dict:
@@ -43,6 +50,58 @@ def _samples(xs: list[float]) -> list[dict]:
         {"step_index": index, "root_position_world_m": [x, 0.0, 0.85]}
         for index, x in enumerate(xs)
     ]
+
+
+def _authority_plan() -> dict:
+    task = _task_spec()
+    criteria = canary_setup()["task_success_contract"]["criteria"]
+    contract = seal_rigid_task_success_contract(
+        task_spec=task,
+        site_id="site-a", task_id="task-a",
+        author_source="task_owner", author_id="owner-a",
+        confirmation_status="confirmed", confirmed_by_team_id="team-a",
+        criteria=criteria,
+    )
+    task["task_success_contract"] = contract
+    task["task_success_contract_digest"] = contract["contract_digest"]
+    plan = {
+        "scene_id": "scene-a", "task_id": "task-a",
+        "task_kind": "rigid_pick_place", "robot": {"robot_id": "unitree_g1"},
+        "task_spec": task,
+    }
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+    return plan
+
+
+def test_navigation_authority_binds_team_task_scene_and_exact_goal() -> None:
+    plan = _authority_plan()
+    authority = seal_g1_navigation_goal_authority(
+        plan=plan, confirmed_by_team_id="team-a", human_reviewer="owner-a"
+    )
+    assert validate_g1_navigation_goal_authority(authority, plan=plan) == authority
+    assert authority["obstacle_clearance_scored"] is False
+    assert authority["physical_outcome_claimed"] is False
+    for changed in (
+        {"scope": {**authority["scope"], "site_id": "other-site"}},
+        {"goal": {**authority["goal"], "acceptance_radius_m": 0.5}},
+        {"confirmed_by_team_id": "other-team"},
+    ):
+        tampered = copy.deepcopy(authority)
+        tampered.update(changed)
+        with pytest.raises(ValueError, match="g1_navigation_goal_authority_invalid"):
+            validate_g1_navigation_goal_authority(tampered, plan=plan)
+    plan["task_spec"]["g1_navigation_goal"]["acceptance_radius_m"] = 0.2
+    with pytest.raises(ValueError, match="g1_navigation_goal_authority_invalid"):
+        validate_g1_navigation_goal_authority(authority, plan=plan)
+
+
+def test_navigation_authority_requires_confirmed_team_task_contract() -> None:
+    plan = _authority_plan()
+    plan["task_spec"]["task_success_contract_digest"] = "sha256:" + "0" * 64
+    with pytest.raises(ValueError, match="g1_navigation_goal_authority_invalid"):
+        seal_g1_navigation_goal_authority(
+            plan=plan, confirmed_by_team_id="team-a", human_reviewer="owner-a"
+        )
 
 
 def test_navigation_score_requires_settled_measured_root_at_visible_goal() -> None:
