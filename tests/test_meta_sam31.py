@@ -300,7 +300,8 @@ def test_completed_continuous_video_reuses_cpu_work_and_rejects_tampering(tmp_pa
 def test_failed_encoder_cannot_publish_partial_video(tmp_path, monkeypatch):
     source = tmp_path / "source.mov"
     source.write_bytes(b"source")
-    monkeypatch.setattr(sam, "_probe_video", lambda _: {"streams": [{"time_base": "1/600"}], "frames": [{}, {}]})
+    monkeypatch.setattr(sam, "_probe_video", lambda _: {"streams": [{"time_base": "1/600"}], "frames": [
+        {"best_effort_timestamp_time": "0.0"}, {"best_effort_timestamp_time": "0.033"}]})
     def timeout(argv, **kwargs):
         assert argv[argv.index("-preset") + 1] == "veryfast"
         assert argv[argv.index("-threads") + 1] == "2"
@@ -333,7 +334,7 @@ def test_variable_frame_rate_phone_clip_keeps_source_timestamps(tmp_path):
     assert (registry[0]["width"], registry[0]["height"]) == (48, 64)
     encoded = [float(frame["best_effort_timestamp_time"]) for frame in sam._probe_video(Path(video["path"]))["frames"]]
     assert all(abs((a - encoded[0]) - (b - expected[0])) <= 0.002 for a, b in zip(encoded, expected, strict=True))
-    assert video["encoding"] == "upright_h264_crf18_veryfast_threads2_source_timebase_all_source_frames_v3"
+    assert video["encoding"] == "upright_h264_crf18_maxrate_fit_veryfast_threads2_source_timebase_all_source_frames_v4"
     # A receipt from the earlier encode is still reused rather than re-bought.
     receipt = json.loads((root / "continuous-video.json").read_text())
     receipt["video"]["encoding"] = "upright_h264_crf18_veryfast_threads2_all_source_frames_v2"
@@ -355,7 +356,7 @@ def _oversize_encoder(tmp_path, monkeypatch, oversize_crfs):
     source = tmp_path / "source.mov"
     source.write_bytes(b"source")
     frames = {"streams": [{"width": 1080, "height": 1920, "time_base": "1/600"}],
-              "frames": [{"best_effort_timestamp_time": "0.0"}, {"best_effort_timestamp_time": "0.033"}]}
+              "frames": [{"best_effort_timestamp_time": "0.0"}, {"best_effort_timestamp_time": "15.0"}]}
     monkeypatch.setattr(sam, "_probe_video", lambda _: frames)
     crfs = []
     def encode(argv, **kwargs):
@@ -363,6 +364,8 @@ def _oversize_encoder(tmp_path, monkeypatch, oversize_crfs):
         # the source timestamps; the demuxer timebase and timescale must carry over.
         assert argv[argv.index("-enc_time_base") + 1] == "-1"
         assert argv[argv.index("-video_track_timescale") + 1] == "600"
+        # A 30-second clip is capped at 90% of the 32 MiB bound on the first pass.
+        assert argv[argv.index("-maxrate") + 1] == argv[argv.index("-bufsize") + 1] == str(int(0.9 * 32 * 1024**2 * 8 / 30))
         crf = int(argv[argv.index("-crf") + 1])
         crfs.append(crf)
         size = sam._CONTINUOUS_VIDEO_MAX_BYTES + 1 if crf in oversize_crfs else 1024
@@ -377,7 +380,7 @@ def test_oversized_continuous_video_steps_down_quality_ladder(tmp_path, monkeypa
     root = tmp_path / "output"
     registry, video = sam.prepare_continuous_video(source=source, source_digest=_sha256_file(source), root=root)
     assert crfs == [18, 23]
-    assert video["encoding"] == "upright_h264_crf23_veryfast_threads2_source_timebase_all_source_frames_v3"
+    assert video["encoding"] == "upright_h264_crf23_maxrate_fit_veryfast_threads2_source_timebase_all_source_frames_v4"
     assert [(row["width"], row["height"]) for row in registry] == [(1080, 1920)] * 2
     assert Path(video["path"]).stat().st_size == 1024
     assert sorted(path.name for path in root.glob("*.mp4")) == ["continuous-upright.mp4"]
