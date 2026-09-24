@@ -67,6 +67,9 @@ def run_g1_shared_scene_episode(
 
     environment.reset(seed=seed)
     policy_client.reset(seed=seed)
+    initial_task_sample = dict(read_task_sample())
+    if initial_task_sample.get("step_index") != 0:
+        raise ValueError("g1_shared_scene_initial_task_sample_invalid")
 
     def retain_observation(
         images: Mapping[str, Any], *, kind: str
@@ -169,6 +172,7 @@ def run_g1_shared_scene_episode(
         "candidate_id": candidate_id,
         "task_prompt": task_prompt,
         "seed": seed,
+        "initial_task_sample": initial_task_sample,
         "policy_query_count": len(queries),
         "scene_step_count": len(steps),
         "queries": queries,
@@ -185,3 +189,97 @@ def run_g1_shared_scene_episode(
         raise ValueError("g1_shared_scene_episode_trace_invalid") from exc
     trace["trace_digest"] = canonical_digest(trace, digest_field="trace_digest")
     return trace
+
+
+def run_g1_built_scene_policy_episode(
+    *,
+    built: Any,
+    policy_client: Any,
+    sonic_bridge: Any,
+    candidate_id: str,
+    max_steps: int,
+    output_dir: Path,
+    preflight_inputs: Mapping[str, Any],
+    to_tensor: Callable[[Any], Any],
+    make_action_tensor: Callable[..., Any],
+) -> dict[str, Any]:
+    """Score a G1 box episode from the same native scene and task readback.
+
+    This executes the shared scene but does not attest the running policy
+    server, model loaded in its process, or physical outcome. The existing
+    qualified policy worker must own those gates before promotion.
+    """
+
+    from .adp_task_scoring import score_task_episode_from_spec
+    from .native_g1_joint_episode_environment import NativeG1JointEpisodeEnvironment
+    from .native_g1_run_preflight import preflight_g1_shared_scene_run
+    from .native_task_arena_readback import NativeRigidTaskArenaReadback
+
+    plan = getattr(built, "plan", None)
+    if (
+        not isinstance(plan, Mapping)
+        or (plan.get("robot") or {}).get("robot_id") != "unitree_g1"
+        or plan.get("task_kind") != "rigid_pick_place"
+        or candidate_id not in G1_BOX_CANDIDATES
+    ):
+        raise ValueError("g1_built_scene_policy_configuration_invalid")
+    preflight = preflight_g1_shared_scene_run(**preflight_inputs)
+    if (
+        preflight.get("status") != "staged_inputs_verified"
+        or preflight.get("robot_id") != "unitree_g1"
+        or preflight.get("candidate_id") != candidate_id
+        or preflight.get("scene_plan_digest") != plan.get("plan_digest")
+        or preflight.get("policy_role") != "manipulation"
+    ):
+        raise ValueError("g1_built_scene_policy_preflight_binding_invalid")
+    environment = NativeG1JointEpisodeEnvironment(
+        built=built, to_tensor=to_tensor, make_action_tensor=make_action_tensor
+    )
+    readback = NativeRigidTaskArenaReadback(built)
+
+    def read_task_sample() -> dict[str, Any]:
+        return {
+            **readback.read_task_sample(),
+            "step_index": environment.read_state()["step_index"],
+        }
+
+    trace = run_g1_shared_scene_episode(
+        environment=environment,
+        policy_client=policy_client,
+        sonic_bridge=sonic_bridge,
+        candidate_id=candidate_id,
+        task_prompt=str(plan["task_spec"]["prompt"]),
+        max_steps=max_steps,
+        output_dir=output_dir,
+        read_task_sample=read_task_sample,
+    )
+    output_dir.mkdir(parents=True, exist_ok=True)
+    trace_path = output_dir / "native_g1_shared_scene_episode_trace.v1.json"
+    with trace_path.open("x", encoding="utf-8") as stream:
+        json.dump(trace, stream, indent=2, sort_keys=True, allow_nan=False)
+        stream.write("\n")
+    samples = [trace["initial_task_sample"]]
+    samples.extend(row["task_sample"] for row in trace["steps"])
+    score = score_task_episode_from_spec(task_spec=plan["task_spec"], samples=samples)
+    if not isinstance(score, Mapping) or score.get("status") != "scored":
+        raise ValueError("g1_built_scene_task_score_incomplete")
+    result = {
+        "schema_version": "native_g1_built_scene_policy_episode.v1",
+        "status": "development_only_scored_episode",
+        "scene_plan_digest": plan["plan_digest"],
+        "candidate_id": candidate_id,
+        "preflight_receipt_digest": canonical_digest(preflight),
+        "trace_digest": trace["trace_digest"],
+        "trace_relative_path": trace_path.name,
+        "score": score,
+        "policy_runtime_identity_verified": False,
+        "ranking_eligible": False,
+        "physical_outcome_claimed": False,
+    }
+    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+    with (output_dir / "native_g1_built_scene_policy_episode.v1.json").open(
+        "x", encoding="utf-8"
+    ) as stream:
+        json.dump(result, stream, indent=2, sort_keys=True, allow_nan=False)
+        stream.write("\n")
+    return result
