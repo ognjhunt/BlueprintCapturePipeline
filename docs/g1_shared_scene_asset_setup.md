@@ -40,3 +40,23 @@ attest checkpoint bytes, score the bounded
 task, and seal a review video before either candidate is offered as runnable.
 Movement policies require their own verified action/controller binding; the
 box-manipulation candidates do not prove movement-policy support.
+
+The two box checkpoints are separately pinned in
+`configs/g1_humanoidarena_checkpoint_inventory.v1.json`. A team can stage one
+candidate at a time, then recheck exact bytes without network access:
+
+```bash
+python scripts/fetch_g1_humanoidarena_checkpoint.py \
+  --candidate humanoidarena_dp_g1_dex3_sonic \
+  --output-dir "$CHECKPOINT_ROOT"
+python scripts/fetch_g1_humanoidarena_checkpoint.py \
+  --candidate humanoidarena_dp_g1_dex3_sonic \
+  --output-dir "$CHECKPOINT_ROOT" --verify-only
+```
+
+The other candidate id is `humanoidarena_pi05_g1_dex3_sonic`. The fetcher
+streams each file from ModelScope to a temporary local file and publishes it
+only after the inventory SHA-256 and byte size match. This is checkpoint
+storage proof, not a running or licensed policy. Verify the applicable model
+terms and bind the executing server process to these bytes before admitting
+either candidate to an evaluation run.
