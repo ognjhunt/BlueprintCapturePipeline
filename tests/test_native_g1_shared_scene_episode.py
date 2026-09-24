@@ -42,6 +42,32 @@ class _Scene:
             "sensor_freshness": {"head": self.step, "overview": self.step},
         }
 
+    def read_observation_metadata(self, roles: tuple[str, ...]) -> dict:
+        def calibration(role: str) -> dict:
+            width, height = (640, 480) if role == "head" else (16, 16)
+            return {
+                "camera_model": "pinhole",
+                "intrinsic_matrix": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                "world_from_camera": [
+                    [1.0, 0.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0, 0.0],
+                    [0.0, 0.0, 1.0, 1.0],
+                    [0.0, 0.0, 0.0, 1.0],
+                ],
+                "resolution": [width, height],
+                "near_m": 0.01,
+                "far_m": 20.0,
+            }
+        return {
+            "timestamp_ns": self.step * 20_000_000,
+            "simulation_time_s": self.step / 50.0,
+            "calibrations": {role: calibration(role) for role in roles},
+            "source_devices": {role: "cpu" for role in roles},
+            "synchronizations": {
+                role: {"host_bytes_ready": True, "method": "fixture"} for role in roles
+            },
+        }
+
 
 class _Policy:
     def __init__(self) -> None:
@@ -96,10 +122,17 @@ def test_candidates_use_same_scene_episode_and_retain_each_frame(
     assert [row["task_sample"]["object_z_m"] for row in trace["steps"]] == [1.0, 2.0, 3.0]
     frames = [row["policy_input_frame"] for row in trace["queries"]]
     frames += [frame for row in trace["steps"] for frame in row["review_frames"].values()]
-    assert len(frames) == 8
+    frames += list(trace["terminal_observation"]["views"].values())
+    assert len(frames) == 10
     assert all((tmp_path / frame["relative_path"]).is_file() for frame in frames)
     assert all(frame["png_sha256"].startswith("sha256:") for frame in frames)
     assert trace["trace_digest"].startswith("sha256:")
+    assert trace["visual_evidence"]["status"] == "complete"
+    assert set(trace["visual_evidence"]["videos"]) == {"head", "overview"}
+    assert all(
+        (tmp_path / row["relative_path"]).is_file()
+        for row in trace["visual_evidence"]["videos"].values()
+    )
 
 
 def test_unknown_candidate_never_queries_policy(tmp_path: Path) -> None:

@@ -50,10 +50,12 @@ configured reset joint positions to the Arena articulation's initial state.
 box-manipulation candidate through the same Arena scene. It binds the prompt to
 the scene task, uses the observed head camera and 64-value state for each policy
 query, sends every returned action through the pinned SONIC target bridge, and
-retains lossless input/review PNGs plus a task sample at each step. Its
-result is an unscored development trace. The production worker still needs to
-attest checkpoint bytes, score the bounded
-task, and seal a review video before either candidate is offered as runnable.
+retains calibrated lossless head input and head/overview review PNGs plus a task
+sample at each step. The shared media finalizer seals derived H.264 review
+videos for both cameras, linked to the immutable frame manifest. Its result is
+still an unscored development trace: the production worker must attest the
+executing checkpoint and controller, score the bounded task, and retain a
+terminal episode receipt before either candidate is offered as runnable.
 Movement policies require their own verified action/controller binding; the
 box-manipulation candidates do not prove movement-policy support.
 

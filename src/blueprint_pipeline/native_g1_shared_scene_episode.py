@@ -13,7 +13,10 @@ from pathlib import Path
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
-from .episode_visual_evidence import persist_observation_frame
+from .episode_visual_evidence import (
+    finalize_multicamera_visual_evidence,
+    persist_multicamera_observation,
+)
 
 
 G1_BOX_CANDIDATES = frozenset({
@@ -65,23 +68,33 @@ def run_g1_shared_scene_episode(
     environment.reset(seed=seed)
     policy_client.reset(seed=seed)
 
-    def retain_frame(role: str, image: Any, index: int) -> dict[str, Any]:
-        return persist_observation_frame(
-            image,
+    def retain_observation(
+        images: Mapping[str, Any], *, kind: str
+    ) -> dict[str, Any]:
+        metadata = environment.read_observation_metadata(tuple(images))
+        return persist_multicamera_observation(
+            images,
             output_dir=output_dir,
-            episode_id=f"{candidate_id}-{role}",
-            frame_index=index,
-            kind="policy-input" if role == "head_policy_input" else "review-sample",
+            episode_id=candidate_id,
+            observation_index=len(policy_observations) + len(review_observations),
+            kind=kind,
+            **metadata,
         )
 
     steps: list[dict[str, Any]] = []
     queries: list[dict[str, Any]] = []
+    policy_observations: list[dict[str, Any]] = []
+    review_observations: list[dict[str, Any]] = []
     while len(steps) < max_steps:
         inputs = environment.read_policy_inputs()
         if not isinstance(inputs, Mapping):
             raise ValueError("g1_shared_scene_policy_inputs_invalid")
         query_index = len(queries)
-        policy_frame = dict(retain_frame("head_policy_input", inputs["front_rgb"], len(steps)))
+        policy_observation = retain_observation(
+            {"head": inputs["front_rgb"]}, kind="policy-input"
+        )
+        policy_observations.append(policy_observation)
+        policy_frame = policy_observation["views"]["head"]
         chunk = policy_client.infer_chunk(
             front_rgb=inputs["front_rgb"],
             observation_state=inputs["observation_state"],
@@ -103,6 +116,11 @@ def run_g1_shared_scene_episode(
             targets = sonic_bridge.targets_for_action(action)
             state = environment.step_controller_targets(targets)
             review = environment.read_review_inputs()
+            review_observation = retain_observation(
+                {"head": review["head_rgb"], "overview": review["overview_rgb"]},
+                kind="review-sample",
+            )
+            review_observations.append(review_observation)
             step_index = len(steps) + 1
             row = {
                 "step_index": step_index,
@@ -113,13 +131,36 @@ def run_g1_shared_scene_episode(
                 "robot_state": state,
                 "task_sample": dict(read_task_sample()),
                 "review_frames": {
-                    role: dict(retain_frame(role, review[f"{role}_rgb"], step_index))
+                    role: review_observation["views"][role]
                     for role in ("head", "overview")
                 },
                 "review_sensor_freshness": review["sensor_freshness"],
             }
             steps.append(row)
 
+    terminal_inputs = environment.read_review_inputs()
+    terminal = retain_observation(
+        {
+            "head": terminal_inputs["head_rgb"],
+            "overview": terminal_inputs["overview_rgb"],
+        },
+        kind="terminal-observation",
+    )
+    visual, artifacts = finalize_multicamera_visual_evidence(
+        output_dir=output_dir,
+        episode_id=candidate_id,
+        identity={
+            "scene_plan_digest": plan_digest,
+            "candidate_id": candidate_id,
+            "seed": seed,
+            "claim_ceiling": "simulator_only_unscored",
+        },
+        policy_input_observations=policy_observations,
+        review_observations=review_observations,
+        terminal_observation=terminal,
+        required_camera_ids=("head", "overview"),
+        review_only_camera_ids=("overview",),
+    )
     trace = {
         "schema_version": "native_g1_shared_scene_episode_trace.v1",
         "status": "development_trace_recorded",
@@ -132,6 +173,11 @@ def run_g1_shared_scene_episode(
         "scene_step_count": len(steps),
         "queries": queries,
         "steps": steps,
+        "policy_input_observations": policy_observations,
+        "review_observations": review_observations,
+        "terminal_observation": terminal,
+        "visual_evidence": visual,
+        "media_artifacts": artifacts,
     }
     try:
         trace = json.loads(json.dumps(trace, allow_nan=False))
