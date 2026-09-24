@@ -136,18 +136,32 @@ def prestage_before_first_stage(result, request):
                 "excluded_directory_names": sorted(EXCLUDED_PARTS)})
             provider = _sealed(json.loads(read("task_evaluation_scene_configuration_provider_result.v1.json")),
                                "result_digest")
+            blockers = provider.get("blockers") or []
+            runtime_setup_failure = blockers == ["scene_configuration_provider_python_runtime_invalid"]
+            early_runtime_identity = (runtime_setup_failure
+                and set(provider) == {"schema_version", "status", "blockers", "first_stage_started",
+                                      "evaluation_episode_executed", "candidate_policy_queried",
+                                      "provider_zero_required_after_return", "result_digest"}
+                and provider.get("provider_zero_required_after_return") is True)
             _require(provider.get("status") == "blocked" and provider.get("first_stage_started") is False
                      and provider.get("evaluation_episode_executed") is False
                      and provider.get("candidate_policy_queried") is False
-                     and provider.get("run_id") == result.get("run_id") == request["run_id"]
-                     and provider.get("source_commit") == result.get("source_commit")
-                     == request["expected_production_commit"])
-            blockers = provider.get("blockers") or []
+                     and result.get("run_id") == request["run_id"]
+                     and result.get("source_commit") == request["expected_production_commit"]
+                     and (early_runtime_identity or
+                          (provider.get("run_id") == result["run_id"]
+                           and provider.get("source_commit") == result["source_commit"])))
             from .core.common import redacted_failure_text
             detail = " ".join(redacted_failure_text(blockers[0]).split()) if len(blockers) == 1 else ""
             if len(detail) > 300:
                 detail = detail[:297] + "..."
-            _require(len(blockers) == 1 and blockers[0].startswith("scene_configuration_provider_failed:")
+            if runtime_setup_failure:
+                _require(read("provider_python_runtime_setup.log") in {
+                    b"BLUEPRINT_SCENE_CONFIGURATION_BLOCKED:scene_configuration_python_import_preflight_failed\n",
+                    b"BLUEPRINT_SCENE_CONFIGURATION_BLOCKED:scene_configuration_python_import_preflight_timed_out\n",
+                })
+            _require(len(blockers) == 1
+                     and (runtime_setup_failure or blockers[0].startswith("scene_configuration_provider_failed:"))
                      and "provider_result_blocker:" + detail in result.get("blockers", []))
         return True
     except (OSError, ValueError, KeyError, TypeError, AttributeError, zipfile.BadZipFile):
