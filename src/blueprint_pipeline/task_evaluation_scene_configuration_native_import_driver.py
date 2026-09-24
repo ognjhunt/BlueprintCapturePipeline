@@ -10,6 +10,7 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from .articulation_graph_contract import ArticulationGraphContractError, validate_articulation_graph
 from .decision_evidence_contracts import canonical_digest, canonical_json
 from .measurement_isaac_physx_rigid_adapter import (
     ISAAC_VERSION,
@@ -140,10 +141,53 @@ def _live_pose(omni_physx: Any, prim_path: str) -> tuple[list[float], list[float
 
 #: A passive drawer may creep a little under gravity while its slide friction
 #: settles; more than this at the closed reset is a start state a policy would
-#: begin from without the part actually being shut.
+#: begin from without the part actually being shut. A hinged part uses its own
+#: graph reset tolerance (radians), declared by the qualified receipt.
 TASK_JOINT_RESET_TOLERANCE = 0.005
-_ARTICULATED_LINKS = frozenset({"carcass", "drawer_0", "drawer_1", "drawer_2"})
+_TASK_JOINT_TYPES = frozenset({"prismatic", "revolute"})
 _IMPORTED_ROOT = "/World/Placement/Replacement"
+
+
+def _receipt_mechanism(receipt: Mapping[str, Any]) -> dict[str, Any]:
+    """The one mechanism the static receipt admitted, in the family's own units.
+
+    Links, root, task joint type, USD axis token and reset tolerance all come
+    from the qualified graph, so a drawer cabinet (carcass, prismatic, metres)
+    and a hinged appliance (body, revolute, radians) import through one path.
+    """
+    try:
+        graph = validate_articulation_graph(receipt["articulation_graph"])
+        links = set(receipt["observed_structure"]["links"])
+        declared = receipt["task_joint"]
+    except (KeyError, TypeError, ArticulationGraphContractError) as exc:
+        raise RuntimeError("scene_configuration_native_import_mechanism_invalid") from exc
+    roots = [row["link_id"] for row in graph["links"] if row["is_root"]]
+    targets = [row for row in graph["joints"] if row["role"] == "target"]
+    target = targets[0] if len(targets) == 1 else {}
+    axis = [float(value) for value in target.get("axis") or [0.0, 0.0, 0.0]]
+    index = max(range(3), key=lambda i: abs(axis[i]))
+    if (len(roots) != 1 or len(targets) != 1 or len(links) < 2
+            or links != {row["link_id"] for row in graph["links"]}
+            or target["joint_type"] not in _TASK_JOINT_TYPES
+            or target["parent_link_id"] != roots[0]
+            or declared.get("joint_id") != target["joint_id"]
+            or declared.get("joint_type") != target["joint_type"]
+            or any(row["joint_type"] != "fixed" or row["parent_link_id"] != roots[0]
+                   for row in graph["joints"] if row["role"] != "target")
+            or not math.isclose(abs(axis[index]), 1.0, abs_tol=1e-6)
+            or any(abs(axis[i]) > 1e-6 for i in range(3) if i != index)):
+        raise RuntimeError("scene_configuration_native_import_mechanism_invalid")
+    return {
+        "links": frozenset(links),
+        "root_link_id": roots[0],
+        "task_joint_type": target["joint_type"],
+        "task_child_link_id": target["child_link_id"],
+        # Joint frames rotate only by 180 degrees about X, so the USD token is
+        # the axis-aligned direction of the graph axis.
+        "task_joint_usd_axis": "XYZ"[index],
+        "fixed_joint_count": len(graph["joints"]) - 1,
+        "reset_tolerance": float(target["reset_tolerance"]),
+    }
 
 
 def _imported_path(asset_path: str) -> str:
@@ -168,18 +212,18 @@ def _articulated_structure_observation(
 
     expected = static_receipt["observed_structure"]
     expected_links = expected["links"]
-    if set(expected_links) != _ARTICULATED_LINKS:
-        raise RuntimeError("scene_configuration_native_import_link_set_invalid")
+    mechanism = _receipt_mechanism(static_receipt)
+    link_ids = mechanism["links"]
     prims = list(stage.Traverse())
     roots = [str(prim.GetPath()) for prim in prims if prim.HasAPI(usd_physics.ArticulationRootAPI)]
     bodies = [prim for prim in prims if prim.HasAPI(usd_physics.RigidBodyAPI)]
     actual_links = {prim.GetName(): prim for prim in bodies}
-    if roots != [_IMPORTED_ROOT] or set(actual_links) != _ARTICULATED_LINKS or len(bodies) != 4:
+    if roots != [_IMPORTED_ROOT] or set(actual_links) != link_ids or len(bodies) != len(link_ids):
         raise RuntimeError("scene_configuration_native_import_link_set_invalid")
     collisions = [prim for prim in prims if prim.HasAPI(usd_physics.CollisionAPI)]
     collision_paths = {str(prim.GetPath()) for prim in collisions}
     link_readback: dict[str, Any] = {}
-    for link_id in sorted(_ARTICULATED_LINKS):
+    for link_id in sorted(link_ids):
         prim = actual_links[link_id]
         expected_link = expected_links[link_id]
         path = str(prim.GetPath())
@@ -216,31 +260,37 @@ def _articulated_structure_observation(
         }
     joints = [prim for prim in prims if prim.IsA(usd_physics.Joint)]
     expected_joint_paths = sorted(_imported_path(path) for path in expected["joint_prim_paths"])
-    if sorted(str(prim.GetPath()) for prim in joints) != expected_joint_paths or len(joints) != 3:
+    if (sorted(str(prim.GetPath()) for prim in joints) != expected_joint_paths
+            or len(joints) != mechanism["fixed_joint_count"] + 1):
         raise RuntimeError("scene_configuration_native_import_joint_set_invalid")
     task = _articulated_joint_observation(stage=stage, usd_physics=usd_physics, root_path=_IMPORTED_ROOT)
     declared_task = static_receipt["task_joint"]
     task_path = task["task_joint_prim_path"]
-    if (task["task_joint_type"] != "prismatic"
+    # Limits read back in SI: metres for a slide, radians for a hinge.
+    if (task["task_joint_type"] != mechanism["task_joint_type"]
             or task_path != _imported_path(declared_task["prim_path"])
             or task["task_joint_name"] != declared_task["joint_id"]
             or any(not math.isclose(a, b, rel_tol=1e-5, abs_tol=1e-7) for a, b in zip(
                 task["task_joint_limits"], _finite_vector(declared_task["limits"], 2), strict=True))
             or not math.isclose(task["task_joint_reset_position"], float(declared_task["reset_position"]), abs_tol=1e-7)
-            or len(task["fixed_joint_prim_paths"]) != 2):
+            or len(task["fixed_joint_prim_paths"]) != mechanism["fixed_joint_count"]):
         raise RuntimeError("scene_configuration_native_import_task_joint_mismatch")
     task_prim = stage.GetPrimAtPath(task_path)
-    axis = str(usd_physics.PrismaticJoint(task_prim).GetAxisAttr().Get())
+    typed_joint = (usd_physics.RevoluteJoint if mechanism["task_joint_type"] == "revolute"
+                   else usd_physics.PrismaticJoint)
+    axis = str(typed_joint(task_prim).GetAxisAttr().Get())
     graph_target = next(row for row in static_receipt["articulation_graph"]["joints"] if row["role"] == "target")
     graph_axis = _finite_vector(graph_target["axis"], 3)
     authored_axis = task_prim.GetCustomDataByKey("blueprint:graphAxis")
-    if axis != "X" or authored_axis is None or any(not math.isclose(float(authored_axis[i]), graph_axis[i], abs_tol=1e-6) for i in range(3)):
+    if (axis != mechanism["task_joint_usd_axis"] or authored_axis is None
+            or any(not math.isclose(float(authored_axis[i]), graph_axis[i], abs_tol=1e-6) for i in range(3))):
         raise RuntimeError("scene_configuration_native_import_task_axis_mismatch")
-    if graph_target["child_link_id"] not in _ARTICULATED_LINKS:
+    if graph_target["child_link_id"] not in link_ids:
         raise RuntimeError("scene_configuration_native_import_task_joint_body_invalid")
     moving_link_path = link_readback[graph_target["child_link_id"]]["prim_path"]
+    root_link_path = link_readback[mechanism["root_link_id"]]["prim_path"]
     task_joint = usd_physics.Joint(task_prim)
-    if ([str(path) for path in task_joint.GetBody0Rel().GetTargets()] != [link_readback["carcass"]["prim_path"]]
+    if ([str(path) for path in task_joint.GetBody0Rel().GetTargets()] != [root_link_path]
             or [str(path) for path in task_joint.GetBody1Rel().GetTargets()] != [moving_link_path]):
         raise RuntimeError("scene_configuration_native_import_task_joint_body_invalid")
     for row in static_receipt["articulation_graph"]["joints"]:
@@ -267,7 +317,7 @@ def _articulated_structure_observation(
         "task_joint": task,
         "link_physics_readback": link_readback,
         "handle_prim_paths": handle_paths,
-        "settle_measured_body_prim_path": link_readback["carcass"]["prim_path"],
+        "settle_measured_body_prim_path": root_link_path,
     }
 
 
@@ -299,6 +349,12 @@ def _validated_articulated_static_receipt(
         raise TaskEvaluationSceneConfigurationNativeImportDriverError(
             "scene_configuration_native_import_static_receipt_invalid"
         )
+    try:
+        _receipt_mechanism(receipt)
+    except RuntimeError as exc:
+        raise TaskEvaluationSceneConfigurationNativeImportDriverError(
+            "scene_configuration_native_import_static_receipt_invalid"
+        ) from exc
     return dict(receipt)
 
 
@@ -342,13 +398,20 @@ def _articulated_repeat_matches_static(
                 or joint["task_joint_reset_position"] != task["reset_position"]
                 or any(not math.isclose(float(a), float(b), rel_tol=1e-5, abs_tol=1e-7)
                        for a, b in zip(joint["task_joint_limits"], task["limits"], strict=True))
-                or len(expected_fixed_paths) != 2
+                or len(expected_fixed_paths) != _receipt_mechanism(receipt)["fixed_joint_count"]
                 or sorted(joint["fixed_joint_prim_paths"]) != expected_fixed_paths
                 or sorted(row["fixed_joint_prim_paths"]) != expected_fixed_paths):
             return False
         return True
     except (KeyError, TypeError, ValueError, RuntimeError, OverflowError):
         return False
+
+
+def _reset_tolerance(receipt: Mapping[str, Any]) -> float:
+    """Metres for a slide (unchanged), the graph's radians for a hinge."""
+    mechanism = _receipt_mechanism(receipt)
+    return (TASK_JOINT_RESET_TOLERANCE if mechanism["task_joint_type"] == "prismatic"
+            else mechanism["reset_tolerance"])
 
 
 def _live_joint_position(articulation: Any, joint_name: str) -> float:
@@ -621,14 +684,15 @@ def _one_native_settle(
         "orientation_xyzw": [round(value, 7) for value in final_rotation],
     }
     if articulated:
+        assert static_receipt is not None
+        tolerance = _reset_tolerance(static_receipt)
+        # The key keeps its historical name; a revolute coordinate is radians.
         state["task_joint_position_m"] = round(float(observed_joint), 7)
         joint_observation["initial_task_joint_position"] = initial_joint
         joint_observation["settled_task_joint_position"] = observed_joint
         joint_observation["task_joint_returned_to_reset"] = (
-            abs(float(initial_joint) - joint_observation["task_joint_reset_position"])
-            <= TASK_JOINT_RESET_TOLERANCE
-            and abs(float(observed_joint) - joint_observation["task_joint_reset_position"])
-            <= TASK_JOINT_RESET_TOLERANCE
+            abs(float(initial_joint) - joint_observation["task_joint_reset_position"]) <= tolerance
+            and abs(float(observed_joint) - joint_observation["task_joint_reset_position"]) <= tolerance
         )
     return {
         "asset_imported": True,
@@ -798,24 +862,31 @@ def execute_native_import_component(
                 for link_id, row in expected_links.items()
             }
             expected_task = static_receipt["task_joint"]
+            mechanism = _receipt_mechanism(static_receipt)
+            tolerance = _reset_tolerance(static_receipt)
             expected_handle = sorted(
                 _imported_path(path)
                 for path in static_receipt["task_contact"]["handle_prim_paths"]
             )
             joints = [row.get("task_joint") for row in repeats]
+            links = mechanism["links"]
             structure_ok = (
-                set(expected_links) == _ARTICULATED_LINKS
+                set(expected_links) == links
                 and all(set(row.get("rigid_body_paths") or []) == set(expected_paths.values()) for row in repeats)
                 and all(row.get("articulation_root_paths") == [_IMPORTED_ROOT] for row in repeats)
-                and all(row.get("settle_measured_body_prim_path") == expected_paths["carcass"] for row in repeats)
+                and all(row.get("settle_measured_body_prim_path") == expected_paths[mechanism["root_link_id"]]
+                        for row in repeats)
                 and all(row.get("handle_prim_paths") == expected_handle for row in repeats)
-                and all(len(row.get("fixed_joint_prim_paths") or []) == 2 for row in repeats)
-                and all(set((row.get("link_physics_readback") or {})) == _ARTICULATED_LINKS for row in repeats)
+                and all(len(row.get("fixed_joint_prim_paths") or []) == mechanism["fixed_joint_count"]
+                        for row in repeats)
+                and all(set((row.get("link_physics_readback") or {})) == links for row in repeats)
                 and all(_articulated_repeat_matches_static(row, static_receipt) for row in repeats)
                 and all(isinstance(joint, Mapping) for joint in joints)
                 and all((joint or {}).get("task_joint_prim_path") == _imported_path(expected_task["prim_path"]) for joint in joints)
-                and all((joint or {}).get("task_joint_type") == "prismatic" for joint in joints)
-                and all((joint or {}).get("task_joint_axis") == "X" for joint in joints)
+                and all((joint or {}).get("task_joint_type") == mechanism["task_joint_type"] for joint in joints)
+                and all((joint or {}).get("task_joint_axis") == mechanism["task_joint_usd_axis"] for joint in joints)
+                and all((joint or {}).get("moving_link_prim_path")
+                        == expected_paths[mechanism["task_child_link_id"]] for joint in joints)
                 and all(
                     (joint or {}).get("task_joint_drive_forbidden_verified") is True
                     for joint in joints
@@ -832,9 +903,9 @@ def execute_native_import_component(
                     and not isinstance((joint or {}).get("settled_task_joint_position"), bool)
                     and math.isfinite(float((joint or {}).get("settled_task_joint_position")))
                     and abs(float((joint or {}).get("settled_task_joint_position")) - float(expected_task["reset_position"]))
-                    <= TASK_JOINT_RESET_TOLERANCE
+                    <= tolerance
                     and abs(float((joint or {}).get("initial_task_joint_position")) - float(expected_task["reset_position"]))
-                    <= TASK_JOINT_RESET_TOLERANCE
+                    <= tolerance
                     for joint in joints
                 )
                 and all(
@@ -928,6 +999,8 @@ def execute_native_import_component(
                 task_joint_closed_at_reset_verified=True,
                 task_joint_travel_is_measured=False,
             )
+            if joint.get("task_joint_type") == "revolute":
+                runtime_result["task_joint_coordinate_units"] = "rad"
         runtime_result["result_digest"] = canonical_digest(
             runtime_result, digest_field="result_digest"
         )

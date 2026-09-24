@@ -145,6 +145,8 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
             derived_mechanism = {**derived_mechanism,
                 "estimated_usable_stroke_m": stage_three["mechanism"]["estimated_usable_stroke_m"],
                 "travel_authority": stage_three["mechanism"]["travel_authority"]}
+        if stage_three.get("hinge_edge") is not None:
+            derived_mechanism = {**derived_mechanism, "hinge_edge": stage_three["hinge_edge"]}
         template, success, execution = records.articulated_open_close_task_records(
             task_identity=task_identity, object_identity=construction["subject_identity"],
             start_center=[(a + b) / 2 for a, b in zip(lower, upper, strict=True)],

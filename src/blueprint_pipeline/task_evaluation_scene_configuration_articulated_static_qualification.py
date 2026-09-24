@@ -30,6 +30,7 @@ from .task_evaluation_scene_configuration_static_qualification import (
 )
 from .task_evaluation_scene_configuration_submission_records import ARTICULATED_STATIC_CHECKS
 from .task_object_articulated_packaging import (
+    CAVITY_COLLISION_WALL_BOXES,
     GENERATED_PROVENANCE,
     HANDLE_ROLE,
     HANDLE_PROTRUSION_M,
@@ -37,6 +38,8 @@ from .task_object_articulated_packaging import (
     PROVENANCE_ATTRIBUTE,
     REQUIRED_PARTS_ATTRIBUTE,
     TASK_CONTACT_ROLE_ATTRIBUTE,
+    box_collision_piece,
+    collision_cavity_findings,
     interior_cavity_findings,
     required_part_findings,
 )
@@ -55,6 +58,25 @@ def _close_authored_float32_sequence(expected: Any, observed: Any) -> bool:
     except (OverflowError, ValueError, TypeError, struct.error):
         return False
     return all(math.isfinite(value) for value in rounded) and _close_sequence(rounded, observed)
+
+
+def _collision_piece(collider: Any, link: Any, xform_cache: Any, *, UsdGeom: Any, UsdPhysics: Any) -> dict[str, Any]:
+    """One collider as link-frame triangles tagged with the approximation PhysX will use."""
+    from pxr import Gf
+    to_link = xform_cache.GetLocalToWorldTransform(collider) * xform_cache.GetLocalToWorldTransform(link).GetInverse()
+    if collider.IsA(UsdGeom.Cube):
+        half = float(UsdGeom.Cube(collider).GetSizeAttr().Get()) / 2
+        box = box_collision_piece([0.0, 0.0, 0.0], [2 * half] * 3)
+        return {**box, "vertices": [list(to_link.Transform(Gf.Vec3d(*point))) for point in box["vertices"]]}
+    if collider.IsA(UsdGeom.Mesh):
+        approximation = (UsdPhysics.MeshCollisionAPI(collider).GetApproximationAttr().Get()
+                         if collider.HasAPI(UsdPhysics.MeshCollisionAPI) else None)
+        points = UsdGeom.Mesh(collider).GetPointsAttr().Get() or []
+        indices = list(UsdGeom.Mesh(collider).GetFaceVertexIndicesAttr().Get() or [])
+        return {"approximation": str(approximation or "none"),
+                "vertices": [list(to_link.Transform(Gf.Vec3d(*[float(c) for c in point]))) for point in points],
+                "faces": indices if len(indices) % 3 == 0 else []}
+    return {"approximation": "analytic_" + str(collider.GetTypeName()), "vertices": [], "faces": []}
 
 
 def _bounds_valid(value: Any) -> bool:
@@ -456,7 +478,23 @@ def _usd_findings(path: Path, *, graph: Mapping[str, Any], physics_bounds: Mappi
     if not isinstance(cavities, list) or not cavities:
         findings.append("replacement_body_interior_cavity_unplanned")
         cavities = []
+    cavity_collision_policy = plan.get("cavity_collision_approximation")
+    cavity_collision: dict[str, Any] = {}
+    if cavity_collision_policy not in {None, CAVITY_COLLISION_WALL_BOXES}:
+        findings.append("replacement_body_cavity_collision_policy_unsupported")
     for link_id in sorted({str(row.get("link_id")) for row in cavities if isinstance(row, Mapping)}):
+        if cavity_collision_policy is not None:
+            # The declared approximation, not the render mesh, is what PhysX collides with.
+            link_prim = body_by_path.get("/Asset/links/" + link_id)
+            own = [c for c in collision_prims
+                   if link_prim is not None and str(c.GetPath()).startswith(str(link_prim.GetPath()) + "/")]
+            pieces = [_collision_piece(c, link_prim, xform_cache, UsdGeom=UsdGeom, UsdPhysics=UsdPhysics)
+                      for c in own]
+            findings.extend("replacement_" + code for code in collision_cavity_findings(
+                pieces, [row for row in cavities if row.get("link_id") == link_id]))
+            cavity_collision[link_id] = {"collider_prim_paths": sorted(str(c.GetPath()) for c in own),
+                                         "approximations": sorted({p["approximation"] for p in pieces})}
+            continue
         shape = stage.GetPrimAtPath(f"/Asset/links/{link_id}/collision/FinalVisualShape")
         points = UsdGeom.Mesh(shape).GetPointsAttr().Get() if shape and shape.IsA(UsdGeom.Mesh) else None
         indices = UsdGeom.Mesh(shape).GetFaceVertexIndicesAttr().Get() if points is not None else None
@@ -490,6 +528,9 @@ def _usd_findings(path: Path, *, graph: Mapping[str, Any], physics_bounds: Mappi
         "dependency_layer_count": len(layers), "external_asset_count": len(unpinned),
         "embedded_package_asset_count": len(external_assets) - len(unpinned),
         "unresolved_dependency_count": len(unresolved),
+        **({"body_cavity_collision": {"approximation": cavity_collision_policy, "links": cavity_collision,
+                                      "cavity_preserved_on_collision_geometry": True}}
+           if cavity_collision_policy is not None else {}),
     }
 
 
