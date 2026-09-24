@@ -140,7 +140,7 @@ def test_visual_world_survives_deferred_support_and_full_masks_are_required_befo
         calls.append("geometry")
         assert kw["task_masks"] == full_masks
         raise ValueError("geometry_pending")
-    monkeypatch.setattr("blueprint_pipeline.website_task_masks.run_website_task_masks", resolve)
+    monkeypatch.setattr("blueprint_pipeline.website_task_masks.complete_retained_static_task_masks", resolve)
     monkeypatch.setattr("blueprint_pipeline.website_scene_geometry.run_website_scene_geometry", geometry)
     result = handoff.prepare_website_scene_handoff(**kwargs)
     assert result["visual_reconstruction_ready"] is True and result["simulator_ready"] is False

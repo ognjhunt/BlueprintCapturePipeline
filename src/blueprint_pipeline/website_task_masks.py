@@ -594,6 +594,166 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
     return manifest
 
 
+def complete_retained_static_task_masks(*, plan: Mapping[str, Any],
+                                        source_geometry: Mapping[str, Any],
+                                        task_masks: Mapping[str, Any],
+                                        output_root: Path, view_plan_root: Path) -> dict[str, Any]:
+    """Select kept objects from the first, paid SAM response without a provider call.
+
+    The view-first clip already includes the kept-object prompts. Its tracks were
+    deferred for object removal, not absent from the provider response. A missing
+    or ambiguous retained observation is a preparation refusal, never a reason
+    to purchase another clip implicitly.
+    """
+    deferred = task_masks.get("deferred_target_ids")
+    targets = [target for target in plan.get("targets", [])
+               if target.get("task_effect") in {"manipulated", "static_contact", "static_obstacle"}]
+    if (task_masks.get("status") != "object_removal_ready" or not isinstance(deferred, list) or not deferred
+            or len(set(deferred)) != len(deferred)
+            or task_masks.get("digest") != canonical_digest(task_masks, digest_field="digest")
+            or source_geometry.get("digest") != canonical_digest(source_geometry, digest_field="digest")
+            or task_masks.get("source_video_digest") != source_geometry.get("binding", {}).get("source_video_digest")):
+        raise ValueError("website_retained_static_masks_binding_invalid")
+    binding = task_masks["binding"]
+    if (binding.get("source_frames_digest") != source_geometry["digest"]
+            or binding.get("geometry_input_digest") != source_geometry.get("geometry_input_digest")
+            or binding.get("task_context_sha256") != plan.get("task_context_sha256")
+            or binding.get("task_targets") != targets
+            or binding.get("mask_input_pixels") not in {
+                "selected_original_views_v1", "continuous_source_video_v1"}
+            or {row["target_id"] for row in targets if row.get("disposition") == "keep"
+                and row.get("task_effect") != "manipulated"} != set(deferred)
+            or {row["target_id"] for row in task_masks.get("targets", [])} !=
+                {row["target_id"] for row in targets} - set(deferred)):
+        raise ValueError("website_retained_static_masks_binding_invalid")
+    request_key = canonical_digest(binding)
+    root = output_root.resolve() / request_key[7:23]
+    first_manifest = root / "task_masks.object_removal.json"
+    if not first_manifest.is_file() or json.loads(first_manifest.read_text()) != task_masks:
+        raise ValueError("website_retained_static_masks_manifest_changed")
+    if binding["mask_input_pixels"] == "selected_original_views_v1":
+        plans = list(view_plan_root.glob("*/view_plan.json"))
+        matching = [row for path in plans if (row := json.loads(path.read_text())).get("digest") ==
+                    binding.get("view_plan_digest")]
+        if len(matching) != 1:
+            raise ValueError("website_retained_static_view_plan_missing")
+        view_plan = matching[0]
+        video = view_plan.get("video") or {}
+        registry = view_plan.get("sparse_registry")
+        video_root = view_plan_root
+        if (view_plan.get("digest") != canonical_digest(view_plan, digest_field="digest")
+                or view_plan.get("binding", {}).get("source_geometry_digest") != source_geometry["digest"]
+                or view_plan.get("binding", {}).get("task_context_sha256") != plan.get("task_context_sha256")
+                or view_plan.get("binding", {}).get("source_video_digest") != task_masks["source_video_digest"]
+                or task_masks.get("source_frame_registry") != view_plan.get("source_frame_registry")):
+            raise ValueError("website_retained_static_view_plan_changed")
+        input_digest = view_plan["digest"]
+    else:
+        receipt_path = root / "continuous-video.json"
+        if not receipt_path.is_file() or binding.get("view_plan_digest") is not None:
+            raise ValueError("website_retained_static_video_receipt_missing")
+        receipt = json.loads(receipt_path.read_text())
+        video = receipt.get("video") or {}
+        registry = receipt.get("registry")
+        video_root = root
+        if (receipt.get("digest") != canonical_digest(receipt, digest_field="digest")
+                or registry != task_masks.get("source_frame_registry")):
+            raise ValueError("website_retained_static_video_receipt_changed")
+        input_digest = receipt["digest"]
+    if (not isinstance(registry, list) or not registry
+            or not isinstance(video.get("path"), str)
+            or not Path(video["path"]).resolve().is_relative_to(video_root.resolve())
+            or video.get("source_video_digest") != task_masks["source_video_digest"]
+            or _sha256_file(Path(video["path"])) != video.get("sha256")):
+        raise ValueError("website_retained_static_video_changed")
+    candidates = list(root.glob("*/tracks.json"))
+    if len(candidates) != 1:
+        raise ValueError("website_retained_static_provider_result_missing")
+    result_path = candidates[0]
+    paid_root = result_path.parent
+    request_binding = json.loads((paid_root / "binding.json").read_text())
+    result = json.loads(result_path.read_text())
+    provider_digest = canonical_digest(request_binding)
+    if (result.get("schema_version") != "website_meta_sam31_tracks.v1"
+            or result.get("status") != "completed" or result.get("binding_digest") != provider_digest
+            or paid_root.name != provider_digest[7:]
+            or request_binding.get("profile") != META_PROFILE or result.get("profile") != META_PROFILE
+            or binding.get("profile_digest") != canonical_digest(META_PROFILE)
+            or request_binding.get("frame_registry") != registry
+            or request_binding.get("frame_artifacts") != []
+            or request_binding.get("continuous_video") !=
+                {key: video[key] for key in ("sha256", "source_video_digest", "encoding")}
+            or request_binding.get("video_transport") != "meta_files_v1"):
+        raise ValueError("website_retained_static_provider_binding_changed")
+    prompts = request_binding.get("prompts") or []
+    receipts = result.get("responses") or []
+    if len(prompts) != len(receipts) or not prompts:
+        raise ValueError("website_retained_static_provider_receipts_invalid")
+    verified_tracks = []
+    for index, receipt in enumerate(receipts):
+        response_path = paid_root / f"response-{index}.json"
+        parsed_path = paid_root / f"parsed-response-{index}.json"
+        if (Path(receipt.get("path", "")).resolve() != response_path.resolve()
+                or receipt.get("sha256") != _sha256_file(response_path)):
+            raise ValueError("website_retained_static_provider_receipts_invalid")
+        response = json.loads(response_path.read_text())
+        parsed = json.loads(parsed_path.read_text())
+        if (response.get("binding_digest") != provider_digest or response.get("clip_digest") != video["sha256"]
+                or response.get("response", {}).get("status") != "completed"
+                or parsed.get("digest") != canonical_digest(parsed, digest_field="digest")
+                or parsed.get("binding") != {"response_digest": receipt["sha256"],
+                    "request_digest": provider_digest, "parser_revision": 1, "profile": META_PROFILE}
+                or any(row.get("label") != prompts[index].get("output_label")
+                       for row in parsed.get("tracks", []))):
+            raise ValueError("website_retained_static_provider_receipts_invalid")
+        verified_tracks.extend(parsed.get("tracks") or [])
+    if verified_tracks != result.get("tracks"):
+        raise ValueError("website_retained_static_provider_tracks_changed")
+    selected = list(task_masks["targets"])
+    selected_ids = {row["source_track"]["track_id"] for row in selected}
+    frames = [{"frame_id": row["source_frame_id"], "timestamp_seconds": row["decoded_pts_seconds"]}
+              for row in registry]
+    geometry_ids = {frame["frame_id"] for frame in source_geometry["frames"]}
+    for target in targets:
+        if target["target_id"] not in deferred:
+            continue
+        text = (target.get("segmentation_prompt") or target["semantic_label"]).strip().casefold()
+        matching_prompts = [row for row in prompts if row.get("text", "").strip().casefold() == text]
+        if len(matching_prompts) != 1:
+            raise ValueError(f"website_retained_static_prompt_missing:{target['target_id']}")
+        label = matching_prompts[0]["output_label"]
+        identity = select_task_track(target=target,
+            tracks=[{**track, "label": target["target_id"]} for track in verified_tracks
+                    if track.get("label") == label], frames=frames)
+        if identity["track_id"] in selected_ids:
+            raise ValueError("website_task_targets_resolve_to_same_instance")
+        selected_ids.add(identity["track_id"])
+        sampled = {**identity, "observations": [row for row in identity["observations"]
+                     if row["source_frame_id"] in geometry_ids]}
+        if not sampled["observations"]:
+            raise ValueError(f"website_retained_static_geometry_observation_missing:{target['target_id']}")
+        selected.append({"target_id": target["target_id"], "target_role": target.get("target_role"),
+            "semantic_label": target["semantic_label"], "task_effect": target["task_effect"],
+            "segmentation_prompt": matching_prompts[0]["text"],
+            "placement_relation": target.get("placement_relation"),
+            "articulated_part": target.get("articulated_part") or "",
+            "articulation_kind": target.get("articulation_kind") or "",
+            "disposition": target["disposition"], "source_track": identity,
+            "track": track_at_geometry_resolution(sampled, source_geometry["frames"]),
+            "estimated_visible_bounds": None})
+    complete = {**task_masks, "status": "completed", "targets": selected,
+        "retained_static_source": {"provider_binding_digest": provider_digest,
+                                   "provider_result_digest": _sha256_file(result_path),
+                                   "retained_video_receipt_digest": input_digest}}
+    complete.pop("deferred_target_ids")
+    complete["digest"] = canonical_digest(complete, digest_field="digest")
+    completed_path = root / "task_masks.json"
+    if completed_path.is_file() and json.loads(completed_path.read_text()) != complete:
+        raise ValueError("website_retained_static_masks_manifest_changed")
+    write_json(completed_path, complete)
+    return complete
+
+
 def bind_task_masks_to_geometry(*, task_masks: Mapping[str, Any], source_geometry: Mapping[str, Any]) -> dict[str, Any]:
     """Lift the retained selected tracks after reconstruction; never call SAM again."""
     if task_masks.get("deferred_target_ids"):
