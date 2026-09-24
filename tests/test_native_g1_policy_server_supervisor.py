@@ -33,6 +33,30 @@ def test_source_revision_requires_clean_pinned_checkout(tmp_path: Path, monkeypa
         supervisor._source_revision(source)
 
 
+def test_source_revision_accepts_official_monorepo_layout(tmp_path: Path, monkeypatch) -> None:
+    root = tmp_path / "HumanoidArena"
+    server = root / "lerobot/scripts/serve_lerobot_vla_http.py"
+    sonic = root / "isaaclab_twist2_g1/action_provider/action_provider_sonic.py"
+    server.parent.mkdir(parents=True)
+    sonic.parent.mkdir(parents=True)
+    (root / "lerobot/src").mkdir()
+    server.write_text("server")
+    sonic.write_text("sonic")
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+    subprocess.run([
+        "git", "-C", str(root), "-c", "user.name=Test", "-c", "user.email=test@example.com",
+        "commit", "-qm", "source",
+    ], check=True)
+    revision = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    monkeypatch.setattr(supervisor, "PINNED_SOURCE_REVISION", revision)
+    assert supervisor._source_revision(server) == revision
+    assert supervisor._source_revision(sonic, expected_parent="action_provider") == revision
+
+
 def test_linux_listener_requires_owning_process(tmp_path: Path) -> None:
     net = tmp_path / "net"
     net.mkdir()

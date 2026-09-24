@@ -177,17 +177,26 @@ The same worker can be staged for the pinned Isaac Sim 6.0.1 container. Use a
 Linux x86-64 NVIDIA Docker host with the digest-pinned image already present,
 the verified native runtime source packet and its source receipt, and a request
 whose scene, candidate, model hashes, and human rights review are sealed. The
-container launcher mounts the packet, official clean HumanoidArena checkout,
-models, and runtime source packet read-only. It provisions Isaac Lab/Arena from
-the released source packet with no network, then runs the existing worker with
-the same scene/candidate/rights fields. Its output directory is the only
-writable bind mount. Planning without `--execute` starts no container:
+request's `python_executable` must name a separately provisioned Linux LeRobot
+policy interpreter inside `--policy-runtime-root`. The pinned HumanoidArena
+release uses separate Isaac and LeRobot environments because their Python
+dependencies differ. Build the policy environment with its own pinned package
+closure and a copied interpreter inside the same container filesystem layout;
+symlinks from the policy environment to a host Python outside that root are
+rejected. Its LeRobot import must resolve to the exact clean HumanoidArena
+checkout at the pinned revision. The launcher mounts that full monorepo, the
+policy environment, packet, models, and runtime source packet read-only. It
+probes policy imports and CUDA before provisioning Isaac Lab/Arena without
+network, then invokes the existing worker with the same
+scene/candidate/rights fields. Its output directory is the only writable bind
+mount. Planning without `--execute` starts no container:
 
 ```bash
 PYTHONPATH=src python -m blueprint_pipeline.native_g1_container_run \
   --request "$SEALED_G1_REQUEST" \
   --source-receipt "$NATIVE_RUNTIME_SOURCE_RECEIPT" \
   --source-packet "$NATIVE_RUNTIME_SOURCE_PACKET" \
+  --policy-runtime-root "$POLICY_RUNTIME_ROOT" \
   --output-dir "$NEW_G1_ATTEMPT_DIR"
 ```
 
