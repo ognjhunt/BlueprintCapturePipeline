@@ -38,6 +38,7 @@ from blueprint_pipeline.clean_plate_stage import (
     PROGRAM_ID,
     STAGE_MANIFEST_SCHEMA_VERSION,
     CleanPlatePolicy,
+    anchor_reconstruction_views_to_geometry,
     apply_clean_plate_to_reconstruction_input,
     run_clean_plate_stage,
     validate_clean_plate_stage_manifest,
@@ -46,6 +47,18 @@ from blueprint_pipeline.common import read_json
 
 _ANALYSIS_ATTR = "blueprint_pipeline.clean_plate_stage.analyze_removal_targets"
 _SAFE_PRIVACY = {"status": "no_people_detected", "world_model_video_uri": "gs://b/x.mov"}
+
+
+def test_reconstruction_first_view_has_a_source_geometry_camera():
+    reviewed = [{"frame_id": "decoded-000000026"}, {"frame_id": "decoded-000000035"},
+                {"frame_id": "decoded-000000173"}]
+    source = {"frames": [{"frame_id": "decoded-000000035"}, {"frame_id": "decoded-000000173"}]}
+    ordered = anchor_reconstruction_views_to_geometry(frames=reviewed, source_geometry=source)
+    assert [row["frame_id"] for row in ordered] == ["decoded-000000035", "decoded-000000026",
+                                                 "decoded-000000173"]
+    assert reviewed[0]["frame_id"] == "decoded-000000026"
+    with pytest.raises(ValueError, match="website_reconstruction_anchor_geometry_frame_missing"):
+        anchor_reconstruction_views_to_geometry(frames=[reviewed[0]], source_geometry=source)
 
 
 @pytest.mark.parametrize("status", ["blocked", "failed_closed", "disabled", "unknown"])
