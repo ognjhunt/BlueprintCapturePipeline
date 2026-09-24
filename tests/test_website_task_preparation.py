@@ -183,8 +183,27 @@ ARTICULATED_REMOVAL = {"schema_version": "clean_plate_removal_manifest.v1", "ent
      "compose_back": {"replacement_asset_id": None, "pose_world": None, "replacement_asset_frame_registration_uri": None}}]}
 
 
-def test_articulated_assembly_compiles_into_an_open_close_intake(tmp_path):
+def _covered(masks):
+    """The subject carries views chosen to cover the whole assembly."""
+    targets = [{**row, "authoring_coverage": {"status": "complete"}} if row.get("target_role") != "destination"
+               else row for row in masks["targets"]]
+    value = {**masks, "targets": targets}
+    value["digest"] = canonical_digest(value, digest_field="digest")
+    return value
+
+
+def test_articulated_assembly_without_whole_object_coverage_is_not_bought(tmp_path):
+    # Surfaces from the depth-sampling frames are not the whole assembly: a thin
+    # front would pass a dimension check against them, so the build is held.
     value = _compile(tmp_path, lambda geometry: {"task_masks": _masks(geometry, destination=False, articulated=True),
+                                                 "removal_manifest": ARTICULATED_REMOVAL})
+    assert value["status"] == "needs_input"
+    assert value["blockers"] == ["website_assembly_whole_object_coverage_required"]
+    assert "intake_request" not in value or value["intake_request"] is None
+
+
+def test_articulated_assembly_compiles_into_an_open_close_intake(tmp_path):
+    value = _compile(tmp_path, lambda geometry: {"task_masks": _covered(_masks(geometry, destination=False, articulated=True)),
                                                  "removal_manifest": ARTICULATED_REMOVAL})
     assert value["status"] == "intake_ready", value["blockers"]
     task = value["intake_request"]["task"]

@@ -589,6 +589,15 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
             blockers.append("website_articulated_part_label_required")
         if destination_rows:
             blockers.append("website_articulated_task_has_no_destination")
+        # A rebuilt assembly needs the whole object, not the surfaces that
+        # happened to fall in the depth-sampling frames: those bounds miss the
+        # body hidden in its cabinet and mix open and closed states, and a
+        # thin front passes a check against them. Until the subject carries
+        # views chosen to cover every part and state of the object, with the
+        # body's depth observed, the build must not be bought.
+        coverage = subject_target.get("authoring_coverage") or {}
+        if coverage.get("status") != "complete":
+            blockers.append("website_assembly_whole_object_coverage_required")
     elif len(destination_rows) == 1 and not independent_object:
         low, high = _runtime_bounds(destination_rows[0]["estimated_visible_bounds"], matrix)
         position = [(low[i] + high[i]) / 2 for i in range(3)]
