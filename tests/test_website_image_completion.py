@@ -40,7 +40,7 @@ def _inputs(tmp_path):
     return frames, admission
 
 
-def test_completion_preserves_unmasked_pixels_references_first_edit_and_reuses_paid_outputs(tmp_path, monkeypatch):
+def test_completion_sends_plain_frame_keeps_whole_edit_references_first_edit_and_reuses_paid_outputs(tmp_path, monkeypatch):
     frames, admission = _inputs(tmp_path)
     calls = []
 
@@ -56,13 +56,22 @@ def test_completion_preserves_unmasked_pixels_references_first_edit_and_reuses_p
     assert len(calls) == 2
     assert calls[0]["reference_images"] == [Path(frames[1]["image_path"]).read_bytes()]
     assert calls[1]["reference_images"] == [Path(outputs[0]["image_path"]).read_bytes()]
+    # No segmentation mask reaches the editor, and the first image is the plain frame
+    # (letterboxed), never a frame with the object cut out.
+    assert all(call["mask_bytes"] is None for call in calls)
+    sent = np.asarray(Image.open(BytesIO(calls[0]["image_bytes"])).convert("RGB"))
+    assert sent.shape == (1536, 1024, 3) and not np.any(np.all(sent == [255, 255, 255], axis=-1))
+    assert np.all(sent[:, 256:768][sent[:, 256:768].any(axis=-1)] == [255, 0, 0])
+    assert "shadows" in calls[0]["prompt"] and "Change nothing else" in calls[0]["prompt"]
+    # Contents of a removed object must go with it rather than float in mid-air.
+    assert "anything inside them or resting on them" in calls[0]["prompt"]
     for original, output in zip(frames, outputs):
         image = np.asarray(Image.open(output["image_path"]))
-        editable = np.asarray(Image.open(original["remaining_mask_path"])) == 255
-        assert np.all(image[editable] == [0, 0, 255])
-        assert np.all(image[~editable] == [255, 0, 0])
+        # The whole edited frame is kept: no silhouette paste-back.
+        assert np.all(image == [0, 0, 255])
         assert _sha256_file(Path(original["image_path"])) == original["image_digest"]
-        assert output["generated_pixel_count"] == 15
+        assert output["generated_pixel_count"] == 10 * 20
+        assert output["generated_region"] == "full_frame"
         assert output["view_consistency"] == "requires_review"
     assert completion.complete_background_images(**args) == outputs
     assert len(calls) == 2
@@ -109,25 +118,11 @@ def test_reference_multipart_keeps_mask_on_first_image():
     assert body.index(b"FIRST") < body.index(b"REFERENCE") < body.index(b"MASK")
 
 
-def test_edit_feathers_background_margin_but_preserves_outside_and_replaces_core(tmp_path, monkeypatch):
-    frames, admission = _inputs(tmp_path)
-    for frame in frames:
-        frame["edge_feather_pixels"] = 2
-    _, _, digest = completion._validated_backend(completion.REGISTRY_PATH, backend_id=completion.BACKEND_ID)
-    admission["allocation_binding_digest"] = canonical_digest(completion.completion_binding(
-        frames, task_digest="task", backend_digest=digest))
-    def edit(**kwargs):
-        stream = BytesIO()
-        Image.new("RGB", kwargs["expected_size"], "blue").save(stream, format="PNG")
-        return {"succeeded": True, "generated": stream.getvalue(),
-                "usage": _normalized_usage({"output_tokens_details": {"image_tokens": 100}})}
-    monkeypatch.setattr(completion, "_execute_frame_request", edit)
-    outputs = completion.complete_background_images(frames=frames, task_digest="task", output_root=tmp_path / "edits",
-        admission=admission, admission_grant=_grant(admission), token="test")
-    pixels = np.asarray(Image.open(outputs[0]["image_path"]))
-    np.testing.assert_array_equal(pixels[5, 3], [128, 0, 128])
-    np.testing.assert_array_equal(pixels[7, 4], [0, 0, 255])
-    np.testing.assert_array_equal(pixels[4, 3], [255, 0, 0])
+def test_multipart_without_mask_sends_no_mask_part():
+    body = _multipart(fields={"prompt": "test"}, image_bytes=b"FIRST", mask_bytes=None, boundary="test",
+                      reference_images=[b"REFERENCE"])
+    assert b'name="mask"' not in body
+    assert body.index(b"FIRST") < body.index(b"REFERENCE")
 
 
 def test_admission_dictionary_cannot_authorize_image_spend(tmp_path, monkeypatch):
