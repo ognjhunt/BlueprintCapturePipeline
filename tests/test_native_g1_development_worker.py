@@ -6,6 +6,8 @@ from types import SimpleNamespace
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline import native_g1_development_worker as worker
+from blueprint_pipeline.native_g1_navigation_goal import seal_g1_navigation_goal_authority
+from tests.test_native_g1_navigation_goal import _authority_plan
 
 
 SCENE = "sha256:" + "a" * 64
@@ -238,3 +240,65 @@ def test_navigation_candidate_requires_visible_goal_before_launch(
     assert result["status"] == "blocked"
     assert result["phase_reached"] == "navigation_goal_validation"
     assert result["blocker"]["message"] == "g1_navigation_goal_or_visible_marker_missing"
+
+
+def test_navigation_candidate_requires_team_goal_authority_before_launch(
+    tmp_path: Path, monkeypatch
+) -> None:
+    request = _request(tmp_path)
+    plan = _authority_plan()
+    candidate = "humanoidarena_dp_g1_dex3_sonic_vision_navi"
+    Path(request["bundle_root"], "native_task_arena_scene_plan.v1.json").write_text(
+        json.dumps(plan)
+    )
+    request["candidate_id"] = candidate
+    request["rights_review"].update(
+        candidate_id=candidate, scene_plan_digest=plan["plan_digest"]
+    )
+    request["rights_review"]["rights_review_digest"] = canonical_digest(
+        request["rights_review"], digest_field="rights_review_digest"
+    )
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+    monkeypatch.setattr(worker, "_verify_packet", lambda _root: {
+        "arena_scene_plan_digest": plan["plan_digest"],
+        "receipt_digest": "sha256:" + "f" * 64,
+    })
+    monkeypatch.setattr(worker, "preflight_g1_shared_scene_run", lambda **_kwargs: {
+        "status": "staged_inputs_verified",
+        "scene_plan_digest": plan["plan_digest"],
+        "candidate_id": candidate,
+        "inventory_file_sha256": INVENTORY,
+        "robot_id": "unitree_g1",
+        "policy_role": "movement_navigation",
+    })
+
+    def must_not_launch(**_kwargs):
+        raise AssertionError("simulator launched without confirmed movement goal")
+
+    monkeypatch.setattr(worker, "_launch_scene", must_not_launch)
+    blocked = worker.run_g1_development_worker(
+        request=request, output_dir=tmp_path / "missing-goal-authority"
+    )
+    assert blocked["status"] == "blocked"
+    assert blocked["phase_reached"] == "navigation_goal_authority_validation"
+    assert blocked["teardown"] == {"environment": "not_started", "simulator": "not_started"}
+
+    authority = seal_g1_navigation_goal_authority(
+        plan=plan, confirmed_by_team_id="team-a", human_reviewer="owner-a"
+    )
+    request["navigation_goal_authority"] = authority
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+    app = SimpleNamespace(close=lambda: None)
+    env = SimpleNamespace(close=lambda: None)
+    monkeypatch.setattr(worker, "_launch_scene", lambda **_kwargs: (app, {"status": "launched"}))
+    monkeypatch.setattr(worker, "_build_scene", lambda **_kwargs: (
+        SimpleNamespace(env=env, plan=plan), {"passed": True}
+    ))
+    monkeypatch.setattr(worker, "run_g1_supervised_built_scene_episode", lambda **_kwargs: {
+        "status": "completed_development_only",
+    })
+    completed = worker.run_g1_development_worker(
+        request=request, output_dir=tmp_path / "confirmed-goal-authority"
+    )
+    assert completed["status"] == "completed_development_only"
+    assert completed["navigation_goal_authority_digest"] == authority["authority_digest"]

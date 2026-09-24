@@ -7,15 +7,18 @@ Obstacle avoidance and physical transfer are outside this score.
 
 from __future__ import annotations
 
+import json
 import math
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from .decision_evidence_contracts import canonical_digest
+from .adp_task_scoring import TaskNeutralScoringError, validate_rigid_task_success_contract
+from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 
 
 SCHEMA_VERSION = "native_g1_navigation_goal.v1"
 SCORE_SCHEMA_VERSION = "native_g1_navigation_goal_score.v1"
+AUTHORITY_SCHEMA_VERSION = "native_g1_navigation_goal_authority.v1"
 PUBLISHED_TASK_INSTRUCTION = "Avoid obstacles and move to the yellow marked area."
 
 
@@ -64,6 +67,95 @@ def validate_g1_navigation_goal(task_spec: Mapping[str, Any]) -> dict[str, Any]:
             "radius_m": marker_radius,
         },
     }
+
+
+def validate_g1_navigation_goal_authority(
+    value: Mapping[str, Any] | None, *, plan: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Bind team-confirmed goal arrival to one sealed G1 task/site scene."""
+
+    try:
+        authority = json.loads(json.dumps(value, allow_nan=False))
+        if (
+            plan.get("plan_digest") != canonical_digest(plan, digest_field="plan_digest")
+            or plan.get("task_kind") != "rigid_pick_place"
+            or (plan.get("robot") or {}).get("robot_id") != "unitree_g1"
+        ):
+            raise ValueError("scene_plan_mismatch")
+        task_spec = plan["task_spec"]
+        goal = validate_g1_navigation_goal(task_spec)
+        task_contract = validate_rigid_task_success_contract(
+            task_spec["task_success_contract"],
+            expected_task_id=plan["task_id"],
+        )
+        if task_spec.get("task_success_contract_digest") != task_contract["contract_digest"]:
+            raise ValueError("task_contract_digest_mismatch")
+        team_id = task_contract["provenance"]["confirmed_by_team_id"]
+        expected_scope = {
+            "site_id": task_contract["scope"]["site_id"],
+            "task_id": plan["task_id"],
+            "scene_plan_digest": plan["plan_digest"],
+            "task_success_contract_digest": task_contract["contract_digest"],
+        }
+    except (AttributeError, KeyError, TypeError, ValueError, TaskNeutralScoringError) as exc:
+        raise ValueError("g1_navigation_goal_authority_invalid") from exc
+    if (
+        not isinstance(authority, dict)
+        or set(authority) != {
+            "schema_version", "status", "scope", "goal", "goal_digest",
+            "confirmed_by_team_id", "human_reviewer", "reviewed_criterion",
+            "obstacle_clearance_scored", "physical_outcome_claimed", "authority_digest",
+        }
+        or authority.get("schema_version") != AUTHORITY_SCHEMA_VERSION
+        or authority.get("status") != "confirmed_for_development_simulation"
+        or authority.get("scope") != expected_scope
+        or authority.get("goal") != goal
+        or authority.get("goal_digest") != cross_runtime_canonical_digest(goal)
+        or not isinstance(team_id, str) or not team_id.strip()
+        or authority.get("confirmed_by_team_id") != team_id
+        or not isinstance(authority.get("human_reviewer"), str)
+        or not authority["human_reviewer"].strip()
+        or authority.get("reviewed_criterion") != "root_xy_goal_arrival_and_terminal_hold"
+        or authority.get("obstacle_clearance_scored") is not False
+        or authority.get("physical_outcome_claimed") is not False
+        or authority.get("authority_digest") != cross_runtime_canonical_digest(
+            authority, digest_field="authority_digest"
+        )
+    ):
+        raise ValueError("g1_navigation_goal_authority_invalid")
+    return authority
+
+
+def seal_g1_navigation_goal_authority(
+    *, plan: Mapping[str, Any], confirmed_by_team_id: str, human_reviewer: str
+) -> dict[str, Any]:
+    """Seal a recorded human decision after the caller has obtained it."""
+
+    task_spec = plan["task_spec"]
+    task_contract = validate_rigid_task_success_contract(
+        task_spec["task_success_contract"], expected_task_id=plan["task_id"]
+    )
+    authority = {
+        "schema_version": AUTHORITY_SCHEMA_VERSION,
+        "status": "confirmed_for_development_simulation",
+        "scope": {
+            "site_id": task_contract["scope"]["site_id"],
+            "task_id": plan["task_id"],
+            "scene_plan_digest": plan["plan_digest"],
+            "task_success_contract_digest": task_contract["contract_digest"],
+        },
+        "goal": validate_g1_navigation_goal(task_spec),
+        "confirmed_by_team_id": confirmed_by_team_id,
+        "human_reviewer": human_reviewer,
+        "reviewed_criterion": "root_xy_goal_arrival_and_terminal_hold",
+        "obstacle_clearance_scored": False,
+        "physical_outcome_claimed": False,
+    }
+    authority["goal_digest"] = cross_runtime_canonical_digest(authority["goal"])
+    authority["authority_digest"] = cross_runtime_canonical_digest(
+        authority, digest_field="authority_digest"
+    )
+    return validate_g1_navigation_goal_authority(authority, plan=plan)
 
 
 def score_g1_navigation_episode(
