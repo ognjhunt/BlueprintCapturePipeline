@@ -2,6 +2,7 @@
 
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from blueprint_pipeline.gear_sonic_joint_order_contract import PROTOCOL_V4_FULL_JOINT_ORDER
@@ -17,10 +18,18 @@ def _adapter():
         joint_vel=[[0.0] * len(names)],
     )
     robot = SimpleNamespace(joint_names=names, data=data)
+    head = SimpleNamespace(
+        frame=[0],
+        data=SimpleNamespace(output={"rgb": np.zeros((1, 480, 640, 4), dtype=np.uint8)}),
+    )
+    overview = SimpleNamespace(
+        frame=[0],
+        data=SimpleNamespace(output={"rgb": np.zeros((1, 360, 640, 3), dtype=np.uint8)}),
+    )
     calls = []
     env = SimpleNamespace(
         unwrapped=SimpleNamespace(
-            scene={"robot": robot},
+            scene={"robot": robot, "head_camera": head, "overview_camera": overview},
             action_manager=SimpleNamespace(total_action_dim=43),
             device="cpu",
         ),
@@ -32,7 +41,10 @@ def _adapter():
         "joint_position_limits_rad": {name: [-1.0, 1.0] for name in names},
     }}
     adapter = NativeG1JointEpisodeEnvironment(
-        built=SimpleNamespace(plan=plan, env=env),
+        built=SimpleNamespace(
+            plan=plan, env=env,
+            camera_scene_names={"head": "head_camera", "overview": "overview_camera"},
+        ),
         to_tensor=lambda value: value,
         make_action_tensor=lambda value, *, device: (value, device),
     )
@@ -66,3 +78,31 @@ def test_raw_policy_vector_and_invalid_controller_targets_never_step() -> None:
     with pytest.raises(ValueError, match="joint_target_invalid"):
         adapter.step_controller_targets(target)
     assert calls == [("reset", 0)]
+
+
+def test_head_policy_frame_and_review_frame_are_exact_and_fresh() -> None:
+    adapter, _, _ = _adapter()
+    adapter.reset(seed=4)
+    policy = adapter.read_policy_inputs()
+    assert policy["front_rgb"].shape == (480, 640, 3)
+    assert policy["observation_state"] == adapter.read_semantic_v3_state()
+    assert policy["sensor_freshness"]["sensor_frame_index"] == 0
+    review = adapter.read_review_inputs()
+    assert review["overview_rgb"].shape == (360, 640, 3)
+    adapter.step_controller_targets({name: 0.0 for name in PROTOCOL_V4_FULL_JOINT_ORDER})
+    with pytest.raises(ValueError, match="camera_stale:head"):
+        adapter.read_policy_inputs()
+    adapter._env.unwrapped.scene["head_camera"].frame = [1]
+    assert adapter.read_policy_inputs()["sensor_freshness"]["sensor_frame_index"] == 1
+
+
+def test_policy_camera_rejects_non_uint8_or_wrong_resolution() -> None:
+    adapter, _, _ = _adapter()
+    adapter.reset(seed=5)
+    camera = adapter._env.unwrapped.scene["head_camera"]
+    camera.data.output["rgb"] = np.zeros((1, 480, 640, 3), dtype=np.float32)
+    with pytest.raises(ValueError, match="camera_readback_invalid:head"):
+        adapter.read_policy_inputs()
+    camera.data.output["rgb"] = np.zeros((1, 300, 640, 3), dtype=np.uint8)
+    with pytest.raises(ValueError, match="policy_camera_shape_invalid"):
+        adapter.read_policy_inputs()
