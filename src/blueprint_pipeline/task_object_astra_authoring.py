@@ -242,7 +242,7 @@ def invoke_vision(invoker, request: AuthoringRequest, *, capability: str,
     spec = AgentsSDKAgentSpec(
         run_id=request.run_id, capability=f'{request.object_id}_{capability}',
         name=f'Blueprint {capability}', instructions=instructions, model=MODEL,
-        max_turns=1, max_output_tokens=12000, max_input_tokens=80000,
+        max_turns=1, max_output_tokens=(8192 if output_type is AppearanceReview else 12000), max_input_tokens=80000,
         reasoning_effort=reasoning_effort, output_type=output_type,
         stable_developer_prefix=stable_prefix, cache_policy=cache_policy,
     )

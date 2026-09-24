@@ -17,6 +17,35 @@ def test_astra_standard_prices_cover_input_output_and_cached_input():
     assert receipt['estimated_total_cost_usd'] == pytest.approx(.015)
 
 
+def test_visual_review_reservation_fits_retained_drawer_budget_without_weakening_review(tmp_path):
+    image = tmp_path / 'reference.png'
+    image.write_bytes(b'\x89PNG\r\n\x1a\nfixture')
+    frame = author.SourceFrame(path=str(image), sha256=author.file_record(image)['sha256'],
+                               role='observed_source', description='Original drawer pixels')
+    request = SimpleNamespace(run_id='test', object_id='drawer', request_digest='sha256:' + 'a' * 64)
+    review = author.AppearanceReview(source_object_recognizable=True,
+        source_color_and_material_preserved=True, opaque_surfaces_opaque=True,
+        required_parts_present=True, no_obvious_geometry_artifacts=True,
+        blockers=[], repair_instructions='', unobserved_surface_limitations=[])
+    calls = []
+
+    class Invoker:
+        def invoke(self, spec, input_value):
+            calls.append(spec)
+            return SimpleNamespace(output=review, model=author.MODEL, provider='fake',
+                                   usage={}, cost_usd=0, cost_status='test')
+
+    result = author.invoke_vision(Invoker(), request, capability='independent_visual_review_2_observable_v3',
+                                  prompt='Review revised drawer', output_type=author.AppearanceReview,
+                                  frames=[frame], root=tmp_path)
+    assert author.appearance_passed(result)
+    assert calls[0].max_output_tokens == 8192
+    assert worst_case_reservation_usd(model='gpt-6-astra', input_token_ceiling=80000,
+                                      max_output_tokens=calls[0].max_output_tokens,
+                                      cache_policy=None) == pytest.approx(1.2096)
+    assert 5.6741 + 1.2096 < 7.0
+
+
 def test_dimension_readback_rejects_previous_rounded_book_and_transparency():
     request = SimpleNamespace(dimensions_m=(.295304002, .397696028, .0211374),
         maximum_export_error_m=.00001, physical_review_input=SimpleNamespace(appearance='opaque'))
