@@ -18,6 +18,8 @@ class NativeRobotAdapter:
     factory_module: str
     factory_name: str
     camera_roles: tuple[tuple[str, str, str], ...] = ()
+    required_camera_roles: tuple[str, ...] = ()
+    policy_camera_roles: tuple[str, ...] = ()
     validator_name: str | None = None
 
 
@@ -31,6 +33,14 @@ def register_native_robot_adapter(adapter: NativeRobotAdapter) -> None:
         raise ValueError("native_robot_adapter_identity_missing")
     if adapter.robot_id in _ADAPTERS:
         raise ValueError(f"native_robot_adapter_already_registered:{adapter.robot_id}")
+    declared_roles = [role for role, _, _ in adapter.camera_roles]
+    if (
+        len(declared_roles) != len(set(declared_roles))
+        or not set(adapter.required_camera_roles).issubset(declared_roles)
+        or not set(adapter.policy_camera_roles).issubset(declared_roles)
+        or not set(adapter.required_camera_roles) & set(adapter.policy_camera_roles)
+    ):
+        raise ValueError(f"native_robot_adapter_camera_contract_invalid:{adapter.robot_id}")
     _ADAPTERS[adapter.robot_id] = adapter
 
 
@@ -96,6 +106,8 @@ register_native_robot_adapter(
             ("wrist", "wrist_camera", "robot_body"),
             ("overview", "external_camera_2", "world"),
         ),
+        required_camera_roles=("external", "wrist", "overview"),
+        policy_camera_roles=("external", "wrist"),
     )
 )
 register_native_robot_adapter(
@@ -111,5 +123,7 @@ register_native_robot_adapter(
             ("right_wrist", "right_wrist_camera", "robot_body"),
             ("overview", "external_camera_2", "world"),
         ),
+        required_camera_roles=("head", "overview"),
+        policy_camera_roles=("head", "left_wrist", "right_wrist"),
     )
 )

@@ -262,3 +262,22 @@ Important implementation facts for the next step:
   those as read-only references, verify source hashes before runtime use.
 
 No provider allocation or paid execution occurred. The goal remains active.
+
+## 2026-09-24 continuation: portable construction packet
+
+The committed G1 spawn adapter was carried onto the current Pipeline branch.
+The shared contract now accepts a digest-bound G1/Dex3 robot configuration,
+requires head policy and overview review cameras, and leaves its policy
+candidate list empty until a G1 episode executor is admitted. The scene
+compiler derives protected rigid-body contact paths from the exact verified
+robot USD and refuses contact fingertips absent from that asset. The packet
+copies the robot USD from evidence-root-relative input, seals source/staged
+hashes, publishes a relative path, and re-verifies bytes before container
+spawn. The same path works for a local non-container bundle root.
+
+This proves construction packet generation and preflight on a minimal test
+asset, not a runnable G1 policy episode. A production robot USD with external
+asset references still needs an admitted dependency closure and exact runtime
+validation. The DROID-specific episode loop, SONIC execution, checkpoint
+inference, scoring, published G1 setup, deployed WebApp path, and review video
+remain unverified. Neither simulator nor physical G1 task success is claimed.

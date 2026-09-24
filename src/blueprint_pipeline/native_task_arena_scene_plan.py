@@ -256,6 +256,34 @@ def _stage_assets(
     return rows
 
 
+def _stage_robot(
+    robot: Mapping[str, Any], *, asset_directory: Path, published_asset_directory: str | None
+) -> dict[str, Any]:
+    """Keep a selected robot in the same digest-bound packet as the task assets."""
+
+    staged = json.loads(json.dumps(robot))
+    if staged.get("robot_id") == "franka_panda":
+        return staged
+    source = Path(str(staged.get("usd_path") or ""))
+    resolved = source.resolve()
+    if (
+        not source.is_absolute()
+        or source.is_symlink()
+        or not resolved.is_file()
+        or resolved.parent != asset_directory
+    ):
+        raise NativeTaskArenaScenePlanError(["native_task_arena_robot_asset_not_staged"])
+    if _sha256(resolved) != staged.get("usd_sha256"):
+        raise NativeTaskArenaScenePlanError(["native_task_arena_robot_asset_digest_mismatch"])
+    staged["usd_size_bytes"] = resolved.stat().st_size
+    staged["usd_path"] = (
+        f"{published_asset_directory}/{resolved.name}"
+        if published_asset_directory is not None
+        else str(resolved)
+    )
+    return staged
+
+
 def _cadence(contract: Mapping[str, Any], *, physics_frequency_hz: float) -> dict[str, Any]:
     try:
         control_frequency = float(contract["task_spec"]["control_frequency_hz"])
@@ -607,7 +635,7 @@ def _graph_articulation_plan(
     )
     try:
         robot_contact_topology = resolve_native_task_robot_contact_topology(
-            str(contract["robot"]["robot_id"])
+            str(contract["robot"]["robot_id"]), contract["robot"]
         )
     except (KeyError, NativeTaskRobotContactTopologyError) as exc:
         errors = (
@@ -755,7 +783,7 @@ def _articulation_plan(
         )
         try:
             robot_contact_topology = resolve_native_task_robot_contact_topology(
-                str(contract["robot"]["robot_id"])
+                str(contract["robot"]["robot_id"]), contract["robot"]
             )
         except (KeyError, NativeTaskRobotContactTopologyError) as exc:
             errors = (
@@ -1195,7 +1223,7 @@ def _articulation_plan(
     )
     try:
         robot_contact_topology = resolve_native_task_robot_contact_topology(
-            str(contract["robot"]["robot_id"])
+            str(contract["robot"]["robot_id"]), contract["robot"]
         )
     except (KeyError, NativeTaskRobotContactTopologyError) as exc:
         errors = (
@@ -1458,6 +1486,11 @@ def materialize_native_task_arena_scene_plan(
         provider_asset_directory=asset_directory,
         published_asset_directory=published_asset_directory,
     )
+    robot = _stage_robot(
+        contract["robot"],
+        asset_directory=asset_directory,
+        published_asset_directory=published_asset_directory,
+    )
     cameras = json.loads(json.dumps(contract["cameras"]))
     task_object_asset_path = next(
         (
@@ -1531,7 +1564,7 @@ def materialize_native_task_arena_scene_plan(
         "objects": objects,
         "appearance_frame_alignment": appearance_frame_alignment,
         "task_object_observability": task_object_observability,
-        "robot": contract["robot"],
+        "robot": robot,
         "cameras": cameras,
         "cadence": _cadence(contract, physics_frequency_hz=physics_frequency_hz),
         "articulation": articulation,

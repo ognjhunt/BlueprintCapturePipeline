@@ -354,6 +354,42 @@ def _resolve_portable_assets(
     return objects
 
 
+def _resolve_portable_robot(
+    plan: Mapping[str, Any], *, bundle_root: str | Path | None
+) -> dict[str, Any]:
+    """Resolve a robot USD inside the packet before any Isaac import or spawn."""
+
+    robot = json.loads(json.dumps(plan["robot"]))
+    if robot.get("robot_id") == "franka_panda":
+        return robot
+    path = str(robot.get("usd_path") or "")
+    if Path(path).is_absolute():
+        return robot
+    pure = PurePosixPath(path)
+    if bundle_root is None or not path or pure.is_absolute() or ".." in pure.parts:
+        raise NativeTaskArenaRuntimeError(["native_task_arena_robot_asset_path_invalid"])
+    raw_root = Path(bundle_root).expanduser()
+    if raw_root.is_symlink():
+        raise NativeTaskArenaRuntimeError(["native_task_arena_runtime_bundle_root_invalid"])
+    root = raw_root.resolve()
+    candidate = root.joinpath(*pure.parts)
+    resolved = candidate.resolve()
+    if (
+        not root.is_dir()
+        or _has_symlink_component(candidate, root=root)
+        or root not in resolved.parents
+        or not resolved.is_file()
+    ):
+        raise NativeTaskArenaRuntimeError(["native_task_arena_robot_asset_missing"])
+    if (
+        resolved.stat().st_size != robot.get("usd_size_bytes")
+        or _sha256(resolved) != robot.get("usd_sha256")
+    ):
+        raise NativeTaskArenaRuntimeError(["native_task_arena_robot_asset_identity_mismatch"])
+    robot["usd_path"] = str(resolved)
+    return robot
+
+
 def _rotation_matrix_to_xyzw(matrix: Sequence[Sequence[float]]) -> list[float]:
     """Convert a proper 3x3 rotation to a canonical XYZW quaternion."""
 
@@ -862,7 +898,7 @@ def validate_native_task_arena_runtime_plan(
 
     plan = _validated_plan(scene_plan)
     from .native_task_robot_registry import validate_native_robot_plan
-    validate_native_robot_plan(plan["robot"])
+    validate_native_robot_plan(_resolve_portable_robot(plan, bundle_root=bundle_root))
     _resolve_portable_assets(plan, bundle_root=bundle_root)
     for camera in plan.get("cameras") or []:
         camera_runtime_parameters(camera, robot_id=str(plan["robot"]["robot_id"]))
@@ -1116,7 +1152,7 @@ def build_native_task_arena_environment(
         contract_xyzw_to_native_xyzw,
     )
 
-    robot = plan["robot"]
+    robot = _resolve_portable_robot(plan, bundle_root=bundle_root)
     robot_pose = robot["base_pose_world"]
     embodiment = build_native_robot_embodiment(robot, enable_cameras=enable_cameras, pose_class=Pose)
     exact_robot_reset = dict(robot["joint_reset_positions_rad"])

@@ -9,6 +9,12 @@ import pytest
 from tests.test_native_task_appearance_frame_alignment import write_appearance_usdz
 
 from blueprint_pipeline.common import sha256_file
+from blueprint_pipeline.gear_sonic_joint_order_contract import PROTOCOL_V4_FULL_JOINT_ORDER
+from blueprint_pipeline.native_g1_embodiment import ACTION_INTERFACE as G1_ACTION_INTERFACE
+from blueprint_pipeline.native_task_arena_runtime import (
+    _resolve_portable_robot,
+    validate_native_task_arena_runtime_plan,
+)
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.native_task_arena_packet import (
     NativeTaskArenaPacketError,
@@ -599,6 +605,76 @@ def test_packet_control_search_authority_is_typed_and_self_digested(
         match="native_task_arena_control_search_authority_invalid",
     ):
         validate_native_task_arena_packet_request(request)
+
+
+def test_packet_stages_g1_asset_for_portable_scene_plan(tmp_path: Path) -> None:
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    request = _request(evidence, articulated=True)
+    asset = evidence / "robot" / "g1.usda"
+    asset.parent.mkdir()
+    asset.write_text(
+        '''#usda 1.0
+(
+    defaultPrim = "G1"
+)
+def Xform "G1"
+{
+    def Xform "pelvis" (prepend apiSchemas = ["PhysicsRigidBodyAPI"]) {}
+    def Xform "right_finger_tip" (prepend apiSchemas = ["PhysicsRigidBodyAPI"]) {}
+}
+''',
+        encoding="utf-8",
+    )
+    digest = f"sha256:{sha256_file(asset)}"
+    joints = {name: 0.0 for name in PROTOCOL_V4_FULL_JOINT_ORDER}
+    robot = {
+        "robot_id": "unitree_g1",
+        "hand_id": "unitree_dex3_1",
+        "action_interface": G1_ACTION_INTERFACE,
+        "usd_sha256": digest,
+        "asset_source": {
+            "root": "evidence",
+            "relative_path": "robot/g1.usda",
+            "size_bytes": asset.stat().st_size,
+            "sha256": digest,
+        },
+        "base_pose_world": request["robot_base_pose_world"],
+        "joint_reset_positions_rad": joints,
+        "joint_position_limits_rad": {name: [-1.0, 1.0] for name in joints},
+        "actuator_parameters": {
+            name: {"stiffness": 100, "damping": 2, "effort_limit": 25, "velocity_limit": 10}
+            for name in joints
+        },
+        "task_contact_body_paths": ["{ENV_REGEX_NS}/Robot/right_finger_tip"],
+    }
+    head = _camera("wrist")
+    head.update(role="head", parent_prim_path="{ENV_REGEX_NS}/Robot/pelvis")
+    request.update(
+        robot_configuration=robot,
+        robot_joint_reset_positions_rad=joints,
+        cameras=[head, _camera("overview")],
+    )
+    request["task_state_binding"]["robot_gripper_contact_prim_pattern"] = (
+        "{ENV_REGEX_NS}/Robot/right_finger_tip"
+    )
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+
+    output = tmp_path / "packet"
+    receipt = materialize_native_task_arena_packet(
+        request=request, evidence_root=evidence, output_dir=output
+    )
+    plan = json.loads((output / "native_task_arena_scene_plan.v1.json").read_text())
+
+    assert receipt["robot_asset_binding"]["staged_sha256"] == digest
+    assert plan["robot"]["usd_path"] == "assets/robot_unitree_g1.usda"
+    assert _resolve_portable_robot(plan, bundle_root=output)["usd_path"] == str(
+        output / "assets" / "robot_unitree_g1.usda"
+    )
+    assert validate_native_task_arena_runtime_plan(plan, bundle_root=output) == plan
+    (output / "assets" / "robot_unitree_g1.usda").write_text("tampered")
+    with pytest.raises(ValueError, match="robot_asset_identity_mismatch"):
+        _resolve_portable_robot(plan, bundle_root=output)
 
 
 @pytest.mark.parametrize("articulated", [False, True])

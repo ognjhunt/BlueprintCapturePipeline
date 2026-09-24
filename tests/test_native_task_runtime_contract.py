@@ -7,6 +7,8 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.gear_sonic_joint_order_contract import PROTOCOL_V4_FULL_JOINT_ORDER
+from blueprint_pipeline.native_g1_embodiment import ACTION_INTERFACE as G1_ACTION_INTERFACE
 from blueprint_pipeline.adp_task_scoring import seal_rigid_task_success_contract
 from blueprint_pipeline.native_task_runtime_contract import (
     DROID_FRANKA_RESET_JOINT_NAMES,
@@ -223,6 +225,51 @@ def test_identified_inserted_rigid_task_object_preserves_independent_identity() 
     assert task_object["source_semantic_role"] == "task_object"
     assert task_object["object_type"] == "RIGID"
     assert task_object["reset_state"]["joint_positions"] == {}
+
+
+def test_g1_robot_and_cameras_can_be_sealed_without_droid_policy_authority(
+    tmp_path: Path,
+) -> None:
+    fixture = _identified_rigid_fixture()
+    asset = tmp_path / "g1.usda"
+    asset.write_text("#usda 1.0\n", encoding="utf-8")
+    joints = {name: 0.0 for name in PROTOCOL_V4_FULL_JOINT_ORDER}
+    robot = {
+        "robot_id": "unitree_g1",
+        "hand_id": "unitree_dex3_1",
+        "action_interface": G1_ACTION_INTERFACE,
+        "usd_path": str(asset),
+        "usd_sha256": _file_sha(asset),
+        "base_pose_world": _pose(1.75, 1.99, 0.8),
+        "joint_reset_positions_rad": joints,
+        "joint_position_limits_rad": {name: [-1.0, 1.0] for name in joints},
+        "actuator_parameters": {
+            name: {"stiffness": 100, "damping": 2, "effort_limit": 25, "velocity_limit": 10}
+            for name in joints
+        },
+        "task_contact_body_paths": [
+            "{ENV_REGEX_NS}/Robot/right_hand/finger_tip"
+        ],
+    }
+    head = _camera("wrist")
+    head.update(role="head", parent_prim_path="{ENV_REGEX_NS}/Robot/head_link")
+    fixture.update(
+        robot_base_pose_world=robot["base_pose_world"],
+        robot_joint_reset_positions_rad=joints,
+        robot_configuration=robot,
+        cameras=[head, _camera("overview")],
+    )
+
+    contract = materialize_native_task_runtime_contract(**fixture)
+
+    assert contract["robot"] == robot
+    assert [row["role"] for row in contract["cameras"]] == ["head", "overview"]
+    assert contract["candidate_ids"] == []
+
+    fixture["robot_joint_reset_positions_rad"] = dict(joints)
+    fixture["robot_joint_reset_positions_rad"].pop(next(iter(joints)))
+    with pytest.raises(NativeTaskRuntimeContractError, match="robot_configuration_invalid"):
+        materialize_native_task_runtime_contract(**fixture)
 
 
 def test_runtime_preserves_one_passive_destination_support_asset() -> None:
