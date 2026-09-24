@@ -77,6 +77,60 @@ def test_completion_sends_plain_frame_keeps_whole_edit_references_first_edit_and
     assert len(calls) == 2
 
 
+def _admission_for(frames, backend_id):
+    _, _, digest = completion._validated_backend(completion.REGISTRY_PATH, backend_id=backend_id)
+    return {"schema_version": "paid_lane_admission.v1", "status": "admitted", "blockers": [],
+            "resource_class": "openai_api_candidate", "external_disclosure_allowed": True,
+            "allocation_binding_digest": canonical_digest(completion.completion_binding(
+                frames, task_digest="task", backend_digest=digest)), "maximum_cost_usd": 1.0}
+
+
+def _blue_edit(calls):
+    def edit(**kwargs):
+        calls.append(kwargs)
+        stream = BytesIO()
+        Image.new("RGB", kwargs["expected_size"], "blue").save(stream, format="PNG")
+        return {"succeeded": True, "generated": stream.getvalue(),
+                "usage": _normalized_usage({"output_tokens_details": {"image_tokens": 100}})}
+    return edit
+
+
+def test_website_edits_use_xhigh_and_a_finished_high_batch_is_reused_without_spending(tmp_path, monkeypatch):
+    frames, _ = _inputs(tmp_path)
+    (legacy_id,) = completion.LEGACY_BACKEND_IDS
+    registry = completion._validated_backend(completion.REGISTRY_PATH, backend_id=completion.BACKEND_ID)[1]
+    assert registry["default_options"] == {"output_format": "png", "quality": "xhigh"}
+    assert registry["model_snapshot"] == "gpt-image-2.5-sunburst-2026-09-08"
+    calls = []
+    monkeypatch.setattr(completion, "_execute_frame_request", _blue_edit(calls))
+    # A batch the earlier high-quality row finished...
+    monkeypatch.setattr(completion, "BACKEND_ID", legacy_id)
+    legacy_admission = _admission_for(frames, legacy_id)
+    finished = completion.complete_background_images(
+        frames=frames, task_digest="task", output_root=tmp_path / "edits", admission=legacy_admission,
+        admission_grant=_grant(legacy_admission), token="test")
+    assert [call["execution"]["default_options"]["quality"] for call in calls] == ["high", "high"]
+    monkeypatch.undo()
+    # ...is read back after the switch with no spend authority and no provider call.
+    monkeypatch.setattr(completion, "_execute_frame_request", lambda **_: pytest.fail("must not spend"))
+    assert completion.complete_background_images(frames=frames, task_digest="task", output_root=tmp_path / "edits",
+                                                 admission={}, token="") == finished
+    # A partial high batch is never finished at the old setting: new edits are xhigh.
+    other = tmp_path / "partial"
+    monkeypatch.setattr(completion, "_execute_frame_request", _blue_edit(calls))
+    monkeypatch.setattr(completion, "BACKEND_ID", legacy_id)
+    completion.complete_background_images(frames=frames, task_digest="task", output_root=other,
+                                          admission=legacy_admission, admission_grant=_grant(legacy_admission),
+                                          token="test")
+    next(other.glob("*/1.json")).unlink()
+    monkeypatch.setattr(completion, "BACKEND_ID", "openai_gpt_image_2_5_sunburst_2026_09_08_website_xhigh")
+    calls.clear()
+    admission = _admission_for(frames, completion.BACKEND_ID)
+    completion.complete_background_images(frames=frames, task_digest="task", output_root=other,
+                                          admission=admission, admission_grant=_grant(admission), token="test")
+    assert [call["execution"]["default_options"]["quality"] for call in calls] == ["xhigh", "xhigh"]
+
+
 def test_largest_removal_view_is_the_edited_anchor_for_every_other_view(tmp_path, monkeypatch):
     frames = []
     for index, count in enumerate((5, 20, 10)):
