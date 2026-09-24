@@ -524,7 +524,12 @@ def execute_asset_authoring(*, request_value: dict, output_root: Path, invoker,
                        'Independently compare new CAD/Blender render views to the ORIGINAL '
                        'observed source and binding owner specification. Reject missing required '
                        'parts, wrong materials, glass paper, jagged/crumpled forms, missing source '
-                       'print/color structure. ') + 'Do not reward merely producing a file. These '
+                       'print/color structure. Treat modest wood-grain scale, hue, or brightness differences '
+                       'as optional cosmetic feedback when the source object, material family, color structure, '
+                       'and task-relevant affordances remain recognizable; record those in repair_instructions '
+                       'without a blocker. Reject clear material or color-family changes, altered handles or '
+                       'required parts, changed geometry, opacity errors, and conspicuous texture artifacts. '
+                       ) + 'Do not reward merely producing a file. These '
                        'are isolated studio views, not proof of scene placement.\n' + canonical_json(context),
                     output_type=AppearanceReview, frames=request.source_frames + rendered, root=attempt,
                     cache_prefix=authoring_instructions)
