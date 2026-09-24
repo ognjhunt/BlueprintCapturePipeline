@@ -54,6 +54,22 @@ CLAIM_CEILING = "development_only"
 STAGE_MANIFEST_SCHEMA_VERSION = "clean_plate_stage_manifest.v1"
 REMOVAL_MANIFEST_SCHEMA_VERSION = "clean_plate_removal_manifest.v1"
 
+
+def anchor_reconstruction_views_to_geometry(*, frames: list[dict[str, Any]],
+                                            source_geometry: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Put a source-geometry view first, so the provider's camera anchor is registered.
+
+    Image reconstruction accepts distinct views in submission order. Its first
+    view defines the world origin, and the later MapAnything registration needs
+    that exact original frame. Keep all reviewed views and their original IDs.
+    """
+    geometry_ids = {row["frame_id"] for row in source_geometry["frames"]}
+    anchor = next((index for index, frame in enumerate(frames)
+                   if frame["frame_id"] in geometry_ids), None)
+    if anchor is None:
+        raise ValueError("website_reconstruction_anchor_geometry_frame_missing")
+    return [frames[anchor], *frames[:anchor], *frames[anchor + 1:]]
+
 CLEAN_PLATE_DIRNAME = "clean_plate"
 REMOVAL_PLAN_FILENAME = "removal_plan.json"
 REMOVAL_MANIFEST_FILENAME = "removal_manifest.json"
@@ -537,6 +553,9 @@ def run_clean_plate_stage(
                         task_context=task_context)
                 if completion_review.get("status") != "passed":
                     raise ValueError("website_image_completion_review_failed")
+            if website_source_video is not None:
+                selected = anchor_reconstruction_views_to_geometry(
+                    frames=selected, source_geometry=source_geometry)
             prepared_views = {"schema_version": "website_prepared_views.v1", "status": "ready", "frames": selected,
                               "reconstruction_profile": profile,
                               "mask_view_plan_digest": mask_view_plan["digest"] if mask_view_plan else None,
