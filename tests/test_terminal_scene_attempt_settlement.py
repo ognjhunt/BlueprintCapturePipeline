@@ -395,27 +395,38 @@ def test_preallocation_budget_reduction_requires_bound_nonallocation_evidence(tm
     assert settlement.budget_retained_hold(receipt)["retained_spend_usd"] == 16.76
 
 
-@pytest.mark.parametrize("changed", [None, "long_blocker", "stage_started", "stage_file", "archive_digest", "blocker"])
+@pytest.mark.parametrize("changed", [None, "long_blocker", "runtime_setup", "runtime_setup_bad_log",
+                                     "stage_started", "stage_file", "archive_digest", "blocker"])
 def test_cpu_prestage_before_first_stage_releases_hold_only_with_bound_zero_spend_proof(
         tmp_path, monkeypatch, changed):
     fx, receipt, result_path, _ = _website_preallocation_failure(tmp_path, monkeypatch)
     result = json.loads(result_path.read_text())
-    blocker = "scene_configuration_provider_failed:TimeoutExpired"
+    blocker = ("scene_configuration_provider_python_runtime_invalid" if changed in
+               {"runtime_setup", "runtime_setup_bad_log"} else "scene_configuration_provider_failed:TimeoutExpired")
     if changed == "long_blocker":
         blocker += ":" + "x" * 400
-    provider = _seal({
+    provider_body = {
         "schema_version": "task_evaluation_scene_configuration_provider_result.v1",
         "status": "blocked", "run_id": result["run_id"], "source_commit": COMMIT,
         "first_stage_started": changed == "stage_started",
         "evaluation_episode_executed": False, "candidate_policy_queried": False,
         "blockers": [blocker],
-    }, "result_digest")
+    }
+    if changed in {"runtime_setup", "runtime_setup_bad_log"}:
+        provider_body.pop("run_id")
+        provider_body.pop("source_commit")
+        provider_body["provider_zero_required_after_return"] = True
+    provider = _seal(provider_body, "result_digest")
     archive_path = result_path.parent / "cpu_prestage_output.zip"
     with zipfile.ZipFile(archive_path, "w") as archive:
         archive.writestr("provider_output_zip_exclusions.json", json.dumps({
             "schema_version": "task_evaluation_scene_configuration_provider_output_zip_exclusions.v1",
             "excluded_directory_names": sorted(EXCLUDED_PARTS)}))
         archive.writestr("task_evaluation_scene_configuration_provider_result.v1.json", json.dumps(provider))
+        if changed in {"runtime_setup", "runtime_setup_bad_log"}:
+            archive.writestr("provider_python_runtime_setup.log", (
+                "unexpected\n" if changed == "runtime_setup_bad_log" else
+                "BLUEPRINT_SCENE_CONFIGURATION_BLOCKED:scene_configuration_python_import_preflight_failed\n"))
         if changed == "stage_file":
             archive.writestr("stages/stage-1/result.json", "{}")
     with archive_path.open("rb") as stream:
@@ -437,7 +448,7 @@ def test_cpu_prestage_before_first_stage_releases_hold_only_with_bound_zero_spen
     attempt = json.loads((fx["directory"] / "attempts" / (receipt["attempt_id"] + ".json")).read_text())
     receipt = validated_cancellation(fx["directory"], attempt)
     assert receipt["settled_spend"]["retained_spend_usd"] == 16.76
-    expected = 0.0 if changed in (None, "long_blocker") else 16.76
+    expected = 0.0 if changed in (None, "long_blocker", "runtime_setup") else 16.76
     assert settlement.budget_retained_hold(receipt)["retained_spend_usd"] == expected
     if expected == 0.0:
         assert _reserve(fx["root"], fx["intent"], "scene-configuration-successor", 17, now=300)["status"] == "reserved"
