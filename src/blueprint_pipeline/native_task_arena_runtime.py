@@ -19,6 +19,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, Sequence
 
 from .decision_evidence_contracts import canonical_digest
+from .native_g1_usd_dependency_closure import G1_KIT_RUNTIME_ASSETS
 
 #: Every logical contact sensor the scene plan is allowed to emit.
 #:
@@ -389,6 +390,14 @@ def _resolve_portable_robot(
     bindings = robot.get("usd_dependency_bindings")
     if not isinstance(bindings, list):
         raise NativeTaskArenaRuntimeError(["native_task_arena_robot_dependency_manifest_missing"])
+    runtime_assets = robot.get("usd_runtime_asset_dependencies")
+    if (
+        not isinstance(runtime_assets, list)
+        or any(not isinstance(asset, str) for asset in runtime_assets)
+        or runtime_assets != sorted(set(runtime_assets))
+        or any(asset not in G1_KIT_RUNTIME_ASSETS for asset in runtime_assets)
+    ):
+        raise NativeTaskArenaRuntimeError(["native_task_arena_robot_runtime_asset_manifest_invalid"])
     seen: set[str] = set()
     for binding in bindings:
         if not isinstance(binding, Mapping):

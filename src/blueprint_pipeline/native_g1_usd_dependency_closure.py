@@ -9,16 +9,27 @@ are refused before the packet is published.
 from __future__ import annotations
 
 from pathlib import Path, PurePosixPath
+from typing import NamedTuple
+
+G1_KIT_RUNTIME_ASSETS = frozenset({"OmniPBR.mdl"})
 
 
-def robot_usd_dependency_sources(source: Path) -> list[tuple[Path, PurePosixPath]]:
+class RobotUsdDependencyClosure(NamedTuple):
+    sources: list[tuple[Path, PurePosixPath]]
+    runtime_assets: tuple[str, ...]
+
+
+def robot_usd_dependency_sources(
+    source: Path, *, allowed_runtime_assets: frozenset[str] = frozenset()
+) -> RobotUsdDependencyClosure:
     try:
         from pxr import UsdUtils
 
         layers, assets, unresolved = UsdUtils.ComputeAllDependencies(str(source))
     except Exception as exc:  # noqa: BLE001 - unavailable USD inspection fails closed
         raise ValueError("native_g1_usd_dependency_inspection_failed") from exc
-    if unresolved:
+    unresolved_names = {str(value) for value in unresolved}
+    if unresolved_names - allowed_runtime_assets:
         raise ValueError("native_g1_usd_dependency_unresolved")
 
     root = source.parent.resolve()
@@ -67,4 +78,7 @@ def robot_usd_dependency_sources(source: Path) -> list[tuple[Path, PurePosixPath
             dependencies[relative.as_posix()] = (path, relative)
         else:
             admit(raw, owner=source)
-    return [dependencies[key] for key in sorted(dependencies)]
+    return RobotUsdDependencyClosure(
+        [dependencies[key] for key in sorted(dependencies)],
+        tuple(sorted(unresolved_names)),
+    )

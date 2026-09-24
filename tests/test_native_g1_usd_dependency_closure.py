@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline.native_g1_usd_dependency_closure import (
+    G1_KIT_RUNTIME_ASSETS,
     robot_usd_dependency_sources,
 )
 
@@ -21,9 +22,11 @@ def Shader "Material" {
     asset inputs:file = @texture.png@
 }
 ''')
-    assert [relative.as_posix() for _, relative in robot_usd_dependency_sources(source)] == [
+    closure = robot_usd_dependency_sources(source)
+    assert [relative.as_posix() for _, relative in closure.sources] == [
         "a.usda", "b.usda", "texture.png"
     ]
+    assert closure.runtime_assets == ()
 
 
 @pytest.mark.parametrize("reference", ["../outside.usda", "missing.usda"])
@@ -40,3 +43,20 @@ def test_escaping_or_unresolved_dependency_fails_closed(
     )
     with pytest.raises(ValueError, match="native_g1_usd_dependency_"):
         robot_usd_dependency_sources(source)
+
+
+def test_pinned_kit_mdl_can_be_declared_as_runtime_dependency(tmp_path: Path) -> None:
+    source = tmp_path / "g1.usda"
+    source.write_text('''#usda 1.0
+def Shader "Material" {
+    uniform token info:implementationSource = "sourceAsset"
+    uniform asset info:mdl:sourceAsset = @OmniPBR.mdl@
+}
+''')
+    with pytest.raises(ValueError, match="dependency_unresolved"):
+        robot_usd_dependency_sources(source)
+    closure = robot_usd_dependency_sources(
+        source, allowed_runtime_assets=G1_KIT_RUNTIME_ASSETS
+    )
+    assert closure.sources == []
+    assert closure.runtime_assets == ("OmniPBR.mdl",)
