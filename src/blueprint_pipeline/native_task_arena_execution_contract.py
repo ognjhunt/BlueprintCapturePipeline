@@ -190,6 +190,7 @@ POLICY_EXTRA_RUNTIME_MODULE_NAMES = (
     "native_g1_official_sonic_target_bridge.py",
     "native_g1_run_preflight.py",
     "native_g1_shared_scene_episode.py",
+    "native_g1_policy_server_supervisor.py",
     "native_task_asset_composition_gate.py",
     "native_task_composition_diagnostic.py",
     "native_task_composition_worker.py",
