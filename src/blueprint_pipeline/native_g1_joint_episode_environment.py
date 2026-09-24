@@ -13,6 +13,7 @@ from typing import Any
 
 import numpy as np
 
+from .adp009d_isaac_episode_adapter import rotation_row_major_from_quaternion_xyzw
 from .gear_sonic_joint_order_contract import PROTOCOL_V4_FULL_JOINT_ORDER
 from .native_g1_humanoidarena_interface import (
     CANONICAL_BODY_JOINT_NAMES_29,
@@ -56,6 +57,80 @@ class NativeG1JointEpisodeEnvironment:
         self._camera_history: dict[str, tuple[int, int]] = {}
         self._initial_root_orientation_xyzw: list[float] | None = None
         self._step_index = 0
+
+    def read_observation_metadata(self, roles: tuple[str, ...]) -> dict[str, Any]:
+        """Read calibrated Arena camera metadata for retained G1 frames."""
+
+        if self._initial_root_orientation_xyzw is None:
+            raise ValueError("native_g1_episode_reset_required")
+        cadence = self.plan.get("cadence") or {}
+        try:
+            frequency = float(cadence["control_frequency_hz"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("native_g1_episode_cadence_missing") from exc
+        if not math.isfinite(frequency) or frequency <= 0:
+            raise ValueError("native_g1_episode_cadence_invalid")
+        if not roles or len(set(roles)) != len(roles) or not set(roles).issubset({"head", "overview"}):
+            raise ValueError("native_g1_episode_camera_roles_invalid")
+        calibrations: dict[str, dict[str, Any]] = {}
+        devices: dict[str, str] = {}
+        synchronizations: dict[str, dict[str, Any]] = {}
+        for role in roles:
+            camera_name = str((self._camera_scene_names or {}).get(role) or "")
+            try:
+                camera = self._env.unwrapped.scene[camera_name]
+                raw = camera.data.output["rgb"]
+                frame = self._array(raw)
+                intrinsic = self._array(camera.data.intrinsic_matrices)[0]
+                position = self._array(camera.data.pos_w)[0]
+                quaternion = self._array(camera.data.quat_w_opengl)[0]
+                clipping = camera.cfg.spawn.clipping_range
+            except (AttributeError, KeyError, IndexError, TypeError, ValueError) as exc:
+                raise ValueError("native_g1_episode_camera_calibration_missing:" + role) from exc
+            if (
+                frame.ndim != 4 or frame.shape[0] != 1
+                or intrinsic.shape != (3, 3)
+                or position.shape != (3,)
+                or quaternion.shape != (4,)
+                or not np.isfinite(intrinsic).all()
+                or not np.isfinite(position).all()
+                or not np.isfinite(quaternion).all()
+                or not math.isclose(float(np.linalg.norm(quaternion)), 1.0, abs_tol=1e-5)
+                or len(clipping) != 2
+            ):
+                raise ValueError("native_g1_episode_camera_calibration_invalid:" + role)
+            rotation = rotation_row_major_from_quaternion_xyzw(quaternion)
+            matrix = [
+                [*rotation[row * 3:row * 3 + 3], float(position[row])]
+                for row in range(3)
+            ]
+            matrix.append([0.0, 0.0, 0.0, 1.0])
+            calibrations[role] = {
+                "camera_model": "pinhole",
+                "intrinsic_matrix": intrinsic.astype(float).tolist(),
+                "world_from_camera": matrix,
+                "resolution": [int(frame.shape[2]), int(frame.shape[1])],
+                "near_m": float(clipping[0]),
+                "far_m": float(clipping[1]),
+                "world_pose_source": "isaac_sensor_buffer",
+            }
+            devices[role] = str(getattr(raw, "device", self._env.unwrapped.device))
+            synchronizations[role] = {
+                "host_bytes_ready": True,
+                "method": "environment_step_completed_before_read_only_host_copy",
+                "sensor_freshness": {
+                    "step_index": self._camera_history[role][0],
+                    "sensor_frame_index": self._camera_history[role][1],
+                },
+            }
+        simulation_time = self._step_index / frequency
+        return {
+            "timestamp_ns": int(round(simulation_time * 1_000_000_000)),
+            "simulation_time_s": simulation_time,
+            "calibrations": calibrations,
+            "source_devices": devices,
+            "synchronizations": synchronizations,
+        }
 
     def _row(self, value: Any) -> list[float]:
         try:

@@ -50,12 +50,24 @@ configured reset joint positions to the Arena articulation's initial state.
 box-manipulation candidate through the same Arena scene. It binds the prompt to
 the scene task, uses the observed head camera and 64-value state for each policy
 query, sends every returned action through the pinned SONIC target bridge, and
-retains lossless input/review PNGs plus a task sample at each step. Its
-result is an unscored development trace. The production worker still needs to
-attest checkpoint bytes, score the bounded
-task, and seal a review video before either candidate is offered as runnable.
+retains calibrated lossless head input and head/overview review PNGs plus a task
+sample at each step. The shared media finalizer seals derived H.264 review
+videos for both cameras, linked to the immutable frame manifest. Its result is
+still an unscored development trace: the production worker must attest the
+executing checkpoint and controller, score the bounded task, and retain a
+terminal episode receipt before either candidate is offered as runnable.
 Movement policies require their own verified action/controller binding; the
 box-manipulation candidates do not prove movement-policy support.
+
+`run_g1_built_scene_policy_episode` now connects that loop to the existing
+native G1 joint environment, live rigid-task scene readback, and shared task
+scorer. It rechecks the offline scene/model/source preflight, retains the
+reset sample before the first policy query, then writes a trace and a scored
+development receipt after the episode. A scored failure is still a valid
+observed outcome. The receipt keeps `ranking_eligible` and policy-runtime
+identity false: the qualified worker has not yet bound the running server to
+the checkpoint or admitted G1 in the published bundle/run path. Navigation
+remains outside this box-task scorer.
 
 The two box checkpoints are separately pinned in
 `configs/g1_humanoidarena_checkpoint_inventory.v1.json`. A team can stage one
@@ -76,3 +88,62 @@ only after the inventory SHA-256 and byte size match. This is checkpoint
 storage proof, not a running or licensed policy. Verify the applicable model
 terms and bind the executing server process to these bytes before admitting
 either candidate to an evaluation run.
+
+The same inventory also pins two `HSI_vision_navi` movement candidates:
+`humanoidarena_dp_g1_dex3_sonic_vision_navi` and
+`humanoidarena_pi05_g1_dex3_sonic_vision_navi`. Their published configurations
+use the same front image, 64-value observation state, 40-value semantic action,
+and SONIC controller interface as the box candidates. Stage either with the
+same fetch command and its candidate id. These are navigation checkpoints for
+moving to a marked area; their file identities do not establish a runnable
+navigation task in Blueprint's captured site. A site-grounded movement task
+contract, checkpoint/server attestation, and live episode evidence are still
+required before offering them in the run configurator.
+
+Before a local or container attempt, run the same offline preflight against
+the staged packet and runtime inputs. `--bundle-root` is the root holding the
+packet's relative `assets/` paths; `--checkpoint-root` is the fetcher's output
+directory. Supply the checked-out official HumanoidArena
+`serve_lerobot_vla_http.py` and `action_provider_sonic.py` source files and
+the SONIC encoder/decoder ONNX files. The command checks the G1 scene packet,
+its USD closure and articulation, each candidate checkpoint file, the pinned
+server and SONIC source hashes, and the caller-declared SONIC model hashes:
+
+```bash
+PYTHONPATH=src python scripts/preflight_g1_shared_scene_run.py \
+  --scene-plan "$BUNDLE_ROOT/native_task_arena_scene_plan.v1.json" \
+  --bundle-root "$BUNDLE_ROOT" \
+  --inventory configs/g1_humanoidarena_checkpoint_inventory.v1.json \
+  --candidate humanoidarena_dp_g1_dex3_sonic \
+  --checkpoint-root "$CHECKPOINT_ROOT" \
+  --policy-server-source "$POLICY_SERVER_SOURCE" \
+  --sonic-provider-source "$SONIC_PROVIDER_SOURCE" \
+  --sonic-encoder "$SONIC_ENCODER" --sonic-encoder-sha256 "$SONIC_ENCODER_SHA256" \
+  --sonic-decoder "$SONIC_DECODER" --sonic-decoder-sha256 "$SONIC_DECODER_SHA256"
+```
+
+The receipt says `staged_inputs_verified` and records the exact selected
+candidate, scene digest, and file identities. It explicitly reports that no
+server or SONIC process was attested and no episode or score exists. It does
+not make a movement candidate runnable: the shared episode loop currently
+accepts only the box-manipulation candidates, and navigation still needs a
+site-grounded task/goal and score contract. The π0.5 upstream configs also
+contain absolute base-model references that need a verified loader mapping
+before their servers can be admitted.
+
+For an authorized development run, `start_g1_policy_server` in
+`native_g1_policy_server_supervisor.py` owns the pinned HumanoidArena HTTP
+server as a child process. It reruns the staged-input check, requires the
+official checkout at the inventory's exact source revision with no local
+changes, refuses an unverified absolute π0.5 base-model reference, launches
+the selected checkpoint on loopback, checks that the child owns the listener,
+and requires the official `/reset` acknowledgement. Its lease must be closed
+in `finally`; closing it waits for that child to exit. The receipt records
+the launch command, interpreter hash, candidate, scene, and listener PID.
+The server's response does not expose loaded-weight identity, so the receipt
+keeps `loaded_checkpoint_identity_observed=false` and makes no inference or
+task-success claim. `run_g1_supervised_built_scene_episode` in
+`native_g1_runtime_assembly.py` now owns this lease and the pinned SONIC
+controller through one built-scene development episode. It records the scored
+episode digest and child teardown in a terminal receipt. The production policy
+worker does not invoke this assembly yet, and no GPU run has verified it.

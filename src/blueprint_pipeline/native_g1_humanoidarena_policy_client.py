@@ -126,7 +126,9 @@ class NativeG1HumanoidArenaPolicyClient:
     def reset(self, *, seed: int) -> None:
         if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
             raise ValueError("g1_policy_seed_invalid")
-        self._transport("/reset", {"seed": seed})
+        response = self._transport("/reset", {"seed": seed})
+        if not isinstance(response, Mapping) or response.get("ok") is not True:
+            raise ValueError("g1_policy_reset_ack_invalid")
         self.candidate_policy_queried = False
 
     def infer_chunk(

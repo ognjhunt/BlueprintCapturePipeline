@@ -283,10 +283,10 @@ def test_edit_prompt_names_every_object_and_the_view_showing_most_objects_anchor
 
 
 # The dishwasher scene's retained paid edits and reviews are content addressed.
-# These digests were computed on origin/main before multi-object support.
+# These digests were computed on origin/main (including its #2199 review prompt).
 SINGLE_BINDING_DIGEST = "sha256:852a8de192a120f450bb5c2e03e2aea4df43d6a1ee4e638852786432154009af"
 SINGLE_REPAIR_BINDING_DIGEST = "sha256:0903c71068138cff0197884eb750175e8ed6fcaac057607a08616a0b7b720dae"
-REVIEW_PROMPT_SHA256 = "2feb2205a040c7c14ff1f219c81eecf0a8a247248e1bcccb24323175d1383823"
+REVIEW_PROMPT_SHA256 = "14bc55f4b4b5fdeb0149834387716880bf1f779ce1c07fd5ef9231aa5c1b643e"
 PROMPT_SHA256 = "f3ec969f5d959f4a5696ebc1afeb73f197cea8ee94681b38eedc6b55502f026e"
 
 
