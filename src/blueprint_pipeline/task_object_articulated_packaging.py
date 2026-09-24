@@ -420,7 +420,19 @@ _DRAWER_FEATURES = (
 )
 
 
-def _interior_slot(row: Mapping[str, Any]) -> str | None:
+def _tub_fixture(row: Mapping[str, Any]) -> str | None:
+    """Fixed tub hardware that belongs to the body (not a separate rack link)."""
+    words = set(_tokens(row["part_id"])) | set(_tokens(row["label"]))
+    if words & {"spray", "sprayer", "sprayers", "wash"} and words & {"arm", "arms", "sprayer", "sprayers"}:
+        return "upper_spray_arm" if words & {"upper", "middle", "top", "second", "2nd"} else "lower_spray_arm"
+    if words & {"filter", "filters", "sump", "drain"}:
+        return "floor_filter"
+    if words & {"heating", "heater"} or {"heat", "element"} <= words:
+        return "heating_element"
+    return None
+
+
+def _interior_slot(row: Mapping[str, Any], *, sole_rack: bool = False) -> str | None:
     words = set(_tokens(row["part_id"])) | set(_tokens(row["label"]))
     if words & {"cutlery", "silverware", "utensil", "utensils", "flatware"}:
         return "third_tray" if words & {"tray", "third", "3rd"} else "cutlery_basket"
@@ -430,7 +442,7 @@ def _interior_slot(row: Mapping[str, Any]) -> str | None:
         return "third_tray"
     if words & {"upper", "top", "second", "2nd"}:
         return "upper_rack"
-    if words & {"lower", "bottom", "first", "1st"}:
+    if words & {"lower", "bottom", "first", "1st"} or (sole_rack and words & {"rack", "racks"}):
         return "lower_rack"
     return None
 
@@ -523,9 +535,22 @@ def _plan_hinged_door_appliance(configuration: Mapping[str, Any], contract: Mapp
               **_place_role_rows(rows["door"], link_id=DOOR_LINK_ID, vocabulary=_DOOR_FEATURES,
                                  whole_role="task_part", features=door_features)}
     slots: dict[str, str] = {}
+    fixtures: dict[str, str] = {}
+    # One rack the footage never qualifies as upper or lower is the lower rack.
+    sole_rack = sum(1 for row in rows["interior"]
+                    if _tub_fixture(row) is None and _interior_slot(row, sole_rack=True) is not None) == 1
     for row in rows["interior"]:
-        slot = _interior_slot(row)
-        if slot is None or slot in slots.values() or row["part_id"] in {BODY_LINK_ID, DOOR_LINK_ID}:
+        slot = _interior_slot(row, sole_rack=sole_rack)
+        fixture = _tub_fixture(row) if slot is None else None
+        if row["part_id"] in {BODY_LINK_ID, DOOR_LINK_ID} or (slot is None and fixture is None):
+            raise AssetAuthoringError("articulated_required_part_unplanned:" + row["part_id"])
+        if fixture is not None:
+            if fixture in fixtures.values():
+                raise AssetAuthoringError("articulated_required_part_unplanned:" + row["part_id"])
+            fixtures[row["part_id"]] = fixture
+            placed[row["part_id"]] = {"link_id": BODY_LINK_ID, "feature": fixture}
+            continue
+        if slot in slots.values():
             raise AssetAuthoringError("articulated_required_part_unplanned:" + row["part_id"])
         slots[row["part_id"]] = slot
         placed[row["part_id"]] = {"link_id": row["part_id"], "feature": "link"}
@@ -550,6 +575,26 @@ def _plan_hinged_door_appliance(configuration: Mapping[str, Any], contract: Mapp
                                     rack_w / 2 - basket[1] / 2 - 0.01, lower_z + 0.01],
                            "Open-top basket seated inside the lower rack footprint at the front right"),
     }
+    # Tub hardware stays on the body, low and thin so the tub remains open.
+    tub_x = body_x / 2 - tub_depth / 2
+    fixture_geometry = {
+        "lower_spray_arm": ([0.05, 0.8 * tub_w, 0.03], [tub_x, 0.0, tub_floor + 0.035],
+                            "lower spray arm: a flat bar across the tub just above the floor"),
+        "upper_spray_arm": ([0.05, 0.7 * tub_w, 0.03], [tub_x, 0.0, upper_z - 0.03],
+                            "upper spray arm: a flat bar across the tub just below the upper rack"),
+        "floor_filter": ([0.12, 0.12, 0.04], [tub_x - 0.15 * tub_depth, 0.0, tub_floor + 0.02],
+                         "filter: a round cup set into the tub floor behind its centre"),
+        "heating_element": ([0.7 * tub_depth, 0.7 * tub_w, 0.012], [tub_x, 0.0, tub_floor + 0.008],
+                            "heating element: a thin loop lying on the tub floor"),
+    }
+    fixture_text = []
+    for part_id, fixture in fixtures.items():
+        size, center, text = fixture_geometry[fixture]
+        if fixture == "upper_spray_arm" and "upper_rack" not in slots.values():
+            raise AssetAuthoringError("articulated_interior_geometry_infeasible:" + part_id)
+        body_features[fixture] = _box(center, size)
+        label = next(row["label"] for row in rows["interior"] if row["part_id"] == part_id)
+        fixture_text.append(f"{label} ({text}, {round(size[0], 3)} x {round(size[1], 3)} x {round(size[2], 3)} m)")
     interior_parts: dict[str, dict[str, Any]] = {}
     interior_links = []
     for part_id, slot in slots.items():
@@ -609,7 +654,9 @@ def _plan_hinged_door_appliance(configuration: Mapping[str, Any], contract: Mapp
                     f"top panel {t} m thick, tub floor {t} m thick, closed back wall and service space "
                     f"{APPLIANCE_BACK_CLEARANCE_M} m thick"
                     + (f", and a solid base {round(base, 4)} m tall whose front face is the kickplate" if base else "")
-                    + ". The tub must stay empty and open to the front; the door, racks and baskets are separate parts."),
+                    + (". Fixed to the tub as part of this body: " + "; ".join(fixture_text) if fixture_text else "")
+                    + ". The tub must otherwise stay empty and open to the front; the door, racks and baskets are "
+                    "separate parts."),
             },
             DOOR_LINK_ID: {
                 "link_role": "task_part", "dimensions_m": [round(door_x, 5), round(width, 5), round(door_h, 5)],

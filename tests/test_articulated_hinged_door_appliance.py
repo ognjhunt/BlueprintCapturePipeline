@@ -686,3 +686,18 @@ def test_prismatic_task_records_keep_their_metre_fields():
     assert success["maximum_settled_target_speed"] == 0.02 and success["locked_joint_motion_tolerance"] == 0.01
     assert "joint_coordinate_units" not in success and "pull_follows_hinge_arc" not in template["interaction_affordance"]
     assert template["interaction_affordance"]["jaw_unit_asset_frame"] == [0.0, 0.0, 1.0]
+
+
+def test_one_unqualified_rack_is_the_lower_rack_but_two_stay_ambiguous():
+    value = dishwasher()
+    value["required_parts"] = [row for row in value["required_parts"]
+                               if row["part_id"] not in {"upper_rack", "lower_rack", "cutlery_basket"}]
+    value["required_parts"].append({"part_id": "rack", "label": "Dish rack", "role": "fixed_interior",
+                                    "observed_frame_ids": ["f_open"]})
+    plan = plan_articulated_assembly(value)
+    rack = next(link for link in plan["links"] if link["link_id"] == "rack")
+    assert rack["rest_translation_m"][2] < plan["parts"]["body"]["features"]["tub_cavity"]["minimum"][2] + 0.1
+    value["required_parts"].append({"part_id": "rack_2", "label": "Another rack", "role": "fixed_interior",
+                                    "observed_frame_ids": ["f_open"]})
+    with pytest.raises(AssetAuthoringError, match="required_part_unplanned:rack"):
+        plan_articulated_assembly(value)

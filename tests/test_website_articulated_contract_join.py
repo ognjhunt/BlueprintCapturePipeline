@@ -207,14 +207,38 @@ def test_yawed_body_keeps_its_own_extent_and_the_builder_checks_it(tmp_path):
 
 
 def test_builder_refusal_holds_compile_before_anything_is_bought(tmp_path):
-    views = [row if row[0] != "decoded-000000045" else (*row[:4], ["lower_rack", "spray_arm", "tub", "upper_rack"])
+    views = [row if row[0] != "decoded-000000045" else (*row[:4], ["lower_rack", "ice_maker", "tub", "upper_rack"])
              for row in DISHWASHER_VIEWS]
     args = _arguments(tmp_path)
     args.update(_dishwasher_inputs(tmp_path, views=views))
     args["removal_manifest"] = DISHWASHER_REMOVAL
     preparation = compile_website_scene_preparation(**args)
     assert preparation["status"] == "needs_input"
-    assert "website_assembly_builder_refused:articulated_required_part_unplanned:spray_arm" in preparation["blockers"]
+    assert "website_assembly_builder_refused:articulated_required_part_unplanned:ice_maker" in preparation["blockers"]
+
+
+def test_routine_tub_hardware_is_placed_on_the_body_not_refused(tmp_path):
+    # A real dishwasher interior shows spray arms and a filter; they belong to the body.
+    views = [row if row[0] != "decoded-000000045" else
+             (*row[:4], ["lower_rack", "lower_spray_arm", "upper_spray_arm", "filter", "tub", "upper_rack"])
+             for row in DISHWASHER_VIEWS]
+    args = _arguments(tmp_path)
+    args.update(_dishwasher_inputs(tmp_path, views=views))
+    args["removal_manifest"] = DISHWASHER_REMOVAL
+    preparation = compile_website_scene_preparation(**args)
+    assert preparation["status"] == "intake_ready", preparation["blockers"]
+    plan = plan_articulated_assembly(preparation["authoring_inputs"]["configuration"])
+    placed = {row["part_id"]: (row["link_id"], row["feature"]) for row in plan["required_parts"]}
+    assert placed["lower_spray_arm"] == ("body", "lower_spray_arm")
+    assert placed["upper_spray_arm"] == ("body", "upper_spray_arm")
+    assert placed["filter"] == ("body", "floor_filter")
+    body = plan["parts"]["body"]
+    assert {"lower_spray_arm", "upper_spray_arm", "floor_filter"} <= set(body["features"])
+    assert "Fixed to the tub as part of this body" in body["description"]
+    # Fixtures stay low and thin: the tub cavity remains open above them.
+    cavity = body["features"]["tub_cavity"]
+    for name in ("lower_spray_arm", "floor_filter"):
+        assert body["features"][name]["maximum"][2] - cavity["minimum"][2] <= 0.06
 
 
 def _published_spec(**specs):
