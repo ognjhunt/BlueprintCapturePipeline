@@ -40,6 +40,17 @@ REVIEW_PROMPT = (
     "only when no prepared view shows one. False if uncertain. Targets: "
 )
 
+CONSISTENCY_DIAGNOSIS_PROMPT = (
+    "The independent review rejected these prepared views ONLY for inconsistent background. "
+    "Compare each prepared frame with its labeled original and with the other views of the same room. "
+    "Identify exactly ONE prepared frame whose generated fill invents a surface or structure that "
+    "conflicts with the observed room in the other views. Do not name a frame merely because its "
+    "camera sees a different part of the room. Preserve the desk, backpack, and other observed "
+    "obstacles. Return JSON with inconsistent_background_frame_ids containing that exact prepared "
+    "frame ID, or an empty array when no single erroneous view can be identified, and a short "
+    "visual_evidence string. This diagnosis does not approve any view or change the prior review."
+)
+
 PROMPT = (
     "Edit only the FIRST image. Complete the transparent masked holes with realistic background surfaces "
     "continuing from the surrounding room. Remove the task object completely in those holes. Preserve "
@@ -325,3 +336,79 @@ def verify_completed_background(*, frames: Sequence[Mapping[str, Any]], original
         task_context=task_context, maximum_cost_usd=gemini_quote(model=DEFAULT_MODEL, input_tokens=input_tokens, max_output_tokens=2048),
         preflight=preflight, invoke=lambda: _verify_completed_background(frames=frames,
             original_frames=original_frames, plan=plan, output_root=output_root, retain_result=False))
+
+
+def diagnose_inconsistent_background(*, frames: Sequence[Mapping[str, Any]],
+                                     original_frames: Sequence[Mapping[str, Any]], plan: Mapping[str, Any],
+                                     failed_review: Mapping[str, Any], output_root: Path,
+                                     task_context: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Buy at most one retained diagnosis for a failed review, never an approval."""
+    if not task_context or failed_review.get("status") != "blocked":
+        raise ValueError("website_background_consistency_diagnosis_not_authorized")
+    prior = failed_review.get("review") or {}
+    if (prior.get("consistent_background") is not False
+            or not all(prior.get(key) is True for key in
+                       ("task_objects_removed", "people_absent", "unrelated_objects_preserved"))
+            or prior.get("remaining_task_object_frame_ids") != []):
+        raise ValueError("website_background_consistency_diagnosis_not_applicable")
+    originals = {frame["frame_id"]: frame for frame in original_frames}
+    for frame in frames:
+        if frame.get("original_image_path"):
+            originals[frame["frame_id"]] = {"image_path": frame["original_image_path"],
+                                              "image_digest": frame["original_image_digest"]}
+    image_digests = []
+    for frame in frames:
+        for item in (originals[frame["frame_id"]], frame):
+            if _sha256_file(Path(item["image_path"])) != item["image_digest"]:
+                raise ValueError("website_background_consistency_source_changed")
+            image_digests.append(item["image_digest"])
+    binding = {"kind": "background_consistency_diagnosis", "revision": 1, "model": DEFAULT_MODEL,
+               "prior_review_digest": failed_review["request_digest"], "image_digests": image_digests,
+               "frame_ids": [frame["frame_id"] for frame in frames], "prompt": CONSISTENCY_DIAGNOSIS_PROMPT,
+               "media_resolution": "MEDIA_RESOLUTION_HIGH", "max_output_tokens": 1024}
+    task_digest = sha256(json.dumps(dict(task_context), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    if plan.get("task_context_sha256") != task_digest:
+        raise ValueError("website_background_consistency_task_mismatch")
+    from .website_gemini_receipts import gemini_quote, retained_gemini_call
+    text_bytes = len(CONSISTENCY_DIAGNOSIS_PROMPT.encode()) + 1024
+    text_bytes += sum(len(str(frame["frame_id"]).encode()) * 2 + 32 for frame in frames)
+
+    def preflight():
+        if not _api_key()[0]:
+            raise ValueError("website_background_consistency_key_missing")
+        from google import genai  # noqa: F401
+
+    def invoke():
+        from google import genai
+        from google.genai import types
+        contents = [CONSISTENCY_DIAGNOSIS_PROMPT]
+        for frame in frames:
+            for label, item in (("original", originals[frame["frame_id"]]), ("prepared", frame)):
+                path = Path(item["image_path"])
+                if _sha256_file(path) != item["image_digest"]:
+                    raise ValueError("website_background_consistency_source_changed")
+                contents.extend([f"{label} {frame['frame_id']}",
+                                 types.Part.from_bytes(data=path.read_bytes(), mime_type="image/png")])
+        with genai.Client(api_key=_api_key()[0], http_options=types.HttpOptions(
+                timeout=120_000, retry_options=types.HttpRetryOptions(attempts=1))) as client:
+            response = client.models.generate_content(model=DEFAULT_MODEL, contents=contents,
+                config=types.GenerateContentConfig(response_mime_type="application/json", max_output_tokens=1024,
+                                                   media_resolution="MEDIA_RESOLUTION_HIGH"))
+        if not response.candidates or response.candidates[0].finish_reason != "STOP":
+            raise ValueError("website_background_consistency_diagnosis_incomplete")
+        return {"status": "completed", "binding": binding, "diagnosis": json.loads(response.text),
+                "basis": "model_visual_diagnosis", "physical_evidence": False}
+
+    result = retained_gemini_call(output_root=output_root / "gemini_reviews", binding=binding,
+        task_context=task_context, maximum_cost_usd=gemini_quote(model=DEFAULT_MODEL,
+            input_tokens=text_bytes + 1120 * len(image_digests), max_output_tokens=1024),
+        preflight=preflight, invoke=invoke)
+    diagnosis = result.get("diagnosis") or {}
+    ids = diagnosis.get("inconsistent_background_frame_ids")
+    if (result.get("status") != "completed" or result.get("binding") != binding
+            or not isinstance(ids, list) or len(ids) != 1 or not isinstance(ids[0], str)
+            or ids[0] not in {frame["frame_id"] for frame in frames}
+            or not isinstance(diagnosis.get("visual_evidence"), str)
+            or not diagnosis["visual_evidence"].strip()):
+        raise ValueError("website_background_consistency_diagnosis_invalid")
+    return result

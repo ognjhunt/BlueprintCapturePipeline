@@ -36,7 +36,9 @@ from .website_task_masks import run_website_task_masks
 from .website_object_removal import prepare_object_removal_frames, select_reconstruction_frames, reconstruction_source_frames, replace_unmasked_task_views
 from .website_removal_view_corroboration import corroborate_removal_views
 from .website_reconstruction_profile import reconstruction_profile
-from .website_image_completion import complete_background_images, verify_completed_background
+from .website_image_completion import (
+    complete_background_images, diagnose_inconsistent_background, verify_completed_background,
+)
 
 FLAG_ENV = "BLUEPRINT_CLEAN_PLATE_ENABLED"
 ADP_ITEM_ENV = "BLUEPRINT_CLEAN_PLATE_ADP_ITEM"
@@ -465,6 +467,35 @@ def run_clean_plate_stage(
                             output_root=clean_plate_root / "image_completion", task_context=task_context)
                         completion_review = {**completion_review, "prior_failed_review": first_review,
                                              "excluded_unmasked_frame_ids": sorted(remaining_ids)}
+                # A failed background-consistency review is not approval. Ask
+                # one separately retained diagnosis for the exact bad view,
+                # exclude only that generated view, then independently review
+                # the whole remaining set. Never retry this branch in a loop.
+                review = completion_review.get("review") or {}
+                if (completion_review.get("status") == "blocked"
+                        and review.get("consistent_background") is False
+                        and all(review.get(field) is True for field in (
+                            "task_objects_removed", "people_absent", "unrelated_objects_preserved"))
+                        and review.get("remaining_task_object_frame_ids") == []):
+                    diagnosis = diagnose_inconsistent_background(
+                        frames=selected, original_frames=source_geometry["frames"], plan=plan,
+                        failed_review=completion_review, output_root=clean_plate_root / "image_completion",
+                        task_context=task_context)
+                    inconsistent_id = diagnosis["diagnosis"]["inconsistent_background_frame_ids"][0]
+                    offending = next(frame for frame in selected if frame["frame_id"] == inconsistent_id)
+                    if not offending.get("generated_pixels_present") or len(selected) < 3:
+                        raise ValueError("website_background_consistency_exclusion_invalid")
+                    prior_review = completion_review
+                    selected = [frame for frame in selected if frame["frame_id"] != inconsistent_id]
+                    completion_review = verify_completed_background(
+                        frames=selected, original_frames=source_geometry["frames"], plan=plan,
+                        output_root=clean_plate_root / "image_completion", task_context=task_context)
+                    completion_review = {**completion_review,
+                                         "prior_failed_review": prior_review.get("prior_failed_review", prior_review),
+                                         "excluded_unmasked_frame_ids": prior_review.get("excluded_unmasked_frame_ids", []),
+                                         "prior_inconsistent_review": prior_review,
+                                         "inconsistency_diagnosis": diagnosis,
+                                         "excluded_inconsistent_frame_ids": [inconsistent_id]}
                 if completion_review.get("status") != "passed":
                     raise ValueError("website_image_completion_review_failed")
             prepared_views = {"schema_version": "website_prepared_views.v1", "status": "ready", "frames": selected,

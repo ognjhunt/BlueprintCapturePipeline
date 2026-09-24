@@ -179,7 +179,8 @@ def test_website_preparation_preserves_original_frames_without_geometry(tmp_path
         assert result["blockers"] == []
 
 
-@pytest.mark.parametrize("fill_result", ["unneeded", "passed", "blocked", "review_repair", "review_repair_edited"])
+@pytest.mark.parametrize("fill_result", ["unneeded", "passed", "blocked", "review_repair",
+                                        "review_repair_edited", "inconsistent_repair", "inconsistent_unedited"])
 def test_website_stage_prepares_images_without_waiting_for_geometry(tmp_path, monkeypatch, fill_result):
     capture_root = _make_capture(tmp_path)
     source = capture_root / "raw/walkthrough.mp4"
@@ -231,6 +232,16 @@ def test_website_stage_prepares_images_without_waiting_for_geometry(tmp_path, mo
 
     def review(**kwargs):
         order.append("review")
+        if fill_result in {"inconsistent_repair", "inconsistent_unedited"}:
+            ids = [frame["frame_id"] for frame in kwargs["frames"]]
+            if len(ids) == 8:
+                return {"status": "blocked", "request_digest": "review-digest", "review": {
+                    "consistent_background": False, "task_objects_removed": True,
+                    "people_absent": True, "unrelated_objects_preserved": True,
+                    "remaining_task_object_frame_ids": []}}
+            assert "f0" not in ids and len(ids) == 7
+            return {"status": "passed", "review": {"consistent_background": True,
+                "task_objects_removed": True, "remaining_task_object_frame_ids": []}}
         if fill_result in {"review_repair", "review_repair_edited"}:
             ids = [frame["frame_id"] for frame in kwargs["frames"]]
             if len(ids) == 8:
@@ -251,6 +262,12 @@ def test_website_stage_prepares_images_without_waiting_for_geometry(tmp_path, mo
     monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.prepare_object_removal_frames", recover)
     monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.complete_background_images", complete)
     monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.verify_completed_background", review)
+    def diagnose(**kwargs):
+        order.append("diagnosis")
+        assert kwargs["failed_review"]["request_digest"] == "review-digest"
+        return {"status": "completed", "diagnosis": {"inconsistent_background_frame_ids":
+            ["f0" if fill_result == "inconsistent_repair" else "f2"], "visual_evidence": "invented panel"}}
+    monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.diagnose_inconsistent_background", diagnose)
     result = run_clean_plate_stage(capture_root=capture_root, privacy_processing={"status": "pending_website_review"},
                                    website_source_video=source)
     assert result["privacy_verified"] is True
@@ -258,17 +275,24 @@ def test_website_stage_prepares_images_without_waiting_for_geometry(tmp_path, mo
     assert result["source_frames"] == geometry
     assert order == ["analysis", "source_frames", "masks", "mask_preparation"] + (
         [] if fill_result == "unneeded" else ["completion", "review"] +
-        (["review"] if fill_result == "review_repair" else []))
-    if fill_result in {"blocked", "review_repair_edited"}:
+        (["review"] if fill_result == "review_repair" else
+         ["diagnosis", "review"] if fill_result == "inconsistent_repair" else
+         ["diagnosis"] if fill_result == "inconsistent_unedited" else []))
+    if fill_result in {"blocked", "review_repair_edited", "inconsistent_unedited"}:
         assert result["status"] == "blocked"
         assert result["prepared_views"] is None
-        assert "website_image_completion_review_failed" in result["blockers"]
+        assert ("website_background_consistency_exclusion_invalid" if fill_result == "inconsistent_unedited"
+                else "website_image_completion_review_failed") in result["blockers"]
         return
     assert result["status"] == "objects_removed"
-    assert len(result["prepared_views"]["frames"]) == (7 if fill_result == "review_repair" else 8)
+    assert len(result["prepared_views"]["frames"]) == (7 if fill_result in {"review_repair", "inconsistent_repair"} else 8)
     if fill_result == "review_repair":
         assert result["prepared_views"]["completion_review"]["excluded_unmasked_frame_ids"] == ["f2"]
         assert result["prepared_views"]["completion_review"]["prior_failed_review"]["status"] == "blocked"
+    if fill_result == "inconsistent_repair":
+        reviewed = result["prepared_views"]["completion_review"]
+        assert reviewed["excluded_inconsistent_frame_ids"] == ["f0"]
+        assert reviewed["prior_inconsistent_review"]["status"] == "blocked"
     forwarded = apply_clean_plate_to_reconstruction_input({"output_video_uri": "gs://raw.mov"}, result, required=True)
     assert forwarded["output_video_uri"] is None
     assert forwarded["prepared_views"] == result["prepared_views"]
