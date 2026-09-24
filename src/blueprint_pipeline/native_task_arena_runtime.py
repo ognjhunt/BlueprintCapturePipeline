@@ -386,6 +386,38 @@ def _resolve_portable_robot(
         or _sha256(resolved) != robot.get("usd_sha256")
     ):
         raise NativeTaskArenaRuntimeError(["native_task_arena_robot_asset_identity_mismatch"])
+    bindings = robot.get("usd_dependency_bindings")
+    if not isinstance(bindings, list):
+        raise NativeTaskArenaRuntimeError(["native_task_arena_robot_dependency_manifest_missing"])
+    seen: set[str] = set()
+    for binding in bindings:
+        if not isinstance(binding, Mapping):
+            raise NativeTaskArenaRuntimeError(["native_task_arena_robot_dependency_manifest_invalid"])
+        relative_path = str(binding.get("relative_path") or "")
+        dep_path = PurePosixPath(relative_path)
+        if (
+            not relative_path
+            or dep_path.is_absolute()
+            or ".." in dep_path.parts
+            or dep_path.parts[0] != "assets"
+            or relative_path in seen
+            or relative_path == path
+        ):
+            raise NativeTaskArenaRuntimeError(["native_task_arena_robot_dependency_manifest_invalid"])
+        seen.add(relative_path)
+        dep_candidate = root.joinpath(*dep_path.parts)
+        dep_resolved = dep_candidate.resolve()
+        if (
+            _has_symlink_component(dep_candidate, root=root)
+            or root not in dep_resolved.parents
+            or not dep_resolved.is_file()
+        ):
+            raise NativeTaskArenaRuntimeError(["native_task_arena_robot_dependency_missing"])
+        if (
+            dep_resolved.stat().st_size != binding.get("size_bytes")
+            or _sha256(dep_resolved) != binding.get("sha256")
+        ):
+            raise NativeTaskArenaRuntimeError(["native_task_arena_robot_dependency_identity_mismatch"])
     robot["usd_path"] = str(resolved)
     return robot
 

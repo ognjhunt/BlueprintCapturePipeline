@@ -24,6 +24,7 @@ from .native_task_arena_scene_plan import (
     materialize_native_task_arena_scene_plan,
 )
 from .native_task_arena_runtime import author_gpu_compatible_scene_collision
+from .native_g1_usd_dependency_closure import robot_usd_dependency_sources
 from .native_task_execution_admission import seal_native_task_execution_admission
 from .native_task_runtime_contract import materialize_native_task_runtime_contract
 from .nvidia_3dgrut_particlefield_transcode import (
@@ -491,15 +492,45 @@ def _stage_robot_configuration(
     _stage_verified_asset(source, destination, link_within=link_within)
     if destination.stat().st_size != size or _sha256(destination) != digest:
         raise NativeTaskArenaPacketError(["native_task_arena_packet_robot_copy_mismatch"])
+    dependency_bindings: list[dict[str, Any]] = []
+    try:
+        dependency_sources = robot_usd_dependency_sources(source)
+    except ValueError as exc:
+        raise NativeTaskArenaPacketError([str(exc)]) from exc
+    for dependency, relative in dependency_sources:
+        staged = assets_dir.joinpath(*relative.parts)
+        if staged.exists() or staged == destination:
+            raise NativeTaskArenaPacketError(["native_task_arena_packet_robot_dependency_collision"])
+        staged.parent.mkdir(parents=True, exist_ok=True)
+        _stage_verified_asset(dependency, staged, link_within=link_within)
+        dependency_digest = _sha256(dependency)
+        dependency_size = dependency.stat().st_size
+        if staged.stat().st_size != dependency_size or _sha256(staged) != dependency_digest:
+            raise NativeTaskArenaPacketError(["native_task_arena_packet_robot_dependency_copy_mismatch"])
+        dependency_bindings.append({
+            "relative_path": f"assets/{relative.as_posix()}",
+            "size_bytes": dependency_size,
+            "sha256": dependency_digest,
+        })
+    try:
+        staged_closure = robot_usd_dependency_sources(destination)
+    except ValueError as exc:
+        raise NativeTaskArenaPacketError(["native_task_arena_packet_robot_staged_closure_invalid"]) from exc
+    if [relative.as_posix() for _, relative in staged_closure] != [
+        row["relative_path"].removeprefix("assets/") for row in dependency_bindings
+    ]:
+        raise NativeTaskArenaPacketError(["native_task_arena_packet_robot_staged_closure_mismatch"])
     configuration = json.loads(json.dumps(raw))
     configuration.pop("asset_source")
     configuration["usd_path"] = str(destination)
     configuration["usd_size_bytes"] = size
+    configuration["usd_dependency_bindings"] = dependency_bindings
     return configuration, {
         "source": dict(raw["asset_source"]),
         "staged_relative_path": f"assets/{filename}",
         "staged_size_bytes": size,
         "staged_sha256": digest,
+        "dependency_bindings": dependency_bindings,
     }
 
 
@@ -748,6 +779,17 @@ def materialize_native_task_arena_packet(
                 or _sha256(staged) != digest
             ):
                 raise NativeTaskArenaPacketError(["native_task_arena_packet_robot_source_mutated"])
+            for binding in robot_asset_binding["dependency_bindings"]:
+                relative = PurePosixPath(binding["relative_path"])
+                dependency_source = source.parent.joinpath(*relative.parts[1:])
+                dependency_staged = output.joinpath(*relative.parts)
+                if (
+                    not dependency_source.is_file()
+                    or dependency_source.stat().st_size != binding["size_bytes"]
+                    or _sha256(dependency_source) != binding["sha256"]
+                    or _sha256(dependency_staged) != binding["sha256"]
+                ):
+                    raise NativeTaskArenaPacketError(["native_task_arena_packet_robot_dependency_source_mutated"])
         receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
         write_json(output / "native_task_arena_packet_receipt.v1.json", receipt)
         construction = contract.get("construction_bindings") or {}

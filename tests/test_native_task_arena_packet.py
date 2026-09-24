@@ -613,6 +613,8 @@ def test_packet_stages_g1_asset_for_portable_scene_plan(tmp_path: Path) -> None:
     request = _request(evidence, articulated=True)
     asset = evidence / "robot" / "g1.usda"
     asset.parent.mkdir()
+    dependency = asset.parent / "attachment.usda"
+    dependency.write_text('#usda 1.0\ndef Xform "Attachment" {}\n', encoding="utf-8")
     asset.write_text(
         '''#usda 1.0
 (
@@ -622,6 +624,7 @@ def Xform "G1"
 {
     def Xform "pelvis" (prepend apiSchemas = ["PhysicsRigidBodyAPI"]) {}
     def Xform "right_finger_tip" (prepend apiSchemas = ["PhysicsRigidBodyAPI"]) {}
+    def Xform "attachment" (references = @attachment.usda@</Attachment>) {}
 }
 ''',
         encoding="utf-8",
@@ -667,11 +670,20 @@ def Xform "G1"
     plan = json.loads((output / "native_task_arena_scene_plan.v1.json").read_text())
 
     assert receipt["robot_asset_binding"]["staged_sha256"] == digest
+    assert receipt["robot_asset_binding"]["dependency_bindings"] == [{
+        "relative_path": "assets/attachment.usda",
+        "size_bytes": dependency.stat().st_size,
+        "sha256": f"sha256:{sha256_file(dependency)}",
+    }]
     assert plan["robot"]["usd_path"] == "assets/robot_unitree_g1.usda"
     assert _resolve_portable_robot(plan, bundle_root=output)["usd_path"] == str(
         output / "assets" / "robot_unitree_g1.usda"
     )
     assert validate_native_task_arena_runtime_plan(plan, bundle_root=output) == plan
+    (output / "assets" / "attachment.usda").write_text("tampered")
+    with pytest.raises(ValueError, match="robot_dependency_identity_mismatch"):
+        _resolve_portable_robot(plan, bundle_root=output)
+    (output / "assets" / "attachment.usda").write_bytes(dependency.read_bytes())
     (output / "assets" / "robot_unitree_g1.usda").write_text("tampered")
     with pytest.raises(ValueError, match="robot_asset_identity_mismatch"):
         _resolve_portable_robot(plan, bundle_root=output)

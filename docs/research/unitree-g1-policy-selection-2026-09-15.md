@@ -276,9 +276,12 @@ hashes, publishes a relative path, and re-verifies bytes before container
 spawn. The same path works for a local non-container bundle root.
 
 This proves construction packet generation and preflight on a minimal test
-asset, not a runnable G1 policy episode. A production robot USD with external
-asset references still needs an admitted dependency closure and exact runtime
-validation. The DROID-specific episode loop, SONIC execution, checkpoint
+asset, not a runnable G1 policy episode. The packet now discovers referenced
+local USD layers and textures, rejects absolute/escaping/unresolved references,
+stages and hashes every dependency, and rechecks that the staged root USD has
+the same closure. Runtime preflight verifies the sealed dependency manifest
+before spawn. A real production G1 USD closure has not been exercised yet.
+The DROID-specific episode loop, SONIC execution, checkpoint
 inference, scoring, published G1 setup, deployed WebApp path, and review video
 remain unverified. Neither simulator nor physical G1 task success is claimed.
 
