@@ -132,6 +132,29 @@ def test_sponsored_claude_choice_requires_its_separate_digest_bound_terms(monkey
             module.load_website_scene_sponsorship(task_context=context(), now=1000)
 
 
+def test_sponsored_agents_api_choice_requires_complete_digest_bound_policy(monkeypatch):
+    policy = {"schema_version": "scene_configuration_agents_api_policy.v1",
+              "disclosure_scope": "task_asset_source_frames_and_metric_envelope",
+              "session_retention": "until_deleted", "trace_retention": "provider_default",
+              "region": "us", "budget_policy": "project_guard_accepted_uncertainty",
+              "project_guard_receipt_digest": "sha256:" + "f" * 64,
+              "ttl_seconds": 900, "maximum_review_cycles": 3}
+    value = {**sponsorship(), "authoring_provider": "openai",
+             "authoring_agent_runtime": "openai_agents_api", "authoring_model": "gpt-6-sol",
+             "agents_api_policy": policy}
+    value["authority_digest"] = canonical_digest(value, digest_field="authority_digest")
+    monkeypatch.setattr(module, "website_webapp_request", lambda **_: value)
+    assert module.load_website_scene_sponsorship(task_context=context(), now=1000) == value
+    for mutation in ({"authoring_model": "gpt-6-astra"},
+                     {"agents_api_policy": {**policy, "maximum_review_cycles": 9}},
+                     {"agents_api_policy": {**policy, "project_guard_receipt_digest": "unbound"}}):
+        bad = {**value, **mutation}
+        bad["authority_digest"] = canonical_digest(bad, digest_field="authority_digest")
+        monkeypatch.setattr(module, "website_webapp_request", lambda **_: bad)
+        with pytest.raises(ValueError, match="agents_api_policy_invalid"):
+            module.load_website_scene_sponsorship(task_context=context(), now=1000)
+
+
 def test_prepared_scene_enters_webapp_outbox_not_a_forged_local_owner_intent(monkeypatch):
     request = {"submission_id": "walkthrough-req1", "source": {"binding_id": "website-splat-test"},
                "task": {"position": [0.0, 1.0, 1e-7]}}

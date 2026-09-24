@@ -163,12 +163,31 @@ def load_website_scene_sponsorship(*, task_context: Mapping[str, Any], now: floa
     issued = (value.get("consent") or {}).get("accepted_at_epoch")
     authoring_provider = value.get("authoring_provider", "openai")
     anthropic_terms = value.get("anthropic_provider_terms_reference")
+    authoring_runtime = value.get("authoring_agent_runtime")
+    agents_policy = value.get("agents_api_policy")
     if (authoring_provider not in {"openai", "anthropic"}
             or (authoring_provider == "openai" and anthropic_terms is not None)
             or (authoring_provider == "anthropic" and (
                 not isinstance(anthropic_terms, str)
                 or re.fullmatch(r"sha256:[0-9a-f]{64}", anthropic_terms) is None))):
         raise ValueError("website_scene_sponsorship_authoring_provider_invalid")
+    if authoring_runtime is not None or value.get("authoring_model") is not None or agents_policy is not None:
+        if (authoring_runtime != "openai_agents_api" or authoring_provider != "openai"
+                or value.get("authoring_model") != "gpt-6-sol"
+                or not isinstance(agents_policy, Mapping)
+                or agents_policy.get("schema_version") != "scene_configuration_agents_api_policy.v1"
+                or agents_policy.get("disclosure_scope") != "task_asset_source_frames_and_metric_envelope"
+                or agents_policy.get("session_retention") != "until_deleted"
+                or agents_policy.get("trace_retention") != "provider_default"
+                or agents_policy.get("region") != "us"
+                or agents_policy.get("budget_policy") != "project_guard_accepted_uncertainty"
+                or re.fullmatch(r"sha256:[0-9a-f]{64}",
+                                str(agents_policy.get("project_guard_receipt_digest") or "")) is None
+                or type(agents_policy.get("ttl_seconds")) is not int
+                or not 60 <= agents_policy["ttl_seconds"] <= 1800
+                or type(agents_policy.get("maximum_review_cycles")) is not int
+                or not 1 <= agents_policy["maximum_review_cycles"] <= 3):
+            raise ValueError("website_scene_sponsorship_agents_api_policy_invalid")
     amounts = [value.get(key) for key in ("preparation_max_total_spend_usd", "upstream_max_spend_usd", "max_total_spend_usd")]
     if (value.get("schema_version") != "website_scene_sponsorship.v1" or value.get("sponsor") != "blueprint"
             or value.get("authority_digest") != canonical_digest(value, digest_field="authority_digest")

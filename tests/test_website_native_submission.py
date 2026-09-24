@@ -20,7 +20,7 @@ from tests.test_website_native_appearance import inputs
 from tests.test_task_evaluation_scene_configuration_submission import production_fixture, SHA
 
 
-def setup(tmp_path, monkeypatch, *, development=False, articulated=False, anthropic=False):
+def setup(tmp_path, monkeypatch, *, development=False, articulated=False, anthropic=False, agents_api=False):
     capture = tmp_path / "capture"
     capture.mkdir()
     args, _, _ = inputs(capture)
@@ -37,6 +37,20 @@ def setup(tmp_path, monkeypatch, *, development=False, articulated=False, anthro
         terms = "sha256:" + "a" * 64
         args["spend"]["authoring_provider"] = "anthropic"
         args["spend"]["anthropic_provider_terms_reference"] = terms
+    if agents_api:
+        assert not anthropic
+        args["spend"].update(authoring_provider="openai",
+            authoring_agent_runtime="openai_agents_api", authoring_model="gpt-6-sol",
+            agents_api_policy={"schema_version": "scene_configuration_agents_api_policy.v1",
+                "disclosure_scope": "task_asset_source_frames_and_metric_envelope",
+                "session_retention": "until_deleted", "trace_retention": "provider_default",
+                "region": "us", "budget_policy": "project_guard_accepted_uncertainty",
+                "project_guard_receipt_digest": "sha256:" + "f" * 64,
+                "ttl_seconds": 900, "maximum_review_cycles": 3},
+            scene_id=args["task_context"]["scene_id"],
+            capture_id=args["task_context"]["capture_id"],
+            task_context_digest=args["task_context"]["context_digest"])
+        args["spend"]["authority_digest"] = canonical_digest(args["spend"], digest_field="authority_digest")
     preparation = compile_website_scene_preparation(**args)
     if development:
         from blueprint_pipeline.website_development_test import prepare_development_test, ENV
@@ -176,6 +190,20 @@ def test_new_signed_website_drawer_can_quote_anthropic_authoring_without_spend(t
     assert rights["consent"]["provider_terms_reference"] == preparation["intake_request"]["consent"]["provider_terms_reference"]
     assert rights["anthropic_provider_terms_reference"] == "sha256:" + "a" * 64
     assert json.loads((root / "rights/terms.json").read_text())["anthropic_provider_terms_reference"] == rights["anthropic_provider_terms_reference"]
+
+
+def test_new_signed_website_drawer_selects_sol_managed_runtime_without_spend(tmp_path, monkeypatch):
+    kwargs, _ = setup(tmp_path, monkeypatch, articulated=True, agents_api=True)
+    materialize_website_submission(**kwargs)
+    root = kwargs["staging_root"]
+    request = json.loads((root / "scene_configuration_preparation_request.v1.json").read_text())
+    authoring = json.loads((root / "configuration/stage_3.json").read_text())
+    assert request["replacement_authoring_agent_runtime"] == "openai_agents_api"
+    assert request["replacement_authoring_model"] == "gpt-6-sol"
+    assert authoring["authoring_agent_runtime"] == "openai_agents_api"
+    assert authoring["agents_api_policy"]["project_guard_receipt_digest"] == "sha256:" + "f" * 64
+    assert request["runtime"]["network"]["allowlist"] == ["api.openai.com"]
+    assert request["spend"]["external_service_caps"]["openai"]["stage_max_cost_usd"]["content_agents"] == 7
 
 
 def test_development_drawer_fixture_retains_articulated_success_and_identity(tmp_path, monkeypatch):

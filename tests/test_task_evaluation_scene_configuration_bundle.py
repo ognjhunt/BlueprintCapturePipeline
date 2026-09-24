@@ -1747,7 +1747,7 @@ def test_preallocation_refusal_seals_canonical_terminal_result(
         lambda _value, **_kwargs: authority,
     )
     monkeypatch.setattr(
-        scene_vast, "_provider_runtime_inputs", lambda _authority: ({}, {})
+        scene_vast, "_provider_runtime_inputs", lambda _authority, _receipt=None: ({}, {})
     )
     monkeypatch.setattr(
         scene_vast,
@@ -3547,7 +3547,7 @@ def test_completed_vast_run_cannot_finish_without_publishing_revision(
         lambda _value, **_kwargs: authority,
     )
     monkeypatch.setattr(
-        scene_vast, "_provider_runtime_inputs", lambda _authority: ({}, {})
+        scene_vast, "_provider_runtime_inputs", lambda _authority, _receipt=None: ({}, {})
     )
     monkeypatch.setattr(
         scene_vast, "require_paid_resource_admission_grant", lambda *_a, **_k: None
@@ -4535,7 +4535,7 @@ def test_scene_configuration_declares_its_transfer_budget_to_the_allocator(
         lambda _value, **_kwargs: authority,
     )
     monkeypatch.setattr(
-        scene_vast, "_provider_runtime_inputs", lambda _authority: ({}, {})
+        scene_vast, "_provider_runtime_inputs", lambda _authority, _receipt=None: ({}, {})
     )
     monkeypatch.setattr(
         scene_vast, "require_paid_resource_admission_grant", lambda *_a, **_k: None
@@ -4697,7 +4697,7 @@ def test_scene_configuration_refuses_insufficient_output_disk_before_staging_or_
         lambda _value, **_kwargs: authority,
     )
     monkeypatch.setattr(
-        scene_vast, "_provider_runtime_inputs", lambda _authority: ({}, {})
+        scene_vast, "_provider_runtime_inputs", lambda _authority, _receipt=None: ({}, {})
     )
     monkeypatch.setattr(
         scene_vast, "require_paid_resource_admission_grant", lambda *_a, **_k: None
@@ -5360,3 +5360,39 @@ def test_website_authoring_needs_no_artifixer_credentials_or_cost_queries(tmp_pa
     monkeypatch.delenv("OPENAI_CONTENT_AGENTS_API_KEY_FILE")
     with pytest.raises(scene_vast.TaskEvaluationSceneConfigurationVastError, match="configuration_missing"):
         scene_vast._provider_runtime_inputs(authority)
+
+
+def test_agents_api_project_guard_refuses_before_paid_allocation(tmp_path, monkeypatch):
+    from blueprint_pipeline.agent_execution.contracts import digest
+    from blueprint_pipeline.task_object_agents_api_stage import GUARD_SCHEMA, DISCLOSURE_SCOPE
+    authority = {"authority_digest": "sha256:" + "a" * 64,
+        "external_service_spend_caps": {"openai": {"maximum_cost_usd": 5,
+            "maximum_requests": 8, "stage_max_cost_usd": {
+                "artifixer_semantic_teacher": 0, "artifixer_visual_review": 0,
+                "content_agents": 5}}}}
+    _configure_scene_openai_runtime_files(tmp_path, monkeypatch)
+    now = time.time()
+    guard = {"schema_version": GUARD_SCHEMA, "project_id": "proj_test",
+        "credential_id": "key_content_agents", "dashboard_hard_limit_enabled": True,
+        "disclosure_scope": DISCLOSURE_SCOPE,
+        "budget_policy": "project_guard_accepted_uncertainty",
+        "session_retention": "until_deleted", "trace_retention": "provider_default",
+        "provider_api_region": "us", "observed_at": now - 5, "expires_at": now + 1800,
+        "spend_limit": {"object": "project.spend_limit", "currency": "USD",
+                        "interval": "month", "threshold_amount": 500}}
+    path = tmp_path / "managed-project-guard.json"
+    path.write_text(json.dumps(guard))
+    path.chmod(0o600)
+    monkeypatch.setenv("BLUEPRINT_SCENE_CONFIGURATION_AGENTS_API_PROJECT_GUARD_FILE", str(path))
+    monkeypatch.setattr(scene_vast, "_collect_openai_cost_snapshot", lambda **_kw: {"total_cost_usd": 0})
+    receipt = {"replacement_authoring_agent_runtime": "openai_agents_api",
+        "replacement_authoring_model": "gpt-6-sol",
+        "replacement_authoring_agents_api_policy": {"project_guard_receipt_digest": digest(guard),
+            "ttl_seconds": 900}}
+    paths, environment = scene_vast._provider_runtime_inputs(authority, receipt)
+    assert paths["BLUEPRINT_SCENE_CONFIGURATION_AGENTS_API_PROJECT_GUARD_FILE"] == str(path)
+    assert environment["BLUEPRINT_SCENE_CONFIGURATION_AUTHORING_RUNTIME"] == "openai_agents_api"
+    receipt["replacement_authoring_agents_api_policy"]["project_guard_receipt_digest"] = "sha256:" + "f" * 64
+    with pytest.raises(scene_vast.TaskEvaluationSceneConfigurationVastError,
+                       match="agents_api_project_guard_invalid"):
+        scene_vast._provider_runtime_inputs(authority, receipt)

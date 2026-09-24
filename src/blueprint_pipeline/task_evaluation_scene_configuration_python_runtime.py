@@ -27,16 +27,17 @@ _MAX_TOTAL_BYTES = 768 * 1024**2
 DEFAULT_RUNTIME_PROFILE = "base"
 RUNTIME_PROFILE_ROOTS = {
     "base": ("openai-agents", "usd-core"),
-    "astra_asset_authoring": ("openai-agents", "usd-core", "build123d", "langgraph", "trimesh", "pillow", "rfc8785"),
+    "astra_asset_authoring": ("openai-agents", "usd-core", "build123d", "langgraph", "trimesh", "pillow", "rfc8785", "jsonschema"),
 }
 RUNTIME_PROFILE_IMPORTS = {
     "base": (),
-    "astra_asset_authoring": ("agents", "pxr.Usd", "build123d", "OCP", "langgraph.graph", "trimesh", "PIL.Image", "rfc8785"),
+    "astra_asset_authoring": ("agents", "pxr.Usd", "build123d", "OCP", "langgraph.graph", "trimesh", "PIL.Image", "rfc8785", "jsonschema"),
 }
 _ASTRA_SOURCE_ROOT = Path(__file__).resolve().parent.parent
 _ASTRA_STAGE_MODULES = ("blueprint_pipeline.astra_cad_skill_runtime",
                         "blueprint_pipeline.task_evaluation_scene_configuration_astra_driver",
                         "blueprint_pipeline.task_object_astra_authoring",
+                        "blueprint_pipeline.task_object_agents_api_stage",
                         "blueprint_pipeline.task_object_simready_packaging")
 RUNTIME_PROFILE_PLATFORM_TAGS = {
     "base": ("manylinux_2_17_x86_64", "manylinux2014_x86_64", "manylinux_2_28_x86_64", "manylinux_2_35_x86_64"),

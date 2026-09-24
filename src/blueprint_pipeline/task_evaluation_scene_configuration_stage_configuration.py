@@ -416,12 +416,44 @@ def _stage_three_refusal(
             configuration.get("authoring_backend") != "astra_cad_blender_v1"
             or configuration.get("source_observation_kind") != "website_capture_frames"):
         return "anthropic_authoring_scope"
+    authoring_runtime = configuration.get("authoring_agent_runtime")
+    if authoring_runtime is None and (configuration.get("authoring_model") is not None
+                                    or configuration.get("agents_api_policy") is not None):
+        return "authoring_agent_runtime"
+    if authoring_runtime is not None:
+        if authoring_runtime != "openai_agents_api":
+            return "authoring_agent_runtime"
+        if (authoring_provider != "openai"
+                or configuration.get("authoring_model") != "gpt-6-sol"
+                or configuration.get("authoring_backend") != "astra_cad_blender_v1"
+                or configuration.get("source_observation_kind") != "website_capture_frames"):
+            return "agents_api_authoring_scope"
+        policy = configuration.get("agents_api_policy")
+        if (not isinstance(policy, Mapping)
+                or policy.get("schema_version") != "scene_configuration_agents_api_policy.v1"
+                or policy.get("disclosure_scope") != "task_asset_source_frames_and_metric_envelope"
+                or policy.get("session_retention") != "until_deleted"
+                or policy.get("trace_retention") != "provider_default"
+                or policy.get("region") != "us"
+                or policy.get("budget_policy") != "project_guard_accepted_uncertainty"
+                or not isinstance(policy.get("project_guard_receipt_digest"), str)
+                or re.fullmatch(r"sha256:[0-9a-f]{64}", policy["project_guard_receipt_digest"]) is None
+                or type(policy.get("ttl_seconds")) is not int
+                or not 60 <= policy["ttl_seconds"] <= 1800
+                or type(policy.get("maximum_review_cycles")) is not int
+                or not 1 <= policy["maximum_review_cycles"] <= 3):
+            return "agents_api_policy"
     declared_backend = (envelope.get("request") or {}).get("replacement_authoring_backend")
     if declared_backend is not None and configuration.get("authoring_backend", "content_agents") != declared_backend:
         return "authoring_backend_budget_binding"
     declared_provider = (envelope.get("request") or {}).get("replacement_authoring_model_provider", "openai")
     if authoring_provider != declared_provider:
         return "authoring_provider_budget_binding"
+    if authoring_runtime != (envelope.get("request") or {}).get("replacement_authoring_agent_runtime"):
+        return "authoring_runtime_budget_binding"
+    if authoring_runtime and configuration.get("authoring_model") != (
+            envelope.get("request") or {}).get("replacement_authoring_model"):
+        return "authoring_model_budget_binding"
     schema_version = configuration.get("schema_version")
     if schema_version not in {
         "rigid_replacement_authoring_configuration.v1",

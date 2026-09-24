@@ -310,6 +310,7 @@ def _collect_openai_cost_snapshot(
 
 def _provider_runtime_inputs(
     authority: Mapping[str, Any],
+    receipt: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, str], dict[str, str]]:
     anthropic = authority["external_service_spend_caps"].get("anthropic")
     if anthropic is not None:
@@ -355,8 +356,17 @@ def _provider_runtime_inputs(
     for _stage, key_id, attestation in active_bindings:
         file_names.update((key_id.removesuffix("_ID") + "_FILE", attestation))
         value_names.add(key_id)
+    managed_asset = (receipt or {}).get("replacement_authoring_agent_runtime") == "openai_agents_api"
+    if managed_asset:
+        if ((receipt or {}).get("replacement_authoring_model") != "gpt-6-sol"
+                or (receipt or {}).get("replacement_authoring_model_provider", "openai") != "openai"):
+            raise TaskEvaluationSceneConfigurationVastError("scene_configuration_agents_api_selection_invalid")
+        file_names.add("BLUEPRINT_SCENE_CONFIGURATION_AGENTS_API_PROJECT_GUARD_FILE")
     secret_paths = {name: str(os.environ.get(name) or "").strip()
                     for name in _OPENAI_RUNTIME_FILE_ENVS if name in file_names}
+    if managed_asset:
+        name = "BLUEPRINT_SCENE_CONFIGURATION_AGENTS_API_PROJECT_GUARD_FILE"
+        secret_paths[name] = str(os.environ.get(name) or "").strip()
     values = {name: str(os.environ.get(name) or "").strip()
               for name in _OPENAI_RUNTIME_VALUE_ENVS if name in value_names}
     if not all(secret_paths.values()) or not all(values.values()):
@@ -419,6 +429,25 @@ def _provider_runtime_inputs(
             raise TaskEvaluationSceneConfigurationVastError(
                 f"scene_configuration_openai_stage_scope_attestation_invalid:{stage}"
             ) from exc
+    if managed_asset:
+        from .agent_execution.contracts import AgentExecutionError
+        from .task_object_agents_api_stage import validate_managed_asset_guard
+        policy = (receipt or {}).get("replacement_authoring_agents_api_policy")
+        if not isinstance(policy, Mapping) or type(policy.get("ttl_seconds")) is not int:
+            raise TaskEvaluationSceneConfigurationVastError(
+                "scene_configuration_agents_api_policy_missing")
+        now_epoch = datetime.now(UTC).timestamp()
+        try:
+            validate_managed_asset_guard(policy=policy,
+                guard_file=Path(secret_paths["BLUEPRINT_SCENE_CONFIGURATION_AGENTS_API_PROJECT_GUARD_FILE"]),
+                project_id=values["OPENAI_PROJECT_ID"],
+                credential_id=values["OPENAI_CONTENT_AGENTS_API_KEY_ID"],
+                maximum_cost_usd=min(15.0, float(stage_caps["content_agents"]),
+                                     float(openai["maximum_cost_usd"])),
+                deadline=now_epoch + policy["ttl_seconds"], now=now_epoch)
+        except (AgentExecutionError, KeyError, TypeError, ValueError) as exc:
+            raise TaskEvaluationSceneConfigurationVastError(
+                "scene_configuration_agents_api_project_guard_invalid") from exc
     now = datetime.now(UTC)
     day_start = datetime(now.year, now.month, now.day, tzinfo=UTC)
     runtime_window_end = now + timedelta(hours=1)
@@ -476,6 +505,8 @@ def _provider_runtime_inputs(
         "BLUEPRINT_SCENE_CONFIGURATION_OPENAI_CONTENT_AGENTS_MAX_COST_USD": str(
             stage_caps["content_agents"]
         ),
+        **({"BLUEPRINT_SCENE_CONFIGURATION_AUTHORING_RUNTIME": "openai_agents_api"}
+           if managed_asset else {}),
     }
     return secret_paths, runtime_environment
 
@@ -1225,7 +1256,7 @@ def run_scene_configuration_vast(
                 scene_construction_queue_root=scene_construction_queue_root,
                 diagnostic_only=diagnostic_only,
             )
-    runtime_secret_paths, runtime_environment = _provider_runtime_inputs(authority)
+    runtime_secret_paths, runtime_environment = _provider_runtime_inputs(authority, receipt)
     if not execute:
         return _seal_terminal_result(
             job,
