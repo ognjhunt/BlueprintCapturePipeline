@@ -147,7 +147,8 @@ def _development_hypothesis_findings(
             or not isinstance(hypothesis.get("prior_comparison"), Mapping)
             or hypothesis["prior_comparison"].get("reference_models_are_exact_match") is not False
             or (hypothesis["prior_comparison"].get("owner_reported_dimensions_m") is not None
-                and (hypothesis["prior_comparison"].get("owner_reported_source") != "cabinet_owner_chat_2026-09-24"
+                and (not isinstance(hypothesis["prior_comparison"]["owner_reported_dimensions_m"], Mapping)
+                     or hypothesis["prior_comparison"].get("owner_reported_source") != "cabinet_owner_chat_2026-09-24"
                      or not _close_sequence(
                          [dimensions.get("depth_x"), dimensions.get("width_y"), dimensions.get("height_z")],
                          [hypothesis["prior_comparison"]["owner_reported_dimensions_m"].get(axis)
