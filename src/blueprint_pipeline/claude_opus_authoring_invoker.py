@@ -49,6 +49,10 @@ _MAX_IMAGE_TOKENS = 4_784
 _FIXED_INPUT_MARGIN_TOKENS = 4_096
 _MAX_REQUEST_BYTES = 30_000_000  # under the provider's 32 MB request ceiling
 _MODEL_INPUT_CONTEXT_TOKENS = 1_000_000
+_UNSUPPORTED_OUTPUT_CONSTRAINTS = frozenset({
+    "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf",
+    "minLength", "maxLength", "maxItems", "uniqueItems",
+})
 
 
 class ClaudeAuthoringBlocked(RuntimeError):
@@ -138,6 +142,33 @@ def _source_image(value: str) -> tuple[dict[str, Any], int]:
                                        "data": encoded}}, _MAX_IMAGE_TOKENS
 
 
+def _provider_output_schema(schema: Mapping[str, Any]) -> dict[str, Any]:
+    """Remove only constraints unsupported by Claude's JSON-output grammar.
+
+    The complete Pydantic schema stays in the prompt and is enforced again on
+    the returned value. Nested object schemas must prohibit extra properties.
+    """
+    result = {key: value for key, value in schema.items()
+              if key not in _UNSUPPORTED_OUTPUT_CONSTRAINTS}
+    if "properties" in result:
+        if result.get("additionalProperties", False) is not False:
+            raise ClaudeAuthoringBlocked("claude_output_schema_open_object")
+        result["additionalProperties"] = False
+        result["properties"] = {key: _provider_output_schema(value)
+                                for key, value in result["properties"].items()}
+    if "$defs" in result:
+        result["$defs"] = {key: _provider_output_schema(value)
+                           for key, value in result["$defs"].items()}
+    if "items" in result:
+        result["items"] = _provider_output_schema(result["items"])
+    for name in ("anyOf", "allOf"):
+        if name in result:
+            result[name] = [_provider_output_schema(value) for value in result[name]]
+    if result.get("minItems") not in (None, 0, 1):
+        result.pop("minItems")
+    return result
+
+
 def _payload(spec: AgentsSDKAgentSpec, input_value: str | list[dict[str, Any]]) -> tuple[dict[str, Any], int]:
     if (spec.model != MODEL or spec.max_turns != 1 or spec.tool_bindings
             or not 1 <= spec.max_output_tokens <= 20_000
@@ -177,7 +208,10 @@ def _payload(spec: AgentsSDKAgentSpec, input_value: str | list[dict[str, Any]]) 
     payload = {"model": MODEL, "max_tokens": spec.max_output_tokens,
                "inference_geo": "us", "system": system,
                "messages": [{"role": "user", "content": content}],
-               "output_config": {"effort": spec.reasoning_effort or "medium"}}
+               "output_config": {"effort": spec.reasoning_effort or "medium",
+                                 "format": {"type": "json_schema",
+                                            "schema": _provider_output_schema(
+                                                spec.output_type.model_json_schema())}}}
     if len(json.dumps(payload, ensure_ascii=True).encode()) > _MAX_REQUEST_BYTES:
         raise ClaudeAuthoringBlocked("claude_request_bytes_exceeded")
     return payload, input_ceiling
@@ -426,10 +460,21 @@ class ClaudeOpusAuthoringInvoker:
                           and isinstance(response.get("id"), str)
                           and len(text_blocks) == 1 and isinstance(text_blocks[0], str))
         output = None
+        invalid_output_reason = None if valid_response else "response_envelope"
+        validation_error_paths: list[str] = []
         if valid_response:
             try:
                 output = spec.output_type.model_validate(json.loads(text_blocks[0]))
-            except (ValueError, ValidationError):
+            except json.JSONDecodeError:
+                invalid_output_reason = "json_syntax"
+                valid_response = False
+            except ValidationError as exc:
+                invalid_output_reason = "schema_validation"
+                validation_error_paths = [".".join(map(str, row["loc"]))
+                                          for row in exc.errors()[:8]]
+                valid_response = False
+            except ValueError:
+                invalid_output_reason = "schema_validation"
                 valid_response = False
         completion = {"schema_version": INFERENCE_COMPLETION_SCHEMA_VERSION,
             "reservation_id": reservation["reservation_id"], "run_id": spec.run_id,
@@ -447,6 +492,9 @@ class ClaudeOpusAuthoringInvoker:
             "structured_output_digest": (canonical_digest(output.model_dump(mode="json"))
                                          if output is not None else None),
             "proof_effect": "none"}
+        if not valid_response:
+            completion["invalid_output_reason"] = invalid_output_reason
+            completion["validation_error_paths"] = validation_error_paths
         completion["inference_completion_digest"] = canonical_digest(
             completion, digest_field="inference_completion_digest")
         self.audit.record_completion(completion)
