@@ -618,8 +618,9 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         # This must come from the website's fresh owner-authorized execution
         # authority. A local key or worker environment cannot opt a scene in.
         terms = spend.get("anthropic_provider_terms_reference")
-        if (not isinstance(terms, str) or not terms.startswith("anthropic:")
-                or consent.get("provider_terms_reference") != terms):
+        if (not isinstance(terms, str) or re.fullmatch(r"sha256:[0-9a-f]{64}", terms) is None
+                or not isinstance(consent.get("provider_terms_reference"), str)
+                or not consent["provider_terms_reference"]):
             blockers.append("website_anthropic_provider_terms_authority_required")
         authoring_configuration["authoring_model_provider"] = "anthropic"
     if not owner or not consent:
@@ -672,6 +673,8 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     value = {
         "schema_version": SCHEMA_VERSION, "status": "needs_input" if blockers else "intake_ready",
         "blockers": blockers, "claim_ceiling": CLAIM_CEILING,
+        **({"authoring_provider_terms_reference": terms} if authoring_provider == "anthropic" and
+            isinstance(terms, str) else {}),
         "binding": {"task_context_digest": task_context["context_digest"], "task_masks_digest": task_masks["digest"],
                     "source_geometry_digest": source_geometry["digest"],
                     "removal_manifest_digest": canonical_digest(removal_manifest),

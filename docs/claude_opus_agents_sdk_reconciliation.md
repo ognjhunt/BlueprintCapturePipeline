@@ -7,6 +7,13 @@ existing model route. A prior Astra scene or its session cannot be relabeled as
 Claude evidence. The SDK path has not been merged, deployed, or used on a paid
 scene as of this branch.
 
+The website sponsorship signs `authoring_provider: anthropic` and a separate
+SHA-256 `anthropic_provider_terms_reference`. The existing shared consent
+provider-terms digest continues to cover upstream preparation providers.
+Pipeline retains the Anthropic reference in its digest-bound preparation and
+rights admission before the CPU stage checks it. The WebApp must emit and
+validate these fields for the new scene; a Pipeline-only selector is insufficient.
+
 The local OpenAI Agents SDK owns a `SQLiteSession` and the confined
 observe/CAD/Blender tools. A `Model` adapter translates source images, strict
 tools, JSON output schemas, and signed Claude thinking blocks. Each translated

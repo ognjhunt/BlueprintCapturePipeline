@@ -115,6 +115,22 @@ def test_sponsor_is_separate_from_model_context_and_rejects_budget_or_capture_ch
             module.load_website_scene_sponsorship(task_context=task, now=1000)
 
 
+def test_sponsored_claude_choice_requires_its_separate_digest_bound_terms(monkeypatch):
+    value = {**sponsorship(), "authoring_provider": "anthropic",
+             "anthropic_provider_terms_reference": "sha256:" + "a" * 64}
+    value["authority_digest"] = canonical_digest(value, digest_field="authority_digest")
+    monkeypatch.setattr(module, "website_webapp_request", lambda **_: value)
+    assert module.load_website_scene_sponsorship(task_context=context(), now=1000) == value
+    for changes in ({"anthropic_provider_terms_reference": "anthropic:unverified"},
+                    {"authoring_provider": "openai"},
+                    {"authoring_provider": "other"}):
+        bad = {**value, **changes}
+        bad["authority_digest"] = canonical_digest(bad, digest_field="authority_digest")
+        monkeypatch.setattr(module, "website_webapp_request", lambda **_: bad)
+        with pytest.raises(ValueError, match="authoring_provider_invalid"):
+            module.load_website_scene_sponsorship(task_context=context(), now=1000)
+
+
 def test_prepared_scene_enters_webapp_outbox_not_a_forged_local_owner_intent(monkeypatch):
     request = {"submission_id": "walkthrough-req1", "source": {"binding_id": "website-splat-test"},
                "task": {"position": [0.0, 1.0, 1e-7]}}

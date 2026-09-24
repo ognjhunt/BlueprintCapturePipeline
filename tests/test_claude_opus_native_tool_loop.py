@@ -164,7 +164,8 @@ def test_future_scene_stage_authority_is_signed_and_bounded(tmp_path):
     stage.write_text("{}")
     rights = {"schema_version": "website_native_rights_admission.v1",
         "execution_authority": {"allowed_providers": ["vast", "anthropic"]},
-        "consent": {"provider_terms_reference": "anthropic:opus-5-5-private-processing-v1"},
+        "consent": {"provider_terms_reference": "sha256:" + "b" * 64},
+        "anthropic_provider_terms_reference": "sha256:" + "c" * 64,
         "private_provider_processing_allowed": True, "provider_training_allowed": False}
     rights["digest"] = canonical_digest(rights, digest_field="digest")
     values = {"BLUEPRINT_SCENE_CONFIGURATION_AUTHORITY_DIGEST": SHA,
@@ -180,7 +181,7 @@ def test_future_scene_stage_authority_is_signed_and_bounded(tmp_path):
         stage_input=bound, request=SimpleNamespace(run_id="future-scene"))
     assert (cost, calls) == (7, 32)
     assert verify("future-scene", SHA)["provider_terms_digest"].startswith("sha256:")
-    for changed in ({**rights, "consent": {"provider_terms_reference": "generic"}},
+    for changed in ({**rights, "anthropic_provider_terms_reference": "generic"},
                     {**rights, "execution_authority": {"allowed_providers": ["vast", "openai"]}}):
         with pytest.raises(ClaudeAuthoringBlocked, match="signed_provider_authority_missing"):
             _claude_stage_authority(values=values, rights=changed,

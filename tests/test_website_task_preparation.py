@@ -236,13 +236,14 @@ def test_anthropic_authoring_requires_explicit_matching_terms_in_new_authority(t
     missing = _compile(tmp_path, spend={**SPEND, "authoring_provider": "anthropic"})
     assert missing["status"] == "needs_input"
     assert "website_anthropic_provider_terms_authority_required" in missing["blockers"]
-    terms = "anthropic:opus-5-5-private-processing-v1"
+    terms = "sha256:" + "a" * 64
     approved = _compile(tmp_path, spend={**SPEND, "authoring_provider": "anthropic",
-        "anthropic_provider_terms_reference": terms,
-        "consent": {**SPEND["consent"], "provider_terms_reference": terms}})
+        "anthropic_provider_terms_reference": terms})
     assert approved["status"] == "intake_ready", approved["blockers"]
     assert "anthropic" in approved["intake_request"]["execution"]["allowed_providers"]
     assert approved["authoring_inputs"]["configuration"]["authoring_model_provider"] == "anthropic"
+    assert approved["authoring_provider_terms_reference"] == terms
+    assert approved["intake_request"]["consent"]["provider_terms_reference"] == SPEND["consent"]["provider_terms_reference"]
 
 
 def test_symmetric_geometry_cannot_register(tmp_path):

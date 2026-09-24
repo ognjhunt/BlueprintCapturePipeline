@@ -742,7 +742,7 @@ def _claude_stage_authority(*, values, rights, stage_input, request):
 
     execution = rights.get("execution_authority") or {}
     consent = rights.get("consent") or {}
-    terms = consent.get("provider_terms_reference")
+    terms = rights.get("anthropic_provider_terms_reference")
     authority_digest = values.get("BLUEPRINT_SCENE_CONFIGURATION_AUTHORITY_DIGEST")
     if (stage_input["configuration"].get("authoring_model_provider") != "anthropic"
             or stage_input["configuration"].get("source_observation_kind") != "website_capture_frames"
@@ -752,7 +752,9 @@ def _claude_stage_authority(*, values, rights, stage_input, request):
             or "anthropic" not in execution.get("allowed_providers", [])
             or rights.get("private_provider_processing_allowed") is not True
             or rights.get("provider_training_allowed") is not False
-            or not isinstance(terms, str) or not terms.startswith("anthropic:")
+            or not isinstance(terms, str) or re.fullmatch(r"sha256:[0-9a-f]{64}", terms) is None
+            or not isinstance(consent.get("provider_terms_reference"), str)
+            or not consent["provider_terms_reference"]
             or not isinstance(authority_digest, str) or re.fullmatch(r"sha256:[0-9a-f]{64}", authority_digest) is None
             or not request.run_id == stage_input["run_id"]):
         raise ClaudeAuthoringBlocked("claude_stage_signed_provider_authority_missing")
@@ -774,7 +776,8 @@ def _claude_stage_authority(*, values, rights, stage_input, request):
                     "paid_authority_digest": authority_digest, "rights_digest": rights["digest"],
                     "stage_input_digest": _sha256(_required_path(values, _INPUT_ENV)),
                     "input_digest": input_digest}),
-                "provider_terms_digest": canonical_digest({"anthropic_terms_reference": terms})}
+                "provider_terms_digest": canonical_digest({"anthropic_terms_reference": terms,
+                    "shared_terms_reference": consent["provider_terms_reference"]})}
     return maximum_cost, maximum_calls, verify
 
 

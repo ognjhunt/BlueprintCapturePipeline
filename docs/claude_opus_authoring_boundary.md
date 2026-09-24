@@ -2,8 +2,9 @@
 
 Status: signed future-scene website and controller route implemented on an
 unmerged branch. Existing Astra/OpenAI scene records and sessions are not
-migrated. A newly authorized scene must explicitly select Anthropic and carry
-an exact `anthropic:` provider-terms reference in its owner consent.
+migrated. A newly authorized scene must explicitly select Anthropic in its
+signed website sponsorship and carry a separate SHA-256 Anthropic provider
+terms reference. The existing shared consent terms reference remains intact.
 
 The website binds that selection into the scene's execution scope, permits only
 `api.anthropic.com` for CPU authoring, and passes a scoped `_FILE` secret

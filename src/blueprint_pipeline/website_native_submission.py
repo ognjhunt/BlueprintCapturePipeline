@@ -111,6 +111,8 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
         "schema_version": "website_scene_processing_terms.v1",
         "rights_reference": rights["consent"]["rights_reference"],
         "provider_terms_reference": rights["consent"]["provider_terms_reference"],
+        **({"anthropic_provider_terms_reference": rights["anthropic_provider_terms_reference"]}
+           if "anthropic_provider_terms_reference" in rights else {}),
         "public_redistribution_allowed": False, "provider_training_allowed": False})
     refs = {}
     for index, row in enumerate(construction["references"]):

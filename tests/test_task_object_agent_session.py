@@ -330,7 +330,8 @@ def test_future_scene_sdk_stage_rehearsal_keeps_signed_cap_and_reuses_asset(agen
     stage_file.write_text('{"fixture":"future-scene"}')
     rights = {'schema_version': 'website_native_rights_admission.v1',
         'execution_authority': {'allowed_providers': ['vast', 'anthropic']},
-        'consent': {'provider_terms_reference': 'anthropic:opus-5-5-private-processing-v1'},
+        'consent': {'provider_terms_reference': 'sha256:' + 'b' * 64},
+        'anthropic_provider_terms_reference': 'sha256:' + 'c' * 64,
         'private_provider_processing_allowed': True, 'provider_training_allowed': False}
     rights['digest'] = canonical_digest(rights, digest_field='digest')
     values = {'BLUEPRINT_SCENE_CONFIGURATION_STAGE_INPUT': str(stage_file),

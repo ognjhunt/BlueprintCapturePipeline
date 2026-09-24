@@ -34,10 +34,9 @@ def setup(tmp_path, monkeypatch, *, development=False, articulated=False, anthro
     args["spend"]["expires_at_epoch"] = now + 3600
     args["spend"]["consent"]["accepted_at_epoch"] = now - 1
     if anthropic:
-        terms = "anthropic:opus-5-5-private-processing-v1"
+        terms = "sha256:" + "a" * 64
         args["spend"]["authoring_provider"] = "anthropic"
         args["spend"]["anthropic_provider_terms_reference"] = terms
-        args["spend"]["consent"]["provider_terms_reference"] = terms
     preparation = compile_website_scene_preparation(**args)
     if development:
         from blueprint_pipeline.website_development_test import prepare_development_test, ENV
@@ -173,7 +172,10 @@ def test_new_signed_website_drawer_can_quote_anthropic_authoring_without_spend(t
     assert request["spend"]["hard_cap_usd"] == 13
     rights = json.loads((root / "rights/admission.json").read_text())
     assert "anthropic" in rights["execution_authority"]["allowed_providers"]
-    assert rights["consent"]["provider_terms_reference"].startswith("anthropic:")
+    preparation = json.loads(Path(kwargs["task"]["preparation"]["path"]).read_text())
+    assert rights["consent"]["provider_terms_reference"] == preparation["intake_request"]["consent"]["provider_terms_reference"]
+    assert rights["anthropic_provider_terms_reference"] == "sha256:" + "a" * 64
+    assert json.loads((root / "rights/terms.json").read_text())["anthropic_provider_terms_reference"] == rights["anthropic_provider_terms_reference"]
 
 
 def test_development_drawer_fixture_retains_articulated_success_and_identity(tmp_path, monkeypatch):
