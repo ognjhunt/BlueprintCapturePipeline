@@ -175,7 +175,13 @@ def run_g1_development_worker(
     """Run one attempt and retain its own terminal receipt on every failure."""
 
     sealed = _request(request)
-    if not isinstance(output_dir, Path) or output_dir.exists() or output_dir.is_symlink():
+    if (
+        not isinstance(output_dir, Path)
+        or output_dir.exists() or output_dir.is_symlink()
+        or output_dir.resolve().is_relative_to(
+            Path(sealed["bundle_root"]).expanduser().resolve()
+        )
+    ):
         raise ValueError("g1_worker_output_directory_exists")
     output_dir.mkdir(parents=True)
     phase = "preflight"
@@ -199,12 +205,18 @@ def run_g1_development_worker(
             preflight.get("status") != "staged_inputs_verified"
             or preflight.get("scene_plan_digest")
             != packet_receipt.get("arena_scene_plan_digest")
+            or preflight.get("robot_id") != "unitree_g1"
+            or preflight.get("policy_role") != "manipulation"
         ):
             raise ValueError("g1_worker_preflight_incomplete")
         phase = "rights_review"
         rights = _rights_review(sealed.get("rights_review"), preflight=preflight)
         plan = json.loads(inputs["scene_plan_path"].read_text(encoding="utf-8"))
-        if plan.get("plan_digest") != preflight.get("scene_plan_digest"):
+        if (
+            plan.get("plan_digest") != preflight.get("scene_plan_digest")
+            or plan.get("task_kind") != "rigid_pick_place"
+            or (plan.get("robot") or {}).get("robot_id") != "unitree_g1"
+        ):
             raise ValueError("g1_worker_scene_changed_after_preflight")
         phase = "simulator_launch"
         app, launch = _launch_scene(request=sealed, plan=plan)

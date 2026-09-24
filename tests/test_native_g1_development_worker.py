@@ -17,7 +17,10 @@ def _request(tmp_path: Path) -> dict:
     bundle = tmp_path / "packet"
     bundle.mkdir()
     (bundle / "native_task_arena_scene_plan.v1.json").write_text(
-        json.dumps({"plan_digest": SCENE, "robot": {"robot_id": "unitree_g1"}})
+        json.dumps({
+            "plan_digest": SCENE, "task_kind": "rigid_pick_place",
+            "robot": {"robot_id": "unitree_g1"},
+        })
     )
     rights = {
         "schema_version": worker.RIGHTS_SCHEMA,
@@ -60,6 +63,8 @@ def _preflight(**kwargs):
         "scene_plan_digest": SCENE,
         "candidate_id": CANDIDATE,
         "inventory_file_sha256": INVENTORY,
+        "robot_id": "unitree_g1",
+        "policy_role": "manipulation",
     }
 
 
@@ -190,3 +195,17 @@ def test_unverified_episode_receipt_cannot_complete_worker(tmp_path: Path, monke
     )
     assert result["status"] == "blocked"
     assert result["blocker"]["message"] == "g1_worker_supervised_episode_incomplete"
+
+
+def test_output_cannot_mutate_sealed_packet(tmp_path: Path) -> None:
+    request = _request(tmp_path)
+    packet = Path(request["bundle_root"])
+    try:
+        worker.run_g1_development_worker(
+            request=request, output_dir=packet / "episode-output"
+        )
+    except ValueError as exc:
+        assert str(exc) == "g1_worker_output_directory_exists"
+    else:
+        raise AssertionError("output was allowed inside the sealed packet")
+    assert not (packet / "episode-output").exists()
