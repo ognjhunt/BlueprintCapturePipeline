@@ -241,7 +241,8 @@ class ClaudeMessagesModel(Model):
                     status="completed"))
             else:
                 raise ClaudeModelBoundaryError("claude_unsupported_response_block")
-        if not output or (result.stop_reason == "tool_use") != bool(tool_calls):
+        if (not any(isinstance(item, ResponseOutputMessage) for item in output) and not tool_calls
+                or (result.stop_reason == "tool_use") != bool(tool_calls)):
             raise ClaudeModelBoundaryError("claude_response_shape_invalid")
         return ModelResponse(output=output, usage=usage, response_id=result.id)
 
