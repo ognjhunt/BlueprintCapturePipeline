@@ -162,6 +162,13 @@ def run_managed_asset_authoring(*, request_value: dict, output_root: Path, budge
         authorize=lambda task, _tool, _args: validate(task), clock=clock)
     runtime = OpenAIAgentsRuntime(transport=transport, project_id=project_id,
         journal=journal, operations=operations, validate_admission=validate, clock=clock)
+    def cleanup_verified(task_id: str) -> None:
+        for _ in range(10):
+            cleaned = runtime.cleanup(task_id)
+            if cleaned["cleanup_state"] == "deleted":
+                return
+            sleep(2)
+        raise AgentExecutionError("asset_api_session_cleanup_unverified")
     initial = asset_input(request)
     admitted_digests = [digest(initial)]
     def admission() -> AgentAdmission:
@@ -193,19 +200,15 @@ def run_managed_asset_authoring(*, request_value: dict, output_root: Path, budge
                 raise AgentExecutionError("asset_api_session_or_tool_outcome_unresolved")
             if clock() >= deadline:
                 runtime.cancel(task.task_id)
+                cleanup_verified(task.task_id)
                 raise AgentExecutionError("asset_api_authoring_deadline")
             sleep(2)
         if state["state"] != "completed":
+            cleanup_verified(task.task_id)
             raise AgentExecutionError("asset_api_author_turn_failed")
         reviewed = tools.review(task_state=state, invoker=review_invoker)
         if reviewed["accepted"]:
-            for _ in range(10):
-                cleaned = runtime.cleanup(task.task_id)
-                if cleaned["cleanup_state"] == "deleted":
-                    break
-                sleep(2)
-            else:
-                raise AgentExecutionError("asset_api_session_cleanup_unverified")
+            cleanup_verified(task.task_id)
             result = reviewed["result"]
             receipt = {"schema_version": "task_asset_agents_api_stage_receipt.v1",
                 "run_id": tools.request.run_id, "object_id": tools.request.object_id,
@@ -224,7 +227,7 @@ def run_managed_asset_authoring(*, request_value: dict, output_root: Path, budge
                 _write_once(path, receipt)
             return result
         if review_index + 1 == policy["maximum_review_cycles"]:
-            runtime.cleanup(task.task_id)
+            cleanup_verified(task.task_id)
             raise AgentExecutionError("asset_api_independent_review_limit_reached")
         feedback = [{"role": "user", "content": [{"type": "input_text", "text":
             "Independent review rejected the candidate. Repair within the existing tool limits: "
