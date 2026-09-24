@@ -27,7 +27,8 @@ not duplicate a prior paid request when an attempt fails.
 Fake transport has exercised stage 3 and duplicate-free same-stage replay. A
 protected local key successfully retrieved model metadata without an inference
 call; this proves account/model availability but not Messages billing. The
-control-plane host still needs a scoped Anthropic secret. A future capped
+control-plane host's scoped Anthropic `_FILE` secret was installed and verified
+as service-user readable on 2026-09-23, without restarting services. A future capped
 provider attempt must verify actual cost, CAD/Blender completion, native USD
 qualification and the later GPU policy episode. None of these tests claims
 that the drawer task succeeded.

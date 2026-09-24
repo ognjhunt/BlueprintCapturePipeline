@@ -36,8 +36,9 @@ usage, not that real CAD authoring will fit $7. A no-inference Models API
 preflight using the protected local key confirmed the model ID, 1M context,
 128K max output and required capabilities on 2026-09-23. It made no billed
 Messages call. A real signed, capped attempt is still required to observe
-billing, native import, and policy results. The control-plane host needs its
-scoped Anthropic secret installed before such an attempt.
+billing, native import, and policy results. The control-plane host's scoped
+Anthropic `_FILE` secret was installed and verified as service-user readable
+on 2026-09-23; the code remains unmerged and undeployed.
 
 Official references: [Opus 5.5 model and price](https://platform.claude.com/docs/en/models/opus-5-5/overview),
 [Models API](https://platform.claude.com/docs/en/api/http/models/retrieve).
