@@ -90,6 +90,23 @@ def visible_target_marker_parameters(plan: Mapping[str, Any]) -> tuple[tuple[flo
     return (position[0], position[1], position[2]), radius
 
 
+def g1_navigation_marker_parameters(
+    plan: Mapping[str, Any],
+) -> tuple[tuple[float, float, float], float] | None:
+    """Place the G1 floor goal alongside the task's existing manipulation cue."""
+    task_spec = plan.get("task_spec") or {}
+    if task_spec.get("g1_navigation_goal") is None:
+        return None
+    if (plan.get("robot") or {}).get("robot_id") != "unitree_g1":
+        raise NativeTaskArenaRuntimeError(["native_g1_navigation_marker_robot_invalid"])
+    from .native_g1_navigation_goal import validate_g1_navigation_goal
+
+    goal = validate_g1_navigation_goal(task_spec)
+    marker = goal["visible_target_marker"]
+    center = marker["surface_position_world_m"]
+    return (center[0], center[1], center[2] + 0.001), marker["radius_m"]
+
+
 def build_task_subject_link_dynamic_friction_override(
     source_usd: str | Path, *, task_link_id: str, value: float
 ) -> dict[str, Any]:
@@ -1349,19 +1366,30 @@ def build_native_task_arena_environment(
         assets.append(obj)
         scene_asset_names[runtime_name] = runtime_name
 
-    marker_parameters = visible_target_marker_parameters(plan)
-    if marker_parameters is not None:
+    task_marker = visible_target_marker_parameters(plan)
+    navigation_marker = g1_navigation_marker_parameters(plan)
+    for marker_name, marker_parameters, yellow_marker in (
+        ("policy_target_marker", task_marker, False),
+        ("g1_navigation_goal_marker", navigation_marker, True),
+    ):
+        if marker_parameters is None:
+            continue
         marker_position, marker_radius = marker_parameters
-        explicit_marker = (plan.get("task_spec") or {}).get("visible_target_marker")
-        yellow_marker = (
-            isinstance(explicit_marker, Mapping)
-            and explicit_marker.get("shape") == "flat_yellow_disc"
-        )
+        if marker_name == "policy_target_marker":
+            explicit_marker = (plan.get("task_spec") or {}).get("visible_target_marker")
+            yellow_marker = (
+                isinstance(explicit_marker, Mapping)
+                and explicit_marker.get("shape") == "flat_yellow_disc"
+            )
         marker = SpawnerObject(
-            name="policy_target_marker",
-            prim_path="{ENV_REGEX_NS}/policy_target_marker",
+            name=marker_name,
+            prim_path="{ENV_REGEX_NS}/" + marker_name,
             spawner_cfg=sim_utils.CylinderCfg(
-                semantic_tags=[("class", "task_target_marker")],
+                semantic_tags=[(
+                    "class",
+                    "navigation_goal_marker"
+                    if marker_name == "g1_navigation_goal_marker" else "task_target_marker",
+                )],
                 radius=marker_radius,
                 height=0.002,
                 axis="Z",
@@ -1378,7 +1406,7 @@ def build_native_task_arena_environment(
             pos=marker_position
         )
         assets.append(marker)
-        scene_asset_names["policy_target_marker"] = "policy_target_marker"
+        scene_asset_names[marker_name] = marker_name
 
     # One source of truth: the same pure check the host-side pre-spend gate
     # runs, so the two can never disagree about what this runtime accepts.

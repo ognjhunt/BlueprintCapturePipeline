@@ -21,7 +21,7 @@ PUBLISHED_TASK_INSTRUCTION = "Avoid obstacles and move to the yellow marked area
 
 def validate_g1_navigation_goal(task_spec: Mapping[str, Any]) -> dict[str, Any]:
     goal = task_spec.get("g1_navigation_goal")
-    marker = task_spec.get("visible_target_marker")
+    marker = goal.get("visible_target_marker") if isinstance(goal, Mapping) else None
     if not isinstance(goal, Mapping) or not isinstance(marker, Mapping):
         raise ValueError("g1_navigation_goal_or_visible_marker_missing")
     try:
@@ -56,6 +56,13 @@ def validate_g1_navigation_goal(task_spec: Mapping[str, Any]) -> dict[str, Any]:
         "max_root_height_drift_m": max_height_drift,
         "settle_window_samples": settle,
         "task_instruction": PUBLISHED_TASK_INSTRUCTION,
+        "visible_target_marker": {
+            "schema_version": "native_task_target_marker.v1",
+            "shape": "flat_yellow_disc",
+            "non_colliding": True,
+            "surface_position_world_m": surface,
+            "radius_m": marker_radius,
+        },
     }
 
 

@@ -97,8 +97,8 @@ use the same front image, 64-value observation state, 40-value semantic action,
 and SONIC controller interface as the box candidates. Stage either with the
 same fetch command and its candidate id. These are navigation checkpoints for
 moving to a marked area; their file identities do not establish a runnable
-navigation task in Blueprint's captured site. The explicit goal and visible
-marker below supply a development task contract; checkpoint/server attestation
+navigation task in Blueprint's captured site. The explicit goal and its own
+visible marker below supply a development task contract; checkpoint/server attestation
 and live episode evidence are still required before offering them as runnable.
 
 Before a local or container attempt, run the same offline preflight against
@@ -215,29 +215,31 @@ uses its original site, object, scene plan, and manipulation prompt. The
 movement candidate receives its published instruction, “Avoid obstacles and
 move to the yellow marked area.” The goal contract requires a measured world
 center, acceptance radius, maximum root-height drift, and settle window. It
-must exactly match an explicit non-colliding `flat_yellow_disc` target marker
-in `task_spec.visible_target_marker`. The Arena builder renders that marker
-in the same scene and leaves the captured site assets untouched.
+must exactly match a non-colliding `flat_yellow_disc` marker nested under
+`task_spec.g1_navigation_goal.visible_target_marker`. The Arena builder renders
+that cue alongside the task's `task_spec.visible_target_marker` when present, so
+the manipulation target and captured site assets remain in the same scene.
 
-For example, add these two fields to the existing rigid task spec before
-sealing the packet (the coordinates must come from that site's measured goal):
+For example, add this field to the existing rigid task spec before sealing the
+packet (the coordinates must come from that site's measured goal). Retain the
+existing manipulation marker and task prompt as they are:
 
 ```json
 {
-  "visible_target_marker": {
-    "schema_version": "native_task_target_marker.v1",
-    "shape": "flat_yellow_disc",
-    "non_colliding": true,
-    "surface_position_world_m": [2.0, 0.0, 0.0],
-    "radius_m": 0.4
-  },
   "g1_navigation_goal": {
     "schema_version": "native_g1_navigation_goal.v1",
     "center_world_m": [2.0, 0.0, 0.0],
     "acceptance_radius_m": 0.3,
     "max_root_height_drift_m": 0.2,
     "settle_window_samples": 2,
-    "task_instruction": "Avoid obstacles and move to the yellow marked area."
+    "task_instruction": "Avoid obstacles and move to the yellow marked area.",
+    "visible_target_marker": {
+      "schema_version": "native_task_target_marker.v1",
+      "shape": "flat_yellow_disc",
+      "non_colliding": true,
+      "surface_position_world_m": [2.0, 0.0, 0.0],
+      "radius_m": 0.4
+    }
   }
 }
 ```
