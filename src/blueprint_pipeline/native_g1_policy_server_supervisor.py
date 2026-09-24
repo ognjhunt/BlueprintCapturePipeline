@@ -27,9 +27,9 @@ PINNED_SOURCE_REVISION = "68479287a784a69be9ce6ad739311d2f11f75ef9"
 LOOPBACK_HOST = "127.0.0.1"
 
 
-def _source_revision(source: Path) -> str:
+def _source_revision(source: Path, *, expected_parent: str = "scripts") -> str:
     root = source.resolve().parents[1]
-    if source.parent.name != "scripts" or not (root / "src").is_dir():
+    if source.parent.name != expected_parent or not (root / "src").is_dir():
         raise ValueError("g1_server_source_tree_invalid")
     try:
         revision = subprocess.run(

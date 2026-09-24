@@ -142,5 +142,8 @@ in `finally`; closing it waits for that child to exit. The receipt records
 the launch command, interpreter hash, candidate, scene, and listener PID.
 The server's response does not expose loaded-weight identity, so the receipt
 keeps `loaded_checkpoint_identity_observed=false` and makes no inference or
-task-success claim. A run worker still needs to own this lease and the SONIC
-controller through the terminal episode and teardown receipt.
+task-success claim. `run_g1_supervised_built_scene_episode` in
+`native_g1_runtime_assembly.py` now owns this lease and the pinned SONIC
+controller through one built-scene development episode. It records the scored
+episode digest and child teardown in a terminal receipt. The production policy
+worker does not invoke this assembly yet, and no GPU run has verified it.
