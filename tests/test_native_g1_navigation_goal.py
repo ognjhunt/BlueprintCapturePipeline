@@ -15,10 +15,10 @@ def _task_spec() -> dict:
         "prompt": "Pick and place the box",
         "visible_target_marker": {
             "schema_version": "native_task_target_marker.v1",
-            "shape": "flat_yellow_disc",
+            "shape": "flat_green_disc",
             "non_colliding": True,
-            "surface_position_world_m": [2.0, 0.0, 0.0],
-            "radius_m": 0.4,
+            "surface_position_world_m": [0.5, 0.0, 0.7],
+            "radius_m": 0.06,
         },
         "g1_navigation_goal": {
             "schema_version": "native_g1_navigation_goal.v1",
@@ -27,6 +27,13 @@ def _task_spec() -> dict:
             "max_root_height_drift_m": 0.2,
             "settle_window_samples": 2,
             "task_instruction": PUBLISHED_TASK_INSTRUCTION,
+            "visible_target_marker": {
+                "schema_version": "native_task_target_marker.v1",
+                "shape": "flat_yellow_disc",
+                "non_colliding": True,
+                "surface_position_world_m": [2.0, 0.0, 0.0],
+                "radius_m": 0.4,
+            },
         },
     }
 
@@ -67,13 +74,21 @@ def test_navigation_goal_must_still_be_held_at_episode_end() -> None:
 
 def test_navigation_goal_rejects_mismatched_marker_and_unchanged_start() -> None:
     task = _task_spec()
-    task["visible_target_marker"]["surface_position_world_m"][0] = 3.0
+    task["g1_navigation_goal"]["visible_target_marker"]["surface_position_world_m"][0] = 3.0
     with pytest.raises(ValueError, match="g1_navigation_goal_invalid"):
         validate_g1_navigation_goal(task)
     with pytest.raises(ValueError, match="start_already_at_goal"):
         score_g1_navigation_episode(
             task_spec=_task_spec(), samples=_samples([2.0, 2.0])
         )
+
+
+def test_navigation_goal_never_substitutes_manipulation_marker() -> None:
+    task = _task_spec()
+    del task["g1_navigation_goal"]["visible_target_marker"]
+    with pytest.raises(ValueError, match="goal_or_visible_marker_missing"):
+        validate_g1_navigation_goal(task)
+    assert task["visible_target_marker"]["shape"] == "flat_green_disc"
 
 
 def test_navigation_goal_rejects_height_collapse_as_success() -> None:

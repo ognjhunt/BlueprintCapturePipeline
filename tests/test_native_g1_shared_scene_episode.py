@@ -221,8 +221,8 @@ def test_navigation_candidate_uses_same_scene_and_measured_goal_score(
             "prompt": "pick the box",
             "visible_target_marker": {
                 "schema_version": "native_task_target_marker.v1",
-                "shape": "flat_yellow_disc", "non_colliding": True,
-                "surface_position_world_m": [2.0, 0.0, 0.0], "radius_m": 0.4,
+                "shape": "flat_green_disc", "non_colliding": True,
+                "surface_position_world_m": [0.5, 0.0, 0.7], "radius_m": 0.06,
             },
             "g1_navigation_goal": {
                 "schema_version": "native_g1_navigation_goal.v1",
@@ -231,6 +231,11 @@ def test_navigation_candidate_uses_same_scene_and_measured_goal_score(
                 "max_root_height_drift_m": 0.2,
                 "settle_window_samples": 2,
                 "task_instruction": PUBLISHED_TASK_INSTRUCTION,
+                "visible_target_marker": {
+                    "schema_version": "native_task_target_marker.v1",
+                    "shape": "flat_yellow_disc", "non_colliding": True,
+                    "surface_position_world_m": [2.0, 0.0, 0.0], "radius_m": 0.4,
+                },
             },
         },
     }

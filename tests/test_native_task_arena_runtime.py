@@ -1572,6 +1572,7 @@ def test_explicit_marker_gets_distinct_visual_semantics(monkeypatch):
 def test_yellow_navigation_goal_marker_is_visible_and_non_colliding(monkeypatch):
     _install_fake_native_runtime(monkeypatch)
     import sys
+    from blueprint_pipeline import native_task_arena_runtime
     captured = []
 
     def cylinder(**kwargs):
@@ -1580,14 +1581,72 @@ def test_yellow_navigation_goal_marker_is_visible_and_non_colliding(monkeypatch)
 
     monkeypatch.setattr(sys.modules["isaaclab.sim"], "CylinderCfg", cylinder)
     plan = _sealed_scene_plan()
+    monkeypatch.setattr(native_task_arena_runtime, "g1_navigation_marker_parameters",
+        lambda _plan: ((1.0, 2.0, 0.001), 0.4))
     plan.setdefault("task_spec", {})["visible_target_marker"] = {
         "schema_version": "native_task_target_marker.v1",
-        "shape": "flat_yellow_disc", "non_colliding": True,
-        "radius_m": 0.4, "surface_position_world_m": [1.0, 2.0, 0.0],
+        "shape": "flat_green_disc", "non_colliding": True,
+        "radius_m": 0.06, "surface_position_world_m": [0.5, 0.0, 0.7],
+    }
+    plan["task_spec"]["g1_navigation_goal"] = {
+        "schema_version": "native_g1_navigation_goal.v1",
+        "center_world_m": [1.0, 2.0, 0.0],
+        "acceptance_radius_m": 0.3,
+        "max_root_height_drift_m": 0.2,
+        "settle_window_samples": 2,
+        "task_instruction": "Avoid obstacles and move to the yellow marked area.",
+        "visible_target_marker": {
+            "schema_version": "native_task_target_marker.v1",
+            "shape": "flat_yellow_disc", "non_colliding": True,
+            "radius_m": 0.4, "surface_position_world_m": [1.0, 2.0, 0.0],
+        },
     }
     plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
-    build_native_task_arena_environment(plan)
-    marker = captured[-1]
-    assert marker["collision_props"] is None
-    assert marker["visual_material"].diffuse_color == pytest.approx((0.95, 0.78, 0.04))
-    assert marker["semantic_tags"] == [("class", "task_target_marker")]
+    built = build_native_task_arena_environment(plan)
+    task_marker, navigation_marker = captured[-2:]
+    assert task_marker["visual_material"].diffuse_color == pytest.approx((0.03, 0.8, 0.12))
+    assert task_marker["semantic_tags"] == [("class", "task_target_marker")]
+    assert navigation_marker["collision_props"] is None
+    assert navigation_marker["visual_material"].diffuse_color == pytest.approx((0.95, 0.78, 0.04))
+    assert navigation_marker["semantic_tags"] == [("class", "navigation_goal_marker")]
+    assert "policy_target_marker" in built.scene_asset_names
+    assert "g1_navigation_goal_marker" in built.scene_asset_names
+
+
+def test_g1_navigation_marker_parameters_preserve_task_marker():
+    from blueprint_pipeline.native_task_arena_runtime import (
+        NativeTaskArenaRuntimeError, g1_navigation_marker_parameters,
+        visible_target_marker_parameters,
+    )
+
+    plan = _sealed_scene_plan()
+    plan["task_spec"] = {
+        "task_kind": "rigid_pick_place",
+        "visible_target_marker": {
+            "schema_version": "native_task_target_marker.v1",
+            "shape": "flat_green_disc", "non_colliding": True,
+            "surface_position_world_m": [0.5, 0.0, 0.7], "radius_m": 0.06,
+        },
+        "g1_navigation_goal": {
+            "schema_version": "native_g1_navigation_goal.v1",
+            "center_world_m": [2.0, 0.0, 0.0],
+            "acceptance_radius_m": 0.3,
+            "max_root_height_drift_m": 0.2,
+            "settle_window_samples": 2,
+            "task_instruction": "Avoid obstacles and move to the yellow marked area.",
+            "visible_target_marker": {
+                "schema_version": "native_task_target_marker.v1",
+                "shape": "flat_yellow_disc", "non_colliding": True,
+                "surface_position_world_m": [2.0, 0.0, 0.0], "radius_m": 0.4,
+            },
+        },
+    }
+    with pytest.raises(NativeTaskArenaRuntimeError, match="navigation_marker_robot_invalid"):
+        g1_navigation_marker_parameters(plan)
+    plan["robot"]["robot_id"] = "unitree_g1"
+    task_position, task_radius = visible_target_marker_parameters(plan)
+    navigation_position, navigation_radius = g1_navigation_marker_parameters(plan)
+    assert task_position == pytest.approx((0.5, 0.0, 0.701))
+    assert task_radius == 0.06
+    assert navigation_position == pytest.approx((2.0, 0.0, 0.001))
+    assert navigation_radius == 0.4
