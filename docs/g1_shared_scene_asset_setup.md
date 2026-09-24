@@ -170,8 +170,35 @@ in that packet, checks the device readback, runs the supervised episode, and
 closes the environment and simulator even after failure. The worker writes
 `native_g1_development_worker_result.v1.json` with the episode receipt and
 teardown states. This is a development simulator path. The published policy
-bundle, container launch profile, live checkpoint inference, movement
+bundle, published launch profile, live checkpoint inference, movement
 clearance, and public video approval remain separate gates.
+
+The same worker can be staged for the pinned Isaac Sim 6.0.1 container. Use a
+Linux x86-64 NVIDIA Docker host with the digest-pinned image already present,
+the verified native runtime source packet and its source receipt, and a request
+whose scene, candidate, model hashes, and human rights review are sealed. The
+container launcher mounts the packet, official clean HumanoidArena checkout,
+models, and runtime source packet read-only. It provisions Isaac Lab/Arena from
+the released source packet with no network, then runs the existing worker with
+the same scene/candidate/rights fields. Its output directory is the only
+writable bind mount. Planning without `--execute` starts no container:
+
+```bash
+PYTHONPATH=src python -m blueprint_pipeline.native_g1_container_run \
+  --request "$SEALED_G1_REQUEST" \
+  --source-receipt "$NATIVE_RUNTIME_SOURCE_RECEIPT" \
+  --source-packet "$NATIVE_RUNTIME_SOURCE_PACKET" \
+  --output-dir "$NEW_G1_ATTEMPT_DIR"
+```
+
+Review `native_g1_container_run_plan.v1.json`, then use the same command with
+`--execute` and a **new** output directory. The launcher requires the pinned
+image locally (`--pull never`), GPU 0, and loopback-only container networking;
+it retains `container.log`, the runtime provisioning receipt, and the worker's
+terminal receipt in the output directory. A staged plan proves only a transport
+recipe. A successful Docker exit still needs the worker receipt, media, scorer,
+checkpoint runtime identity, and teardown inspected before any runnable WebApp
+profile or video claim is published.
 
 For the two pinned `HSI_vision_navi` candidates, the same rigid-task packet
 may include a `task_spec.g1_navigation_goal` side objective. The task still
