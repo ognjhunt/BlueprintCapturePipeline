@@ -105,6 +105,20 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
         removal_path = Path(clean_plate["removal_manifest_path"])
         if not removal_path.resolve().is_relative_to(capture_root.resolve() / "pipeline"):
             raise ValueError("website_scene_removal_manifest_outside_capture")
+        removal = json.loads(removal_path.read_text())
+        # Each articulated task target needs views of its whole assembly from
+        # the full track, not only the geometry frames. Retained receipts and
+        # decoded frames make a restart free.
+        from .website_assembly_coverage import attach_assembly_coverage
+        source_video = Path(clean_plate.get("input_video_path") or "")
+        masks = attach_assembly_coverage(task_masks=clean_plate["task_masks"],
+            source_geometry=clean_plate["source_geometry"], removal_manifest=removal, task_context=context,
+            source_video=(source_video if source_video.is_file()
+                          and source_video.resolve().is_relative_to(capture_root.resolve()) else None),
+            output_root=root / "assembly_coverage")
+        if masks != clean_plate["task_masks"]:
+            write_json(root / "task_masks.coverage.json", masks)
+            clean_plate = {**clean_plate, "task_masks": masks}
         # World Labs exports are OpenCV Y-down, including their GLB meshes:
         # https://docs.worldlabs.ai/marble/export/specs . The world manifest
         # declares an estimated metric factor and ground plane (raw units x
@@ -153,7 +167,7 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
             authority = {"max_total_spend_usd": 0, "max_paid_attempts": 0, "expires_at_epoch": now}
         preparation = compile_website_scene_preparation(
             task_context=context, task_masks=clean_plate["task_masks"],
-            removal_manifest=json.loads(removal_path.read_text()), source_geometry=clean_plate["source_geometry"],
+            removal_manifest=removal, source_geometry=clean_plate["source_geometry"],
             base_scene=base, output_root=root, spend=authority, now=now,
         )
         result.update(status=preparation["status"], blockers=preparation["blockers"],

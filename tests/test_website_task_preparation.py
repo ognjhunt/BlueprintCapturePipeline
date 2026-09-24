@@ -183,34 +183,111 @@ ARTICULATED_REMOVAL = {"schema_version": "clean_plate_removal_manifest.v1", "ent
      "compose_back": {"replacement_asset_id": None, "pose_world": None, "replacement_asset_frame_registration_uri": None}}]}
 
 
-def _covered(masks):
-    """The subject carries views chosen to cover the whole assembly."""
-    targets = [{**row, "authoring_coverage": {"status": "complete"}} if row.get("target_role") != "destination"
-               else row for row in masks["targets"]]
+# What the classifier would answer for the drawer footage: closed and open
+# fronts in the two geometry frames, and oblique views between them.
+DRAWER_VIEWS = [
+    ("frame-0", 0.0, "closed", "front", ["body_front", "bottom_drawer_front", "handle", "middle_drawer_front",
+                                         "top_drawer_front"]),
+    ("frame-1", 0.5, "open", "front", ["body_front", "drawer_interior", "handle", "middle_drawer_front"]),
+    ("decoded-000000030", 1.0, "partially_open", "left_oblique", ["left_side", "middle_drawer_front"]),
+    ("decoded-000000045", 1.5, "closed", "right_oblique", ["right_side", "top_surface"]),
+]
+
+
+def _covered(masks, source_geometry, root: Path, *, views=DRAWER_VIEWS):
+    """Coverage built by the real selection, sizing and record functions; only the classifier answer is given."""
+    from blueprint_pipeline import website_assembly_coverage as coverage
+    root.mkdir(parents=True, exist_ok=True)
+    frames = []
+    for frame_id, timestamp, _, _, _ in views:
+        path = root / f"{frame_id}.png"
+        Image.fromarray(np.full((HEIGHT, WIDTH, 3), 90, dtype=np.uint8)).save(path)
+        frames.append({"frame_id": frame_id, "timestamp_seconds": timestamp, "mask_area_fraction": 0.02,
+                       "geometry_frame": frame_id.startswith("frame-"), "path": str(path), "sha256": _sha256_file(path)})
+    answer = {"hinge_edge": None, "task_part_components": sorted({"drawer_interior", "handle", "middle_drawer_front"}
+                                                                 & {part for row in views for part in row[4]}),
+              "frames": [{"frame_id": row[0], "visible_parts": row[4], "task_part_state": row[2], "view": row[3]}
+                         for row in views]}
+    labels = coverage.validate_classification(answer, frame_ids=[row[0] for row in views], articulation_kind="prismatic")
+    classified = {"frames": [{**frame, **label} for frame, label in zip(frames, labels["frames"])],
+                  "task_part_components": labels["task_part_components"], "hinge_edges": [],
+                  "receipts": [{"binding_digest": "sha256:" + "1" * 64, "result_digest": "sha256:" + "2" * 64}]}
+    targets = []
+    for row in masks["targets"]:
+        if row.get("task_effect") == "manipulated":
+            body, blockers = coverage.estimate_body_bounds(track=row["track"], frames=source_geometry["frames"],
+                states={label["frame_id"]: label["part_state"] for label in classified["frames"]})
+            row = {**row, "authoring_coverage": coverage.coverage_record(target_id=row["target_id"],
+                binding=coverage.coverage_binding(target=row, source_geometry=source_geometry),
+                articulation_kind="prismatic", classified=classified,
+                selected=coverage.select_reference_frames(classified["frames"]), body_bounds=body,
+                body_blockers=blockers, candidate_count=len(frames))}
+        targets.append(row)
     value = {**masks, "targets": targets}
     value["digest"] = canonical_digest(value, digest_field="digest")
     return value
 
 
+INTERIOR_DEPTH_M = 0.4
+# Source-frame pixel boxes (rows, cols) and depths of the drawer cabinet.
+CLOSED_FRONT = ((14, 28), (14, 27), 1.2)  # Its lowest row rests on the table.
+OPEN_INTERIOR = ((12, 22), (15, 25), 1.2 + INTERIOR_DEPTH_M)
+PULLED_DRAWER = ((22, 25), (15, 25), 0.9)
+
+
+def _assembly_inputs(root: Path, *, covered=True):
+    """A cabinet filmed closed (frame-0) and with its drawer pulled out (frame-1).
+
+    The open view sees the interior 0.4 m behind the closed front and the
+    drawer itself in front of it; only the interior is body depth.
+    """
+    root = root / "assembly"
+    root.mkdir(parents=True, exist_ok=True)
+    frames, observations = [], []
+    for index, boxes in enumerate(((CLOSED_FRONT,), (OPEN_INTERIOR, PULLED_DRAWER))):
+        frame = _frame(root, index)
+        depth, mask = _depth(), np.zeros((HEIGHT, WIDTH), dtype=bool)
+        for (top, bottom), (left, right), value in boxes:
+            depth[top:bottom, left:right] = value
+            mask[top:bottom, left:right] = True
+        np.savez(frame["geometry_path"], depth_m=depth, valid_mask=np.ones_like(depth, dtype=bool))
+        frames.append({**frame, "geometry_digest": _sha256_file(Path(frame["geometry_path"]))})
+        flat = np.flatnonzero(np.diff(np.pad(mask.reshape(-1).astype(np.int8), (1, 1))))
+        observations.append({"source_frame_id": frame["frame_id"], "height": HEIGHT, "width": WIDTH,
+                             "runs": [{"start": int(a), "length": int(b - a)} for a, b in zip(flat[::2], flat[1::2])]})
+    geometry = {"schema_version": "website_source_geometry.v1", "frames": frames, "unit": "estimated_meters",
+                "scale_status": "model_estimated", "metric_measurement_proven": False}
+    geometry["digest"] = canonical_digest(geometry, digest_field="digest")
+    masks = _masks(geometry, destination=False, articulated=True)
+    masks["targets"][0]["track"] = {**masks["targets"][0]["track"], "observations": observations}
+    masks["digest"] = canonical_digest(masks, digest_field="digest")
+    return {"source_geometry": geometry, "removal_manifest": ARTICULATED_REMOVAL,
+            "task_masks": _covered(masks, geometry, root / "views") if covered else masks}
+
+
 def test_articulated_assembly_without_whole_object_coverage_is_not_bought(tmp_path):
     # Surfaces from the depth-sampling frames are not the whole assembly: a thin
     # front would pass a dimension check against them, so the build is held.
-    value = _compile(tmp_path, lambda geometry: {"task_masks": _masks(geometry, destination=False, articulated=True),
-                                                 "removal_manifest": ARTICULATED_REMOVAL})
+    value = _compile(tmp_path, _assembly_inputs(tmp_path, covered=False))
     assert value["status"] == "needs_input"
-    assert value["blockers"] == ["website_assembly_whole_object_coverage_required"]
-    assert "intake_request" not in value or value["intake_request"] is None
+    # Those surfaces mix the closed front, the open interior and the pulled
+    # drawer; the box they enclose does not even rest on the counter.
+    assert value["blockers"] == ["support_surface_not_found_under_subject",
+                                 "website_assembly_whole_object_coverage_required"]
+    assert value["subject"]["complete_object_dimensions"] is False
+    assert "required_parts" not in value["authoring_inputs"]["configuration"]
 
 
 def test_articulated_assembly_compiles_into_an_open_close_intake(tmp_path):
-    value = _compile(tmp_path, lambda geometry: {"task_masks": _covered(_masks(geometry, destination=False, articulated=True)),
-                                                 "removal_manifest": ARTICULATED_REMOVAL})
+    inputs = _assembly_inputs(tmp_path)
+    value = _compile(tmp_path, inputs)
     assert value["status"] == "intake_ready", value["blockers"]
     task = value["intake_request"]["task"]
     assert task["strategy"] == "articulated_open_close" and "destination" not in task
     mechanism = task["articulation"]
     assert mechanism["joint_type"] == "prismatic" and mechanism["part_label"] == "middle drawer"
-    assert mechanism["lock_status"] == "unknown" and mechanism["part_observed_open_in_footage"] is False
+    assert mechanism["lock_status"] == "unknown" and mechanism["part_observed_open_in_footage"] is True
+    assert mechanism["travel_authority"] == "object_prior_estimate_from_observed_body_depth"
     assert mechanism["physical_measurement_proven"] is False
     normal = np.asarray(mechanism["estimated_front_normal_world"])
     assert np.linalg.norm(normal) == pytest.approx(1.0) and normal[2] == pytest.approx(0.0)
@@ -230,6 +307,51 @@ def test_articulated_assembly_compiles_into_an_open_close_intake(tmp_path):
     assert value["destination"] is None
     # The whole assembly still rests on the support beneath its footprint.
     assert value["support"] is not None
+    # The builder sees the chosen upright views, not the depth-sampling frames.
+    coverage = inputs["task_masks"]["targets"][0]["authoring_coverage"]
+    frames = value["authoring_inputs"]["source_frames"]
+    assert [row["frame_id"] for row in frames] == [row["frame_id"] for row in coverage["selected_frames"]]
+    assert all(row["role"] == "observed_source" and row["reason"] for row in frames)
+    assert configuration["reference_frames"] == [{key: row[key] for key in ("path", "sha256", "frame_id",
+        "timestamp_seconds", "visible_parts", "part_state", "view", "reason")} for row in coverage["selected_frames"]]
+    assert configuration["assembly_family"] == "stacked_drawer_cabinet" and configuration["hinge_edge"] is None
+    roles = {row["part_id"]: row["role"] for row in configuration["required_parts"]}
+    assert roles == {"body_front": "body_feature", "bottom_drawer_front": "body_feature", "drawer_interior": "task_part",
+                     "handle": "door_feature", "left_side": "body_feature", "middle_drawer_front": "task_part",
+                     "right_side": "body_feature", "top_drawer_front": "body_feature", "top_surface": "body_feature"}
+    assert all(row["observed_frame_ids"] for row in configuration["required_parts"])
+    # Whole body: the interior 0.4 m behind the closed front, scaled 0.5 x 2 into simulator metres.
+    assert configuration["body_depth"]["basis"] == "interior_observed_open_state"
+    assert configuration["body_depth"]["frame_ids"] == ["frame-1"]
+    assert configuration["body_depth"]["value_m"] == pytest.approx(INTERIOR_DEPTH_M, abs=0.03)
+    assert depth == pytest.approx(configuration["body_depth"]["value_m"], rel=0.05)
+    constraints = configuration["construction_constraints"]
+    assert constraints["complete_object_dimensions_observed"] is True and value["subject"]["complete_object_dimensions"]
+    assert constraints["task_part"] == "middle drawer" and constraints["hinge_edge"] is None
+    assert set(constraints["fixed_parts"]) == set(constraints["required_parts"]) - {"drawer_interior", "handle",
+                                                                                   "middle_drawer_front"}
+    assert configuration["metric_envelope"]["minimum_xyz_m"] == value["subject"]["aabb_min_xyz"]
+
+
+def test_articulated_assembly_with_stale_or_incomplete_coverage_is_not_bought(tmp_path):
+    inputs = _assembly_inputs(tmp_path)
+    masks = inputs["task_masks"]
+    record = masks["targets"][0]["authoring_coverage"]
+    stale = {**record, "binding": {**record["binding"], "source_geometry_digest": "sha256:" + "0" * 64}}
+    stale["digest"] = canonical_digest(stale, digest_field="digest")
+    changed = {**masks, "targets": [{**masks["targets"][0], "authoring_coverage": stale}]}
+    changed["digest"] = canonical_digest(changed, digest_field="digest")
+    value = _compile(tmp_path, {**inputs, "task_masks": changed})
+    assert value["blockers"][1:] == ["website_assembly_coverage_binding_mismatch",
+                                     "website_assembly_whole_object_coverage_required"]
+    unopened = [row for row in DRAWER_VIEWS if row[2] == "closed"]
+    inputs = _assembly_inputs(tmp_path / "held", covered=False)
+    held = _covered(inputs["task_masks"], inputs["source_geometry"], tmp_path / "held" / "views", views=unopened)
+    value = _compile(tmp_path, {**inputs, "task_masks": held})
+    assert value["status"] == "needs_input"
+    assert value["blockers"][1:] == ["website_assembly_whole_object_coverage_required",
+                                     "website_assembly_body_depth_unobserved"]
+    assert value["intake_request"]["task"]["articulation"]["part_observed_open_in_footage"] is False
 
 
 def test_articulated_task_refuses_a_destination_row(tmp_path):

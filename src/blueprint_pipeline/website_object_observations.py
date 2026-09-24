@@ -8,11 +8,13 @@ replacement or evidence of unseen surfaces.
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 import shutil
 from typing import Any, Mapping
 
 import numpy as np
+from PIL import Image
 from pxr import Usd, UsdGeom
 
 from .common import write_json
@@ -59,6 +61,22 @@ def validate_observation_handoff(path: Path, *, configuration: Mapping[str, Any]
     return value, frames
 
 
+def _upright(frame: Mapping[str, Any], source: Path, target: Path) -> float:
+    """Originals are decoded without autorotation; send them as the camera displayed them."""
+    rotation = frame.get("display_rotation_degrees")
+    if (isinstance(rotation, bool) or not isinstance(rotation, (int, float))
+            or not math.isfinite(rotation) or rotation % 90):
+        raise ValueError("website_source_rotation_not_supported")
+    if rotation % 360 == 0:
+        shutil.copyfile(source, target)
+    else:
+        # Same convention as the geometry and removal inputs: PIL's
+        # counter-clockwise rotate by the display rotation, canvas expanded.
+        with Image.open(source) as image:
+            image.convert("RGB").rotate(float(rotation), expand=True).save(target, format="PNG")
+    return float(rotation)
+
+
 def materialize_object_observations(*, preparation: Mapping[str, Any], source_geometry: Mapping[str, Any],
                                     task_masks: Mapping[str, Any], output_root: Path) -> dict[str, Any]:
     for value in (preparation, source_geometry, task_masks):
@@ -85,7 +103,12 @@ def materialize_object_observations(*, preparation: Mapping[str, Any], source_ge
     if path.exists():
         value, _ = validate_observation_handoff(path, configuration=bound_config)
         # Check source bytes too, rather than adopting stale copied inputs.
+        references = {row["frame_id"]: row for row in config.get("reference_frames") or []}
         for row in value["frames"]:
+            if row.get("image_basis") == "upright_coverage_frame":
+                if _sha256_file(Path(references[row["frame_id"]]["path"])) != row["source_image_digest"]:
+                    raise ValueError("website_object_observation_source_changed")
+                continue
             frame = frames[row["frame_id"]]
             if (_sha256_file(Path(frame["source_image_path"] if row.get("image_basis") == "original_capture" else frame["image_path"])) != row["source_image_digest"]
                     or _sha256_file(Path(frame["geometry_path"])) != row["source_geometry_digest"]):
@@ -105,7 +128,10 @@ def materialize_object_observations(*, preparation: Mapping[str, Any], source_ge
     up = {"Y": 1, "-Y": 1, "Z": 2}[preparation["coordinate_frame"]["declared_up_axis"]]
     snap[up, 3] = preparation["compose_back"]["pose_world"]["support_snap_runtime_units"]
     transform = runtime_to_sim @ snap @ source_to_runtime
-    retained = []
+    # An assembly with whole-object coverage is authored from the upright views
+    # chosen to show every part and state, not from the depth-sampling frames.
+    references = list(config.get("reference_frames") or [])
+    retained, surfaces = [], 0
     for index, observation in enumerate(targets[0]["track"]["observations"]):
         frame = frames[observation["source_frame_id"]]
         if (_sha256_file(Path(frame["geometry_path"])) != frame["geometry_digest"]
@@ -139,20 +165,35 @@ def materialize_object_observations(*, preparation: Mapping[str, Any], source_ge
         mesh.CreateFaceVertexIndicesAttr(indices.ravel().tolist())
         mesh.CreateSubdivisionSchemeAttr(UsdGeom.Tokens.none)
         mesh.CreateDoubleSidedAttr(True)
+        surfaces += 1
+        if references:
+            continue
         image = root / f"source-{index:04d}.png"
         original = "source_image_path" in frame
         image_path = Path(frame["source_image_path"] if original else frame["image_path"])
         image_digest = frame["source_image_digest"] if original else frame["image_digest"]
         if _sha256_file(image_path) != image_digest:
             raise ValueError("website_object_observation_source_changed")
-        shutil.copyfile(image_path, image)
+        rotation = _upright(frame, image_path, image) if original else 0.0
+        if not original:
+            shutil.copyfile(image_path, image)
         retained.append({"frame_id": frame["frame_id"], "timestamp_seconds": frame["timestamp_seconds"],
                          "image": _record(image, relative_to=root), "source_image_digest": image_digest,
                          "image_basis": "original_capture" if original else "geometry_input",
+                         "display_rotation_applied_degrees": rotation,
                          "source_geometry_digest": frame["geometry_digest"], "triangle_count": len(triangles),
                          "mask_digest": canonical_digest(observation)})
-    if not retained:
+    if not surfaces:
         raise ValueError("website_object_observation_surface_missing")
+    for index, row in enumerate(references):
+        image = root / f"reference-{index:02d}.png"
+        if _sha256_file(Path(row["path"])) != row["sha256"]:
+            raise ValueError("website_object_observation_source_changed")
+        shutil.copyfile(row["path"], image)
+        retained.append({"frame_id": row["frame_id"], "timestamp_seconds": row["timestamp_seconds"],
+                         "image": _record(image, relative_to=root), "source_image_digest": row["sha256"],
+                         "image_basis": "upright_coverage_frame",
+                         **{key: row[key] for key in ("visible_parts", "part_state", "view", "reason")}})
     stage.GetRootLayer().Save()
     value = {"schema_version": SCHEMA, "preparation_digest": preparation["digest"],
              "source_geometry_digest": source_geometry["digest"], "task_masks_digest": task_masks["digest"],
