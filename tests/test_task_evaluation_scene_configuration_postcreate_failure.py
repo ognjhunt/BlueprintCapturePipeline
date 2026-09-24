@@ -77,7 +77,7 @@ def test_postcreate_adapter_exception_preserves_instance_identity_and_watchdog(
         lambda _value, **_kwargs: authority,
     )
     monkeypatch.setattr(
-        scene_vast, "_provider_runtime_inputs", lambda _authority: ({}, {})
+        scene_vast, "_provider_runtime_inputs", lambda _authority, _receipt: ({}, {})
     )
     monkeypatch.setattr(
         scene_vast, "require_paid_resource_admission_grant", lambda *_a, **_k: None
