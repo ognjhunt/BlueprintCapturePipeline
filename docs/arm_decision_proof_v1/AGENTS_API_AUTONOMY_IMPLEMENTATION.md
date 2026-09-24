@@ -1,5 +1,28 @@
 # Agents API autonomy implementation
 
+## Future asset-authoring adapter (2026-09-24)
+
+ADP-009B/day-21 needs a reversible authoring option for an exact later scene.
+The existing local OpenAI Agents SDK and Claude SDK loops can author through
+the confined CAD/Blender tools, but neither is a managed Agents API session.
+`task_object_agents_api.py` now prepares an immutable `gpt-6-sol` Agents API
+task for an explicitly admitted run. It reuses the existing CAD/Blender and
+independent-review contracts, retains local tool outcomes by operation ID,
+refuses uncertain outcomes, and prepares a same-session continuation only from
+a retained independent rejection. The output remains `development_only` until
+the established native and scene qualification gates pass. Its completion
+artifact is an admitted task plus a digest-bound authoring/review receipt; the
+focused wire-shaped test exercises the adapter without a provider call.
+
+This is an opt-in library path, not a change to the scene-configuration driver.
+For a separately identified future drawer scene, the controller must first
+issue exact source-byte disclosure authority, accept Agents API session/trace
+retention and managed-budget uncertainty, bind an OpenAI project guard and paid
+stage cap, select the runtime in a signed configuration, and wire the existing
+runtime journal plus separate reviewer. It must observe cleanup and provider
+zero before declaring a terminal run. No current Claude scene authority or
+resource is transferable to that future selection.
+
 This is the implementation and verification ledger for the revised September 10
 Agents API assessment and its specialist design review. The objective is the
 complete authorized software workflow, not a runtime adapter alone.
