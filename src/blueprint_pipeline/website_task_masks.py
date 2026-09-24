@@ -34,6 +34,42 @@ def decode_track_mask(observation: Mapping[str, Any]) -> np.ndarray:
     return mask.reshape(height, width)
 
 
+def is_person_removal(target: Mapping[str, Any]) -> bool:
+    """People are removed from website views like task objects, never rebuilt or placed."""
+    return target.get("target_class") == "person" and target.get("disposition") == "remove"
+
+
+def tracked_task_targets(plan: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    return [target for target in plan.get("targets", [])
+            if target.get("task_effect") in {"manipulated", "static_contact", "static_obstacle"}
+            or is_person_removal(target)]
+
+
+def union_person_tracks(tracks: list[Mapping[str, Any]], *, label: str) -> dict[str, Any]:
+    """Every instance of a person concept, merged per frame; no single instance is chosen."""
+    merged: dict[str, dict[str, Any]] = {}
+    for track in tracks:
+        for observation in track["observations"]:
+            frame_id = observation["source_frame_id"]
+            mask = decode_track_mask(observation)
+            if frame_id in merged:
+                prior = merged[frame_id]
+                if mask.shape != prior["mask"].shape:
+                    raise ValueError("website_person_track_dimensions_inconsistent")
+                prior["mask"] |= mask
+            else:
+                merged[frame_id] = {"observation": observation, "mask": mask.copy()}
+    observations = []
+    for frame_id, row in merged.items():
+        edges = np.diff(np.pad(row["mask"].reshape(-1).astype(np.int8), (1, 1)))
+        starts, ends = np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)
+        observations.append({**{key: value for key, value in row["observation"].items() if key != "runs"},
+                             "runs": [{"start": int(start), "length": int(end - start)}
+                                      for start, end in zip(starts, ends)]})
+    return {"track_id": f"{label}-union", "label": label, "observations": observations,
+            "member_track_ids": sorted(str(track.get("track_id")) for track in tracks)}
+
+
 def track_at_geometry_resolution(track: Mapping[str, Any], frames: list[Mapping[str, Any]]) -> dict[str, Any]:
     """Map upright source masks to the same uncropped grid as estimated depth."""
     by_id = {frame["frame_id"]: frame for frame in frames}
@@ -344,9 +380,8 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
                           meta_admission_grant: Any = None, task_context: Mapping[str, Any] | None = None,
                           source_video: Path | None = None, defer_kept_static: bool = False,
                           view_plan: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    targets = [target for target in plan.get("targets", [])
-               if target.get("task_effect") in {"manipulated", "static_contact", "static_obstacle"}]
-    if not targets:
+    targets = tracked_task_targets(plan)
+    if not [target for target in targets if not is_person_removal(target)]:
         raise ValueError("website_task_targets_missing")
     provider = os.getenv("BLUEPRINT_WEBSITE_SAM31_PROVIDER", "meta")
     if provider == "meta":
@@ -428,9 +463,10 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
                           "size_bytes": jpeg.stat().st_size, "media_type": "image/jpeg"})
     for target in targets:
         evidence = target.get("spatial_evidence") or []
-        if not evidence or evidence[0].get("timestamp_seconds") is None:
+        if (not evidence or evidence[0].get("timestamp_seconds") is None) and not is_person_removal(target):
             raise ValueError("task_target_spatial_anchor_missing")
-        anchor = min(range(len(registry)), key=lambda i: abs(registry[i]["decoded_pts_seconds"] - evidence[0]["timestamp_seconds"]))
+        anchor = (0 if not evidence or evidence[0].get("timestamp_seconds") is None else
+                  min(range(len(registry)), key=lambda i: abs(registry[i]["decoded_pts_seconds"] - evidence[0]["timestamp_seconds"])))
         text = target.get("segmentation_prompt") or target["semantic_label"]
         if view_plan is not None and target.get("task_effect") == "manipulated":
             from .website_task_grounding import ground_task_target
@@ -503,6 +539,20 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
                                if p["output_label"] == prompt_labels[target["target_id"]])
         candidates = [{**track, "label": target["target_id"]} for track in identity_tracks
                       if track.get("label") == prompt_labels[target["target_id"]]]
+        if is_person_removal(target):
+            # Remove every person instance the concept found, in every frame.
+            members = [{**track, "label": target["target_id"]} for track in tracks
+                       if track.get("label") == prompt_labels[target["target_id"]]]
+            selected.append({"target_id": target["target_id"], "target_role": target.get("target_role"),
+                             "target_class": "person", "semantic_label": target["semantic_label"],
+                             "task_effect": target["task_effect"], "segmentation_prompt": selected_prompt,
+                             "placement_relation": None, "articulated_part": "", "articulation_kind": "",
+                             "disposition": target["disposition"],
+                             "track": union_person_tracks(members, label=target["target_id"]),
+                             "estimated_visible_bounds": None})
+            if provider == "meta":
+                selected[-1]["source_track"] = union_person_tracks(candidates, label=target["target_id"])
+            continue
         grounding = None
         if target["target_id"] in grounded_targets:
             target = grounded_targets[target["target_id"]]
@@ -606,8 +656,7 @@ def complete_retained_static_task_masks(*, plan: Mapping[str, Any],
     to purchase another clip implicitly.
     """
     deferred = task_masks.get("deferred_target_ids")
-    targets = [target for target in plan.get("targets", [])
-               if target.get("task_effect") in {"manipulated", "static_contact", "static_obstacle"}]
+    targets = tracked_task_targets(plan)
     if (task_masks.get("status") != "object_removal_ready" or not isinstance(deferred, list) or not deferred
             or len(set(deferred)) != len(deferred)
             or task_masks.get("digest") != canonical_digest(task_masks, digest_field="digest")

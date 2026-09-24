@@ -372,11 +372,12 @@ def run_clean_plate_stage(
             mode = "fill_machinery_pending"
             reason = "clean_plate_fill_machinery_not_implemented"
 
-    # The analysis retains person observations for provenance. They are not
-    # task objects, edit instructions, or replacement assets for website media.
-    task_plan = ({**plan, "targets": [target for target in plan.get("targets", [])
-                  if target.get("target_class") != "person"]}
-                 if website_source_video is not None else plan)
+    # People are tracked and removed from the edited views exactly like the
+    # manipulated task objects (owner decision, 2026-09-24), but they are never
+    # rebuilt, placed or given replacement assets: every geometry and placement
+    # consumer selects task_effect == "manipulated", and the removal manifest
+    # above excludes them.
+    task_plan = plan
 
     # Tracking/editing needs source pixels, not depth. Defer the GPU geometry
     # job until the provider has published its visual result.
