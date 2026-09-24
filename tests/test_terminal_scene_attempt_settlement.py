@@ -518,6 +518,81 @@ def test_cpu_articulated_budget_refusal_retains_full_authoring_cap(tmp_path, cha
     assert prestage_authoring_cap_upper_bound(result, request) == (5.0 if changed is None else None)
 
 
+@pytest.mark.parametrize("changed", [None, "archive_digest", "later_stage", "manifest_digest",
+                                     "unknown_call", "wrong_provider", "completion_digest", "extra_receipt"])
+def test_claude_cpu_failure_retains_only_full_authoring_cap(tmp_path, changed):
+    from blueprint_pipeline.task_evaluation_unentered_authoring_budget import prestage_authoring_cap_upper_bound
+
+    run_id = "website-claude-drawer"
+    blocker = ("scene_configuration_provider_failed:TaskEvaluationSceneConfigurationStageProducerError:"
+               "scene_configuration_stage_producer_failed:content_agents_rigid_replacement:1")
+    request = {"run_id": run_id, "expected_production_commit": COMMIT,
+               "spend": {"external_service_caps": {"openai": {
+                   "maximum_cost_usd": 0.0, "stage_max_cost_usd": {
+                       "artifixer_semantic_teacher": 0.0, "artifixer_visual_review": 0.0,
+                       "content_agents": 0.0}}, "anthropic": {
+                           "maximum_cost_usd": 7.0, "maximum_requests": 32}}}}
+    provider = _seal({"schema_version": "task_evaluation_scene_configuration_provider_result.v1",
+                      "status": "blocked", "run_id": run_id, "source_commit": COMMIT,
+                      "first_stage_started": True, "evaluation_episode_executed": False,
+                      "candidate_policy_queried": False, "blockers": [blocker]}, "result_digest")
+    reservation_id = "sha256:" + "a" * 64
+    reservation = _seal({"schema_version": "task_evaluation_inference_reservation.v1",
+                         "run_id": run_id, "reservation_id": reservation_id,
+                         "provider": "openai" if changed == "wrong_provider" else "anthropic",
+                         "model": "claude-opus-5-5", "authority_digest": "sha256:" + "b" * 64,
+                         "provider_terms_digest": "sha256:" + "c" * 64,
+                         "projected_max_cost_usd": 4.0}, "inference_reservation_digest")
+    completion = _seal({"schema_version": "task_evaluation_inference_completion.v1",
+                        "run_id": run_id, "reservation_id": reservation_id,
+                        "provider": "anthropic", "model": "claude-opus-5-5",
+                        "authority_digest": reservation["authority_digest"],
+                        "provider_terms_digest": reservation["provider_terms_digest"],
+                        "status": "completed", "proof_effect": "none",
+                        "reconciled_actual_cost_usd": 0.2}, "inference_completion_digest")
+    if changed == "completion_digest":
+        completion["inference_completion_digest"] = "sha256:" + "0" * 64
+    path = reservation_id[7:] + ".json"
+    reserved_name = "inference_reservations/reserved/" + path
+    completed_name = "inference_reservations/completed/" + path
+    row = {"reservation_id": reservation_id, "reservation_path": reserved_name,
+           "completion_path": completed_name, "status": "completed",
+           "reservation_digest": reservation["inference_reservation_digest"],
+           "completion_digest": completion["inference_completion_digest"],
+           "projected_max_cost_usd": 4.0, "reconciled_actual_cost_usd": 0.2}
+    manifest = _seal({"schema_version": "task_evaluation_inference_reservation_manifest.v1",
+                      "run_id": run_id, "proof_effect": "none", "reservations": [row],
+                      "reservation_count": 1, "in_flight_unknown_count": int(changed == "unknown_call"),
+                      "reserved_max_cost_usd": 0.2}, "inference_reservation_manifest_digest")
+    if changed == "manifest_digest":
+        manifest["inference_reservation_manifest_digest"] = "sha256:" + "0" * 64
+    prefix = "stages/stage-3/producer/astra_cad_blender_runtime/"
+    archive_path = tmp_path / "cpu_prestage_output.zip"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr("provider_output_zip_exclusions.json", json.dumps({
+            "schema_version": "task_evaluation_scene_configuration_provider_output_zip_exclusions.v1",
+            "excluded_directory_names": sorted(EXCLUDED_PARTS)}))
+        archive.writestr("task_evaluation_scene_configuration_provider_result.v1.json", json.dumps(provider))
+        archive.writestr(prefix + "inference_audit.json", json.dumps(manifest))
+        archive.writestr(prefix + "inference/" + reserved_name, json.dumps(reservation))
+        archive.writestr(prefix + "inference/" + completed_name, json.dumps(completion))
+        archive.writestr("stages/stage-3/producer/stage_producer.log", "AssetAuthoringError")
+        if changed == "later_stage":
+            archive.writestr("stages/stage-4/result.json", "{}")
+        if changed == "extra_receipt":
+            archive.writestr(prefix + "inference/inference_reservations/reserved/" + "f" * 64 + ".json", "{}")
+    with archive_path.open("rb") as stream:
+        archive_digest = "sha256:" + hashlib.file_digest(stream, "sha256").hexdigest()
+    result = _seal({"status": "blocked", "retry_cap": 0, "provider_mutations_performed": 0,
+                    "api_pretraining": None, "cpu_prestage": None,
+                    "provider_runtime_output_zip_path": str(archive_path),
+                    "provider_runtime_output_zip_sha256": ("sha256:" + "0" * 64 if changed == "archive_digest"
+                                                           else archive_digest),
+                    "run_id": run_id, "source_commit": COMMIT,
+                    "blockers": ["provider_result_blocker:" + blocker]}, "result_digest")
+    assert prestage_authoring_cap_upper_bound(result, request) == (7.0 if changed is None else None)
+
+
 def test_terminal_cpu_authoring_failure_projects_verified_cap_without_changing_settlement(tmp_path, monkeypatch):
     fx, receipt, result_path, _ = _website_preallocation_failure(tmp_path, monkeypatch)
     result = json.loads(result_path.read_text())
