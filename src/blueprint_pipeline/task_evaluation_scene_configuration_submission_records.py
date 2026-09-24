@@ -103,7 +103,9 @@ ARTICULATED_OPEN_CLOSE_TASK_SPACE_TARGETS = [
 ]
 # Static checks for a multi-link replacement: one articulation root, exactly one
 # target joint with finite limits and a closed reset inside them, every other
-# joint fixed, a tagged handle on the moving part, generated interiors labelled.
+# joint fixed, a tagged handle on the moving part, generated interiors labelled,
+# every contract required part carried by its planned link, and a body that is
+# hollow behind an open front (probe rays on the exact collision mesh).
 ARTICULATED_STATIC_CHECKS = {
     "usd_parses": True,
     "meters_per_unit": 1.0,
@@ -118,6 +120,8 @@ ARTICULATED_STATIC_CHECKS = {
     "mass_and_inertia_positive_finite_per_link": True,
     "materials_within_preregistered_bounds": True,
     "generated_geometry_provenance_tagged": True,
+    "articulated_required_parts_present": True,
+    "articulated_body_interior_cavity": True,
     "no_external_unpinned_dependencies": True,
     "no_scripts_or_credentials": True,
 }

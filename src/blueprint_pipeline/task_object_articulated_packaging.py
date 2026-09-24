@@ -34,6 +34,7 @@ PROVENANCE_ATTRIBUTE = "blueprint:articulatedReplacement:provenance"
 OBSERVED_PROVENANCE = "observed_source_derived"
 GENERATED_PROVENANCE = "generated_candidate_geometry"
 TASK_CONTACT_ROLE_ATTRIBUTE = "blueprint:articulatedReplacement:taskContactRole"
+REQUIRED_PARTS_ATTRIBUTE = "blueprint:articulatedReplacement:requiredParts"
 HANDLE_ROLE = "handle"
 TARGET_JOINT_ID = "task_part_joint"
 CARCASS_LINK_ID = "carcass"
@@ -52,6 +53,36 @@ BACK_CLEARANCE_M = 0.02
 MINIMUM_RETAINED_DEPTH_M = 0.05
 PASSIVE_JOINT_DAMPING_N_S_PER_M = 5.0
 DEPTH_HYPOTHESIS_SCHEMA_VERSION = "articulated_cabinet_depth_hypothesis.v1"
+DRAWER_FAMILY = "stacked_drawer_cabinet"
+HINGED_FAMILY = "hinged_door_appliance"
+FAMILY_JOINT_TYPES = {DRAWER_FAMILY: "prismatic", HINGED_FAMILY: "revolute"}
+BODY_LINK_ID = "body"
+DOOR_LINK_ID = "door"
+NOT_CAPTURED_KIND = "not_captured_created_from_description"
+REQUIRED_PART_ROLES = frozenset({"body", "task_part", "fixed_interior", "door_feature", "body_feature"})
+PART_STATES = frozenset({"closed", "partially_open", "open", "not_visible"})
+HINGE_EDGES = frozenset({"bottom", "left", "right", "top"})
+# Built-in appliance construction priors (recorded in the plan; none is measured).
+APPLIANCE_WALL_M = 0.02
+APPLIANCE_DOOR_THICKNESS_M = 0.05
+APPLIANCE_BACK_CLEARANCE_M = 0.05
+APPLIANCE_KICKPLATE_HEIGHT_M = 0.10
+APPLIANCE_CONTROL_PANEL_HEIGHT_M = 0.08
+APPLIANCE_HANDLE_OFFSET_M = 0.04
+RACK_SIDE_CLEARANCE_M = 0.02
+RACK_FRONT_CLEARANCE_M = 0.03
+RACK_BACK_CLEARANCE_M = 0.02
+RACK_HEIGHT_FRACTION_OF_TUB = 0.22
+LOWER_RACK_FLOOR_CLEARANCE_M = 0.06
+UPPER_RACK_FLOOR_FRACTION_OF_TUB = 0.55
+MINIMUM_APPLIANCE_DEPTH_TO_WIDTH = 0.4
+PASSIVE_HINGE_DAMPING_N_M_S_PER_RAD = 0.5
+HINGE_RESET_TOLERANCE_RAD = 0.02
+# Cavity probes: rays start this far in front of the planned opening and must
+# travel at least this fraction of the planned inner depth before any hit.
+CAVITY_PROBE_STANDOFF_M = 0.01
+CAVITY_MINIMUM_CLEAR_FRACTION = 0.6
+CAVITY_PROBE_OFFSETS = (-0.3, 0.0, 0.3)
 
 _ORDINALS = {
     0: ("top", "upper", "uppermost", "first", "1st", "highest"),
@@ -222,16 +253,400 @@ def _resolve_bay_layout(assembly_label: str, part_label: str) -> tuple[int, int,
     return count, index, assumptions
 
 
+def _finite_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def assembly_family(configuration: Mapping[str, Any]) -> str:
+    """The declared assembly family; a legacy prismatic configuration is a drawer cabinet."""
+    joint_type = (configuration.get("mechanism") or {}).get("joint_type")
+    family = configuration.get("assembly_family")
+    if family is None and joint_type == "prismatic":
+        return DRAWER_FAMILY
+    if family not in FAMILY_JOINT_TYPES:
+        raise AssetAuthoringError("articulated_assembly_family_unsupported:" + str(family or joint_type))
+    if FAMILY_JOINT_TYPES[family] != joint_type:
+        raise AssetAuthoringError(f"articulated_assembly_family_joint_mismatch:{family}:{joint_type}")
+    return family
+
+
+def assembly_contract(configuration: Mapping[str, Any], family: str) -> dict[str, Any]:
+    """Validate one object's whole-assembly contract: optional for legacy drawers, required for doors.
+
+    A pure function of this object's configuration, so several task objects
+    plan and check independently. An object created from a description (not
+    captured) carries no frames and may claim no observation.
+    """
+    captured = configuration.get("source_observation_kind") != NOT_CAPTURED_KIND
+    required = family == HINGED_FAMILY
+    frames = configuration.get("reference_frames")
+    if frames is None and not (required and captured):
+        frames = []
+    if (not isinstance(frames, list) or len(frames) > 16 or (not captured and frames)
+            or (required and captured and not frames)):
+        raise AssetAuthoringError("articulated_reference_frames_invalid")
+    frame_ids: list[str] = []
+    for row in frames:
+        if (not isinstance(row, Mapping)
+                or not isinstance(row.get("frame_id"), str) or not row["frame_id"]
+                or not isinstance(row.get("sha256"), str)
+                or re.fullmatch(r"sha256:[0-9a-f]{64}", row["sha256"]) is None
+                or not isinstance(row.get("visible_parts"), list)
+                or any(not isinstance(v, str) or not v for v in row["visible_parts"])
+                or row.get("part_state") not in PART_STATES
+                or not isinstance(row.get("view"), str) or not row["view"].strip()
+                or not isinstance(row.get("reason"), str) or not row["reason"].strip()
+                or not _finite_number(row.get("timestamp_seconds"))):
+            raise AssetAuthoringError("articulated_reference_frames_invalid")
+        frame_ids.append(row["frame_id"])
+    if len(frame_ids) != len(set(frame_ids)) or len({row["sha256"] for row in frames}) != len(frames):
+        raise AssetAuthoringError("articulated_reference_frames_invalid")
+    parts = configuration.get("required_parts")
+    if parts is None and not required:
+        parts = []
+    if not isinstance(parts, list) or (required and not parts):
+        raise AssetAuthoringError("articulated_required_parts_missing")
+    normalized = []
+    for row in parts:
+        observed = row.get("observed_frame_ids") if isinstance(row, Mapping) else None
+        if (not isinstance(row, Mapping)
+                or not isinstance(row.get("part_id"), str)
+                or re.fullmatch(r"[a-z][a-z0-9_]{0,63}", row["part_id"]) is None
+                or not isinstance(row.get("label"), str) or not row["label"].strip()
+                or row.get("role") not in REQUIRED_PART_ROLES
+                or not isinstance(observed, list) or any(v not in frame_ids for v in observed)
+                or (not captured and observed)):
+            raise AssetAuthoringError("articulated_required_parts_invalid")
+        normalized.append({"part_id": row["part_id"], "label": row["label"].strip(), "role": row["role"],
+                           "observed_frame_ids": list(observed)})
+    if len({row["part_id"] for row in normalized}) != len(normalized) or (
+            normalized and not any(row["role"] == "task_part" for row in normalized)):
+        raise AssetAuthoringError("articulated_required_parts_invalid")
+    depth = configuration.get("body_depth")
+    body_depth = None
+    if depth is not None or required:
+        basis = "interior_observed_open_state" if captured else "owner_or_catalog_specified"
+        ids = depth.get("frame_ids") if isinstance(depth, Mapping) else None
+        if (not isinstance(depth, Mapping) or not _finite_number(depth.get("value_m")) or depth["value_m"] <= 0
+                or depth.get("basis") != basis or not isinstance(ids, list)
+                or any(v not in frame_ids for v in ids) or (captured and not ids)):
+            raise AssetAuthoringError("articulated_body_depth_missing_or_invalid")
+        body_depth = {"value_m": float(depth["value_m"]), "basis": basis, "frame_ids": list(ids)}
+    hinge = configuration.get("hinge_edge")
+    if required and hinge not in HINGE_EDGES:
+        raise AssetAuthoringError("articulated_hinge_edge_missing_or_invalid")
+    return {"captured": captured, "reference_frames": [dict(row) for row in frames],
+            "required_parts": normalized, "body_depth": body_depth, "hinge_edge": hinge if required else None}
+
+
+def _projected_envelope(configuration: Mapping[str, Any]) -> dict[str, Any]:
+    envelope = configuration["metric_envelope"]
+    lower, upper = envelope["minimum_xyz_m"], envelope["maximum_xyz_m"]
+    extents = [float(upper[i]) - float(lower[i]) for i in range(3)]
+    normal = [float(v) for v in configuration["mechanism"]["estimated_front_normal_world"]]
+    horizontal = math.hypot(normal[0], normal[1])
+    if horizontal < 1e-9:
+        raise AssetAuthoringError("articulated_front_normal_invalid")
+    nx, ny = normal[0] / horizontal, normal[1] / horizontal
+    return {"lower": list(lower), "upper": list(upper), "normal": normal, "yaw": math.atan2(ny, nx),
+            "depth": abs(nx) * extents[0] + abs(ny) * extents[1],
+            "width": abs(ny) * extents[0] + abs(nx) * extents[1], "height": extents[2]}
+
+
+def _tokens(value: str) -> list[str]:
+    return re.findall(r"[a-z0-9]+", value.lower())
+
+
+def _match_vocabulary(row: Mapping[str, Any], vocabulary: Sequence[tuple[tuple[str, ...], str]]) -> str | None:
+    """Match the part id first, then its label; the first vocabulary entry that hits wins."""
+    for words in (_tokens(row["part_id"]), _tokens(row["label"])):
+        for keys, name in vocabulary:
+            if any(word in keys for word in words):
+                return name
+    return None
+
+
+_BODY_FEATURES = (
+    (("tub", "interior", "cavity", "inside", "liner"), "tub_cavity"),
+    (("kickplate", "kick", "toe", "plinth", "base"), "kickplate"),
+    (("left",), "left_side_wall"),
+    (("right",), "right_side_wall"),
+    (("top", "worktop", "countertop"), "top_panel"),
+    (("back", "rear"), "back_wall"),
+    (("front", "frame", "face", "opening", "trim"), "front_frame"),
+    (("body", "shell", "housing", "cabinet", "carcass", "chassis", "appliance"), "link"),
+)
+_DOOR_FEATURES = (
+    (("handle", "pull", "grip"), "handle"),
+    (("control", "controls", "button", "buttons", "display", "dial", "keypad", "console"), "control_panel"),
+    (("brand", "logo", "label", "badge", "nameplate"), "brand_label"),
+    (("inner", "liner", "inside", "interior"), "inner_liner"),
+    (("outer", "skin", "front", "face", "panel"), "outer_skin"),
+    (("door",), "link"),
+)
+_CARCASS_FEATURES = (
+    (("left",), "left_side_panel"), (("right",), "right_side_panel"), (("top",), "top_panel"),
+    (("back", "rear"), "back_panel"), (("front", "frame", "face", "opening", "bay", "bays"), "open_front_bays"),
+    (("body", "carcass", "cabinet", "case", "frame", "shell"), "link"),
+)
+_DRAWER_FEATURES = (
+    (("handle", "pull", "grip"), "handle"), (("front", "face", "panel"), "drawer_front"),
+    (("box", "interior", "inside", "tray"), "drawer_box"), (("drawer",), "link"),
+)
+
+
+def _interior_slot(row: Mapping[str, Any]) -> str | None:
+    words = set(_tokens(row["part_id"])) | set(_tokens(row["label"]))
+    if words & {"cutlery", "silverware", "utensil", "utensils", "flatware"}:
+        return "third_tray" if words & {"tray", "third", "3rd"} else "cutlery_basket"
+    if not words & {"rack", "racks", "basket", "tray", "shelf"}:
+        return None
+    if words & {"third", "3rd"}:
+        return "third_tray"
+    if words & {"upper", "top", "second", "2nd"}:
+        return "upper_rack"
+    if words & {"lower", "bottom", "first", "1st"}:
+        return "lower_rack"
+    return None
+
+
+def _box(center: Sequence[float], size: Sequence[float]) -> dict[str, list[float]]:
+    return {"minimum": [round(c - s / 2, 5) for c, s in zip(center, size)],
+            "maximum": [round(c + s / 2, 5) for c, s in zip(center, size)]}
+
+
+def _place_role_rows(rows: Sequence[Mapping[str, Any]], *, link_id: str, vocabulary, whole_role: str,
+                     features: Mapping[str, Any]) -> dict[str, dict[str, str]]:
+    placed = {}
+    for row in rows:
+        feature = _match_vocabulary(row, vocabulary) or ("link" if row["role"] == whole_role else None)
+        if feature is None or features.get(feature) is None:
+            raise AssetAuthoringError("articulated_required_part_unplanned:" + row["part_id"])
+        placed[row["part_id"]] = {"link_id": link_id, "feature": feature}
+    return placed
+
+
+def _plan_hinged_door_appliance(configuration: Mapping[str, Any], contract: Mapping[str, Any]) -> dict[str, Any]:
+    """A built-in appliance: open-front hollow body, one hinged door, fixed interior parts.
+
+    Assembly frame: +X out of the closed door face, Z up, origin at the closed
+    envelope centre-XY / bottom-Z. The body occupies the rear of the envelope
+    and the closed door its front ``APPLIANCE_DOOR_THICKNESS_M``.
+    """
+    mechanism = configuration["mechanism"]
+    source = _projected_envelope(configuration)
+    width, height = source["width"], source["height"]
+    tolerance = float(configuration["metric_envelope"]["maximum_dimension_relative_error"])
+    body_depth = contract["body_depth"]
+    depth = body_depth["value_m"]
+    if min(depth, source["depth"]) / width < MINIMUM_APPLIANCE_DEPTH_TO_WIDTH:
+        raise AssetAuthoringError("articulated_body_depth_implausibly_thin")
+    if abs(depth - source["depth"]) > tolerance * max(depth, source["depth"]):
+        raise AssetAuthoringError("articulated_body_depth_disagrees_with_envelope")
+    swing = mechanism.get("estimated_usable_swing_rad")
+    hinge = contract["hinge_edge"]
+    if (not _finite_number(swing) or not 0.1 <= swing <= (math.pi / 2 if hinge == "bottom" else math.pi)
+            or list(mechanism.get("joint_limits", [0.0, swing])) != [0.0, swing]):
+        raise AssetAuthoringError("articulated_hinge_swing_infeasible")
+    rows = {role: [row for row in contract["required_parts"] if row["role"] in roles] for role, roles in (
+        ("body", {"body", "body_feature"}), ("door", {"task_part", "door_feature"}), ("interior", {"fixed_interior"}))}
+    t, door_t, hp, s = APPLIANCE_WALL_M, APPLIANCE_DOOR_THICKNESS_M, HANDLE_PROTRUSION_M, HANDLE_SECTION_M
+    base = (APPLIANCE_KICKPLATE_HEIGHT_M if any(_match_vocabulary(row, _BODY_FEATURES) == "kickplate"
+                                                for row in rows["body"]) else 0.0)
+    panel_h = (APPLIANCE_CONTROL_PANEL_HEIGHT_M if any(_match_vocabulary(row, _DOOR_FEATURES) == "control_panel"
+                                                       for row in rows["door"]) else 0.0)
+    body_x, door_h = depth - door_t, height - base
+    tub_depth, tub_w = body_x - APPLIANCE_BACK_CLEARANCE_M, width - 2 * t
+    tub_floor, tub_ceiling = base + t, height - t
+    tub_h = tub_ceiling - tub_floor
+    if min(tub_depth, tub_w, tub_h) <= 0.15 or door_h <= 0.2:
+        raise AssetAuthoringError("articulated_appliance_geometry_infeasible")
+    front_x = depth / 2 - door_t  # body front plane, assembly frame
+    door_x = door_t + hp
+    outer_face_x = door_x / 2 - hp
+    if hinge in {"bottom", "top"}:
+        handle_z = door_h - panel_h - APPLIANCE_HANDLE_OFFSET_M if hinge == "bottom" else APPLIANCE_HANDLE_OFFSET_M
+        handle_center = [round(door_x / 2 - s / 2, 5), 0.0, round(handle_z, 5)]
+        handle = {"center_m": handle_center, "length_m": round(HANDLE_LENGTH_FRACTION_OF_FRONT * width, 4),
+                  "section_m": s, "axis": "Y", "grasp_point_link_m": handle_center}
+    else:  # Seen from the front the viewer's left is -Y; the handle sits on the free edge.
+        handle_y = (width / 2 - APPLIANCE_HANDLE_OFFSET_M) * (1 if hinge == "left" else -1)
+        handle_center = [round(door_x / 2 - s / 2, 5), round(handle_y, 5), round(door_h / 2, 5)]
+        handle = {"center_m": handle_center, "length_m": round(HANDLE_LENGTH_FRACTION_OF_FRONT * door_h, 4),
+                  "section_m": s, "axis": "Z", "grasp_point_link_m": handle_center}
+    door_features = {
+        "link": _box([0.0, 0.0, door_h / 2], [door_x, width, door_h]),
+        "outer_skin": _box([outer_face_x - 0.001, 0.0, door_h / 2], [0.002, width, door_h]),
+        "inner_liner": _box([-door_x / 2 + 0.001, 0.0, door_h / 2], [0.002, width - 2 * t, door_h - 2 * t]),
+        "handle": _box(handle_center, [s, handle["length_m"], s] if handle["axis"] == "Y" else [s, s, handle["length_m"]]),
+        "control_panel": _box([outer_face_x - 0.001, 0.0, door_h - panel_h / 2], [0.002, width, panel_h]) if panel_h else None,
+        "brand_label": _box([outer_face_x - 0.0005, 0.0, door_h - (panel_h or 0.1) / 2], [0.001, 0.12, 0.03]),
+    }
+    body_features = {
+        "link": _box([0.0, 0.0, height / 2], [body_x, width, height]),
+        "tub_cavity": _box([body_x / 2 - tub_depth / 2, 0.0, (tub_floor + tub_ceiling) / 2], [tub_depth, tub_w, tub_h]),
+        "front_frame": _box([body_x / 2 - t / 2, 0.0, (base + height) / 2], [t, width, height - base]),
+        "left_side_wall": _box([0.0, -width / 2 + t / 2, height / 2], [body_x, t, height]),
+        "right_side_wall": _box([0.0, width / 2 - t / 2, height / 2], [body_x, t, height]),
+        "top_panel": _box([0.0, 0.0, height - t / 2], [body_x, width, t]),
+        "back_wall": _box([-body_x / 2 + APPLIANCE_BACK_CLEARANCE_M / 2, 0.0, height / 2],
+                          [APPLIANCE_BACK_CLEARANCE_M, width, height]),
+        "kickplate": _box([body_x / 2 - t / 2, 0.0, base / 2], [t, width, base]) if base else None,
+    }
+    placed = {**_place_role_rows(rows["body"], link_id=BODY_LINK_ID, vocabulary=_BODY_FEATURES,
+                                 whole_role="body", features=body_features),
+              **_place_role_rows(rows["door"], link_id=DOOR_LINK_ID, vocabulary=_DOOR_FEATURES,
+                                 whole_role="task_part", features=door_features)}
+    slots: dict[str, str] = {}
+    for row in rows["interior"]:
+        slot = _interior_slot(row)
+        if slot is None or slot in slots.values() or row["part_id"] in {BODY_LINK_ID, DOOR_LINK_ID}:
+            raise AssetAuthoringError("articulated_required_part_unplanned:" + row["part_id"])
+        slots[row["part_id"]] = slot
+        placed[row["part_id"]] = {"link_id": row["part_id"], "feature": "link"}
+    # Fixed interior parts sit inside the tub, clear of the closed door's liner.
+    rack_w = tub_w - 2 * RACK_SIDE_CLEARANCE_M
+    rack_d = tub_depth - RACK_FRONT_CLEARANCE_M - RACK_BACK_CLEARANCE_M
+    rack_h = RACK_HEIGHT_FRACTION_OF_TUB * tub_h
+    rack_x = front_x - RACK_FRONT_CLEARANCE_M - rack_d / 2
+    lower_z = tub_floor + LOWER_RACK_FLOOR_CLEARANCE_M
+    upper_z = tub_floor + UPPER_RACK_FLOOR_FRACTION_OF_TUB * tub_h
+    tray_h = 0.06
+    tray_z = tub_ceiling - 0.01 - tray_h
+    basket = [min(0.25, 0.45 * rack_d), min(0.15, 0.35 * rack_w),
+              min(0.2, 0.8 * (upper_z - lower_z) if "upper_rack" in slots.values() else 0.35 * tub_h)]
+    slot_geometry = {
+        "lower_rack": ([rack_d, rack_w, rack_h], [rack_x, 0.0, lower_z],
+                       "Lower rack: open-top wire basket resting near the tub floor"),
+        "upper_rack": ([rack_d, rack_w, rack_h], [rack_x, 0.0, upper_z],
+                       "Upper rack: open-top wire basket in the upper half of the tub"),
+        "third_tray": ([rack_d, rack_w, tray_h], [rack_x, 0.0, tray_z], "Shallow tray just below the tub ceiling"),
+        "cutlery_basket": (basket, [front_x - RACK_FRONT_CLEARANCE_M - basket[0] / 2 - 0.01,
+                                    rack_w / 2 - basket[1] / 2 - 0.01, lower_z + 0.01],
+                           "Open-top basket seated inside the lower rack footprint at the front right"),
+    }
+    interior_parts: dict[str, dict[str, Any]] = {}
+    interior_links = []
+    for part_id, slot in slots.items():
+        size, rest, text = slot_geometry[slot]
+        if (min(size) <= 0.03 or rest[2] + size[2] > tub_ceiling + 1e-9
+                or (slot == "upper_rack" and "third_tray" in slots.values() and upper_z + rack_h > tray_z)):
+            raise AssetAuthoringError("articulated_interior_geometry_infeasible:" + part_id)
+        label = next(row["label"] for row in rows["interior"] if row["part_id"] == part_id)
+        interior_parts[part_id] = {
+            "link_role": "fixed_interior", "dimensions_m": [round(v, 5) for v in size],
+            "features": {"link": _box([0.0, 0.0, size[2] / 2], size)},
+            "description": (f"{label}. {text}: {round(size[0], 4)} m deep x {round(size[1], 4)} m wide x "
+                            f"{round(size[2], 4)} m tall overall, open top with thin slotted or wire walls and floor; "
+                            "held fixed inside the tub, not a task part.")}
+        interior_links.append({"link_id": part_id, "part_id": part_id, "is_root": False,
+                               "semantic_role": "fixed_interior", "rest_translation_m": [round(v, 5) for v in rest]})
+    # Positive rotation opens the door outward (+X); a negative axis uses a
+    # 180 degree joint frame about X so the USD axis token stays Y or Z.
+    axis, token, rotation = {"bottom": ([0.0, 1.0, 0.0], "Y", [1.0, 0.0, 0.0, 0.0]),
+                             "top": ([0.0, -1.0, 0.0], "Y", [0.0, 1.0, 0.0, 0.0]),
+                             "right": ([0.0, 0.0, 1.0], "Z", [1.0, 0.0, 0.0, 0.0]),
+                             "left": ([0.0, 0.0, -1.0], "Z", [0.0, 1.0, 0.0, 0.0])}[hinge]
+    pivot = {"bottom": [depth / 2, 0.0, base], "top": [depth / 2, 0.0, height],
+             "left": [depth / 2, -width / 2, base + door_h / 2], "right": [depth / 2, width / 2, base + door_h / 2]}[hinge]
+    label = str(mechanism["task_part_label"])
+    features = {row["feature"] for row in placed.values()}
+    return {
+        "schema_version": PLAN_SCHEMA_VERSION, "family": HINGED_FAMILY, "root_link_id": BODY_LINK_ID,
+        "assembly_frame": {"front_axis": "+X", "up_axis": "Z", "origin": "closed_envelope_center_xy_bottom_z",
+                           "world_yaw_rad_from_estimated_front_normal": source["yaw"],
+                           "estimated_front_normal_world": source["normal"]},
+        "assembly_dimensions_m": {"depth_x": round(depth, 5), "width_y": round(width, 5), "height_z": round(height, 5),
+                                  "authority": "body_depth_" + body_depth["basis"]},
+        "closed_collision_dimensions_m": [round(depth + hp, 5), round(width, 5), round(height, 5)],
+        "source_geometry": {"aabb_min_xyz_m": source["lower"], "aabb_max_xyz_m": source["upper"],
+                            "projected_depth_m": round(source["depth"], 5), "projected_width_m": round(width, 5),
+                            "height_m": round(height, 5), "authority": "retained_source_envelope_not_physical_measurement"},
+        "body_depth": {**body_depth, "envelope_projected_depth_m": round(source["depth"], 5),
+                       "relative_disagreement": round(abs(depth - source["depth"]) / depth, 5)},
+        "hinge_edge": hinge,
+        "construction_assumptions": [
+            f"wall_thickness_m={t}", f"door_thickness_m={door_t}", f"back_clearance_m={APPLIANCE_BACK_CLEARANCE_M}",
+            f"kickplate_height_m={base}", f"control_panel_height_m={panel_h}", f"handle_protrusion_m={hp}",
+            f"handle_section_m={s}", f"rack_height_fraction_of_tub={RACK_HEIGHT_FRACTION_OF_TUB}",
+            "interior_parts_fixed_closed_not_sliding", "handle_modelled_as_bar_grasp_feature",
+            "door_counterbalance_spring_not_modelled_only_viscous_damping", "body_treated_as_grounded_base",
+            "unobserved_surfaces_are_generated_candidate_geometry",
+        ],
+        "parts": {
+            BODY_LINK_ID: {
+                "link_role": "body", "dimensions_m": [round(body_x, 5), round(width, 5), round(height, 5)],
+                "features": body_features,
+                "description": (
+                    f"Body shell of the appliance behind the {label}: the front (+X face) is open onto a hollow tub "
+                    f"cavity {round(tub_depth, 4)} m deep x {round(tub_w, 4)} m wide x {round(tub_h, 4)} m tall "
+                    f"(part-frame z {round(tub_floor, 4)} to {round(tub_ceiling, 4)}); left and right side walls and "
+                    f"top panel {t} m thick, tub floor {t} m thick, closed back wall and service space "
+                    f"{APPLIANCE_BACK_CLEARANCE_M} m thick"
+                    + (f", and a solid base {round(base, 4)} m tall whose front face is the kickplate" if base else "")
+                    + ". The tub must stay empty and open to the front; the door, racks and baskets are separate parts."),
+            },
+            DOOR_LINK_ID: {
+                "link_role": "task_part", "dimensions_m": [round(door_x, 5), round(width, 5), round(door_h, 5)],
+                "features": door_features, "handle": handle,
+                "description": (
+                    f"The {label}: one solid panel {door_t} m thick spanning the full {round(width, 4)} m width and "
+                    f"{round(door_h, 4)} m height at the -X side of this part, hinged along its {hinge} edge; outer "
+                    "skin on its +X face and inner liner on its -X face"
+                    + (f", a flush control panel strip {panel_h} m tall along the top edge of the outer face"
+                       if panel_h else "")
+                    + f", and a bar handle {handle['length_m']} m long along {handle['axis']} with a {s} m square "
+                    f"section protruding {hp} m in +X (bar centre at part-frame {handle_center})"
+                    + (", with the brand label as a flush visual region on the outer skin"
+                       if "brand_label" in features else "") + "."),
+            },
+            **interior_parts,
+        },
+        "links": [
+            {"link_id": BODY_LINK_ID, "part_id": BODY_LINK_ID, "is_root": True, "semantic_role": "appliance_body",
+             "rest_translation_m": [round(-door_t / 2, 5), 0.0, 0.0]},
+            {"link_id": DOOR_LINK_ID, "part_id": DOOR_LINK_ID, "is_root": False, "semantic_role": "task_door",
+             "rest_translation_m": [round(depth / 2 + (hp - door_t) / 2, 5), 0.0, round(base, 5)]},
+            *interior_links,
+        ],
+        "task_joint": {"joint_id": TARGET_JOINT_ID, "joint_type": "revolute", "parent_link_id": BODY_LINK_ID,
+                       "child_link_id": DOOR_LINK_ID, "axis_asset_frame": axis, "usd_axis": token,
+                       "joint_frame_rotation_wxyz": rotation, "anchor_asset_frame_m": [round(v, 5) for v in pivot],
+                       "limits_rad": [0.0, float(swing)], "reset_position_rad": 0.0,
+                       "travel_authority": mechanism.get("travel_authority", "object_prior_estimate"),
+                       "drive": {"drive_type": "none", "stiffness": 0.0, "damping": PASSIVE_HINGE_DAMPING_N_M_S_PER_RAD,
+                                 "maximum_force": 0.0, "implementation": "passive_torque_damper",
+                                 "damping_units": "N_m_s_per_rad"}},
+        "interior_cavities": [{"cavity_id": "tub", "link_id": BODY_LINK_ID,
+                               "opening_center_link_m": [round(body_x / 2, 5), 0.0,
+                                                         round((tub_floor + tub_ceiling) / 2, 5)],
+                               "opening_width_m": round(tub_w, 5), "opening_height_m": round(tub_h, 5),
+                               "inner_depth_m": round(tub_depth, 5)}],
+        "required_parts": [{**row, **placed[row["part_id"]]} for row in contract["required_parts"]],
+        "source_observation": "captured" if contract["captured"] else NOT_CAPTURED_KIND,
+        "intra_assembly_collision": "filtered_joints_constrain_mechanism",
+        "lock_status": str(mechanism.get("lock_status") or "unknown"),
+        "physical_measurement_proven": False,
+    }
+
+
 def plan_articulated_assembly(configuration: Mapping[str, Any]) -> dict[str, Any]:
-    """Derive exact part envelopes, rest poses and the task joint from the stage-3 configuration.
+    """Derive exact part envelopes, rest poses and the task joint from one object's stage-3 configuration.
 
     The assembly frame has +X out of the front face and Z up. Width/depth come
     from the estimated world envelope projected onto the estimated front normal;
-    they inherit that estimate's uncertainty and are labelled so.
+    they inherit that estimate's uncertainty and are labelled so. Every
+    contract required part must land on a planned link or named feature.
     """
+    family = assembly_family(configuration)
+    contract = assembly_contract(configuration, family)
+    if family == HINGED_FAMILY:
+        return _plan_hinged_door_appliance(configuration, contract)
+    return _plan_stacked_drawer_cabinet(configuration, contract)
+
+
+def _plan_stacked_drawer_cabinet(configuration: Mapping[str, Any], contract: Mapping[str, Any]) -> dict[str, Any]:
     mechanism = configuration["mechanism"]
-    if mechanism.get("joint_type") != "prismatic":
-        raise AssetAuthoringError("articulated_assembly_family_unsupported:" + str(mechanism.get("joint_type")))
     envelope = configuration["metric_envelope"]
     lower, upper = envelope["minimum_xyz_m"], envelope["maximum_xyz_m"]
     extents = [float(upper[i]) - float(lower[i]) for i in range(3)]
@@ -272,9 +687,35 @@ def plan_articulated_assembly(configuration: Mapping[str, Any]) -> dict[str, Any
                      "rest_translation_m": [round(depth / 2 - drawer_x / 2 + HANDLE_PROTRUSION_M, 5), 0.0,
                                             round(floor_z + BAY_CLEARANCE_M / 2, 5)]})
     yaw = math.atan2(ny, nx)
+    carcass_features = dict.fromkeys(("link", "left_side_panel", "right_side_panel", "top_panel", "back_panel",
+                                      "open_front_bays"), "carcass_panel")
+    drawer_features = dict.fromkeys(("link", "handle", "drawer_front", "drawer_box"), "drawer_solid")
+    placed = {**_place_role_rows([r for r in contract["required_parts"] if r["role"] in {"body", "body_feature"}],
+                                 link_id=CARCASS_LINK_ID, vocabulary=_CARCASS_FEATURES, whole_role="body",
+                                 features=carcass_features),
+              **_place_role_rows([r for r in contract["required_parts"] if r["role"] in {"task_part", "door_feature"}],
+                                 link_id=f"drawer_{task_index}", vocabulary=_DRAWER_FEATURES, whole_role="task_part",
+                                 features=drawer_features)}
+    for row in contract["required_parts"]:
+        if row["role"] != "fixed_interior":
+            continue
+        words = _tokens(row["part_id"]) + _tokens(row["label"])
+        index = next((k for k, names in _ORDINALS.items() if any(w in names for w in words)), None)
+        index = count - 1 if index == 2 and count > 3 else index
+        if index is None or index == task_index or index >= count or "drawer" not in words:
+            raise AssetAuthoringError("articulated_required_part_unplanned:" + row["part_id"])
+        placed[row["part_id"]] = {"link_id": f"drawer_{index}", "feature": "link"}
     return {
         "schema_version": PLAN_SCHEMA_VERSION,
-        "family": "stacked_drawer_cabinet",
+        "family": DRAWER_FAMILY, "root_link_id": CARCASS_LINK_ID,
+        "closed_collision_dimensions_m": [round(depth + HANDLE_PROTRUSION_M, 5), round(width, 5), round(height, 5)],
+        "interior_cavities": [{"cavity_id": f"bay_{bay['bay_index']}", "link_id": CARCASS_LINK_ID,
+                               "opening_center_link_m": [round(depth / 2, 5), 0.0,
+                                                         round(t + (count - 1 - bay["bay_index"]) * (bay_height + t)
+                                                               + bay_height / 2, 5)],
+                               "opening_width_m": round(bay_width, 5), "opening_height_m": round(bay_height, 5),
+                               "inner_depth_m": round(depth - t, 5)} for bay in bays],
+        "required_parts": [{**row, **placed[row["part_id"]]} for row in contract["required_parts"]],
         "assembly_frame": {"front_axis": "+X", "up_axis": "Z", "origin": "carcass_center_xy_bottom_z",
                            "world_yaw_rad_from_estimated_front_normal": yaw,
                            "estimated_front_normal_world": normal},
@@ -299,6 +740,7 @@ def plan_articulated_assembly(configuration: Mapping[str, Any]) -> dict[str, Any
         "parts": {
             CARCASS_LINK_ID: {
                 "link_role": "carcass", "dimensions_m": [round(depth, 5), round(width, 5), round(height, 5)],
+                "features": carcass_features,
                 "description": (f"Open-front cabinet carcass: top, bottom, back, left and right panels {t} m thick "
                                 f"plus {count - 1} horizontal dividers forming {count} equal drawer bays "
                                 f"({round(bay_width, 4)} m wide x {round(bay_height, 4)} m tall x {round(depth - t, 4)} m deep). "
@@ -306,6 +748,7 @@ def plan_articulated_assembly(configuration: Mapping[str, Any]) -> dict[str, Any
             },
             "drawer": {
                 "link_role": "task_part", "dimensions_m": [round(drawer_x, 5), round(drawer_y, 5), round(drawer_z, 5)],
+                "features": drawer_features,
                 "description": (f"One drawer: a front panel {FRONT_PANEL_THICKNESS_M} m thick spanning the full Y width and Z height "
                                 f"at the +X end, a centred horizontal bar handle {handle_length} m long with a {HANDLE_SECTION_M} m "
                                 f"square section protruding {HANDLE_PROTRUSION_M} m in +X from the front panel (its bar centre at "
@@ -332,6 +775,79 @@ def plan_articulated_assembly(configuration: Mapping[str, Any]) -> dict[str, Any
         "lock_status": str(mechanism.get("lock_status") or "unknown"),
         "physical_measurement_proven": False,
     }
+
+
+def root_link_id(plan: Mapping[str, Any]) -> str:
+    return str(plan.get("root_link_id") or CARCASS_LINK_ID)
+
+
+def task_joint_limits(task_joint: Mapping[str, Any]) -> list[float]:
+    """SI limits of the task joint: metres for prismatic, radians for revolute."""
+    key = "limits_rad" if task_joint["joint_type"] == "revolute" else "limits_m"
+    return [float(v) for v in task_joint[key]]
+
+
+def required_parts_by_link(plan: Mapping[str, Any]) -> dict[str, dict[str, str]]:
+    """``{link_id: {required_part_id: feature}}``; refuses a part no planned link carries."""
+    links = {row["link_id"]: row["part_id"] for row in plan["links"]}
+    placed: dict[str, dict[str, str]] = {}
+    for row in plan.get("required_parts") or []:
+        part = plan["parts"].get(links.get(row.get("link_id")), {})
+        if row.get("feature") not in (part.get("features") or {}) and row.get("feature") != "link":
+            raise AssetAuthoringError("articulated_required_part_unplanned:" + str(row.get("part_id")))
+        placed.setdefault(row["link_id"], {})[row["part_id"]] = row["feature"]
+    return placed
+
+
+def required_part_findings(plan: Mapping[str, Any], observed: Mapping[str, Mapping[str, str]]) -> list[str]:
+    """Every contract required part must be carried by the link and feature the plan assigned it."""
+    try:
+        expected = required_parts_by_link(plan)
+    except (AssetAuthoringError, KeyError, TypeError):
+        return ["required_parts_plan_invalid"]
+    return sorted(f"required_part_missing:{part_id}" for link_id, rows in expected.items()
+                  for part_id, feature in rows.items() if (observed.get(link_id) or {}).get(part_id) != feature)
+
+
+def interior_cavity_findings(vertices: Any, faces: Any, cavities: Sequence[Mapping[str, Any]]) -> list[str]:
+    """Rays from just outside each planned opening, along -X, must travel into a hollow and hit a closed back.
+
+    Mesh coordinates are in the cavity's link frame. The first hit of every
+    probe ray must lie at least ``CAVITY_MINIMUM_CLEAR_FRACTION`` of the planned
+    inner depth past the opening; a solid block or a thin slab stops the ray
+    early, a missing back lets it escape.
+    """
+    import numpy as np
+
+    triangles = np.asarray(vertices, dtype=float)[np.asarray(faces, dtype=int).reshape(-1, 3)]
+    if not len(cavities):
+        return ["body_interior_cavity_unplanned"]
+    a, b, c = triangles[:, 0], triangles[:, 1], triangles[:, 2]
+    # Rays run along -X, so intersections reduce to 2-D point-in-triangle tests in YZ.
+    e1, e2 = b[:, 1:] - a[:, 1:], c[:, 1:] - a[:, 1:]
+    det = e1[:, 0] * e2[:, 1] - e1[:, 1] * e2[:, 0]
+    usable = np.abs(det) > 1e-14
+    def clear_depth(origin_x: float, y: float, z: float) -> float | None:
+        rel = np.array([y, z]) - a[:, 1:]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            u = (rel[:, 0] * e2[:, 1] - rel[:, 1] * e2[:, 0]) / det
+            v = (e1[:, 0] * rel[:, 1] - e1[:, 1] * rel[:, 0]) / det
+            inside = usable & (u >= -1e-9) & (v >= -1e-9) & (u + v <= 1 + 1e-9)
+        hit_x = a[inside, 0] + u[inside] * (b[inside, 0] - a[inside, 0]) + v[inside] * (c[inside, 0] - a[inside, 0])
+        ahead = hit_x[hit_x < origin_x]
+        return float(origin_x - ahead.max()) - CAVITY_PROBE_STANDOFF_M if len(ahead) else None
+
+    findings = []
+    for cavity in cavities:
+        cx, cy, cz = (float(v) for v in cavity["opening_center_link_m"])
+        half_w, half_h = float(cavity["opening_width_m"]) / 2, float(cavity["opening_height_m"]) / 2
+        depths = [clear_depth(cx + CAVITY_PROBE_STANDOFF_M, cy + dy * half_w, cz + dz * half_h)
+                  for dy in CAVITY_PROBE_OFFSETS for dz in CAVITY_PROBE_OFFSETS]
+        if any(depth is None for depth in depths):
+            findings.append("body_interior_cavity_back_open:" + str(cavity["cavity_id"]))
+        elif min(depths) < CAVITY_MINIMUM_CLEAR_FRACTION * float(cavity["inner_depth_m"]):
+            findings.append("body_interior_cavity_closed:" + str(cavity["cavity_id"]))
+    return findings
 
 
 def _part_physics(*, request: AuthoringRequest, authoring_result: Mapping[str, Any],
@@ -419,8 +935,11 @@ def package_astra_articulated_candidate(*, requests: Mapping[str, AuthoringReque
     """Compose the reviewed parts into one articulated USDZ and seal its candidate physics.
 
     ``physics_bounds`` maps part id to the admitted bounds for that part's
-    reviewed properties. The carcass is the dynamic root; the runtime grounds it
-    with its anchor joint at staging (no link is kinematic, which PhysX refuses).
+    reviewed properties. The root body (carcass or appliance body) is the
+    dynamic root; the runtime grounds it with its anchor joint at staging (no
+    link is kinematic, which PhysX refuses). Before any USD is written, every
+    contract required part must be carried by a planned link and every planned
+    body cavity must be hollow and open-fronted in the reviewed mesh.
     """
     from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade, UsdUtils
 
@@ -428,11 +947,28 @@ def package_astra_articulated_candidate(*, requests: Mapping[str, AuthoringReque
         raise AssetAuthoringError("articulated_plan_schema_invalid")
     if set(requests) != set(plan["parts"]) or set(authoring_results) != set(plan["parts"]):
         raise AssetAuthoringError("articulated_part_set_mismatch")
+    required_by_link = required_parts_by_link(plan)
+    link_part = {row["link_id"]: row["part_id"] for row in plan["links"]}
+    if set(required_by_link) - set(link_part):
+        raise AssetAuthoringError("articulated_required_part_unplanned:" + sorted(
+            part for link in set(required_by_link) - set(link_part) for part in required_by_link[link])[0])
+    root_id = root_link_id(plan)
+    cavities = plan.get("interior_cavities") or []
+    if not cavities or any(row.get("link_id") not in link_part for row in cavities):
+        raise AssetAuthoringError("articulated_body_interior_cavity_unplanned")
     parts = {part_id: _part_physics(request=requests[part_id], authoring_result=authoring_results[part_id],
                                     physics_bounds=physics_bounds[part_id]) for part_id in plan["parts"]}
     for part_id, spec in plan["parts"].items():
         if [round(v, 5) for v in requests[part_id].dimensions_m] != [round(v, 5) for v in spec["dimensions_m"]]:
             raise AssetAuthoringError("articulated_part_dimensions_changed:" + part_id)
+    for link_id in sorted({row["link_id"] for row in cavities}):
+        mesh = parts[link_part[link_id]]["mesh"]
+        findings = interior_cavity_findings(mesh.vertices, mesh.faces,
+                                            [row for row in cavities if row["link_id"] == link_id])
+        if findings:
+            raise AssetAuthoringError("articulated_" + findings[0])
+    task_joint = plan["task_joint"]
+    limits = task_joint_limits(task_joint)
     output_root.mkdir(parents=True, exist_ok=True)
     authored = output_root / "astra_articulated_candidate.usdc"
     if authored.exists():
@@ -444,7 +980,6 @@ def package_astra_articulated_candidate(*, requests: Mapping[str, AuthoringReque
     stage.SetDefaultPrim(root.GetPrim())
     UsdPhysics.ArticulationRootAPI.Apply(root.GetPrim())
     root.GetPrim().SetCustomDataByKey("blueprint:articulatedAssemblyPlanDigest", canonical_digest(dict(plan)))
-    task_joint = plan["task_joint"]
     link_paths: dict[str, str] = {}
     link_rows: dict[str, dict[str, Any]] = {}
     materials: dict[str, Any] = {}
@@ -465,7 +1000,10 @@ def package_astra_articulated_candidate(*, requests: Mapping[str, AuthoringReque
         mass.CreatePrincipalAxesAttr(Gf.Quatf(_quat_from_matrix(physics["principal_rotation"])))
         xform.GetPrim().SetCustomDataByKey("blueprint:semanticRole", link["semantic_role"])
         xform.GetPrim().SetCustomDataByKey("blueprint:partId", part_id)
-        provenance = OBSERVED_PROVENANCE if link["semantic_role"] == "task_drawer" else GENERATED_PROVENANCE
+        xform.GetPrim().SetCustomDataByKey(REQUIRED_PARTS_ATTRIBUTE,
+                                           json.dumps(required_by_link.get(link_id, {}), sort_keys=True))
+        is_task_link = link_id == task_joint["child_link_id"]
+        provenance = OBSERVED_PROVENANCE if is_task_link else GENERATED_PROVENANCE
         # Visual appearance: the reviewed part candidate, referenced then flattened.
         visual = stage.DefinePrim(f"{path}/visual", "Xform")
         visual.GetReferences().AddReference(str(physics["source_path"]), ASSET_ROOT)
@@ -492,12 +1030,14 @@ def package_astra_articulated_candidate(*, requests: Mapping[str, AuthoringReque
         collision.GetPrim().SetCustomDataByKey("blueprint:collisionGeometryOnly", True)
         collision_paths = [str(collision.GetPath())]
         handle_grasp_point = None
-        if link["semantic_role"] == "task_drawer":
+        if is_task_link:
             handle = plan["parts"][part_id]["handle"]
+            section, length = float(handle["section_m"]), float(handle["length_m"])
             bar = UsdGeom.Cube.Define(stage, f"{path}/collision/handle")
             bar.CreateSizeAttr(1.0)
             bar.AddTranslateOp().Set(Gf.Vec3f(*[float(v) for v in handle["center_m"]]))
-            bar.AddScaleOp().Set(Gf.Vec3f(float(handle["section_m"]), float(handle["length_m"]), float(handle["section_m"])))
+            bar.AddScaleOp().Set(Gf.Vec3f(section, length, section) if handle.get("axis", "Y") == "Y"
+                                 else Gf.Vec3f(section, section, length))
             bar.CreatePurposeAttr("guide")
             bar.CreateVisibilityAttr("invisible")
             UsdPhysics.CollisionAPI.Apply(bar.GetPrim()).CreateCollisionEnabledAttr(True)
@@ -523,25 +1063,38 @@ def package_astra_articulated_candidate(*, requests: Mapping[str, AuthoringReque
                                                    "restitution": physics["restitution"]},
                               **({"handle_grasp_point_link_m": handle_grasp_point} if handle_grasp_point else {})}
     joint_rows = []
+    revolute = task_joint["joint_type"] == "revolute"
+    root_rest = [float(v) for v in next(row["rest_translation_m"] for row in plan["links"] if row["link_id"] == root_id)]
     for link in plan["links"]:
         if link["is_root"]:
             continue
         is_task = link["link_id"] == task_joint["child_link_id"]
         joint_id = task_joint["joint_id"] if is_task else f"{link['link_id']}_fixed"
         path = f"{ASSET_ROOT}/joints/{joint_id}"
-        if is_task:
+        rest = [float(v) for v in link["rest_translation_m"]]
+        # Joint frames sit at the hinge anchor (a drawer's is its own origin),
+        # expressed in each body's frame; closed, both frames coincide.
+        anchor = [float(v) for v in task_joint.get("anchor_asset_frame_m", rest)] if is_task else rest
+        rotation = Gf.Quatf(*[float(v) for v in (task_joint.get("joint_frame_rotation_wxyz") if is_task else None)
+                              or [1.0, 0.0, 0.0, 0.0]])
+        if is_task and revolute:
+            joint = UsdPhysics.RevoluteJoint.Define(stage, path)
+            joint.CreateAxisAttr(str(task_joint["usd_axis"]))
+            joint.CreateLowerLimitAttr(math.degrees(limits[0]))
+            joint.CreateUpperLimitAttr(math.degrees(limits[1]))
+        elif is_task:
             joint = UsdPhysics.PrismaticJoint.Define(stage, path)
             joint.CreateAxisAttr("X")
-            joint.CreateLowerLimitAttr(float(task_joint["limits_m"][0]))
-            joint.CreateUpperLimitAttr(float(task_joint["limits_m"][1]))
+            joint.CreateLowerLimitAttr(limits[0])
+            joint.CreateUpperLimitAttr(limits[1])
         else:
             joint = UsdPhysics.FixedJoint.Define(stage, path)
-        joint.CreateBody0Rel().SetTargets([Sdf.Path(link_paths[CARCASS_LINK_ID])])
+        joint.CreateBody0Rel().SetTargets([Sdf.Path(link_paths[root_id])])
         joint.CreateBody1Rel().SetTargets([Sdf.Path(link_paths[link["link_id"]])])
-        joint.CreateLocalPos0Attr(Gf.Vec3f(*[float(v) for v in link["rest_translation_m"]]))
-        joint.CreateLocalPos1Attr(Gf.Vec3f(0.0, 0.0, 0.0))
-        joint.CreateLocalRot0Attr(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
-        joint.CreateLocalRot1Attr(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        joint.CreateLocalPos0Attr(Gf.Vec3f(*[anchor[i] - root_rest[i] for i in range(3)]))
+        joint.CreateLocalPos1Attr(Gf.Vec3f(*[anchor[i] - rest[i] for i in range(3)]))
+        joint.CreateLocalRot0Attr(rotation)
+        joint.CreateLocalRot1Attr(rotation)
         prim = joint.GetPrim()
         prim.SetCustomDataByKey("blueprint:jointRole", "target" if is_task else "locked")
         prim.SetCustomDataByKey("blueprint:resetPosition", 0.0)
@@ -551,28 +1104,32 @@ def package_astra_articulated_candidate(*, requests: Mapping[str, AuthoringReque
             prim.SetCustomDataByKey("blueprint:declaredDriveType", "none")
             damping = float(task_joint["drive"]["damping"])
             if damping > 0.0:
-                drive = UsdPhysics.DriveAPI.Apply(prim, "linear")
+                # USD angular drive damping is per degree; the plan's is per radian.
+                name, implementation = (("angular", "passive_torque_damper") if revolute
+                                        else ("linear", "passive_force_damper"))
+                drive = UsdPhysics.DriveAPI.Apply(prim, name)
                 drive.CreateTypeAttr().Set("force")
                 drive.CreateStiffnessAttr().Set(0.0)
-                drive.CreateDampingAttr().Set(damping)
+                drive.CreateDampingAttr().Set(math.radians(damping) if revolute else damping)
                 drive.CreateTargetPositionAttr().Set(0.0)
-                prim.SetCustomDataByKey("blueprint:driveImplementation", "passive_force_damper")
+                prim.SetCustomDataByKey("blueprint:driveImplementation", implementation)
                 drive_row = {"declared_drive_type": "none", "usd_drive_authored": True, "usd_drive_type": "force",
-                             "implementation": "passive_force_damper", "stiffness": 0.0, "damping": damping}
-        joint_rows.append({"joint_id": joint_id, "prim_path": path, "joint_type": "prismatic" if is_task else "fixed",
-                           "parent_link_id": CARCASS_LINK_ID, "child_link_id": link["link_id"],
+                             "implementation": implementation, "stiffness": 0.0, "damping": damping}
+        joint_rows.append({"joint_id": joint_id, "prim_path": path,
+                           "joint_type": task_joint["joint_type"] if is_task else "fixed",
+                           "parent_link_id": root_id, "child_link_id": link["link_id"],
                            "role": "target" if is_task else "locked",
-                           "limits": [float(v) for v in task_joint["limits_m"]] if is_task else [0.0, 0.0],
+                           "limits": limits if is_task else [0.0, 0.0],
                            "reset_position": 0.0, "drive": drive_row})
     # The joints and limits constrain the mechanism; approximate colliders of
     # nested parts must not fight them. Robot contacts are unaffected.
     for link_id, path in link_paths.items():
-        if link_id == CARCASS_LINK_ID:
+        if link_id == root_id:
             continue
-        filtered = UsdPhysics.FilteredPairsAPI.Apply(stage.GetPrimAtPath(link_paths[CARCASS_LINK_ID]))
+        filtered = UsdPhysics.FilteredPairsAPI.Apply(stage.GetPrimAtPath(link_paths[root_id]))
         filtered.CreateFilteredPairsRel().AddTarget(Sdf.Path(path))
         for other_id, other_path in link_paths.items():
-            if other_id not in {CARCASS_LINK_ID, link_id} and other_id > link_id:
+            if other_id not in {root_id, link_id} and other_id > link_id:
                 UsdPhysics.FilteredPairsAPI.Apply(stage.GetPrimAtPath(path)).CreateFilteredPairsRel().AddTarget(Sdf.Path(other_path))
     stage.GetRootLayer().documentation = ("Blueprint articulated SimReady candidate composed from reviewed parts; "
                                           "native behaviour and physical equivalence are not qualified by authoring")
@@ -585,9 +1142,16 @@ def package_astra_articulated_candidate(*, requests: Mapping[str, AuthoringReque
     reopened = Usd.Stage.Open(str(asset))
     if reopened is None or not reopened.GetDefaultPrim().HasAPI(UsdPhysics.ArticulationRootAPI):
         raise AssetAuthoringError("authoring_usdz_readback_failed")
-    prismatic = [p for p in reopened.Traverse() if p.IsA(UsdPhysics.PrismaticJoint)]
-    if len(prismatic) != 1 or len([p for p in reopened.Traverse() if p.HasAPI(UsdPhysics.RigidBodyAPI)]) != len(link_rows):
+    moving = [p for p in reopened.Traverse() if p.IsA(UsdPhysics.Joint) and not p.IsA(UsdPhysics.FixedJoint)]
+    expected_type = UsdPhysics.RevoluteJoint if revolute else UsdPhysics.PrismaticJoint
+    if (len(moving) != 1 or not moving[0].IsA(expected_type)
+            or len([p for p in reopened.Traverse() if p.HasAPI(UsdPhysics.RigidBodyAPI)]) != len(link_rows)):
         raise AssetAuthoringError("authoring_usdz_readback_failed")
+    observed_parts = {prim.GetName(): json.loads(str(prim.GetCustomDataByKey(REQUIRED_PARTS_ATTRIBUTE) or "{}"))
+                      for prim in reopened.Traverse() if prim.HasAPI(UsdPhysics.RigidBodyAPI)}
+    missing = required_part_findings(plan, observed_parts)
+    if missing:
+        raise AssetAuthoringError("articulated_" + missing[0])
     task_link = link_rows[task_joint["child_link_id"]]
     lows = [min(row["collision_bounds_link_frame_m"]["minimum"][i] + row["rest_translation_m"][i] for row in link_rows.values()) for i in range(3)]
     highs = [max(row["collision_bounds_link_frame_m"]["maximum"][i] + row["rest_translation_m"][i] for row in link_rows.values()) for i in range(3)]
@@ -599,9 +1163,13 @@ def package_astra_articulated_candidate(*, requests: Mapping[str, AuthoringReque
         "joints": joint_rows,
         "task_joint_prim_path": f"{ASSET_ROOT}/joints/{task_joint['joint_id']}",
         "task_link_prim_path": task_link["prim_path"],
-        "fixed_base_body_prim_path": link_paths[CARCASS_LINK_ID],
+        "fixed_base_body_prim_path": link_paths[root_id],
         "handle_prim_paths": [p for p in task_link["collision_prim_paths"] if p.endswith("/handle")],
         "handle_grasp_point_link_m": task_link["handle_grasp_point_link_m"],
+        "required_parts_by_link": required_by_link,
+        "interior_cavity_check": {"status": "hollow_open_front_verified_on_reviewed_mesh",
+                                  "cavity_ids": [row["cavity_id"] for row in cavities],
+                                  "minimum_clear_fraction": CAVITY_MINIMUM_CLEAR_FRACTION},
         "collision_bounds_asset_frame_closed_m": {"minimum": lows, "maximum": highs},
         "collision_dimensions_m": [highs[i] - lows[i] for i in range(3)],
         "intra_assembly_collision_filtered": True,
@@ -629,7 +1197,8 @@ def package_astra_articulated_candidate(*, requests: Mapping[str, AuthoringReque
 def articulation_graph_from_plan(plan: Mapping[str, Any], *, opening_fraction: float = 0.6) -> dict[str, Any]:
     """The task-neutral graph contract for the composed assembly (adp_articulation_graph.v1)."""
     task_joint = plan["task_joint"]
-    stroke = float(task_joint["limits_m"][1])
+    stroke = task_joint_limits(task_joint)[1]
+    revolute = task_joint["joint_type"] == "revolute"
     links = [{"link_id": row["link_id"], "is_root": row["is_root"], "semantic_role": row["semantic_role"]} for row in plan["links"]]
     joints = []
     for row in plan["links"]:
@@ -637,11 +1206,12 @@ def articulation_graph_from_plan(plan: Mapping[str, Any], *, opening_fraction: f
             continue
         is_task = row["link_id"] == task_joint["child_link_id"]
         joints.append({"joint_id": task_joint["joint_id"] if is_task else f"{row['link_id']}_fixed",
-                       "parent_link_id": CARCASS_LINK_ID, "child_link_id": row["link_id"],
-                       "joint_type": "prismatic" if is_task else "fixed", "role": "target" if is_task else "locked",
-                       "axis": [1.0, 0.0, 0.0] if is_task else [0.0, 0.0, 0.0],
+                       "parent_link_id": root_link_id(plan), "child_link_id": row["link_id"],
+                       "joint_type": task_joint["joint_type"] if is_task else "fixed",
+                       "role": "target" if is_task else "locked",
+                       "axis": [float(v) for v in task_joint["axis_asset_frame"]] if is_task else [0.0, 0.0, 0.0],
                        "limits": [0.0, stroke] if is_task else [0.0, 0.0], "reset_position": 0.0,
-                       "reset_tolerance": 0.005,
+                       "reset_tolerance": HINGE_RESET_TOLERANCE_RAD if revolute else 0.005,
                        "drive": {"drive_type": "none", "stiffness": 0.0,
                                  "damping": float(task_joint["drive"]["damping"]) if is_task else 0.0, "maximum_force": 0.0}})
     link_ids = [row["link_id"] for row in links]
@@ -654,6 +1224,8 @@ def articulation_graph_from_plan(plan: Mapping[str, Any], *, opening_fraction: f
 
 __all__ = [
     "AUTHORING_RESULT_SCHEMA_VERSION", "COMPLETION_SCHEMA_VERSION", "PLAN_SCHEMA_VERSION",
-    "PROVENANCE_ATTRIBUTE", "TASK_CONTACT_ROLE_ATTRIBUTE", "TARGET_JOINT_ID",
-    "articulation_graph_from_plan", "package_astra_articulated_candidate", "plan_articulated_assembly",
+    "PROVENANCE_ATTRIBUTE", "REQUIRED_PARTS_ATTRIBUTE", "TASK_CONTACT_ROLE_ATTRIBUTE", "TARGET_JOINT_ID",
+    "articulation_graph_from_plan", "assembly_contract", "assembly_family", "interior_cavity_findings",
+    "package_astra_articulated_candidate", "plan_articulated_assembly", "required_part_findings",
+    "required_parts_by_link", "root_link_id", "task_joint_limits",
 ]
