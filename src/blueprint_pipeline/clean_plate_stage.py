@@ -39,6 +39,7 @@ from .website_reconstruction_profile import reconstruction_profile
 from .website_image_completion import (
     complete_background_images, diagnose_inconsistent_background, verify_completed_background,
 )
+from .website_image_repair_agent import image_repair_enabled, repair_rejected_views
 
 FLAG_ENV = "BLUEPRINT_CLEAN_PLATE_ENABLED"
 ADP_ITEM_ENV = "BLUEPRINT_CLEAN_PLATE_ADP_ITEM"
@@ -503,6 +504,15 @@ def run_clean_plate_stage(
                                          "prior_inconsistent_review": prior_review,
                                          "inconsistency_diagnosis": diagnosis,
                                          "excluded_inconsistent_frame_ids": [inconsistent_id]}
+                # Opt-in: one bounded repair plan for the still-rejected set. The
+                # planner never approves; the independent review decides again.
+                if (completion_review.get("status") != "passed" and task_context is not None
+                        and image_repair_enabled()):
+                    selected, completion_review = repair_rejected_views(
+                        selected=selected, object_removal_frames=object_removal_frames,
+                        original_frames=source_geometry["frames"], plan=task_plan,
+                        failed_review=completion_review, output_root=clean_plate_root / "image_completion",
+                        task_context=task_context)
                 if completion_review.get("status") != "passed":
                     raise ValueError("website_image_completion_review_failed")
             prepared_views = {"schema_version": "website_prepared_views.v1", "status": "ready", "frames": selected,
