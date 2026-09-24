@@ -579,3 +579,13 @@ def test_a_run_is_any_two_runnable_policies_in_catalog_order(tmp_path: Path) -> 
             match="policy_canary_launch_selection_invalid",
         ):
             _validate_selection(request, setup=setup, plan=plan)
+
+
+def test_navigation_objective_stays_blocked_without_a_movement_contract(tmp_path: Path) -> None:
+    request, setup, plan = _selection_with_unavailable_policy(tmp_path)
+    for candidate in setup["robot_presets"][0]["policy_candidates"][:2]:
+        candidate["evaluation_objective_id"] = "g1_navigation_goal"
+    setup["setup_digest"] = policy_canary_setup_digest(setup)
+    request["setup_digest"] = setup["setup_digest"]
+    with pytest.raises(PolicyCanaryPreparationDispatchError, match="policy_canary_launch_selection_invalid"):
+        _validate_selection(request, setup=setup, plan=plan)

@@ -104,7 +104,7 @@ def validate_policy_canary_setup(value: Mapping[str, Any]) -> dict[str, Any]:
         for row in presets[1:]
     ):
         raise TaskEvaluationPolicyCanarySetupError("policy_canary_setup_large_preset_enabled")
-    runnable_by_robot: dict[str, list[str]] = {}
+    runnable_by_robot: dict[str, dict[str, list[str]]] = {}
     for robot in setup["robot_presets"]:
         if robot["readiness"]["status"] != "verified_runnable":
             continue
@@ -124,14 +124,24 @@ def validate_policy_canary_setup(value: Mapping[str, Any]) -> dict[str, Any]:
                 raise TaskEvaluationPolicyCanarySetupError(
                     "policy_canary_setup_compatibility_invalid"
                 )
-            runnable_by_robot.setdefault(robot["robot_preset_id"], []).append(
-                policy["candidate_id"]
-            )
+            objective = policy.get("evaluation_objective_id", "task_success")
+            runnable_by_robot.setdefault(robot["robot_preset_id"], {}).setdefault(
+                objective, []
+            ).append(policy["candidate_id"])
     if not runnable_by_robot or any(
         len(candidate_ids) != 2 or len(set(candidate_ids)) != 2
-        for candidate_ids in runnable_by_robot.values()
+        for groups in runnable_by_robot.values()
+        for candidate_ids in groups.values()
     ):
         raise TaskEvaluationPolicyCanarySetupError("policy_canary_setup_runnable_pair_invalid")
+    if any(
+        objective != "task_success"
+        for groups in runnable_by_robot.values()
+        for objective in groups
+    ):
+        raise TaskEvaluationPolicyCanarySetupError(
+            "policy_canary_navigation_success_contract_not_published"
+        )
     return setup
 
 
