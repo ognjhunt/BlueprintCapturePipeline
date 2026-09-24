@@ -124,6 +124,13 @@ class AgentsSDKAgentSpec:
     max_initial_multimodal_input_tokens: int = 0
     reasoning_effort: Literal["minimal", "low", "medium", "high", "xhigh", "max"] | None = None
     tool_bindings: tuple[RegisteredToolBinding, ...] = ()
+    # Provider-hosted tools (for example ``agents.WebSearchTool``) carry a
+    # per-call fee that token usage does not report. Calls are capped per
+    # response (Responses API ``max_tool_calls``), reserved up front at the cap,
+    # and reconciled from the calls the run actually made.
+    hosted_tools: tuple[Any, ...] = ()
+    max_hosted_tool_calls_per_turn: int = 0
+    hosted_tool_call_usd: float = 0.0
     output_type: type[BaseModel] = AgentsSDKCapabilityOutput
     cache_policy: PromptCachePolicy | None = None
     stable_developer_prefix: str | None = None
@@ -479,6 +486,13 @@ class OpenAIAgentsSDKInvoker:
                 + spec.max_output_tokens * self.config.output_cost_per_million_tokens_usd
             ) / 1_000_000
         projected_max_cost = projected_per_request_cost * spec.max_turns
+        hosted_call_ceiling = 0
+        if spec.hosted_tools:
+            if not (0 < spec.max_hosted_tool_calls_per_turn <= 8 and math.isfinite(spec.hosted_tool_call_usd)
+                    and spec.hosted_tool_call_usd > 0):
+                raise AgentsSDKInvocationBlocked("agents_sdk_hosted_tool_budget_missing")
+            hosted_call_ceiling = spec.max_hosted_tool_calls_per_turn * spec.max_turns
+            projected_max_cost += hosted_call_ceiling * spec.hosted_tool_call_usd
         reserved_before_call = self._reserved_cost_usd
         if reserved_before_call + projected_max_cost > self.config.max_inference_cost_usd:
             raise AgentsSDKInvocationBlocked("agents_sdk_inference_budget_ceiling_exceeded")
@@ -515,6 +529,9 @@ class OpenAIAgentsSDKInvoker:
         }
         if spec.reasoning_effort is not None:
             reservation["reasoning_effort"] = spec.reasoning_effort
+        if hosted_call_ceiling:
+            reservation.update(hosted_tool_call_ceiling=hosted_call_ceiling,
+                               hosted_tool_call_usd=spec.hosted_tool_call_usd)
         reservation["inference_reservation_digest"] = canonical_digest(
             reservation,
             digest_field="inference_reservation_digest",
@@ -611,14 +628,14 @@ class OpenAIAgentsSDKInvoker:
                 include_usage=True,
                 verbosity="low",
                 prompt_cache_options=cache_request_kwargs.get("prompt_cache_options"),
-                extra_args=(
-                    {"prompt_cache_key": cache_request_kwargs["prompt_cache_key"]}
-                    if "prompt_cache_key" in cache_request_kwargs
-                    else None
-                ),
+                extra_args=({
+                    **({"prompt_cache_key": cache_request_kwargs["prompt_cache_key"]}
+                       if "prompt_cache_key" in cache_request_kwargs else {}),
+                    **({"max_tool_calls": spec.max_hosted_tool_calls_per_turn} if hosted_call_ceiling else {}),
+                } or None),
             ),
             output_type=spec.output_type,
-            tools=sdk_tools,
+            tools=[*sdk_tools, *spec.hosted_tools],
         )
         trace_id = canonical_digest(
             {"run_id": spec.run_id, "capability": capability_id, "model": spec.model}
@@ -680,10 +697,18 @@ class OpenAIAgentsSDKInvoker:
             digest_field="usage_receipt_digest",
         )
         estimated_cost = usage_receipt.get("estimated_total_cost_usd")
+        hosted_calls = 0
+        if hosted_call_ceiling:
+            hosted_calls = sum(1 for item in (getattr(result, "new_items", None) or ())
+                               if _raw_item_type(item) in _HOSTED_TOOL_CALL_TYPES)
+            if estimated_cost is not None:
+                estimated_cost = float(estimated_cost) + hosted_calls * spec.hosted_tool_call_usd
         reconciled_cost = (
             float(estimated_cost) if estimated_cost is not None else projected_max_cost
         )
-        cost_overrun = reconciled_cost > projected_max_cost + 1.0e-12
+        cost_overrun = (reconciled_cost > projected_max_cost + 1.0e-12
+                        or hosted_calls > hosted_call_ceiling)
+        hosted_usage = {"hosted_tool_calls": hosted_calls} if hosted_call_ceiling else {}
         if self._record_completion is not None:
             completion: dict[str, Any] = {
                 "schema_version": INFERENCE_COMPLETION_SCHEMA_VERSION,
@@ -704,6 +729,7 @@ class OpenAIAgentsSDKInvoker:
                 ),
                 "actual_cost_exceeded_reservation": cost_overrun,
                 "proof_effect": "none",
+                **hosted_usage,
             }
             completion["inference_completion_digest"] = canonical_digest(
                 completion,
@@ -729,12 +755,22 @@ class OpenAIAgentsSDKInvoker:
                 "projected_max_cost_per_request_usd": projected_per_request_cost,
                 "projected_max_cost_usd": projected_max_cost,
                 "cumulative_reserved_cost_usd": self._reserved_cost_usd,
+                **hosted_usage,
             },
             cost_usd=(float(estimated_cost) if estimated_cost is not None else None),
             cost_status=str(usage_receipt["cost_status"]),
             trace_id=None if self.config.tracing_disabled else f"trace_{trace_id[:32]}",
             tool_observations=tuple(tool_observations),
         )
+
+
+_HOSTED_TOOL_CALL_TYPES = frozenset({"web_search_call", "file_search_call", "code_interpreter_call",
+                                     "image_generation_call", "mcp_call"})
+
+
+def _raw_item_type(item: Any) -> str | None:
+    raw = getattr(item, "raw_item", None)
+    return raw.get("type") if isinstance(raw, Mapping) else getattr(raw, "type", None)
 
 
 _FALSE_ONLY_AGENT_KEYS = {

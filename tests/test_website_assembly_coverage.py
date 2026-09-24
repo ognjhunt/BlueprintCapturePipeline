@@ -97,7 +97,8 @@ def _label(index):
 
 def _answer(binding, *, hinge="bottom"):
     ids = [row["frame_id"] for row in binding["images"]]
-    frames = [dict(zip(("task_part_state", "view", "visible_parts"), _label(int(i[8:]))), frame_id=i) for i in ids]
+    frames = [dict(zip(("task_part_state", "view", "visible_parts"), _label(int(i[8:]))), frame_id=i,
+                   label_text=["BOSCH", "800 Series"] if int(i[8:]) < 40 else []) for i in ids]
     visible = {part for row in frames for part in row["visible_parts"]}
     return {"hinge_edge": hinge, "task_part_components": sorted(MOVING & visible), "frames": frames}
 
@@ -179,6 +180,11 @@ def test_views_cover_every_part_and_state_within_the_cap_and_restart_is_free(tmp
     assert body["maximum"][2] == pytest.approx(INTERIOR_Z, abs=1e-6)
     assert body["width_m"] == pytest.approx(0.6, abs=0.03) and body["height_m"] == pytest.approx(0.6, abs=0.03)
     assert body["closed_frame_ids"] == [f"decoded-{CLOSED:09d}"] and body["open_frame_ids"] == [f"decoded-{OPEN:09d}"]
+    # Label text is kept verbatim, per frame, only where some was read.
+    readings = record["label_readings"]
+    assert readings and all(row["label_text"] == ["BOSCH", "800 Series"] and int(row["frame_id"][8:]) < 40
+                            and Path(row["path"]).is_file() for row in readings)
+    assert "label_text" in calls[0]["prompt"] and record["classifier"]["revision"] == 2
     # Retained receipts: a restart buys nothing and reproduces the record.
     assert _run(tmp_path, target, geometry, registry=_registry(600)) == record
     assert len(calls) == math.ceil(len(ids) / coverage.CLASSIFY_BATCH)
@@ -240,6 +246,14 @@ def test_open_door_sweep_alone_is_not_body_depth(tmp_path):
     lambda a: {**a, "frames": [{**a["frames"][0], "visible_parts": ["Door Outer"]}, *a["frames"][1:]]},
     lambda a: {**a, "task_part_components": ["never_seen"]},
     lambda a: {**a, "extra": True},
+    lambda a: {**a, "frames": [{k: v for k, v in a["frames"][0].items() if k != "label_text"}, *a["frames"][1:]]},
+    lambda a: {**a, "frames": [{**a["frames"][0], "label_text": "BOSCH"}, *a["frames"][1:]]},
+    lambda a: {**a, "frames": [{**a["frames"][0], "label_text": [" BOSCH"]}, *a["frames"][1:]]},
+    lambda a: {**a, "frames": [{**a["frames"][0], "label_text": ["BOSCH", "BOSCH"]}, *a["frames"][1:]]},
+    lambda a: {**a, "frames": [{**a["frames"][0], "label_text": [""]}, *a["frames"][1:]]},
+    lambda a: {**a, "frames": [{**a["frames"][0], "label_text": ["BO\nSCH"]}, *a["frames"][1:]]},
+    lambda a: {**a, "frames": [{**a["frames"][0], "label_text": ["x" * 121]}, *a["frames"][1:]]},
+    lambda a: {**a, "frames": [{**a["frames"][0], "label_text": [str(i) for i in range(9)]}, *a["frames"][1:]]},
 ])
 def test_malformed_classification_fails_closed_without_rebuying(tmp_path, model, change):
     calls, state = model

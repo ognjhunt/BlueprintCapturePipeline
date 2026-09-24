@@ -223,3 +223,26 @@ def test_articulated_targets_gain_coverage_from_the_retained_video_before_compil
     kwargs["clean_plate"]["input_video_path"] = str(outside)
     handoff.prepare_website_scene_handoff(**kwargs)
     assert seen["attach"]["source_video"] is None
+
+
+def test_identified_targets_gain_published_specs_after_coverage_and_before_compile(tmp_path, monkeypatch):
+    kwargs = inputs(tmp_path)
+    masks = {"targets": [{"target_id": "dishwasher-1"}], "digest": "sha256:" + "b" * 64}
+    kwargs["clean_plate"].update(source_geometry={"digest": "geometry"}, task_masks=masks)
+    covered = {**masks, "targets": [{"target_id": "dishwasher-1", "authoring_coverage": {"status": "complete"}}]}
+    specified = {**covered, "targets": [{**covered["targets"][0], "object_spec": {"status": "researched"}}]}
+    seen = {}
+    monkeypatch.setattr("blueprint_pipeline.website_assembly_coverage.attach_assembly_coverage", lambda **_: covered)
+
+    def attach(**value):
+        seen["attach"] = value
+        return specified
+    monkeypatch.setattr("blueprint_pipeline.website_object_spec_research.attach_object_specs", attach)
+    monkeypatch.setattr(handoff, "compile_website_scene_preparation",
+                        lambda **value: seen.update(compile=value) or (_ for _ in ()).throw(ValueError("stop")))
+    handoff.prepare_website_scene_handoff(**kwargs)
+    assert seen["attach"]["task_masks"] == covered
+    assert seen["attach"]["task_context"] == kwargs["descriptor"]["metadata"]["site_task_context"]
+    assert seen["attach"]["output_root"] == tmp_path / "pipeline/website_scene_preparation/object_spec"
+    assert seen["compile"]["task_masks"] == specified
+    assert json.loads((tmp_path / "pipeline/website_scene_preparation/task_masks.coverage.json").read_text()) == specified

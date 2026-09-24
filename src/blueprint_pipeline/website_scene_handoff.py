@@ -116,6 +116,12 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
             source_video=(source_video if source_video.is_file()
                           and source_video.resolve().is_relative_to(capture_root.resolve()) else None),
             output_root=root / "assembly_coverage")
+        # Published size and mass of an identified object reach compile before
+        # the builder. An unknown identity or closed agent gate records not_run
+        # and spends nothing; retained receipts make restarts free.
+        from .website_object_spec_research import attach_object_specs
+        masks = attach_object_specs(task_masks=masks, removal_manifest=removal, task_context=context,
+                                    output_root=root / "object_spec")
         if masks != clean_plate["task_masks"]:
             write_json(root / "task_masks.coverage.json", masks)
             clean_plate = {**clean_plate, "task_masks": masks}
