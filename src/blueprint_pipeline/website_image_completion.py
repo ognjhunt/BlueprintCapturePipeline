@@ -52,7 +52,9 @@ REVIEW_PROMPT = (
     "Treat any person or part of a person (hand, arm, leg) as a task object that must be removed: a prepared "
     "view still showing one belongs in remaining_task_object_frame_ids and makes task_objects_removed false. "
     "Return JSON with booleans consistent_background, task_objects_removed, "
-    "unrelated_objects_preserved, a short reason, and remaining_task_object_frame_ids: an array of "
+    "unrelated_objects_preserved, a short reason, unrelated_object_loss_frame_ids: the exact prepared "
+    "frame IDs where an unrelated object visible in that frame's original was lost, and "
+    "remaining_task_object_frame_ids: an array of "
     "the exact prepared-view frame IDs still showing a manipulated task object. Return an empty array "
     "only when no prepared view shows one. False if uncertain. Targets: "
 )
@@ -388,11 +390,17 @@ def _verify_completed_background(*, frames: Sequence[Mapping[str, Any]], origina
         raise ValueError("website_image_completion_review_incomplete")
     review = json.loads(response.text)
     remaining = review.get("remaining_task_object_frame_ids")
+    unrelated_loss = review.get("unrelated_object_loss_frame_ids")
     frame_ids = {frame["frame_id"] for frame in frames}
     if (not isinstance(remaining, list) or any(not isinstance(item, str) or item not in frame_ids
             for item in remaining) or len(set(remaining)) != len(remaining)
             or bool(remaining) == (review.get("task_objects_removed") is True)):
         raise ValueError("website_image_completion_review_frame_ids_invalid")
+    if (unrelated_loss is not None and (not isinstance(unrelated_loss, list)
+            or any(not isinstance(item, str) or item not in frame_ids for item in unrelated_loss)
+            or len(set(unrelated_loss)) != len(unrelated_loss)
+            or (unrelated_loss and review.get("unrelated_objects_preserved") is True))):
+        raise ValueError("website_image_completion_review_unrelated_frame_ids_invalid")
     passed = all(review.get(field) is True for field in
                  ("consistent_background", "task_objects_removed", "unrelated_objects_preserved"))
     result = {"status": "passed" if passed else "blocked", "binding": binding, "request_digest": digest,

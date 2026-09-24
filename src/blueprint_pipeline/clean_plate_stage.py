@@ -454,6 +454,28 @@ def run_clean_plate_stage(
                     frames=selected, original_frames=source_geometry["frames"], plan=task_plan,
                     output_root=clean_plate_root / "image_completion", task_context=task_context)
                 review = completion_review.get("review") or {}
+                unrelated_loss_ids = review.get("unrelated_object_loss_frame_ids") or []
+                generated_ids = {frame["frame_id"] for frame in selected
+                                 if frame.get("generated_pixels_present")}
+                # A full-frame edit can remove an unrelated object in one
+                # viewpoint. Exclude only the exact generated view named by
+                # the independent reviewer, then review the whole set again.
+                # A missing obstacle in an unedited view cannot be repaired by
+                # discarding model output and remains a blocking finding.
+                if (completion_review.get("status") == "blocked"
+                        and review.get("consistent_background") is True
+                        and review.get("unrelated_objects_preserved") is False
+                        and unrelated_loss_ids and set(unrelated_loss_ids) <= generated_ids
+                        and len(selected) - len(unrelated_loss_ids) >= 2):
+                    first_review = completion_review
+                    selected = [frame for frame in selected
+                                if frame["frame_id"] not in unrelated_loss_ids]
+                    completion_review = verify_completed_background(
+                        frames=selected, original_frames=source_geometry["frames"], plan=task_plan,
+                        output_root=clean_plate_root / "image_completion", task_context=task_context)
+                    completion_review = {**completion_review, "prior_unrelated_review": first_review,
+                                         "excluded_unrelated_loss_frame_ids": sorted(unrelated_loss_ids)}
+                review = completion_review.get("review") or {}
                 remaining_ids = review.get("remaining_task_object_frame_ids") or []
                 # A missing SAM mask cannot justify keeping a visibly unremoved
                 # task object. The independent review may name exact unedited

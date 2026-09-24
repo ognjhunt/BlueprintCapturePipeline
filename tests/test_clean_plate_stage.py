@@ -204,7 +204,8 @@ def test_website_person_observation_does_not_require_removal(tmp_path, monkeypat
 
 
 @pytest.mark.parametrize("fill_result", ["unneeded", "passed", "blocked", "review_repair",
-                                        "review_repair_edited", "inconsistent_repair", "inconsistent_unedited"])
+                                        "review_repair_edited", "inconsistent_repair", "inconsistent_unedited",
+                                        "unrelated_loss", "unrelated_unedited"])
 def test_website_stage_prepares_images_without_waiting_for_geometry(tmp_path, monkeypatch, fill_result):
     capture_root = _make_capture(tmp_path)
     source = capture_root / "raw/walkthrough.mp4"
@@ -264,6 +265,25 @@ def test_website_stage_prepares_images_without_waiting_for_geometry(tmp_path, mo
     def review(**kwargs):
         order.append("review")
         assert [target["target_id"] for target in kwargs["plan"]["targets"]] == ["box", "operator_hand"]
+        if fill_result in {"unrelated_loss", "unrelated_unedited"}:
+            ids = [frame["frame_id"] for frame in kwargs["frames"]]
+            if len(ids) == 8:
+                loss_id = "f1" if fill_result == "unrelated_loss" else "f2"
+                return {"status": "blocked", "review": {"consistent_background": True,
+                    "task_objects_removed": False, "unrelated_objects_preserved": False,
+                    "unrelated_object_loss_frame_ids": [loss_id],
+                    "remaining_task_object_frame_ids": ["f2"]}}
+            assert fill_result == "unrelated_loss"
+            if len(ids) == 7:
+                assert "f1" not in ids
+                return {"status": "blocked", "review": {"consistent_background": True,
+                    "task_objects_removed": False, "unrelated_objects_preserved": True,
+                    "unrelated_object_loss_frame_ids": [],
+                    "remaining_task_object_frame_ids": ["f2"]}}
+            assert len(ids) == 6 and "f2" not in ids
+            return {"status": "passed", "review": {"consistent_background": True,
+                "task_objects_removed": True, "unrelated_objects_preserved": True,
+                "unrelated_object_loss_frame_ids": [], "remaining_task_object_frame_ids": []}}
         if fill_result in {"inconsistent_repair", "inconsistent_unedited"}:
             ids = [frame["frame_id"] for frame in kwargs["frames"]]
             if len(ids) == 8:
@@ -307,17 +327,24 @@ def test_website_stage_prepares_images_without_waiting_for_geometry(tmp_path, mo
     assert result["source_frames"] == geometry
     assert order == ["analysis", "source_frames", "masks", "mask_preparation"] + (
         [] if fill_result == "unneeded" else ["completion", "review"] +
-        (["review"] if fill_result == "review_repair" else
+        (["review", "review"] if fill_result == "unrelated_loss" else
+         ["review"] if fill_result == "review_repair" else
          ["diagnosis", "review"] if fill_result == "inconsistent_repair" else
          ["diagnosis"] if fill_result == "inconsistent_unedited" else []))
-    if fill_result in {"blocked", "review_repair_edited", "inconsistent_unedited"}:
+    if fill_result in {"blocked", "review_repair_edited", "inconsistent_unedited", "unrelated_unedited"}:
         assert result["status"] == "blocked"
         assert result["prepared_views"] is None
         assert ("website_background_consistency_exclusion_invalid" if fill_result == "inconsistent_unedited"
                 else "website_image_completion_review_failed") in result["blockers"]
         return
     assert result["status"] == "objects_removed"
-    assert len(result["prepared_views"]["frames"]) == (7 if fill_result in {"review_repair", "inconsistent_repair"} else 8)
+    assert len(result["prepared_views"]["frames"]) == (
+        6 if fill_result == "unrelated_loss" else
+        7 if fill_result in {"review_repair", "inconsistent_repair"} else 8)
+    if fill_result == "unrelated_loss":
+        reviewed = result["prepared_views"]["completion_review"]
+        assert reviewed["excluded_unmasked_frame_ids"] == ["f2"]
+        assert reviewed["prior_failed_review"]["excluded_unrelated_loss_frame_ids"] == ["f1"]
     if fill_result == "review_repair":
         assert result["prepared_views"]["completion_review"]["excluded_unmasked_frame_ids"] == ["f2"]
         assert result["prepared_views"]["completion_review"]["prior_failed_review"]["status"] == "blocked"
