@@ -36,6 +36,7 @@ from .replacement_construction_bindings import (
     ReplacementConstructionBindingsError,
     validate_materialized_replacement_construction_bindings,
 )
+from .native_task_robot_registry import native_robot_adapter, validate_native_robot_plan
 
 
 SCHEMA_VERSION = "native_task_runtime_contract.v1"
@@ -396,33 +397,37 @@ def _asset_rows(
 
 
 def _camera_rows(
-    cameras: Sequence[Mapping[str, Any]], *, errors: list[str]
+    cameras: Sequence[Mapping[str, Any]], *, robot_id: str, errors: list[str]
 ) -> list[dict[str, Any]]:
+    adapter = native_robot_adapter(robot_id)
+    camera_roles = {role: frame for role, _, frame in adapter.camera_roles}
+    required_roles = set(adapter.required_camera_roles)
+    policy_roles = set(adapter.policy_camera_roles)
     by_role: dict[str, Mapping[str, Any]] = {}
     for index, row in enumerate(cameras):
         if not isinstance(row, Mapping):
             errors.append(f"native_task_runtime_camera_invalid:{index}")
             continue
         role = str(row.get("role") or "")
-        if role not in CAMERA_ROLES or role in by_role:
+        if role not in camera_roles or role in by_role:
             errors.append(f"native_task_runtime_camera_role_invalid:{role or index}")
             continue
         by_role[role] = row
-    for role in sorted(set(CAMERA_ROLES) - set(by_role)):
+    for role in sorted(required_roles - set(by_role)):
         errors.append(f"native_task_runtime_camera_missing:{role}")
 
     rows: list[dict[str, Any]] = []
-    for role in CAMERA_ROLES:
+    for role in camera_roles:
         if role not in by_role:
             continue
         source = by_role[role]
-        expected_policy = role in {"external", "wrist"}
+        expected_policy = role in policy_roles
         if bool(source.get("policy_input")) is not expected_policy:
             errors.append(f"native_task_runtime_camera_policy_role_invalid:{role}")
         if bool(source.get("scoring_input")):
             errors.append(f"native_task_runtime_camera_scoring_forbidden:{role}")
         frame = str(source.get("pose_frame") or "")
-        expected_frame = "robot_body" if role == "wrist" else "world"
+        expected_frame = camera_roles[role]
         if frame != expected_frame:
             errors.append(f"native_task_runtime_camera_pose_frame_invalid:{role}")
         parent_prim_path = str(source.get("parent_prim_path") or "")
@@ -504,7 +509,7 @@ def _camera_rows(
             {
                 "role": role,
                 "policy_input": expected_policy,
-                "review_only": role == "overview",
+                "review_only": not expected_policy,
                 "scoring_input": False,
                 "pose_frame": frame,
                 "parent_prim_path": parent_prim_path,
@@ -791,6 +796,7 @@ def materialize_native_task_runtime_contract(
     assets: Sequence[Mapping[str, Any]],
     robot_base_pose_world: Mapping[str, Any],
     robot_joint_reset_positions_rad: Mapping[str, float],
+    robot_configuration: Mapping[str, Any] | None = None,
     cameras: Sequence[Mapping[str, Any]],
     scenario_cell_id: str,
     scenario_instance_digest: str,
@@ -969,10 +975,34 @@ def materialize_native_task_runtime_contract(
         error="native_task_runtime_robot_base_pose_invalid",
         errors=errors,
     )
-    robot_reset_positions = _robot_joint_reset_positions(
-        robot_joint_reset_positions_rad, errors=errors
-    )
-    camera_rows = _camera_rows(cameras, errors=errors)
+    robot_id = "franka_panda"
+    robot_configuration_row: dict[str, Any] | None = None
+    if robot_configuration is None:
+        robot_reset_positions = _robot_joint_reset_positions(
+            robot_joint_reset_positions_rad, errors=errors
+        )
+    else:
+        try:
+            robot_configuration_row = json.loads(json.dumps(robot_configuration, allow_nan=False))
+            robot_id = str(robot_configuration_row["robot_id"])
+            if robot_id == "franka_panda":
+                raise ValueError("franka_uses_default_contract")
+            validate_native_robot_plan(robot_configuration_row)
+            robot_reset_positions = {
+                str(name): float(value)
+                for name, value in robot_configuration_row["joint_reset_positions_rad"].items()
+            }
+            if (
+                robot_configuration_row["base_pose_world"] != robot_pose
+                or robot_reset_positions != dict(robot_joint_reset_positions_rad)
+            ):
+                raise ValueError("robot_arguments_disagree")
+        except (KeyError, TypeError, ValueError, RuntimeError) as exc:
+            errors.append(f"native_task_runtime_robot_configuration_invalid:{exc}")
+            robot_id = "franka_panda"
+            robot_configuration_row = None
+            robot_reset_positions = {}
+    camera_rows = _camera_rows(cameras, robot_id=robot_id, errors=errors)
     scenario_parameters = _scenario_parameter_rows(
         scenario_parameter_bindings, errors=errors
     )
@@ -1005,9 +1035,9 @@ def materialize_native_task_runtime_contract(
             "seed": seed,
             "parameter_bindings": scenario_parameters,
         },
-        "candidate_ids": list(FROZEN_CANDIDATES),
+        "candidate_ids": list(FROZEN_CANDIDATES) if robot_id == "franka_panda" else [],
         "objects": asset_rows,
-        "robot": {
+        "robot": robot_configuration_row or {
             "robot_id": "franka_panda",
             "base_pose_world": robot_pose,
             "joint_reset_positions_rad": robot_reset_positions,

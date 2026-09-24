@@ -15,19 +15,16 @@ import sys
 import types
 from pathlib import Path
 from typing import Any
+from .native_task_robot_registry import native_robot_adapter, native_robot_modules
 
 
-ROBOT_EMBODIMENT_MODULES = {
-    "franka_panda": "isaaclab_arena.embodiments.droid.droid",
-}
+ROBOT_EMBODIMENT_MODULES = native_robot_modules()
 
 
 def install_scoped_arena_embodiment(robot_id: str) -> dict[str, Any]:
     """Install and import the one Arena embodiment selected by ``robot_id``."""
 
-    selected_module = ROBOT_EMBODIMENT_MODULES.get(str(robot_id))
-    if selected_module is None:
-        raise RuntimeError(f"native_task_arena_robot_embodiment_unadmitted:{robot_id}")
+    selected_module = native_robot_adapter(str(robot_id)).arena_module
 
     arena = importlib.import_module("isaaclab_arena")
     package_name = "isaaclab_arena.embodiments"

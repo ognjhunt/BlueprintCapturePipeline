@@ -12,6 +12,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import shutil
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
@@ -23,6 +24,7 @@ from .native_task_arena_scene_plan import (
     materialize_native_task_arena_scene_plan,
 )
 from .native_task_arena_runtime import author_gpu_compatible_scene_collision
+from .native_g1_usd_dependency_closure import robot_usd_dependency_sources
 from .native_task_execution_admission import seal_native_task_execution_admission
 from .native_task_runtime_contract import materialize_native_task_runtime_contract
 from .nvidia_3dgrut_particlefield_transcode import (
@@ -463,6 +465,75 @@ def _stage_verified_asset(
     shutil.copyfile(source_path, destination)
 
 
+def _stage_robot_configuration(
+    raw: Any, *, evidence_root: Path, assets_dir: Path, link_within: Path | None
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    if raw is None:
+        return None, None
+    if not isinstance(raw, Mapping) or not isinstance(raw.get("asset_source"), Mapping):
+        raise NativeTaskArenaPacketError(["native_task_arena_packet_robot_source_invalid"])
+    source, digest, size = _asset_source(
+        {"semantic_role": "robot", "source": raw["asset_source"]},
+        evidence_root=evidence_root,
+    )
+    if raw.get("usd_sha256") != digest or (
+        raw.get("usd_path") is not None and str(raw["usd_path"]) != str(source)
+    ):
+        raise NativeTaskArenaPacketError(["native_task_arena_packet_robot_identity_mismatch"])
+    robot_id = str(raw.get("robot_id") or "")
+    if re.fullmatch(r"[a-z][a-z0-9_]{0,63}", robot_id) is None:
+        raise NativeTaskArenaPacketError(["native_task_arena_packet_robot_id_invalid"])
+    filename = f"robot_{robot_id}{source.suffix}"
+    if not usd_payload_format_matches(source, filename):
+        raise NativeTaskArenaPacketError(["native_task_arena_packet_robot_format_invalid"])
+    destination = assets_dir / filename
+    if destination.exists():
+        raise NativeTaskArenaPacketError(["native_task_arena_packet_robot_filename_duplicate"])
+    _stage_verified_asset(source, destination, link_within=link_within)
+    if destination.stat().st_size != size or _sha256(destination) != digest:
+        raise NativeTaskArenaPacketError(["native_task_arena_packet_robot_copy_mismatch"])
+    dependency_bindings: list[dict[str, Any]] = []
+    try:
+        dependency_sources = robot_usd_dependency_sources(source)
+    except ValueError as exc:
+        raise NativeTaskArenaPacketError([str(exc)]) from exc
+    for dependency, relative in dependency_sources:
+        staged = assets_dir.joinpath(*relative.parts)
+        if staged.exists() or staged == destination:
+            raise NativeTaskArenaPacketError(["native_task_arena_packet_robot_dependency_collision"])
+        staged.parent.mkdir(parents=True, exist_ok=True)
+        _stage_verified_asset(dependency, staged, link_within=link_within)
+        dependency_digest = _sha256(dependency)
+        dependency_size = dependency.stat().st_size
+        if staged.stat().st_size != dependency_size or _sha256(staged) != dependency_digest:
+            raise NativeTaskArenaPacketError(["native_task_arena_packet_robot_dependency_copy_mismatch"])
+        dependency_bindings.append({
+            "relative_path": f"assets/{relative.as_posix()}",
+            "size_bytes": dependency_size,
+            "sha256": dependency_digest,
+        })
+    try:
+        staged_closure = robot_usd_dependency_sources(destination)
+    except ValueError as exc:
+        raise NativeTaskArenaPacketError(["native_task_arena_packet_robot_staged_closure_invalid"]) from exc
+    if [relative.as_posix() for _, relative in staged_closure] != [
+        row["relative_path"].removeprefix("assets/") for row in dependency_bindings
+    ]:
+        raise NativeTaskArenaPacketError(["native_task_arena_packet_robot_staged_closure_mismatch"])
+    configuration = json.loads(json.dumps(raw))
+    configuration.pop("asset_source")
+    configuration["usd_path"] = str(destination)
+    configuration["usd_size_bytes"] = size
+    configuration["usd_dependency_bindings"] = dependency_bindings
+    return configuration, {
+        "source": dict(raw["asset_source"]),
+        "staged_relative_path": f"assets/{filename}",
+        "staged_size_bytes": size,
+        "staged_sha256": digest,
+        "dependency_bindings": dependency_bindings,
+    }
+
+
 def materialize_native_task_arena_packet(
     *,
     request: Mapping[str, Any],
@@ -592,6 +663,12 @@ def materialize_native_task_arena_packet(
                 }
             )
 
+        robot_configuration, robot_asset_binding = _stage_robot_configuration(
+            frozen.get("robot_configuration"),
+            evidence_root=evidence,
+            assets_dir=assets_dir,
+            link_within=link_within,
+        )
         scenario = _validated_scenario_context(frozen.get("scenario"))
         scenario_parameter_bindings = _scenario_parameter_bindings(scenario)
         contract_path = output / "native_task_runtime_contract.v1.json"
@@ -604,6 +681,7 @@ def materialize_native_task_arena_packet(
             assets=runtime_assets,
             robot_base_pose_world=frozen.get("robot_base_pose_world") or {},
             robot_joint_reset_positions_rad=(frozen.get("robot_joint_reset_positions_rad") or {}),
+            robot_configuration=robot_configuration,
             cameras=frozen.get("cameras") or [],
             scenario_cell_id=str(scenario.get("cell_id") or ""),
             scenario_instance_digest=str(scenario.get("instance_digest") or ""),
@@ -669,6 +747,11 @@ def materialize_native_task_arena_packet(
             ),
             "scenario_instance_digest": scenario["instance_digest"],
             "source_bindings": source_bindings,
+            **(
+                {"robot_asset_binding": robot_asset_binding}
+                if robot_asset_binding is not None
+                else {}
+            ),
             "artifacts": artifacts,
             "source_bytes_mutated": False,
             "native_application_claimed": False,
@@ -684,6 +767,29 @@ def materialize_native_task_arena_packet(
                 digest != binding["staged_sha256"] or size != binding["staged_size_bytes"]
             ):
                 raise NativeTaskArenaPacketError(["native_task_arena_packet_asset_copy_mismatch"])
+        if robot_asset_binding is not None:
+            source, digest, size = _asset_source(
+                {"semantic_role": "robot", "source": robot_asset_binding["source"]},
+                evidence_root=evidence,
+            )
+            staged = output / robot_asset_binding["staged_relative_path"]
+            if (
+                digest != robot_asset_binding["staged_sha256"]
+                or size != robot_asset_binding["staged_size_bytes"]
+                or _sha256(staged) != digest
+            ):
+                raise NativeTaskArenaPacketError(["native_task_arena_packet_robot_source_mutated"])
+            for binding in robot_asset_binding["dependency_bindings"]:
+                relative = PurePosixPath(binding["relative_path"])
+                dependency_source = source.parent.joinpath(*relative.parts[1:])
+                dependency_staged = output.joinpath(*relative.parts)
+                if (
+                    not dependency_source.is_file()
+                    or dependency_source.stat().st_size != binding["size_bytes"]
+                    or _sha256(dependency_source) != binding["sha256"]
+                    or _sha256(dependency_staged) != binding["sha256"]
+                ):
+                    raise NativeTaskArenaPacketError(["native_task_arena_packet_robot_dependency_source_mutated"])
         receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
         write_json(output / "native_task_arena_packet_receipt.v1.json", receipt)
         construction = contract.get("construction_bindings") or {}

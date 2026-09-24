@@ -354,6 +354,74 @@ def _resolve_portable_assets(
     return objects
 
 
+def _resolve_portable_robot(
+    plan: Mapping[str, Any], *, bundle_root: str | Path | None
+) -> dict[str, Any]:
+    """Resolve a robot USD inside the packet before any Isaac import or spawn."""
+
+    robot = json.loads(json.dumps(plan["robot"]))
+    if robot.get("robot_id") == "franka_panda":
+        return robot
+    path = str(robot.get("usd_path") or "")
+    if Path(path).is_absolute():
+        return robot
+    pure = PurePosixPath(path)
+    if bundle_root is None or not path or pure.is_absolute() or ".." in pure.parts:
+        raise NativeTaskArenaRuntimeError(["native_task_arena_robot_asset_path_invalid"])
+    raw_root = Path(bundle_root).expanduser()
+    if raw_root.is_symlink():
+        raise NativeTaskArenaRuntimeError(["native_task_arena_runtime_bundle_root_invalid"])
+    root = raw_root.resolve()
+    candidate = root.joinpath(*pure.parts)
+    resolved = candidate.resolve()
+    if (
+        not root.is_dir()
+        or _has_symlink_component(candidate, root=root)
+        or root not in resolved.parents
+        or not resolved.is_file()
+    ):
+        raise NativeTaskArenaRuntimeError(["native_task_arena_robot_asset_missing"])
+    if (
+        resolved.stat().st_size != robot.get("usd_size_bytes")
+        or _sha256(resolved) != robot.get("usd_sha256")
+    ):
+        raise NativeTaskArenaRuntimeError(["native_task_arena_robot_asset_identity_mismatch"])
+    bindings = robot.get("usd_dependency_bindings")
+    if not isinstance(bindings, list):
+        raise NativeTaskArenaRuntimeError(["native_task_arena_robot_dependency_manifest_missing"])
+    seen: set[str] = set()
+    for binding in bindings:
+        if not isinstance(binding, Mapping):
+            raise NativeTaskArenaRuntimeError(["native_task_arena_robot_dependency_manifest_invalid"])
+        relative_path = str(binding.get("relative_path") or "")
+        dep_path = PurePosixPath(relative_path)
+        if (
+            not relative_path
+            or dep_path.is_absolute()
+            or ".." in dep_path.parts
+            or dep_path.parts[0] != "assets"
+            or relative_path in seen
+            or relative_path == path
+        ):
+            raise NativeTaskArenaRuntimeError(["native_task_arena_robot_dependency_manifest_invalid"])
+        seen.add(relative_path)
+        dep_candidate = root.joinpath(*dep_path.parts)
+        dep_resolved = dep_candidate.resolve()
+        if (
+            _has_symlink_component(dep_candidate, root=root)
+            or root not in dep_resolved.parents
+            or not dep_resolved.is_file()
+        ):
+            raise NativeTaskArenaRuntimeError(["native_task_arena_robot_dependency_missing"])
+        if (
+            dep_resolved.stat().st_size != binding.get("size_bytes")
+            or _sha256(dep_resolved) != binding.get("sha256")
+        ):
+            raise NativeTaskArenaRuntimeError(["native_task_arena_robot_dependency_identity_mismatch"])
+    robot["usd_path"] = str(resolved)
+    return robot
+
+
 def _rotation_matrix_to_xyzw(matrix: Sequence[Sequence[float]]) -> list[float]:
     """Convert a proper 3x3 rotation to a canonical XYZW quaternion."""
 
@@ -396,7 +464,7 @@ def _rotation_matrix_to_xyzw(matrix: Sequence[Sequence[float]]) -> list[float]:
     return quaternion
 
 
-def camera_runtime_parameters(camera: Mapping[str, Any]) -> dict[str, Any]:
+def camera_runtime_parameters(camera: Mapping[str, Any], *, robot_id: str = "franka_panda") -> dict[str, Any]:
     """Convert one calibrated OpenCV pose/intrinsics row to Isaac CameraCfg data."""
 
     role = str(camera.get("role") or "")
@@ -428,7 +496,12 @@ def camera_runtime_parameters(camera: Mapping[str, Any]) -> dict[str, Any]:
     rotation = [matrix[0:3], matrix[4:7], matrix[8:11]]
     pose_frame = str(camera.get("pose_frame") or "")
     parent = str(camera.get("parent_prim_path") or "")
-    expected_frame = "robot_body" if role == "wrist" else "world"
+    from .native_task_robot_registry import native_robot_adapter
+
+    camera_roles = {key: (name, frame) for key, name, frame in native_robot_adapter(robot_id).camera_roles}
+    if role not in camera_roles:
+        raise NativeTaskArenaRuntimeError([f"native_task_arena_camera_role_invalid:{role}"])
+    runtime_name, expected_frame = camera_roles[role]
     if (
         pose_frame != expected_frame
         or not parent
@@ -440,15 +513,6 @@ def camera_runtime_parameters(camera: Mapping[str, Any]) -> dict[str, Any]:
     ):
         raise NativeTaskArenaRuntimeError(
             [f"native_task_arena_camera_parent_invalid:{role}"]
-        )
-    runtime_name = {
-        "external": "external_camera",
-        "wrist": "wrist_camera",
-        "overview": "external_camera_2",
-    }.get(role)
-    if runtime_name is None:
-        raise NativeTaskArenaRuntimeError(
-            [f"native_task_arena_camera_role_invalid:{role}"]
         )
     return {
         "role": role,
@@ -865,9 +929,11 @@ def validate_native_task_arena_runtime_plan(
     """
 
     plan = _validated_plan(scene_plan)
+    from .native_task_robot_registry import validate_native_robot_plan
+    validate_native_robot_plan(_resolve_portable_robot(plan, bundle_root=bundle_root))
     _resolve_portable_assets(plan, bundle_root=bundle_root)
     for camera in plan.get("cameras") or []:
-        camera_runtime_parameters(camera)
+        camera_runtime_parameters(camera, robot_id=str(plan["robot"]["robot_id"]))
     validate_contact_sensor_plan(plan)
     _validate_articulation_adaptability(plan, bundle_root=bundle_root)
     return plan
@@ -1033,9 +1099,7 @@ def build_native_task_arena_environment(
     from isaaclab_arena.assets.asset import Asset
     from isaaclab_arena.assets.object import Object
     from isaaclab_arena.assets.object_base import ObjectType
-    from isaaclab_arena.embodiments.droid.droid import (
-        DroidAbsoluteJointPositionEmbodiment,
-    )
+    from blueprint_pipeline.native_task_robot_registry import build_native_robot_embodiment
     from isaaclab_arena.environments.arena_env_builder import ArenaEnvBuilder
     from isaaclab_arena.environments.arena_env_builder_cfg import (
         ArenaEnvBuilderCfg,
@@ -1120,24 +1184,10 @@ def build_native_task_arena_environment(
         contract_xyzw_to_native_xyzw,
     )
 
-    robot = plan["robot"]
+    robot = _resolve_portable_robot(plan, bundle_root=bundle_root)
     robot_pose = robot["base_pose_world"]
-    embodiment = DroidAbsoluteJointPositionEmbodiment(
-        enable_cameras=enable_cameras,
-        initial_pose=Pose(
-            position_xyz=tuple(robot_pose["position_world_m"]),
-            rotation_xyzw=tuple(robot_pose["orientation_xyzw"]),
-        ),
-        initial_joint_pose=list(robot["joint_reset_positions_rad"].values()),
-    )
+    embodiment = build_native_robot_embodiment(robot, enable_cameras=enable_cameras, pose_class=Pose)
     exact_robot_reset = dict(robot["joint_reset_positions_rad"])
-    embodiment.event_config.init_franka_arm_pose.params["default_pose"] = list(
-        exact_robot_reset.values()
-    )
-    embodiment.event_config.randomize_franka_joint_state.params["mean"] = 0.0
-    embodiment.event_config.randomize_franka_joint_state.params["std"] = 0.0
-    embodiment.get_scene_cfg()
-    embodiment.scene_config.stand = None
     embodiment.initial_pose = None
     # Beta2's AssetBaseCfg.InitialStateCfg.rot, articulation root/body pose
     # buffers, and DifferentialIK pose commands are all documented XYZW.  The
@@ -1167,7 +1217,7 @@ def build_native_task_arena_environment(
     camera_names: dict[str, str] = {}
     camera_configuration_readback: dict[str, dict[str, Any]] = {}
     for camera in plan["cameras"] if enable_cameras else ():
-        parameters = camera_runtime_parameters(camera)
+        parameters = camera_runtime_parameters(camera, robot_id=str(robot["robot_id"]))
         camera_cfg = getattr(embodiment.camera_config, parameters["runtime_name"])
         official_policy_camera = (
             preserve_policy_cameras and parameters["role"] in policy_camera_roles

@@ -37,6 +37,9 @@ CONSTRUCTION_RUNTIME_MODULE_NAMES = (
     "native_task_arena_device_readback.py",
     "native_task_arena_dependency_contract.py",
     "native_task_arena_import_scope.py",
+    "native_task_robot_registry.py",
+    "native_g1_embodiment.py",
+    "gear_sonic_joint_order_contract.py",
     "native_task_arena_preconstruction.py",
     "native_task_arena_runtime.py",
     "native_rigid_friction_scenario.py",
@@ -140,6 +143,9 @@ CONTROLS_RUNTIME_MODULE_NAMES = (
     "native_task_curobo_path_execution.py",
     "native_task_arena_dependency_contract.py",
     "native_task_arena_import_scope.py",
+    "native_task_robot_registry.py",
+    "native_g1_embodiment.py",
+    "gear_sonic_joint_order_contract.py",
     "native_task_arena_preconstruction.py",
     "native_task_arena_device_readback.py",
     "native_task_arena_readback.py",
@@ -176,6 +182,9 @@ CONTROLS_RUNTIME_MODULE_NAMES = (
 )
 
 POLICY_EXTRA_RUNTIME_MODULE_NAMES = (
+    "native_g1_humanoidarena_interface.py",
+    "native_g1_humanoidarena_policy_client.py",
+    "native_g1_joint_episode_environment.py",
     "native_task_asset_composition_gate.py",
     "native_task_composition_diagnostic.py",
     "native_task_composition_worker.py",
