@@ -435,6 +435,7 @@ PROVIDER_OPS_STATUS_SCHEMA_VERSION = "provider_ops_status.v1"
 DEFAULT_JOB_LEASE_SECONDS = 900
 DEFAULT_ACK_DEADLINE_SECONDS = 600
 DEFAULT_MAX_DELIVERY_ATTEMPTS = 5
+RETRY_DEFER_SECONDS = 600
 _JOB_RETRYABLE_STATUSES = {
     "processing",
     "failed_retryable",
@@ -1540,11 +1541,20 @@ class _AckDeadlineHeartbeat:
         self._stop.set()
         self._thread.join(timeout=1.0)
 
-    def nack(self) -> None:
+    def defer_retry(self) -> None:
+        """Keep blocked work unacked while giving other handoffs a pull window.
+
+        A zero-second nack makes an expensive blocked scene immediately eligible
+        again. One bounded Pub/Sub ack lease leaves it retryable without letting
+        that same message dominate the next timer invocation. Pub/Sub redelivers
+        it after the lease expires (or routes it to the configured dead letter
+        topic after its delivery limit). If the lease change fails, the message
+        remains unacked and its existing lease still expires normally.
+        """
         try:
-            self._modify(0)
-        except Exception:  # noqa: BLE001 - leaving unacked still preserves retry semantics
-            logger.exception("pubsub_handoff.explicit_nack_failed")
+            self._modify(RETRY_DEFER_SECONDS)
+        except Exception:  # noqa: BLE001 - an unacked message still retries
+            logger.exception("pubsub_handoff.retry_deferral_failed")
 
 
 def _write_delivery_evidence(
@@ -1697,12 +1707,13 @@ def pull_and_process(
                 "pubsub_handoff.processing_failed",
                 extra={
                     "message_id": message.message_id,
-                    "queue_disposition": "retryable_nack",
+                    "queue_disposition": "retryable_deferred",
+                    "retry_defer_seconds": RETRY_DEFER_SECONDS,
                     "delivery_attempt": getattr(received, "delivery_attempt", None),
                     "max_delivery_attempts": max_delivery_attempts,
                 },
             )
-            heartbeat.nack()
+            heartbeat.defer_retry()
             continue
         if result.get("queue_disposition") == "retryable" or result.get(
             "status"
@@ -1725,9 +1736,10 @@ def pull_and_process(
                     "delivery_attempt": getattr(received, "delivery_attempt", None),
                     "max_delivery_attempts": max_delivery_attempts,
                     "dead_letter_policy_owns_exhausted_delivery": True,
+                    "retry_defer_seconds": RETRY_DEFER_SECONDS,
                 },
             )
-            heartbeat.nack()
+            heartbeat.defer_retry()
             continue
         ack_ids.append(received.ack_id)
 
