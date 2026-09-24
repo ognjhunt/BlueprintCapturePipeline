@@ -11,6 +11,7 @@ remain separate claims.
 """
 from __future__ import annotations
 
+import json
 import math
 import struct
 from collections.abc import Mapping, Sequence
@@ -34,7 +35,10 @@ from .task_object_articulated_packaging import (
     HANDLE_PROTRUSION_M,
     OBSERVED_PROVENANCE,
     PROVENANCE_ATTRIBUTE,
+    REQUIRED_PARTS_ATTRIBUTE,
     TASK_CONTACT_ROLE_ATTRIBUTE,
+    interior_cavity_findings,
+    required_part_findings,
 )
 
 SCHEMA_VERSION = "task_evaluation_articulated_replacement_static_qualification.v1"
@@ -255,21 +259,33 @@ def _usd_findings(path: Path, *, graph: Mapping[str, Any], physics_bounds: Mappi
                 axis_components = [float(v) for v in axis_value]
             except (TypeError, ValueError):
                 axis_components = []
+            # The token is in the joint frame; both body frames carry the same
+            # joint rotation, which maps it onto the declared asset-frame axis.
+            joint_api = UsdPhysics.Joint(task_joint)
+            rot0, rot1 = joint_api.GetLocalRot0Attr().Get(), joint_api.GetLocalRot1Attr().Get()
+            quaternions = [[q.GetReal(), *q.GetImaginary()] if q is not None else [1.0, 0.0, 0.0, 0.0]
+                           for q in (rot0, rot1)]
+            body_axis = (list(Gf.Rotation(Gf.Quatd(quaternions[0][0], Gf.Vec3d(*quaternions[0][1:])))
+                              .TransformDir(Gf.Vec3d(*token_vector))) if token_vector is not None else None)
             if (token_vector is None or not _close_sequence(axis_components, declared_axis)
-                    or not _close_sequence(token_vector, declared_axis)):
+                    or not _close_sequence(body_axis, declared_axis)
+                    or not _close_sequence(quaternions[0], quaternions[1])):
                 findings.append("replacement_target_joint_axis_mismatch")
         declared_drive = target_row["drive"]
-        linear_drive = (UsdPhysics.DriveAPI(task_joint, "linear")
-                        if task_joint.HasAPI(UsdPhysics.DriveAPI, "linear") else None)
+        revolute = target_row["joint_type"] == "revolute"
+        drive_name, other_name = ("angular", "linear") if revolute else ("linear", "angular")
+        passive_drive = (UsdPhysics.DriveAPI(task_joint, drive_name)
+                         if task_joint.HasAPI(UsdPhysics.DriveAPI, drive_name) else None)
+        # USD angular damping is per degree; the graph declares SI per radian.
+        usd_damping = math.radians(declared_drive["damping"]) if revolute else declared_drive["damping"]
         if (task_joint.GetCustomDataByKey("blueprint:declaredDriveType") != "none"
                 or declared_drive["drive_type"] != "none"
-                or task_joint.HasAPI(UsdPhysics.DriveAPI, "angular")
-                or (linear_drive is None and declared_drive["damping"] != 0.0)
-                or (linear_drive is not None and (
-                    str(linear_drive.GetTypeAttr().Get()) != "force"
-                    or not _close_sequence([linear_drive.GetStiffnessAttr().Get()], [0.0])
-                    or not _close_sequence([linear_drive.GetDampingAttr().Get()],
-                                           [declared_drive["damping"]])))):
+                or task_joint.HasAPI(UsdPhysics.DriveAPI, other_name)
+                or (passive_drive is None and declared_drive["damping"] != 0.0)
+                or (passive_drive is not None and (
+                    str(passive_drive.GetTypeAttr().Get()) != "force"
+                    or not _close_sequence([passive_drive.GetStiffnessAttr().Get()], [0.0])
+                    or not _close_sequence([passive_drive.GetDampingAttr().Get()], [usd_damping])))):
             findings.append("replacement_target_joint_drive_mismatch")
         observed_joint = {"prim_path": str(task_joint.GetPath()), "joint_type": target_row["joint_type"],
                           "limits": [float(lower), float(upper)] if lower is not None and upper is not None else None,
@@ -427,6 +443,32 @@ def _usd_findings(path: Path, *, graph: Mapping[str, Any], physics_bounds: Mappi
                               "physics_materials": materials}
     if not material_bounds_ok:
         findings.append("replacement_physics_material_bounds_invalid")
+    # Every contract required part must be carried by its planned link.
+    placed: dict[str, Any] = {}
+    for prim in bodies:
+        try:
+            placed[prim.GetName()] = json.loads(str(prim.GetCustomDataByKey(REQUIRED_PARTS_ATTRIBUTE) or "{}"))
+        except json.JSONDecodeError:
+            placed[prim.GetName()] = {}
+    findings.extend("replacement_" + code for code in required_part_findings(plan, placed))
+    # The body must be hollow behind an open front on the exact collision bytes.
+    cavities = plan.get("interior_cavities")
+    if not isinstance(cavities, list) or not cavities:
+        findings.append("replacement_body_interior_cavity_unplanned")
+        cavities = []
+    for link_id in sorted({str(row.get("link_id")) for row in cavities if isinstance(row, Mapping)}):
+        shape = stage.GetPrimAtPath(f"/Asset/links/{link_id}/collision/FinalVisualShape")
+        points = UsdGeom.Mesh(shape).GetPointsAttr().Get() if shape and shape.IsA(UsdGeom.Mesh) else None
+        indices = UsdGeom.Mesh(shape).GetFaceVertexIndicesAttr().Get() if points is not None else None
+        if not points or not indices or len(indices) % 3:
+            findings.append("replacement_body_interior_cavity_mesh_missing:" + link_id)
+            continue
+        try:
+            codes = interior_cavity_findings([[float(c) for c in p] for p in points], list(indices),
+                                             [row for row in cavities if row.get("link_id") == link_id])
+        except (KeyError, TypeError, ValueError, IndexError):
+            codes = ["body_interior_cavity_unplanned"]
+        findings.extend("replacement_" + code for code in codes)
     if task_child is not None and not handle_found:
         findings.append("replacement_handle_contact_role_missing")
     handle_bounds = None

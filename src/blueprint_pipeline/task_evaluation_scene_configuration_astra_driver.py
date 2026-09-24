@@ -44,8 +44,8 @@ from .task_evaluation_scene_configuration_stage_tool import (
 from .task_object_articulated_packaging import (
     AUTHORING_RESULT_SCHEMA_VERSION as ARTICULATED_AUTHORING_RESULT_SCHEMA_VERSION,
     COMPLETION_SCHEMA_VERSION as ARTICULATED_COMPLETION_SCHEMA_VERSION,
-    HANDLE_PROTRUSION_M, articulation_graph_from_plan, package_astra_articulated_candidate,
-    plan_articulated_assembly,
+    DRAWER_FAMILY, HANDLE_PROTRUSION_M, articulation_graph_from_plan, assembly_contract, assembly_family,
+    package_astra_articulated_candidate, plan_articulated_assembly,
 )
 from .task_object_astra_authoring import (
     AssetAuthoringError,
@@ -225,16 +225,75 @@ def build_authoring_request(stage_input: Mapping[str, Any], source_record: Mappi
     return request
 
 
-def _articulated_physics_bounds(configuration: Mapping[str, Any]) -> dict[str, dict[str, list[float]]]:
-    """Per-part admitted bounds: the carcass carries the assembly mass, the moving part its own."""
+def _articulated_physics_bounds(configuration: Mapping[str, Any],
+                                plan: Mapping[str, Any] | None = None) -> dict[str, dict[str, list[float]]]:
+    """Per-part admitted bounds: the body carries the assembly mass, the moving part its own.
+
+    Fixed interior parts (racks, baskets) need their own preregistered
+    ``fixed_part_mass_kg_bounds``; none is borrowed from another part.
+    """
     shared = _physics_bounds(configuration)
     required = configuration.get("required_output") or {}
-    task_part = required.get("task_part_mass_kg_bounds")
-    if (not isinstance(task_part, list) or len(task_part) != 2
-            or not all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in task_part)
-            or not 0 < task_part[0] <= task_part[1]):
-        raise AstraStageError("astra_articulated_task_part_mass_bounds_invalid")
-    return {"carcass": {**shared}, "drawer": {**shared, "mass_kg": [float(task_part[0]), float(task_part[1])]}}
+
+    def interval(key: str) -> list[float]:
+        value = required.get(key)
+        if (not isinstance(value, list) or len(value) != 2
+                or not all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in value)
+                or not 0 < value[0] <= value[1]):
+            raise AstraStageError(f"astra_articulated_{key.removesuffix('_mass_kg_bounds')}_mass_bounds_invalid")
+        return [float(value[0]), float(value[1])]
+
+    task_part = interval("task_part_mass_kg_bounds")
+    if plan is None or plan.get("family", DRAWER_FAMILY) == DRAWER_FAMILY:
+        return {"carcass": {**shared}, "drawer": {**shared, "mass_kg": task_part}}
+    return {part_id: {**shared} if spec["link_role"] == "body" else
+            {**shared, "mass_kg": task_part if spec["link_role"] == "task_part" else interval("fixed_part_mass_kg_bounds")}
+            for part_id, spec in plan["parts"].items()}
+
+
+def articulated_frame_descriptions(configuration: Mapping[str, Any], references: list[Path]) -> list[dict[str, Any]]:
+    """Source frames for one object's part briefs, captioned from its own ``reference_frames``.
+
+    Each retained frame is described by what the contract says it shows
+    (visible parts, part state, view, why it was chosen). A legacy drawer
+    configuration without reference frames keeps its historical caption; an
+    object created from a description has no frames and claims no observation.
+    """
+    family = assembly_family(configuration)
+    contract = assembly_contract(configuration, family)
+    website_capture = configuration.get("source_observation_kind") == "website_capture_frames"
+    records = [file_record(path) for path in references]
+    if not contract["captured"]:
+        if records:
+            raise AstraStageError("astra_articulated_created_object_frames_invalid")
+        return []
+    rows = contract["reference_frames"]
+    if not rows:
+        return [{"path": record["path"], "sha256": record["sha256"], "role": "observed_source",
+                 "description": (f"Original website capture frame {index}: the whole assembly, closed. Retain observed "
+                                 "front appearance (wood-grain fronts, silver bar handles, grey carcass edges); the "
+                                 "interior is unobserved." if website_capture else
+                                 f"Digest-bound stage-1 appearance view {index}; derived source render, not physical truth.")}
+                for index, record in enumerate(records)]
+    by_digest = {row["sha256"]: row for row in rows}
+    if sorted(record["sha256"] for record in records) != sorted(by_digest):
+        raise AstraStageError("astra_articulated_reference_frames_disagree_with_retained_frames")
+    labels = {row["part_id"]: row["label"] for row in contract["required_parts"]}
+    task_label = str(configuration["mechanism"]["task_part_label"])
+    states = {"closed": "closed", "partially_open": "partially open", "open": "open",
+              "not_visible": "not visible in this frame"}
+    frames = []
+    for record in records:
+        row = by_digest[record["sha256"]]
+        visible = ", ".join(labels.get(part, part.replace("_", " ")) for part in row["visible_parts"])
+        frames.append({"path": record["path"], "sha256": record["sha256"], "role": "observed_source",
+                       "description": (
+                           f"Original capture frame {row['frame_id']} at {float(row['timestamp_seconds']):.2f} s, "
+                           f"{row['view'].strip()} view; the {task_label} is {states[row['part_state']]}. "
+                           f"Visible parts: {visible or 'none of the required parts'}. "
+                           f"Chosen for: {row['reason'].strip()}. Retain observed appearance only where it is visible; "
+                           "geometry and scale inferred from it remain estimates.")})
+    return frames
 
 
 def build_articulated_authoring_requests(stage_input: Mapping[str, Any], source_record: Mapping[str, Any],
@@ -282,9 +341,11 @@ def build_articulated_authoring_requests(stage_input: Mapping[str, Any], source_
     identity = configuration["replacement_identity"]
     owner = str(configuration.get("authoring_target") or "").strip()
     source_identity = configuration.get("source_object_identity")
-    if not owner or not source_identity or not references:
+    family = plan.get("family", DRAWER_FAMILY)
+    contract = assembly_contract(configuration, family)
+    if not owner or not source_identity or (contract["captured"] and not references):
         raise AstraStageError("astra_owner_identity_or_reference_missing")
-    bounds = _articulated_physics_bounds(configuration)
+    bounds = _articulated_physics_bounds(configuration, plan)
     uncertainty_note = ("Assembly envelope relative tolerance used as an explicit uncertainty proxy for each part; "
                         "part dimensions derive from the estimated envelope projected on the estimated front normal "
                         "and object-prior construction assumptions. None is measured.")
@@ -292,18 +353,18 @@ def build_articulated_authoring_requests(stage_input: Mapping[str, Any], source_
         uncertainty_note = ("Cabinet depth uses a development-only estimate with an explicit interval that disagrees "
                             "with the retained source AABB; other axes use source-envelope tolerance proxies. "
                             "No part dimension is physically measured.")
-    frames = []
+    elif family != DRAWER_FAMILY:
+        uncertainty_note = (f"Body depth basis {plan['body_depth']['basis']}; width and height from the closed front; "
+                            "part dimensions add recorded construction priors. Envelope relative tolerance is an "
+                            "explicit uncertainty proxy. None is measured.")
+    frames = articulated_frame_descriptions(configuration, references)
+    if not frames:  # Created-from-description objects need a generated-specification brief first.
+        raise AstraStageError("astra_articulated_created_object_authoring_unsupported")
     base_evidence = [{"evidence_id": "retained_source_geometry", "uri": str(source_record["path"]),
                       "sha256": str(source_record["digest"]).removeprefix("sha256:"), "kind": "source_geometry",
                       "excerpt": "Retained source object identity and metric envelope: " + canonical_json({
                           "source_object_identity": source_identity, "metric_envelope": envelope})}]
-    for index, reference in enumerate(references):
-        record = file_record(reference)
-        frames.append({"path": record["path"], "sha256": record["sha256"], "role": "observed_source",
-                       "description": (f"Original website capture frame {index}: the whole assembly, closed. Retain observed "
-                                       "front appearance (wood-grain fronts, silver bar handles, grey carcass edges); the "
-                                       "interior is unobserved." if website_capture else
-                                       f"Digest-bound stage-1 appearance view {index}; derived source render, not physical truth.")})
+    for index, record in enumerate(frames):
         base_evidence.append({"evidence_id": f"retained_source_view_{index}", "uri": record["path"],
                               "sha256": record["sha256"].removeprefix("sha256:"), "kind": "material_observation",
                               "excerpt": "Task-selected assembly in the original website capture frame." if website_capture
@@ -320,9 +381,17 @@ def build_articulated_authoring_requests(stage_input: Mapping[str, Any], source_
             uncertainty[0] = max(dimensions[0] - float(depth_interval[0]),
                                  float(depth_interval[1]) - dimensions[0])
         part_object_id = f"{identity['id']}__{part_id}"
-        material = (f"Infer material conservatively from the retained assembly description and reference views: {owner}. "
-                    + ("Grey painted steel or laminate carcass." if part_id == "carcass" else
-                       "Wood-grain laminate drawer front with a brushed silver metal bar handle; plain box behind."))
+        link_ids = {row["link_id"] for row in plan["links"] if row["part_id"] == part_id}
+        carried = [row for row in plan.get("required_parts") or [] if row["link_id"] in link_ids]
+        if family == DRAWER_FAMILY and not contract["reference_frames"]:  # historical drawer brief
+            material = (f"Infer material conservatively from the retained assembly description and reference views: {owner}. "
+                        + ("Grey painted steel or laminate carcass." if part_id == "carcass" else
+                           "Wood-grain laminate drawer front with a brushed silver metal bar handle; plain box behind."))
+        else:
+            material = (f"Infer material conservatively from the retained assembly description and reference views: {owner}. "
+                        f"Part: {spec['link_role']}"
+                        + (f" carrying {', '.join(row['label'] for row in carried)}" if carried else "")
+                        + ". Use only finishes a reference view shows; do not assume any other.")
         physical = {
             "object_id": part_object_id, "object_description": f"{spec['link_role']} of {owner}: {spec['description']}",
             "material_description": material, "appearance": configuration.get("appearance", "unknown"), "dimensions": {},
@@ -343,10 +412,23 @@ def build_articulated_authoring_requests(stage_input: Mapping[str, Any], source_
                               if hypothesis is not None and index == 0 else
                               "Part envelope derived from the estimated assembly envelope and construction assumptions."),
                 "uncertainty": uncertainty_note, "evidence_ids": ["retained_source_geometry"]}
+        family_constraints = ({"bay_count": plan["bay_count"], "task_bay_index": plan["task_bay_index"]}
+                              if family == DRAWER_FAMILY else
+                              {"assembly_family": family, "hinge_edge": plan["hinge_edge"],
+                               "task_joint": {key: plan["task_joint"][key] for key in (
+                                   "joint_type", "axis_asset_frame", "anchor_asset_frame_m", "limits_rad")},
+                               "body_depth": plan["body_depth"]})
+        cavities = [row for row in plan.get("interior_cavities") or [] if row["link_id"] in link_ids]
         constraints = {"owner_description": owner, "assembly_part_id": part_id, "link_role": spec["link_role"],
             "part_description": spec["description"], "assembly_frame": plan["assembly_frame"],
-            "assembly_dimensions_m": plan["assembly_dimensions_m"], "bay_count": plan["bay_count"],
-            "task_bay_index": plan["task_bay_index"], "exact_nominal_dimensions_m": dimensions,
+            "assembly_dimensions_m": plan["assembly_dimensions_m"], **family_constraints,
+            **({"required_parts_on_this_part": [{key: row[key] for key in ("part_id", "label", "feature",
+                                                                          "observed_frame_ids")} for row in carried]}
+               if carried else {}),
+            **({"part_features_part_frame_m": {k: v for k, v in spec["features"].items() if isinstance(v, Mapping)}}
+               if family != DRAWER_FAMILY else {}),
+            **({"interior_cavities_must_stay_hollow_and_open_front": cavities} if cavities else {}),
+            "exact_nominal_dimensions_m": dimensions,
             "part_frame": "center_XY_bottom_Z_with_the_front_face_at_+X",
             "source_uncertainty_note": uncertainty_note, "construction_assumptions": plan["construction_assumptions"],
             "source_geometry_receipt": plan["source_geometry_receipt"],
@@ -358,7 +440,7 @@ def build_articulated_authoring_requests(stage_input: Mapping[str, Any], source_
             "schema_version": "task_object_astra_authoring_request.v1", "run_id": stage_input["run_id"],
             "object_id": part_object_id, "owner_description": f"{spec['link_role']} of {owner}",
             "role": "task_object", "dimensions_m": dimensions,
-            "dimension_authority": "estimated" if website_capture else "source_geometry",
+            "dimension_authority": "estimated" if website_capture or family != DRAWER_FAMILY else "source_geometry",
             "dimension_source_digest": source_record["digest"],
             "dimension_uncertainty_m": uncertainty, "coordinate_frame": "object_center_xy_bottom_z_z_up_meters",
             "maximum_export_error_m": configuration.get("maximum_export_error_m", 0.00001),
@@ -488,8 +570,18 @@ def _finish_articulated_component(*, plan, part_requests, authored, output, phys
     completion = packaged["physics_completion"]
     if completion.get("schema_version") != ARTICULATED_COMPLETION_SCHEMA_VERSION:
         raise AstraStageError("astra_articulated_completion_schema_invalid")
+    # Every contract required part must have been planned and carried into the asset.
+    planned = {row["part_id"] for row in plan.get("required_parts") or []}
+    carried = {part for rows in (completion.get("required_parts_by_link") or {}).values() for part in rows}
+    for row in configuration.get("required_parts") or []:
+        part_id = row.get("part_id") if isinstance(row, Mapping) else None
+        if part_id not in planned or part_id not in carried:
+            raise AstraStageError(f"astra_articulated_required_part_unplanned:{part_id}")
     dims = plan["assembly_dimensions_m"]
-    expected = [dims["depth_x"] + HANDLE_PROTRUSION_M, dims["width_y"], dims["height_z"]]
+    # The family's closed envelope (a door appliance's body depth includes the
+    # door) with the handle protrusion; a thin slab body cannot match it.
+    expected = [float(v) for v in plan.get("closed_collision_dimensions_m")
+                or [dims["depth_x"] + HANDLE_PROTRUSION_M, dims["width_y"], dims["height_z"]]]
     observed = completion["collision_dimensions_m"]
     tolerance = float(configuration["metric_envelope"]["maximum_dimension_relative_error"])
     errors = [abs(observed[i] - expected[i]) / expected[i] for i in range(3)]
@@ -1019,7 +1111,7 @@ def execute_astra_component(*, environment=None, runner=subprocess.run,
         plan, part_requests = build_articulated_authoring_requests(
             stage_input, source_record, references, _read(rights_path, code="astra_rights_invalid"))
         request = next(iter(part_requests.values()))
-        physics_bounds = _articulated_physics_bounds(configuration)
+        physics_bounds = _articulated_physics_bounds(configuration, plan)
     else:
         request = build_authoring_request(stage_input, source_record, references,
                                          _read(rights_path, code="astra_rights_invalid"))
