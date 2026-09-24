@@ -340,6 +340,12 @@ def assembly_contract(configuration: Mapping[str, Any], family: str) -> dict[str
 
 
 def _projected_envelope(configuration: Mapping[str, Any]) -> dict[str, Any]:
+    """Body depth, width and height in the assembly frame.
+
+    An axis-aligned world envelope of a yawed body is wider and deeper than
+    the body. When the contract carries the oriented ``body_extent_m``, that
+    is used and the envelope must be its axis-aligned bound on the front normal.
+    """
     envelope = configuration["metric_envelope"]
     lower, upper = envelope["minimum_xyz_m"], envelope["maximum_xyz_m"]
     extents = [float(upper[i]) - float(lower[i]) for i in range(3)]
@@ -347,10 +353,23 @@ def _projected_envelope(configuration: Mapping[str, Any]) -> dict[str, Any]:
     horizontal = math.hypot(normal[0], normal[1])
     if horizontal < 1e-9:
         raise AssetAuthoringError("articulated_front_normal_invalid")
-    nx, ny = normal[0] / horizontal, normal[1] / horizontal
-    return {"lower": list(lower), "upper": list(upper), "normal": normal, "yaw": math.atan2(ny, nx),
-            "depth": abs(nx) * extents[0] + abs(ny) * extents[1],
-            "width": abs(ny) * extents[0] + abs(nx) * extents[1], "height": extents[2]}
+    nx, ny = abs(normal[0] / horizontal), abs(normal[1] / horizontal)
+    value = {"lower": list(lower), "upper": list(upper), "normal": normal,
+             "yaw": math.atan2(normal[1] / horizontal, normal[0] / horizontal),
+             "depth": nx * extents[0] + ny * extents[1], "width": ny * extents[0] + nx * extents[1],
+             "height": extents[2], "extent_authority": "envelope_projected_on_front_normal"}
+    body = configuration.get("body_extent_m")
+    if body is None:
+        return value
+    if (not isinstance(body, Mapping)
+            or any(not _finite_number(body.get(key)) or body[key] <= 0 for key in ("depth", "width", "height"))):
+        raise AssetAuthoringError("articulated_body_extent_invalid")
+    depth, width, height = (float(body[key]) for key in ("depth", "width", "height"))
+    bound = [depth * nx + width * ny, depth * ny + width * nx, height]
+    tolerance = float(envelope["maximum_dimension_relative_error"])
+    if any(abs(bound[i] - extents[i]) > tolerance * max(bound[i], extents[i]) for i in range(3)):
+        raise AssetAuthoringError("articulated_body_extent_disagrees_with_envelope")
+    return {**value, "depth": depth, "width": width, "height": height, "extent_authority": "oriented_body_extent"}
 
 
 def _tokens(value: str) -> list[str]:
@@ -647,17 +666,9 @@ def plan_articulated_assembly(configuration: Mapping[str, Any]) -> dict[str, Any
 
 def _plan_stacked_drawer_cabinet(configuration: Mapping[str, Any], contract: Mapping[str, Any]) -> dict[str, Any]:
     mechanism = configuration["mechanism"]
-    envelope = configuration["metric_envelope"]
-    lower, upper = envelope["minimum_xyz_m"], envelope["maximum_xyz_m"]
-    extents = [float(upper[i]) - float(lower[i]) for i in range(3)]
-    normal = [float(v) for v in mechanism["estimated_front_normal_world"]]
-    horizontal = math.hypot(normal[0], normal[1])
-    if horizontal < 1e-9:
-        raise AssetAuthoringError("articulated_front_normal_invalid")
-    nx, ny = normal[0] / horizontal, normal[1] / horizontal
-    source_depth = abs(nx) * extents[0] + abs(ny) * extents[1]
-    width = abs(ny) * extents[0] + abs(nx) * extents[1]
-    height = extents[2]
+    source = _projected_envelope(configuration)
+    lower, upper, normal = source["lower"], source["upper"], source["normal"]
+    source_depth, width, height = source["depth"], source["width"], source["height"]
     hypothesis = _depth_hypothesis(configuration, source_depth=source_depth, width=width, height=height)
     depth = float(hypothesis["estimated_depth_m"]) if hypothesis else source_depth
     if min(depth, width, height) <= 6 * PANEL_THICKNESS_M:
@@ -686,7 +697,7 @@ def _plan_stacked_drawer_cabinet(configuration: Mapping[str, Any], contract: Map
         bays.append({"bay_index": k, "link_id": f"drawer_{k}", "is_task_part": k == task_index,
                      "rest_translation_m": [round(depth / 2 - drawer_x / 2 + HANDLE_PROTRUSION_M, 5), 0.0,
                                             round(floor_z + BAY_CLEARANCE_M / 2, 5)]})
-    yaw = math.atan2(ny, nx)
+    yaw = source["yaw"]
     carcass_features = dict.fromkeys(("link", "left_side_panel", "right_side_panel", "top_panel", "back_panel",
                                       "open_front_bays"), "carcass_panel")
     drawer_features = dict.fromkeys(("link", "handle", "drawer_front", "drawer_box"), "drawer_solid")

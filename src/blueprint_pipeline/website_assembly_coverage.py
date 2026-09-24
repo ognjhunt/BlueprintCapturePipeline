@@ -40,6 +40,9 @@ MIN_MASK_AREA_FRACTION = 0.01
 CLASSIFY_BATCH = 12
 CLASSIFIER_MODEL = "gemini-3.8-flash"
 CLASSIFIER_REVISION = 1
+# Selection output shape; a change recomputes records while replaying retained
+# classifier receipts for free.
+SELECTION_REVISION = 2
 CLASSIFIER_MAX_OUTPUT_TOKENS = 8192
 # Classification needs to recognize parts, not read fine texture; the builder
 # still receives the full-resolution frames. Keeps a 12-image request inline.
@@ -278,8 +281,14 @@ def classify_frames(*, target_id: str, assembly_label: str, task_part: str, arti
             "receipts": receipts}
 
 
-def select_reference_frames(frames: Sequence[Mapping[str, Any]], *, cap: int = MAX_REFERENCE_FRAMES) -> list[dict[str, Any]]:
-    """Greedy set cover: every part and state first, then part-states and views, then spread."""
+def select_reference_frames(frames: Sequence[Mapping[str, Any]], *, cap: int = MAX_REFERENCE_FRAMES,
+                            seed_frame_ids: Sequence[str] = ()) -> list[dict[str, Any]]:
+    """Greedy set cover: every part and state first, then part-states and views, then spread.
+
+    ``seed_frame_ids`` (the interior view body depth was measured from) are
+    chosen first. ``selection_rank`` keeps the greedy order, which a provider
+    budget later trims by.
+    """
     rest = [dict(row) for row in frames if row["visible_parts"]]
     required: dict[str, set] = {}
     optional: dict[str, set] = {}
@@ -291,6 +300,14 @@ def select_reference_frames(frames: Sequence[Mapping[str, Any]], *, cap: int = M
     uncovered_required = set().union(*required.values()) if rest else set()
     uncovered_optional = set().union(*optional.values()) if rest else set()
     selected: list[dict[str, Any]] = []
+    for frame_id in seed_frame_ids:
+        seed = next((row for row in rest if row["frame_id"] == frame_id), None)
+        if seed is None or len(selected) >= cap:
+            continue
+        uncovered_required -= required[frame_id]
+        uncovered_optional -= optional[frame_id]
+        rest.remove(seed)
+        selected.append({**seed, "reason": "shows the open interior the body depth was measured from"})
 
     def describe(elements):
         parts = sorted(e[1] for e in elements if e[0] == "part")
@@ -325,7 +342,8 @@ def select_reference_frames(frames: Sequence[Mapping[str, Any]], *, cap: int = M
         rest.remove(best)
         selected.append({**best, "reason": f"adds diversity: least-represented {best['view']} view in "
                                            f"{best['part_state']} state, {gap:.1f} s from the nearest chosen frame"})
-    return sorted(selected, key=lambda row: row["timestamp_seconds"])
+    return sorted(({**row, "selection_rank": rank} for rank, row in enumerate(selected)),
+                  key=lambda row: row["timestamp_seconds"])
 
 
 def _frame_points(observation: Mapping[str, Any], frame: Mapping[str, Any]) -> np.ndarray:
@@ -451,7 +469,8 @@ def coverage_record(*, target_id: str, binding: Mapping[str, Any], articulation_
              "selected_frames": [{"frame_id": row["frame_id"], "timestamp_seconds": row["timestamp_seconds"],
                                   "path": row["path"], "sha256": row["sha256"],
                                   "visible_parts": list(row["visible_parts"]), "part_state": row["part_state"],
-                                  "view": row["view"], "reason": row["reason"]} for row in selected],
+                                  "view": row["view"], "reason": row["reason"],
+                                  "selection_rank": row["selection_rank"]} for row in selected],
              "missing_parts": missing,
              "part_observed_open": any(row["part_state"] in OPEN_STATES for row in frames),
              "hinge_edge": hinge, "body_bounds": dict(body_bounds) if body_bounds else None,
@@ -488,7 +507,7 @@ def coverage_binding(*, target: Mapping[str, Any], source_geometry: Mapping[str,
             "classifier_model": CLASSIFIER_MODEL, "classifier_revision": CLASSIFIER_REVISION,
             "prompt_digest": canonical_digest({"prompt": PROMPT, "revolute": REVOLUTE_PROMPT,
                                                "prismatic": PRISMATIC_PROMPT, "response": RESPONSE_SHAPE}),
-            "reference_frame_cap": MAX_REFERENCE_FRAMES}
+            "reference_frame_cap": MAX_REFERENCE_FRAMES, "selection_revision": SELECTION_REVISION}
 
 
 def coverage_matches(record: Mapping[str, Any] | None, *, target: Mapping[str, Any],
@@ -542,7 +561,8 @@ def assembly_coverage(*, target: Mapping[str, Any], assembly_label: str, task_pa
     states = {row["frame_id"]: row["part_state"] for row in classified["frames"]}
     body, body_blockers = estimate_body_bounds(track=target["track"], frames=frames, states=states)
     return coverage_record(target_id=target["target_id"], binding=binding, articulation_kind=articulation_kind,
-                           classified=classified, selected=select_reference_frames(classified["frames"]),
+                           classified=classified, selected=select_reference_frames(
+                               classified["frames"], seed_frame_ids=depth_seed(classified["frames"], body)),
                            body_bounds=body, body_blockers=body_blockers, candidate_count=len(candidates))
 
 
@@ -574,6 +594,14 @@ def attach_assembly_coverage(*, task_masks: Mapping[str, Any], source_geometry: 
     return value
 
 
+def depth_seed(frames: Sequence[Mapping[str, Any]], body: Mapping[str, Any] | None) -> list[str]:
+    """The fullest open-state frame body depth was measured from; the builder must be shown it."""
+    opened = set((body or {}).get("open_frame_ids") or [])
+    rows = [row for row in frames if row["frame_id"] in opened and row["visible_parts"]]
+    best = max(rows, key=lambda row: (row.get("mask_area_fraction", 0.0), -row["timestamp_seconds"]), default=None)
+    return [best["frame_id"]] if best else []
+
+
 def part_role(part: str, *, task_part_components: Sequence[str]) -> str:
     feature = re.search(r"handle|control|brand|label|logo|button|display|knob|badge", part)
     if part in task_part_components:
@@ -595,7 +623,13 @@ def assembly_constraints(record: Mapping[str, Any], *, task_part: str) -> dict[s
 
 def assembly_contract(record: Mapping[str, Any], *, articulation_kind: str,
                       source_to_simulator_scale: float) -> dict[str, Any]:
-    """Builder-facing keys; only a complete record with an observed body depth reaches here."""
+    """Builder-facing keys; only a complete record with an observed body depth reaches here.
+
+    Lengths are simulator metres (source estimate times the registration
+    scale). ``body_extent_m`` is the oriented whole body in the assembly frame
+    (+X out of the closed front, Z up): an axis-aligned world envelope of a
+    yawed body is wider and deeper than the body itself.
+    """
     body = record["body_bounds"]
     if (record.get("status") != "complete" or body is None
             or body.get("depth_basis") != "interior_observed_open_state"
@@ -603,6 +637,11 @@ def assembly_contract(record: Mapping[str, Any], *, articulation_kind: str,
         raise ValueError("website_assembly_coverage_incomplete")
     moving = set(record["task_part_components"])
     frames = record["selected_frames"]
+    shown = {row["frame_id"] for row in frames}
+    depth_frames = [frame_id for frame_id in body["open_frame_ids"] if frame_id in shown]
+    if not depth_frames:
+        raise ValueError("website_assembly_depth_frame_not_referenced")
+    scale = float(source_to_simulator_scale)
     return {
         "assembly_family": "stacked_drawer_cabinet" if articulation_kind == "prismatic" else "hinged_door_appliance",
         "hinge_edge": record["hinge_edge"],
@@ -611,8 +650,12 @@ def assembly_contract(record: Mapping[str, Any], *, articulation_kind: str,
                             "observed_frame_ids": [row["frame_id"] for row in frames if part in row["visible_parts"]]}
                            for part in record["observed_parts"]],
         "reference_frames": [{key: row[key] for key in ("path", "sha256", "frame_id", "timestamp_seconds",
-                                                        "visible_parts", "part_state", "view", "reason")}
+                                                        "visible_parts", "part_state", "view", "reason",
+                                                        "selection_rank")}
                              for row in frames],
-        "body_depth": {"value_m": float(body["depth_m"]) * source_to_simulator_scale, "basis": body["depth_basis"],
-                       "frame_ids": list(body["open_frame_ids"])},
+        "body_depth": {"value_m": float(body["depth_m"]) * scale, "basis": body["depth_basis"],
+                       "frame_ids": depth_frames},
+        "body_extent_m": {"depth": float(body["depth_m"]) * scale, "width": float(body["width_m"]) * scale,
+                          "height": float(body["height_m"]) * scale, "frame": "assembly_front_+X_up_Z",
+                          "basis": body["basis"], "unit": "estimated_simulator_meters"},
     }

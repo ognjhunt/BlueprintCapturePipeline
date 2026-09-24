@@ -199,9 +199,9 @@ def _covered(masks, source_geometry, root: Path, *, views=DRAWER_VIEWS):
     from blueprint_pipeline import website_assembly_coverage as coverage
     root.mkdir(parents=True, exist_ok=True)
     frames = []
-    for frame_id, timestamp, _, _, _ in views:
+    for index, (frame_id, timestamp, _, _, _) in enumerate(views):
         path = root / f"{frame_id}.png"
-        Image.fromarray(np.full((HEIGHT, WIDTH, 3), 90, dtype=np.uint8)).save(path)
+        Image.fromarray(np.full((HEIGHT, WIDTH, 3), 90 + index, dtype=np.uint8)).save(path)
         frames.append({"frame_id": frame_id, "timestamp_seconds": timestamp, "mask_area_fraction": 0.02,
                        "geometry_frame": frame_id.startswith("frame-"), "path": str(path), "sha256": _sha256_file(path)})
     answer = {"hinge_edge": None, "task_part_components": sorted({"drawer_interior", "handle", "middle_drawer_front"}
@@ -312,8 +312,18 @@ def test_articulated_assembly_compiles_into_an_open_close_intake(tmp_path):
     frames = value["authoring_inputs"]["source_frames"]
     assert [row["frame_id"] for row in frames] == [row["frame_id"] for row in coverage["selected_frames"]]
     assert all(row["role"] == "observed_source" and row["reason"] for row in frames)
-    assert configuration["reference_frames"] == [{key: row[key] for key in ("path", "sha256", "frame_id",
-        "timestamp_seconds", "visible_parts", "part_state", "view", "reason")} for row in coverage["selected_frames"]]
+    # Each frame goes out as a provider-sized derivative; the retained original stays bound.
+    references = configuration["reference_frames"]
+    assert [{key: row[key] for key in ("frame_id", "timestamp_seconds", "visible_parts", "part_state", "view",
+                                       "reason", "selection_rank")} for row in references] == [
+        {key: row[key] for key in ("frame_id", "timestamp_seconds", "visible_parts", "part_state", "view", "reason",
+                                   "selection_rank")} for row in coverage["selected_frames"]]
+    for row, original in zip(references, coverage["selected_frames"]):
+        assert row["transmission"]["source_sha256"] == original["sha256"] == _sha256_file(Path(original["path"]))
+        assert row["sha256"] == _sha256_file(Path(row["path"])) and row["transmission"]["format"] == "png"
+    assert configuration["reference_frame_budget"]["provider"] == "openai"
+    assert configuration["reference_frame_budget"]["dropped_frame_ids"] == []
+    assert [row["sha256"] for row in frames] == [row["sha256"] for row in references]
     assert configuration["assembly_family"] == "stacked_drawer_cabinet" and configuration["hinge_edge"] is None
     roles = {row["part_id"]: row["role"] for row in configuration["required_parts"]}
     assert roles == {"body_front": "body_feature", "bottom_drawer_front": "body_feature", "drawer_interior": "task_part",

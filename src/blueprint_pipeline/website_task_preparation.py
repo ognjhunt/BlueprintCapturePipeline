@@ -458,6 +458,42 @@ def estimate_front_normal(track: Mapping[str, Any], frames_by_id: Mapping[str, M
             "physical_orientation_measured": False}
 
 
+def levelled_body_bounds(body: Mapping[str, Any], source_to_runtime: np.ndarray, *, up: int) -> tuple[list, list]:
+    """Runtime bounds of the whole body standing upright, yawed to its levelled front normal.
+
+    The body box's own up axis comes from camera orientation and is an
+    estimate; the registered runtime up axis is the gravity reference. The
+    box keeps its estimated depth, width and height and its corner centre.
+    """
+    linear = np.asarray(source_to_runtime, dtype=float)[:3, :3]
+    scale = abs(float(np.linalg.det(linear))) ** (1 / 3)
+    corners = np.asarray(body["corners"], dtype=float) @ linear.T + np.asarray(source_to_runtime)[:3, 3]
+    normal = linear @ np.asarray(body["front_normal"], dtype=float)
+    normal[up] = 0.0
+    if float(np.linalg.norm(normal)) < 1e-9:
+        raise ValueError("website_front_normal_undetermined")
+    normal = np.abs(normal / np.linalg.norm(normal))
+    a, b = [axis for axis in range(3) if axis != up]
+    depth, width, height = (float(body[key]) * scale for key in ("depth_m", "width_m", "height_m"))
+    half = np.zeros(3)
+    half[a] = (depth * normal[a] + width * normal[b]) / 2
+    half[b] = (depth * normal[b] + width * normal[a]) / 2
+    half[up] = height / 2
+    center = corners.mean(axis=0)
+    return (center - half).tolist(), (center + half).tolist()
+
+
+def body_front_normal(body: Mapping[str, Any], source_to_sim_linear: np.ndarray) -> dict[str, Any]:
+    """The closed front plane's outward normal, levelled, in the simulator frame."""
+    sim = np.asarray(source_to_sim_linear, dtype=float) @ np.asarray(body["front_normal"], dtype=float)
+    sim[2] = 0.0
+    norm = float(np.linalg.norm(sim))
+    if norm < 1e-9:
+        raise ValueError("website_front_normal_undetermined")
+    return {"estimated_front_normal_world": [float(v) for v in sim / norm],
+            "basis": "closed_front_plane_of_whole_object_coverage", "physical_orientation_measured": False}
+
+
 def _thumbnail(track: Mapping[str, Any], frames_by_id: Mapping[str, Mapping[str, Any]], output: Path) -> dict[str, Any]:
     best = max(track["observations"], key=lambda item: sum(run["length"] for run in item["runs"]))
     frame = frames_by_id[best["source_frame_id"]]
@@ -566,9 +602,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                                                                source_geometry=source_geometry)
     body = coverage["body_bounds"] if coverage_bound and coverage["status"] == "complete" else None
     if body is not None:
-        # The whole body as an oriented box; rotate its corners, not an AABB.
-        corners = np.asarray(body["corners"], dtype=float) @ matrix[:3, :3].T + matrix[:3, 3]
-        subject_min, subject_max = corners.min(axis=0).tolist(), corners.max(axis=0).tolist()
+        subject_min, subject_max = levelled_body_bounds(body, matrix, up=up)
     else:
         subject_bounds = estimate_target_bounds(subject_target["track"], source_geometry["frames"],
                                                 source_to_target=matrix)
@@ -650,10 +684,25 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     else:
         blockers.append("task_destination_pose_required")
     track = subject_target["track"]
-    authoring_frames = []
+    authoring_provider = spend.get("authoring_provider", "openai")
+    if authoring_provider not in {"openai", "anthropic"}:
+        raise ValueError("website_authoring_provider_invalid")
+    contract = None
     if body is not None:
-        authoring_frames = [{"path": row["path"], "sha256": row["sha256"], "role": "observed_source",
-                             "frame_id": row["frame_id"], "reason": row["reason"]} for row in coverage["selected_frames"]]
+        from .authoring_frame_budget import FrameBudgetError, fit_reference_frames
+        scale = abs(float(np.linalg.det(runtime_to_sim[:3, :3] @ matrix[:3, :3]))) ** (1 / 3)
+        try:
+            # Frames go to the builder as provider-sized derivatives of the
+            # retained upright views; both digests stay on each row.
+            contract = fit_reference_frames(
+                assembly_contract(coverage, articulation_kind=articulation_kind, source_to_simulator_scale=scale),
+                provider=authoring_provider, output_root=output_root / "reference_frames")
+        except (ValueError, FrameBudgetError) as exc:
+            blockers.append(str(exc))
+    authoring_frames = [{"path": row["path"], "sha256": row["sha256"], "role": "observed_source",
+                         "frame_id": row["frame_id"], "reason": row["reason"],
+                         "source_sha256": row["transmission"]["source_sha256"]}
+                        for row in (contract or {}).get("reference_frames") or []]
     for observation in [] if body is not None else track["observations"]:
         frame = frames_by_id[observation["source_frame_id"]]
         authoring_frames.append({"path": frame["image_path"], "sha256": frame["image_digest"],
@@ -664,11 +713,26 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     mechanism = None
     if articulated:
         physics = screen_articulated_physics(dimensions_m, joint_type=articulation_kind)
-        front = estimate_front_normal(track, frames_by_id, matrix,
-                                      [(subject_min[i] + subject_max[i]) / 2 for i in range(3)],
-                                      up=up, runtime_to_sim=runtime_to_sim)
-        normal = front["estimated_front_normal_world"]
-        depth_m = abs(normal[0]) * dimensions_m[0] + abs(normal[1]) * dimensions_m[1]
+        if body is not None:
+            front = body_front_normal(body, runtime_to_sim[:3, :3] @ matrix[:3, :3])
+            normal = front["estimated_front_normal_world"]
+            extent = [float(body[key]) * scale for key in ("depth_m", "width_m", "height_m")]
+        else:
+            front = estimate_front_normal(track, frames_by_id, matrix,
+                                          [(subject_min[i] + subject_max[i]) / 2 for i in range(3)],
+                                          up=up, runtime_to_sim=runtime_to_sim)
+            normal = front["estimated_front_normal_world"]
+            extent = [abs(normal[0]) * dimensions_m[0] + abs(normal[1]) * dimensions_m[1],
+                      abs(normal[1]) * dimensions_m[0] + abs(normal[0]) * dimensions_m[1], dimensions_m[2]]
+        depth_m = extent[0]
+        from .website_articulated_mass import articulated_mass_bounds
+        masses = articulated_mass_bounds(subject_target, joint_type=articulation_kind, body_extent_m=extent,
+            fixed_part_ids=[row["part_id"] for row in (contract or {}).get("required_parts") or []
+                            if row["role"] == "fixed_interior" and articulation_kind == "revolute"],
+            object_spec=subject_target.get("object_spec"))
+        physics["bounds"].update({key.removesuffix("_bounds"): value for key, value in masses.items()
+                                  if key.endswith("_mass_kg_bounds") or key == "mass_kg_bounds"})
+        physics["mass_authority"] = masses["mass_authority"]
         travel = ({"estimated_usable_stroke_m": round(DRAWER_USABLE_STROKE_FRACTION_OF_DEPTH * depth_m, 4)}
                   if articulation_kind == "prismatic" else {"estimated_usable_swing_rad": DOOR_USABLE_SWING_RAD})
         mechanism = {"assembly_label": subject_entry.get("semantic_label") or subject_entry["target_id"],
@@ -690,10 +754,13 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
             physics_bounds={key + "_bounds": value for key, value in physics["bounds"].items()},
             mechanism=mechanism,
         )
-        if body is not None:
-            scale = abs(float(np.linalg.det(runtime_to_sim[:3, :3] @ matrix[:3, :3]))) ** (1 / 3)
-            authoring_configuration.update(assembly_contract(coverage, articulation_kind=articulation_kind,
-                                                             source_to_simulator_scale=scale))
+        if "fixed_part_mass_kg_bounds" in masses:
+            authoring_configuration["required_output"]["fixed_part_mass_kg_bounds"] = masses["fixed_part_mass_kg_bounds"]
+        authoring_configuration.update(mass_authority=masses["mass_authority"],
+                                       mass_bounds_provenance=masses["provenance"],
+                                       mass_source_urls=masses["source_urls"])
+        if contract is not None:
+            authoring_configuration.update(contract)
     else:
         physics = screen_physics(dimensions_m)
         authoring_configuration = stage_three_configuration(
@@ -724,14 +791,19 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
             "unknown_surfaces": "Generated completion must remain an explicit assumption.",
         },
     )
+    if contract is not None:
+        # Hold what the builder would refuse before anything is bought.
+        from .task_object_articulated_packaging import plan_articulated_assembly
+        from .task_object_astra_authoring import AssetAuthoringError
+        try:
+            plan_articulated_assembly(authoring_configuration)
+        except AssetAuthoringError as exc:
+            blockers.append("website_assembly_builder_refused:" + str(exc))
     thumbnail = _thumbnail(track, frames_by_id, output_root / "thumbnail.png")
     # Capture consent permits scene preparation; it does not manufacture a
     # paid simulation authorization or accept provider terms on the owner's behalf.
     owner = dict(spend.get("owner") or {})
     consent = dict(spend.get("consent") or {})
-    authoring_provider = spend.get("authoring_provider", "openai")
-    if authoring_provider not in {"openai", "anthropic"}:
-        raise ValueError("website_authoring_provider_invalid")
     if authoring_provider == "anthropic":
         # This must come from the website's fresh owner-authorized execution
         # authority. A local key or worker environment cannot opt a scene in.

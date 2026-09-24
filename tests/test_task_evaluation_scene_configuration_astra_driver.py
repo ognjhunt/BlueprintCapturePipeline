@@ -634,10 +634,13 @@ def _dishwasher_stage(retained, monkeypatch):
     from blueprint_pipeline import website_native_inputs
 
     monkeypatch.setattr(website_native_inputs, "validate_website_authoring_disclosure", lambda **_: None)
-    second = retained.root / "open.png"
-    second.write_bytes(b"\x89PNG\r\n\x1a\nretained-open-door")
+    from PIL import Image
+    # Real bounded PNGs: frames are checked against the provider's request bound.
+    first, second = retained.root / "closed.png", retained.root / "open.png"
+    Image.new("RGB", (64, 48), (200, 200, 200)).save(first)
+    Image.new("RGB", (64, 48), (90, 90, 90)).save(second)
     frames = [
-        _frame("f_closed", driver._sha256(retained.image), "closed", ["door_outer", "handle", "control_panel"]),
+        _frame("f_closed", driver._sha256(first), "closed", ["door_outer", "handle", "control_panel"]),
         _frame("f_open", driver._sha256(second), "open", ["tub_interior", "upper_rack", "lower_rack"],
                view="front-high", reason="interior observed with the door open")]
     config = dishwasher(frames=frames)
@@ -645,7 +648,7 @@ def _dishwasher_stage(retained, monkeypatch):
                   provider_disclosure={"derived_views_and_metric_envelope": True,
                                        "provider_training": False, "public_redistribution": False})
     retained.input["configuration"] = config
-    return config, [retained.image, second]
+    return config, [first, second]
 
 
 def test_hinged_appliance_briefs_caption_each_frame_from_its_reference_row(retained, monkeypatch):

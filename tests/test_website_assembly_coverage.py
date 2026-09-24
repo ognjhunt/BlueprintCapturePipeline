@@ -200,6 +200,25 @@ def test_selection_that_cannot_show_every_part_is_incomplete():
         "website_assembly_reference_parts_uncovered:t"]
 
 
+def test_depth_view_is_chosen_first_and_the_contract_cites_only_shown_frames():
+    frames = [{"frame_id": f"f{i}", "timestamp_seconds": float(i), "mask_area_fraction": 0.1 + 0.01 * i,
+               "visible_parts": ["body_front", "door"] if i < 3 else ["tub"], "view": "front",
+               "part_state": "closed" if i < 3 else "open", "path": "p", "sha256": "s"} for i in range(5)]
+    body = {"open_frame_ids": ["f3", "f4"], "depth_m": 0.5, "width_m": 0.6, "height_m": 0.8,
+            "depth_basis": "interior_observed_open_state", "basis": "b"}
+    assert coverage.depth_seed(frames, body) == ["f4"]
+    selected = coverage.select_reference_frames(frames, cap=2, seed_frame_ids=["f4"])
+    assert [(row["frame_id"], row["selection_rank"]) for row in selected] == [("f2", 1), ("f4", 0)]
+    record = {"status": "complete", "body_bounds": body, "hinge_edge": "bottom", "task_part_components": ["door"],
+              "observed_parts": ["body_front", "door", "tub"], "selected_frames": selected}
+    contract = coverage.assembly_contract(record, articulation_kind="revolute", source_to_simulator_scale=2.0)
+    assert contract["body_depth"] == {"value_m": 1.0, "basis": "interior_observed_open_state", "frame_ids": ["f4"]}
+    assert (contract["body_extent_m"]["depth"], contract["body_extent_m"]["width"]) == (1.0, 1.2)
+    with pytest.raises(ValueError, match="website_assembly_depth_frame_not_referenced"):
+        coverage.assembly_contract({**record, "selected_frames": selected[:1]}, articulation_kind="revolute",
+                                   source_to_simulator_scale=2.0)
+
+
 def test_selection_fills_remaining_slots_with_distinct_views():
     frames = [{"frame_id": f"f{i}", "timestamp_seconds": float(i), "mask_area_fraction": 0.1,
                "visible_parts": ["body_front"], "part_state": "closed", "view": view}

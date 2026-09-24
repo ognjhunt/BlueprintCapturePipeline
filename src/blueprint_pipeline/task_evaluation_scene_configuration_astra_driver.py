@@ -278,6 +278,13 @@ def articulated_frame_descriptions(configuration: Mapping[str, Any], references:
     by_digest = {row["sha256"]: row for row in rows}
     if sorted(record["sha256"] for record in records) != sorted(by_digest):
         raise AstraStageError("astra_articulated_reference_frames_disagree_with_retained_frames")
+    # The retained frames go inline into every provider request; refuse any
+    # that the configured provider's request bound would not admit.
+    from .authoring_frame_budget import FrameBudgetError, check_transmitted_frames
+    try:
+        check_transmitted_frames(references, provider=str(configuration.get("authoring_model_provider") or "openai"))
+    except FrameBudgetError as exc:
+        raise AstraStageError("astra_" + str(exc)) from exc
     labels = {row["part_id"]: row["label"] for row in contract["required_parts"]}
     task_label = str(configuration["mechanism"]["task_part_label"])
     states = {"closed": "closed", "partially_open": "partially open", "open": "open",

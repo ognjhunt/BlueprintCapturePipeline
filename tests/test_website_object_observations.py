@@ -82,8 +82,11 @@ def test_articulated_builder_receives_the_coverage_views(tmp_path):
     result = materialize_object_observations(**kwargs)
     manifest, frames = validate_observation_handoff(Path(result['manifest']['path']), configuration=result['configuration'])
     selected = args['task_masks']['targets'][0]['authoring_coverage']['selected_frames']
+    references = preparation['authoring_inputs']['configuration']['reference_frames']
     assert [row['frame_id'] for row in manifest['frames']] == [row['frame_id'] for row in selected]
-    assert [_sha256_file(path) for path in frames] == [row['sha256'] for row in selected]
+    # The builder receives the provider-sized derivatives, each bound to its retained original.
+    assert [_sha256_file(path) for path in frames] == [row['sha256'] for row in references]
+    assert [row['retained_original_sha256'] for row in manifest['frames']] == [row['sha256'] for row in selected]
     assert {row['image_basis'] for row in manifest['frames']} == {'upright_coverage_frame'}
     assert all(row['reason'] and row['visible_parts'] for row in manifest['frames'])
     assert materialize_object_observations(**kwargs) == result

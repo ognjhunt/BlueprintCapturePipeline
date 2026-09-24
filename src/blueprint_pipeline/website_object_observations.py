@@ -61,6 +61,13 @@ def validate_observation_handoff(path: Path, *, configuration: Mapping[str, Any]
     return value, frames
 
 
+def _reference_unchanged(row: Mapping[str, Any]) -> bool:
+    """The transmitted derivative and, when there is one, its retained original."""
+    original = row.get("transmission")
+    return (_sha256_file(Path(row["path"])) == row["sha256"]
+            and (original is None or _sha256_file(Path(original["source_path"])) == original["source_sha256"]))
+
+
 def _upright(frame: Mapping[str, Any], source: Path, target: Path) -> float:
     """Originals are decoded without autorotation; send them as the camera displayed them."""
     rotation = frame.get("display_rotation_degrees")
@@ -106,7 +113,8 @@ def materialize_object_observations(*, preparation: Mapping[str, Any], source_ge
         references = {row["frame_id"]: row for row in config.get("reference_frames") or []}
         for row in value["frames"]:
             if row.get("image_basis") == "upright_coverage_frame":
-                if _sha256_file(Path(references[row["frame_id"]]["path"])) != row["source_image_digest"]:
+                reference = references[row["frame_id"]]
+                if reference["sha256"] != row["source_image_digest"] or not _reference_unchanged(reference):
                     raise ValueError("website_object_observation_source_changed")
                 continue
             frame = frames[row["frame_id"]]
@@ -187,12 +195,15 @@ def materialize_object_observations(*, preparation: Mapping[str, Any], source_ge
         raise ValueError("website_object_observation_surface_missing")
     for index, row in enumerate(references):
         image = root / f"reference-{index:02d}.png"
-        if _sha256_file(Path(row["path"])) != row["sha256"]:
+        if not _reference_unchanged(row):
             raise ValueError("website_object_observation_source_changed")
         shutil.copyfile(row["path"], image)
         retained.append({"frame_id": row["frame_id"], "timestamp_seconds": row["timestamp_seconds"],
                          "image": _record(image, relative_to=root), "source_image_digest": row["sha256"],
                          "image_basis": "upright_coverage_frame",
+                         # The transmitted derivative's retained full-resolution original.
+                         **({"retained_original_sha256": row["transmission"]["source_sha256"]}
+                            if "transmission" in row else {}),
                          **{key: row[key] for key in ("visible_parts", "part_state", "view", "reason")}})
     stage.GetRootLayer().Save()
     value = {"schema_version": SCHEMA, "preparation_digest": preparation["digest"],
