@@ -117,6 +117,9 @@ def test_largest_removal_view_is_the_edited_anchor_for_every_other_view(tmp_path
     assert "leave the empty bay it occupied open to its full depth" in calls[0]["prompt"]
     assert "never fill that space with cabinets, doors, drawers, panels" in calls[0]["prompt"]
     assert "not new cabinets, doors, drawers or panels" in completion.REVIEW_PROMPT
+    # Objects next to the removed one stay, and a covered rug or mat continues underneath.
+    assert "even where they touch or sit next to the removed object" in calls[0]["prompt"]
+    assert "continue it underneath" in calls[0]["prompt"]
 
 
 @pytest.mark.parametrize("fault", ["binding", "rights", "budget", "changed_source"])
