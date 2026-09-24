@@ -103,11 +103,6 @@ astra_asset_authoring = [
     "langgraph-sdk==0.1.74",
     "trimesh==4.12.2",
 ]
-# Future-scene Claude Messages adapter only. It is not a selectable paid
-# authoring profile until provider-specific admission and receipts are wired.
-claude_asset_authoring = [
-    "anthropic>=1.0,<2",
-]
 cloud = [
     "google-cloud-storage>=2.10.0",
     "google-auth>=2.0.0",

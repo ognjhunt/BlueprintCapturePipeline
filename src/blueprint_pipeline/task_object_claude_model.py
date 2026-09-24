@@ -149,15 +149,17 @@ def _messages(value: str | list) -> list[dict]:
 
 
 def _usage(value: Any) -> Usage:
-    def nonnegative(name: str) -> int:
-        number = getattr(value, name, None)
+    def nonnegative(name: str, *, optional: bool = False) -> int:
+        number = getattr(value, name, 0 if optional else None)
+        if number is None and optional:
+            number = 0
         if not isinstance(number, int) or isinstance(number, bool) or number < 0:
             raise ClaudeModelBoundaryError("claude_usage_invalid")
         return number
     # Count cache reads and writes at the full input rate until the durable
     # provider ledger supports exact cache tiers. This is conservative.
-    input_tokens = sum(nonnegative(name) for name in (
-        "input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"))
+    input_tokens = nonnegative("input_tokens") + sum(nonnegative(name, optional=True) for name in (
+        "cache_creation_input_tokens", "cache_read_input_tokens"))
     output_tokens = nonnegative("output_tokens")
     return Usage(requests=1, input_tokens=input_tokens, output_tokens=output_tokens,
                  total_tokens=input_tokens + output_tokens)
@@ -186,7 +188,7 @@ class ClaudeMessagesModel(Model):
             raise ClaudeModelBoundaryError("claude_tool_choice_unsupported")
         messages = _messages(input)
         kwargs: dict[str, Any] = {"model": MODEL, "max_tokens": model_settings.max_tokens,
-                                  "messages": messages}
+                                  "inference_geo": "us", "messages": messages}
         if system_instructions:
             kwargs["system"] = system_instructions
         if tools:
@@ -205,11 +207,12 @@ class ClaudeMessagesModel(Model):
         # Opus 5.5 has adaptive thinking. Signed blocks must round-trip intact
         # on each tool continuation; omit readable thinking from local receipts.
         kwargs["thinking"] = {"type": "adaptive", "display": "omitted"}
+        kwargs["output_config"] = {"effort": "medium"}
         if output_schema is not None:
             schema = output_schema.json_schema()
             if not isinstance(schema, dict):
                 raise ClaudeModelBoundaryError("claude_output_schema_invalid")
-            kwargs["output_config"] = {"format": {"type": "json_schema", "schema": schema}}
+            kwargs["output_config"]["format"] = {"type": "json_schema", "schema": schema}
         result = await self.client.messages.create(**kwargs)
         if result.stop_reason not in {"end_turn", "tool_use"}:
             raise ClaudeModelBoundaryError("claude_response_incomplete_or_refused")

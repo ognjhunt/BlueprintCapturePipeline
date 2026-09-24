@@ -226,13 +226,25 @@ class ClaudeOpusAuthoringInvoker:
         """
         if not self.config.allow_live_invocation or self.verify_authority is None:
             raise ClaudeAuthoringBlocked("claude_live_authority_missing")
+        output_config = payload.get("output_config")
+        output_format = output_config.get("format") if isinstance(output_config, dict) else None
         if (not capability or payload.get("model") != MODEL
                 or payload.get("inference_geo") != "us"
                 or type(payload.get("max_tokens")) is not int
                 or not 1 <= payload["max_tokens"] <= 12_000
                 or not isinstance(payload.get("messages"), list)
                 or not isinstance(payload.get("tools"), list)
-                or payload.get("output_config") != {"effort": "medium"}
+                or not isinstance(output_config, dict)
+                or output_config.get("effort") != "medium"
+                or set(output_config) - {"effort", "format"}
+                or (output_format is not None and (not isinstance(output_format, dict)
+                    or set(output_format) != {"type", "schema"}
+                    or output_format.get("type") != "json_schema"
+                    or not isinstance(output_format.get("schema"), dict)))
+                or payload.get("thinking", {"type": "adaptive", "display": "omitted"})
+                    != {"type": "adaptive", "display": "omitted"}
+                or payload.get("tool_choice", {"type": "auto", "disable_parallel_tool_use": True})
+                    != {"type": "auto", "disable_parallel_tool_use": True}
                 or _contains_key(payload, {"cache_control", "mcp_servers",
                                            "context_management", "speed"})
                 or any(not isinstance(tool, dict)
@@ -299,7 +311,8 @@ class ClaudeOpusAuthoringInvoker:
                  and response.get("stop_reason") in {"tool_use", "end_turn"}
                  and isinstance(response.get("content"), list)
                  and all(isinstance(block, dict) and block.get("type") in
-                         {"thinking", "text", "tool_use"} for block in response["content"]))
+                         {"thinking", "redacted_thinking", "text", "tool_use"}
+                         for block in response["content"]))
         if valid:
             allowed_names = {tool["name"] for tool in payload["tools"]}
             tool_ids = [block.get("id") for block in response["content"]
@@ -308,6 +321,8 @@ class ClaudeOpusAuthoringInvoker:
                          for block in response["content"] if block["type"] == "thinking")
                      and all(isinstance(block.get("text"), str)
                              for block in response["content"] if block["type"] == "text")
+                     and all(isinstance(block.get("data"), str) and block["data"]
+                             for block in response["content"] if block["type"] == "redacted_thinking")
                      and all(block.get("name") in allowed_names
                              and isinstance(block.get("input"), dict)
                              for block in response["content"] if block["type"] == "tool_use")
