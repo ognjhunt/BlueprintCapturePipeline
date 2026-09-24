@@ -368,12 +368,13 @@ def test_review_names_which_of_several_objects_each_view_still_shows(tmp_path, m
     plan = {"task_context_sha256": "task", "targets": _plan()["targets"]}
     args = dict(frames=frames, original_frames=frames, plan=plan, output_root=tmp_path / "review",
                 retain_result=False)
-    if error:
-        with pytest.raises(ValueError, match=error):
-            completion._verify_completed_background(**args)
-        return
     result = completion._verify_completed_background(**args)
-    assert result["status"] == "blocked"
+    if error:
+        # Retained as a blocked result, never a raise: the paid answer is kept and
+        # the receipt never becomes uncertain.
+        assert result["status"] == "blocked" and result["blocker"] == "website_image_completion_" + error
+        return
+    assert result["status"] == "blocked" and "blocker" not in result
     assert result["review"]["remaining_task_objects"] == objects
     assert sent[0][0].startswith(completion.REVIEW_PROMPT.removesuffix("Targets: "))
     assert completion.MULTI_OBJECT_REVIEW_PROMPT in sent[0][0]

@@ -447,6 +447,7 @@ def _verify_completed_background(*, frames: Sequence[Mapping[str, Any]], origina
             or len(set(unrelated_loss)) != len(unrelated_loss)
             or (unrelated_loss and review.get("unrelated_objects_preserved") is True))):
         raise ValueError("website_image_completion_review_unrelated_frame_ids_invalid")
+    objects_valid = True
     if prompt != REVIEW_PROMPT:
         # With several objects the review must name which one each view still shows.
         objects = review.get("remaining_task_objects")
@@ -458,11 +459,14 @@ def _verify_completed_background(*, frames: Sequence[Mapping[str, Any]], origina
                 or any(frame_id not in remaining or target_id not in names | {"person"}
                        for frame_id, target_id in pairs)
                 or {frame_id for frame_id, _ in pairs} != set(remaining)):
-            raise ValueError("website_image_completion_review_objects_invalid")
-    passed = all(review.get(field) is True for field in
-                 ("consistent_background", "task_objects_removed", "unrelated_objects_preserved"))
+            # A paid answer that cannot name the remaining objects blocks the set;
+            # it is retained, not lost, so the receipt never becomes uncertain.
+            objects_valid = False
+    passed = objects_valid and all(review.get(field) is True for field in
+                                   ("consistent_background", "task_objects_removed", "unrelated_objects_preserved"))
     result = {"status": "passed" if passed else "blocked", "binding": binding, "request_digest": digest,
-              "review": review, "basis": "model_visual_review", "physical_evidence": False}
+              "review": review, "basis": "model_visual_review", "physical_evidence": False,
+              **({} if objects_valid else {"blocker": "website_image_completion_review_objects_invalid"})}
     output_root.mkdir(parents=True, exist_ok=True)
     if retain_result:
         write_json(receipt_path, result)
