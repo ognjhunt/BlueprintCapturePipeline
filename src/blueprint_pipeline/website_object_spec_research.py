@@ -69,7 +69,8 @@ MATCHES = ("exact_model", "model_family", "brand_category")
 LENGTH_UNITS = {"mm": 0.001, "cm": 0.01, "m": 1.0, "in": 0.0254}
 MASS_UNITS = {"g": 0.001, "kg": 1.0, "lb": 0.45359237}
 LENGTH_SPECS = ("overall_width", "overall_height", "overall_depth", "cutout_width", "cutout_height", "cutout_depth")
-PART_SPECS = {"revolute": ("door_weight",), "prismatic": ("drawer_max_load",)}
+# Names are the contract website_articulated_mass reads.
+PART_SPECS = {"revolute": ("door_weight", "rack_weight"), "prismatic": ("drawer_weight", "drawer_max_load")}
 MAX_LENGTH_M, MAX_MASS_KG = 5.0, 1000.0
 _MODEL_TOKEN = re.compile(r"(?=[A-Za-z0-9./-]*\d)(?=[A-Za-z0-9./-]*[A-Za-z])[A-Za-z0-9][A-Za-z0-9./-]{3,}")
 _NUMBER = re.compile(r"(?P<whole>\d+(?:[.,]\d+)?)(?:(?:\s+|-)(?P<num>\d+)/(?P<den>\d+))?"
@@ -401,13 +402,31 @@ def _matches_evidence(model: Any, identity: Mapping[str, Any]) -> bool:
 _ATTRIBUTE_WORDS = {"width": {"width", "wide", "w"}, "height": {"height", "high", "tall", "h"},
                     "depth": {"depth", "deep", "d"}, "weight": {"weight", "weighs", "mass"},
                     "load": {"load", "capacity"}}
+_PART_WORDS = {"door": {"door", "doors"}, "rack": {"rack", "racks"}, "drawer": {"drawer", "drawers"}}
+_CLAUSE = re.compile(r"[;\n|]|,(?!\d)|\.(?=\s|$)")
 
 
-def _quote_names_attribute(quote: str, name: str) -> bool:
-    """A figure's quote must name its attribute; single letters count only as whole words (W x H x D)."""
-    words = set(re.findall(r"[a-z]+", quote.lower()))
-    attributes = [key for key in _ATTRIBUTE_WORDS if key in name.split("_")]
-    return not attributes or any(words & _ATTRIBUTE_WORDS[key] for key in attributes)
+def _quote_names_attribute(quote: str, name: str, span: Sequence[float], unit: str) -> bool:
+    """The number must share a clause with its own attribute (and part) and no other attribute.
+
+    ``34 x 24 x 24 in (H x W x D)`` names three attributes in one clause and
+    proves none; ``Net weight 40 kg; door 8 kg`` gives the door 8 kg, not 40.
+    """
+    tokens = set(name.split("_"))
+    attributes = {key for key in _ATTRIBUTE_WORDS if key in tokens}
+    parts = {key for key in _PART_WORDS if key in tokens}
+    for clause in _CLAUSE.split(quote):
+        readings = quoted_values(clause, default_unit=unit)
+        if not readings or not all(any(math.isclose(reading, bound, rel_tol=QUOTE_VALUE_TOLERANCE)
+                                       for reading in readings) for bound in span):
+            continue
+        words = set(re.findall(r"[a-z]+", clause.lower()))
+        named = {key for key, vocabulary in _ATTRIBUTE_WORDS.items() if words & vocabulary}
+        # A mass unit already says "weight" when the clause names no other attribute.
+        if (not attributes or named == attributes or (not named and attributes == {"weight"})) and {
+                key for key, vocabulary in _PART_WORDS.items() if words & vocabulary} == parts:
+            return True
+    return False
 
 
 def verify_findings(findings: Mapping[str, Any], *, fetch_log: Sequence[Mapping[str, Any]],
@@ -443,7 +462,7 @@ def verify_findings(findings: Mapping[str, Any], *, fetch_log: Sequence[Mapping[
             if not all(any(math.isclose(reading, bound, rel_tol=QUOTE_VALUE_TOLERANCE) for reading in readings)
                        for bound in span):
                 reason = "quote_value_mismatch"
-            elif not _quote_names_attribute(figure["quote"], figure["name"]):
+            elif not _quote_names_attribute(figure["quote"], figure["name"], span, figure["unit"]):
                 # The right number beside the wrong attribute (a width quoted as a
                 # depth) is not evidence for this figure.
                 reason = "quote_attribute_mismatch"
@@ -666,11 +685,15 @@ def research_object_spec(*, target_id: str, category: str, articulation_kind: st
             verified = verify_findings(receipt["findings"], fetch_log=receipt["fetch_log"], identity=identity,
                                        articulation_kind=articulation_kind)
         except ValueError as exc:
-            # Held research surfaces; compile continues on labelled estimates.
-            value.update(status="held", research={"status": "held", "reason": str(exc)}, blockers=[str(exc)])
+            # Held research surfaces; compile continues on labelled estimates and the
+            # retained receipt is never bought again.
+            value.update(status="held", research={"status": "held", "reason": str(exc)})
         else:
-            check = dimension_check(verified, (coverage or {}).get("body_bounds"))
-            value.update(verified, status="researched", dimension_check=check, blockers=list(check["blockers"]),
+            # Advisory: coverage bounds are in source-estimate units. Compile repeats
+            # the check on the simulator-scaled body and that one decides.
+            check = {**dimension_check(verified, (coverage or {}).get("body_bounds")),
+                     "basis": "published_product_figures_vs_source_estimate_body_bounds_advisory"}
+            value.update(verified, status="researched", dimension_check=check,
                          research={"status": "completed", "model": receipt["model"],
                                    "verification_rule": VERIFICATION_RULE,
                                    "receipt_binding_digest": receipt["binding_digest"],

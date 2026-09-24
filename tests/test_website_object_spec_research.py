@@ -134,7 +134,7 @@ def test_only_figures_the_fetched_page_states_are_kept(tmp_path, website):
     assert {row["name"]: row["reason"] for row in record["unsourced_dropped"]} == {
         "net_weight": "quote_value_mismatch", "door_weight": "source_not_fetched",
         "upper_rack_max_load": "quote_not_in_page", "drawer_max_load": "quote_not_in_page"}
-    assert record["silent_on"] == ["cutout_width", "cutout_height", "cutout_depth", "net_weight", "door_weight"]
+    assert record["silent_on"] == ["cutout_width", "cutout_height", "cutout_depth", "net_weight", "door_weight", "rack_weight"]
     assert record["blockers"] == [] and record["dimension_check"]["blockers"] == []
     assert record["claim"] == research.CLAIM and record["physical_measurement_proven"] is False
     fetched = record["research"]["fetch_log"]
@@ -228,7 +228,8 @@ def test_uncertain_receipt_is_held_for_reconciliation_and_never_rebought(tmp_pat
     receipt.write_text(json.dumps({"status": "submitting"}))
     record = _research(tmp_path, website, invoker)
     assert record["status"] == "held" and record["specs"] == {}
-    assert record["blockers"] == ["website_object_spec_agent_requires_reconciliation"]
+    assert record["research"]["reason"] == "website_object_spec_agent_requires_reconciliation"
+    assert record["blockers"] == []  # Held research never holds the build; the receipt is never re-bought.
     assert len(invoker.calls) == len(website["reserve"]) == 1
 
 
@@ -238,8 +239,8 @@ def test_failed_agent_run_leaves_an_uncertain_receipt(tmp_path, website):
             self.calls.append(spec)
             raise TimeoutError("wall clock")
     invoker = Failing(_findings())
-    assert _research(tmp_path, website, invoker)["blockers"] == ["website_object_spec_agent_failed:TimeoutError"]
-    assert _research(tmp_path, website, invoker)["blockers"] == ["website_object_spec_agent_requires_reconciliation"]
+    assert _research(tmp_path, website, invoker)["research"]["reason"] == "website_object_spec_agent_failed:TimeoutError"
+    assert _research(tmp_path, website, invoker)["research"]["reason"] == "website_object_spec_agent_requires_reconciliation"
     assert len(invoker.calls) == len(website["reserve"]) == 1 and website["settle"] == []
 
 
@@ -247,7 +248,7 @@ def test_unknown_model_pricing_fails_closed_before_any_reservation(tmp_path, web
     monkeypatch.setattr(research, "MODEL", "gpt-unpriced")
     invoker = _Invoker(_findings())
     record = _research(tmp_path, website, invoker)
-    assert record["status"] == "held" and record["blockers"] == ["website_object_spec_agent_pricing_unknown"]
+    assert record["status"] == "held" and record["research"]["reason"] == "website_object_spec_agent_pricing_unknown"
     assert invoker.calls == website["reserve"] == []
 
 
@@ -257,7 +258,9 @@ def test_published_dimension_disagreeing_with_the_measured_body_blocks(tmp_path,
     check = record["dimension_check"]
     assert check["comparisons"]["height"]["within_tolerance"] is False
     assert check["comparisons"]["width"]["within_tolerance"] is True
-    assert record["blockers"] == ["website_object_spec_dimension_conflict"]
+    # Advisory here (source-estimate units); compile decides on the simulator-scaled body.
+    assert record["blockers"] == [] and research.dimension_check(record, short)["blockers"] == [
+        "website_object_spec_dimension_conflict"]
     family = _research(tmp_path, website, _Invoker(_findings(match="model_family")), root="family",
                        coverage=_coverage(tmp_path, body=short))
     assert family["dimension_check"]["comparisons"]["height"]["within_tolerance"] is False
@@ -358,3 +361,37 @@ def test_right_number_beside_the_wrong_attribute_is_dropped(tmp_path, website):
     assert "overall_depth" not in record["specs"] and "overall_width" in record["specs"]
     assert record["unsourced_dropped"][0]["name"] == "overall_depth"
     assert record["unsourced_dropped"][0]["reason"] == "quote_attribute_mismatch"
+
+
+def test_researched_weights_reach_the_mass_bounds_by_name(tmp_path, website):
+    # The research record is the mass step's input: names and ranges must line up.
+    from blueprint_pipeline.website_articulated_mass import articulated_mass_bounds
+    figures = [_figure("net_weight", 97, "lb", SPEC, "Net weight 97 lbs"),
+               _figure("overall_height", 33.875, "in", SPEC, "Height 33 7/8 in"),
+               _figure("overall_height", 34.5, "in", RETAIL, "Overall height: 34 1/2 in")]
+    record = _research(tmp_path, website, _Invoker(_findings(figures)))
+    assert record["specs"]["net_weight"]["value"] == pytest.approx(97 * 0.45359237, rel=1e-6)
+    masses = articulated_mass_bounds({"target_id": record["target_id"]}, joint_type="revolute",
+                                     body_extent_m=[0.55, 0.6, 0.86], object_spec=record)
+    assert masses["provenance"]["body"]["mass_authority"] == "manufacturer_published"
+    assert masses["provenance"]["body"]["spec"] == "net_weight"
+    # A published range (sources disagree) widens the interval instead of failing.
+    ranged = {**record, "specs": {"door_weight": {"value": [7.0, 9.0], "unit": "kg", "source_urls": [SPEC],
+                                                  "match": "exact_model"}}}
+    ranged.pop("digest")
+    ranged["digest"] = canonical_digest(ranged, digest_field="digest")
+    door = articulated_mass_bounds({"target_id": record["target_id"]}, joint_type="revolute",
+                                   body_extent_m=[0.55, 0.6, 0.86], object_spec=ranged)
+    assert door["task_part_mass_kg_bounds"] == [6.3, 9.9]
+
+
+def test_a_quote_ties_its_number_to_its_own_attribute_and_part():
+    names = research._quote_names_attribute
+    # One clause naming three attributes proves none of them.
+    assert not names("34 x 24 x 24 in (H x W x D)", "overall_depth", [24 * 0.0254] * 2, "in")
+    # The door gets its own clause's number, never the whole appliance's.
+    assert not names("Net weight 40 kg; door 8 kg", "door_weight", [40.0, 40.0], "kg")
+    assert names("Net weight 40 kg; door 8 kg", "door_weight", [8.0, 8.0], "kg")
+    assert names("Net weight 40 kg; door 8 kg", "net_weight", [40.0, 40.0], "kg")
+    assert not names("Net weight 40 kg; door 8 kg", "net_weight", [8.0, 8.0], "kg")
+    assert names("Width: 23 9/16 in, Height: 33 7/8 in", "overall_width", [0.598, 0.598], "in")

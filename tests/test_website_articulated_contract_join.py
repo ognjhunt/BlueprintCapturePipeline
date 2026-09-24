@@ -261,7 +261,7 @@ def test_mass_bounds_use_published_weights_when_identified_and_estimates_otherwi
     assert estimated["task_part_mass_kg_bounds"] == [2.04, 12.75]
     exact = articulated_mass_bounds(target, joint_type="revolute", body_extent_m=extent,
         fixed_part_ids=["upper_rack", "lower_rack"],
-        object_spec=_published_spec(weight=_weight(40.0, "exact_model"), door_weight=_weight(17.6, "exact_model", "lb"),
+        object_spec=_published_spec(net_weight=_weight(40.0, "exact_model"), door_weight=_weight(17.6, "exact_model", "lb"),
                                     rack_weight=_weight(2.0, "exact_model")))
     assert exact["mass_authority"] == "manufacturer_published"
     assert exact["task_part_mass_kg_bounds"] == pytest.approx([7.184, 8.781], abs=1e-3)
@@ -378,13 +378,19 @@ def test_frames_that_cannot_fit_fail_closed(tmp_path):
 
 
 def test_published_size_conflict_holds_compile_before_anything_is_bought(tmp_path):
-    spec = {**_published_spec(door_weight=_weight(8.0, "exact_model")),
-            "blockers": ["website_object_spec_dimension_conflict"]}
-    spec.pop("digest")
-    spec["digest"] = canonical_digest(spec, digest_field="digest")
-    args = _arguments(tmp_path)
-    args.update(_dishwasher_inputs(tmp_path, object_spec=spec))
-    args["removal_manifest"] = DISHWASHER_REMOVAL
-    preparation = compile_website_scene_preparation(**args)
-    assert preparation["status"] == "needs_input"
-    assert "website_object_spec_dimension_conflict" in preparation["blockers"]
+    def compiled(match, root):
+        spec = {**_published_spec(overall_height={"value": 3.0, "unit": "m", "match": match,
+                                                  "source_urls": ["https://example.com/ex-24/specs"]}),
+                "status": "researched"}
+        spec.pop("digest")
+        spec["digest"] = canonical_digest(spec, digest_field="digest")
+        (tmp_path / root).mkdir()
+        args = _arguments(tmp_path / root)
+        args.update(_dishwasher_inputs(tmp_path / root, object_spec=spec))
+        args["removal_manifest"] = DISHWASHER_REMOVAL
+        return compile_website_scene_preparation(**args)
+    # Compared with the body as it will be built (simulator metres), not source units.
+    exact = compiled("exact_model", "exact")
+    assert exact["status"] == "needs_input" and "website_object_spec_dimension_conflict" in exact["blockers"]
+    family = compiled("model_family", "family")
+    assert "website_object_spec_dimension_conflict" not in family["blockers"]

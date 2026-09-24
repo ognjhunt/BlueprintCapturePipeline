@@ -33,13 +33,15 @@ def _published(spec: Mapping[str, Any] | None, name: str) -> tuple[list[float], 
     if row is None:
         return None
     value, unit, match, urls = row.get("value"), row.get("unit"), row.get("match"), row.get("source_urls")
-    if (isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0
-            or unit not in _TO_KG or match not in PUBLISHED_RELATIVE_SPREAD
+    # Disagreeing sources are published as a range; the interval spans it.
+    span = value if isinstance(value, list) and len(value) == 2 else [value, value]
+    if (any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v <= 0 for v in span)
+            or span[0] > span[1] or unit not in _TO_KG or match not in PUBLISHED_RELATIVE_SPREAD
             or not isinstance(urls, list) or not urls or any(not isinstance(v, str) or not v.startswith("https://")
                                                              for v in urls)):
         raise ValueError("website_object_spec_invalid:" + name)
-    kg, spread = float(value) * _TO_KG[unit], PUBLISHED_RELATIVE_SPREAD[match]
-    return ([round(kg * (1 - spread), 3), round(kg * (1 + spread), 3)],
+    low, high, spread = float(span[0]) * _TO_KG[unit], float(span[1]) * _TO_KG[unit], PUBLISHED_RELATIVE_SPREAD[match]
+    return ([round(low * (1 - spread), 3), round(high * (1 + spread), 3)],
             {"mass_authority": "manufacturer_published", "spec": name, "match": match, "source_urls": list(urls)})
 
 
@@ -63,7 +65,7 @@ def articulated_mass_bounds(target: Mapping[str, Any], *, joint_type: str, body_
     """Body, task-part and fixed-part mass intervals with each one's authority and sources.
 
     ``body_extent_m`` is ``[depth, width, height]`` of the body in simulator
-    metres. Published specs are read by name: ``weight`` (whole assembly),
+    metres. Published specs are read by the names research requests: ``net_weight`` (whole assembly),
     ``door_weight`` / ``drawer_weight`` (task part), and ``<part id>_weight``
     or ``rack_weight`` for fixed parts. ``mass_authority`` is ``mixed`` when
     only some intervals are published; each interval records its own.
@@ -93,7 +95,7 @@ def articulated_mass_bounds(target: Mapping[str, Any], *, joint_type: str, body_
     body = ([round(max(BODY_FLOOR_KG[0], BODY_DENSITY_KG_M3[0] * volume), 3),
              round(max(BODY_FLOOR_KG[1], BODY_DENSITY_KG_M3[1] * volume), 3)],
             {**estimated, "basis": "body_envelope_volume_times_density_prior"})
-    whole = _published(spec, "weight")
+    whole = _published(spec, "net_weight")
     if whole is not None:
         # The body is what remains of the published whole after every other link.
         others = [task[0], *(value[0] for value in fixed.values())]
