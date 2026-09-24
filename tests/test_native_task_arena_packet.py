@@ -624,6 +624,7 @@ def Xform "G1"
 {
     def Xform "pelvis" (prepend apiSchemas = ["PhysicsRigidBodyAPI"]) {}
     def Xform "right_finger_tip" (prepend apiSchemas = ["PhysicsRigidBodyAPI"]) {}
+    def Xform "right_thumb_tip" (prepend apiSchemas = ["PhysicsRigidBodyAPI"]) {}
     def Xform "attachment" (references = @attachment.usda@</Attachment>) {}
     def Shader "Material" {
         uniform token info:implementationSource = "sourceAsset"
@@ -653,7 +654,14 @@ def Xform "G1"
             name: {"stiffness": 100, "damping": 2, "effort_limit": 25, "velocity_limit": 10}
             for name in joints
         },
-        "task_contact_body_paths": ["{ENV_REGEX_NS}/Robot/right_finger_tip"],
+        "task_contact_body_paths": [
+            "{ENV_REGEX_NS}/Robot/right_finger_tip",
+            "{ENV_REGEX_NS}/Robot/right_thumb_tip",
+        ],
+        "grasp_frame": {
+            "kind": "body_midpoint",
+            "body_names": ["right_finger_tip", "right_thumb_tip"],
+        },
     }
     head = _camera("wrist")
     head.update(role="head", parent_prim_path="{ENV_REGEX_NS}/Robot/pelvis")
@@ -680,6 +688,7 @@ def Xform "G1"
         "sha256": f"sha256:{sha256_file(dependency)}",
     }]
     assert plan["robot"]["usd_path"] == "assets/robot_unitree_g1.usda"
+    assert plan["robot"]["grasp_frame"] == robot["grasp_frame"]
     assert plan["robot"]["usd_runtime_asset_dependencies"] == ["OmniPBR.mdl"]
     assert receipt["robot_asset_binding"]["runtime_asset_dependencies"] == ["OmniPBR.mdl"]
     assert _resolve_portable_robot(plan, bundle_root=output)["usd_path"] == str(
