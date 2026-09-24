@@ -1,5 +1,6 @@
 """No-network SDK authoring with signed Anthropic per-request admission."""
 import base64
+import asyncio
 import io
 import json
 
@@ -45,9 +46,16 @@ def _authority(run_id, _digest):
             "authority_digest": SHA, "provider_terms_digest": SHA}
 
 
-def _tool(name, calls):
+def _tool(name, calls, ledger=None):
     async def invoke(context, arguments):
         calls.append((name, context.tool_call_id, json.loads(arguments)))
+        if ledger is not None:
+            ledger.mkdir(parents=True, exist_ok=True)
+            token = canonical_digest({"call_id": context.tool_call_id})[7:]
+            (ledger / (token + ".started.json")).write_text(json.dumps({
+                "tool": name, "call_id": context.tool_call_id,
+                "arguments": json.loads(arguments)}))
+            (ledger / (token + ".result.json")).write_text('{"status":"completed"}')
         return '{"status":"completed"}'
     return FunctionTool(name=name, description="Local asset operation: " + name,
         params_json_schema={"type": "object", "properties": {"part": {"type": "string"}},
@@ -93,9 +101,11 @@ def test_exact_sdk_tool_image_sequence_and_reviews_fit_after_completion(monkeypa
             "usage": {"input_tokens": 1500, "output_tokens": 100}}
 
     invoker, audit = _invoker(monkeypatch, tmp_path, send)
-    client = ClaudeSDKMessageClient(invoker=invoker, object_id="middle_drawer")
+    client = ClaudeSDKMessageClient(invoker=invoker, object_id="middle_drawer",
+        journal_root=tmp_path / "journal", session_db=tmp_path / "conversation.sqlite")
+    tool_ledger = tmp_path / "tools"
     agent = Agent(name="Future-scene Claude drawer author", model=ClaudeMessagesModel(client=client),
-        tools=[_tool(name, local_calls) for name in names], output_type=CandidateReady,
+        tools=[_tool(name, local_calls, tool_ledger) for name in names], output_type=CandidateReady,
         tool_use_behavior=StopAtTools(stop_at_tool_names=["render_candidate"]),
         model_settings=ModelSettings(max_tokens=12_000, store=False, parallel_tool_calls=False))
     db = tmp_path / "conversation.sqlite"
@@ -110,6 +120,7 @@ def test_exact_sdk_tool_image_sequence_and_reviews_fit_after_completion(monkeypa
         session.close()
     assert [name for name, _, _ in local_calls] == names
     assert db.is_file()
+    assert [name for name, _, _ in client.completed_tool_history(tool_ledger)] == names
 
     # The independent physical and visual reviews still use the admitted
     # provider-specific invoker, sharing the *same* $7 ledger.
@@ -177,3 +188,81 @@ def test_unknown_first_turn_keeps_full_quote_and_blocks_next(monkeypatch, tmp_pa
     with pytest.raises(ClaudeAuthoringBlocked, match="spend_cap_exhausted"):
         invoker.invoke_tool_turn(capability="middle_drawer_author_turn_002", payload=payload)
     assert audit.manifest()["reservation_count"] == 1
+
+
+def _wire_request(text):
+    return {"model": "claude-opus-5-5", "max_tokens": 12_000, "inference_geo": "us",
+        "messages": [{"role": "user", "content": [{"type": "text", "text": text}]}],
+        "tools": [{"name": "observe_object", "description": "Observe source",
+                   "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+                   "strict": True}],
+        "output_config": {"effort": "medium"}}
+
+
+def _tool_response(index):
+    return {"id": f"msg_{index}", "model": "claude-opus-5-5", "stop_reason": "tool_use",
+        "content": [{"type": "thinking", "thinking": "", "signature": f"signed-{index}"},
+                    {"type": "tool_use", "id": f"tool_{index}", "name": "observe_object", "input": {}}],
+        "usage": {"input_tokens": 1000, "output_tokens": 100}}
+
+
+def test_journal_replays_only_uncheckpointed_signed_response(monkeypatch, tmp_path):
+    sent = []
+    def send(payload, _key):
+        sent.append(payload)
+        return _tool_response(len(sent))
+    invoker, audit = _invoker(monkeypatch, tmp_path, send)
+    db = tmp_path / "conversation.sqlite"
+    SQLiteSession("middle_drawer", db_path=db).close()
+    journal = tmp_path / "journal"
+    first = ClaudeSDKMessageClient(invoker=invoker, object_id="middle_drawer",
+        journal_root=journal, session_db=db)
+    payload = _wire_request("Observe")
+    assert asyncio.run(first.create(**payload)).id == "msg_1"
+    restarted = ClaudeSDKMessageClient(invoker=invoker, object_id="middle_drawer",
+        journal_root=journal, session_db=db)
+    assert asyncio.run(restarted.create(**payload)).id == "msg_1"
+    assert len(sent) == 1 and audit.manifest()["reservation_count"] == 1
+    assert len(restarted.inspect_journal()) == 1
+    second_restart = ClaudeSDKMessageClient(invoker=invoker, object_id="middle_drawer",
+        journal_root=journal, session_db=db)
+    with pytest.raises(ClaudeAuthoringBlocked, match="prior_response_not_checkpointed"):
+        asyncio.run(second_restart.create(**_wire_request("Continue")))
+    checkpoint = SQLiteSession("middle_drawer", db_path=db)
+    asyncio.run(checkpoint.add_items([{"type": "function_call", "call_id": "tool_1",
+        "name": "observe_object", "arguments": "{}"},
+        {"type": "function_call_output", "call_id": "tool_1", "output": "{}"}]))
+    checkpoint.close()
+    assert asyncio.run(second_restart.create(**_wire_request("Continue"))).id == "msg_2"
+    assert len(sent) == 2 and audit.manifest()["reservation_count"] == 2
+
+
+def test_journal_unknown_or_changed_response_never_redispatches(monkeypatch, tmp_path):
+    sent = []
+    invoker, audit = _invoker(monkeypatch, tmp_path,
+        lambda payload, _key: sent.append(payload) or _tool_response(len(sent)))
+    journal = tmp_path / "journal"
+    client = ClaudeSDKMessageClient(invoker=invoker, object_id="middle_drawer",
+        journal_root=journal)
+    asyncio.run(client.create(**_wire_request("Observe")))
+    response = journal / "turn-001-response.json"
+    value = json.loads(response.read_text())
+    value["content"][1]["id"] = "tampered"
+    response.write_text(json.dumps(value))
+    with pytest.raises(ClaudeAuthoringBlocked, match="journal_receipt_changed"):
+        ClaudeSDKMessageClient(invoker=invoker, object_id="middle_drawer",
+            journal_root=journal)
+    assert len(sent) == 1 and audit.manifest()["reservation_count"] == 1
+
+    unknown_root = tmp_path / "unknown"
+    unknown_root.mkdir()
+    uncertain, uncertain_audit = _invoker(monkeypatch, unknown_root,
+        lambda *_: (_ for _ in ()).throw(TimeoutError("uncertain")))
+    first = ClaudeSDKMessageClient(invoker=uncertain, object_id="middle_drawer",
+        journal_root=unknown_root / "journal")
+    with pytest.raises(ClaudeAuthoringBlocked, match="provider_outcome_unknown"):
+        asyncio.run(first.create(**_wire_request("Observe")))
+    with pytest.raises(ClaudeAuthoringBlocked, match="provider_outcome_unknown"):
+        ClaudeSDKMessageClient(invoker=uncertain, object_id="middle_drawer",
+            journal_root=unknown_root / "journal")
+    assert uncertain_audit.manifest()["reservation_count"] == 1
