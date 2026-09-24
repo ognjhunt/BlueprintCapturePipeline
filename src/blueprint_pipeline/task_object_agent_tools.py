@@ -111,7 +111,8 @@ class AssetTools:
         from . import task_object_blender_runtime
         completed = self.blender_runner([self.blender_executable, "--background", "--factory-startup",
             "--python-exit-code", "23", "--python", str(Path(task_object_blender_runtime.__file__).resolve()),
-            "--", str(attempt)], cwd=attempt, timeout=600, check=False, capture_output=True, text=True)
+            "--", str(attempt)], cwd=attempt, timeout=task_object_blender_runtime.STUDIO_RENDER_TIMEOUT_SECONDS,
+            check=False, capture_output=True, text=True)
         (attempt / "blender.stdout.txt").write_text((completed.stdout or "")[-100000:])
         (attempt / "blender.stderr.txt").write_text((completed.stderr or "")[-100000:])
         if completed.returncode:

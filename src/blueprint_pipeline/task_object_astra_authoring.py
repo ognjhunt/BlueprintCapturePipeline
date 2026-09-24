@@ -494,7 +494,8 @@ def execute_asset_authoring(*, request_value: dict, output_root: Path, invoker,
                 completed = blender_runner(
                     [blender_executable, '--background', '--factory-startup',
                      '--python-exit-code', '23', '--python', str(wrapper), '--', str(attempt)],
-                    cwd=attempt, timeout=600, check=False, capture_output=True, text=True)
+                    cwd=attempt, timeout=task_object_blender_runtime.STUDIO_RENDER_TIMEOUT_SECONDS,
+                    check=False, capture_output=True, text=True)
                 (attempt / 'blender.stdout.txt').write_text(completed.stdout[-100000:])
                 (attempt / 'blender.stderr.txt').write_text(completed.stderr[-100000:])
                 if completed.returncode:
