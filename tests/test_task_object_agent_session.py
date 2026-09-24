@@ -28,7 +28,6 @@ from blueprint_pipeline.claude_opus_authoring_invoker import (
 from blueprint_pipeline.claude_opus_native_tool_loop import (
     execute_claude_agent_authoring, inspect_completed_claude_authoring,
 )
-from blueprint_pipeline import claude_opus_native_tool_loop as native_claude
 from blueprint_pipeline import task_object_agent_cad as agent_cad
 from blueprint_pipeline.claude_opus_sdk_session import (
     execute_claude_sdk_agent_authoring, inspect_completed_claude_sdk_authoring,
@@ -319,7 +318,7 @@ def test_sdk_claude_uses_real_tools_signed_calls_and_retained_reviews(agent_fixt
 
 
 def test_future_scene_sdk_stage_rehearsal_keeps_signed_cap_and_reuses_asset(agent_fixture, monkeypatch):
-    """Test-only SDK substitution through the real Claude stage boundary."""
+    """The signed future-scene selector uses the SDK through the real stage."""
     f = agent_fixture
     key = f.runtime / 'test-anthropic-key'
     key.write_text('test-only-placeholder')
@@ -366,12 +365,6 @@ def test_future_scene_sdk_stage_rehearsal_keeps_signed_cap_and_reuses_asset(agen
     def fake_invoker_init(self, config, *, audit, verify_authority=None, send=None):
         original_init(self, config, audit=audit, verify_authority=verify_authority, send=fake_send)
     monkeypatch.setattr(ClaudeOpusAuthoringInvoker, '__init__', fake_invoker_init)
-    # The deployed selector remains native. This substitution exercises the
-    # prospective SDK implementation without changing paid stage routing.
-    monkeypatch.setattr(native_claude, 'execute_claude_agent_authoring',
-                        execute_claude_sdk_agent_authoring)
-    monkeypatch.setattr(native_claude, 'inspect_completed_claude_authoring',
-                        inspect_completed_claude_sdk_authoring)
     def fake_cad(*, program, output_root, request, **_kwargs):
         return f.kwargs['cad_executor'](program=program, output_root=output_root, request=request)
     monkeypatch.setattr(agent_cad, 'execute_cad_program', fake_cad)

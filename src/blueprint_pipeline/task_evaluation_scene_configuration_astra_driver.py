@@ -747,8 +747,8 @@ def _execute_claude_stage(*, values, stage_input, rights, request, articulated, 
                           result_path, package_candidate):
     from functools import partial
     from .claude_opus_authoring_invoker import ClaudeAuthoringConfig, ClaudeOpusAuthoringInvoker
-    from .claude_opus_native_tool_loop import (
-        execute_claude_agent_authoring, inspect_completed_claude_authoring,
+    from .claude_opus_sdk_session import (
+        execute_claude_sdk_agent_authoring, inspect_completed_claude_sdk_authoring,
     )
     from .task_evaluation_supervisor.inference_reservations import InferenceReservationAudit
     from .task_object_agent_cad import execute_cad_program
@@ -770,14 +770,14 @@ def _execute_claude_stage(*, values, stage_input, rights, request, articulated, 
             for part_id, part_request in part_requests.items():
                 part_root = authored_root / "parts" / part_id
                 session_root = budget_root / "parts" / part_id / "asset_session"
-                parts[part_id] = execute_claude_agent_authoring(
+                parts[part_id] = execute_claude_sdk_agent_authoring(
                     request_value=part_request.model_dump(mode="json"),
                     output_root=part_root,
                     budget_root=budget_root,
                     session_root=session_root,
                     invoker=invoker, cad_executor=cad_executor, blender_runner=sandbox,
                     blender_executable=blender["executable"], authoring_instructions=instructions)
-                if inspect_completed_claude_authoring(output_root=part_root, budget_root=budget_root,
+                if inspect_completed_claude_sdk_authoring(output_root=part_root, budget_root=budget_root,
                         session_root=session_root,
                         request_value=part_request.model_dump(mode="json")) != parts[part_id]:
                     raise AstraStageError("claude_part_retained_validation_changed")
@@ -791,12 +791,12 @@ def _execute_claude_stage(*, values, stage_input, rights, request, articulated, 
             authored["result_digest"] = canonical_digest(authored, digest_field="result_digest")
             _write(authored_root / "result.json", authored)
         else:
-            authored = execute_claude_agent_authoring(
+            authored = execute_claude_sdk_agent_authoring(
                 request_value=request.model_dump(mode="json"), output_root=authored_root,
                 budget_root=budget_root, invoker=invoker, cad_executor=cad_executor,
                 blender_runner=sandbox, blender_executable=blender["executable"],
                 authoring_instructions=instructions)
-            if inspect_completed_claude_authoring(output_root=authored_root,
+            if inspect_completed_claude_sdk_authoring(output_root=authored_root,
                     budget_root=budget_root, request_value=request.model_dump(mode="json")) != authored:
                 raise AstraStageError("claude_retained_validation_changed")
     finally:
