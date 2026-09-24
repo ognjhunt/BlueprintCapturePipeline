@@ -279,6 +279,60 @@ def test_setup_rejects_unrunnable_second_policy() -> None:
         validate_policy_canary_setup(mutated)
 
 
+def test_setup_accepts_unavailable_g1_candidates_with_distinct_objectives() -> None:
+    setup = _setup()
+    robot = copy.deepcopy(setup["robot_presets"][0])
+    robot.update(
+        robot_preset_id="unitree_g1_dex3_v1",
+        display_name="Unitree G1 + Dex3",
+        embodiment_id="unitree_g1",
+        readiness={
+            "status": "unavailable", "receipt": None,
+            "reason": "GPU checkpoint episode not yet verified",
+        },
+    )
+    candidates = []
+    for index, objective in enumerate(
+        ("task_success", "task_success", "g1_navigation_goal", "g1_navigation_goal")
+    ):
+        candidate = copy.deepcopy(robot["policy_candidates"][index % 2])
+        candidate["candidate_id"] = f"g1_policy_{index}"
+        candidate["evaluation_objective_id"] = objective
+        candidate["readiness"] = {
+            "status": "unavailable", "receipt": None,
+            "reason": "GPU checkpoint episode not yet verified",
+        }
+        candidate["compatibility"]["robot_preset_ids"] = [robot["robot_preset_id"]]
+        candidate["compatibility"]["embodiment_ids"] = ["unitree_g1"]
+        candidates.append(candidate)
+    robot["policy_candidates"] = candidates
+    setup["robot_presets"].append(robot)
+    setup["setup_digest"] = policy_canary_setup_digest(setup)
+
+    assert validate_policy_canary_setup(setup) == setup
+    candidates[2]["evaluation_objective_id"] = "unknown_goal"
+    setup["setup_digest"] = policy_canary_setup_digest(setup)
+    with pytest.raises(TaskEvaluationPolicyCanarySetupError, match="policy_canary_setup_invalid"):
+        validate_policy_canary_setup(setup)
+
+
+def test_setup_rejects_one_runnable_policy_per_objective() -> None:
+    setup = _setup()
+    setup["robot_presets"][0]["policy_candidates"][1]["evaluation_objective_id"] = "g1_navigation_goal"
+    setup["setup_digest"] = policy_canary_setup_digest(setup)
+    with pytest.raises(TaskEvaluationPolicyCanarySetupError, match="runnable_pair_invalid"):
+        validate_policy_canary_setup(setup)
+
+
+def test_setup_rejects_runnable_navigation_without_confirmed_contract() -> None:
+    setup = _setup()
+    for candidate in setup["robot_presets"][0]["policy_candidates"]:
+        candidate["evaluation_objective_id"] = "g1_navigation_goal"
+    setup["setup_digest"] = policy_canary_setup_digest(setup)
+    with pytest.raises(TaskEvaluationPolicyCanarySetupError, match="navigation_success_contract_not_published"):
+        validate_policy_canary_setup(setup)
+
+
 def test_setup_schema_rejects_unknown_task_success_contract_fields() -> None:
     setup = _setup()
     mutated = copy.deepcopy(setup)
