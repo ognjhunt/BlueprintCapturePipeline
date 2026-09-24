@@ -395,3 +395,11 @@ def test_a_quote_ties_its_number_to_its_own_attribute_and_part():
     assert names("Net weight 40 kg; door 8 kg", "net_weight", [40.0, 40.0], "kg")
     assert not names("Net weight 40 kg; door 8 kg", "net_weight", [8.0, 8.0], "kg")
     assert names("Width: 23 9/16 in, Height: 33 7/8 in", "overall_width", [0.598, 0.598], "in")
+
+
+def test_embedded_private_addresses_are_not_public():
+    for address in ("64:ff9b::a9fe:a9fe", "::ffff:10.0.0.1", "2002:0a00:0001::1", "169.254.169.254", "127.0.0.1",
+                    "fd00::1"):
+        assert research.public_address(address) is False, address
+    for address in ("8.8.8.8", "2606:4700:4700::1111", "64:ff9b::808:808"):
+        assert research.public_address(address) is True, address

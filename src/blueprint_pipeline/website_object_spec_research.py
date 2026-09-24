@@ -241,19 +241,41 @@ def page_text(body: bytes, content_type: str) -> str:
     return "\n".join(line for line in lines if line)
 
 
+# IPv6 forms that embed an IPv4 address (NAT64, 6to4, Teredo, IPv4-mapped) are
+# judged by the address they reach: 64:ff9b::a9fe:a9fe is the metadata host.
+_NAT64 = (ipaddress.ip_network("64:ff9b::/96"), ipaddress.ip_network("64:ff9b:1::/48"))
+
+
+def public_address(address: str) -> bool:
+    ip = ipaddress.ip_address(address.split("%")[0])
+    if isinstance(ip, ipaddress.IPv6Address):
+        embedded = ip.ipv4_mapped or ip.sixtofour or (ip.teredo[1] if ip.teredo else None)
+        if embedded is None and any(ip in network for network in _NAT64):
+            embedded = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+        if embedded is not None:
+            return embedded.is_global
+    return ip.is_global
+
+
 def _public_host(host: str, resolver: Callable[..., Any]) -> bool:
     try:
         addresses = {row[4][0] for row in resolver(host, 443, proto=socket.IPPROTO_TCP)}
     except OSError:
         return False
-    return bool(addresses) and all(ipaddress.ip_address(address.split("%")[0]).is_global for address in addresses)
+    return bool(addresses) and all(public_address(address) for address in addresses)
 
 
 def _https_transport(url: str, *, max_bytes: int, timeout: float) -> dict[str, Any]:
     """One hop, no redirect following, body read to at most ``max_bytes + 1``."""
     import httpx
-    with httpx.Client(follow_redirects=False, timeout=timeout) as client:
+    # No proxy: the address checked must be the address connected to. The peer
+    # is re-checked after connecting, which closes the DNS-rebinding window.
+    with httpx.Client(follow_redirects=False, timeout=timeout, trust_env=False) as client:
         with client.stream("GET", url, headers={"User-Agent": "BlueprintSpecResearch/1"}) as response:
+            stream = response.extensions.get("network_stream")
+            peer = stream.get_extra_info("server_addr") if stream is not None else None
+            if not peer or not public_address(str(peer[0])):
+                raise ConnectionRefusedError("connected_peer_not_public")
             body = bytearray()
             for chunk in response.iter_bytes():
                 body.extend(chunk)
