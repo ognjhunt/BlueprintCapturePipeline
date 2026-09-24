@@ -24,6 +24,34 @@ ACCEPTED_SOURCE_CANDIDATE_CLAIMS = (
 )
 
 
+def expected_articulated_physics_bounds(configuration, plan) -> dict:
+    """Per-part bounds the configuration admits: body, moving part, and any fixed interior parts.
+
+    A legacy drawer configuration names ``carcass``/``drawer``. A configuration
+    that declares its ``assembly_family`` binds bounds to the plan's part roles,
+    and the plan must be of that family.
+    """
+    required_output = configuration.get("required_output")
+    if not isinstance(required_output, Mapping):
+        return {}
+    shared = {
+        "static_friction": required_output.get("static_friction_bounds"),
+        "dynamic_friction": required_output.get("dynamic_friction_bounds"),
+        "restitution": required_output.get("restitution_bounds"),
+    }
+    family = configuration.get("assembly_family")
+    if family is None:
+        return {"carcass": {**shared, "mass_kg": required_output.get("mass_kg_bounds")},
+                "drawer": {**shared, "mass_kg": required_output.get("task_part_mass_kg_bounds")}}
+    parts = plan.get("parts") if isinstance(plan, Mapping) else None
+    if not isinstance(parts, Mapping) or plan.get("family") != family:
+        return {"assembly_plan_family_mismatch": {}}
+    role_key = {"body": "mass_kg_bounds", "carcass": "mass_kg_bounds", "task_part": "task_part_mass_kg_bounds",
+                "fixed_interior": "fixed_part_mass_kg_bounds"}
+    return {part_id: {**shared, "mass_kg": required_output.get(role_key.get(spec.get("link_role"), ""))}
+            for part_id, spec in parts.items() if isinstance(spec, Mapping)}
+
+
 def verify_articulated_replacement_result(
     *, configuration, envelope, receipt, graph, asset, asset_record, source_candidate_record
 ) -> None:
@@ -35,15 +63,7 @@ def verify_articulated_replacement_result(
     required_output = configuration.get("required_output")
     mechanism = configuration.get("mechanism")
     completion = receipt.get("candidate_physics_completion")
-    shared = {
-        "static_friction": required_output.get("static_friction_bounds"),
-        "dynamic_friction": required_output.get("dynamic_friction_bounds"),
-        "restitution": required_output.get("restitution_bounds"),
-    } if isinstance(required_output, Mapping) else {}
-    expected_bounds = {
-        "carcass": {**shared, "mass_kg": required_output.get("mass_kg_bounds")},
-        "drawer": {**shared, "mass_kg": required_output.get("task_part_mass_kg_bounds")},
-    } if isinstance(required_output, Mapping) else {}
+    expected_bounds = expected_articulated_physics_bounds(configuration, graph.get("assembly_plan"))
     try:
         articulation = validate_articulation_graph(graph.get("articulation_graph") or {})
     except (ArticulationGraphContractError, ValueError, TypeError):
@@ -134,5 +154,6 @@ def verify_articulated_replacement_result(
 
 __all__ = [
     "ACCEPTED_SOURCE_CANDIDATE_CLAIMS",
+    "expected_articulated_physics_bounds",
     "verify_articulated_replacement_result",
 ]

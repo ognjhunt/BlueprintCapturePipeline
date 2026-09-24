@@ -1121,11 +1121,11 @@ def score_articulated_task_episode(
     hard_limit_excursion_rad = 0.0
     for sample in normalized:
         for joint_id, position in sample["joint_positions_rad"].items():
-            lower, upper = spec["joint_hard_limits_rad"][joint_id]
+            hard_lower, hard_upper = spec["joint_hard_limits_rad"][joint_id]
             hard_limit_excursion_rad = max(
                 hard_limit_excursion_rad,
-                float(lower) - float(position),
-                float(position) - float(upper),
+                float(hard_lower) - float(position),
+                float(position) - float(hard_upper),
             )
     hard_limit_violation = any(
         sample["joint_limit_violation"] for sample in normalized

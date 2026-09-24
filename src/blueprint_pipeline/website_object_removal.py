@@ -16,10 +16,17 @@ from .website_task_masks import decode_track_mask
 def select_reconstruction_frames(*, frames: Sequence[Mapping[str, Any]], task_masks: Mapping[str, Any],
                                  limit: int) -> list[dict[str, Any]]:
     """Use the provider's full view allowance, including wider room context."""
-    visible = {row["source_frame_id"] for target in task_masks["targets"]
-               if target.get("task_effect") == "manipulated"
-               for row in (target.get("source_track") or target["track"])["observations"]}
-    anchors = [index for index, frame in enumerate(frames) if frame["frame_id"] in visible]
+    # Each manipulated object keeps its own first and last observed view. The
+    # union of several objects' observations is not one object's work interval.
+    firsts, lasts = [], []
+    for target in task_masks["targets"]:
+        if target.get("task_effect") != "manipulated":
+            continue
+        visible = {row["source_frame_id"] for row in (target.get("source_track") or target["track"])["observations"]}
+        anchors = [index for index, frame in enumerate(frames) if frame["frame_id"] in visible]
+        if anchors:
+            firsts.append(anchors[0])
+            lasts.append(anchors[-1])
     if len({frame["image_digest"] for frame in frames}) < 2:
         raise ValueError("at_least_two_distinct_reconstruction_views_required")
     if isinstance(limit, bool) or not isinstance(limit, int) or limit < 2:
@@ -38,9 +45,14 @@ def select_reconstruction_frames(*, frames: Sequence[Mapping[str, Any]], task_ma
         quality[index] = float(laplacian.var()) if laplacian.size else 0.0
     # Preserve views of the actual work; object absence is not a reason to
     # discard useful room context. Review still checks every selected view.
-    selected = list(dict.fromkeys([anchors[0], anchors[-1]])) if anchors else []
-    if len(selected) == 2 and frames[selected[0]]["image_digest"] == frames[selected[1]]["image_digest"]:
-        selected.pop()
+    selected: list[int] = []
+    for position, index in enumerate(firsts + lasts):
+        if index not in selected and frames[index]["image_digest"] not in {frames[i]["image_digest"] for i in selected}:
+            selected.append(index)
+        if position == len(firsts) - 1 and len(selected) > limit:
+            # Every removed object needs at least one reviewed work view.
+            raise ValueError("website_reconstruction_frame_limit_below_task_objects")
+    selected = selected[:limit]
     peak = max(quality.values())
     candidates = set(quality) - set(selected)
     while candidates and len(selected) < limit:
@@ -160,6 +172,12 @@ def prepare_object_removal_frames(*, frames: Sequence[Mapping[str, Any]], task_m
                                   output_root: Path) -> list[dict[str, Any]]:
     """Keep original pixels; only the editor supplies the newly exposed background."""
     output_root.mkdir(parents=True, exist_ok=True)
+    # With several removed objects, record which of them each view shows so the
+    # editor's shared anchor can be the view that shows the most of them. A
+    # single-object scene keeps its exact prior frame record.
+    objects = [target for target in task_masks["targets"]
+               if target["disposition"] == "remove" and target["task_effect"] == "manipulated"]
+    per_object = len(objects) > 1 and all(target.get("target_id") for target in objects)
     prepared = []
     for index, frame in enumerate(frames):
         source = Path(frame["source_image_path"])
@@ -171,6 +189,7 @@ def prepare_object_removal_frames(*, frames: Sequence[Mapping[str, Any]], task_m
         with Image.open(source) as image:
             original = image.convert("RGB").rotate(rotation, expand=True)
         mask = np.zeros((original.height, original.width), dtype=bool)
+        shown = []
         for target in task_masks["targets"]:
             # People are removed with the manipulated task objects.
             if target["disposition"] != "remove" or (target["task_effect"] != "manipulated"
@@ -183,7 +202,10 @@ def prepare_object_removal_frames(*, frames: Sequence[Mapping[str, Any]], task_m
                 source_mask = decode_track_mask(observation)
                 if target.get("source_track") and source_mask.shape != mask.shape:
                     raise ValueError("website_object_removal_source_mask_mismatch")
-                mask |= np.asarray(Image.fromarray(source_mask).resize(original.size, Image.Resampling.NEAREST))
+                resized = np.asarray(Image.fromarray(source_mask).resize(original.size, Image.Resampling.NEAREST))
+                mask |= resized
+                if per_object and target["task_effect"] == "manipulated" and resized.any():
+                    shown.append(target["target_id"])
         # Cover motion-blurred object edges and leave a narrow background-only
         # transition for compositing. Scale the margin with the source resolution.
         edge_margin = max(2, round(min(original.size) * 0.01))
@@ -201,4 +223,6 @@ def prepare_object_removal_frames(*, frames: Sequence[Mapping[str, Any]], task_m
                          "edge_feather_pixels": feather_pixels,
                          "remaining_pixel_count": int(mask.sum()), "generated_pixels_present": False,
                          "metric_measurement_proven": False})
+        if per_object:
+            prepared[-1]["removed_task_object_ids"] = list(dict.fromkeys(shown))
     return prepared

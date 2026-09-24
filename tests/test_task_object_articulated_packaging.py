@@ -39,9 +39,46 @@ def configuration():
         physics_bounds=PHYSICS, mechanism=MECHANISM)
 
 
-def _part(root, *, object_id, dimensions, mass_kg, density, bounds, compound=False):
+def open_front_shell(dimensions, cavities):
+    """A body of closed panels around open-front cavities (part frame: centre XY, bottom Z, front at +X).
+
+    Each Z slab crossed by a cavity becomes back, left and right walls; every
+    other slab is one full panel. Distinct touching solids, as authored parts are.
+    """
+    depth, width, height = dimensions
+    cuts = sorted({0.0, height, *(round(c["opening_center_link_m"][2] + s * c["opening_height_m"] / 2, 9)
+                                  for c in cavities for s in (-1, 1))})
+    pieces = []
+
+    unit = trimesh.creation.box(extents=[1.0, 1.0, 1.0])
+
+    def box(lo, hi):  # exact shared corner coordinates between touching panels
+        if any(h - low <= 1e-9 for low, h in zip(lo, hi)):
+            return
+        vertices = np.where(unit.vertices > 0, np.asarray(hi, dtype=float), np.asarray(lo, dtype=float))
+        pieces.append(trimesh.Trimesh(vertices=vertices, faces=unit.faces.copy(), process=False))
+
+    for z0, z1 in zip(cuts, cuts[1:]):
+        cavity = next((c for c in cavities
+                       if c["opening_center_link_m"][2] - c["opening_height_m"] / 2 - 1e-9 <= z0
+                       and z1 <= c["opening_center_link_m"][2] + c["opening_height_m"] / 2 + 1e-9), None)
+        if cavity is None:
+            box([-depth / 2, -width / 2, z0], [depth / 2, width / 2, z1])
+            continue
+        back = depth / 2 - cavity["inner_depth_m"]
+        y0 = cavity["opening_center_link_m"][1] - cavity["opening_width_m"] / 2
+        y1 = cavity["opening_center_link_m"][1] + cavity["opening_width_m"] / 2
+        box([-depth / 2, -width / 2, z0], [back, width / 2, z1])
+        box([back, -width / 2, z0], [depth / 2, y0, z1])
+        box([back, y1, z0], [depth / 2, width / 2, z1])
+    return trimesh.util.concatenate(pieces)
+
+
+def _part(root, *, object_id, dimensions, mass_kg, density, bounds, compound=False, mesh=None):
     root.mkdir(parents=True, exist_ok=True)
-    if compound:
+    if mesh is not None:
+        pass
+    elif compound:
         halves = []
         for sign in (-1, 1):
             half = trimesh.creation.box(extents=[dimensions[0] / 2, *dimensions[1:]])
@@ -121,7 +158,7 @@ def fixture(tmp_path, *, compound_drawer=False, drawer_mass=2.0, drawer_density=
     carcass_dims = plan["parts"]["carcass"]["dimensions_m"]
     drawer_dims = plan["parts"]["drawer"]["dimensions_m"]
     carcass = _part(tmp_path / "carcass", object_id="website-subject-cab__carcass", dimensions=carcass_dims,
-                    mass_kg=12.0, density=(60.0, 140.0),
+                    mass_kg=12.0, density=(60.0, 140.0),  # a legacy plan plans no cavity: solid is fine
                     bounds={"mass_kg": [4.0, 40.0], "static_friction": [0.3, 0.8], "dynamic_friction": [0.2, 0.6], "restitution": [0.0, 0.2]})
     drawer = _part(tmp_path / "drawer", object_id="website-subject-cab__drawer", dimensions=drawer_dims,
                    mass_kg=drawer_mass, density=drawer_density,
@@ -148,6 +185,21 @@ def test_articulated_drawer_keeps_closed_disconnected_visual_pieces_in_one_link(
     assert drawer_link.HasAPI(UsdPhysics.RigidBodyAPI)
     assert mesh.body_count == 2 and mesh.is_watertight
     assert len([prim for prim in stage.Traverse() if prim.IsA(UsdPhysics.PrismaticJoint)]) == 1
+
+
+def test_legacy_drawer_keeps_a_solid_carcass_but_a_coverage_plan_must_plan_its_bays(tmp_path):
+    plan, requests, results, bounds = fixture(tmp_path)
+    assert not {"interior_cavities", "required_parts", "root_link_id"} & set(plan)
+    receipt = package_astra_articulated_candidate(
+        requests=requests, authoring_results=results, plan=plan,
+        output_root=tmp_path / "packaged", physics_bounds=bounds)
+    assert receipt["physics_completion"]["interior_cavity_check"] == {
+        "status": "not_planned_legacy_drawer_configuration"}
+    coverage = {**configuration(), "assembly_family": "stacked_drawer_cabinet"}
+    stripped = {key: value for key, value in plan_articulated_assembly(coverage).items() if key != "interior_cavities"}
+    with pytest.raises(AssetAuthoringError, match="articulated_body_interior_cavity_unplanned"):
+        package_astra_articulated_candidate(requests=requests, authoring_results=results, plan=stripped,
+                                            output_root=tmp_path / "stripped", physics_bounds=bounds)
 
 
 def test_plan_places_three_bays_with_one_prismatic_task_joint_and_records_assumptions():

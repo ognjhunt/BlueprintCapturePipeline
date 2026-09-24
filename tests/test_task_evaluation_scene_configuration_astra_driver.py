@@ -555,7 +555,7 @@ def _articulated_configuration():
 
 def test_articulated_configuration_authors_each_part_and_seals_one_assembly(component, retained):
     """Two bounded part sessions, one composed articulation, checkpointed parts on retry."""
-    from tests.test_task_object_articulated_packaging import _part
+    from tests.test_task_object_articulated_packaging import _part, open_front_shell
     configuration = _articulated_configuration()
     retained.input["configuration"] = configuration
     retained.config.clear()
@@ -574,8 +574,11 @@ def test_articulated_configuration_authors_each_part_and_seals_one_assembly(comp
         mass, density = (12.0, (60.0, 140.0)) if part_id == "carcass" else (2.0, (30.0, 120.0))
         bounds = {"mass_kg": [4.0, 40.0] if part_id == "carcass" else [0.5, 6.0], "static_friction": [0.3, 0.8],
                   "dynamic_friction": [0.2, 0.6], "restitution": [0.0, 0.2]}
+        cavities = json.loads(request_value["construction_constraints"]).get(
+            "interior_cavities_must_stay_hollow_and_open_front")
         _, result, _ = _part(kw["output_root"] / "fixture", object_id=request_value["object_id"],
-                             dimensions=request_value["dimensions_m"], mass_kg=mass, density=density, bounds=bounds)
+                             dimensions=request_value["dimensions_m"], mass_kg=mass, density=density, bounds=bounds,
+                             mesh=open_front_shell(request_value["dimensions_m"], cavities) if cavities else None)
         result["request_digest"] = request_value["request_digest"]
         result["model"] = "gpt-6-astra"
         result["result_digest"] = canonical_digest(result, digest_field="result_digest")
@@ -617,6 +620,34 @@ def test_articulated_configuration_authors_each_part_and_seals_one_assembly(comp
     assert len(authored_parts) == 2
 
 
+# Computed on origin/main 8f22c8801 with this exact fixture (paths normalized,
+# request_digest dropped): a legacy drawer's plan and part requests must not
+# move, or an already-bought carcass is bought again.
+LEGACY_DRAWER_GOLDEN = {
+    "plan": "sha256:5f264447d01a683f03e8add84e88c17ad326e17c2ae602bf4155343840cc39f2",
+    "carcass": "sha256:745142dc8f6a68411a4ff8343cb15cae81414625741af3fa3f08ae5d502f8d85",
+    "drawer": "sha256:9ccdd4ea76e43c23a59a564be5db148541e3b2157e38319443178446ade18d35",
+}
+
+
+def test_legacy_drawer_plan_and_part_requests_match_origin_main(retained):
+    retained.input["configuration"] = _articulated_configuration()
+    assert "assembly_family" not in retained.input["configuration"]
+    plan, requests = driver.build_articulated_authoring_requests(
+        retained.input, retained.source, [retained.image], retained.rights)
+
+    def normalized(value):
+        return canonical_digest(json.loads(json.dumps(value).replace(str(retained.root), "<root>")))
+
+    observed = {"plan": normalized(plan)}
+    for part_id, request in requests.items():
+        value = request.model_dump(mode="json")
+        value.pop("request_digest")
+        observed[part_id] = normalized(value)
+    assert observed == LEGACY_DRAWER_GOLDEN
+    assert "interior_cavities_must_stay_hollow_and_open_front" not in requests["carcass"].construction_constraints
+
+
 def test_articulated_configuration_refuses_rigid_phase_adoption(component, retained):
     configuration = _articulated_configuration()
     configuration["astra_phase_adoption"] = {"prior_runtime": "/nonexistent", "schema_version": "x"}
@@ -624,3 +655,99 @@ def test_articulated_configuration_refuses_rigid_phase_adoption(component, retai
     Path(component.environment[driver._INPUT_ENV]).write_text(json.dumps(retained.input))
     with pytest.raises(driver.AstraStageError, match="astra_articulated_phase_adoption_unsupported"):
         driver.execute_astra_component(**component.kwargs)
+
+
+def _dishwasher_stage(retained, monkeypatch):
+    from tests.test_articulated_hinged_door_appliance import _frame, dishwasher
+    from blueprint_pipeline import website_native_inputs
+
+    monkeypatch.setattr(website_native_inputs, "validate_website_authoring_disclosure", lambda **_: None)
+    from PIL import Image
+    # Real bounded PNGs: frames are checked against the provider's request bound.
+    first, second = retained.root / "closed.png", retained.root / "open.png"
+    Image.new("RGB", (64, 48), (200, 200, 200)).save(first)
+    Image.new("RGB", (64, 48), (90, 90, 90)).save(second)
+    frames = [
+        _frame("f_closed", driver._sha256(first), "closed", ["door_outer", "handle", "control_panel"]),
+        _frame("f_open", driver._sha256(second), "open", ["tub_interior", "upper_rack", "lower_rack"],
+               view="front-high", reason="interior observed with the door open")]
+    config = dishwasher(frames=frames)
+    config.update(authoring_backend=driver.BACKEND,
+                  provider_disclosure={"derived_views_and_metric_envelope": True,
+                                       "provider_training": False, "public_redistribution": False})
+    retained.input["configuration"] = config
+    return config, [first, second]
+
+
+def test_hinged_appliance_briefs_caption_each_frame_from_its_reference_row(retained, monkeypatch):
+    config, references = _dishwasher_stage(retained, monkeypatch)
+    plan, requests = driver.build_articulated_authoring_requests(
+        retained.input, retained.source, references, retained.rights)
+    assert set(requests) == {"body", "door", "upper_rack", "lower_rack", "cutlery_basket"}
+    frames = requests["door"].source_frames
+    assert [frame.sha256 for frame in frames] == [driver._sha256(path) for path in references]
+    assert "dishwasher door is closed" in frames[0].description
+    assert "Door outer panel, Door handle, Control panel" in frames[0].description
+    assert "is open" in frames[1].description and "Stainless tub interior" in frames[1].description
+    assert "interior observed with the door open" in frames[1].description
+    brief = json.dumps([request.model_dump(mode="json") for request in requests.values()]).lower()
+    assert "wood-grain" not in brief and "silver bar handles" not in brief and "interior is unobserved" not in brief
+    body = json.loads(requests["body"].construction_constraints)
+    assert body["assembly_family"] == "hinged_door_appliance" and body["hinge_edge"] == "bottom"
+    assert body["interior_cavities_must_stay_hollow_and_open_front"] == plan["interior_cavities"]
+    assert "bay_count" not in body
+    door = json.loads(requests["door"].construction_constraints)
+    assert {row["part_id"] for row in door["required_parts_on_this_part"]} == {
+        "door_outer", "door_inner", "handle", "control_panel", "brand_label"}
+    assert "Door handle" in requests["door"].physical_review_input.material_description
+    bounds = driver._articulated_physics_bounds(config, plan)
+    assert bounds["upper_rack"]["mass_kg"] == [0.3, 4.0] and bounds["door"]["mass_kg"] == [2.0, 12.0]
+    del config["required_output"]["fixed_part_mass_kg_bounds"]
+    with pytest.raises(driver.AstraStageError, match="astra_articulated_fixed_part_mass_bounds_invalid"):
+        driver.build_articulated_authoring_requests(retained.input, retained.source, references, retained.rights)
+
+
+def test_hinged_appliance_frames_must_match_the_retained_frames(retained, monkeypatch):
+    _config, references = _dishwasher_stage(retained, monkeypatch)
+    with pytest.raises(driver.AstraStageError, match="reference_frames_disagree_with_retained_frames"):
+        driver.build_articulated_authoring_requests(retained.input, retained.source, references[:1], retained.rights)
+
+
+def test_created_object_without_frames_plans_but_refuses_an_observed_brief(retained, monkeypatch):
+    config, _references = _dishwasher_stage(retained, monkeypatch)
+    config.update(source_observation_kind="not_captured_created_from_description", reference_frames=[],
+                  body_depth={"value_m": 0.58, "basis": "owner_or_catalog_specified", "frame_ids": []})
+    for row in config["required_parts"]:
+        row["observed_frame_ids"] = []
+    assert driver.articulated_frame_descriptions(config, []) == []
+    with pytest.raises(driver.AstraStageError, match="created_object_authoring_unsupported"):
+        driver.build_articulated_authoring_requests(retained.input, retained.source, [], retained.rights)
+
+
+def test_finish_refuses_thin_slab_envelope_and_uncarried_required_parts(tmp_path):
+    from tests.test_articulated_hinged_door_appliance import dishwasher
+    from blueprint_pipeline.task_object_articulated_packaging import plan_articulated_assembly, required_parts_by_link
+
+    config = dishwasher()
+    plan = plan_articulated_assembly(config)
+    output = (tmp_path / "out").resolve()
+
+    def attempt(completion):
+        def package(**_):
+            output.mkdir(parents=True, exist_ok=True)
+            asset = output / "asset.usdz"
+            asset.write_bytes(b"usdz")
+            return {"asset": driver._file_record(asset), "physics_completion": completion}
+        driver._finish_articulated_component(
+            plan=plan, part_requests={}, authored={"parts": {}}, output=output, physics_bounds={},
+            configuration=config, source_record=None, stage_input=None, rights_record=None, cad_runtime=None,
+            blender=None, authored_root=None, result_path=None, package_candidate=package)
+
+    base = {"schema_version": driver.ARTICULATED_COMPLETION_SCHEMA_VERSION,
+            "required_parts_by_link": required_parts_by_link(plan)}
+    with pytest.raises(driver.AstraStageError, match="astra_articulated_assembly_envelope_mismatch"):
+        attempt({**base, "collision_dimensions_m": [0.16, 0.6, 0.85]})
+    carried = required_parts_by_link(plan)
+    del carried["door"]["handle"]
+    with pytest.raises(driver.AstraStageError, match="required_part_unplanned:handle"):
+        attempt({**base, "required_parts_by_link": carried, "collision_dimensions_m": [0.61, 0.6, 0.85]})

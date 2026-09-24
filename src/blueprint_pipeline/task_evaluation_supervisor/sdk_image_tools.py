@@ -19,6 +19,11 @@ from PIL import Image
 MODELS = frozenset({"gpt-6-astra", "gpt-6-sol", "gpt-6-luna"})
 
 
+def image_context_tokens(width: int, height: int) -> int:
+    """Conservative context charge for one unresized image, plus framing headroom."""
+    return math.ceil(math.ceil(width / 32) * math.ceil(height / 32) * 1.2) + 1 + 256
+
+
 def encode_tool_output(value, *, model):
     """Return SDK content objects and a cumulative context charge, before send."""
     from agents import ToolOutputImage, ToolOutputText
@@ -54,7 +59,7 @@ def encode_tool_output(value, *, model):
                 raise ValueError("agents_sdk_image_tool_size_not_qualified")
             # Explicit auto preserves the source tool's existing provider sizing.
             result.append(ToolOutputImage(image_url=url, detail="auto"))
-            tokens += math.ceil(patches * 1.2) + 1 + 256
+            tokens += image_context_tokens(width, height)
         else:
             raise ValueError("agents_sdk_image_tool_content_invalid")
     return result, tokens

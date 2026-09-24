@@ -28,6 +28,7 @@ from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .external_scene_frame_registration import _axis_rotations, _sample, _trimmed_rmse
 from .local_reconstruction_adapters import _sha256_file
+from .website_assembly_coverage import assembly_constraints, assembly_contract, coverage_blockers, coverage_matches
 from .website_task_masks import decode_track_mask, estimate_target_bounds
 from .website_support_geometry import support_under
 
@@ -457,6 +458,42 @@ def estimate_front_normal(track: Mapping[str, Any], frames_by_id: Mapping[str, M
             "physical_orientation_measured": False}
 
 
+def levelled_body_bounds(body: Mapping[str, Any], source_to_runtime: np.ndarray, *, up: int) -> tuple[list, list]:
+    """Runtime bounds of the whole body standing upright, yawed to its levelled front normal.
+
+    The body box's own up axis comes from camera orientation and is an
+    estimate; the registered runtime up axis is the gravity reference. The
+    box keeps its estimated depth, width and height and its corner centre.
+    """
+    linear = np.asarray(source_to_runtime, dtype=float)[:3, :3]
+    scale = abs(float(np.linalg.det(linear))) ** (1 / 3)
+    corners = np.asarray(body["corners"], dtype=float) @ linear.T + np.asarray(source_to_runtime)[:3, 3]
+    normal = linear @ np.asarray(body["front_normal"], dtype=float)
+    normal[up] = 0.0
+    if float(np.linalg.norm(normal)) < 1e-9:
+        raise ValueError("website_front_normal_undetermined")
+    normal = np.abs(normal / np.linalg.norm(normal))
+    a, b = [axis for axis in range(3) if axis != up]
+    depth, width, height = (float(body[key]) * scale for key in ("depth_m", "width_m", "height_m"))
+    half = np.zeros(3)
+    half[a] = (depth * normal[a] + width * normal[b]) / 2
+    half[b] = (depth * normal[b] + width * normal[a]) / 2
+    half[up] = height / 2
+    center = corners.mean(axis=0)
+    return (center - half).tolist(), (center + half).tolist()
+
+
+def body_front_normal(body: Mapping[str, Any], source_to_sim_linear: np.ndarray) -> dict[str, Any]:
+    """The closed front plane's outward normal, levelled, in the simulator frame."""
+    sim = np.asarray(source_to_sim_linear, dtype=float) @ np.asarray(body["front_normal"], dtype=float)
+    sim[2] = 0.0
+    norm = float(np.linalg.norm(sim))
+    if norm < 1e-9:
+        raise ValueError("website_front_normal_undetermined")
+    return {"estimated_front_normal_world": [float(v) for v in sim / norm],
+            "basis": "closed_front_plane_of_whole_object_coverage", "physical_orientation_measured": False}
+
+
 def _thumbnail(track: Mapping[str, Any], frames_by_id: Mapping[str, Mapping[str, Any]], output: Path) -> dict[str, Any]:
     best = max(track["observations"], key=lambda item: sum(run["length"] for run in item["runs"]))
     frame = frames_by_id[best["source_frame_id"]]
@@ -558,9 +595,18 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     write_json(registration_path, registration)
     matrix = np.asarray(registration["source_to_runtime"])
     frames_by_id = {frame["frame_id"]: frame for frame in source_geometry["frames"]}
-    subject_bounds = estimate_target_bounds(subject_target["track"], source_geometry["frames"],
-                                            source_to_target=matrix)
-    subject_min, subject_max = subject_bounds["minimum"], subject_bounds["maximum"]
+    articulation_kind = str(subject_entry.get("articulation_kind") or subject_target.get("articulation_kind") or "")
+    articulated = articulation_kind in {"prismatic", "revolute"}
+    coverage = subject_target.get("authoring_coverage") if articulated else None
+    coverage_bound = coverage is not None and coverage_matches(coverage, target=subject_target,
+                                                               source_geometry=source_geometry)
+    body = coverage["body_bounds"] if coverage_bound and coverage["status"] == "complete" else None
+    if body is not None:
+        subject_min, subject_max = levelled_body_bounds(body, matrix, up=up)
+    else:
+        subject_bounds = estimate_target_bounds(subject_target["track"], source_geometry["frames"],
+                                                source_to_target=matrix)
+        subject_min, subject_max = subject_bounds["minimum"], subject_bounds["maximum"]
     import trimesh
     collider = None if independent_object else trimesh.load(base_scene["collision_mesh_path"], force="mesh", process=False)
     support = (None if independent_object else
@@ -578,8 +624,6 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                    if support else (None, None))
     destination_rows = [row for row in task_masks["targets"] if row.get("target_role") == "destination"]
     destination = None
-    articulation_kind = str(subject_entry.get("articulation_kind") or subject_target.get("articulation_kind") or "")
-    articulated = articulation_kind in {"prismatic", "revolute"}
     if articulated:
         # The moving part stays inside its assembly: no destination pose exists.
         # The whole assembly is removed, rebuilt with one task joint, and
@@ -589,6 +633,18 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
             blockers.append("website_articulated_part_label_required")
         if destination_rows:
             blockers.append("website_articulated_task_has_no_destination")
+        # A rebuilt assembly needs the whole object, not the surfaces that
+        # happened to fall in the depth-sampling frames: those bounds miss the
+        # body hidden in its cabinet and mix open and closed states, and a
+        # thin front passes a check against them. Until the subject carries
+        # views chosen to cover every part and state of the object, with the
+        # body's depth observed, the build must not be bought.
+        if coverage is not None and not coverage_bound:
+            blockers.append("website_assembly_coverage_binding_mismatch")
+        if body is None:
+            blockers.append("website_assembly_whole_object_coverage_required")
+            if coverage_bound:
+                blockers.extend(coverage_blockers(coverage, target_id=subject_entry["target_id"], several=False))
     elif len(destination_rows) == 1 and not independent_object:
         low, high = _runtime_bounds(destination_rows[0]["estimated_visible_bounds"], matrix)
         position = [(low[i] + high[i]) / 2 for i in range(3)]
@@ -628,8 +684,26 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     else:
         blockers.append("task_destination_pose_required")
     track = subject_target["track"]
-    authoring_frames = []
-    for observation in track["observations"]:
+    authoring_provider = spend.get("authoring_provider", "openai")
+    if authoring_provider not in {"openai", "anthropic"}:
+        raise ValueError("website_authoring_provider_invalid")
+    contract = None
+    if body is not None:
+        from .authoring_frame_budget import FrameBudgetError, fit_reference_frames
+        scale = abs(float(np.linalg.det(runtime_to_sim[:3, :3] @ matrix[:3, :3]))) ** (1 / 3)
+        try:
+            # Frames go to the builder as provider-sized derivatives of the
+            # retained upright views; both digests stay on each row.
+            contract = fit_reference_frames(
+                assembly_contract(coverage, articulation_kind=articulation_kind, source_to_simulator_scale=scale),
+                provider=authoring_provider, output_root=output_root / "reference_frames")
+        except (ValueError, FrameBudgetError) as exc:
+            blockers.append(str(exc))
+    authoring_frames = [{"path": row["path"], "sha256": row["sha256"], "role": "observed_source",
+                         "frame_id": row["frame_id"], "reason": row["reason"],
+                         "source_sha256": row["transmission"]["source_sha256"]}
+                        for row in (contract or {}).get("reference_frames") or []]
+    for observation in [] if body is not None else track["observations"]:
         frame = frames_by_id[observation["source_frame_id"]]
         authoring_frames.append({"path": frame["image_path"], "sha256": frame["image_digest"],
                                  "role": "observed_source", "frame_id": frame["frame_id"]})
@@ -639,21 +713,50 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     mechanism = None
     if articulated:
         physics = screen_articulated_physics(dimensions_m, joint_type=articulation_kind)
-        front = estimate_front_normal(track, frames_by_id, matrix,
-                                      [(subject_min[i] + subject_max[i]) / 2 for i in range(3)],
-                                      up=up, runtime_to_sim=runtime_to_sim)
-        normal = front["estimated_front_normal_world"]
-        depth_m = abs(normal[0]) * dimensions_m[0] + abs(normal[1]) * dimensions_m[1]
+        if body is not None:
+            front = body_front_normal(body, runtime_to_sim[:3, :3] @ matrix[:3, :3])
+            normal = front["estimated_front_normal_world"]
+            extent = [float(body[key]) * scale for key in ("depth_m", "width_m", "height_m")]
+        else:
+            front = estimate_front_normal(track, frames_by_id, matrix,
+                                          [(subject_min[i] + subject_max[i]) / 2 for i in range(3)],
+                                          up=up, runtime_to_sim=runtime_to_sim)
+            normal = front["estimated_front_normal_world"]
+            extent = [abs(normal[0]) * dimensions_m[0] + abs(normal[1]) * dimensions_m[1],
+                      abs(normal[1]) * dimensions_m[0] + abs(normal[0]) * dimensions_m[1], dimensions_m[2]]
+        depth_m = extent[0]
+        from .website_articulated_mass import articulated_mass_bounds
+        masses = articulated_mass_bounds(subject_target, joint_type=articulation_kind, body_extent_m=extent,
+            fixed_part_ids=[row["part_id"] for row in (contract or {}).get("required_parts") or []
+                            if row["role"] == "fixed_interior" and articulation_kind == "revolute"],
+            object_spec=subject_target.get("object_spec"))
+        physics["bounds"].update({key.removesuffix("_bounds"): value for key, value in masses.items()
+                                  if key.endswith("_mass_kg_bounds") or key == "mass_kg_bounds"})
+        physics["mass_authority"] = masses["mass_authority"]
+        # A published exact-model size that contradicts the body as it will be
+        # built (simulator metres) holds the build; it is never silently resolved.
+        spec = subject_target.get("object_spec")
+        if spec and spec.get("status") == "researched":
+            from .website_object_spec_research import dimension_check
+            size_check = dimension_check(spec, {"depth_m": extent[0], "width_m": extent[1], "height_m": extent[2]})
+            blockers.extend(size_check["blockers"])
         travel = ({"estimated_usable_stroke_m": round(DRAWER_USABLE_STROKE_FRACTION_OF_DEPTH * depth_m, 4)}
                   if articulation_kind == "prismatic" else {"estimated_usable_swing_rad": DOOR_USABLE_SWING_RAD})
         mechanism = {"assembly_label": subject_entry.get("semantic_label") or subject_entry["target_id"],
                      "part_label": articulated_part or "unspecified part", "joint_type": articulation_kind,
-                     **travel, "travel_authority": "object_prior_estimate_from_estimated_visible_bounds",
+                     **travel, "travel_authority": ("object_prior_estimate_from_observed_body_depth" if body is not None
+                                                    else "object_prior_estimate_from_estimated_visible_bounds"),
                      "estimated_front_normal_world": normal, "front_normal_basis": front["basis"],
-                     "lock_status": "unknown", "part_observed_open_in_footage": False,
+                     "lock_status": "unknown",
+                     "part_observed_open_in_footage": bool(coverage_bound and coverage["part_observed_open"]),
                      "observation_timestamps_seconds": sorted({float(frames_by_id[row["source_frame_id"]].get("timestamp_seconds") or 0.0)
                                                               for row in track["observations"]}),
                      "physical_measurement_proven": False}
+        if body is not None:
+            # The website admits a rebuilt hinged assembly only with this evidence.
+            mechanism["whole_object_coverage"] = {
+                "schema_version": coverage["schema_version"], "status": "complete", "digest": coverage["digest"],
+                "reference_frame_count": len(coverage["selected_frames"])}
         authoring_configuration = articulated_stage_three_configuration(
             scene_id=task_context["scene_id"],
             replacement_identity={"id": "website-subject-" + task_context["context_digest"][7:27], "version": "v1"},
@@ -663,6 +766,13 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
             physics_bounds={key + "_bounds": value for key, value in physics["bounds"].items()},
             mechanism=mechanism,
         )
+        if "fixed_part_mass_kg_bounds" in masses:
+            authoring_configuration["required_output"]["fixed_part_mass_kg_bounds"] = masses["fixed_part_mass_kg_bounds"]
+        authoring_configuration.update(mass_authority=masses["mass_authority"],
+                                       mass_bounds_provenance=masses["provenance"],
+                                       mass_source_urls=masses["source_urls"])
+        if contract is not None:
+            authoring_configuration.update(contract)
     else:
         physics = screen_physics(dimensions_m)
         authoring_configuration = stage_three_configuration(
@@ -676,8 +786,10 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     authoring_configuration.update(
         source_object_identity=subject_entry["target_id"],
         source_observation_kind="website_capture_frames", dimension_authority="estimated",
-        appearance_inputs="digest_bound_original_capture_frames",
-        geometry_support=("unregistered_object_local_estimated_visible_bounds" if independent_object
+        appearance_inputs=("digest_bound_upright_coverage_frames" if body is not None
+                           else "digest_bound_original_capture_frames"),
+        geometry_support=("whole_body_bounds_from_closed_front_and_open_interior_depth" if body is not None
+                          else "unregistered_object_local_estimated_visible_bounds" if independent_object
                           else "registered_partial_visible_bounds_from_estimated_source_geometry"),
         construction_constraints={
             "confirmed_task": task_context["description"],
@@ -685,19 +797,25 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
             "task_context_digest": task_context["context_digest"],
             "subject_target_id": subject_entry["target_id"], "destination": destination,
             **({"mechanism": mechanism} if mechanism else {}),
+            **(assembly_constraints(coverage, task_part=articulated_part) if body is not None else {}),
             "rebuild_only_this_subject": True, "non_target_scene_objects_remain_in_background": True,
-            "complete_object_dimensions_observed": False,
+            "complete_object_dimensions_observed": body is not None,
             "unknown_surfaces": "Generated completion must remain an explicit assumption.",
         },
     )
+    if contract is not None:
+        # Hold what the builder would refuse before anything is bought.
+        from .task_object_articulated_packaging import plan_articulated_assembly
+        from .task_object_astra_authoring import AssetAuthoringError
+        try:
+            plan_articulated_assembly(authoring_configuration)
+        except AssetAuthoringError as exc:
+            blockers.append("website_assembly_builder_refused:" + str(exc))
     thumbnail = _thumbnail(track, frames_by_id, output_root / "thumbnail.png")
     # Capture consent permits scene preparation; it does not manufacture a
     # paid simulation authorization or accept provider terms on the owner's behalf.
     owner = dict(spend.get("owner") or {})
     consent = dict(spend.get("consent") or {})
-    authoring_provider = spend.get("authoring_provider", "openai")
-    if authoring_provider not in {"openai", "anthropic"}:
-        raise ValueError("website_authoring_provider_invalid")
     if authoring_provider == "anthropic":
         # This must come from the website's fresh owner-authorized execution
         # authority. A local key or worker environment cannot opt a scene in.
@@ -741,7 +859,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                              "aabb_min_xyz": sim_min, "aabb_max_xyz": sim_max,
                              "coordinate_frame": "Z_up_estimated_meters",
                              "geometry_origin": "removed_before_reconstruction",
-                             "complete_object_dimensions": False},
+                             "complete_object_dimensions": body is not None},
                  "support": {"description": subject_entry.get("support_label") or "support surface under subject",
                              "aabb_min_xyz": sim_support[0], "aabb_max_xyz": sim_support[1]},
                  **({"articulation": mechanism, "success": dict(ARTICULATED_SUCCESS)} if articulated else

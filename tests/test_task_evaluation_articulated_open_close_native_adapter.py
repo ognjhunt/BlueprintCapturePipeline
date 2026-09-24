@@ -64,8 +64,9 @@ def _native_import(identity: dict) -> dict:
     return value
 
 
-def _case(tmp_path: Path, *, opening_fraction: float = OPENING_FRACTION):
-    asset, graph_spec, static = _assembly(tmp_path)
+def _case(tmp_path: Path, *, opening_fraction: float = OPENING_FRACTION, assembly=None, mechanism=None):
+    """``assembly`` (asset, graph_spec, static) and ``mechanism`` default to the drawer cabinet."""
+    asset, graph_spec, static = assembly or _assembly(tmp_path)
     plan = graph_spec["assembly_plan"]
     configured = revision()
     identity = {"id": "website-subject-cab", "version": "v1"}
@@ -81,10 +82,11 @@ def _case(tmp_path: Path, *, opening_fraction: float = OPENING_FRACTION):
     template, success, execution = articulated_open_close_task_records(
         task_identity=configured["task_template"]["identity"], object_identity=identity,
         start_center=[0.4, 0.1, dims["height_z"] / 2], source_min=lower, source_max=upper,
-        mechanism={"part_label": "middle drawer", "joint_type": "prismatic",
-                   "estimated_usable_stroke_m": plan["task_joint"]["limits_m"][1],
-                   "estimated_front_normal_world": plan["assembly_frame"]["estimated_front_normal_world"],
-                   "lock_status": "unknown", "travel_authority": "object_prior_estimate"},
+        mechanism=mechanism or {
+            "part_label": "middle drawer", "joint_type": "prismatic",
+            "estimated_usable_stroke_m": plan["task_joint"]["limits_m"][1],
+            "estimated_front_normal_world": plan["assembly_frame"]["estimated_front_normal_world"],
+            "lock_status": "unknown", "travel_authority": "object_prior_estimate"},
         success={"control_frequency_hz": 15, "maximum_episode_seconds": 30,
                  "minimum_opening_fraction_of_estimated_stroke": opening_fraction,
                  "minimum_hold_seconds": 1.0, "maximum_retries": 0},
@@ -278,11 +280,8 @@ def _runtime_contract(case, adapted, tmp_path: Path, asset_directory: Path):
     return assets, task_object, scene_collision
 
 
-def test_adapted_drawer_task_freezes_a_native_contract_and_scene_plan(tmp_path: Path) -> None:
-    """End to end on CPU: qualified bytes -> adapter -> runtime contract -> articulation plan."""
-    case = _case(tmp_path)
-    adapted = adapt_articulated_open_close_task_template(
-        configured_revision=case["configured"], materialized_references=case["references"])
+def materialize_contract_and_plan(case, adapted, tmp_path: Path):
+    """Freeze the native runtime contract and articulation plan for one adapted task, on CPU."""
     assets, task_object, scene_collision = _runtime_contract(
         case, adapted, tmp_path, tmp_path / "staged")
     definition = adapted["native_task_definition"]
@@ -323,6 +322,17 @@ def test_adapted_drawer_task_freezes_a_native_contract_and_scene_plan(tmp_path: 
             seed=execution["scenario"]["seed"])
     except NativeTaskRuntimeContractError as exc:  # pragma: no cover - surfaced as the assertion
         pytest.fail("articulated runtime contract refused: " + ";".join(exc.errors))
+    plan = _articulation_plan(contract, task_object_asset_path=task_object,
+                              scene_collision_asset_path=scene_collision)
+    return contract, plan
+
+
+def test_adapted_drawer_task_freezes_a_native_contract_and_scene_plan(tmp_path: Path) -> None:
+    """End to end on CPU: qualified bytes -> adapter -> runtime contract -> articulation plan."""
+    case = _case(tmp_path)
+    adapted = adapt_articulated_open_close_task_template(
+        configured_revision=case["configured"], materialized_references=case["references"])
+    contract, plan = materialize_contract_and_plan(case, adapted, tmp_path)
     assert contract["task_kind"] == "articulated_open_close"
     assert contract["runtime_readback_required"]["task_joint_indices"] is True
     assert contract["scoring_contract"]["policy_may_grade_itself"] is False
@@ -333,9 +343,6 @@ def test_adapted_drawer_task_freezes_a_native_contract_and_scene_plan(tmp_path: 
     subject = next(row for row in contract["objects"] if row.get("task_subject") is True)
     assert subject["object_type"] == "ARTICULATION"
     assert subject["reset_state"]["joint_positions"] == {"task_part_joint": 0.0}
-
-    plan = _articulation_plan(contract, task_object_asset_path=task_object,
-                              scene_collision_asset_path=scene_collision)
     assert plan["graph_articulation"] is True
     assert plan["task_joint_reset_positions_rad"] == {"task_part_joint": 0.0}
     assert plan["interaction_link_native_body_name"] == "drawer_1"
