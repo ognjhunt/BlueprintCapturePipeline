@@ -454,6 +454,8 @@ def test_every_shipped_lane_is_satisfiable_by_its_own_command_line() -> None:
         "openai_artifixer_semantic_teacher_max_cost_usd",
         "openai_artifixer_visual_review_max_cost_usd",
         "openai_content_agents_max_cost_usd",
+        "anthropic_max_cost_usd",
+        "anthropic_max_requests",
         "hard_ttl_seconds",
         "provider",
         "aggregate_goal_spend_before_usd",
