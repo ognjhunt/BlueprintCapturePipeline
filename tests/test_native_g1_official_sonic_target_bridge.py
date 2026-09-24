@@ -29,6 +29,10 @@ class _Scene:
 class _Environment:
     def __init__(self):
         self.scene = _Scene()
+        self.step_count = 0
+
+    def step(self, *_args):
+        self.step_count += 1
 
 
 class SonicActionProvider:
@@ -111,6 +115,7 @@ def test_exact_semantic_action_runs_both_onnx_sessions_and_maps_names(tmp_path, 
     assert targets["left_hand_middle_0_joint"] == pytest.approx(0.1)
     assert targets["right_hand_index_0_joint"] == pytest.approx(0.2)
     assert (adapter.encoder.calls, adapter.decoder.calls) == (1, 1)
+    assert adapter.provider.env._native_environment.step_count == 0
 
 
 def test_upstream_default_pose_fallback_cannot_count_as_controller_inference(tmp_path, monkeypatch):
