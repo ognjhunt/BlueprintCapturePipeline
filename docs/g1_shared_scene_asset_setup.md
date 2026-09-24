@@ -89,3 +89,34 @@ moving to a marked area; their file identities do not establish a runnable
 navigation task in Blueprint's captured site. A site-grounded movement task
 contract, checkpoint/server attestation, and live episode evidence are still
 required before offering them in the run configurator.
+
+Before a local or container attempt, run the same offline preflight against
+the staged packet and runtime inputs. `--bundle-root` is the root holding the
+packet's relative `assets/` paths; `--checkpoint-root` is the fetcher's output
+directory. Supply the checked-out official HumanoidArena
+`serve_lerobot_vla_http.py` and `action_provider_sonic.py` source files and
+the SONIC encoder/decoder ONNX files. The command checks the G1 scene packet,
+its USD closure and articulation, each candidate checkpoint file, the pinned
+server and SONIC source hashes, and the caller-declared SONIC model hashes:
+
+```bash
+PYTHONPATH=src python scripts/preflight_g1_shared_scene_run.py \
+  --scene-plan "$BUNDLE_ROOT/native_task_arena_scene_plan.v1.json" \
+  --bundle-root "$BUNDLE_ROOT" \
+  --inventory configs/g1_humanoidarena_checkpoint_inventory.v1.json \
+  --candidate humanoidarena_dp_g1_dex3_sonic \
+  --checkpoint-root "$CHECKPOINT_ROOT" \
+  --policy-server-source "$POLICY_SERVER_SOURCE" \
+  --sonic-provider-source "$SONIC_PROVIDER_SOURCE" \
+  --sonic-encoder "$SONIC_ENCODER" --sonic-encoder-sha256 "$SONIC_ENCODER_SHA256" \
+  --sonic-decoder "$SONIC_DECODER" --sonic-decoder-sha256 "$SONIC_DECODER_SHA256"
+```
+
+The receipt says `staged_inputs_verified` and records the exact selected
+candidate, scene digest, and file identities. It explicitly reports that no
+server or SONIC process was attested and no episode or score exists. It does
+not make a movement candidate runnable: the shared episode loop currently
+accepts only the box-manipulation candidates, and navigation still needs a
+site-grounded task/goal and score contract. The π0.5 upstream configs also
+contain absolute base-model references that need a verified loader mapping
+before their servers can be admitted.
