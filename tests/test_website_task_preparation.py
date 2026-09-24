@@ -327,9 +327,10 @@ def test_articulated_assembly_compiles_into_an_open_close_intake(tmp_path):
     assert [row["sha256"] for row in frames] == [row["sha256"] for row in references]
     assert configuration["assembly_family"] == "stacked_drawer_cabinet" and configuration["hinge_edge"] is None
     roles = {row["part_id"]: row["role"] for row in configuration["required_parts"]}
-    assert roles == {"body_front": "body_feature", "bottom_drawer_front": "body_feature", "drawer_interior": "task_part",
+    # Non-task drawers are fixed bays, never carcass panels named by their position word.
+    assert roles == {"body_front": "body_feature", "bottom_drawer_front": "fixed_interior", "drawer_interior": "task_part",
                      "handle": "door_feature", "left_side": "body_feature", "middle_drawer_front": "task_part",
-                     "right_side": "body_feature", "top_drawer_front": "body_feature", "top_surface": "body_feature"}
+                     "right_side": "body_feature", "top_drawer_front": "fixed_interior", "top_surface": "body_feature"}
     assert all(row["observed_frame_ids"] for row in configuration["required_parts"])
     # Whole body: the interior 0.4 m behind the closed front, scaled 0.5 x 2 into simulator metres.
     assert configuration["body_depth"]["basis"] == "interior_observed_open_state"

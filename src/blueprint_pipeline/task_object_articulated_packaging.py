@@ -378,6 +378,7 @@ def _projected_envelope(configuration: Mapping[str, Any]) -> dict[str, Any]:
     depth, width, height = (float(body[key]) for key in ("depth", "width", "height"))
     bound = [depth * nx + width * ny, depth * ny + width * nx, height]
     tolerance = float(envelope["maximum_dimension_relative_error"])
+    # Structural only on the coverage path: that envelope is levelled from this same body.
     if any(abs(bound[i] - extents[i]) > tolerance * max(bound[i], extents[i]) for i in range(3)):
         raise AssetAuthoringError("articulated_body_extent_disagrees_with_envelope")
     return {**value, "depth": depth, "width": width, "height": height, "extent_authority": "oriented_body_extent"}
@@ -483,6 +484,8 @@ def _plan_hinged_door_appliance(configuration: Mapping[str, Any], contract: Mapp
     depth = body_depth["value_m"]
     if min(depth, source["depth"]) / width < MINIMUM_APPLIANCE_DEPTH_TO_WIDTH:
         raise AssetAuthoringError("articulated_body_depth_implausibly_thin")
+    # Structural only when body_extent_m is present (coverage path): both depths are the same observed body;
+    # a published size that contradicts it is held upstream as an object_spec blocker.
     if abs(depth - source["depth"]) > tolerance * max(depth, source["depth"]):
         raise AssetAuthoringError("articulated_body_depth_disagrees_with_envelope")
     swing = mechanism.get("estimated_usable_swing_rad")

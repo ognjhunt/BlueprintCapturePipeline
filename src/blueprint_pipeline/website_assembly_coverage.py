@@ -192,6 +192,15 @@ def _classifier_copy(path: Path) -> bytes:
     return buffer.getvalue()
 
 
+class CoverageClassificationInvalid(ValueError):
+    """A retained classifier answer failed validation. It is never bought again:
+    only a ``CLASSIFIER_REVISION`` bump changes the receipt binding."""
+
+    def __init__(self, receipts: Sequence[Mapping[str, Any]]):
+        super().__init__("website_assembly_coverage_classification_invalid")
+        self.receipts = [dict(row) for row in receipts]
+
+
 def _parts(value: Any) -> list[str]:
     if (not isinstance(value, list) or len(value) > 32 or len(set(value)) != len(value)
             or any(not isinstance(part, str) or len(part) > 48 or not _PART.fullmatch(part) for part in value)):
@@ -284,9 +293,13 @@ def classify_frames(*, target_id: str, assembly_label: str, task_part: str, arti
             maximum_cost_usd=gemini_quote(model=CLASSIFIER_MODEL, input_tokens=len(prompt.encode()) + 3168 * len(batch),
                                          max_output_tokens=CLASSIFIER_MAX_OUTPUT_TOKENS),
             preflight=preflight, invoke=invoke)
-        value = validate_classification(result.get("classification"), frame_ids=[row["frame_id"] for row in batch],
-                                        articulation_kind=articulation_kind)
         receipts.append({"binding_digest": canonical_digest(binding), "result_digest": canonical_digest(result)})
+        try:
+            value = validate_classification(result.get("classification"),
+                                            frame_ids=[row["frame_id"] for row in batch],
+                                            articulation_kind=articulation_kind)
+        except ValueError as exc:
+            raise CoverageClassificationInvalid(receipts) from exc
         for row, label in zip(batch, value["frames"], strict=True):
             classified.append({**{key: row[key] for key in ("frame_id", "timestamp_seconds", "mask_area_fraction",
                                                             "geometry_frame", "path", "sha256")}, **label})
@@ -504,16 +517,18 @@ def coverage_record(*, target_id: str, binding: Mapping[str, Any], articulation_
 
 
 def empty_record(*, target_id: str, binding: Mapping[str, Any], articulation_kind: str,
-                 status: str, blocker: str) -> dict[str, Any]:
-    """No frames to cover. ``not_captured`` is a task object with no footage at all,
+                 status: str, blocker: str, receipts: Sequence[Mapping[str, Any]] = (),
+                 candidate_count: int = 0) -> dict[str, Any]:
+    """No usable classified frames. ``not_captured`` is a task object with no footage at all,
     which a later change routes to creation from description; never complete."""
     value = {"schema_version": SCHEMA_VERSION, "target_id": target_id, "status": status,
              "binding": dict(binding), "articulation_kind": articulation_kind, "observed_parts": [],
              "task_part_components": [], "observed_states": [], "selected_frames": [], "missing_parts": [],
              "part_observed_open": False, "hinge_edge": None, "body_bounds": None,
-             "label_readings": [], "blockers": [blocker], "candidate_frame_count": 0,
+             "label_readings": [], "blockers": [blocker], "candidate_frame_count": candidate_count,
              "reference_frame_cap": MAX_REFERENCE_FRAMES,
-             "classifier": {"model": CLASSIFIER_MODEL, "revision": CLASSIFIER_REVISION, "receipts": []},
+             "classifier": {"model": CLASSIFIER_MODEL, "revision": CLASSIFIER_REVISION,
+                            "receipts": [dict(row) for row in receipts]},
              "claim_ceiling": "development_only", "physical_measurement_proven": False}
     value["digest"] = canonical_digest(value, digest_field="digest")
     return value
@@ -575,9 +590,16 @@ def assembly_coverage(*, target: Mapping[str, Any], assembly_label: str, task_pa
         if (image["width"], image["height"]) != (row["mask_width"], row["mask_height"]):
             raise ValueError("website_assembly_coverage_mask_resolution_mismatch")
         row.update(path=image["path"], sha256=image["sha256"])
-    classified = (classify or classify_frames)(target_id=target["target_id"], assembly_label=assembly_label,
-        task_part=task_part, articulation_kind=articulation_kind, frames=candidates,
-        task_context=task_context, output_root=root / "receipts")
+    try:
+        classified = (classify or classify_frames)(target_id=target["target_id"], assembly_label=assembly_label,
+            task_part=task_part, articulation_kind=articulation_kind, frames=candidates,
+            task_context=task_context, output_root=root / "receipts")
+    except CoverageClassificationInvalid as exc:
+        # A typed incomplete record: compile reports it; the record's binding
+        # holds it until a classifier revision bump.
+        return empty_record(target_id=target["target_id"], binding=binding, articulation_kind=articulation_kind,
+                            status="incomplete", blocker="website_assembly_coverage_classification_invalid",
+                            receipts=exc.receipts, candidate_count=len(candidates))
     states = {row["frame_id"]: row["part_state"] for row in classified["frames"]}
     body, body_blockers = estimate_body_bounds(track=target["track"], frames=frames, states=states)
     return coverage_record(target_id=target["target_id"], binding=binding, articulation_kind=articulation_kind,
@@ -622,10 +644,18 @@ def depth_seed(frames: Sequence[Mapping[str, Any]], body: Mapping[str, Any] | No
     return [best["frame_id"]] if best else []
 
 
-def part_role(part: str, *, task_part_components: Sequence[str]) -> str:
+def part_role(part: str, *, task_part_components: Sequence[str], articulation_kind: str = "revolute") -> str:
+    """The planner role of one observed part.
+
+    In a drawer cabinet every drawer that is not the task part is a fixed bay
+    (``fixed_interior``); carcass words in its name (``top_drawer``) never make
+    it a carcass panel.
+    """
     feature = re.search(r"handle|control|brand|label|logo|button|display|knob|badge", part)
     if part in task_part_components:
         return "door_feature" if feature else "task_part"
+    if articulation_kind == "prismatic" and "drawer" in part.split("_"):
+        return "fixed_interior"
     if re.search(r"rack|basket|shelf|spray_arm|tray|filter", part):
         return "fixed_interior"
     if re.search(r"interior|tub|cavity|carcass", part):
@@ -666,7 +696,7 @@ def assembly_contract(record: Mapping[str, Any], *, articulation_kind: str,
         "assembly_family": "stacked_drawer_cabinet" if articulation_kind == "prismatic" else "hinged_door_appliance",
         "hinge_edge": record["hinge_edge"],
         "required_parts": [{"part_id": part, "label": part.replace("_", " "),
-                            "role": part_role(part, task_part_components=moving),
+                            "role": part_role(part, task_part_components=moving, articulation_kind=articulation_kind),
                             "observed_frame_ids": [row["frame_id"] for row in frames if part in row["visible_parts"]]}
                            for part in record["observed_parts"]],
         "reference_frames": [{key: row[key] for key in ("path", "sha256", "frame_id", "timestamp_seconds",

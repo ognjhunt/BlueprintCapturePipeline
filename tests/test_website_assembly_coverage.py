@@ -225,6 +225,34 @@ def test_depth_view_is_chosen_first_and_the_contract_cites_only_shown_frames():
                                    source_to_simulator_scale=2.0)
 
 
+def test_drawer_cabinet_parts_plan_each_drawer_as_its_bay_and_carcass_words_as_panels():
+    from blueprint_pipeline.task_object_articulated_packaging import plan_articulated_assembly
+    from tests.test_task_object_articulated_packaging import configuration
+
+    parts = ["bottom_drawer", "cabinet_top", "left_side", "middle_drawer", "top_drawer"]
+    frames = [{"frame_id": "f0", "timestamp_seconds": 0.0, "visible_parts": parts, "part_state": "closed",
+               "view": "front", "path": "p0", "sha256": "s0", "reason": "front", "selection_rank": 1},
+              {"frame_id": "f1", "timestamp_seconds": 1.0, "visible_parts": ["middle_drawer"], "part_state": "open",
+               "view": "front", "path": "p1", "sha256": "s1", "reason": "depth", "selection_rank": 0}]
+    body = {"open_frame_ids": ["f1"], "depth_m": 0.55, "width_m": 0.42, "height_m": 0.62,
+            "depth_basis": "interior_observed_open_state", "basis": "b"}
+    record = {"status": "complete", "body_bounds": body, "hinge_edge": None, "task_part_components": ["middle_drawer"],
+              "observed_parts": parts, "selected_frames": frames}
+    contract = coverage.assembly_contract(record, articulation_kind="prismatic", source_to_simulator_scale=1.0)
+    assert {row["part_id"]: row["role"] for row in contract["required_parts"]} == {
+        "top_drawer": "fixed_interior", "middle_drawer": "task_part", "bottom_drawer": "fixed_interior",
+        "cabinet_top": "body_feature", "left_side": "body_feature"}
+    value = configuration()  # three-drawer cabinet, task part "middle drawer"
+    value.update(contract, source_observation_kind="website_capture_frames",
+                 reference_frames=[{**row, "sha256": "sha256:" + str(index) * 64}
+                                   for index, row in enumerate(contract["reference_frames"])])
+    plan = plan_articulated_assembly(value)
+    assert {row["part_id"]: (row["link_id"], row["feature"]) for row in plan["required_parts"]} == {
+        "top_drawer": ("drawer_0", "link"), "middle_drawer": ("drawer_1", "link"),
+        "bottom_drawer": ("drawer_2", "link"), "cabinet_top": ("carcass", "top_panel"),
+        "left_side": ("carcass", "left_side_panel")}
+
+
 def test_selection_fills_remaining_slots_with_distinct_views():
     frames = [{"frame_id": f"f{i}", "timestamp_seconds": float(i), "mask_area_fraction": 0.1,
                "visible_parts": ["body_front"], "part_state": "closed", "view": view}
@@ -274,16 +302,37 @@ def test_open_door_sweep_alone_is_not_body_depth(tmp_path):
     lambda a: {**a, "frames": [{**a["frames"][0], "label_text": ["x" * 121]}, *a["frames"][1:]]},
     lambda a: {**a, "frames": [{**a["frames"][0], "label_text": [str(i) for i in range(9)]}, *a["frames"][1:]]},
 ])
-def test_malformed_classification_fails_closed_without_rebuying(tmp_path, model, change):
+def test_malformed_classification_is_a_typed_incomplete_record_never_rebought(tmp_path, model, change):
     calls, state = model
     state["answer"] = lambda binding: change(_answer(binding))
     geometry, track = _source_geometry(tmp_path / "geometry")
     target = _target(track)
-    with pytest.raises(ValueError, match="website_assembly_coverage_classification_invalid"):
-        _run(tmp_path, target, geometry)
-    with pytest.raises(ValueError, match="website_assembly_coverage_classification_invalid"):
-        _run(tmp_path, target, geometry)
+    record = _run(tmp_path, target, geometry)
+    assert record["status"] == "incomplete" and record["body_bounds"] is None
+    assert record["blockers"] == ["website_assembly_coverage_classification_invalid"]
+    assert len(record["classifier"]["receipts"]) == 1 and record["candidate_frame_count"] > 0
+    assert _run(tmp_path, target, geometry) == record
     assert len(calls) == 1
+
+
+def test_malformed_classification_is_held_every_tick_until_a_revision_bump(tmp_path, model, monkeypatch):
+    calls, state = model
+    state["answer"] = lambda binding: {**_answer(binding), "extra": True}
+    geometry, track = _source_geometry(tmp_path / "geometry")
+    masks = {"schema_version": "website_task_masks.v1", "targets": [_target(track)],
+             "source_frame_registry": _registry()}
+    masks["digest"] = canonical_digest(masks, digest_field="digest")
+    arguments = dict(task_masks=masks, source_geometry=geometry, removal_manifest={"entries": []},
+                     task_context=_context(), source_video=tmp_path / "clip.mov", output_root=tmp_path / "coverage")
+    value = coverage.attach_assembly_coverage(**arguments)
+    record = value["targets"][0]["authoring_coverage"]
+    assert coverage.coverage_blockers(record, target_id="dishwasher-1", several=False) == [
+        "website_assembly_coverage_classification_invalid"]
+    assert coverage.attach_assembly_coverage(**{**arguments, "task_masks": value}) == value and len(calls) == 1
+    state["answer"] = _answer
+    monkeypatch.setattr(coverage, "CLASSIFIER_REVISION", coverage.CLASSIFIER_REVISION + 1)
+    bumped = coverage.attach_assembly_coverage(**{**arguments, "task_masks": value})
+    assert bumped["targets"][0]["authoring_coverage"]["status"] == "complete" and len(calls) > 1
 
 
 def test_inconsistent_hinge_is_a_blocker(tmp_path, model):
