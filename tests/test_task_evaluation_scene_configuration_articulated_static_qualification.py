@@ -22,9 +22,12 @@ from blueprint_pipeline.task_object_articulated_packaging import (
 IDENTITY = {"id": "website-subject-cab", "version": "v1"}
 
 
-def _sealed(tmp_path, *, development_hypothesis=False):
+def _sealed(tmp_path, *, development_hypothesis=False, compound_drawer=False,
+            drawer_mass=2.0, drawer_density=(30.0, 120.0)):
     from tests.test_task_object_articulated_packaging import fixture
-    plan, requests, results, bounds = fixture(tmp_path)
+    plan, requests, results, bounds = fixture(
+        tmp_path, compound_drawer=compound_drawer, drawer_mass=drawer_mass,
+        drawer_density=drawer_density)
     if development_hypothesis:
         plan = json.loads(json.dumps(plan))
         dimensions = plan["assembly_dimensions_m"]
@@ -125,6 +128,20 @@ def test_composed_assembly_passes_every_articulated_static_check(tmp_path):
         qualify_scene_configuration_articulated_asset_static(
             asset_path=asset, graph_spec=graph, authoring_receipt=authoring,
             replacement_identity=IDENTITY, output_path=tmp_path / "static.json")
+
+
+def test_compound_drawer_survives_usd_float32_roundtrip_and_static_qualification(tmp_path):
+    asset, graph, authoring = _sealed(
+        tmp_path, compound_drawer=True, drawer_mass=5.7, drawer_density=(30.0, 200.0))
+    result = qualify_scene_configuration_articulated_asset_static(
+        asset_path=asset, graph_spec=graph, authoring_receipt=authoring,
+        replacement_identity=IDENTITY, output_path=tmp_path / "compound-static.json")
+    authored_mass = next(row["mass_kg"] for row in authoring["candidate_physics_completion"]["links"]
+                         if row["link_id"] == "drawer_1")
+    observed_mass = result["observed_structure"]["links"]["drawer_1"]["mass_kg"]
+    assert result["status"] == "authored_structure_statically_qualified"
+    assert abs(authored_mass - observed_mass) > 1e-7
+    assert result["task_joint"]["reset_position"] == 0.0
 
 
 def test_a_position_servo_on_the_task_joint_is_refused(tmp_path):
