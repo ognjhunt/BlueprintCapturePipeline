@@ -195,6 +195,59 @@ def test_background_review_keeps_client_alive_until_response(tmp_path, monkeypat
     assert state["calls"] == 1
 
 
+@pytest.mark.parametrize("diagnosed_ids", [["0"], [], ["0", "1"], ["missing"]])
+def test_consistency_diagnosis_is_exactly_one_retained_view(tmp_path, monkeypatch, diagnosed_ids):
+    import sys
+    from hashlib import sha256
+    from types import SimpleNamespace as NS
+    import google
+    from blueprint_pipeline import website_gemini_receipts as receipts
+
+    frames, _ = _inputs(tmp_path)
+    task = {"request_id": "request", "scene_id": "scene", "capture_id": "capture",
+            "context_digest": "sha256:task-context"}
+    task_digest = sha256(json.dumps(task, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    calls = []
+    def retained(**kwargs):
+        calls.append(kwargs)
+        return kwargs["invoke"]()
+    def generate(**kwargs):
+        assert kwargs["model"] == completion.DEFAULT_MODEL
+        assert len(kwargs["contents"]) == 1 + 4 * len(frames)
+        return NS(candidates=[NS(finish_reason="STOP")], text=json.dumps({
+            "inconsistent_background_frame_ids": diagnosed_ids,
+            "visual_evidence": "one generated panel conflicts with the other view"}))
+    class Client:
+        def __init__(self, **kwargs):
+            self.models = NS(generate_content=generate)
+        def __enter__(self):
+            return self
+        def __exit__(self, *_):
+            return False
+    fake = NS(Client=Client, types=NS(Part=NS(from_bytes=lambda **kw: kw),
+        GenerateContentConfig=NS, HttpOptions=NS, HttpRetryOptions=NS))
+    monkeypatch.setattr(google, "genai", fake, raising=False)
+    monkeypatch.setitem(sys.modules, "google.genai", fake)
+    monkeypatch.setattr(completion, "_api_key", lambda: ("fixture-key", "fixture"))
+    monkeypatch.setattr(receipts, "retained_gemini_call", retained)
+    args = dict(frames=frames, original_frames=frames,
+        plan={"task_context_sha256": task_digest}, failed_review={"status": "blocked",
+            "request_digest": "sha256:prior", "review": {"consistent_background": False,
+                "task_objects_removed": True, "people_absent": True,
+                "unrelated_objects_preserved": True, "remaining_task_object_frame_ids": []}},
+        output_root=tmp_path / "review", task_context=task)
+    if diagnosed_ids == ["0"]:
+        result = completion.diagnose_inconsistent_background(**args)
+        assert result["diagnosis"]["inconsistent_background_frame_ids"] == ["0"]
+        assert calls[0]["binding"]["prior_review_digest"] == "sha256:prior"
+        assert calls[0]["binding"]["kind"] == "background_consistency_diagnosis"
+        assert calls[0]["maximum_cost_usd"] > 0
+    else:
+        with pytest.raises(ValueError, match="diagnosis_invalid"):
+            completion.diagnose_inconsistent_background(**args)
+    assert len(calls) == 1
+
+
 def test_controller_reserves_image_edits_and_restart_reuses_outputs_without_new_grant(tmp_path, monkeypatch):
     from blueprint_pipeline import website_task_context as control
     frames, admission = _inputs(tmp_path)
