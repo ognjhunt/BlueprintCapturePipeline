@@ -118,7 +118,12 @@ def validate_setup_pair(setup: Mapping[str, Any], binding: Mapping[str, Any]) ->
     bound = validate_binding(binding)
     robots = setup.get("robot_presets")
     _require(isinstance(robots, list) and len(robots) == 1, "setup_robot_pair_invalid")
-    candidates = robots[0].get("policy_candidates")
+    listed = robots[0].get("policy_candidates")
+    # The catalog may also list policies a team cannot pick yet; only the
+    # runnable ones are the pair.
+    candidates = [row for row in listed if isinstance(row, Mapping) and
+                  (row.get("readiness") or {}).get("status") == "verified_runnable"] \
+        if isinstance(listed, list) else None
     _require(isinstance(candidates, list) and len(candidates) == 2, "setup_candidate_pair_invalid")
     actual = candidate_map([{"id": row.get("candidate_id"),
         "artifact_digest": (row.get("checkpoint") or {}).get("digest")} for row in candidates])

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -61,3 +62,52 @@ def test_dry_preflight_collects_independent_refusals_in_one_pass(tmp_path, monke
     assert "adp_arena_cumulative_budget_below_minimum_live_window" in blockers
     assert "independent_vast_watchdog_caller_exit_survival_unproven" in blockers
     assert any("spend_admission" in code for code in blockers)
+
+
+def _gated_args(tmp_path, monkeypatch, **extra):
+    monkeypatch.delenv(lane.REQUIRE_INTEGRATION_CANARY_ENV, raising=False)
+    authority_path = tmp_path / "authority.json"
+    bundle_path = tmp_path / "bundle.json"
+    authority_path.write_text("{}")
+    bundle_path.write_text("{}")
+    authority = {"hard_cap_usd": 3.78, "hard_ttl_seconds": 1800, "authority_digest": "sha256:" + "a" * 64,
+        "candidate_ids": ["pi05_droid", "groot_n17_droid"],
+        "resource_name": "blueprint-native-task-policy-canary-" + "1" * 32}
+    monkeypatch.setattr(lane, "validate_session_authority", lambda _: authority)
+    monkeypatch.setattr(lane, "validate_provider_bundle", lambda *a, **kw: {"bundle_sha256": "sha256:" + "3" * 64})
+    monkeypatch.setattr(lane, "_launch_environment_blockers",
+        lambda *a, **kw: pytest.fail("A refused canary reached the launch preflight"))
+    monkeypatch.setattr(lane, "run_native_task_arena_policy_canary_session_vast",
+        lambda **kw: pytest.fail("A refused canary reached provider transport"))
+    return SimpleNamespace(provider="vast", execute=True, adp_job_dir=str(tmp_path / "job"),
+        native_task_arena_policy_canary_session_authority=str(authority_path),
+        native_task_arena_policy_canary_session_bundle_receipt=str(bundle_path),
+        adp_max_spend_usd=3.78, adp_hard_ttl_seconds=1800, adp_max_hourly_rate_usd=.8,
+        admission_out=str(tmp_path / "admission.json"), adapter_output=str(tmp_path / "result.json"), **extra)
+
+
+def test_a_required_integration_canary_that_is_missing_refuses_before_spend(tmp_path, monkeypatch):
+    args = _gated_args(tmp_path, monkeypatch, require_policy_integration_canary=True)
+    assert lane.run_policy_canary_allocator_lane(args, ([], {"orchestrator_source_commit": "5" * 40})) == 2
+    result = json.loads((tmp_path / "result.json").read_text())
+    assert "policy_integration_canary_receipt_missing" in result["blockers"]
+    assert result["provider_mutations_performed"] == 0
+
+
+def test_a_supplied_failing_canary_refuses_even_when_not_required(tmp_path, monkeypatch):
+    from blueprint_pipeline.decision_evidence_contracts import cross_runtime_canonical_digest
+
+    receipt = {"schema_version": "policy_integration_canary_receipt.v1",
+        "reference": {"suite": "nvidia_robolab", "revision": "0" * 40, "task_ids": ["RubiksCubeInBowlTask"]},
+        "candidates": [{"candidate_id": "pi05_droid", "passed": True},
+                       {"candidate_id": "groot_n17_droid", "passed": False, "failed_checks": ["gripper_polarity"]}],
+        "generated_at_iso": datetime.now(timezone.utc).isoformat(),
+        "receipt_digest": ""}
+    receipt["receipt_digest"] = cross_runtime_canonical_digest(receipt, digest_field="receipt_digest")
+    path = tmp_path / "canary.json"
+    path.write_text(json.dumps(receipt))
+    args = _gated_args(tmp_path, monkeypatch, native_task_arena_policy_integration_canary_receipt=str(path))
+    assert lane.run_policy_canary_allocator_lane(args, ([], {"orchestrator_source_commit": "5" * 40})) == 2
+    result = json.loads((tmp_path / "result.json").read_text())
+    assert "policy_integration_canary_candidate_failed:groot_n17_droid:gripper_polarity" in result["blockers"]
+    assert result["provider_mutations_performed"] == 0

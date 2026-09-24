@@ -45,7 +45,7 @@ jobs:
           name: impacted-test-plan-${{ github.sha }}
           path: ${{ runner.temp }}/blueprint-ci/impacted-test-plan.json
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 7
 
   impacted-tests:
     name: Impacted tests and sentinels
@@ -164,7 +164,7 @@ jobs:
             ${{ runner.temp }}/blueprint-ci/impacted-test-plan.json
             ${{ runner.temp }}/blueprint-ci/impacted-tests-junit.xml
           if-no-files-found: error
-          retention-days: 90
+          retention-days: 7
 
   cross-cutting-full-suite:
     name: Cross-cutting full suite
@@ -239,7 +239,7 @@ jobs:
           name: groot-oscar-prerequisites-${{ github.sha }}
           path: ${{ runner.temp }}/blueprint-ci/groot_oscar_live_prerequisites.json
           if-no-files-found: error
-          retention-days: 90
+          retention-days: 7
 
   typecheck:
     name: Typed release contract core
@@ -335,7 +335,7 @@ jobs:
             ${{ runner.temp }}/blueprint-ci/bandit.json
             ${{ runner.temp }}/blueprint-ci/bandit-policy-gate.json
           if-no-files-found: error
-          retention-days: 90
+          retention-days: 7
 
   source-governance:
     name: Module and critical-lane governance
@@ -448,7 +448,7 @@ jobs:
             ${{ runner.temp }}/blueprint-ci/dist/*
             ${{ runner.temp }}/blueprint-ci/supply-chain/*.json
           if-no-files-found: error
-          retention-days: 90
+          retention-days: 7
 
   dependency-security:
     if: github.event_name == 'push'
@@ -475,7 +475,7 @@ jobs:
           name: dependency-security-${{ github.sha }}
           path: ${{ runner.temp }}/blueprint-ci/dependency-security-gate.json
           if-no-files-found: error
-          retention-days: 90
+          retention-days: 7
 
   container-contract:
     name: Container production contract
@@ -572,4 +572,4 @@ jobs:
           name: container-production-${{ github.sha }}
           path: ${{ runner.temp }}/blueprint-ci/container-production
           if-no-files-found: error
-          retention-days: 90
+          retention-days: 7
