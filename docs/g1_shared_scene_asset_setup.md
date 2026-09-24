@@ -59,6 +59,16 @@ terminal episode receipt before either candidate is offered as runnable.
 Movement policies require their own verified action/controller binding; the
 box-manipulation candidates do not prove movement-policy support.
 
+`run_g1_built_scene_policy_episode` now connects that loop to the existing
+native G1 joint environment, live rigid-task scene readback, and shared task
+scorer. It rechecks the offline scene/model/source preflight, retains the
+reset sample before the first policy query, then writes a trace and a scored
+development receipt after the episode. A scored failure is still a valid
+observed outcome. The receipt keeps `ranking_eligible` and policy-runtime
+identity false: the qualified worker has not yet bound the running server to
+the checkpoint or admitted G1 in the published bundle/run path. Navigation
+remains outside this box-task scorer.
+
 The two box checkpoints are separately pinned in
 `configs/g1_humanoidarena_checkpoint_inventory.v1.json`. A team can stage one
 candidate at a time, then recheck exact bytes without network access:
