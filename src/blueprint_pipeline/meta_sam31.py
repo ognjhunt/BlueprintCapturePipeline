@@ -145,8 +145,11 @@ def _upload_video(*, clip: Path, root: Path, token: str, opener: Any) -> str:
 
 _CONTINUOUS_CRF_LADDER = (18, 23, 28)
 _CONTINUOUS_VIDEO_MAX_BYTES = 32 * 1024**2
-# Receipts written before the source-timebase encode stay reusable as-is.
-_LEGACY_CONTINUOUS_ENCODING = "upright_h264_crf18_veryfast_threads2_all_source_frames_v2"
+# Target this share of the bound so rate-control overshoot still fits.
+_CONTINUOUS_VIDEO_FILL = 0.9
+# Receipts written by earlier encodes stay reusable as-is.
+_LEGACY_CONTINUOUS_ENCODINGS = frozenset({"upright_h264_crf18_veryfast_threads2_all_source_frames_v2"} | {
+    f"upright_h264_crf{crf}_veryfast_threads2_source_timebase_all_source_frames_v3" for crf in (18, 23, 28)})
 
 
 def _probe_video(path: Path) -> dict[str, Any]:
@@ -163,14 +166,14 @@ def prepare_continuous_video(*, source: Path, source_digest: str, root: Path) ->
     root.mkdir(parents=True, exist_ok=True)
     destination = root / "continuous-upright.mp4"
     receipt_path = root / "continuous-video.json"
-    encodings = {crf: f"upright_h264_crf{crf}_veryfast_threads2_source_timebase_all_source_frames_v3"
+    encodings = {crf: f"upright_h264_crf{crf}_maxrate_fit_veryfast_threads2_source_timebase_all_source_frames_v4"
                  for crf in _CONTINUOUS_CRF_LADDER}
     if receipt_path.is_file():
         receipt = json.loads(receipt_path.read_text())
         video = receipt.get("video") or {}
         if (receipt.get("digest") != canonical_digest(receipt, digest_field="digest")
                 or video.get("source_video_digest") != source_digest
-                or video.get("encoding") not in {*encodings.values(), _LEGACY_CONTINUOUS_ENCODING}
+                or video.get("encoding") not in {*encodings.values(), *_LEGACY_CONTINUOUS_ENCODINGS}
                 or video.get("path") != str(destination) or not destination.is_file()
                 or _sha256_file(destination) != video.get("sha256")):
             raise ValueError("meta_sam_prepared_video_receipt_invalid")
@@ -185,6 +188,14 @@ def prepare_continuous_video(*, source: Path, source_digest: str, root: Path) ->
     numerator, _, denominator = str((original.get("streams") or [{}])[0].get("time_base", "")).partition("/")
     if numerator != "1" or not denominator.isdigit() or not 0 < int(denominator) <= 1_000_000:
         raise ValueError("meta_sam_source_time_base_invalid")
+    # Cap the bitrate so the first encode fits the upload bound; an uncapped
+    # CRF 18 pass of a 30-second phone clip came out at 50 MB and was discarded,
+    # doubling the encode time. The cap follows from the clip's own duration.
+    stamps = [float(frame["best_effort_timestamp_time"]) for frame in original["frames"]]
+    duration = (stamps[-1] - stamps[0]) * len(stamps) / (len(stamps) - 1)
+    if not math.isfinite(duration) or duration <= 0:
+        raise ValueError("meta_sam_frame_count_invalid")
+    maxrate = str(int(_CONTINUOUS_VIDEO_FILL * _CONTINUOUS_VIDEO_MAX_BYTES * 8 / duration))
     # Full-resolution, every-frame tracking input; use the CPU preset rather
     # than x264's slower default. Allow for the shared service's CPU quota/load;
     # the former two-minute wall limit expired even for a 13-second walkthrough.
@@ -199,7 +210,8 @@ def prepare_continuous_video(*, source: Path, source_digest: str, root: Path) ->
         try:
             subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(source), "-map", "0:v:0", "-an",
                 "-fps_mode", "passthrough", "-enc_time_base", "-1", "-c:v", "libx264", "-preset", "veryfast", "-threads", "2",
-                "-crf", str(crf), "-pix_fmt", "yuv420p", "-video_track_timescale", denominator,
+                "-crf", str(crf), "-maxrate", maxrate, "-bufsize", maxrate,
+                "-pix_fmt", "yuv420p", "-video_track_timescale", denominator,
                 "-movflags", "+faststart", str(partial)],
                 check=True, timeout=600, capture_output=True)
             encoded = _probe_video(partial)
