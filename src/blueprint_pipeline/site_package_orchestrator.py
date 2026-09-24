@@ -2788,7 +2788,7 @@ def _rights_review_required_use_classes(
 _PRIVACY_POSTPROCESS_CLEARED_STATUSES = frozenset(
     {
         "no_people_detected",
-        "person_removed",
+        "person_removed", "website_capture_admitted",
         "face_anonymized_fallback",
         "full_frame_redacted_local_proof",
     }
@@ -5117,7 +5117,7 @@ def run_qualification_pipeline(
         write_json(pipeline_dir / "pipeline_summary.json", pipeline_summary)
         privacy_world_model_ready = str(privacy_processing.get("status") or "").strip().lower() in {
             "no_people_detected",
-            "person_removed",
+            "person_removed", "website_capture_admitted",
             "face_anonymized_fallback",
             "full_frame_redacted_local_proof",
         }

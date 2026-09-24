@@ -179,6 +179,30 @@ def test_website_preparation_preserves_original_frames_without_geometry(tmp_path
         assert result["blockers"] == []
 
 
+def test_website_person_observation_does_not_require_removal(tmp_path, monkeypatch):
+    capture_root = _make_capture(tmp_path)
+    source = capture_root / "raw" / "walkthrough.mp4"
+    plan = build_removal_plan(targets=[{
+        "target_id": "operator_hand", "semantic_label": "hand and arm",
+        "target_class": "person", "target_role": "person", "task_effect": "privacy",
+        "disposition": "remove", "rebuild_intent": "none", "spatial_evidence": [],
+    }], status="completed", model="test", processing="static")
+    monkeypatch.setattr(_ANALYSIS_ATTR, lambda **_kwargs: plan)
+    monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.prepare_website_source_frames",
+                        lambda **_kwargs: {"schema_version": "website_source_frames.v1", "geometry_available": False})
+    monkeypatch.setattr("blueprint_pipeline.clean_plate_stage.run_website_task_masks",
+                        lambda **_kwargs: pytest.fail("a person is not a task mask"))
+
+    result = run_clean_plate_stage(capture_root=capture_root, website_source_video=source,
+                                   privacy_processing={"status": "pending_website_review"})
+    assert result["status"] == "noop"
+    assert result["privacy_verified"] is True
+    assert result["privacy_status"] == "website_capture_admitted"
+    assert result["person_target_count"] == 1
+    assert read_json(Path(result["removal_manifest_path"]))["entries"] == []
+    assert source.read_bytes() == b"RAWVIDEO"
+
+
 @pytest.mark.parametrize("fill_result", ["unneeded", "passed", "blocked", "review_repair",
                                         "review_repair_edited", "inconsistent_repair", "inconsistent_unedited"])
 def test_website_stage_prepares_images_without_waiting_for_geometry(tmp_path, monkeypatch, fill_result):
@@ -189,6 +213,10 @@ def test_website_stage_prepares_images_without_waiting_for_geometry(tmp_path, mo
         "target_id": "box", "semantic_label": "blue box", "target_class": "movable_object",
         "target_role": "task_object", "task_effect": "manipulated", "disposition": "remove",
         "rebuild_intent": "rebuild_and_compose", "spatial_evidence": [], "confidence": 0.9,
+    }, {
+        "target_id": "operator_hand", "semantic_label": "hand and arm",
+        "target_class": "person", "target_role": "person", "task_effect": "privacy",
+        "disposition": "remove", "rebuild_intent": "none", "spatial_evidence": [],
     }], status="completed", model="test", processing="agentic")
     plan["task_context_sha256"] = "task-digest"
     geometry = {"status": "estimated", "digest": "geometry-digest", "frames": [{"frame_id": f"f{i}"} for i in range(13)]}
@@ -205,6 +233,7 @@ def test_website_stage_prepares_images_without_waiting_for_geometry(tmp_path, mo
 
     def track(**kwargs):
         order.append("masks")
+        assert [target["target_id"] for target in kwargs["plan"]["targets"]] == ["box"]
         assert kwargs["defer_kept_static"] is True
         assert kwargs["source_geometry"] == geometry
         assert kwargs["source_video"] == source
@@ -225,6 +254,7 @@ def test_website_stage_prepares_images_without_waiting_for_geometry(tmp_path, mo
 
     def complete(**kwargs):
         order.append("completion")
+        assert [target["target_id"] for target in kwargs["targets"]] == ["box"]
         assert len(kwargs["frames"]) == 8
         assert sum(f["remaining_pixel_count"] > 0 for f in kwargs["frames"]) == 2
         return [{**frame, "remaining_pixel_count": 0,
@@ -232,6 +262,7 @@ def test_website_stage_prepares_images_without_waiting_for_geometry(tmp_path, mo
 
     def review(**kwargs):
         order.append("review")
+        assert [target["target_id"] for target in kwargs["plan"]["targets"]] == ["box"]
         if fill_result in {"inconsistent_repair", "inconsistent_unedited"}:
             ids = [frame["frame_id"] for frame in kwargs["frames"]]
             if len(ids) == 8:

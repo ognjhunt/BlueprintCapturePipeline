@@ -189,7 +189,7 @@ def _build_removal_manifest(plan: Mapping[str, Any]) -> Dict[str, Any]:
     for target in plan.get("targets", []) or []:
         if not isinstance(target, Mapping):
             continue
-        if target.get("disposition") != "remove":
+        if target.get("disposition") != "remove" or target.get("target_class") == "person":
             continue
         entries.append(
             {
@@ -351,11 +351,11 @@ def run_clean_plate_stage(
             blockers.extend(plan_errors)
         blockers.extend(plan.get("blockers", []) or [])
         if website_source_video is not None:
-            # The website reviews its original source, not a VIP derivative.
-            # A complete review with no people can proceed; detected people
-            # require actual removal/verification before images leave Pipeline.
-            privacy_verified = not blockers and plan.get("status") == "completed" and not int(plan.get("person_target_count") or 0)
-            privacy_status = "no_people_detected" if privacy_verified else "pending_website_review"
+            # Website ingress has already admitted the uploaded source under
+            # the site's capture consent. People in an admitted task video are
+            # not a second clean-plate hold or an object-removal target.
+            privacy_verified = not blockers and plan.get("status") == "completed"
+            privacy_status = "website_capture_admitted" if privacy_verified else "pending_website_review"
         movable_removals = int(plan.get("movable_removal_count") or 0)
         if blockers or _string(plan.get("status")) != "completed":
             status = "blocked"
@@ -372,6 +372,12 @@ def run_clean_plate_stage(
             mode = "fill_machinery_pending"
             reason = "clean_plate_fill_machinery_not_implemented"
 
+    # The analysis retains person observations for provenance. They are not
+    # task objects, edit instructions, or replacement assets for website media.
+    task_plan = ({**plan, "targets": [target for target in plan.get("targets", [])
+                  if target.get("target_class") != "person"]}
+                 if website_source_video is not None else plan)
+
     # Tracking/editing needs source pixels, not depth. Defer the GPU geometry
     # job until the provider has published its visual result.
     if website_source_video is not None and privacy_verified and not blockers:
@@ -387,17 +393,17 @@ def run_clean_plate_stage(
 
     if source_geometry is not None and not blockers and any(
         target.get("task_effect") in {"manipulated", "static_contact", "static_obstacle"}
-        for target in plan.get("targets", [])
+        for target in task_plan.get("targets", [])
     ):
         try:
             profile = reconstruction_profile(reconstruction_capabilities)
             if website_source_video is not None and parse_bool(
                     os.getenv("BLUEPRINT_WEBSITE_VIEW_FIRST_SAM"), default=False):
                 mask_view_plan = prepare_mask_view_plan(
-                    source_video=website_source_video, source_geometry=source_geometry, plan=plan,
+                    source_video=website_source_video, source_geometry=source_geometry, plan=task_plan,
                     source_geometry_root=clean_plate_root / "source_geometry",
                     output_root=clean_plate_root / "mask_view_plan", limit=profile["max_input_images"])
-            task_masks = run_website_task_masks(plan=plan, source_geometry=source_geometry, defer_kept_static=True,
+            task_masks = run_website_task_masks(plan=task_plan, source_geometry=source_geometry, defer_kept_static=True,
                                                 output_root=clean_plate_root / "task_masks",
                                                 meta_admission=meta_sam_admission,
                                                 meta_admission_grant=meta_sam_admission_grant,
@@ -439,11 +445,11 @@ def run_clean_plate_stage(
                     frames=selected, task_digest=plan["task_context_sha256"],
                     output_root=clean_plate_root / "image_completion", admission=image_edit_admission or {},
                     token=os.getenv("OPENAI_API_KEY", ""), admission_grant=image_edit_admission_grant,
-                    targets=plan["targets"], task_context=task_context)
+                    targets=task_plan["targets"], task_context=task_context)
                 selected = replace_unmasked_task_views(selected=selected, frames=object_removal_frames,
-                    task_masks=task_masks, targets=plan["targets"], limit=profile["max_input_images"])
+                    task_masks=task_masks, targets=task_plan["targets"], limit=profile["max_input_images"])
                 completion_review = verify_completed_background(
-                    frames=selected, original_frames=source_geometry["frames"], plan=plan,
+                    frames=selected, original_frames=source_geometry["frames"], plan=task_plan,
                     output_root=clean_plate_root / "image_completion", task_context=task_context)
                 review = completion_review.get("review") or {}
                 remaining_ids = review.get("remaining_task_object_frame_ids") or []
@@ -454,7 +460,7 @@ def run_clean_plate_stage(
                 if (completion_review.get("status") == "blocked"
                         and review.get("task_objects_removed") is False
                         and all(review.get(field) is True for field in (
-                            "consistent_background", "people_absent", "unrelated_objects_preserved"))
+                            "consistent_background", "unrelated_objects_preserved"))
                         and remaining_ids and set(remaining_ids) <= {frame["frame_id"] for frame in selected}
                         and all(not frame.get("generated_pixels_present") for frame in selected
                                 if frame["frame_id"] in remaining_ids)):
@@ -463,7 +469,7 @@ def run_clean_plate_stage(
                         first_review = completion_review
                         selected = retained
                         completion_review = verify_completed_background(
-                            frames=selected, original_frames=source_geometry["frames"], plan=plan,
+                            frames=selected, original_frames=source_geometry["frames"], plan=task_plan,
                             output_root=clean_plate_root / "image_completion", task_context=task_context)
                         completion_review = {**completion_review, "prior_failed_review": first_review,
                                              "excluded_unmasked_frame_ids": sorted(remaining_ids)}
@@ -475,10 +481,10 @@ def run_clean_plate_stage(
                 if (completion_review.get("status") == "blocked"
                         and review.get("consistent_background") is False
                         and all(review.get(field) is True for field in (
-                            "task_objects_removed", "people_absent", "unrelated_objects_preserved"))
+                            "task_objects_removed", "unrelated_objects_preserved"))
                         and review.get("remaining_task_object_frame_ids") == []):
                     diagnosis = diagnose_inconsistent_background(
-                        frames=selected, original_frames=source_geometry["frames"], plan=plan,
+                        frames=selected, original_frames=source_geometry["frames"], plan=task_plan,
                         failed_review=completion_review, output_root=clean_plate_root / "image_completion",
                         task_context=task_context)
                     inconsistent_id = diagnosis["diagnosis"]["inconsistent_background_frame_ids"][0]
@@ -488,7 +494,7 @@ def run_clean_plate_stage(
                     prior_review = completion_review
                     selected = [frame for frame in selected if frame["frame_id"] != inconsistent_id]
                     completion_review = verify_completed_background(
-                        frames=selected, original_frames=source_geometry["frames"], plan=plan,
+                        frames=selected, original_frames=source_geometry["frames"], plan=task_plan,
                         output_root=clean_plate_root / "image_completion", task_context=task_context)
                     completion_review = {**completion_review,
                                          "prior_failed_review": prior_review.get("prior_failed_review", prior_review),
