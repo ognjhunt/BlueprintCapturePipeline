@@ -28,6 +28,7 @@ from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .external_scene_frame_registration import _axis_rotations, _sample, _trimmed_rmse
 from .local_reconstruction_adapters import _sha256_file
+from .website_assembly_coverage import assembly_constraints, assembly_contract, coverage_blockers, coverage_matches
 from .website_task_masks import decode_track_mask, estimate_target_bounds
 from .website_support_geometry import support_under
 
@@ -558,9 +559,20 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     write_json(registration_path, registration)
     matrix = np.asarray(registration["source_to_runtime"])
     frames_by_id = {frame["frame_id"]: frame for frame in source_geometry["frames"]}
-    subject_bounds = estimate_target_bounds(subject_target["track"], source_geometry["frames"],
-                                            source_to_target=matrix)
-    subject_min, subject_max = subject_bounds["minimum"], subject_bounds["maximum"]
+    articulation_kind = str(subject_entry.get("articulation_kind") or subject_target.get("articulation_kind") or "")
+    articulated = articulation_kind in {"prismatic", "revolute"}
+    coverage = subject_target.get("authoring_coverage") if articulated else None
+    coverage_bound = coverage is not None and coverage_matches(coverage, target=subject_target,
+                                                               source_geometry=source_geometry)
+    body = coverage["body_bounds"] if coverage_bound and coverage["status"] == "complete" else None
+    if body is not None:
+        # The whole body as an oriented box; rotate its corners, not an AABB.
+        corners = np.asarray(body["corners"], dtype=float) @ matrix[:3, :3].T + matrix[:3, 3]
+        subject_min, subject_max = corners.min(axis=0).tolist(), corners.max(axis=0).tolist()
+    else:
+        subject_bounds = estimate_target_bounds(subject_target["track"], source_geometry["frames"],
+                                                source_to_target=matrix)
+        subject_min, subject_max = subject_bounds["minimum"], subject_bounds["maximum"]
     import trimesh
     collider = None if independent_object else trimesh.load(base_scene["collision_mesh_path"], force="mesh", process=False)
     support = (None if independent_object else
@@ -578,8 +590,6 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                    if support else (None, None))
     destination_rows = [row for row in task_masks["targets"] if row.get("target_role") == "destination"]
     destination = None
-    articulation_kind = str(subject_entry.get("articulation_kind") or subject_target.get("articulation_kind") or "")
-    articulated = articulation_kind in {"prismatic", "revolute"}
     if articulated:
         # The moving part stays inside its assembly: no destination pose exists.
         # The whole assembly is removed, rebuilt with one task joint, and
@@ -595,9 +605,12 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         # thin front passes a check against them. Until the subject carries
         # views chosen to cover every part and state of the object, with the
         # body's depth observed, the build must not be bought.
-        coverage = subject_target.get("authoring_coverage") or {}
-        if coverage.get("status") != "complete":
+        if coverage is not None and not coverage_bound:
+            blockers.append("website_assembly_coverage_binding_mismatch")
+        if body is None:
             blockers.append("website_assembly_whole_object_coverage_required")
+            if coverage_bound:
+                blockers.extend(coverage_blockers(coverage, target_id=subject_entry["target_id"], several=False))
     elif len(destination_rows) == 1 and not independent_object:
         low, high = _runtime_bounds(destination_rows[0]["estimated_visible_bounds"], matrix)
         position = [(low[i] + high[i]) / 2 for i in range(3)]
@@ -638,7 +651,10 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         blockers.append("task_destination_pose_required")
     track = subject_target["track"]
     authoring_frames = []
-    for observation in track["observations"]:
+    if body is not None:
+        authoring_frames = [{"path": row["path"], "sha256": row["sha256"], "role": "observed_source",
+                             "frame_id": row["frame_id"], "reason": row["reason"]} for row in coverage["selected_frames"]]
+    for observation in [] if body is not None else track["observations"]:
         frame = frames_by_id[observation["source_frame_id"]]
         authoring_frames.append({"path": frame["image_path"], "sha256": frame["image_digest"],
                                  "role": "observed_source", "frame_id": frame["frame_id"]})
@@ -657,9 +673,11 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                   if articulation_kind == "prismatic" else {"estimated_usable_swing_rad": DOOR_USABLE_SWING_RAD})
         mechanism = {"assembly_label": subject_entry.get("semantic_label") or subject_entry["target_id"],
                      "part_label": articulated_part or "unspecified part", "joint_type": articulation_kind,
-                     **travel, "travel_authority": "object_prior_estimate_from_estimated_visible_bounds",
+                     **travel, "travel_authority": ("object_prior_estimate_from_observed_body_depth" if body is not None
+                                                    else "object_prior_estimate_from_estimated_visible_bounds"),
                      "estimated_front_normal_world": normal, "front_normal_basis": front["basis"],
-                     "lock_status": "unknown", "part_observed_open_in_footage": False,
+                     "lock_status": "unknown",
+                     "part_observed_open_in_footage": bool(coverage_bound and coverage["part_observed_open"]),
                      "observation_timestamps_seconds": sorted({float(frames_by_id[row["source_frame_id"]].get("timestamp_seconds") or 0.0)
                                                               for row in track["observations"]}),
                      "physical_measurement_proven": False}
@@ -672,6 +690,10 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
             physics_bounds={key + "_bounds": value for key, value in physics["bounds"].items()},
             mechanism=mechanism,
         )
+        if body is not None:
+            scale = abs(float(np.linalg.det(runtime_to_sim[:3, :3] @ matrix[:3, :3]))) ** (1 / 3)
+            authoring_configuration.update(assembly_contract(coverage, articulation_kind=articulation_kind,
+                                                             source_to_simulator_scale=scale))
     else:
         physics = screen_physics(dimensions_m)
         authoring_configuration = stage_three_configuration(
@@ -685,8 +707,10 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     authoring_configuration.update(
         source_object_identity=subject_entry["target_id"],
         source_observation_kind="website_capture_frames", dimension_authority="estimated",
-        appearance_inputs="digest_bound_original_capture_frames",
-        geometry_support=("unregistered_object_local_estimated_visible_bounds" if independent_object
+        appearance_inputs=("digest_bound_upright_coverage_frames" if body is not None
+                           else "digest_bound_original_capture_frames"),
+        geometry_support=("whole_body_bounds_from_closed_front_and_open_interior_depth" if body is not None
+                          else "unregistered_object_local_estimated_visible_bounds" if independent_object
                           else "registered_partial_visible_bounds_from_estimated_source_geometry"),
         construction_constraints={
             "confirmed_task": task_context["description"],
@@ -694,8 +718,9 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
             "task_context_digest": task_context["context_digest"],
             "subject_target_id": subject_entry["target_id"], "destination": destination,
             **({"mechanism": mechanism} if mechanism else {}),
+            **(assembly_constraints(coverage, task_part=articulated_part) if body is not None else {}),
             "rebuild_only_this_subject": True, "non_target_scene_objects_remain_in_background": True,
-            "complete_object_dimensions_observed": False,
+            "complete_object_dimensions_observed": body is not None,
             "unknown_surfaces": "Generated completion must remain an explicit assumption.",
         },
     )
@@ -750,7 +775,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                              "aabb_min_xyz": sim_min, "aabb_max_xyz": sim_max,
                              "coordinate_frame": "Z_up_estimated_meters",
                              "geometry_origin": "removed_before_reconstruction",
-                             "complete_object_dimensions": False},
+                             "complete_object_dimensions": body is not None},
                  "support": {"description": subject_entry.get("support_label") or "support surface under subject",
                              "aabb_min_xyz": sim_support[0], "aabb_max_xyz": sim_support[1]},
                  **({"articulation": mechanism, "success": dict(ARTICULATED_SUCCESS)} if articulated else

@@ -194,3 +194,32 @@ def test_terminal_world_failure_enters_only_authorized_development_seed(tmp_path
     assert base['mode'] == 'development_fixture_seed' and base['provider'] == 'blueprint_authored_development_seed'
     assert _sha256_file(__import__('pathlib').Path(base['collision_mesh_path'])) == base['collision_mesh_digest']
     assert 'splat_path' not in base
+
+
+def test_articulated_targets_gain_coverage_from_the_retained_video_before_compile(tmp_path, monkeypatch):
+    kwargs = inputs(tmp_path)
+    video = tmp_path / "walkthrough.mov"
+    video.write_bytes(b"source")
+    masks = {"targets": [{"target_id": "dishwasher-1"}], "digest": "sha256:" + "b" * 64}
+    kwargs["clean_plate"].update(source_geometry={"digest": "geometry"}, task_masks=masks,
+                                 input_video_path=str(video))
+    seen, attached = {}, {**masks, "targets": [{"target_id": "dishwasher-1", "authoring_coverage": {"status": "complete"}}]}
+
+    def attach(**value):
+        seen["attach"] = value
+        return attached
+    monkeypatch.setattr("blueprint_pipeline.website_assembly_coverage.attach_assembly_coverage", attach)
+    monkeypatch.setattr(handoff, "compile_website_scene_preparation",
+                        lambda **value: seen.update(compile=value) or (_ for _ in ()).throw(ValueError("stop")))
+    handoff.prepare_website_scene_handoff(**kwargs)
+    assert seen["attach"]["task_masks"] == masks and seen["attach"]["source_video"] == video
+    assert seen["attach"]["task_context"] == kwargs["descriptor"]["metadata"]["site_task_context"]
+    assert seen["attach"]["output_root"] == tmp_path / "pipeline/website_scene_preparation/assembly_coverage"
+    assert seen["compile"]["task_masks"] == attached
+    assert json.loads((tmp_path / "pipeline/website_scene_preparation/task_masks.coverage.json").read_text()) == attached
+    # A video outside the capture is never read.
+    outside = tmp_path.parent / (tmp_path.name + "-outside.mov")
+    outside.write_bytes(b"other")
+    kwargs["clean_plate"]["input_video_path"] = str(outside)
+    handoff.prepare_website_scene_handoff(**kwargs)
+    assert seen["attach"]["source_video"] is None

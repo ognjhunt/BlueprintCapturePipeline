@@ -128,10 +128,9 @@ def test_registered_room_failure_does_not_block_authorized_object_preparation(tm
 
 def test_missing_marble_anchor_uses_separately_named_drawer_fixture(tmp_path, monkeypatch):
     from blueprint_pipeline import website_task_preparation as compiler
-    from tests.test_website_task_preparation import _arguments, _masks, ARTICULATED_REMOVAL
+    from tests.test_website_task_preparation import _arguments, _assembly_inputs
     args = _arguments(tmp_path)
-    args['task_masks'] = _masks(args['source_geometry'], destination=False, articulated=True)
-    args['removal_manifest'] = ARTICULATED_REMOVAL
+    args.update(_assembly_inputs(tmp_path))
     monkeypatch.setenv(ENV, json.dumps([args['task_context']['context_digest']]))
     def refused(**_):
         raise ValueError('website_registration_anchor_frame_missing')
@@ -155,13 +154,12 @@ def test_missing_marble_anchor_uses_separately_named_drawer_fixture(tmp_path, mo
 
 def test_terminal_marble_failure_uses_only_an_authored_seed_for_the_drawer_fixture(tmp_path, monkeypatch):
     from blueprint_pipeline import website_task_preparation as compiler
-    from tests.test_website_task_preparation import _arguments, _masks, ARTICULATED_REMOVAL
+    from tests.test_website_task_preparation import _arguments, _assembly_inputs
     from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
     import trimesh
 
     args = _arguments(tmp_path)
-    args['task_masks'] = _masks(args['source_geometry'], destination=False, articulated=True)
-    args['removal_manifest'] = ARTICULATED_REMOVAL
+    args.update(_assembly_inputs(tmp_path))
     seed = tmp_path / 'fixture-seed.glb'
     seed.write_bytes(trimesh.creation.box(extents=(1, 1, 0.1)).export(file_type='glb'))
     args['base_scene'] = {'mode': 'development_fixture_seed', 'provider': 'blueprint_authored_development_seed',

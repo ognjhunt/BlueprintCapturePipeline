@@ -25,9 +25,8 @@ def setup(tmp_path, monkeypatch, *, development=False, articulated=False, anthro
     capture.mkdir()
     args, _, _ = inputs(capture)
     if articulated:
-        from tests.test_website_task_preparation import ARTICULATED_REMOVAL, _masks
-        args["task_masks"] = _masks(args["source_geometry"], destination=False, articulated=True)
-        args["removal_manifest"] = ARTICULATED_REMOVAL
+        from tests.test_website_task_preparation import _assembly_inputs
+        args.update(_assembly_inputs(capture))
     now = time.time()
     args["now"] = now
     args["spend"] = copy.deepcopy(args["spend"])
