@@ -153,6 +153,38 @@ def test_missing_marble_anchor_uses_separately_named_drawer_fixture(tmp_path, mo
     assert runtime['object_authoring']['configuration']['schema_version'] == 'articulated_replacement_authoring_configuration.v1'
 
 
+def test_terminal_marble_failure_uses_only_an_authored_seed_for_the_drawer_fixture(tmp_path, monkeypatch):
+    from blueprint_pipeline import website_task_preparation as compiler
+    from tests.test_website_task_preparation import _arguments, _masks, ARTICULATED_REMOVAL
+    from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
+    import trimesh
+
+    args = _arguments(tmp_path)
+    args['task_masks'] = _masks(args['source_geometry'], destination=False, articulated=True)
+    args['removal_manifest'] = ARTICULATED_REMOVAL
+    seed = tmp_path / 'fixture-seed.glb'
+    seed.write_bytes(trimesh.creation.box(extents=(1, 1, 0.1)).export(file_type='glb'))
+    args['base_scene'] = {'mode': 'development_fixture_seed', 'provider': 'blueprint_authored_development_seed',
+        'reconstruction_blocker': 'website_reconstruction_failed', 'collision_mesh_path': str(seed),
+        'collision_mesh_digest': _sha256_file(seed), 'collision_binding_id': 'website-development-seed',
+        'up_axis': 'Z', 'meters_per_unit': 1.0, 'operation_id': 'failed-operation'}
+    with pytest.raises(ValueError, match='website_development_fixture_seed_not_authorized'):
+        compiler.compile_website_scene_preparation(**args)
+    monkeypatch.setenv(ENV, json.dumps([args['task_context']['context_digest']]))
+    original = compiler.compile_website_scene_preparation(**args)
+    assert original['status'] == 'needs_input'
+    assert original['blockers'] == ['website_reconstruction_failed', 'support_surface_not_found_under_subject']
+    assert original['registration']['physical_registration_proven'] is False
+    assert original['intake_request']['source']['kind'] == 'mesh'
+    assert original['binding']['development_seed_mesh_digest'] == _sha256_file(seed)
+    prepared, runtime = prepare_development_test(preparation=original, source_geometry=args['source_geometry'],
+        task_masks=args['task_masks'], output_root=tmp_path / 'failed-marble-drawer-fixture')
+    assert prepared['status'] == 'intake_ready' and prepared['development_test']['kind'] == DRAWER_KIND
+    assert prepared['development_test']['source_scene_blockers'] == original['blockers']
+    assert prepared['intake_request']['source']['content_digest'] != _sha256_file(seed)
+    assert runtime['simulator_ready'] is False
+
+
 @pytest.mark.parametrize('authorized,reason', [
     (False, 'website_registration_conflicts_provider_anchor'),
     (True, 'website_registration_anchor_frame_invalid'),

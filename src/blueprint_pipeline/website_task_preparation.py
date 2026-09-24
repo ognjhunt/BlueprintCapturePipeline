@@ -426,7 +426,15 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     request_id, capture_id = str(task_context["request_id"]), str(task_context["capture_id"])
     if not _IDENTIFIER.fullmatch(capture_id) or not re.fullmatch(r"[A-Za-z0-9._-]{1,100}", request_id):
         raise ValueError("website_identity_invalid")
-    for path_key, digest_key in (("splat_path", "splat_digest"), ("collision_mesh_path", "collision_mesh_digest")):
+    development_seed = base_scene.get("mode") == "development_fixture_seed"
+    if development_seed:
+        from .website_development_test import enabled
+        if (not enabled(task_context["context_digest"])
+                or base_scene.get("reconstruction_blocker") != "website_reconstruction_failed"
+                or base_scene.get("provider") != "blueprint_authored_development_seed"):
+            raise ValueError("website_development_fixture_seed_not_authorized")
+    for path_key, digest_key in (("collision_mesh_path", "collision_mesh_digest"),) if development_seed else (
+            ("splat_path", "splat_digest"), ("collision_mesh_path", "collision_mesh_digest")):
         if _sha256_file(Path(base_scene[path_key])) != base_scene[digest_key]:
             raise ValueError("website_base_scene_changed")
     up = _UP_INDEX[base_scene["up_axis"]]
@@ -448,6 +456,8 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                   "ground_plane_offset_m": base_scene.get("ground_plane_offset_m")}
     independent_object = False
     try:
+        if development_seed:
+            raise ValueError("website_reconstruction_failed")
         registration = register_source_to_runtime(source_geometry=source_geometry,
             collision_mesh_path=Path(base_scene["collision_mesh_path"]),
             anchor=anchor, focus_bounds=subject_target["estimated_visible_bounds"])
@@ -478,7 +488,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                                             source_to_target=matrix)
     subject_min, subject_max = subject_bounds["minimum"], subject_bounds["maximum"]
     import trimesh
-    collider = trimesh.load(base_scene["collision_mesh_path"], force="mesh", process=False)
+    collider = None if independent_object else trimesh.load(base_scene["collision_mesh_path"], force="mesh", process=False)
     support = (None if independent_object else
                support_under(collider, subject_min, subject_max, up=up, meters_per_unit=mpu, up_sign=up_sign))
     snap = 0.0
@@ -630,8 +640,10 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         blockers.append("website_scene_processing_rights_required")
     request = {
         "schema_version": intake.REQUEST_SCHEMA, "submission_id": capture_id, "owner": owner,
-        "source": {"kind": "gaussian_splat", "binding_id": base_scene["splat_binding_id"],
-                   "content_digest": base_scene["splat_digest"]},
+        "source": ({"kind": "mesh", "binding_id": base_scene["collision_binding_id"],
+                    "content_digest": base_scene["collision_mesh_digest"]} if development_seed else
+                   {"kind": "gaussian_splat", "binding_id": base_scene["splat_binding_id"],
+                    "content_digest": base_scene["splat_digest"]}),
         # The preparation below binds the reconstructed collider and estimated
         # registration. This is not an owner-uploaded companion mesh or an
         # owner declaration of its coordinate frame.
@@ -678,7 +690,9 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         "binding": {"task_context_digest": task_context["context_digest"], "task_masks_digest": task_masks["digest"],
                     "source_geometry_digest": source_geometry["digest"],
                     "removal_manifest_digest": canonical_digest(removal_manifest),
-                    "splat_digest": base_scene["splat_digest"], "collision_mesh_digest": base_scene["collision_mesh_digest"],
+                    **({"development_seed_mesh_digest": base_scene["collision_mesh_digest"]} if development_seed else
+                       {"splat_digest": base_scene["splat_digest"]}),
+                    "collision_mesh_digest": base_scene["collision_mesh_digest"],
                     "provider": base_scene.get("provider"), "operation_id": base_scene.get("operation_id")},
         "registration": registration, "coordinate_frame": {"declared_meters_per_unit": mpu,
                                                            "scale_authority": ("model_estimated_object_frame" if independent_object

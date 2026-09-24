@@ -159,3 +159,38 @@ def test_world_without_declared_scale_leaves_registration_to_estimate(tmp_path, 
     base = seen["base_scene"]
     assert base["meters_per_unit"] is None and base["anchor"] is None
     assert base["scale_authority"] == "registration_estimate"
+
+
+def test_terminal_world_failure_enters_only_authorized_development_seed(tmp_path, monkeypatch):
+    from blueprint_pipeline.website_development_test import ENV
+    kwargs = inputs(tmp_path)
+    context = kwargs['descriptor']['metadata']['site_task_context']
+    context['context_digest'] = 'sha256:' + 'a' * 64
+    operation_path = tmp_path / 'pipeline' / 'operation.json'
+    write_json(operation_path, {'operation_id': 'op-1', 'done': True, 'error': {'code': 500}})
+    kwargs['provider_run'] = {'status': 'failed', 'operation_terminal_status': 'failed',
+        'provider_run_id': 'op-1', 'worldlabs_operation_manifest_uri': str(operation_path)}
+    video = tmp_path / 'walkthrough.mov'
+    video.write_bytes(b'source')
+    kwargs['clean_plate'].update(source_geometry=None, input_video_path=str(video),
+        stage_manifest_path=str(tmp_path / 'pipeline' / 'clean_plate' / 'stage.json'))
+    called = []
+    def dispatch(**kw):
+        called.append(kw)
+        raise ValueError('geometry_pending')
+    monkeypatch.setattr('blueprint_pipeline.website_scene_geometry.run_website_scene_geometry', dispatch)
+    assert handoff.prepare_website_scene_handoff(**kwargs)['blockers'] == ['website_reconstruction_pending']
+    assert called == []
+    monkeypatch.setenv(ENV, json.dumps([context['context_digest']]))
+    result = handoff.prepare_website_scene_handoff(**kwargs)
+    assert result['blockers'] == ['geometry_pending'] and len(called) == 1
+    assert result['captured_scene_reconstruction']['status'] == 'failed'
+    kwargs['clean_plate']['source_geometry'] = {'digest': 'source'}
+    seen = {}
+    monkeypatch.setattr(handoff, 'compile_website_scene_preparation',
+        lambda **value: seen.update(value) or (_ for _ in ()).throw(ValueError('stop')))
+    assert handoff.prepare_website_scene_handoff(**kwargs)['blockers'] == ['stop']
+    base = seen['base_scene']
+    assert base['mode'] == 'development_fixture_seed' and base['provider'] == 'blueprint_authored_development_seed'
+    assert _sha256_file(__import__('pathlib').Path(base['collision_mesh_path'])) == base['collision_mesh_digest']
+    assert 'splat_path' not in base
