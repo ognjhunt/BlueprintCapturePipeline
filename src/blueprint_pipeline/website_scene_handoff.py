@@ -79,7 +79,7 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
             result["reconstruction_settlement"] = settlement
         if clean_plate.get("source_geometry") is None:
             from .website_scene_geometry import run_website_scene_geometry
-            from .website_task_masks import bind_task_masks_to_geometry, run_website_task_masks
+            from .website_task_masks import bind_task_masks_to_geometry, complete_retained_static_task_masks
             video = Path(clean_plate.get("input_video_path") or "")
             if not video.is_file() or not video.resolve().is_relative_to(capture_root.resolve()):
                 raise ValueError("website_source_video_outside_capture")
@@ -90,9 +90,10 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
                 plan_path = Path(clean_plate["removal_plan_path"])
                 if not plan_path.resolve().is_relative_to(capture_root.resolve() / "pipeline"):
                     raise ValueError("website_scene_removal_plan_outside_capture")
-                masks = run_website_task_masks(plan=json.loads(plan_path.read_text()),
-                    source_geometry=clean_plate["source_frames"], output_root=plan_path.parent / "task_masks",
-                    source_video=video, task_context=context)
+                masks = complete_retained_static_task_masks(plan=json.loads(plan_path.read_text()),
+                    source_geometry=clean_plate["source_frames"], task_masks=clean_plate["task_masks"],
+                    output_root=plan_path.parent / "task_masks",
+                    view_plan_root=plan_path.parent / "mask_view_plan")
                 clean_plate = {**clean_plate, "task_masks": masks}
             result["geometry_controller_invoked"] = True
             geometry = run_website_scene_geometry(source_video=video,
