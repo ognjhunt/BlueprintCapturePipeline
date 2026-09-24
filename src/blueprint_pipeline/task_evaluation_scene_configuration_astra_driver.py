@@ -461,6 +461,18 @@ def _author_articulated_parts(*, plan, part_requests, authored_root, runtime, pr
     return authored
 
 
+def _managed_authoring_receipt(path: Path, authored: Mapping[str, Any]) -> dict[str, Any]:
+    value = _read(path, code="agents_api_stage_receipt_missing")
+    if (value.get("schema_version") != "task_asset_agents_api_stage_receipt.v1"
+            or value.get("provider") != "openai" or value.get("model") != "gpt-6-sol"
+            or value.get("runtime") != "openai_agents_api"
+            or value.get("session_cleanup") != "deleted"
+            or value.get("result_digest") != authored.get("result_digest")
+            or value.get("receipt_digest") != canonical_digest(value, digest_field="receipt_digest")):
+        raise AstraStageError("agents_api_stage_receipt_invalid")
+    return value
+
+
 def _finish_articulated_component(*, plan, part_requests, authored, output, physics_bounds, configuration,
                                   source_record, stage_input, rights_record, cad_runtime, blender, authored_root,
                                   result_path, package_candidate):
@@ -508,9 +520,16 @@ def _finish_articulated_component(*, plan, part_requests, authored, output, phys
         "authoring_backend": BACKEND}
     graph_path = output / "replacement_graph_spec.v1.json"
     _write(graph_path, graph)
+    managed_receipts = {}
+    if configuration.get("authoring_agent_runtime") == "openai_agents_api":
+        for part_id in part_requests:
+            path = authored_root.parent / "inference" / "agents_api" / "parts" / part_id / "agents_api_stage_receipt.json"
+            managed_receipts[part_id] = _managed_authoring_receipt(path, authored["parts"][part_id])
     receipt = {"schema_version": ARTICULATED_RECEIPT_SCHEMA_VERSION,
         "status": "authored_candidate_pending_qualification", "authoring_backend": BACKEND, "model": authored["model"],
         **({"provider": "anthropic"} if authored["model"] == "claude-opus-5-5" else {}),
+        **({"provider": "openai", "agent_runtime": "openai_agents_api",
+            "managed_agent_execution_receipts": managed_receipts} if managed_receipts else {}),
         "part_models": authored["part_models"],
         "asset_kind": "articulated_assembly", "replacement_identity": identity,
         "source_candidate_digest": source_record["digest"],
@@ -529,6 +548,7 @@ def _finish_articulated_component(*, plan, part_requests, authored, output, phys
         "stage_id": stage_input["stage"]["stage_id"], "provider_mutations_performed": 0,
         "nested_paid_execution_requested": False, "authoring_backend": BACKEND, "model": authored["model"],
         **({"provider": "anthropic"} if authored["model"] == "claude-opus-5-5" else {}),
+        **({"provider": "openai", "agent_runtime": "openai_agents_api"} if managed_receipts else {}),
         "asset_kind": "articulated_assembly",
         "artifacts": [{"role": role, **_file_record(path)} for role, path in (
             ("replacement_asset", asset), ("replacement_authoring_receipt", receipt_path), ("replacement_graph_spec", graph_path))],
@@ -853,6 +873,121 @@ def _execute_claude_stage(*, values, stage_input, rights, request, articulated, 
         cad_runtime=cad_runtime, blender=blender, authored_root=authored_root, result_path=result_path)
 
 
+def _execute_agents_api_stage(*, values, stage_input, rights, request, articulated, plan, part_requests,
+                              runtime, authored_root, output, physics_bounds, configuration, source_record,
+                              rights_record, cad_runtime, cad_root, verified_sources, blender, sandbox,
+                              result_path, package_candidate, cost_gate_factory):
+    """Only a separately signed Sol/managed selection can enter this CPU lane."""
+    from functools import partial
+    from .task_object_agent_cad import execute_cad_program
+    from .task_object_agents_api_stage import run_managed_asset_authoring
+
+    execution = rights.get("execution_authority") or {}
+    consent = rights.get("consent") or {}
+    policy = configuration.get("agents_api_policy") or {}
+    authority_digest = values.get("BLUEPRINT_SCENE_CONFIGURATION_AUTHORITY_DIGEST")
+    if (configuration.get("authoring_agent_runtime") != "openai_agents_api"
+            or configuration.get("authoring_model_provider") != "openai"
+            or configuration.get("authoring_model") != "gpt-6-sol"
+            or configuration.get("source_observation_kind") != "website_capture_frames"
+            or values.get("BLUEPRINT_SCENE_CONFIGURATION_AUTHORING_RUNTIME") != "openai_agents_api"
+            or rights.get("schema_version") != "website_native_rights_admission.v1"
+            or rights.get("digest") != canonical_digest(rights, digest_field="digest")
+            or "openai" not in execution.get("allowed_providers", [])
+            or rights.get("private_provider_processing_allowed") is not True
+            or rights.get("provider_training_allowed") is not False
+            or not consent.get("provider_terms_reference")
+            or not isinstance(authority_digest, str)
+            or re.fullmatch(r"sha256:[0-9a-f]{64}", authority_digest) is None
+            or request.run_id != stage_input["run_id"]):
+        raise AstraStageError("agents_api_stage_signed_authority_missing")
+    scope = scene_configuration_openai_stage_scope(values, stage="content_agents")
+    key_path = Path(scope["api_key_file"]).expanduser()
+    guard_file = Path(str(values.get("BLUEPRINT_SCENE_CONFIGURATION_AGENTS_API_PROJECT_GUARD_FILE") or ""))
+    try:
+        maximum_cost = min(15.0,
+            float(values["BLUEPRINT_SCENE_CONFIGURATION_OPENAI_CONTENT_AGENTS_MAX_COST_USD"]),
+            float(values["BLUEPRINT_SCENE_CONFIGURATION_OPENAI_MAX_COST_USD"]))
+        maximum_calls = min(32, int(values["BLUEPRINT_SCENE_CONFIGURATION_OPENAI_MAX_REQUESTS"]))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise AstraStageError("agents_api_stage_paid_cap_missing") from exc
+    if (not math.isfinite(maximum_cost) or maximum_cost <= 0 or maximum_calls < 1
+            or not guard_file.is_absolute() or key_path.is_symlink() or not key_path.is_file()
+            or key_path.stat().st_mode & 0o077 or not key_path.read_text().strip()):
+        raise AstraStageError("agents_api_stage_paid_cap_or_secret_invalid")
+    project_id = str(values.get("OPENAI_PROJECT_ID") or "")
+    if not project_id or not scope.get("api_key_id"):
+        raise AstraStageError("agents_api_stage_project_scope_missing")
+    budget_root = runtime / "inference"
+    base_invoker, audit = budgeted_invoker(root=budget_root / "review",
+        run_id=request.run_id, maximum_cost_usd=maximum_cost)
+    reviewer = _StageInvoker(base_invoker, request.run_id, maximum_calls, 0)
+    cad_executor = partial(execute_cad_program, cad_root=cad_root / "text-to-cad",
+        mac_root=cad_root / "Multi-Agent-CAD", sandbox=sandbox, verified_sources=verified_sources)
+    instructions = (cad_root / "text-to-cad/skills/cad/SKILL.md").read_text()
+    gate = cost_gate_factory(environment=values, stage="content_agents", run_id=request.run_id,
+        request_digest=_sha256(_required_path(values, _INPUT_ENV)), candidate_digest=source_record["digest"],
+        output_root=runtime / "official_openai_cost", max_cost_usd=maximum_cost)
+    gate.reserve()
+    authored, failure, provider_attempted = None, None, False
+    try:
+        with _stage_sdk_environment(key_path.resolve()):
+            if articulated:
+                parts = {}
+                for part_id, part_request in part_requests.items():
+                    provider_attempted = True
+                    parts[part_id] = run_managed_asset_authoring(
+                        request_value=part_request.model_dump(mode="json"),
+                        output_root=authored_root / "parts" / part_id,
+                        budget_root=budget_root / "agents_api" / "parts" / part_id,
+                        cad_executor=cad_executor, blender_runner=sandbox,
+                        blender_executable=blender["executable"], review_invoker=reviewer,
+                        policy=policy, authority_digest=authority_digest,
+                        source_commit=stage_input["source_commit"], project_id=project_id,
+                        credential_id=scope["api_key_id"], guard_file=guard_file,
+                        maximum_cost_usd=maximum_cost, key_file=key_path.resolve(),
+                        authoring_instructions=instructions)
+                authored = {"schema_version": ARTICULATED_AUTHORING_RESULT_SCHEMA_VERSION,
+                    "status": "parts_authored_pending_native_qualification", "model": "gpt-6-sol",
+                    "provider": "openai", "agent_runtime": "openai_agents_api",
+                    "plan": dict(plan), "parts": parts, "reused_part_ids": [],
+                    "part_models": {part_id: part["model"] for part_id, part in parts.items()},
+                    "part_request_digests": {part_id: item.request_digest for part_id, item in part_requests.items()},
+                    "claim_ceiling": "development_only", "native_import_qualified": False,
+                    "scene_placement_qualified": False, "physical_equivalence_proven": False}
+                authored["result_digest"] = canonical_digest(authored, digest_field="result_digest")
+                _write(authored_root / "result.json", authored)
+            else:
+                provider_attempted = True
+                authored = run_managed_asset_authoring(
+                    request_value=request.model_dump(mode="json"), output_root=authored_root,
+                    budget_root=budget_root / "agents_api", cad_executor=cad_executor,
+                    blender_runner=sandbox, blender_executable=blender["executable"],
+                    review_invoker=reviewer, policy=policy,
+                    authority_digest=authority_digest, source_commit=stage_input["source_commit"],
+                    project_id=project_id, credential_id=scope["api_key_id"], guard_file=guard_file,
+                    maximum_cost_usd=maximum_cost, key_file=key_path.resolve(),
+                    authoring_instructions=instructions)
+    except Exception as exc:
+        failure = type(exc).__name__
+        raise
+    finally:
+        _write(runtime / "inference_audit.json", audit.manifest())
+        gate.complete(provider_call_performed=provider_attempted,
+            runtime_result_digest=(authored or {}).get("result_digest"),
+            runtime_exception_type=failure)
+    if articulated:
+        return _finish_articulated_component(plan=plan, part_requests=part_requests, authored=authored,
+            output=output, physics_bounds=physics_bounds, configuration=configuration,
+            source_record=source_record, stage_input=stage_input, rights_record=rights_record,
+            cad_runtime=cad_runtime, blender=blender, authored_root=authored_root,
+            result_path=result_path, package_candidate=package_candidate)
+    return _finish_component(request=request, authored=authored, package_candidate=package_candidate,
+        output=output, physics_bounds=physics_bounds, configuration=configuration,
+        source_record=source_record, stage_input=stage_input, rights_record=rights_record,
+        cad_runtime=cad_runtime, blender=blender, authored_root=authored_root, result_path=result_path)
+
+
 @_locked_component
 def execute_astra_component(*, environment=None, runner=subprocess.run,
                             cost_gate_factory=scene_configuration_openai_stage_gate,
@@ -870,8 +1005,11 @@ def execute_astra_component(*, environment=None, runner=subprocess.run,
         raise AstraStageError("astra_parent_toolchain_digest_mismatch")
     configuration, envelope = stage_input["configuration"], stage_input["construction_envelope"]
     authoring_provider = configuration.get("authoring_model_provider", "openai")
+    authoring_runtime = configuration.get("authoring_agent_runtime")
     if authoring_provider not in {"openai", "anthropic"}:
         raise AstraStageError("astra_authoring_provider_invalid")
+    if authoring_runtime not in (None, "openai_agents_api"):
+        raise AstraStageError("astra_authoring_runtime_invalid")
     source_record, _ = _dependency_candidate(dependencies)
     references = _reference_frames(stage_input, dependencies)
     rights_record, rights_path = _materialized(envelope, contract_path="scene.rights.admission")
@@ -926,6 +1064,10 @@ def execute_astra_component(*, environment=None, runner=subprocess.run,
         restore_partial_astra(value=partial_descriptor, request_value=request.model_dump(mode="json"),
             original_root=restored_root, verified_lineage=verified_lineage, archive_path=archive_path)
     prior_roots = ([primary] if primary.exists() else []) + sorted(attempts.glob("attempt-????"))
+    if authoring_runtime == "openai_agents_api" and (prior_roots or partial_descriptor is not None
+            or configuration.get("astra_phase_adoption") is not None
+            or no_cost_replay or retained_runtime is not None):
+        raise AstraStageError("agents_api_cross_attempt_adoption_not_qualified")
     if authoring_provider == "anthropic" and (prior_roots or partial_descriptor is not None
             or configuration.get("astra_phase_adoption") is not None
             or no_cost_replay or retained_runtime is not None):
@@ -1004,6 +1146,16 @@ def execute_astra_component(*, environment=None, runner=subprocess.run,
             cad_runtime=cad_runtime, cad_root=cad_root, verified_sources=verified_sources,
             blender=blender, sandbox=sandbox, result_path=result_path,
             package_candidate=package_candidate)
+    if authoring_runtime == "openai_agents_api":
+        return _execute_agents_api_stage(values=values, stage_input=stage_input,
+            rights=_read(rights_path, code="astra_rights_invalid"), request=request,
+            articulated=articulated, plan=plan, part_requests=part_requests,
+            runtime=runtime, authored_root=authored_root, output=delivery_output,
+            physics_bounds=physics_bounds, configuration=configuration,
+            source_record=source_record, rights_record=rights_record,
+            cad_runtime=cad_runtime, cad_root=cad_root, verified_sources=verified_sources,
+            blender=blender, sandbox=sandbox, result_path=result_path,
+            package_candidate=package_candidate, cost_gate_factory=cost_gate_factory)
     scope = scene_configuration_openai_stage_scope(values, stage="content_agents")
     key_path = Path(scope["api_key_file"]).expanduser()
     if key_path.is_symlink() or not key_path.is_file() or key_path.stat().st_mode & 0o077 or not key_path.read_text().strip():
@@ -1107,9 +1259,15 @@ def _finish_component(*, request, authored, package_candidate, output, physics_b
         "physics_bounds": physics_bounds, "physics_authority_granted": False, "authoring_backend": BACKEND}
     graph_path = output / "replacement_graph_spec.v1.json"
     _write(graph_path, graph)
+    managed_receipts = {}
+    if configuration.get("authoring_agent_runtime") == "openai_agents_api":
+        path = authored_root.parent / "inference" / "agents_api" / "agents_api_stage_receipt.json"
+        managed_receipts["object"] = _managed_authoring_receipt(path, authored)
     receipt = {"schema_version": "task_evaluation_rigid_replacement_authoring_result.v1",
         "status": "authored_candidate_pending_qualification", "authoring_backend": BACKEND, "model": authored["model"],
         **({"provider": "anthropic"} if authored["model"] == "claude-opus-5-5" else {}),
+        **({"provider": "openai", "agent_runtime": "openai_agents_api",
+            "managed_agent_execution_receipts": managed_receipts} if managed_receipts else {}),
         "replacement_identity": identity, "source_candidate_digest": source_record["digest"],
         "source_candidate_claim": "source_geometry_not_observed_truth_or_physics_authority",
         "source_commit": stage_input["source_commit"], "toolchain_digest": stage_input["toolchain_digest"],
@@ -1124,6 +1282,7 @@ def _finish_component(*, request, authored, package_candidate, output, physics_b
         "stage_id": stage_input["stage"]["stage_id"], "provider_mutations_performed": 0,
         "nested_paid_execution_requested": False, "authoring_backend": BACKEND, "model": authored["model"],
         **({"provider": "anthropic"} if authored["model"] == "claude-opus-5-5" else {}),
+        **({"provider": "openai", "agent_runtime": "openai_agents_api"} if managed_receipts else {}),
         "artifacts": [{"role": role, **_file_record(path)} for role, path in (
             ("replacement_asset", asset), ("replacement_authoring_receipt", receipt_path), ("replacement_graph_spec", graph_path))],
         "result_digest": ""}

@@ -281,6 +281,14 @@ def _validate_launch_preparation_request(
         # The construction consumer verifies this declaration against the
         # sealed recipe and native-input evidence before paid authority.
         prepared_website = request["scene"].get("website_native_inputs") is not None
+        agents_api_selected = request.get("replacement_authoring_agent_runtime") == "openai_agents_api"
+        if (agents_api_selected != (request.get("replacement_authoring_model") == "gpt-6-sol")
+                or (agents_api_selected and (anthropic_selected or not prepared_website
+                    or request.get("replacement_authoring_backend") != "astra_cad_blender_v1"
+                    or request["runtime"]["network"]["allowlist"] != ["api.openai.com"]
+                    or request["runtime"]["secret_refs"] != ["secret-file:openai_api_key"]))):
+            raise TaskEvaluationLaunchPreparationContractError(
+                "launch_preparation_agents_api_authoring_scope_invalid")
         if anthropic_selected and (not prepared_website
                 or request.get("replacement_authoring_backend") != "astra_cad_blender_v1"
                 or request["runtime"]["network"]["allowlist"] != ["api.anthropic.com"]
@@ -328,6 +336,8 @@ def _validate_launch_preparation_request(
             raise TaskEvaluationLaunchPreparationContractError("launch_preparation_episode_authoring_backend_forbidden")
         if "replacement_authoring_model_provider" in request:
             raise TaskEvaluationLaunchPreparationContractError("launch_preparation_episode_authoring_provider_forbidden")
+        if "replacement_authoring_agent_runtime" in request or "replacement_authoring_model" in request:
+            raise TaskEvaluationLaunchPreparationContractError("launch_preparation_episode_authoring_runtime_forbidden")
         if request.get("appearance_review_override") is not None:
             raise TaskEvaluationLaunchPreparationContractError(
                 "launch_preparation_episode_appearance_review_override_forbidden"

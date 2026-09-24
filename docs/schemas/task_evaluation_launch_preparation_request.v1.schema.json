@@ -1300,7 +1300,9 @@
         "astra_cad_blender_v1"
       ]
     },
-    "replacement_authoring_model_provider": {"const": "anthropic"}
+    "replacement_authoring_model_provider": {"const": "anthropic"},
+    "replacement_authoring_agent_runtime": {"const": "openai_agents_api"},
+    "replacement_authoring_model": {"const": "gpt-6-sol"}
   },
   "allOf": [
     {

@@ -14,14 +14,49 @@ the established native and scene qualification gates pass. Its completion
 artifact is an admitted task plus a digest-bound authoring/review receipt; the
 focused wire-shaped test exercises the adapter without a provider call.
 
-This is an opt-in library path, not a change to the scene-configuration driver.
-For a separately identified future drawer scene, the controller must first
-issue exact source-byte disclosure authority, accept Agents API session/trace
-retention and managed-budget uncertainty, bind an OpenAI project guard and paid
-stage cap, select the runtime in a signed configuration, and wire the existing
-runtime journal plus separate reviewer. It must observe cleanup and provider
-zero before declaring a terminal run. No current Claude scene authority or
-resource is transferable to that future selection.
+The scene-configuration driver now selects this path only when a fresh website
+sponsorship record signs `authoring_agent_runtime=openai_agents_api`,
+`authoring_model=gpt-6-sol`, and a bounded `agents_api_policy`. The Pipeline
+verifies that sponsorship digest, carries the selection through the website
+preparation, launch request, immutable stage configuration and bundle receipt,
+then stages an owner-only project guard file for the exact OpenAI project/key.
+The managed stage keeps one session across at most three independent review
+cycles, retains uncertain operations for reconciliation, and requires observed
+session deletion before returning an authored candidate to the existing
+OpenUSD packaging and later native/scene qualification gates. The stage's
+official-cost attestation, project hard limit, run spend cap and finite
+deadline all remain required. The signed receipt digest must match the private
+`blueprint_agent_project_admission_observation.v1` file; browser input cannot
+set it. No current Claude scene authority or resource transfers to this route.
+
+Admission before the first live scene still needs a separately identified
+rights-cleared website capture, owner acceptance of provider terms and managed
+session/trace retention, a dedicated project/key with an observed hard limit no
+larger than the signed content-agent stage cap, a current private guard receipt,
+and a fresh signed WebApp sponsorship carrying these fields. Deployment and a
+live provider trial have not occurred in this implementation PR.
+
+Operator admission for a fresh scene:
+
+1. In the OpenAI dashboard, inspect the **dedicated** project, its content-agent
+   key identity, and the enabled monthly hard limit. Confirm the limit is no
+   greater than the signed content-agent stage cap. A key file or an earlier
+   pilot receipt does not prove this observation.
+2. As the Pipeline service owner, create a private `0700` directory and run
+   `python scripts/write_scene_agents_api_project_guard.py --output
+   /absolute/private/scene-guard.json --project-id proj_EXACT --credential-id
+   key_EXACT --dashboard-hard-limit-usd 5.00 --signed-stage-cap-usd 5.00
+   --expires-in-seconds 3600 --ack-dashboard-hard-limit-enabled
+   --ack-dedicated-project-and-key`. Use the actual observed amount, project
+   and credential IDs. The command creates a `0600` file once and prints only
+   its digest; it records the human dashboard observation and does not query or
+   change the project limit.
+3. Configure the Pipeline host's
+   `BLUEPRINT_SCENE_CONFIGURATION_AGENTS_API_PROJECT_GUARD_FILE` to that exact
+   private path. Configure the WebApp server's signed policy JSON with the
+   printed `project_guard_receipt_digest` and exact task-context allowlist.
+   Verify both sides' policy/receipt digest and expiry before constructing the
+   fresh scene. A changed guard, project, key, cap or task needs new authority.
 
 This is the implementation and verification ledger for the revised September 10
 Agents API assessment and its specialist design review. The objective is the

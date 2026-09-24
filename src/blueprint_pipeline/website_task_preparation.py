@@ -633,6 +633,20 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                 or not consent["provider_terms_reference"]):
             blockers.append("website_anthropic_provider_terms_authority_required")
         authoring_configuration["authoring_model_provider"] = "anthropic"
+    if any(spend.get(key) is not None for key in ("authoring_agent_runtime", "authoring_model", "agents_api_policy")):
+        if (authoring_provider != "openai"
+                or spend.get("authoring_agent_runtime") != "openai_agents_api"
+                or spend.get("authoring_model") != "gpt-6-sol"
+                or not isinstance(spend.get("agents_api_policy"), Mapping)
+                or spend.get("authority_digest") != canonical_digest(spend, digest_field="authority_digest")
+                or spend.get("scene_id") != task_context["scene_id"]
+                or spend.get("capture_id") != task_context["capture_id"]
+                or spend.get("task_context_digest") != task_context["context_digest"]):
+            blockers.append("website_agents_api_signed_authority_required")
+        else:
+            authoring_configuration.update(authoring_model_provider="openai",
+                authoring_agent_runtime="openai_agents_api", authoring_model="gpt-6-sol",
+                agents_api_policy=dict(spend["agents_api_policy"]))
     if not owner or not consent:
         blockers.append("website_scene_execution_authority_required")
     rights = task_context.get("capture_rights") or {}

@@ -282,6 +282,34 @@ def test_anthropic_stage_requires_the_same_launch_request_provider() -> None:
     validate_immutable_stage_configurations(envelope=envelope, configurations=configurations)
 
 
+def test_agents_api_stage_requires_exact_signed_runtime_model_and_policy() -> None:
+    envelope = _envelope()
+    configurations = _articulated_map()
+    authoring = configurations["stage-3"]
+    authoring.update(authoring_backend="astra_cad_blender_v1",
+        authoring_model_provider="openai", authoring_agent_runtime="openai_agents_api",
+        authoring_model="gpt-6-sol", source_observation_kind="website_capture_frames",
+        agents_api_policy={"schema_version": "scene_configuration_agents_api_policy.v1",
+            "disclosure_scope": "task_asset_source_frames_and_metric_envelope",
+            "session_retention": "until_deleted", "trace_retention": "provider_default",
+            "region": "us", "budget_policy": "project_guard_accepted_uncertainty",
+            "project_guard_receipt_digest": "sha256:" + "a" * 64,
+            "ttl_seconds": 900, "maximum_review_cycles": 3})
+    with pytest.raises(ValueError, match="authoring_runtime_budget_binding"):
+        validate_immutable_stage_configurations(envelope=envelope, configurations=configurations)
+    envelope["request"] = {"replacement_authoring_backend": "astra_cad_blender_v1",
+        "replacement_authoring_agent_runtime": "openai_agents_api",
+        "replacement_authoring_model": "gpt-6-sol"}
+    validate_immutable_stage_configurations(envelope=envelope, configurations=configurations)
+    envelope["request"]["replacement_authoring_model"] = "gpt-6-astra"
+    with pytest.raises(ValueError, match="authoring_model_budget_binding"):
+        validate_immutable_stage_configurations(envelope=envelope, configurations=configurations)
+    envelope["request"]["replacement_authoring_model"] = "gpt-6-sol"
+    authoring["agents_api_policy"]["budget_policy"] = "strict_per_call"
+    with pytest.raises(ValueError, match="agents_api_policy"):
+        validate_immutable_stage_configurations(envelope=envelope, configurations=configurations)
+
+
 def test_stage_three_refuses_physically_impossible_friction_bounds() -> None:
     configurations = _configuration_map()
     required = configurations["stage-3"]["required_output"]

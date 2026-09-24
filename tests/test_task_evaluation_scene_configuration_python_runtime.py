@@ -192,6 +192,7 @@ def _astra_lock(tmp_path: Path, *, broken_module: str | None = None) -> tuple[Pa
         "trimesh": {"trimesh/__init__.py": "class Trimesh: pass\n"},
         "pillow": {"PIL/__init__.py": "", "PIL/Image.py": "class Image: pass\n"},
         "rfc8785": {"rfc8785/__init__.py": "def dumps(value): return b'{}'\n"},
+        "jsonschema": {"jsonschema/__init__.py": "class Draft202012Validator: pass\n"},
     }
     dependencies = {"build123d": "cadquery-ocp-novtk"}
     rows, bodies = [], {}
@@ -261,7 +262,7 @@ def test_astra_profile_closes_locked_cad_and_langgraph_with_minimal_base_roots()
 def test_astra_materialization_imports_sealed_profile_and_rejects_wrong_profile(tmp_path):
     root, manifest = _build_astra(tmp_path)
     assert manifest["runtime_profile"] == "astra_asset_authoring"
-    assert manifest["root_distributions"] == ["openai-agents", "usd-core", "build123d", "langgraph", "trimesh", "pillow", "rfc8785"]
+    assert manifest["root_distributions"] == ["openai-agents", "usd-core", "build123d", "langgraph", "trimesh", "pillow", "rfc8785", "jsonschema"]
     assert validate_scene_configuration_python_wheelhouse(root=root, profile="astra_asset_authoring") == manifest
     with pytest.raises(ValueError, match="manifest_invalid|profile_mismatch"):
         validate_scene_configuration_python_wheelhouse(root=root)
@@ -288,7 +289,7 @@ def test_slow_sealed_import_has_bounded_headroom_and_typed_timeout(tmp_path, mon
     assert observed["timeout"] == 300
 
 
-@pytest.mark.parametrize("missing", ["build123d", "langgraph", "trimesh", "pillow", "rfc8785"])
+@pytest.mark.parametrize("missing", ["build123d", "langgraph", "trimesh", "pillow", "rfc8785", "jsonschema"])
 def test_missing_astra_root_wheel_is_refused_even_with_rehashed_inventory(tmp_path, missing):
     from blueprint_pipeline.decision_evidence_contracts import canonical_digest
     root, manifest = _build_astra(tmp_path)
@@ -304,7 +305,7 @@ def test_missing_astra_root_wheel_is_refused_even_with_rehashed_inventory(tmp_pa
     assert not (tmp_path/"installed").exists()
 
 
-@pytest.mark.parametrize("broken", ["build123d", "langgraph", "cadquery-ocp-novtk", "trimesh", "pillow", "rfc8785"])
+@pytest.mark.parametrize("broken", ["build123d", "langgraph", "cadquery-ocp-novtk", "trimesh", "pillow", "rfc8785", "jsonschema"])
 def test_astra_import_failure_refuses_promotion_before_any_agent_call(tmp_path, broken):
     root, _ = _build_astra(tmp_path, broken_module=broken)
     with pytest.raises(ValueError, match="import_preflight_failed"):
