@@ -291,7 +291,7 @@ def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_dige
 
 
 def _verify_completed_background(*, frames: Sequence[Mapping[str, Any]], original_frames: Sequence[Mapping[str, Any]],
-                                plan: Mapping[str, Any], output_root: Path, retain_result: bool = True) -> dict[str, Any]:
+                                plan: Mapping[str, Any], output_root: Path, retain_result: bool = True, timeout_ms: int = 120_000) -> dict[str, Any]:
     """Inspect generated candidates before allowing them into reconstruction."""
     originals = {f["frame_id"]: f for f in original_frames}
     for frame in frames:
@@ -319,7 +319,7 @@ def _verify_completed_background(*, frames: Sequence[Mapping[str, Any]], origina
                 raise ValueError("website_image_completion_review_source_changed")
             contents.extend([f"{label} {frame['frame_id']}", types.Part.from_bytes(data=path.read_bytes(), mime_type="image/png")])
     with genai.Client(api_key=key, http_options=types.HttpOptions(
-            timeout=120_000, retry_options=types.HttpRetryOptions(attempts=1))) as client:
+            timeout=timeout_ms, retry_options=types.HttpRetryOptions(attempts=1))) as client:
         response = client.models.generate_content(
             model=DEFAULT_MODEL, contents=contents,
             config=types.GenerateContentConfig(response_mime_type="application/json", max_output_tokens=2048,
@@ -364,15 +364,37 @@ def verify_completed_background(*, frames: Sequence[Mapping[str, Any]], original
             if _sha256_file(Path(item["image_path"])) != item["image_digest"]:
                 raise ValueError("website_image_completion_review_source_changed")
             inputs.append(item["image_digest"])
-    binding = {"kind": "background_review", "revision": 1, "model": DEFAULT_MODEL, "max_output_tokens": 2048,
-               "image_digests": inputs, "frame_ids": [f["frame_id"] for f in frames], "targets": plan["targets"],
-               "prompt": REVIEW_PROMPT, "media_resolution": "MEDIA_RESOLUTION_HIGH"}
+    base_binding = {"kind": "background_review", "model": DEFAULT_MODEL, "max_output_tokens": 2048,
+                    "image_digests": inputs, "frame_ids": [f["frame_id"] for f in frames], "targets": plan["targets"],
+                    "prompt": REVIEW_PROMPT, "media_resolution": "MEDIA_RESOLUTION_HIGH"}
     # HIGH is bounded at 1120 tokens/image. UTF-8 bytes upper-bound the
     # controlled text; 2048 covers the fixed prompt and per-image labels.
     # https://ai.google.dev/gemini-api/docs/generate-content/media-resolution
     text_bytes = len((REVIEW_PROMPT + json.dumps(plan["targets"], sort_keys=True)).encode()) + 2048
     text_bytes += sum(len(str(frame["frame_id"]).encode()) * 2 + 32 for frame in frames)
     input_tokens = text_bytes + 1120 * len(inputs)
+    quote = gemini_quote(model=DEFAULT_MODEL, input_tokens=input_tokens, max_output_tokens=2048)
+    # Revision 1 allowed the client 120 s; a 14-image HIGH-resolution review
+    # outlived it and left an immutable submitting intent. Reuse a completed v1
+    # receipt; only an exact unresolved v1 intent permits one separately bounded
+    # v2 request, which allows 300 s. Never rewrite the old intent.
+    prior_binding = {**base_binding, "revision": 1}
+    prior_request = {"binding": prior_binding, "task_context_digest": task_context["context_digest"],
+                     "maximum_cost_usd": quote}
+    prior_digest = canonical_digest(prior_request)
+    prior_path = output_root / "gemini_reviews" / f"{prior_digest[7:]}.json"
+    prior_status = None
+    if prior_path.is_file():
+        prior_receipt = json.loads(prior_path.read_text())
+        if prior_receipt.get("request_digest") != prior_digest or prior_receipt.get("request") != prior_request:
+            raise ValueError("website_image_completion_prior_review_receipt_changed")
+        prior_status = prior_receipt.get("status")
+        if prior_status not in {"completed", "submitting"}:
+            raise ValueError("website_image_completion_prior_review_receipt_invalid")
+    timeout_ms = 120_000 if prior_status == "completed" else 300_000
+    binding = (prior_binding if prior_status == "completed" else
+               {**base_binding, "revision": 2, "timeout_seconds": timeout_ms // 1000,
+                "supersedes_incomplete_request_digest": prior_digest if prior_status == "submitting" else None})
 
     def preflight():
         if not _api_key()[0]:
@@ -380,9 +402,10 @@ def verify_completed_background(*, frames: Sequence[Mapping[str, Any]], original
         from google import genai  # noqa: F401
 
     return retained_gemini_call(output_root=output_root / "gemini_reviews", binding=binding,
-        task_context=task_context, maximum_cost_usd=gemini_quote(model=DEFAULT_MODEL, input_tokens=input_tokens, max_output_tokens=2048),
+        task_context=task_context, maximum_cost_usd=quote,
         preflight=preflight, invoke=lambda: _verify_completed_background(frames=frames,
-            original_frames=original_frames, plan=plan, output_root=output_root, retain_result=False))
+            original_frames=original_frames, plan=plan, output_root=output_root, retain_result=False,
+            timeout_ms=timeout_ms))
 
 
 def diagnose_inconsistent_background(*, frames: Sequence[Mapping[str, Any]],

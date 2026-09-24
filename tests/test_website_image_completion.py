@@ -295,6 +295,56 @@ def test_consistency_diagnosis_preserves_or_supersedes_exact_prior_receipt(
         assert seen[0]["binding"]["supersedes_incomplete_request_digest"] == prior_digest
 
 
+@pytest.mark.parametrize("prior_status,expected_revision", [("completed", 1), ("submitting", 2), (None, 2)])
+def test_background_review_preserves_or_supersedes_exact_prior_receipt(
+        tmp_path, monkeypatch, prior_status, expected_revision):
+    from hashlib import sha256
+    from blueprint_pipeline import website_gemini_receipts as receipts
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+
+    frames, _ = _inputs(tmp_path)
+    task = {"request_id": "request", "scene_id": "scene", "capture_id": "capture",
+            "context_digest": "sha256:task-context"}
+    plan = {"task_context_sha256": sha256(json.dumps(task, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+            "targets": []}
+    image_digests = [digest for frame in frames for digest in (frame["image_digest"], frame["image_digest"])]
+    prior_binding = {"kind": "background_review", "revision": 1, "model": completion.DEFAULT_MODEL,
+        "max_output_tokens": 2048, "image_digests": image_digests, "frame_ids": [frame["frame_id"] for frame in frames],
+        "targets": [], "prompt": completion.REVIEW_PROMPT, "media_resolution": "MEDIA_RESOLUTION_HIGH"}
+    text_bytes = len((completion.REVIEW_PROMPT + json.dumps([], sort_keys=True)).encode()) + 2048
+    text_bytes += sum(len(str(frame["frame_id"]).encode()) * 2 + 32 for frame in frames)
+    prior_request = {"binding": prior_binding, "task_context_digest": task["context_digest"],
+        "maximum_cost_usd": receipts.gemini_quote(model=completion.DEFAULT_MODEL,
+            input_tokens=text_bytes + 1120 * len(image_digests), max_output_tokens=2048)}
+    prior_digest = canonical_digest(prior_request)
+    if prior_status:
+        review_dir = tmp_path / "review" / "gemini_reviews"
+        review_dir.mkdir(parents=True)
+        (review_dir / f"{prior_digest[7:]}.json").write_text(json.dumps({
+            "status": prior_status, "request_digest": prior_digest, "request": prior_request}))
+    seen, timeouts = [], []
+    def retained(**kwargs):
+        seen.append(kwargs)
+        kwargs["invoke"]()
+        return {"status": "passed", "binding": kwargs["binding"]}
+    monkeypatch.setattr(receipts, "retained_gemini_call", retained)
+    monkeypatch.setattr(completion, "_verify_completed_background", lambda **kw: timeouts.append(kw["timeout_ms"]))
+    completion.verify_completed_background(frames=frames, original_frames=frames, plan=plan,
+                                           output_root=tmp_path / "review", task_context=task)
+    binding = seen[0]["binding"]
+    assert binding["revision"] == expected_revision
+    if expected_revision == 1:
+        # A completed v1 review is reused exactly, never bought again.
+        assert binding == prior_binding and timeouts == [120_000]
+    else:
+        # An unresolved v1 intent is never rewritten; one separately bounded v2
+        # request with a longer client timeout supersedes it.
+        assert binding["timeout_seconds"] == 300 and timeouts == [300_000]
+        assert binding["supersedes_incomplete_request_digest"] == (prior_digest if prior_status else None)
+        assert not prior_status or json.loads(next((tmp_path / "review" / "gemini_reviews").glob("*.json"))
+                                              .read_text())["status"] == prior_status
+
+
 def test_controller_reserves_image_edits_and_restart_reuses_outputs_without_new_grant(tmp_path, monkeypatch):
     from blueprint_pipeline import website_task_context as control
     frames, admission = _inputs(tmp_path)
