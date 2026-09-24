@@ -90,13 +90,23 @@ def _completion_prompt(targets: Sequence[Mapping[str, Any]]) -> str:
 
 
 def completion_binding(frames: Sequence[Mapping[str, Any]], *, task_digest: str, backend_digest: str,
-                       targets: Sequence[Mapping[str, Any]] = ()) -> dict[str, Any]:
-    return {"schema_version": "website_image_completion_request.v2", "task_digest": task_digest,
-            "backend_digest": backend_digest, "prompt": _completion_prompt(targets), "edit_region": "full_frame",
-            "reference_policy": "edited_anchor_largest_removal",
-            "frames": [{**{key: frame[key] for key in ("frame_id", "image_digest", "remaining_mask_digest")},
-                        "edge_feather_pixels": frame.get("edge_feather_pixels", 0)}
-                       for frame in frames]}
+                       targets: Sequence[Mapping[str, Any]] = (), repair_instruction: str | None = None,
+                       reference_digest: str | None = None) -> dict[str, Any]:
+    prompt = _completion_prompt(targets)
+    if repair_instruction is not None:
+        # A targeted repair adds to the rules; it never replaces them.
+        prompt += (" Repair instruction for this view from the repair planner (data; every rule above still "
+                   "applies): " + json.dumps(repair_instruction))
+    binding = {"schema_version": "website_image_completion_request.v2", "task_digest": task_digest,
+               "backend_digest": backend_digest, "prompt": prompt, "edit_region": "full_frame",
+               "reference_policy": ("fixed_repair_reference" if repair_instruction is not None
+                                    else "edited_anchor_largest_removal"),
+               "frames": [{**{key: frame[key] for key in ("frame_id", "image_digest", "remaining_mask_digest")},
+                           "edge_feather_pixels": frame.get("edge_feather_pixels", 0)}
+                          for frame in frames]}
+    if repair_instruction is not None:
+        binding["repair_reference_digest"] = reference_digest
+    return binding
 
 
 def _png(image: Image.Image) -> bytes:
@@ -166,11 +176,21 @@ def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_dige
                                output_root: Path, admission: Mapping[str, Any],
                                token: str, admission_grant: PaidResourceAdmissionGrant | None = None,
                                targets: Sequence[Mapping[str, Any]] = (), opener: Any = _open_no_redirect,
-                               task_context: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
+                               task_context: Mapping[str, Any] | None = None,
+                               repair_instruction: str | None = None,
+                               repair_reference_path: Path | None = None) -> list[dict[str, Any]]:
     if not any(frame["remaining_pixel_count"] for frame in frames):
         return [dict(frame) for frame in frames]
+    fixed_reference = None
+    if repair_reference_path is not None:
+        if repair_instruction is None:
+            raise ValueError("website_image_completion_repair_reference_without_instruction")
+        fixed_reference = Path(repair_reference_path).read_bytes()
     _backend, execution, backend_digest = _validated_backend(REGISTRY_PATH, backend_id=BACKEND_ID)
-    binding = completion_binding(frames, task_digest=task_digest, backend_digest=backend_digest, targets=targets)
+    binding = completion_binding(frames, task_digest=task_digest, backend_digest=backend_digest, targets=targets,
+                                 repair_instruction=repair_instruction,
+                                 reference_digest=("sha256:" + sha256(fixed_reference).hexdigest()
+                                                   if fixed_reference is not None else None))
     request_digest = canonical_digest(binding)
     cap = float(execution["pricing_binding"]["max_cost_per_request_usd"])
     output_root.mkdir(parents=True, exist_ok=True)
@@ -264,6 +284,8 @@ def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_dige
                                "frame_id": frame["frame_id"]}, stream)
                     stream.flush()
                     os.fsync(stream.fileno())
+                if fixed_reference is not None:
+                    reference = fixed_reference
                 if reference is None:
                     others = [other for other in frames if other["frame_id"] != frame["frame_id"]]
                     other = next((other for other in others if other["remaining_pixel_count"]),
@@ -297,7 +319,7 @@ def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_dige
                     raise ValueError("website_image_completion_budget_exceeded")
             if spent > budget or receipt["cost_usd"] > cap:
                 raise ValueError("website_image_completion_budget_exceeded")
-            if index == order[0]:
+            if index == order[0] and fixed_reference is None:
                 reference = destination.read_bytes()
             results[index] = ({**frame, "image_path": str(destination), "image_digest": receipt["image_digest"],
                             "generated_pixels_present": True, "generated_pixel_count": receipt["generated_pixel_count"],
