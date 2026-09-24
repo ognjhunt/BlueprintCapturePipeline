@@ -1,59 +1,40 @@
 # Claude Opus 5.5 authoring boundary
 
-Status: optional future-scene website and controller route, implemented but not
-deployed or provider tested. The current signed drawer scene remains on OpenAI.
+Status: signed future-scene website and controller route implemented on an
+unmerged branch. Existing Astra/OpenAI scene records and sessions are not
+migrated. A newly authorized scene must explicitly select Anthropic and carry
+an exact `anthropic:` provider-terms reference in its owner consent.
 
-The local `ClaudeOpusAuthoringInvoker` can make one bounded Claude Messages
-request for an image interpretation, CAD subtask, or independent review. It
-requires a caller that verifies signed Anthropic disclosure authority and
-provider terms, an `ANTHROPIC_API_KEY_FILE` reference, and a shared durable
-inference reservation ledger. It reserves the cost of the model's entire
-published one-million-token input window plus the configured maximum output
-before dispatch. The unknown-outcome reservation stays charged; it is never
-silently replayed. Model output never approves its own geometry or physics.
+The website binds that selection into the scene's execution scope, permits only
+`api.anthropic.com` for CPU authoring, and passes a scoped `_FILE` secret
+reference. Stage 3 reserves at most $7 of Anthropic model exposure and $6 of
+compute per attempt, under the fixed $25 new-scene development sponsorship
+($5 preparation, $20 simulation). Reservation happens before each model call,
+including independent physical and visual review. The full 1M input context
+and bounded output are quoted at published US-only rates; an unknown bill
+retains its full reservation. Provider terms, rights, expiry and scene identity
+must match the signed grant.
 
-The optional `ClaudeNativeToolLoop` journals each raw model turn and its local
-tool result before the next turn. It replays Opus 5.5's signed `thinking`
-blocks unmodified with the matching tool result. It invokes the existing four
-confined CAD/Blender tool definitions and pauses on a valid render for the
-existing independent review. Unknown model or tool outcomes fail closed. A
-new process verifies the transcript, tool receipts, CAD/Blender artifacts and
-independent-review receipts, then restores completed asset state without
-repeating those operations. In-flight provider or tool outcomes remain blocked
-until independently reconciled. A fake-provider lifecycle test
-exercises original-image interpretation, failed CAD repair, successful CAD,
-Blender render, interruption after render, restoration, and independent
-physics/appearance reviews without an Anthropic call.
-`inspect_completed_claude_authoring` provides a read-only retained-result
-gate; the default OpenAI retained-result validator still rejects Claude
-unless that explicit gate has passed.
+The local OpenAI Agents SDK session authors through confined CAD and Blender
+tools. A durable request/response journal preserves exact provider content,
+including signed thinking, before any local tool executes. A read-only
+inspector checks SQLite, provider and tool receipts, CAD/Blender artifacts,
+independent reviews and the final asset. It can reuse a completed candidate
+after an interruption. It fails closed on incomplete calls or tool outcomes.
+Cross-attempt Claude stage adoption is not yet qualified; the controller must
+not duplicate a prior paid request when an attempt fails.
 
-This does **not** swap Claude into the website capture's current OpenAI Agents
-SDK SQLite conversation. Its item format drops Claude's signed thinking blocks.
-The opt-in route uses its own durable Messages transcript and the same local
-CAD/Blender tools. The website must record an exact `anthropic:` provider terms
-reference in the fresh scene's owner consent and select
-`authoring_provider: anthropic`. The website then signs Anthropic into that scene's execution scope,
-requests an Anthropic-only network and `_FILE` secret scope, and quotes $7 for
-Anthropic plus $6 for compute under the existing $20 simulation authority.
-The paid authority and CPU stage enforce those separate caps; absent authority,
-terms, or a scoped key file fails closed. Default scenes still use OpenAI.
+Fake transport has exercised stage 3 and duplicate-free same-stage replay. A
+protected local key successfully retrieved model metadata without an inference
+call; this proves account/model availability but not Messages billing. The
+control-plane host still needs a scoped Anthropic secret. A future capped
+provider attempt must verify actual cost, CAD/Blender completion, native USD
+qualification and the later GPU policy episode. None of these tests claims
+that the drawer task succeeded.
 
-This has only hermetic fake-provider coverage. A new authorized scene and a
-provider canary are still needed to prove Anthropic authentication, exact API
-behavior, successful CAD/Blender output, native qualification, and billing.
-One operational boundary remains: a completed native session can be inspected
-after a process interruption, but the enclosing scene stage currently refuses
-cross-attempt Claude adoption. An attempt that fails after CPU authoring must
-be reconciled rather than blindly replayed. Do not interpret the code or tests
-as a completed drawer policy run or an approved mid-scene model switch.
+Claude Managed Agents is outside this path because its session budget check
+does not enforce this stage's per-request hard reservation. The local SDK
+retains Blueprint's allocator, ledger, teardown and review boundaries.
 
-Claude Managed Agents does not meet this run's hard $7 per-attempt guard by
-itself: its session budget is checked between model requests and Anthropic
-allows the final request to finish above the cap. Its hosted sandbox and
-tool behavior would also need their own qualification. It is therefore not
-the path used here.
-
-Official reference: [Opus 5.5 model and pricing](https://platform.claude.com/docs/en/models/opus-5-5/overview),
-[thinking and tool-use continuity](https://platform.claude.com/docs/en/models/opus-5-5/whats-new-opus-5-5),
-[Managed Agents session budgets](https://platform.claude.com/docs/en/managed-agents/sessions).
+Official references: [Opus 5.5 model and pricing](https://platform.claude.com/docs/en/models/opus-5-5/overview),
+[Models API](https://platform.claude.com/docs/en/api/http/models/retrieve).

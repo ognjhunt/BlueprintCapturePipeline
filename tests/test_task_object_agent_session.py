@@ -20,7 +20,7 @@ from blueprint_pipeline import task_object_astra_authoring as author
 from blueprint_pipeline import task_evaluation_scene_configuration_astra_driver as driver
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_object_agent_model import bounded_authoring_input, context_ceiling
-from blueprint_pipeline.task_object_agent_tools import AssetTools
+from blueprint_pipeline.task_object_agent_tools import APPEARANCE_SCOPE, AssetTools
 from blueprint_pipeline.task_evaluation_supervisor.agents_sdk import AgentsSDKInvocationBlocked
 from blueprint_pipeline.claude_opus_authoring_invoker import (
     ClaudeAuthoringBlocked, ClaudeAuthoringConfig, ClaudeOpusAuthoringInvoker, MODEL as CLAUDE_MODEL,
@@ -225,7 +225,8 @@ def test_native_claude_loop_uses_real_cad_blender_tools_and_independent_review(a
         budget_root=f.kwargs['budget_root'], request_value=f.kwargs['request_value'],
         session_root=f.kwargs.get('session_root'))
     assert inspected['result_digest'] == result['result_digest']
-    review_path = f.kwargs['output_root'] / 'appearance-00/independent_visual_review_1_observable_v2.json'
+    review_path = (f.kwargs['output_root'] / 'appearance-00'
+                   / f'independent_visual_review_1_{APPEARANCE_SCOPE}.json')
     original_review = review_path.read_text()
     changed = json.loads(original_review)
     changed['provider'] = 'openai'
@@ -292,7 +293,8 @@ def test_sdk_claude_uses_real_tools_signed_calls_and_retained_reviews(agent_fixt
         budget_root=f.kwargs['budget_root'], request_value=f.kwargs['request_value']) == result
     replay = execute_claude_sdk_agent_authoring(**f.kwargs, invoker=invoker)
     assert replay['result_digest'] == result['result_digest'] and len(seen) == 6
-    review_path = f.kwargs['output_root'] / 'appearance-00/independent_visual_review_1_observable_v2.json'
+    review_path = (f.kwargs['output_root'] / 'appearance-00'
+                   / f'independent_visual_review_1_{APPEARANCE_SCOPE}.json')
     original = review_path.read_text()
     changed = json.loads(original)
     changed['provider'] = 'openai'

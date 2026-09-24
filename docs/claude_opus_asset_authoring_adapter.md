@@ -1,35 +1,27 @@
-# Claude Opus 5.5 asset-authoring adapter (not yet a paid profile)
+# Claude Opus 5.5 asset-authoring adapter
 
-`task_object_claude_model.ClaudeMessagesModel` maps one stateless native
-Anthropic Messages response into the local OpenAI Agents SDK `Model` interface.
-It retains the SDK's SQLite session, local function tools, original-frame image
-bytes, structured output schema, tool-call IDs, signed thinking blocks and
-provider token usage. It refuses remote image URLs, hidden server conversations,
-unrecognized SDK items, incomplete responses and parallel tool calls. A scoped
-Anthropic client must be supplied by the caller; the adapter disables client
-transport retries.
+`task_object_claude_model.ClaudeMessagesModel` maps one stateless Anthropic
+Messages response into the local OpenAI Agents SDK `Model` interface. It keeps
+the SDK's SQLite session, confined tools, original-frame image bytes,
+structured-output schema, tool-call IDs, signed thinking blocks and provider
+token usage. It refuses remote image URLs, hidden server conversations,
+unrecognized SDK items, incomplete responses and parallel tool calls.
 
-The adapter is intentionally **not selected** by the CPU authoring worker. The
-current worker reserves and receipts every authoring/model-review call as
-`gpt-6-astra`/OpenAI and uses OpenAI-specific prices. Routing a Claude call
-through that ledger would misstate the provider, price and spend. Before a
-future separately identified scene can select this profile:
+`claude_opus_sdk_bridge.ClaudeSDKMessageClient` supplies this model from the
+existing signed Anthropic invoker. Requests and complete responses are
+journaled before local tool execution. The bridge binds each journaled turn to
+its signed reservation and completion, and read-only inspection ties those
+turns to SQLite and local tool outcomes. An unresolved provider call or local
+tool outcome cannot be retried as fresh spend.
 
-1. Resolve its secret from the existing scoped `_FILE` mechanism and build a
-   zero-retry Anthropic client. No ambient key fallback.
-2. Make the reservation, completion and retained-record schemas carry the
-   actual provider and model. Use a conservative Claude Opus 5.5 input/output
-   quote, including image and cache uncertainty, under the same per-attempt
-   and cumulative caps. An unknown bill keeps its full reservation.
-3. Route independent physical-property and visual reviews with correctly
-   labeled/provider-priced calls, or explicitly keep those reviews on OpenAI
-   with separately accounted receipts. Preserve the existing independent
-   acceptance, native-import and policy-action checks.
-4. Exercise the actual installed Anthropic SDK request shape in a no-spend
-   transport fixture, especially `output_config.format`, strict local tools,
-   image/tool-result content and signed thinking continuity. Then complete the
-   focused changed-contract tests and normal paid-resource admission before a
-   bounded provider canary. Do not adopt an Astra session into Claude.
+The stage driver selects this path only when a fresh website scene carries the
+signed Anthropic provider choice, terms and $7 model cap. OpenAI scenes retain
+their current route. The provider secret comes only from the scoped
+`ANTHROPIC_API_KEY_FILE` reference. The model may author geometry and
+appearance; independent reviewers and deterministic native import checks keep
+their own authority. No Claude model output alone qualifies a scene or policy.
 
-The hermetic adapter tests make no provider calls. This branch does not affect
-the active drawer run and cannot be used to claim Claude authoring is ready.
+This branch is not deployed. A fake-provider stage rehearsal and a live,
+no-inference Models API check have passed. Real Messages billing, native import,
+scene placement and GPU policy outcomes are unproven until a separately
+identified authorized scene runs under the controller.
