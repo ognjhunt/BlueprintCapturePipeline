@@ -214,8 +214,10 @@ def repair_rejected_views(*, selected: Sequence[Mapping[str, Any]], object_remov
     if not repairs:
         return list(map(dict, selected)), {**failed_review, "repair_plan": receipt["plan"]}
     repaired_ids = {row["frame_id"] for row in repairs}
-    # Every repaired view copies the revealed space of one accepted edited view.
-    anchor = next((frame for frame in sorted(selected, key=lambda row: -int(row.get("generated_pixel_count") or 0))
+    # Every repaired view copies the revealed space of one accepted edited view,
+    # with several removed objects the one showing the most of them.
+    anchor = next((frame for frame in sorted(selected, key=lambda row: (
+                       -len(row.get("removed_task_object_ids") or ()), -int(row.get("generated_pixel_count") or 0)))
                    if frame.get("generated_pixels_present") and frame["frame_id"] not in repaired_ids), None)
     result = [dict(frame) for frame in selected]
     for row in repairs:

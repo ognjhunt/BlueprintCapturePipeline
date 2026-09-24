@@ -154,7 +154,11 @@ def test_spawn_uses_g1_with_43_named_actions_and_no_franka_events(tmp_path, monk
         def __init__(self, **kwargs):
             self.settings = kwargs
             self.scene_config = SimpleNamespace(
-                robot=SimpleNamespace(spawn=SimpleNamespace(), actuators={})
+                robot=SimpleNamespace(
+                    spawn=SimpleNamespace(),
+                    init_state=SimpleNamespace(joint_pos={"left_knee_joint": 99.0}),
+                    actuators={},
+                )
             )
             self.camera_config = SimpleNamespace(robot_head_cam=SimpleNamespace(prim_path="head"))
 
@@ -166,6 +170,7 @@ def test_spawn_uses_g1_with_43_named_actions_and_no_franka_events(tmp_path, monk
     result = build_g1_embodiment(plan, enable_cameras=True, pose_class=lambda **kwargs: kwargs)
     assert isinstance(result, G1)
     assert result.scene_config.robot.spawn.usd_path == plan["usd_path"]
+    assert result.scene_config.robot.init_state.joint_pos == plan["joint_reset_positions_rad"]
     assert result.action_config.joint_positions.joint_names == list(PROTOCOL_V4_FULL_JOINT_ORDER)
     assert result.action_config.joint_positions.use_default_offset is False
     assert result.action_config.joint_positions.preserve_order is True

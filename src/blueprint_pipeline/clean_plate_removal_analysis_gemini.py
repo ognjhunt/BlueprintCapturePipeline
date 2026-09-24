@@ -338,7 +338,8 @@ def parse_removal_plan_response(
             kind = _string(raw.get("articulation_kind")).lower()
             part = _string(raw.get("articulated_part"))
             if kind or part:
-                # A mechanism hint is only meaningful on the one manipulated assembly.
+                # A mechanism hint is only meaningful on a manipulated assembly;
+                # a task may manipulate several objects, articulated or not.
                 if kind not in ARTICULATION_KINDS or not part or effect != "manipulated":
                     raise ValueError("removal_analysis_articulation_hint_invalid")
             if effect == "uncertain" and (

@@ -30,6 +30,22 @@ against the selected hand and validate them against the same pinned USD before
 running an episode. These are robot bodies inside the shared site scene, not a
 separate G1 scene.
 
+`build_pinned_g1_arena_robot_configuration` in
+`src/blueprint_pipeline/native_g1_arena_robot_configuration.py` authors the
+packet robot row from this exact USD and the pinned Arena G1 configuration.
+Pass the USD path inside the evidence root, the evidence root itself, a
+`base_pose_world` with `position_world_m` and `orientation_xyzw`, and the task
+hand (`left` or `right`). It checks the USD bytes, reads and converts all 43
+joint limits to radians, and binds the chosen Dex3 contact bodies. The returned
+row is ready for the existing native task packet builder.
+
+For a rigid pick-and-place task, set `robot.grasp_frame` to
+`{"kind":"body_midpoint","body_names":["right_hand_index_1_link","right_hand_thumb_2_link"]}`
+and include both exact paths in `robot.task_contact_body_paths`. The shared
+rigid readback checks this relation before an episode and derives the grasp
+midpoint from those two live Dex3 bodies. The G1 spawn adapter applies all 43
+configured reset joint positions to the Arena articulation's initial state.
+
 `native_g1_shared_scene_episode.py` can sequence either pinned HumanoidArena
 box-manipulation candidate through the same Arena scene. It binds the prompt to
 the scene task, uses the observed head camera and 64-value state for each policy
