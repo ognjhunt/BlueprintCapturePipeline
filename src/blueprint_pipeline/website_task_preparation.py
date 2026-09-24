@@ -748,6 +748,11 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                      "observation_timestamps_seconds": sorted({float(frames_by_id[row["source_frame_id"]].get("timestamp_seconds") or 0.0)
                                                               for row in track["observations"]}),
                      "physical_measurement_proven": False}
+        if body is not None:
+            # The website admits a rebuilt hinged assembly only with this evidence.
+            mechanism["whole_object_coverage"] = {
+                "schema_version": coverage["schema_version"], "status": "complete", "digest": coverage["digest"],
+                "reference_frame_count": len(coverage["selected_frames"])}
         authoring_configuration = articulated_stage_three_configuration(
             scene_id=task_context["scene_id"],
             replacement_identity={"id": "website-subject-" + task_context["context_digest"][7:27], "version": "v1"},
