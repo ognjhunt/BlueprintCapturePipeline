@@ -56,7 +56,8 @@
       "action_interface": "humanoidarena_semantic_v3",
       "task_checkpoint": "HOI_pp_box",
       "hand_interface": "binary_grasp_to_dex3",
-      "lower_body_controller": "GEAR-SONIC matching HumanoidArena release"
+      "lower_body_controller": "GEAR-SONIC matching HumanoidArena release",
+      "policy_role": "manipulation"
     },
     {
       "candidate_id": "humanoidarena_pi05_g1_dex3_sonic",
@@ -104,7 +105,108 @@
       "action_interface": "humanoidarena_semantic_v3",
       "task_checkpoint": "HOI_pp_box",
       "hand_interface": "binary_grasp_to_dex3",
-      "lower_body_controller": "GEAR-SONIC matching HumanoidArena release"
+      "lower_body_controller": "GEAR-SONIC matching HumanoidArena release",
+      "policy_role": "manipulation"
+    },
+    {
+      "candidate_id": "humanoidarena_dp_g1_dex3_sonic_vision_navi",
+      "subdirectory": "small/HSI_vision_navi/diffusion_sonic_visionnavi_0529/pretrained_model",
+      "files": [
+        {
+          "path": "config.json",
+          "sha256": "9854a226d08820fa643b9506b3ddd339d1131ce6edb9959e696aaa8dfc448b04",
+          "size_bytes": 2073
+        },
+        {
+          "path": "model.safetensors",
+          "sha256": "db4903e8ee6d617eed483bcd2395ef5e6a2f883a6f5e680dd1cf29987c339561",
+          "size_bytes": 1050993432
+        },
+        {
+          "path": "policy_postprocessor.json",
+          "sha256": "e1fd7102586d641b414a4876672fe9954a061cdaccc2e9e6966ac7ef751dc3c5",
+          "size_bytes": 659
+        },
+        {
+          "path": "policy_postprocessor_step_0_unnormalizer_processor.safetensors",
+          "sha256": "4e35326371d34ce06264b9cd286fa37019e25399d3741a7d5a1696fc7b063ce0",
+          "size_bytes": 10040
+        },
+        {
+          "path": "policy_preprocessor.json",
+          "sha256": "b21d0eb9d6a97956b248b8fb6ab7b104697a4942c177a815955e56da73fd6016",
+          "size_bytes": 1154
+        },
+        {
+          "path": "policy_preprocessor_step_3_normalizer_processor.safetensors",
+          "sha256": "4e35326371d34ce06264b9cd286fa37019e25399d3741a7d5a1696fc7b063ce0",
+          "size_bytes": 10040
+        }
+      ],
+      "inventory_digest": "sha256:a679eff7ddabf60ec80223beb51dfb613a9079dc539e4172864f108bf080708d",
+      "input_image_shape_hwc": [
+        480,
+        640,
+        3
+      ],
+      "input_state_width": 64,
+      "output_action_width": 40,
+      "action_interface": "humanoidarena_semantic_v3",
+      "task_checkpoint": "HSI_vision_navi",
+      "hand_interface": "binary_grasp_to_dex3",
+      "lower_body_controller": "GEAR-SONIC matching HumanoidArena release",
+      "policy_role": "movement_navigation",
+      "task_instruction": "Avoid obstacles and move to the yellow marked area."
+    },
+    {
+      "candidate_id": "humanoidarena_pi05_g1_dex3_sonic_vision_navi",
+      "subdirectory": "pi/HSI_vision_navi/pi05_sonic_visionnavi_0529/100000/pretrained_model",
+      "files": [
+        {
+          "path": "config.json",
+          "sha256": "488b9f6c4b483ea4f84dec46985671a344bf4a49fb50fd3591350282ef6a0aa3",
+          "size_bytes": 3930
+        },
+        {
+          "path": "model.safetensors",
+          "sha256": "4bf0f5c48e07db8bd0a710afa910194ac1c8e3489cbfccb3191486b348ede82c",
+          "size_bytes": 9354116320
+        },
+        {
+          "path": "policy_postprocessor.json",
+          "sha256": "021ed08c42597fa0d5dc413bda37a82ec2f3f92f666c133a96133ef5d5bc296e",
+          "size_bytes": 663
+        },
+        {
+          "path": "policy_postprocessor_step_0_unnormalizer_processor.safetensors",
+          "sha256": "4e35326371d34ce06264b9cd286fa37019e25399d3741a7d5a1696fc7b063ce0",
+          "size_bytes": 10040
+        },
+        {
+          "path": "policy_preprocessor.json",
+          "sha256": "58bffa7f2c54c2a0619eab5cc75e9fa46be8f34b6249bf292713e46e33a12b82",
+          "size_bytes": 1612
+        },
+        {
+          "path": "policy_preprocessor_step_2_normalizer_processor.safetensors",
+          "sha256": "4e35326371d34ce06264b9cd286fa37019e25399d3741a7d5a1696fc7b063ce0",
+          "size_bytes": 10040
+        }
+      ],
+      "inventory_digest": "sha256:f305ac7cc70a01c1de7aa38a185ec749079ab721a1ec34e0f85a2cd3eee77398",
+      "input_image_shape_hwc": [
+        480,
+        640,
+        3
+      ],
+      "input_state_width": 64,
+      "output_action_width": 40,
+      "action_interface": "humanoidarena_semantic_v3",
+      "task_checkpoint": "HSI_vision_navi",
+      "hand_interface": "binary_grasp_to_dex3",
+      "lower_body_controller": "GEAR-SONIC matching HumanoidArena release",
+      "policy_role": "movement_navigation",
+      "task_instruction": "Avoid obstacles and move to the yellow marked area."
     }
   ]
 }

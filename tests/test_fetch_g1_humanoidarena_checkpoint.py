@@ -27,7 +27,7 @@ class _Response(io.BytesIO):
 
 def _inventory(tmp_path: Path, content: bytes) -> Path:
     path = tmp_path / "inventory.json"
-    path.write_text(json.dumps({
+    inventory = {
         "schema_version": "g1_humanoidarena_checkpoint_inventory.v1",
         "candidates": [{
             "candidate_id": "dp",
@@ -38,7 +38,12 @@ def _inventory(tmp_path: Path, content: bytes) -> Path:
                 "size_bytes": len(content),
             }],
         }],
-    }))
+    }
+    files = inventory["candidates"][0]["files"]
+    inventory["candidates"][0]["inventory_digest"] = "sha256:" + hashlib.sha256(
+        json.dumps(files, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    path.write_text(json.dumps(inventory))
     return path
 
 
@@ -101,3 +106,32 @@ def test_existing_wrong_bytes_and_path_escape_fail_closed(tmp_path: Path) -> Non
             inventory_path=inventory, candidate_id="dp", output_dir=output,
             verify_only=True,
         )
+
+
+def test_candidate_inventory_digest_rejects_changed_file_identity(tmp_path: Path) -> None:
+    inventory = _inventory(tmp_path, b"expected")
+    value = json.loads(inventory.read_text())
+    value["candidates"][0]["files"][0]["sha256"] = "0" * 64
+    inventory.write_text(json.dumps(value))
+    with pytest.raises(ValueError, match="candidate_inventory_digest_invalid"):
+        fetch.materialize_candidate(
+            inventory_path=inventory, candidate_id="dp", output_dir=tmp_path / "checkpoints",
+            verify_only=True,
+        )
+
+
+def test_pinned_navigation_candidates_are_distinct_40_value_movement_policies() -> None:
+    inventory = json.loads(fetch.DEFAULT_INVENTORY.read_text())
+    candidates = {row["candidate_id"]: row for row in inventory["candidates"]}
+    assert len(candidates) == 4
+    for suffix in ("dp", "pi05"):
+        movement_id = f"humanoidarena_{suffix}_g1_dex3_sonic_vision_navi"
+        movement = fetch._candidate(inventory, movement_id)
+        assert movement["policy_role"] == "movement_navigation"
+        assert movement["task_checkpoint"] == "HSI_vision_navi"
+        assert movement["input_image_shape_hwc"] == [480, 640, 3]
+        assert movement["input_state_width"] == 64
+        assert movement["output_action_width"] == 40
+        assert movement["action_interface"] == "humanoidarena_semantic_v3"
+        assert any(row["path"] == "model.safetensors" for row in movement["files"])
+        assert movement["files"] != candidates[f"humanoidarena_{suffix}_g1_dex3_sonic"]["files"]
