@@ -29,7 +29,17 @@ LOOPBACK_HOST = "127.0.0.1"
 
 def _source_revision(source: Path, *, expected_parent: str = "scripts") -> str:
     root = source.resolve().parents[1]
-    if source.parent.name != expected_parent or not (root / "src").is_dir():
+    if (
+        source.parent.name != expected_parent
+        or (
+            expected_parent == "scripts" and not (root / "src").is_dir()
+        )
+        or (
+            expected_parent == "action_provider"
+            and (root.name != "isaaclab_twist2_g1" or source.name != "action_provider_sonic.py")
+        )
+        or expected_parent not in {"scripts", "action_provider"}
+    ):
         raise ValueError("g1_server_source_tree_invalid")
     try:
         revision = subprocess.run(
