@@ -29,3 +29,14 @@ hand, the observed rigid contact bodies are
 against the selected hand and validate them against the same pinned USD before
 running an episode. These are robot bodies inside the shared site scene, not a
 separate G1 scene.
+
+`native_g1_shared_scene_episode.py` can sequence either pinned HumanoidArena
+box-manipulation candidate through the same Arena scene. It binds the prompt to
+the scene task, uses the observed head camera and 64-value state for each policy
+query, sends every returned action through the pinned SONIC target bridge, and
+retains lossless input/review PNGs plus a task sample at each step. Its
+result is an unscored development trace. The production worker still needs to
+attest checkpoint bytes, score the bounded
+task, and seal a review video before either candidate is offered as runnable.
+Movement policies require their own verified action/controller binding; the
+box-manipulation candidates do not prove movement-policy support.

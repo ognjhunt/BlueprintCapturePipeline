@@ -46,6 +46,7 @@ class NativeG1JointEpisodeEnvironment:
         if not isinstance(limits, Mapping) or set(limits) != set(PROTOCOL_V4_FULL_JOINT_ORDER):
             raise ValueError("native_g1_episode_joint_limits_missing")
         self._limits = limits
+        self.plan = plan
         self._env = env
         self._robot = robot
         self._to_tensor = to_tensor
