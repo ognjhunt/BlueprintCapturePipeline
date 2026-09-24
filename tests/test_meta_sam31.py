@@ -300,7 +300,7 @@ def test_completed_continuous_video_reuses_cpu_work_and_rejects_tampering(tmp_pa
 def test_failed_encoder_cannot_publish_partial_video(tmp_path, monkeypatch):
     source = tmp_path / "source.mov"
     source.write_bytes(b"source")
-    monkeypatch.setattr(sam, "_probe_video", lambda _: {"frames": [{}, {}]})
+    monkeypatch.setattr(sam, "_probe_video", lambda _: {"streams": [{"time_base": "1/600"}], "frames": [{}, {}]})
     def timeout(argv, **kwargs):
         assert argv[argv.index("-preset") + 1] == "veryfast"
         assert argv[argv.index("-threads") + 1] == "2"
@@ -315,14 +315,54 @@ def test_failed_encoder_cannot_publish_partial_video(tmp_path, monkeypatch):
     assert not list(root.glob("*.mp4"))
 
 
+def test_variable_frame_rate_phone_clip_keeps_source_timestamps(tmp_path):
+    # An iPhone-like clip: rotated, 1/600 track timescale, one off-grid frame interval.
+    plain, source = tmp_path / "plain.mov", tmp_path / "vfr.mov"
+    sam.subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=64x48:rate=30",
+        "-frames:v", "30", "-vf", "settb=1/600,setpts='N*20+gte(N,10)*9'", "-fps_mode", "passthrough",
+        "-enc_time_base", "1/600", "-c:v", "libx264", "-video_track_timescale", "600", str(plain)],
+        check=True, capture_output=True)
+    sam.subprocess.run(["ffmpeg", "-v", "error", "-y", "-display_rotation:v:0", "90", "-i", str(plain),
+        "-c", "copy", "-video_track_timescale", "600", str(source)], check=True, capture_output=True)
+    original = sam._probe_video(source)
+    assert original["streams"][0]["time_base"] == "1/600"
+    expected = [float(frame["best_effort_timestamp_time"]) for frame in original["frames"]]
+    root = tmp_path / "continuous"
+    registry, video = sam.prepare_continuous_video(source=source, source_digest=_sha256_file(source), root=root)
+    assert [row["decoded_pts_seconds"] for row in registry] == expected
+    assert (registry[0]["width"], registry[0]["height"]) == (48, 64)
+    encoded = [float(frame["best_effort_timestamp_time"]) for frame in sam._probe_video(Path(video["path"]))["frames"]]
+    assert all(abs((a - encoded[0]) - (b - expected[0])) <= 0.002 for a, b in zip(encoded, expected, strict=True))
+    assert video["encoding"] == "upright_h264_crf18_veryfast_threads2_source_timebase_all_source_frames_v3"
+    # A receipt from the earlier encode is still reused rather than re-bought.
+    receipt = json.loads((root / "continuous-video.json").read_text())
+    receipt["video"]["encoding"] = "upright_h264_crf18_veryfast_threads2_all_source_frames_v2"
+    receipt["digest"] = canonical_digest(receipt, digest_field="digest")
+    (root / "continuous-video.json").write_text(json.dumps(receipt))
+    assert sam.prepare_continuous_video(source=source, source_digest=_sha256_file(source), root=root)[1] == receipt["video"]
+
+
+def test_source_without_fine_timebase_fails_closed(tmp_path, monkeypatch):
+    source = tmp_path / "source.mov"
+    source.write_bytes(b"source")
+    monkeypatch.setattr(sam, "_probe_video", lambda _: {"streams": [{"time_base": "1001/30000"}], "frames": [{}, {}]})
+    monkeypatch.setattr(sam.subprocess, "run", lambda *a, **k: pytest.fail("must not encode"))
+    with pytest.raises(ValueError, match="meta_sam_source_time_base_invalid"):
+        sam.prepare_continuous_video(source=source, source_digest=_sha256_file(source), root=tmp_path / "out")
+
+
 def _oversize_encoder(tmp_path, monkeypatch, oversize_crfs):
     source = tmp_path / "source.mov"
     source.write_bytes(b"source")
-    frames = {"streams": [{"width": 1080, "height": 1920}],
+    frames = {"streams": [{"width": 1080, "height": 1920, "time_base": "1/600"}],
               "frames": [{"best_effort_timestamp_time": "0.0"}, {"best_effort_timestamp_time": "0.033"}]}
     monkeypatch.setattr(sam, "_probe_video", lambda _: frames)
     crfs = []
     def encode(argv, **kwargs):
+        # Rotated phone clips otherwise encode on 1/(29.97 fps) and drift from
+        # the source timestamps; the demuxer timebase and timescale must carry over.
+        assert argv[argv.index("-enc_time_base") + 1] == "-1"
+        assert argv[argv.index("-video_track_timescale") + 1] == "600"
         crf = int(argv[argv.index("-crf") + 1])
         crfs.append(crf)
         size = sam._CONTINUOUS_VIDEO_MAX_BYTES + 1 if crf in oversize_crfs else 1024
@@ -337,7 +377,7 @@ def test_oversized_continuous_video_steps_down_quality_ladder(tmp_path, monkeypa
     root = tmp_path / "output"
     registry, video = sam.prepare_continuous_video(source=source, source_digest=_sha256_file(source), root=root)
     assert crfs == [18, 23]
-    assert video["encoding"] == "upright_h264_crf23_veryfast_threads2_all_source_frames_v2"
+    assert video["encoding"] == "upright_h264_crf23_veryfast_threads2_source_timebase_all_source_frames_v3"
     assert [(row["width"], row["height"]) for row in registry] == [(1080, 1920)] * 2
     assert Path(video["path"]).stat().st_size == 1024
     assert sorted(path.name for path in root.glob("*.mp4")) == ["continuous-upright.mp4"]
