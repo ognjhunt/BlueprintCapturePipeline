@@ -17,6 +17,7 @@ from blueprint_pipeline.claude_opus_authoring_invoker import (
 from blueprint_pipeline.claude_opus_sdk_bridge import ClaudeSDKMessageClient
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_object_claude_model import ClaudeMessagesModel
+from blueprint_pipeline.task_object_agent_session import stop_after_valid_render
 from blueprint_pipeline.task_evaluation_supervisor.agents_sdk import AgentsSDKAgentSpec
 from blueprint_pipeline.task_evaluation_supervisor.inference_reservations import InferenceReservationAudit
 
@@ -73,6 +74,44 @@ def _invoker(monkeypatch, tmp_path, send):
         run_id="future-scene", maximum_cost_usd=7, maximum_calls=5,
         allow_live_invocation=True), audit=audit, verify_authority=_authority, send=send)
     return invoker, audit
+
+
+def test_failed_render_returns_feedback_to_claude_before_stopping(monkeypatch, tmp_path):
+    sent, calls = [], []
+
+    def send(payload, _key):
+        sent.append(payload)
+        if len(sent) == 2:
+            assert "repair_needed" in json.dumps(payload["messages"])
+            assert "not enough values to unpack" in json.dumps(payload["messages"])
+        return {"id": f"msg_{len(sent)}", "model": "claude-opus-5-5", "stop_reason": "tool_use",
+            "content": [{"type": "tool_use", "id": f"tool_{len(sent)}", "name": "render_candidate",
+                         "input": {"part": "carcass"}}],
+            "usage": {"input_tokens": 1200, "output_tokens": 100}}
+
+    async def render(_context, _arguments):
+        calls.append("render")
+        if len(calls) == 1:
+            return '{"status":"repair_needed","error":"not enough values to unpack"}'
+        return '{"status":"rendered_pending_independent_review"}'
+
+    invoker, _audit = _invoker(monkeypatch, tmp_path, send)
+    client = ClaudeSDKMessageClient(invoker=invoker, object_id="carcass",
+        journal_root=tmp_path / "journal", session_db=tmp_path / "conversation.sqlite")
+    tool = FunctionTool(name="render_candidate", description="Render candidate",
+        params_json_schema={"type": "object", "properties": {"part": {"type": "string"}},
+                            "required": ["part"], "additionalProperties": False},
+        on_invoke_tool=render, needs_approval=False)
+    agent = Agent(name="Claude render repair", model=ClaudeMessagesModel(client=client),
+        tools=[tool], output_type=CandidateReady, tool_use_behavior=stop_after_valid_render,
+        model_settings=ModelSettings(max_tokens=12_000, store=False, parallel_tool_calls=False))
+    session = SQLiteSession("carcass", db_path=tmp_path / "conversation.sqlite")
+    try:
+        Runner.run_sync(agent, "Render the cabinet carcass.", session=session,
+            run_config=RunConfig(tracing_disabled=True), max_turns=4)
+    finally:
+        session.close()
+    assert len(sent) == len(calls) == 2
 
 
 def test_exact_sdk_tool_image_sequence_and_reviews_fit_after_completion(monkeypatch, tmp_path):
