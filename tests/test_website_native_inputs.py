@@ -22,6 +22,33 @@ from blueprint_pipeline.task_evaluation_scene_construction_recipe import validat
 from tests.test_website_native_appearance import inputs
 
 
+def test_cc48_drawer_depth_prior_is_bound_to_its_own_source_evidence():
+    from blueprint_pipeline.website_drawer_depth_prior import CC48_PRIOR, prior_for
+    from blueprint_pipeline.task_object_articulated_packaging import derived_website_cabinet_depth_hypothesis
+
+    configuration = {
+        "schema_version": "articulated_replacement_authoring_configuration.v1",
+        "scene_id": CC48_PRIOR["scene_id"], "replacement_identity": CC48_PRIOR["subject_identity"],
+        "source_observation_kind": "website_capture_frames",
+        "metric_envelope": {"minimum_xyz_m": [-0.8676723447340478, -0.04660110532186394, 0.75],
+                            "maximum_xyz_m": [-0.28922411491134925, 0.04660110532186394, 1.531543853290867]},
+        "mechanism": {"joint_type": "prismatic", "estimated_front_normal_world":
+                      [0.11635973738420832, -0.9932071342453588, 0.0],
+                      "estimated_usable_stroke_m": 0.1199},
+    }
+    frames = [{"role": "observed_source", "sha256": digest}
+              for digest in CC48_PRIOR["original_frame_sha256s"]]
+    assert prior_for(scene_id=configuration["scene_id"],
+                     subject_identity=configuration["replacement_identity"]) is CC48_PRIOR
+    hypothesis = derived_website_cabinet_depth_hypothesis(configuration, frames, 0.6)
+    assert hypothesis["estimated_depth_m"] == 0.55
+    assert hypothesis["estimated_usable_stroke_m"] == 0.4125
+    assert hypothesis["estimated_minimum_opening_m"] == 0.2475
+    assert hypothesis["prior_comparison"]["reference_models_are_exact_match"] is False
+    assert prior_for(scene_id=configuration["scene_id"],
+                     subject_identity=DRAWER_DEPTH_PRIOR["subject_identity"]) is None
+
+
 def test_exact_drawer_successor_changes_only_stage_three_and_freezes_stroke(tmp_path, monkeypatch):
     from tests.test_task_object_articulated_packaging import _thin_website_cabinet
     from blueprint_pipeline import website_drawer_depth_prior
