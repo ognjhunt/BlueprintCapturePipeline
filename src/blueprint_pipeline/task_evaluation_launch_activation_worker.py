@@ -973,6 +973,10 @@ def _build_scene_configuration_context(
         raise TaskEvaluationLaunchActivationWorkerError(
             "launch_activation_scene_configuration_toolchain_invalid"
         ) from exc
+    service_caps = preparation_request["spend"]["external_service_caps"]
+    openai_caps = service_caps["openai"]
+    openai_stage_caps = openai_caps["stage_max_cost_usd"]
+    anthropic_caps = service_caps.get("anthropic") or {}
     operations = {
         "set_root": str(activation_root / "launch-set"),
         "repository_root": str(repository_root),
@@ -1006,29 +1010,19 @@ def _build_scene_configuration_context(
         "provider_compute_spend_cap_usd": preparation_request["spend"][
             "provider_compute_spend_cap_usd"
         ],
-        "openai_max_cost_usd": preparation_request["spend"][
-            "external_service_caps"
-        ]["openai"]["maximum_cost_usd"],
-        "openai_max_requests": preparation_request["spend"][
-            "external_service_caps"
-        ]["openai"]["maximum_requests"],
-        "openai_artifixer_semantic_teacher_max_cost_usd": preparation_request[
-            "spend"
-        ]["external_service_caps"]["openai"]["stage_max_cost_usd"][
+        "openai_max_cost_usd": openai_caps["maximum_cost_usd"],
+        "openai_max_requests": openai_caps["maximum_requests"],
+        "openai_artifixer_semantic_teacher_max_cost_usd": openai_stage_caps[
             "artifixer_semantic_teacher"
         ],
-        "openai_artifixer_visual_review_max_cost_usd": preparation_request[
-            "spend"
-        ]["external_service_caps"]["openai"]["stage_max_cost_usd"][
+        "openai_artifixer_visual_review_max_cost_usd": openai_stage_caps[
             "artifixer_visual_review"
         ],
-        "openai_content_agents_max_cost_usd": preparation_request["spend"][
-            "external_service_caps"
-        ]["openai"]["stage_max_cost_usd"]["content_agents"],
-        "anthropic_max_cost_usd": (preparation_request["spend"]["external_service_caps"]
-                                   .get("anthropic") or {}).get("maximum_cost_usd", 0.0),
-        "anthropic_max_requests": (preparation_request["spend"]["external_service_caps"]
-                                   .get("anthropic") or {}).get("maximum_requests", 0),
+        "openai_content_agents_max_cost_usd": openai_stage_caps[
+            "content_agents"
+        ],
+        "anthropic_max_cost_usd": anthropic_caps.get("maximum_cost_usd", 0.0),
+        "anthropic_max_requests": anthropic_caps.get("maximum_requests", 0),
         "hard_ttl_seconds": preparation_request["spend"]["hard_ttl_seconds"],
         "container_image": preparation_request["runtime"]["oci_image"],
         "scene_id": preparation_request["scene"]["identity"]["id"],
