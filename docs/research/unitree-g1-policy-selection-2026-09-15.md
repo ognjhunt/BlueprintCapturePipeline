@@ -309,3 +309,8 @@ targets only after both ONNX sessions actually run and every target is inside
 the sealed joint limits. Source and ONNX bytes are checked by digest. The
 bridge has hermetic tests with a provider double; it has not yet been exercised
 with the official provider on a GPU or connected to the shared episode worker.
+The G1 joint episode adapter now reads the real head-camera RGB and overview
+review frames from the same Arena scene, requires a 480x640 uint8 policy frame,
+and checks Isaac's sensor frame counter after each control step. This protects
+the policy input/video seam from stale or wrong-shaped frames; it is still a
+hermetic contract until native camera readback runs on a GPU.

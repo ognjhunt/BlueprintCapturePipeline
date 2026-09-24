@@ -11,6 +11,8 @@ import math
 from collections.abc import Mapping
 from typing import Any
 
+import numpy as np
+
 from .gear_sonic_joint_order_contract import PROTOCOL_V4_FULL_JOINT_ORDER
 from .native_g1_humanoidarena_interface import (
     CANONICAL_BODY_JOINT_NAMES_29,
@@ -49,6 +51,8 @@ class NativeG1JointEpisodeEnvironment:
         self._to_tensor = to_tensor
         self._make_action_tensor = make_action_tensor
         self._index = {name: index for index, name in enumerate(names)}
+        self._camera_scene_names = getattr(built, "camera_scene_names", None)
+        self._camera_history: dict[str, tuple[int, int]] = {}
         self._initial_root_orientation_xyzw: list[float] | None = None
         self._step_index = 0
 
@@ -69,7 +73,68 @@ class NativeG1JointEpisodeEnvironment:
         if len(self._initial_root_orientation_xyzw) != 4:
             raise ValueError("native_g1_episode_root_orientation_invalid")
         self._step_index = 0
+        self._camera_history = {}
         return self.read_state()
+
+    @staticmethod
+    def _array(value: Any) -> np.ndarray:
+        if hasattr(value, "detach"):
+            value = value.detach().cpu()
+        return np.asarray(value)
+
+    def _read_camera(self, role: str, *, policy_shape: bool) -> tuple[np.ndarray, dict[str, int]]:
+        names = self._camera_scene_names
+        if not isinstance(names, Mapping) or not str(names.get(role) or ""):
+            raise ValueError("native_g1_episode_camera_binding_missing:" + role)
+        camera_name = str(names[role])
+        try:
+            camera = self._env.unwrapped.scene[camera_name]
+            raw = camera.data.output["rgb"]
+            counter = self._array(camera.frame).reshape(-1)
+            frame = self._array(raw)
+        except (AttributeError, KeyError, TypeError, ValueError) as exc:
+            raise ValueError("native_g1_episode_camera_readback_missing:" + role) from exc
+        if (
+            len(counter) != 1
+            or not np.isfinite(counter[0])
+            or counter[0] < 0
+            or float(counter[0]) != int(counter[0])
+            or frame.ndim != 4
+            or frame.shape[0] != 1
+            or frame.shape[-1] not in (3, 4)
+            or frame.dtype != np.uint8
+        ):
+            raise ValueError("native_g1_episode_camera_readback_invalid:" + role)
+        frame_index = int(counter[0])
+        previous = self._camera_history.get(role)
+        if previous is not None and self._step_index > previous[0] and frame_index <= previous[1]:
+            raise ValueError("native_g1_episode_camera_stale:" + role)
+        rgb = np.ascontiguousarray(frame[0, :, :, :3])
+        if policy_shape and rgb.shape != (480, 640, 3):
+            raise ValueError("native_g1_episode_policy_camera_shape_invalid")
+        self._camera_history[role] = (self._step_index, frame_index)
+        return rgb, {"step_index": self._step_index, "sensor_frame_index": frame_index}
+
+    def read_policy_inputs(self) -> dict[str, Any]:
+        if self._initial_root_orientation_xyzw is None:
+            raise ValueError("native_g1_episode_reset_required")
+        front, freshness = self._read_camera("head", policy_shape=True)
+        return {
+            "front_rgb": front,
+            "observation_state": self.read_semantic_v3_state(),
+            "sensor_freshness": freshness,
+        }
+
+    def read_review_inputs(self) -> dict[str, Any]:
+        if self._initial_root_orientation_xyzw is None:
+            raise ValueError("native_g1_episode_reset_required")
+        head, head_freshness = self._read_camera("head", policy_shape=True)
+        overview, overview_freshness = self._read_camera("overview", policy_shape=False)
+        return {
+            "head_rgb": head,
+            "overview_rgb": overview,
+            "sensor_freshness": {"head": head_freshness, "overview": overview_freshness},
+        }
 
     def read_state(self) -> dict[str, Any]:
         positions = self._row(self._robot.data.joint_pos)
