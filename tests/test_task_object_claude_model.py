@@ -125,6 +125,12 @@ def test_message_response_maps_to_agents_sdk_output():
     assert result.output[0].content[0].text == "Ready"
 
 
+def test_thinking_only_answer_is_not_counted_as_completed_candidate():
+    messages = FakeMessages(response(value(type="thinking", thinking="", signature="opaque")))
+    with pytest.raises(ClaudeModelBoundaryError, match="response_shape_invalid"):
+        call(ClaudeMessagesModel(client=value(messages=messages)), "Task")
+
+
 def test_real_agents_sdk_round_trips_signed_thinking_tools_and_sqlite(tmp_path):
     class CandidateReady(BaseModel):
         model_config = ConfigDict(extra="forbid")
