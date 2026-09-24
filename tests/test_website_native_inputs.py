@@ -67,6 +67,50 @@ def test_exact_drawer_successor_changes_only_stage_three_and_freezes_stroke(tmp_
     assert derived_stage_three_configuration(runtime=runtime, preparation=preparation) == original
 
 
+def test_second_scene_requires_its_own_preparation_observation_and_identity(tmp_path, monkeypatch):
+    from tests.test_task_object_articulated_packaging import _thin_website_cabinet
+    from blueprint_pipeline import website_drawer_depth_prior
+    from blueprint_pipeline.task_object_articulated_packaging import plan_articulated_assembly
+
+    second = copy.deepcopy(DRAWER_DEPTH_PRIOR)
+    second.update(scene_id="site-capture-second-development",
+                  preparation_digest="sha256:" + "b" * 64,
+                  subject_identity={"id": "website-subject-second", "version": "v1"})
+    observed = {"schema_version": "website_object_observations.v1",
+                "preparation_digest": second["preparation_digest"],
+                "frames": [{"frame_id": str(i), "image_basis": "original_capture",
+                            "image": {"digest": digest}}
+                           for i, digest in enumerate(second["original_frame_sha256s"])],
+                "digest": ""}
+    observed["digest"] = canonical_digest(observed, digest_field="digest")
+    manifest_path = tmp_path / "observations.json"
+    write_json(manifest_path, observed)
+    record = _record(manifest_path)
+    second["observation_manifest_digest"] = record["digest"]
+    monkeypatch.setattr(website_drawer_depth_prior, "ADDITIONAL_PRIORS", (second,))
+
+    original = _thin_website_cabinet()
+    original.update(scene_id=second["scene_id"], replacement_identity=second["subject_identity"])
+    runtime = {"object_authoring": {"configuration": original, "observation_manifest": record}}
+    preparation = {"digest": second["preparation_digest"],
+                   "development_test": {"kind": "development_drawer_fixture",
+                                        "captured_scene_evaluation_allowed": False},
+                   "intake_request": {"task": {"success": {
+                       "minimum_opening_fraction_of_estimated_stroke": 0.6}}}}
+    successor = derived_stage_three_configuration(runtime=runtime, preparation=preparation)
+    assert successor["development_geometry_hypothesis"]["estimated_depth_m"] == 0.55
+    assert plan_articulated_assembly(successor)["task_joint"]["limits_m"] == [0.0, 0.4125]
+    assert derived_stage_three_configuration(
+        runtime=runtime, preparation={**preparation, "digest": DRAWER_DEPTH_PRIOR["preparation_digest"]}) == original
+    assert derived_stage_three_configuration(
+        runtime={"object_authoring": {"configuration": original,
+                                      "observation_manifest": {**record, "digest": "sha256:" + "0" * 64}}},
+        preparation=preparation) == original
+    assert website_drawer_depth_prior.prior_for(
+        scene_id=DRAWER_DEPTH_PRIOR["scene_id"],
+        subject_identity=DRAWER_DEPTH_PRIOR["subject_identity"]) is website_drawer_depth_prior.PRIOR
+
+
 def packet(tmp_path):
     tmp_path.mkdir(parents=True, exist_ok=True)
     args, preparation, _ = inputs(tmp_path)

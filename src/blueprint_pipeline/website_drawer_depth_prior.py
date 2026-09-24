@@ -1,5 +1,9 @@
 """Exact-scene, development-only cabinet prior; never a measured source repair."""
 
+from __future__ import annotations
+
+from typing import Any, Mapping
+
 PRIOR = {
     "schema_version": "website_drawer_depth_prior.v1",
     "claim_ceiling": "development_only",
@@ -36,3 +40,35 @@ PRIOR = {
     ],
     "limitations": "Comparison models differ from the filmed cabinet; rear geometry and physical mass remain unmeasured.",
 }
+
+# Each entry is bound to its own scene, preparation, observed frames and object
+# identity. A later capture of the same video still needs a new entry: the old
+# capture's identity and authority cannot be borrowed for the new run.
+BC15_PRIOR = {
+    # This capture contains the same source video as PRIOR, so the observed
+    # original-frame hashes and public comparison examples are the same. Its
+    # preparation and observation receipts, object identity and scene are new.
+    **PRIOR,
+    "scene_id": "site-capture-bc15f409-09b7-438c-9891-519ba24d728f-development",
+    "preparation_digest": "sha256:2e1254a642a9a3a77de7f4ae421cc59e68ca8ef8b75da6d14617207afaba1f59",
+    "observation_manifest_digest": "sha256:5d780038e8d92460645b15bccf2146a3dcc2436dd230ea1b236dfdb07a494e73",
+    "subject_identity": {"id": "website-subject-cc9b93603a73eb7cbace", "version": "v1"},
+    "original_frame_sha256s": [
+        "sha256:0205303c4faa9892114349af39bc5908b07c145dcc58eaeedd9b5fb74e4336af",
+        "sha256:7c711762f672a41fd90803b4c5c658a81ee23e9dc3b0fcc71dd57ed243bfcc4a",
+        "sha256:afba0d20718721e00312255a4be823a42af42f36e6640598008eee2e2bbe01f9",
+        "sha256:aba7b9e216a351510bf07b16bc8362ec0a68306c94306bbf705f60a0e8874157",
+        "sha256:b6f03d21cf7d274c7cc4228fca289e242e9eeb347f97986c4af39d2e00812a25",
+    ],
+}
+
+ADDITIONAL_PRIORS: tuple[Mapping[str, Any], ...] = (BC15_PRIOR,)
+
+
+def prior_for(*, scene_id: str, subject_identity: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    matches = [prior for prior in (PRIOR, *ADDITIONAL_PRIORS)
+               if prior.get("scene_id") == scene_id
+               and prior.get("subject_identity") == subject_identity]
+    if len(matches) > 1:
+        raise ValueError("website_drawer_depth_prior_ambiguous")
+    return matches[0] if matches else None

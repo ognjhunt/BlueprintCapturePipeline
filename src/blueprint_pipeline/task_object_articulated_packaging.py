@@ -65,12 +65,13 @@ def derived_website_cabinet_depth_hypothesis(configuration: Mapping[str, Any],
                                              source_frames: Sequence[Mapping[str, Any]],
                                              opening_fraction: float) -> dict[str, Any] | None:
     """Deterministic no-spend successor from signed visible bounds and retained frames."""
-    from .website_drawer_depth_prior import PRIOR
+    from .website_drawer_depth_prior import prior_for
+    prior = prior_for(scene_id=configuration.get("scene_id"),
+                      subject_identity=configuration.get("replacement_identity"))
     if (configuration.get("schema_version") != "articulated_replacement_authoring_configuration.v1"
             or configuration.get("source_observation_kind") != "website_capture_frames"
             or (configuration.get("mechanism") or {}).get("joint_type") != "prismatic"
-            or configuration.get("scene_id") != PRIOR["scene_id"]
-            or configuration.get("replacement_identity") != PRIOR["subject_identity"]
+            or prior is None
             or configuration.get("development_geometry_hypothesis") is not None):
         return None
     envelope = configuration.get("metric_envelope") or {}
@@ -87,7 +88,7 @@ def derived_website_cabinet_depth_hypothesis(configuration: Mapping[str, Any],
         return None
     if not (height >= 0.35 and width >= 0.30 and depth < 0.25 and depth / width < 0.5):
         return None
-    nominal = PRIOR["nominal_depth_m"]
+    nominal = prior["nominal_depth_m"]
     if nominal / width > 1.5:
         return None  # A wider prior is not defensible for this object; request review.
     hashes = sorted({str(frame.get("sha256") or "") for frame in source_frames
@@ -105,26 +106,26 @@ def derived_website_cabinet_depth_hypothesis(configuration: Mapping[str, Any],
             "claim_ceiling": "development_only", "basis": "bounded_cabinet_prior",
             "source_aabb_min_xyz_m": list(lower), "source_aabb_max_xyz_m": list(upper),
             "estimated_depth_m": nominal,
-            "depth_interval_m": list(PRIOR["depth_interval_m"]),
+            "depth_interval_m": list(prior["depth_interval_m"]),
             "source_estimated_usable_stroke_m": source_stroke,
             "estimated_usable_stroke_m": stroke,
             "minimum_opening_fraction": opening_fraction,
             "estimated_minimum_opening_m": round(stroke * opening_fraction, 5),
-            "manufacturer_examples": list(PRIOR["manufacturer_examples"]),
-            "reference_retrieved_date": PRIOR["reference_retrieved_date"],
-            "prior_record_schema_version": PRIOR["schema_version"],
+            "manufacturer_examples": list(prior["manufacturer_examples"]),
+            "reference_retrieved_date": prior["reference_retrieved_date"],
+            "prior_record_schema_version": prior["schema_version"],
             "prior_comparison": {
-                "example_depth_range_m": PRIOR["example_depth_range_m"],
-                "example_width_range_m": PRIOR["example_width_range_m"],
-                "example_height_range_m": PRIOR["example_height_range_m"],
-                "example_weight_range_kg_approx": PRIOR["example_weight_range_kg_approx"],
+                "example_depth_range_m": prior["example_depth_range_m"],
+                "example_width_range_m": prior["example_width_range_m"],
+                "example_height_range_m": prior["example_height_range_m"],
+                "example_weight_range_kg_approx": prior["example_weight_range_kg_approx"],
                 "source_width_m": round(width, 5), "source_height_m": round(height, 5),
-                "width_status": "outside_examples_review_needed" if width > PRIOR["example_width_range_m"][1] else "within_example_range",
-                "height_status": "outside_examples_review_needed" if height > PRIOR["example_height_range_m"][1] else "within_example_range",
+                "width_status": "outside_examples_review_needed" if width > prior["example_width_range_m"][1] else "within_example_range",
+                "height_status": "outside_examples_review_needed" if height > prior["example_height_range_m"][1] else "within_example_range",
                 "reference_models_are_exact_match": False,
             },
-            "whole_assembly_mass_interval_kg": list(PRIOR["whole_assembly_mass_interval_kg"]),
-            "revised_part_mass_bounds_kg": dict(PRIOR["revised_part_mass_bounds_kg"]),
+            "whole_assembly_mass_interval_kg": list(prior["whole_assembly_mass_interval_kg"]),
+            "revised_part_mass_bounds_kg": dict(prior["revised_part_mass_bounds_kg"]),
             "rationale": ("Original closed-drawer frames identify an office cabinet but do not show its back. "
                           "A broad cabinet construction prior supplies candidate depth; physical depth is unmeasured."),
             "evidence_frame_sha256s": hashes}
@@ -133,13 +134,17 @@ def derived_website_cabinet_depth_hypothesis(configuration: Mapping[str, Any],
 def _depth_hypothesis(configuration: Mapping[str, Any], *, source_depth: float,
                       width: float, height: float) -> dict[str, Any] | None:
     """Admit an explicit development estimate while retaining the source box intact."""
-    from .website_drawer_depth_prior import PRIOR
+    from .website_drawer_depth_prior import prior_for
+    prior = prior_for(scene_id=configuration.get("scene_id"),
+                      subject_identity=configuration.get("replacement_identity"))
     raw = configuration.get("development_geometry_hypothesis")
     implausibly_thin = height >= 0.35 and width >= 0.30 and source_depth < 0.25 and source_depth / width < 0.5
     if raw is None:
         if configuration.get("source_observation_kind") == "website_capture_frames" and implausibly_thin:
             raise AssetAuthoringError("articulated_cabinet_depth_implausible_hypothesis_required")
         return None
+    if prior is None:
+        raise AssetAuthoringError("articulated_cabinet_depth_hypothesis_invalid")
     if not isinstance(raw, Mapping) or set(raw) != {
         "schema_version", "claim_ceiling", "basis", "source_aabb_min_xyz_m", "source_aabb_max_xyz_m",
         "estimated_depth_m", "depth_interval_m", "rationale", "evidence_frame_sha256s",
@@ -163,8 +168,6 @@ def _depth_hypothesis(configuration: Mapping[str, Any], *, source_depth: float,
     opening = raw.get("estimated_minimum_opening_m")
     mechanism = configuration["mechanism"]
     if (configuration.get("source_observation_kind") != "website_capture_frames"
-            or configuration.get("scene_id") != PRIOR["scene_id"]
-            or configuration.get("replacement_identity") != PRIOR["subject_identity"]
             or basis not in {"original_capture_frames", "bounded_cabinet_prior"}
             or not isinstance(frames, list) or len(frames) != len(set(map(str, frames)))
             or not frames
@@ -180,12 +183,12 @@ def _depth_hypothesis(configuration: Mapping[str, Any], *, source_depth: float,
             or not math.isclose(opening, round(stroke * fraction, 5), abs_tol=1e-8)
             or mechanism.get("estimated_usable_stroke_m") != stroke
             or mechanism.get("joint_limits") != [0.0, stroke]
-            or raw.get("whole_assembly_mass_interval_kg") != PRIOR["whole_assembly_mass_interval_kg"]
-            or raw.get("revised_part_mass_bounds_kg") != PRIOR["revised_part_mass_bounds_kg"]
-            or configuration.get("required_output", {}).get("mass_kg_bounds") != PRIOR["revised_part_mass_bounds_kg"]["carcass"]
-            or configuration.get("required_output", {}).get("task_part_mass_kg_bounds") != PRIOR["revised_part_mass_bounds_kg"]["drawer"]
-            or raw.get("reference_retrieved_date") != PRIOR["reference_retrieved_date"]
-            or raw.get("prior_record_schema_version") != PRIOR["schema_version"]
+            or raw.get("whole_assembly_mass_interval_kg") != prior["whole_assembly_mass_interval_kg"]
+            or raw.get("revised_part_mass_bounds_kg") != prior["revised_part_mass_bounds_kg"]
+            or configuration.get("required_output", {}).get("mass_kg_bounds") != prior["revised_part_mass_bounds_kg"]["carcass"]
+            or configuration.get("required_output", {}).get("task_part_mass_kg_bounds") != prior["revised_part_mass_bounds_kg"]["drawer"]
+            or raw.get("reference_retrieved_date") != prior["reference_retrieved_date"]
+            or raw.get("prior_record_schema_version") != prior["schema_version"]
             or not isinstance(raw.get("manufacturer_examples"), list)
             or len(raw["manufacturer_examples"]) != 4
             or not isinstance(raw.get("prior_comparison"), Mapping)

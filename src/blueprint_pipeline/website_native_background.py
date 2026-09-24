@@ -25,17 +25,17 @@ def derived_stage_three_configuration(*, runtime: Mapping[str, Any],
                                       observation_manifest_path: Path | None = None) -> dict[str, Any]:
     """Recompile only stage 3 from the retained exact-scene evidence on retry."""
     from .task_object_articulated_packaging import derived_website_cabinet_depth_hypothesis
-    from .website_drawer_depth_prior import PRIOR
+    from .website_drawer_depth_prior import prior_for
 
     original = runtime["object_authoring"]["configuration"]
     config = dict(original)
     observation_record = runtime["object_authoring"]["observation_manifest"]
-    if (preparation.get("digest") != PRIOR["preparation_digest"]
-            or original.get("scene_id") != PRIOR["scene_id"]
-            or original.get("replacement_identity") != PRIOR["subject_identity"]
+    prior = prior_for(scene_id=original.get("scene_id"),
+                      subject_identity=original.get("replacement_identity"))
+    if (prior is None or preparation.get("digest") != prior["preparation_digest"]
             or (preparation.get("development_test") or {}).get("kind") != "development_drawer_fixture"
             or (preparation.get("development_test") or {}).get("captured_scene_evaluation_allowed") is not False
-            or observation_record.get("digest") != PRIOR["observation_manifest_digest"]):
+            or observation_record.get("digest") != prior["observation_manifest_digest"]):
         return config
     manifest_path = observation_manifest_path or Path(observation_record["path"])
     if not manifest_path.is_file():
@@ -51,7 +51,7 @@ def derived_stage_three_configuration(*, runtime: Mapping[str, Any],
     original_frames = observed.get("frames") or []
     hashes = {row.get("image", {}).get("digest") for row in original_frames
               if row.get("image_basis") == "original_capture"}
-    if len(original_frames) != len(hashes) or hashes != set(PRIOR["original_frame_sha256s"]):
+    if len(original_frames) != len(hashes) or hashes != set(prior["original_frame_sha256s"]):
         return config
     frames = [{"role": "observed_source", "sha256": digest} for digest in sorted(hashes)]
     fraction = (preparation.get("intake_request", {}).get("task", {}).get("success") or {}).get(
