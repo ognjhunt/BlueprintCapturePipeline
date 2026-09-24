@@ -19,6 +19,8 @@ from .claude_opus_authoring_invoker import (
     ClaudeAuthoringBlocked, ClaudeOpusAuthoringInvoker, MODEL,
 )
 from .decision_evidence_contracts import canonical_digest, canonical_json
+from .task_evaluation_supervisor.sdk_image_tools import encode_tool_output
+from .task_object_claude_model import _messages
 
 
 def _write_once(path: Path, value: Any) -> None:
@@ -54,12 +56,14 @@ class ClaudeSDKMessageClient:
     """One journal and one ordered SDK conversation for a single asset."""
 
     def __init__(self, *, invoker: ClaudeOpusAuthoringInvoker, object_id: str,
-                 journal_root: Path, session_db: Path | None = None):
+                 journal_root: Path, session_db: Path | None = None,
+                 tool_root: Path | None = None):
         if not object_id or not isinstance(invoker, ClaudeOpusAuthoringInvoker):
             raise ValueError("claude_sdk_bridge_configuration_invalid")
         self.invoker, self.object_id = invoker, object_id
         self.root = Path(journal_root)
         self.session_db = Path(session_db) if session_db is not None else None
+        self.tool_root = Path(tool_root) if tool_root is not None else None
         self.messages = self
         self._lock = asyncio.Lock()
         self._initial_call = True
@@ -140,16 +144,23 @@ class ClaudeSDKMessageClient:
         if not calls or None in calls:
             raise ClaudeAuthoringBlocked("claude_sdk_replay_ambiguous")
         with closing(sqlite3.connect(self.session_db.as_uri() + "?mode=ro&immutable=1", uri=True)) as db:
-            seen = {json.loads(row[0]).get("call_id") for row in db.execute(
+            items = [json.loads(row[0]) for row in db.execute(
                 "SELECT message_data FROM agent_messages WHERE session_id=? ORDER BY id",
-                (self.object_id,))}
-        if calls & seen and not calls <= seen:
+                (self.object_id,))]
+        seen = {item.get("call_id") for item in items
+                if item.get("type") == "function_call"}
+        done = {item.get("call_id") for item in items
+                if item.get("type") == "function_call_output"}
+        if calls & seen and not calls <= done:
             raise ClaudeAuthoringBlocked("claude_sdk_replay_partial_checkpoint")
-        return calls <= seen
+        return calls <= seen and calls <= done
 
-    def completed_tool_history(self, tool_root: Path) -> list[tuple[str, dict, Any]]:
+    def completed_tool_history(self, tool_root: Path | None = None) -> list[tuple[str, dict, Any]]:
         """Read only SQLite, signed provider turns and local tool outcomes."""
         records = self.inspect_journal()
+        tool_root = Path(tool_root) if tool_root is not None else self.tool_root
+        if tool_root is None:
+            raise ClaudeAuthoringBlocked("claude_sdk_tool_ledger_missing")
         if self.session_db is None or not self.session_db.is_file():
             raise ClaudeAuthoringBlocked("claude_sdk_conversation_missing")
         wal = self.session_db.with_name(self.session_db.name + "-wal")
@@ -168,7 +179,22 @@ class ClaudeSDKMessageClient:
                 or {item.get("call_id") for item in outputs}
                     != {block.get("id") for block in expected}):
             raise ClaudeAuthoringBlocked("claude_sdk_tool_history_changed")
+        for payload, response in records:
+            blocks = [block for block in response["content"] if block.get("type") == "tool_use"]
+            if len(blocks) != 1:
+                raise ClaudeAuthoringBlocked("claude_sdk_tool_history_changed")
+            call_id = blocks[0]["id"]
+            matches = [index for index, item in enumerate(items)
+                       if item.get("type") == "function_call" and item.get("call_id") == call_id]
+            if len(matches) != 1:
+                raise ClaudeAuthoringBlocked("claude_sdk_tool_history_changed")
+            start = matches[0]
+            while start and items[start - 1].get("type") == "reasoning":
+                start -= 1
+            if _messages(items[:start]) != payload.get("messages"):
+                raise ClaudeAuthoringBlocked("claude_sdk_conversation_request_changed")
         history = []
+        outputs_by_id = {item["call_id"]: item for item in outputs}
         for item, block in zip(calls, expected, strict=True):
             call_id, name, arguments = block.get("id"), block.get("name"), block.get("input")
             if (not isinstance(call_id, str) or not call_id or item.get("name") != name
@@ -185,6 +211,10 @@ class ClaudeSDKMessageClient:
             result = _read(Path(tool_root) / (token + ".result.json"))
             if started != {"tool": name, "call_id": call_id, "arguments": arguments}:
                 raise ClaudeAuthoringBlocked("claude_sdk_tool_history_changed")
+            encoded, _ = encode_tool_output(result, model="gpt-6-astra")
+            if outputs_by_id[call_id].get("output") != (
+                    encoded if encoded is not None else canonical_json(result)):
+                raise ClaudeAuthoringBlocked("claude_sdk_tool_output_changed")
             history.append((name, arguments, result))
         return history
 
