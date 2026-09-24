@@ -5366,32 +5366,68 @@ def test_agents_api_project_guard_refuses_before_paid_allocation(tmp_path, monke
     from blueprint_pipeline.agent_execution.contracts import digest
     from blueprint_pipeline.task_object_agents_api_stage import GUARD_SCHEMA, DISCLOSURE_SCOPE
     authority = {"authority_digest": "sha256:" + "a" * 64,
-        "external_service_spend_caps": {"openai": {"maximum_cost_usd": 5,
+        "external_service_spend_caps": {"openai": {"maximum_cost_usd": 7,
             "maximum_requests": 8, "stage_max_cost_usd": {
                 "artifixer_semantic_teacher": 0, "artifixer_visual_review": 0,
-                "content_agents": 5}}}}
+                "content_agents": 7}}}}
     _configure_scene_openai_runtime_files(tmp_path, monkeypatch)
+    scoped_key = tmp_path / "dedicated-sol-key"
+    scoped_key.write_text("fixture-dedicated-sol-key")
+    scoped_key.chmod(0o640)
+    scoped_attestation = tmp_path / "dedicated-sol-scope.json"
+    scoped_attestation.write_text(_openai_scope_attestation(
+        paid_resource_class="task_evaluation_scene_configuration_content_agents",
+        api_key_id="key_dedicated_sol", project_id="proj_dedicated_sol"))
+    scoped_attestation.chmod(0o640)
+    monkeypatch.setenv("BLUEPRINT_SCENE_CONFIGURATION_AGENTS_API_PROJECT_ID", "proj_dedicated_sol")
+    monkeypatch.setenv("BLUEPRINT_SCENE_CONFIGURATION_AGENTS_API_KEY_ID", "key_dedicated_sol")
+    monkeypatch.setenv("BLUEPRINT_SCENE_CONFIGURATION_AGENTS_API_KEY_FILE", str(scoped_key))
+    monkeypatch.setenv("BLUEPRINT_SCENE_CONFIGURATION_AGENTS_API_COST_SCOPE_ATTESTATION_FILE",
+                       str(scoped_attestation))
     now = time.time()
-    guard = {"schema_version": GUARD_SCHEMA, "project_id": "proj_test",
-        "credential_id": "key_content_agents", "dashboard_hard_limit_enabled": True,
+    guard = {"schema_version": GUARD_SCHEMA, "project_id": "proj_dedicated_sol",
+        "credential_id": "key_dedicated_sol", "dashboard_hard_limit_enabled": True,
         "disclosure_scope": DISCLOSURE_SCOPE,
         "budget_policy": "project_guard_accepted_uncertainty",
         "session_retention": "until_deleted", "trace_retention": "provider_default",
         "provider_api_region": "us", "observed_at": now - 5, "expires_at": now + 1800,
         "spend_limit": {"object": "project.spend_limit", "currency": "USD",
-                        "interval": "month", "threshold_amount": 500}}
+                        "interval": "month", "threshold_amount": 700}}
     path = tmp_path / "managed-project-guard.json"
     path.write_text(json.dumps(guard))
     path.chmod(0o600)
     monkeypatch.setenv("BLUEPRINT_SCENE_CONFIGURATION_AGENTS_API_PROJECT_GUARD_FILE", str(path))
-    monkeypatch.setattr(scene_vast, "_collect_openai_cost_snapshot", lambda **_kw: {"total_cost_usd": 0})
+    observed = []
+    monkeypatch.setattr(scene_vast, "_collect_openai_cost_snapshot", lambda **kw:
+                        observed.append((kw["project_id"], kw["api_key_id"])) or {"total_cost_usd": 0})
     receipt = {"replacement_authoring_agent_runtime": "openai_agents_api",
         "replacement_authoring_model": "gpt-6-sol",
         "replacement_authoring_agents_api_policy": {"project_guard_receipt_digest": digest(guard),
             "ttl_seconds": 900}}
     paths, environment = scene_vast._provider_runtime_inputs(authority, receipt)
     assert paths["BLUEPRINT_SCENE_CONFIGURATION_AGENTS_API_PROJECT_GUARD_FILE"] == str(path)
+    assert paths["OPENAI_CONTENT_AGENTS_API_KEY_FILE"] == str(scoped_key)
+    assert environment["OPENAI_PROJECT_ID"] == "proj_dedicated_sol"
+    assert environment["OPENAI_CONTENT_AGENTS_API_KEY_ID"] == "key_dedicated_sol"
+    assert observed == [("proj_dedicated_sol", "key_dedicated_sol")]
     assert environment["BLUEPRINT_SCENE_CONFIGURATION_AUTHORING_RUNTIME"] == "openai_agents_api"
+    monkeypatch.setenv("BLUEPRINT_SCENE_CONFIGURATION_AGENTS_API_PROJECT_ID", "proj_wrong")
+    with pytest.raises(scene_vast.TaskEvaluationSceneConfigurationVastError,
+                       match="agents_api_project_guard_invalid"):
+        scene_vast._provider_runtime_inputs(authority, receipt)
+    monkeypatch.setenv("BLUEPRINT_SCENE_CONFIGURATION_AGENTS_API_PROJECT_ID", "proj_dedicated_sol")
+    monkeypatch.delenv("BLUEPRINT_SCENE_CONFIGURATION_AGENTS_API_KEY_FILE")
+    with pytest.raises(scene_vast.TaskEvaluationSceneConfigurationVastError,
+                       match="openai_runtime_secret_configuration_missing"):
+        scene_vast._provider_runtime_inputs(authority, receipt)
+    monkeypatch.setenv("BLUEPRINT_SCENE_CONFIGURATION_AGENTS_API_KEY_FILE", str(scoped_key))
+    mixed = json.loads(json.dumps(authority))
+    mixed_caps = mixed["external_service_spend_caps"]["openai"]
+    mixed_caps["stage_max_cost_usd"]["artifixer_visual_review"] = 0.96
+    mixed_caps["maximum_cost_usd"] = 7.96
+    with pytest.raises(scene_vast.TaskEvaluationSceneConfigurationVastError,
+                       match="agents_api_requires_content_only_scope"):
+        scene_vast._provider_runtime_inputs(mixed, receipt)
     receipt["replacement_authoring_agents_api_policy"]["project_guard_receipt_digest"] = "sha256:" + "f" * 64
     with pytest.raises(scene_vast.TaskEvaluationSceneConfigurationVastError,
                        match="agents_api_project_guard_invalid"):

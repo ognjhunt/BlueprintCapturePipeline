@@ -152,6 +152,18 @@ _OPENAI_RUNTIME_VALUE_ENVS = (
     "OPENAI_ARTIFIXER_VISUAL_REVIEW_API_KEY_ID",
     "OPENAI_CONTENT_AGENTS_API_KEY_ID",
 )
+# Managed asset authoring uses a dedicated project/key without changing the
+# host's legacy OpenAI project for unrelated scene stages. These operator-set
+# inputs are copied into the canonical provider environment only after the
+# signed project guard and cost-scope attestation bind their exact identities.
+_AGENTS_API_SCOPED_ENVS = {
+    "OPENAI_PROJECT_ID": "BLUEPRINT_SCENE_CONFIGURATION_AGENTS_API_PROJECT_ID",
+    "OPENAI_CONTENT_AGENTS_API_KEY_FILE": "BLUEPRINT_SCENE_CONFIGURATION_AGENTS_API_KEY_FILE",
+    "OPENAI_CONTENT_AGENTS_API_KEY_ID": "BLUEPRINT_SCENE_CONFIGURATION_AGENTS_API_KEY_ID",
+    "BLUEPRINT_OPENAI_CONTENT_AGENTS_COST_SCOPE_ATTESTATION_FILE": (
+        "BLUEPRINT_SCENE_CONFIGURATION_AGENTS_API_COST_SCOPE_ATTESTATION_FILE"
+    ),
+}
 _OPENAI_STAGE_SCOPE_DISTINCT_GROUPS = (
     (
         "OPENAI_ARTIFIXER_SEMANTIC_TEACHER_API_KEY_FILE",
@@ -361,13 +373,21 @@ def _provider_runtime_inputs(
         if ((receipt or {}).get("replacement_authoring_model") != "gpt-6-sol"
                 or (receipt or {}).get("replacement_authoring_model_provider", "openai") != "openai"):
             raise TaskEvaluationSceneConfigurationVastError("scene_configuration_agents_api_selection_invalid")
+        if any(float(stage_caps[stage]) != 0 for stage in (
+                "artifixer_semantic_teacher", "artifixer_visual_review")):
+            raise TaskEvaluationSceneConfigurationVastError(
+                "scene_configuration_agents_api_requires_content_only_scope")
         file_names.add("BLUEPRINT_SCENE_CONFIGURATION_AGENTS_API_PROJECT_GUARD_FILE")
-    secret_paths = {name: str(os.environ.get(name) or "").strip()
+    def scoped_value(name: str) -> str:
+        selected = _AGENTS_API_SCOPED_ENVS.get(name) if managed_asset else None
+        return str(os.environ.get(selected or name) or "").strip()
+
+    secret_paths = {name: scoped_value(name)
                     for name in _OPENAI_RUNTIME_FILE_ENVS if name in file_names}
     if managed_asset:
         name = "BLUEPRINT_SCENE_CONFIGURATION_AGENTS_API_PROJECT_GUARD_FILE"
         secret_paths[name] = str(os.environ.get(name) or "").strip()
-    values = {name: str(os.environ.get(name) or "").strip()
+    values = {name: scoped_value(name)
               for name in _OPENAI_RUNTIME_VALUE_ENVS if name in value_names}
     if not all(secret_paths.values()) or not all(values.values()):
         raise TaskEvaluationSceneConfigurationVastError(
