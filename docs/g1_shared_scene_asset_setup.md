@@ -147,3 +147,28 @@ task-success claim. `run_g1_supervised_built_scene_episode` in
 controller through one built-scene development episode. It records the scored
 episode digest and child teardown in a terminal receipt. The production policy
 worker does not invoke this assembly yet, and no GPU run has verified it.
+
+`python -m blueprint_pipeline.native_g1_development_worker --request
+<sealed-request.json> --output-dir <new-attempt-directory>` is the local
+development worker for that assembly. It consumes the same sealed
+`native_task_arena_packet` that the Franka path uses. Its request schema is
+`native_g1_development_episode_request.v1`; it names the packet root, selected
+box candidate, checkpoint inventory/root, pinned server and SONIC sources,
+encoder/decoder paths and hashes, policy-server Python executable, loopback
+port, `cuda:0`, maximum steps, and the existing Isaac runtime provisioning
+receipt. The request and embedded rights review both carry canonical digests.
+The review must name a human reviewer, bind the candidate, scene and exact
+inventory file, and record review of the checkpoint's inherited model terms
+plus source and SONIC terms for development simulation. A receipt with those
+fields is a recorded decision; the validator cannot establish that the
+reviewer actually had authority or that publication rights are granted.
+
+Before starting Isaac, the worker rechecks the packet receipt and every
+staged source/model byte, then compares the preflight scene digest with the
+sealed packet. It refuses missing rights review. It builds the selected G1
+in that packet, checks the device readback, runs the supervised episode, and
+closes the environment and simulator even after failure. The worker writes
+`native_g1_development_worker_result.v1.json` with the episode receipt and
+teardown states. This is a development simulator path. The published policy
+bundle, container launch profile, live checkpoint inference, movement task,
+and public video approval remain separate gates.
