@@ -287,3 +287,8 @@ state from named joints and explicitly converts native XYZW root quaternions
 to the publisher's heading-canonical WXYZ rotation representation. It checks
 40-wide policy references and keeps them out of the direct motor-target path.
 This is a tested interface adapter, not policy inference or SONIC execution.
+The native G1 joint episode adapter now reads 43 named joints from the same
+Arena articulation and applies only bounded, complete controller target maps
+in the action manager's declared order. A 40-value semantic policy action
+cannot be passed into that actuator seam. Controller provenance and real
+simulation stepping still require a GPU runtime receipt.
