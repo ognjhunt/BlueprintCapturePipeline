@@ -362,16 +362,40 @@ def diagnose_inconsistent_background(*, frames: Sequence[Mapping[str, Any]],
             if _sha256_file(Path(item["image_path"])) != item["image_digest"]:
                 raise ValueError("website_background_consistency_source_changed")
             image_digests.append(item["image_digest"])
-    binding = {"kind": "background_consistency_diagnosis", "revision": 1, "model": DEFAULT_MODEL,
-               "prior_review_digest": failed_review["request_digest"], "image_digests": image_digests,
-               "frame_ids": [frame["frame_id"] for frame in frames], "prompt": CONSISTENCY_DIAGNOSIS_PROMPT,
-               "media_resolution": "MEDIA_RESOLUTION_HIGH", "max_output_tokens": 1024}
+    base_binding = {"kind": "background_consistency_diagnosis", "model": DEFAULT_MODEL,
+                    "prior_review_digest": failed_review["request_digest"], "image_digests": image_digests,
+                    "frame_ids": [frame["frame_id"] for frame in frames], "prompt": CONSISTENCY_DIAGNOSIS_PROMPT,
+                    "media_resolution": "MEDIA_RESOLUTION_HIGH"}
     task_digest = sha256(json.dumps(dict(task_context), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     if plan.get("task_context_sha256") != task_digest:
         raise ValueError("website_background_consistency_task_mismatch")
     from .website_gemini_receipts import gemini_quote, retained_gemini_call
     text_bytes = len(CONSISTENCY_DIAGNOSIS_PROMPT.encode()) + 1024
     text_bytes += sum(len(str(frame["frame_id"]).encode()) * 2 + 32 for frame in frames)
+    input_tokens = text_bytes + 1120 * len(image_digests)
+    # Revision 1 allowed too few output tokens for Gemini's reasoning and left
+    # an immutable submitting intent when the provider returned an incomplete
+    # answer. Reuse a completed v1 receipt; only an exact unresolved v1 intent
+    # permits one separately bounded v2 request. Never rewrite the old intent.
+    prior_binding = {**base_binding, "revision": 1, "max_output_tokens": 1024}
+    prior_quote = gemini_quote(model=DEFAULT_MODEL, input_tokens=input_tokens, max_output_tokens=1024)
+    prior_request = {"binding": prior_binding, "task_context_digest": task_context["context_digest"],
+                     "maximum_cost_usd": prior_quote}
+    prior_digest = canonical_digest(prior_request)
+    prior_path = output_root / "gemini_reviews" / f"{prior_digest[7:]}.json"
+    prior_status = None
+    if prior_path.is_file():
+        prior_receipt = json.loads(prior_path.read_text())
+        if (prior_receipt.get("request_digest") != prior_digest
+                or prior_receipt.get("request") != prior_request):
+            raise ValueError("website_background_consistency_prior_receipt_changed")
+        prior_status = prior_receipt.get("status")
+        if prior_status not in {"completed", "submitting"}:
+            raise ValueError("website_background_consistency_prior_receipt_invalid")
+    max_output_tokens = 1024 if prior_status == "completed" else 8192
+    binding = (prior_binding if prior_status == "completed" else
+               {**base_binding, "revision": 2, "max_output_tokens": max_output_tokens,
+                "supersedes_incomplete_request_digest": prior_digest if prior_status == "submitting" else None})
 
     def preflight():
         if not _api_key()[0]:
@@ -392,7 +416,8 @@ def diagnose_inconsistent_background(*, frames: Sequence[Mapping[str, Any]],
         with genai.Client(api_key=_api_key()[0], http_options=types.HttpOptions(
                 timeout=120_000, retry_options=types.HttpRetryOptions(attempts=1))) as client:
             response = client.models.generate_content(model=DEFAULT_MODEL, contents=contents,
-                config=types.GenerateContentConfig(response_mime_type="application/json", max_output_tokens=1024,
+                config=types.GenerateContentConfig(response_mime_type="application/json",
+                                                   max_output_tokens=max_output_tokens,
                                                    media_resolution="MEDIA_RESOLUTION_HIGH"))
         if not response.candidates or response.candidates[0].finish_reason != "STOP":
             raise ValueError("website_background_consistency_diagnosis_incomplete")
@@ -401,7 +426,7 @@ def diagnose_inconsistent_background(*, frames: Sequence[Mapping[str, Any]],
 
     result = retained_gemini_call(output_root=output_root / "gemini_reviews", binding=binding,
         task_context=task_context, maximum_cost_usd=gemini_quote(model=DEFAULT_MODEL,
-            input_tokens=text_bytes + 1120 * len(image_digests), max_output_tokens=1024),
+            input_tokens=input_tokens, max_output_tokens=max_output_tokens),
         preflight=preflight, invoke=invoke)
     diagnosis = result.get("diagnosis") or {}
     ids = diagnosis.get("inconsistent_background_frame_ids")
