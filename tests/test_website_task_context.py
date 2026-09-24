@@ -123,6 +123,7 @@ def test_sponsored_claude_choice_requires_its_separate_digest_bound_terms(monkey
     assert module.load_website_scene_sponsorship(task_context=context(), now=1000) == value
     for changes in ({"anthropic_provider_terms_reference": "anthropic:unverified"},
                     {"authoring_provider": "openai"},
+                    {"authoring_provider": "openai", "anthropic_provider_terms_reference": "unverified"},
                     {"authoring_provider": "other"}):
         bad = {**value, **changes}
         bad["authority_digest"] = canonical_digest(bad, digest_field="authority_digest")

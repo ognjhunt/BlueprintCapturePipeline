@@ -164,9 +164,10 @@ def load_website_scene_sponsorship(*, task_context: Mapping[str, Any], now: floa
     authoring_provider = value.get("authoring_provider", "openai")
     anthropic_terms = value.get("anthropic_provider_terms_reference")
     if (authoring_provider not in {"openai", "anthropic"}
-            or (authoring_provider == "anthropic") != (
-                isinstance(anthropic_terms, str)
-                and re.fullmatch(r"sha256:[0-9a-f]{64}", anthropic_terms) is not None)):
+            or (authoring_provider == "openai" and anthropic_terms is not None)
+            or (authoring_provider == "anthropic" and (
+                not isinstance(anthropic_terms, str)
+                or re.fullmatch(r"sha256:[0-9a-f]{64}", anthropic_terms) is None))):
         raise ValueError("website_scene_sponsorship_authoring_provider_invalid")
     amounts = [value.get(key) for key in ("preparation_max_total_spend_usd", "upstream_max_spend_usd", "max_total_spend_usd")]
     if (value.get("schema_version") != "website_scene_sponsorship.v1" or value.get("sponsor") != "blueprint"
