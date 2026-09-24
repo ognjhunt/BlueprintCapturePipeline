@@ -233,7 +233,8 @@ def test_website_stage_prepares_images_without_waiting_for_geometry(tmp_path, mo
 
     def track(**kwargs):
         order.append("masks")
-        assert [target["target_id"] for target in kwargs["plan"]["targets"]] == ["box"]
+        # People are tracked and removed like the task object (owner decision, 2026-09-24).
+        assert [target["target_id"] for target in kwargs["plan"]["targets"]] == ["box", "operator_hand"]
         assert kwargs["defer_kept_static"] is True
         assert kwargs["source_geometry"] == geometry
         assert kwargs["source_video"] == source
@@ -254,7 +255,7 @@ def test_website_stage_prepares_images_without_waiting_for_geometry(tmp_path, mo
 
     def complete(**kwargs):
         order.append("completion")
-        assert [target["target_id"] for target in kwargs["targets"]] == ["box"]
+        assert [target["target_id"] for target in kwargs["targets"]] == ["box", "operator_hand"]
         assert len(kwargs["frames"]) == 8
         assert sum(f["remaining_pixel_count"] > 0 for f in kwargs["frames"]) == 2
         return [{**frame, "remaining_pixel_count": 0,
@@ -262,7 +263,7 @@ def test_website_stage_prepares_images_without_waiting_for_geometry(tmp_path, mo
 
     def review(**kwargs):
         order.append("review")
-        assert [target["target_id"] for target in kwargs["plan"]["targets"]] == ["box"]
+        assert [target["target_id"] for target in kwargs["plan"]["targets"]] == ["box", "operator_hand"]
         if fill_result in {"inconsistent_repair", "inconsistent_unedited"}:
             ids = [frame["frame_id"] for frame in kwargs["frames"]]
             if len(ids) == 8:

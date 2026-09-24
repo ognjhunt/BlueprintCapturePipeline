@@ -172,7 +172,9 @@ def prepare_object_removal_frames(*, frames: Sequence[Mapping[str, Any]], task_m
             original = image.convert("RGB").rotate(rotation, expand=True)
         mask = np.zeros((original.height, original.width), dtype=bool)
         for target in task_masks["targets"]:
-            if target["task_effect"] != "manipulated" or target["disposition"] != "remove":
+            # People are removed with the manipulated task objects.
+            if target["disposition"] != "remove" or (target["task_effect"] != "manipulated"
+                                                     and target.get("target_class") != "person"):
                 continue
             track = target.get("source_track") or target["track"]
             for observation in track["observations"]:

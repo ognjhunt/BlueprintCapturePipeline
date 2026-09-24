@@ -68,6 +68,54 @@ def test_full_video_identity_is_selected_before_geometry_sampling(tmp_path, monk
     assert len(result["targets"][0]["source_track"]["observations"]) == 2
 
 
+def test_every_person_instance_is_tracked_for_removal_without_choosing_one(tmp_path, monkeypatch):
+    from blueprint_pipeline import website_task_masks as masks
+
+    task = {**_target(), "semantic_label": "blue box", "task_effect": "manipulated", "disposition": "remove"}
+    person = {"target_id": "person", "semantic_label": "person", "segmentation_prompt": "person",
+              "target_class": "person", "target_role": "person", "task_effect": "privacy", "disposition": "remove",
+              "spatial_evidence": []}
+    box = _track()
+    box["observations"][0]["source_frame_id"] = "anchor"
+    arm_a = _track("arm-a", start=0, label="person")
+    arm_a["observations"][0]["source_frame_id"] = "anchor"
+    arm_b = _track("arm-b", start=10, label="person")
+    arm_b["observations"][0]["source_frame_id"] = "anchor"
+    registry = [{"source_frame_id": "anchor", "decoded_pts_seconds": 1 / 30, "width": 4, "height": 4}]
+    seen = []
+    monkeypatch.setenv("BLUEPRINT_WEBSITE_SAM31_PROVIDER", "meta")
+    monkeypatch.setattr(masks, "prepare_continuous_video", lambda **kw: (registry, {"path": "prepared.mp4"}))
+    def sam(**kw):
+        seen.append([prompt["text"] for prompt in kw["prompts"]])
+        return {"tracks": [box, arm_a, arm_b]}
+    monkeypatch.setattr(masks, "run_meta_sam31", sam)
+    result = masks.run_website_task_masks(
+        plan={"targets": [task, person], "task_context_sha256": "task"},
+        source_geometry={"digest": "source", "geometry_available": False,
+                         "binding": {"source_video_digest": "video"},
+                         "frames": [{"frame_id": "anchor", "timestamp_seconds": 1 / 30, "width": 4, "height": 4}]},
+        source_video=tmp_path / "source.mov", output_root=tmp_path / "masks")
+    # One hosted call tracks the task object and the person concept together.
+    assert len(seen) == 1 and seen[0][-1] == "person"
+    by_id = {row["target_id"]: row for row in result["targets"]}
+    assert by_id["task-cup"]["track"]["track_id"] == "cup-1"
+    people = by_id["person"]
+    assert people["target_class"] == "person" and people["estimated_visible_bounds"] is None
+    assert people["track"]["member_track_ids"] == ["arm-a", "arm-b"]
+    union = decode_track_mask(people["track"]["observations"][0])
+    np.testing.assert_array_equal(union, decode_track_mask(arm_a["observations"][0])
+                                  | decode_track_mask(arm_b["observations"][0]))
+    # No person instance is ever a placement or geometry target.
+    assert [row["target_id"] for row in result["targets"] if row["task_effect"] == "manipulated"] == ["task-cup"]
+
+
+def test_person_only_plan_still_needs_a_task_object():
+    from blueprint_pipeline import website_task_masks as masks
+    person = {"target_id": "person", "target_class": "person", "task_effect": "privacy", "disposition": "remove"}
+    with pytest.raises(ValueError, match="website_task_targets_missing"):
+        masks.run_website_task_masks(plan={"targets": [person]}, source_geometry={}, output_root=None)
+
+
 def test_view_first_proves_task_noun_before_short_hosted_clip(tmp_path, monkeypatch):
     from blueprint_pipeline import website_task_masks as masks, website_task_grounding as grounding
     from blueprint_pipeline.decision_evidence_contracts import canonical_digest

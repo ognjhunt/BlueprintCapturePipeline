@@ -120,6 +120,10 @@ def test_largest_removal_view_is_the_edited_anchor_for_every_other_view(tmp_path
     # Objects next to the removed one stay, and a covered rug or mat continues underneath.
     assert "even where they touch or sit next to the removed object" in calls[0]["prompt"]
     assert "continue it underneath" in calls[0]["prompt"]
+    # People and body parts go with the task objects, in the edit and in the review.
+    assert "remove every person and every part of a person" in calls[0]["prompt"]
+    assert "Treat any person or part of a person" in completion.REVIEW_PROMPT
+    assert "not a reason to reject" not in completion.REVIEW_PROMPT
 
 
 @pytest.mark.parametrize("fault", ["binding", "rights", "budget", "changed_source"])

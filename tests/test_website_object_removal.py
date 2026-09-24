@@ -43,6 +43,19 @@ def test_multiple_task_objects_share_one_mask_without_removing_unrelated_objects
     assert _sha256_file(Path(frame["source_image_path"])) == frame["source_image_digest"]
 
 
+def test_people_are_removed_with_task_objects_but_privacy_observations_alone_are_not(tmp_path):
+    frame = _source(tmp_path)
+    person = {**_target(8, 12, "privacy"), "target_class": "person"}
+    kept_person = {**_target(5, 7, "privacy", "keep"), "target_class": "person"}
+    unclassed_privacy = _target(2, 2, "privacy")
+    result = prepare_object_removal_frames(frames=[frame], task_masks={"targets": [person, kept_person, unclassed_privacy]},
+                                           output_root=tmp_path / "edit")[0]
+    expected = np.zeros((16, 12), dtype=bool)
+    expected[12:14, 8:10] = True
+    expected = binary_dilation(expected, iterations=3)
+    np.testing.assert_array_equal(np.asarray(Image.open(result["remaining_mask_path"])) == 255, expected)
+
+
 def test_unchanged_view_needs_no_generation(tmp_path):
     frame = _source(tmp_path)
     result = prepare_object_removal_frames(frames=[frame], task_masks={"targets": []}, output_root=tmp_path / "edit")[0]
