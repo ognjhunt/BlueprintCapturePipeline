@@ -5,7 +5,7 @@ import base64
 import json
 from pathlib import Path
 
-from agents import Agent, FunctionTool, ModelSettings, RunConfig, Runner, SQLiteSession, StopAtTools
+from agents import Agent, FunctionTool, ModelSettings, RunConfig, Runner, SQLiteSession, ToolsToFinalOutputResult
 from agents.models.openai_provider import OpenAIProvider
 from agents.strict_schema import ensure_strict_json_schema
 from pydantic import BaseModel, ConfigDict
@@ -82,6 +82,20 @@ def tool_definitions(asset, ledger):
     return bindings
 
 
+def stop_after_valid_render(_context, tool_results):
+    """Return for independent review only after the render tool actually succeeded."""
+    for result in tool_results:
+        if result.tool.name != "render_candidate" or not isinstance(result.output, str):
+            continue
+        try:
+            value = json.loads(result.output)
+        except ValueError:
+            continue
+        if isinstance(value, dict) and value.get("status") == "rendered_pending_independent_review":
+            return ToolsToFinalOutputResult(is_final_output=True, final_output=result.output)
+    return ToolsToFinalOutputResult(is_final_output=False, final_output=None)
+
+
 def execute_agent_authoring(*, request_value, output_root, budget_root, invoker,
                             cad_executor, blender_runner, blender_executable,
                             authoring_instructions, model=None, run_agent=None, adopted_agent_root=None,
@@ -136,7 +150,7 @@ def execute_agent_authoring(*, request_value, output_root, budget_root, invoker,
         # A model that keeps editing the brief after a valid render clears
         # asset.candidate and can exhaust all review slots without one review.
         # Hand off each completed render before the model can mutate its inputs.
-        tool_use_behavior=StopAtTools(stop_at_tool_names=["render_candidate"]),
+        tool_use_behavior=stop_after_valid_render,
         model_settings=ModelSettings(max_tokens=12000, reasoning={"effort": "medium"},
             parallel_tool_calls=False, store=False, include_usage=True, retry={"max_retries": 0},
             verbosity="low", prompt_cache_options={"mode": "explicit", "ttl": "30m"}))
