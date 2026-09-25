@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from .adp_task_scoring import validate_rigid_task_success_contract
-from .decision_evidence_contracts import canonical_digest
+from .decision_evidence_contracts import cross_runtime_canonical_digest
 from .native_task_arena_bundle import verify_native_task_arena_packet
 from .native_task_arena_packet import REQUEST_SCHEMA_VERSION
 from .task_evaluation_g1_catalog import G1_PRESET_ID, unavailable_g1_preset
@@ -79,7 +79,7 @@ def validate_packet_planning_setup(value: Mapping[str, Any]) -> dict[str, Any]:
             )
         )
         or setup.get("robot_presets") != [unavailable_g1_preset()]
-        or setup.get("setup_digest") != canonical_digest(setup, digest_field="setup_digest")
+        or setup.get("setup_digest") != cross_runtime_canonical_digest(setup, digest_field="setup_digest")
     ):
         raise ValueError("packet_planning_setup_invalid")
     contract = validate_rigid_task_success_contract(
@@ -141,7 +141,7 @@ def make_packet_planning_setup(*, source_packet_dir: Path) -> dict[str, Any]:
         "task_success_contract_digest": contract["contract_digest"],
         "robot_presets": [unavailable_g1_preset()],
     }
-    setup["setup_digest"] = canonical_digest(setup, digest_field="setup_digest")
+    setup["setup_digest"] = cross_runtime_canonical_digest(setup, digest_field="setup_digest")
     return validate_packet_planning_setup(setup)
 
 
@@ -161,7 +161,7 @@ def validate_packet_policy_pair_choice(
         or choice.get("setup_digest") != catalog["setup_digest"]
         or choice.get("source_packet_receipt_digest") != catalog["source_packet_receipt_digest"]
         or choice.get("robot_preset_id") != G1_PRESET_ID
-        or choice.get("choice_digest") != canonical_digest(choice, digest_field="choice_digest")
+        or choice.get("choice_digest") != cross_runtime_canonical_digest(choice, digest_field="choice_digest")
     ):
         raise ValueError("packet_policy_pair_choice_binding_invalid")
     selected = choice.get("policy_candidate_ids")
@@ -202,7 +202,7 @@ def make_packet_policy_pair_choice(
         "policy_candidate_ids": candidates,
         "objective_id": objective_id,
     }
-    choice["choice_digest"] = canonical_digest(choice, digest_field="choice_digest")
+    choice["choice_digest"] = cross_runtime_canonical_digest(choice, digest_field="choice_digest")
     return validate_packet_policy_pair_choice(choice, setup=catalog)
 
 
