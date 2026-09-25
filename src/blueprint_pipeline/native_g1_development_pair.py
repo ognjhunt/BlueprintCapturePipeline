@@ -320,6 +320,7 @@ def run_g1_development_pair(
     attempts: list[dict[str, Any]] = []
     for candidate_id in pair["candidate_ids"]:
         request_path, request = by_candidate[candidate_id]
+        worker_request_digest = request["request_digest"]
         attempt_root = output / candidate_id
         verified: dict[str, Any] | None = None
         result_path: Path | None = None
@@ -341,6 +342,7 @@ def run_g1_development_pair(
                     output_dir=attempt_root,
                     repo_root=Path(__file__).resolve().parents[2],
                 )
+                worker_request_digest = plan["container_request_digest"]
                 with (attempt_root / "container.log").open("x", encoding="utf-8") as stream:
                     process = subprocess.run(
                         plan["command"], stdout=stream, stderr=subprocess.STDOUT,
@@ -351,14 +353,14 @@ def run_g1_development_pair(
                 worker = _read_result(
                     result_path, candidate_id=candidate_id,
                     scene_plan_digest=pair["scene_plan_digest"],
-                    request_digest=request["request_digest"],
+                    request_digest=worker_request_digest,
                 )
                 if process.returncode != (0 if worker["status"] == "completed_development_only" else 1):
                     raise ValueError("g1_pair_container_exit_or_worker_mismatch")
             verified = _read_result(
                 result_path, candidate_id=candidate_id,
                 scene_plan_digest=pair["scene_plan_digest"],
-                request_digest=request["request_digest"],
+                request_digest=worker_request_digest,
             )
             if verified != worker:
                 raise ValueError("g1_pair_worker_return_or_receipt_mismatch")

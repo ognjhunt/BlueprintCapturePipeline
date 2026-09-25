@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import hashlib
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -291,3 +292,41 @@ def test_review_index_accepts_actual_g1_frame_and_video_finalizer(tmp_path: Path
     assert media["frame_manifest_digest"] == trace["visual_evidence"]["frame_manifest_digest"]
     assert all((pair_root / row["relative_path"]).is_file()
                for row in media["review_videos"].values())
+
+
+def test_container_pair_uses_resealed_worker_request_digest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blueprint_pipeline import native_g1_container_run
+
+    paths, _ = _paired_requests(tmp_path)
+    container_digest = "sha256:" + "e" * 64
+    staged: dict = {}
+
+    def prepare(**kwargs: object) -> dict:
+        output_dir = kwargs["output_dir"]
+        output_dir.mkdir()
+        (output_dir / "results").mkdir()
+        staged.update(request_path=kwargs["request_path"], output_dir=output_dir)
+        return {"command": ["docker", "run", "fixture"],
+                "container_request_digest": container_digest}
+
+    def run(_command: list[str], **_kwargs: object) -> SimpleNamespace:
+        request = json.loads(staged["request_path"].read_text())
+        request["request_digest"] = container_digest
+        _fake_result(request, staged["output_dir"] / "results/episode", blocked=True)
+        return SimpleNamespace(returncode=1)
+
+    monkeypatch.setattr(pair.sys, "platform", "linux")
+    monkeypatch.setattr(native_g1_container_run, "prepare_g1_container_run", prepare)
+    monkeypatch.setattr(pair.subprocess, "run", run)
+    result = pair.run_g1_development_pair(
+        request_paths=paths, output_dir=tmp_path / "comparison", mode="container",
+        source_receipt_path=tmp_path / "source-receipt.json",
+        source_packet_path=tmp_path / "source-packet.tar",
+        policy_runtime_root=tmp_path / "policy-runtime",
+    )
+    assert result["status"] == "blocked"
+    assert result["attempts"][0]["worker_result_digest"]
+    assert result["attempts"][0]["blocker"]["message"] == "model_bytes_mismatch"
+    assert result["not_attempted_candidate_ids"] == [PI]
