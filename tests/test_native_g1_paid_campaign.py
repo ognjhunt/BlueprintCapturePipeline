@@ -16,6 +16,7 @@ from blueprint_pipeline.native_g1_provider_bundle import (
     MANIFEST,
     PROVIDER_BUNDLE_KIND,
     SCHEMA,
+    _runtime_code_files,
     load_verified_g1_provider_bundle,
 )
 from blueprint_pipeline.provider_runtime_bundle_contract import (
@@ -98,6 +99,14 @@ def test_bundle_receipt_rejects_mutated_bytes(tmp_path: Path) -> None:
         archive.writestr("extra.txt", "changed")
     with pytest.raises(ValueError, match="g1_provider_bundle_receipt_binding_invalid"):
         load_verified_g1_provider_bundle(path, expected_implementation_commit=commit)
+
+
+def test_bundle_code_closure_includes_shared_subpackages() -> None:
+    package = Path(lane.__file__).resolve().parent
+    relative = {path.relative_to(package).as_posix() for path in _runtime_code_files(package)}
+    assert "native_g1_provider_runtime.py" in relative
+    assert "core/common.py" in relative
+    assert "__pycache__" not in relative
 
 
 def test_g1_provider_kind_uses_isaac_and_retains_episode_media() -> None:

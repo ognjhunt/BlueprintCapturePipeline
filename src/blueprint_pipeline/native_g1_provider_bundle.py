@@ -57,6 +57,19 @@ def _files(root: Path) -> list[Path]:
     return rows
 
 
+def _runtime_code_files(package: Path) -> tuple[Path, ...]:
+    """Include shared subpackages that the G1 worker imports at runtime."""
+
+    return tuple(
+        path
+        for path in _files(package)
+        if "__pycache__" not in path.parts
+        and path.suffix != ".pyc"
+        and not path.name.startswith("._")
+        and path.name != ".DS_Store"
+    )
+
+
 def _entrypoint() -> str:
     return '''#!/usr/bin/env bash
 set -u
@@ -171,7 +184,7 @@ def build_g1_provider_bundle(
     if not job.is_absolute() or job.is_symlink() or job.exists() or not job.parent.is_dir():
         raise ValueError("g1_provider_bundle_job_path_invalid")
     source_files = _files(source / "source")
-    module_files = sorted(path for path in package.glob("*.py") if path.is_file())
+    module_files = _runtime_code_files(package)
     fetchers = [
         repository / "scripts/fetch_g1_humanoidarena_checkpoint.py",
         repository / "scripts/fetch_g1_sonic_assets.py",
@@ -243,7 +256,10 @@ def build_g1_provider_bundle(
         for path in module_files:
             _write_zip_file(
                 archive, source=path,
-                archive_path="provider_runtime/blueprint_pipeline/" + path.name,
+                archive_path=(
+                    "provider_runtime/blueprint_pipeline/"
+                    + path.relative_to(package).as_posix()
+                ),
             )
         for path in fetchers:
             _write_zip_file(archive, source=path, archive_path="provider_runtime/scripts/" + path.name)
