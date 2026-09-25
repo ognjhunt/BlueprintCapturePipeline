@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
+import sys
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,6 +18,7 @@ from blueprint_pipeline.native_g1_provider_bundle import (
     MANIFEST,
     PROVIDER_BUNDLE_KIND,
     SCHEMA,
+    _contract_dependency,
     _runtime_code_files,
     load_verified_g1_provider_bundle,
 )
@@ -78,16 +81,20 @@ def test_exact_main_and_sealed_receipt_required_before_paid_mutation(
 
 def test_bundle_receipt_rejects_mutated_bytes(tmp_path: Path) -> None:
     commit = "a" * 40
+    dependency, sources = _contract_dependency()
     manifest = {
         "schema_version": SCHEMA,
         "status": "ready",
         "provider_bundle_kind": PROVIDER_BUNDLE_KIND,
         "implementation_commit": commit,
+        "contract_python_dependencies": [dependency],
     }
     manifest["manifest_digest"] = canonical_digest(manifest, digest_field="manifest_digest")
     archive_path = tmp_path / "bundle.zip"
     with zipfile.ZipFile(archive_path, "w") as archive:
         archive.writestr(MANIFEST, json.dumps(manifest))
+        for relative, source in sources:
+            archive.write(source, "provider_runtime/" + relative)
     receipt = {
         **manifest,
         "bundle_path": str(archive_path),
@@ -99,6 +106,17 @@ def test_bundle_receipt_rejects_mutated_bytes(tmp_path: Path) -> None:
     assert load_verified_g1_provider_bundle(
         path, expected_implementation_commit=commit
     )["bundle_sha256"] == receipt["bundle_sha256"]
+    extraction = tmp_path / "extracted"
+    with zipfile.ZipFile(archive_path) as archive:
+        archive.extractall(extraction)
+    probe = subprocess.run(
+        [sys.executable, "-I", "-S", "-c",
+         "import sys; sys.path.insert(0, sys.argv[1]); import rfc8785; "
+         "assert rfc8785.dumps({'x': 1}) == b'{\"x\":1}'",
+         str(extraction / "provider_runtime")],
+        capture_output=True, text=True, check=False,
+    )
+    assert probe.returncode == 0, probe.stderr
     with zipfile.ZipFile(archive_path, "a") as archive:
         archive.writestr("extra.txt", "changed")
     with pytest.raises(ValueError, match="g1_provider_bundle_receipt_binding_invalid"):
