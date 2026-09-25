@@ -973,10 +973,13 @@ def _resolved_scene_plan(
         delta = float(parameters["object_start_y_delta_m"])
         subject["pose_world"]["position_world_m"][1] += delta
         subject["reset_state"]["root_pose_world"]["position_world_m"][1] += delta
-        scoring_start_pose = plan["task_spec"].get("start_pose_world")
-        if not isinstance(scoring_start_pose, list) or len(scoring_start_pose) != 7:
-            raise RuntimeError("policy_canary_task_scoring_start_pose_invalid")
-        scoring_start_pose[1] += delta
+        if plan["task_kind"] == "rigid_pick_place":
+            scoring_start_pose = plan["task_spec"].get("start_pose_world")
+            if not isinstance(scoring_start_pose, list) or len(scoring_start_pose) != 7:
+                raise RuntimeError("policy_canary_task_scoring_start_pose_invalid")
+            scoring_start_pose[1] += delta
+        elif "start_pose_world" in plan["task_spec"]:
+            raise RuntimeError("policy_canary_articulated_scoring_pose_unexpected")
         applications.append(
             {
                 "parameter_id": "object_start_y_delta_m",
@@ -995,10 +998,13 @@ def _resolved_scene_plan(
         subject["reset_state"]["root_pose_world"]["orientation_xyzw"] = list(
             orientation
         )
-        scoring_start_pose = plan["task_spec"].get("start_pose_world")
-        if not isinstance(scoring_start_pose, list) or len(scoring_start_pose) != 7:
-            raise RuntimeError("policy_canary_task_scoring_start_pose_invalid")
-        scoring_start_pose[3:] = list(orientation)
+        if plan["task_kind"] == "rigid_pick_place":
+            scoring_start_pose = plan["task_spec"].get("start_pose_world")
+            if not isinstance(scoring_start_pose, list) or len(scoring_start_pose) != 7:
+                raise RuntimeError("policy_canary_task_scoring_start_pose_invalid")
+            scoring_start_pose[3:] = list(orientation)
+        elif "start_pose_world" in plan["task_spec"]:
+            raise RuntimeError("policy_canary_articulated_scoring_pose_unexpected")
         applications.append(
             {
                 "parameter_id": "object_yaw_delta_degrees",

@@ -104,11 +104,64 @@ def load_for_run(*, launch_state_root: str | Path, source_launch_id: str,
     return directive
 
 
-def derived_contract(*, packet_request_path: Path, directive: Mapping[str, Any]):
+def confirmed_articulated_contract(*, task_spec: Mapping[str, Any], site_id: str,
+                                   task_id: str) -> dict[str, Any]:
+    """Translate the owner's frozen drawer criteria without changing scoring."""
+    from .adp_articulated_task_success_contract import seal_task_success_contract
+    owner = task_spec.get('configured_owner_authority') or {}
+    criteria = task_spec.get('configured_success_criteria') or {}
+    _require(task_spec.get('task_kind') == 'articulated_open_close'
+             and criteria.get('owner_success_contract_required') is True
+             and criteria.get('task_joint_drive_forbidden') is True
+             and owner.get('confirmation_status') == 'confirmed'
+             and bool(str(owner.get('accepted_by') or '').strip())
+             and bool(str(owner.get('authority_reference') or '').strip()),
+             'articulated_owner_contract_unconfirmed')
+    contract = seal_task_success_contract(
+        task_kind='articulated_open_close', task_spec=task_spec,
+        site_id=site_id, task_id=task_id, author_source='task_owner',
+        author_id=owner['accepted_by'], confirmation_status='confirmed',
+        confirmed_by_team_id=owner['accepted_by'])
+    opening = contract['criteria']['opening']['success_interval']
+    _require(opening == task_spec['executable_opening_threshold']['success_interval'],
+             'articulated_threshold_changed')
+    return contract
+
+
+def derived_contract(*, packet_request_path: Path, directive: Mapping[str, Any],
+                     scene_plan_path: Path | None = None):
     """Use the existing typed omission producer; retain original request bytes."""
     from .native_marked_area_rehearsal import direct_policy_request
     _safe(packet_request_path)
     source = json.loads(packet_request_path.read_bytes())
+    if (source.get('task_spec') or {}).get('task_kind') == 'articulated_open_close':
+        from .native_task_arena_packet import validate_native_task_arena_packet_request
+        from .native_task_arena_policy_canary_session import validate_control_omission_authority
+        _require(scene_plan_path is not None, 'articulated_scene_plan_missing')
+        _safe(scene_plan_path)
+        plan = json.loads(scene_plan_path.read_bytes())
+        validate_native_task_arena_packet_request(source)
+        _require(plan.get('schema_version') == 'native_task_arena_scene_plan.v1'
+                 and plan.get('plan_digest') == canonical_digest(plan, digest_field='plan_digest')
+                 and plan.get('scene_id') == source.get('scene_id')
+                 and plan.get('task_id') == source.get('task_id')
+                 and plan.get('task_spec') == source.get('task_spec'),
+                 'articulated_scene_plan_changed')
+        contract = confirmed_articulated_contract(
+            task_spec=plan['task_spec'], site_id=plan['scene_id'], task_id=plan['task_id'])
+        authority = {
+            'schema_version': 'task_evaluation_diagnostic_control_omission_authority.v1',
+            'run_kind': 'internal_policy_canary', 'claim_ceiling': 'diagnostic_policy_execution',
+            'authorized_by': directive['authorized_by'],
+            'authorization_reference': directive['authorization_reference'],
+            'omitted_controls': OMITTED,
+            'source_task_success_contract_digest': contract['contract_digest'],
+            'result_task_success_contract_digest': contract['contract_digest'],
+            'task_scoring_criteria_changed': False, 'qualified_comparison_permitted': False,
+        }
+        authority['authority_digest'] = canonical_digest(authority, digest_field='authority_digest')
+        validate_control_omission_authority(authority, contract_digest=contract['contract_digest'])
+        return contract, authority
     derived = direct_policy_request(source_request=source, authorized_by=directive['authorized_by'],
         authorization_reference=directive['authorization_reference'])
     return derived['task_spec']['task_success_contract'], derived['diagnostic_control_omission_authority']

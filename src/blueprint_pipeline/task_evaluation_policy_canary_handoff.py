@@ -915,7 +915,7 @@ def advance_policy_canary_handoff(
         if omission is not None:
             contract, typed_omission = derived_contract(
                 packet_request_path=Path(compiled["packet_receipt_path"]).parent / "native_task_arena_packet_request.v1.json",
-                directive=omission)
+                directive=omission, scene_plan_path=Path(compiled["scene_plan_path"]))
             from .task_evaluation_scene_control_omission import bind_camera_start
             typed_omission["policy_canary_camera_start_configuration"] = bind_camera_start(
                 directive=omission, plan=_load(Path(compiled["scene_plan_path"]), blocker="policy_canary_scene_plan_invalid"),

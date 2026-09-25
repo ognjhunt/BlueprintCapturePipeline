@@ -411,8 +411,14 @@ def _require_strict_owner_success_contract(
         try:
             omission = validate_control_omission_authority(
                 diagnostic_control_omission_authority, contract_digest=contract["contract_digest"])
-            source = validate_task_success_contract(
-                task_spec["task_success_contract"], task_kind=task_kind)
+            if task_kind == "articulated_open_close" and "task_success_contract" not in task_spec:
+                from .task_evaluation_scene_control_omission import confirmed_articulated_contract
+                source = confirmed_articulated_contract(
+                    task_spec=task_spec, site_id=contract["scope"]["site_id"],
+                    task_id=contract["scope"]["task_id"])
+            else:
+                source = validate_task_success_contract(
+                    task_spec["task_success_contract"], task_kind=task_kind)
             expected = deepcopy(source)
             expected["criteria"].pop("controls", None)
             expected["contract_digest"] = cross_runtime_canonical_digest(expected, digest_field="contract_digest")
