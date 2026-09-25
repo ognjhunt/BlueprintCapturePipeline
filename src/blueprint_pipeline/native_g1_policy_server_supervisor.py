@@ -25,6 +25,14 @@ from .native_g1_run_preflight import preflight_g1_shared_scene_run
 
 PINNED_SOURCE_REVISION = "68479287a784a69be9ce6ad739311d2f11f75ef9"
 LOOPBACK_HOST = "127.0.0.1"
+PUBLISHER_PI05_BASE_HINTS = {
+    "humanoidarena_pi05_g1_dex3_sonic": (
+        "/mnt/workspace/xujunzhe/yunhengwang/lerobot/checkpoints/pi05_base"
+    ),
+    "humanoidarena_pi05_g1_dex3_sonic_vision_navi": (
+        "/mnt/workspace/vla/users/xujunzhe/yunhengwang/lerobot/lerobot/checkpoints/pi05_base"
+    ),
+}
 
 
 def _source_revision(source: Path, *, expected_parent: str = "scripts") -> str:
@@ -87,9 +95,18 @@ def _candidate_policy_dir(inventory_path: Path, candidate_id: str, checkpoint_ro
         raise ValueError("g1_server_policy_config_invalid")
     base = settings.get("pretrained_path")
     if isinstance(base, str) and Path(base).is_absolute():
-        # The released pi05 configs reference a publisher-local base model.
-        # Its bytes and loader mapping need a separate exact admission.
-        raise ValueError("g1_server_external_base_model_unverified")
+        # These two exact publisher-local values are inert in the pinned
+        # inference path: the official server calls PI05Policy.from_pretrained
+        # with this verified policy_dir, and that loader reads its local
+        # model.safetensors with strict key matching. It does not dereference
+        # config.pretrained_path when PEFT is disabled. Keep all other
+        # absolute refs and PEFT-dependent configs fail-closed.
+        if (
+            base != PUBLISHER_PI05_BASE_HINTS.get(candidate_id)
+            or settings.get("type") != "pi05"
+            or settings.get("use_peft") is not False
+        ):
+            raise ValueError("g1_server_external_base_model_unverified")
     return folder
 
 

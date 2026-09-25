@@ -86,6 +86,33 @@ def test_external_base_model_reference_is_not_admitted(tmp_path: Path) -> None:
         supervisor._candidate_policy_dir(inventory, "pi", tmp_path / "checkpoints")
 
 
+@pytest.mark.parametrize("candidate_id,base_hint", list(supervisor.PUBLISHER_PI05_BASE_HINTS.items()))
+def test_exact_publisher_pi05_training_hint_does_not_block_local_inference(
+    tmp_path: Path, candidate_id: str, base_hint: str
+) -> None:
+    inventory = tmp_path / "inventory.json"
+    inventory.write_text(json.dumps({
+        "source_revision": supervisor.PINNED_SOURCE_REVISION,
+        "candidates": [{"candidate_id": candidate_id, "subdirectory": "pi/model"}],
+    }))
+    config = tmp_path / "checkpoints/pi/model/config.json"
+    config.parent.mkdir(parents=True)
+    config.write_text(json.dumps({
+        "type": "pi05", "use_peft": False, "pretrained_path": base_hint,
+    }))
+    assert supervisor._candidate_policy_dir(
+        inventory, candidate_id, tmp_path / "checkpoints"
+    ) == config.parent
+    config.write_text(json.dumps({"type": "pi05", "pretrained_path": "/other/base"}))
+    with pytest.raises(ValueError, match="external_base_model_unverified"):
+        supervisor._candidate_policy_dir(inventory, candidate_id, tmp_path / "checkpoints")
+    config.write_text(json.dumps({
+        "type": "pi05", "use_peft": True, "pretrained_path": base_hint,
+    }))
+    with pytest.raises(ValueError, match="external_base_model_unverified"):
+        supervisor._candidate_policy_dir(inventory, candidate_id, tmp_path / "checkpoints")
+
+
 class _Process:
     pid = 417
 

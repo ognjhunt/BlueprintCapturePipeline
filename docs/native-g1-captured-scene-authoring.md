@@ -143,3 +143,14 @@ check staged bytes without network access. The receipt supplies the two SHA-256
 values required by the G1 worker request. Do not mix these files with the
 separate low-latency or SONIC 1.1 variants. Staging bytes does not approve model
 rights or show that SONIC inference works with the captured scene.
+
+The two released π0.5 checkpoint configs contain different absolute
+`pretrained_path` values from the publisher's training machines. The pinned
+HumanoidArena HTTP server passes the selected local checkpoint directory to
+`PI05Policy.from_pretrained`; that inference loader reads the directory's own
+`model.safetensors` and does not use the config's training path when the
+released config has `use_peft: false`. The G1
+supervisor accepts only those two exact published hint strings after the
+checkpoint preflight has verified every local file. Other absolute paths still
+fail. This removes a known startup refusal; actual π0.5 loading and inference
+remain unverified until the GPU episode runs.
