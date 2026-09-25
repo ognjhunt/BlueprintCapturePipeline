@@ -272,6 +272,32 @@ outcome are unscored. A caller-supplied reviewer name records a decision but
 does not itself prove the reviewer had authority. The separate rights review
 and live checkpoint/episode gates still apply.
 
+To derive both worker requests from the same published Task Evaluation Run
+setup catalog, use the no-spend selection stage. The runtime template contains
+the shared worker fields (packet, inventory, checkpoint root, pinned sources,
+SONIC models and hashes, policy Python, port, device, and step cap), but no
+candidate, rights review, or request digest. Supply a separate already-reviewed
+rights receipt for each selected candidate:
+
+```bash
+PYTHONPATH=src python -m blueprint_pipeline.native_g1_development_selection \
+  --setup "$PUBLISHED_POLICY_SETUP" --objective task_success \
+  --runtime-template "$G1_SHARED_RUNTIME_TEMPLATE" \
+  --rights-review "humanoidarena_dp_g1_dex3_sonic=$G1_DP_RIGHTS" \
+  --rights-review "humanoidarena_pi05_g1_dex3_sonic=$G1_PI05_RIGHTS" \
+  --output-dir "$NEW_G1_SELECTION_DIR"
+```
+
+Use `--objective g1_navigation_goal`, the corresponding two `_vision_navi`
+rights receipts, and `--navigation-authority` for the movement pair. The stage
+checks that the selected pair is in the published G1 catalog and belongs to
+the same objective, that the packet matches the selected task and site, and
+that each rights review binds its candidate, scene, and inventory. It writes
+two sealed request JSON files and a digest-bound plan. The `--selection` option
+accepts a sealed selection record carrying the same setup, robot, candidate,
+objective, and scene identities; it is the input seam for the existing WebApp
+configurator. Staging never runs a policy or changes catalog readiness.
+
 To attempt both policies for one objective on the same sealed task/site, create
 one worker request per candidate. Keep every runtime and scene field identical;
 only `candidate_id`, its candidate-specific `rights_review`, and the resulting
