@@ -4778,11 +4778,18 @@ def _probe_shell_script(
                 "preserve_all_output = "
                 + repr(provider_bundle_kind == "native_g1_development_campaign")
                 + "\n"
-                "g1_transient_runtime_prefix = "
+                # The pinned checkpoint and SONIC receipts live directly under
+                # models/. Their downloaded weights are execution inputs, not
+                # review evidence, and exceed the bounded output PUT ceiling.
+                "g1_transient_runtime_prefixes = "
                 + repr(
-                    "policy-runtime-build/policy-runtime/"
+                    (
+                        "policy-runtime-build/policy-runtime/",
+                        "models/checkpoints/",
+                        "models/sonic/",
+                    )
                     if provider_bundle_kind == "native_g1_development_campaign"
-                    else None
+                    else ()
                 )
                 + "\n"
                 "required_result_max_bytes = 512 * 1024 * 1024\n"
@@ -4799,7 +4806,7 @@ def _probe_shell_script(
                 "            if path.is_file():\n"
                 "                size = path.stat().st_size\n"
                 "                relative_name = path.relative_to(output_dir).as_posix()\n"
-                "                if g1_transient_runtime_prefix and relative_name.startswith(g1_transient_runtime_prefix):\n"
+                "                if relative_name.startswith(g1_transient_runtime_prefixes):\n"
                 "                    continue\n"
                 "                size_limit = required_result_max_bytes if relative_name == required_result_name else 100_000_000\n"
                 "                if preserve_all_output or size <= size_limit:\n"
