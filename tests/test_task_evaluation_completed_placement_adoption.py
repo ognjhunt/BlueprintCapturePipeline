@@ -9,9 +9,12 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
 
 @pytest.mark.parametrize('evaluation_id', [None, 'team-eval-one'])
-@pytest.mark.parametrize('provenance_rebound', [False, True])
+@pytest.mark.parametrize(
+    'provenance_rebound,retained_lineage_rebound',
+    [(False, False), (True, False), (True, True)],
+)
 def test_completed_placement_rebinds_native_plan_without_new_model_or_search(
-    tmp_path, monkeypatch, evaluation_id, provenance_rebound,
+    tmp_path, monkeypatch, evaluation_id, provenance_rebound, retained_lineage_rebound,
 ):
     scene = {"scene": "fixture"}
     task = {"task": "move-object"}
@@ -21,6 +24,9 @@ def test_completed_placement_rebinds_native_plan_without_new_model_or_search(
         trajectory = {"trajectory_digest": "sha256:" + "b" * 64}
         task = {**task, "trajectory_digest": trajectory["trajectory_digest"]}
         prior_task = {**task, "trajectory_digest": "sha256:" + "a" * 64}
+    original_task = prior_task
+    if retained_lineage_rebound:
+        original_task = {**task, "trajectory_digest": "sha256:" + "c" * 64}
     revision = {"revision_digest": "sha256:" + "b" * 64}
     cameras = tmp_path / "old-cameras.json"
     cameras.write_text(json.dumps({"cameras": [{"pose": "fixed"}]}))
@@ -39,6 +45,8 @@ def test_completed_placement_rebinds_native_plan_without_new_model_or_search(
     placement = {
         "accepted_pose": {"position_world_m": [1, 2, 3], "orientation_xyzw": [0, 0, 0, 1]},
         "accepted_candidate_id": "selected",
+        "task_binding_digest": canonical_digest(original_task),
+        "task_trajectory_digest": original_task.get("trajectory_digest"),
     }
     files = {
         k: {"digest": "sha256:" + "e" * 64}
@@ -87,7 +95,7 @@ def test_completed_placement_rebinds_native_plan_without_new_model_or_search(
 
     def readiness(**kwargs):
         assert kwargs["placement_receipt"] is placement
-        assert kwargs["task_binding"] == prior_task
+        assert kwargs["task_binding"] == original_task
         Path(kwargs["output_path"]).write_text("{}")
         seen.append("readiness")
 
