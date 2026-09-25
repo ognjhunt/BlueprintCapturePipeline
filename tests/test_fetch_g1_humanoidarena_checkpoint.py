@@ -201,6 +201,26 @@ def test_large_checkpoint_rejects_wrong_range_response(
             )
 
 
+def test_large_checkpoint_deadline_cleans_partial_without_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    content = b"checkpoint" * 1024
+    inventory = _inventory(tmp_path, content)
+    monkeypatch.setattr(fetch, "RANGED_DOWNLOAD_MIN_BYTES", 1)
+    output = tmp_path / "checkpoints"
+
+    # Exercise the materializer's cleanup with a deliberately expired fetch.
+    original = fetch._download_pinned_ranges
+    monkeypatch.setattr(fetch, "_download_pinned_ranges", lambda *args, **kwargs:
+                        original(*args, **kwargs, deadline_seconds=1e-9))
+    with pytest.raises(TimeoutError, match="g1_checkpoint_download_deadline_exceeded"):
+        fetch.materialize_candidate(
+            inventory_path=inventory, candidate_id="dp", output_dir=output,
+        )
+    assert not (output / "small/HOI_pp_box/model/config.json").exists()
+    assert not list(output.rglob(".g1-checkpoint-*"))
+
+
 def test_pinned_navigation_candidates_are_distinct_40_value_movement_policies() -> None:
     inventory = json.loads(fetch.DEFAULT_INVENTORY.read_text())
     candidates = {row["candidate_id"]: row for row in inventory["candidates"]}
