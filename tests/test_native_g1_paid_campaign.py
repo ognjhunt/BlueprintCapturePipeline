@@ -79,6 +79,43 @@ def test_exact_main_and_sealed_receipt_required_before_paid_mutation(
     assert json.loads((tmp_path / "admission.json").read_text())["status"] == "blocked"
 
 
+def test_active_deployed_release_survives_main_advance_but_rechecks_before_create(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commit = "a" * 40
+    identity = {
+        "orchestrator_source_commit": commit,
+        "origin_main_commit": commit,
+        "remote_main_commit": "b" * 40,
+    }
+    receipt = {"value": "sha256:" + "1" * 64}
+    def deployed(_root: Path, _commit: str) -> dict[str, object]:
+        return {
+            "status": "verified_active_release", "blockers": [],
+            "source_commit": commit, "receipt_sha256": receipt["value"],
+            "provenance_sha256": "sha256:" + "2" * 64,
+            "release_admission_mode": "development_iteration",
+            "evidence_grade": "development_only",
+        }
+    monkeypatch.setattr(lane, "inspect_active_deployed_release", deployed)
+    bundle = {"bundle_sha256": "sha256:" + "3" * 64}
+    monkeypatch.setattr(lane, "load_verified_g1_provider_bundle", lambda *_a, **_k: bundle)
+    def fake_run(**kwargs: object) -> dict[str, object]:
+        receipt["value"] = "sha256:" + "4" * 64
+        return kwargs["pre_provider_mutation_hook"]()
+    monkeypatch.setattr(lane, "run_arena_native_control_vast", fake_run)
+    result = lane.dispatch_g1_paid_campaign(
+        _args(tmp_path, g1_campaign_bundle_receipt=str(tmp_path / "receipt.json")),
+        control_identity=identity, control_blockers=[],
+        control_recheck=lambda: ([], identity),
+    )
+    admission = json.loads((tmp_path / "admission.json").read_text())
+    assert admission["status"] == "admitted"
+    assert admission["release_authority"]["receipt_sha256"] == "sha256:" + "1" * 64
+    assert result["blockers"] == ["g1_paid_campaign_controller_identity_changed_before_create"]
+    assert not (tmp_path / "job/native_g1_paid_attempt_consumption.v1.json").exists()
+
+
 def test_bundle_receipt_rejects_mutated_bytes(tmp_path: Path) -> None:
     commit = "a" * 40
     dependency, sources = _contract_dependency()
