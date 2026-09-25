@@ -31,6 +31,19 @@ EXPECTED_FILES = {
 }
 
 
+class _HTTPSRedirectsOnly(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, response, code, message, headers, new_url):
+        if urllib.parse.urlsplit(new_url).scheme.lower() != "https":
+            raise ValueError("g1_sonic_insecure_redirect")
+        return super().redirect_request(request, response, code, message, headers, new_url)
+
+
+def _open_https(url: str):
+    if urllib.parse.urlsplit(url).scheme.lower() != "https":
+        raise ValueError("g1_sonic_insecure_source")
+    return urllib.request.build_opener(_HTTPSRedirectsOnly()).open(url, timeout=180)
+
+
 def _identity(path: Path) -> tuple[str, int]:
     digest = hashlib.sha256()
     size = 0
@@ -112,7 +125,7 @@ def stage_sonic_assets(
                     prefix=".g1-sonic-", dir=destination.parent, delete=False
                 ) as stream:
                     temporary = Path(stream.name)
-                    with urllib.request.urlopen(url, timeout=180) as response:
+                    with _open_https(url) as response:
                         if urllib.parse.urlparse(response.geturl()).scheme != "https":
                             raise ValueError("g1_sonic_insecure_redirect")
                         digest = hashlib.sha256()
