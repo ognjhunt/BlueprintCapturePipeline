@@ -1,7 +1,49 @@
 """Retained official-charge recovery without reopening a paid execution."""
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 from .vast_official_charge_period import VastOfficialBillingExtractionError
+
+
+def _candidate_sources(audit: Path, adapter_result_path: Path,
+                       adapter: Mapping[str, Any]) -> list[Path]:
+    """Skip audits that predate this instance's maximum possible lifetime.
+
+    The canonical audit directories carry their observation time in the name.
+    That lets a closeout avoid opening hundreds of thousands of old responses
+    when the new instance's official charge has not posted yet. Legacy adapters
+    without a TTL retain the original unrestricted lookup.
+    """
+    if not audit.is_dir() or audit.is_symlink():
+        return []
+    cutoff = None
+    # The adapter writes generated_at before provider creation. Its result does
+    # not carry the allocator TTL, so use that creation boundary with a clock
+    # skew margin. Missing or invalid timestamps preserve unrestricted lookup.
+    generated_at = adapter.get("generated_at")
+    if isinstance(generated_at, str):
+        try:
+            created = datetime.fromisoformat(generated_at.replace("Z", "+00:00"))
+            if created.tzinfo is not None:
+                cutoff = created.timestamp() - 3600.0
+        except ValueError:
+            pass
+    candidates = []
+    sources = (audit.glob("*/provider_billing_source_receipt.json")
+               if cutoff is not None else audit.rglob("provider_billing_source_receipt.json"))
+    for source in sources:
+        if cutoff is not None:
+            try:
+                observed = datetime.strptime(
+                    source.parent.name, "%Y%m%dT%H%M%S.%fZ"
+                ).replace(tzinfo=timezone.utc).timestamp()
+            except ValueError:
+                observed = source.stat().st_mtime
+            if observed < cutoff:
+                continue
+        candidates.append(source)
+    return sorted(candidates, key=lambda path: path.stat().st_mtime_ns,
+                  reverse=True)
 
 def reconcile_posted_billing(
     *,
@@ -34,10 +76,7 @@ def reconcile_posted_billing(
             raise dispatch_error("policy_canary_existing_billing_identity_mismatch")
         return True
     audit = Path(billing_audit_root).expanduser().resolve()
-    candidates = sorted(
-        audit.rglob("provider_billing_source_receipt.json"),
-        key=lambda path: path.stat().st_mtime_ns, reverse=True,
-    ) if audit.is_dir() and not audit.is_symlink() else []
+    candidates = _candidate_sources(audit, adapter_result_path, adapter)
     failures = []
     for source in candidates:
         try:
