@@ -289,9 +289,10 @@ existing manipulation marker and task prompt as they are:
 ```
 
 The navigation scorer reads G1 root position from Isaac at reset and after
-each SONIC-controlled action. It requires the robot to start outside the goal
-and hold inside the visible target for the terminal settle window without a
-large root-height drop. The receipt reports measured distance, first settled
+each SONIC-controlled action. It requires the robot to start outside the goal,
+stay within the configured root-height drift bound throughout the episode, and
+hold inside the visible target for the terminal settle window. The receipt
+reports measured distance, maximum observed root-height drift, first settled
 step, and terminal hold. It explicitly leaves obstacle-clearance scoring
 false, so it cannot establish the full “avoid obstacles” behavior or physical
 navigation readiness. Navigation remains development-only until a compatible
