@@ -42,7 +42,13 @@ from urllib.parse import urlsplit
 from .decision_evidence_contracts import canonical_digest
 from .native_task_construction_plan import (
     NativeTaskConstructionPlanError,
+    _quaternion_rotate_xyzw,
     materialize_native_task_construction_phase_plan,
+)
+from .native_franka_action_math import grasp_orientation_contact_xyzw
+from .task_evaluation_articulated_open_close_native_adapter import (
+    TaskEvaluationArticulatedOpenCloseNativeAdapterError,
+    adapt_articulated_open_close_task_template,
 )
 from .task_evaluation_native_arena_episode_compiler import _runtime_subject_task_spec
 from .task_evaluation_rigid_relocation_native_adapter import (
@@ -57,6 +63,7 @@ from .task_evaluation_rigid_relocation_native_adapter import (
     adapt_rigid_relocation_task_template,
 )
 from .task_evaluation_robot_placement_trajectory import (
+    ARTICULATED_PLACEMENT_PLAN_SCHEMA_VERSION,
     RobotPlacementTrajectoryError,
     placement_trajectory_from_native_plan,
 )
@@ -176,7 +183,7 @@ def _materialized_references(
 def derive_native_trajectory_plan(
     *, revision: Mapping[str, Any], documents: Mapping[str, Path]
 ) -> dict[str, Any]:
-    """Return the rigid construction phase plan the runtime derives from this revision.
+    """Return the task-bound path used to place the robot before execution.
 
     The same native adapter and construction-plan materializer the arena applies
     at compile time run here on CPU, so the plan placement is screened against is
@@ -184,6 +191,12 @@ def derive_native_trajectory_plan(
     """
 
     references = _materialized_references(revision=revision, documents=documents)
+    try:
+        task_definition = json.loads(documents[DEFINITION_CONTRACT_PATH].read_text())
+    except (OSError, ValueError, KeyError) as exc:
+        raise ConfiguredControlsDeferredInputError("configured_controls_deferred_task_definition_invalid") from exc
+    if task_definition.get("strategy") == "articulated_open_close":
+        return _articulated_placement_plan(revision=revision, documents=documents, references=references)
     try:
         adapted = adapt_rigid_relocation_task_template(
             configured_revision=revision, materialized_references=references
@@ -254,6 +267,122 @@ def derive_native_trajectory_plan(
         raise ConfiguredControlsDeferredInputError(
             f"configured_controls_deferred_plan_unprojectable:{exc}"
         ) from exc
+    return plan
+
+
+def _articulated_placement_plan(
+    *, revision: Mapping[str, Any], documents: Mapping[str, Path],
+    references: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Project the qualified handle and passive joint into placement-only poses.
+
+    This path screens robot reach. It never commands the drawer or supplies a
+    scripted success to policy evaluation.
+    """
+    try:
+        adapted = adapt_articulated_open_close_task_template(
+            configured_revision=revision, materialized_references=references,
+        )
+    except TaskEvaluationArticulatedOpenCloseNativeAdapterError as exc:
+        raise ConfiguredControlsDeferredInputError(
+            f"configured_controls_deferred_adapter_failed:{exc}"
+        ) from exc
+    definition = adapted["native_task_definition"]
+    spec = definition["task_spec"]
+    graph = spec["articulation_graph"]
+    target = next((row for row in graph["joints"] if row["role"] == "target"), None)
+    if target is None or target["joint_type"] != "prismatic":
+        raise ConfiguredControlsDeferredInputError(
+            "configured_controls_deferred_articulated_placement_joint_unsupported"
+        )
+    asset_reference = _reference(
+        (revision.get("replacement") or {}).get("asset"),
+        blocker="configured_controls_deferred_articulated_asset_reference_invalid",
+    )
+    asset = documents.get("scene.configured_revision.replacement.asset")
+    if asset is None or Path(asset).is_symlink() or not Path(asset).is_file():
+        raise ConfiguredControlsDeferredInputError("configured_controls_deferred_articulated_asset_missing")
+    payload = Path(asset).read_bytes()
+    if _digest(payload) != asset_reference["digest"] or len(payload) != asset_reference["size_bytes"]:
+        raise ConfiguredControlsDeferredInputError("configured_controls_deferred_articulated_asset_mismatch")
+    affordance = spec["interaction_affordance"]
+    root_pose = definition["task_object_pose_world"]
+    root_position = root_pose["position_world_m"]
+    root_orientation = root_pose["orientation_xyzw"]
+    try:
+        from pxr import Gf, Usd, UsdGeom
+
+        stage = Usd.Stage.Open(str(asset))
+        root_prim = stage.GetPrimAtPath("/Asset") if stage is not None else None
+        link_path = next(
+            path for path in affordance["contact_body_prim_paths"]
+            if path.endswith("/" + affordance["contact_link_id"])
+        )
+        link_prim = stage.GetPrimAtPath(link_path) if stage is not None else None
+        if not root_prim or not root_prim.IsValid() or not link_prim or not link_prim.IsValid():
+            raise ValueError("contact_link_missing")
+        cache = UsdGeom.XformCache(Usd.TimeCode.Default())
+        point_stage = cache.GetLocalToWorldTransform(link_prim).Transform(
+            Gf.Vec3d(*affordance["contact_point_link_m"])
+        )
+        point_asset = cache.GetLocalToWorldTransform(root_prim).GetInverse().Transform(point_stage)
+        point_world = [
+            float(root_position[i]) + value
+            for i, value in enumerate(_quaternion_rotate_xyzw(root_orientation, list(point_asset)))
+        ]
+        approach = _quaternion_rotate_xyzw(root_orientation, affordance["approach_unit_asset_root"])
+        jaw = _quaternion_rotate_xyzw(root_orientation, affordance["jaw_unit_asset_root"])
+        axis = _quaternion_rotate_xyzw(root_orientation, target["axis"])
+        orientation = grasp_orientation_contact_xyzw(approach_axis=approach, jaw_axis=jaw)
+    except (ImportError, ValueError, StopIteration, RuntimeError, TypeError, KeyError) as exc:
+        raise ConfiguredControlsDeferredInputError(
+            "configured_controls_deferred_articulated_handle_projection_failed"
+        ) from exc
+    clearance = float(affordance["precontact_clearance_m"])
+    opening = float(spec["executable_opening_threshold"]["success_interval"][0])
+    if not 0.0 < opening <= float(target["limits"][1]):
+        raise ConfiguredControlsDeferredInputError(
+            "configured_controls_deferred_articulated_opening_invalid"
+        )
+
+    def phase(name: str, point: list[float], state: str) -> dict[str, Any]:
+        return {
+            "phase_id": name, "position_world_m": point,
+            "orientation_world_xyzw": orientation, "gripper_state": state,
+            "gate_ids": ["native_ik", "native_collision_readback"],
+        }
+
+    precontact = [point_world[i] - approach[i] * clearance for i in range(3)]
+    opened = [point_world[i] + axis[i] * opening for i in range(3)]
+    phases = [
+        phase("approach", precontact, "open"),
+        phase("handle_contact", point_world, "open"),
+        phase("minimum_opening_reach", opened, "closed"),
+    ]
+    plan = {
+        "schema_version": ARTICULATED_PLACEMENT_PLAN_SCHEMA_VERSION,
+        "task_kind": "articulated_open_close",
+        "manipulation_strategy": "articulated_open_close",
+        "configured_scene_revision_digest": revision["revision_digest"],
+        "adapter_digest": adapted["adapter_digest"],
+        "qualified_asset_digest": asset_reference["digest"],
+        "qualified_static_digest": revision["replacement"]["static_qualification"]["digest"],
+        "target_joint_id": target["joint_id"],
+        "minimum_opening_m": opening,
+        "phases": phases, "phase_count": len(phases),
+        "execution_parameters": {
+            "arrival_tolerance_m": 0.02,
+            "arrival_orientation_tolerance_rad": 0.08,
+            "maximum_steps_per_phase": 64,
+        },
+        "claim_boundary": {
+            "placement_only_no_task_joint_command": True,
+            "policy_action_and_native_readback_required_for_success": True,
+        },
+        "plan_digest": "",
+    }
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+    placement_trajectory_from_native_plan(plan)
     return plan
 
 
@@ -442,6 +571,22 @@ def resolve_deferred_inputs(
                 _write_immutable_bytes(document_path, _fetched(reference, fetcher=fetcher),
                     conflict="configured_controls_deferred_document_conflict")
             documents[contract_path] = document_path
+        try:
+            definition = json.loads(documents[DEFINITION_CONTRACT_PATH].read_text())
+        except (OSError, ValueError) as exc:
+            raise ConfiguredControlsDeferredInputError("configured_controls_deferred_task_definition_invalid") from exc
+        if definition.get("strategy") == "articulated_open_close":
+            asset_reference = _reference(
+                (revision.get("replacement") or {}).get("asset"),
+                blocker="configured_controls_deferred_articulated_asset_reference_invalid",
+            )
+            asset_path = root / "documents" / "articulated-replacement.usdz"
+            if not _retained_matches(asset_path, reference=asset_reference):
+                _write_immutable_bytes(
+                    asset_path, _fetched(asset_reference, fetcher=fetcher),
+                    conflict="configured_controls_deferred_articulated_asset_conflict",
+                )
+            documents["scene.configured_revision.replacement.asset"] = asset_path
         # Re-derive from the bound retained inputs on every restart. A self-sealed
         # cache alone cannot prove it belongs to this revision or execution code.
         plan = derive_native_trajectory_plan(revision=revision, documents=documents)
