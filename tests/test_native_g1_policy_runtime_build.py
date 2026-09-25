@@ -64,6 +64,10 @@ def test_in_container_plan_uses_pinned_lock_without_nested_docker(
     assert plan["command"][:4] == ["/bin/bash", "-euo", "pipefail", "-c"]
     assert "--require-hashes" in plan["command"][-1]
     assert "-m venv --copies" in plan["command"][-1]
+    assert plan["command"][-1].index("linux-libc-dev") < plan["command"][-1].index("-m pip install")
+    assert plan["command"][-1].index("python3.12-dev") < plan["command"][-1].index("-m pip install")
+    assert "test -f /usr/include/linux/input-event-codes.h" in plan["command"][-1]
+    assert "test -f /usr/include/python3.12/Python.h" in plan["command"][-1]
     assert not (tmp_path / "new-build").exists()
 
 
