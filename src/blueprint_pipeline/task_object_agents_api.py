@@ -6,10 +6,15 @@ provider session, or substitutes the author's output for independent review.
 """
 from __future__ import annotations
 
+import base64
+import hashlib
+from io import BytesIO
 import json
 import os
 from pathlib import Path
 from typing import Any, Mapping
+
+from PIL import Image
 
 from agents.strict_schema import ensure_strict_json_schema
 
@@ -19,7 +24,7 @@ from .agent_execution.contracts import (
 )
 from .astra_cad_skill_runtime import _CAD_PROGRAM_CONTRACT
 from .decision_evidence_contracts import canonical_digest, canonical_json
-from .task_object_agent_session import CandidateReady, image_content
+from .task_object_agent_session import CandidateReady
 from .task_object_agent_tools import AssetTools
 from .task_object_astra_authoring import (
     AssetAuthoringError, BlenderProgram, VisualBrief, blender_author_prompt,
@@ -30,6 +35,48 @@ from .task_object_astra_retained_artifacts import completed_authoring
 
 MODEL = "gpt-6-sol"
 _TOOL_VERSION = "task_asset_agents_api.v1"
+_MAX_DELIVERY_IMAGE_BYTES = 2_000_000
+
+
+def _managed_image_content(frames) -> list[dict[str, str]]:
+    """Send bounded JPEG copies to the managed API; keep source PNGs intact."""
+    content = []
+    for frame in frames:
+        path = Path(frame.path)
+        if file_record(path)["sha256"] != frame.sha256:
+            raise AssetAuthoringError("authoring_source_image_changed")
+        try:
+            with Image.open(path) as source:
+                source.load()
+                if source.format != "PNG":
+                    raise AssetAuthoringError("asset_api_source_image_format_invalid")
+                if source.mode in ("RGBA", "LA"):
+                    rgba = source.convert("RGBA")
+                    delivery = Image.new("RGB", rgba.size, (255, 255, 255))
+                    delivery.paste(rgba, mask=rgba.getchannel("A"))
+                else:
+                    delivery = source.convert("RGB")
+                dimensions = list(delivery.size)
+                encoded = BytesIO()
+                delivery.save(encoded, format="JPEG", quality=90, subsampling=0,
+                              optimize=True)
+                payload = encoded.getvalue()
+        except (OSError, ValueError) as exc:
+            raise AssetAuthoringError("asset_api_source_image_decode_failed") from exc
+        if not payload or len(payload) > _MAX_DELIVERY_IMAGE_BYTES:
+            raise AssetAuthoringError("asset_api_delivery_image_too_large")
+        delivery_digest = "sha256:" + hashlib.sha256(payload).hexdigest()
+        content.extend([
+            {"type": "input_text", "text": frame.description + "\n" + canonical_json({
+                "delivery_encoding": "jpeg_quality_90_444_original_dimensions",
+                "delivery_dimensions": dimensions,
+                "delivery_sha256": delivery_digest,
+                "source_png_sha256": frame.sha256,
+            })},
+            {"type": "input_image", "image_url": "data:image/jpeg;base64,"
+             + base64.b64encode(payload).decode("ascii")},
+        ])
+    return content
 
 
 def _write_once(path: Path, value: Any) -> None:
@@ -211,7 +258,7 @@ class AgentsAPIAssetTools:
             description="Inspect the validated perspective, top and side renders before review.",
             input_schema={"type": "object", "properties": {}, "required": [],
                 "additionalProperties": False}, effect="read_only",
-            invoke=lambda _args, _ctx: image_content(self._restore().candidate_frames())))
+            invoke=lambda _args, _ctx: _managed_image_content(self._restore().candidate_frames())))
         return tuple(tools)
 
     def review(self, *, task_state: Mapping[str, Any], invoker) -> dict:
@@ -258,7 +305,7 @@ def asset_input(request_value: dict) -> list[dict[str, Any]]:
     context = request.model_dump(mode="json")
     context.pop("source_frames")
     return [{"role": "user", "content": [{"type": "input_text", "text": canonical_json(context)},
-        *image_content(request.source_frames)]}]
+        *_managed_image_content(request.source_frames)]}]
 
 
 def prepare_asset_task(*, request_value: dict, tools: AgentsAPIAssetTools,
