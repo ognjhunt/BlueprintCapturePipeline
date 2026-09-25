@@ -12,6 +12,10 @@ from blueprint_pipeline.native_g1_development_pair import validate_g1_developmen
 from blueprint_pipeline.native_g1_development_worker import PATH_FIELDS, REQUEST_SCHEMA
 from blueprint_pipeline.native_g1_navigation_goal import seal_g1_navigation_goal_authority
 from blueprint_pipeline.task_evaluation_g1_catalog import G1_PRESET_ID, unavailable_g1_preset
+from blueprint_pipeline.task_evaluation_policy_pair_choice import (
+    SCHEMA as CHOICE_SCHEMA,
+    validate_policy_pair_choice,
+)
 from blueprint_pipeline.task_evaluation_policy_canary_setup import policy_canary_setup_digest
 from tests.test_native_g1_development_worker import _request as worker_request
 from tests.test_native_g1_navigation_goal import _authority_plan
@@ -126,6 +130,71 @@ def test_operator_can_choose_objective_without_handcrafting_selection(
     result = selection_module.stage_g1_development_selection(**args)
     assert result["candidate_ids"] == [DP, PI]
     assert result["selection_digest"].startswith("sha256:")
+
+
+def _choice(args: dict) -> dict:
+    setup = json.loads(args["setup_path"].read_text())
+    value = {
+        "schema_version": CHOICE_SCHEMA,
+        "claim_ceiling": "planning_only",
+        "source_launch_id": setup["source_launch_id"],
+        "offering_digest": setup["offering_digest"],
+        "scene_revision_digest": setup["scene_revision_digest"],
+        "setup_digest": setup["setup_digest"],
+        "robot_preset_id": G1_PRESET_ID,
+        "policy_candidate_ids": [DP, PI],
+        "objective_id": "task_success",
+    }
+    value["choice_digest"] = canonical_digest(value, digest_field="choice_digest")
+    return value
+
+
+def test_stages_browser_pair_choice_against_exact_scene(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    args = _inputs(tmp_path, monkeypatch)
+    choice = _choice(args)
+    choice_path = tmp_path / "pair-choice.json"
+    choice_path.write_text(json.dumps(choice))
+    args["selection_path"] = None
+    args["choice_path"] = choice_path
+    result = selection_module.stage_g1_development_selection(**args)
+    assert result["pair_choice_digest"] == choice["choice_digest"]
+    assert result["candidate_ids"] == [DP, PI]
+    assert json.loads(Path(result["selection_path"]).read_text())["scene_plan_digest"] == result["scene_plan_digest"]
+    assert json.loads((args["output_dir"] / "task_evaluation_policy_pair_choice.v1.json").read_text()) == choice
+
+
+def test_rejects_stale_or_cross_objective_browser_choice_before_writing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    args = _inputs(tmp_path, monkeypatch)
+    choice = _choice(args)
+    choice_path = tmp_path / "pair-choice.json"
+    args["selection_path"] = None
+    args["choice_path"] = choice_path
+    choice["scene_revision_digest"] = "sha256:" + "0" * 64
+    choice["choice_digest"] = canonical_digest(choice, digest_field="choice_digest")
+    choice_path.write_text(json.dumps(choice))
+    with pytest.raises(ValueError, match="policy_pair_choice_binding_invalid"):
+        selection_module.stage_g1_development_selection(**args)
+    assert not args["output_dir"].exists()
+
+    choice = _choice(args)
+    choice["objective_id"] = "g1_navigation_goal"
+    choice["choice_digest"] = canonical_digest(choice, digest_field="choice_digest")
+    choice_path.write_text(json.dumps(choice))
+    with pytest.raises(ValueError, match="policy_pair_choice_compatibility_invalid"):
+        selection_module.stage_g1_development_selection(**args)
+    assert not args["output_dir"].exists()
+
+
+def test_pair_choice_digest_is_verified(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    args = _inputs(tmp_path, monkeypatch)
+    choice = _choice(args)
+    choice["policy_candidate_ids"].reverse()
+    with pytest.raises(ValueError, match="policy_pair_choice_binding_invalid"):
+        validate_policy_pair_choice(choice, setup=json.loads(args["setup_path"].read_text()))
 
 
 def test_stages_navigation_pair_only_with_confirmed_goal_authority(
