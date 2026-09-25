@@ -1,9 +1,9 @@
 """Build the pinned HumanoidArena LeRobot inference environment in Isaac 6.0.1.
 
-Planning is local and read-only. Execution requires a Linux Docker host with
-the pinned Isaac image already present and network access for hashed Python
-packages. The resulting environment is mounted into the separate, network-off
-episode container; this command never starts a policy or downloads a model.
+Planning is local and read-only. Execution can use a Linux Docker host with
+the pinned Isaac image already present, or run inside that image when a paid
+provider owns the container. Both paths install the same hashed Python lock.
+This command never starts a policy or downloads a model.
 """
 
 from __future__ import annotations
@@ -34,6 +34,8 @@ LOCK = Path(__file__).resolve().parents[2] / (
 )
 LOCK_SHA256 = "584a48b4c42f7911780d5cde20c2c216e35a4ba2d0680a8805d8327e53536e2a"
 PYPROJECT_SHA256 = "034d8e821601a1cf514c5e7c61b998b7b5fce129be16752c3328b16ab074092d"
+EXECUTION_MODES = frozenset({"docker_host", "inside_isaac_container"})
+PINNED_IMAGE_ENV = "BLUEPRINT_G1_PINNED_ISAAC_IMAGE"
 
 
 def _sha256(path: Path) -> str:
@@ -55,8 +57,13 @@ def _absolute(path: Path, *, kind: str) -> Path:
     return path
 
 
-def prepare_g1_policy_runtime_build(*, checkout: Path, output_dir: Path) -> dict[str, Any]:
-    """Seal a Docker build command against source and dependency identities."""
+def prepare_g1_policy_runtime_build(
+    *, checkout: Path, output_dir: Path, execution_mode: str = "docker_host"
+) -> dict[str, Any]:
+    """Seal a build command against source and dependency identities."""
+
+    if execution_mode not in EXECUTION_MODES:
+        raise ValueError("g1_policy_runtime_execution_mode_invalid")
 
     source = _absolute(checkout, kind="dir")
     server = _absolute(source / "lerobot/scripts/serve_lerobot_vla_http.py", kind="file")
@@ -101,7 +108,7 @@ def prepare_g1_policy_runtime_build(*, checkout: Path, output_dir: Path) -> dict
         f"{shlex.quote(str(python))} -c {shlex.quote(probe)}",
         f"{shlex.quote(str(python))} -m pip freeze > {shlex.quote(str(freeze))}",
     ))
-    command = [
+    docker_command = [
         "docker", "run", "--rm", "--pull", "never", "--network", "bridge",
         "--env", "ACCEPT_EULA=Y", "--env", "PRIVACY_CONSENT=Y",
         "--env", "PIP_DISABLE_PIP_VERSION_CHECK=1",
@@ -113,6 +120,10 @@ def prepare_g1_policy_runtime_build(*, checkout: Path, output_dir: Path) -> dict
         "--entrypoint", "/bin/bash", NATIVE_TASK_ARENA_IMAGE,
         "-euo", "pipefail", "-c", shell,
     ]
+    command = (
+        docker_command if execution_mode == "docker_host"
+        else ["/bin/bash", "-euo", "pipefail", "-c", shell]
+    )
     plan = {
         "schema_version": SCHEMA,
         "status": "planned_not_built",
@@ -124,6 +135,7 @@ def prepare_g1_policy_runtime_build(*, checkout: Path, output_dir: Path) -> dict
         "dependency_lock_sha256": "sha256:" + LOCK_SHA256,
         "python_target": "CPython 3.12 Linux x86_64",
         "image": NATIVE_TASK_ARENA_IMAGE,
+        "execution_mode": execution_mode,
         "runtime_root": str(runtime),
         "command": command,
         "model_bytes_downloaded": False,
@@ -140,9 +152,15 @@ def execute_g1_policy_runtime_build(*, plan: dict[str, Any]) -> dict[str, Any]:
         plan, digest_field="plan_digest"
     ):
         raise ValueError("g1_policy_runtime_execution_plan_invalid")
+    if plan.get("execution_mode") == "inside_isaac_container" and (
+        os.environ.get(PINNED_IMAGE_ENV) != NATIVE_TASK_ARENA_IMAGE
+        or not Path("/isaac-sim/python.sh").is_file()
+    ):
+        raise ValueError("g1_policy_runtime_pinned_container_unverified")
     output = Path(plan["runtime_root"]).parent
     if prepare_g1_policy_runtime_build(
-        checkout=Path(plan["checkout_path"]), output_dir=output
+        checkout=Path(plan["checkout_path"]), output_dir=output,
+        execution_mode=plan.get("execution_mode", ""),
     ) != plan:
         raise ValueError("g1_policy_runtime_execution_inputs_changed")
     output.mkdir()
@@ -164,6 +182,7 @@ def execute_g1_policy_runtime_build(*, plan: dict[str, Any]) -> dict[str, Any]:
             "status": "built_import_probe_passed_no_cuda_probe" if success else "blocked",
             "plan_digest": plan["plan_digest"],
             "container_exit_code": process.returncode,
+            "execution_mode": plan["execution_mode"],
             "build_log_sha256": _sha256(log),
             "installed_freeze_sha256": _sha256(freeze) if success else None,
             "runtime_root": plan["runtime_root"],
@@ -177,6 +196,7 @@ def execute_g1_policy_runtime_build(*, plan: dict[str, Any]) -> dict[str, Any]:
             "status": "blocked",
             "plan_digest": plan["plan_digest"],
             "container_exit_code": None,
+            "execution_mode": plan["execution_mode"],
             "blocker": {"type": type(exc).__name__, "message": str(exc)},
             "cuda_device_probed": False,
             "model_bytes_downloaded": False,
@@ -193,9 +213,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkout", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument(
+        "--execution-mode", choices=sorted(EXECUTION_MODES), default="docker_host"
+    )
     parser.add_argument("--execute", action="store_true")
     args = parser.parse_args(argv)
-    plan = prepare_g1_policy_runtime_build(checkout=args.checkout, output_dir=args.output_dir)
+    plan = prepare_g1_policy_runtime_build(
+        checkout=args.checkout, output_dir=args.output_dir,
+        execution_mode=args.execution_mode,
+    )
     if not args.execute:
         print(json.dumps(plan, indent=2, sort_keys=True))
         return 0

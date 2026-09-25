@@ -221,6 +221,16 @@ the pinned Diffusion and π0.5 policies. It retains `build.log`,
 Python packages. It does not download models, attest a CUDA device, run Isaac,
 or prove checkpoint inference. A real Linux build remains to be observed.
 
+For a paid provider that starts the pinned Isaac image as the outer container,
+use `--execution-mode inside_isaac_container` instead. This runs the same
+locked environment build directly under `/isaac-sim/python.sh`, without a
+nested Docker daemon. Execution requires the provider entrypoint to set
+`BLUEPRINT_G1_PINNED_ISAAC_IMAGE` to the exact pinned image reference and to
+expose `/isaac-sim/python.sh`; the environment value is an assertion from the
+transport, not independent proof of the running image. The paid transport must
+bind and retain its actual image identity before treating the build as ready
+for an episode.
+
 Use that `policy-runtime` subdirectory as `--policy-runtime-root` and its
 `bin/python` path in each sealed G1 worker request. Planning the episode
 without `--execute` starts no container:
