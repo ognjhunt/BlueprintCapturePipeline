@@ -197,8 +197,9 @@ def test_subprocess_native_exit_retains_pair_receipt_and_exit_diagnostic(
     launcher.write_text("#!/bin/sh\n", encoding="utf-8")
     calls = []
 
-    def crash(command, *, stdout, stderr, check):
+    def crash(command, *, stdout, stderr, check, timeout):
         calls.append(command)
+        assert timeout == pair.SUBPROCESS_EPISODE_TIMEOUT_SECONDS
         stdout.write("native simulator stopped before Python could write a receipt\n")
         return SimpleNamespace(returncode=-11)
 
@@ -215,7 +216,9 @@ def test_subprocess_native_exit_retains_pair_receipt_and_exit_diagnostic(
     )
     assert calls[0][:3] == [str(launcher), "-m", "blueprint_pipeline.native_g1_development_worker"]
     diagnostics = tmp_path / "comparison/_worker_diagnostics"
-    assert json.loads((diagnostics / f"{DP}.exit.json").read_text()) == {"returncode": -11}
+    assert json.loads((diagnostics / f"{DP}.exit.json").read_text()) == {
+        "status": "exited", "returncode": -11,
+    }
     assert "native simulator stopped" in (diagnostics / f"{DP}.log").read_text()
     assert json.loads((tmp_path / "comparison" / (pair.SCHEMA + ".json")).read_text()) == result
 
@@ -225,7 +228,8 @@ def test_subprocess_preserves_episode_layout_and_scores(tmp_path: Path, monkeypa
     launcher = tmp_path / "python.sh"
     launcher.write_text("#!/bin/sh\n", encoding="utf-8")
 
-    def run(command, *, stdout, stderr, check):
+    def run(command, *, stdout, stderr, check, timeout):
+        assert timeout == pair.SUBPROCESS_EPISODE_TIMEOUT_SECONDS
         request = json.loads(Path(command[4]).read_text(encoding="utf-8"))
         _fake_result(request, Path(command[6]))
         return SimpleNamespace(returncode=0)
@@ -239,6 +243,32 @@ def test_subprocess_preserves_episode_layout_and_scores(tmp_path: Path, monkeypa
     assert result["status"] == "completed_development_only"
     assert [row["candidate_id"] for row in result["attempts"]] == [DP, PI]
     assert all(row["review_media"] for row in result["attempts"])
+
+
+def test_subprocess_timeout_stops_pair_and_retains_typed_diagnostic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths, _ = _paired_requests(tmp_path)
+    launcher = tmp_path / "python.sh"
+    launcher.write_text("#!/bin/sh\n", encoding="utf-8")
+
+    def timeout(command, *, stdout, stderr, check, timeout):
+        assert timeout == pair.SUBPROCESS_EPISODE_TIMEOUT_SECONDS
+        raise pair.subprocess.TimeoutExpired(command, timeout)
+
+    monkeypatch.setattr(pair.sys, "platform", "linux")
+    monkeypatch.setattr(pair.subprocess, "run", timeout)
+    result = pair.run_g1_development_pair(
+        request_paths=paths, output_dir=tmp_path / "comparison",
+        mode="subprocess", worker_launcher=launcher,
+    )
+    assert result["status"] == "blocked"
+    assert result["not_attempted_candidate_ids"] == [PI]
+    assert result["attempts"][0]["blocker"]["message"] == "g1_pair_worker_timeout"
+    diagnostic = json.loads((tmp_path / "comparison/_worker_diagnostics" / f"{DP}.exit.json").read_text())
+    assert diagnostic == {
+        "status": "timed_out", "timeout_seconds": pair.SUBPROCESS_EPISODE_TIMEOUT_SECONDS,
+    }
 
 
 def test_pair_rejects_changed_runtime_and_rights_before_output(tmp_path: Path) -> None:

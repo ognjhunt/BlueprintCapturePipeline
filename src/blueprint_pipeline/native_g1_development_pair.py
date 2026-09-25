@@ -36,6 +36,7 @@ PAIR_ORDER = (
     "humanoidarena_dp_g1_dex3_sonic_vision_navi",
     "humanoidarena_pi05_g1_dex3_sonic_vision_navi",
 )
+SUBPROCESS_EPISODE_TIMEOUT_SECONDS = 45 * 60
 CANDIDATE_FIELDS = frozenset({
     "candidate_id", "rights_review", "request_digest",
 })
@@ -343,15 +344,32 @@ def run_g1_development_pair(
                 # Isaac/Kit may terminate its interpreter outside Python's
                 # exception handling. Keep the campaign alive so it can retain
                 # the child's actual exit status and a terminal pair receipt.
+                exit_path = diagnostics / (candidate_id + ".exit.json")
                 with (diagnostics / (candidate_id + ".log")).open("x", encoding="utf-8") as stream:
-                    process = subprocess.run(
-                        [str(worker_launcher), "-m", "blueprint_pipeline.native_g1_development_worker",
-                         "--request", str(request_path), "--output-dir", str(attempt_root)],
-                        stdout=stream, stderr=subprocess.STDOUT, check=False,
-                    )
-                (diagnostics / (candidate_id + ".exit.json")).write_text(
-                    json.dumps({"returncode": process.returncode}, sort_keys=True) + "\n",
-                    encoding="utf-8",
+                    try:
+                        process = subprocess.run(
+                            [str(worker_launcher), "-m", "blueprint_pipeline.native_g1_development_worker",
+                             "--request", str(request_path), "--output-dir", str(attempt_root)],
+                            stdout=stream, stderr=subprocess.STDOUT, check=False,
+                            timeout=SUBPROCESS_EPISODE_TIMEOUT_SECONDS,
+                        )
+                    except subprocess.TimeoutExpired as exc:
+                        exit_path.write_text(
+                            json.dumps({"status": "timed_out", "timeout_seconds":
+                                        SUBPROCESS_EPISODE_TIMEOUT_SECONDS}, sort_keys=True) + "\n",
+                            encoding="utf-8",
+                        )
+                        raise ValueError("g1_pair_worker_timeout") from exc
+                    except OSError as exc:
+                        exit_path.write_text(
+                            json.dumps({"status": "launch_failed", "error_type": type(exc).__name__},
+                                       sort_keys=True) + "\n",
+                            encoding="utf-8",
+                        )
+                        raise ValueError("g1_pair_worker_launch_failed") from exc
+                exit_path.write_text(
+                    json.dumps({"status": "exited", "returncode": process.returncode},
+                               sort_keys=True) + "\n", encoding="utf-8",
                 )
                 result_path = attempt_root / RESULT_FILENAME
                 episode_path = attempt_root / "episode" / EPISODE_FILENAME
