@@ -22,7 +22,6 @@ from .decision_evidence_contracts import (
 )
 from .control_plane_disk_budget import reserve_control_plane_disk
 from .task_evaluation_scene_attempt_binding import require_scene_execution_binding
-from .task_object_astra_authoring import AssetAuthoringError
 
 SCHEMA = "task_evaluation_partial_astra_transport.v1"
 FIELD = "partial_astra_successor"
@@ -270,6 +269,7 @@ def select_partial_astra_source(*, owner_attempt_path, envelope, output_root,
                                 activation_root=None, pins_root=None, on_pin_created=None):
     """Freeze the newest closed, same-owner/scene/task pending second-review source."""
     from . import task_evaluation_scene_intake as intake
+    from .task_object_astra_authoring import AssetAuthoringError
     current = _read(owner_attempt_path, "owner_attempt_digest")
     validate_envelope_owner(envelope, current)
     target = _safe(output_root)
