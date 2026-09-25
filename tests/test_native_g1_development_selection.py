@@ -17,6 +17,11 @@ from blueprint_pipeline.task_evaluation_policy_pair_choice import (
     validate_policy_pair_choice,
 )
 from blueprint_pipeline.task_evaluation_policy_canary_setup import policy_canary_setup_digest
+from blueprint_pipeline.task_evaluation_packet_planning_setup import (
+    make_packet_policy_pair_choice,
+    SETUP_SCHEMA as PACKET_SETUP_SCHEMA,
+)
+from blueprint_pipeline.decision_evidence_contracts import cross_runtime_canonical_digest
 from tests.test_native_g1_development_worker import _request as worker_request
 from tests.test_native_g1_navigation_goal import _authority_plan
 from tests.test_task_evaluation_policy_canary_setup import _setup
@@ -161,8 +166,118 @@ def test_stages_browser_pair_choice_against_exact_scene(
     result = selection_module.stage_g1_development_selection(**args)
     assert result["pair_choice_digest"] == choice["choice_digest"]
     assert result["candidate_ids"] == [DP, PI]
-    assert json.loads(Path(result["selection_path"]).read_text())["scene_plan_digest"] == result["scene_plan_digest"]
-    assert json.loads((args["output_dir"] / "task_evaluation_policy_pair_choice.v1.json").read_text()) == choice
+    assert (
+        json.loads(Path(result["selection_path"]).read_text())["scene_plan_digest"]
+        == result["scene_plan_digest"]
+    )
+    assert (
+        json.loads((args["output_dir"] / "task_evaluation_policy_pair_choice.v1.json").read_text())
+        == choice
+    )
+
+
+def _packet_choice_inputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[dict, dict]:
+    args = _inputs(tmp_path, monkeypatch)
+    published = json.loads(args["setup_path"].read_text())
+    contract = published["task_success_contract"]
+    site_id = contract["scope"]["site_id"]
+    setup = {
+        "schema_version": PACKET_SETUP_SCHEMA,
+        "claim_ceiling": "planning_only",
+        "scene_id": site_id,
+        "task_id": contract["scope"]["task_id"],
+        "source_packet_receipt_digest": "sha256:" + "a" * 64,
+        "source_packet_request_digest": "sha256:" + "b" * 64,
+        "source_scene_plan_digest": "sha256:" + "c" * 64,
+        "source_declared_task_success_contract_digest": contract["contract_digest"],
+        "task_success_contract": contract,
+        "task_success_contract_digest": contract["contract_digest"],
+        "robot_presets": [unavailable_g1_preset()],
+    }
+    setup["setup_digest"] = cross_runtime_canonical_digest(setup, digest_field="setup_digest")
+    args["setup_path"].write_text(json.dumps(setup))
+    choice = make_packet_policy_pair_choice(setup=setup, objective_id="task_success")
+    choice_path = tmp_path / "packet-choice.json"
+    choice_path.write_text(json.dumps(choice))
+    args["selection_path"] = None
+    args["choice_path"] = choice_path
+    template = json.loads(args["runtime_template_path"].read_text())
+    bundle = Path(template["bundle_root"])
+    plan_path = bundle / "native_task_arena_scene_plan.v1.json"
+    plan = json.loads(plan_path.read_text())
+    plan["scene_id"] = site_id
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+    plan_path.write_text(json.dumps(plan))
+    for candidate, path in args["rights_review_paths"].items():
+        rights = json.loads(path.read_text())
+        rights["scene_plan_digest"] = plan["plan_digest"]
+        rights["rights_review_digest"] = canonical_digest(
+            rights, digest_field="rights_review_digest"
+        )
+        path.write_text(json.dumps(rights))
+    request = {
+        "schema_version": "native_task_arena_packet_request.v1",
+        "scene_id": site_id,
+        "task_id": setup["task_id"],
+        "task_spec": {"task_success_contract_digest": setup["task_success_contract_digest"]},
+        "g1_scene_derivation": {
+            "schema_version": "native_g1_scene_packet_derivation.v1",
+            "source_packet_receipt_digest": setup["source_packet_receipt_digest"],
+            "source_scene_plan_digest": setup["source_scene_plan_digest"],
+            "source_declared_task_success_contract_digest": setup[
+                "source_declared_task_success_contract_digest"
+            ],
+            "setup_digest": setup["setup_digest"],
+            "pair_choice_digest": choice["choice_digest"],
+        },
+    }
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+    (bundle / "native_task_arena_packet_request.v1.json").write_text(json.dumps(request))
+    monkeypatch.setattr(
+        selection_module,
+        "_verify_packet",
+        lambda _bundle: {
+            "arena_scene_plan_digest": plan["plan_digest"],
+            "receipt_digest": "sha256:" + "f" * 64,
+            "request_digest": json.loads(
+                (bundle / "native_task_arena_packet_request.v1.json").read_text()
+            )["request_digest"],
+        },
+    )
+    return args, choice
+
+
+def test_stages_retained_packet_browser_choice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    args, choice = _packet_choice_inputs(tmp_path, monkeypatch)
+    result = selection_module.stage_g1_development_selection(**args)
+    assert result["candidate_ids"] == [DP, PI]
+    assert result["pair_choice_digest"] == choice["choice_digest"]
+    assert "source_launch_id" not in result
+    assert result["source_packet_receipt_digest"] == choice["source_packet_receipt_digest"]
+    assert (
+        json.loads(Path(result["selection_path"]).read_text())["schema_version"]
+        == selection_module.PACKET_SELECTION_SCHEMA
+    )
+    assert validate_g1_development_pair([Path(path) for path in result["request_paths"]])[
+        "candidate_ids"
+    ] == [DP, PI]
+
+
+def test_rejects_packet_choice_for_different_derived_scene(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    args, _choice = _packet_choice_inputs(tmp_path, monkeypatch)
+    template = json.loads(args["runtime_template_path"].read_text())
+    path = Path(template["bundle_root"]) / "native_task_arena_packet_request.v1.json"
+    request = json.loads(path.read_text())
+    request["g1_scene_derivation"]["pair_choice_digest"] = "sha256:" + "0" * 64
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+    path.write_text(json.dumps(request))
+    with pytest.raises(ValueError, match="g1_selection_packet_derivation_mismatch"):
+        selection_module.stage_g1_development_selection(**args)
+    assert not args["output_dir"].exists()
 
 
 def test_rejects_stale_or_cross_objective_browser_choice_before_writing(

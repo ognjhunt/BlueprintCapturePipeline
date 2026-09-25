@@ -28,12 +28,20 @@ from .native_g1_development_worker import (
 )
 from .native_g1_navigation_goal import validate_g1_navigation_goal_authority
 from .native_g1_shared_scene_episode import G1_BOX_CANDIDATES, G1_NAVIGATION_CANDIDATES
+from .native_task_arena_packet import REQUEST_SCHEMA_VERSION
 from .task_evaluation_g1_catalog import G1_PRESET_ID, unavailable_g1_preset
+from .task_evaluation_packet_planning_setup import (
+    CHOICE_SCHEMA as PACKET_CHOICE_SCHEMA,
+    SETUP_SCHEMA as PACKET_SETUP_SCHEMA,
+    validate_packet_planning_setup,
+    validate_packet_policy_pair_choice,
+)
 from .task_evaluation_policy_pair_choice import validate_policy_pair_choice
 from .task_evaluation_policy_canary_setup import validate_policy_canary_setup
 
 
 SCHEMA = "native_g1_development_selection.v1"
+PACKET_SELECTION_SCHEMA = "native_g1_packet_development_selection.v1"
 PLAN_SCHEMA = "native_g1_development_selection_plan.v1"
 SELECTION_FIELDS = frozenset(
     {
@@ -175,7 +183,13 @@ def stage_g1_development_selection(
 ) -> dict[str, Any]:
     """Write two sealed worker requests from one shared catalog selection."""
 
-    setup = validate_policy_canary_setup(_read(setup_path))
+    raw_setup = _read(setup_path)
+    packet_planning = raw_setup.get("schema_version") == PACKET_SETUP_SCHEMA
+    setup = (
+        validate_packet_planning_setup(raw_setup)
+        if packet_planning
+        else validate_policy_canary_setup(raw_setup)
+    )
     template = _read(runtime_template_path)
     if (
         set(template) != TEMPLATE_FIELDS
@@ -198,16 +212,41 @@ def stage_g1_development_selection(
     scene = _read(scene_path)
     if sum(source is not None for source in (selection_path, objective_id, choice_path)) != 1:
         raise ValueError("g1_selection_source_invalid")
+    if packet_planning and choice_path is None:
+        raise ValueError("g1_selection_packet_choice_required")
     choice = (
-        validate_policy_pair_choice(_read(choice_path), setup=setup)
-        if choice_path is not None else None
+        (
+            validate_packet_policy_pair_choice(_read(choice_path), setup=setup)
+            if packet_planning
+            else validate_policy_pair_choice(_read(choice_path), setup=setup)
+        )
+        if choice_path is not None
+        else None
     )
-    selection = _read(selection_path) if selection_path is not None else seal_g1_development_selection(
-        setup=setup,
-        objective_id=choice["objective_id"] if choice is not None else objective_id,
-        scene_plan_digest=scene.get("plan_digest"),
-    )
-    candidates = _selected_pair(setup, selection)
+    if packet_planning:
+        candidates = tuple(choice["policy_candidate_ids"])
+        selection = {
+            "schema_version": PACKET_SELECTION_SCHEMA,
+            "setup_digest": setup["setup_digest"],
+            "source_packet_receipt_digest": setup["source_packet_receipt_digest"],
+            "pair_choice_digest": choice["choice_digest"],
+            "robot_preset_id": G1_PRESET_ID,
+            "policy_candidate_ids": list(candidates),
+            "objective_id": choice["objective_id"],
+            "scene_plan_digest": scene.get("plan_digest"),
+        }
+        selection["selection_digest"] = canonical_digest(selection, digest_field="selection_digest")
+    else:
+        selection = (
+            _read(selection_path)
+            if selection_path is not None
+            else seal_g1_development_selection(
+                setup=setup,
+                objective_id=choice["objective_id"] if choice is not None else objective_id,
+                scene_plan_digest=scene.get("plan_digest"),
+            )
+        )
+        candidates = _selected_pair(setup, selection)
     if choice is not None and (
         choice["robot_preset_id"] != G1_PRESET_ID
         or choice["policy_candidate_ids"] != list(candidates)
@@ -216,6 +255,27 @@ def stage_g1_development_selection(
     if set(rights_review_paths) != set(candidates):
         raise ValueError("g1_selection_rights_review_pair_invalid")
     packet = _verify_packet(bundle)
+    if packet_planning:
+        request = _read(bundle / f"{REQUEST_SCHEMA_VERSION}.json")
+        derivation = request.get("g1_scene_derivation") or {}
+        if (
+            request.get("request_digest") != packet.get("request_digest")
+            or request.get("request_digest")
+            != canonical_digest(request, digest_field="request_digest")
+            or derivation.get("schema_version") != "native_g1_scene_packet_derivation.v1"
+            or derivation.get("source_packet_receipt_digest")
+            != setup["source_packet_receipt_digest"]
+            or derivation.get("source_scene_plan_digest") != setup["source_scene_plan_digest"]
+            or derivation.get("source_declared_task_success_contract_digest")
+            != setup["source_declared_task_success_contract_digest"]
+            or derivation.get("setup_digest") != setup["setup_digest"]
+            or derivation.get("pair_choice_digest") != choice["choice_digest"]
+            or request.get("scene_id") != setup["scene_id"]
+            or request.get("task_id") != setup["task_id"]
+            or (request.get("task_spec") or {}).get("task_success_contract_digest")
+            != setup["task_success_contract_digest"]
+        ):
+            raise ValueError("g1_selection_packet_derivation_mismatch")
     task_spec = scene.get("task_spec") or {}
     task_contract = task_spec.get("task_success_contract") or {}
     scope = task_contract.get("scope") or {}
@@ -296,14 +356,14 @@ def stage_g1_development_selection(
     ):
         raise ValueError("g1_selection_output_directory_invalid")
     output.mkdir(parents=True)
-    sealed_selection_path = output / (SCHEMA + ".json")
+    sealed_selection_path = output / (selection["schema_version"] + ".json")
     sealed_selection_path.write_text(
         json.dumps(selection, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     if choice is not None:
-        (output / "task_evaluation_policy_pair_choice.v1.json").write_text(
-            json.dumps(choice, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-        )
+        (
+            output / f"{PACKET_CHOICE_SCHEMA if packet_planning else choice['schema_version']}.json"
+        ).write_text(json.dumps(choice, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     request_paths = []
     for request in requests:
         path = output / (request["candidate_id"] + ".json")
@@ -317,7 +377,11 @@ def stage_g1_development_selection(
         "selection_digest": selection["selection_digest"],
         "selection_path": str(sealed_selection_path),
         "pair_choice_digest": choice["choice_digest"] if choice is not None else None,
-        "source_launch_id": setup["source_launch_id"],
+        **(
+            {"source_packet_receipt_digest": setup["source_packet_receipt_digest"]}
+            if packet_planning
+            else {"source_launch_id": setup["source_launch_id"]}
+        ),
         "robot_preset_id": G1_PRESET_ID,
         "scene_plan_digest": scene["plan_digest"],
         "packet_receipt_digest": packet["receipt_digest"],
