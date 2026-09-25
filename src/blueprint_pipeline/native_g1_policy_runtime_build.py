@@ -101,7 +101,18 @@ def prepare_g1_policy_runtime_build(
         "assert actual.is_relative_to(expected), 'g1_policy_import_origin_mismatch';"
         "assert torch.version.cuda is not None, 'g1_policy_torch_not_cuda_build'"
     )
+    native_prerequisites = (
+        "test \"$(id -u)\" = 0",
+        "apt-get update -qq",
+        "DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "
+        "linux-libc-dev build-essential pkg-config python3-dev python3.12-dev",
+        "test -f /usr/include/linux/input.h",
+        "test -f /usr/include/linux/input-event-codes.h",
+        "test -f /usr/include/python3.12/Python.h",
+        "command -v cc >/dev/null",
+    ) if execution_mode == "inside_isaac_container" else ()
     shell = " && ".join((
+        *native_prerequisites,
         f"/isaac-sim/python.sh -m venv --copies {shlex.quote(str(runtime))}",
         f"{shlex.quote(str(python))} -m pip install --no-cache-dir --require-hashes -r {shlex.quote(str(lock))}",
         f"{shlex.quote(str(python))} -m pip check",
