@@ -26,6 +26,7 @@ PROVIDER_RUNTIME_BUNDLE_KINDS = (
     "adp009d_articulated_native",
     "native_task_arena",
     "native_task_arena_policy_canary_session",
+    "native_g1_development_campaign",
     "paired_target_native_import",
     "adp009d_ovrtx",
     "adp009d_aura_native",
@@ -272,6 +273,27 @@ def provider_runtime_contract_blockers(
         )
         runner_valid = construction_runner_valid or runtime_preflight_runner_valid
         runner_blocker = "provider_runner_missing_native_task_arena_runtime_contract"
+    elif provider_bundle_kind == "native_g1_development_campaign":
+        entrypoint_valid = all(
+            token in entrypoint_text
+            for token in (
+                "native_task_runtime_source_provision",
+                "native_g1_provider_runtime",
+                "native_g1_provider_campaign_result.v1.json",
+                "g1_provider_runner_exited_without_terminal_result",
+            )
+        )
+        runner_valid = all(
+            token in runner_text
+            for token in (
+                "verify_g1_provider_inputs",
+                "execute_g1_policy_runtime_build",
+                "run_g1_development_pair",
+                "_query_count",
+                "development_only",
+            )
+        )
+        runner_blocker = "provider_runner_missing_native_g1_campaign_runtime_contract"
     elif provider_bundle_kind == "paired_target_native_import":
         entrypoint_valid = all(
             token in entrypoint_text

@@ -99,6 +99,16 @@ from .native_task_arena_execution_contract import (
     NATIVE_TASK_ARENA_POLICY_CANDIDATES,
     required_archive_entries as native_task_arena_required_archive_entries,
 )
+from .vast_provider_field_parsing import (
+    number as _number,
+    normalized_binary_capability as _normalized_binary_capability,
+    content_range_total_bytes as _content_range_total_bytes,
+    version_tuple as _version_tuple,
+)
+from .native_g1_vast_bundle_contract import (
+    REQUIRED_ENTRIES as NATIVE_G1_REQUIRED_ENTRIES,
+    validate_manifest as validate_g1_manifest,
+)
 from .provider_output_disk_capacity import (
     download_provider_output_with_capacity_guard as _download_provider_output_with_capacity_guard,
 )
@@ -355,6 +365,7 @@ def _is_isaac_provider_bundle(provider_bundle_kind: str) -> bool:
         "adp009d_articulated_native",
         "native_task_arena",
         "native_task_arena_policy_canary_session",
+        "native_g1_development_campaign",
         "paired_target_native_import",
         "task_evaluation_scene_configuration",
     }
@@ -368,6 +379,7 @@ def _provider_expected_video_count(provider_bundle_kind: str) -> int:
         "adp009d_articulated_native",
         "native_task_arena",
         "native_task_arena_policy_canary_session",
+        "native_g1_development_campaign",
         "paired_target_native_import",
         "task_evaluation_scene_configuration",
     }:
@@ -442,63 +454,6 @@ def _default_machine_avoidlist_path(job_dir: Path) -> Path:
     """Share proven-bad hosts across sibling jobs in one bounded run root."""
 
     return job_dir.parent / "vast_machine_avoidlist.json"
-
-
-def _number(value: Any) -> float | None:
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, (int, float)):
-        return float(value)
-    if isinstance(value, str):
-        try:
-            return float(value)
-        except ValueError:
-            return None
-    return None
-
-
-def _normalized_binary_capability(value: Any) -> bool | None:
-    """Normalize provider 0/1 capability fields without treating unknown as false."""
-    if isinstance(value, bool):
-        return value
-    number = _number(value)
-    if number == 1:
-        return True
-    if number == 0:
-        return False
-    text = _string(value).strip().lower()
-    if text in {"true", "yes"}:
-        return True
-    if text in {"false", "no"}:
-        return False
-    return None
-
-
-def _content_range_total_bytes(value: Any) -> int | None:
-    text = _string(value)
-    if "/" not in text:
-        return None
-    total = text.rsplit("/", 1)[-1].strip()
-    if not total or total == "*":
-        return None
-    try:
-        parsed = int(total)
-    except ValueError:
-        return None
-    return parsed if parsed >= 0 else None
-
-
-def _version_tuple(value: Any) -> tuple[int, int, int] | None:
-    text = _string(value)
-    if not text:
-        return None
-    parts = re.findall(r"\d+", text)
-    if not parts:
-        return None
-    numbers = [int(item) for item in parts[:3]]
-    while len(numbers) < 3:
-        numbers.append(0)
-    return numbers[0], numbers[1], numbers[2]
 
 
 def _driver_version(offer: Mapping[str, Any]) -> str:
@@ -2761,6 +2716,11 @@ def _blueprint_bundle_preflight(
         entrypoint_member = "provider_runtime/run_adp_arena_provider_runtime.sh"
         runner_member = "provider_runtime/adp_arena_provider_runner.py"
         readiness_name = "adp_arena_provider_manifest.json"
+    elif provider_bundle_kind == "native_g1_development_campaign":
+        required_entries = NATIVE_G1_REQUIRED_ENTRIES
+        entrypoint_member = "provider_runtime/run_adp_arena_provider_runtime.sh"
+        runner_member = "provider_runtime/blueprint_pipeline/native_g1_provider_runtime.py"
+        readiness_name = "native_g1_provider_manifest.json"
     elif provider_bundle_kind == "paired_target_native_import":
         required_entries = paired_target_native_import_required_entries
         entrypoint_member = "provider_runtime/run_paired_target_native_import_probe.sh"
@@ -2882,6 +2842,7 @@ def _blueprint_bundle_preflight(
             "adp009d_articulated_native",
             "native_task_arena",
             "native_task_arena_policy_canary_session",
+            "native_g1_development_campaign",
             "paired_target_native_import",
             "adp009d_ovrtx",
             "adp009d_aura_native",
@@ -3054,6 +3015,14 @@ def _blueprint_bundle_preflight(
                             blockers.append(
                                 "native_task_arena_provider_manifest_invalid"
                             )
+                    if provider_bundle_kind == "native_g1_development_campaign":
+                        readiness_member = "provider_runtime/native_g1_provider_manifest.json"
+                        readiness_source = "immutable_bundle_member"
+                        try:
+                            readiness = dict(validate_g1_manifest(archive))
+                            readiness["local_bundle_ready_for_remote_staging"] = True
+                        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                            blockers.append("native_g1_provider_manifest_invalid")
                     if provider_bundle_kind == "task_evaluation_scene_configuration":
                         readiness_member = (
                             "provider_runtime/"
@@ -3503,6 +3472,7 @@ def _blueprint_bundle_preflight(
         if provider_bundle_kind in {
             "native_task_arena",
             "native_task_arena_policy_canary_session",
+            "native_g1_development_campaign",
             "task_evaluation_scene_configuration",
         }:
             # The native readiness manifest is a required, JSON-validated member
@@ -3909,6 +3879,7 @@ def _resolve_launch_mode(
             "adp009d_articulated_native",
             "native_task_arena",
             "native_task_arena_policy_canary_session",
+            "native_g1_development_campaign",
             "paired_target_native_import",
             "paired_target_native_import",
             "adp009d_ovrtx",
@@ -3976,6 +3947,7 @@ def _probe_env(
         "adp009d_articulated_native",
         "native_task_arena",
         "native_task_arena_policy_canary_session",
+        "native_g1_development_campaign",
         "paired_target_native_import",
         "task_evaluation_scene_configuration",
     }:
@@ -4710,6 +4682,7 @@ def _probe_shell_script(
             "adp009d_articulated_native",
             "native_task_arena",
             "native_task_arena_policy_canary_session",
+            "native_g1_development_campaign",
             "paired_target_native_import",
         }:
             script += (
@@ -4795,8 +4768,15 @@ def _probe_shell_script(
                 + repr(
                     "native_task_arena_policy_canary_session_result.v1.json"
                     if provider_bundle_kind == "native_task_arena_policy_canary_session"
-                    else None
+                    else (
+                        "native_g1_provider_campaign_result.v1.json"
+                        if provider_bundle_kind == "native_g1_development_campaign"
+                        else None
+                    )
                 )
+                + "\n"
+                "preserve_all_output = "
+                + repr(provider_bundle_kind == "native_g1_development_campaign")
                 + "\n"
                 "required_result_max_bytes = 512 * 1024 * 1024\n"
                 "if required_result_name is not None:\n"
@@ -4813,7 +4793,7 @@ def _probe_shell_script(
                 "                size = path.stat().st_size\n"
                 "                relative_name = path.relative_to(output_dir).as_posix()\n"
                 "                size_limit = required_result_max_bytes if relative_name == required_result_name else 100_000_000\n"
-                "                if size <= size_limit:\n"
+                "                if preserve_all_output or size <= size_limit:\n"
                 "                    archive.write(path, relative_name)\n"
                 "    else:\n"
                 "        archive.writestr('runtime_output_missing.json', json.dumps({'status': 'blocked', 'blockers': ['runtime_output_directory_missing']}, indent=2))\n"
@@ -6665,6 +6645,7 @@ def _container_missing_max_seconds(provider_bundle_kind: str) -> int:
             "adp009d_articulated_native",
             "native_task_arena",
             "native_task_arena_policy_canary_session",
+            "native_g1_development_campaign",
             "adp009d_ovrtx",
             "adp009d_aura_native",
             "adp_content_agents",
@@ -7537,6 +7518,7 @@ def run_vast_provider_adapter(
             "adp009d_articulated_native",
             "native_task_arena",
             "native_task_arena_policy_canary_session",
+            "native_g1_development_campaign",
             "adp009d_ovrtx",
             "adp009d_aura_native",
         }
@@ -9102,7 +9084,11 @@ def run_vast_provider_adapter(
         )
         command_execute_fallback_allowed = bool(
             provider_bundle_kind
-            in {"native_task_arena", "native_task_arena_policy_canary_session"}
+            in {
+                "native_task_arena",
+                "native_task_arena_policy_canary_session",
+                "native_g1_development_campaign",
+            }
             or _env_truthy(VAST_ALLOW_COMMAND_EXECUTE_SCRIPT_FALLBACK_ENV)
         )
         if (

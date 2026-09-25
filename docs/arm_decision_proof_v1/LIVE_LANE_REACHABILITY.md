@@ -6,7 +6,7 @@ denominator; a transport module is not a lane and one profile builder may emit
 more than one ordered probe kind.
 
 <!-- reachability-inventory:start -->
-Current executable inventory: **36 dispatched, 20 website-reachable, 16 named
+Current executable inventory: **37 dispatched, 20 website-reachable, 17 named
 non-reachable, 0 awaiting-builder.**
 <!-- reachability-inventory:end -->
 
@@ -75,7 +75,7 @@ campaign cap. The import cannot be authorized first.
 
 ## Named non-reachable probe kinds
 
-These fifteen allocator branches are deliberate decisions, not builder debt.
+These seventeen allocator branches are deliberate decisions, not builder debt.
 
 ### Retired appearance/reference approaches (7)
 
@@ -110,6 +110,14 @@ world-model, and post-training work remains frozen.
 
 This is not a website lane. The allocator runs it against a profile before any
 provider mutation.
+
+### Owner-approved internal development campaign (1)
+
+- `native-g1-development-campaign`
+
+This scene 841757 G1 simulation campaign is controller operated for internal
+development. It has no website profile and cannot imply physical proof or
+public clip rights.
 
 ## Terminal and production rules
 

@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .common import ensure_dir, redacted_failure_detail, utc_now_iso, write_json
+from .paid_cpu_builder_arguments import cpu_vector as _cpu_vector
 from .decision_evidence_contracts import canonical_digest
 from .groot_oscar_digitalocean_builder import (
     DETACHED_CPU_BUILD_SUPERVISOR_ENV,
@@ -161,6 +162,10 @@ from .adp_isaac_lab_arena_vast import (
     PROBE_KIND as ADP_ISAAC_LAB_ARENA_PROBE_KIND,
     build_arena_native_control_bundle,
     run_arena_native_control_vast,
+)
+from .native_g1_paid_campaign import (
+    PROBE_KIND as NATIVE_G1_DEVELOPMENT_CAMPAIGN_PROBE_KIND,
+    dispatch_g1_paid_campaign,
 )
 from .adp009d_franka_vast import (
     controls_only_max_compute_cap,
@@ -1246,42 +1251,6 @@ def configure_or_launch_detached_gpu_canary(
     return None
 
 
-def _cpu_vector(args: argparse.Namespace) -> list[str]:
-    values = [
-        "--output-dir",
-        args.output_dir,
-        "--packet-manifest",
-        args.packet_manifest,
-        "--builder-evidence",
-        args.builder_evidence,
-        "--spend",
-        args.spend,
-        "--token-file",
-        args.token_file,
-        "--docker-username-file",
-        args.docker_username_file,
-        "--docker-password-file",
-        args.docker_password_file,
-        "--hf-token-file",
-        args.hf_token_file,
-        "--runpod-s3-access-key-file",
-        args.runpod_s3_access_key_file,
-        "--runpod-s3-secret-key-file",
-        args.runpod_s3_secret_key_file,
-        "--login-private-key",
-        args.login_private_key,
-        "--host-private-key",
-        args.host_private_key,
-        "--ssh-key-id",
-        str(args.ssh_key_id),
-        "--region",
-        args.region,
-    ]
-    if args.allow_paid:
-        values.append("--allow-paid")
-    return values
-
-
 def _missing_cpu_provider_arguments(args: argparse.Namespace) -> list[str]:
     return [
         name
@@ -1710,6 +1679,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             NATIVE_TASK_ARENA_CONTROLS_PROBE_KIND,
             NATIVE_TASK_ARENA_POLICY_PROBE_KIND,
             NATIVE_TASK_ARENA_POLICY_DIAGNOSTIC_PROBE_KIND,
+            NATIVE_G1_DEVELOPMENT_CAMPAIGN_PROBE_KIND,
             policy_canary_lane.PROBE_KIND,
             ADP009D_OVRTX_LIVE_CAMERA_PROBE_KIND,
             ADP009D_AURA_NATIVE_LIVE_CAMERA_PROBE_KIND,
@@ -1860,6 +1830,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     gpu.add_argument("--native-task-arena-control-result")
     gpu.add_argument("--native-task-arena-policy-execution-spec")
+    gpu.add_argument("--g1-campaign-bundle-receipt")
+    gpu.add_argument("--g1-campaign-manipulation-packet")
+    gpu.add_argument("--g1-campaign-movement-packet")
+    gpu.add_argument("--g1-campaign-book-handoff")
+    gpu.add_argument("--g1-campaign-navigation-authority")
+    gpu.add_argument("--g1-campaign-publisher-source")
+    gpu.add_argument("--g1-campaign-runtime-source-receipt")
+    gpu.add_argument("--g1-campaign-rights-review", action="append", default=[])
     policy_canary_lane.add_policy_canary_allocator_arguments(gpu)
     gpu.add_argument(
         "--native-task-arena-retain-warm-session",
@@ -2316,6 +2294,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             write_json(output, result)
             success = result.get("status") == "completed"
+            print(json.dumps({"success": success}, sort_keys=True))
+            return 0 if success else 2
+        if args.probe_kind == NATIVE_G1_DEVELOPMENT_CAMPAIGN_PROBE_KIND:
+            control_blockers, control_identity = _control_plane_checkout_blockers()
+            result = dispatch_g1_paid_campaign(
+                args,
+                control_identity=control_identity,
+                control_blockers=control_blockers,
+                control_recheck=_control_plane_checkout_blockers,
+            )
+            success = result.get("status") in {"dry_run_ready", "completed"}
             print(json.dumps({"success": success}, sort_keys=True))
             return 0 if success else 2
         if args.probe_kind == SEMANTIC_TEACHER_IMAGE_EDIT_PROBE_KIND:
