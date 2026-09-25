@@ -14,11 +14,13 @@ import os
 import tempfile
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 
 MODEL_BASE = "https://modelscope.cn/models/Twang2026/HumanoidArena_models/resolve/master/"
+RANGED_DOWNLOAD_MIN_BYTES = 512 * 1024 * 1024
 DEFAULT_INVENTORY = (
     Path(__file__).resolve().parents[1]
     / "configs/g1_humanoidarena_checkpoint_inventory.v1.json"
@@ -32,10 +34,58 @@ class _HTTPSRedirectsOnly(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(request, response, code, message, headers, new_url)
 
 
-def _open_https(url: str):
+def _open_https(url: str, *, headers: dict[str, str] | None = None):
     if urllib.parse.urlsplit(url).scheme.lower() != "https":
         raise ValueError("g1_checkpoint_insecure_source")
-    return urllib.request.build_opener(_HTTPSRedirectsOnly()).open(url, timeout=180)
+    request = urllib.request.Request(url, headers=headers or {})
+    return urllib.request.build_opener(_HTTPSRedirectsOnly()).open(request, timeout=180)
+
+
+def _download_pinned_ranges(
+    url: str, descriptor: int, expected_size: int, *,
+    chunk_size: int = 128 * 1024 * 1024, workers: int = 8,
+) -> int:
+    """Fetch one large model into a private temporary file, then hash it whole."""
+
+    if expected_size <= 0 or chunk_size <= 0 or not 1 <= workers <= 24:
+        raise ValueError("g1_checkpoint_range_bounds_invalid")
+    intervals = [(start, min(start + chunk_size, expected_size) - 1)
+                 for start in range(0, expected_size, chunk_size)]
+    os.ftruncate(descriptor, expected_size)
+
+    def fetch(start: int, end: int) -> int:
+        for attempt in range(3):
+            try:
+                with _open_https(url, headers={"Range": f"bytes={start}-{end}"}) as response:
+                    if (response.status != 206
+                            or response.headers.get("Content-Range") != f"bytes {start}-{end}/{expected_size}"
+                            or urllib.parse.urlsplit(response.geturl()).scheme.lower() != "https"):
+                        raise ValueError("g1_checkpoint_range_response_invalid")
+                    written = 0
+                    while written <= end - start:
+                        block = response.read(min(1024 * 1024, end - start + 1 - written))
+                        if not block:
+                            raise ValueError("g1_checkpoint_range_truncated")
+                        if os.pwrite(descriptor, block, start + written) != len(block):
+                            raise ValueError("g1_checkpoint_range_short_write")
+                        written += len(block)
+                    if response.read(1):
+                        raise ValueError("g1_checkpoint_range_extra_bytes")
+                    return written
+            except (OSError, ValueError):
+                if attempt == 2:
+                    raise
+        raise ValueError("g1_checkpoint_range_unreachable")
+
+    total = 0
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(fetch, start, end) for start, end in intervals]
+        for completed in as_completed(futures):
+            total += completed.result()
+    if total != expected_size:
+        raise ValueError("g1_checkpoint_range_size_mismatch")
+    os.fsync(descriptor)
+    return total
 
 
 def _sha256_and_size(path: Path) -> tuple[str, int]:
@@ -118,18 +168,20 @@ def materialize_candidate(
                     prefix=".g1-checkpoint-", dir=destination.parent, delete=False
                 ) as stream:
                     temporary = Path(stream.name)
-                    with _open_https(url) as response:
-                        if urllib.parse.urlparse(response.geturl()).scheme != "https":
-                            raise ValueError("g1_checkpoint_insecure_redirect")
-                        digest = hashlib.sha256()
-                        size = 0
-                        while block := response.read(1024 * 1024):
-                            size += len(block)
-                            if size > expected[1]:
-                                raise ValueError("g1_checkpoint_download_exceeds_pinned_size")
-                            digest.update(block)
-                            stream.write(block)
-                if (digest.hexdigest(), size) != expected:
+                    if expected[1] >= RANGED_DOWNLOAD_MIN_BYTES:
+                        _download_pinned_ranges(url, stream.fileno(), expected[1])
+                    else:
+                        with _open_https(url) as response:
+                            if urllib.parse.urlparse(response.geturl()).scheme != "https":
+                                raise ValueError("g1_checkpoint_insecure_redirect")
+                            size = 0
+                            while block := response.read(1024 * 1024):
+                                size += len(block)
+                                if size > expected[1]:
+                                    raise ValueError("g1_checkpoint_download_exceeds_pinned_size")
+                                stream.write(block)
+                        stream.flush()
+                if _sha256_and_size(temporary) != expected:
                     raise ValueError("g1_checkpoint_download_identity_mismatch")
                 os.link(temporary, destination)
             finally:
