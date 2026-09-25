@@ -117,8 +117,18 @@ def owner_for_profile(profile: Mapping[str, Any], *, now: float | None = None) -
 def validate_setup_pair(setup: Mapping[str, Any], binding: Mapping[str, Any]) -> None:
     bound = validate_binding(binding)
     robots = setup.get("robot_presets")
-    _require(isinstance(robots, list) and len(robots) == 1, "setup_robot_pair_invalid")
-    listed = robots[0].get("policy_candidates")
+    _require(isinstance(robots, list), "setup_robot_pair_invalid")
+    runnable_robots = [robot for robot in robots if isinstance(robot, Mapping) and
+                       (robot.get("readiness") or {}).get("status") == "verified_runnable"]
+    _require(len(runnable_robots) == 1, "setup_robot_pair_invalid")
+    _require(all(
+        isinstance(robot, Mapping) and
+        (robot.get("readiness") or {}).get("status") == "unavailable" and
+        all((candidate.get("readiness") or {}).get("status") == "unavailable"
+            for candidate in robot.get("policy_candidates") or [])
+        for robot in robots if robot is not runnable_robots[0]
+    ), "setup_unavailable_robot_candidate_runnable")
+    listed = runnable_robots[0].get("policy_candidates")
     # The catalog may also list policies a team cannot pick yet; only the
     # runnable ones are the pair.
     candidates = [row for row in listed if isinstance(row, Mapping) and

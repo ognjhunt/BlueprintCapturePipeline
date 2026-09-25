@@ -611,9 +611,13 @@ def _compiled_construction(
 def _selection(
     *, setup: Mapping[str, Any], run_id: str, notification_email: str
 ) -> dict[str, Any]:
+    from .droid_policy_canary_embodiment import DROID_POLICY_CANARY_PRESET_ID
+
     presets = [row for row in setup.get("episode_presets") or [] if row.get("preset_id") == "quick_10"]
-    robots = list(setup.get("robot_presets") or [])
-    if len(presets) != 1 or presets[0].get("availability") != "enabled" or len(robots) != 1:
+    robots = [row for row in setup.get("robot_presets") or []
+              if (row.get("readiness") or {}).get("status") == "verified_runnable"]
+    if (len(presets) != 1 or presets[0].get("availability") != "enabled"
+            or len(robots) != 1 or robots[0].get("robot_preset_id") != DROID_POLICY_CANARY_PRESET_ID):
         raise PolicyCanaryHandoffError("policy_canary_handoff_setup_quick10_unavailable")
     quick = presets[0]
     candidates = [

@@ -721,6 +721,14 @@ def test_presubmission_setup_is_activation_independent_and_profile_ready(
         ).read_text(encoding="utf-8")
     )
     robot = setup["robot_presets"][0]
+    assert len(setup["robot_presets"]) == 2
+    g1 = setup["robot_presets"][1]
+    assert g1["robot_preset_id"] == "unitree_g1_dex3_sonic_v1"
+    assert g1["readiness"]["status"] == "unavailable"
+    assert [row["evaluation_objective_id"] for row in g1["policy_candidates"]] == [
+        "task_success", "task_success", "g1_navigation_goal", "g1_navigation_goal",
+    ]
+    assert all(row["readiness"]["status"] == "unavailable" for row in g1["policy_candidates"])
     # The registry's other policies are listed with a reason, never offered.
     runnable = [
         row["candidate_id"]
