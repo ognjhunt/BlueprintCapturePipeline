@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import tempfile
+import time
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -21,6 +22,7 @@ from typing import Any
 
 MODEL_BASE = "https://modelscope.cn/models/Twang2026/HumanoidArena_models/resolve/master/"
 RANGED_DOWNLOAD_MIN_BYTES = 512 * 1024 * 1024
+RANGED_DOWNLOAD_DEADLINE_SECONDS = 15 * 60
 DEFAULT_INVENTORY = (
     Path(__file__).resolve().parents[1]
     / "configs/g1_humanoidarena_checkpoint_inventory.v1.json"
@@ -38,17 +40,29 @@ def _open_https(url: str, *, headers: dict[str, str] | None = None):
     if urllib.parse.urlsplit(url).scheme.lower() != "https":
         raise ValueError("g1_checkpoint_insecure_source")
     request = urllib.request.Request(url, headers=headers or {})
-    return urllib.request.build_opener(_HTTPSRedirectsOnly()).open(request, timeout=180)
+    return urllib.request.build_opener(_HTTPSRedirectsOnly()).open(request, timeout=45)
+
+
+class _DownloadDeadlineExceeded(TimeoutError):
+    pass
 
 
 def _download_pinned_ranges(
     url: str, descriptor: int, expected_size: int, *,
     chunk_size: int = 128 * 1024 * 1024, workers: int = 8,
+    deadline_seconds: float = RANGED_DOWNLOAD_DEADLINE_SECONDS,
 ) -> int:
     """Fetch one large model into a private temporary file, then hash it whole."""
 
-    if expected_size <= 0 or chunk_size <= 0 or not 1 <= workers <= 24:
+    if (expected_size <= 0 or chunk_size <= 0 or not 1 <= workers <= 24
+            or deadline_seconds <= 0):
         raise ValueError("g1_checkpoint_range_bounds_invalid")
+    deadline = time.monotonic() + deadline_seconds
+
+    def check_deadline() -> None:
+        if time.monotonic() >= deadline:
+            raise _DownloadDeadlineExceeded("g1_checkpoint_download_deadline_exceeded")
+
     intervals = [(start, min(start + chunk_size, expected_size) - 1)
                  for start in range(0, expected_size, chunk_size)]
     os.ftruncate(descriptor, expected_size)
@@ -56,7 +70,9 @@ def _download_pinned_ranges(
     def fetch(start: int, end: int) -> int:
         for attempt in range(3):
             try:
+                check_deadline()
                 with _open_https(url, headers={"Range": f"bytes={start}-{end}"}) as response:
+                    check_deadline()
                     if (response.status != 206
                             or response.headers.get("Content-Range") != f"bytes {start}-{end}/{expected_size}"
                             or urllib.parse.urlsplit(response.geturl()).scheme.lower() != "https"):
@@ -64,6 +80,7 @@ def _download_pinned_ranges(
                     written = 0
                     while written <= end - start:
                         block = response.read(min(1024 * 1024, end - start + 1 - written))
+                        check_deadline()
                         if not block:
                             raise ValueError("g1_checkpoint_range_truncated")
                         if os.pwrite(descriptor, block, start + written) != len(block):
@@ -71,7 +88,10 @@ def _download_pinned_ranges(
                         written += len(block)
                     if response.read(1):
                         raise ValueError("g1_checkpoint_range_extra_bytes")
+                    check_deadline()
                     return written
+            except _DownloadDeadlineExceeded:
+                raise
             except (OSError, ValueError):
                 if attempt == 2:
                     raise
