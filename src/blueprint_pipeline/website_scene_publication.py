@@ -99,14 +99,41 @@ def publication_inputs(*, envelope, stage_results, output_root):
 
     authored = json.loads(retained(receipt["astra_authoring_result"]).read_text())
     require(
-        authored.get("status") == "candidate_authored_pending_native_qualification"
-        and authored.get("result_digest")
-        == canonical_digest(authored, digest_field="result_digest")
-        and authored.get("object_id") == receipt["replacement_identity"]["id"]
+        authored.get("result_digest") == canonical_digest(authored, digest_field="result_digest")
         and authored.get("physical_equivalence_proven") is False
-        and bool(authored.get("review_images"))
     )
-    image = retained(authored["review_images"][0])
+    rationale = "First retained task-object studio render. Does not show or qualify the captured room."
+    if receipt.get("asset_kind") == "articulated_assembly":
+        parts = authored.get("parts")
+        plan_parts = (authored.get("plan") or {}).get("parts")
+        receipt_parts = receipt.get("part_authoring_results")
+        require(
+            authored.get("schema_version") == "task_object_astra_articulated_authoring_result.v1"
+            and authored.get("status") == "parts_authored_pending_native_qualification"
+            and isinstance(parts, dict) and bool(parts)
+            and isinstance(plan_parts, dict) and set(plan_parts) == set(parts)
+            and isinstance(receipt_parts, dict) and set(receipt_parts) == set(parts)
+        )
+        for part_id, part in parts.items():
+            require(
+                json.loads(retained(receipt_parts[part_id]).read_text()) == part
+                and part.get("status") == "candidate_authored_pending_native_qualification"
+                and part.get("result_digest") == canonical_digest(part, digest_field="result_digest")
+            )
+        fixed_parts = [part_id for part_id, spec in plan_parts.items()
+                       if spec.get("link_role") in {"carcass", "fixed_part"}]
+        require(len(fixed_parts) == 1 and bool(parts[fixed_parts[0]].get("review_images")))
+        selected_part = fixed_parts[0]
+        image = retained(parts[selected_part]["review_images"][0])
+        rationale = (f"First retained {selected_part} studio render of the articulated assembly. "
+                     "It shows one part, not the assembled object or captured room.")
+    else:
+        require(
+            authored.get("status") == "candidate_authored_pending_native_qualification"
+            and authored.get("object_id") == receipt["replacement_identity"]["id"]
+            and bool(authored.get("review_images"))
+        )
+        image = retained(authored["review_images"][0])
     require(0 < image.stat().st_size <= MAX_TASK_THUMBNAIL_SIZE_BYTES and image.suffix == ".png")
     thumbnail = Path(output_root) / "generated_task_object.png"
     shutil.copyfile(image, thumbnail)
@@ -114,7 +141,7 @@ def publication_inputs(*, envelope, stage_results, output_root):
     selection = {
         "camera_id": image.stem,
         "frame_digest": digest,
-        "rationale": "First retained task-object studio render. Does not show or qualify the captured room.",
+        "rationale": rationale,
         "reviewer": {
             "kind": "system",
             "identity": "website-task-object-preview",
