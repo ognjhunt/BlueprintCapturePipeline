@@ -156,6 +156,45 @@ def test_trajectory_plan_is_derived_from_the_exact_published_documents(tmp_path:
     assert again == plan
 
 
+def test_articulated_drawer_placement_uses_qualified_asset_and_passive_joint(tmp_path: Path) -> None:
+    from tests.test_task_evaluation_articulated_open_close_native_adapter import _case as drawer_case
+
+    case = drawer_case(tmp_path)
+    revision = case["configured"]
+    asset = case["asset"]
+    payload = asset.read_bytes()
+    revision["replacement"]["asset"] = {
+        "uri": "s3://blueprint-production-inputs/drawer.usdz",
+        "digest": "sha256:" + hashlib.sha256(payload).hexdigest(),
+        "size_bytes": len(payload),
+    }
+    revision["revision_digest"] = canonical_digest(revision, digest_field="revision_digest")
+    documents = {
+        contract_path: Path(row["materialized_path"])
+        for contract_path, row in case["references"].items()
+    }
+    documents["scene.configured_revision.replacement.asset"] = asset
+    plan = deferred.derive_native_trajectory_plan(revision=revision, documents=documents)
+    assert plan["schema_version"] == "task_evaluation_articulated_placement_plan.v1"
+    assert plan["target_joint_id"] == "task_part_joint"
+    assert plan["claim_boundary"]["placement_only_no_task_joint_command"] is True
+    assert plan["phases"][-1]["position_world_m"][0] > plan["phases"][1]["position_world_m"][0]
+    assert placement_trajectory_from_native_plan(plan)["source_plan_digest"] == plan["plan_digest"]
+    payloads = {
+        row["uri"]: Path(row["materialized_path"]).read_bytes()
+        for row in case["references"].values()
+    }
+    payloads[revision["replacement"]["asset"]["uri"]] = payload
+    resolved = deferred.resolve_deferred_inputs(
+        intent={"paths": {"native_trajectory_plan_path": {"deferred": deferred.TRAJECTORY_MODE}},
+                "expected_production_commit": "a" * 40},
+        revision=revision,
+        output_root=tmp_path / "deferred",
+        fetcher=lambda reference: payloads[reference["uri"]],
+    )
+    assert json.loads(Path(resolved["native_trajectory_plan_path"]).read_text()) == plan
+
+
 def test_adapter_binds_the_task_from_the_revision_alone_exactly_as_a_request_would(
     tmp_path: Path,
 ) -> None:

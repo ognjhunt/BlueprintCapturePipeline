@@ -19,6 +19,7 @@ from .decision_evidence_contracts import canonical_digest
 
 SCHEMA_VERSION = "task_evaluation_robot_placement_trajectory.v1"
 NATIVE_RIGID_PLAN_SCHEMA_VERSION = "native_rigid_construction_phase_plan.v1"
+ARTICULATED_PLACEMENT_PLAN_SCHEMA_VERSION = "task_evaluation_articulated_placement_plan.v1"
 
 
 class RobotPlacementTrajectoryError(ValueError):
@@ -56,12 +57,15 @@ def _vector(value: object, length: int, *, blocker: str) -> list[float]:
 def placement_trajectory_from_native_plan(
     value: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Validate and project one exact native rigid construction phase plan."""
+    """Project an exact rigid construction or articulated placement path."""
 
     plan = json.loads(json.dumps(dict(value), allow_nan=False))
     phases = plan.get("phases")
     if (
-        plan.get("schema_version") != NATIVE_RIGID_PLAN_SCHEMA_VERSION
+        plan.get("schema_version") not in {
+            NATIVE_RIGID_PLAN_SCHEMA_VERSION,
+            ARTICULATED_PLACEMENT_PLAN_SCHEMA_VERSION,
+        }
         or not isinstance(phases, list)
         or not 1 <= len(phases) <= 64
         or plan.get("phase_count") != len(phases)
@@ -71,6 +75,12 @@ def placement_trajectory_from_native_plan(
         raise RobotPlacementTrajectoryError(
             "robot_placement_native_trajectory_plan_invalid"
         )
+    if plan["schema_version"] == ARTICULATED_PLACEMENT_PLAN_SCHEMA_VERSION and (
+        plan.get("task_kind") != "articulated_open_close"
+        or plan.get("manipulation_strategy") != "articulated_open_close"
+        or plan.get("claim_boundary", {}).get("placement_only_no_task_joint_command") is not True
+    ):
+        raise RobotPlacementTrajectoryError("robot_placement_native_trajectory_plan_invalid")
 
     compact_phases: list[dict[str, Any]] = []
     phase_ids: set[str] = set()
