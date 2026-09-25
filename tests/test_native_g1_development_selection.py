@@ -283,6 +283,99 @@ def test_verifies_retained_packet_choice_before_runtime_or_rights(
     assert result["result_digest"] == canonical_digest(result, digest_field="result_digest")
 
 
+def test_single_file_browser_handoff_verifies_and_stages_same_pair(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    args, choice = _packet_choice_inputs(tmp_path, monkeypatch)
+    setup = json.loads(args["setup_path"].read_text())
+    handoff = {
+        "schema_version": "task_evaluation_packet_policy_handoff.v1",
+        "claim_ceiling": "planning_only",
+        "setup": setup,
+        "choice": choice,
+    }
+    handoff["handoff_digest"] = cross_runtime_canonical_digest(
+        handoff, digest_field="handoff_digest"
+    )
+    handoff_path = tmp_path / "browser-handoff.json"
+    handoff_path.write_text(json.dumps(handoff))
+    template = json.loads(args["runtime_template_path"].read_text())
+    verified = selection_module.verify_g1_packet_choice_bundle(
+        handoff_path=handoff_path, bundle=Path(template["bundle_root"])
+    )
+    assert verified["status"] == "verified_not_executed"
+    assert verified["choice_digest"] == choice["choice_digest"]
+    args["setup_path"] = None
+    args["choice_path"] = None
+    args["handoff_path"] = handoff_path
+    staged = selection_module.stage_g1_development_selection(**args)
+    assert staged["candidate_ids"] == [DP, PI]
+    assert staged["handoff_digest"] == handoff["handoff_digest"]
+    assert json.loads((args["output_dir"] / "task_evaluation_packet_policy_handoff.v1.json").read_text()) == handoff
+
+
+def test_single_file_handoff_rejects_tampered_choice_before_writing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    args, choice = _packet_choice_inputs(tmp_path, monkeypatch)
+    choice["policy_candidate_ids"].reverse()
+    handoff = {
+        "schema_version": "task_evaluation_packet_policy_handoff.v1",
+        "claim_ceiling": "planning_only",
+        "setup": json.loads(args["setup_path"].read_text()),
+        "choice": choice,
+    }
+    handoff["handoff_digest"] = cross_runtime_canonical_digest(
+        handoff, digest_field="handoff_digest"
+    )
+    handoff_path = tmp_path / "tampered-handoff.json"
+    handoff_path.write_text(json.dumps(handoff))
+    args["setup_path"] = None
+    args["choice_path"] = None
+    args["handoff_path"] = handoff_path
+    with pytest.raises(ValueError, match="packet_policy_pair_choice_binding_invalid"):
+        selection_module.stage_g1_development_selection(**args)
+    assert not args["output_dir"].exists()
+
+
+def test_scene_authoring_cli_reads_single_file_handoff(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blueprint_pipeline import native_g1_scene_packet_request as scene_module
+
+    args, choice = _packet_choice_inputs(tmp_path, monkeypatch)
+    setup = json.loads(args["setup_path"].read_text())
+    handoff = {
+        "schema_version": "task_evaluation_packet_policy_handoff.v1",
+        "claim_ceiling": "planning_only",
+        "setup": setup,
+        "choice": choice,
+    }
+    handoff["handoff_digest"] = cross_runtime_canonical_digest(
+        handoff, digest_field="handoff_digest"
+    )
+    handoff_path = tmp_path / "authoring-handoff.json"
+    handoff_path.write_text(json.dumps(handoff))
+    authoring_path = tmp_path / "authoring.json"
+    authoring_path.write_text("{}")
+    received = {}
+
+    def capture(**kwargs: object) -> dict[str, str]:
+        received.update(kwargs)
+        return {"status": "captured"}
+
+    monkeypatch.setattr(scene_module, "prepare_g1_scene_packet_request", capture)
+    assert scene_module.main([
+        "--source-packet", str(tmp_path / "source"),
+        "--g1-usd", str(tmp_path / "g1.usd"),
+        "--handoff", str(handoff_path),
+        "--authoring", str(authoring_path),
+        "--output-dir", str(tmp_path / "authored"),
+    ]) == 0
+    assert received["setup"] == setup
+    assert received["choice"] == choice
+
+
 def test_rejects_packet_choice_for_different_derived_scene(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -32,8 +32,10 @@ from .native_task_arena_packet import REQUEST_SCHEMA_VERSION
 from .task_evaluation_g1_catalog import G1_PRESET_ID, unavailable_g1_preset
 from .task_evaluation_packet_planning_setup import (
     CHOICE_SCHEMA as PACKET_CHOICE_SCHEMA,
+    HANDOFF_SCHEMA as PACKET_HANDOFF_SCHEMA,
     SETUP_SCHEMA as PACKET_SETUP_SCHEMA,
     validate_packet_planning_setup,
+    validate_packet_policy_handoff,
     validate_packet_policy_pair_choice,
 )
 from .task_evaluation_policy_pair_choice import validate_policy_pair_choice
@@ -236,12 +238,21 @@ def _verify_task_scene(
 
 
 def verify_g1_packet_choice_bundle(
-    *, setup_path: Path, choice_path: Path, bundle: Path
+    *, setup_path: Path | None = None, choice_path: Path | None = None,
+    handoff_path: Path | None = None, bundle: Path
 ) -> dict[str, Any]:
     """Verify the exact retained-packet choice and G1 scene without runtime assets."""
 
-    setup = validate_packet_planning_setup(_read(setup_path))
-    choice = validate_packet_policy_pair_choice(_read(choice_path), setup=setup)
+    if handoff_path is not None:
+        if setup_path is not None or choice_path is not None:
+            raise ValueError("g1_selection_handoff_source_invalid")
+        handoff = validate_packet_policy_handoff(_read(handoff_path))
+        setup, choice = handoff["setup"], handoff["choice"]
+    else:
+        if setup_path is None or choice_path is None:
+            raise ValueError("g1_selection_handoff_source_invalid")
+        setup = validate_packet_planning_setup(_read(setup_path))
+        choice = validate_packet_policy_pair_choice(_read(choice_path), setup=setup)
     if not bundle.is_absolute() or bundle.is_symlink() or not bundle.is_dir():
         raise ValueError("g1_selection_scene_packet_missing")
     scene = _read(bundle / "native_task_arena_scene_plan.v1.json")
@@ -269,7 +280,7 @@ def verify_g1_packet_choice_bundle(
 
 def stage_g1_development_selection(
     *,
-    setup_path: Path,
+    setup_path: Path | None,
     selection_path: Path | None,
     runtime_template_path: Path,
     rights_review_paths: Mapping[str, Path],
@@ -277,10 +288,19 @@ def stage_g1_development_selection(
     navigation_authority_path: Path | None = None,
     objective_id: str | None = None,
     choice_path: Path | None = None,
+    handoff_path: Path | None = None,
 ) -> dict[str, Any]:
     """Write two sealed worker requests from one shared catalog selection."""
 
-    raw_setup = _read(setup_path)
+    if handoff_path is not None:
+        if setup_path is not None or choice_path is not None or selection_path is not None or objective_id is not None:
+            raise ValueError("g1_selection_handoff_source_invalid")
+        handoff = validate_packet_policy_handoff(_read(handoff_path))
+        raw_setup = handoff["setup"]
+    else:
+        if setup_path is None:
+            raise ValueError("g1_selection_handoff_source_invalid")
+        raw_setup = _read(setup_path)
     packet_planning = raw_setup.get("schema_version") == PACKET_SETUP_SCHEMA
     setup = (
         validate_packet_planning_setup(raw_setup)
@@ -307,17 +327,17 @@ def stage_g1_development_selection(
     ):
         raise ValueError("g1_selection_scene_packet_missing")
     scene = _read(scene_path)
-    if sum(source is not None for source in (selection_path, objective_id, choice_path)) != 1:
+    if sum(source is not None for source in (selection_path, objective_id, choice_path, handoff_path)) != 1:
         raise ValueError("g1_selection_source_invalid")
-    if packet_planning and choice_path is None:
+    if packet_planning and choice_path is None and handoff_path is None:
         raise ValueError("g1_selection_packet_choice_required")
     choice = (
-        (
+        handoff["choice"] if handoff_path is not None else (
             validate_packet_policy_pair_choice(_read(choice_path), setup=setup)
             if packet_planning
             else validate_policy_pair_choice(_read(choice_path), setup=setup)
         )
-        if choice_path is not None
+        if choice_path is not None or handoff_path is not None
         else None
     )
     if packet_planning:
@@ -396,7 +416,8 @@ def stage_g1_development_selection(
         requests.append(_request(value))
     output = Path(output_dir)
     protected = [
-        setup_path,
+        *([setup_path] if setup_path else []),
+        *([handoff_path] if handoff_path else []),
         runtime_template_path,
         bundle,
         inventory,
@@ -423,6 +444,10 @@ def stage_g1_development_selection(
         (
             output / f"{PACKET_CHOICE_SCHEMA if packet_planning else choice['schema_version']}.json"
         ).write_text(json.dumps(choice, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    if handoff_path is not None:
+        (output / f"{PACKET_HANDOFF_SCHEMA}.json").write_text(
+            json.dumps(handoff, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
     request_paths = []
     for request in requests:
         path = output / (request["candidate_id"] + ".json")
@@ -436,6 +461,7 @@ def stage_g1_development_selection(
         "selection_digest": selection["selection_digest"],
         "selection_path": str(sealed_selection_path),
         "pair_choice_digest": choice["choice_digest"] if choice is not None else None,
+        **({"handoff_digest": handoff["handoff_digest"]} if handoff_path else {}),
         **(
             {"source_packet_receipt_digest": setup["source_packet_receipt_digest"]}
             if packet_planning
@@ -464,8 +490,10 @@ def stage_g1_development_selection(
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--setup", type=Path, required=True)
-    choice = parser.add_mutually_exclusive_group(required=True)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--setup", type=Path)
+    source.add_argument("--handoff", type=Path)
+    choice = parser.add_mutually_exclusive_group()
     choice.add_argument("--selection", type=Path)
     choice.add_argument("--objective", choices=("task_success", "g1_navigation_goal"))
     choice.add_argument("--choice", type=Path)
@@ -474,6 +502,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--navigation-authority", type=Path)
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args(argv)
+    if args.handoff is None and sum(value is not None for value in (args.selection, args.objective, args.choice)) != 1:
+        parser.error("--setup requires one of --selection, --objective, or --choice")
+    if args.handoff is not None and any(value is not None for value in (args.selection, args.objective, args.choice)):
+        parser.error("--handoff already contains the selected pair")
     rights: dict[str, Path] = {}
     for entry in args.rights_review:
         candidate, separator, path = entry.partition("=")
@@ -485,6 +517,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         selection_path=args.selection,
         objective_id=args.objective,
         choice_path=args.choice,
+        handoff_path=args.handoff,
         runtime_template_path=args.runtime_template,
         rights_review_paths=rights,
         output_dir=args.output_dir,

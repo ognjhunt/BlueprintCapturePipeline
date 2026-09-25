@@ -41,6 +41,7 @@ from .task_evaluation_g1_catalog import G1_PRESET_ID
 from .task_evaluation_packet_planning_setup import (
     SETUP_SCHEMA as PACKET_PLANNING_SETUP_SCHEMA,
     validate_packet_planning_setup,
+    validate_packet_policy_handoff,
     validate_packet_policy_pair_choice,
 )
 from .task_evaluation_policy_pair_choice import validate_policy_pair_choice
@@ -424,17 +425,27 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-packet", type=Path, required=True)
     parser.add_argument("--g1-usd", type=Path, required=True)
-    parser.add_argument("--setup", type=Path, required=True)
-    parser.add_argument("--choice", type=Path, required=True)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--setup", type=Path)
+    source.add_argument("--handoff", type=Path)
+    parser.add_argument("--choice", type=Path)
     parser.add_argument("--authoring", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--materialize-packet", action="store_true")
     args = parser.parse_args(argv)
+    if (args.setup is None) != (args.choice is None):
+        parser.error("--setup requires --choice; --handoff already contains the choice")
+    if args.handoff is not None:
+        handoff = validate_packet_policy_handoff(json.loads(args.handoff.read_text()))
+        setup, choice = handoff["setup"], handoff["choice"]
+    else:
+        setup = json.loads(args.setup.read_text())
+        choice = json.loads(args.choice.read_text())
     result = prepare_g1_scene_packet_request(
         source_packet_dir=args.source_packet,
         g1_usd_path=args.g1_usd,
-        setup=json.loads(args.setup.read_text()),
-        choice=json.loads(args.choice.read_text()),
+        setup=setup,
+        choice=choice,
         authoring=json.loads(args.authoring.read_text()),
         output_dir=args.output_dir,
         materialize_packet=args.materialize_packet,

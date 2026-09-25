@@ -24,6 +24,7 @@ from .task_evaluation_g1_catalog import G1_PRESET_ID, unavailable_g1_preset
 
 SETUP_SCHEMA = "task_evaluation_packet_planning_setup.v1"
 CHOICE_SCHEMA = "task_evaluation_packet_policy_pair_choice.v1"
+HANDOFF_SCHEMA = "task_evaluation_packet_policy_handoff.v1"
 SETUP_FIELDS = frozenset(
     {
         "schema_version",
@@ -180,6 +181,25 @@ def validate_packet_policy_pair_choice(
     ):
         raise ValueError("packet_policy_pair_choice_candidates_invalid")
     return choice
+
+
+def validate_packet_policy_handoff(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate the browser's single-file setup and pair choice handoff."""
+
+    handoff = dict(value)
+    if (
+        set(handoff) != {"schema_version", "claim_ceiling", "setup", "choice", "handoff_digest"}
+        or handoff.get("schema_version") != HANDOFF_SCHEMA
+        or handoff.get("claim_ceiling") != "planning_only"
+        or handoff.get("handoff_digest")
+        != cross_runtime_canonical_digest(handoff, digest_field="handoff_digest")
+        or not isinstance(handoff.get("setup"), dict)
+        or not isinstance(handoff.get("choice"), dict)
+    ):
+        raise ValueError("packet_policy_handoff_invalid")
+    setup = validate_packet_planning_setup(handoff["setup"])
+    choice = validate_packet_policy_pair_choice(handoff["choice"], setup=setup)
+    return {**handoff, "setup": setup, "choice": choice}
 
 
 def make_packet_policy_pair_choice(
