@@ -447,7 +447,9 @@ def materialize(
     # original task binding. Only the trajectory provenance may differ.
     readiness_task_binding = dict(task_binding)
     if canonical_digest(readiness_task_binding) != placement["task_binding_digest"]:
-        readiness_task_binding["trajectory_digest"] = placement["task_trajectory_digest"]
+        original_trajectory_digest = placement.get("task_trajectory_digest")
+        require(isinstance(original_trajectory_digest, str), "scientific_binding_changed")
+        readiness_task_binding["trajectory_digest"] = original_trajectory_digest
     require(
         canonical_digest(readiness_task_binding) == placement["task_binding_digest"],
         "scientific_binding_changed",
