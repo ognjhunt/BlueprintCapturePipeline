@@ -314,7 +314,8 @@ def run_g1_provider_campaign(runtime_root: Path, output_dir: Path) -> dict[str, 
                 pair = run_g1_development_pair(
                     request_paths=[Path(path) for path in selected["request_paths"]],
                     output_dir=output / (packet_name + "_pair"),
-                    mode="local",
+                    mode="subprocess",
+                    worker_launcher=Path("/isaac-sim/python.sh"),
                 )
             pair_results.append(
                 {

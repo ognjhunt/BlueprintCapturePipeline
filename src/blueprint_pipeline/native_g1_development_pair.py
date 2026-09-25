@@ -287,14 +287,19 @@ def run_g1_development_pair(
     source_receipt_path: Path | None = None,
     source_packet_path: Path | None = None,
     policy_runtime_root: Path | None = None,
+    worker_launcher: Path | None = None,
     local_runner: Callable[..., dict[str, Any]] = run_g1_development_worker,
 ) -> dict[str, Any]:
     """Execute in catalog order; stop on an infrastructure block to limit spend."""
 
     pair = validate_g1_development_pair(request_paths)
-    if mode not in {"local", "container"} or (mode == "container" and (
+    if mode not in {"local", "container", "subprocess"} or (mode == "container" and (
         sys.platform != "linux" or source_receipt_path is None
         or source_packet_path is None or policy_runtime_root is None
+    )) or (mode == "subprocess" and (
+        sys.platform != "linux" or worker_launcher is None
+        or not worker_launcher.is_absolute() or worker_launcher.is_symlink()
+        or not worker_launcher.is_file()
     )):
         raise ValueError("g1_pair_execution_mode_invalid")
     output = Path(output_dir).expanduser()
@@ -315,6 +320,9 @@ def run_g1_development_pair(
     ):
         raise ValueError("g1_pair_output_directory_invalid")
     output.mkdir(parents=True)
+    diagnostics = output / "_worker_diagnostics"
+    if mode == "subprocess":
+        diagnostics.mkdir()
     by_candidate = {request["candidate_id"]: (path, request)
                     for path, request in zip(request_paths, requests, strict=True)}
     attempts: list[dict[str, Any]] = []
@@ -331,6 +339,31 @@ def run_g1_development_pair(
                 worker = local_runner(request=request, output_dir=attempt_root)
                 result_path = attempt_root / RESULT_FILENAME
                 episode_path = attempt_root / "episode" / EPISODE_FILENAME
+            elif mode == "subprocess":
+                # Isaac/Kit may terminate its interpreter outside Python's
+                # exception handling. Keep the campaign alive so it can retain
+                # the child's actual exit status and a terminal pair receipt.
+                with (diagnostics / (candidate_id + ".log")).open("x", encoding="utf-8") as stream:
+                    process = subprocess.run(
+                        [str(worker_launcher), "-m", "blueprint_pipeline.native_g1_development_worker",
+                         "--request", str(request_path), "--output-dir", str(attempt_root)],
+                        stdout=stream, stderr=subprocess.STDOUT, check=False,
+                    )
+                (diagnostics / (candidate_id + ".exit.json")).write_text(
+                    json.dumps({"returncode": process.returncode}, sort_keys=True) + "\n",
+                    encoding="utf-8",
+                )
+                result_path = attempt_root / RESULT_FILENAME
+                episode_path = attempt_root / "episode" / EPISODE_FILENAME
+                if not result_path.is_file():
+                    raise ValueError(f"g1_pair_worker_exited_without_receipt:{process.returncode}")
+                worker = _read_result(
+                    result_path, candidate_id=candidate_id,
+                    scene_plan_digest=pair["scene_plan_digest"],
+                    request_digest=worker_request_digest,
+                )
+                if process.returncode != (0 if worker["status"] == "completed_development_only" else 1):
+                    raise ValueError(f"g1_pair_worker_exit_or_receipt_mismatch:{process.returncode}")
             else:
                 from .native_g1_container_run import prepare_g1_container_run
                 from .native_g1_container_host import record_g1_container_host

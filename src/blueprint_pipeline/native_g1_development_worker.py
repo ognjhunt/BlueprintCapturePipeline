@@ -255,9 +255,11 @@ def run_g1_development_worker(
                 sealed.get("navigation_goal_authority"), plan=plan
             )
         phase = "simulator_launch"
+        print("BLUEPRINT_G1_WORKER_PHASE:simulator_launch", flush=True)
         app, launch = _launch_scene(request=sealed, plan=plan)
         if runtime_pxr_preflight:
             phase = "runtime_usd_preflight"
+            print("BLUEPRINT_G1_WORKER_PHASE:runtime_usd_preflight", flush=True)
             verified = preflight_g1_shared_scene_run(**inputs)
             if any(verified.get(key) != preflight.get(key) for key in (
                 "status", "scene_plan_digest", "robot_id", "candidate_id",
@@ -268,10 +270,12 @@ def run_g1_development_worker(
                 raise ValueError("g1_worker_runtime_usd_preflight_changed")
             preflight = verified
         phase = "scene_build"
+        print("BLUEPRINT_G1_WORKER_PHASE:scene_build", flush=True)
         built, device_binding = _build_scene(
             plan=plan, bundle_root=inputs["bundle_root"], device=sealed["device"]
         )
         phase = "episode"
+        print("BLUEPRINT_G1_WORKER_PHASE:episode", flush=True)
         import torch
 
         episode = run_g1_supervised_built_scene_episode(
@@ -288,6 +292,7 @@ def run_g1_development_worker(
     except BaseException as exc:  # noqa: BLE001 - terminal evidence for failed attempts
         failure = exc
     finally:
+        print("BLUEPRINT_G1_WORKER_PHASE:teardown", flush=True)
         if built is not None:
             try:
                 built.env.close()
@@ -298,6 +303,7 @@ def run_g1_development_worker(
                     failure = exc
         if app is not None:
             try:
+                print("BLUEPRINT_G1_WORKER_PHASE:simulator_close", flush=True)
                 app.close()
                 teardown["simulator"] = "closed"
             except BaseException as exc:  # noqa: BLE001
