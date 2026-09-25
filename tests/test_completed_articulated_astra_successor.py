@@ -16,6 +16,13 @@ from blueprint_pipeline.task_evaluation_scene_configuration_astra_phase_adoption
 from blueprint_pipeline.task_object_astra_authoring import AssetAuthoringError, file_record, validate_request
 
 META = json.loads((Path(__file__).parent / "fixtures/partial_astra_eae_metadata.json").read_text())
+SOURCE_ENVELOPE = "sha256:" + "1" * 64
+SUCCESSOR_ENVELOPE = "sha256:" + "2" * 64
+SOURCE_GEOMETRY = {"source_candidate_digest": "sha256:" + "3" * 64,
+                   "construction_envelope_digest": SOURCE_ENVELOPE,
+                   "configuration_digest": "sha256:" + "4" * 64,
+                   "source_aabb_min_xyz_m": [0, 0, 0],
+                   "source_aabb_max_xyz_m": [1, 1, 1]}
 
 
 def sealed(value: dict, field: str) -> dict:
@@ -39,10 +46,15 @@ def completed(tmp_path):
         base["object_id"] = "office_cabinet__" + part
         base["physical_review_input"]["object_id"] = base["object_id"]
         base["run_id"] = "original-run"
+        source_constraints = {"source_geometry_receipt": SOURCE_GEOMETRY}
+        base["construction_constraints"] = json.dumps(source_constraints)
         old[part] = sealed(base, "request_digest")
         validate_request(old[part])
+        successor_constraints = copy.deepcopy(source_constraints)
+        successor_constraints["source_geometry_receipt"]["construction_envelope_digest"] = SUCCESSOR_ENVELOPE
         new[part] = sealed(dict(old[part], run_id="successor-run",
-                                expected_production_commit="b" * 40), "request_digest")
+                                expected_production_commit="b" * 40,
+                                construction_constraints=json.dumps(successor_constraints)), "request_digest")
         validate_request(new[part])
         directory = prior / "authoring/parts" / part
         directory.mkdir(parents=True)
@@ -66,10 +78,13 @@ def completed(tmp_path):
         receipt_path = prior / "inference/agents_api/parts" / part / "agents_api_stage_receipt.json"
         receipt_path.parent.mkdir(parents=True)
         receipt_path.write_text(json.dumps(receipt))
-    plan = {"schema_version": "development_drawer_plan.v1", "parts": sorted(parts)}
+    source_plan = {"schema_version": "development_drawer_plan.v1", "parts": sorted(parts),
+                   "source_geometry_receipt": SOURCE_GEOMETRY}
+    plan = copy.deepcopy(source_plan)
+    plan["source_geometry_receipt"]["construction_envelope_digest"] = SUCCESSOR_ENVELOPE
     authored = sealed({"schema_version": "task_object_astra_articulated_authoring_result.v1",
                        "status": "parts_authored_pending_native_qualification", "provider": "openai",
-                       "agent_runtime": "openai_agents_api", "model": "gpt-6-sol", "plan": plan,
+                       "agent_runtime": "openai_agents_api", "model": "gpt-6-sol", "plan": source_plan,
                        "parts": parts, "part_request_digests": {
                            part: row["request_digest"] for part, row in old.items()}}, "result_digest")
     (prior / "authoring/result.json").write_text(json.dumps(authored))
@@ -98,10 +113,12 @@ def completed(tmp_path):
         "original_runtime_root": str(prior),
         "source_request_digest": canonical_digest({part: row["request_digest"] for part, row in old.items()}),
         "semantic_request_digest": canonical_digest(semantic_articulated_requests(new)),
+        "source_construction_envelope_digest": SOURCE_ENVELOPE,
         "source_stage_binding_digest": binding["binding_digest"],
         "owner_intent_lineage": lineage, "retained_files": _inventory(prior)}, "adoption_digest")
     return {"value": descriptor, "part_requests": {part: validate_request(row) for part, row in new.items()},
             "plan": plan, "source_binding": current_binding, "verified_lineage": lineage,
+            "successor_envelope_digest": SUCCESSOR_ENVELOPE,
             "runtime": successor}, prior
 
 
@@ -114,6 +131,8 @@ def test_completed_articulated_successor_preserves_source_and_spends_nothing(com
     assert prepared["lineage"]["new_provider_calls"] == 0
     assert prepared["lineage"]["cad_execution_repeated"] is False
     assert prepared["lineage"]["blender_execution_repeated"] is False
+    assert prepared["lineage"]["source_construction_envelope_digest"] == SOURCE_ENVELOPE
+    assert prepared["lineage"]["successor_construction_envelope_digest"] == SUCCESSOR_ENVELOPE
     assert _inventory(prior) == before
     for part in ("carcass", "drawer"):
         assert prepared["source_part_requests"][part].request_digest != arguments["part_requests"][part].request_digest
@@ -140,6 +159,21 @@ def test_completed_articulated_archive_restores_only_at_original_root(completed,
             part: request.model_dump(mode="json") for part, request in arguments["part_requests"].items()}},
         original_root=prior, verified_lineage=arguments["verified_lineage"], archive_path=archive)
     assert _inventory(prior) == before
+
+
+@pytest.mark.parametrize("change", ["source_envelope", "successor_envelope", "geometry_bounds"])
+def test_completed_articulated_successor_checks_envelope_lineage_and_geometry(completed, change):
+    arguments, _ = completed
+    if change == "source_envelope":
+        arguments["value"]["source_construction_envelope_digest"] = SUCCESSOR_ENVELOPE
+        sealed(arguments["value"], "adoption_digest")
+    elif change == "successor_envelope":
+        arguments["successor_envelope_digest"] = SOURCE_ENVELOPE
+    else:
+        arguments["plan"]["source_geometry_receipt"]["source_aabb_max_xyz_m"] = [2, 1, 1]
+    arguments["runtime"].joinpath("authoring").mkdir(parents=True)
+    with pytest.raises(AssetAuthoringError):
+        prepare_completed_articulated_successor(**arguments)
 
 
 @pytest.mark.parametrize("change", ["owner", "description", "rights", "part_result", "asset"])

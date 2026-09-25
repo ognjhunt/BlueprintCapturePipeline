@@ -269,6 +269,7 @@ def select_partial_astra_source(*, owner_attempt_path, envelope, output_root,
                                 activation_root=None, pins_root=None, on_pin_created=None):
     """Freeze the newest closed, same-owner/scene/task pending second-review source."""
     from . import task_evaluation_scene_intake as intake
+    from .task_object_astra_authoring import AssetAuthoringError
     current = _read(owner_attempt_path, "owner_attempt_digest")
     validate_envelope_owner(envelope, current)
     target = _safe(output_root)
@@ -342,14 +343,21 @@ def select_partial_astra_source(*, owner_attempt_path, envelope, output_root,
                 prefix = _latest_prefix(archive)
                 known_partial = any(p + "authoring/cad_result.json" in names or
                                     p + "authoring/result.json" in names for p in (prefix, PREFIX))
-                from .task_evaluation_partial_astra_successor import semantic_request
+                from .task_evaluation_partial_astra_successor import (
+                    semantic_articulated_requests, semantic_request,
+                )
                 articulated = prefix + "authoring/result.json" in names
                 if articulated:
                     authored = _archive_json(archive, "authoring/result.json", prefix)
+                    source_stage = _archive_json(archive, "stage_production_input.v1.json",
+                                                 "stages/stage-3/producer/")
+                    source_envelope_digest = (source_stage.get("construction_envelope") or {}).get("envelope_digest")
                     _require(authored.get("schema_version") == "task_object_astra_articulated_authoring_result.v1"
                              and authored.get("status") == "parts_authored_pending_native_qualification"
                              and authored.get("agent_runtime") == "openai_agents_api"
                              and authored.get("model") == "gpt-6-sol"
+                             and (authored.get("plan") or {}).get("source_geometry_receipt", {}).get(
+                                 "construction_envelope_digest") == source_envelope_digest
                              and authored.get("result_digest") == canonical_digest(authored, digest_field="result_digest"),
                              "completed_articulated_result_invalid")
                     requests = {part: _archive_json(archive, f"authoring/parts/{part}/request.json", prefix)
@@ -361,7 +369,7 @@ def select_partial_astra_source(*, owner_attempt_path, envelope, output_root,
                                  part: row["request_digest"] for part, row in requests.items()},
                              "completed_articulated_requests_invalid")
                     request_digest = canonical_digest({part: row["request_digest"] for part, row in requests.items()})
-                    semantic_digest = canonical_digest({part: semantic_request(row) for part, row in requests.items()})
+                    semantic_digest = canonical_digest(semantic_articulated_requests(requests))
                 else:
                     request = _archive_json(archive, "authoring/request.json", prefix)
                     request_digest = request["request_digest"]
@@ -400,6 +408,7 @@ def select_partial_astra_source(*, owner_attempt_path, envelope, output_root,
                 from .task_evaluation_partial_astra_successor import SCHEMA_VERSION, semantic_request
                 descriptor = {"schema_version": SCHEMA_VERSION,
                     **({"adoption_kind": "completed_articulated_agents_api"} if articulated else {}),
+                    **({"source_construction_envelope_digest": source_envelope_digest} if articulated else {}),
                     "source_run_id": lineage["source_run_id"],
                     "successor_run_id": envelope["run_id"], "original_runtime_root": ORIGINAL_ROOT.removesuffix(PREFIX.rstrip("/")) + prefix.rstrip("/"),
                     "source_request_digest": request_digest,
@@ -419,7 +428,8 @@ def select_partial_astra_source(*, owner_attempt_path, envelope, output_root,
                 selection_path = target / "selection.json"
                 _write(selection_path, selection)
                 return selection_path
-        except (OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile) as exc:
+        except (OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile,
+                AssetAuthoringError) as exc:
             reason = str(exc)
             excluded = reason.endswith(("source_configuration_changed", "source_owner_changed", "source_scope_changed",
                                         "owner_attempt_changed", "source_not_closed"))

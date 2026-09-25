@@ -5,13 +5,14 @@ import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
+import re
 import shutil
 import stat
 import tempfile
 from typing import Mapping
 import zipfile
 
-from .decision_evidence_contracts import canonical_digest
+from .decision_evidence_contracts import canonical_digest, canonical_json
 from .task_object_astra_authoring import AssetAuthoringError, AppearanceReview, appearance_passed, file_record
 
 SCHEMA_VERSION = 'task_evaluation_partial_astra_successor_adoption.v1'
@@ -24,8 +25,37 @@ def semantic_request(request: Mapping) -> dict:
             if key not in {'run_id', 'request_digest', 'expected_production_commit'}}
 
 
+def _semantic_source_geometry_receipt(receipt: Mapping) -> dict:
+    """Drop only the run-scoped envelope ID; retain geometry/configuration IDs."""
+    if (not isinstance(receipt, Mapping)
+            or any(not isinstance(receipt.get(key), str) or
+                   re.fullmatch(r'sha256:[0-9a-f]{64}', receipt[key]) is None
+                   for key in ('source_candidate_digest', 'construction_envelope_digest',
+                               'configuration_digest'))):
+        raise AssetAuthoringError('astra_articulated_successor_source_receipt_invalid')
+    return {key: item for key, item in receipt.items() if key != 'construction_envelope_digest'}
+
+
+def semantic_articulated_plan(plan: Mapping) -> dict:
+    return {**plan, 'source_geometry_receipt':
+        _semantic_source_geometry_receipt(plan.get('source_geometry_receipt'))}
+
+
 def semantic_articulated_requests(requests: Mapping[str, Mapping]) -> dict:
-    return {part_id: semantic_request(value) for part_id, value in sorted(requests.items())}
+    normalized = {}
+    for part_id, value in sorted(requests.items()):
+        row = semantic_request(value)
+        try:
+            constraints = json.loads(row['construction_constraints'])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise AssetAuthoringError('astra_articulated_successor_constraints_invalid') from exc
+        if not isinstance(constraints, dict):
+            raise AssetAuthoringError('astra_articulated_successor_constraints_invalid')
+        constraints['source_geometry_receipt'] = _semantic_source_geometry_receipt(
+            constraints.get('source_geometry_receipt'))
+        row['construction_constraints'] = canonical_json(constraints)
+        normalized[part_id] = row
+    return normalized
 
 
 def _verify_descriptor(value, *, request_value, original_root, verified_lineage):
@@ -50,7 +80,8 @@ def _verify_descriptor(value, *, request_value, original_root, verified_lineage)
 
 def prepare_completed_articulated_successor(*, value: Mapping, part_requests: Mapping,
                                             plan: Mapping, source_binding: dict,
-                                            verified_lineage: Mapping, runtime: Path) -> dict:
+                                            verified_lineage: Mapping, runtime: Path,
+                                            successor_envelope_digest: str) -> dict:
     """Reopen reviewed source parts under their original request, with zero provider calls.
 
     The new stage repackages the original CAD/Blender outputs and runs the
@@ -94,7 +125,11 @@ def prepare_completed_articulated_successor(*, value: Mapping, part_requests: Ma
             or authored.get('result_digest') != canonical_digest(authored, digest_field='result_digest')
             or authored.get('part_request_digests') != {
                 part: row['request_digest'] for part, row in previous.items()}
-            or authored.get('plan') != dict(plan) or set(authored.get('parts') or {}) != set(previous)):
+            or semantic_articulated_plan(authored.get('plan') or {}) != semantic_articulated_plan(plan)
+            or authored['plan']['source_geometry_receipt']['construction_envelope_digest']
+               != value.get('source_construction_envelope_digest')
+            or plan['source_geometry_receipt']['construction_envelope_digest'] != successor_envelope_digest
+            or set(authored.get('parts') or {}) != set(previous)):
         raise AssetAuthoringError('astra_articulated_successor_authored_result_invalid')
     from .task_evaluation_scene_configuration_astra_driver import _managed_authoring_receipt
     for part, row in previous.items():
@@ -128,6 +163,8 @@ def prepare_completed_articulated_successor(*, value: Mapping, part_requests: Ma
                'semantic_request_digest': value['semantic_request_digest'],
                'adoption_digest': value['adoption_digest'], 'owner_intent_lineage': dict(verified_lineage),
                'source_authoring_result': file_record(prior / 'authoring/result.json'),
+               'source_construction_envelope_digest': value['source_construction_envelope_digest'],
+               'successor_construction_envelope_digest': successor_envelope_digest,
                'new_provider_calls': 0, 'cad_execution_repeated': False, 'blender_execution_repeated': False,
                'native_import_qualified': False}
     lineage['lineage_digest'] = canonical_digest(lineage, digest_field='lineage_digest')
