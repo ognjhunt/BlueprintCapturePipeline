@@ -123,7 +123,7 @@ else
   runner_rc="$provision_rc"
 fi
 if [ ! -f "$OUT_DIR/native_g1_provider_campaign_result.v1.json" ]; then
-  /isaac-sim/python.sh - "$OUT_DIR" "$runner_rc" <<'PY'
+  /isaac-sim/python.sh - "$OUT_DIR" "$provision_rc" "$runner_rc" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -139,6 +139,7 @@ value = {
     "ranking_eligible": False,
     "physical_outcome_claimed": False,
     "stage_reached": "runtime-source-provisioning" if int(sys.argv[2]) else "runner-start",
+    "runner_exit_code": int(sys.argv[3]),
     "blockers": ["g1_provider_runner_exited_without_terminal_result"],
 }
 value["result_digest"] = canonical_digest(value, digest_field="result_digest")
