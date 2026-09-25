@@ -267,6 +267,31 @@ def test_retained_placement_provenance_accepts_identical_cached_plans_only(tmp_p
         evidence._validated_trajectory_provenance_rebound(result=result, ancestor={"result": previous})
 
 
+@pytest.mark.parametrize("prior_rebound", [None, {
+    "source_plan_digest": "sha256:" + "a" * 64,
+    "successor_plan_digest": "sha256:" + "b" * 64,
+    "physical_plan_fields_identical": True,
+}])
+def test_repeated_placement_adoption_preserves_prior_trajectory_provenance(prior_rebound):
+    from blueprint_pipeline import task_evaluation_retained_controls_evidence as evidence
+
+    previous = {"trajectory_digest": "sha256:" + "c" * 64}
+    if prior_rebound is not None:
+        previous["trajectory_adapter_provenance_rebound"] = prior_rebound
+    result = {**previous}
+    evidence._validate_same_task_trajectory_lineage(result=result, previous=previous)
+
+    changed = {**result, "trajectory_digest": "sha256:" + "d" * 64}
+    with pytest.raises(ValueError, match="checkpoint_lineage_invalid"):
+        evidence._validate_same_task_trajectory_lineage(result=changed, previous=previous)
+
+    changed = {**result, "trajectory_adapter_provenance_rebound": {
+        "source_plan_digest": "sha256:" + "e" * 64,
+    }}
+    with pytest.raises(ValueError, match="checkpoint_lineage_invalid"):
+        evidence._validate_same_task_trajectory_lineage(result=changed, previous=previous)
+
+
 def test_retained_placement_finds_original_receipt_binding_in_linear_reads(tmp_path, monkeypatch):
     from blueprint_pipeline import task_evaluation_retained_controls_evidence as evidence
 
