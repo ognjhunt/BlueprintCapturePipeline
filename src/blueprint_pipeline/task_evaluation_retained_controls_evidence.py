@@ -54,6 +54,56 @@ def _placement_ref(ref: Mapping[str, Any]) -> dict[str, Any]:
     return _read(path)
 
 
+def _validated_trajectory_provenance_rebound(
+    *, result: Mapping[str, Any], ancestor: Mapping[str, Any]
+) -> None:
+    """Recheck the exact native plans behind a retained receipt's new digest."""
+    from .task_evaluation_robot_placement_trajectory import placement_trajectory_from_native_plan
+
+    previous = ancestor["result"]
+    rebound = result.get("trajectory_adapter_provenance_rebound")
+    _placement_require(
+        isinstance(rebound, Mapping)
+        and set(rebound) == {"source_plan_digest", "successor_plan_digest", "physical_plan_fields_identical"}
+        and rebound.get("physical_plan_fields_identical") is True
+        and result.get("trajectory_digest") != previous.get("trajectory_digest"),
+        "trajectory_provenance_invalid",
+    )
+
+    def native_plan(base_pose_path: str, digest: str) -> dict[str, Any]:
+        root = Path(base_pose_path).parent / "deferred-inputs"
+        _placement_require(root.is_dir() and not root.is_symlink(), "trajectory_provenance_invalid")
+        paths = list(root.glob("*/native_trajectory_plan.v1.json"))
+        _placement_require(0 < len(paths) <= 16, "trajectory_provenance_invalid")
+        matches = []
+        for path in paths:
+            _placement_require(path.is_file() and not path.is_symlink(), "trajectory_provenance_invalid")
+            candidate = _read(path)
+            if candidate.get("plan_digest") == digest:
+                _placement_require(
+                    canonical_digest(candidate, digest_field="plan_digest") == digest,
+                    "trajectory_provenance_invalid",
+                )
+                matches.append(candidate)
+        _placement_require(
+            bool(matches) and all(candidate == matches[0] for candidate in matches[1:]),
+            "trajectory_provenance_invalid",
+        )
+        return matches[0]
+
+    old = native_plan(previous["base_pose_candidate_path"], rebound["source_plan_digest"])
+    new = native_plan(result["base_pose_candidate_path"], rebound["successor_plan_digest"])
+    _placement_require(
+        {k: v for k, v in old.items() if k not in {"adapter_digest", "plan_digest"}}
+        == {k: v for k, v in new.items() if k not in {"adapter_digest", "plan_digest"}}
+        and placement_trajectory_from_native_plan(old)["trajectory_digest"]
+        == previous["trajectory_digest"]
+        and placement_trajectory_from_native_plan(new)["trajectory_digest"]
+        == result["trajectory_digest"],
+        "trajectory_provenance_invalid",
+    )
+
+
 def validate_placement_adoption(
     value: Mapping[str, Any], *, expected_owner_digest: str | None = None
 ) -> dict[str, Any]:
@@ -100,10 +150,35 @@ def validate_placement_adoption(
         and _file(inventory_path)["digest"] == checkpoint["inventory_sha256"],
         "checkpoint_changed",
     )
+    ancestor = None
+    if result.get("completed_placement_adoption") is not None:
+        parent = result["completed_placement_adoption"]
+        ancestor = validate_placement_adoption(parent)
+        original = ancestor["result"]
+        _placement_require(
+            result.get("placement_calls_reexecuted") is False
+            and value["source_agent_checkpoint"] == parent["source_agent_checkpoint"]
+            and result["scene_binding_digest"] == original["scene_binding_digest"]
+            and result["placement_agent_receipt_digest"] == original["placement_agent_receipt_digest"]
+            and result["candidate_inventory_digest"] == original["candidate_inventory_digest"]
+            and result["selected_candidate_id"] == original["selected_candidate_id"]
+            and result["cpu_placement_checkpoint_binding_digest"]
+            == original["cpu_placement_checkpoint_binding_digest"],
+            "checkpoint_lineage_invalid",
+        )
+        if result["task_binding_digest"] != original["task_binding_digest"]:
+            _validated_trajectory_provenance_rebound(result=result, ancestor=ancestor)
+        else:
+            _placement_require(
+                result.get("trajectory_adapter_provenance_rebound") is None
+                and result["trajectory_digest"] == original["trajectory_digest"],
+                "checkpoint_lineage_invalid",
+            )
+    receipt_binding = ancestor["result"] if ancestor is not None else result
     receipt = validate_robot_placement_receipt(
         _read(receipt_path),
-        expected_scene_binding_digest=result["scene_binding_digest"],
-        expected_task_binding_digest=result["task_binding_digest"],
+        expected_scene_binding_digest=receipt_binding["scene_binding_digest"],
+        expected_task_binding_digest=receipt_binding["task_binding_digest"],
     )
     inventory = _read(inventory_path)
     _placement_require(
