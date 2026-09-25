@@ -14,6 +14,7 @@ import re
 import stat
 import zipfile
 from collections.abc import Mapping, Sequence
+from importlib.metadata import distribution
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,12 @@ PROVIDER_BUNDLE_KIND = "native_g1_development_campaign"
 MANIFEST = "provider_runtime/native_g1_provider_manifest.json"
 ENTRYPOINT = "provider_runtime/run_adp_arena_provider_runtime.sh"
 BUNDLE_NAME = "native_g1_provider_bundle.zip"
+CONTRACT_DEPENDENCY_PATHS = (
+    "rfc8785/__init__.py",
+    "rfc8785/_impl.py",
+    "rfc8785/py.typed",
+    "rfc8785-0.1.4.dist-info/LICENSE",
+)
 
 
 def _sha256(path: Path) -> str:
@@ -68,6 +75,27 @@ def _runtime_code_files(package: Path) -> tuple[Path, ...]:
         and not path.name.startswith("._")
         and path.name != ".DS_Store"
     )
+
+
+def _contract_dependency() -> tuple[dict[str, Any], list[tuple[str, Path]]]:
+    """Ship the pinned pure-Python canonicalizer used by scene input checks."""
+
+    dependency = distribution("rfc8785")
+    if dependency.version != "0.1.4":
+        raise ValueError("g1_provider_rfc8785_version_mismatch")
+    rows = []
+    sources = []
+    for relative in CONTRACT_DEPENDENCY_PATHS:
+        source = Path(dependency.locate_file(relative))
+        if source.is_symlink() or not source.is_file():
+            raise ValueError("g1_provider_rfc8785_source_missing")
+        rows.append({
+            "relative_path": relative,
+            "sha256": _sha256(source),
+            "size_bytes": source.stat().st_size,
+        })
+        sources.append((relative, source))
+    return {"distribution": "rfc8785", "version": dependency.version, "files": rows}, sources
 
 
 def _entrypoint() -> str:
@@ -185,6 +213,7 @@ def build_g1_provider_bundle(
         raise ValueError("g1_provider_bundle_job_path_invalid")
     source_files = _files(source / "source")
     module_files = _runtime_code_files(package)
+    contract_dependency, contract_sources = _contract_dependency()
     fetchers = [
         repository / "scripts/fetch_g1_humanoidarena_checkpoint.py",
         repository / "scripts/fetch_g1_sonic_assets.py",
@@ -214,6 +243,7 @@ def build_g1_provider_bundle(
             name: packet[1]["receipt_digest"] for name, packet in packets.items()
         },
         "candidate_ids": list(PAIR_ORDER),
+        "contract_python_dependencies": [contract_dependency],
         "expected_output_filename": RESULT_FILENAME,
         "runtime_entrypoint": ENTRYPOINT,
         "claim_ceiling": "development_only",
@@ -261,6 +291,8 @@ def build_g1_provider_bundle(
                     + path.relative_to(package).as_posix()
                 ),
             )
+        for relative, path in contract_sources:
+            _write_zip_file(archive, source=path, archive_path="provider_runtime/" + relative)
         for path in fetchers:
             _write_zip_file(archive, source=path, archive_path="provider_runtime/scripts/" + path.name)
         for path in (inventory, sonic_inventory, lock):
@@ -333,6 +365,30 @@ def load_verified_g1_provider_bundle(
         embedded = json.loads(archive.read(MANIFEST))
         if embedded != manifest or archive.testzip() is not None:
             raise ValueError("g1_provider_bundle_manifest_binding_invalid")
+        dependencies = manifest.get("contract_python_dependencies") or []
+        if (
+            not isinstance(dependencies, list)
+            or len(dependencies) != 1
+            or not isinstance(dependencies[0], dict)
+            or dependencies[0].get("distribution") != "rfc8785"
+            or dependencies[0].get("version") != "0.1.4"
+        ):
+            raise ValueError("g1_provider_bundle_contract_dependency_invalid")
+        rows = dependencies[0].get("files") or []
+        if (
+            not isinstance(rows, list)
+            or not all(isinstance(row, dict) for row in rows)
+            or len(rows) != len(CONTRACT_DEPENDENCY_PATHS)
+            or {row.get("relative_path") for row in rows} != set(CONTRACT_DEPENDENCY_PATHS)
+        ):
+            raise ValueError("g1_provider_bundle_contract_dependency_files_invalid")
+        for row in rows:
+            try:
+                content = archive.read("provider_runtime/" + row["relative_path"])
+            except KeyError as exc:
+                raise ValueError("g1_provider_bundle_contract_dependency_missing") from exc
+            if len(content) != row.get("size_bytes") or "sha256:" + hashlib.sha256(content).hexdigest() != row.get("sha256"):
+                raise ValueError("g1_provider_bundle_contract_dependency_digest_invalid")
     return receipt
 
 
