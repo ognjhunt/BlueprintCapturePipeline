@@ -213,6 +213,52 @@ def test_repeated_adoption_uses_original_checkpoint_without_new_model_file(tmp_p
         adoption.checkpoint_reference(result=result, binding=tmp_path, token="new-intent")
 
 
+def test_retained_placement_provenance_accepts_identical_cached_plans_only(tmp_path, monkeypatch):
+    from blueprint_pipeline import task_evaluation_retained_controls_evidence as evidence
+    from blueprint_pipeline import task_evaluation_robot_placement_trajectory as projector
+
+    root = tmp_path / "binding"
+    old = {"adapter_digest": "old", "phases": ["same"]}
+    new = {"adapter_digest": "new", "phases": ["same"]}
+    for plan in (old, new):
+        plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+
+    def write_plan(directory, plan):
+        path = root / "deferred-inputs" / directory / "native_trajectory_plan.v1.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(plan))
+        return path
+
+    write_plan("old-a", old)
+    write_plan("old-b", old)
+    write_plan("new-a", new)
+    duplicate = write_plan("new-b", new)
+    monkeypatch.setattr(projector, "placement_trajectory_from_native_plan", lambda plan: {
+        "trajectory_digest": "sha256:" + ("a" if plan["adapter_digest"] == "old" else "b") * 64,
+    })
+    previous = {"base_pose_candidate_path": str(root / "candidate.json"),
+                "trajectory_digest": "sha256:" + "a" * 64}
+    result = {"base_pose_candidate_path": str(root / "candidate.json"),
+              "trajectory_digest": "sha256:" + "b" * 64,
+              "trajectory_adapter_provenance_rebound": {
+                  "source_plan_digest": old["plan_digest"],
+                  "successor_plan_digest": new["plan_digest"],
+                  "physical_plan_fields_identical": True,
+              }}
+    evidence._validated_trajectory_provenance_rebound(result=result, ancestor={"result": previous})
+
+    changed = {**new, "phases": ["different"]}
+    changed["plan_digest"] = new["plan_digest"]
+    duplicate.write_text(json.dumps(changed))
+    with pytest.raises(ValueError, match="trajectory_provenance_invalid"):
+        evidence._validated_trajectory_provenance_rebound(result=result, ancestor={"result": previous})
+    duplicate.write_text(json.dumps(new))
+    changed["plan_digest"] = canonical_digest(changed, digest_field="plan_digest")
+    result["trajectory_adapter_provenance_rebound"]["successor_plan_digest"] = changed["plan_digest"]
+    with pytest.raises(ValueError, match="trajectory_provenance_invalid"):
+        evidence._validated_trajectory_provenance_rebound(result=result, ancestor={"result": previous})
+
+
 def test_legacy_checkpoint_alias_is_byte_identical_idempotent_and_never_overwrites(
     tmp_path, monkeypatch
 ):
