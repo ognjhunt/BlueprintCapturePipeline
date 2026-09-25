@@ -52,15 +52,20 @@ def _candidate(inventory: dict[str, Any], candidate_id: str) -> dict[str, Any]:
     rows = inventory.get("candidates")
     if inventory.get("schema_version") != INVENTORY_SCHEMA or not isinstance(rows, list):
         raise ValueError("g1_preflight_inventory_invalid")
-    matches = [row for row in rows if isinstance(row, dict) and row.get("candidate_id") == candidate_id]
+    matches = [
+        row for row in rows if isinstance(row, dict) and row.get("candidate_id") == candidate_id
+    ]
     if len(matches) != 1:
         raise ValueError("g1_preflight_candidate_invalid")
     candidate = matches[0]
     files = candidate.get("files")
     folder = PurePosixPath(str(candidate.get("subdirectory") or ""))
     if (
-        not isinstance(files, list) or not files or not folder.parts
-        or folder.is_absolute() or ".." in folder.parts
+        not isinstance(files, list)
+        or not files
+        or not folder.parts
+        or folder.is_absolute()
+        or ".." in folder.parts
         or candidate.get("policy_role") not in {"manipulation", "movement_navigation"}
         or candidate.get("action_interface") != "humanoidarena_semantic_v3"
         or candidate.get("input_image_shape_hwc") != [480, 640, 3]
@@ -68,9 +73,12 @@ def _candidate(inventory: dict[str, Any], candidate_id: str) -> dict[str, Any]:
         or candidate.get("output_action_width") != 40
     ):
         raise ValueError("g1_preflight_candidate_contract_invalid")
-    inventory_digest = "sha256:" + hashlib.sha256(
-        json.dumps(files, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
-    ).hexdigest()
+    inventory_digest = (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(files, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+        ).hexdigest()
+    )
     if candidate.get("inventory_digest") != inventory_digest:
         raise ValueError("g1_preflight_candidate_inventory_digest_invalid")
     return candidate
@@ -104,6 +112,45 @@ def preflight_g1_shared_scene_run(
     if plan.get("robot", {}).get("robot_id") != "unitree_g1":
         raise ValueError("g1_preflight_scene_robot_invalid")
 
+    assets = verify_g1_host_asset_identities(
+        inventory_path=inventory_path,
+        candidate_id=candidate_id,
+        checkpoint_root=checkpoint_root,
+        policy_server_source=policy_server_source,
+        sonic_provider_source=sonic_provider_source,
+        sonic_encoder=sonic_encoder,
+        sonic_encoder_sha256=sonic_encoder_sha256,
+        sonic_decoder=sonic_decoder,
+        sonic_decoder_sha256=sonic_decoder_sha256,
+    )
+    return {
+        "schema_version": "native_g1_shared_scene_run_preflight.v1",
+        "status": "staged_inputs_verified",
+        "scene_plan_digest": plan["plan_digest"],
+        "robot_id": "unitree_g1",
+        **assets,
+        "server_process_verified": False,
+        "sonic_process_verified": False,
+        "episode_executed": False,
+        "task_scored": False,
+        "evidence_level": "development_only",
+    }
+
+
+def verify_g1_host_asset_identities(
+    *,
+    inventory_path: Path,
+    candidate_id: str,
+    checkpoint_root: Path,
+    policy_server_source: Path,
+    sonic_provider_source: Path,
+    sonic_encoder: Path,
+    sonic_encoder_sha256: str,
+    sonic_decoder: Path,
+    sonic_decoder_sha256: str,
+) -> dict[str, Any]:
+    """Check exact model and source bytes without importing Isaac or USD."""
+
     inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
     candidate = _candidate(inventory, candidate_id)
     folder = PurePosixPath(candidate["subdirectory"])
@@ -115,9 +162,13 @@ def preflight_g1_shared_scene_run(
         relative = PurePosixPath(str(row.get("path") or ""))
         size = row.get("size_bytes")
         if (
-            not relative.parts or relative.is_absolute() or ".." in relative.parts
+            not relative.parts
+            or relative.is_absolute()
+            or ".." in relative.parts
             or relative.as_posix() in seen
-            or isinstance(size, bool) or not isinstance(size, int) or size <= 0
+            or isinstance(size, bool)
+            or not isinstance(size, int)
+            or size <= 0
         ):
             raise ValueError("g1_preflight_file_inventory_invalid")
         seen.add(relative.as_posix())
@@ -130,7 +181,8 @@ def preflight_g1_shared_scene_run(
         verified.append({"relative_path": (folder / relative).as_posix(), **identity})
 
     server = _require_sha256(
-        policy_server_source, "sha256:" + PINNED_POLICY_SERVER_SHA256,
+        policy_server_source,
+        "sha256:" + PINNED_POLICY_SERVER_SHA256,
         label="policy_server_source",
     )
     require_pinned_sonic_source(sonic_provider_source)
@@ -142,10 +194,6 @@ def preflight_g1_shared_scene_run(
     encoder = _require_sha256(sonic_encoder, sonic_encoder_sha256, label="sonic_encoder")
     decoder = _require_sha256(sonic_decoder, sonic_decoder_sha256, label="sonic_decoder")
     return {
-        "schema_version": "native_g1_shared_scene_run_preflight.v1",
-        "status": "staged_inputs_verified",
-        "scene_plan_digest": plan["plan_digest"],
-        "robot_id": "unitree_g1",
         "candidate_id": candidate_id,
         "policy_role": candidate["policy_role"],
         "candidate_inventory_digest": candidate["inventory_digest"],
@@ -155,9 +203,4 @@ def preflight_g1_shared_scene_run(
         "sonic_provider_source": sonic_source,
         "sonic_encoder": encoder,
         "sonic_decoder": decoder,
-        "server_process_verified": False,
-        "sonic_process_verified": False,
-        "episode_executed": False,
-        "task_scored": False,
-        "evidence_level": "development_only",
     }
