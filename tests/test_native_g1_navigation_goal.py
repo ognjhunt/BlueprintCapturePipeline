@@ -155,3 +155,13 @@ def test_navigation_goal_rejects_height_collapse_as_success() -> None:
     samples[2]["root_position_world_m"][2] = 0.1
     score = score_g1_navigation_episode(task_spec=_task_spec(), samples=samples)
     assert score["outcome"] == "failure"
+
+
+def test_navigation_goal_rejects_recovered_mid_episode_height_collapse() -> None:
+    samples = _samples([0.0, 1.5, 1.8, 1.9])
+    samples[1]["root_position_world_m"][2] = 0.1
+    score = score_g1_navigation_episode(task_spec=_task_spec(), samples=samples)
+    assert score["terminal_goal_hold"] is True
+    assert score["root_height_stable_throughout"] is False
+    assert score["maximum_root_height_drift_observed_m"] > 0.2
+    assert score["outcome"] == "failure"

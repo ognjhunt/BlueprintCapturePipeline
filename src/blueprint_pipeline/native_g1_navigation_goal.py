@@ -182,10 +182,14 @@ def score_g1_navigation_episode(
     radius = goal["acceptance_radius_m"]
     if distances[0] <= radius:
         raise ValueError("g1_navigation_start_already_at_goal")
+    height_drifts = [abs(height - heights[0]) for height in heights]
+    height_stable_throughout = all(
+        drift <= goal["max_root_height_drift_m"] for drift in height_drifts
+    )
     within = [
         distance <= radius
-        and abs(height - heights[0]) <= goal["max_root_height_drift_m"]
-        for distance, height in zip(distances, heights, strict=True)
+        and drift <= goal["max_root_height_drift_m"]
+        for distance, drift in zip(distances, height_drifts, strict=True)
     ]
     settle = goal["settle_window_samples"]
     first_settled_step = next(
@@ -197,9 +201,11 @@ def score_g1_navigation_episode(
     result = {
         "schema_version": SCORE_SCHEMA_VERSION,
         "status": "scored",
-        "outcome": "success" if terminal_hold else "failure",
+        "outcome": "success" if terminal_hold and height_stable_throughout else "failure",
         "first_settled_step": first_settled_step,
         "terminal_goal_hold": terminal_hold,
+        "root_height_stable_throughout": height_stable_throughout,
+        "maximum_root_height_drift_observed_m": max(height_drifts),
         "initial_distance_m": distances[0],
         "minimum_distance_m": min(distances),
         "terminal_distance_m": distances[-1],
