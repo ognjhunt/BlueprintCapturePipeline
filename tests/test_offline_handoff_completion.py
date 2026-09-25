@@ -298,6 +298,23 @@ def test_invalid_billing_source_leaves_durable_recovery_action(tmp_path):
     assert fixture["receipt"].read_bytes() == invalid_source_bytes
 
 
+def test_billing_recovery_scans_only_sources_near_provider_creation(tmp_path):
+    from blueprint_pipeline.policy_canary_billing_recovery import _candidate_sources
+
+    audit = tmp_path / "audit"
+    old = audit / "20260912T120000.000000Z" / "provider_billing_source_receipt.json"
+    recent = audit / "20260925T171700.000000Z" / "provider_billing_source_receipt.json"
+    for source in (old, recent):
+        source.parent.mkdir(parents=True)
+        source.write_text("{}")
+    adapter_path = tmp_path / "adapter.json"
+    adapter_path.write_text("{}")
+    assert _candidate_sources(audit, adapter_path, {
+        "generated_at": "2026-09-25T17:16:47+00:00",
+    }) == [recent]
+    assert set(_candidate_sources(audit, adapter_path, {})) == {old, recent}
+
+
 @pytest.mark.parametrize("conflict", [False, True])
 def test_legacy_teardown_identity_is_bound_without_accepting_conflicting_aliases(tmp_path, conflict):
     record = guard.open_pending_teardown(provider="vast", lane="offline", run_id="legacy", instance_id="123", registry_dir=tmp_path)

@@ -221,12 +221,31 @@ def _placement_aware_camera_candidates(
             blocker="configured_controls_autostart_camera_trajectory_invalid",
         )
     lateral = [-direction[1], direction[0], 0.0]
-    external_position = [base[0], base[1], base[2] + 1.35]
-    overview_position = [
-        focus[0] + 0.9 * lateral[0],
-        focus[1] + 0.9 * lateral[1],
-        max(base[2], max(point[2] for point in points)) + 1.45,
-    ]
+    if validated_trajectory["task_kind"] == "articulated_open_close":
+        # A drawer beneath a desktop is hidden from the generic high, lateral
+        # overview. Face the opening direction at handle height, on the robot's
+        # side of the task. Native observability remains the final authority.
+        base_side = sum(
+            (base[index] - focus[index]) * lateral[index] for index in range(2)
+        )
+        side = -1.0 if base_side <= 0.0 else 1.0
+        external_position = [
+            focus[index] + 0.8 * direction[index] + side * 0.65 * lateral[index]
+            for index in range(2)
+        ] + [focus[2] + 0.15]
+        overview_position = [
+            focus[index] + 1.3 * direction[index] + side * 0.8 * lateral[index]
+            for index in range(2)
+        ] + [focus[2] + 0.2]
+        derivation_method = "articulated_front_elevation_from_selected_trajectory"
+    else:
+        external_position = [base[0], base[1], base[2] + 1.35]
+        overview_position = [
+            focus[0] + 0.9 * lateral[0],
+            focus[1] + 0.9 * lateral[1],
+            max(base[2], max(point[2] for point in points)) + 1.45,
+        ]
+        derivation_method = "selected_base_and_full_trajectory_look_at"
     cameras = [
         _world_camera_candidate(
             "external",
@@ -256,7 +275,7 @@ def _placement_aware_camera_candidates(
         },
         "trajectory_digest": validated_trajectory["trajectory_digest"],
         "camera_template_digest": canonical_digest(camera_template),
-        "derivation_method": "selected_base_and_full_trajectory_look_at",
+        "derivation_method": derivation_method,
         "world_camera_positions_depend_on_selected_base": True,
         "wrist_mount_copied_from_immutable_profile": True,
         "camera_configuration_qualified": False,

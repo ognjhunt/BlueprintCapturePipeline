@@ -728,6 +728,33 @@ def test_world_cameras_are_derived_after_exact_inventory_member_selection() -> N
     )
 
 
+def test_articulated_world_cameras_face_drawer_below_fixture_desktop() -> None:
+    trajectory = _trajectory()
+    trajectory["task_kind"] = "articulated_open_close"
+    trajectory["manipulation_strategy"] = "articulated_open_close"
+    trajectory["phases"][0]["position_world_m"] = [-0.29, 0.0, 0.29]
+    trajectory["phases"][1]["position_world_m"] = [-0.01, 0.0, 0.29]
+    trajectory["trajectory_digest"] = autostart.canonical_digest(
+        trajectory, digest_field="trajectory_digest"
+    )
+    result = autostart._placement_aware_camera_candidates(
+        camera_template=_camera_template(),
+        accepted_pose={"position_world_m": [-0.3, -0.65, 0.0], "orientation_xyzw": [0.0, 0.0, 0.0, 1.0]},
+        selected_candidate_id="drawer-fixture",
+        trajectory=trajectory,
+        source_commit=COMMIT,
+    )
+    by_role = {row["role"]: row for row in result["cameras"]}
+    for role in ("external", "overview"):
+        matrix = by_role[role]["frame_from_camera_matrix"]
+        # This fixture has a desktop slab at z=0.70..0.75 and cabinet front
+        # near x=-0.324. Both camera-to-handle rays stay below the slab.
+        assert matrix[3] > -0.324
+        assert matrix[7] < -0.4
+        assert matrix[11] < 0.7
+    assert by_role["wrist"] == _camera_template()["cameras"][1]
+
+
 def test_different_selected_pose_cannot_reuse_world_camera_bytes() -> None:
     common = {
         "camera_template": _camera_template(),
