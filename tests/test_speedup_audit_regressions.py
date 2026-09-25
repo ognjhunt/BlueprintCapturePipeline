@@ -108,6 +108,9 @@ def test_missing_newest_candidate_falls_back_to_intact_history(tmp_path):
 def test_successful_none_verdict_is_reused_across_operations(tmp_path, monkeypatch):
     monkeypatch.setenv(store.ROOT_ENV, str(tmp_path / 'verdicts'))
     monkeypatch.setattr(identity, 'running_release_commit', lambda: 'c' * 40)
+    # Persistence is intentionally disabled when another thread could execute
+    # untraced package code. Make the single-thread premise deterministic.
+    monkeypatch.setattr(store.threading, 'active_count', lambda: 1)
     calls = []
     def validate():
         calls.append(1)
@@ -116,6 +119,20 @@ def test_successful_none_verdict_is_reused_across_operations(tmp_path, monkeypat
         with file_digest_scope():
             reuse_verdict('audit-none', ('same',), {}, validate)
     assert len(calls) == 1
+
+
+def test_verdict_is_recomputed_when_other_threads_are_active(tmp_path, monkeypatch):
+    monkeypatch.setenv(store.ROOT_ENV, str(tmp_path / 'verdicts'))
+    monkeypatch.setattr(identity, 'running_release_commit', lambda: 'c' * 40)
+    monkeypatch.setattr(store.threading, 'active_count', lambda: 2)
+    calls = []
+    def validate():
+        calls.append(1)
+        return None
+    for _ in range(2):
+        with file_digest_scope():
+            reuse_verdict('audit-none-concurrent', ('same',), {}, validate)
+    assert len(calls) == 2
 
 
 def test_dedup_must_not_replace_bytes_if_source_changes(tmp_path, monkeypatch):
