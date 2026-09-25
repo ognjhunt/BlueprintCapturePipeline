@@ -29,6 +29,7 @@ from .native_g1_development_worker import (
 from .native_g1_navigation_goal import validate_g1_navigation_goal_authority
 from .native_g1_shared_scene_episode import G1_BOX_CANDIDATES, G1_NAVIGATION_CANDIDATES
 from .task_evaluation_g1_catalog import G1_PRESET_ID, unavailable_g1_preset
+from .task_evaluation_policy_pair_choice import validate_policy_pair_choice
 from .task_evaluation_policy_canary_setup import validate_policy_canary_setup
 
 
@@ -170,6 +171,7 @@ def stage_g1_development_selection(
     output_dir: Path,
     navigation_authority_path: Path | None = None,
     objective_id: str | None = None,
+    choice_path: Path | None = None,
 ) -> dict[str, Any]:
     """Write two sealed worker requests from one shared catalog selection."""
 
@@ -194,16 +196,23 @@ def stage_g1_development_selection(
     ):
         raise ValueError("g1_selection_scene_packet_missing")
     scene = _read(scene_path)
-    if (selection_path is None) == (objective_id is None):
+    if sum(source is not None for source in (selection_path, objective_id, choice_path)) != 1:
         raise ValueError("g1_selection_source_invalid")
-    selection = (
-        _read(selection_path)
-        if selection_path is not None
-        else seal_g1_development_selection(
-            setup=setup, objective_id=objective_id, scene_plan_digest=scene.get("plan_digest")
-        )
+    choice = (
+        validate_policy_pair_choice(_read(choice_path), setup=setup)
+        if choice_path is not None else None
+    )
+    selection = _read(selection_path) if selection_path is not None else seal_g1_development_selection(
+        setup=setup,
+        objective_id=choice["objective_id"] if choice is not None else objective_id,
+        scene_plan_digest=scene.get("plan_digest"),
     )
     candidates = _selected_pair(setup, selection)
+    if choice is not None and (
+        choice["robot_preset_id"] != G1_PRESET_ID
+        or choice["policy_candidate_ids"] != list(candidates)
+    ):
+        raise ValueError("g1_selection_pair_choice_invalid")
     if set(rights_review_paths) != set(candidates):
         raise ValueError("g1_selection_rights_review_pair_invalid")
     packet = _verify_packet(bundle)
@@ -275,6 +284,7 @@ def stage_g1_development_selection(
         *(Path(template[field]) for field in PATH_FIELDS),
         *rights_review_paths.values(),
         *([selection_path] if selection_path else []),
+        *([choice_path] if choice_path else []),
         *([navigation_authority_path] if navigation_authority_path else []),
     ]
     if (
@@ -290,6 +300,10 @@ def stage_g1_development_selection(
     sealed_selection_path.write_text(
         json.dumps(selection, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
+    if choice is not None:
+        (output / "task_evaluation_policy_pair_choice.v1.json").write_text(
+            json.dumps(choice, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
     request_paths = []
     for request in requests:
         path = output / (request["candidate_id"] + ".json")
@@ -302,6 +316,7 @@ def stage_g1_development_selection(
         "setup_digest": setup["setup_digest"],
         "selection_digest": selection["selection_digest"],
         "selection_path": str(sealed_selection_path),
+        "pair_choice_digest": choice["choice_digest"] if choice is not None else None,
         "source_launch_id": setup["source_launch_id"],
         "robot_preset_id": G1_PRESET_ID,
         "scene_plan_digest": scene["plan_digest"],
@@ -330,6 +345,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     choice = parser.add_mutually_exclusive_group(required=True)
     choice.add_argument("--selection", type=Path)
     choice.add_argument("--objective", choices=("task_success", "g1_navigation_goal"))
+    choice.add_argument("--choice", type=Path)
     parser.add_argument("--runtime-template", type=Path, required=True)
     parser.add_argument("--rights-review", action="append", required=True, metavar="CANDIDATE=PATH")
     parser.add_argument("--navigation-authority", type=Path)
@@ -345,6 +361,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         setup_path=args.setup,
         selection_path=args.selection,
         objective_id=args.objective,
+        choice_path=args.choice,
         runtime_template_path=args.runtime_template,
         rights_review_paths=rights,
         output_dir=args.output_dir,
