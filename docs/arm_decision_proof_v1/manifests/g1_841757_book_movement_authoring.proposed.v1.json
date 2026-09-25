@@ -1,0 +1,514 @@
+{
+  "authoring_digest": "sha256:41ad27d02ed7b2e39c4817d39da07b5ca316fef00ffa23fde5a80fb5fdb98584",
+  "base_pose_world": {
+    "orientation_xyzw": [
+      0.0,
+      0.0,
+      1.0,
+      0.0
+    ],
+    "position_world_m": [
+      -2.703953,
+      -3.441138,
+      0.79
+    ]
+  },
+  "cameras": [
+    {
+      "frame_from_camera_matrix": [
+        0.0,
+        -0.7071067811865475,
+        0.7071067811865476,
+        0.08,
+        -1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        -0.7071067811865476,
+        -0.7071067811865475,
+        0.04,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "intrinsics": {
+        "cx": 319.5,
+        "cy": 239.5,
+        "fx": 500.0,
+        "fy": 500.0,
+        "height": 480,
+        "width": 640
+      },
+      "optical_convention": "opencv",
+      "parent_prim_path": "{ENV_REGEX_NS}/Robot/head_link",
+      "policy_input": true,
+      "pose_frame": "robot_body",
+      "review_only": false,
+      "role": "head",
+      "scoring_input": false
+    },
+    {
+      "frame_from_camera_matrix": [
+        1.0,
+        0.0,
+        0.0,
+        -3.2,
+        -0.0,
+        -0.6253049104839162,
+        0.7803805282839275,
+        -5.0,
+        0.0,
+        -0.7803805282839275,
+        -0.6253049104839162,
+        1.8,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "intrinsics": {
+        "cx": 639.5,
+        "cy": 359.5,
+        "fx": 700.0,
+        "fy": 700.0,
+        "height": 720,
+        "width": 1280
+      },
+      "optical_convention": "opencv",
+      "parent_prim_path": "{ENV_REGEX_NS}",
+      "policy_input": false,
+      "pose_frame": "world",
+      "review_only": true,
+      "role": "overview",
+      "scoring_input": false
+    }
+  ],
+  "claim_ceiling": "development_only",
+  "pair_choice_digest": "sha256:0c5041ad81376d663c0e035804b678218cdf8575a0178dd717a14c26f08b652a",
+  "physics_frequency_hz": 200.0,
+  "scenario": {
+    "cell_id": "g1_841757_navigation_development.seed_1",
+    "context_document": {
+      "caller_asserted_success": false,
+      "cell_id": "g1_841757_navigation_development.seed_1",
+      "factor_records": [],
+      "family": "development",
+      "instance_digest": "sha256:4667b5c68798fc46518f38f68e9faa6bb7654dbfaf5c9805d6a7c584ab760586",
+      "learned_policy_outcomes_consulted": false,
+      "partition": "development",
+      "policy_neutral": true,
+      "program_id": "arm-decision-proof-v1",
+      "required_controls": [],
+      "resolved_parameters": {
+        "object_start_x_m": -2.0039529,
+        "object_start_y_m": -3.441138,
+        "object_start_z_m": 0.2860687,
+        "target_x_m": -2.0292786,
+        "target_y_m": -2.9522899860558796,
+        "target_z_m": 0.2860687
+      },
+      "schema_version": "adp009d_scenario_instance.v1",
+      "scored": false,
+      "seed": 1,
+      "task_change_authority_digest": "sha256:0de664691da956ca03eff7ec20d77008c0903a80a5dd0525e97c1907dbc19124",
+      "template_id": "g1_841757_navigation_development"
+    },
+    "context_kind": "evaluation_cell",
+    "instance_digest": "sha256:4667b5c68798fc46518f38f68e9faa6bb7654dbfaf5c9805d6a7c584ab760586",
+    "seed": 1
+  },
+  "schema_version": "native_g1_scene_packet_authoring.v1",
+  "source_packet_receipt_digest": "sha256:9b3e8ba34242eea5977c1fe709bf8351f62efae8da1a2fac5d2577c27182464a",
+  "task_hand": "right",
+  "task_spec": {
+    "action_bounds_m_per_step": {
+      "maximum": 0.02,
+      "minimum": -0.02
+    },
+    "collision_failure_minimum_force_n": 1.0,
+    "configured_success_criteria": {
+      "authority": "deterministic_simulator_state",
+      "collision_failure_minimum_force_n": 1.0,
+      "drop_events_allowed": false,
+      "drop_minimum_fall_m": 0.03,
+      "forbidden_collision_allowed": false,
+      "forbidden_contact_classes": [
+        "robot_background",
+        "robot_object",
+        "object_background"
+      ],
+      "joint_limit_violation_allowed": false,
+      "maximum_final_planar_target_error_m": 0.005,
+      "maximum_regrasps": 0,
+      "maximum_retries": 0,
+      "maximum_task_contact_force_n": 20.0,
+      "minimum_lift_m": 0.1,
+      "minimum_planar_displacement_m": 0.05,
+      "owner_success_contract_required": true,
+      "per_cell_controls_required": false,
+      "release_required": true,
+      "retreat_clearance_m": 0.1,
+      "retreat_clearance_required": true,
+      "robot_workspace_position_bounds_world_m": {
+        "maximum": [
+          -1.45,
+          -2.7,
+          1.15
+        ],
+        "minimum": [
+          -2.55,
+          -4.1,
+          0.2
+        ]
+      },
+      "target_center_xyz_m": [
+        -2.0292786,
+        -2.9522899860558796,
+        0.2860687
+      ]
+    },
+    "control_frequency_hz": 50.0,
+    "destination_orientation_tolerance_rad": 0.08,
+    "destination_orientation_xyzw": [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ],
+    "destination_pose_world": [
+      -2.0292786,
+      -2.9522899860558796,
+      0.2860687,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ],
+    "destination_position_bounds_world_m": {
+      "maximum": [
+        -2.0242786,
+        -2.9472899860558797,
+        0.2910687
+      ],
+      "minimum": [
+        -2.0342786,
+        -2.9572899860558794,
+        0.2810687
+      ]
+    },
+    "destination_position_tolerance_m": 0.005,
+    "g1_navigation_goal": {
+      "acceptance_radius_m": 0.2,
+      "center_world_m": [
+        -3.703953,
+        -3.441138,
+        0.0
+      ],
+      "max_root_height_drift_m": 0.15,
+      "schema_version": "native_g1_navigation_goal.v1",
+      "settle_window_samples": 5,
+      "task_instruction": "Avoid obstacles and move to the yellow marked area.",
+      "visible_target_marker": {
+        "non_colliding": true,
+        "radius_m": 0.25,
+        "schema_version": "native_task_target_marker.v1",
+        "shape": "flat_yellow_disc",
+        "surface_position_world_m": [
+          -3.703953,
+          -3.441138,
+          0.0
+        ]
+      }
+    },
+    "instruction_subject_label": "book",
+    "interaction_affordance": {
+      "affordance_digest": "sha256:454f8638b3f408b5ff4ca3c32c1e61b7103cfa5ae04c419a1ad8ae11d7d20d2b",
+      "allowed_contact_prim_paths": [
+        "/Asset"
+      ],
+      "approach_unit_scoring_frame": [
+        0.0,
+        -1.0,
+        0.0
+      ],
+      "arrival_orientation_tolerance_rad": 0.08,
+      "asset_root_from_scoring_frame": {
+        "orientation_xyzw": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "position_m": [
+          3.3306690738754696e-16,
+          1.249000902703301e-16,
+          0.010500000789761543
+        ]
+      },
+      "contact_point_scoring_frame_m": [
+        0.0,
+        -0.19884801400000018,
+        0.0
+      ],
+      "gripper_orientation_scoring_frame_xyzw": [
+        0.0,
+        0.7071067811865475,
+        0.7071067811865476,
+        0.0
+      ],
+      "insertion_withdrawal_unit_world": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "intended_support_prim_paths": [
+        "/Root/_J6IMDBVAV27YPTUKI888888"
+      ],
+      "lift_unit_world": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "pregrasp_clearance_m": 0.08,
+      "schema_version": "native_rigid_interaction_affordance.v1",
+      "scoring_frame_id": "task_scoring_frame",
+      "subject_asset_id": "scene_841757_book_replacement",
+      "support_alignment": {
+        "initial_support_penetration_permitted": false,
+        "replacement_minimum_root_z_m": -6.869921023844316e-05,
+        "source_minimum_scoring_z_m": -0.010568699999999986,
+        "support_aligned_root_z_m": 0.27506869921023847,
+        "support_top_z_m": 0.275
+      }
+    },
+    "manipulation_strategy": "pick_and_place",
+    "maximum_action_steps": 3000,
+    "maximum_episode_seconds": 60.0,
+    "minimum_lift_m": 0.1,
+    "minimum_translation_m": 0.05,
+    "movement_epsilon_m": 0.005,
+    "prompt": "Pick up the open book, place it over the green target marker on the tabletop, release it, and move the gripper clear.",
+    "release_gripper_width_min_m": 0.06,
+    "release_required": true,
+    "relocation_tracking_tolerance_m": 0.005,
+    "reset_orientation_tolerance_rad": 0.01,
+    "reset_translation_tolerance_m": 0.002,
+    "retreat_clearance_m": 0.1,
+    "robot_workspace_position_bounds_world_m": {
+      "maximum": [
+        -1.45,
+        -2.7,
+        1.15
+      ],
+      "minimum": [
+        -2.55,
+        -4.1,
+        0.2
+      ]
+    },
+    "schema_version": "adp_task_spec.v2",
+    "settle_orientation_tolerance_rad": 0.03,
+    "settle_position_tolerance_m": 0.005,
+    "settle_window_samples": 20,
+    "source_subject_identity": "scene-841757-book-replacement",
+    "start_pose_world": [
+      -2.0039529,
+      -3.441138,
+      0.2860687,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ],
+    "subject_asset_id": "scene_841757_book_replacement",
+    "subject_collision_bounds_scoring_frame_m": {
+      "maximum": [
+        0.147000015658836,
+        0.1985000158538182,
+        0.010500000207684934
+      ],
+      "minimum": [
+        -0.147000015658836,
+        -0.1985000158538182,
+        -0.010500000789761543
+      ]
+    },
+    "success_criteria": {
+      "authority": "deterministic_simulator_state",
+      "collision_failure_minimum_force_n": 1.0,
+      "drop_events_allowed": false,
+      "drop_minimum_fall_m": 0.03,
+      "forbidden_collision_allowed": false,
+      "forbidden_contact_classes": [
+        "robot_background",
+        "robot_object",
+        "object_background"
+      ],
+      "joint_limit_violation_allowed": false,
+      "maximum_final_planar_target_error_m": 0.005,
+      "maximum_regrasps": 0,
+      "maximum_retries": 0,
+      "maximum_task_contact_force_n": 20.0,
+      "minimum_lift_m": 0.1,
+      "minimum_planar_displacement_m": 0.05,
+      "owner_success_contract_required": true,
+      "per_cell_controls_required": false,
+      "release_required": true,
+      "retreat_clearance_m": 0.1,
+      "retreat_clearance_required": true,
+      "robot_workspace_position_bounds_world_m": {
+        "maximum": [
+          -1.45,
+          -2.7,
+          1.15
+        ],
+        "minimum": [
+          -2.55,
+          -4.1,
+          0.2
+        ]
+      },
+      "target_center_xyz_m": [
+        -2.0292786,
+        -2.9522899860558796,
+        0.2860687
+      ]
+    },
+    "support_height_interval_m": [
+      0.2810687,
+      0.2910687
+    ],
+    "target_position_world_m": [
+      -2.0292786,
+      -2.9522899860558796,
+      0.2860687
+    ],
+    "task_change_authority_digest": "sha256:0de664691da956ca03eff7ec20d77008c0903a80a5dd0525e97c1907dbc19124",
+    "task_contact_minimum_force_n": 0.5,
+    "task_kind": "rigid_pick_place",
+    "task_success_contract": {
+      "contract_digest": "sha256:7b442ca6c0b8465d04f16f80caec6dacf523a82d53669823eba8bf99c7d76596",
+      "criteria": {
+        "destination_containment": {
+          "mode": "required",
+          "position_bounds_world_m": {
+            "maximum": [
+              -2.0242786,
+              -2.9472899860558797,
+              0.2910687
+            ],
+            "minimum": [
+              -2.0342786,
+              -2.9572899860558794,
+              0.2810687
+            ]
+          }
+        },
+        "gripper_state": {
+          "mode": "released",
+          "threshold_m": 0.06
+        },
+        "motion": {
+          "minimum_lift_m": 0.1,
+          "minimum_translation_m": 0.05,
+          "movement_epsilon_m": 0.005
+        },
+        "orientation": {
+          "mode": "required",
+          "reference_xyzw": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "tolerance_rad": 0.08
+        },
+        "retreat": {
+          "minimum_clearance_m": 0.1,
+          "mode": "required",
+          "withdrawal_unit_destination_frame": [
+            0.0,
+            0.0,
+            1.0
+          ]
+        },
+        "safety": {
+          "mode": "required"
+        },
+        "settling": {
+          "mode": "required",
+          "orientation_tolerance_rad": 0.03,
+          "position_tolerance_m": 0.005,
+          "window_samples": 20
+        },
+        "support": {
+          "contact_mode": "required",
+          "height_interval_m": [
+            0.2810687,
+            0.2910687
+          ],
+          "height_mode": "required"
+        },
+        "temporal_invariants": {
+          "containment_excursions": "forbidden",
+          "forbidden_contact_classes": [
+            "robot_background",
+            "robot_object",
+            "object_background"
+          ],
+          "maximum_regrasps": 0,
+          "maximum_retries": 0,
+          "maximum_task_contact_force_n": 20.0,
+          "no_drop": {
+            "minimum_fall_m": 0.03,
+            "mode": "required"
+          },
+          "schema_version": "rigid_task_event_ledger_expectation.v1",
+          "workspace_excursions": "forbidden"
+        },
+        "terminal_task_contact": {
+          "mode": "cleared"
+        }
+      },
+      "provenance": {
+        "author_id": "nijelhunt_1",
+        "author_source": "task_owner",
+        "confirmation_status": "confirmed",
+        "confirmed_by_team_id": "scene-e9a834a10cfb62ca2f5bbe23ffc3f97b04e8dec8dbea607c",
+        "proposal_digest": null
+      },
+      "schema_version": "rigid_task_success_contract.v1",
+      "scope": {
+        "site_id": "interiorgs-841757",
+        "task_id": "scene-841757-book-to-marked-area"
+      }
+    },
+    "task_success_contract_digest": "sha256:7b442ca6c0b8465d04f16f80caec6dacf523a82d53669823eba8bf99c7d76596",
+    "visible_target_label": "green marked area",
+    "visible_target_marker": {
+      "non_colliding": true,
+      "radius_m": 0.06,
+      "schema_version": "native_task_target_marker.v1",
+      "shape": "flat_green_disc",
+      "surface_position_world_m": [
+        -2.0292786,
+        -2.9522899860558796,
+        0.275
+      ]
+    },
+    "workspace_position_bounds_world_m": {
+      "maximum": [
+        -1.841778487,
+        0.932239608,
+        0.6405687
+      ],
+      "minimum": [
+        -2.216778713,
+        -4.236320408,
+        0.03606870000000001
+      ]
+    }
+  }
+}
