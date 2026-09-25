@@ -4778,6 +4778,13 @@ def _probe_shell_script(
                 "preserve_all_output = "
                 + repr(provider_bundle_kind == "native_g1_development_campaign")
                 + "\n"
+                "g1_transient_runtime_prefix = "
+                + repr(
+                    "policy-runtime-build/policy-runtime/"
+                    if provider_bundle_kind == "native_g1_development_campaign"
+                    else None
+                )
+                + "\n"
                 "required_result_max_bytes = 512 * 1024 * 1024\n"
                 "if required_result_name is not None:\n"
                 "    required_result = output_dir / required_result_name\n"
@@ -4792,6 +4799,8 @@ def _probe_shell_script(
                 "            if path.is_file():\n"
                 "                size = path.stat().st_size\n"
                 "                relative_name = path.relative_to(output_dir).as_posix()\n"
+                "                if g1_transient_runtime_prefix and relative_name.startswith(g1_transient_runtime_prefix):\n"
+                "                    continue\n"
                 "                size_limit = required_result_max_bytes if relative_name == required_result_name else 100_000_000\n"
                 "                if preserve_all_output or size <= size_limit:\n"
                 "                    archive.write(path, relative_name)\n"
