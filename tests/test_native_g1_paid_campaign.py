@@ -24,6 +24,9 @@ from blueprint_pipeline.provider_runtime_bundle_contract import (
 )
 from blueprint_pipeline import vast_provider_adapter as vast
 from blueprint_pipeline.wam_provider_output import inspect_provider_runtime_output_zip
+from blueprint_pipeline.vast_independent_watchdog_control import (
+    validate_independent_vast_watchdog_names,
+)
 
 
 def _args(tmp_path: Path, **changes: object) -> SimpleNamespace:
@@ -111,6 +114,9 @@ def test_bundle_code_closure_includes_shared_subpackages() -> None:
 
 
 def test_g1_provider_kind_uses_isaac_and_retains_episode_media() -> None:
+    assert validate_independent_vast_watchdog_names(
+        pod_name_prefix=lane.INSTANCE_LABEL_PREFIX
+    )[0] == lane.INSTANCE_LABEL_PREFIX
     assert vast._is_isaac_provider_bundle(PROVIDER_BUNDLE_KIND)
     assert vast._provider_expected_video_count(PROVIDER_BUNDLE_KIND) == 0
     assert vast._resolve_launch_mode(
