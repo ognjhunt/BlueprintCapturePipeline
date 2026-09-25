@@ -37,6 +37,11 @@ from .native_task_arena_packet import (
 from .native_task_robot_contact_topology import _asset_rigid_body_paths
 from .native_task_runtime_contract import _camera_rows
 from .task_evaluation_g1_catalog import G1_PRESET_ID
+from .task_evaluation_packet_planning_setup import (
+    SETUP_SCHEMA as PACKET_PLANNING_SETUP_SCHEMA,
+    validate_packet_planning_setup,
+    validate_packet_policy_pair_choice,
+)
 from .task_evaluation_policy_pair_choice import validate_policy_pair_choice
 from .task_evaluation_policy_canary_setup import validate_policy_canary_setup
 
@@ -69,6 +74,43 @@ ROBOT_TASK_FIELDS = frozenset(
 )
 
 
+def _validated_source_pair(
+    *,
+    setup: Mapping[str, Any],
+    choice: Mapping[str, Any],
+    receipt: Mapping[str, Any],
+    source: Mapping[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Accept a published choice or an exact retained-packet planning choice."""
+
+    if setup.get("schema_version") == PACKET_PLANNING_SETUP_SCHEMA:
+        published = validate_packet_planning_setup(setup)
+        selected = validate_packet_policy_pair_choice(choice, setup=published)
+        if (
+            published["source_packet_receipt_digest"] != receipt["receipt_digest"]
+            or published["source_packet_request_digest"] != receipt["request_digest"]
+            or published["source_scene_plan_digest"] != receipt["arena_scene_plan_digest"]
+            or published["scene_id"] != source.get("scene_id")
+            or published["task_id"] != source.get("task_id")
+            or published["source_declared_task_success_contract_digest"]
+            != source.get("task_spec", {}).get("task_success_contract_digest")
+        ):
+            raise ValueError("g1_scene_request_source_task_mismatch")
+    else:
+        published = validate_policy_canary_setup(setup)
+        selected = validate_policy_pair_choice(choice, setup=published)
+    if (
+        selected["robot_preset_id"] != G1_PRESET_ID
+        or source.get("request_digest") != receipt.get("request_digest")
+        or source.get("task_id") != published["task_success_contract"]["scope"]["task_id"]
+        or source.get("task_spec", {}).get("task_success_contract")
+        != published["task_success_contract"]
+        or source.get("task_spec", {}).get("task_kind") != "rigid_pick_place"
+    ):
+        raise ValueError("g1_scene_request_source_task_mismatch")
+    return published, selected
+
+
 def author_g1_scene_packet_request(
     *,
     source_packet_dir: Path,
@@ -80,20 +122,14 @@ def author_g1_scene_packet_request(
 ) -> dict[str, Any]:
     """Return a new request bound to the exact source packet and shared choice."""
 
-    published = validate_policy_canary_setup(setup)
-    selected = validate_policy_pair_choice(choice, setup=published)
-    if selected["robot_preset_id"] != G1_PRESET_ID:
-        raise ValueError("g1_scene_request_choice_robot_invalid")
     source_root, receipt, _ = verify_native_task_arena_packet(source_packet_dir)
     source = json.loads((source_root / (REQUEST_SCHEMA_VERSION + ".json")).read_text())
-    if (
-        source.get("request_digest") != receipt.get("request_digest")
-        or source.get("task_id") != published["task_success_contract"]["scope"]["task_id"]
-        or source.get("task_spec", {}).get("task_success_contract")
-        != published["task_success_contract"]
-        or source.get("task_spec", {}).get("task_kind") != "rigid_pick_place"
-    ):
-        raise ValueError("g1_scene_request_source_task_mismatch")
+    published, selected = _validated_source_pair(
+        setup=setup,
+        choice=choice,
+        receipt=receipt,
+        source=source,
+    )
     authored = dict(authoring)
     if (
         set(authored) != FIELDS
@@ -117,6 +153,10 @@ def author_g1_scene_packet_request(
     expected_fields = set(source["task_spec"])
     if selected["objective_id"] == "g1_navigation_goal":
         expected_fields.add("g1_navigation_goal")
+    packet_planning = published["schema_version"] == PACKET_PLANNING_SETUP_SCHEMA
+    allowed_changed_fields = ROBOT_TASK_FIELDS | (
+        {"task_success_contract_digest"} if packet_planning else set()
+    )
     if (
         task_spec.get("task_kind") != "rigid_pick_place"
         or task_contract != published["task_success_contract"]
@@ -126,7 +166,7 @@ def author_g1_scene_packet_request(
         or any(
             task_spec[key] != source["task_spec"][key]
             for key in source["task_spec"]
-            if key not in ROBOT_TASK_FIELDS
+            if key not in allowed_changed_fields
         )
     ):
         raise ValueError("g1_scene_request_task_contract_mismatch")
@@ -210,6 +250,19 @@ def author_g1_scene_packet_request(
             "setup_digest": published["setup_digest"],
             "pair_choice_digest": selected["choice_digest"],
             "authoring_digest": authored["authoring_digest"],
+            **(
+                {
+                    "source_declared_task_success_contract_digest": published[
+                        "source_declared_task_success_contract_digest"
+                    ],
+                    "task_contract_digest_corrected_from_embedded_confirmed_contract": (
+                        published["source_declared_task_success_contract_digest"]
+                        != published["task_success_contract_digest"]
+                    ),
+                }
+                if packet_planning
+                else {}
+            ),
         },
     }
     request["request_digest"] = canonical_digest(request, digest_field="request_digest")
@@ -245,8 +298,13 @@ def prepare_g1_scene_packet_request(
     if not isinstance(authoring, Mapping):
         raise ValueError("g1_scene_request_authoring_invalid")
     source_root, receipt, _ = verify_native_task_arena_packet(source_packet_dir)
-    published = validate_policy_canary_setup(setup)
-    selected = validate_policy_pair_choice(choice, setup=published)
+    source = json.loads((source_root / (REQUEST_SCHEMA_VERSION + ".json")).read_text())
+    _, selected = _validated_source_pair(
+        setup=setup,
+        choice=choice,
+        receipt=receipt,
+        source=source,
+    )
     if (
         selected["robot_preset_id"] != G1_PRESET_ID
         or authoring.get("source_packet_receipt_digest") != receipt["receipt_digest"]
@@ -270,7 +328,6 @@ def prepare_g1_scene_packet_request(
     digest = hashlib.sha256(g1_usd_path.read_bytes()).hexdigest()
     if digest != G1_USD_SHA256:
         raise ValueError("g1_scene_request_robot_asset_invalid")
-    source = json.loads((source_root / (REQUEST_SCHEMA_VERSION + ".json")).read_text())
     by_role = {row["semantic_role"]: row for row in receipt["source_bindings"]}
     if len(by_role) != len(source["assets"]) or len(source["assets"]) != len(
         {row["semantic_role"] for row in source["assets"]}
