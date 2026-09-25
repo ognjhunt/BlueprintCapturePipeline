@@ -78,3 +78,66 @@ def materialize_development_fixture_placement_floor(
     finally:
         temporary_path.unlink(missing_ok=True)
     return destination
+
+
+def materialize_development_fixture_episode_floor(
+    *, source_collision: Path, source_appearance: Path,
+    qualified_asset: Path, qualified_asset_digest: str,
+    target_world_m: Sequence[float], output_root: Path,
+) -> tuple[Path, Path]:
+    """Derive explicit visual and physical floor layers for a development fixture.
+
+    The published assets remain intact. This is not captured-room geometry.
+    """
+    if _digest(qualified_asset) != qualified_asset_digest:
+        raise ValueError("development_fixture_floor_asset_digest_mismatch")
+    asset_stage = Usd.Stage.Open(str(qualified_asset))
+    if asset_stage is None or not asset_stage.GetDefaultPrim().IsValid():
+        raise ValueError("development_fixture_floor_asset_invalid")
+    bounds = UsdGeom.BBoxCache(
+        Usd.TimeCode.Default(),
+        [UsdGeom.Tokens.default_, UsdGeom.Tokens.render, UsdGeom.Tokens.proxy],
+    ).ComputeWorldBound(asset_stage.GetDefaultPrim()).ComputeAlignedRange()
+    if abs(float(bounds.GetMin()[2])) > 0.005:
+        raise ValueError("development_fixture_floor_asset_not_at_zero")
+    if len(target_world_m) != 3 or not all(
+        isinstance(value, (float, int)) for value in target_world_m
+    ):
+        raise ValueError("development_fixture_floor_target_invalid")
+    x, y = float(target_world_m[0]), float(target_world_m[1])
+    output_root.mkdir(mode=0o750, parents=True, exist_ok=True)
+    results: list[Path] = []
+    for role, source, collision_enabled in (
+        ("collision", source_collision, True),
+        ("appearance", source_appearance, False),
+    ):
+        stage = Usd.Stage.Open(str(source))
+        if stage is None or not stage.GetDefaultPrim().IsValid():
+            raise ValueError(f"development_fixture_floor_{role}_invalid")
+        floor_path = str(stage.GetDefaultPrim().GetPath()) + "/development_fixture_floor"
+        if stage.GetPrimAtPath(floor_path).IsValid():
+            raise ValueError("development_fixture_floor_prim_conflict")
+        mesh = UsdGeom.Mesh.Define(stage, floor_path)
+        mesh.CreatePointsAttr([
+            Gf.Vec3f(x - 2.5, y - 2.5, 0.0),
+            Gf.Vec3f(x + 2.5, y - 2.5, 0.0),
+            Gf.Vec3f(x - 2.5, y + 2.5, 0.0),
+            Gf.Vec3f(x + 2.5, y + 2.5, 0.0),
+        ])
+        mesh.CreateFaceVertexCountsAttr([3, 3])
+        mesh.CreateFaceVertexIndicesAttr([0, 1, 2, 1, 3, 2])
+        if collision_enabled:
+            UsdPhysics.CollisionAPI.Apply(mesh.GetPrim())
+            UsdPhysics.MeshCollisionAPI.Apply(mesh.GetPrim()).CreateApproximationAttr().Set("none")
+        stage.GetRootLayer().customLayerData = {
+            "blueprintPurpose": "development_fixture_episode_floor",
+            "blueprintSourceDigest": _digest(source),
+            "blueprintQualifiedAssetDigest": qualified_asset_digest,
+            "blueprintCapturedRoomQualified": False,
+        }
+        destination = output_root / f"development_fixture_{role}_with_floor.usda"
+        if destination.exists() or not stage.GetRootLayer().Export(str(destination)):
+            raise ValueError("development_fixture_floor_export_failed")
+        destination.chmod(0o440)
+        results.append(destination)
+    return results[0], results[1]

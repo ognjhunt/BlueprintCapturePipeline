@@ -1180,6 +1180,41 @@ def compile_native_arena_episode(
         ),
         output_root=root,
     )
+    configured_template = task_adapter["source_documents"]["documents"].get(
+        "scene.configured_revision.task_template.definition", {}
+    )
+    test_environment = configured_template.get("test_environment")
+    if (
+        articulated
+        and isinstance(test_environment, Mapping)
+        and test_environment.get("kind") == "development_drawer_fixture"
+        and test_environment.get("claim_scope") == "development_only"
+        and test_environment.get("captured_scene_evaluation_allowed") is False
+    ):
+        from .task_evaluation_development_fixture_floor import (
+            materialize_development_fixture_episode_floor,
+        )
+
+        task_pose = task_definition.get("task_object_pose_world")
+        if not isinstance(task_pose, Mapping):
+            raise TaskEvaluationNativeArenaEpisodeCompilerError(
+                "episode_compiler_fixture_task_pose_missing"
+            )
+        try:
+            floor_collision, floor_appearance = materialize_development_fixture_episode_floor(
+                source_collision=configured_assets["collision"],
+                source_appearance=configured_assets["appearance"],
+                qualified_asset=configured_assets["replacement"],
+                qualified_asset_digest=_sha256_and_size(configured_assets["replacement"])[0],
+                target_world_m=task_pose["position_world_m"],
+                output_root=root / "development-fixture-floor",
+            )
+        except (KeyError, ValueError) as exc:
+            raise TaskEvaluationNativeArenaEpisodeCompilerError(
+                "episode_compiler_fixture_floor_invalid"
+            ) from exc
+        configured_assets["collision"] = floor_collision
+        configured_assets["appearance"] = floor_appearance
     destination_asset = _stage_destination_asset(
         request=request,
         materialized_references=materialized_references,

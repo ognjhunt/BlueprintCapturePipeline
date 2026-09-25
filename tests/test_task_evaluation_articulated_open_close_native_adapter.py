@@ -16,6 +16,7 @@ import pytest
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.native_task_arena_scene_plan import _articulation_plan
+from blueprint_pipeline.native_task_arena_packet import _validated_scenario_context
 from blueprint_pipeline.native_task_runtime_contract import (
     NativeTaskRuntimeContractError, materialize_native_task_runtime_contract,
 )
@@ -332,6 +333,8 @@ def test_adapted_drawer_task_freezes_a_native_contract_and_scene_plan(tmp_path: 
     case = _case(tmp_path)
     adapted = adapt_articulated_open_close_task_template(
         configured_revision=case["configured"], materialized_references=case["references"])
+    scenario = adapted["native_episode_execution"]["scenario"]
+    assert _validated_scenario_context(scenario) == scenario
     contract, plan = materialize_contract_and_plan(case, adapted, tmp_path)
     assert contract["task_kind"] == "articulated_open_close"
     assert contract["runtime_readback_required"]["task_joint_indices"] is True
