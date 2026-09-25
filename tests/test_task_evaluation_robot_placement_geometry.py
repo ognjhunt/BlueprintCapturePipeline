@@ -315,6 +315,32 @@ def test_geometry_gate_rejects_embedded_and_obstacle_overlapping_pose(tmp_path) 
     assert "robot_reset_bounds_overlap_scene_geometry" in overlapping["blockers"]
 
 
+def test_thin_desk_in_gap_between_links_does_not_block_base(tmp_path) -> None:
+    scene_path = tmp_path / "scene.usda"
+    scene = Usd.Stage.CreateNew(str(scene_path))
+    scene.SetDefaultPrim(UsdGeom.Xform.Define(scene, "/Scene").GetPrim())
+    _mesh(scene, "/Scene/Floor", [(-2, -2, 0), (2, -2, 0),
+                                 (2, 2, 0), (-2, 2, 0)], [(0, 1, 2, 3)])
+    _box(scene, "/Scene/Desk", (-0.1, -0.2, 0.7), (0.1, 0.2, 0.75))
+    scene.GetRootLayer().Save()
+    robot_path = tmp_path / "robot.usda"
+    robot = Usd.Stage.CreateNew(str(robot_path))
+    robot.SetDefaultPrim(UsdGeom.Xform.Define(robot, "/Robot").GetPrim())
+    _box(robot, "/Robot/Left", (-0.55, -0.05, 0), (-0.45, 0.05, 0.8))
+    _box(robot, "/Robot/Right", (0.45, -0.05, 0), (0.55, 0.05, 0.8))
+    robot.GetRootLayer().Save()
+    index = build_robot_placement_geometry_index(
+        scene_collision_usd_path=scene_path, robot_asset_usd_path=robot_path,
+    )
+    floor = next(row for row in index.support_surfaces if row.prim_path == "/Scene/Floor")
+    gate = validate_robot_placement_geometry_candidate(
+        index=index, proposal=_proposal(floor.surface_id),
+        target_position_world_m=[0.8, 0.0, 0.5],
+    )
+    assert gate["status"] == "passed"
+    assert gate["scene_overlap_triangle_count"] == 0
+
+
 def test_geometry_previews_are_digest_bound_multimodal_inputs(tmp_path) -> None:
     scene, robot = _assets(tmp_path)
     index = build_robot_placement_geometry_index(

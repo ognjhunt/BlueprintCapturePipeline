@@ -60,8 +60,12 @@ from .task_evaluation_robot_placement_geometry import (
     validate_robot_placement_trajectory_position_ik,
 )
 from .task_evaluation_robot_placement_trajectory import (
+    ARTICULATED_PLACEMENT_PLAN_SCHEMA_VERSION,
     placement_trajectory_from_native_plan,
     validate_robot_placement_trajectory,
+)
+from .task_evaluation_development_fixture_floor import (
+    materialize_development_fixture_placement_floor,
 )
 from .task_evaluation_configured_controls_openai_placement import (
     PAID_RESOURCE_CLASS as OPENAI_PLACEMENT_PAID_RESOURCE_CLASS,
@@ -1167,9 +1171,19 @@ def materialize_configured_controls_autostart(
         raise TaskEvaluationConfiguredControlsAutostartError(
             f"configured_controls_autostart_deferred_input_failed:{exc}"
         ) from exc
-    trajectory = placement_trajectory_from_native_plan(
-        _read(Path(paths["native_trajectory_plan_path"]), blocker="configured_controls_autostart_trajectory_invalid")
-    )
+    native_plan_path = Path(paths["native_trajectory_plan_path"])
+    native_plan = _read(native_plan_path, blocker="configured_controls_autostart_trajectory_invalid")
+    trajectory = placement_trajectory_from_native_plan(native_plan)
+    articulated_placement = native_plan.get("schema_version") == ARTICULATED_PLACEMENT_PLAN_SCHEMA_VERSION
+    target_position = intent["target_position_world_m"]
+    if articulated_placement:
+        handle = next((phase for phase in trajectory["phases"]
+                       if phase["phase_id"] == "handle_contact"), None)
+        if handle is None:
+            raise TaskEvaluationConfiguredControlsAutostartError(
+                "configured_controls_autostart_articulated_handle_missing"
+            )
+        target_position = handle["position_world_m"]
     scene_binding = {
         "schema_version": "task_evaluation_robot_placement_scene_binding.v1",
         "scene_identity": revision["scene_identity"],
@@ -1183,7 +1197,7 @@ def materialize_configured_controls_autostart(
         "task_identity": revision["task_template"]["identity"],
         "task_definition_digest": revision["task_template"]["definition"]["digest"],
         "robot_id": "franka_panda",
-        "target_position_world_m": intent["target_position_world_m"],
+        "target_position_world_m": target_position,
         "trajectory_digest": trajectory["trajectory_digest"],
     }
     scene_binding_digest = canonical_digest(scene_binding)
@@ -1226,6 +1240,14 @@ def materialize_configured_controls_autostart(
     collision = _configured_collision(
         revision=revision, revision_path=revision_path, output_root=root
     )
+    if articulated_placement and str(intent["scene_id"]).endswith("-development"):
+        collision = materialize_development_fixture_placement_floor(
+            source_collision=collision,
+            qualified_asset=native_plan_path.parent / "documents" / "articulated-replacement.usdz",
+            qualified_asset_digest=native_plan["qualified_asset_digest"],
+            target_world_m=target_position,
+            output_root=root,
+        )
     placement = intent["placement"]
     continued_review = None
     if intent.get('visual_review_continuation') is not None:
@@ -1252,7 +1274,7 @@ def materialize_configured_controls_autostart(
             "run_id": f"{terminal['run_id']}-cpu-placement",
             "scene_collision_usd": collision,
             "robot_asset_usd": Path(paths["robot_asset_usd_path"]),
-            "target_position_world_m": intent["target_position_world_m"],
+            "target_position_world_m": target_position,
             "scene_binding": scene_binding,
             "task_binding": task_binding,
             "overview_image_paths": [
@@ -1340,7 +1362,7 @@ def materialize_configured_controls_autostart(
             "run_id": f"{terminal['run_id']}-agent-placement",
             "scene_collision_usd": collision,
             "robot_asset_usd": Path(paths["robot_asset_usd_path"]),
-            "target_position_world_m": intent["target_position_world_m"],
+            "target_position_world_m": target_position,
             "scene_binding": scene_binding,
             "task_binding": task_binding,
             "overview_image_paths": [
