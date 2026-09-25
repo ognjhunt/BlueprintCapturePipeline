@@ -201,7 +201,15 @@ def _members(archive, prefix=PREFIX):
            "stage_source_binding.json", "inference/asset_session/binding.json",
            "inference/asset_session/conversation.sqlite"} <= names
     legacy = REQUIRED <= names and "authoring/appearance-01/independent_visual_review_1.json" not in names
-    _require((sdk or legacy) and "authoring/result.json" not in names, "source_not_pending_final_review")
+    articulated = "authoring/result.json" in names and {
+        "authoring/parts/carcass/request.json", "authoring/parts/carcass/result.json",
+        "authoring/parts/drawer/request.json", "authoring/parts/drawer/result.json",
+        "inference/agents_api/parts/carcass/agents_api_stage_receipt.json",
+        "inference/agents_api/parts/drawer/agents_api_stage_receipt.json",
+        "stage_source_binding.json",
+    } <= names
+    _require(((sdk or legacy) and "authoring/result.json" not in names) or articulated,
+             "source_not_pending_final_review_or_completed_articulated")
     _require(sum(i.file_size for _, i in selected) <= MAX_EXPANDED_BYTES, "archive_expansion_exceeded")
     return sorted(selected)
 
@@ -332,13 +340,37 @@ def select_partial_astra_source(*, owner_attempt_path, envelope, output_root,
             with zipfile.ZipFile(archive_path) as archive:
                 names = set(archive.namelist())
                 prefix = _latest_prefix(archive)
-                known_partial = any(p + "authoring/cad_result.json" in names for p in (prefix, PREFIX))
-                request = _archive_json(archive, "authoring/request.json", prefix)
+                known_partial = any(p + "authoring/cad_result.json" in names or
+                                    p + "authoring/result.json" in names for p in (prefix, PREFIX))
+                from .task_evaluation_partial_astra_successor import semantic_request
+                articulated = prefix + "authoring/result.json" in names
+                if articulated:
+                    authored = _archive_json(archive, "authoring/result.json", prefix)
+                    _require(authored.get("schema_version") == "task_object_astra_articulated_authoring_result.v1"
+                             and authored.get("status") == "parts_authored_pending_native_qualification"
+                             and authored.get("agent_runtime") == "openai_agents_api"
+                             and authored.get("model") == "gpt-6-sol"
+                             and authored.get("result_digest") == canonical_digest(authored, digest_field="result_digest"),
+                             "completed_articulated_result_invalid")
+                    requests = {part: _archive_json(archive, f"authoring/parts/{part}/request.json", prefix)
+                                for part in sorted(authored.get("parts") or {})}
+                    _require(set(requests) == {"carcass", "drawer"}
+                             and all(row.get("request_digest") == canonical_digest(row, digest_field="request_digest")
+                                     and row.get("run_id") == lineage["source_run_id"] for row in requests.values())
+                             and authored.get("part_request_digests") == {
+                                 part: row["request_digest"] for part, row in requests.items()},
+                             "completed_articulated_requests_invalid")
+                    request_digest = canonical_digest({part: row["request_digest"] for part, row in requests.items()})
+                    semantic_digest = canonical_digest({part: semantic_request(row) for part, row in requests.items()})
+                else:
+                    request = _archive_json(archive, "authoring/request.json", prefix)
+                    request_digest = request["request_digest"]
+                    semantic_digest = canonical_digest(semantic_request(request))
                 binding = _archive_json(archive, "stage_source_binding.json", prefix)
-                _require(request.get("request_digest") == canonical_digest(request, digest_field="request_digest")
-                         and request.get("run_id") == lineage["source_run_id"]
+                _require((articulated or (request.get("request_digest") == canonical_digest(request, digest_field="request_digest")
+                         and request.get("run_id") == lineage["source_run_id"]))
                          and binding.get("binding_digest") == canonical_digest(binding, digest_field="binding_digest")
-                         and binding.get("run_id") == request["run_id"]
+                         and binding.get("run_id") == lineage["source_run_id"]
                          and binding.get("configuration_sha256") == configuration["digest"], "source_configuration_changed")
                 members = _members(archive, prefix)
                 _pin_source_metadata(proof=proof, activation_request=activation_request, activation_root=activation_root,
@@ -366,10 +398,12 @@ def select_partial_astra_source(*, owner_attempt_path, envelope, output_root,
                 _require(_file(archive_path) == original_record and packed.stat().st_size <= MAX_ARCHIVE_BYTES,
                          "source_archive_changed")
                 from .task_evaluation_partial_astra_successor import SCHEMA_VERSION, semantic_request
-                descriptor = {"schema_version": SCHEMA_VERSION, "source_run_id": request["run_id"],
+                descriptor = {"schema_version": SCHEMA_VERSION,
+                    **({"adoption_kind": "completed_articulated_agents_api"} if articulated else {}),
+                    "source_run_id": lineage["source_run_id"],
                     "successor_run_id": envelope["run_id"], "original_runtime_root": ORIGINAL_ROOT.removesuffix(PREFIX.rstrip("/")) + prefix.rstrip("/"),
-                    "source_request_digest": request["request_digest"],
-                    "semantic_request_digest": canonical_digest(semantic_request(request)),
+                    "source_request_digest": request_digest,
+                    "semantic_request_digest": semantic_digest,
                     "source_stage_binding_digest": binding["binding_digest"], "owner_intent_lineage": lineage,
                     "retained_runtime_archive": {k: v for k, v in _file(packed).items() if k != "path"},
                     "retained_files": inventory}

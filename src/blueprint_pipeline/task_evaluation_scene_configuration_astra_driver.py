@@ -564,7 +564,7 @@ def _managed_authoring_receipt(path: Path, authored: Mapping[str, Any]) -> dict[
 
 def _finish_articulated_component(*, plan, part_requests, authored, output, physics_bounds, configuration,
                                   source_record, stage_input, rights_record, cad_runtime, blender, authored_root,
-                                  result_path, package_candidate):
+                                  result_path, package_candidate, adoption_lineage=None):
     output.mkdir(parents=True, exist_ok=True)
     packaged = package_candidate(requests=part_requests, authoring_results=authored["parts"], plan=plan,
                                  output_root=output, physics_bounds=physics_bounds)
@@ -630,6 +630,7 @@ def _finish_articulated_component(*, plan, part_requests, authored, output, phys
         **({"provider": "openai", "agent_runtime": "openai_agents_api",
             "managed_agent_execution_receipts": managed_receipts} if managed_receipts else {}),
         "part_models": authored["part_models"],
+        **({"completed_articulated_adoption": adoption_lineage} if adoption_lineage is not None else {}),
         "asset_kind": "articulated_assembly", "replacement_identity": identity,
         "source_candidate_digest": source_record["digest"],
         "source_candidate_claim": "source_geometry_not_observed_truth_or_physics_authority",
@@ -1133,8 +1134,7 @@ def execute_astra_component(*, environment=None, runner=subprocess.run,
     partial_envelope = envelope.get("partial_astra_successor")
     partial_descriptor = None
     verified_lineage = None
-    if articulated and (partial_envelope is not None or configuration.get("astra_phase_adoption") is not None
-                        or retained_runtime is not None):
+    if articulated and (configuration.get("astra_phase_adoption") is not None or retained_runtime is not None):
         # Assembly parts are adopted per part from the same run root; the rigid
         # phase-adoption descriptors describe one solid and do not apply.
         raise AstraStageError("astra_articulated_phase_adoption_unsupported")
@@ -1160,12 +1160,20 @@ def execute_astra_component(*, environment=None, runner=subprocess.run,
         if restored_root != primary and not (restored_root.parent == attempts
                 and re.fullmatch(r"attempt-[0-9]{4}", restored_root.name)):
             raise AstraStageError("astra_partial_successor_runtime_root_invalid")
-        restore_partial_astra(value=partial_descriptor, request_value=request.model_dump(mode="json"),
+        if articulated and partial_descriptor.get("adoption_kind") != "completed_articulated_agents_api":
+            raise AstraStageError("astra_articulated_partial_successor_kind_invalid")
+        restore_request = ({"run_id": request.run_id,
+                            "part_requests": {part: row.model_dump(mode="json") for part, row in part_requests.items()}}
+                           if articulated else request.model_dump(mode="json"))
+        restore_partial_astra(value=partial_descriptor, request_value=restore_request,
             original_root=restored_root, verified_lineage=verified_lineage, archive_path=archive_path)
     prior_roots = ([primary] if primary.exists() else []) + sorted(attempts.glob("attempt-????"))
+    completed_articulated = (articulated and partial_descriptor is not None
+                             and partial_descriptor.get("adoption_kind") == "completed_articulated_agents_api"
+                             and len(prior_roots) == 1)
     if authoring_runtime == "openai_agents_api" and (prior_roots or partial_descriptor is not None
             or configuration.get("astra_phase_adoption") is not None
-            or no_cost_replay or retained_runtime is not None):
+            or no_cost_replay or retained_runtime is not None) and not completed_articulated:
         raise AstraStageError("agents_api_cross_attempt_adoption_not_qualified")
     if authoring_provider == "anthropic" and (prior_roots or partial_descriptor is not None
             or configuration.get("astra_phase_adoption") is not None
@@ -1202,6 +1210,26 @@ def execute_astra_component(*, environment=None, runner=subprocess.run,
         if source.is_symlink() or not source.is_file():
             raise AstraStageError("astra_cad_package_incomplete")
         shutil.copyfile(source, runtime / name)
+    if completed_articulated:
+        from .task_evaluation_partial_astra_successor import prepare_completed_articulated_successor
+        authored_root = runtime / "authoring"
+        authored_root.mkdir()
+        prepared = prepare_completed_articulated_successor(
+            value=partial_descriptor, part_requests=part_requests, plan=plan,
+            source_binding=source_binding, verified_lineage=verified_lineage, runtime=runtime)
+        if package_candidate is None:
+            package_candidate = package_astra_articulated_candidate
+        retained = {"status": "retained_completed_articulated_parts",
+                    "adoption_digest": partial_descriptor["adoption_digest"],
+                    "runtime_execution_repeated": False}
+        return _finish_articulated_component(
+            plan=plan, part_requests=prepared["source_part_requests"],
+            authored=prepared["authored"], output=delivery_output,
+            physics_bounds=physics_bounds, configuration=configuration,
+            source_record=source_record, stage_input=stage_input, rights_record=rights_record,
+            cad_runtime=retained, blender=retained, authored_root=authored_root,
+            result_path=result_path, package_candidate=package_candidate,
+            adoption_lineage=prepared["lineage"])
     if cross_run:
         from .task_evaluation_partial_astra_successor import prepare_partial_astra_successor
         adoption = prepare_partial_astra_successor(value=partial_descriptor,

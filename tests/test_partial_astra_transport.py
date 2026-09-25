@@ -129,6 +129,48 @@ def test_real_eae_metadata_selects_same_owner_successor_and_preserves_bytes(reta
     assert source.exists()
 
 
+def test_completed_articulated_source_is_selected_from_cpu_archive(retained):
+    """A completed Sol drawer is a valid source after GPU credit refusal."""
+    args, source = retained
+    old_archive = source / transport.ARCHIVE_RELATIVE
+    cpu_archive = source / transport.CPU_ARCHIVE_RELATIVE
+    cpu_archive.parent.mkdir(parents=True, exist_ok=True)
+    requests = {}
+    for part in ("carcass", "drawer"):
+        value = copy.deepcopy(META["request"])
+        value["object_id"] += "__" + part
+        value["physical_review_input"]["object_id"] = value["object_id"]
+        seal(value, "request_digest")
+        requests[part] = value
+    authored = seal({"schema_version": "task_object_astra_articulated_authoring_result.v1",
+                     "status": "parts_authored_pending_native_qualification",
+                     "provider": "openai", "agent_runtime": "openai_agents_api", "model": "gpt-6-sol",
+                     "parts": {part: {} for part in requests},
+                     "part_request_digests": {part: value["request_digest"] for part, value in requests.items()}},
+                    "result_digest")
+    with zipfile.ZipFile(old_archive) as old, zipfile.ZipFile(cpu_archive, "w") as output:
+        for member in old.infolist():
+            if member.filename != transport.PREFIX + "authoring/request.json":
+                output.writestr(member, old.read(member))
+        output.writestr(transport.PREFIX + "authoring/result.json", json.dumps(authored))
+        for part, value in requests.items():
+            output.writestr(transport.PREFIX + f"authoring/parts/{part}/request.json", json.dumps(value))
+            output.writestr(transport.PREFIX + f"authoring/parts/{part}/result.json", "{}")
+            output.writestr(transport.PREFIX + f"inference/agents_api/parts/{part}/agents_api_stage_receipt.json", "{}")
+    old_archive.unlink()
+    result_path = source / "allocator/scene-configuration-job/task_evaluation_scene_configuration_vast_result.v1.json"
+    result = json.loads(result_path.read_text())
+    digest, size = transport._sha(cpu_archive), cpu_archive.stat().st_size
+    result.update(provider_runtime_output_zip_path=str(cpu_archive), provider_runtime_output_zip_sha256=digest)
+    result["provider_runtime_output_remote_reference"].update(digest=digest, readback_digest=digest,
+        size_bytes=size, readback_size_bytes=size)
+    write(result_path, seal(result, "result_digest"))
+    selection = transport.select_partial_astra_source(**args)
+    descriptor = json.loads(Path(json.loads(selection.read_text())["descriptor"]["path"]).read_text())
+    assert descriptor["adoption_kind"] == "completed_articulated_agents_api"
+    assert descriptor["source_run_id"] == SOURCE_RUN
+
+
 @pytest.mark.parametrize("change", ["owner", "scene", "task", "configuration", "provider_zero", "canonical_attempt"])
 def test_changed_source_identity_is_not_selected(retained, change):
     args, source = retained

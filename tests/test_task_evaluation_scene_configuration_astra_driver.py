@@ -657,6 +657,56 @@ def test_articulated_configuration_refuses_rigid_phase_adoption(component, retai
         driver.execute_astra_component(**component.kwargs)
 
 
+def test_completed_articulated_successor_bypasses_model_and_cad_runtime(component, retained, monkeypatch):
+    from blueprint_pipeline import task_evaluation_partial_astra_successor as successor
+    configuration = _articulated_configuration()
+    configuration["authoring_agent_runtime"] = "openai_agents_api"
+    retained.input["configuration"] = configuration
+    descriptor = retained.root / "descriptor.json"
+    archive = retained.root / "retained.zip"
+    archive.write_bytes(b"retained-fixture")
+    primary = Path(component.environment[driver._OUTPUT_ENV]) / "astra_cad_blender_runtime"
+    descriptor.write_text(json.dumps({"adoption_kind": "completed_articulated_agents_api",
+        "original_runtime_root": str(primary), "adoption_digest": "sha256:" + "a" * 64}))
+
+    def reference(path):
+        record = driver.file_record(path)
+        return {"materialized_path": str(path), "digest": record["sha256"],
+                "size_bytes": record["size_bytes"]}
+
+    envelope = retained.input["construction_envelope"]
+    envelope["partial_astra_successor"] = {"descriptor": reference(descriptor),
+        "runtime_archive": reference(archive), "verified_lineage": {"source_run_id": "source"}}
+    envelope["envelope_digest"] = canonical_digest(envelope, digest_field="envelope_digest")
+    Path(component.environment[driver._INPUT_ENV]).write_text(json.dumps(retained.input))
+    observed = {}
+
+    def restore(**kwargs):
+        observed["restored"] = kwargs
+        kwargs["original_root"].mkdir(parents=True)
+
+    def prepare(**kwargs):
+        observed["prepared"] = kwargs
+        return {"source_part_requests": kwargs["part_requests"],
+                "authored": {"model": "gpt-6-sol", "parts": {}},
+                "lineage": {"new_provider_calls": 0}}
+
+    def finish(**kwargs):
+        observed["finished"] = kwargs
+        return {"status": "completed", "adopted": True}
+
+    monkeypatch.setattr(successor, "restore_partial_astra", restore)
+    monkeypatch.setattr(successor, "prepare_completed_articulated_successor", prepare)
+    monkeypatch.setattr(driver, "_finish_articulated_component", finish)
+    monkeypatch.setattr(driver, "prepare_astra_execution_runtime",
+                        lambda **_kwargs: pytest.fail("CAD runtime was repeated"))
+    component.kwargs["authoring_executor"] = lambda **_kwargs: pytest.fail("model authoring was repeated")
+    assert driver.execute_astra_component(**component.kwargs)["adopted"] is True
+    assert observed["restored"]["original_root"] == primary
+    assert observed["finished"]["adoption_lineage"]["new_provider_calls"] == 0
+    assert observed["finished"]["part_requests"] == observed["prepared"]["part_requests"]
+
+
 def _dishwasher_stage(retained, monkeypatch):
     from tests.test_articulated_hinged_door_appliance import _frame, dishwasher
     from blueprint_pipeline import website_native_inputs
