@@ -242,19 +242,38 @@ def discover(
                         record = _sealed(candidate, "receipt_digest")
                         if record["execution_source_commit"] == prior_commit:
                             prior_records.append(record)
-                    require(len(prior_records) == 1, "ambiguous_sources")
-                    prior_intent = auto.validate_configured_controls_autostart_intent(
-                        _read(Path(prior_records[0]["provisioning"]["intent_path"]))
-                    )
-                    require(
-                        prior_intent.get("completed_placement_adoption") == retained
-                        and prior_intent.get("evaluation_authority") == selected
-                        and prior_intent.get("evaluation_run_id") == evaluation_id,
-                        "lineage_changed",
-                    )
-                    prior_result = auto._autostart_result_path(
-                        root=binding, intent_digest=prior_intent["intent_digest"]
-                    )
+                    require(len(prior_records) <= 1, "ambiguous_sources")
+                    if prior_records:
+                        prior_intent = auto.validate_configured_controls_autostart_intent(
+                            _read(Path(prior_records[0]["provisioning"]["intent_path"]))
+                        )
+                        require(
+                            prior_intent.get("completed_placement_adoption") == retained
+                            and prior_intent.get("evaluation_authority") == selected
+                            and prior_intent.get("evaluation_run_id") == evaluation_id,
+                            "lineage_changed",
+                        )
+                        prior_result = auto._autostart_result_path(
+                            root=binding, intent_digest=prior_intent["intent_digest"]
+                        )
+                        prior_result_exists = prior_result.exists() or prior_result.is_symlink()
+                    else:
+                        # A failed deploy may cancel an unused plan before it
+                        # publishes the successor intent. Inspect every result
+                        # in this evaluation binding before rebinding it.
+                        prior_result_exists = False
+                        for result_path in binding.glob("task_evaluation_configured_controls_autostart.v3-*.json"):
+                            require(not result_path.is_symlink(), "lineage_changed")
+                            candidate = _read(result_path)
+                            parent = candidate.get("completed_placement_adoption") or {}
+                            candidate_plan = candidate.get("plan_path")
+                            if parent.get("execution_commit") == prior_commit:
+                                prior_result_exists = True
+                            if isinstance(candidate_plan, str):
+                                plan_path = Path(candidate_plan)
+                                require(plan_path.is_file() and not plan_path.is_symlink(), "lineage_changed")
+                                if _read(plan_path).get("expected_production_commit") == prior_commit:
+                                    prior_result_exists = True
                     plan_root = Path(retained["source_plan"]["path"]).parent
                     prior_plans = []
                     for plan_path in plan_root.glob("*.json"):
@@ -262,7 +281,7 @@ def discover(
                         if (plan.get("expected_production_commit") == prior_commit
                                 and plan.get("source_launch_id") == source["launch_id"]):
                             prior_plans.append(plan_path)
-                    if not prior_result.exists() and not prior_result.is_symlink() and not prior_plans:
+                    if not prior_result_exists and not prior_plans:
                         rebound = dict(retained)
                         rebound["execution_commit"] = expected_commit
                         rebound["adoption_digest"] = canonical_digest(

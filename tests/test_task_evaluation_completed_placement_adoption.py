@@ -413,6 +413,18 @@ def test_cancelled_predecessor_rebinds_only_when_intermediate_release_has_no_pla
         expected_commit=next_commit)
     assert rebound is not None and rebound["execution_commit"] == next_commit
     assert rebound["adoption_digest"] == canonical_digest(rebound, digest_field="adoption_digest")
+    (controls / "intermediate" / "terminal_adoption_provisioning.json").unlink()
+    assert adoption.discover(config=config, intent_id=intent_id, source=source,
+        expected_commit=next_commit) == rebound
+    binding = tmp_path / "state" / "source" / adoption.scoped_identity("cpu-robot-binding", None)
+    binding.mkdir(parents=True)
+    prior_result = binding / "task_evaluation_configured_controls_autostart.v3-prior.json"
+    prior_result.write_text(json.dumps({
+        "completed_placement_adoption": {"execution_commit": previous_commit},
+    }))
+    assert adoption.discover(config=config, intent_id=intent_id, source=source,
+        expected_commit=next_commit) is None
+    prior_result.unlink()
     (plans / "intermediate.json").write_text(json.dumps({
         "expected_production_commit": previous_commit, "source_launch_id": "source",
     }))
