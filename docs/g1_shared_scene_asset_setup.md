@@ -189,7 +189,13 @@ policy environment, packet, models, and runtime source packet read-only. It
 probes policy imports and CUDA before provisioning Isaac Lab/Arena without
 network, then invokes the existing worker with the same
 scene/candidate/rights fields. Its output directory is the only writable bind
-mount. Planning without `--execute` starts no container:
+mount. Before writing a plan, the launcher verifies the sealed packet and
+runtime source archive, checks the selected checkpoint, server and SONIC bytes,
+and validates the candidate-specific rights review. Navigation candidates also
+need a team-confirmed goal authority bound to this scene. The plan records
+those host checks under `host_preflight`; USD articulation, policy imports,
+CUDA, and the actual episode still require the container worker. Planning
+without `--execute` starts no container:
 
 ```bash
 PYTHONPATH=src python -m blueprint_pipeline.native_g1_container_run \
