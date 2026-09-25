@@ -395,7 +395,6 @@ def materialize(
     scene_digest = canonical_digest(scene_binding)
     task_digest = canonical_digest(task_binding)
     trajectory_rebound = False
-    readiness_task_binding = task_binding
     if old["trajectory_digest"] != trajectory["trajectory_digest"]:
         # A successor release may change only the native adapter's provenance
         # digest. Reuse is safe only when the complete sealed native plans are
@@ -436,16 +435,23 @@ def materialize(
             without_provenance(old_native) == without_provenance(new_native)
             and canonical_digest(prior_task_binding) == old["task_binding_digest"]
         )
-        if trajectory_rebound:
-            # The retained placement receipt and inventory are sealed to the
-            # original trajectory digest. Validate them against that exact
-            # binding while the successor plan records its new provenance.
-            readiness_task_binding = prior_task_binding
     require(
         old["scene_binding_digest"] == scene_digest
         and (old["task_binding_digest"] == task_digest or trajectory_rebound)
         and (old["trajectory_digest"] == trajectory["trajectory_digest"] or trajectory_rebound)
         and old["configured_scene_revision_digest"] == revision["revision_digest"],
+        "scientific_binding_changed",
+    )
+    # The source result may itself be an adoption. Its task digest then names
+    # the previous release, while the sealed placement receipt still names the
+    # original task binding. Only the trajectory provenance may differ.
+    readiness_task_binding = dict(task_binding)
+    if canonical_digest(readiness_task_binding) != placement["task_binding_digest"]:
+        original_trajectory_digest = placement.get("task_trajectory_digest")
+        require(isinstance(original_trajectory_digest, str), "scientific_binding_changed")
+        readiness_task_binding["trajectory_digest"] = original_trajectory_digest
+    require(
+        canonical_digest(readiness_task_binding) == placement["task_binding_digest"],
         "scientific_binding_changed",
     )
     for name in (
