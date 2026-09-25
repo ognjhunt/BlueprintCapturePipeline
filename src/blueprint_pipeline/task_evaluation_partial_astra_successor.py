@@ -24,14 +24,21 @@ def semantic_request(request: Mapping) -> dict:
             if key not in {'run_id', 'request_digest', 'expected_production_commit'}}
 
 
+def semantic_articulated_requests(requests: Mapping[str, Mapping]) -> dict:
+    return {part_id: semantic_request(value) for part_id, value in sorted(requests.items())}
+
+
 def _verify_descriptor(value, *, request_value, original_root, verified_lineage):
+    articulated = value.get('adoption_kind') == 'completed_articulated_agents_api'
+    scientific = (semantic_articulated_requests(request_value['part_requests']) if articulated
+                  else semantic_request(request_value))
     if (value.get('schema_version') != SCHEMA_VERSION
             or value.get('adoption_digest') != canonical_digest(value, digest_field='adoption_digest')
             or value.get('original_runtime_root') != str(original_root)
             or not original_root.is_absolute()
             or value.get('successor_run_id') != request_value['run_id']
             or value.get('source_run_id') == request_value['run_id']
-            or value.get('semantic_request_digest') != canonical_digest(semantic_request(request_value))):
+            or value.get('semantic_request_digest') != canonical_digest(scientific)):
         raise AssetAuthoringError('astra_partial_successor_descriptor_invalid')
     claimed = value.get('owner_intent_lineage')
     if (not isinstance(claimed, dict) or not isinstance(verified_lineage, Mapping)
@@ -39,6 +46,94 @@ def _verify_descriptor(value, *, request_value, original_root, verified_lineage)
                    or claimed[key] != verified_lineage.get(key) for key in IDENTITY_KEYS)
             or any(claimed[key] != value[key] for key in ('source_run_id', 'successor_run_id'))):
         raise AssetAuthoringError('astra_partial_successor_owner_intent_unverified')
+
+
+def prepare_completed_articulated_successor(*, value: Mapping, part_requests: Mapping,
+                                            plan: Mapping, source_binding: dict,
+                                            verified_lineage: Mapping, runtime: Path) -> dict:
+    """Reopen reviewed source parts under their original request, with zero provider calls.
+
+    The new stage repackages the original CAD/Blender outputs and runs the
+    packager's deterministic geometry/physics checks again. Source receipts
+    retain their original run ID; the successor records explicit lineage.
+    """
+    from .task_evaluation_scene_configuration_astra_phase_adoption import _inventory
+    from .task_object_astra_authoring import validate_request
+
+    prior = Path(value['original_runtime_root'])
+    current = {part: request.model_dump(mode='json') for part, request in part_requests.items()}
+    _verify_descriptor(value, request_value={'run_id': next(iter(current.values()))['run_id'],
+        'part_requests': current}, original_root=prior, verified_lineage=verified_lineage)
+    if _inventory(prior) != value['retained_files']:
+        raise AssetAuthoringError('astra_articulated_successor_retained_bytes_changed')
+    previous = {part: json.loads((prior / 'authoring' / 'parts' / part / 'request.json').read_text())
+                for part in current}
+    for row in previous.values():
+        validate_request(row)
+    if (semantic_articulated_requests(previous) != semantic_articulated_requests(current)
+            or canonical_digest({part: row['request_digest'] for part, row in previous.items()})
+               != value['source_request_digest']
+            or any(row['run_id'] != value['source_run_id'] for row in previous.values())):
+        raise AssetAuthoringError('astra_articulated_successor_scientific_inputs_changed')
+    binding = json.loads((prior / 'stage_source_binding.json').read_text())
+    if (binding.get('binding_digest') != value['source_stage_binding_digest']
+            or binding.get('binding_digest') != canonical_digest(binding, digest_field='binding_digest')
+            or binding.get('run_id') != value['source_run_id']
+            or binding.get('authoring_input_digest') != canonical_digest({
+                part: {key: item for key, item in row.items()
+                       if key not in {'request_digest', 'expected_production_commit'}}
+                for part, row in previous.items()})
+            or any(binding.get(key) != source_binding.get(key)
+                   for key in ('configuration_sha256', 'source_candidate', 'rights_admission', 'assembly_parts'))):
+        raise AssetAuthoringError('astra_articulated_successor_source_binding_changed')
+    authored = json.loads((prior / 'authoring/result.json').read_text())
+    if (authored.get('schema_version') != 'task_object_astra_articulated_authoring_result.v1'
+            or authored.get('status') != 'parts_authored_pending_native_qualification'
+            or authored.get('provider') != 'openai' or authored.get('agent_runtime') != 'openai_agents_api'
+            or authored.get('model') != 'gpt-6-sol'
+            or authored.get('result_digest') != canonical_digest(authored, digest_field='result_digest')
+            or authored.get('part_request_digests') != {
+                part: row['request_digest'] for part, row in previous.items()}
+            or authored.get('plan') != dict(plan) or set(authored.get('parts') or {}) != set(previous)):
+        raise AssetAuthoringError('astra_articulated_successor_authored_result_invalid')
+    from .task_evaluation_scene_configuration_astra_driver import _managed_authoring_receipt
+    for part, row in previous.items():
+        result_path = prior / 'authoring' / 'parts' / part / 'result.json'
+        result = json.loads(result_path.read_text())
+        if (result != authored['parts'][part] or result.get('request_digest') != row['request_digest']
+                or result.get('result_digest') != canonical_digest(result, digest_field='result_digest')
+                or result.get('status') != 'candidate_authored_pending_native_qualification'):
+            raise AssetAuthoringError('astra_articulated_successor_part_result_invalid')
+        receipt = _managed_authoring_receipt(prior / 'inference/agents_api/parts' / part /
+                                             'agents_api_stage_receipt.json', result)
+        if receipt.get('run_id') != value['source_run_id'] or receipt.get('object_id') != row['object_id']:
+            raise AssetAuthoringError('astra_articulated_successor_agent_receipt_invalid')
+        for name in ('asset', 'final_visual_mesh', 'final_visual_mesh_receipt', 'physical_review',
+                     'physical_review_input', 'geometry_readback'):
+            record = result[name]
+            path = Path(record['path'])
+            if (not path.is_relative_to(prior / 'authoring/parts' / part)
+                    or file_record(path) != record):
+                raise AssetAuthoringError('astra_articulated_successor_artifact_changed')
+        destination = runtime / 'inference/agents_api/parts' / part / 'agents_api_stage_receipt.json'
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(prior / 'inference/agents_api/parts' / part / 'agents_api_stage_receipt.json', destination)
+        result_destination = runtime / 'authoring/parts' / part / 'result.json'
+        result_destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(result_path, result_destination)
+    shutil.copyfile(prior / 'authoring/result.json', runtime / 'authoring/result.json')
+    lineage = {'schema_version': 'astra_completed_articulated_successor.v1',
+               'source_run_id': value['source_run_id'], 'successor_run_id': value['successor_run_id'],
+               'source_request_digest': value['source_request_digest'],
+               'semantic_request_digest': value['semantic_request_digest'],
+               'adoption_digest': value['adoption_digest'], 'owner_intent_lineage': dict(verified_lineage),
+               'source_authoring_result': file_record(prior / 'authoring/result.json'),
+               'new_provider_calls': 0, 'cad_execution_repeated': False, 'blender_execution_repeated': False,
+               'native_import_qualified': False}
+    lineage['lineage_digest'] = canonical_digest(lineage, digest_field='lineage_digest')
+    (runtime / 'completed_articulated_successor.json').write_text(json.dumps(lineage, sort_keys=True) + '\n')
+    return {'authored': authored, 'source_part_requests': {
+        part: validate_request(row) for part, row in previous.items()}, 'lineage': lineage}
 
 
 def restore_partial_astra(*, value: Mapping, request_value: dict, original_root: Path,
