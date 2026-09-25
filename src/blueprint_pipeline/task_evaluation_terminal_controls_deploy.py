@@ -42,6 +42,25 @@ def _only_unpaid_preparation(binding: Path) -> bool:
     return True
 
 
+def _completed_placement_for_deploy(
+    *, config: dict[str, Any], intent_id: str, source: dict[str, Any], expected_commit: str
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Keep invalid retained placement evidence intact without aborting deploy."""
+
+    from .task_evaluation_completed_placement_adoption import discover
+
+    try:
+        return discover(
+            config=config, intent_id=intent_id, source=source,
+            expected_commit=expected_commit,
+        ), None
+    except ValueError as exc:
+        blocker = str(exc)
+        if not blocker.startswith('completed_placement_adoption_'):
+            raise
+        return None, blocker
+
+
 @file_digest_scope()
 def prepare(*, config_path: str | Path, expected_commit: str, now: float | None = None) -> dict[str, Any]:
     config = worker._json(Path(config_path))
@@ -75,14 +94,25 @@ def prepare(*, config_path: str | Path, expected_commit: str, now: float | None 
             # Credential failure may leave deterministic CPU artifacts and lock
             # receipts, but no paid reservation. Retain those bytes and all holds.
             if not _only_unpaid_preparation(binding):
-                from .task_evaluation_completed_placement_adoption import discover as discover_completed
-                if discover_completed(config=config,intent_id=intent_id,source=source,expected_commit=expected_commit) is None:
+                completed, blocker = _completed_placement_for_deploy(
+                    config=config, intent_id=intent_id, source=source, expected_commit=expected_commit,
+                )
+                if blocker:
+                    rows.append({'intent_id': intent_id, 'status': 'retained_invalid_completed_placement_adoption',
+                                 'blocker': blocker})
+                    continue
+                if completed is None:
                     rows.append({'intent_id': intent_id, 'status': 'retained_started_materialization'})
                     continue
         elif binding.exists():
-            from .task_evaluation_completed_placement_adoption import discover as discover_completed
             from .task_evaluation_visual_review_continuation import discover
-            continuation = discover_completed(config=config,intent_id=intent_id,source=source,expected_commit=expected_commit)
+            continuation, blocker = _completed_placement_for_deploy(
+                config=config, intent_id=intent_id, source=source, expected_commit=expected_commit,
+            )
+            if blocker:
+                rows.append({'intent_id': intent_id, 'status': 'retained_invalid_completed_placement_adoption',
+                             'blocker': blocker})
+                continue
             if continuation is None:
                 continuation = discover(config=config,intent_id=intent_id,source=source,expected_commit=expected_commit)
             if continuation is None:
