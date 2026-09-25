@@ -107,3 +107,24 @@ def test_selected_evaluation_reuses_verified_placement_instead_of_calling_model_
     result=prepare.prepare(config_path=p,expected_commit='b'*40,now=102)
     assert len(discovered)==1 and discovered[0]['intent_id']==owner['intent_id']
     assert len(calls)==1 and result['rows'][0]['status']=='installed_terminal_adoption'
+
+
+def test_invalid_completed_placement_is_retained_without_aborting_deploy(adopted, tmp_path, monkeypatch):
+    p, config, source, owner, calls = setup(adopted, tmp_path, monkeypatch)
+    monkeypatch.setattr(prepare.team_runs, 'source_for_evaluation', lambda **kwargs: source)
+    intent = prepare.worker._scene_intent(Path(config['scene_root'])/owner['intent_id']/'intent.json')
+    binding = Path(config['progression_root'])/source['launch_id']/prepare.scoped_identity(
+        'cpu-robot-binding', intent['request']['submission_id'])
+    put(binding/'paid_placement.json', {})
+    from blueprint_pipeline import task_evaluation_completed_placement_adoption as completed
+    def invalid(**kwargs):
+        raise ValueError('completed_placement_adoption_checkpoint_lineage_invalid')
+    monkeypatch.setattr(completed, 'discover', invalid)
+    result = prepare.prepare(config_path=p, expected_commit='b'*40, now=102)
+    assert result['rows'] == [{
+        'intent_id': owner['intent_id'],
+        'status': 'retained_invalid_completed_placement_adoption',
+        'blocker': 'completed_placement_adoption_checkpoint_lineage_invalid',
+    }]
+    assert calls == []
+    assert (binding/'paid_placement.json').is_file()
