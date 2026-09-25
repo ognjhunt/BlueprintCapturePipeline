@@ -133,3 +133,13 @@ within this single derived output directory. The pair selection step then binds 
 the same setup, choice, checkpoint inventory, candidate rights reviews, and
 optional navigation authority. A successful request or packet build proves
 neither checkpoint inference nor an executed episode.
+
+For the default GEAR-SONIC controller used by this G1 development path,
+[`g1_sonic_default_asset_inventory.v1.json`](../configs/g1_sonic_default_asset_inventory.v1.json)
+pins the matching encoder and decoder from one official release revision. On an
+authorized asset host, `python scripts/fetch_g1_sonic_assets.py --output-dir
+/absolute/sonic/default` downloads and checks the pair. Add `--verify-only` to
+check staged bytes without network access. The receipt supplies the two SHA-256
+values required by the G1 worker request. Do not mix these files with the
+separate low-latency or SONIC 1.1 variants. Staging bytes does not approve model
+rights or show that SONIC inference works with the captured scene.
