@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import shutil
 import subprocess
 import sys
@@ -61,6 +62,7 @@ FIELDS = frozenset(
         "authoring_digest",
     }
 )
+OPTIONAL_FIELDS = frozenset({"physics_frequency_hz"})
 ROBOT_TASK_FIELDS = frozenset(
     {
         "robot_workspace_position_bounds_world_m",
@@ -132,7 +134,7 @@ def author_g1_scene_packet_request(
     )
     authored = dict(authoring)
     if (
-        set(authored) != FIELDS
+        not FIELDS <= set(authored) <= FIELDS | OPTIONAL_FIELDS
         or authored.get("schema_version") != SCHEMA
         or authored.get("claim_ceiling") != "development_only"
         or authored.get("source_packet_receipt_digest") != receipt["receipt_digest"]
@@ -144,6 +146,29 @@ def author_g1_scene_packet_request(
     task_spec = authored["task_spec"]
     if not isinstance(task_spec, Mapping):
         raise ValueError("g1_scene_request_task_spec_invalid")
+    physics_frequency = authored.get("physics_frequency_hz", source["physics_frequency_hz"])
+    control_frequency = task_spec.get("control_frequency_hz")
+    if (
+        isinstance(physics_frequency, bool)
+        or not isinstance(physics_frequency, (int, float))
+        or not math.isfinite(physics_frequency)
+        or physics_frequency <= 0
+    ):
+        raise ValueError("g1_scene_request_physics_control_cadence_invalid")
+    if (
+        isinstance(control_frequency, bool)
+        or not isinstance(control_frequency, (int, float))
+        or not math.isfinite(control_frequency)
+        or control_frequency <= 0
+        or physics_frequency / control_frequency < 1
+        or not math.isclose(
+            physics_frequency / control_frequency,
+            round(physics_frequency / control_frequency),
+            rel_tol=0.0,
+            abs_tol=1e-9,
+        )
+    ):
+        raise ValueError("g1_scene_request_physics_control_cadence_invalid")
     task_contract = task_spec.get("task_success_contract")
     validate_rigid_task_success_contract(
         task_contract,
@@ -241,7 +266,7 @@ def author_g1_scene_packet_request(
         "cameras": normalized,
         "task_spec": dict(task_spec),
         "scenario": scenario,
-        "physics_frequency_hz": source["physics_frequency_hz"],
+        "physics_frequency_hz": physics_frequency,
         "g1_scene_derivation": {
             "schema_version": "native_g1_scene_packet_derivation.v1",
             "claim_ceiling": "development_only",
@@ -250,6 +275,8 @@ def author_g1_scene_packet_request(
             "setup_digest": published["setup_digest"],
             "pair_choice_digest": selected["choice_digest"],
             "authoring_digest": authored["authoring_digest"],
+            "source_physics_frequency_hz": source["physics_frequency_hz"],
+            "selected_physics_frequency_hz": physics_frequency,
             **(
                 {
                     "source_declared_task_success_contract_digest": published[
