@@ -48,6 +48,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import math
+from pathlib import Path
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -417,6 +418,29 @@ def measure_native_task_semantic_label_pixels(
         "pixel_fraction": count / float(height * width),
         "bbox_xyxy": bbox,
         "frame_resolution_hw": [height, width],
+        "measurement_authority": "native_semantic_segmentation_aov",
+    }
+
+
+def retain_native_robot_semantic_mask(
+    *, semantic_ids: Any, id_to_labels: Mapping[str, Any],
+    output_path: Path, relative_to: Path,
+) -> dict[str, Any]:
+    """Retain exact native robot pixels for a later body-occlusion check."""
+    import numpy as np
+    from PIL import Image
+
+    robot = measure_native_task_semantic_label_pixels(
+        semantic_ids=semantic_ids, id_to_labels=id_to_labels, target_label="robot"
+    )
+    mask = np.isin(np.asarray(semantic_ids).astype(np.int64), robot["target_semantic_ids"])
+    Image.fromarray((mask * 255).astype(np.uint8), mode="L").save(
+        output_path, format="PNG", compress_level=9
+    )
+    return {
+        "path": str(output_path.relative_to(relative_to)),
+        "sha256": "sha256:" + hashlib.sha256(output_path.read_bytes()).hexdigest(),
+        "pixel_count": int(mask.sum()),
         "measurement_authority": "native_semantic_segmentation_aov",
     }
 

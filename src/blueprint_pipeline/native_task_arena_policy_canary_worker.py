@@ -55,6 +55,7 @@ def _policy_camera_visibility_contract(
     *,
     preserve_official_droid_calibration: bool,
     require_task_support: bool = False,
+    wrist_robot_occlusion_qualified: bool = False,
 ) -> dict[str, Any]:
     """Qualify task visibility according to each camera's policy role.
 
@@ -97,7 +98,13 @@ def _policy_camera_visibility_contract(
             if isinstance(thresholds, Mapping)
             else 0
         )
-        render_passed = observability.get("render_passed") is True
+        raw_render_passed = observability.get("render_passed") is True
+        render_passed = raw_render_passed or (
+            role == "wrist"
+            and preserve_official_droid_calibration
+            and wrist_robot_occlusion_qualified
+            and (observability.get("render_evidence") or {}).get("target_rendered") is True
+        )
         centroid_within_margin = (
             observability.get("centroid_within_margin") is True
         )
@@ -131,6 +138,10 @@ def _policy_camera_visibility_contract(
             "pixel_count": pixel_count,
             "minimum_pixels": minimum_pixels,
             "render_passed": render_passed,
+            "raw_render_passed": raw_render_passed,
+            "wrist_robot_occlusion_qualified": (
+                role == "wrist" and wrist_robot_occlusion_qualified
+            ),
             "centroid_within_margin": centroid_within_margin,
         }
         if require_task_support and role in {"external", "overview"}:
@@ -169,6 +180,94 @@ def _policy_camera_visibility_contract(
         "blockers": sorted(set(blockers)),
         "notices": sorted(set(notices)),
     }
+
+
+def _qualify_official_droid_wrist_body_occlusion(
+    *, snapshot: Mapping[str, Any], visual: Mapping[str, Any], output_root: Path,
+) -> tuple[dict[str, Any], bool]:
+    """Keep a visible target when exact black pixels are the robot's own body."""
+    import numpy as np
+    from PIL import Image
+    from blueprint_pipeline.native_task_camera_observability import (
+        BLOCKER_FRAME_STRUCTURE_FAILED, BLOCKER_SITE_DOMINANT_COLOR,
+        BLOCKER_SITE_VOID, NEAR_BLACK_LUMINANCE_MAX,
+        REFUSAL_PREPOLICY_VISUAL_FRAME_NEAR_BLACK,
+    )
+
+    unchanged = deepcopy(dict(visual))
+    rows = [row for row in snapshot.get("cameras") or []
+            if isinstance(row, Mapping) and row.get("role") == "wrist"]
+    if len(rows) != 1:
+        return unchanged, False
+    wrist = rows[0]
+    observation = wrist.get("observability") or {}
+    render = observation.get("render_evidence") or {}
+    target = (wrist.get("semantic_label_pixels") or {}).get("task_object") or {}
+    expected_blocker = f"{REFUSAL_PREPOLICY_VISUAL_FRAME_NEAR_BLACK}:wrist"
+    wrist_view = (unchanged.get("views") or {}).get("wrist") or {}
+    if (
+        wrist_view.get("blockers") != [REFUSAL_PREPOLICY_VISUAL_FRAME_NEAR_BLACK]
+        or expected_blocker not in unchanged.get("blockers", [])
+        or wrist_view.get("render_presence", {}).get("passed") is not True
+        or wrist_view.get("saturation", {}).get("passed") is not True
+        or observation.get("semantic_passed") is not True
+        or render.get("target_rendered") is not True
+        or not set(render.get("blockers") or []).issubset(
+            {BLOCKER_SITE_VOID, BLOCKER_SITE_DOMINANT_COLOR}
+        )
+        or float(target.get("pixel_fraction") or 0.0) < 0.15
+    ):
+        return unchanged, False
+    root = output_root.resolve()
+    paths = []
+    for record in (wrist.get("rgb_png"), wrist.get("robot_semantic_mask")):
+        if not isinstance(record, Mapping):
+            return unchanged, False
+        relative = record.get("path")
+        if not isinstance(relative, str) or not relative:
+            return unchanged, False
+        path = (root / relative).resolve()
+        if not path.is_relative_to(root) or not path.is_file():
+            return unchanged, False
+        if _sha256(path) != record.get("sha256"):
+            return unchanged, False
+        paths.append(path)
+    with Image.open(paths[0]) as image:
+        rgb = np.asarray(image.convert("RGB"))
+    with Image.open(paths[1]) as image:
+        robot = np.asarray(image.convert("L")) > 0
+    if robot.shape != rgb.shape[:2]:
+        return unchanged, False
+    black = rgb.astype(np.float64).mean(axis=-1) <= NEAR_BLACK_LUMINANCE_MAX
+    black_count = int(black.sum())
+    robot_count = int(robot.sum())
+    robot_record = wrist["robot_semantic_mask"]
+    if robot_count != robot_record.get("pixel_count") or not black_count:
+        return unchanged, False
+    overlap = int((black & robot).sum()) / black_count
+    outside_black = int((black & ~robot).sum()) / max(1, int((~robot).sum()))
+    robot_fraction = robot_count / robot.size
+    if robot_fraction < 0.5 or overlap < 0.98 or outside_black > 0.05:
+        return unchanged, False
+    wrist_view["blockers"] = []
+    wrist_view["passed"] = True
+    wrist_view["robot_body_occlusion"] = {
+        "status": "qualified_for_development_policy_input",
+        "robot_mask": dict(robot_record),
+        "robot_pixel_fraction": robot_fraction,
+        "near_black_inside_robot_fraction": overlap,
+        "near_black_outside_robot_fraction": outside_black,
+        "target_pixel_fraction": target["pixel_fraction"],
+    }
+    unchanged["blockers"] = [b for b in unchanged["blockers"] if b != expected_blocker]
+    unchanged["frame_structure_passed"] = not unchanged["blockers"]
+    unchanged["passed"] = unchanged["frame_structure_passed"]
+    if unchanged["frame_structure_passed"]:
+        unchanged["policy_observation_integrity_blockers"] = [
+            b for b in unchanged.get("policy_observation_integrity_blockers", [])
+            if b != BLOCKER_FRAME_STRUCTURE_FAILED
+        ]
+    return unchanged, True
 
 
 def _sha256_prefixed(value: Any) -> str:
@@ -716,12 +815,20 @@ def isaac_cell_runtime() -> CellRuntime:
             snapshot=snapshot,
             output_root=root,
         )
+        official_droid = (
+            isinstance(droid_profile, Mapping)
+            and droid_profile.get("policy_camera_roles") == ["external", "wrist"]
+            and droid_profile.get("preserve_official_policy_camera_calibration") is True
+        )
+        wrist_body_qualified = False
+        if official_droid:
+            visual, wrist_body_qualified = _qualify_official_droid_wrist_body_occlusion(
+                snapshot=snapshot, visual=visual, output_root=root
+            )
         visibility_contract = _policy_camera_visibility_contract(
             snapshot,
-            preserve_official_droid_calibration=(
-                isinstance(droid_profile, Mapping)
-                and droid_profile.get("policy_camera_roles") == ["external", "wrist"]
-            ),
+            preserve_official_droid_calibration=official_droid,
+            wrist_robot_occlusion_qualified=wrist_body_qualified,
             require_task_support=(
                 bool(plan["task_spec"].get("destination_support_asset_id"))
                 or any(row.get("semantic_role") == "task_support" for row in plan["objects"])
