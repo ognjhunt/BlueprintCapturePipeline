@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -9,8 +10,10 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline import native_g1_development_pair as pair
 from blueprint_pipeline.native_g1_development_worker import RESULT_FILENAME
 from blueprint_pipeline.native_g1_navigation_goal import seal_g1_navigation_goal_authority
+from blueprint_pipeline.native_g1_shared_scene_episode import run_g1_shared_scene_episode
 from tests.test_native_g1_development_worker import _request as worker_request
 from tests.test_native_g1_navigation_goal import _authority_plan
+from tests.test_native_g1_shared_scene_episode import _Bridge, _Policy, _Scene
 
 
 DP = "humanoidarena_dp_g1_dex3_sonic"
@@ -64,6 +67,57 @@ def _fake_result(request: dict, output_dir: Path, *, blocked: bool = False) -> d
     else:
         score = {"status": "scored", "outcome": "failure"}
         score["score_digest"] = canonical_digest(score, digest_field="score_digest")
+        episode_dir = output_dir / "episode"
+        episode_dir.mkdir()
+        media_dir = episode_dir / "media" / request["candidate_id"]
+        media_dir.mkdir(parents=True)
+        manifest = {
+            "identity": {
+                "candidate_id": request["candidate_id"],
+                "scene_plan_digest": plan["plan_digest"],
+            },
+        }
+        manifest["frame_manifest_digest"] = canonical_digest(
+            manifest, digest_field="frame_manifest_digest"
+        )
+        manifest_path = media_dir / "multicamera_frame_manifest.json"
+        manifest_path.write_text(json.dumps(manifest))
+        artifacts = [{
+            "role": "multicamera_observation_frame_manifest",
+            "relative_path": manifest_path.relative_to(episode_dir).as_posix(),
+            "sha256": "sha256:" + hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+            "size_bytes": manifest_path.stat().st_size,
+        }]
+        videos = {}
+        for camera_id in ("head", "overview"):
+            video_path = media_dir / f"{camera_id}.mp4"
+            video_path.write_bytes(f"fixture:{request['candidate_id']}:{camera_id}".encode())
+            video = {
+                "relative_path": video_path.relative_to(episode_dir).as_posix(),
+                "sha256": "sha256:" + hashlib.sha256(video_path.read_bytes()).hexdigest(),
+                "size_bytes": video_path.stat().st_size,
+                "derived_from_frame_manifest_digest": manifest["frame_manifest_digest"],
+            }
+            videos[camera_id] = video
+            artifacts.append({
+                "role": "camera_review_video", "camera_id": camera_id,
+                "relative_path": video["relative_path"], "sha256": video["sha256"],
+                "size_bytes": video["size_bytes"], "media_type": "video/mp4",
+            })
+        trace = {
+            "status": "development_trace_recorded",
+            "candidate_id": request["candidate_id"],
+            "scene_plan_digest": plan["plan_digest"],
+            "claim_ceiling": "simulator_only_unscored",
+            "visual_evidence": {
+                "status": "complete", "videos": videos,
+                "required_camera_ids": ["head", "overview"],
+                "frame_manifest_digest": manifest["frame_manifest_digest"],
+            },
+            "media_artifacts": artifacts,
+        }
+        trace["trace_digest"] = canonical_digest(trace, digest_field="trace_digest")
+        (episode_dir / pair.TRACE_FILENAME).write_text(json.dumps(trace))
         episode = {
             "status": "development_only_scored_episode", "candidate_id": request["candidate_id"],
             "scene_plan_digest": plan["plan_digest"],
@@ -72,10 +126,10 @@ def _fake_result(request: dict, output_dir: Path, *, blocked: bool = False) -> d
                 else "rigid_pick_place"
             ),
             "score": score, "ranking_eligible": False, "physical_outcome_claimed": False,
+            "trace_relative_path": pair.TRACE_FILENAME,
+            "trace_digest": trace["trace_digest"],
         }
         episode["result_digest"] = canonical_digest(episode, digest_field="result_digest")
-        episode_dir = output_dir / "episode"
-        episode_dir.mkdir()
         (episode_dir / pair.EPISODE_FILENAME).write_text(json.dumps(episode))
         result = {
             "candidate_id": request["candidate_id"], "request_digest": request["request_digest"],
@@ -108,6 +162,10 @@ def test_pair_runs_same_scene_in_catalog_order_and_preserves_two_scores(tmp_path
     assert result["scene_plan_digest"] == plan["plan_digest"]
     assert len({a["score"]["score_digest"] for a in result["attempts"]}) == 1
     assert all(a["score"]["outcome"] == "failure" for a in result["attempts"])
+    assert all(set(a["review_media"]["review_videos"]) == {"head", "overview"}
+               for a in result["attempts"])
+    assert all(a["review_media"]["public_redistribution_authorized"] is False
+               for a in result["attempts"])
     assert result["ranking_eligible"] is False
     assert json.loads((tmp_path / "comparison" / (pair.SCHEMA + ".json")).read_text()) == result
 
@@ -179,3 +237,57 @@ def test_tampered_episode_score_cannot_complete_pair(tmp_path: Path) -> None:
         "g1_pair_episode_or_score_receipt_invalid"
     )
     assert result["not_attempted_candidate_ids"] == [PI]
+
+
+def test_tampered_review_video_retains_worker_receipt_but_blocks_pair(tmp_path: Path) -> None:
+    paths, _ = _paired_requests(tmp_path)
+
+    def run(*, request: dict, output_dir: Path) -> dict:
+        result = _fake_result(request, output_dir)
+        (output_dir / "episode/media" / request["candidate_id"] / "head.mp4").write_bytes(
+            b"changed"
+        )
+        return result
+
+    result = pair.run_g1_development_pair(
+        request_paths=paths, output_dir=tmp_path / "comparison", local_runner=run,
+    )
+    attempt = result["attempts"][0]
+    assert attempt["status"] == "blocked"
+    assert attempt["worker_status"] == "completed_development_only"
+    assert attempt["worker_result_digest"]
+    assert attempt["score"]["score_digest"]
+    assert attempt["blocker"]["message"] in {
+        "g1_pair_media_file_invalid", "g1_pair_media_digest_mismatch"
+    }
+    assert result["not_attempted_candidate_ids"] == [PI]
+
+
+def test_review_index_accepts_actual_g1_frame_and_video_finalizer(tmp_path: Path) -> None:
+    scene = _Scene()
+    pair_root = tmp_path / "comparison"
+    episode_root = pair_root / DP / "episode"
+    trace = run_g1_shared_scene_episode(
+        environment=scene,
+        policy_client=_Policy(),
+        sonic_bridge=_Bridge(),
+        candidate_id=DP,
+        task_prompt="pick the box",
+        max_steps=1,
+        output_dir=episode_root,
+        read_task_sample=lambda: {"step_index": scene.step},
+    )
+    (episode_root / pair.TRACE_FILENAME).write_text(json.dumps(trace), encoding="utf-8")
+    media = pair._verified_review_media(
+        episode_root / pair.EPISODE_FILENAME,
+        episode={
+            "candidate_id": DP,
+            "scene_plan_digest": scene.plan["plan_digest"],
+            "trace_relative_path": pair.TRACE_FILENAME,
+            "trace_digest": trace["trace_digest"],
+        },
+        pair_root=pair_root,
+    )
+    assert media["frame_manifest_digest"] == trace["visual_evidence"]["frame_manifest_digest"]
+    assert all((pair_root / row["relative_path"]).is_file()
+               for row in media["review_videos"].values())

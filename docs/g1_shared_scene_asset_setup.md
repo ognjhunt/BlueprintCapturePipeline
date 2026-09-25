@@ -286,6 +286,11 @@ first, then π0.5 only if the first worker completes; it stops after an
 infrastructure block to avoid a second unproductive GPU attempt. It keeps the
 two worker receipts, scores, media trees, and any container logs under separate
 candidate directories, plus a digest-bound pair receipt at the output root.
+For each completed candidate the pair receipt indexes the exact head and
+overview MP4 review files by relative path and SHA-256, bound to the episode
+trace and frame-manifest digest. These videos are review conveniences; the
+receipt does not authorize public redistribution or replace the retained
+lossless policy inputs.
 Scored task failure still counts as a completed development episode. Neither
 this comparison nor a successful simulator score makes a candidate qualified
 or available in the public Task Evaluation Run.

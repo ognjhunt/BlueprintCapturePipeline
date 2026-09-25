@@ -8,11 +8,12 @@ objective, then preserves each terminal receipt. It cannot qualify a ranking.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import subprocess
 import sys
 from collections.abc import Callable, Mapping, Sequence
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
@@ -28,6 +29,7 @@ from .native_g1_shared_scene_episode import G1_BOX_CANDIDATES, G1_NAVIGATION_CAN
 
 SCHEMA = "native_g1_development_pair.v1"
 EPISODE_FILENAME = "native_g1_built_scene_policy_episode.v1.json"
+TRACE_FILENAME = "native_g1_shared_scene_episode_trace.v1.json"
 PAIR_ORDER = (
     "humanoidarena_dp_g1_dex3_sonic",
     "humanoidarena_pi05_g1_dex3_sonic",
@@ -173,6 +175,110 @@ def _score_from_episode(
     }
 
 
+def _verified_review_media(
+    episode_path: Path, *, episode: Mapping[str, Any], pair_root: Path
+) -> dict[str, Any]:
+    """Index exact derived videos for review, without promoting their claim."""
+
+    episode_root = episode_path.parent
+    if episode.get("trace_relative_path") != TRACE_FILENAME:
+        raise ValueError("g1_pair_trace_path_invalid")
+    trace_path = episode_root / TRACE_FILENAME
+    if trace_path.is_symlink() or not trace_path.is_file():
+        raise ValueError("g1_pair_trace_missing")
+    trace = json.loads(trace_path.read_text(encoding="utf-8"))
+    visual = trace.get("visual_evidence")
+    artifacts = trace.get("media_artifacts")
+    if (
+        trace.get("trace_digest") != episode.get("trace_digest")
+        or trace.get("trace_digest") != canonical_digest(trace, digest_field="trace_digest")
+        or trace.get("status") != "development_trace_recorded"
+        or trace.get("candidate_id") != episode.get("candidate_id")
+        or trace.get("scene_plan_digest") != episode.get("scene_plan_digest")
+        or trace.get("claim_ceiling") != "simulator_only_unscored"
+        or not isinstance(visual, Mapping)
+        or visual.get("status") != "complete"
+        or set(visual.get("videos") or {}) != {"head", "overview"}
+        or set(visual.get("required_camera_ids") or []) != {"head", "overview"}
+        or not isinstance(artifacts, list)
+    ):
+        raise ValueError("g1_pair_trace_or_media_invalid")
+
+    def artifact_file(row: Mapping[str, Any]) -> dict[str, Any]:
+        relative = row.get("relative_path")
+        if not isinstance(relative, str):
+            raise ValueError("g1_pair_media_path_invalid")
+        path_part = PurePosixPath(relative)
+        if (
+            path_part.is_absolute() or ".." in path_part.parts
+            or not path_part.parts or path_part.parts[0] != "media"
+        ):
+            raise ValueError("g1_pair_media_path_invalid")
+        path = episode_root.joinpath(*path_part.parts)
+        if (
+            path.is_symlink() or path.resolve() != path or not path.is_file()
+            or isinstance(row.get("size_bytes"), bool)
+            or not isinstance(row.get("size_bytes"), int)
+            or row["size_bytes"] <= 0
+            or path.stat().st_size != row.get("size_bytes")
+        ):
+            raise ValueError("g1_pair_media_file_invalid")
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            for block in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(block)
+        if row.get("sha256") != "sha256:" + digest.hexdigest():
+            raise ValueError("g1_pair_media_digest_mismatch")
+        return {
+            "relative_path": path.relative_to(pair_root).as_posix(),
+            "sha256": row["sha256"],
+            "size_bytes": row["size_bytes"],
+        }
+
+    manifests = [row for row in artifacts if isinstance(row, Mapping)
+                 and row.get("role") == "multicamera_observation_frame_manifest"]
+    videos = [row for row in artifacts if isinstance(row, Mapping)
+              and row.get("role") == "camera_review_video"]
+    if len(manifests) != 1 or len(videos) != 2:
+        raise ValueError("g1_pair_media_artifacts_incomplete")
+    manifest_ref = artifact_file(manifests[0])
+    manifest = json.loads((pair_root / manifest_ref["relative_path"]).read_text(encoding="utf-8"))
+    identity = manifest.get("identity")
+    if (
+        manifest.get("frame_manifest_digest") != visual.get("frame_manifest_digest")
+        or manifest.get("frame_manifest_digest")
+        != canonical_digest(manifest, digest_field="frame_manifest_digest")
+        or not isinstance(identity, Mapping)
+        or identity.get("candidate_id") != episode.get("candidate_id")
+        or identity.get("scene_plan_digest") != episode.get("scene_plan_digest")
+    ):
+        raise ValueError("g1_pair_frame_manifest_invalid")
+    by_camera = {row.get("camera_id"): row for row in videos}
+    if set(by_camera) != {"head", "overview"}:
+        raise ValueError("g1_pair_review_cameras_invalid")
+    review_videos = {}
+    for camera_id in ("head", "overview"):
+        row = by_camera[camera_id]
+        video = visual["videos"][camera_id]
+        if (
+            row.get("media_type") != "video/mp4"
+            or row.get("relative_path") != video.get("relative_path")
+            or row.get("sha256") != video.get("sha256")
+            or row.get("size_bytes") != video.get("size_bytes")
+            or video.get("derived_from_frame_manifest_digest") != manifest["frame_manifest_digest"]
+        ):
+            raise ValueError("g1_pair_review_video_binding_invalid")
+        review_videos[camera_id] = artifact_file(row)
+    return {
+        "trace_digest": trace["trace_digest"],
+        "frame_manifest_digest": manifest["frame_manifest_digest"],
+        "frame_manifest": manifest_ref,
+        "review_videos": review_videos,
+        "derived_videos_are_human_review_convenience": True,
+        "public_redistribution_authorized": False,
+    }
+
+
 def run_g1_development_pair(
     *,
     request_paths: Sequence[Path],
@@ -215,6 +321,10 @@ def run_g1_development_pair(
     for candidate_id in pair["candidate_ids"]:
         request_path, request = by_candidate[candidate_id]
         attempt_root = output / candidate_id
+        verified: dict[str, Any] | None = None
+        result_path: Path | None = None
+        score: dict[str, Any] | None = None
+        review_media: dict[str, Any] | None = None
         try:
             if mode == "local":
                 worker = local_runner(request=request, output_dir=attempt_root)
@@ -264,21 +374,32 @@ def run_g1_development_pair(
                 )
                 if verified.get("status") == "completed_development_only" else None
             )
+            review_media = (
+                _verified_review_media(
+                    episode_path, episode=json.loads(episode_path.read_text(encoding="utf-8")),
+                    pair_root=output,
+                )
+                if score is not None else None
+            )
             attempts.append({
                 "candidate_id": candidate_id,
                 "status": verified["status"],
+                "worker_status": verified["status"],
                 "worker_result_digest": verified["result_digest"],
                 "worker_result_path": str(result_path),
                 "score": score,
+                "review_media": review_media,
                 "blocker": verified.get("blocker"),
             })
         except Exception as exc:
             attempts.append({
                 "candidate_id": candidate_id,
                 "status": "blocked",
-                "worker_result_digest": None,
-                "worker_result_path": None,
-                "score": None,
+                "worker_result_digest": verified.get("result_digest") if verified else None,
+                "worker_result_path": str(result_path) if verified and result_path else None,
+                "worker_status": verified.get("status") if verified else None,
+                "score": score,
+                "review_media": review_media,
                 "blocker": {"type": type(exc).__name__, "message": str(exc)},
             })
         if attempts[-1]["status"] != "completed_development_only":
