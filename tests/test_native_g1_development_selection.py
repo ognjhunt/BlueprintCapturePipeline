@@ -265,6 +265,24 @@ def test_stages_retained_packet_browser_choice(
     ] == [DP, PI]
 
 
+def test_verifies_retained_packet_choice_before_runtime_or_rights(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    args, choice = _packet_choice_inputs(tmp_path, monkeypatch)
+    template = json.loads(args["runtime_template_path"].read_text())
+    result = selection_module.verify_g1_packet_choice_bundle(
+        setup_path=args["setup_path"],
+        choice_path=args["choice_path"],
+        bundle=Path(template["bundle_root"]),
+    )
+    assert result["status"] == "verified_not_executed"
+    assert result["candidate_ids"] == [DP, PI]
+    assert result["choice_digest"] == choice["choice_digest"]
+    assert result["rights_reviewed"] is False
+    assert result["episode_executed"] is False
+    assert result["result_digest"] == canonical_digest(result, digest_field="result_digest")
+
+
 def test_rejects_packet_choice_for_different_derived_scene(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -278,6 +296,37 @@ def test_rejects_packet_choice_for_different_derived_scene(
     with pytest.raises(ValueError, match="g1_selection_packet_derivation_mismatch"):
         selection_module.stage_g1_development_selection(**args)
     assert not args["output_dir"].exists()
+
+
+def test_packet_preflight_rejects_changed_confirmed_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    args, _choice = _packet_choice_inputs(tmp_path, monkeypatch)
+    template = json.loads(args["runtime_template_path"].read_text())
+    bundle = Path(template["bundle_root"])
+    plan_path = bundle / "native_task_arena_scene_plan.v1.json"
+    plan = json.loads(plan_path.read_text())
+    contract = plan["task_spec"]["task_success_contract"]
+    contract["provenance"]["author_id"] = "different-owner"
+    contract["contract_digest"] = canonical_digest(contract, digest_field="contract_digest")
+    plan["task_spec"]["task_success_contract_digest"] = contract["contract_digest"]
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+    plan_path.write_text(json.dumps(plan))
+    monkeypatch.setattr(
+        selection_module,
+        "_verify_packet",
+        lambda _bundle: {
+            "arena_scene_plan_digest": plan["plan_digest"],
+            "receipt_digest": "sha256:" + "f" * 64,
+            "request_digest": json.loads(
+                (bundle / "native_task_arena_packet_request.v1.json").read_text()
+            )["request_digest"],
+        },
+    )
+    with pytest.raises(ValueError, match="g1_selection_scene_or_site_mismatch"):
+        selection_module.verify_g1_packet_choice_bundle(
+            setup_path=args["setup_path"], choice_path=args["choice_path"], bundle=bundle
+        )
 
 
 def test_rejects_stale_or_cross_objective_browser_choice_before_writing(
