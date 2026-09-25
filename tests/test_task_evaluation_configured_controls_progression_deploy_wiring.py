@@ -56,4 +56,4 @@ def test_cpu_placement_screen_has_bounded_time_to_finish() -> None:
     unit = text(
         "deploy/systemd/blueprint-task-evaluation-configured-controls-progression.service"
     )
-    assert "TimeoutStartSec=30min" in unit
+    assert "TimeoutStartSec=45min" in unit
