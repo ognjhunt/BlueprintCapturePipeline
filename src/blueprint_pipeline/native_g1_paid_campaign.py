@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .adp_isaac_lab_arena_vast import run_arena_native_control_vast
+from .active_deployed_release_admission import inspect_active_deployed_release
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .episode_visual_evidence import validate_multicamera_frame_manifest
@@ -36,6 +37,35 @@ from .paid_resource_admission import (
 PROBE_KIND = "native-g1-development-campaign"
 RESULT_SCHEMA = "native_g1_paid_campaign_result.v1"
 INSTANCE_LABEL_PREFIX = "blueprint-native-task-arena-g1-841757-"
+
+
+def _controller_release_authority(
+    commit: str, identity: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Accept an immutable active release even when the main tip advances."""
+
+    deployed = inspect_active_deployed_release(Path(__file__).resolve().parents[2], commit)
+    if deployed is not None:
+        if (
+            deployed.get("status") != "verified_active_release"
+            or deployed.get("blockers")
+            or deployed.get("source_commit") != commit
+        ):
+            return None
+        return {
+            key: deployed[key]
+            for key in (
+                "status", "source_commit", "receipt_sha256", "provenance_sha256",
+                "release_admission_mode", "evidence_grade",
+            )
+        }
+    if (
+        commit
+        and commit == identity.get("origin_main_commit")
+        and commit == identity.get("remote_main_commit")
+    ):
+        return {"status": "exact_main_checkout", "source_commit": commit}
+    return None
 
 
 def _read(path: Path) -> dict[str, Any]:
@@ -160,11 +190,8 @@ def dispatch_g1_paid_campaign(
 
     blockers = list(control_blockers)
     commit = str(control_identity.get("orchestrator_source_commit") or "")
-    if (
-        not commit
-        or commit != control_identity.get("origin_main_commit")
-        or commit != control_identity.get("remote_main_commit")
-    ):
+    release_authority = _controller_release_authority(commit, control_identity)
+    if release_authority is None:
         blockers.append("g1_paid_campaign_controller_not_exact_main")
     if args.provider != "vast":
         blockers.append("g1_paid_campaign_provider_must_be_vast")
@@ -232,6 +259,7 @@ def dispatch_g1_paid_campaign(
         "probe_kind": PROBE_KIND,
         "provider": "vast",
         "orchestrator_source_commit": commit,
+        "release_authority": release_authority,
         "bundle_sha256": bundle.get("bundle_sha256") if bundle else None,
         "campaign_plan_digest": bundle.get("campaign_plan_digest") if bundle else None,
         "publisher_source_receipt_digest": (
@@ -254,6 +282,7 @@ def dispatch_g1_paid_campaign(
         "program_id": "arm-decision-proof-v1",
         "probe_kind": PROBE_KIND,
         "control_plane_identity": control_identity,
+        "release_authority": release_authority,
         "bundle_sha256": bundle.get("bundle_sha256") if bundle else None,
         "campaign_plan_digest": bundle.get("campaign_plan_digest") if bundle else None,
         "max_hourly_rate_usd": rate,
@@ -293,8 +322,8 @@ def dispatch_g1_paid_campaign(
                 if (
                     fresh_blockers
                     or fresh_identity.get("orchestrator_source_commit") != commit
-                    or fresh_identity.get("origin_main_commit") != commit
-                    or fresh_identity.get("remote_main_commit") != commit
+                    or _controller_release_authority(commit, fresh_identity)
+                    != release_authority
                 ):
                     return {
                         "status": "blocked",
