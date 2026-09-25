@@ -14,6 +14,7 @@ import json
 import os
 import threading
 from collections.abc import Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -155,15 +156,20 @@ def _stage_models(root: Path, output: Path) -> dict[str, Any]:
     models = output / "models"
     models.mkdir()
     checkpoints = models / "checkpoints"
-    receipts = []
-    for candidate in PAIR_ORDER:
+
+    def fetch_checkpoint(candidate: str) -> dict[str, Any]:
         with _Heartbeat("checkpoint:" + candidate):
-            receipt = checkpoint_fetcher.materialize_candidate(
+            return checkpoint_fetcher.materialize_candidate(
                 inventory_path=inventory,
                 candidate_id=candidate,
                 output_dir=checkpoints,
             )
-        receipts.append(receipt)
+
+    # Candidate downloads use distinct pinned paths. Fetch them together so
+    # large pi0.5 weights do not consume the whole bounded GPU lease serially.
+    with ThreadPoolExecutor(max_workers=len(PAIR_ORDER)) as pool:
+        receipts = list(pool.map(fetch_checkpoint, PAIR_ORDER))
+    for candidate, receipt in zip(PAIR_ORDER, receipts, strict=True):
         (models / (candidate + ".json")).write_text(
             json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
