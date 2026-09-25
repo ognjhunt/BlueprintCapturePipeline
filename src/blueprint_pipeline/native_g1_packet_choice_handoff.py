@@ -16,12 +16,17 @@ from .native_g1_development_selection import verify_g1_packet_choice_bundle
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--setup", type=Path, required=True)
-    parser.add_argument("--choice", type=Path, required=True)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--setup", type=Path)
+    source.add_argument("--handoff", type=Path)
+    parser.add_argument("--choice", type=Path)
     parser.add_argument("--packet", type=Path, required=True)
     args = parser.parse_args(argv)
+    if (args.setup is None) != (args.choice is None):
+        parser.error("--setup requires --choice; --handoff already contains the choice")
     result = verify_g1_packet_choice_bundle(
-        setup_path=args.setup, choice_path=args.choice, bundle=args.packet
+        setup_path=args.setup, choice_path=args.choice,
+        handoff_path=args.handoff, bundle=args.packet,
     )
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0

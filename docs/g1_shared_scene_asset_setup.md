@@ -334,27 +334,37 @@ that each rights review binds its candidate, scene, and inventory. It writes
 two sealed request JSON files and a digest-bound plan. The `--selection` option
 accepts a sealed selection record carrying the same published setup, robot,
 candidate, objective, and scene identities. The existing WebApp configurator
-can also download a choice for a retained packet. For that path, pass its
-`task_evaluation_packet_planning_setup.v1` file as `--setup`, its
-`task_evaluation_packet_policy_pair_choice.v1` file as `--choice`, and the G1
-packet authored from those exact two files in the runtime template. Staging
+can download one handoff containing the retained packet setup and selected
+pair. For that path, pass the file as `--handoff` and the G1 packet authored
+from its exact setup and choice in the runtime template. The older separate
+`--setup` and `--choice` inputs remain valid. Staging
 verifies the packet request's source receipt, original scene, setup, and
 pair-choice digests before writing two requests. It retains the same rights
 checks and, for movement, the confirmed navigation goal check. Staging never
 runs a policy or changes catalog readiness.
+
+When authoring a new G1 packet, `native_g1_scene_packet_request` also accepts
+`--handoff "$PACKET_POLICY_HANDOFF"` alongside its source packet, G1 USD,
+authoring file, and output directory. The same handoff can then be used for
+packet verification and worker staging.
 
 Before preparing the runtime template or rights receipts, the team can check
 the downloaded choice and complete G1 packet directly:
 
 ```bash
 PYTHONPATH=src python -m blueprint_pipeline.native_g1_packet_choice_handoff \
-  --setup "$PACKET_PLANNING_SETUP" --choice "$PACKET_PAIR_CHOICE" \
+  --handoff "$PACKET_POLICY_HANDOFF" \
   --packet "$G1_PACKET"
 ```
 
 This prints a digest-bound `verified_not_executed` receipt. It reads and hashes
 the packet, so a successful result proves the selected scene and task identity;
 it does not prove checkpoint rights, Linux runtime readiness, or a policy run.
+
+After rights review and runtime preparation, stage the same handoff with
+`native_g1_development_selection --handoff "$PACKET_POLICY_HANDOFF"` plus
+`--runtime-template`, one `--rights-review` per selected candidate, and a new
+`--output-dir`. A movement choice also requires `--navigation-authority`.
 
 To attempt both policies for one objective on the same sealed task/site, create
 one worker request per candidate. Keep every runtime and scene field identical;
