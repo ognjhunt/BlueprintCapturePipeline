@@ -331,10 +331,57 @@ def materialize(
     placement = source["placement"]
     scene_digest = canonical_digest(scene_binding)
     task_digest = canonical_digest(task_binding)
+    trajectory_rebound = False
+    readiness_task_binding = task_binding
+    if old["trajectory_digest"] != trajectory["trajectory_digest"]:
+        # A successor release may change only the native adapter's provenance
+        # digest. Reuse is safe only when the complete sealed native plans are
+        # otherwise byte-for-byte equivalent as JSON values; in particular all
+        # phases, task geometry, limits and execution parameters must agree.
+        from .task_evaluation_robot_placement_trajectory import (
+            placement_trajectory_from_native_plan,
+        )
+
+        old_binding = Path(old["base_pose_candidate_path"]).parent
+        native_plans = sorted(
+            (old_binding / "deferred-inputs").glob("*/native_trajectory_plan.v1.json")
+        )
+        require(0 < len(native_plans) <= 16, "scientific_binding_changed")
+        matches: dict[str, dict[str, Any]] = {}
+        for path in native_plans:
+            require(not path.is_symlink() and path.is_file(), "scientific_binding_changed")
+            candidate = _read(path)
+            projected = placement_trajectory_from_native_plan(candidate)
+            if projected["trajectory_digest"] == old["trajectory_digest"]:
+                matches[candidate["plan_digest"]] = candidate
+        require(len(matches) == 1, "scientific_binding_changed")
+        old_native = next(iter(matches.values()))
+        new_native = _read(Path(paths["native_trajectory_plan_path"]))
+        require(
+            placement_trajectory_from_native_plan(new_native)["trajectory_digest"]
+            == trajectory["trajectory_digest"],
+            "scientific_binding_changed",
+        )
+        def without_provenance(plan: Mapping[str, Any]) -> dict[str, Any]:
+            return {
+                key: value for key, value in plan.items()
+                if key not in {"adapter_digest", "plan_digest"}
+            }
+        prior_task_binding = dict(task_binding)
+        prior_task_binding["trajectory_digest"] = old["trajectory_digest"]
+        trajectory_rebound = (
+            without_provenance(old_native) == without_provenance(new_native)
+            and canonical_digest(prior_task_binding) == old["task_binding_digest"]
+        )
+        if trajectory_rebound:
+            # The retained placement receipt and inventory are sealed to the
+            # original trajectory digest. Validate them against that exact
+            # binding while the successor plan records its new provenance.
+            readiness_task_binding = prior_task_binding
     require(
         old["scene_binding_digest"] == scene_digest
-        and old["task_binding_digest"] == task_digest
-        and old["trajectory_digest"] == trajectory["trajectory_digest"]
+        and (old["task_binding_digest"] == task_digest or trajectory_rebound)
+        and (old["trajectory_digest"] == trajectory["trajectory_digest"] or trajectory_rebound)
         and old["configured_scene_revision_digest"] == revision["revision_digest"],
         "scientific_binding_changed",
     )
@@ -382,7 +429,7 @@ def materialize(
         readiness_materializer(
             configured_revision=revision,
             scene_binding=scene_binding,
-            task_binding=task_binding,
+            task_binding=readiness_task_binding,
             placement_receipt=placement,
             candidate_inventory=inventory,
             output_path=base,
@@ -409,12 +456,19 @@ def materialize(
     result = {
         **old,
         "intent_digest": intent["intent_digest"],
+        "task_binding_digest": task_digest,
+        "trajectory_digest": trajectory["trajectory_digest"],
         "base_pose_candidate_path": str(base),
         "native_construction_candidate_universe": universe_ref,
         "plan_path": plan["plan_path"],
         "plan_digest": plan["plan_digest"],
         "completed_placement_adoption": dict(packet),
         "placement_calls_reexecuted": False,
+        **({"trajectory_adapter_provenance_rebound": {
+            "source_plan_digest": old_native["plan_digest"],
+            "successor_plan_digest": new_native["plan_digest"],
+            "physical_plan_fields_identical": True,
+        }} if trajectory_rebound else {}),
     }
     result["result_digest"] = canonical_digest(result, digest_field="result_digest")
     destination = auto._autostart_result_path(root=root, intent_digest=intent["intent_digest"])

@@ -9,10 +9,18 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
 
 @pytest.mark.parametrize('evaluation_id', [None, 'team-eval-one'])
-def test_completed_placement_rebinds_native_plan_without_new_model_or_search(tmp_path, monkeypatch, evaluation_id):
+@pytest.mark.parametrize('provenance_rebound', [False, True])
+def test_completed_placement_rebinds_native_plan_without_new_model_or_search(
+    tmp_path, monkeypatch, evaluation_id, provenance_rebound,
+):
     scene = {"scene": "fixture"}
     task = {"task": "move-object"}
     trajectory = {"trajectory_digest": "sha256:" + "a" * 64}
+    prior_task = task
+    if provenance_rebound:
+        trajectory = {"trajectory_digest": "sha256:" + "b" * 64}
+        task = {**task, "trajectory_digest": trajectory["trajectory_digest"]}
+        prior_task = {**task, "trajectory_digest": "sha256:" + "a" * 64}
     revision = {"revision_digest": "sha256:" + "b" * 64}
     cameras = tmp_path / "old-cameras.json"
     cameras.write_text(json.dumps({"cameras": [{"pose": "fixed"}]}))
@@ -20,8 +28,8 @@ def test_completed_placement_rebinds_native_plan_without_new_model_or_search(tmp
     universe.write_text(json.dumps({"run_id": "retained-run"}))
     old = {
         "scene_binding_digest": canonical_digest(scene),
-        "task_binding_digest": canonical_digest(task),
-        "trajectory_digest": trajectory["trajectory_digest"],
+        "task_binding_digest": canonical_digest(prior_task),
+        "trajectory_digest": prior_task.get("trajectory_digest", trajectory["trajectory_digest"]),
         "configured_scene_revision_digest": revision["revision_digest"],
         "native_construction_candidate_universe": {"path": str(universe)},
         "placement_agent_receipt_digest": "sha256:" + "c" * 64,
@@ -49,6 +57,19 @@ def test_completed_placement_rebinds_native_plan_without_new_model_or_search(tmp
     }
     packet = {"source_result": {"digest": "sha256:" + "f" * 64}}
     monkeypatch.setattr(adoption, "validate_adoption", lambda value: source)
+    if provenance_rebound:
+        from blueprint_pipeline import task_evaluation_robot_placement_trajectory as projector
+
+        old_binding = tmp_path / "old-binding"
+        old_plan = old_binding / "deferred-inputs" / "original" / "native_trajectory_plan.v1.json"
+        old_plan.parent.mkdir(parents=True)
+        old_plan.write_text(json.dumps({"adapter_digest": "old", "plan_digest": "old-plan", "phases": ["same"]}))
+        new_plan = tmp_path / "new-native-plan.json"
+        new_plan.write_text(json.dumps({"adapter_digest": "new", "plan_digest": "new-plan", "phases": ["same"]}))
+        old["base_pose_candidate_path"] = str(old_binding / "candidate.json")
+        monkeypatch.setattr(projector, "placement_trajectory_from_native_plan", lambda plan: {
+            "trajectory_digest": "sha256:" + ("a" if plan["adapter_digest"] == "old" else "b") * 64,
+        })
     seen = []
 
     def forbid(**kwargs):
@@ -66,6 +87,7 @@ def test_completed_placement_rebinds_native_plan_without_new_model_or_search(tmp
 
     def readiness(**kwargs):
         assert kwargs["placement_receipt"] is placement
+        assert kwargs["task_binding"] == prior_task
         Path(kwargs["output_path"]).write_text("{}")
         seen.append("readiness")
 
@@ -100,6 +122,8 @@ def test_completed_placement_rebinds_native_plan_without_new_model_or_search(tmp
             "runtime_binding_path",
         )
     }
+    if provenance_rebound:
+        paths["native_trajectory_plan_path"] = str(new_plan)
     kwargs = dict(
         intent=intent,
         root=tmp_path,
@@ -126,6 +150,13 @@ def test_completed_placement_rebinds_native_plan_without_new_model_or_search(tmp
         "readiness",
         "plan",
     ]
+    if provenance_rebound:
+        assert result["trajectory_digest"] == trajectory["trajectory_digest"]
+        assert result["task_binding_digest"] == canonical_digest(task)
+        assert result["trajectory_adapter_provenance_rebound"]["physical_plan_fields_identical"] is True
+        new_plan.write_text(json.dumps({"adapter_digest": "new", "plan_digest": "new-plan", "phases": ["changed"]}))
+        with pytest.raises(ValueError, match="scientific_binding_changed"):
+            adoption.materialize(**{**kwargs, "root": tmp_path / "changed"})
     with pytest.raises(ValueError, match="scientific_binding_changed"):
         adoption.materialize(**{**kwargs, "task_binding": {"task": "different"}})
     if evaluation_id:
