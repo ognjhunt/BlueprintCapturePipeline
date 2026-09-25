@@ -51,6 +51,66 @@ def test_plan_uses_same_pinned_image_and_copied_python(
     assert plan["model_bytes_downloaded"] is False
 
 
+def test_in_container_plan_uses_pinned_lock_without_nested_docker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _checkout(tmp_path, monkeypatch)
+    plan = builder.prepare_g1_policy_runtime_build(
+        checkout=source,
+        output_dir=tmp_path / "new-build",
+        execution_mode="inside_isaac_container",
+    )
+    assert plan["image"] == builder.NATIVE_TASK_ARENA_IMAGE
+    assert plan["command"][:4] == ["/bin/bash", "-euo", "pipefail", "-c"]
+    assert "--require-hashes" in plan["command"][-1]
+    assert "-m venv --copies" in plan["command"][-1]
+    assert not (tmp_path / "new-build").exists()
+
+
+def test_in_container_execution_refuses_unverified_image_before_writing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _checkout(tmp_path, monkeypatch)
+    output = tmp_path / "new-build"
+    plan = builder.prepare_g1_policy_runtime_build(
+        checkout=source, output_dir=output, execution_mode="inside_isaac_container"
+    )
+    monkeypatch.setattr(builder.sys, "platform", "linux")
+    monkeypatch.delenv(builder.PINNED_IMAGE_ENV, raising=False)
+    with pytest.raises(ValueError, match="g1_policy_runtime_pinned_container_unverified"):
+        builder.execute_g1_policy_runtime_build(plan=plan)
+    assert not output.exists()
+
+
+def test_in_container_execution_runs_direct_shell_after_transport_assertion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _checkout(tmp_path, monkeypatch)
+    output = tmp_path / "new-build"
+    plan = builder.prepare_g1_policy_runtime_build(
+        checkout=source, output_dir=output, execution_mode="inside_isaac_container"
+    )
+    monkeypatch.setattr(builder.sys, "platform", "linux")
+    monkeypatch.setenv(builder.PINNED_IMAGE_ENV, builder.NATIVE_TASK_ARENA_IMAGE)
+    original_is_file = Path.is_file
+    monkeypatch.setattr(
+        Path, "is_file",
+        lambda path: True if str(path) == "/isaac-sim/python.sh" else original_is_file(path),
+    )
+
+    def run(command: list[str], **_kwargs: object) -> SimpleNamespace:
+        assert command[:4] == ["/bin/bash", "-euo", "pipefail", "-c"]
+        (output / "policy-runtime/bin").mkdir(parents=True)
+        (output / "policy-runtime/bin/python").write_bytes(b"python")
+        (output / "installed.freeze").write_text("torch==2.10.0\n")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(builder.subprocess, "run", run)
+    result = builder.execute_g1_policy_runtime_build(plan=plan)
+    assert result["status"] == "built_import_probe_passed_no_cuda_probe"
+    assert result["execution_mode"] == "inside_isaac_container"
+
+
 def test_plan_refuses_changed_upstream_pyproject(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
