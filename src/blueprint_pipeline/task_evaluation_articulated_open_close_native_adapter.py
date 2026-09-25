@@ -451,6 +451,9 @@ def adapt_articulated_open_close_task_template(
         "cell_id": f"{task['identity']['id']}-nominal",
         "seed": seed,
         "parameter_bindings": [],
+        "policy_neutral": True,
+        "caller_asserted_success": False,
+        "learned_policy_outcomes_consulted": False,
         "instance_digest": "",
     }
     scenario_document["instance_digest"] = canonical_digest(
