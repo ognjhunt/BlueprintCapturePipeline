@@ -21,7 +21,10 @@ from .native_g1_navigation_goal import (
     validate_g1_navigation_goal_authority,
 )
 from .native_g1_runtime_assembly import run_g1_supervised_built_scene_episode
-from .native_g1_run_preflight import preflight_g1_shared_scene_run
+from .native_g1_run_preflight import (
+    preflight_g1_shared_scene_run,
+    verify_g1_host_asset_identities,
+)
 from .native_g1_shared_scene_episode import G1_BOX_CANDIDATES, G1_NAVIGATION_CANDIDATES
 
 
@@ -199,13 +202,33 @@ def run_g1_development_worker(
     device_binding = None
     episode = None
     failure: BaseException | None = None
+    runtime_pxr_preflight = False
     teardown: dict[str, Any] = {"environment": "not_started", "simulator": "not_started"}
     try:
         inputs = _preflight_inputs(sealed)
         phase = "packet_verification"
         packet_receipt = _verify_packet(inputs["bundle_root"])
         phase = "preflight"
-        preflight = preflight_g1_shared_scene_run(**inputs)
+        try:
+            preflight = preflight_g1_shared_scene_run(**inputs)
+        except ValueError as exc:
+            if str(exc) != "g1_preflight_pxr_unavailable":
+                raise
+            # Isaac's USD bindings become importable only after AppLauncher
+            # starts Kit in the pinned container. Verify model/source bytes and
+            # human rights before that launch; complete the USD scene check
+            # immediately afterward and before any environment or policy work.
+            assets = verify_g1_host_asset_identities(**{
+                key: value for key, value in inputs.items()
+                if key not in {"scene_plan_path", "bundle_root"}
+            })
+            preflight = {
+                "status": "staged_inputs_verified",
+                "scene_plan_digest": packet_receipt["arena_scene_plan_digest"],
+                "robot_id": "unitree_g1",
+                **assets,
+            }
+            runtime_pxr_preflight = True
         if (
             preflight.get("status") != "staged_inputs_verified"
             or preflight.get("scene_plan_digest")
@@ -233,6 +256,17 @@ def run_g1_development_worker(
             )
         phase = "simulator_launch"
         app, launch = _launch_scene(request=sealed, plan=plan)
+        if runtime_pxr_preflight:
+            phase = "runtime_usd_preflight"
+            verified = preflight_g1_shared_scene_run(**inputs)
+            if any(verified.get(key) != preflight.get(key) for key in (
+                "status", "scene_plan_digest", "robot_id", "candidate_id",
+                "policy_role", "inventory_file_sha256", "checkpoint_files",
+                "policy_server_source", "sonic_provider_source", "sonic_encoder",
+                "sonic_decoder",
+            )):
+                raise ValueError("g1_worker_runtime_usd_preflight_changed")
+            preflight = verified
         phase = "scene_build"
         built, device_binding = _build_scene(
             plan=plan, bundle_root=inputs["bundle_root"], device=sealed["device"]

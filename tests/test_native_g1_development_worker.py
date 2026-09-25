@@ -160,6 +160,90 @@ def test_preflight_failure_still_writes_terminal_receipt(tmp_path: Path, monkeyp
     assert result["blocker"]["message"] == "model_bytes_mismatch"
 
 
+def test_usd_preflight_waits_for_isaac_runtime_and_keeps_rights_gate(
+    tmp_path: Path, monkeypatch
+) -> None:
+    request = _request(tmp_path)
+    monkeypatch.setattr(worker, "_verify_packet", _packet)
+    events: list[str] = []
+    assets = {
+        "candidate_id": CANDIDATE,
+        "policy_role": "manipulation",
+        "inventory_file_sha256": INVENTORY,
+        "checkpoint_files": [],
+        "policy_server_source": {},
+        "sonic_provider_source": {},
+        "sonic_encoder": {},
+        "sonic_decoder": {},
+    }
+    monkeypatch.setattr(worker, "verify_g1_host_asset_identities", lambda **kwargs: (
+        events.append("model_bytes_verified") or assets
+    ))
+
+    def preflight(**kwargs):
+        events.append("usd_preflight")
+        if events.count("usd_preflight") == 1:
+            raise ValueError("g1_preflight_pxr_unavailable")
+        return {**_preflight(**kwargs), **assets}
+
+    monkeypatch.setattr(worker, "preflight_g1_shared_scene_run", preflight)
+    original_rights = worker._rights_review
+
+    def rights(value, *, preflight):
+        result = original_rights(value, preflight=preflight)
+        events.append("rights_verified")
+        return result
+
+    monkeypatch.setattr(worker, "_rights_review", rights)
+    app = SimpleNamespace(close=lambda: events.append("simulator_closed"))
+
+    def launch(**kwargs):
+        assert events[-2:] == ["model_bytes_verified", "rights_verified"]
+        events.append("simulator_launched")
+        return app, {"status": "launched"}
+
+    monkeypatch.setattr(worker, "_launch_scene", launch)
+    monkeypatch.setattr(worker, "_build_scene", lambda **kwargs: (
+        (_ for _ in ()).throw(AssertionError("scene must not build after test stop"))
+    ))
+    result = worker.run_g1_development_worker(
+        request=request, output_dir=tmp_path / "usd-runtime"
+    )
+    assert result["status"] == "blocked"
+    assert result["phase_reached"] == "scene_build"
+    assert events == [
+        "usd_preflight", "model_bytes_verified", "rights_verified", "simulator_launched",
+        "usd_preflight", "simulator_closed",
+    ]
+
+
+def test_usd_runtime_fallback_rejects_rights_before_launch(
+    tmp_path: Path, monkeypatch
+) -> None:
+    request = _request(tmp_path)
+    request["rights_review"]["checkpoint_terms_reviewed"] = False
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+    monkeypatch.setattr(worker, "_verify_packet", _packet)
+    monkeypatch.setattr(worker, "preflight_g1_shared_scene_run", lambda **kwargs: (
+        (_ for _ in ()).throw(ValueError("g1_preflight_pxr_unavailable"))
+    ))
+    monkeypatch.setattr(worker, "verify_g1_host_asset_identities", lambda **kwargs: {
+        "candidate_id": CANDIDATE,
+        "policy_role": "manipulation",
+        "inventory_file_sha256": INVENTORY,
+    })
+    monkeypatch.setattr(worker, "_launch_scene", lambda **kwargs: (
+        (_ for _ in ()).throw(AssertionError("launched without rights"))
+    ))
+    result = worker.run_g1_development_worker(
+        request=request, output_dir=tmp_path / "usd-rights-blocked"
+    )
+    assert result["status"] == "blocked"
+    assert result["phase_reached"] == "rights_review"
+    assert result["blocker"]["message"] == "g1_worker_rights_review_invalid"
+    assert result["teardown"]["simulator"] == "not_started"
+
+
 def test_changed_packet_binding_refuses_simulator_launch(tmp_path: Path, monkeypatch) -> None:
     request = _request(tmp_path)
     monkeypatch.setattr(
