@@ -259,6 +259,34 @@ def test_retained_placement_provenance_accepts_identical_cached_plans_only(tmp_p
         evidence._validated_trajectory_provenance_rebound(result=result, ancestor={"result": previous})
 
 
+def test_retained_placement_finds_original_receipt_binding_in_linear_reads(tmp_path, monkeypatch):
+    from blueprint_pipeline import task_evaluation_retained_controls_evidence as evidence
+
+    parent = None
+    for name in ("original", "successor-one", "successor-two"):
+        value = {"name": name}
+        if parent is not None:
+            value["completed_placement_adoption"] = {"source_result": parent}
+        path = tmp_path / f"{name}.json"
+        path.write_text(json.dumps(value))
+        parent = evidence._file(path)
+
+    reads = []
+    original_reader = evidence._placement_ref
+
+    def counted(ref):
+        reads.append(ref["digest"])
+        return original_reader(ref)
+
+    monkeypatch.setattr(evidence, "_placement_ref", counted)
+    previous, original = evidence._original_placement_result(
+        {"source_result": parent}, {"digest": "sha256:" + "f" * 64}
+    )
+    assert previous["name"] == "successor-two"
+    assert original["name"] == "original"
+    assert len(reads) == 3
+
+
 def test_legacy_checkpoint_alias_is_byte_identical_idempotent_and_never_overwrites(
     tmp_path, monkeypatch
 ):

@@ -104,6 +104,21 @@ def _validated_trajectory_provenance_rebound(
     )
 
 
+def _original_placement_result(
+    parent: Mapping[str, Any], current_result_ref: Mapping[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Read a previously validated adoption lineage once per generation."""
+    previous = _placement_ref(parent["source_result"])
+    original = previous
+    seen = {current_result_ref["digest"]}
+    while original.get("completed_placement_adoption") is not None:
+        reference = original["completed_placement_adoption"]["source_result"]
+        _placement_require(reference["digest"] not in seen, "checkpoint_lineage_invalid")
+        seen.add(reference["digest"])
+        original = _placement_ref(reference)
+    return previous, original
+
+
 def validate_placement_adoption(
     value: Mapping[str, Any], *, expected_owner_digest: str | None = None
 ) -> dict[str, Any]:
@@ -150,35 +165,35 @@ def validate_placement_adoption(
         and _file(inventory_path)["digest"] == checkpoint["inventory_sha256"],
         "checkpoint_changed",
     )
-    ancestor = None
+    original = result
     if result.get("completed_placement_adoption") is not None:
         parent = result["completed_placement_adoption"]
-        ancestor = validate_placement_adoption(parent)
-        original = ancestor["result"]
+        # The intent validator above has already validated this exact parent.
+        # Revalidating it here doubles traversal at every release generation.
+        previous, original = _original_placement_result(parent, value["source_result"])
         _placement_require(
             result.get("placement_calls_reexecuted") is False
             and value["source_agent_checkpoint"] == parent["source_agent_checkpoint"]
-            and result["scene_binding_digest"] == original["scene_binding_digest"]
-            and result["placement_agent_receipt_digest"] == original["placement_agent_receipt_digest"]
-            and result["candidate_inventory_digest"] == original["candidate_inventory_digest"]
-            and result["selected_candidate_id"] == original["selected_candidate_id"]
+            and result["scene_binding_digest"] == previous["scene_binding_digest"]
+            and result["placement_agent_receipt_digest"] == previous["placement_agent_receipt_digest"]
+            and result["candidate_inventory_digest"] == previous["candidate_inventory_digest"]
+            and result["selected_candidate_id"] == previous["selected_candidate_id"]
             and result["cpu_placement_checkpoint_binding_digest"]
-            == original["cpu_placement_checkpoint_binding_digest"],
+            == previous["cpu_placement_checkpoint_binding_digest"],
             "checkpoint_lineage_invalid",
         )
-        if result["task_binding_digest"] != original["task_binding_digest"]:
-            _validated_trajectory_provenance_rebound(result=result, ancestor=ancestor)
+        if result["task_binding_digest"] != previous["task_binding_digest"]:
+            _validated_trajectory_provenance_rebound(result=result, ancestor={"result": previous})
         else:
             _placement_require(
                 result.get("trajectory_adapter_provenance_rebound") is None
-                and result["trajectory_digest"] == original["trajectory_digest"],
+                and result["trajectory_digest"] == previous["trajectory_digest"],
                 "checkpoint_lineage_invalid",
             )
-    receipt_binding = ancestor["result"] if ancestor is not None else result
     receipt = validate_robot_placement_receipt(
         _read(receipt_path),
-        expected_scene_binding_digest=receipt_binding["scene_binding_digest"],
-        expected_task_binding_digest=receipt_binding["task_binding_digest"],
+        expected_scene_binding_digest=original["scene_binding_digest"],
+        expected_task_binding_digest=original["task_binding_digest"],
     )
     inventory = _read(inventory_path)
     _placement_require(
