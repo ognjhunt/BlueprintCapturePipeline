@@ -194,7 +194,35 @@ runtime source archive, checks the selected checkpoint, server and SONIC bytes,
 and validates the candidate-specific rights review. Navigation candidates also
 need a team-confirmed goal authority bound to this scene. The plan records
 those host checks under `host_preflight`; USD articulation, policy imports,
-CUDA, and the actual episode still require the container worker. Planning
+CUDA, and the actual episode still require the container worker.
+
+The pinned HumanoidArena checkout's LeRobot project requires Python 3.12 and
+its `pi` extra. The dependency lock at
+`configs/g1_humanoidarena_lerobot_pi_py312_linux_x86_64.requirements.txt`
+was resolved against that checkout's exact `lerobot/pyproject.toml` for Linux
+x86_64, with package versions and distribution hashes. It includes source-built
+`evdev`; the pinned Isaac image must be able to build it. Plan the environment
+without touching Docker, then execute on the authorized Linux host using a
+**new** output directory:
+
+```bash
+PYTHONPATH=src python -m blueprint_pipeline.native_g1_policy_runtime_build \
+  --checkout "$PINNED_HUMANOIDARENA_CHECKOUT" \
+  --output-dir "$NEW_POLICY_ENV_BUILD_DIR"
+# Review the printed plan, then run the same command with --execute.
+```
+
+The builder rechecks the clean upstream revision, its server and project bytes,
+and the lock before Docker starts. It creates a copied Python environment in
+`$NEW_POLICY_ENV_BUILD_DIR/policy-runtime` inside the pinned Isaac image, installs
+the hashed dependency lock, checks package consistency, and probes imports of
+the pinned Diffusion and π0.5 policies. It retains `build.log`,
+`installed.freeze`, and a terminal result. The build uses network access for
+Python packages. It does not download models, attest a CUDA device, run Isaac,
+or prove checkpoint inference. A real Linux build remains to be observed.
+
+Use that `policy-runtime` subdirectory as `--policy-runtime-root` and its
+`bin/python` path in each sealed G1 worker request. Planning the episode
 without `--execute` starts no container:
 
 ```bash
