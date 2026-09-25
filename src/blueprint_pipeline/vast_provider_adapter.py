@@ -99,7 +99,16 @@ from .native_task_arena_execution_contract import (
     NATIVE_TASK_ARENA_POLICY_CANDIDATES,
     required_archive_entries as native_task_arena_required_archive_entries,
 )
-from .native_task_isaaclab_launch import NATIVE_TASK_ARENA_IMAGE
+from .vast_provider_field_parsing import (
+    number as _number,
+    normalized_binary_capability as _normalized_binary_capability,
+    content_range_total_bytes as _content_range_total_bytes,
+    version_tuple as _version_tuple,
+)
+from .native_g1_vast_bundle_contract import (
+    REQUIRED_ENTRIES as NATIVE_G1_REQUIRED_ENTRIES,
+    validate_manifest as validate_g1_manifest,
+)
 from .provider_output_disk_capacity import (
     download_provider_output_with_capacity_guard as _download_provider_output_with_capacity_guard,
 )
@@ -445,63 +454,6 @@ def _default_machine_avoidlist_path(job_dir: Path) -> Path:
     """Share proven-bad hosts across sibling jobs in one bounded run root."""
 
     return job_dir.parent / "vast_machine_avoidlist.json"
-
-
-def _number(value: Any) -> float | None:
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, (int, float)):
-        return float(value)
-    if isinstance(value, str):
-        try:
-            return float(value)
-        except ValueError:
-            return None
-    return None
-
-
-def _normalized_binary_capability(value: Any) -> bool | None:
-    """Normalize provider 0/1 capability fields without treating unknown as false."""
-    if isinstance(value, bool):
-        return value
-    number = _number(value)
-    if number == 1:
-        return True
-    if number == 0:
-        return False
-    text = _string(value).strip().lower()
-    if text in {"true", "yes"}:
-        return True
-    if text in {"false", "no"}:
-        return False
-    return None
-
-
-def _content_range_total_bytes(value: Any) -> int | None:
-    text = _string(value)
-    if "/" not in text:
-        return None
-    total = text.rsplit("/", 1)[-1].strip()
-    if not total or total == "*":
-        return None
-    try:
-        parsed = int(total)
-    except ValueError:
-        return None
-    return parsed if parsed >= 0 else None
-
-
-def _version_tuple(value: Any) -> tuple[int, int, int] | None:
-    text = _string(value)
-    if not text:
-        return None
-    parts = re.findall(r"\d+", text)
-    if not parts:
-        return None
-    numbers = [int(item) for item in parts[:3]]
-    while len(numbers) < 3:
-        numbers.append(0)
-    return numbers[0], numbers[1], numbers[2]
 
 
 def _driver_version(offer: Mapping[str, Any]) -> str:
@@ -2614,33 +2566,6 @@ def _blueprint_bundle_preflight(
         "provider_runtime/blueprint_pipeline/episode_visual_evidence.py",
         "provider_runtime/adp009d_policy_server_worker.py",
     }
-    native_g1_required_entries = {
-        "provider_runtime/run_adp_arena_provider_runtime.sh",
-        "provider_runtime/native_g1_provider_manifest.json",
-        "provider_runtime/inputs/native_g1_development_campaign.v1.json",
-        "provider_runtime/inputs/book_handoff.json",
-        "provider_runtime/inputs/navigation_authority.json",
-        "provider_runtime/inputs/scene_packets/manipulation/native_task_arena_packet_receipt.v1.json",
-        "provider_runtime/inputs/scene_packets/movement/native_task_arena_packet_receipt.v1.json",
-        "provider_runtime/publisher-source/native_g1_publisher_source_stage.v1.json",
-        "provider_runtime/publisher-source/source/.git/config",
-        "provider_runtime/native_task_runtime_sources/native_task_runtime_source_packet.v1.json",
-        "provider_runtime/blueprint_pipeline/__init__.py",
-        "provider_runtime/blueprint_pipeline/native_g1_provider_runtime.py",
-        "provider_runtime/scripts/fetch_g1_humanoidarena_checkpoint.py",
-        "provider_runtime/scripts/fetch_g1_sonic_assets.py",
-        "configs/g1_humanoidarena_checkpoint_inventory.v1.json",
-        "configs/g1_sonic_default_asset_inventory.v1.json",
-        "configs/g1_humanoidarena_lerobot_pi_py312_linux_x86_64.requirements.txt",
-    } | {
-        "provider_runtime/inputs/rights/" + candidate + ".json"
-        for candidate in (
-            "humanoidarena_dp_g1_dex3_sonic",
-            "humanoidarena_pi05_g1_dex3_sonic",
-            "humanoidarena_dp_g1_dex3_sonic_vision_navi",
-            "humanoidarena_pi05_g1_dex3_sonic_vision_navi",
-        )
-    }
     paired_target_native_import_required_entries = {
         "provider_runtime/run_paired_target_native_import_probe.sh",
         "provider_runtime/run_paired_target_native_import_probe.py",
@@ -2792,7 +2717,7 @@ def _blueprint_bundle_preflight(
         runner_member = "provider_runtime/adp_arena_provider_runner.py"
         readiness_name = "adp_arena_provider_manifest.json"
     elif provider_bundle_kind == "native_g1_development_campaign":
-        required_entries = native_g1_required_entries
+        required_entries = NATIVE_G1_REQUIRED_ENTRIES
         entrypoint_member = "provider_runtime/run_adp_arena_provider_runtime.sh"
         runner_member = "provider_runtime/blueprint_pipeline/native_g1_provider_runtime.py"
         readiness_name = "native_g1_provider_manifest.json"
@@ -3094,57 +3019,7 @@ def _blueprint_bundle_preflight(
                         readiness_member = "provider_runtime/native_g1_provider_manifest.json"
                         readiness_source = "immutable_bundle_member"
                         try:
-                            g1_manifest = json.loads(archive.read(readiness_member))
-                            g1_campaign = json.loads(
-                                archive.read(
-                                    "provider_runtime/inputs/native_g1_development_campaign.v1.json"
-                                )
-                            )
-                            g1_source = json.loads(
-                                archive.read(
-                                    "provider_runtime/publisher-source/"
-                                    "native_g1_publisher_source_stage.v1.json"
-                                )
-                            )
-                            g1_runtime_source = json.loads(
-                                archive.read(
-                                    "provider_runtime/native_task_runtime_sources/"
-                                    "native_task_runtime_source_packet.v1.json"
-                                )
-                            )
-                            expected_candidates = [
-                                "humanoidarena_dp_g1_dex3_sonic",
-                                "humanoidarena_pi05_g1_dex3_sonic",
-                                "humanoidarena_dp_g1_dex3_sonic_vision_navi",
-                                "humanoidarena_pi05_g1_dex3_sonic_vision_navi",
-                            ]
-                            if (
-                                g1_manifest.get("schema_version") != "native_g1_provider_bundle.v1"
-                                or g1_manifest.get("status") != "ready"
-                                or g1_manifest.get("provider_bundle_kind")
-                                != "native_g1_development_campaign"
-                                or g1_manifest.get("manifest_digest")
-                                != canonical_digest(g1_manifest, digest_field="manifest_digest")
-                                or g1_manifest.get("container_image") != NATIVE_TASK_ARENA_IMAGE
-                                or g1_manifest.get("expected_output_filename")
-                                != "native_g1_provider_campaign_result.v1.json"
-                                or g1_manifest.get("runtime_entrypoint") != entrypoint_member
-                                or g1_manifest.get("candidate_ids") != expected_candidates
-                                or g1_manifest.get("campaign_plan_digest")
-                                != g1_campaign.get("plan_digest")
-                                or g1_manifest.get("publisher_source_receipt_digest")
-                                != g1_source.get("receipt_digest")
-                                or (g1_manifest.get("runtime_source_packet") or {}).get(
-                                    "packet_sha256"
-                                ) != g1_runtime_source.get("packet_sha256")
-                                or (g1_manifest.get("runtime_source_packet") or {}).get(
-                                    "embedded_in_provider_bundle"
-                                ) is not False
-                                or g1_manifest.get("claim_ceiling") != "development_only"
-                                or g1_manifest.get("provider_zero_required_after_return") is not True
-                            ):
-                                raise ValueError("native_g1_manifest_binding_invalid")
-                            readiness = dict(g1_manifest)
+                            readiness = dict(validate_g1_manifest(archive))
                             readiness["local_bundle_ready_for_remote_staging"] = True
                         except (KeyError, TypeError, ValueError, json.JSONDecodeError):
                             blockers.append("native_g1_provider_manifest_invalid")

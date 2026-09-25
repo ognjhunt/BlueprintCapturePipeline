@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .common import ensure_dir, redacted_failure_detail, utc_now_iso, write_json
+from .paid_cpu_builder_arguments import cpu_vector as _cpu_vector
 from .decision_evidence_contracts import canonical_digest
 from .groot_oscar_digitalocean_builder import (
     DETACHED_CPU_BUILD_SUPERVISOR_ENV,
@@ -1248,42 +1249,6 @@ def configure_or_launch_detached_gpu_canary(
         return 0 if detached.get("status") == "supervisor_started" else 2
     _configure_detached_supervisor_signal_policy(command)
     return None
-
-
-def _cpu_vector(args: argparse.Namespace) -> list[str]:
-    values = [
-        "--output-dir",
-        args.output_dir,
-        "--packet-manifest",
-        args.packet_manifest,
-        "--builder-evidence",
-        args.builder_evidence,
-        "--spend",
-        args.spend,
-        "--token-file",
-        args.token_file,
-        "--docker-username-file",
-        args.docker_username_file,
-        "--docker-password-file",
-        args.docker_password_file,
-        "--hf-token-file",
-        args.hf_token_file,
-        "--runpod-s3-access-key-file",
-        args.runpod_s3_access_key_file,
-        "--runpod-s3-secret-key-file",
-        args.runpod_s3_secret_key_file,
-        "--login-private-key",
-        args.login_private_key,
-        "--host-private-key",
-        args.host_private_key,
-        "--ssh-key-id",
-        str(args.ssh_key_id),
-        "--region",
-        args.region,
-    ]
-    if args.allow_paid:
-        values.append("--allow-paid")
-    return values
 
 
 def _missing_cpu_provider_arguments(args: argparse.Namespace) -> list[str]:
