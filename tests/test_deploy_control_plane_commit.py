@@ -2531,6 +2531,24 @@ def test_deploy_drains_prior_agent_tasks_before_adopting_release(tmp_path, monke
     assert ['systemctl', 'restart', 'blueprint-agent-execution.service'] in calls
 
 
+def test_deploy_drains_agent_before_switching_away_from_its_worker(tmp_path, monkeypatch):
+    from tests.test_agent_production_service import fixture
+    from blueprint_pipeline.agent_execution import release
+
+    service, task, _, config_path = fixture(tmp_path)
+    service.enqueue(task.task_id, "fixture-client")
+    service.journal.set_state(task.task_id, "completed", result={"output": {"summary": "retained"}})
+    monkeypatch.setattr(deploy, "_systemd_unit_state", lambda unit: {"state": "active"})
+    monkeypatch.setattr(release.time, "sleep", lambda seconds: service.service.tick())
+    result = deploy._drain_agent_execution_before_release_switch(
+        expected_commit="b" * 40, config_path=config_path,
+    )
+    assert result["status"] == "drained"
+    assert service.journal.task(task.task_id)["cleanup_state"] == "deleted"
+    assert json.loads(config_path.read_text())["source_commit"] == "a" * 40
+    assert (service.journal.root / release.MARKER).is_file()
+
+
 @pytest.mark.slow
 def test_runtime_provision_uses_target_release_imports(tmp_path, monkeypatch):
     """An old deployer's imported module must not define the new bundle inventory."""
