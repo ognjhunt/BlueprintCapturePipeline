@@ -333,6 +333,7 @@ def run_g1_development_pair(
                 episode_path = attempt_root / "episode" / EPISODE_FILENAME
             else:
                 from .native_g1_container_run import prepare_g1_container_run
+                from .native_g1_container_host import record_g1_container_host
 
                 plan = prepare_g1_container_run(
                     request_path=request_path,
@@ -343,6 +344,7 @@ def run_g1_development_pair(
                     repo_root=Path(__file__).resolve().parents[2],
                 )
                 worker_request_digest = plan["container_request_digest"]
+                record_g1_container_host(output_dir=attempt_root)
                 with (attempt_root / "container.log").open("x", encoding="utf-8") as stream:
                     process = subprocess.run(
                         plan["command"], stdout=stream, stderr=subprocess.STDOUT,

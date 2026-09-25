@@ -28,6 +28,7 @@ from .native_g1_development_worker import (
     _rights_review,
     _verify_packet,
 )
+from .native_g1_container_host import record_g1_container_host
 from .native_g1_navigation_goal import (
     validate_g1_navigation_goal,
     validate_g1_navigation_goal_authority,
@@ -373,6 +374,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         )
         return 0
+    record_g1_container_host(output_dir=args.output_dir)
     with (args.output_dir / "container.log").open("w", encoding="utf-8") as stream:
         try:
             completed = subprocess.run(

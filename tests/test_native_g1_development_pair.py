@@ -298,6 +298,7 @@ def test_container_pair_uses_resealed_worker_request_digest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from blueprint_pipeline import native_g1_container_run
+    from blueprint_pipeline import native_g1_container_host
 
     paths, _ = _paired_requests(tmp_path)
     container_digest = "sha256:" + "e" * 64
@@ -319,6 +320,7 @@ def test_container_pair_uses_resealed_worker_request_digest(
 
     monkeypatch.setattr(pair.sys, "platform", "linux")
     monkeypatch.setattr(native_g1_container_run, "prepare_g1_container_run", prepare)
+    monkeypatch.setattr(native_g1_container_host, "record_g1_container_host", lambda **_kwargs: {})
     monkeypatch.setattr(pair.subprocess, "run", run)
     result = pair.run_g1_development_pair(
         request_paths=paths, output_dir=tmp_path / "comparison", mode="container",
@@ -329,4 +331,37 @@ def test_container_pair_uses_resealed_worker_request_digest(
     assert result["status"] == "blocked"
     assert result["attempts"][0]["worker_result_digest"]
     assert result["attempts"][0]["blocker"]["message"] == "model_bytes_mismatch"
+    assert result["not_attempted_candidate_ids"] == [PI]
+
+
+def test_container_pair_refuses_unready_host_before_docker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blueprint_pipeline import native_g1_container_run, native_g1_container_host
+
+    paths, _ = _paired_requests(tmp_path)
+
+    def prepare(**kwargs: object) -> dict:
+        kwargs["output_dir"].mkdir()
+        return {"command": ["docker", "run", "fixture"],
+                "container_request_digest": "sha256:" + "e" * 64}
+
+    def fail_host(**_kwargs: object) -> dict:
+        raise ValueError("g1_container_gpu_zero_missing")
+
+    def forbidden_docker(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("docker must not start")
+
+    monkeypatch.setattr(pair.sys, "platform", "linux")
+    monkeypatch.setattr(native_g1_container_run, "prepare_g1_container_run", prepare)
+    monkeypatch.setattr(native_g1_container_host, "record_g1_container_host", fail_host)
+    monkeypatch.setattr(pair.subprocess, "run", forbidden_docker)
+    result = pair.run_g1_development_pair(
+        request_paths=paths, output_dir=tmp_path / "comparison", mode="container",
+        source_receipt_path=tmp_path / "source-receipt.json",
+        source_packet_path=tmp_path / "source-packet.tar",
+        policy_runtime_root=tmp_path / "policy-runtime",
+    )
+    assert result["status"] == "blocked"
+    assert result["attempts"][0]["blocker"]["message"] == "g1_container_gpu_zero_missing"
     assert result["not_attempted_candidate_ids"] == [PI]

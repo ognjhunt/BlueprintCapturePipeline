@@ -257,3 +257,29 @@ def test_container_plan_refuses_policy_python_outside_mounted_runtime(tmp_path: 
     with pytest.raises(ValueError, match="g1_container_policy_python_invalid"):
         prepare_g1_container_run(**paths)
     assert not paths["output_dir"].exists()
+
+
+def test_execute_refuses_unready_host_before_docker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _inputs(tmp_path)
+    def prepare(**kwargs: object) -> dict:
+        kwargs["output_dir"].mkdir()
+        return {"command": ["docker", "run", "fixture"]}
+    def fail_host(**_kwargs: object) -> dict:
+        raise ValueError("g1_container_pinned_image_unavailable")
+    def forbidden_docker(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("docker must not start")
+    monkeypatch.setattr(container_run.sys, "platform", "linux")
+    monkeypatch.setattr(container_run, "prepare_g1_container_run", prepare)
+    monkeypatch.setattr(container_run, "record_g1_container_host", fail_host)
+    monkeypatch.setattr(container_run.subprocess, "run", forbidden_docker)
+    with pytest.raises(ValueError, match="g1_container_pinned_image_unavailable"):
+        container_run.main([
+            "--request", str(paths["request_path"]),
+            "--source-receipt", str(paths["source_receipt_path"]),
+            "--source-packet", str(paths["source_packet_path"]),
+            "--policy-runtime-root", str(paths["policy_runtime_root"]),
+            "--output-dir", str(paths["output_dir"]),
+            "--execute",
+        ])
