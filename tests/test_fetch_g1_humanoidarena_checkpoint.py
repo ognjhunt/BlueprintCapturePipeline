@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -129,6 +130,75 @@ def test_candidate_inventory_digest_rejects_changed_file_identity(tmp_path: Path
             inventory_path=inventory, candidate_id="dp", output_dir=tmp_path / "checkpoints",
             verify_only=True,
         )
+
+
+def test_large_checkpoint_ranges_are_complete_before_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    content = b"checkpoint" * (2 * 1024 * 1024 + 1)
+    calls: list[tuple[int, int]] = []
+
+    def open_range(url: str, *, headers: dict[str, str]):
+        assert url.startswith("https://modelscope.cn/")
+        start, end = (int(part) for part in headers["Range"][6:].split("-"))
+        calls.append((start, end))
+        response = _Response(content[start : end + 1], url)
+        response.status = 206
+        response.headers = {"Content-Range": f"bytes {start}-{end}/{len(content)}"}
+        return response
+
+    monkeypatch.setattr(fetch, "_open_https", open_range)
+    with tempfile.NamedTemporaryFile(dir=tmp_path) as stream:
+        assert fetch._download_pinned_ranges(
+            "https://modelscope.cn/pinned", stream.fileno(), len(content),
+            chunk_size=8 * 1024 * 1024, workers=3,
+        ) == len(content)
+        assert Path(stream.name).read_bytes() == content
+    assert len(calls) == 3
+
+
+def test_candidate_materialization_owns_ranged_publish(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    content = b"range-verified-checkpoint"
+    inventory = _inventory(tmp_path, content)
+    monkeypatch.setattr(fetch, "RANGED_DOWNLOAD_MIN_BYTES", 1)
+
+    def open_range(url: str, *, headers: dict[str, str]):
+        assert headers["Range"] == f"bytes=0-{len(content) - 1}"
+        response = _Response(content, url)
+        response.status = 206
+        response.headers = {"Content-Range": f"bytes 0-{len(content) - 1}/{len(content)}"}
+        return response
+
+    monkeypatch.setattr(fetch, "_open_https", open_range)
+    output = tmp_path / "checkpoints"
+    result = fetch.materialize_candidate(
+        inventory_path=inventory, candidate_id="dp", output_dir=output,
+    )
+    assert result["status"] == "checkpoint_bytes_verified"
+    assert (output / "small/HOI_pp_box/model/config.json").read_bytes() == content
+    assert not list(output.rglob(".g1-checkpoint-*"))
+
+
+def test_large_checkpoint_rejects_wrong_range_response(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    content = b"checkpoint" * 1024
+
+    def open_range(url: str, *, headers: dict[str, str]):
+        response = _Response(content, url)
+        response.status = 200
+        response.headers = {}
+        return response
+
+    monkeypatch.setattr(fetch, "_open_https", open_range)
+    with tempfile.NamedTemporaryFile(dir=tmp_path) as stream:
+        with pytest.raises(ValueError, match="g1_checkpoint_range_response_invalid"):
+            fetch._download_pinned_ranges(
+                "https://modelscope.cn/pinned", stream.fileno(), len(content),
+                chunk_size=8 * 1024, workers=2,
+            )
 
 
 def test_pinned_navigation_candidates_are_distinct_40_value_movement_policies() -> None:
