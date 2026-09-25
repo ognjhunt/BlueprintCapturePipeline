@@ -32,8 +32,32 @@ def drain(service, *, target_source_commit: str, timeout_seconds: float = 30, dr
               "target_source_commit": target_source_commit, "config_digest": service.config_digest}
     path = service.journal.root / MARKER
     with service.journal.own_task("release-adoption"):
-        if path.exists() and json.loads(path.read_text()) != marker:
-            raise AgentExecutionError("agent_release_drain_owner_conflict")
+        if path.exists():
+            previous = json.loads(path.read_text())
+            if previous != marker:
+                prior_target = previous.get("target_source_commit")
+                if (
+                    previous.get("schema_version") != marker["schema_version"]
+                    or previous.get("source_commit") != marker["source_commit"]
+                    or previous.get("config_digest") != marker["config_digest"]
+                    or not isinstance(prior_target, str)
+                    or re.fullmatch(r"[0-9a-f]{40}", prior_target) is None
+                    or pending_cleanup(service.journal)
+                ):
+                    raise AgentExecutionError("agent_release_drain_owner_conflict")
+                prior_receipt_path = service.journal.root / "release-drains" / f"{prior_target}.json"
+                if not prior_receipt_path.is_file() or prior_receipt_path.is_symlink():
+                    raise AgentExecutionError("agent_release_drain_owner_conflict")
+                prior_receipt = json.loads(prior_receipt_path.read_text())
+                if (
+                    {key: prior_receipt.get(key) for key in previous} != previous
+                    or prior_receipt.get("status") != "drained"
+                    or prior_receipt.get("remaining_task_ids") != []
+                    or prior_receipt.get("errors") != {}
+                    or prior_receipt.get("receipt_digest")
+                    != digest({k: v for k, v in prior_receipt.items() if k != "receipt_digest"})
+                ):
+                    raise AgentExecutionError("agent_release_drain_owner_conflict")
         write_json(path, marker)
     end = time.monotonic() + timeout_seconds
     errors = {}
