@@ -6,6 +6,27 @@ Franka worker. The shared Task Evaluation Run configurator exports a
 `native_g1_scene_packet_request` connects that choice to one verified retained
 scene packet. It does not enable the public G1 run profile.
 
+The selected 841757 packet is newer than its published canary setup. For this
+case, the packet itself can produce a planning-only setup and pair choice with
+the same G1 catalog. This route carries the verified packet receipt identity;
+it does not invent a configured offering or claim the pair is runnable:
+
+```bash
+PYTHONPATH=src python -m blueprint_pipeline.task_evaluation_packet_planning_setup \
+  --source-packet /path/to/verified/packet-direct-policy-camera-v12 \
+  --objective task_success \
+  --output-dir /path/to/new/packet-planning
+```
+
+Use `--objective g1_navigation_goal` for the movement pair. Both resulting
+files can be passed as `--setup` and `--choice` to the G1 packet builder below.
+The source packet's declared task-success digest differs from its embedded,
+owner-confirmed contract. The planning setup records both digests. G1 authoring
+must use the embedded contract and its actual digest; the derived request
+records the correction. Object, destination, scoring criteria, and other task
+facts cannot change through this correction. It remains a development packet,
+not a published Website setup or executable policy profile.
+
 For the first book relocation rehearsal, the retained source is the
 `packet-direct-policy-camera-v12` packet for scene `interiorgs-841757` and task
 `scene-841757-book-to-marked-area`. The packet receipt digest is

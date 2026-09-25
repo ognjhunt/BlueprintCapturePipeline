@@ -12,6 +12,7 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.native_g1_navigation_goal import PUBLISHED_TASK_INSTRUCTION
 from blueprint_pipeline.native_task_arena_packet import _asset_source
 from blueprint_pipeline.task_evaluation_g1_catalog import G1_PRESET_ID, unavailable_g1_preset
+from blueprint_pipeline import task_evaluation_packet_planning_setup as packet_planning
 from blueprint_pipeline.task_evaluation_policy_canary_setup import policy_canary_setup_digest
 from tests.test_task_evaluation_policy_canary_setup import _setup
 
@@ -346,3 +347,82 @@ def test_navigation_choice_requires_authored_goal_in_same_scene(
     authoring["authoring_digest"] = canonical_digest(authoring, digest_field="authoring_digest")
     request = module.author_g1_scene_packet_request(**args)
     assert request["task_spec"]["g1_navigation_goal"]["center_world_m"] == [1.0, 2.0, 0.0]
+
+
+def test_packet_planning_choice_corrects_only_stale_declared_contract_digest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    args = _inputs(tmp_path, monkeypatch)
+    packet = args["source_packet_dir"]
+    source_path = packet / "native_task_arena_packet_request.v1.json"
+    source = json.loads(source_path.read_text())
+    source["scene_id"] = args["setup"]["task_success_contract"]["scope"]["site_id"]
+    destination = args["setup"]["task_success_contract"]["criteria"]["destination_containment"]
+    source["task_spec"]["target_position_world_m"] = [
+        (lower + upper) / 2
+        for lower, upper in zip(
+            destination["position_bounds_world_m"]["minimum"],
+            destination["position_bounds_world_m"]["maximum"],
+            strict=True,
+        )
+    ]
+    stale_digest = "sha256:" + "e" * 64
+    source["task_spec"]["task_success_contract_digest"] = stale_digest
+    source["request_digest"] = canonical_digest(source, digest_field="request_digest")
+    source_path.write_text(json.dumps(source))
+    receipt = {
+        "receipt_digest": "sha256:" + "a" * 64,
+        "arena_scene_plan_digest": "sha256:" + "d" * 64,
+        "request_digest": source["request_digest"],
+        "source_bindings": [
+            {
+                "semantic_role": "scene_collision",
+                "staged_relative_path": "assets/collision.usda",
+                "staged_size_bytes": len("sealed collision"),
+                "staged_sha256": "sha256:" + hashlib.sha256(b"sealed collision").hexdigest(),
+            }
+        ],
+    }
+    monkeypatch.setattr(module, "verify_native_task_arena_packet", lambda _: (packet, receipt, []))
+    monkeypatch.setattr(
+        packet_planning, "verify_native_task_arena_packet", lambda _: (packet, receipt, [])
+    )
+    setup = packet_planning.make_packet_planning_setup(source_packet_dir=packet)
+    choice = packet_planning.make_packet_policy_pair_choice(
+        setup=setup,
+        objective_id="task_success",
+    )
+    assert setup["source_declared_task_success_contract_digest"] == stale_digest
+    assert setup["task_success_contract_digest"] == args["setup"]["task_success_contract_digest"]
+    assert "offering_digest" not in setup
+    authoring = args["authoring"]
+    authoring["task_spec"]["target_position_world_m"] = source["task_spec"][
+        "target_position_world_m"
+    ]
+    authoring["pair_choice_digest"] = choice["choice_digest"]
+    authoring["authoring_digest"] = canonical_digest(authoring, digest_field="authoring_digest")
+    request = module.author_g1_scene_packet_request(
+        **{**args, "setup": setup, "choice": choice, "authoring": authoring},
+    )
+    assert (
+        request["task_spec"]["task_success_contract_digest"]
+        == setup["task_success_contract_digest"]
+    )
+    assert (
+        request["g1_scene_derivation"]["source_declared_task_success_contract_digest"]
+        == stale_digest
+    )
+    assert (
+        request["g1_scene_derivation"][
+            "task_contract_digest_corrected_from_embedded_confirmed_contract"
+        ]
+        is True
+    )
+    changed = copy.deepcopy(authoring)
+    changed["task_spec"]["target_position_world_m"] = [8.0, 2.0, 0.3]
+    changed["authoring_digest"] = canonical_digest(changed, digest_field="authoring_digest")
+    with pytest.raises(ValueError, match="task_contract_mismatch"):
+        module.author_g1_scene_packet_request(
+            **{**args, "setup": setup, "choice": choice, "authoring": changed},
+        )
