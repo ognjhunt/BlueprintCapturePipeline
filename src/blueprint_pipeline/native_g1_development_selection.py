@@ -170,6 +170,103 @@ def seal_g1_development_selection(
     return selection
 
 
+def _verify_packet_choice_derivation(
+    *, setup: Mapping[str, Any], choice: Mapping[str, Any], bundle: Path, packet: Mapping[str, Any]
+) -> None:
+    request = _read(bundle / f"{REQUEST_SCHEMA_VERSION}.json")
+    derivation = request.get("g1_scene_derivation") or {}
+    if (
+        request.get("request_digest") != packet.get("request_digest")
+        or request.get("request_digest") != canonical_digest(request, digest_field="request_digest")
+        or derivation.get("schema_version") != "native_g1_scene_packet_derivation.v1"
+        or derivation.get("source_packet_receipt_digest") != setup["source_packet_receipt_digest"]
+        or derivation.get("source_scene_plan_digest") != setup["source_scene_plan_digest"]
+        or derivation.get("source_declared_task_success_contract_digest")
+        != setup["source_declared_task_success_contract_digest"]
+        or derivation.get("setup_digest") != setup["setup_digest"]
+        or derivation.get("pair_choice_digest") != choice["choice_digest"]
+        or request.get("scene_id") != setup["scene_id"]
+        or request.get("task_id") != setup["task_id"]
+        or (request.get("task_spec") or {}).get("task_success_contract_digest")
+        != setup["task_success_contract_digest"]
+    ):
+        raise ValueError("g1_selection_packet_derivation_mismatch")
+
+
+def _verify_task_scene(
+    *,
+    setup: Mapping[str, Any],
+    scene: Mapping[str, Any],
+    packet: Mapping[str, Any],
+    expected_scene_digest: str | None = None,
+) -> None:
+    task_spec = scene.get("task_spec") or {}
+    task_contract = task_spec.get("task_success_contract") or {}
+    scope = task_contract.get("scope") or {}
+    public_scope = setup["task_success_contract"]["scope"]
+    try:
+        validate_rigid_task_success_contract(
+            task_contract,
+            expected_site_id=public_scope["site_id"],
+            expected_task_id=public_scope["task_id"],
+        )
+    except TaskNeutralScoringError as exc:
+        raise ValueError("g1_selection_scene_or_site_mismatch") from exc
+    if (
+        scene.get("plan_digest") != canonical_digest(scene, digest_field="plan_digest")
+        or scene.get("plan_digest") != packet.get("arena_scene_plan_digest")
+        or (expected_scene_digest is not None and scene.get("plan_digest") != expected_scene_digest)
+        or scene.get("task_kind") != "rigid_pick_place"
+        or (scene.get("robot") or {}).get("robot_id") != "unitree_g1"
+        or (
+            setup.get("schema_version") == PACKET_SETUP_SCHEMA
+            and scene.get("scene_id") != public_scope["site_id"]
+        )
+        or (
+            setup.get("schema_version") == PACKET_SETUP_SCHEMA
+            and task_contract != setup["task_success_contract"]
+        )
+        or scene.get("task_id") != public_scope["task_id"]
+        or scope.get("site_id") != public_scope["site_id"]
+        or scope.get("task_id") != public_scope["task_id"]
+        or task_contract.get("criteria") != setup["task_success_contract"]["criteria"]
+        or task_spec.get("task_success_contract_digest") != task_contract.get("contract_digest")
+    ):
+        raise ValueError("g1_selection_scene_or_site_mismatch")
+
+
+def verify_g1_packet_choice_bundle(
+    *, setup_path: Path, choice_path: Path, bundle: Path
+) -> dict[str, Any]:
+    """Verify the exact retained-packet choice and G1 scene without runtime assets."""
+
+    setup = validate_packet_planning_setup(_read(setup_path))
+    choice = validate_packet_policy_pair_choice(_read(choice_path), setup=setup)
+    if not bundle.is_absolute() or bundle.is_symlink() or not bundle.is_dir():
+        raise ValueError("g1_selection_scene_packet_missing")
+    scene = _read(bundle / "native_task_arena_scene_plan.v1.json")
+    packet = _verify_packet(bundle)
+    _verify_packet_choice_derivation(setup=setup, choice=choice, bundle=bundle, packet=packet)
+    _verify_task_scene(setup=setup, scene=scene, packet=packet)
+    result = {
+        "schema_version": "native_g1_packet_choice_handoff.v1",
+        "status": "verified_not_executed",
+        "claim_ceiling": "development_only",
+        "scene_id": setup["scene_id"],
+        "task_id": setup["task_id"],
+        "setup_digest": setup["setup_digest"],
+        "choice_digest": choice["choice_digest"],
+        "candidate_ids": choice["policy_candidate_ids"],
+        "objective_id": choice["objective_id"],
+        "scene_plan_digest": scene["plan_digest"],
+        "packet_receipt_digest": packet["receipt_digest"],
+        "rights_reviewed": False,
+        "episode_executed": False,
+    }
+    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+    return result
+
+
 def stage_g1_development_selection(
     *,
     setup_path: Path,
@@ -256,51 +353,13 @@ def stage_g1_development_selection(
         raise ValueError("g1_selection_rights_review_pair_invalid")
     packet = _verify_packet(bundle)
     if packet_planning:
-        request = _read(bundle / f"{REQUEST_SCHEMA_VERSION}.json")
-        derivation = request.get("g1_scene_derivation") or {}
-        if (
-            request.get("request_digest") != packet.get("request_digest")
-            or request.get("request_digest")
-            != canonical_digest(request, digest_field="request_digest")
-            or derivation.get("schema_version") != "native_g1_scene_packet_derivation.v1"
-            or derivation.get("source_packet_receipt_digest")
-            != setup["source_packet_receipt_digest"]
-            or derivation.get("source_scene_plan_digest") != setup["source_scene_plan_digest"]
-            or derivation.get("source_declared_task_success_contract_digest")
-            != setup["source_declared_task_success_contract_digest"]
-            or derivation.get("setup_digest") != setup["setup_digest"]
-            or derivation.get("pair_choice_digest") != choice["choice_digest"]
-            or request.get("scene_id") != setup["scene_id"]
-            or request.get("task_id") != setup["task_id"]
-            or (request.get("task_spec") or {}).get("task_success_contract_digest")
-            != setup["task_success_contract_digest"]
-        ):
-            raise ValueError("g1_selection_packet_derivation_mismatch")
-    task_spec = scene.get("task_spec") or {}
-    task_contract = task_spec.get("task_success_contract") or {}
-    scope = task_contract.get("scope") or {}
-    public_scope = setup["task_success_contract"]["scope"]
-    try:
-        validate_rigid_task_success_contract(
-            task_contract,
-            expected_site_id=public_scope["site_id"],
-            expected_task_id=public_scope["task_id"],
-        )
-    except TaskNeutralScoringError as exc:
-        raise ValueError("g1_selection_scene_or_site_mismatch") from exc
-    if (
-        scene.get("plan_digest") != canonical_digest(scene, digest_field="plan_digest")
-        or scene.get("plan_digest") != packet.get("arena_scene_plan_digest")
-        or scene.get("plan_digest") != selection.get("scene_plan_digest")
-        or scene.get("task_kind") != "rigid_pick_place"
-        or (scene.get("robot") or {}).get("robot_id") != "unitree_g1"
-        or scene.get("task_id") != public_scope["task_id"]
-        or scope.get("site_id") != public_scope["site_id"]
-        or scope.get("task_id") != public_scope["task_id"]
-        or task_contract.get("criteria") != setup["task_success_contract"]["criteria"]
-        or task_spec.get("task_success_contract_digest") != task_contract.get("contract_digest")
-    ):
-        raise ValueError("g1_selection_scene_or_site_mismatch")
+        _verify_packet_choice_derivation(setup=setup, choice=choice, bundle=bundle, packet=packet)
+    _verify_task_scene(
+        setup=setup,
+        scene=scene,
+        packet=packet,
+        expected_scene_digest=selection["scene_plan_digest"],
+    )
     authority = None
     if selection["objective_id"] == "g1_navigation_goal":
         if navigation_authority_path is None:

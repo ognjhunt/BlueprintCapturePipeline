@@ -343,6 +343,19 @@ pair-choice digests before writing two requests. It retains the same rights
 checks and, for movement, the confirmed navigation goal check. Staging never
 runs a policy or changes catalog readiness.
 
+Before preparing the runtime template or rights receipts, the team can check
+the downloaded choice and complete G1 packet directly:
+
+```bash
+PYTHONPATH=src python -m blueprint_pipeline.native_g1_packet_choice_handoff \
+  --setup "$PACKET_PLANNING_SETUP" --choice "$PACKET_PAIR_CHOICE" \
+  --packet "$G1_PACKET"
+```
+
+This prints a digest-bound `verified_not_executed` receipt. It reads and hashes
+the packet, so a successful result proves the selected scene and task identity;
+it does not prove checkpoint rights, Linux runtime readiness, or a policy run.
+
 To attempt both policies for one objective on the same sealed task/site, create
 one worker request per candidate. Keep every runtime and scene field identical;
 only `candidate_id`, its candidate-specific `rights_review`, and the resulting
