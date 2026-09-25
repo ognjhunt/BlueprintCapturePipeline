@@ -53,14 +53,13 @@ def test_fetch_then_offline_verify_exact_sonic_pair(tmp_path: Path, monkeypatch)
     inventory, content = _inventory(tmp_path)
     calls = []
 
-    def open_url(url: str, timeout: int) -> _Response:
-        assert timeout == 180
+    def open_url(url: str) -> _Response:
         calls.append(url)
         filename = url.rsplit("/", 1)[-1]
         role = next(key for key, value in fetch.EXPECTED_FILES.items() if value == filename)
         return _Response(content[role], url)
 
-    monkeypatch.setattr(fetch.urllib.request, "urlopen", open_url)
+    monkeypatch.setattr(fetch, "_open_https", open_url)
     output = tmp_path / "sonic"
     first = fetch.stage_sonic_assets(inventory_path=inventory, output_dir=output)
     second = fetch.stage_sonic_assets(
@@ -76,9 +75,9 @@ def test_fetch_then_offline_verify_exact_sonic_pair(tmp_path: Path, monkeypatch)
 def test_bad_download_does_not_publish_asset(tmp_path: Path, monkeypatch) -> None:
     inventory, _ = _inventory(tmp_path)
     monkeypatch.setattr(
-        fetch.urllib.request,
-        "urlopen",
-        lambda url, timeout: _Response(b"wrong", url),
+        fetch,
+        "_open_https",
+        lambda url: _Response(b"wrong", url),
     )
     output = tmp_path / "sonic"
     with pytest.raises(ValueError, match="download_identity_mismatch"):
@@ -101,6 +100,18 @@ def test_verify_only_rejects_missing_or_changed_bytes(tmp_path: Path) -> None:
         fetch.stage_sonic_assets(
             inventory_path=inventory, output_dir=output, verify_only=True
         )
+
+
+def test_redirect_guard_rejects_http_before_following() -> None:
+    request = fetch.urllib.request.Request("https://huggingface.co/source")
+    with pytest.raises(ValueError, match="insecure_redirect"):
+        fetch._HTTPSRedirectsOnly().redirect_request(
+            request, None, 302, "Found", {}, "http://example.org/asset"
+        )
+    redirected = fetch._HTTPSRedirectsOnly().redirect_request(
+        request, None, 302, "Found", {}, "https://cdn.example.org/asset"
+    )
+    assert redirected.full_url == "https://cdn.example.org/asset"
 
 
 def test_inventory_rejects_variant_or_path_substitution(tmp_path: Path) -> None:

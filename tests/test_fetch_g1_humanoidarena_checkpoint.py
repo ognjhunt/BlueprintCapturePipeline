@@ -52,12 +52,11 @@ def test_fetch_then_verify_exact_candidate_bytes(tmp_path: Path, monkeypatch) ->
     inventory = _inventory(tmp_path, content)
     calls: list[str] = []
 
-    def open_url(url: str, timeout: int) -> _Response:
-        assert timeout == 180
+    def open_url(url: str) -> _Response:
         calls.append(url)
         return _Response(content, url)
 
-    monkeypatch.setattr(fetch.urllib.request, "urlopen", open_url)
+    monkeypatch.setattr(fetch, "_open_https", open_url)
     output = tmp_path / "checkpoints"
     first = fetch.materialize_candidate(
         inventory_path=inventory, candidate_id="dp", output_dir=output
@@ -75,8 +74,8 @@ def test_fetch_then_verify_exact_candidate_bytes(tmp_path: Path, monkeypatch) ->
 def test_bad_download_never_publishes_checkpoint(tmp_path: Path, monkeypatch) -> None:
     inventory = _inventory(tmp_path, b"expected")
     monkeypatch.setattr(
-        fetch.urllib.request, "urlopen",
-        lambda url, timeout: _Response(b"wrong", url),
+        fetch, "_open_https",
+        lambda url: _Response(b"wrong", url),
     )
     output = tmp_path / "checkpoints"
     with pytest.raises(ValueError, match="download_identity_mismatch"):
@@ -106,6 +105,18 @@ def test_existing_wrong_bytes_and_path_escape_fail_closed(tmp_path: Path) -> Non
             inventory_path=inventory, candidate_id="dp", output_dir=output,
             verify_only=True,
         )
+
+
+def test_redirect_guard_rejects_http_before_following() -> None:
+    request = fetch.urllib.request.Request("https://modelscope.cn/source")
+    with pytest.raises(ValueError, match="insecure_redirect"):
+        fetch._HTTPSRedirectsOnly().redirect_request(
+            request, None, 302, "Found", {}, "http://example.org/asset"
+        )
+    redirected = fetch._HTTPSRedirectsOnly().redirect_request(
+        request, None, 302, "Found", {}, "https://cdn.example.org/asset"
+    )
+    assert redirected.full_url == "https://cdn.example.org/asset"
 
 
 def test_candidate_inventory_digest_rejects_changed_file_identity(tmp_path: Path) -> None:

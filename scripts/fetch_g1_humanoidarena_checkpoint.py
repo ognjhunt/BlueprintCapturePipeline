@@ -25,6 +25,19 @@ DEFAULT_INVENTORY = (
 )
 
 
+class _HTTPSRedirectsOnly(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, response, code, message, headers, new_url):
+        if urllib.parse.urlsplit(new_url).scheme.lower() != "https":
+            raise ValueError("g1_checkpoint_insecure_redirect")
+        return super().redirect_request(request, response, code, message, headers, new_url)
+
+
+def _open_https(url: str):
+    if urllib.parse.urlsplit(url).scheme.lower() != "https":
+        raise ValueError("g1_checkpoint_insecure_source")
+    return urllib.request.build_opener(_HTTPSRedirectsOnly()).open(url, timeout=180)
+
+
 def _sha256_and_size(path: Path) -> tuple[str, int]:
     digest = hashlib.sha256()
     size = 0
@@ -105,7 +118,7 @@ def materialize_candidate(
                     prefix=".g1-checkpoint-", dir=destination.parent, delete=False
                 ) as stream:
                     temporary = Path(stream.name)
-                    with urllib.request.urlopen(url, timeout=180) as response:
+                    with _open_https(url) as response:
                         if urllib.parse.urlparse(response.geturl()).scheme != "https":
                             raise ValueError("g1_checkpoint_insecure_redirect")
                         digest = hashlib.sha256()
