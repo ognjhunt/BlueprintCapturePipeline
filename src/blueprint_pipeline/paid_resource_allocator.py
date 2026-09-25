@@ -162,6 +162,10 @@ from .adp_isaac_lab_arena_vast import (
     build_arena_native_control_bundle,
     run_arena_native_control_vast,
 )
+from .native_g1_paid_campaign import (
+    PROBE_KIND as NATIVE_G1_DEVELOPMENT_CAMPAIGN_PROBE_KIND,
+    dispatch_g1_paid_campaign,
+)
 from .adp009d_franka_vast import (
     controls_only_max_compute_cap,
     run_adp009d_native_microcheck_vast,
@@ -1710,6 +1714,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             NATIVE_TASK_ARENA_CONTROLS_PROBE_KIND,
             NATIVE_TASK_ARENA_POLICY_PROBE_KIND,
             NATIVE_TASK_ARENA_POLICY_DIAGNOSTIC_PROBE_KIND,
+            NATIVE_G1_DEVELOPMENT_CAMPAIGN_PROBE_KIND,
             policy_canary_lane.PROBE_KIND,
             ADP009D_OVRTX_LIVE_CAMERA_PROBE_KIND,
             ADP009D_AURA_NATIVE_LIVE_CAMERA_PROBE_KIND,
@@ -1860,6 +1865,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     gpu.add_argument("--native-task-arena-control-result")
     gpu.add_argument("--native-task-arena-policy-execution-spec")
+    gpu.add_argument("--g1-campaign-bundle-receipt")
+    gpu.add_argument("--g1-campaign-manipulation-packet")
+    gpu.add_argument("--g1-campaign-movement-packet")
+    gpu.add_argument("--g1-campaign-book-handoff")
+    gpu.add_argument("--g1-campaign-navigation-authority")
+    gpu.add_argument("--g1-campaign-publisher-source")
+    gpu.add_argument("--g1-campaign-runtime-source-receipt")
+    gpu.add_argument("--g1-campaign-rights-review", action="append", default=[])
     policy_canary_lane.add_policy_canary_allocator_arguments(gpu)
     gpu.add_argument(
         "--native-task-arena-retain-warm-session",
@@ -2316,6 +2329,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             write_json(output, result)
             success = result.get("status") == "completed"
+            print(json.dumps({"success": success}, sort_keys=True))
+            return 0 if success else 2
+        if args.probe_kind == NATIVE_G1_DEVELOPMENT_CAMPAIGN_PROBE_KIND:
+            control_blockers, control_identity = _control_plane_checkout_blockers()
+            result = dispatch_g1_paid_campaign(
+                args,
+                control_identity=control_identity,
+                control_blockers=control_blockers,
+            )
+            success = result.get("status") in {"dry_run_ready", "completed"}
             print(json.dumps({"success": success}, sort_keys=True))
             return 0 if success else 2
         if args.probe_kind == SEMANTIC_TEACHER_IMAGE_EDIT_PROBE_KIND:
