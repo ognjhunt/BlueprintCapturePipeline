@@ -8,7 +8,10 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline import native_g1_scene_packet_request as module
-from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.decision_evidence_contracts import (
+    canonical_digest,
+    cross_runtime_canonical_digest,
+)
 from blueprint_pipeline.native_g1_navigation_goal import PUBLISHED_TASK_INSTRUCTION
 from blueprint_pipeline.native_task_arena_packet import _asset_source
 from blueprint_pipeline.task_evaluation_g1_catalog import G1_PRESET_ID, unavailable_g1_preset
@@ -395,6 +398,12 @@ def test_packet_planning_choice_corrects_only_stale_declared_contract_digest(
     )
     assert setup["source_declared_task_success_contract_digest"] == stale_digest
     assert setup["task_success_contract_digest"] == args["setup"]["task_success_contract_digest"]
+    assert setup["setup_digest"] == cross_runtime_canonical_digest(
+        setup, digest_field="setup_digest"
+    )
+    assert choice["choice_digest"] == cross_runtime_canonical_digest(
+        choice, digest_field="choice_digest"
+    )
     assert "offering_digest" not in setup
     authoring = args["authoring"]
     authoring["task_spec"]["target_position_world_m"] = source["task_spec"][
