@@ -303,6 +303,15 @@ def test_single_file_browser_handoff_verifies_and_stages_same_pair(
     verified = selection_module.verify_g1_packet_choice_bundle(
         handoff_path=handoff_path, bundle=Path(template["bundle_root"])
     )
+    in_memory = selection_module.verify_g1_packet_choice_bundle(
+        handoff=handoff, bundle=Path(template["bundle_root"])
+    )
+    assert in_memory == verified
+    with pytest.raises(ValueError, match="g1_selection_handoff_source_invalid"):
+        selection_module.verify_g1_packet_choice_bundle(
+            handoff=handoff, handoff_path=handoff_path,
+            bundle=Path(template["bundle_root"]),
+        )
     assert verified["status"] == "verified_not_executed"
     assert verified["choice_digest"] == choice["choice_digest"]
     args["setup_path"] = None

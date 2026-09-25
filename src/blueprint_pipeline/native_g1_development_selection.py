@@ -239,11 +239,17 @@ def _verify_task_scene(
 
 def verify_g1_packet_choice_bundle(
     *, setup_path: Path | None = None, choice_path: Path | None = None,
-    handoff_path: Path | None = None, bundle: Path
+    handoff_path: Path | None = None, handoff: Mapping[str, Any] | None = None,
+    bundle: Path
 ) -> dict[str, Any]:
     """Verify the exact retained-packet choice and G1 scene without runtime assets."""
 
-    if handoff_path is not None:
+    if handoff is not None:
+        if handoff_path is not None or setup_path is not None or choice_path is not None:
+            raise ValueError("g1_selection_handoff_source_invalid")
+        validated_handoff = validate_packet_policy_handoff(handoff)
+        setup, choice = validated_handoff["setup"], validated_handoff["choice"]
+    elif handoff_path is not None:
         if setup_path is not None or choice_path is not None:
             raise ValueError("g1_selection_handoff_source_invalid")
         handoff = validate_packet_policy_handoff(_read(handoff_path))
