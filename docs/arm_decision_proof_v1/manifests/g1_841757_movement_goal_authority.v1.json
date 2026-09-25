@@ -1,0 +1,40 @@
+{
+  "authority_digest": "sha256:66c841334c55d2a1098f257a9c106b2a99d6ddc0094f3365dbf063041cf03a5b",
+  "confirmed_by_team_id": "scene-e9a834a10cfb62ca2f5bbe23ffc3f97b04e8dec8dbea607c",
+  "goal": {
+    "acceptance_radius_m": 0.2,
+    "center_world_m": [
+      -3.703953,
+      -3.441138,
+      0.0
+    ],
+    "max_root_height_drift_m": 0.15,
+    "schema_version": "native_g1_navigation_goal.v1",
+    "settle_window_samples": 5,
+    "task_instruction": "Avoid obstacles and move to the yellow marked area.",
+    "visible_target_marker": {
+      "non_colliding": true,
+      "radius_m": 0.25,
+      "schema_version": "native_task_target_marker.v1",
+      "shape": "flat_yellow_disc",
+      "surface_position_world_m": [
+        -3.703953,
+        -3.441138,
+        0.0
+      ]
+    }
+  },
+  "goal_digest": "sha256:55022529f138151f2332a5cef150486da788503f95ac2e8109a42642c2877152",
+  "human_reviewer": "Nijel Hunt",
+  "obstacle_clearance_scored": false,
+  "physical_outcome_claimed": false,
+  "reviewed_criterion": "root_xy_goal_arrival_and_terminal_hold",
+  "schema_version": "native_g1_navigation_goal_authority.v1",
+  "scope": {
+    "scene_plan_digest": "sha256:57d4f9ff69225c1c8bc5754157df09a62983dae5ec42b52785cef5146fc3e293",
+    "site_id": "interiorgs-841757",
+    "task_id": "scene-841757-book-to-marked-area",
+    "task_success_contract_digest": "sha256:7b442ca6c0b8465d04f16f80caec6dacf523a82d53669823eba8bf99c7d76596"
+  },
+  "status": "confirmed_for_development_simulation"
+}
