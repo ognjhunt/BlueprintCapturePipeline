@@ -45,6 +45,7 @@ def test_plan_uses_same_pinned_image_and_copied_python(
     assert command[:5] == ["docker", "run", "--rm", "--pull", "never"]
     assert command[command.index("--entrypoint") + 2] == builder.NATIVE_TASK_ARENA_IMAGE
     assert "-m venv --copies" in command[-1]
+    assert "PYTHONEXE=" not in command[-1]
     assert "--require-hashes" in command[-1]
     assert "DiffusionPolicy" in command[-1] and "PI05Policy" in command[-1]
     assert command[command.index("--network") + 1] == "bridge"
@@ -64,6 +65,8 @@ def test_in_container_plan_uses_pinned_lock_without_nested_docker(
     assert plan["command"][:4] == ["/bin/bash", "-euo", "pipefail", "-c"]
     assert "--require-hashes" in plan["command"][-1]
     assert "-m venv --copies" in plan["command"][-1]
+    assert plan["command"][-1].count("/isaac-sim/python.sh -I") == 4
+    assert "sys.path.insert(0," in plan["command"][-1]
     assert plan["command"][-1].index("linux-libc-dev") < plan["command"][-1].index("-m pip install")
     assert plan["command"][-1].index("python3.12-dev") < plan["command"][-1].index("-m pip install")
     assert "test -f /usr/include/linux/input-event-codes.h" in plan["command"][-1]
