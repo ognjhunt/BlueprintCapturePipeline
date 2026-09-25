@@ -91,7 +91,9 @@ def prepare_g1_policy_runtime_build(
     freeze = output / "installed.freeze"
     source_package = source / "lerobot/src"
     probe = (
-        "import pathlib,torch,lerobot;"
+        "import pathlib,sys;"
+        f"sys.path.insert(0,{str(source_package)!r});"
+        "import torch,lerobot;"
         "from lerobot.configs.policies import PreTrainedConfig;"
         "from lerobot.policies.factory import get_policy_class;"
         "from lerobot.policies.diffusion.modeling_diffusion import DiffusionPolicy;"
@@ -111,13 +113,18 @@ def prepare_g1_policy_runtime_build(
         "test -f /usr/include/python3.12/Python.h",
         "command -v cc >/dev/null",
     ) if execution_mode == "inside_isaac_container" else ()
+    isolated_python = (
+        f"PYTHONEXE={shlex.quote(str(python))} /isaac-sim/python.sh -I"
+        if execution_mode == "inside_isaac_container"
+        else shlex.quote(str(python))
+    )
     shell = " && ".join((
         *native_prerequisites,
         f"/isaac-sim/python.sh -m venv --copies {shlex.quote(str(runtime))}",
-        f"{shlex.quote(str(python))} -m pip install --no-cache-dir --require-hashes -r {shlex.quote(str(lock))}",
-        f"{shlex.quote(str(python))} -m pip check",
-        f"{shlex.quote(str(python))} -c {shlex.quote(probe)}",
-        f"{shlex.quote(str(python))} -m pip freeze > {shlex.quote(str(freeze))}",
+        f"{isolated_python} -m pip install --no-cache-dir --require-hashes -r {shlex.quote(str(lock))}",
+        f"{isolated_python} -m pip check",
+        f"{isolated_python} -c {shlex.quote(probe)}",
+        f"{isolated_python} -m pip freeze > {shlex.quote(str(freeze))}",
     ))
     docker_command = [
         "docker", "run", "--rm", "--pull", "never", "--network", "bridge",
