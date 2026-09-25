@@ -119,6 +119,18 @@ def _original_placement_result(
     return previous, original
 
 
+def _validate_same_task_trajectory_lineage(
+    *, result: Mapping[str, Any], previous: Mapping[str, Any]
+) -> None:
+    """Carry forward a prior adapter rebound without inventing a new one."""
+    _placement_require(
+        result.get("trajectory_adapter_provenance_rebound")
+        == previous.get("trajectory_adapter_provenance_rebound")
+        and result["trajectory_digest"] == previous["trajectory_digest"],
+        "checkpoint_lineage_invalid",
+    )
+
+
 def validate_placement_adoption(
     value: Mapping[str, Any], *, expected_owner_digest: str | None = None
 ) -> dict[str, Any]:
@@ -185,11 +197,7 @@ def validate_placement_adoption(
         if result["task_binding_digest"] != previous["task_binding_digest"]:
             _validated_trajectory_provenance_rebound(result=result, ancestor={"result": previous})
         else:
-            _placement_require(
-                result.get("trajectory_adapter_provenance_rebound") is None
-                and result["trajectory_digest"] == previous["trajectory_digest"],
-                "checkpoint_lineage_invalid",
-            )
+            _validate_same_task_trajectory_lineage(result=result, previous=previous)
     receipt = validate_robot_placement_receipt(
         _read(receipt_path),
         expected_scene_binding_digest=original["scene_binding_digest"],
