@@ -41,6 +41,28 @@ qualification scenario would misdescribe the episode. The builder checks
 binding and camera shape but native collision, reach, visibility, and task
 performance still require a G1 simulator run.
 
+Before authoring a stance, run the static reach diagnostic against the retained
+packet. State the scene's floor height explicitly:
+
+```bash
+PYTHONPATH=src python -m blueprint_pipeline.native_g1_scene_reach_probe \
+  --source-packet /path/to/verified/packet-direct-policy-camera-v12 \
+  --floor-z 0 \
+  --output /path/to/new/g1-static-reach.json
+```
+
+For the verified 841757 v12 packet (receipt `9b3e8ba…`), a 5 cm grid over a
+1.25 m radius found 346 floor-clear nominal standing poses. Its book and mark
+are at 0.286 m, while the G1 profile's nominal shoulder is 1.08 m and arm span
+is 0.45 m. Even with horizontal alignment, the shoulder would have to lower at
+least 0.344 m to put the object within that nominal span. The nearest sampled
+shoulder-to-subject-center and shoulder-to-mark horizontal distances were
+0.718 m and 0.717 m respectively. A fixed nominal standing pose is therefore
+not a credible starting assumption for this task. The policy must be allowed to
+approach, lean, or crouch, and the resulting motion still needs an actual
+simulator reach, contact, and task test. This diagnostic samples static boxes;
+it is not an inverse-kinematics or policy-success result.
+
 ```bash
 python -m blueprint_pipeline.native_g1_scene_packet_request \
   --source-packet /path/to/verified/packet-direct-policy-camera-v12 \
