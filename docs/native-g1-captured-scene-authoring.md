@@ -1,0 +1,62 @@
+# G1 packet request from a captured task
+
+The G1 development worker consumes the same native task packet format as the
+Franka worker. The shared Task Evaluation Run configurator exports a
+`task_evaluation_policy_pair_choice.v1.json` for the unavailable G1 pair.
+`native_g1_scene_packet_request` connects that choice to one verified retained
+scene packet. It does not enable the public G1 run profile.
+
+For the first book relocation rehearsal, the retained source is the
+`packet-direct-policy-camera-v12` packet for scene `interiorgs-841757` and task
+`scene-841757-book-to-marked-area`. The packet receipt digest is
+`sha256:9b3e8ba34242eea5977c1fe709bf8351f62efae8da1a2fac5d2577c27182464a`.
+Use the packet's own path on the machine running this command; the original
+source files need not still exist.
+
+The team supplies an authoring JSON with these fields:
+
+- `schema_version`: `native_g1_scene_packet_authoring.v1`
+- `claim_ceiling`: `development_only`
+- `source_packet_receipt_digest`: the verified receipt digest
+- `pair_choice_digest`: from the exported choice
+- `base_pose_world`: a reviewed G1 stance in the source scene's metric frame
+- `task_hand`: `left` or `right`
+- `cameras`: a 640 by 480 policy `head` camera parented to a rigid body in the
+  official G1 USD, plus a world-frame review `overview` camera
+- `task_spec`: the source task specification with G1 robot workspace, release,
+  action, cadence, and episode bounds reviewed for the new embodiment. The
+  object, target, destination, scoring contract, and other task facts must match
+  the source packet exactly.
+- `scenario`: an `evaluation_cell` context with `partition: development` and
+  its sealed instance digest
+- `authoring_digest`: canonical digest of the JSON excluding that field
+
+For a movement pair, the authored task specification also needs a
+`g1_navigation_goal` in the same scene. The later pair-selection step requires
+the human-confirmed navigation authority bound to the sealed G1 scene plan.
+
+The stance, camera extrinsics, task parameters, and development scenario must
+be authored for G1. Reusing the Franka wrist camera, robot workspace, or
+qualification scenario would misdescribe the episode. The builder checks
+binding and camera shape but native collision, reach, visibility, and task
+performance still require a G1 simulator run.
+
+```bash
+python -m blueprint_pipeline.native_g1_scene_packet_request \
+  --source-packet /path/to/verified/packet-direct-policy-camera-v12 \
+  --g1-usd /path/to/g1_29dof_with_hand_rev_1_0.usd \
+  --setup /path/to/published/task_evaluation_policy_canary_setup.v1.json \
+  --choice /path/to/task_evaluation_policy_pair_choice.v1.json \
+  --authoring /path/to/native_g1_scene_packet_authoring.v1.json \
+  --output-dir /path/to/new/g1-request \
+  --materialize-packet
+```
+
+The output contains an evidence directory, a digest-bound
+`native_task_arena_packet_request.v1.json`, and, with `--materialize-packet`, a
+sealed G1 packet. On macOS, retained assets are cloned with separate inodes to
+reduce disk use; other hosts copy them. The packet materializer can hard-link
+within this single derived output directory. The pair selection step then binds that packet to
+the same setup, choice, checkpoint inventory, candidate rights reviews, and
+optional navigation authority. A successful request or packet build proves
+neither checkpoint inference nor an executed episode.
