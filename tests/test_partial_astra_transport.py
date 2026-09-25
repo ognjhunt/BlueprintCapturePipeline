@@ -135,16 +135,22 @@ def test_completed_articulated_source_is_selected_from_cpu_archive(retained):
     old_archive = source / transport.ARCHIVE_RELATIVE
     cpu_archive = source / transport.CPU_ARCHIVE_RELATIVE
     cpu_archive.parent.mkdir(parents=True, exist_ok=True)
+    source_envelope = "sha256:" + "1" * 64
+    source_geometry = {"source_candidate_digest": "sha256:" + "2" * 64,
+                       "construction_envelope_digest": source_envelope,
+                       "configuration_digest": META["stage_source_binding"]["configuration_sha256"]}
     requests = {}
     for part in ("carcass", "drawer"):
         value = copy.deepcopy(META["request"])
         value["object_id"] += "__" + part
         value["physical_review_input"]["object_id"] = value["object_id"]
+        value["construction_constraints"] = json.dumps({"source_geometry_receipt": source_geometry})
         seal(value, "request_digest")
         requests[part] = value
     authored = seal({"schema_version": "task_object_astra_articulated_authoring_result.v1",
                      "status": "parts_authored_pending_native_qualification",
                      "provider": "openai", "agent_runtime": "openai_agents_api", "model": "gpt-6-sol",
+                     "plan": {"source_geometry_receipt": source_geometry},
                      "parts": {part: {} for part in requests},
                      "part_request_digests": {part: value["request_digest"] for part, value in requests.items()}},
                     "result_digest")
@@ -153,6 +159,8 @@ def test_completed_articulated_source_is_selected_from_cpu_archive(retained):
             if member.filename != transport.PREFIX + "authoring/request.json":
                 output.writestr(member, old.read(member))
         output.writestr(transport.PREFIX + "authoring/result.json", json.dumps(authored))
+        output.writestr("stages/stage-3/producer/stage_production_input.v1.json",
+                        json.dumps({"construction_envelope": {"envelope_digest": source_envelope}}))
         for part, value in requests.items():
             output.writestr(transport.PREFIX + f"authoring/parts/{part}/request.json", json.dumps(value))
             output.writestr(transport.PREFIX + f"authoring/parts/{part}/result.json", "{}")
@@ -169,6 +177,7 @@ def test_completed_articulated_source_is_selected_from_cpu_archive(retained):
     descriptor = json.loads(Path(json.loads(selection.read_text())["descriptor"]["path"]).read_text())
     assert descriptor["adoption_kind"] == "completed_articulated_agents_api"
     assert descriptor["source_run_id"] == SOURCE_RUN
+    assert descriptor["source_construction_envelope_digest"] == source_envelope
 
 
 @pytest.mark.parametrize("change", ["owner", "scene", "task", "configuration", "provider_zero", "canonical_attempt"])

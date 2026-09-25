@@ -1216,7 +1216,8 @@ def execute_astra_component(*, environment=None, runner=subprocess.run,
         authored_root.mkdir()
         prepared = prepare_completed_articulated_successor(
             value=partial_descriptor, part_requests=part_requests, plan=plan,
-            source_binding=source_binding, verified_lineage=verified_lineage, runtime=runtime)
+            source_binding=source_binding, verified_lineage=verified_lineage, runtime=runtime,
+            successor_envelope_digest=envelope["envelope_digest"])
         if package_candidate is None:
             package_candidate = package_astra_articulated_candidate
         retained = {"status": "retained_completed_articulated_parts",
