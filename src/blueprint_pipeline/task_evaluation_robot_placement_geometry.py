@@ -449,7 +449,28 @@ def validate_robot_placement_geometry_candidate(
     allowed_support_contact = index.triangle_maximum[:, 2] <= (
         position[2] + support_height_tolerance_m
     )
-    collision_indices = np.flatnonzero(overlap & ~allowed_support_contact)
+    broad_collision_indices = np.flatnonzero(overlap & ~allowed_support_contact)
+    # A whole-arm AABB falsely rejects an arm beside a thin desktop: empty
+    # space between its links intersects the desk even when no link does.
+    # Triangle AABBs remain conservative while testing actual robot geometry.
+    collision_indices: list[int] = []
+    if len(broad_collision_indices):
+        rotation_3d = np.asarray(
+            [[math.cos(yaw), -math.sin(yaw), 0.0],
+             [math.sin(yaw), math.cos(yaw), 0.0], [0.0, 0.0, 1.0]],
+            dtype=np.float64,
+        )
+        robot_triangles_world = index.robot_triangles @ rotation_3d.T + position
+        robot_triangle_minimum = robot_triangles_world.min(axis=1)
+        robot_triangle_maximum = robot_triangles_world.max(axis=1)
+        for scene_index in broad_collision_indices:
+            scene_minimum = index.triangle_minimum[int(scene_index)]
+            scene_maximum = index.triangle_maximum[int(scene_index)]
+            if np.any(np.all(
+                (robot_triangle_maximum >= scene_minimum)
+                & (robot_triangle_minimum <= scene_maximum), axis=1,
+            )):
+                collision_indices.append(int(scene_index))
     robot_center = 0.5 * (robot_minimum + robot_maximum)
     containing_prim_paths = []
     containment_tolerance_m = 1.0e-4
