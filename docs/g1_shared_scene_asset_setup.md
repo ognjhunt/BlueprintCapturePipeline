@@ -332,9 +332,16 @@ checks that the selected pair is in the published G1 catalog and belongs to
 the same objective, that the packet matches the selected task and site, and
 that each rights review binds its candidate, scene, and inventory. It writes
 two sealed request JSON files and a digest-bound plan. The `--selection` option
-accepts a sealed selection record carrying the same setup, robot, candidate,
-objective, and scene identities; it is the input seam for the existing WebApp
-configurator. Staging never runs a policy or changes catalog readiness.
+accepts a sealed selection record carrying the same published setup, robot,
+candidate, objective, and scene identities. The existing WebApp configurator
+can also download a choice for a retained packet. For that path, pass its
+`task_evaluation_packet_planning_setup.v1` file as `--setup`, its
+`task_evaluation_packet_policy_pair_choice.v1` file as `--choice`, and the G1
+packet authored from those exact two files in the runtime template. Staging
+verifies the packet request's source receipt, original scene, setup, and
+pair-choice digests before writing two requests. It retains the same rights
+checks and, for movement, the confirmed navigation goal check. Staging never
+runs a policy or changes catalog readiness.
 
 To attempt both policies for one objective on the same sealed task/site, create
 one worker request per candidate. Keep every runtime and scene field identical;
