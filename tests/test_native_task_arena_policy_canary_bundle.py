@@ -228,6 +228,7 @@ def test_episode_failure_gap_retains_safe_diagnostic_without_host_path(
 def test_resolved_scene_plan_binds_policy_cadence_and_supported_variations() -> None:
     base = {
         "schema_version": "native_task_arena_scene_plan.v1",
+        "task_kind": "rigid_pick_place",
         "objects": [
             {
                 "name": "task_object",
