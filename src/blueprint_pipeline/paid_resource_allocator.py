@@ -2337,6 +2337,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args,
                 control_identity=control_identity,
                 control_blockers=control_blockers,
+                control_recheck=_control_plane_checkout_blockers,
             )
             success = result.get("status") in {"dry_run_ready", "completed"}
             print(json.dumps({"success": success}, sort_keys=True))

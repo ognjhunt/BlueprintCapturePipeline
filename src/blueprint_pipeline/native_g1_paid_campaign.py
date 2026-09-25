@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import zipfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .adp_isaac_lab_arena_vast import run_arena_native_control_vast
 from .common import write_json
@@ -149,7 +149,11 @@ def verify_g1_paid_output(result: dict[str, Any], bundle: dict[str, Any]) -> dic
 
 
 def dispatch_g1_paid_campaign(
-    args: Any, *, control_identity: dict[str, Any], control_blockers: list[str]
+    args: Any,
+    *,
+    control_identity: dict[str, Any],
+    control_blockers: list[str],
+    control_recheck: Callable[[], tuple[list[str], dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     """Build or load exact bytes, admit spend, launch, and verify terminal output."""
 
@@ -222,6 +226,26 @@ def dispatch_g1_paid_campaign(
                 raise ValueError("g1_paid_campaign_bundle_receipt_missing")
         except (OSError, ValueError, json.JSONDecodeError, zipfile.BadZipFile) as exc:
             blockers.append("g1_paid_campaign_bundle_preparation_failed:" + type(exc).__name__)
+    allocation_binding = {
+        "program_id": "arm-decision-proof-v1",
+        "probe_kind": PROBE_KIND,
+        "provider": "vast",
+        "orchestrator_source_commit": commit,
+        "bundle_sha256": bundle.get("bundle_sha256") if bundle else None,
+        "campaign_plan_digest": bundle.get("campaign_plan_digest") if bundle else None,
+        "publisher_source_receipt_digest": (
+            bundle.get("publisher_source_receipt_digest") if bundle else None
+        ),
+        "runtime_source_packet_sha256": (
+            (bundle.get("runtime_source_packet") or {}).get("packet_sha256")
+            if bundle else None
+        ),
+        "max_hourly_rate_usd": rate,
+        "hard_cap_usd": cap,
+        "hard_ttl_seconds": ttl,
+        "retry_cap": 0,
+    }
+    allocation_binding_digest = canonical_digest(allocation_binding)
     admission = build_paid_lane_admission(
         resource_class="vast_provider_adapter", blockers=blockers
     )
@@ -235,6 +259,8 @@ def dispatch_g1_paid_campaign(
         "hard_cap_usd": cap,
         "hard_ttl_seconds": ttl,
         "retry_cap": 0,
+        "allocation_binding": allocation_binding,
+        "allocation_binding_digest": allocation_binding_digest,
         "claim_ceiling": "development_only",
         "authority": "owner_approved_g1_841757_development_simulation_and_bounded_gpu_compute",
         "private_data_uploaded": True,
@@ -260,7 +286,45 @@ def dispatch_g1_paid_campaign(
                 if args.adapter_output:
                     write_json(Path(args.adapter_output), result)
                 return result
+        def before_provider_create() -> dict[str, Any]:
+            if control_recheck is not None:
+                fresh_blockers, fresh_identity = control_recheck()
+                if (
+                    fresh_blockers
+                    or fresh_identity.get("orchestrator_source_commit") != commit
+                    or fresh_identity.get("origin_main_commit") != commit
+                    or fresh_identity.get("remote_main_commit") != commit
+                ):
+                    return {
+                        "status": "blocked",
+                        "blockers": ["g1_paid_campaign_controller_identity_changed_before_create"],
+                    }
+            load_verified_g1_provider_bundle(
+                Path(args.g1_campaign_bundle_receipt),
+                expected_implementation_commit=commit,
+            )
+            consumption_path = Path(args.adp_job_dir) / "native_g1_paid_attempt_consumption.v1.json"
+            consumption = {
+                "schema_version": "native_g1_paid_attempt_consumption.v1",
+                "status": "consumed",
+                "allocation_binding_digest": allocation_binding_digest,
+                "bundle_sha256": bundle["bundle_sha256"],
+                "orchestrator_source_commit": commit,
+                "provider": "vast",
+                "retry_cap": 0,
+            }
+            try:
+                with consumption_path.open("x", encoding="utf-8") as stream:
+                    json.dump(consumption, stream, indent=2, sort_keys=True)
+                    stream.write("\n")
+            except FileExistsError:
+                return {
+                    "status": "blocked",
+                    "blockers": ["g1_paid_campaign_attempt_already_consumed"],
+                }
+            return consumption
         result = run_arena_native_control_vast(
+            pre_provider_mutation_hook=before_provider_create if args.execute else None,
             approval_path=args.g1_campaign_bundle_receipt or args.g1_campaign_book_handoff,
             job_dir=args.adp_job_dir,
             paid_resource_admission_grant=grant,

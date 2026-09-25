@@ -186,3 +186,39 @@ def test_completed_transport_without_episode_evidence_is_blocked(
     assert result["status"] == "blocked"
     assert result["continuing_spend_from_this_run"] is False
     assert result["blockers"] == ["g1_paid_campaign_output_verification_failed:ValueError"]
+
+
+def test_precreate_consumes_one_exact_bundle_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commit = "a" * 40
+    bundle = {"status": "ready", "bundle_sha256": "sha256:" + "b" * 64}
+    identity = {
+        "orchestrator_source_commit": commit,
+        "origin_main_commit": commit,
+        "remote_main_commit": commit,
+    }
+    monkeypatch.setattr(lane, "load_verified_g1_provider_bundle", lambda *_a, **_k: bundle)
+
+    def fake_run(**kwargs: object) -> dict[str, object]:
+        hook = kwargs["pre_provider_mutation_hook"]
+        assert callable(hook)
+        first = hook()
+        second = hook()
+        assert first["status"] == "consumed"
+        assert first["bundle_sha256"] == bundle["bundle_sha256"]
+        assert second["blockers"] == ["g1_paid_campaign_attempt_already_consumed"]
+        return {"status": "blocked", "blockers": ["test_stopped_before_provider_create"]}
+
+    monkeypatch.setattr(lane, "run_arena_native_control_vast", fake_run)
+    result = lane.dispatch_g1_paid_campaign(
+        _args(tmp_path, g1_campaign_bundle_receipt=str(tmp_path / "receipt.json")),
+        control_identity=identity,
+        control_blockers=[],
+        control_recheck=lambda: ([], identity),
+    )
+    assert result["status"] == "blocked"
+    consumption = json.loads(
+        (tmp_path / "job/native_g1_paid_attempt_consumption.v1.json").read_text()
+    )
+    assert consumption["status"] == "consumed"
