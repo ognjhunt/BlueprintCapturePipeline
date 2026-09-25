@@ -22,8 +22,8 @@ from .decision_evidence_contracts import (
     cross_runtime_canonical_digest,
 )
 from .task_evaluation_policy_run_contract import QUICK_FAMILY_COUNTS
-from .rigid_task_success_contract_schema import (
-    rigid_task_success_contract_schema,
+from .articulated_task_success_contract_schema import (
+    task_success_contract_schema,
 )
 
 
@@ -42,7 +42,7 @@ def policy_canary_setup_schema() -> dict[str, Any]:
     try:
         value = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
         value["$defs"]["taskSuccessContract"] = (
-            rigid_task_success_contract_schema()
+            task_success_contract_schema()
         )
         jsonschema.Draft202012Validator.check_schema(value)
     except (OSError, json.JSONDecodeError, jsonschema.SchemaError) as exc:

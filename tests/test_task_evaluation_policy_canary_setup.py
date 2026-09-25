@@ -5,6 +5,11 @@ import copy
 import pytest
 
 from blueprint_pipeline.adp_task_scoring import seal_rigid_task_success_contract
+from blueprint_pipeline.adp_articulated_task_success_contract import (
+    EVENT_LEDGER_SCHEMA_VERSION,
+    SAFETY_PREDICATE,
+    seal_articulated_task_success_contract,
+)
 from blueprint_pipeline.decision_evidence_contracts import (
     canonical_digest,
     cross_runtime_canonical_digest,
@@ -349,9 +354,54 @@ def test_setup_schema_rejects_unknown_task_success_contract_fields() -> None:
 
     with pytest.raises(
         TaskEvaluationPolicyCanarySetupError,
-        match="policy_canary_setup_invalid:task_success_contract.criteria",
+        match="policy_canary_setup_invalid:task_success_contract",
     ):
         validate_policy_canary_setup(mutated)
+
+
+def test_setup_accepts_sealed_articulated_drawer_criteria_and_rejects_extra_fields() -> None:
+    setup = _setup()
+    criteria = {
+        "target_joint": {"joint_id": "middle_drawer_slide", "joint_ids": ["middle_drawer_slide"]},
+        "opening": {"mode": "required", "success_interval": [0.18, 0.3],
+                    "joint_hard_limits": [0.0, 0.3], "reset_position": 0.0},
+        "hold": {"mode": "required", "window_samples": 15,
+                 "maximum_settled_target_speed": 0.02},
+        "locked_joints": {"mode": "ignored", "joint_ids": [], "motion_tolerance": 0.01},
+        "reset": {"tolerance": 0.005},
+        "motion": {"movement_epsilon": 0.003},
+        "assembly_root": {"mode": "required"},
+        "safety": SAFETY_PREDICATE,
+        "temporal_invariants": {
+            "schema_version": EVENT_LEDGER_SCHEMA_VERSION,
+            "rebound_below_threshold_allowed": False,
+            "forbidden_collision_allowed": False,
+            "joint_limit_violation_allowed": False,
+            "assembly_root_excursion_allowed": False,
+        },
+    }
+    prior = setup["task_success_contract"]
+    contract = seal_articulated_task_success_contract(
+        task_spec={}, site_id=prior["scope"]["site_id"],
+        task_id=prior["scope"]["task_id"],
+        author_source="compatibility_default", author_id="blueprint:articulated_defaults.v1",
+        confirmation_status="confirmed", confirmed_by_team_id="test-robot-team",
+        criteria=criteria,
+    )
+    setup["task_success_contract"] = contract
+    setup["task_success_contract_digest"] = contract["contract_digest"]
+    setup["setup_digest"] = policy_canary_setup_digest(setup)
+    assert validate_policy_canary_setup(setup) == setup
+
+    invalid = copy.deepcopy(setup)
+    invalid["task_success_contract"]["criteria"]["unobserved_rule"] = True
+    invalid["task_success_contract"]["contract_digest"] = cross_runtime_canonical_digest(
+        invalid["task_success_contract"], digest_field="contract_digest"
+    )
+    invalid["task_success_contract_digest"] = invalid["task_success_contract"]["contract_digest"]
+    invalid["setup_digest"] = policy_canary_setup_digest(invalid)
+    with pytest.raises(TaskEvaluationPolicyCanarySetupError, match="policy_canary_setup_invalid"):
+        validate_policy_canary_setup(invalid)
 
 
 def test_public_setup_may_publish_an_agent_proposal_without_authorizing_it() -> None:
