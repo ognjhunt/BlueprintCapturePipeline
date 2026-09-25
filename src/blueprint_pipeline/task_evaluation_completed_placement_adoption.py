@@ -225,8 +225,52 @@ def discover(
         cancelled = validated_cancellation(directory, attempt)
         if cancelled is not None:
             retained = cancelled.get("completed_placement_adoption")
-            if retained is not None and retained["execution_commit"] == expected_commit:
-                matches.append(retained)
+            if retained is not None:
+                if retained["execution_commit"] == expected_commit:
+                    matches.append(retained)
+                else:
+                    # A successor can fail before writing its placement result.
+                    # In that case the original sealed checkpoint is still the
+                    # latest completed evidence. Rebind it only after proving
+                    # that the intermediate release made no plan or native
+                    # submission; never erase or reopen its spent attempt.
+                    prior_commit = retained["execution_commit"]
+                    prior_records = []
+                    for candidate in (Path(config["controls_root"]) / "terminal-adoptions" / intent_id).glob(
+                        "*/terminal_adoption_provisioning.json"
+                    ):
+                        record = _sealed(candidate, "receipt_digest")
+                        if record["execution_source_commit"] == prior_commit:
+                            prior_records.append(record)
+                    require(len(prior_records) == 1, "ambiguous_sources")
+                    prior_intent = auto.validate_configured_controls_autostart_intent(
+                        _read(Path(prior_records[0]["provisioning"]["intent_path"]))
+                    )
+                    require(
+                        prior_intent.get("completed_placement_adoption") == retained
+                        and prior_intent.get("evaluation_authority") == selected
+                        and prior_intent.get("evaluation_run_id") == evaluation_id,
+                        "lineage_changed",
+                    )
+                    prior_result = auto._autostart_result_path(
+                        root=binding, intent_digest=prior_intent["intent_digest"]
+                    )
+                    plan_root = Path(retained["source_plan"]["path"]).parent
+                    prior_plans = []
+                    for plan_path in plan_root.glob("*.json"):
+                        plan = _read(plan_path)
+                        if (plan.get("expected_production_commit") == prior_commit
+                                and plan.get("source_launch_id") == source["launch_id"]):
+                            prior_plans.append(plan_path)
+                    if not prior_result.exists() and not prior_result.is_symlink() and not prior_plans:
+                        rebound = dict(retained)
+                        rebound["execution_commit"] = expected_commit
+                        rebound["adoption_digest"] = canonical_digest(
+                            rebound, digest_field="adoption_digest"
+                        )
+                        verified = validate_adoption(rebound)
+                        if native_submission_absent(config=config, plan=verified["plan"]):
+                            matches.append(rebound)
             continue
         result_path = auto._autostart_result_path(root=binding, intent_digest=old["intent_digest"])
         if not result_path.exists():

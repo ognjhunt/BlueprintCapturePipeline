@@ -281,6 +281,71 @@ def test_discovery_chooses_exact_descendant_after_multiple_release_adoptions(tmp
     assert adoption._latest_verified_descendant([]) is None
 
 
+def test_cancelled_predecessor_rebinds_only_when_intermediate_release_has_no_plan(
+    tmp_path, monkeypatch,
+):
+    from blueprint_pipeline import task_evaluation_controls_autoprovision as provisioner
+    from blueprint_pipeline import task_evaluation_scene_intake as intake
+    from blueprint_pipeline import task_evaluation_retained_controls_evidence as evidence
+
+    intent_id = "scene-one"
+    previous_commit = "1" * 40
+    next_commit = "2" * 40
+    controls = tmp_path / "controls" / "terminal-adoptions" / intent_id
+    scene = tmp_path / "scenes" / intent_id
+    scene.mkdir(parents=True)
+    plans = tmp_path / "plans"
+    plans.mkdir()
+    retained = {
+        "execution_commit": previous_commit,
+        "source_plan": {"path": str(plans / "original.json")},
+        "adoption_digest": "sha256:" + "a" * 64,
+    }
+    for name, attempt_id in (("original", "original"), ("intermediate", "intermediate")):
+        directory = controls / name
+        directory.mkdir(parents=True)
+        authorization = directory / "authorization.json"
+        authorization.write_text(json.dumps({
+            "scene_owner_attempt": {"scene_attempt_binding": {"attempt_id": attempt_id}}
+        }))
+        intent_path = directory / "intent.json"
+        intent_path.write_text(json.dumps({
+            "intent_digest": "sha256:" + ("b" if name == "original" else "c") * 64,
+            "evaluation_authority": None,
+            "evaluation_run_id": None,
+            "phases": {"construction": {"authorization_path": str(authorization)}},
+            **({"completed_placement_adoption": retained} if name == "intermediate" else {}),
+        }))
+        (directory / "terminal_adoption_provisioning.json").write_text(json.dumps({
+            "execution_source_commit": previous_commit if name == "intermediate" else "0" * 40,
+            "provisioning": {"intent_path": str(intent_path)},
+        }))
+    monkeypatch.setattr(provisioner, "_sealed", lambda path, field: json.loads(Path(path).read_text()))
+    monkeypatch.setattr(intake, "_read", lambda path, field: {"attempt_id": Path(path).stem})
+    monkeypatch.setattr(evidence, "validated_cancellation", lambda directory, attempt: (
+        {"completed_placement_adoption": retained}
+        if attempt["attempt_id"] == "original" else None
+    ))
+    monkeypatch.setattr(auto, "validate_configured_controls_autostart_intent", lambda value: value)
+    monkeypatch.setattr(adoption, "validate_adoption", lambda packet: {"plan": {"source_launch_id": "source"}})
+    monkeypatch.setattr(adoption, "native_submission_absent", lambda **kwargs: True)
+    config = {
+        "controls_root": str(tmp_path / "controls"),
+        "scene_root": str(tmp_path / "scenes"),
+        "progression_root": str(tmp_path / "state"),
+    }
+    source = {"launch_id": "source", "evaluation_authority": None}
+    rebound = adoption.discover(config=config, intent_id=intent_id, source=source,
+        expected_commit=next_commit)
+    assert rebound is not None and rebound["execution_commit"] == next_commit
+    assert rebound["adoption_digest"] == canonical_digest(rebound, digest_field="adoption_digest")
+    (plans / "intermediate.json").write_text(json.dumps({
+        "expected_production_commit": previous_commit, "source_launch_id": "source",
+    }))
+    assert adoption.discover(config=config, intent_id=intent_id, source=source,
+        expected_commit=next_commit) is None
+
+
 @pytest.mark.parametrize('defect', ['unrelated', 'branch', 'rerun', 'changed_checkpoint', 'changed_reference'])
 def test_discovery_never_collapses_different_or_changed_placement_lineages(tmp_path, defect):
     first = _lineage_packet(tmp_path, 'first')
