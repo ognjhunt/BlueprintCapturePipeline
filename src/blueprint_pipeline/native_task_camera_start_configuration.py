@@ -97,8 +97,7 @@ def resolved_camera_matrices(plan, chain, joints) -> dict[str, tuple[np.ndarray,
 
 
 def camera_framing_report(plan, chain, joints) -> dict[str, Any]:
-    points = {"subject_start": plan["task_spec"]["start_pose_world"][:3],
-              "subject_destination": plan["task_spec"]["target_position_world_m"]}
+    points = task_framing_points(plan)
     rows = []
     for role, (matrix, intrinsics) in resolved_camera_matrices(plan, chain, joints).items():
         camera = next(c for c in plan["cameras"] if c["role"] == role)
@@ -116,6 +115,40 @@ def camera_framing_report(plan, chain, joints) -> dict[str, Any]:
                          "projected_center_uv": uv, "depth_m": depth, "passed": passed})
     return {"status": "passed" if all(row["passed"] for row in rows) else "blocked", "views": rows,
             "native_visibility_claimed": False, "occlusion_qualification_claimed": False}
+
+
+def task_framing_points(plan) -> dict[str, list[float]]:
+    """Use authored assembly bounds for a provisional drawer camera target."""
+    spec = plan["task_spec"]
+    if plan.get("task_kind") != "articulated_open_close":
+        return {"subject_start": spec["start_pose_world"][:3],
+                "subject_destination": spec["target_position_world_m"]}
+    subjects = [row for row in plan["objects"] if row.get("task_subject") is True]
+    if len(subjects) != 1 or subjects[0].get("object_type") != "ARTICULATION":
+        raise ValueError("policy_camera_articulated_subject_invalid")
+    extent = np.asarray(plan["task_object_observability"]["task_object_extent_m"], dtype=float)
+    contact = np.asarray(spec["interaction_affordance"]["contact_point_link_m"], dtype=float)
+    pull = np.asarray(spec["interaction_affordance"]["pull_unit_asset_root"], dtype=float)
+    threshold = spec["executable_opening_threshold"]
+    if threshold.get("joint_type") != "prismatic":
+        raise ValueError("policy_camera_articulated_joint_unsupported")
+    interval = threshold["success_interval"]
+    if (extent.shape != (3,) or contact.shape != (3,) or pull.shape != (3,)
+            or not np.isfinite(extent).all() or not np.isfinite(contact).all()
+            or not np.isfinite(pull).all() or np.any(extent <= 0)
+            or not math.isclose(float(np.linalg.norm(pull)), 1.0, abs_tol=1e-3)
+            or not isinstance(interval, list) or len(interval) != 2
+            or not 0 < float(interval[0]) <= float(interval[1])):
+        raise ValueError("policy_camera_articulated_geometry_invalid")
+    pose = subjects[0]["pose_world"]
+    world = pose_matrix(pose["position_world_m"], pose["orientation_xyzw"])
+    # The handle point is link-local, so only its front/side coordinates are
+    # used here. The vertical center comes from the qualified full assembly
+    # extent. Native rendered visibility remains a separate required check.
+    local = np.array([contact[0], contact[1], extent[2] / 2, 1.0])
+    start = (world @ local)[:3]
+    destination = start + world[:3, :3] @ pull * float(interval[0])
+    return {"subject_start": start.tolist(), "subject_destination": destination.tolist()}
 
 
 def validate_camera_start_configuration(plan, value) -> dict[str, Any]:
@@ -240,4 +273,37 @@ def materialize_camera_start_from_plan(*, plan, source_binding, native_reference
             except ValueError as exc:
                 if str(exc) not in {'policy_camera_final_reset_does_not_frame_task', 'policy_camera_start_joint_margin_invalid'}:
                     raise
+    if plan.get('task_kind') == 'articulated_open_close':
+        # A drawer can face the wrist differently from a pick-and-place
+        # target. Search a finite joint-5/6 camera candidate grid, retain the
+        # original base and task pose, and require native checks after launch.
+        choices = []
+        for fifth in (-0.25, -0.5, -0.75, -1.0):
+            for sixth in (0.25, 0.5, 0.75):
+                candidate = deepcopy(value)
+                candidate['joint_reset_positions_rad']['panda_joint5'] += fifth
+                candidate['joint_reset_positions_rad']['panda_joint6'] += sixth
+                candidate['reset_adjustment'] = {
+                    'joints': {'panda_joint5': fifth, 'panda_joint6': sixth},
+                    'reason': 'articulated_task_outside_wrist_camera_at_selected_reset',
+                    'native_validated': False,
+                }
+                candidate['configuration_digest'] = canonical_digest(candidate, digest_field='configuration_digest')
+                try:
+                    validate_camera_start_configuration(plan, candidate)
+                except ValueError as exc:
+                    if str(exc) not in {'policy_camera_final_reset_does_not_frame_task',
+                                        'policy_camera_start_joint_margin_invalid'}:
+                        raise
+                    continue
+                report = camera_framing_report(plan, candidate['source_joint_chain'],
+                                               candidate['joint_reset_positions_rad'])
+                wrist = next(row for row in report['views'] if row['camera_role'] == 'wrist'
+                             and row['subject'] == 'subject_start')
+                u, v = wrist['projected_center_uv']
+                score = (abs(u - 640) / 640 + abs(v - 360) / 360
+                         + 0.25 * (abs(fifth) + abs(sixth)))
+                choices.append((score, fifth, sixth, candidate))
+        if choices:
+            return min(choices, key=lambda item: item[:3])[3]
     raise ValueError('policy_camera_final_reset_does_not_frame_task')

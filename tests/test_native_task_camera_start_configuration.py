@@ -15,6 +15,7 @@ from blueprint_pipeline.native_task_camera_start_configuration import (
     camera_framing_report,
     external_camera_offset_position,
     resolved_camera_matrices,
+    task_framing_points,
     validate_camera_start_configuration,
 )
 
@@ -57,6 +58,29 @@ def test_source_joint_camera_prediction_preserves_task_aligned_start():
         ][1]
         > 720
     )
+
+
+def test_articulated_framing_uses_assembly_extent_and_frozen_stroke():
+    plan = fixture()
+    plan['task_kind'] = 'articulated_open_close'
+    plan['objects'] = [{
+        'task_subject': True, 'object_type': 'ARTICULATION',
+        'pose_world': {'position_world_m': [-0.6, 0.1, 0.0],
+                       'orientation_xyzw': [0.0, 0.0, 0.0, 1.0]},
+    }]
+    plan['task_object_observability'] = {'task_object_extent_m': [0.54, 0.4, 0.58]}
+    plan['task_spec']['interaction_affordance'] = {
+        'contact_point_link_m': [0.25, 0.0, 0.08], 'pull_unit_asset_root': [1.0, 0.0, 0.0],
+    }
+    plan['task_spec']['executable_opening_threshold'] = {
+        'joint_type': 'prismatic', 'success_interval': [0.23, 0.38],
+    }
+    points = task_framing_points(plan)
+    assert points['subject_start'] == pytest.approx([-0.35, 0.1, 0.29])
+    assert points['subject_destination'] == pytest.approx([-0.12, 0.1, 0.29])
+    plan['objects'][0]['object_type'] = 'RIGID'
+    with pytest.raises(ValueError, match='policy_camera_articulated_subject_invalid'):
+        task_framing_points(plan)
 
 
 @pytest.mark.parametrize(

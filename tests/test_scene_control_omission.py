@@ -116,6 +116,58 @@ def test_existing_typed_derivation_preserves_scoring_and_original_bytes(tmp_path
     assert authority['qualified_comparison_permitted'] is False
 
 
+def test_confirmed_drawer_contract_keeps_the_qualified_opening_threshold(tmp_path):
+    from tests.test_task_evaluation_articulated_open_close_native_adapter import _case
+    from blueprint_pipeline.task_evaluation_articulated_open_close_native_adapter import (
+        adapt_articulated_open_close_task_template,
+    )
+    from blueprint_pipeline.task_evaluation_policy_canary_scene_setup import (
+        _require_strict_owner_success_contract,
+    )
+
+    case = _case(tmp_path)
+    adapted = adapt_articulated_open_close_task_template(
+        configured_revision=case['configured'], materialized_references=case['references'])
+    spec = copy.deepcopy(adapted['native_task_definition']['task_spec'])
+    spec['configured_owner_authority'] = {
+        'confirmation_status': 'confirmed', 'accepted_by': 'owner-1',
+        'authority_reference': 'scene-intent:fixture',
+    }
+    contract = omission.confirmed_articulated_contract(
+        task_spec=spec, site_id='scene-drawer', task_id='task-drawer')
+    assert contract['criteria']['opening']['success_interval'] == spec['executable_opening_threshold']['success_interval']
+    assert contract['criteria']['safety'] == {'mode': 'required'}
+    authority = {
+        'schema_version': 'task_evaluation_diagnostic_control_omission_authority.v1',
+        'run_kind': 'internal_policy_canary', 'claim_ceiling': 'diagnostic_policy_execution',
+        'authorized_by': 'blueprint-platform-owner', 'authorization_reference': 'scene-intent:fixture',
+        'omitted_controls': omission.OMITTED,
+        'source_task_success_contract_digest': contract['contract_digest'],
+        'result_task_success_contract_digest': contract['contract_digest'],
+        'task_scoring_criteria_changed': False, 'qualified_comparison_permitted': False,
+    }
+    authority['authority_digest'] = canonical_digest(authority, digest_field='authority_digest')
+    _require_strict_owner_success_contract(
+        task_spec=spec, contract=contract, diagnostic_control_omission_authority=authority,
+        task_kind='articulated_open_close')
+    unconfirmed = copy.deepcopy(spec)
+    unconfirmed['configured_owner_authority']['confirmation_status'] = 'proposal_only'
+    with pytest.raises(ValueError, match='articulated_owner_contract_unconfirmed'):
+        omission.confirmed_articulated_contract(
+            task_spec=unconfirmed, site_id='scene-drawer', task_id='task-drawer')
+    weakened = copy.deepcopy(contract)
+    weakened['criteria']['opening']['success_interval'][0] = 0.1
+    weakened['contract_digest'] = cross_runtime_canonical_digest(weakened, digest_field='contract_digest')
+    with pytest.raises(ValueError, match='policy_canary_control_omission_scope_invalid'):
+        _require_strict_owner_success_contract(
+            task_spec=spec, contract=weakened, diagnostic_control_omission_authority={
+                **authority, 'result_task_success_contract_digest': weakened['contract_digest'],
+                'authority_digest': canonical_digest({
+                    **authority, 'result_task_success_contract_digest': weakened['contract_digest'],
+                }, digest_field='authority_digest'),
+            }, task_kind='articulated_open_close')
+
+
 def test_worker_omits_controls_before_any_standalone_controls_admission(tmp_path,monkeypatch):
     from blueprint_pipeline import task_evaluation_configured_controls_progression_worker as worker
     from tests.test_task_evaluation_configured_controls_progression_worker import _plan,_write,_sealed_progression
