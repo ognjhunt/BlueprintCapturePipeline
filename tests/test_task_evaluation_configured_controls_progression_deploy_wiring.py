@@ -50,3 +50,10 @@ def test_installer_and_deploy_carry_the_progression_path_with_timer_authority() 
         assert unit in deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS
         assert unit in deploy.DEFAULT_ALWAYS_ARM_TIMER_UNITS
         assert unit not in deploy.DEFAULT_ALWAYS_ARM_PATH_UNITS
+
+
+def test_cpu_placement_screen_has_bounded_time_to_finish() -> None:
+    unit = text(
+        "deploy/systemd/blueprint-task-evaluation-configured-controls-progression.service"
+    )
+    assert "TimeoutStartSec=30min" in unit
