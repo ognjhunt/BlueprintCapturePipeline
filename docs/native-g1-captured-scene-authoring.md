@@ -69,6 +69,22 @@ declared-versus-embedded contract digest correction.
 For a movement pair, the authored task specification also needs a
 `g1_navigation_goal` in the same scene. The later pair-selection step requires
 the human-confirmed navigation authority bound to the sealed G1 scene plan.
+The [`841757 movement authoring proposal`](arm_decision_proof_v1/manifests/g1_841757_book_movement_authoring.proposed.v1.json)
+uses the same retained scene and task contract, with a proposed yellow floor
+marker 1 m west of the G1 start at `[-3.703953, -3.441138, 0]` m. Arrival means
+the root is within 0.20 m for the last five samples with no more than 0.15 m
+of root-height drift. This criterion scores arrival and hold; it does not score
+obstacle avoidance. A 5 cm static footprint sample found 21 clear points from
+start to marker, but did not establish floor mesh support, marker visibility,
+dynamic clearance, or policy behavior. The proposal remains unconfirmed until
+the task owner approves the location and criterion and an authority receipt is
+sealed against the materialized movement scene plan. It cannot be used to run
+the movement pair without that receipt. The proposal derives from source
+receipt `sha256:9b3e8ba34242eea5977c1fe709bf8351f62efae8da1a2fac5d2577c27182464a`;
+the locally verified movement packet has receipt
+`sha256:635f56c4ae3418f56d2a8bfb1648f9a0efdf08e51a73fb61637f28ac1788087d`
+and scene plan
+`sha256:57d4f9ff69225c1c8bc5754157df09a62983dae5ec42b52785cef5146fc3e293`.
 
 The stance, camera extrinsics, task parameters, and development scenario must
 be authored for G1. Reusing the Franka wrist camera, robot workspace, or
