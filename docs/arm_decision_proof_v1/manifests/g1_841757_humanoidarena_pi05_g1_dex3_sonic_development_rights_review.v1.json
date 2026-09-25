@@ -1,0 +1,13 @@
+{
+  "candidate_id": "humanoidarena_pi05_g1_dex3_sonic",
+  "checkpoint_terms_reviewed": true,
+  "decision_record_url": "https://github.com/ognjhunt/BlueprintCapturePipeline/issues/2245#issuecomment-5830761422",
+  "human_reviewer": "Nijel Hunt",
+  "inventory_file_sha256": "sha256:6be81cc07bd9c3a4c924c96c57bc23b1a8e518f7884cc30dcccfa1868aebe259",
+  "rights_review_digest": "sha256:ade1bbaded1bdfe49e0352d5ed1d2a9b6bb268f3b09f1cf02603975c0a2e8105",
+  "scene_plan_digest": "sha256:318514b2c988f69c9d7bacf8f5a9471a6292d1f22a68ac6e0fabfcac60b658c4",
+  "schema_version": "native_g1_development_rights_review.v1",
+  "source_and_sonic_terms_reviewed": true,
+  "source_revision": "68479287a784a69be9ce6ad739311d2f11f75ef9",
+  "status": "approved_for_development_simulation"
+}

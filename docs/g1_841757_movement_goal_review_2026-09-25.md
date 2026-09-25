@@ -1,8 +1,10 @@
 # Scene 841757 G1 movement goal decision packet
 
-**Status:** proposed for task-owner review. This is a development simulation
-goal on the retained book-task site. It is not a navigation authority receipt,
-an executed policy result, or a claim of obstacle avoidance.
+**Status:** confirmed by Nijel Hunt for the Blueprint site/task team on
+2026-09-25, recorded in [issue #2245](https://github.com/ognjhunt/BlueprintCapturePipeline/issues/2245#issuecomment-5830761422).
+The sealed `native_g1_navigation_goal_authority.v1` receipt is
+`docs/arm_decision_proof_v1/manifests/g1_841757_movement_goal_authority.v1.json`.
+This is not an executed policy result or a claim of obstacle avoidance.
 
 ## Blocker Title
 
@@ -12,15 +14,16 @@ Confirm the marked-area destination for the G1 movement pair on scene 841757.
 
 `human-blocker:g1-841757-movement-goal-20260925`
 
-## Why This Is Blocked
+## Decision Context
 
-ADP-050 Day 28 compatibility has a materialized movement scene packet and a
-proposed yellow marker, but the movement goal changes task truth. The site/task
-owner must confirm that this is the destination to evaluate before
-`seal_g1_navigation_goal_authority` can bind it to the exact scene plan. An
-agent cannot infer that authorization from static geometry or a packet digest.
+ADP-050 Day 28 compatibility materialized the movement scene packet and
+proposed yellow marker. Because the movement goal changes task truth, the
+site/task owner confirmed the destination and criterion below before
+`seal_g1_navigation_goal_authority` bound it to the exact scene plan. The
+confirmed team id matches the task-success contract's provenance:
+`scene-e9a834a10cfb62ca2f5bbe23ffc3f97b04e8dec8dbea607c`.
 
-## Recommended Answer
+## Confirmed Goal
 
 Confirm the proposed development-only goal below if it matches the intended
 movement task for the same 841757 captured site:
@@ -56,7 +59,7 @@ in Isaac. The current navigation scorer tests arrival and hold; it does not
 score the instruction's obstacle-avoidance clause. An approval would authorize
 only the named goal definition for development simulation.
 
-## Exact Response Needed
+## Original Response Requested
 
 Reply **confirm**, **correct**, or **hold** for this exact proposed center,
 radius, root-height bound, and terminal hold on the retained 841757 task/site.
@@ -78,8 +81,8 @@ and return the new exact plan for review. For **hold**, keep movement disabled.
 
 ## Deadline / Checkpoint
 
-Before launching either `HSI_vision_navi` candidate on 841757. Revisit when
-the site/task owner replies.
+The site/task decision is recorded above. Before launching either
+`HSI_vision_navi` candidate, complete storage, host, spend, and runtime preflight.
 
 ## Evidence
 
@@ -107,6 +110,8 @@ recorded in the owning run artifact.
 
 ## Non-Scope
 
-This decision does not authorize checkpoint download, SONIC use, GPU spend,
+This movement-goal decision alone does not authorize model use, GPU spend,
 physical G1 operation, public video, a qualified policy ranking, or a claim
-that the robot avoided obstacles. Those require their own evidence and gates.
+that the robot avoided obstacles. The model-use decision is recorded separately
+in the rights packet above; the remaining claims require their own evidence
+and gates.

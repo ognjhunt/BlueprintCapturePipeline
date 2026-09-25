@@ -1,8 +1,10 @@
 # Scene 841757 G1 model-rights decision packet
 
-**Status:** awaiting authorized human review. This packet records source facts for
-development simulation. It is not a rights receipt, a license interpretation, a
-GPU-spend authorization, or permission to publish episode media.
+**Status:** approved by Nijel Hunt for internal development simulation on
+2026-09-25. The decision is recorded in [issue #2245](https://github.com/ognjhunt/BlueprintCapturePipeline/issues/2245#issuecomment-5830761422).
+The four candidate-specific, digest-bound rights receipts are in
+`docs/arm_decision_proof_v1/manifests/g1_841757_*_development_rights_review.v1.json`.
+This decision is not GPU-spend authorization or permission to publish episode media.
 
 ## Blocker Title
 
@@ -13,16 +15,21 @@ internal development simulation on the scene 841757 book task.
 
 `human-blocker:g1-841757-model-rights-20260925`
 
-## Why This Is Blocked
+## Decision Context
 
-ADP-050 Day 28 compatibility work has verified the 841757 packet handoff, but
-the G1 worker requires a human-reviewed rights receipt for **each** candidate
-before a checkpoint can run. The same worker uses SONIC controller assets.
+ADP-050 Day 28 compatibility work verified the 841757 packet handoff. The G1
+worker requires a human-reviewed rights receipt for **each** candidate before
+a checkpoint can run. The same worker uses SONIC controller assets.
 The repository validator checks the receipt's identity and digest; it cannot
 decide whether the reviewer has authority or whether the publisher's and
 upstream model terms cover Blueprint's use.
 
-## Recommended Answer
+Nijel Hunt confirmed review and approval of the pinned checkpoint, inherited
+π0.5 base-model, source, and SONIC terms for the four named candidates below.
+No candidate was held. Each receipt binds that decision to its exact candidate,
+inventory file, source revision, and manipulation or movement scene-plan digest.
+
+## Original Review Guidance
 
 An authorized reviewer should inspect the exact sources below and, **only if**
 the HumanoidArena checkpoint terms, any inherited base-model terms, and the
@@ -48,7 +55,7 @@ provenance evidence, not a grant of rights. SONIC weights have separate NVIDIA
 Open Model License terms from its Apache 2.0 source code. A development-use
 approval would not itself establish permission to publish G1 videos.
 
-## Exact Response Needed
+## Original Response Requested
 
 Reply with **approve** or **hold** for development-only download and simulation
 of these four candidates and the pinned SONIC encoder/decoder, naming the
@@ -83,8 +90,8 @@ storage, host, spend, and launch preflight.
 
 ## Deadline / Checkpoint
 
-Before downloading weights or starting the first G1 policy episode on 841757.
-Revisit when the reviewer replies or the publisher supplies missing terms.
+The reviewer decision is recorded above. Before starting the first G1 policy
+episode, complete storage, host, spend, and runtime preflight.
 
 ## Evidence
 
