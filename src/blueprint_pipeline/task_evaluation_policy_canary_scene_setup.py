@@ -49,6 +49,7 @@ from .droid_policy_canary_embodiment import (
     DROID_POLICY_CANARY_PRESET_ID,
     concrete_droid_task_instruction,
 )
+from .task_evaluation_g1_catalog import unavailable_g1_preset
 from .task_evaluation_policy_candidate_registry import (
     unavailable_candidates as unavailable_policy_candidates,
 )
@@ -1235,7 +1236,8 @@ def materialize_policy_canary_presubmission_setup(
                     "reason": None,
                 },
                 "policy_candidates": policies,
-            }
+            },
+            *([unavailable_g1_preset()] if task_family_id == "rigid_relocation" else []),
         ],
         "episode_presets": [
             {
