@@ -1,10 +1,15 @@
 """ADP-009B/day-21: managed session asset tools remain bounded after restart."""
 from __future__ import annotations
 
+import base64
+import hashlib
+from io import BytesIO
 import json
+from pathlib import Path
 import time
 
 import pytest
+from PIL import Image
 
 from blueprint_pipeline.agent_execution.contracts import (
     AgentAdmission, AgentExecutionError, ToolContext, digest,
@@ -60,6 +65,26 @@ def test_future_scene_task_is_explicitly_admitted_and_model_bound(agent_fixture)
         prepare_asset_task(request_value=f.kwargs["request_value"], tools=tools,
             admission=admission.model_copy(update={"disclosure_scope": "other"}),
             task_id="future_drawer_author", source_commit="a" * 40, deadline=now + 1800)
+
+
+def test_managed_image_delivery_is_bounded_and_binds_originals(agent_fixture):  # noqa: F811
+    request = agent_fixture.request
+    original = [(frame, Path(frame.path).read_bytes()) for frame in request.source_frames]
+    inputs = asset_input(agent_fixture.kwargs["request_value"])
+    content = inputs[0]["content"]
+    images = [part for part in content if part["type"] == "input_image"]
+    descriptions = [part for part in content if part["type"] == "input_text"][1:]
+    assert len(images) == len(descriptions) == len(original)
+    for (frame, source), description, image in zip(original, descriptions, images):
+        assert image["image_url"].startswith("data:image/jpeg;base64,")
+        payload = base64.b64decode(image["image_url"].partition(",")[2], validate=True)
+        assert 0 < len(payload) <= 2_000_000
+        with Image.open(BytesIO(source)) as source_image, Image.open(BytesIO(payload)) as delivered:
+            assert source_image.size == delivered.size
+            assert delivered.format == "JPEG"
+        assert frame.sha256 in description["text"]
+        assert "sha256:" + hashlib.sha256(payload).hexdigest() in description["text"]
+        assert Path(frame.path).read_bytes() == source
 
 
 def test_tool_repair_restart_and_independent_review(agent_fixture):  # noqa: F811
