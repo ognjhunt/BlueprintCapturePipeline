@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.decision_evidence_contracts import cross_runtime_canonical_digest
 from blueprint_pipeline.native_g1_development_pair import PAIR_ORDER
 from blueprint_pipeline import native_g1_private_review as review_module
 from blueprint_pipeline.native_g1_private_review import project_g1_private_review
@@ -72,7 +72,18 @@ def test_private_review_retains_four_scores_and_relative_media() -> None:
         "manipulation_pair/"
     )
     assert review["episodes"][3]["frame_manifest"]["relative_path"].startswith("movement_pair/")
-    assert review["review_digest"] == canonical_digest(review, digest_field="review_digest")
+    assert review["review_digest"] == cross_runtime_canonical_digest(
+        review, digest_field="review_digest"
+    )
+
+
+def test_private_review_digest_uses_website_number_encoding() -> None:
+    verification, bundle = _inputs()
+    verification["episodes"][0]["score"]["progress_score"] = 1.0
+    review = project_g1_private_review(verification=verification, bundle=bundle)
+    assert review["review_digest"] == cross_runtime_canonical_digest(
+        review, digest_field="review_digest"
+    )
 
 
 @pytest.mark.parametrize(
@@ -129,6 +140,6 @@ def test_private_review_backfills_older_adapter_result_from_raw_evidence(
         )
         == 0
     )
-    assert json.loads(output.read_text())["review_digest"] == canonical_digest(
+    assert json.loads(output.read_text())["review_digest"] == cross_runtime_canonical_digest(
         json.loads(output.read_text()), digest_field="review_digest"
     )
