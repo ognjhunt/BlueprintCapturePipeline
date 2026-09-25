@@ -88,6 +88,7 @@ def _inputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
             "task_success_contract": setup["task_success_contract"],
             "task_success_contract_digest": setup["task_success_contract_digest"],
             "target_position_world_m": [1.0, 2.0, 0.3],
+            "control_frequency_hz": 50.0,
             "robot_workspace_position_bounds_world_m": {"minimum": [0, 0, 0], "maximum": [1, 1, 1]},
         },
         "assets": [
@@ -157,6 +158,7 @@ def _inputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
         "claim_ceiling": "development_only",
         "source_packet_receipt_digest": receipt["receipt_digest"],
         "pair_choice_digest": choice["choice_digest"],
+        "physics_frequency_hz": 200.0,
         "base_pose_world": robot["base_pose_world"],
         "task_hand": "right",
         "cameras": [_camera("head"), _camera("overview")],
@@ -165,6 +167,7 @@ def _inputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
             "task_success_contract": setup["task_success_contract"],
             "task_success_contract_digest": setup["task_success_contract_digest"],
             "target_position_world_m": [1.0, 2.0, 0.3],
+            "control_frequency_hz": 50.0,
             "robot_workspace_position_bounds_world_m": {
                 "minimum": [-1, -1, 0],
                 "maximum": [2, 2, 2],
@@ -197,6 +200,9 @@ def test_authors_g1_request_from_exact_source_scene_without_franka_camera_bindin
     assert "policy_canary_camera_start_configuration" not in request
     assert request["scenario"]["context_document"]["partition"] == "development"
     assert request["request_digest"] == canonical_digest(request, digest_field="request_digest")
+    assert request["physics_frequency_hz"] == 200.0
+    assert request["g1_scene_derivation"]["source_physics_frequency_hz"] == 120
+    assert request["g1_scene_derivation"]["selected_physics_frequency_hz"] == 200.0
     assert (
         request["g1_scene_derivation"]["source_packet_receipt_digest"]
         == (args["authoring"]["source_packet_receipt_digest"])
@@ -299,6 +305,19 @@ def test_wrong_head_resolution_rejected(tmp_path: Path, monkeypatch: pytest.Monk
     authoring["authoring_digest"] = canonical_digest(authoring, digest_field="authoring_digest")
     args["authoring"] = authoring
     with pytest.raises(ValueError, match="head_camera_invalid"):
+        module.author_g1_scene_packet_request(**args)
+
+
+@pytest.mark.parametrize("physics_frequency", [120.0, 125.0, 0.0])
+def test_g1_physics_must_have_integral_control_decimation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, physics_frequency: float
+) -> None:
+    args = _inputs(tmp_path, monkeypatch)
+    authoring = copy.deepcopy(args["authoring"])
+    authoring["physics_frequency_hz"] = physics_frequency
+    authoring["authoring_digest"] = canonical_digest(authoring, digest_field="authoring_digest")
+    args["authoring"] = authoring
+    with pytest.raises(ValueError, match="physics_control_cadence_invalid"):
         module.author_g1_scene_packet_request(**args)
 
 

@@ -40,6 +40,10 @@ The team supplies an authoring JSON with these fields:
 - `claim_ceiling`: `development_only`
 - `source_packet_receipt_digest`: the verified receipt digest
 - `pair_choice_digest`: from the exported choice
+- `physics_frequency_hz`: an explicit G1 physics cadence when the source
+  cadence cannot evenly decimate to the policy control rate; for 841757, use
+  200 Hz physics with 50 Hz G1 control (four physics steps per action). The
+  request records both source and selected rates.
 - `base_pose_world`: a reviewed G1 stance in the source scene's metric frame
 - `task_hand`: `left` or `right`
 - `cameras`: a 640 by 480 policy `head` camera parented to a rigid body in the
@@ -52,6 +56,16 @@ The team supplies an authoring JSON with these fields:
   its sealed instance digest
 - `authoring_digest`: canonical digest of the JSON excluding that field
 
+For the first 841757 book manipulation rehearsal, the
+[`g1_841757_book_manipulation_authoring.v1.json`](arm_decision_proof_v1/manifests/g1_841757_book_manipulation_authoring.v1.json)
+file binds the retained packet and the two manipulation candidates. Its base
+pose is a floor-clear **candidate** sampled by the static reach probe. Its head
+and overview camera extrinsics are authored estimates; a live simulator frame
+must confirm object visibility before this can be treated as a viable episode
+setup. It uses 200 Hz physics and 50 Hz control. The task success contract and
+book/target facts are copied from the retained packet, with only the recorded
+declared-versus-embedded contract digest correction.
+
 For a movement pair, the authored task specification also needs a
 `g1_navigation_goal` in the same scene. The later pair-selection step requires
 the human-confirmed navigation authority bound to the sealed G1 scene plan.
@@ -59,7 +73,7 @@ the human-confirmed navigation authority bound to the sealed G1 scene plan.
 The stance, camera extrinsics, task parameters, and development scenario must
 be authored for G1. Reusing the Franka wrist camera, robot workspace, or
 qualification scenario would misdescribe the episode. The builder checks
-binding and camera shape but native collision, reach, visibility, and task
+binding, integral physics/control decimation, and camera shape but native collision, reach, visibility, and task
 performance still require a G1 simulator run.
 
 Before authoring a stance, run the static reach diagnostic against the retained
