@@ -209,11 +209,21 @@ PYTHONPATH=src python -m blueprint_pipeline.native_g1_container_run \
 Review `native_g1_container_run_plan.v1.json`, then use the same command with
 `--execute` and a **new** output directory. The launcher requires the pinned
 image locally (`--pull never`), GPU 0, and loopback-only container networking;
-it retains `container.log`, the runtime provisioning receipt, and the worker's
-terminal receipt in the output directory. A staged plan proves only a transport
-recipe. A successful Docker exit still needs the worker receipt, media, scorer,
-checkpoint runtime identity, and teardown inspected before any runnable WebApp
-profile or video claim is published.
+before Docker starts it records `native_g1_container_host_readiness.v1.json`
+with the visible GPU 0, driver, VRAM, local image ID, and free output disk. It
+rejects hosts below Isaac Sim 6.0's published 16 GB nominal VRAM and Linux driver
+580.95.05 minimums, its explicitly unsupported A100/H100 GPUs, a missing
+pinned image, or less than 16 GiB of additional output space. These are
+pre-execution checks, not proof that RTX rendering or the policy can initialize.
+The launcher retains `container.log`, the runtime provisioning receipt, and
+the worker's terminal receipt in the output directory. The pair runner applies
+the same host check to each container attempt before calling Docker. A staged
+plan proves only a transport recipe. A successful Docker exit still needs the
+worker receipt, media, scorer, checkpoint runtime identity, and teardown
+inspected before any runnable WebApp profile or video claim is published.
+
+Isaac Sim's requirements and unsupported-GPU list are maintained in the
+[official 6.0 requirements](https://docs.isaacsim.omniverse.nvidia.com/6.0.0/installation/requirements.html).
 
 For the two pinned `HSI_vision_navi` candidates, the same rigid-task packet
 may include a `task_spec.g1_navigation_goal` side objective. The task still
