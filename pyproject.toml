@@ -88,7 +88,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Website-only source geometry; install in the existing inference worker.
+# Website-only source geometry; install in its own runtime without the default
+# dev group (`uv sync --no-dev --extra website_geometry`). MapAnything requires
+# headless OpenCV 4.10.0.84; measurement development tests require 4.11.0.86.
 website_geometry = [
     "mapanything @ git+https://github.com/facebookresearch/map-anything.git@3d10cf7a3016fc0f9bb13a071ee66c47b10be0d9",
 ]
@@ -208,7 +210,7 @@ dev = [
     "pyelastica==0.3.3.post2",
     "boto3>=1.34.0",
     "botocore>=1.34.0",
-    "opencv-python-headless>=4.10.0",
+    "opencv-python-headless==4.11.0.86",
     # Real loopback ZMQ transport tests for the official GEAR-SONIC executor
     # (FABLE-004): without pyzmq those tests skip, and the Full Test Lane's
     # fail-closed evidence policy rejects any skip.
@@ -263,7 +265,7 @@ dev = [
     "pyelastica==0.3.3.post2",
     "boto3>=1.34.0",
     "botocore>=1.34.0",
-    "opencv-python-headless>=4.10.0",
+    "opencv-python-headless==4.11.0.86",
     # Real loopback ZMQ transport tests for the official GEAR-SONIC executor
     # (FABLE-004): without pyzmq those tests skip, and the Full Test Lane's
     # fail-closed evidence policy rejects any skip.
@@ -487,6 +489,12 @@ line-length = 100
 
 [tool.uv]
 required-version = "==0.10.7"
+# MapAnything pins OpenCV 4.10.0.84. The development measurement suite pins
+# 4.11.0.86, so these environments must be installed separately.
+conflicts = [
+    [{ extra = "website_geometry" }, { extra = "dev" }],
+    [{ extra = "website_geometry" }, { group = "dev" }],
+]
 exclude-dependencies = [
     "opencv-python",
 ]
