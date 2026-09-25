@@ -195,6 +195,71 @@ def test_official_droid_wrist_reset_accepts_visible_edge_task_pixels() -> None:
     assert droid["notices"] == ["droid_wrist_task_initially_near_frame_edge"]
     assert generic["passed"] is False
     assert "policy_canary_wrist_task_visibility_failed" in generic["blockers"]
+
+
+def test_official_droid_wrist_black_robot_body_keeps_visible_drawer(tmp_path: Path) -> None:
+    from PIL import Image
+
+    rgb = np.full((100, 100, 3), 120, dtype=np.uint8)
+    rgb[:, :72] = 0
+    robot = np.zeros((100, 100), dtype=np.uint8)
+    robot[:, :72] = 255
+    rgb_path = tmp_path / "wrist.png"
+    mask_path = tmp_path / "robot-mask.png"
+    Image.fromarray(rgb, mode="RGB").save(rgb_path)
+    Image.fromarray(robot, mode="L").save(mask_path)
+    wrist = {
+        "role": "wrist",
+        "rgb_png": {"path": rgb_path.name, "sha256": _sha(rgb_path)},
+        "robot_semantic_mask": {"path": mask_path.name, "sha256": _sha(mask_path),
+                                "pixel_count": 7200},
+        "semantic_label_pixels": {"task_object": {"pixel_fraction": 0.22}},
+        "observability": {
+            "passed": False, "semantic_passed": True, "render_passed": False,
+            "pixel_count": 2200, "centroid_within_margin": True,
+            "target_semantic_ids": [17],
+            "thresholds": {"effective_minimum_pixels": 120},
+            "render_evidence": {"target_rendered": True, "blockers": [
+                "native_task_camera_rgb_site_void_fraction_above_ceiling",
+                "native_task_camera_rgb_site_dominant_color_fraction_above_ceiling",
+            ]},
+        },
+    }
+    blocker = "native_task_prepolicy_visual_frame_near_black_fraction_above_ceiling"
+    visual = {
+        "views": {"wrist": {"blockers": [blocker], "passed": False,
+                             "render_presence": {"passed": True},
+                             "saturation": {"passed": True}}},
+        "blockers": [blocker + ":wrist"], "frame_structure_passed": False,
+        "passed": False, "policy_observation_integrity_blockers": [
+            "native_task_prepolicy_frame_structure_failed",
+            "native_task_appearance_reference_parity_missing",
+        ],
+    }
+    snapshot = {"cameras": [wrist]}
+    qualified, allowed = worker._qualify_official_droid_wrist_body_occlusion(
+        snapshot=snapshot, visual=visual, output_root=tmp_path
+    )
+    assert allowed and qualified["frame_structure_passed"] is True
+    assert qualified["views"]["wrist"]["robot_body_occlusion"]["near_black_inside_robot_fraction"] == 1.0
+    assert visual["frame_structure_passed"] is False
+    other = {"role": "external", "observability": {"passed": True,
+             "render_passed": True, "pixel_count": 1000,
+             "thresholds": {"effective_minimum_pixels": 120}}}
+    result = worker._policy_camera_visibility_contract(
+        {"cameras": [wrist, other, {**other, "role": "overview"}]},
+        preserve_official_droid_calibration=True,
+        wrist_robot_occlusion_qualified=allowed,
+    )
+    assert result["camera_visibility"]["wrist"] is True
+    assert result["role_qualifications"]["wrist"]["raw_render_passed"] is False
+    rgb[:, 72:] = 0  # Black outside the robot mask remains a failure.
+    Image.fromarray(rgb, mode="RGB").save(rgb_path)
+    wrist["rgb_png"]["sha256"] = _sha(rgb_path)
+    refused, allowed = worker._qualify_official_droid_wrist_body_occlusion(
+        snapshot=snapshot, visual=visual, output_root=tmp_path
+    )
+    assert not allowed and refused["blockers"] == [blocker + ":wrist"]
 PI05_POLICY_SPEC = {
     "policy_id": "pi05_droid_jointpos_polaris",
     "config_name": "pi05_droid_jointpos_polaris",

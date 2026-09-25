@@ -1090,6 +1090,18 @@ def _finish_policy_canary_delivery(
         or not isinstance(notification, Mapping)
         or notification.get("status") not in {"accepted", "delivered", "failed"}
     ):
+        # Keep only typed transport/readback metadata. A failed website retry
+        # must be diagnosable without logging the signed payload or token.
+        write_json(root / "website_sync_attempt_diagnostic.json", {
+            "schema_version": "policy_canary_website_sync_attempt_diagnostic.v1",
+            "status": sync.get("status"),
+            "reason": sync.get("reason"),
+            "attempts": sync.get("attempts"),
+            "notification_status": (
+                notification.get("status") if isinstance(notification, Mapping) else None
+            ),
+            "provider_mutation_performed": False,
+        })
         pending = {
             "schema_version": SCHEMA_VERSION,
             "status": "awaiting_website_sync_or_notification",

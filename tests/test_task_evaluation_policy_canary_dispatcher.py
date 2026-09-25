@@ -1185,6 +1185,9 @@ def test_release_change_resumes_only_sealed_delivery_without_allocator(tmp_path,
         run_id=activation["run_id"], configuration_digest="sha256:" + "1" * 64,
         sync_runner=lambda **_kwargs: {"status": "failed"})
     root = run["root"]
+    diagnostic = json.loads((root / "website_sync_attempt_diagnostic.json").read_text())
+    assert diagnostic["status"] == "failed"
+    assert diagnostic["provider_mutation_performed"] is False
     runtime_path = Path(json.loads(activation_result.read_text())["policy_canary_runtime_inputs_path"])
     runtime = json.loads(runtime_path.read_text())
     resource = runtime["resource_authority"]

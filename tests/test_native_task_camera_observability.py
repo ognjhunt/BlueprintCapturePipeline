@@ -28,6 +28,7 @@ from blueprint_pipeline.native_task_camera_observability import (
     measure_native_task_camera_observability,
     measure_native_task_frame_render_evidence,
     measure_native_task_semantic_label_pixels,
+    retain_native_robot_semantic_mask,
     validate_native_task_policy_start_camera_observability,
 )
 
@@ -67,6 +68,23 @@ def test_semantic_label_pixels_separates_task_and_robot_occlusion() -> None:
     assert task["bbox_xyxy"] == [3, 2, 7, 5]
     assert robot["pixel_count"] == 150
     assert robot["pixel_fraction"] == pytest.approx(0.25)
+
+
+def test_robot_semantic_mask_retains_exact_pixels(tmp_path) -> None:
+    from PIL import Image
+
+    semantic = np.array([[9, 9, 7], [0, 9, 7]], dtype=np.int32)
+    path = tmp_path / "robot.png"
+    record = retain_native_robot_semantic_mask(
+        semantic_ids=semantic,
+        id_to_labels={"9": {"class": "robot"}, "7": {"class": "task_object"}},
+        output_path=path,
+        relative_to=tmp_path,
+    )
+    assert record["pixel_count"] == 3
+    assert record["path"] == "robot.png"
+    with Image.open(path) as image:
+        assert np.asarray(image).tolist() == [[255, 255, 0], [0, 255, 0]]
 
 
 def _passing_policy_start_camera(role: str, *, snapshot_id: str = "reset") -> dict:

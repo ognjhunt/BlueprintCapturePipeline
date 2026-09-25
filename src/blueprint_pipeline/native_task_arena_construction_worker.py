@@ -835,6 +835,7 @@ def _camera_snapshot(
     from blueprint_pipeline.native_task_camera_observability import (
         measure_native_task_camera_observability,
         measure_native_task_semantic_label_pixels,
+        retain_native_robot_semantic_mask,
     )
     from blueprint_pipeline.native_task_frame_display_encoding import (
         display_encode_hdr,
@@ -954,6 +955,11 @@ def _camera_snapshot(
                 (framing_expectations or {}).get(role) or None
             ),
         )
+        robot_mask_record = (retain_native_robot_semantic_mask(
+            semantic_ids=semantic, id_to_labels=labels,
+            output_path=frame_dir / f"{snapshot_id}.robot_semantic_mask.png",
+            relative_to=output_root,
+        ) if role == "wrist" else None)
         rows.append(
             {
                 "role": role,
@@ -974,6 +980,7 @@ def _camera_snapshot(
                     camera.data.quat_w_opengl
                 )[0],
                 "observability": observability,
+                "robot_semantic_mask": robot_mask_record,
                 "semantic_label_pixels": {
                     label: measure_native_task_semantic_label_pixels(
                         semantic_ids=semantic,
