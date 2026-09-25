@@ -35,6 +35,7 @@ from .paid_resource_admission import (
 
 PROBE_KIND = "native-g1-development-campaign"
 RESULT_SCHEMA = "native_g1_paid_campaign_result.v1"
+INSTANCE_LABEL_PREFIX = "blueprint-native-task-arena-g1-841757-"
 
 
 def _read(path: Path) -> dict[str, Any]:
@@ -338,7 +339,7 @@ def dispatch_g1_paid_campaign(
             container_image=NATIVE_TASK_ARENA_IMAGE,
             provider_bundle_kind=PROVIDER_BUNDLE_KIND,
             result_schema_version=RESULT_SCHEMA,
-            instance_label_prefix="blueprint-g1-841757-",
+            instance_label_prefix=INSTANCE_LABEL_PREFIX,
             blocker_prefix="native_g1_campaign",
             min_gpu_ram_mb=48_000,
             candidate_policy_query_expected=True,
