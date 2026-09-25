@@ -1910,6 +1910,34 @@ def _required_restart_units(units: Sequence[str]) -> tuple[str, ...]:
     return tuple(required)
 
 
+def _drain_agent_execution_before_release_switch(
+    *, expected_commit: str, config_path: str | Path = "/etc/blueprint/agent-execution.json"
+) -> dict[str, Any]:
+    """Quiesce the old agent while its matching worker can still perform cleanup."""
+    path = Path(config_path)
+    if not path.exists():
+        return {"status": "not_configured"}
+    from blueprint_pipeline.agent_execution.production import ProductionAgentService, ProductionConfig, _read_private
+    from blueprint_pipeline.agent_execution.release import drain, pending_cleanup
+    from blueprint_pipeline.agent_execution.journal import AgentJournal
+
+    config = ProductionConfig.model_validate_json(_read_private(path))
+    if config.source_commit == expected_commit:
+        return {"status": "already_bound", "source_commit": expected_commit}
+    if pending_cleanup(AgentJournal(config.state_root)) and (
+        _systemd_unit_state("blueprint-agent-execution.service").get("state") != "active"
+    ):
+        raise ControlPlaneDeployError("deploy_agent_cleanup_worker_not_active")
+    try:
+        service = ProductionAgentService(path, source_commit=config.source_commit)
+        result = drain(service, target_source_commit=expected_commit, timeout_seconds=30, drive_worker=False)
+    except Exception as exc:
+        raise ControlPlaneDeployError("deploy_agent_configuration_requires_clean_drain") from exc
+    if result["status"] != "drained":
+        raise ControlPlaneDeployError("deploy_agent_cleanup_reconciliation_pending")
+    return result
+
+
 def _activate_agent_execution(*, expected_commit: str, config_path: str | Path = "/etc/blueprint/agent-execution.json") -> dict[str, Any]:
     """An admitted config activates the worker; absent config never grants inference."""
     path = Path(config_path)
@@ -2474,6 +2502,9 @@ def deploy_control_plane_commit(
             scene_preparation_installation = {"status": "not_configured", "bootstrap_path": str(bootstrap),
                                               "provider_mutation_performed": False}
         _mark_stage("runtime_trees_provisioned")
+        agent_pre_activation_drain = _drain_agent_execution_before_release_switch(
+            expected_commit=source_commit
+        )
         _move_source_checkout(source, source_commit)
         release = stage_task_evaluation_control_plane_release(
             source_repo=source,
@@ -2582,6 +2613,7 @@ def deploy_control_plane_commit(
         )
         _mark_stage("intake_restarted_and_proven")
         agent_execution = _activate_agent_execution(expected_commit=commit)
+        agent_execution["pre_activation_drain"] = agent_pre_activation_drain
         # Last inside the held locks: the queue watcher only starts watching
         # once the restarted intake has proven the new commit, and no launch
         # can slip in between the watcher restart and the lock release.
