@@ -23,6 +23,7 @@ from blueprint_pipeline.provider_runtime_bundle_contract import (
     provider_runtime_contract_blockers,
 )
 from blueprint_pipeline import vast_provider_adapter as vast
+from blueprint_pipeline.wam_provider_output import inspect_provider_runtime_output_zip
 
 
 def _args(tmp_path: Path, **changes: object) -> SimpleNamespace:
@@ -140,6 +141,18 @@ def test_g1_provider_kind_uses_isaac_and_retains_episode_media() -> None:
     )
     assert "preserve_all_output = True" in script
     assert "if preserve_all_output or size <= size_limit" in script
+
+
+def test_returned_g1_terminal_result_is_detected_by_provider_adapter(tmp_path: Path) -> None:
+    path = tmp_path / "output.zip"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr(
+            "native_g1_provider_campaign_result.v1.json",
+            json.dumps({"status": "completed", "blockers": []}),
+        )
+    inspected = inspect_provider_runtime_output_zip(path, expected_video_count=0)
+    assert inspected["runtime_result_present"] is True
+    assert inspected["runtime_result_status"] == "completed"
 
 
 def test_completed_transport_without_episode_evidence_is_blocked(
