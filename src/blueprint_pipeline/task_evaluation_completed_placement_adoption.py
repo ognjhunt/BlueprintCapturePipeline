@@ -10,6 +10,7 @@ from .task_evaluation_retained_controls_evidence import (
 
 import os
 import hashlib
+import math
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -20,6 +21,42 @@ from .task_evaluation_retained_controls_evidence import _file, _read
 
 SCHEMA = "task_evaluation_completed_placement_adoption.v1"
 CANCELLATION_SCHEMA = "task_evaluation_unused_native_plan_cancellation.v1"
+
+
+def _camera_revision_compatible(old: Mapping[str, Any], new: Mapping[str, Any]) -> bool:
+    """Permit only generated world-view poses to change across a release.
+
+    A wrist camera or an intrinsic change alters the policy observation contract.
+    World-view poses remain candidates until native observability readback.
+    """
+    old_cameras, new_cameras = old.get("cameras"), new.get("cameras")
+    if old_cameras == new_cameras:
+        return True
+    if not (isinstance(old_cameras, list) and isinstance(new_cameras, list)
+            and len(old_cameras) == len(new_cameras) == 3
+            and all(isinstance(camera, Mapping) for camera in (*old_cameras, *new_cameras))
+            and [camera.get("role") for camera in old_cameras] == ["external", "wrist", "overview"]
+            and [camera.get("role") for camera in new_cameras] == ["external", "wrist", "overview"]
+            and new.get("status") == "candidate_pending_native_observability_readback"
+            and new.get("camera_configuration_qualified") is False
+            and new.get("native_observability_readback_required") is True
+            and new.get("wrist_mount_copied_from_immutable_profile") is True):
+        return False
+    for original, successor in zip(old_cameras, new_cameras):
+        if original["role"] == "wrist":
+            if original != successor:
+                return False
+            continue
+        if {key: value for key, value in original.items() if key != "frame_from_camera_matrix"} != {
+            key: value for key, value in successor.items() if key != "frame_from_camera_matrix"
+        }:
+            return False
+        matrix = successor.get("frame_from_camera_matrix")
+        if not (isinstance(matrix, list) and len(matrix) == 16
+                and all(type(value) in (int, float) and math.isfinite(value) for value in matrix)
+                and matrix[12:] == [0.0, 0.0, 0.0, 1.0]):
+            return False
+    return True
 
 
 def checkpoint_reference(*, result: Mapping[str, Any], binding: Path, token: str) -> dict:
@@ -489,7 +526,9 @@ def materialize(
         source_commit=intent["expected_production_commit"],
     )
     require(
-        _read(cameras_path)["cameras"] == _read(Path(source["plan"]["cameras_path"]))["cameras"],
+        _camera_revision_compatible(
+            _read(Path(source["plan"]["cameras_path"])), _read(cameras_path)
+        ),
         "camera_geometry_changed",
     )
     token = intent["intent_digest"].removeprefix("sha256:")[:16]

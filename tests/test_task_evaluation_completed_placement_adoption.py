@@ -1,4 +1,5 @@
 import json
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -8,13 +9,43 @@ from blueprint_pipeline import task_evaluation_configured_controls_autostart as 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
 
+def test_completed_placement_accepts_only_unqualified_world_camera_pose_revision():
+    matrix = [1.0, 0.0, 0.0, 0.5, 0.0, 1.0, 0.0, -0.4,
+              0.0, 0.0, 1.0, 0.6, 0.0, 0.0, 0.0, 1.0]
+    old = {"cameras": [
+        {"role": "external", "frame_from_camera_matrix": matrix.copy(), "intrinsics": {"fov": 60}},
+        {"role": "wrist", "frame_from_camera_matrix": matrix.copy(), "intrinsics": {"fov": 70}},
+        {"role": "overview", "frame_from_camera_matrix": matrix.copy(), "intrinsics": {"fov": 65}},
+    ]}
+    new = deepcopy(old)
+    new.update(status="candidate_pending_native_observability_readback",
+               camera_configuration_qualified=False,
+               native_observability_readback_required=True,
+               wrist_mount_copied_from_immutable_profile=True)
+    for index in (0, 2):
+        new["cameras"][index]["frame_from_camera_matrix"][3] += 0.2
+    assert adoption._camera_revision_compatible(old, new)
+    for index, field, value in (
+        (0, "intrinsics", {"fov": 50}),
+        (1, "frame_from_camera_matrix", [*matrix[:3], 1.2, *matrix[4:]]),
+        (2, "frame_from_camera_matrix", [float("nan"), *matrix[1:]]),
+    ):
+        changed = deepcopy(new)
+        changed["cameras"][index][field] = value
+        assert not adoption._camera_revision_compatible(old, changed)
+    qualified = deepcopy(new)
+    qualified["camera_configuration_qualified"] = True
+    assert not adoption._camera_revision_compatible(old, qualified)
+
+
 @pytest.mark.parametrize('evaluation_id', [None, 'team-eval-one'])
+@pytest.mark.parametrize('world_camera_rebound', [False, True])
 @pytest.mark.parametrize(
     'provenance_rebound,retained_lineage_rebound',
     [(False, False), (True, False), (True, True)],
 )
 def test_completed_placement_rebinds_native_plan_without_new_model_or_search(
-    tmp_path, monkeypatch, evaluation_id, provenance_rebound, retained_lineage_rebound,
+    tmp_path, monkeypatch, evaluation_id, world_camera_rebound, provenance_rebound, retained_lineage_rebound,
 ):
     scene = {"scene": "fixture"}
     task = {"task": "move-object"}
@@ -29,7 +60,21 @@ def test_completed_placement_rebinds_native_plan_without_new_model_or_search(
         original_task = {**task, "trajectory_digest": "sha256:" + "c" * 64}
     revision = {"revision_digest": "sha256:" + "b" * 64}
     cameras = tmp_path / "old-cameras.json"
-    cameras.write_text(json.dumps({"cameras": [{"pose": "fixed"}]}))
+    camera_matrix = [1.0, 0.0, 0.0, 0.5, 0.0, 1.0, 0.0, -0.4,
+                     0.0, 0.0, 1.0, 0.6, 0.0, 0.0, 0.0, 1.0]
+    original_cameras = {"cameras": [
+        {"role": role, "frame_from_camera_matrix": camera_matrix.copy(), "intrinsics": {"fov": 60}}
+        for role in ("external", "wrist", "overview")
+    ]}
+    cameras.write_text(json.dumps(original_cameras))
+    successor_cameras = tmp_path / "new-cameras.json"
+    successor_value = deepcopy(original_cameras)
+    successor_value.update(status="candidate_pending_native_observability_readback",
+                           camera_configuration_qualified=False,
+                           native_observability_readback_required=True,
+                           wrist_mount_copied_from_immutable_profile=True)
+    successor_value["cameras"][0]["frame_from_camera_matrix"][3] += 0.2
+    successor_cameras.write_text(json.dumps(successor_value))
     universe = tmp_path / "old-universe.json"
     universe.write_text(json.dumps({"run_id": "retained-run"}))
     old = {
@@ -91,7 +136,8 @@ def test_completed_placement_rebinds_native_plan_without_new_model_or_search(
         return universe, {"inventory_digest": "sha256:" + "0" * 64, "candidates": [{}]}
 
     monkeypatch.setattr(auto, "_materialize_native_feedback_candidate_universe", native_universe)
-    monkeypatch.setattr(auto, "_materialize_placement_aware_cameras", lambda **kwargs: cameras)
+    monkeypatch.setattr(auto, "_materialize_placement_aware_cameras",
+                        lambda **kwargs: successor_cameras if world_camera_rebound else cameras)
 
     def readiness(**kwargs):
         assert kwargs["placement_receipt"] is placement
