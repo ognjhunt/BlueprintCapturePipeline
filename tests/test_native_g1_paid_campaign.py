@@ -249,6 +249,41 @@ def test_completed_transport_without_episode_evidence_is_blocked(
     assert result["blockers"] == ["g1_paid_campaign_output_verification_failed:ValueError"]
 
 
+def test_completed_verified_run_writes_private_review_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blueprint_pipeline import native_g1_private_review as review_module
+
+    commit = "a" * 40
+    digest = "sha256:" + "b" * 64
+    bundle = {"status": "ready", "bundle_sha256": digest}
+    monkeypatch.setattr(lane, "load_verified_g1_provider_bundle", lambda *_a, **_k: bundle)
+    monkeypatch.setattr(lane, "run_arena_native_control_vast", lambda **_k: {
+        "status": "completed", "continuing_spend_from_this_run": False, "blockers": [],
+    })
+    monkeypatch.setattr(lane, "verify_g1_paid_output", lambda *_a, **_k: {
+        "status": "verified_development_only",
+    })
+    monkeypatch.setattr(review_module, "project_g1_private_review", lambda **_k: {
+        "schema_version": review_module.SCHEMA,
+        "status": "verified_private_development_review",
+        "review_digest": digest,
+    })
+    result = lane.dispatch_g1_paid_campaign(
+        _args(tmp_path, g1_campaign_bundle_receipt=str(tmp_path / "receipt.json")),
+        control_identity={
+            "orchestrator_source_commit": commit,
+            "origin_main_commit": commit,
+            "remote_main_commit": commit,
+        },
+        control_blockers=[],
+    )
+    path = tmp_path / "job/native_g1_private_review.v1.json"
+    assert result["status"] == "completed"
+    assert result["g1_private_review"] == {"path": str(path), "review_digest": digest}
+    assert json.loads(path.read_text())["status"] == "verified_private_development_review"
+
+
 def test_precreate_consumes_one_exact_bundle_attempt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -165,6 +165,7 @@ def verify_g1_paid_output(result: dict[str, Any], bundle: dict[str, Any]) -> dic
                 "objective_id": objective,
                 "policy_query_count": trace["policy_query_count"],
                 "score": score,
+                "frame_manifest": media["frame_manifest"],
                 "review_videos": media["review_videos"],
                 "frame_manifest_digest": media["frame_manifest_digest"],
             })
@@ -380,6 +381,18 @@ def dispatch_g1_paid_campaign(
         if args.execute and result.get("status") == "completed":
             try:
                 result["g1_output_verification"] = verify_g1_paid_output(result, bundle)
+                from .native_g1_private_review import project_g1_private_review
+
+                review = project_g1_private_review(
+                    verification=result["g1_output_verification"], bundle=bundle
+                )
+                review_path = Path(args.adp_job_dir) / "native_g1_private_review.v1.json"
+                with review_path.open("x", encoding="utf-8") as stream:
+                    json.dump(review, stream, indent=2, sort_keys=True)
+                    stream.write("\n")
+                result["g1_private_review"] = {
+                    "path": str(review_path), "review_digest": review["review_digest"]
+                }
             except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
                 result["status"] = "blocked"
                 result["blockers"] = sorted(set([
