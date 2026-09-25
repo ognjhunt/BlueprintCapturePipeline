@@ -13,7 +13,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from .decision_evidence_contracts import canonical_digest
+from .decision_evidence_contracts import cross_runtime_canonical_digest
 from .native_g1_development_pair import PAIR_ORDER
 from .task_evaluation_g1_catalog import G1_EMBODIMENT_ID
 
@@ -119,7 +119,11 @@ def project_g1_private_review(
         "physical_outcome_claimed": False,
         "simulator_result_is_physical_proof": False,
     }
-    review["review_digest"] = canonical_digest(review, digest_field="review_digest")
+    # The Website verifies this digest after JSON.parse, whose number encoding
+    # follows ECMAScript rather than Python's json.dumps float formatting.
+    review["review_digest"] = cross_runtime_canonical_digest(
+        review, digest_field="review_digest"
+    )
     return review
 
 
