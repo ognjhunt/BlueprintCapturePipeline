@@ -386,3 +386,22 @@ def test_apply_keeps_the_old_binds_when_one_will_not_unmount(tmp_path: Path) -> 
     assert "could not unmount /var/lib/blueprint/task-evaluation-inputs/prepared-references" in applied.stderr
     assert (_tree(state), bound.read_text(encoding="utf-8")) == before
     assert (volume / "task-evaluation-inputs" / "prepared-references" / "payload.bin").is_file()
+
+
+def test_apply_refuses_when_the_volume_copy_holds_what_the_root_lacks(tmp_path: Path) -> None:
+    state = _state(tmp_path)
+    # Left by an earlier run, or by a store copy that is no longer bound: it would
+    # go live under the bind although the root no longer has it.
+    stale = tmp_path / "mnt" / "blueprint-work" / "task-evaluation-inputs" / "launch-activations" / "claimed.json"
+    stale.parent.mkdir(parents=True)
+    stale.write_text("{}", encoding="utf-8")
+
+    planned = _run("--device", "/dev/null", "--root-prefix", str(tmp_path), "--plan")
+    applied = _run("--device", "/dev/null", "--root-prefix", str(tmp_path), "--apply", "--ack", ACK)
+
+    assert f"{tmp_path}/mnt/blueprint-work/task-evaluation-inputs is not empty" in planned.stdout
+    assert applied.returncode == 3, applied.stderr + applied.stdout
+    assert "launch-activations/claimed.json" in applied.stderr
+    assert (state / "task-evaluation-inputs" / "prepared-references" / "payload.bin").is_file(), "nothing was swapped"
+    assert not (state / "task-evaluation-inputs.migrated-to-volume").exists()
+    assert stale.read_text(encoding="utf-8") == "{}"

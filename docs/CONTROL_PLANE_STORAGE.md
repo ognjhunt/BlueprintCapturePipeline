@@ -213,6 +213,11 @@ When a run stops:
   rerun.
 - `refusing to swap: copy differs from source` means nothing was swapped. Rerun,
   and rsync resumes.
+- `refusing to swap: the volume copy holds entries its root lacks` means nothing
+  was swapped. The copy never deletes, and the bind would expose everything on
+  the volume. Something there (an earlier run's copy of what was since removed,
+  or a store copy that is no longer bound) would go live. Check the listed paths
+  under `/mnt/blueprint-work`, move them aside, and rerun.
 - `refusing: could not unmount …` means the old binds are back in place.
   `fuser -vm <path>` shows what holds the path. Rerun once it is free.
 - `refusing to remove <root>.migrated-to-volume` means the root is already bound

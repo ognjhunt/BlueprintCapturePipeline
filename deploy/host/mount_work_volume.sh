@@ -480,7 +480,11 @@ plan() {
       move)
         mib="$(size_mib "${root}")"
         total=$((total + mib))
-        echo "move     ${root} -> ${dest} (${mib} MiB)"
+        note=""
+        if [ -d "${dest}" ] && [ -n "$(ls -A "${dest}")" ]; then
+          note="; ${dest} is not empty, and apply refuses anything there the root lacks"
+        fi
+        echo "move     ${root} -> ${dest} (${mib} MiB${note})"
         ;;
       consolidate)
         mib="$(size_mib "${root}")"
@@ -803,7 +807,24 @@ apply() {
   fi
   if [ -n "${drift}" ]; then
     echo "refusing to swap: copy differs from source" >&2
-    echo "${drift}" | head -20 >&2
+    head -20 <<< "${drift}" >&2
+    exit 3
+  fi
+  # The bind exposes the whole volume copy, and the copy never deletes, so
+  # anything already there that the root lacks (an earlier run's copy of what
+  # was since removed, or a store copy that is no longer bound) would go live.
+  local stale=""
+  for i in "${PENDING[@]}"; do
+    # shellcheck disable=SC2086  # child names were validated: no whitespace or glob characters
+    one="$(drift_between "${HOST_MOUNT}/${ROOT_VREL[i]}" "${ROOT_PREFIX}${ROOT_HOST[i]}" ${CHILDREN[i]})" || {
+      echo "refusing to swap: could not compare ${HOST_MOUNT}/${ROOT_VREL[i]} with its root" >&2
+      exit 3
+    }
+    if [ -n "${one}" ]; then stale="${stale}${ROOT_VREL[i]}:"$'\n'"${one}"$'\n'; fi
+  done
+  if [ -n "${stale}" ]; then
+    echo "refusing to swap: the volume copy holds entries its root lacks; check them and move them aside, then rerun" >&2
+    head -20 <<< "${stale}" >&2
     exit 3
   fi
 
