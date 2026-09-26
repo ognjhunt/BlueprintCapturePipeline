@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -11,7 +12,7 @@ from blueprint_pipeline.decision_evidence_contracts import cross_runtime_canonic
 from blueprint_pipeline.native_g1_team_campaign_intake import stage_g1_team_campaign
 from blueprint_pipeline.native_g1_team_campaign_preparation import prepare_g1_team_campaign
 from tests.test_native_g1_team_campaign_intake import _registry
-from tests.test_native_g1_team_campaign_request import NOW, _request
+from tests.test_native_g1_team_campaign_request import _request, _reseal
 
 
 COMMIT = "a" * 40
@@ -19,6 +20,9 @@ COMMIT = "a" * 40
 
 def _accepted(tmp_path, monkeypatch):
     setup, request = _request(tmp_path, monkeypatch)
+    moment = time.time()
+    request["authorization"]["expires_at_epoch"] = moment + 1800
+    _reseal(request)
     registry, binding = _registry(tmp_path, request)
     monkeypatch.setattr(
         "blueprint_pipeline.native_g1_team_campaign_intake.make_packet_planning_setup",
@@ -32,7 +36,7 @@ def _accepted(tmp_path, monkeypatch):
     receipt = stage_g1_team_campaign(
         value=request, registry_path=registry, queue_root=queue,
         authenticated_client="blueprint-webapp", trusted_clients={"blueprint-webapp"},
-        now_epoch=NOW,
+        now_epoch=moment,
     )
     return registry, binding, queue / receipt["intent_id"] / "intent.json", request
 
