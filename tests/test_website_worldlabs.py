@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 from hashlib import sha256
 
 from blueprint_pipeline.paid_resource_admission import require_paid_resource_admission
@@ -435,3 +436,72 @@ def test_settlement_uses_only_bound_terminal_provider_billing(tmp_path, monkeypa
         assert request['method'] == 'POST' and request['timeout_seconds'] == 10
         assert json.loads(request['data'])['request_id'] == 'req1'
         assert json.loads((root/'settlement.json').read_text()) == receipt
+
+
+def _rereviewed(descriptor, **changes):
+    """The same prepared record with a new review receipt (and optional frame changes)."""
+    preparation = dict(descriptor["metadata"]["clean_plate"]["prepared_views"])
+    preparation.pop("digest")
+    preparation.update(completion_review={"request_digest": "sha256:" + "e" * 64, "status": "passed"}, **changes)
+    preparation["digest"] = canonical_digest(preparation, digest_field="digest")
+    descriptor["metadata"]["clean_plate"]["prepared_views"] = preparation
+    return descriptor
+
+
+def test_a_rereview_of_identical_images_reuses_the_purchased_world(tmp_path, monkeypatch):
+    descriptor = _descriptor(tmp_path)
+    requests = []
+
+    def api(path, **kwargs):
+        requests.append(path)
+        if path.endswith("prepare_upload"):
+            return {"media_asset": {"media_asset_id": f"asset-{len(requests)}"},
+                    "upload_info": {"upload_url": "https://upload.example/image"}}
+        return {"operation_id": "operation-1", "done": False}
+
+    monkeypatch.setattr(provider_preview, "_worldlabs_api_request", api)
+    monkeypatch.setattr(provider_preview, "_presigned_upload", lambda *a, **k: None)
+    grant = _grant(descriptor["metadata"]["website_reconstruction_admission"])
+    provider = WorldLabsPreviewProvider()
+    first = provider.submit(descriptor=descriptor, capture_root=tmp_path,
+                            provider_adapter_input={"paid_resource_admission_grant": grant})
+    # A new review receipt changes the record's digest, not the images Marble consumed.
+    again = provider.submit(descriptor=_rereviewed(descriptor), capture_root=tmp_path,
+                            provider_adapter_input={"paid_resource_admission_grant": grant})
+    assert again["provider_run_id"] == first["provider_run_id"] == "operation-1"
+    assert again["worldlabs_request_manifest"]["request_digest"] == first["worldlabs_request_manifest"]["request_digest"]
+    assert len(requests) == 3  # Two uploads and one generation: nothing bought twice.
+    (receipt,) = (tmp_path / "pipeline/website_reconstruction/rebindings").glob("*.json")
+    record = json.loads(receipt.read_text())
+    assert record["basis"] == "identical_ordered_prepared_images"
+    assert record["prepared_views_digest"] == descriptor["metadata"]["clean_plate"]["prepared_views"]["digest"]
+
+
+@pytest.mark.parametrize("change", ["changed_image", "reordered"])
+def test_different_or_reordered_images_stay_bound_to_the_purchased_inputs(tmp_path, monkeypatch, change):
+    descriptor = _descriptor(tmp_path)
+    # Distinct views, so their order is meaningful.
+    second = descriptor["metadata"]["clean_plate"]["prepared_views"]["frames"][1]
+    Image.new("RGB", (14, 14), "gray").save(second["image_path"])
+    second["image_digest"] = _sha256_file(Path(second["image_path"]))
+    _rereviewed(descriptor)
+    descriptor["metadata"]["website_reconstruction_admission"]["allocation_binding_digest"] = canonical_digest(
+        {"prepared_views_digest": descriptor["metadata"]["clean_plate"]["prepared_views"]["digest"],
+         "model": "marble-1.1-plus", "scene_id": "site-test", "capture_id": "walkthrough-test"})
+    monkeypatch.setattr(provider_preview, "_worldlabs_api_request", lambda path, **kwargs: (
+        {"media_asset": {"media_asset_id": "asset"}, "upload_info": {"upload_url": "https://upload.example/image"}}
+        if path.endswith("prepare_upload") else {"operation_id": "operation-1", "done": False}))
+    monkeypatch.setattr(provider_preview, "_presigned_upload", lambda *a, **k: None)
+    grant = _grant(descriptor["metadata"]["website_reconstruction_admission"])
+    WorldLabsPreviewProvider().submit(descriptor=descriptor, capture_root=tmp_path,
+                                      provider_adapter_input={"paid_resource_admission_grant": grant})
+    frames = list(descriptor["metadata"]["clean_plate"]["prepared_views"]["frames"])
+    if change == "reordered":
+        frames = frames[::-1]
+    else:
+        Image.new("RGB", (14, 14), "black").save(frames[0]["image_path"])
+        frames[0] = {**frames[0], "image_digest": _sha256_file(Path(frames[0]["image_path"]))}
+    _rereviewed(descriptor, frames=frames)
+    with pytest.raises(ValueError, match="already_bound_to_other_inputs"):
+        submit_website_prepared_views(descriptor=descriptor, capture_root=tmp_path, api_request=None, upload=None,
+                                      admission_grant=grant)
