@@ -17,6 +17,7 @@ from .native_g1_team_artifact_runtime import launch_g1_team_artifact_synthetic_p
 from .native_g1_team_container_runtime import launch_g1_team_container_synthetic_probe
 from .native_g1_team_policy_conformance import run_g1_team_policy_synthetic_conformance
 from .native_g1_team_policy_https_client import NativeG1TeamPolicyHttpsClient
+from .native_g1_shared_scene_episode import team_policy_candidate_id
 from .team_policy_delivery_profile import validate_team_policy_delivery_profile
 
 
@@ -38,6 +39,27 @@ class NativeG1TeamRuntimeSession:
         self.output_dir = output_dir
         self._lease = lease
         self._closed: dict[str, Any] | None = None
+        self._linked_episode_digest: str | None = None
+
+    def link_scored_episode(self, result: Mapping[str, Any]) -> None:
+        """Bind a caller-produced episode digest without claiming to verify media."""
+
+        if (
+            self._closed is not None or self._linked_episode_digest is not None
+            or not isinstance(result, Mapping)
+            or result.get("schema_version") != "native_g1_team_scored_scene_episode.v1"
+            or result.get("status") != "development_only_scored_episode"
+            or result.get("profile_digest") != self.profile_digest
+            or result.get("candidate_id") != team_policy_candidate_id(self.profile_digest)
+            or result.get("source_setup_digest") != self.conformance["source_setup_digest"]
+            or result.get("delivery_mode") != self.delivery_mode
+            or type(result.get("policy_query_count")) is not int
+            or result["policy_query_count"] < 1
+            or result.get("result_digest")
+            != canonical_digest(result, digest_field="result_digest")
+        ):
+            raise ValueError("g1_team_runtime_episode_link_invalid")
+        self._linked_episode_digest = result["result_digest"]
 
     def close(self) -> dict[str, Any]:
         if self._closed is not None:
@@ -54,7 +76,8 @@ class NativeG1TeamRuntimeSession:
             "synthetic_conformance_digest": self.conformance["receipt_digest"],
             "child_teardown_digest": teardown.get("receipt_digest") if teardown else None,
             "child_teardown_required": teardown is not None,
-            "site_episode_scored": False,
+            "linked_scored_episode_result_digest": self._linked_episode_digest,
+            "linked_episode_media_verified_by_session": False,
             "provider_teardown_verified": False,
             "claim_ceiling": "planning_only",
         }
