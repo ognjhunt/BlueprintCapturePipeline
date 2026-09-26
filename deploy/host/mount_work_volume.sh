@@ -221,7 +221,10 @@ done
 exists() { [ -e "$1" ] || [ -L "$1" ]; }
 
 size_mib() {
-  if [ -d "$1" ]; then du -xsm "$1" 2>/dev/null | cut -f1; else echo 0; fi
+  # du still prints a total when a file vanishes under it, and exits 1 for that.
+  local mib=""
+  if [ -d "$1" ]; then mib="$(du -xsm "$1" 2>/dev/null | cut -f1)" || true; fi
+  echo "${mib:-0}"
 }
 
 inode_of() {
@@ -742,7 +745,9 @@ swap_root() {  # index
   drift="$(drift_between "${kept}" "${dest}")" || refuse 3 "could not compare ${kept} with ${dest}; kept it"
   if [ -n "${drift}" ]; then
     echo "refusing to remove ${kept}: it holds bytes the volume copy lacks" >&2
-    printf '%s\n' "${drift}" | head -20 >&2
+    # A here-string, not a pipe: under pipefail a writer cut off by head would
+    # turn this refusal into a SIGPIPE exit.
+    head -20 <<< "${drift}" >&2
     exit 3
   fi
   load_mount_table

@@ -414,3 +414,17 @@ def test_apply_refuses_when_the_volume_copy_holds_what_the_root_lacks(tmp_path: 
     assert (state / "task-evaluation-inputs" / "prepared-references" / "payload.bin").is_file(), "nothing was swapped"
     assert not (state / "task-evaluation-inputs.migrated-to-volume").exists()
     assert stale.read_text(encoding="utf-8") == "{}"
+
+
+def test_a_drift_list_longer_than_a_pipe_still_refuses_with_exit_3(tmp_path: Path) -> None:
+    state, volume, bound = _bound_state(tmp_path)
+    hidden = state / "task-evaluation-inputs" / "prepared-references"
+    # About 84 KB of drift lines from a few hundred one-byte files: more than a pipe holds.
+    for n in range(400):
+        (hidden / f"hidden-{n:04d}-{'x' * 180}.bin").write_bytes(b"h")
+
+    applied = _run(*_hermetic(tmp_path, bound), "--apply", "--ack", ACK)
+
+    assert applied.returncode == 3, applied.stderr[-500:]
+    assert "refusing to remove" in applied.stderr
+    assert len(list((state / "task-evaluation-inputs.migrated-to-volume" / "prepared-references").iterdir())) == 400
