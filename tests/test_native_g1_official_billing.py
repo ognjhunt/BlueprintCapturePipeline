@@ -114,6 +114,27 @@ def _case(root: Path) -> tuple[Path, dict]:
     return path, result
 
 
+def _pre_native_case(root: Path) -> tuple[Path, dict]:
+    path, result = _case(root)
+    Path(result["native_control_result_path"]).unlink()
+    artifact_path = Path(result["artifact_manifest_path"])
+    artifact = json.loads(artifact_path.read_text())
+    artifact["status"] = "blocked"
+    artifact["blockers"] = ["task_evaluation_artifact_role_missing:provider_runtime_evidence"]
+    artifact["manifest_digest"] = canonical_digest(artifact, digest_field="manifest_digest")
+    _write(artifact_path, artifact)
+    result.update({
+        "native_control_result_path": None,
+        "native_control_result_digest": None,
+        "candidate_policy_queried": False,
+        "scientific_attempt_started": False,
+        "first_observation_reached": False,
+    })
+    _write(path, result)
+    _write(Path(result["attempt_root"]) / "adp_arena_vast_result.json", result)
+    return path, result
+
+
 def test_blocked_g1_campaign_seals_financial_closeout_only(tmp_path: Path) -> None:
     result_path, _ = _case(tmp_path / "run")
     evidence = billing._terminal_evidence(
@@ -127,6 +148,37 @@ def test_blocked_g1_campaign_seals_financial_closeout_only(tmp_path: Path) -> No
     assert evidence["native_result"]["sha256"] == _record(Path(
         json.loads(result_path.read_text())["native_control_result_path"]
     ))["sha256"]
+
+
+def test_pre_native_g1_startup_failure_can_reconcile_provider_charge(tmp_path: Path) -> None:
+    result_path, _ = _pre_native_case(tmp_path / "run")
+    evidence = billing._terminal_evidence(
+        instance_id=52686067, terminal_result_path=result_path
+    )
+    assert evidence["terminal_status"] == "blocked"
+    assert evidence["provider_zero_verified"] is True
+    assert evidence["policy_evaluation_qualified"] is False
+    assert "native_result" not in evidence
+
+
+@pytest.mark.parametrize("fault", ["claimed_query", "claimed_observation", "completed_artifacts"])
+def test_pre_native_g1_billing_rejects_claimed_science_or_false_artifacts(
+    tmp_path: Path, fault: str
+) -> None:
+    result_path, result = _pre_native_case(tmp_path / "run")
+    if fault == "completed_artifacts":
+        artifact_path = Path(result["artifact_manifest_path"])
+        artifact = json.loads(artifact_path.read_text())
+        artifact["status"] = "completed"
+        artifact["blockers"] = []
+        artifact["manifest_digest"] = canonical_digest(artifact, digest_field="manifest_digest")
+        _write(artifact_path, artifact)
+    else:
+        result["candidate_policy_queried" if fault == "claimed_query" else "first_observation_reached"] = True
+        _write(result_path, result)
+        _write(Path(result["attempt_root"]) / "adp_arena_vast_result.json", result)
+    with pytest.raises(billing.VastOfficialBillingExtractionError):
+        billing._terminal_evidence(instance_id=52686067, terminal_result_path=result_path)
 
 
 @pytest.mark.parametrize("fault", ["instance", "watchdog", "cleanup", "native", "attempt_copy"])
