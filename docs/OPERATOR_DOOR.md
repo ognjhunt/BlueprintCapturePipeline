@@ -127,8 +127,10 @@ because `TimeoutStartSec` does not bound an `exec` unit once it has started:
 deploy 3 h, door upgrade 30 min, retirement 2 h. A retirement unit is further
 sandboxed (`ProtectSystem=strict`, `PrivateTmp`, `NoNewPrivileges`) and may write
 only `/var/lib/blueprint/pubsub-handoffs`, the disk reservation ledger and the
-door's results. It loads `/etc/blueprint/pipeline-control-plane.env` without
-echoing it and archives to the same artifact store as the reclaim timer. See
+door's results. It reads `/etc/blueprint/pipeline-control-plane.env` as data, never
+as shell (only `KEY=VALUE` lines, matching quotes stripped, nothing expanded or run,
+and only `BLUEPRINT_*`, `GOOGLE_*` and `GCLOUD_PROJECT` exported), never echoes it,
+and archives to the same artifact store as the reclaim timer. See
 "Scene workspace retirement" in `docs/CONTROL_PLANE_STORAGE.md` for what it checks.
 
 ### What a door deploy does

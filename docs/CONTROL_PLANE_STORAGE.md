@@ -344,9 +344,12 @@ scene only when everything in it can come back and nothing can still need it.
 
 1. the scene path and its parents are real directories, nothing inside is a link or
    special file (`workspace_path_unsafe`, `unsafe_entry:<path>`);
-2. every capture is terminal with its own proof and holds no live lease: a
-   `completed` ledger with a committed output, or `terminal_authority_ended` with a
-   terminal receipt whose payload digest is the ledger's
+2. every capture is a website capture, by the listener's own test
+   (`is_website_capture_manifest` on its `raw/manifest.json`); a device or mixed scene,
+   or a capture whose manifest cannot be read, is kept (`not_a_website_scene`). Every
+   capture is terminal with its own proof and holds no live lease: a `completed`
+   ledger with a committed output, or `terminal_authority_ended` with a terminal
+   receipt whose payload digest is the ledger's
    (`capture_not_terminal:<c>`, `capture_lease_held:<c>`, `capture_ledger_unreadable:<c>`,
    `capture_lock_missing:<c>`, `scene_has_no_captures`);
 3. its last terminal message was acknowledged: an ack receipt with the matching
@@ -361,8 +364,15 @@ scene only when everything in it can come back and nothing can still need it.
 7. no live process holds it (`in_use`; an unreadable process table counts as in use);
 8. no scene intent that can still run resolves a website source registered inside
    it (`open_scene_intent:<intent>`). An intent is finished once its progression
-   completed, it was revoked, or its (possibly extended) execution window elapsed. A
-   registration no intent has claimed protects the scene for 72 hours
+   completed, it was revoked, or seven days have passed since its (possibly extended)
+   execution window elapsed: an owner may still extend an expired window, and
+   progression would then resolve the source again. A revoked or expired intent is
+   also held by any attempt row progression still treats as live (`attempts/*.json`
+   with no validated cancellation or settlement:
+   `open_scene_attempt:<intent>/<attempt>`); a completed intent's rows are not, since
+   only retired predecessors are ever settled and progression completes only after
+   the attempt's terminal result. A registration no intent has claimed protects the
+   scene for 72 hours
    (`unclaimed_source_registration`); a registration or intent that cannot be read
    protects every scene (`reference_index_unreadable`); a workspace whose website
    handoff names a registration outside the indexed binding root is kept too
@@ -396,7 +406,12 @@ place (owned like the destination's parent).
 listener reads the receipt: a message the receipt proves terminal (the acknowledged
 payload, or the payload that ended the capture's authority) is acknowledged as
 `skipped_retired_terminal` without staging. A different payload is a new request
-and stages again from Firebase Storage.
+and stages again from Firebase Storage. A redelivery that races a retirement never
+recreates the workspace: after taking the ledger lock the listener checks that the
+lock file it holds is still the capture's and that the capture still exists, and a
+claim for a capture that existed when the message arrived never creates it again.
+Either way it asks the receipt again, and a payload the receipt does not cover is
+left for its next delivery (`capture_retired_retryable`).
 
 **Where it runs.** The reclaim timer plans every scene workspace in
 `BLUEPRINT_CONTROL_PLANE_GC_SCENE_WORKSPACE_ROOTS` (intents from
