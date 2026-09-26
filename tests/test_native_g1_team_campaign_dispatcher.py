@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
-from blueprint_pipeline.native_g1_team_campaign_dispatcher import dispatch_one_g1_team_campaign
+from blueprint_pipeline.native_g1_team_campaign_dispatcher import (
+    _refresh_paid_admission,
+    dispatch_one_g1_team_campaign,
+)
 from tests.test_native_g1_team_campaign_preparation import COMMIT, _accepted
 
 
@@ -26,6 +30,7 @@ def _ready(tmp_path, monkeypatch):
     return dict(
         queue_root=intent.parent.parent, registry_path=registry,
         work_root=tmp_path / "work", implementation_commit=COMMIT,
+        admission_refresher=lambda _run_root: [],
     )
 
 
@@ -82,6 +87,68 @@ def test_dry_run_blocker_never_writes_paid_start_and_can_retry(tmp_path, monkeyp
         assert result["provider_mutation_performed"] is False
     assert calls[0] != calls[1]
     assert not list(args["work_root"].glob("g1-*/execution_started.json"))
+
+
+def test_spend_lock_refresh_follows_dry_run_and_blocks_before_one_use_start(tmp_path, monkeypatch):
+    args = _ready(tmp_path, monkeypatch)
+    events = []
+    def runner(command, _log_path):
+        events.append("paid" if "--execute" in command else "dry")
+        _write_adapter(command, {"status": "dry_run_ready"})
+        return 0
+    def stale(_run_root):
+        events.append("refresh_stale")
+        return ["spend_admission_lock_stale"]
+    args["admission_refresher"] = stale
+    blocked = dispatch_one_g1_team_campaign(**args, execute=True, allocator_runner=runner)
+    assert blocked["status"] == "blocked_before_provider"
+    assert blocked["blockers"] == ["spend_admission_lock_stale"]
+    assert events == ["dry", "refresh_stale"]
+    assert not list(args["work_root"].glob("g1-*/execution_started.json"))
+    args["admission_refresher"] = lambda _run_root: events.append("refresh_open") or []
+    completed = dispatch_one_g1_team_campaign(**args, execute=True, allocator_runner=runner)
+    assert events == ["dry", "refresh_stale", "refresh_open", "paid"]
+    assert completed["status"] == "blocked_after_allocator_attempt"
+    assert len(list(args["work_root"].glob("g1-*/execution_started.json"))) == 1
+
+
+def test_paid_admission_refresh_uses_canonical_guard_and_three_minute_lock(tmp_path, monkeypatch):
+    module = "blueprint_pipeline.native_g1_team_campaign_dispatcher"
+    values = {
+        "BLUEPRINT_GPU_SPEND_GUARD_MAX_BOOT_SECONDS": "480",
+        "BLUEPRINT_GPU_SPEND_GUARD_MAX_BOOTED_ORPHAN_SECONDS": "14400",
+        "BLUEPRINT_GPU_FLEET_MAX_LIVE_INSTANCES": "10",
+        "BLUEPRINT_GPU_FLEET_MAX_BURN_USD_PER_HOUR": "10.0",
+        "BLUEPRINT_GPU_SPEND_LEDGER": str(tmp_path / "gpu_spend_guard" / "spend_ledger.json"),
+        "BLUEPRINT_GPU_FLEET_MAX_DAILY_SPEND_USD": "100.0",
+        "BLUEPRINT_GPU_FLEET_MAX_TOTAL_SPEND_USD": "5000.0",
+        "BLUEPRINT_GPU_BILLING_EXPORT": str(tmp_path / "gpu_spend_guard" / "billing.json"),
+        "BLUEPRINT_PAID_SPEND_ADMISSION_LOCK_PATH": str(tmp_path / "gpu_spend_guard" / "lock.json"),
+        "BLUEPRINT_GPU_SPEND_GUARD_REPORT": str(tmp_path / "gpu_spend_guard" / "latest.json"),
+    }
+    for name, value in values.items():
+        monkeypatch.setenv(name, value)
+    captured = []
+    def run(command, **kwargs):
+        captured.append((command, kwargs))
+        return SimpleNamespace(returncode=0)
+    monkeypatch.setattr(f"{module}.subprocess.run", run)
+    monkeypatch.setattr(f"{module}._load_spend_admission_lock", lambda _path: {"status": "open"})
+    def validate(lock, **kwargs):
+        assert lock["status"] == "open"
+        assert kwargs["max_age_seconds"] == 180
+        assert kwargs["required_provider"] == "vast"
+        return []
+    monkeypatch.setattr(f"{module}.validate_spend_admission_lock", validate)
+    run_root = tmp_path / "run"
+    run_root.mkdir()
+    assert _refresh_paid_admission(run_root) == []
+    command, kwargs = captured[0]
+    assert "--reap" in command
+    assert "--require-billing-reconciliation" in command
+    assert command[command.index("--output-root") + 1] == str(tmp_path)
+    assert command[command.index("--admission-lock-report") + 1] == values["BLUEPRINT_PAID_SPEND_ADMISSION_LOCK_PATH"]
+    assert kwargs["timeout"] == 300
 
 
 def test_interrupted_paid_invocation_is_never_automatically_relaunched(tmp_path, monkeypatch):
