@@ -30,10 +30,12 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import dataclasses
 import fcntl
 import hashlib
 import json
 import os
+import re
 import stat
 import subprocess  # nosec B404 - fixed git/systemctl argv over validated paths
 import tempfile
@@ -42,7 +44,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 import sys
 
@@ -78,10 +80,15 @@ from blueprint_pipeline.control_plane_release_leases import (  # noqa: E402
     collect_release_protections,
 )
 from blueprint_pipeline.control_plane_release_retirement import (  # noqa: E402
-    ControlPlaneReleaseRetirementError,
     EXECUTE_ACK as RELEASE_RETIREMENT_ACK,
+    RUNTIME_COMPONENTS as RELEASE_RUNTIME_COMPONENTS,
     apply_release_retirement_plan,
     build_release_retirement_plan,
+    publisher_lock_roots,
+)
+from blueprint_pipeline.task_evaluation_release_reference_lock import (  # noqa: E402
+    ReleaseReferenceLockError,
+    release_reference_lock,
 )
 from blueprint_pipeline.production_cad_skill_sources import (  # noqa: E402
     DEFAULT_ROOT as DEFAULT_CAD_SKILL_SOURCE_ROOT,
@@ -213,6 +220,11 @@ CONFIGURED_CONTROLS_AUTOMATION_UNITS = (
 #: authorizations, retention bindings (with their sidecar leases) and the
 #: configuration files that name runtime paths.  Nothing is grepped.
 DEFAULT_RELEASE_PROTECTION_SOURCES = DEFAULT_PROTECTION_SOURCES
+#: The latest deploy's retirement summary, written under ``<state_root>/release-retention``
+#: (0644) so capacity paging can read its alerts without root.
+RELEASE_RETIREMENT_SUMMARY_NAME = "latest-deploy-retirement.json"
+RELEASE_RETIREMENT_SUMMARY_SCHEMA = "control_plane_release_retirement_summary.v1"
+_RELEASE_COMMIT_RE = re.compile(r"[0-9a-f]{40}\Z")
 DEFAULT_RELEASE_RETIREMENT_KEEP_LAST = 3
 #: The only unit kinds a release may install.  Services and their queue-watching
 #: paths stay paired, while the one fixed progression timer (and its
@@ -839,6 +851,80 @@ def _install_disk_reservation_runtime_prerequisites(
     }
 
 
+def _install_release_lease_root(lease_root: str | Path) -> dict[str, Any]:
+    """Create the directory that holds the sidecar leases of immutable bindings.
+
+    Only the root deploy writes sidecars, so the tree is root:root 0750.  A
+    symlink or a file where the tree belongs is refused rather than repaired.
+    """
+
+    root = Path(lease_root)
+    installed = os.geteuid() == 0
+    for path in (root, root / "bindings"):
+        if path.is_symlink() or (path.exists() and not path.is_dir()):
+            raise ControlPlaneDeployError("deploy_release_lease_root_unsafe")
+        path.mkdir(mode=0o750, exist_ok=True)
+        if installed:
+            os.chown(path, 0, 0)
+        path.chmod(0o750)
+    return {"status": "ready", "path": str(root / "bindings"), "mode": "0750",
+            "owner": "root" if installed else "deploying_user"}
+
+
+def _write_release_retirement_summary(
+    path: Path, result: Mapping[str, Any], *, source_commit: str, generated_at: float
+) -> dict[str, Any]:
+    """Replace the latest retirement summary atomically; never fail the deploy."""
+
+    summary = {
+        "schema_version": RELEASE_RETIREMENT_SUMMARY_SCHEMA,
+        "generated_at_epoch": generated_at,
+        "source_commit": source_commit,
+        **{key: value for key, value in result.items() if key != "summary"},
+    }
+    payload = (json.dumps(summary, indent=1, sort_keys=True) + "\n").encode("utf-8")
+    directory = path.parent
+    try:
+        if directory.is_symlink() or (directory.exists() and not directory.is_dir()):
+            raise OSError("release retention directory unsafe")
+        directory.mkdir(mode=0o750, exist_ok=True)
+        descriptor, temporary = tempfile.mkstemp(
+            prefix=f".{path.name}.", suffix=".tmp", dir=directory
+        )
+        try:
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(payload)
+                stream.flush()
+                os.fchmod(stream.fileno(), 0o644)
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(temporary)
+            raise
+    except OSError as exc:
+        return {"status": "write_failed", "path": str(path), "error": type(exc).__name__}
+    return {"status": "written", "path": str(path), "mode": "0644"}
+
+
+def _retirement_protection_summary(
+    plan: Mapping[str, Any], protections: Mapping[str, Any]
+) -> dict[str, Any]:
+    return {
+        "protected_commit_count": len(plan["protected_commits"]),
+        "protected_by_kind": {
+            kind: len(commits) for kind, commits in plan["protected_by_kind"].items()
+        },
+        "protected_tree_count": plan["protected_tree_count"],
+        "lease_protected_tree_count": plan["lease_protected_tree_count"],
+        "lapsed_count": plan["lapsed_count"],
+        "migrated_binding_count": len(protections["migrated"]),
+        "renewed_lease_count": len(protections["renewed"]),
+        "warning_count": plan["warning_count"],
+        "alerts": list(plan["alerts"]),
+    }
+
+
 def _retire_superseded_release_trees(
     *,
     release_root: str | Path,
@@ -847,58 +933,95 @@ def _retire_superseded_release_trees(
     current_commit: str,
     protection_sources: ProtectionSources,
     keep_last: int,
-    in_use_commits: Sequence[str] = (),
-    now: Any = time.time,
+    state_root: str | Path | None = None,
+    now: Callable[[], float] = time.time,
+    proc_root: str | Path = "/proc",
+    summary_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Retire release and runtime trees this deploy has superseded.
 
     Deploy is the only event that creates per-commit trees, so it is where
-    they are retired.  Anything the plan cannot prove safe is left in place and
-    reported; a retirement failure never fails a deploy whose surfaces already
-    moved.
+    they are retired.  Every publisher lock root is held exclusively across
+    collecting typed protection, planning and removal, so no release reference
+    can appear in between; publishers take the same locks shared.  Anything the
+    plan cannot prove safe is left in place and reported; a retirement failure
+    never fails a deploy whose surfaces already moved.
     """
 
+    roots: list[Path] = []
+
+    def in_use() -> list[str]:
+        return _live_release_commits(release_root, runtime_root=runtime_root, proc_root=proc_root)
+
     try:
-        protections = collect_release_protections(
-            protection_sources, now=float(now()), migrate=True
+        # The same directories publishers lock shared, plus this deploy's own
+        # state root (release activation locks it), each exactly once.
+        roots.extend(
+            publisher_lock_roots(
+                protection_sources, *([] if state_root is None else [state_root])
+            )
         )
-        plan = build_release_retirement_plan(
-            release_root=release_root,
-            runtime_root=runtime_root,
-            active_link=active_link,
-            current_commit=current_commit,
-            protections=protections,
-            keep_last=keep_last,
-            now=now,
-            in_use_commits=list(in_use_commits),
-        )
-        if plan["status"] != "dry_run":
-            return {
-                "status": "skipped",
-                "blockers": list(plan["blockers"]),
-                "plan_digest": plan["plan_digest"],
-            }
-        receipt = apply_release_retirement_plan(
-            plan,
-            ack=RELEASE_RETIREMENT_ACK,
-            active_link=active_link,
-            release_root=release_root,
-        )
-    except (ControlPlaneReleaseRetirementError, OSError, ValueError) as exc:
-        return {
+        with contextlib.ExitStack() as held:
+            for root in roots:
+                held.enter_context(release_reference_lock(root, exclusive=True))
+            _install_release_lease_root(protection_sources.lease_root)
+            protections = collect_release_protections(
+                protection_sources, now=float(now()), migrate=True
+            )
+            plan = build_release_retirement_plan(
+                release_root=release_root,
+                runtime_root=runtime_root,
+                active_link=active_link,
+                current_commit=current_commit,
+                protections=protections,
+                keep_last=keep_last,
+                now=now,
+                in_use_commits=in_use(),
+            )
+            if plan["status"] != "dry_run":
+                result: dict[str, Any] = {
+                    "status": "skipped",
+                    "blockers": list(plan["blockers"]),
+                    "plan_digest": plan["plan_digest"],
+                    **_retirement_protection_summary(plan, protections),
+                }
+            else:
+                receipt = apply_release_retirement_plan(
+                    plan,
+                    ack=RELEASE_RETIREMENT_ACK,
+                    active_link=active_link,
+                    release_root=release_root,
+                    in_use_now=lambda: set(in_use()),
+                )
+                retired = sorted({row["commit"] for row in receipt["removed"]})
+                result = {
+                    "status": "applied",
+                    "plan_digest": plan["plan_digest"],
+                    "receipt_digest": receipt["result_digest"],
+                    "retired_commits": retired,
+                    "retired_bytes": sum(
+                        row["size_bytes"] for row in plan["candidates"] if row["commit"] in retired
+                    ),
+                    "unmanaged_children": list(plan["unmanaged_children"]),
+                    "skipped": list(receipt["skipped"]),
+                    **_retirement_protection_summary(plan, protections),
+                }
+    except (ReleaseReferenceLockError, ControlPlaneDeployError) as exc:
+        # Both carry typed codes, never host paths.
+        result = {"status": "blocked", "blockers": [str(exc)]}
+    except Exception as exc:  # the surfaces already moved; report, never fail the deploy
+        result = {
             "status": "blocked",
             "blockers": [f"deploy_release_retirement_failed:{type(exc).__name__}"],
         }
-    return {
-        "status": "applied",
-        "plan_digest": plan["plan_digest"],
-        "receipt_digest": receipt["result_digest"],
-        "retired_commits": sorted({row["commit"] for row in receipt["removed"]}),
-        "retired_bytes": plan["candidate_bytes"],
-        "protected_commit_count": len(plan["protected_commits"]),
-        "unmanaged_children": list(plan["unmanaged_children"]),
-        "skipped": list(receipt["skipped"]),
-    }
+    if result["status"] == "blocked":
+        result["alerts"] = [f"release_retirement_blocked:{result['blockers'][0]}"]
+    result["lock_roots"] = [str(root) for root in roots]
+    if summary_path is not None:
+        result["summary"] = _write_release_retirement_summary(
+            Path(summary_path), result, source_commit=current_commit, generated_at=float(now())
+        )
+    return result
 
 
 _SANDBOX_DIRECTIVES = ("ReadWritePaths=", "ReadOnlyPaths=")
@@ -1671,17 +1794,31 @@ def _require_in_flight_runs_outside_units(
                 )
 
 
-def _live_release_commits(release_root: str | Path, *, proc_root: str | Path = "/proc") -> list[str]:
-    """Release commits a live process runs from (cwd or argv); never retired."""
+def _live_release_commits(
+    release_root: str | Path,
+    *,
+    runtime_root: str | Path | None = None,
+    proc_root: str | Path = "/proc",
+) -> list[str]:
+    """Commits whose release or runtime tree a live process runs from; never retired.
 
-    root = Path(release_root).expanduser().resolve()
+    A process counts when its cwd, executable or any absolute argv entry lies
+    inside ``<release_root>/<commit>`` or ``<runtime_root>/<component>/<commit>``.
+    Only a 40-hex first component names a commit.
+    """
+
+    roots = [Path(release_root).expanduser().resolve()]
+    if runtime_root is not None:
+        runtimes = Path(runtime_root).expanduser().resolve()
+        roots.extend(runtimes / component for component in RELEASE_RUNTIME_COMPONENTS)
     commits: set[str] = set()
     for entry in Path(proc_root).iterdir():
         if not entry.name.isdigit():
             continue
         candidates: list[str] = []
-        with contextlib.suppress(OSError):
-            candidates.append(os.readlink(entry / "cwd"))
+        for link in ("cwd", "exe"):
+            with contextlib.suppress(OSError):
+                candidates.append(os.readlink(entry / link))
         with contextlib.suppress(OSError):
             candidates.extend(
                 part.decode("utf-8", "replace")
@@ -1690,8 +1827,13 @@ def _live_release_commits(release_root: str | Path, *, proc_root: str | Path = "
             )
         for candidate in candidates:
             path = Path(candidate)
-            if path.is_absolute() and path.is_relative_to(root) and path != root:
-                commits.add(path.relative_to(root).parts[0])
+            if not path.is_absolute():
+                continue
+            for root in roots:
+                if path.is_relative_to(root) and path != root:
+                    first = path.relative_to(root).parts[0]
+                    if _RELEASE_COMMIT_RE.fullmatch(first):
+                        commits.add(first)
     return sorted(commits)
 
 
@@ -2821,14 +2963,23 @@ def deploy_control_plane_commit(
         # Last, with the new release proven live: retire the trees this deploy
         # superseded, so per-commit growth is bounded by keep_last instead of
         # by the number of deploys ever made.
+        protection_sources = release_protection_sources
+        if bootstrap not in protection_sources.config_files:
+            # The bootstrap this deploy installed may name a non-default
+            # machinery file; retirement must read the same configuration.
+            protection_sources = dataclasses.replace(
+                protection_sources,
+                config_files=(*protection_sources.config_files, bootstrap),
+            )
         release_retirement = _retire_superseded_release_trees(
             release_root=releases,
             runtime_root=scene_configuration_runtime_root,
             active_link=active,
             current_commit=commit,
-            protection_sources=release_protection_sources,
+            protection_sources=protection_sources,
             keep_last=release_retirement_keep_last,
-            in_use_commits=_live_release_commits(releases),
+            state_root=state,
+            summary_path=state / "release-retention" / RELEASE_RETIREMENT_SUMMARY_NAME,
         )
         _mark_stage("release_retirement")
 
