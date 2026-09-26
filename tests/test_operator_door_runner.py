@@ -58,9 +58,11 @@ def test_deploy_launches_the_door_deploy_script_with_validated_parameters(config
     runner = FakeRunner()
     assert process_spool(config, runner=runner) == 0
     launch = [call for call in runner.calls if call[0] == "systemd-run"][0]
-    unit = f"blueprint-operator-door-deploy-{SHA[:12]}-{request_id[-8:]}"
+    unit = f"blueprint-operator-door-deploy-{SHA[:12]}-{request_id[-8:]}.service"
     assert launch[:6] == ["systemd-run", f"--unit={unit}", "--collect", "--service-type=exec",
                           "--property=TimeoutStartSec=3h", "--setenv=PYTHONDONTWRITEBYTECODE=1"]
+    # TimeoutStartSec does not bound an exec unit once it has started; RuntimeMaxSec does.
+    assert "--property=RuntimeMaxSec=3h" in launch
     assert launch[-2:] == ["/bin/bash", "/opt/blueprint/operator-door/door-deploy.sh"]
     env = dict(part.removeprefix("--setenv=").split("=", 1) for part in launch if part.startswith("--setenv="))
     assert env["DOOR_REQUEST_ID"] == request_id and env["DOOR_COMMIT"] == SHA
@@ -105,8 +107,11 @@ def test_door_upgrade_launches_the_upgrade_script(config: DoorConfig) -> None:
     runner = FakeRunner()
     process_spool(config, runner=runner)
     launch = [call for call in runner.calls if call[0] == "systemd-run"][0]
-    assert f"--unit=blueprint-operator-door-upgrade-{SHA[:12]}-{request_id[-8:]}" in launch
+    assert f"--unit=blueprint-operator-door-upgrade-{SHA[:12]}-{request_id[-8:]}.service" in launch
+    assert "--property=TimeoutStartSec=30min" in launch and "--property=RuntimeMaxSec=30min" in launch
     assert launch[-1] == "/opt/blueprint/operator-door/door-upgrade.sh"
+    env = dict(part.removeprefix("--setenv=").split("=", 1) for part in launch if part.startswith("--setenv="))
+    assert env["DOOR_COMMIT"] == SHA and "DOOR_WAIT_FOR_IDLE" not in env  # only what the kind defines
 
 
 def test_tampered_spool_files_are_refused_not_executed(config: DoorConfig) -> None:
@@ -199,3 +204,14 @@ def test_stranded_claims_are_failed_after_an_hour(config: DoorConfig) -> None:
     assert not stranded.exists()
     assert _result(config, "20260923T000000Z-deploy-0000cafe") == {
         **_result(config, "20260923T000000Z-deploy-0000cafe"), "status": "failed", "code": "stranded"}
+
+
+def test_every_launched_unit_is_a_named_service_the_door_can_inspect(config: DoorConfig) -> None:
+    """``unit_properties`` accepts only ``.service`` names, so a bare name left ``unit_state`` null."""
+
+    from operator_door.hostinfo import UNIT_NAME
+
+    for body in ({"kind": "deploy", "commit": SHA}, {"kind": "door-upgrade", "commit": SHA}):
+        request_id = _spooled(config, body)
+        process_spool(config, runner=FakeRunner())
+        assert UNIT_NAME.fullmatch(_result(config, request_id)["unit"])

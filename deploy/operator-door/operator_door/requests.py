@@ -38,9 +38,13 @@ from .secrets_guard import redact_lines
 SCHEMA = "blueprint_operator_door_request.v1"
 MAX_SPOOL_FILE = 64 * 1024
 STATES = ("pending", "processing", "completed")
+#: Every request kind and the token scope it needs. ``validate_request`` has one explicit
+#: branch per kind, the runner one launch per non-unit kind, and ids name exactly these kinds.
 _SCOPES = {"deploy": "deploy", "unit": "operate", "door-upgrade": "deploy"}
 _COMMIT = re.compile(r"[0-9a-f]{40}")
-_REQUEST_ID = re.compile(r"[0-9]{8}T[0-9]{6}Z-(deploy|unit|door-upgrade)-[0-9a-f]{8}")
+_REQUEST_ID = re.compile(
+    r"[0-9]{8}T[0-9]{6}Z-(" + "|".join(re.escape(kind) for kind in sorted(_SCOPES)) + r")-[0-9a-f]{8}"
+)
 _UNIT_ACTIONS = ("start", "reset-failed", "stop", "restart")
 _TRIGGER_ONLY_ACTIONS = ("stop", "restart")
 # Timers that protect money or cleanup are never paused through the door.
@@ -55,10 +59,9 @@ class RequestRefused(Exception):
 
 
 def required_scope(kind: str) -> str:
-    try:
-        return _SCOPES[kind]
-    except KeyError as error:
-        raise RequestRefused("kind_unknown") from error
+    if not isinstance(kind, str) or kind not in _SCOPES:
+        raise RequestRefused("kind_unknown")
+    return _SCOPES[kind]
 
 
 def _only(body: dict[str, Any], allowed: tuple[str, ...]) -> None:
@@ -80,8 +83,6 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(body, dict):
         raise RequestRefused("request_not_object")
     kind = body.get("kind")
-    if kind not in _SCOPES:
-        raise RequestRefused("kind_unknown")
     if kind == "deploy":
         _only(body, ("kind", "commit", "wait_for_idle"))
         wait = body.get("wait_for_idle", True)
@@ -104,8 +105,11 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
             if _SAFETY_CRITICAL.search(unit):
                 raise RequestRefused("unit_safety_critical")
         return {"kind": kind, "unit": unit, "action": action}
-    _only(body, ("kind", "commit"))
-    return {"kind": kind, "commit": _commit(body)}
+    if kind == "door-upgrade":
+        _only(body, ("kind", "commit"))
+        return {"kind": kind, "commit": _commit(body)}
+    # Anything else, however it is shaped, is not a request the door knows.
+    raise RequestRefused("kind_unknown")
 
 
 def new_request_id(kind: str, now: _dt.datetime | None = None) -> str:

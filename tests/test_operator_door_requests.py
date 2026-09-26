@@ -92,6 +92,24 @@ def test_unsafe_unit_actions_are_refused(unit: str, action: str, code: str) -> N
     assert caught.value.code == code
 
 
+@pytest.mark.parametrize("kind", [["deploy"], {"deploy": 1}, None, 7])
+def test_a_kind_that_is_not_a_known_string_is_refused(kind: object) -> None:
+    with pytest.raises(RequestRefused) as caught:
+        validate_request({"kind": kind, "commit": SHA})
+    assert caught.value.code == "kind_unknown"
+
+
+def test_request_ids_name_exactly_the_known_kinds() -> None:
+    from operator_door.requests import _SCOPES, validate_request_id
+
+    for kind in _SCOPES:
+        assert validate_request_id(f"20260926T000000Z-{kind}-0123abcd")
+        assert required_scope(kind) in {"deploy", "operate"}
+    for bad in ("20260926T000000Z-shell-0123abcd", "20260926T000000Z-deploy-0123ABCD"):
+        with pytest.raises(RequestRefused):
+            validate_request_id(bad)
+
+
 def test_door_upgrade_needs_a_commit() -> None:
     assert validate_request({"kind": "door-upgrade", "commit": SHA}) == {"kind": "door-upgrade", "commit": SHA}
     assert required_scope("door-upgrade") == "deploy"
