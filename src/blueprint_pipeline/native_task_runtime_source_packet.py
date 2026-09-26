@@ -25,6 +25,7 @@ from typing import Any
 from datetime import datetime, timezone
 from .decision_evidence_contracts import canonical_digest
 from .native_task_torch_runtime_lock import TORCH_RUNTIME_DEPENDENCY_WHEELS
+from .native_task_g1_runtime_lock import G1_RUNTIME_DEPENDENCY_WHEELS
 
 
 SCHEMA_VERSION = "native_task_runtime_source_packet.v1"
@@ -360,6 +361,15 @@ BASE_RUNTIME_DEPENDENCY_WHEELS = (
 RUNTIME_DEPENDENCY_WHEELS = (
     BASE_RUNTIME_DEPENDENCY_WHEELS + TORCH_RUNTIME_DEPENDENCY_WHEELS
 )
+RUNTIME_PROFILES = ("base", "unitree_g1")
+
+
+def runtime_dependency_contracts(profile: str) -> tuple[dict[str, Any], ...]:
+    if profile == "base":
+        return RUNTIME_DEPENDENCY_WHEELS
+    if profile == "unitree_g1":
+        return RUNTIME_DEPENDENCY_WHEELS + G1_RUNTIME_DEPENDENCY_WHEELS
+    raise NativeTaskRuntimeSourcePacketError(["native_task_runtime_profile_unsupported"])
 
 
 class NativeTaskRuntimeSourcePacketError(ValueError):
@@ -524,8 +534,9 @@ def _repository_rows(
 
 def _runtime_dependency_rows(
     wheel_dir: Path,
+    contracts: Sequence[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], list[tuple[str, Path]]]:
-    expected = {row["filename"] for row in RUNTIME_DEPENDENCY_WHEELS}
+    expected = {row["filename"] for row in contracts}
     observed = {path.name for path in wheel_dir.glob("*.whl")} if wheel_dir.is_dir() else set()
     if observed != expected:
         raise NativeTaskRuntimeSourcePacketError(
@@ -533,7 +544,7 @@ def _runtime_dependency_rows(
         )
     rows: list[dict[str, Any]] = []
     wheel_files: list[tuple[str, Path]] = []
-    for contract in RUNTIME_DEPENDENCY_WHEELS:
+    for contract in contracts:
         path = wheel_dir / contract["filename"]
         try:
             with zipfile.ZipFile(path) as archive:
@@ -582,6 +593,7 @@ def materialize_native_task_runtime_source_packet(
     isaaclab_repo: str | Path,
     arena_repo: str | Path,
     dependency_wheel_dir: str | Path,
+    runtime_profile: str = "base",
     generated_at: str | None = None,
     isaaclab_commit: str = ISAACLAB_COMMIT,
     isaaclab_tree: str = ISAACLAB_TREE,
@@ -595,6 +607,7 @@ def materialize_native_task_runtime_source_packet(
 ) -> dict[str, Any]:
     """Create one deterministic, digest-bound released-source packet."""
 
+    dependency_contracts = runtime_dependency_contracts(runtime_profile)
     destination = Path(output_dir).expanduser().resolve()
     destination.mkdir(parents=True, exist_ok=True)
     # Isaac Lab resolves its Kit experience files relative to the repository
@@ -677,12 +690,13 @@ def materialize_native_task_runtime_source_packet(
         ),
     )
     dependency_rows, dependency_files = _runtime_dependency_rows(
-        Path(dependency_wheel_dir).expanduser().resolve()
+        Path(dependency_wheel_dir).expanduser().resolve(), dependency_contracts
     )
     manifest: dict[str, Any] = {
         "schema_version": MANIFEST_SCHEMA_VERSION,
         "generated_at": generated_at or _utc_now_iso(),
         "status": "ready",
+        "runtime_profile": runtime_profile,
         "repositories": [isaaclab, compatibility, arena],
         "runtime_experience": {
             "relative_path": RUNTIME_EXPERIENCE_RELATIVE_PATH,
@@ -747,6 +761,7 @@ def materialize_native_task_runtime_source_packet(
         "schema_version": SCHEMA_VERSION,
         "generated_at": manifest["generated_at"],
         "status": "ready",
+        "runtime_profile": runtime_profile,
         "manifest_digest": manifest["manifest_digest"],
         "repositories": [
             {
@@ -775,6 +790,109 @@ def materialize_native_task_runtime_source_packet(
         receipt, digest_field="receipt_digest"
     )
     _write_json(destination / "native_task_runtime_source_packet.v1.json", receipt)
+    return receipt
+
+
+def extend_native_task_runtime_source_packet(
+    *,
+    base_receipt_path: str | Path,
+    output_dir: str | Path,
+    dependency_wheel_dir: str | Path,
+    runtime_profile: str,
+    generated_at: str | None = None,
+) -> dict[str, Any]:
+    """Add one embodiment's verified wheels without re-cloning source trees.
+
+    The base packet remains immutable.  Its already verified source and wheel
+    members are streamed into a new archive, so the multi-gigabyte torch layer
+    never needs a second unpacked wheelhouse on the control-plane host.
+    """
+
+    if runtime_profile == "base":
+        raise NativeTaskRuntimeSourcePacketError(
+            ["native_task_runtime_extension_profile_invalid"]
+        )
+    contracts = runtime_dependency_contracts(runtime_profile)
+    base = verify_native_task_runtime_source_packet(base_receipt_path)
+    if base.get("runtime_profile") not in (None, "base") or [
+        (row.get("package"), row.get("version"), row.get("filename"))
+        for row in base.get("runtime_dependency_wheels", [])
+    ] != [
+        (row["package"], row["version"], row["filename"])
+        for row in RUNTIME_DEPENDENCY_WHEELS
+    ]:
+        raise NativeTaskRuntimeSourcePacketError(
+            ["native_task_runtime_extension_base_mismatch"]
+        )
+    extra_rows, extra_files = _runtime_dependency_rows(
+        Path(dependency_wheel_dir).expanduser().resolve(),
+        contracts[len(RUNTIME_DEPENDENCY_WHEELS):],
+    )
+    destination = Path(output_dir).expanduser().resolve()
+    destination.mkdir(parents=True, exist_ok=True)
+    packet_path = destination / "native_task_runtime_sources.zip"
+    receipt_path = destination / "native_task_runtime_source_packet.v1.json"
+    if packet_path.exists() or receipt_path.exists() or packet_path.is_symlink():
+        raise NativeTaskRuntimeSourcePacketError(
+            ["native_task_runtime_extension_output_exists"]
+        )
+    with zipfile.ZipFile(base["verified_packet_path"]) as source:
+        manifest = json.loads(
+            source.read("native_task_runtime_source_manifest.v1.json").decode("utf-8")
+        )
+        manifest.update({
+            "generated_at": generated_at or _utc_now_iso(),
+            "runtime_profile": runtime_profile,
+            "runtime_dependency_wheels": [
+                *base["runtime_dependency_wheels"], *extra_rows,
+            ],
+            "manifest_digest": "",
+        })
+        manifest["manifest_digest"] = canonical_digest(
+            manifest, digest_field="manifest_digest"
+        )
+        manifest_bytes = (
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+        ).encode("utf-8")
+        with zipfile.ZipFile(packet_path, "w", allowZip64=True) as output:
+            for original in source.infolist():
+                info = zipfile.ZipInfo(original.filename, date_time=(1980, 1, 1, 0, 0, 0))
+                info.create_system = 3
+                info.external_attr = 0o100644 << 16
+                info.compress_type = original.compress_type
+                if original.filename == "native_task_runtime_source_manifest.v1.json":
+                    output.writestr(info, manifest_bytes)
+                else:
+                    with source.open(original) as incoming, output.open(
+                        info, "w", force_zip64=True
+                    ) as outgoing:
+                        shutil.copyfileobj(incoming, outgoing, length=1024 * 1024)
+            for relative, wheel in sorted(extra_files):
+                info = zipfile.ZipInfo(relative, date_time=(1980, 1, 1, 0, 0, 0))
+                info.create_system = 3
+                info.external_attr = 0o100644 << 16
+                info.compress_type = zipfile.ZIP_STORED
+                with wheel.open("rb") as incoming, output.open(
+                    info, "w", force_zip64=True
+                ) as outgoing:
+                    shutil.copyfileobj(incoming, outgoing, length=1024 * 1024)
+    receipt = dict(base)
+    receipt.pop("verified_packet_path", None)
+    receipt.update({
+        "generated_at": manifest["generated_at"],
+        "runtime_profile": runtime_profile,
+        "runtime_dependency_wheels": manifest["runtime_dependency_wheels"],
+        "manifest_digest": manifest["manifest_digest"],
+        "packet_path": str(packet_path),
+        "packet_size_bytes": packet_path.stat().st_size,
+        "packet_sha256": _sha256_file(packet_path),
+        "receipt_digest": "",
+    })
+    receipt["receipt_digest"] = canonical_digest(
+        receipt, digest_field="receipt_digest"
+    )
+    _write_json(receipt_path, receipt)
+    verify_native_task_runtime_source_packet(receipt_path)
     return receipt
 
 
@@ -858,6 +976,8 @@ def verify_native_task_runtime_source_packet(
     try:
         with zipfile.ZipFile(packet_path) as archive:
             names = archive.namelist()
+            if len(names) != len(set(names)):
+                errors.append("native_task_runtime_source_archive_duplicate_member")
             for name in names:
                 pure = PurePosixPath(name)
                 if pure.is_absolute() or ".." in pure.parts:
@@ -900,6 +1020,11 @@ def verify_native_task_runtime_source_packet(
                 "runtime_dependency_wheels"
             ):
                 errors.append("native_task_runtime_dependency_receipt_manifest_mismatch")
+            if manifest.get("runtime_profile") != receipt.get("runtime_profile") or (
+                manifest.get("runtime_profile") is not None
+                and manifest.get("runtime_profile") not in RUNTIME_PROFILES
+            ):
+                errors.append("native_task_runtime_profile_receipt_manifest_mismatch")
             if manifest.get("runtime_dependency_basis") != receipt.get(
                 "runtime_dependency_basis"
             ):
@@ -932,18 +1057,34 @@ def verify_native_task_runtime_source_packet(
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-dir", required=True)
-    parser.add_argument("--isaaclab-repo", required=True)
-    parser.add_argument("--arena-repo", required=True)
+    parser.add_argument("--isaaclab-repo")
+    parser.add_argument("--arena-repo")
     parser.add_argument("--dependency-wheel-dir", required=True)
+    parser.add_argument("--extend-base-receipt")
+    parser.add_argument("--runtime-profile", choices=RUNTIME_PROFILES, default="base")
     parser.add_argument("--generated-at")
     args = parser.parse_args(argv)
-    receipt = materialize_native_task_runtime_source_packet(
-        output_dir=args.output_dir,
-        isaaclab_repo=args.isaaclab_repo,
-        arena_repo=args.arena_repo,
-        dependency_wheel_dir=args.dependency_wheel_dir,
-        generated_at=args.generated_at,
-    )
+    if args.extend_base_receipt:
+        if args.isaaclab_repo or args.arena_repo:
+            parser.error("source repositories are not used when extending a base packet")
+        receipt = extend_native_task_runtime_source_packet(
+            base_receipt_path=args.extend_base_receipt,
+            output_dir=args.output_dir,
+            dependency_wheel_dir=args.dependency_wheel_dir,
+            runtime_profile=args.runtime_profile,
+            generated_at=args.generated_at,
+        )
+    else:
+        if not args.isaaclab_repo or not args.arena_repo:
+            parser.error("--isaaclab-repo and --arena-repo are required")
+        receipt = materialize_native_task_runtime_source_packet(
+            output_dir=args.output_dir,
+            isaaclab_repo=args.isaaclab_repo,
+            arena_repo=args.arena_repo,
+            dependency_wheel_dir=args.dependency_wheel_dir,
+            runtime_profile=args.runtime_profile,
+            generated_at=args.generated_at,
+        )
     print(json.dumps(receipt, sort_keys=True))
     return 0
 

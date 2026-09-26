@@ -14,6 +14,7 @@ import re
 import stat
 import zipfile
 from collections.abc import Mapping, Sequence
+from datetime import date, datetime, timezone
 from importlib.metadata import distribution
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,7 @@ from .decision_evidence_contracts import canonical_digest
 from .native_g1_development_campaign import plan_g1_development_campaign
 from .native_g1_development_pair import PAIR_ORDER
 from .native_g1_provider_runtime import RESULT_FILENAME
+from .native_task_g1_runtime_lock import G1_RUNTIME_DEPENDENCY_WHEELS
 from .native_g1_publisher_source_stage import verify_g1_publisher_source
 from .native_task_arena_bundle import _write_zip_file, verify_native_task_arena_packet
 from .native_task_isaaclab_launch import NATIVE_TASK_ARENA_IMAGE
@@ -47,6 +49,81 @@ def _sha256(path: Path) -> str:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     return "sha256:" + digest.hexdigest()
+
+
+def _review_g1_runtime_wheels(
+    runtime_source: Mapping[str, Any], policy_path: Path, *, as_of: date | None = None
+) -> dict[str, Any]:
+    """Require exact owner approval for the G1-only wheel layer before bundling."""
+
+    if policy_path.is_symlink() or not policy_path.is_file():
+        raise ValueError("g1_provider_bundle_dependency_policy_missing")
+    try:
+        policy = json.loads(policy_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("g1_provider_bundle_dependency_policy_invalid") from exc
+    if (
+        not isinstance(policy, dict)
+        or policy.get("schema_version") != "blueprint.runtime_dependency_license_policy.v1"
+        or not isinstance(policy.get("components"), dict)
+        or not isinstance(policy.get("review_policy"), dict)
+        or policy["review_policy"].get("review_owner") != "@ognjhunt"
+        or policy["review_policy"].get("exact_name_and_version_match_required") is not True
+        or policy["review_policy"].get("new_or_changed_components_block_until_reviewed") is not True
+    ):
+        raise ValueError("g1_provider_bundle_dependency_policy_invalid")
+    today = as_of or datetime.now(timezone.utc).date()
+    try:
+        policy_reviewed_on = date.fromisoformat(str(policy["review_policy"].get("reviewed_on") or ""))
+        policy_expires_on = date.fromisoformat(str(policy["review_policy"].get("expires_on") or ""))
+    except ValueError as exc:
+        raise ValueError("g1_provider_bundle_dependency_policy_invalid") from exc
+    if not policy_reviewed_on <= today <= policy_expires_on:
+        raise ValueError("g1_provider_bundle_dependency_policy_expired")
+    actual = runtime_source.get("runtime_dependency_wheels")
+    expected = list(G1_RUNTIME_DEPENDENCY_WHEELS)
+    if (
+        not isinstance(actual, list)
+        or len(actual) < len(expected)
+        or [
+            (row.get("package"), row.get("version"), row.get("filename"), row.get("license_spdx"))
+            for row in actual[-len(expected):]
+            if isinstance(row, dict)
+        ] != [
+            (row["package"], row["version"], row["filename"], row["license_spdx"])
+            for row in expected
+        ]
+    ):
+        raise ValueError("g1_provider_bundle_dependency_wheel_set_invalid")
+    approvals = policy["components"]
+    for wheel in expected:
+        exact = f"{wheel['package']}=={wheel['version']}"
+        review = approvals.get(exact)
+        if not isinstance(review, dict):
+            raise ValueError("g1_provider_bundle_dependency_review_missing:" + exact)
+        try:
+            reviewed_on = date.fromisoformat(str(review.get("reviewed_on") or ""))
+            expires_on = date.fromisoformat(str(review.get("expires_on") or ""))
+        except ValueError as exc:
+            raise ValueError("g1_provider_bundle_dependency_review_invalid:" + exact) from exc
+        if (
+            review.get("approved") is not True
+            or review.get("owner") != "@ognjhunt"
+            or not isinstance(review.get("license_expression"), str)
+            or not review["license_expression"].strip()
+            or not isinstance(review.get("source"), str)
+            or not review["source"].strip()
+            or not reviewed_on <= today <= expires_on
+        ):
+            raise ValueError("g1_provider_bundle_dependency_review_invalid:" + exact)
+    return {
+        "status": "exact_g1_wheels_approved",
+        "policy_sha256": _sha256(policy_path),
+        "owner": "@ognjhunt",
+        "exact_requirements": [
+            f"{wheel['package']}=={wheel['version']}" for wheel in expected
+        ],
+    }
 
 
 def _files(root: Path) -> list[Path]:
@@ -238,6 +315,10 @@ def build_g1_provider_bundle(
     ):
         raise ValueError("g1_provider_bundle_publisher_receipt_invalid")
     runtime_source = verify_native_task_runtime_source_packet(runtime_source_receipt)
+    if runtime_source.get("runtime_profile") != "unitree_g1":
+        raise ValueError("g1_provider_bundle_runtime_profile_invalid")
+    dependency_policy = repository / "docs/runtime_dependency_license_policy.json"
+    dependency_review = _review_g1_runtime_wheels(runtime_source, dependency_policy)
     packets = {
         "manipulation": verify_native_task_arena_packet(manipulation_packet),
         "movement": verify_native_task_arena_packet(movement_packet),
@@ -268,6 +349,7 @@ def build_g1_provider_bundle(
         "campaign_plan_digest": campaign["plan_digest"],
         "publisher_source_receipt_digest": staged_publisher["receipt_digest"],
         "runtime_source_packet": {
+            "runtime_profile": runtime_source["runtime_profile"],
             "receipt_digest": runtime_source["receipt_digest"],
             "packet_sha256": runtime_source["packet_sha256"],
             "packet_size_bytes": runtime_source["packet_size_bytes"],
@@ -275,6 +357,7 @@ def build_g1_provider_bundle(
             "transport": "content_addressed_external_layer.v1",
             "embedded_in_provider_bundle": False,
         },
+        "runtime_dependency_license_review": dependency_review,
         "packet_receipt_digests": {
             name: packet[1]["receipt_digest"] for name, packet in packets.items()
         },
@@ -333,6 +416,10 @@ def build_g1_provider_bundle(
             _write_zip_file(archive, source=path, archive_path="provider_runtime/scripts/" + path.name)
         for path in (inventory, sonic_inventory, lock):
             _write_zip_file(archive, source=path, archive_path="configs/" + path.name)
+        _write_zip_file(
+            archive, source=dependency_policy,
+            archive_path="provider_runtime/inputs/rights/runtime_dependency_license_policy.json",
+        )
         for candidate in PAIR_ORDER:
             _write_zip_file(
                 archive, source=rights_review_paths[candidate],

@@ -8,6 +8,7 @@ import json
 import subprocess
 import sys
 import zipfile
+from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -22,8 +23,10 @@ from blueprint_pipeline.native_g1_provider_bundle import (
     _contract_dependency,
     _runtime_code_files,
     _entrypoint,
+    _review_g1_runtime_wheels,
     load_verified_g1_provider_bundle,
 )
+from blueprint_pipeline.native_task_g1_runtime_lock import G1_RUNTIME_DEPENDENCY_WHEELS
 from blueprint_pipeline.provider_runtime_bundle_contract import (
     provider_runtime_contract_blockers,
 )
@@ -57,6 +60,57 @@ def _args(tmp_path: Path, **changes: object) -> SimpleNamespace:
     }
     value.update(changes)
     return SimpleNamespace(**value)
+
+
+def test_g1_bundle_requires_exact_current_wheel_owner_review(tmp_path: Path) -> None:
+    wheels = [dict(row) for row in G1_RUNTIME_DEPENDENCY_WHEELS]
+    policy = {
+        "schema_version": "blueprint.runtime_dependency_license_policy.v1",
+        "review_policy": {
+            "review_owner": "@ognjhunt",
+            "exact_name_and_version_match_required": True,
+            "new_or_changed_components_block_until_reviewed": True,
+            "reviewed_on": "2026-09-25",
+            "expires_on": "2027-09-25",
+        },
+        "components": {
+            f"{row['package']}=={row['version']}": {
+                "approved": True,
+                "owner": "@ognjhunt",
+                "license_expression": row["license_spdx"],
+                "source": "reviewed exact wheel license",
+                "reviewed_on": "2026-09-25",
+                "expires_on": "2027-09-25",
+            }
+            for row in wheels
+        },
+    }
+    path = tmp_path / "policy.json"
+    path.write_text(json.dumps(policy))
+    runtime_source = {"runtime_dependency_wheels": wheels}
+    reviewed = _review_g1_runtime_wheels(
+        runtime_source, path, as_of=date(2026, 9, 26)
+    )
+    assert reviewed["status"] == "exact_g1_wheels_approved"
+    assert len(reviewed["exact_requirements"]) == len(wheels)
+
+    policy["components"].pop("pin==4.1.0")
+    path.write_text(json.dumps(policy))
+    with pytest.raises(ValueError, match="g1_provider_bundle_dependency_review_missing:pin==4.1.0"):
+        _review_g1_runtime_wheels(runtime_source, path, as_of=date(2026, 9, 26))
+
+    policy["components"]["pin==4.1.0"] = {
+        "approved": True, "owner": "@ognjhunt", "license_expression": "BSD-3-Clause",
+        "source": "reviewed exact wheel license", "reviewed_on": "2026-09-25",
+        "expires_on": "2026-09-25",
+    }
+    path.write_text(json.dumps(policy))
+    with pytest.raises(ValueError, match="g1_provider_bundle_dependency_review_invalid:pin==4.1.0"):
+        _review_g1_runtime_wheels(runtime_source, path, as_of=date(2026, 9, 26))
+
+    runtime_source["runtime_dependency_wheels"][-1]["version"] = "0.0.0"
+    with pytest.raises(ValueError, match="g1_provider_bundle_dependency_wheel_set_invalid"):
+        _review_g1_runtime_wheels(runtime_source, path, as_of=date(2026, 9, 26))
 
 
 def test_exact_main_and_sealed_receipt_required_before_paid_mutation(

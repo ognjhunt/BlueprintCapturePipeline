@@ -18,8 +18,10 @@ from blueprint_pipeline.native_task_runtime_source_packet import (
     ISAACLAB_RUNTIME_COMPATIBILITY_TREE,
     ISAACLAB_TREE,
     RUNTIME_DEPENDENCY_WHEELS,
+    runtime_dependency_contracts,
     NativeTaskRuntimeSourcePacketError,
     materialize_native_task_runtime_source_packet,
+    extend_native_task_runtime_source_packet,
     verify_native_task_runtime_source_packet,
 )
 from blueprint_pipeline.native_task_runtime_source_provision import (
@@ -92,7 +94,9 @@ def _repository(root: Path, *, arena: bool) -> tuple[Path, str, str]:
     return repo, _git(repo, "rev-parse", "HEAD"), _git(repo, "rev-parse", "HEAD^{tree}")
 
 
-def _packet(tmp_path: Path, *, output_name: str = "packet") -> dict:
+def _packet(
+    tmp_path: Path, *, output_name: str = "packet", runtime_profile: str = "base"
+) -> dict:
     isaaclab, isaaclab_commit, isaaclab_tree = _repository(
         tmp_path / "lab-root", arena=False
     )
@@ -101,7 +105,8 @@ def _packet(tmp_path: Path, *, output_name: str = "packet") -> dict:
         output_dir=tmp_path / output_name,
         isaaclab_repo=isaaclab,
         arena_repo=arena,
-        dependency_wheel_dir=_wheelhouse(tmp_path),
+        dependency_wheel_dir=_wheelhouse(tmp_path, runtime_profile=runtime_profile),
+        runtime_profile=runtime_profile,
         generated_at="fixed",
         isaaclab_commit=isaaclab_commit,
         isaaclab_tree=isaaclab_tree,
@@ -121,10 +126,81 @@ def test_default_source_pair_is_the_upstream_601_compatible_release_pair() -> No
     assert ARENA_TREE == "a52514015a8573ac03b6448688bfa61f9cea18a9"
 
 
-def _wheelhouse(root: Path) -> Path:
+def test_g1_runtime_profile_seals_its_native_import_closure_without_changing_base(
+    tmp_path: Path,
+) -> None:
+    receipt = _packet(tmp_path, runtime_profile="unitree_g1")
+    verified = verify_native_task_runtime_source_packet(
+        tmp_path / "packet/native_task_runtime_source_packet.v1.json"
+    )
+    assert receipt["runtime_profile"] == verified["runtime_profile"] == "unitree_g1"
+    packages = {row["package"] for row in verified["runtime_dependency_wheels"]}
+    assert {"pin", "coal", "eigenpy", "protobuf", "numpy"}.issubset(packages)
+    assert not {"pin", "coal", "protobuf"}.intersection(
+        row["package"] for row in RUNTIME_DEPENDENCY_WHEELS
+    )
+    simulator = tmp_path / "isaac-sim"
+    simulator.mkdir()
+    result = provision_native_task_runtime_sources(
+        source_receipt_path=tmp_path / "packet/native_task_runtime_source_packet.v1.json",
+        source_packet_path=receipt["packet_path"],
+        extraction_dir=tmp_path / "extracted",
+        output_path=tmp_path / "provisioning.json",
+        simulator_root=simulator,
+        site_packages_dir=tmp_path / "site-packages",
+        runtime_python_tag="cp312",
+        runtime_platform_tags=("manylinux_2_28_x86_64",),
+        run_command=lambda command, **_kwargs: subprocess.CompletedProcess(
+            command, 0,
+            stdout=(json.dumps(_successful_import_rows())
+                    if "import_module" in command[-1] else "found"),
+            stderr="",
+        ),
+    )
+    assert result["status"] == "completed"
+    assert result["runtime_profile"] == "unitree_g1"
+    assert "cmeel.prefix/lib/python3.12/site-packages" in Path(
+        result["path_file"]
+    ).read_text(encoding="utf-8")
+
+
+def test_g1_extension_reuses_verified_base_sources_and_wheels(tmp_path: Path) -> None:
+    base = _packet(tmp_path)
+    extension = extend_native_task_runtime_source_packet(
+        base_receipt_path=tmp_path / "packet/native_task_runtime_source_packet.v1.json",
+        output_dir=tmp_path / "g1-packet",
+        dependency_wheel_dir=_wheelhouse(
+            tmp_path / "g1-extra", runtime_profile="unitree_g1", only_extension=True
+        ),
+        runtime_profile="unitree_g1",
+        generated_at="fixed-g1",
+    )
+    verified = verify_native_task_runtime_source_packet(
+        tmp_path / "g1-packet/native_task_runtime_source_packet.v1.json"
+    )
+    assert verified["runtime_profile"] == "unitree_g1"
+    assert len(verified["runtime_dependency_wheels"]) == len(
+        runtime_dependency_contracts("unitree_g1")
+    )
+    assert verify_native_task_runtime_source_packet(
+        tmp_path / "packet/native_task_runtime_source_packet.v1.json"
+    )["packet_sha256"] == base["packet_sha256"]
+    with zipfile.ZipFile(base["packet_path"]) as original, zipfile.ZipFile(
+        extension["packet_path"]
+    ) as expanded:
+        source_name = "runtime_sources/arena/isaaclab_arena_g1/__init__.py"
+        assert original.read(source_name) == expanded.read(source_name)
+
+
+def _wheelhouse(
+    root: Path, *, runtime_profile: str = "base", only_extension: bool = False
+) -> Path:
     wheelhouse = root / "wheelhouse"
-    wheelhouse.mkdir(exist_ok=True)
-    for contract in RUNTIME_DEPENDENCY_WHEELS:
+    wheelhouse.mkdir(parents=True, exist_ok=True)
+    contracts = runtime_dependency_contracts(runtime_profile)
+    if only_extension:
+        contracts = contracts[len(RUNTIME_DEPENDENCY_WHEELS):]
+    for contract in contracts:
         path = wheelhouse / contract["filename"]
         if path.is_file():
             continue
@@ -420,6 +496,7 @@ def test_relocated_packet_installs_all_sources_once_without_build_backend(
     assert len(path_lines) == 1
     assert path_lines[0].startswith("import sys;sys.path[:0]=[")
     assert result["runtime_dependency_target"] in path_lines[0]
+    assert "cmeel.prefix" not in path_lines[0]
     assert all(path in path_lines[0] for path in result["install_roots"])
 
 
