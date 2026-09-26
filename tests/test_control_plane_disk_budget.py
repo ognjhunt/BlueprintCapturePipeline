@@ -338,3 +338,22 @@ def test_headroom_refuses_roles_by_their_measured_footprint(tmp_path):
     assert "launch_activation" not in headroom["refused_roles"]
     assert "launch_preparation" in headroom["refused_roles"]
     assert headroom["footprints"]["launch_activation"]["basis"] == "measured_p95"
+
+
+def test_recording_never_waits_forever_on_a_held_ledger_lock(tmp_path, monkeypatch):
+    # An evictor runs under the exclusive admission lock; if it released a
+    # measured reservation, an unbounded wait here would stall every worker.
+    import fcntl
+
+    ledger, work = tmp_path / "ledger", tmp_path / "job"
+    reservation = reserve_control_plane_disk("launch_activation", target_root=tmp_path, reservation_root=ledger,
+        workspace=work, disk_usage=lambda _p: Usage(100 * GIB, 0, 90 * GIB), now=lambda: 1.0,
+        pid_alive=lambda _pid: True)
+    monkeypatch.setattr(disk_budget, "HISTORY_LOCK_WAIT_SECONDS", 0.2)
+    with (ledger / ".lock").open("a+b") as held:
+        fcntl.flock(held.fileno(), fcntl.LOCK_EX)
+        assert disk_budget.record_footprint_sample(
+            reservation_root=ledger, role="launch_activation", observed_bytes=1, reserved_bytes=GIB) is False
+        reservation.release()
+    assert not reservation.path.exists()
+    assert not (ledger / "history" / "launch_activation.jsonl").exists()

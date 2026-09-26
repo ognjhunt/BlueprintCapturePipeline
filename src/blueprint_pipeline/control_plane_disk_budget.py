@@ -67,6 +67,10 @@ MEASURED_HEADROOM = 1.25
 MEASURED_FLOOR_BYTES = 64 * 1024**2
 HISTORY_MAX_LINES = 200  # compaction keeps the newest lines
 HISTORY_COMPACTION_BYTES = 64 * 1024
+# Bookkeeping never waits indefinitely on the ledger lock: a caller that already
+# holds it (an evictor running under admission) would otherwise deadlock itself
+# and every worker queued behind it.  Giving up only loses one sample.
+HISTORY_LOCK_WAIT_SECONDS = 5.0
 _SAMPLE_MAX_BYTES = 1024
 # Pid liveness is the primary liveness signal; the TTL is only the backstop for a
 # recycled pid.  Long roles outlive the default, so their entries must too, or
@@ -253,6 +257,20 @@ def _open_ledger_lock(ledger: Path) -> int:
     return descriptor
 
 
+def _bounded_flock(descriptor: int, operation: int) -> None:
+    """Take ``operation`` on the ledger lock or raise BlockingIOError after the bound."""
+
+    deadline = time.monotonic() + HISTORY_LOCK_WAIT_SECONDS
+    while True:
+        try:
+            fcntl.flock(descriptor, operation | fcntl.LOCK_NB)
+            return
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.05)
+
+
 def _prepare_history_directory(ledger: Path) -> Path:
     history = ledger / FOOTPRINT_HISTORY_DIRNAME
     try:
@@ -281,7 +299,7 @@ def _compact_history(ledger: Path, path: Path) -> None:
 
     lock = _open_ledger_lock(ledger)
     try:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+        _bounded_flock(lock, fcntl.LOCK_EX)
         data = path.read_bytes()
         if len(data) <= HISTORY_COMPACTION_BYTES:
             return  # another writer compacted while this one waited
@@ -312,7 +330,7 @@ def _append_footprint_sample(ledger: Path, role: str, line: bytes) -> None:
     try:
         # Appenders share the lock so compaction never drops a sample that
         # lands between its read and its replace.
-        fcntl.flock(lock, fcntl.LOCK_SH)
+        _bounded_flock(lock, fcntl.LOCK_SH)
         descriptor = os.open(
             path,
             os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
@@ -336,7 +354,10 @@ def _append_footprint_sample(ledger: Path, role: str, line: bytes) -> None:
     finally:
         os.close(lock)
     if size > HISTORY_COMPACTION_BYTES:
-        _compact_history(ledger, path)
+        try:
+            _compact_history(ledger, path)
+        except OSError:
+            pass  # the sample is recorded; the next append compacts
 
 
 def record_footprint_sample(
