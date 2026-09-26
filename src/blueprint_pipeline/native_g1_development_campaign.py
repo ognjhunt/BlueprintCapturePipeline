@@ -63,9 +63,26 @@ def _movement_handoff(book_handoff: Mapping[str, Any]) -> dict[str, Any]:
     return validate_packet_policy_handoff(handoff)
 
 
+def _chosen_movement_handoff(
+    book_handoff: Mapping[str, Any], movement_handoff_path: Path | None
+) -> dict[str, Any]:
+    movement_handoff = (
+        validate_packet_policy_handoff(_read(movement_handoff_path))
+        if movement_handoff_path is not None
+        else _movement_handoff(book_handoff)
+    )
+    if (
+        movement_handoff["choice"]["objective_id"] != "g1_navigation_goal"
+        or movement_handoff["setup"] != book_handoff["setup"]
+    ):
+        raise ValueError("g1_campaign_movement_choice_or_setup_mismatch")
+    return movement_handoff
+
+
 def plan_g1_development_campaign(
     *,
     book_handoff_path: Path,
+    movement_handoff_path: Path | None = None,
     manipulation_packet: Path,
     movement_packet: Path,
     inventory_path: Path,
@@ -77,7 +94,7 @@ def plan_g1_development_campaign(
     book_handoff = validate_packet_policy_handoff(_read(book_handoff_path))
     if book_handoff["choice"]["objective_id"] != "task_success":
         raise ValueError("g1_campaign_book_objective_invalid")
-    movement_handoff = _movement_handoff(book_handoff)
+    movement_handoff = _chosen_movement_handoff(book_handoff, movement_handoff_path)
     book = verify_g1_packet_choice_bundle(
         handoff_path=book_handoff_path, bundle=manipulation_packet
     )
@@ -120,6 +137,7 @@ def plan_g1_development_campaign(
         "scene_id": book["scene_id"],
         "task_id": book["task_id"],
         "source_packet_receipt_digest": book_handoff["setup"]["source_packet_receipt_digest"],
+        "movement_handoff_digest": movement_handoff["handoff_digest"],
         "inventory_file_sha256": inventory_sha256,
         "objectives": [
             {
@@ -152,6 +170,7 @@ def plan_g1_development_campaign(
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--book-handoff", type=Path, required=True)
+    parser.add_argument("--movement-handoff", type=Path)
     parser.add_argument("--manipulation-packet", type=Path, required=True)
     parser.add_argument("--movement-packet", type=Path, required=True)
     parser.add_argument("--inventory", type=Path, required=True)
@@ -167,6 +186,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         rights[candidate] = Path(path)
     result = plan_g1_development_campaign(
         book_handoff_path=args.book_handoff,
+        movement_handoff_path=args.movement_handoff,
         manipulation_packet=args.manipulation_packet,
         movement_packet=args.movement_packet,
         inventory_path=args.inventory,

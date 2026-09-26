@@ -245,6 +245,10 @@ def dispatch_g1_paid_campaign(
                     manipulation_packet=Path(args.g1_campaign_manipulation_packet),
                     movement_packet=Path(args.g1_campaign_movement_packet),
                     book_handoff=Path(args.g1_campaign_book_handoff),
+                    movement_handoff=(
+                        Path(args.g1_campaign_movement_handoff)
+                        if getattr(args, "g1_campaign_movement_handoff", None) else None
+                    ),
                     rights_review_paths=rights,
                     navigation_authority=Path(args.g1_campaign_navigation_authority),
                     publisher_source=Path(args.g1_campaign_publisher_source),

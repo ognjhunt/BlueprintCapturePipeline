@@ -159,6 +159,7 @@ def build_g1_provider_bundle(
     manipulation_packet: Path,
     movement_packet: Path,
     book_handoff: Path,
+    movement_handoff: Path | None = None,
     rights_review_paths: Mapping[str, Path],
     navigation_authority: Path,
     publisher_source: Path,
@@ -179,6 +180,7 @@ def build_g1_provider_bundle(
         raise ValueError("g1_provider_bundle_rights_set_invalid")
     campaign = plan_g1_development_campaign(
         book_handoff_path=book_handoff,
+        movement_handoff_path=movement_handoff,
         manipulation_packet=manipulation_packet,
         movement_packet=movement_packet,
         inventory_path=inventory,
@@ -303,8 +305,13 @@ def build_g1_provider_bundle(
                 archive, source=rights_review_paths[candidate],
                 archive_path="provider_runtime/inputs/rights/" + candidate + ".json",
             )
-        for path, relative in (
+        handoff_files = [
             (book_handoff, "provider_runtime/inputs/book_handoff.json"),
+        ]
+        if movement_handoff is not None:
+            handoff_files.append((movement_handoff, "provider_runtime/inputs/movement_handoff.json"))
+        for path, relative in (
+            *handoff_files,
             (navigation_authority, "provider_runtime/inputs/navigation_authority.json"),
             (source / "native_g1_publisher_source_stage.v1.json", "provider_runtime/publisher-source/native_g1_publisher_source_stage.v1.json"),
             (runtime_source_receipt, "provider_runtime/native_task_runtime_sources/native_task_runtime_source_packet.v1.json"),
@@ -399,6 +406,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--manipulation-packet", type=Path, required=True)
     parser.add_argument("--movement-packet", type=Path, required=True)
     parser.add_argument("--book-handoff", type=Path, required=True)
+    parser.add_argument("--movement-handoff", type=Path)
     parser.add_argument("--rights-review", action="append", required=True, metavar="CANDIDATE=PATH")
     parser.add_argument("--navigation-authority", type=Path, required=True)
     parser.add_argument("--publisher-source", type=Path, required=True)
@@ -416,6 +424,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         manipulation_packet=args.manipulation_packet,
         movement_packet=args.movement_packet,
         book_handoff=args.book_handoff,
+        movement_handoff=args.movement_handoff,
         rights_review_paths=rights,
         navigation_authority=args.navigation_authority,
         publisher_source=args.publisher_source,

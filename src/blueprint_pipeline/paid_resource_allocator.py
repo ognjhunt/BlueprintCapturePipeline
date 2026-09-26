@@ -1834,6 +1834,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--g1-campaign-manipulation-packet")
     gpu.add_argument("--g1-campaign-movement-packet")
     gpu.add_argument("--g1-campaign-book-handoff")
+    gpu.add_argument("--g1-campaign-movement-handoff")
     gpu.add_argument("--g1-campaign-navigation-authority")
     gpu.add_argument("--g1-campaign-publisher-source")
     gpu.add_argument("--g1-campaign-runtime-source-receipt")
