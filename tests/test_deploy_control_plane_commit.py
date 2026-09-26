@@ -1611,6 +1611,10 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
         ),
     )
 
+    # Retirement runs for real, but only against this test's own tree: never
+    # the host's protection sources, runtime root or process table.
+    monkeypatch.setattr(deploy, "_live_release_commits", lambda *args, **kwargs: [])
+    protection = _protection_sources(tmp_path / "protection")
     receipt = deploy.deploy_control_plane_commit(
         source_repo=source,
         source_commit=commit,
@@ -1621,7 +1625,11 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
         paid_launch_locks=(str(lock),),
         intake_runtime_drop_in=tmp_path / "drop-in",
         scene_configuration_environment_file=tmp_path / "scene-runtime.env",
+        scene_configuration_runtime_root=tmp_path / "system-runtimes",
+        scene_preparation_bootstrap_file=tmp_path / "absent-bootstrap.json",
+        controls_autoprovision_bootstrap_file=tmp_path / "absent-controls-bootstrap.json",
         disk_reservation_root=tmp_path / "disk-reservations",
+        release_protection_sources=protection,
     )
 
     assert observed == [
@@ -1657,12 +1665,18 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
     ]
     assert receipt["release_provenance"]["git_sha"] == commit
     assert Path(receipt["release_provenance"]["path"]).stat().st_mode & 0o777 == 0o440
-    # This synthetic host has no control-plane root to lock: retirement is
-    # reported, never fatal, and its summary still lands under the state root.
-    assert receipt["release_retirement"]["status"] == "blocked"
+    # The synthetic active link points outside the release root, so the plan
+    # cannot prove the active release: retirement is reported, never fatal,
+    # and its summary still lands under the state root.
+    retirement = receipt["release_retirement"]
+    assert retirement["status"] == "skipped"
+    assert retirement["blockers"] == ["release_retirement_active_target_outside_root"]
+    assert retirement["lock_roots"] == sorted(
+        str(path.resolve()) for path in (tmp_path / "state", protection.control_plane_root)
+    )
     summary = tmp_path / "state" / "release-retention" / "latest-deploy-retirement.json"
     assert json.loads(summary.read_text(encoding="utf-8"))["alerts"] == [
-        "release_retirement_blocked:release_reference_lock_root_unavailable"
+        "release_retirement_blocked:release_retirement_active_target_outside_root"
     ]
 
 
@@ -2677,6 +2691,40 @@ def test_deploy_retirement_reports_what_it_moved_deleted_and_swept(
     )
     assert again["status"] == "applied" and again["swept"] == [] and again["deletion_failures"] == []
     assert sorted(path.name for path in releases.iterdir()) == [current]
+
+
+def test_deploy_retirement_locks_the_control_plane_root_once_when_it_is_the_state_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On the host the deploy state root is the control-plane root; one descriptor only."""
+    import contextlib
+    import time
+
+    releases = tmp_path / "releases"
+    no_processes = tmp_path / "proc"
+    no_processes.mkdir()
+    current, superseded = "a" * 40, "b" * 40
+    _release_trees(releases, {current: 3_600, superseded: 10 * 86_400}, now=time.time())
+    active = tmp_path / "active"
+    active.symlink_to(releases / current, target_is_directory=True)
+    sources = _protection_sources(tmp_path)
+    locked: list[Path] = []
+
+    @contextlib.contextmanager
+    def recorder(root, *, exclusive, **_bounded):
+        locked.append(Path(root))
+        yield
+
+    monkeypatch.setattr(deploy, "release_reference_lock", recorder)
+    result = deploy._retire_superseded_release_trees(
+        release_root=releases, runtime_root=tmp_path / "runtimes", active_link=active,
+        current_commit=current, protection_sources=sources, keep_last=1,
+        state_root=sources.control_plane_root, proc_root=no_processes,
+    )
+
+    assert result["status"] == "applied" and result["retired_commits"] == [superseded]
+    assert locked == [sources.control_plane_root.resolve()]
+    assert result["lock_roots"] == [str(sources.control_plane_root.resolve())]
 
 
 def test_deploy_retirement_gives_up_when_a_publisher_holds_the_lock(tmp_path: Path) -> None:
