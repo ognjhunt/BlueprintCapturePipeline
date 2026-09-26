@@ -1,6 +1,8 @@
 from copy import deepcopy
+import hashlib
 
 import pytest
+from pxr import Gf, Usd, UsdGeom, UsdPhysics
 from blueprint_pipeline import native_task_camera_start_configuration as camera
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from tests.test_camera_start_construction_materializer import inputs
@@ -62,3 +64,39 @@ def test_small_wrist_adjustment_frames_task_without_changing_base_or_claims():
     assert result['native_qualification_claimed'] is False
     assert value == before
     assert camera.validate_camera_start_configuration(plan, result) == result
+
+
+def test_fixture_desk_intersection_is_screened_before_policy_rental(tmp_path):
+    value = plan_inputs()
+    plan = value['plan']
+    stage = Usd.Stage.CreateNew(str(tmp_path / 'fixture.usda'))
+    root = UsdGeom.Xform.Define(stage, '/Root')
+    stage.SetDefaultPrim(root.GetPrim())
+    desk = UsdGeom.Mesh.Define(stage, '/Root/desk')
+    desk.CreatePointsAttr([Gf.Vec3f(x, y, z) for x in (-1.0, 1.0)
+                           for y in (-0.4, 0.4) for z in (0.8, 0.85)])
+    desk.CreateFaceVertexCountsAttr([3, 3])
+    desk.CreateFaceVertexIndicesAttr([0, 1, 2, 1, 3, 2])
+    UsdPhysics.CollisionAPI.Apply(desk.GetPrim())
+    floor = UsdGeom.Mesh.Define(stage, '/Root/floor')
+    floor.CreatePointsAttr([Gf.Vec3f(-2, -2, 0), Gf.Vec3f(2, -2, 0),
+                            Gf.Vec3f(-2, 2, 0), Gf.Vec3f(2, 2, 0)])
+    floor.CreateFaceVertexCountsAttr([3, 3])
+    floor.CreateFaceVertexIndicesAttr([0, 1, 2, 1, 3, 2])
+    UsdPhysics.CollisionAPI.Apply(floor.GetPrim())
+    stage.GetRootLayer().Save()
+    path = tmp_path / 'fixture.usda'
+    plan['objects'] = [{'semantic_role': 'scene_collision',
+                        'sha256': 'sha256:' + hashlib.sha256(path.read_bytes()).hexdigest(),
+                        'pose_world': {'position_world_m': [0.0, 0.0, 0.0],
+                                       'orientation_xyzw': [0.0, 0.0, 0.0, 1.0]}}]
+    chain = value['source_binding']['source_joint_chain']
+    original = plan['robot']['joint_reset_positions_rad']
+    blocked = camera.fixture_reset_clearance(plan, chain, original, path)
+    safe = dict(original)
+    safe['panda_joint4'] -= 0.5
+    passed = camera.fixture_reset_clearance(plan, chain, safe, path)
+    assert blocked['status'] == 'blocked'
+    assert passed['status'] == 'passed'
+    assert passed['minimum_link_centerline_to_obstacle_m'] > 0.13
+    assert passed['native_collision_qualified'] is False
