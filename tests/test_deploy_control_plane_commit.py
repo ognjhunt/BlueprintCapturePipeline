@@ -2356,6 +2356,33 @@ def test_installer_records_the_service_account_access_receipt(
 
 
 
+def _protection_sources(tmp_path: Path, **overrides: object):
+    """Typed protection sources laid out like the host, under ``tmp_path``."""
+
+    from blueprint_pipeline.control_plane_release_leases import LIVE_QUEUE_STATES
+
+    control_plane = tmp_path / "var/lib/blueprint/pipeline-control-plane"
+    for queue, states in LIVE_QUEUE_STATES.items():
+        for state in states:
+            (control_plane / queue / state).mkdir(parents=True, exist_ok=True)
+    for name in ("standing-authorizations", "task-evaluation-release-retention-bindings"):
+        (control_plane / name).mkdir(parents=True, exist_ok=True)
+    profiles = tmp_path / "etc/blueprint/task-evaluation-launch-profiles"
+    profiles.mkdir(parents=True, exist_ok=True)
+    values: dict[str, object] = {
+        "control_plane_root": control_plane,
+        "profile_dir": profiles,
+        "standing_authorization_dir": control_plane / "standing-authorizations",
+        "binding_root": control_plane / "task-evaluation-release-retention-bindings",
+        "lease_root": control_plane / "release-leases",
+        "config_files": (),
+        "intent_root": control_plane / "task-evaluation-scene-intents",
+        "launch_run_root": control_plane / "task-evaluation-launch-runs",
+    }
+    values.update(overrides)
+    return deploy.ProtectionSources(**values)
+
+
 def test_release_retirement_is_skipped_without_protection_sources_and_applied_with_them(
     tmp_path: Path,
 ) -> None:
@@ -2386,23 +2413,21 @@ def test_release_retirement_is_skipped_without_protection_sources_and_applied_wi
         runtime_root=runtimes,
         active_link=active,
         current_commit=current,
-        reference_roots=[str(tmp_path / "absent-profiles")],
+        protection_sources=_protection_sources(
+            tmp_path, control_plane_root=tmp_path / "absent-control-plane"
+        ),
         keep_last=1,
     )
     assert skipped["status"] == "skipped"
-    assert skipped["blockers"] == [
-        "release_retirement_protected_reference_root_missing:absent-profiles"
-    ]
+    assert skipped["blockers"] == ["release_protection_control_plane_root_missing"]
     assert (releases / superseded).is_dir()
 
-    profiles = tmp_path / "profiles"
-    profiles.mkdir()
     applied = deploy._retire_superseded_release_trees(
         release_root=releases,
         runtime_root=runtimes,
         active_link=active,
         current_commit=current,
-        reference_roots=[str(profiles)],
+        protection_sources=_protection_sources(tmp_path),
         keep_last=1,
     )
     assert applied["status"] == "applied"
@@ -2433,12 +2458,8 @@ def test_deploy_retirement_honors_required_historical_evidence_binding(tmp_path:
         os.utime(directory, (old, old))
     active = tmp_path / "active"
     active.symlink_to(releases / current, target_is_directory=True)
-    references = [tmp_path / path.lstrip("/") for path in deploy.DEFAULT_RELEASE_RETIREMENT_REFERENCE_ROOTS]
-    for root in references:
-        root.mkdir(parents=True, exist_ok=True)
-    bindings = tmp_path / "var/lib/blueprint/pipeline-control-plane/task-evaluation-release-retention-bindings"
-    bindings.mkdir(parents=True, exist_ok=True)
-    (bindings / "sam-prefix.json").write_text(json.dumps({
+    sources = _protection_sources(tmp_path)
+    (sources.binding_root / "sam-prefix.json").write_text(json.dumps({
         "schema_version": "task_evaluation_release_retention_binding.v1",
         "status": "required", "source_commit": retained,
         "reason": "Completed prefix replay reopens the original renderer release.",
@@ -2446,7 +2467,7 @@ def test_deploy_retirement_honors_required_historical_evidence_binding(tmp_path:
 
     result = deploy._retire_superseded_release_trees(
         release_root=releases, runtime_root=runtimes, active_link=active,
-        current_commit=current, reference_roots=[str(path) for path in references], keep_last=1,
+        current_commit=current, protection_sources=sources, keep_last=1,
     )
     assert result["status"] == "applied"
     assert result["retired_commits"] == []

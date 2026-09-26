@@ -3,26 +3,44 @@
 Every deploy publishes a release worktree and two runtime trees keyed by the
 exact commit, and until now nothing ever removed them: the host accumulated 30
 worktrees and 138 runtime trees.  Deploy is the only event that creates these
-trees, so deploy is where they are retired.  A commit's trees are candidates
-only when the commit is not the active release, not the commit being deployed,
-not named by any launch profile, standing authorization, or queued envelope,
-not among the newest ``keep_last`` releases, and older than a minimum age.
+trees, so deploy is where they are retired.
+
+A commit's trees stay while it is the active release, the commit being
+deployed, among the newest ``keep_last`` releases, in use by a live process,
+younger than a minimum age, or held by a typed protection row from
+``control_plane_release_leases``: an unexpired lease (a live queue envelope, a
+standing authorization that can still launch, a required-evidence binding
+whose run is not over) or a configured runtime path.  Protection used to be
+every 40-hex token in about twenty JSON roots, which is how 513 commits became
+protected and none of 95 trees could be retired; nothing greps any more.
+
 Unknown children are reported and left alone.  Every tree is reproducible from
 its commit and the governed prerequisites, so retirement destroys no evidence.
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
 import shutil
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from .control_plane_release_leases import (
+    CONFIG_KIND,
+    DEFAULT_PROTECTION_SOURCES,
+    LEASE_ALERT_THRESHOLD,
+    LEASE_KINDS,
+    PROTECTIONS_SCHEMA,
+    ProtectionSources,
+    collect_release_protections,
+)
 from .decision_evidence_contracts import canonical_digest
+from .task_evaluation_release_reference_lock import release_reference_lock
 
 
 PLAN_SCHEMA_VERSION = "control_plane_release_retirement_plan.v1"
@@ -31,14 +49,53 @@ EXECUTE_ACK = "retire-superseded-release-trees"
 RUNTIME_COMPONENTS = ("splat-render", "scene-configuration")
 DEFAULT_KEEP_LAST = 3
 DEFAULT_MINIMUM_AGE_SECONDS = 24 * 60 * 60
+MAX_REPORTED_WARNINGS = 50
 _COMMIT_RE = re.compile(r"[0-9a-f]{40}\Z")
-_COMMIT_SEARCH_RE = re.compile(r"(?<![0-9a-f])[0-9a-f]{40}(?![0-9a-f])")
 _RECEIPT_RE = re.compile(r"([0-9a-f]{40})\.publication\.v1\.json\Z")
-_MAX_REFERENCE_BYTES = 16 * 1024 * 1024
+_PROTECTION_KINDS = frozenset((*LEASE_KINDS, CONFIG_KIND))
 
 
 class ControlPlaneReleaseRetirementError(RuntimeError):
     """The retirement plan could not be built or applied safely."""
+
+
+def publisher_lock_roots(
+    sources: ProtectionSources, *extra_roots: str | Path
+) -> tuple[Path, ...]:
+    """Every distinct directory a release-reference publisher locks, sorted.
+
+    Queue writers lock the parent of their queue root (the control-plane
+    root), the standing-authorization materializer locks the parent of its
+    output directory, and the launch-profile publisher locks the parent of the
+    public catalog, which lives in the control-plane root.  Callers add their
+    own state root, which release activation locks.  Roots are resolved so a
+    directory is never locked twice: a second descriptor on the same inode
+    would deadlock an exclusive holder against itself.
+    """
+
+    return tuple(
+        sorted(
+            {
+                Path(root).expanduser().resolve()
+                for root in (
+                    sources.control_plane_root,
+                    Path(sources.standing_authorization_dir).parent,
+                    Path(sources.binding_root).parent,
+                    *extra_roots,
+                )
+            }
+        )
+    )
+
+
+@contextlib.contextmanager
+def holding_publisher_locks(roots: Sequence[str | Path]):
+    """Hold every publisher lock exclusively, acquired in the given order."""
+
+    with contextlib.ExitStack() as stack:
+        for root in roots:
+            stack.enter_context(release_reference_lock(root, exclusive=True))
+        yield
 
 
 def _active_commit(active_link: Path, release_root: Path) -> str:
@@ -56,30 +113,21 @@ def _active_commit(active_link: Path, release_root: Path) -> str:
     return relative.name
 
 
-def _commits_named_under(roots: Sequence[Path]) -> tuple[set[str], list[str]]:
-    """Every 40-hex token in protected JSON files or their directory trees."""
-
-    commits: set[str] = set()
-    blockers: list[str] = []
-    for root in roots:
-        if root.is_file() and root.suffix == ".json":
-            paths = [root]
-        elif root.is_dir():
-            paths = [Path(directory) / name
-                     for directory, _subdirectories, files in os.walk(root)
-                     for name in files if name.endswith(".json")]
-        else:
-            blockers.append(f"release_retirement_protected_reference_root_missing:{root.name}")
-            continue
-        for path in paths:
-            try:
-                if path.is_symlink() or path.stat().st_size > _MAX_REFERENCE_BYTES:
-                    blockers.append(f"release_retirement_protected_reference_unsafe:{path.name}")
-                    continue
-                commits.update(_COMMIT_SEARCH_RE.findall(path.read_text(encoding="utf-8")))
-            except (OSError, UnicodeDecodeError):
-                blockers.append(f"release_retirement_protected_reference_unreadable:{path.name}")
-    return commits, blockers
+def _protections_valid(protections: Any) -> bool:
+    if not isinstance(protections, Mapping) or protections.get("schema_version") != PROTECTIONS_SCHEMA:
+        return False
+    for field in ("leases", "lapsed", "migrated", "warnings", "blockers"):
+        if not isinstance(protections.get(field), list):
+            return False
+    return all(
+        isinstance(row, Mapping)
+        and isinstance(row.get("commit"), str)
+        and _COMMIT_RE.fullmatch(row["commit"]) is not None
+        and row.get("kind") in _PROTECTION_KINDS
+        and isinstance(row.get("reason"), str)
+        and bool(row["reason"])
+        for row in protections["leases"]
+    ) and all(isinstance(blocker, str) and blocker for blocker in protections["blockers"])
 
 
 def _managed(root: Path, *, with_receipts: bool) -> tuple[dict[str, list[Path]], list[str]]:
@@ -118,13 +166,18 @@ def build_release_retirement_plan(
     runtime_root: str | Path,
     active_link: str | Path,
     current_commit: str,
-    protected_reference_roots: Sequence[str | Path],
+    protections: Mapping[str, Any],
     keep_last: int = DEFAULT_KEEP_LAST,
     minimum_age_seconds: int = DEFAULT_MINIMUM_AGE_SECONDS,
     now: Callable[[], float] = time.time,
     in_use_commits: Sequence[str] = (),
 ) -> dict[str, Any]:
-    """Decide which superseded commits may be retired; mutate nothing."""
+    """Decide which superseded commits may be retired; mutate nothing.
+
+    ``protections`` is a ``collect_release_protections`` result.  Any of its
+    blockers blocks the plan: without readable protection sources it cannot
+    know what is live.
+    """
 
     if (
         _COMMIT_RE.fullmatch(str(current_commit)) is None
@@ -133,22 +186,18 @@ def build_release_retirement_plan(
         or keep_last < 1
         or not isinstance(minimum_age_seconds, int)
         or minimum_age_seconds < 0
-        or not protected_reference_roots
+        or not _protections_valid(protections)
     ):
         raise ControlPlaneReleaseRetirementError("release_retirement_input_invalid")
     releases = Path(release_root).expanduser()
     runtimes = Path(runtime_root).expanduser()
     observed_at = float(now())
-    blockers: list[str] = []
+    blockers: list[str] = list(protections["blockers"])
     try:
         active = _active_commit(Path(active_link).expanduser(), releases)
     except (ControlPlaneReleaseRetirementError, OSError) as exc:
         active = None
         blockers.append(str(exc) if isinstance(exc, ControlPlaneReleaseRetirementError) else "release_retirement_active_link_invalid")
-    referenced, reference_blockers = _commits_named_under(
-        [Path(root).expanduser() for root in protected_reference_roots]
-    )
-    blockers.extend(reference_blockers)
     release_trees, unmanaged = _managed(releases, with_receipts=False)
     runtime_trees: dict[str, dict[str, list[Path]]] = {}
     for component in RUNTIME_COMPONENTS:
@@ -161,16 +210,23 @@ def build_release_retirement_plan(
         reverse=True,
     )[:keep_last]
     protected: dict[str, list[str]] = {}
+    kinds: dict[str, set[str]] = {}
+
+    def protect(commit: str, reason: str, kind: str) -> None:
+        protected.setdefault(commit, []).append(reason)
+        kinds.setdefault(commit, set()).add(kind)
+
     for commit, reason in [(active, "active_release"), (current_commit, "current_deploy")]:
         if commit:
-            protected.setdefault(commit, []).append(reason)
-    for commit in referenced:
-        protected.setdefault(commit, []).append("named_by_protected_reference")
+            protect(commit, reason, reason)
+    for row in protections["leases"]:
+        kind, reason = str(row["kind"]), str(row["reason"])
+        protect(row["commit"], reason if reason.startswith(f"{kind}:") else f"{kind}:{reason}", kind)
     for commit in newest:
-        protected.setdefault(commit, []).append("keep_last")
+        protect(commit, "keep_last", "keep_last")
     # A paid run may outlive the deploy that superseded its release.
     for commit in in_use_commits:
-        protected.setdefault(commit, []).append("in_use_by_live_process")
+        protect(commit, "in_use_by_live_process", "in_use_by_live_process")
     all_commits = set(release_trees) | {
         commit for trees in runtime_trees.values() for commit in trees
     }
@@ -183,7 +239,7 @@ def build_release_retirement_plan(
             paths.extend(runtime_trees[component].get(commit, []))
         age = min(observed_at - path.lstat().st_mtime for path in paths)
         if age < minimum_age_seconds:
-            protected.setdefault(commit, []).append("younger_than_minimum_age")
+            protect(commit, "younger_than_minimum_age", "younger_than_minimum_age")
             continue
         candidates.append(
             {
@@ -192,10 +248,26 @@ def build_release_retirement_plan(
                 "size_bytes": sum(_tree_bytes(path) for path in paths),
             }
         )
+    blockers = sorted(set(blockers))
     if blockers:
         # Without a proven active release and readable protection sources the
         # plan cannot know what is live; report and retire nothing.
         candidates = []
+    # Grouped for the receipt, counting only commits whose trees still exist.
+    protected_by_kind: dict[str, set[str]] = {}
+    for commit in all_commits & set(kinds):
+        for kind in kinds[commit]:
+            protected_by_kind.setdefault(kind, set()).add(commit)
+    lease_kinds = set(LEASE_KINDS)
+    lease_protected_tree_count = sum(
+        1 for commit in all_commits if commit in kinds and kinds[commit] <= lease_kinds
+    )
+    alerts: list[str] = []
+    if lease_protected_tree_count > LEASE_ALERT_THRESHOLD:
+        alerts.append(f"release_retirement_lease_protected_trees:{lease_protected_tree_count}")
+    if blockers:
+        alerts.append(f"release_retirement_blocked:{blockers[0]}")
+    warnings = sorted(set(protections["warnings"]))
     plan: dict[str, Any] = {
         "schema_version": PLAN_SCHEMA_VERSION,
         "status": "blocked" if blockers else "dry_run",
@@ -204,11 +276,21 @@ def build_release_retirement_plan(
         "keep_last": keep_last,
         "minimum_age_seconds": minimum_age_seconds,
         "protected_commits": {commit: sorted(set(reasons)) for commit, reasons in sorted(protected.items())},
+        "protected_by_kind": {
+            kind: sorted(commits) for kind, commits in sorted(protected_by_kind.items())
+        },
+        "protected_tree_count": len(all_commits & set(protected)),
+        "lease_protected_tree_count": lease_protected_tree_count,
+        "lapsed_count": len(protections["lapsed"]),
+        "migrated": sorted(protections["migrated"]),
+        "warning_count": len(warnings),
+        "warnings": warnings[:MAX_REPORTED_WARNINGS],
+        "alerts": alerts,
         "unmanaged_children": sorted(unmanaged),
         "candidate_count": len(candidates),
         "candidate_bytes": sum(row["size_bytes"] for row in candidates),
         "candidates": candidates,
-        "blockers": sorted(set(blockers)),
+        "blockers": blockers,
         "evidence_roots_touched": False,
         "plan_digest": "",
     }
@@ -217,9 +299,19 @@ def build_release_retirement_plan(
 
 
 def apply_release_retirement_plan(
-    plan: dict[str, Any], *, ack: str, active_link: str | Path, release_root: str | Path
+    plan: dict[str, Any],
+    *,
+    ack: str,
+    active_link: str | Path,
+    release_root: str | Path,
+    in_use_now: Callable[[], set[str]] | None = None,
 ) -> dict[str, Any]:
-    """Remove exactly the planned trees, re-proving the active release first."""
+    """Remove exactly the planned trees, re-proving the active release first.
+
+    ``in_use_now`` is asked again immediately before each commit's paths are
+    removed: a process that started on a candidate after the plan was built
+    keeps it (``in_use_at_apply``), and a probe that fails keeps it too.
+    """
 
     if (
         ack != EXECUTE_ACK
@@ -236,6 +328,17 @@ def apply_release_retirement_plan(
         if commit in {active, str(plan.get("current_commit") or "")} or _COMMIT_RE.fullmatch(commit) is None:
             skipped.append({"commit": commit, "reason": "protected_at_apply"})
             continue
+        if in_use_now is not None:
+            try:
+                busy = commit in in_use_now()
+            except (OSError, ValueError) as exc:
+                skipped.append(
+                    {"commit": commit, "reason": f"in_use_check_failed:{type(exc).__name__}"}
+                )
+                continue
+            if busy:
+                skipped.append({"commit": commit, "reason": "in_use_at_apply"})
+                continue
         for raw in row.get("paths") or []:
             path = Path(str(raw))
             if path.is_symlink() or not (path.name == commit or _RECEIPT_RE.fullmatch(path.name)):
@@ -268,33 +371,74 @@ def apply_release_retirement_plan(
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
+    defaults = DEFAULT_PROTECTION_SOURCES
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--release-root", required=True)
     parser.add_argument("--runtime-root", required=True)
     parser.add_argument("--active-link", required=True)
     parser.add_argument("--current-commit", required=True)
-    parser.add_argument("--protected-reference-root", action="append", required=True)
+    parser.add_argument("--control-plane-root", default=str(defaults.control_plane_root))
+    parser.add_argument("--profile-dir", default=str(defaults.profile_dir))
+    parser.add_argument(
+        "--standing-authorization-dir", default=str(defaults.standing_authorization_dir)
+    )
+    parser.add_argument("--binding-root", default=str(defaults.binding_root))
+    parser.add_argument("--lease-root", default=str(defaults.lease_root))
+    parser.add_argument(
+        "--config-file",
+        action="append",
+        default=None,
+        help="Configuration naming runtime paths. Repeatable; defaults to the host's two.",
+    )
+    parser.add_argument("--intent-root", default=str(defaults.intent_root))
+    parser.add_argument("--launch-run-root", default=str(defaults.launch_run_root))
+    parser.add_argument(
+        "--no-migrate",
+        action="store_true",
+        help="Dry run: evaluate legacy bindings without writing or renewing any lease.",
+    )
     parser.add_argument("--keep-last", type=int, default=DEFAULT_KEEP_LAST)
     parser.add_argument("--minimum-age-seconds", type=int, default=DEFAULT_MINIMUM_AGE_SECONDS)
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--ack", default="")
     args = parser.parse_args(argv)
-    plan = build_release_retirement_plan(
-        release_root=args.release_root,
-        runtime_root=args.runtime_root,
-        active_link=args.active_link,
-        current_commit=args.current_commit,
-        protected_reference_roots=args.protected_reference_root,
-        keep_last=args.keep_last,
-        minimum_age_seconds=args.minimum_age_seconds,
+    sources = ProtectionSources(
+        control_plane_root=Path(args.control_plane_root),
+        profile_dir=Path(args.profile_dir),
+        standing_authorization_dir=Path(args.standing_authorization_dir),
+        binding_root=Path(args.binding_root),
+        lease_root=Path(args.lease_root),
+        config_files=tuple(
+            Path(path) for path in (args.config_file or defaults.config_files)
+        ),
+        intent_root=Path(args.intent_root),
+        launch_run_root=Path(args.launch_run_root),
     )
-    result = (
-        apply_release_retirement_plan(
-            plan, ack=args.ack, active_link=args.active_link, release_root=args.release_root
+    mutating = args.apply or not args.no_migrate
+    with (
+        holding_publisher_locks(publisher_lock_roots(sources))
+        if mutating
+        else contextlib.nullcontext()
+    ):
+        protections = collect_release_protections(
+            sources, now=time.time(), migrate=not args.no_migrate
         )
-        if args.apply
-        else plan
-    )
+        plan = build_release_retirement_plan(
+            release_root=args.release_root,
+            runtime_root=args.runtime_root,
+            active_link=args.active_link,
+            current_commit=args.current_commit,
+            protections=protections,
+            keep_last=args.keep_last,
+            minimum_age_seconds=args.minimum_age_seconds,
+        )
+        result = (
+            apply_release_retirement_plan(
+                plan, ack=args.ack, active_link=args.active_link, release_root=args.release_root
+            )
+            if args.apply
+            else plan
+        )
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0
 
@@ -304,10 +448,13 @@ __all__ = [
     "DEFAULT_KEEP_LAST",
     "DEFAULT_MINIMUM_AGE_SECONDS",
     "EXECUTE_ACK",
+    "MAX_REPORTED_WARNINGS",
     "RUNTIME_COMPONENTS",
     "apply_release_retirement_plan",
     "build_release_retirement_plan",
+    "holding_publisher_locks",
     "main",
+    "publisher_lock_roots",
 ]
 
 

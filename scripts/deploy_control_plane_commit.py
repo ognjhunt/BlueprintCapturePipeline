@@ -72,6 +72,11 @@ from blueprint_pipeline.control_plane_disk_budget import (  # noqa: E402
 from blueprint_pipeline.control_plane_storage_pins import (  # noqa: E402
     DEFAULT_PINS_ROOT,
 )
+from blueprint_pipeline.control_plane_release_leases import (  # noqa: E402
+    DEFAULT_PROTECTION_SOURCES,
+    ProtectionSources,
+    collect_release_protections,
+)
 from blueprint_pipeline.control_plane_release_retirement import (  # noqa: E402
     ControlPlaneReleaseRetirementError,
     EXECUTE_ACK as RELEASE_RETIREMENT_ACK,
@@ -204,33 +209,10 @@ CONFIGURED_CONTROLS_AUTOMATION_UNITS = (
     "blueprint-task-evaluation-configured-controls-progression.timer",
     "blueprint-task-evaluation-configured-controls-progression.path",
 )
-#: JSON under these roots names the commits that a launch may still need; a
-#: commit named anywhere here is never retired by the deploy that supersedes it.
-DEFAULT_RELEASE_RETIREMENT_REFERENCE_ROOTS = (
-    "/etc/blueprint/task-evaluation-launch-profiles",
-    # Preparation can still use an older renderer after launch queues empty.
-    # Protect the configured dependency itself, before a new attempt exists.
-    "/etc/blueprint/task-evaluation-public-scene-machinery.json",
-    "/etc/blueprint/task-evaluation-scene-preparation-bootstrap.json",
-    # Terminal evidence can still require an older renderer after its queues empty.
-    "/var/lib/blueprint/pipeline-control-plane/task-evaluation-release-retention-bindings",
-    "/var/lib/blueprint/pipeline-control-plane/standing-authorizations",
-    "/var/lib/blueprint/pipeline-control-plane/task-evaluation-launches/pending",
-    "/var/lib/blueprint/pipeline-control-plane/task-evaluation-launches/processing",
-    "/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-preparations/pending",
-    "/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-preparations/processing",
-    "/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-preparations/awaiting_source_preparation",
-    "/var/lib/blueprint/pipeline-control-plane/sam31-preparation-executions/pending",
-    "/var/lib/blueprint/pipeline-control-plane/sam31-preparation-executions/processing",
-    "/var/lib/blueprint/pipeline-control-plane/sam31-preparation-executions/waiting_external",
-    "/var/lib/blueprint/pipeline-control-plane/sam31-preparation-executions/wake-pending",
-    "/var/lib/blueprint/pipeline-control-plane/task-evaluation-episode-compilations/pending",
-    "/var/lib/blueprint/pipeline-control-plane/task-evaluation-episode-compilations/processing",
-    "/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-activations/pending",
-    "/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-activations/processing",
-    "/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canary-dispatches/pending",
-    "/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canary-dispatches/processing",
-)
+#: Where typed release protection is read: live queue envelopes, standing
+#: authorizations, retention bindings (with their sidecar leases) and the
+#: configuration files that name runtime paths.  Nothing is grepped.
+DEFAULT_RELEASE_PROTECTION_SOURCES = DEFAULT_PROTECTION_SOURCES
 DEFAULT_RELEASE_RETIREMENT_KEEP_LAST = 3
 #: The only unit kinds a release may install.  Services and their queue-watching
 #: paths stay paired, while the one fixed progression timer (and its
@@ -863,9 +845,10 @@ def _retire_superseded_release_trees(
     runtime_root: str | Path,
     active_link: str | Path,
     current_commit: str,
-    reference_roots: Sequence[str],
+    protection_sources: ProtectionSources,
     keep_last: int,
     in_use_commits: Sequence[str] = (),
+    now: Any = time.time,
 ) -> dict[str, Any]:
     """Retire release and runtime trees this deploy has superseded.
 
@@ -876,13 +859,17 @@ def _retire_superseded_release_trees(
     """
 
     try:
+        protections = collect_release_protections(
+            protection_sources, now=float(now()), migrate=True
+        )
         plan = build_release_retirement_plan(
             release_root=release_root,
             runtime_root=runtime_root,
             active_link=active_link,
             current_commit=current_commit,
-            protected_reference_roots=list(reference_roots),
+            protections=protections,
             keep_last=keep_last,
+            now=now,
             in_use_commits=list(in_use_commits),
         )
         if plan["status"] != "dry_run":
@@ -2484,9 +2471,7 @@ def deploy_control_plane_commit(
     arm_path_units: bool = False,
     preserve_configured_controls_state: bool = False,
     disk_reservation_root: str | Path | None = None,
-    release_retirement_reference_roots: Sequence[str] = (
-        DEFAULT_RELEASE_RETIREMENT_REFERENCE_ROOTS
-    ),
+    release_protection_sources: ProtectionSources = DEFAULT_RELEASE_PROTECTION_SOURCES,
     release_retirement_keep_last: int = DEFAULT_RELEASE_RETIREMENT_KEEP_LAST,
 ) -> dict[str, Any]:
     """Move the mutable clone and the release link, then verify both."""
@@ -2841,7 +2826,7 @@ def deploy_control_plane_commit(
             runtime_root=scene_configuration_runtime_root,
             active_link=active,
             current_commit=commit,
-            reference_roots=release_retirement_reference_roots,
+            protection_sources=release_protection_sources,
             keep_last=release_retirement_keep_last,
             in_use_commits=_live_release_commits(releases),
         )
