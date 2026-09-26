@@ -224,3 +224,23 @@ def test_unreadable_protected_config_cannot_silently_allow_retirement(tmp_path):
     )
     assert plan["status"] != "dry_run"
     assert "release_retirement_protected_reference_unsafe:active-machinery.json" in plan["blockers"]
+
+
+def test_a_release_a_live_paid_run_still_uses_is_never_retired(tmp_path: Path) -> None:
+    """Deploys no longer wait out runs in flight, so those runs pin their own tree."""
+    now = 5_000_000.0
+    host = _host(tmp_path, now=now)
+
+    plan = build_release_retirement_plan(
+        release_root=host["releases"],
+        runtime_root=host["runtimes"],
+        active_link=host["active"],
+        current_commit=A,
+        protected_reference_roots=[host["profiles"], host["standing"], host["queue"]],
+        keep_last=3,
+        now=lambda: now,
+        in_use_commits=[E],
+    )
+
+    assert plan["protected_commits"][E] == ["in_use_by_live_process"]
+    assert plan["candidates"] == []

@@ -9,7 +9,6 @@ teardown artifacts without promoting any of those into rank-fidelity proof.
 from __future__ import annotations
 
 import base64
-import fcntl
 import hashlib
 import io
 import ipaddress
@@ -39,6 +38,16 @@ from .vast_provider_log_observations import (
     _log_result_container_vanished_after_output,
 )
 from .common import ensure_dir, utc_now_iso, write_json
+from .vast_launch_slots import (  # noqa: F401 - re-exported for existing callers
+    DEFAULT_MAX_CONCURRENT_PAID_LAUNCHES,
+    MAX_CONCURRENT_PAID_LAUNCHES_ENV,
+    _max_concurrent_paid_launches,
+    _release_vast_launch_lock,
+    _try_acquire_vast_launch_lock,
+    _vast_launch_lock_path,
+    vast_launch_gate_path,
+    vast_launch_lock_paths,
+)
 from .decision_evidence_contracts import canonical_digest
 from .vast_create_failure_diagnosis import diagnose_empty_create_400
 from .vast_render_bundle_inventory import RETAINED_ENTRIES, read_render_manifest, resolve_render_inventory
@@ -7022,183 +7031,6 @@ def _api_gate_blockers(
     if not api_key:
         blockers.append(f"missing_file_based_secret_{VAST_API_KEY_FILE_ENV}")
     return blockers
-
-
-#: How many paid launches may hold a provider at once, fleet-wide.
-#:
-#: This is a spend policy, not a technical limit. It was 1 for a long time and
-#: that made every lane queue behind the slowest run in flight -- a Content
-#: Agents run held the provider for 78 minutes on 2026-08-13 while three other
-#: lanes waited. Raised to 3 on explicit authorization the same day.
-#:
-#: What it does NOT change: each attempt still carries its own hard cap, TTL,
-#: and watchdog, so the worst case is N times one attempt's ceiling rather than
-#: an unbounded fleet. And a run still proves teardown from its own receipt.
-#: Fleet-wide provider zero simply becomes provable between batches rather than
-#: after every run, which is where the reconciler already looks for it.
-DEFAULT_MAX_CONCURRENT_PAID_LAUNCHES = 3
-MAX_CONCURRENT_PAID_LAUNCHES_ENV = "BLUEPRINT_VAST_MAX_CONCURRENT_PAID_LAUNCHES"
-
-
-def _max_concurrent_paid_launches() -> int:
-    raw = _string(os.environ.get(MAX_CONCURRENT_PAID_LAUNCHES_ENV))
-    if not raw:
-        return DEFAULT_MAX_CONCURRENT_PAID_LAUNCHES
-    try:
-        value = int(raw)
-    except ValueError:
-        return DEFAULT_MAX_CONCURRENT_PAID_LAUNCHES
-    # Never widen past the compiled policy from an environment variable, and
-    # never fall below one: an env typo must not silently authorize more
-    # concurrent spend, nor deadlock every lane.
-    return max(1, min(value, DEFAULT_MAX_CONCURRENT_PAID_LAUNCHES))
-
-
-def vast_launch_lock_paths(lock_path: Path | None = None) -> list[Path]:
-    """One path per concurrency slot.
-
-    Slot 0 keeps the historical filename, so a host, a reaper, or an operator
-    that knows only `vast_paid_launch.lock` still sees a real lock rather than
-    nothing.
-    """
-
-    base = lock_path or _vast_launch_lock_path()
-    paths = [base]
-    for slot in range(1, _max_concurrent_paid_launches()):
-        paths.append(base.with_name(f"{base.stem}.slot{slot}{base.suffix}"))
-    return paths
-
-
-def _vast_launch_lock_path() -> Path:
-    configured = _string(os.environ.get(VAST_LAUNCH_LOCK_FILE_ENV))
-    if configured:
-        return Path(configured).expanduser().resolve()
-    api_key_path = Path(
-        os.environ.get(VAST_API_KEY_FILE_ENV, DEFAULT_VAST_API_KEY_FILE)
-    ).expanduser()
-    return (api_key_path.parent / DEFAULT_VAST_LAUNCH_LOCK_FILENAME).resolve()
-
-
-def _try_acquire_vast_launch_lock(
-    *,
-    job_dir: Path,
-    generated_at: str,
-    lock_path: Path | None = None,
-) -> tuple[Any | None, dict[str, Any]]:
-    slots = vast_launch_lock_paths(lock_path)
-    handle = None
-    held_path: Path | None = None
-    last_holder = ""
-    unusable: list[str] = []
-    for candidate in slots:
-        ensure_dir(candidate.parent)
-        # A slot the launching account cannot open is a provisioning fault, not
-        # a busy slot, and no amount of waiting clears it. Production reached
-        # this state when a tool run as root created `slot1`/`slot2` owned
-        # `root:root` at 0644 while the adapter runs as `blueprint`. Both calls
-        # sat outside the `try:` below, which catches only `BlockingIOError`,
-        # so the `PermissionError` escaped as an unhandled traceback at the
-        # money boundary -- and only when slot 0 was already held, because slot
-        # 0 is tried first and is usually fine.
-        try:
-            attempt = candidate.open("a+", encoding="utf-8")
-        except OSError as exc:
-            unusable.append(f"{candidate.name}:{type(exc).__name__}")
-            continue
-        try:
-            candidate.chmod(0o600)
-        except OSError as exc:
-            unusable.append(f"{candidate.name}:{type(exc).__name__}")
-            attempt.close()
-            continue
-        try:
-            fcntl.flock(attempt.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            attempt.seek(0)
-            last_holder = attempt.read()[:1000]
-            attempt.close()
-            continue
-        handle = attempt
-        held_path = candidate
-        break
-    if handle is None or held_path is None:
-        # Two different refusals share this exit. "Busy" is the fleet at its
-        # authorized concurrency and says nothing about whether a *particular*
-        # run may proceed. "Unusable" is a host that cannot honour its own
-        # semaphore, which an operator has to repair.
-        every_slot_unusable = len(unusable) == len(slots)
-        manifest = {
-            "schema_version": "vast_launch_lock_manifest.v1",
-            "generated_at": generated_at,
-            "status": "blocked",
-            "lock_path": str(slots[0]),
-            "lock_slots": [str(item) for item in slots],
-            "lock_acquired": False,
-            "blockers": [
-                "vast_paid_launch_lock_unusable"
-                if every_slot_unusable
-                else "vast_paid_launch_lock_busy"
-            ],
-            "existing_lock_record_prefix": last_holder,
-            "unusable_lock_slots": unusable,
-            "raw_secret_values_recorded": False,
-        }
-        write_json(job_dir / "vast_launch_lock_manifest.json", manifest)
-        return None, manifest
-    lock_path = held_path
-    record = {
-        "pid": os.getpid(),
-        "job_dir": str(job_dir),
-        "acquired_at": generated_at,
-        "purpose": "vast_paid_instance_launch_single_flight_guard",
-    }
-    handle.seek(0)
-    handle.truncate()
-    handle.write(json.dumps(record, sort_keys=True) + "\n")
-    handle.flush()
-    os.fsync(handle.fileno())
-    manifest = {
-        "schema_version": "vast_launch_lock_manifest.v1",
-        "generated_at": generated_at,
-        "status": "acquired",
-        "lock_path": str(lock_path),
-        "lock_slots": [str(item) for item in slots],
-        "lock_acquired": True,
-        "lock_record": record,
-        "blockers": [],
-        # Recorded on the success path too: a fleet silently running at lower
-        # concurrency than it is authorized for is the failure this hides.
-        "unusable_lock_slots": unusable,
-        "raw_secret_values_recorded": False,
-    }
-    write_json(job_dir / "vast_launch_lock_manifest.json", manifest)
-    return handle, manifest
-
-
-def _release_vast_launch_lock(
-    handle: Any | None,
-    *,
-    job_dir: Path | None = None,
-    generated_at: str | None = None,
-) -> dict[str, Any] | None:
-    if handle is None:
-        return None
-    lock_path = Path(handle.name).expanduser()
-    try:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-    finally:
-        handle.close()
-    manifest = {
-        "schema_version": "vast_launch_lock_manifest.v1",
-        "generated_at": generated_at or utc_now_iso(),
-        "status": "released",
-        "lock_path": str(lock_path),
-        "lock_released": True,
-        "raw_secret_values_recorded": False,
-    }
-    if job_dir is not None:
-        write_json(job_dir / "vast_launch_lock_manifest.json", manifest)
-    return manifest
 
 
 def run_vast_provider_adapter(

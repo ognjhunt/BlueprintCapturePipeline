@@ -1279,18 +1279,24 @@ def test_an_absent_lock_is_not_created_by_the_deploy(tmp_path: Path) -> None:
 
 
 def test_the_deploy_does_not_move_a_surface_while_refusing(tmp_path: Path, monkeypatch) -> None:
+    """A launch caught taking its slot holds the gate; the deploy refuses, moving nothing."""
     import fcntl
+
+    from blueprint_pipeline.vast_provider_adapter import vast_launch_gate_path
 
     moved: list[str] = []
     monkeypatch.setattr(
         deploy, "_move_source_checkout", lambda repo, commit: moved.append(commit)
     )
+    monkeypatch.setattr(deploy, "PAID_LAUNCH_GATE_WAIT_SECONDS", 0)
     source = tmp_path / "source"
     source.mkdir()
     lock = _lock(tmp_path)
+    gate = vast_launch_gate_path(lock)
+    gate.touch()
 
-    with lock.open("r", encoding="utf-8") as holder:
-        fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    with gate.open("r", encoding="utf-8") as holder:
+        fcntl.flock(holder.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
         with pytest.raises(deploy.ControlPlaneDeployError):
             deploy.deploy_control_plane_commit(
                 source_repo=source,

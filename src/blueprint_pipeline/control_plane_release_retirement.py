@@ -122,6 +122,7 @@ def build_release_retirement_plan(
     keep_last: int = DEFAULT_KEEP_LAST,
     minimum_age_seconds: int = DEFAULT_MINIMUM_AGE_SECONDS,
     now: Callable[[], float] = time.time,
+    in_use_commits: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Decide which superseded commits may be retired; mutate nothing."""
 
@@ -167,6 +168,9 @@ def build_release_retirement_plan(
         protected.setdefault(commit, []).append("named_by_protected_reference")
     for commit in newest:
         protected.setdefault(commit, []).append("keep_last")
+    # A paid run may outlive the deploy that superseded its release.
+    for commit in in_use_commits:
+        protected.setdefault(commit, []).append("in_use_by_live_process")
     all_commits = set(release_trees) | {
         commit for trees in runtime_trees.values() for commit in trees
     }

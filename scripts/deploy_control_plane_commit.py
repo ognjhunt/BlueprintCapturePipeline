@@ -599,8 +599,11 @@ def _repair_paid_launch_lock_slots(
     created correctly once survives every later root-run tool.
     """
 
+    from blueprint_pipeline.vast_provider_adapter import vast_launch_gate_path
+
     repaired: list[str] = []
-    for path in _expanded_slots(lock_paths):
+    gates = [vast_launch_gate_path(Path(raw).expanduser()) for raw in lock_paths]
+    for path in [*_expanded_slots(lock_paths), *gates]:
         if not path.is_file():
             continue
         metadata = path.stat()
@@ -862,6 +865,7 @@ def _retire_superseded_release_trees(
     current_commit: str,
     reference_roots: Sequence[str],
     keep_last: int,
+    in_use_commits: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Retire release and runtime trees this deploy has superseded.
 
@@ -879,6 +883,7 @@ def _retire_superseded_release_trees(
             current_commit=current_commit,
             protected_reference_roots=list(reference_roots),
             keep_last=keep_last,
+            in_use_commits=list(in_use_commits),
         )
         if plan["status"] != "dry_run":
             return {
@@ -1555,6 +1560,152 @@ def _holding_paid_launch_locks(lock_paths: Sequence[str]):
             with contextlib.suppress(OSError):
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
                 handle.close()
+
+
+#: A launch holds the gate shared only while taking a slot, so the wait is short.
+PAID_LAUNCH_GATE_WAIT_SECONDS = 120
+
+
+@contextlib.contextmanager
+def _holding_paid_launch_gate(
+    lock_paths: Sequence[str],
+    *,
+    wait_seconds: float | None = None,
+    sleeper: Any = time.sleep,
+    clock: Any = time.monotonic,
+):
+    """Close paid launches for the deploy without waiting out runs in flight.
+
+    Holding every slot made a deploy wait for the longest paid run, and with
+    three slots busy a deploy could wait for hours. What the deploy must
+    exclude is a launch *starting* while the release is swapped (2026-08-13).
+    A run that started earlier runs on its own immutable release tree, which
+    retirement never removes while a live process uses it.
+
+    So the deploy takes the gate exclusively, which new launches take shared
+    while they acquire a slot, and also holds every free slot, so a process
+    still running pre-gate adapter code cannot start a launch either. Busy
+    slots are reported as in flight, not refused. Files are opened read-only
+    and never created, for the same ownership reason as the slots.
+    """
+
+    from blueprint_pipeline.vast_provider_adapter import vast_launch_gate_path
+
+    handles: list[Any] = []
+    in_flight: list[dict[str, Any]] = []
+    try:
+        for raw in lock_paths:
+            gate = vast_launch_gate_path(Path(raw).expanduser())
+            try:
+                handle = gate.open("r", encoding="utf-8")
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                raise ControlPlaneDeployError(
+                    f"deploy_paid_launch_gate_unreadable:{gate.name}"
+                ) from exc
+            deadline = clock() + (
+                PAID_LAUNCH_GATE_WAIT_SECONDS if wait_seconds is None else wait_seconds
+            )
+            while True:
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if clock() >= deadline:
+                        handle.close()
+                        raise ControlPlaneDeployError(
+                            "deploy_refused_paid_launch_gate_busy"
+                        ) from None
+                    sleeper(1.0)
+            handles.append(handle)
+        for path in _expanded_slots(lock_paths):
+            try:
+                handle = path.open("r", encoding="utf-8")
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                raise ControlPlaneDeployError(
+                    f"deploy_paid_launch_lock_unreadable:{path.name}"
+                ) from exc
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                handle.seek(0)
+                holder = handle.read(1000)
+                handle.close()
+                in_flight.append({
+                    "slot": path.name,
+                    "holder": _holder_summary(holder),
+                    "pid": _holder_pid(holder),
+                })
+                continue
+            handles.append(handle)
+        yield in_flight
+    finally:
+        for handle in handles:
+            with contextlib.suppress(OSError, ValueError):
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                handle.close()
+
+
+def _holder_pid(holder: str) -> int | None:
+    try:
+        record = json.loads(holder)
+    except (ValueError, json.JSONDecodeError):
+        return None
+    pid = record.get("pid") if isinstance(record, Mapping) else None
+    return pid if type(pid) is int and pid > 0 else None
+
+
+def _require_in_flight_runs_outside_units(
+    in_flight: Sequence[Mapping[str, Any]],
+    units: Sequence[str],
+    *,
+    proc_root: str | Path = "/proc",
+) -> None:
+    """A restart must never take down the controller of a live paid instance."""
+
+    for run in in_flight:
+        pid = run.get("pid")
+        if pid is None:
+            # A holder that names no process cannot be placed outside a unit.
+            raise ControlPlaneDeployError(
+                "deploy_refused_paid_launch_holder_unknown:" + str(run.get("holder"))
+            )
+        try:
+            cgroup = (Path(proc_root) / str(pid) / "cgroup").read_text(encoding="utf-8")
+        except OSError:
+            continue  # Gone: its slot is free again and nothing is restarted under it.
+        for unit in units:
+            if f"/{unit}" in cgroup:
+                raise ControlPlaneDeployError(
+                    f"deploy_refused_paid_launch_in_restarted_unit:{unit}:{run.get('holder')}"
+                )
+
+
+def _live_release_commits(release_root: str | Path, *, proc_root: str | Path = "/proc") -> list[str]:
+    """Release commits a live process runs from (cwd or argv); never retired."""
+
+    root = Path(release_root).expanduser().resolve()
+    commits: set[str] = set()
+    for entry in Path(proc_root).iterdir():
+        if not entry.name.isdigit():
+            continue
+        candidates: list[str] = []
+        with contextlib.suppress(OSError):
+            candidates.append(os.readlink(entry / "cwd"))
+        with contextlib.suppress(OSError):
+            candidates.extend(
+                part.decode("utf-8", "replace")
+                for part in (entry / "cmdline").read_bytes().split(b"\0")
+                if part
+            )
+        for candidate in candidates:
+            path = Path(candidate)
+            if path.is_absolute() and path.is_relative_to(root) and path != root:
+                commits.add(path.relative_to(root).parts[0])
+    return sorted(commits)
 
 
 def _holder_summary(holder: str) -> str:
@@ -2478,7 +2629,7 @@ def deploy_control_plane_commit(
     # any later deploy step fails.
     with (
         disk_reservation or contextlib.nullcontext(),
-        _holding_paid_launch_locks(paid_launch_locks),
+        _holding_paid_launch_gate(paid_launch_locks) as paid_runs_in_flight,
         _restore_path_unit_states_on_deploy_failure(automation_unit_names) as (
             automation_unit_states_before,
             quiesced_automation_units,
@@ -2658,6 +2809,9 @@ def deploy_control_plane_commit(
             lock_repair["status"] = "repaired"
             lock_repair["account"] = DEFAULT_SERVICE_ACCOUNT
         _mark_stage("units_and_directories_installed")
+        _require_in_flight_runs_outside_units(
+            paid_runs_in_flight, _required_restart_units(restart_units)
+        )
         restarted = _restart_units(_required_restart_units(restart_units))
         runtime = _verify_intake_runtime(
             intake_version_url, expected_commit=commit
@@ -2689,6 +2843,7 @@ def deploy_control_plane_commit(
             current_commit=commit,
             reference_roots=release_retirement_reference_roots,
             keep_last=release_retirement_keep_last,
+            in_use_commits=_live_release_commits(releases),
         )
         _mark_stage("release_retirement")
 
@@ -2770,7 +2925,10 @@ def deploy_control_plane_commit(
         # trusts.
         "paid_launch_locks_held": [
             str(path) for path in _expanded_slots(paid_launch_locks)
+            if path.name not in {run["slot"] for run in paid_runs_in_flight}
         ],
+        # Runs that started before the deploy and kept their own release tree.
+        "paid_runs_in_flight": list(paid_runs_in_flight),
         "paid_launch_lock_repair": lock_repair,
         "provider_mutation_performed": False,
         "raw_secret_values_recorded": False,
