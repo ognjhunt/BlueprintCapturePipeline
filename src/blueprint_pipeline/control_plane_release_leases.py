@@ -380,6 +380,15 @@ def _collect_queues(
     collection: _Collection,
 ) -> None:
     for queue, states in LIVE_QUEUE_STATES.items():
+        try:
+            if _absent(root / queue):
+                # A whole queue missing is unusual enough to report; its states
+                # being missing (never used on this host) is not.
+                collection.warnings.add(f"release_protection_queue_root_missing:{queue}")
+                continue
+        except OSError:
+            collection.blockers.add(f"release_protection_queue_unreadable:{queue}")
+            continue
         for state in states:
             directory = root / queue / state
             try:
@@ -510,12 +519,20 @@ def _standing_authorization_state(
 
 
 def _collect_standing_authorizations(
-    directory: Path, profiles: _Profiles, *, now: float, collection: _Collection
+    directory: Path, profiles: _Profiles, *, now: float, required: bool, collection: _Collection
 ) -> None:
-    """A release stays while an authorization can still launch the profile that runs it."""
+    """A release stays while an authorization can still launch the profile that runs it.
+
+    When ``required`` (the control-plane root exists), a missing directory is a
+    source that cannot be read, not a host without authorizations.
+    """
 
     try:
         if _absent(directory):
+            if required:
+                collection.blockers.add(
+                    f"release_protection_source_missing:{_code_id(directory.name)}"
+                )
             return
         if directory.is_symlink() or not directory.is_dir():
             raise ValueError("standing_authorization_root_unsafe")
@@ -1017,11 +1034,14 @@ def _collect_bindings(
     migrate: bool,
     ttl_seconds: int,
     max_lifetime_seconds: int,
+    required: bool,
     collection: _Collection,
 ) -> None:
     root = Path(sources.binding_root)
     try:
         if _absent(root):
+            if required:
+                collection.blockers.add(f"release_protection_source_missing:{_code_id(root.name)}")
             return
         if root.is_symlink() or not root.is_dir():
             raise ValueError("binding_root_unsafe")
@@ -1145,7 +1165,8 @@ def collect_release_protections(
     collection = _Collection()
     profiles = _read_profiles(Path(sources.profile_dir), collection)
     control_plane = Path(sources.control_plane_root)
-    if control_plane.is_symlink() or not control_plane.is_dir():
+    present = not control_plane.is_symlink() and control_plane.is_dir()
+    if not present:
         collection.blockers.add("release_protection_control_plane_root_missing")
     else:
         _collect_queues(
@@ -1156,7 +1177,11 @@ def collect_release_protections(
             collection=collection,
         )
     _collect_standing_authorizations(
-        Path(sources.standing_authorization_dir), profiles, now=now, collection=collection
+        Path(sources.standing_authorization_dir),
+        profiles,
+        now=now,
+        required=present,
+        collection=collection,
     )
     resolver = RunStateResolver(
         sources.intent_root,
@@ -1173,6 +1198,7 @@ def collect_release_protections(
         migrate=migrate,
         ttl_seconds=ttl_seconds,
         max_lifetime_seconds=max_lifetime_seconds,
+        required=present,
         collection=collection,
     )
     _collect_configuration(tuple(sources.config_files), collection)

@@ -848,3 +848,29 @@ def test_blocker_codes_never_carry_raw_identities(tmp_path: Path) -> None:
         "release_protection_profile_missing",
         "release_protection_queue_unreadable",
     }
+
+
+def test_missing_protection_sources_block_or_warn(tmp_path: Path) -> None:
+    import shutil
+
+    sources = _sources(tmp_path)
+    queues = sources.control_plane_root
+    # A queue state never used on this host holds nothing: no row, no warning.
+    (queues / "task-evaluation-launches" / "processing").rmdir()
+    # A queue that is missing altogether is worth a look.
+    shutil.rmtree(queues / "task-evaluation-scene-constructions")
+    # With the control-plane root present, a missing authorization or binding
+    # root is not "none exist": it is a source that cannot be read.
+    sources.standing_authorization_dir.rmdir()
+    sources.binding_root.rmdir()
+
+    result = collect_release_protections(sources, now=NOW, migrate=True)
+
+    assert result["blockers"] == [
+        "release_protection_source_missing:standing-authorizations",
+        "release_protection_source_missing:task-evaluation-release-retention-bindings",
+    ]
+    assert result["warnings"] == [
+        "release_protection_queue_root_missing:task-evaluation-scene-constructions"
+    ]
+    assert not sources.binding_root.exists()  # the collector never invents a source

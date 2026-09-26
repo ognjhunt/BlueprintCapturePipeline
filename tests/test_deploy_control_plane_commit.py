@@ -2512,6 +2512,35 @@ def test_deploy_retirement_honors_required_historical_evidence_binding(tmp_path:
     assert binding.read_bytes() == before
 
 
+def test_deploy_retirement_creates_missing_protection_roots_on_a_fresh_host(tmp_path: Path) -> None:
+    """A fresh host has no authorizations or bindings yet; that must not read as unreadable."""
+    import time
+
+    releases, runtimes = tmp_path / "releases", tmp_path / "runtimes"
+    no_processes = tmp_path / "proc"
+    no_processes.mkdir()
+    current, superseded = "a" * 40, "b" * 40
+    _release_trees(releases, {current: 3_600, superseded: 10 * 86_400}, now=time.time())
+    active = tmp_path / "active"
+    active.symlink_to(releases / current, target_is_directory=True)
+    sources = _protection_sources(tmp_path)
+    sources.standing_authorization_dir.rmdir()
+    sources.binding_root.rmdir()
+
+    result = deploy._retire_superseded_release_trees(
+        release_root=releases, runtime_root=runtimes, active_link=active,
+        current_commit=current, protection_sources=sources, keep_last=1, proc_root=no_processes,
+    )
+
+    assert result["status"] == "applied" and result["retired_commits"] == [superseded]
+    assert result["created_protection_roots"] == [
+        str(sources.standing_authorization_dir), str(sources.binding_root),
+    ]
+    for root in (sources.standing_authorization_dir, sources.binding_root):
+        assert root.is_dir() and list(root.iterdir()) == []
+        assert stat.S_IMODE(root.stat().st_mode) == 0o750
+
+
 def test_deploy_retirement_holds_publisher_locks_and_writes_its_summary(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

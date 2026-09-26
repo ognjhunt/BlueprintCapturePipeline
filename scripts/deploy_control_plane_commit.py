@@ -871,6 +871,32 @@ def _install_release_lease_root(lease_root: str | Path) -> dict[str, Any]:
             "owner": "root" if installed else "deploying_user"}
 
 
+def _install_release_protection_roots(
+    sources: ProtectionSources, *, account: str = DEFAULT_SERVICE_ACCOUNT
+) -> list[str]:
+    """Create, empty, the authorization and binding roots a fresh host lacks.
+
+    Retirement treats a missing root as a source it cannot read.  On a fresh
+    host they simply do not exist yet, so deploy creates them with the service
+    account's ownership (0750), exactly as the host installer would; an
+    existing root is never touched, and a symlink or file in its place refuses.
+    """
+
+    created: list[str] = []
+    for root in (Path(sources.standing_authorization_dir), Path(sources.binding_root)):
+        if root.is_symlink() or (root.exists() and not root.is_dir()):
+            raise ControlPlaneDeployError("deploy_release_protection_root_unsafe")
+        if root.exists():
+            continue
+        root.mkdir(mode=0o750)
+        ids = _service_account_ids(account) if os.geteuid() == 0 else None
+        if ids is not None:
+            os.chown(root, ids[0], ids[1])
+        root.chmod(0o750)
+        created.append(str(root))
+    return created
+
+
 def _write_release_retirement_summary(
     path: Path, result: Mapping[str, Any], *, source_commit: str, generated_at: float
 ) -> dict[str, Any]:
@@ -964,6 +990,7 @@ def _retire_superseded_release_trees(
         with contextlib.ExitStack() as held:
             for root in roots:
                 held.enter_context(release_reference_lock(root, exclusive=True))
+            created_roots = _install_release_protection_roots(protection_sources)
             _install_release_lease_root(protection_sources.lease_root)
             protections = collect_release_protections(
                 protection_sources, now=float(now()), migrate=True
@@ -983,6 +1010,7 @@ def _retire_superseded_release_trees(
                     "status": "skipped",
                     "blockers": list(plan["blockers"]),
                     "plan_digest": plan["plan_digest"],
+                    "created_protection_roots": created_roots,
                     **_retirement_protection_summary(plan, protections),
                 }
             else:
@@ -1004,6 +1032,7 @@ def _retire_superseded_release_trees(
                     ),
                     "unmanaged_children": list(plan["unmanaged_children"]),
                     "skipped": list(receipt["skipped"]),
+                    "created_protection_roots": created_roots,
                     **_retirement_protection_summary(plan, protections),
                 }
     except (ReleaseReferenceLockError, ControlPlaneDeployError) as exc:
