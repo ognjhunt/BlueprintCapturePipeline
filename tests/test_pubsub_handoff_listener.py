@@ -1864,13 +1864,18 @@ def test_retryable_results_leave_no_ack_receipt(tmp_path, monkeypatch):
     assert not (_capture_root(tmp_path) / "pipeline_job_ack_receipt.json").exists()
 
 
-def test_one_unwritable_ack_receipt_does_not_cost_the_others(tmp_path, monkeypatch):
+@pytest.mark.parametrize("damage", ["unwritable", "malformed"])
+def test_one_bad_ack_receipt_does_not_cost_the_others(tmp_path, monkeypatch, damage):
     other_prefix = "scenes/scene-2/captures/capture-2"
     other_payload = json.dumps({
         "bucket": "capture-bucket", "scene_id": "scene-2", "capture_id": "capture-2",
         "raw_prefix_uri": f"gs://capture-bucket/{other_prefix}/raw"}).encode("utf-8")
-    blocked = _capture_root(tmp_path) / "pipeline_job_ack_receipt.json"
-    blocked.mkdir(parents=True)  # a directory where the receipt file belongs: the write fails
+    damaged = _capture_root(tmp_path) / "pipeline_job_ack_receipt.json"
+    if damage == "unwritable":
+        damaged.mkdir(parents=True)  # a directory where the receipt file belongs: the write fails
+    else:
+        damaged.parent.mkdir(parents=True)
+        damaged.write_bytes(b"\xff\xfe not utf-8")  # reading the previous count raises UnicodeDecodeError
     subscriber = FakeSubscriber([_received(ack_id="a1", data=PAYLOAD_BYTES),
                                  _received(ack_id="a2", data=other_payload)])
     _install_fake_pubsub(
@@ -1880,7 +1885,10 @@ def test_one_unwritable_ack_receipt_does_not_cost_the_others(tmp_path, monkeypat
 
     assert _pull(tmp_path) == 2
     assert subscriber.acknowledged == ["a1", "a2"]
-    assert blocked.is_dir()
+    if damage == "unwritable":
+        assert damaged.is_dir()
+    else:
+        assert damaged.read_bytes() == b"\xff\xfe not utf-8"  # left exactly as found
     other = _read(tmp_path / "capture-bucket" / other_prefix / "pipeline_job_ack_receipt.json")
     assert other["message_id"] == "msg-a2" and other["acknowledgement_count"] == 1
 

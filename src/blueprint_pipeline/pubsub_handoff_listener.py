@@ -2172,7 +2172,7 @@ def pull_and_process(
         for receipt in ack_receipts:
             try:
                 written = _write_ack_receipt(subscription=subscription_resource, **receipt)
-            except OSError:
+            except (OSError, ValueError):  # ValueError covers an undecodable old receipt
                 logger.exception(
                     "pubsub_handoff.ack_receipt_write_failed",
                     extra={"message_id": receipt["message_id"]},
