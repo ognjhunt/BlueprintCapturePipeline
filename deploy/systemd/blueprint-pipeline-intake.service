@@ -43,6 +43,8 @@ Environment=PIPELINE_SYNC_REQUIRED=true
 Environment=BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT=/var/lib/blueprint/pipeline-control-plane/disk-reservations
 Environment=BLUEPRINT_CONTROL_PLANE_DISK_TARGET_ROOT=/var/lib/blueprint/task-evaluation-inputs
 Environment=BLUEPRINT_TASK_EVALUATION_POLICY_CANARY_RESULT_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries
+Environment=BLUEPRINT_NATIVE_G1_TEAM_CAMPAIGN_REGISTRY_PATH=/var/lib/blueprint/task-evaluation-inputs/g1-team-campaign-registry.json
+Environment=BLUEPRINT_NATIVE_G1_TEAM_CAMPAIGN_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/native-g1-team-campaigns
 Environment=RETRIEVAL_REQUIRE_PRIVACY_SAFE_VIDEO=true
 Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_ACCESS_KEY_ID_FILE=/etc/blueprint/provider-secrets/backblaze_b2_key_id
 Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_SECRET_ACCESS_KEY_FILE=/etc/blueprint/provider-secrets/backblaze_b2_application_key

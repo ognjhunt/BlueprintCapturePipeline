@@ -65,6 +65,7 @@ class DoorConfig:
         "blueprint-task-evaluation-launch-activation.service",
         "blueprint-task-evaluation-launch-dispatcher.path",
         "blueprint-task-evaluation-policy-canary-dispatcher.path",
+        "blueprint-native-g1-team-campaign-dispatcher.timer",
         "blueprint-gpu-spend-guard.timer",
     )
     max_read_bytes: int = 16 * 1024 * 1024
