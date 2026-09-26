@@ -65,6 +65,10 @@ def verify_g1_provider_inputs(runtime_root: Path) -> dict[str, Any]:
     inputs = root / "inputs"
     campaign = plan_g1_development_campaign(
         book_handoff_path=inputs / "book_handoff.json",
+        movement_handoff_path=(
+            inputs / "movement_handoff.json"
+            if (inputs / "movement_handoff.json").is_file() else None
+        ),
         manipulation_packet=inputs / "scene_packets/manipulation",
         movement_packet=inputs / "scene_packets/movement",
         inventory_path=root.parent / "configs/g1_humanoidarena_checkpoint_inventory.v1.json",
@@ -275,7 +279,12 @@ def run_g1_provider_campaign(runtime_root: Path, output_dir: Path) -> dict[str, 
         stage = "model-staging"
         models = _stage_models(root, output)
         source_handoff = _json(root / "inputs/book_handoff.json")
-        movement_handoff = _movement_handoff(source_handoff)
+        supplied_movement_handoff = root / "inputs/movement_handoff.json"
+        movement_handoff = (
+            _json(supplied_movement_handoff)
+            if supplied_movement_handoff.is_file()
+            else _movement_handoff(source_handoff)
+        )
         movement_handoff_path = output / "movement_handoff.json"
         movement_handoff_path.write_text(
             json.dumps(movement_handoff, indent=2, sort_keys=True) + "\n",
