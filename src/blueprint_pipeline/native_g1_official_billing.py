@@ -58,6 +58,15 @@ def g1_paid_campaign_terminal_evidence(
         or watchdog.get("raw_secret_values_recorded") is not False
     ):
         raise error_factory("vast_official_g1_terminal_result_invalid")
+    pre_native = result.get("native_control_result_path") is None
+    if pre_native and (
+        result.get("status") != "blocked"
+        or result.get("native_control_result_digest") is not None
+        or result.get("candidate_policy_queried") is not False
+        or result.get("scientific_attempt_started") is not False
+        or result.get("first_observation_reached") is not False
+    ):
+        raise error_factory("vast_official_g1_pre_native_result_invalid")
     paths = {
         "attempt_result": attempt_root / "adp_arena_vast_result.json",
         "provider_adapter_result": (
@@ -77,16 +86,19 @@ def g1_paid_campaign_terminal_evidence(
             attempt_root / "object_store_staging/wam_provider_object_store_cleanup.json"
         ),
     }
+    if pre_native:
+        paths.pop("native_result")
     for role, field in (
         ("provider_adapter_result", "adapter_result_path"),
         ("teardown_manifest", "teardown_manifest_path"),
         ("artifact_manifest", "artifact_manifest_path"),
-        ("native_result", "native_control_result_path"),
         ("watchdog_receipt", "watchdog_receipt_path"),
         ("object_store_cleanup", "object_store_cleanup_path"),
     ):
         if result.get(field) != str(paths[role]):
             raise error_factory("vast_official_g1_terminal_path_invalid")
+    if not pre_native and result.get("native_control_result_path") != str(paths["native_result"]):
+        raise error_factory("vast_official_g1_terminal_path_invalid")
     loaded = {
         role: json_file(path, code="vast_official_g1_" + role + "_invalid")
         for role, path in paths.items()
@@ -96,9 +108,15 @@ def g1_paid_campaign_terminal_evidence(
     adapter = loaded["provider_adapter_result"][1]
     teardown = loaded["teardown_manifest"][1]
     artifact = loaded["artifact_manifest"][1]
-    native = loaded["native_result"][1]
+    native = loaded["native_result"][1] if not pre_native else None
     watcher = loaded["watchdog_receipt"][1]
     cleanup = loaded["object_store_cleanup"][1]
+    artifact_blockers = artifact.get("blockers")
+    artifact_blockers_valid = isinstance(artifact_blockers, list) and (
+        "task_evaluation_artifact_role_missing:provider_runtime_evidence"
+        in artifact_blockers
+        if pre_native else artifact_blockers == []
+    )
     if (
         closeout.get("adapter_result")
         != record(loaded["provider_adapter_result"][0], loaded["provider_adapter_result"][2])
@@ -121,18 +139,11 @@ def g1_paid_campaign_terminal_evidence(
         or teardown.get("retention_authorized") is not False
         or teardown.get("raw_secret_values_recorded") is not False
         or artifact.get("schema_version") != "task_evaluation_artifact_manifest.v1"
-        or artifact.get("status") != "completed"
-        or artifact.get("blockers") != []
+        or artifact.get("status") != ("blocked" if pre_native else "completed")
+        or not artifact_blockers_valid
         or artifact.get("manifest_digest") != canonical_digest(artifact, digest_field="manifest_digest")
         or (artifact.get("binding") or {}).get("bundle_sha256") != result.get("bundle_sha256")
         or (artifact.get("binding") or {}).get("attempt_number") != 1
-        or native.get("schema_version") != "native_g1_provider_campaign_result.v1"
-        or native.get("status") != result.get("status")
-        or native.get("claim_ceiling") != "development_only"
-        or native.get("ranking_eligible") is not False
-        or native.get("physical_outcome_claimed") is not False
-        or native.get("result_digest") != canonical_digest(native, digest_field="result_digest")
-        or result.get("native_control_result_digest") != native.get("result_digest")
         or watcher.get("schema_version") != "groot_oscar_runpod_canary_watchdog.v1"
         or watcher.get("provider") != "vast"
         or watcher.get("status") != "provider_terminal"
@@ -146,6 +157,16 @@ def g1_paid_campaign_terminal_evidence(
         or cleanup.get("all_ephemeral_objects_absent") is not True
         or cleanup.get("blockers") != []
         or cleanup.get("raw_secret_values_recorded") is not False
+    ):
+        raise error_factory("vast_official_g1_terminal_closure_invalid")
+    if native is not None and (
+        native.get("schema_version") != "native_g1_provider_campaign_result.v1"
+        or native.get("status") != result.get("status")
+        or native.get("claim_ceiling") != "development_only"
+        or native.get("ranking_eligible") is not False
+        or native.get("physical_outcome_claimed") is not False
+        or native.get("result_digest") != canonical_digest(native, digest_field="result_digest")
+        or result.get("native_control_result_digest") != native.get("result_digest")
     ):
         raise error_factory("vast_official_g1_terminal_closure_invalid")
     evidence = {
