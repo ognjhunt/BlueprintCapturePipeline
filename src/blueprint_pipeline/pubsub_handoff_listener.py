@@ -732,25 +732,34 @@ def _locked_job_ledger(capture_root: Path) -> Iterator[dict[str, Any]]:
 
 
 @contextmanager
-def _existing_job_ledger_lock(capture_root: Path) -> Iterator[bool]:
+def _existing_job_ledger_lock(capture_root: Path) -> Iterator[str]:
     """Hold the ledger lock of a capture that already exists, creating nothing.
 
-    Yields whether the capture's ledger exists while the lock is held. A capture
-    whose workspace was retired (or never staged) has no lock file or no ledger,
-    and recording something about it must not bring its directory back.
+    Yields "ledger_present" while the lock is held and the ledger exists,
+    otherwise "capture_absent" or "ledger_absent". A capture whose workspace was
+    retired (or never staged) must not be brought back by recording something
+    about it.
+
+    Contract: anything that deletes a capture root (scene workspace retirement)
+    must hold this same flock, on the capture's .pipeline_job_ledger.json.lock,
+    for the whole deletion. A writer here then either finishes before the
+    deletion starts or finds the ledger gone once it gets the lock.
     """
+
+    def absence() -> str:
+        return "ledger_absent" if capture_root.is_dir() else "capture_absent"
 
     try:
         descriptor: int | None = os.open(capture_root / f".{JOB_LEDGER_FILENAME}.lock", os.O_RDONLY)
     except (FileNotFoundError, NotADirectoryError):
         descriptor = None
     if descriptor is None:
-        yield False
+        yield absence()
         return
     try:
         fcntl.flock(descriptor, fcntl.LOCK_EX)
         try:
-            yield (capture_root / JOB_LEDGER_FILENAME).is_file()
+            yield "ledger_present" if (capture_root / JOB_LEDGER_FILENAME).is_file() else absence()
         finally:
             fcntl.flock(descriptor, fcntl.LOCK_UN)
     finally:
@@ -1988,16 +1997,17 @@ def _write_ack_receipt(
     payload_digest: str,
     delivery_attempt: int | None,
     disposition: str,
-) -> bool:
+) -> str | None:
     """Replace the capture's ack receipt; call only after acknowledge returned.
 
-    Returns False, writing nothing, when the capture has no ledger: a workspace
-    retired after its cloud copy was verified must stay retired.
+    Returns None once written. Returns "capture_absent" or "ledger_absent",
+    writing nothing, when the capture has no ledger: a workspace retired after
+    its cloud copy was verified must stay retired.
     """
 
-    with _existing_job_ledger_lock(capture_root) as ledger_present:
-        if not ledger_present:
-            return False
+    with _existing_job_ledger_lock(capture_root) as state:
+        if state != "ledger_present":
+            return state
         path = capture_root / JOB_ACK_RECEIPT_FILENAME
         previous = _read_optional_json_object(path)
         if not previous and path.is_file():
@@ -2018,7 +2028,7 @@ def _write_ack_receipt(
                 "acknowledgement_count": previous_count + 1,
             },
         )
-    return True
+    return None
 
 
 def _canonical_subscription_resource(subscription: str) -> str:
@@ -2219,7 +2229,7 @@ def _record_acknowledgement(
         return
     delivery_attempt = getattr(received, "delivery_attempt", None)
     try:
-        written = _write_ack_receipt(
+        skipped = _write_ack_receipt(
             capture_root=Path(capture_root),
             subscription=subscription,
             message_id=message_id,
@@ -2232,8 +2242,10 @@ def _record_acknowledgement(
     except (OSError, ValueError):
         logger.exception("pubsub_handoff.ack_receipt_write_failed", extra={"message_id": message_id})
         return
-    if not written:
+    if skipped == "capture_absent":
         logger.warning("pubsub_handoff.ack_receipt_skipped_capture_absent", extra={"message_id": message_id})
+    elif skipped == "ledger_absent":
+        logger.warning("pubsub_handoff.ack_receipt_skipped_ledger_absent", extra={"message_id": message_id})
 
 
 def _required_string(data: Mapping[str, Any], key: str) -> str:

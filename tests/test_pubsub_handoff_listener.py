@@ -2022,8 +2022,10 @@ def test_an_ack_for_a_capture_without_a_ledger_writes_nothing(tmp_path, monkeypa
         assert not (tmp_path / "capture-bucket").exists()
     else:
         assert list(capture_root.iterdir()) == []
-    assert any(record.getMessage() == "pubsub_handoff.ack_receipt_skipped_capture_absent"
-               for record in caplog.records)
+    expected = {"absent": "pubsub_handoff.ack_receipt_skipped_capture_absent",
+                "no_ledger": "pubsub_handoff.ack_receipt_skipped_ledger_absent"}[workspace]
+    assert [record.getMessage() for record in caplog.records
+            if record.getMessage().startswith("pubsub_handoff.ack_receipt_skipped")] == [expected]
 
 
 def test_an_undecodable_staging_manifest_skips_nothing_and_is_replaced(tmp_path):
