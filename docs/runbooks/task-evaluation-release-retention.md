@@ -23,7 +23,7 @@ following commits are always retained:
 - the explicitly named current deploy candidate;
 - an explicit operator `--keep-commit` pin (two-step tool) or one of the newest
   three releases (deploy);
-- any commit a live process runs from (deploy);
+- any commit a live process runs from (deploy and the retirement CLI);
 - any commit, or profile resolving to a commit, in a live Task Evaluation
   queue document;
 - any published profile whose standing authorization is valid, unexpired, and
@@ -70,20 +70,46 @@ and an `expires_at_epoch`:
 | Kind | Source | Protects | Lapses |
 |---|---|---|---|
 | `live_queue` | `*.json` in a live state of the launch, preparation (including `awaiting_source_preparation` and `awaiting_capacity`), SAM execution (`pending`, `processing`, `waiting_external`), episode compilation, activation, policy canary, scene construction and terminal resource release queues | `expected_production_commit`, `source_commit`, `expected_source_commit` (top level or under `request`), `release.commit`, `launch_profile_id` resolved through its profile, and paths naming `…/task-evaluation-control-plane-releases/<sha>` or `…/system-runtimes/<component>/<sha>` | when the envelope leaves the live states; at the latest 30 days after its mtime (with a warning) |
-| `standing_authorization` | `standing-authorizations/<profile_id>.json` | the commit its profile runs, while the authorization can still admit a launch | when it expires or runs out of launches or spend |
-| `retention_binding` | `task-evaluation-release-retention-bindings/*.json` plus its lease | `source_commit` and `retained_release.source_commit` (never `retained_release.tree`, a git tree id) | when its run is terminal, when its lease expires with the run unknown, and at the lease's maximum lifetime |
+| `standing_authorization` | `standing-authorizations/<profile_id>.json` | the commit its profile runs (its `source_commit`, else its allocator's `--expected-source-commit`, else the first 40-hex segment of the profile id), while the authorization can still admit a launch | when it expires or runs out of launches or spend |
+| `retention_binding` | `task-evaluation-release-retention-bindings/*.json` plus its lease | `source_commit` and `retained_release.source_commit` (never `retained_release.tree`, a git tree id), and the same for every ancestor binding it builds on | when its run is terminal and no protected descendant builds on it, when its lease expires with the run unknown, and at the lease's maximum lifetime |
 | `configured_runtime` | `/etc/blueprint/task-evaluation-public-scene-machinery.json`, the scene-preparation bootstrap, and the machinery file the bootstrap names in `public_scene_machinery_path` | runtime and release paths in those files | when the configuration stops naming them (re-read every deploy) |
 
 Wake-pending markers, consumption records, standing-authorization step logs,
 launch profiles on their own, and bare commits in configuration protect nothing.
 
+The live queues are read as one snapshot. Workers move envelopes between
+states during the scan, so after each pass every live state is listed again;
+if an envelope vanished between listing and reading, or one is present that the
+pass never read, the pass is repeated, and a queue still moving after three
+passes blocks with `release_protection_queue_unstable`.
+
 A binding's run is the scene intent whose directory under
 `task-evaluation-scene-intents` is the first component of its `evidence.path`
-(factory output is `<factory_output_root>/<intent_id>/<attempt_id>/…`). The run
-is terminal when the intent's progression is `completed`, when `revoked.json`
-exists, or when the intent's effective execution window (including approved
-extensions) has passed. It is live while the intent directory exists otherwise,
-and unknown when it cannot be read or the binding names no intent.
+(factory output is `<factory_output_root>/<intent_id>/<attempt_id>/…`).
+Revocation and expiry only close *new* execution, so:
+
+- a `completed` progression is terminal;
+- a revoked or expired intent with a paid attempt still in flight (a row under
+  `attempts/` with no validated cancellation or terminal settlement, the rule
+  progression uses for execution ownership) is live;
+- a revoked intent with nothing in flight is terminal;
+- an expired intent with nothing in flight is unknown, because its owner may
+  still extend the window after expiry: the lease runs out its TTL first;
+- an intent that is neither revoked nor expired is live, and one that cannot be
+  read is unknown.
+
+Chained SAM prefix adoptions share releases. An adoption whose source profile
+adopted an earlier completed prefix (`completed_prefix_adoption`) reopens that
+earlier adoption's release on replay, which is why
+`publish_adoption_release_binding` republishes the ancestor's binding.
+Protection is therefore transitive: the collector follows each binding's
+evidence (its adoption record) through the source profile to the earlier
+adoption and its binding, `sam31-prefix-<digest>.json`, and keeps every
+ancestor of a protected binding, with the reason `ancestor_of:<binding>` and the
+descendant's run and expiry. An ancestor whose binding is missing still has its
+commits kept, with the warning `release_protection_binding_ancestor_missing`.
+When a binding's chain cannot be read, its run is never treated as terminal; it
+keeps its lease until the lease expires.
 
 ### Binding sidecars and migration
 
@@ -111,8 +137,9 @@ binding. A binding's lease therefore lives in a sidecar,
 ```
 
 The first deploy after this change migrates every binding without a sidecar:
-it creates the sidecar exclusively with a 14-day TTL and a 30-day maximum
-lifetime, and the deploy receipt counts it in `migrated_binding_count`. A
+it writes the sidecar to a temporary file, fsyncs it and links it into place
+(so a full disk leaves no partial lease behind) with a 14-day TTL and a 30-day
+maximum lifetime, and the deploy receipt counts it in `migrated_binding_count`. A
 binding whose run is already terminal lapses on that same deploy. While a run is
 live, deploy renews its sidecar by atomic replace once less than half the TTL
 remains, to `min(now + 14 days, max_expires_at_epoch)`; past the maximum
@@ -122,17 +149,31 @@ instead carry `owner`, `expires_at_epoch`, `run_ref` and optionally
 `max_expires_at_epoch` inline; inline leases are never renewed.
 
 Blocking codes, each of which retires nothing until fixed:
-`release_protection_queue_unreadable:<queue>/<state>/<name>`,
+`release_protection_queue_unreadable:<queue>[/<state>[/<name>]]`,
+`release_protection_queue_unstable`,
 `release_protection_profile_missing:<profile_id>`,
 `release_protection_standing_authorization_invalid:<profile_id>`,
-`release_protection_binding_invalid:<binding>`,
+`release_protection_standing_authorization_commit_unknown:<profile_id>` (the
+authorization can still launch, but no profile or profile id names its
+release), `release_protection_source_missing:<directory>` (the
+standing-authorization directory or binding root is missing while the
+control-plane root exists), `release_protection_binding_invalid:<binding>`,
 `release_protection_binding_changed:<binding>` (binding bytes no longer match
 the sidecar's `binding_sha256`), `release_protection_lease_invalid:<binding>`,
 `release_protection_lease_write_failed:<binding>`,
 `release_protection_config_unreadable:<name>`, and
-`release_protection_control_plane_root_missing`. A retention plan misplaced
-into the binding directory is only the warning `misplaced_retention_plan:<name>`
-at deploy; the two-step tool still refuses it until it is reconciled (below).
+`release_protection_control_plane_root_missing`. A permission error, a symlink
+or a FIFO where a document or directory belongs is a blocker, never "empty";
+documents are opened without blocking. An identity in a code that is not a
+plain identifier appears as `invalid-<digest>`, never raw.
+
+Warnings, which do not block: `misplaced_retention_plan:<name>` (a retention
+plan misplaced into the binding directory; the two-step tool still refuses it
+until it is reconciled, below), `release_protection_queue_root_missing:<queue>`,
+`release_protection_profile_commit_unpinned:<profile_id>` (a readable profile
+that pins no release runs from the active one),
+`release_protection_binding_ancestor_missing:<binding>`, and the lapse and
+renewal warnings above.
 
 ### Renewing or ending a lease
 
@@ -150,18 +191,35 @@ itself is evidence and is never edited or removed to end a lease.
 ## Deploy-time retirement
 
 Every deploy retires superseded trees after the new release is proven live
-(`control_plane_release_retirement`). It holds every release-reference
-publisher lock exclusively (the control-plane root, which queue writers, the
-profile publisher, the standing-authorization materializer and release
-activation lock shared) while it collects protection with migration, plans,
-and applies. It keeps the newest three releases, the active and current
-commits, anything a live process runs from (release or runtime tree, re-checked
-immediately before each commit is removed; a busy commit is skipped as
-`in_use_at_apply`), anything younger than a day, and every lease or configured
-runtime above.
+(`control_plane_release_retirement`). Every release-reference publisher takes
+the reference lock shared on the control-plane root: queue writers, the
+launch-profile publisher, the standing-authorization materializer, release
+activation and the SAM prefix binding writer (which also refuses, with
+`sam31_adoption_retained_release_missing`, to bind a release that is already
+gone). Retirement:
+
+1. deletes any `.retiring` leftovers of an interrupted retirement (they are
+   already unreachable);
+2. takes each distinct lock root exclusively, waiting at most 300 seconds per
+   root before giving up with `release_reference_lock_busy`;
+3. under the locks, creates the standing-authorization and binding roots if a
+   fresh host lacks them, collects protection with migration, plans (without
+   walking the trees), and renames each candidate into
+   `<its root>/.retiring/<name>-<token>`, re-checking immediately before each
+   commit that no live process runs from it (a busy commit is skipped as
+   `in_use_at_apply`);
+4. releases the locks, then deletes and measures what it moved aside.
+
+It keeps the newest three releases, the active and current commits, anything a
+live process runs from (its cwd, executable, or an absolute or `--flag=/path`
+argv entry inside a release or runtime tree), anything younger than a day, and
+every lease or configured runtime above.
 
 The receipt's `release_retirement` records `status` (`applied`, `skipped` with
-`blockers`, or `blocked`), `retired_commits`, `retired_bytes`, `skipped`,
+`blockers`, or `blocked`), `retired_commits`, `renamed` (each tree moved aside,
+even when apply stopped partway), `deleted` and `retired_bytes` (what was
+actually deleted), `swept` (leftovers deleted first), `deletion_failures`,
+`created_protection_roots`, `skipped`,
 `protected_by_kind` (tree counts per kind: `active_release`, `current_deploy`,
 `keep_last`, `in_use_by_live_process`, `younger_than_minimum_age`, and the four
 protection kinds), `protected_tree_count`, `lease_protected_tree_count` (trees
@@ -176,15 +234,22 @@ summary, with `generated_at_epoch` and `source_commit`, replaces
 - `release_retirement_blocked:<first blocker>` when retirement skipped or could
   not run.
 
-A `blocked` retirement carries `release_reference_lock_root_unavailable` (or
-another `release_reference_lock_*` code), `deploy_release_lease_root_unsafe`,
-or `deploy_release_retirement_failed:<exception type>`. A retirement problem
-never fails a deploy whose surfaces already moved. For an out-of-band look,
-`python -m blueprint_pipeline.control_plane_release_retirement` takes the same
-sources (`--control-plane-root`, `--profile-dir`,
+A `blocked` retirement carries `release_reference_lock_busy`,
+`release_reference_lock_root_unavailable` (or another `release_reference_lock_*`
+code), `deploy_release_lease_root_unsafe`,
+`deploy_release_protection_root_unsafe`, or
+`deploy_release_retirement_failed:<exception type>`. A retirement problem never
+fails a deploy whose surfaces already moved. A `.retiring` directory that could
+not be emptied stays until the next deploy sweeps it; until then the two-step
+tool refuses it as an unknown managed child.
+
+For an out-of-band look, `python -m blueprint_pipeline.control_plane_release_retirement`
+takes the same sources (`--control-plane-root`, `--profile-dir`,
 `--standing-authorization-dir`, `--binding-root`, `--lease-root`,
-`--config-file`, `--intent-root`, `--launch-run-root`); pass `--no-migrate` for
-a dry run that writes no lease.
+`--config-file`, `--intent-root`, `--launch-run-root`) and the process table
+(`--proc-root`); pass `--no-migrate` for a dry run that writes no lease. With
+`--apply` it takes the same locks, keeps trees in use by live processes, and
+prints the plan, the receipt and the deletion.
 
 ## Two-step operation
 
