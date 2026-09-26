@@ -79,6 +79,27 @@ def _deploy_environment(config: DoorConfig, request: dict[str, Any]) -> dict[str
     }
 
 
+_PUBSUB_HANDOFFS = "/var/lib/blueprint/pubsub-handoffs"
+
+
+def _retire_environment(config: DoorConfig, request: dict[str, Any]) -> dict[str, str]:
+    values = {"DOOR_VENV_PYTHON": config.venv_python, "DOOR_SCENE_ID": request["scene_id"]}
+    if request.get("bucket"):
+        values["DOOR_BUCKET"] = request["bucket"]
+    if request["apply"]:
+        values["DOOR_APPLY"] = "1"
+    return values
+
+
+def _retire_properties(config: DoorConfig) -> tuple[str, ...]:
+    """A retirement writes only the spool, the disk reservation ledger and its own result."""
+
+    results = str(Path(config.spool_root) / "results")
+    reservations = str(Path(config.control_plane_state) / "disk-reservations")
+    return ("ProtectSystem=strict", "PrivateTmp=yes", "NoNewPrivileges=yes",
+            f"ReadWritePaths={_PUBSUB_HANDOFFS} {reservations} {results}")
+
+
 @dataclass(frozen=True)
 class _LaunchSpec:
     """How one request kind becomes one transient ``.service`` unit running one installed script."""
@@ -97,6 +118,9 @@ _LAUNCHES: dict[str, _LaunchSpec] = {
                           lambda request: request["commit"][:12], _deploy_environment),
     "door-upgrade": _LaunchSpec("blueprint-operator-door-upgrade", "door-upgrade.sh", "30min",
                                 lambda request: request["commit"][:12], _source_environment),
+    "retire-scene-workspace": _LaunchSpec("blueprint-operator-door-retire", "door-retire-scene-workspace.sh", "2h",
+                                          lambda request: request["scene_id"][:24], _retire_environment,
+                                          _retire_properties),
 }
 
 

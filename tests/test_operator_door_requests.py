@@ -168,3 +168,56 @@ def test_list_requests_newest_first(config: DoorConfig) -> None:
     listed = list_requests(config)
     assert [item["id"] for item in listed] == [second, first]
     assert listed[0]["state"] == "pending" and listed[0]["kind"] == "deploy"
+
+
+SCENE_OK = ["site-capture-1", "a", "A.b_c-d", "x" * 128]
+SCENE_BAD = ["", ".", "..", "-leading", ".hidden", "a/b", "a b", "x" * 129, "scene\n", 7, None]
+BUCKET_OK = ["blueprint-8c1ca.appspot.com", "abc", "a" * 222]
+BUCKET_BAD = ["", "ab", "Upper-bucket", "-bucket", "bucket-", "a..b", "a" * 223, "bucket/x", 3]
+
+
+@pytest.mark.parametrize("scene_id", SCENE_OK)
+def test_retire_scene_workspace_accepts_scene_ids_the_listener_can_create(scene_id: str) -> None:
+    assert validate_request({"kind": "retire-scene-workspace", "scene_id": scene_id}) == {
+        "kind": "retire-scene-workspace", "scene_id": scene_id, "apply": False}
+
+
+@pytest.mark.parametrize("scene_id", SCENE_BAD)
+def test_retire_scene_workspace_refuses_unsafe_scene_ids(scene_id: object) -> None:
+    with pytest.raises(RequestRefused) as caught:
+        validate_request({"kind": "retire-scene-workspace", "scene_id": scene_id})
+    assert caught.value.code == "scene_id_invalid"
+
+
+@pytest.mark.parametrize("bucket", BUCKET_OK)
+def test_retire_scene_workspace_takes_an_optional_bucket(bucket: str) -> None:
+    assert validate_request({"kind": "retire-scene-workspace", "scene_id": "s", "bucket": bucket, "apply": True}) == {
+        "kind": "retire-scene-workspace", "scene_id": "s", "bucket": bucket, "apply": True}
+
+
+@pytest.mark.parametrize("bucket", BUCKET_BAD)
+def test_retire_scene_workspace_refuses_invalid_buckets(bucket: object) -> None:
+    with pytest.raises(RequestRefused) as caught:
+        validate_request({"kind": "retire-scene-workspace", "scene_id": "s", "bucket": bucket})
+    assert caught.value.code == "bucket_invalid"
+
+
+@pytest.mark.parametrize(("body", "code"), [
+    ({"kind": "retire-scene-workspace", "scene_id": "s", "apply": "yes"}, "apply_invalid"),
+    ({"kind": "retire-scene-workspace", "scene_id": "s", "apply": 1}, "apply_invalid"),
+    ({"kind": "retire-scene-workspace", "scene_id": "s", "commit": SHA}, "request_key_unknown:commit"),
+    ({"kind": "retire-scene-workspace", "scene_id": "s", "ack": "retire-scene-workspace"}, "request_key_unknown:ack"),
+])
+def test_retire_scene_workspace_refuses_everything_else(body: dict, code: str) -> None:
+    with pytest.raises(RequestRefused) as caught:
+        validate_request(body)
+    assert caught.value.code == code
+
+
+def test_retire_scene_workspace_is_an_operate_request_with_its_own_id(config: DoorConfig) -> None:
+    assert required_scope("retire-scene-workspace") == "operate"
+    request_id = enqueue(config, validate_request({"kind": "retire-scene-workspace", "scene_id": "s"}),
+                         requested_by="cloud")
+    assert re.fullmatch(r"\d{8}T\d{6}Z-retire-scene-workspace-[0-9a-f]{8}", request_id)
+    assert request_state(config, request_id)["request"]["scene_id"] == "s"
+    assert list_requests(config)[0]["kind"] == "retire-scene-workspace"

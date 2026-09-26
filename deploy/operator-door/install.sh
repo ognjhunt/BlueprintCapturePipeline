@@ -49,7 +49,7 @@ rm -rf "$stage"
 mkdir -p "$stage"
 cp -R "$source_dir/operator_door" "$stage/"
 cp "$source_dir"/door-common.sh "$source_dir"/door-deploy.sh "$source_dir"/door-upgrade.sh \
-  "$source_dir"/install.sh "$stage/"
+  "$source_dir"/door-retire-scene-workspace.sh "$source_dir"/install.sh "$stage/"
 git -C "$repo_root" rev-parse HEAD >"$stage/INSTALLED_COMMIT" 2>/dev/null || echo unknown >"$stage/INSTALLED_COMMIT"
 find "$stage" -name '__pycache__' -prune -exec rm -rf {} +
 chown -R root:root "$stage"

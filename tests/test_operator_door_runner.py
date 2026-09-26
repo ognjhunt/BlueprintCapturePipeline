@@ -215,3 +215,32 @@ def test_every_launched_unit_is_a_named_service_the_door_can_inspect(config: Doo
         request_id = _spooled(config, body)
         process_spool(config, runner=FakeRunner())
         assert UNIT_NAME.fullmatch(_result(config, request_id)["unit"])
+
+
+@pytest.mark.parametrize(("body", "extra_env"), [
+    ({"kind": "retire-scene-workspace", "scene_id": "site-capture-with-a-long-name-1"}, {}),
+    ({"kind": "retire-scene-workspace", "scene_id": "s", "bucket": "blueprint-8c1ca.appspot.com", "apply": True},
+     {"DOOR_BUCKET": "blueprint-8c1ca.appspot.com", "DOOR_APPLY": "1"}),
+])
+def test_retire_scene_workspace_launches_a_bounded_sandboxed_service(config: DoorConfig, body: dict,
+                                                                   extra_env: dict) -> None:
+    request_id = _spooled(config, body)
+    runner = FakeRunner()
+    process_spool(config, runner=runner)
+
+    unit = f"blueprint-operator-door-retire-{body['scene_id'][:24]}-{request_id[-8:]}.service"
+    results = str(Path(config.spool_root) / "results")
+    env = {"DOOR_REQUEST_ID": request_id, "DOOR_RESULTS_DIR": results, "DOOR_VENV_PYTHON": DoorConfig().venv_python,
+           "DOOR_SCENE_ID": body["scene_id"], **extra_env}
+    assert [call for call in runner.calls if call[0] == "systemd-run"] == [[
+        "systemd-run", f"--unit={unit}", "--collect", "--service-type=exec",
+        "--property=TimeoutStartSec=2h", "--setenv=PYTHONDONTWRITEBYTECODE=1", "--property=RuntimeMaxSec=2h",
+        "--property=ProtectSystem=strict", "--property=PrivateTmp=yes", "--property=NoNewPrivileges=yes",
+        "--property=ReadWritePaths=/var/lib/blueprint/pubsub-handoffs "
+        f"/var/lib/blueprint/pipeline-control-plane/disk-reservations {results}",
+        *(f"--setenv={key}={value}" for key, value in env.items()),
+        "--", "/bin/bash", "/opt/blueprint/operator-door/door-retire-scene-workspace.sh",
+    ]]
+    assert _result(config, request_id) == {**_result(config, request_id), "status": "launched", "unit": unit}
+    # A retirement is not a deploy: it neither waits for nor blocks one.
+    assert not any(call[:2] == ["systemctl", "list-units"] for call in runner.calls)

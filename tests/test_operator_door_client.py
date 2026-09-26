@@ -181,3 +181,33 @@ def test_wait_fails_on_a_refusal(door: dict[str, Any]) -> None:
 def test_scope_refusal_on_post_exits_3(door: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("BLUEPRINT_OPERATOR_DOOR_TOKEN", READ_ONLY)
     assert _run("deploy", SHA)[0] == 3
+
+
+def test_retire_scene_workspace_spools_a_plan_or_an_apply(door: dict[str, Any]) -> None:
+    code, out = _run("retire-scene-workspace", "site-capture-1")
+    spooled = json.loads((door["state"] / "requests" / "pending" / f"{json.loads(out)['id']}.json").read_text())
+    assert code == 0 and spooled["request"] == {"kind": "retire-scene-workspace", "scene_id": "site-capture-1",
+                                                "apply": False}
+    code, out = _run("retire-scene-workspace", "site-capture-1", "--bucket", "blueprint-8c1ca.appspot.com", "--apply")
+    spooled = json.loads((door["state"] / "requests" / "pending" / f"{json.loads(out)['id']}.json").read_text())
+    assert code == 0 and spooled["request"] == {"kind": "retire-scene-workspace", "scene_id": "site-capture-1",
+                                                "bucket": "blueprint-8c1ca.appspot.com", "apply": True}
+
+
+@pytest.mark.parametrize(("status", "exit_code"), [("planned", 0), ("retired", 0), ("retained", 1), ("failed", 1)])
+def test_waiting_on_a_retirement_exits_by_its_outcome(door: dict[str, Any], status: str, exit_code: int) -> None:
+    code, out = _run("retire-scene-workspace", "site-capture-1")
+    request_id = json.loads(out)["id"]
+    results = door["state"] / "requests" / "results"
+    (results / f"{request_id}.json").write_text(json.dumps({"status": "launched", "unit": "u.service"}))
+    outcome = {"status": status, "code": "pinned" if status == "retained" else None, "exit_code": 0}
+    (results / f"{request_id}.outcome.json").write_text(json.dumps(outcome))
+
+    code, out = _run("request", request_id, "--wait", "--poll", "0.05", "--timeout", "5")
+
+    assert code == exit_code and json.loads(out)["outcome"] == outcome  # a retained scene says why
+
+
+def test_a_retirement_needs_the_operate_scope(door: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("BLUEPRINT_OPERATOR_DOOR_TOKEN", READ_ONLY)
+    assert _run("retire-scene-workspace", "site-capture-1")[0] == 3
