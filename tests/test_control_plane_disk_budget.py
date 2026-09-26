@@ -357,3 +357,30 @@ def test_recording_never_waits_forever_on_a_held_ledger_lock(tmp_path, monkeypat
         reservation.release()
     assert not reservation.path.exists()
     assert not (ledger / "history" / "launch_activation.jsonl").exists()
+
+
+@pytest.mark.parametrize("outcome", ["failed", "blocked"])
+def test_released_outcome_is_recorded_and_only_completed_shapes_admission(tmp_path, outcome):
+    ledger = tmp_path / "ledger"
+    for index in range(10):
+        reservation = reserve_control_plane_disk("launch_activation", target_root=tmp_path, reservation_root=ledger,
+            workspace=tmp_path / f"job-{index}", disk_usage=lambda _p: Usage(100 * GIB, 0, 90 * GIB),
+            now=lambda: 1.0, pid_alive=lambda _pid: True)
+        reservation.release(outcome=outcome)
+        reservation.release(outcome="completed")  # idempotent: the first outcome stands
+    rows = [json.loads(line) for line in (ledger / "history" / "launch_activation.jsonl").read_text().splitlines()]
+    assert [row["outcome"] for row in rows] == [outcome] * 10
+    measured = disk_budget.measured_footprint("launch_activation", reservation_root=ledger)
+    assert (measured["basis"], measured["bytes"], measured["sample_count"]) == ("declared_default", 2 * GIB, 0)
+
+
+def test_an_unknown_outcome_never_counts_as_completed(tmp_path):
+    ledger = tmp_path / "ledger"
+    assert disk_budget.record_footprint_sample(reservation_root=ledger, role="launch_activation",
+        observed_bytes=1, reserved_bytes=GIB, outcome="finished") is False
+    reservation = reserve_control_plane_disk("launch_activation", target_root=tmp_path, reservation_root=ledger,
+        workspace=tmp_path / "job", disk_usage=lambda _p: Usage(100 * GIB, 0, 90 * GIB), now=lambda: 1.0,
+        pid_alive=lambda _pid: True)
+    reservation.release(outcome="finished")
+    [row] = [json.loads(line) for line in (ledger / "history" / "launch_activation.jsonl").read_text().splitlines()]
+    assert row["outcome"] == "failed"

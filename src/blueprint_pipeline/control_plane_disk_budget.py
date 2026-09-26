@@ -57,7 +57,10 @@ ROLE_FOOTPRINT_BYTES: Mapping[str, int] = {
     "cpu_prestage": 6 * GIB,
 }
 _ROLE_RE = re.compile(r"[a-z][a-z0-9_]{1,63}\Z")
-_OUTCOME_RE = re.compile(r"[a-z][a-z_]{1,31}\Z")
+# How a measured job ended.  Only a completed job measured its whole footprint,
+# so only "completed" samples shape admission; "failed" means the job raised and
+# "blocked" means it returned a blocked result before finishing its work.
+FOOTPRINT_OUTCOMES = frozenset({"completed", "failed", "blocked"})
 
 FOOTPRINT_HISTORY_DIRNAME = "history"
 FOOTPRINT_SAMPLE_SCHEMA = "control_plane_disk_footprint_sample.v1"
@@ -383,8 +386,7 @@ def record_footprint_sample(
             not isinstance(role, str)
             or not _ROLE_RE.fullmatch(role)
             or role not in ROLE_FOOTPRINT_BYTES
-            or not isinstance(outcome, str)
-            or not _OUTCOME_RE.fullmatch(outcome)
+            or outcome not in FOOTPRINT_OUTCOMES
             or (workload is not None
                 and (not isinstance(workload, str) or not _ROLE_RE.fullmatch(workload)))
             or not isinstance(observed_bytes, int)
@@ -566,14 +568,23 @@ class DiskReservation:
                 self.peak_delta_bytes or 0, max(0, observed_bytes)
             )
 
-    def release(self) -> None:
-        self._finish("completed")
+    def release(self, *, outcome: str = "completed") -> None:
+        """Free the reservation and record its sample under ``outcome``.
+
+        A caller that catches its job's failure passes ``outcome="failed"``, and
+        one whose job returned a blocked result passes ``outcome="blocked"``;
+        neither shapes admission.  Idempotent: the first release's outcome stands.
+        """
+
+        self._finish(outcome)
 
     def _finish(self, outcome: str) -> None:
         if self.released:
             return
         self.path.unlink(missing_ok=True)
         self.released = True
+        if outcome not in FOOTPRINT_OUTCOMES:
+            outcome = "failed"  # an unrecognized label must never count as completed
         try:
             if self.workspace is not None:
                 self.sample()
@@ -839,6 +850,7 @@ __all__ = [
     "DEFAULT_RESERVATION_ROOT",
     "DiskReservation",
     "FOOTPRINT_HISTORY_DIRNAME",
+    "FOOTPRINT_OUTCOMES",
     "FOOTPRINT_SAMPLE_SCHEMA",
     "HISTORY_MAX_LINES",
     "MEASURED_FLOOR_BYTES",
