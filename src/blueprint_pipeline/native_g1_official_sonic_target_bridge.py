@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import torch
 
 from .gear_sonic_joint_order_contract import (
     PROTOCOL_V4_FULL_JOINT_ORDER,
@@ -90,7 +91,7 @@ class _CountingTimings(list[float]):
 
 
 class WxyzRootDataView:
-    """Show SONIC WXYZ root state from the native Beta2 XYZW tensor."""
+    """Show SONIC WXYZ root state from native Beta2 XYZW readbacks."""
 
     def __init__(self, native_data: Any) -> None:
         self._native_data = native_data
@@ -98,12 +99,35 @@ class WxyzRootDataView:
     @property
     def root_state_w(self) -> Any:
         native = self._native_data.root_state_w
-        if len(native.shape) != 2 or native.shape[1] < 7:
-            raise ValueError("g1_sonic_native_root_state_invalid")
-        converted = native.clone()
-        converted[:, 3] = native[:, 6]
-        converted[:, 4:7] = native[:, 3:6]
-        return converted
+        if len(native.shape) == 2 and native.shape[1] >= 7:
+            converted = native.clone()
+            converted[:, 3] = native[:, 6]
+            converted[:, 4:7] = native[:, 3:6]
+            return converted
+        # Some native startup readbacks expose an incomplete combined state.
+        # Reconstruct the same world-frame 13-vector from its named tensors;
+        # never synthesize a pose or silently replace missing velocity data.
+        try:
+            position = self._native_data.root_pos_w
+            quaternion = self._native_data.root_quat_w
+            linear = self._native_data.root_lin_vel_w
+            angular = self._native_data.root_ang_vel_w
+            batch = position.shape[0]
+            if (
+                batch < 1
+                or position.shape != (batch, 3)
+                or quaternion.shape != (batch, 4)
+                or linear.shape != (batch, 3)
+                or angular.shape != (batch, 3)
+                or any(value.device != position.device or value.dtype != position.dtype
+                       for value in (quaternion, linear, angular))
+            ):
+                raise ValueError("g1_sonic_native_root_state_invalid")
+            return torch.cat((
+                position, quaternion[:, [3, 0, 1, 2]], linear, angular,
+            ), dim=1)
+        except (AttributeError, IndexError, TypeError) as exc:
+            raise ValueError("g1_sonic_native_root_state_invalid") from exc
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._native_data, name)

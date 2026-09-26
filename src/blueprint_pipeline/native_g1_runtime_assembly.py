@@ -32,6 +32,20 @@ from .native_g1_sonic_cuda_runtime import require_sonic_cuda_runtime
 from .native_g1_shared_scene_episode import run_g1_built_scene_policy_episode
 
 
+def _prime_sonic_native_root(built: Any, env: Any, plan: Mapping[str, Any]) -> SonicWxyzEnvironmentView:
+    """Read the real initialized articulation before starting an official provider."""
+
+    seed = (plan.get("scenario") or {}).get("seed")
+    if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
+        raise ValueError("g1_sonic_reset_seed_invalid")
+    built.env.reset(seed=seed)
+    view = SonicWxyzEnvironmentView(env)
+    root = view.scene["robot"].data.root_state_w
+    if len(root.shape) != 2 or root.shape[0] != 1 or root.shape[1] < 7:
+        raise ValueError("g1_sonic_native_root_state_invalid")
+    return view
+
+
 def _require_official_module_closure(root: Path) -> None:
     """Refuse a stale import that would bypass the pinned upstream checkout."""
 
@@ -107,7 +121,7 @@ def build_pinned_g1_sonic_bridge(
         enable_dex3_dds=False,
         enable_dex1_dds=False,
     )
-    provider = provider_class(SonicWxyzEnvironmentView(env), arguments)
+    provider = provider_class(_prime_sonic_native_root(built, env, plan), arguments)
     return NativeG1OfficialSonicTargetBridge(
         provider=provider,
         source_path=source_path,
