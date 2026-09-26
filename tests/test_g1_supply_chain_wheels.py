@@ -12,7 +12,7 @@ def test_pinned_g1_provider_wheels_have_exact_current_license_reviews() -> None:
     approvals = json.loads(
         (root / "docs/runtime_dependency_license_policy.json").read_text()
     )["components"]
-    assert len(keys) == 16
+    assert len(keys) == 17
     assert all(approvals.get(key, {}).get("approved") is True for key in keys)
 
 

@@ -195,6 +195,7 @@ POLICY_EXTRA_RUNTIME_MODULE_NAMES = (
     "native_g1_shared_scene_episode.py",
     "native_g1_policy_server_supervisor.py",
     "native_g1_runtime_assembly.py",
+    "native_g1_sonic_cuda_runtime.py",
     "native_task_asset_composition_gate.py",
     "native_task_composition_diagnostic.py",
     "native_task_composition_worker.py",
