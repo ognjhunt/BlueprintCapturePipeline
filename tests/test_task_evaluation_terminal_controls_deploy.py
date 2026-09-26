@@ -36,6 +36,30 @@ def test_deploy_prepares_only_retained_unstarted_adoption(adopted, tmp_path, mon
     assert result['model_called'] is False and result['placement_materialized'] is False
 
 
+def test_exhausted_source_attempt_is_retained_without_aborting_deploy(adopted, tmp_path, monkeypatch):
+    p, config, source, owner, calls = setup(adopted, tmp_path, monkeypatch)
+    def exhausted(**kwargs):
+        raise prepare.intake.SceneIntakeError('scene_intake_dependent_source_attempt_required')
+    monkeypatch.setattr(prepare.adoption, 'provision_terminal_controls_adoption', exhausted)
+    result = prepare.prepare(config_path=p, expected_commit='b'*40, now=102)
+    assert result['rows'] == [{
+        'intent_id': owner['intent_id'],
+        'status': 'retained_exhausted_source_attempt',
+        'blocker': 'scene_intake_dependent_source_attempt_required',
+    }]
+    assert result['provider_mutation_performed'] is False
+    assert (Path(config['scene_root'])/owner['intent_id']/'intent.json').is_file()
+
+
+def test_other_source_attempt_error_still_aborts_deploy(adopted, tmp_path, monkeypatch):
+    p, config, source, owner, calls = setup(adopted, tmp_path, monkeypatch)
+    def invalid(**kwargs):
+        raise prepare.intake.SceneIntakeError('scene_intake_another_failure')
+    monkeypatch.setattr(prepare.adoption, 'provision_terminal_controls_adoption', invalid)
+    with pytest.raises(prepare.intake.SceneIntakeError, match='scene_intake_another_failure'):
+        prepare.prepare(config_path=p, expected_commit='b'*40, now=102)
+
+
 @pytest.mark.parametrize('state', ['started', 'revoked', 'expired', 'same_release'])
 def test_deploy_does_not_restart_or_refresh_existing_execution(adopted, tmp_path, monkeypatch, state):
     p, config, source, owner, calls = setup(adopted, tmp_path, monkeypatch)
