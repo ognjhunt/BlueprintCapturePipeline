@@ -14,6 +14,7 @@ import blueprint_pipeline.pubsub_handoff_listener as listener_module
 import blueprint_pipeline.site_package_orchestrator as orchestrator
 from blueprint_pipeline.capture_orchestrator import run_capture_pipeline
 from blueprint_pipeline.common import PipelineError, StageError
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.live_pipeline_control_plane import (
     LIVE_PIPELINE_CONTROL_PLANE_SCHEMA_VERSION,
 )
@@ -1536,3 +1537,223 @@ def test_payload_digest_matches_the_recorded_delivery_evidence(tmp_path):
     assert listener_module.payload_sha256(PAYLOAD_BYTES) == recorded
     assert listener_module.payload_sha256(PAYLOAD_BYTES.decode("utf-8")) == recorded
     assert listener_module.payload_sha256({"b": 1, "a": 2}) == sha256(b'{"a":2,"b":1}').hexdigest()
+
+
+SUBSCRIPTION = "projects/p/subscriptions/s"
+_CAPTURE_PREFIX = "scenes/scene-1/captures/capture-1"
+_WEBSITE_MANIFEST = {"scene_id": "scene-1", "capture_id": "capture-1",
+                     "capture_source": "browser_self_capture", "site_submission_id": "request-1"}
+_ORIGINAL_PROCESS_HANDOFF_PAYLOAD = listener_module.process_handoff_payload
+
+
+def _website_bundle_blobs(prefix: str = _CAPTURE_PREFIX) -> "list[FakeBlob]":
+    return [
+        FakeBlob(f"{prefix}/raw/manifest.json", json.dumps(_WEBSITE_MANIFEST).encode("utf-8")),
+        FakeBlob(f"{prefix}/raw/capture_upload_complete.json", b"{}"),
+        FakeBlob(f"{prefix}/raw/walkthrough.mov", b"video"),
+    ]
+
+
+def _received(*, ack_id: str, data: bytes, delivery_attempt: int = 1) -> object:
+    return types.SimpleNamespace(
+        ack_id=ack_id,
+        delivery_attempt=delivery_attempt,
+        message=types.SimpleNamespace(message_id=f"msg-{ack_id}", data=data, attributes={}),
+    )
+
+
+def _install_fake_pubsub(monkeypatch, subscriber, *, storage_client=None, run_e2e=None) -> "list[dict]":
+    """Point pull_and_process at a fake subscriber and the real handoff processor.
+
+    pull_and_process has no storage or run_e2e seams of its own, so the real
+    process_handoff_payload is wrapped with them. Returns every result it produced.
+    """
+
+    monkeypatch.setattr(google.cloud, "pubsub_v1",
+                        types.SimpleNamespace(SubscriberClient=lambda: subscriber), raising=False)
+    results: list[dict] = []
+
+    def process(payload, **kwargs):
+        if storage_client is not None:
+            kwargs["storage_client"] = storage_client
+        if run_e2e is not None:
+            kwargs["run_e2e"] = run_e2e
+        result = _ORIGINAL_PROCESS_HANDOFF_PAYLOAD(payload, **kwargs)
+        results.append(result)
+        return result
+
+    monkeypatch.setattr(listener_module, "process_handoff_payload", process)
+    return results
+
+
+def _pull(storage_root: Path) -> int:
+    # The deployed listener stages control-plane input and skips run_e2e for
+    # device captures; website captures still run their preparation.
+    return pull_and_process(subscription=SUBSCRIPTION, storage_root=storage_root, provider="openai",
+                            max_messages=1, stage_control_plane=True, run_e2e_enabled=False)
+
+
+def _capture_root(storage_root: Path) -> Path:
+    return storage_root / "capture-bucket" / _CAPTURE_PREFIX
+
+
+def _read(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _expired(*_args, **_kwargs):
+    try:
+        raise ValueError("website_control_scene-sponsorship_http_409:consent_expired")
+    except ValueError as exc:
+        raise listener_module.PipelineError("website scene failed") from exc
+
+
+class _ListingForbidden:
+    def list_blobs(self, *_args, **_kwargs):
+        pytest.fail("a capture whose authority ended must not be staged again")
+
+
+def test_consent_expired_finishes_the_job_as_terminal_and_is_acknowledged(tmp_path, monkeypatch):
+    subscriber = FakeSubscriber([_received(ack_id="a1", data=PAYLOAD_BYTES, delivery_attempt=1)])
+    results = _install_fake_pubsub(monkeypatch, subscriber,
+                                   storage_client=FakeStorageClient(_website_bundle_blobs()), run_e2e=_expired)
+
+    acknowledged = _pull(tmp_path)
+
+    assert acknowledged == 1 and subscriber.acknowledged == ["a1"]
+    assert results[0]["status"] == "terminal_authority_ended"
+    assert results[0]["queue_disposition"] == "terminal_authority_ended"
+    assert results[0]["blockers"] == ["consent_expired"]
+    ledger = _read(_capture_root(tmp_path) / "pipeline_job_ledger.json")
+    assert ledger["status"] == "terminal_authority_ended"
+    assert ledger["terminal_code"] == "consent_expired"
+    assert ledger["terminal_payload_sha256"] == sha256(PAYLOAD_BYTES).hexdigest()
+    assert ledger["queue_disposition"] == "terminal_authority_ended"
+    assert ledger["updated_at"] == ledger["terminal_at"]
+    assert ledger["last_error_type"] == "PipelineError"
+    assert ledger["last_error"] == "website scene failed"
+    assert ledger["lease_owner"] is None and ledger["lease_expires_at"] is None
+    assert ledger["attempt_history"] == [{
+        "attempt_number": 1, "status": "terminal_authority_ended", "stage": "run_e2e",
+        "started_at": ledger["last_attempt_started_at"], "ended_at": ledger["terminal_at"],
+        "code": "consent_expired",
+    }]
+    receipt = _read(_capture_root(tmp_path) / "pipeline_job_terminal_receipt.json")
+    assert receipt["status"] == "authority_ended" and receipt["receipt_digest"].startswith("sha256:")
+    assert receipt["receipt_digest"] == canonical_digest(receipt, digest_field="receipt_digest")
+    assert {key: value for key, value in receipt.items() if key != "receipt_digest"} == {
+        "schema_version": "pipeline_job_terminal_receipt.v1", "status": "authority_ended",
+        "code": "consent_expired", "bucket": "capture-bucket", "scene_id": "scene-1",
+        "capture_id": "capture-1", "attempt_count": 1,
+        "payload_sha256": sha256(PAYLOAD_BYTES).hexdigest(), "ended_at": ledger["terminal_at"],
+        "error": "website scene failed",
+    }
+    assert not (tmp_path / ".pubsub_delivery_evidence").exists()
+
+
+def test_redelivered_terminal_capture_is_acknowledged_without_staging(tmp_path, monkeypatch):
+    first = FakeSubscriber([_received(ack_id="a1", data=PAYLOAD_BYTES)])
+    _install_fake_pubsub(monkeypatch, first,
+                         storage_client=FakeStorageClient(_website_bundle_blobs()), run_e2e=_expired)
+    assert _pull(tmp_path) == 1
+    ledger_path = _capture_root(tmp_path) / "pipeline_job_ledger.json"
+    terminal_ledger = _read(ledger_path)
+
+    second = FakeSubscriber([_received(ack_id="a2", data=PAYLOAD_BYTES, delivery_attempt=2)])
+    results = _install_fake_pubsub(monkeypatch, second, storage_client=_ListingForbidden(),
+                                   run_e2e=lambda **_: pytest.fail("a terminal capture must not run again"))
+
+    assert _pull(tmp_path) == 1
+    assert second.acknowledged == ["a2"]
+    second_result_status = results[0]["status"]
+    assert second_result_status == "skipped_terminal_authority_ended"
+    assert results[0]["queue_disposition"] == "terminal_authority_ended"
+    assert results[0]["blockers"] == ["consent_expired"]
+    assert _read(ledger_path) == terminal_ledger
+
+
+def test_a_redelivery_repairs_a_terminal_receipt_lost_to_a_crash(tmp_path, monkeypatch):
+    first = FakeSubscriber([_received(ack_id="a1", data=PAYLOAD_BYTES)])
+    _install_fake_pubsub(monkeypatch, first,
+                         storage_client=FakeStorageClient(_website_bundle_blobs()), run_e2e=_expired)
+    assert _pull(tmp_path) == 1
+    receipt_path = _capture_root(tmp_path) / "pipeline_job_terminal_receipt.json"
+    original = receipt_path.read_bytes()
+    receipt_path.unlink()  # the ledger committed; the process died before the receipt
+
+    second = FakeSubscriber([_received(ack_id="a2", data=PAYLOAD_BYTES, delivery_attempt=2)])
+    _install_fake_pubsub(monkeypatch, second, storage_client=_ListingForbidden())
+    assert _pull(tmp_path) == 1
+    assert receipt_path.read_bytes() == original
+
+
+def test_a_new_payload_reopens_a_terminal_capture(tmp_path, monkeypatch):
+    first = FakeSubscriber([_received(ack_id="a1", data=PAYLOAD_BYTES)])
+    _install_fake_pubsub(monkeypatch, first,
+                         storage_client=FakeStorageClient(_website_bundle_blobs()), run_e2e=_expired)
+    assert _pull(tmp_path) == 1
+    reopened_payload = json.dumps({
+        **PAYLOAD,
+        "pipeline_handoff_uri": f"gs://capture-bucket/{_CAPTURE_PREFIX}/pipeline_handoff.json",
+    }).encode("utf-8")
+    run_e2e_calls: list[dict] = []
+
+    def prepare(**kwargs):
+        run_e2e_calls.append(kwargs)
+        return {"status": "completed"}
+
+    second = FakeSubscriber([_received(ack_id="a2", data=reopened_payload)])
+    results = _install_fake_pubsub(monkeypatch, second,
+                                   storage_client=FakeStorageClient(_website_bundle_blobs()), run_e2e=prepare)
+
+    assert _pull(tmp_path) == 1
+    assert len(run_e2e_calls) == 1  # the reopened job runs
+    assert results[0]["status"] == "processed"
+    ledger = _read(_capture_root(tmp_path) / "pipeline_job_ledger.json")
+    assert ledger["status"] == "completed"
+    assert ledger["attempt_count"] == 2
+    assert [row["status"] for row in ledger["attempt_history"]] == [
+        "terminal_authority_ended", "reopened_after_terminal_authority", "completed"]
+    reopened = ledger["attempt_history"][1]
+    assert reopened["terminal_code"] == "consent_expired"
+    assert reopened["terminal_payload_sha256"] == sha256(PAYLOAD_BYTES).hexdigest()
+    assert reopened["payload_sha256"] == sha256(reopened_payload).hexdigest()
+    # The earlier ending stays on disk as evidence; the ledger is the current state.
+    assert (_capture_root(tmp_path) / "pipeline_job_terminal_receipt.json").is_file()
+
+
+def test_non_terminal_409_stays_retryable(tmp_path, monkeypatch):
+    def held(**_kwargs):
+        try:
+            raise ValueError("website_control_task-context_http_409:task_brief_missing")
+        except ValueError as exc:
+            raise listener_module.PipelineError(str(exc)) from exc
+
+    subscriber = FakeSubscriber([_received(ack_id="a1", data=PAYLOAD_BYTES)])
+    _install_fake_pubsub(monkeypatch, subscriber,
+                         storage_client=FakeStorageClient(_website_bundle_blobs()), run_e2e=held)
+
+    assert _pull(tmp_path) == 0
+    assert subscriber.acknowledged == []
+    ledger = _read(_capture_root(tmp_path) / "pipeline_job_ledger.json")
+    assert ledger["status"] == "failed_retryable"
+    assert "terminal_code" not in ledger
+    assert not (_capture_root(tmp_path) / "pipeline_job_terminal_receipt.json").exists()
+
+
+def test_a_terminal_ledger_without_a_matching_digest_is_not_reopened(tmp_path):
+    root = tmp_path / "capture"
+    root.mkdir()
+    (root / "pipeline_job_ledger.json").write_text(json.dumps({
+        "status": "terminal_authority_ended", "terminal_code": "source_revoked",
+        "terminal_payload_sha256": "a" * 64, "attempt_count": 1}), encoding="utf-8")
+    claim = listener_module._claim_job_lease
+    same, _ = claim(root, scene_id="s", capture_id="c", owner="w", lease_seconds=60, payload_sha256="a" * 64)
+    unknown, _ = claim(root, scene_id="s", capture_id="c", owner="w", lease_seconds=60)
+    assert (same, unknown) == ("terminal", "terminal")
+    assert _read(root / "pipeline_job_ledger.json")["status"] == "terminal_authority_ended"
+    reopened, ledger = claim(root, scene_id="s", capture_id="c", owner="w", lease_seconds=60,
+                             payload_sha256="b" * 64)
+    assert reopened == "claimed"
+    assert ledger["attempt_count"] == 2
+    assert ledger["attempt_history"][-1]["status"] == "reopened_after_terminal_authority"

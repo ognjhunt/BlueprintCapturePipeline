@@ -23,6 +23,7 @@ import google.auth
 from google.cloud import storage
 
 from .common import PipelineError, utc_now_iso, write_json
+from .decision_evidence_contracts import canonical_digest
 from .run_e2e import run_end_to_end
 from .core.security_controls import (
     SecurityValidationError,
@@ -432,6 +433,9 @@ JOB_OUTPUT_COMMIT_FILENAME = "pipeline_job_output_commit.json"
 JOB_LEDGER_SCHEMA_VERSION = "pipeline_job_ledger.v1"
 JOB_OUTPUT_COMMIT_SCHEMA_VERSION = "pipeline_job_output_commit.v1"
 JOB_STATUS_SCHEMA_VERSION = "pipeline_job_status.v1"
+TERMINAL_AUTHORITY_STATUS = "terminal_authority_ended"
+JOB_TERMINAL_RECEIPT_FILENAME = "pipeline_job_terminal_receipt.json"
+JOB_TERMINAL_RECEIPT_SCHEMA_VERSION = "pipeline_job_terminal_receipt.v1"
 PROVIDER_OPS_STATUS_SCHEMA_VERSION = "provider_ops_status.v1"
 DEFAULT_JOB_LEASE_SECONDS = 900
 DEFAULT_ACK_DEADLINE_SECONDS = 600
@@ -645,6 +649,7 @@ def _claim_job_lease(
     owner: str,
     lease_seconds: int,
     now: datetime | None = None,
+    payload_sha256: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
     current_time = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     with _locked_job_ledger(capture_root) as ledger:
@@ -652,6 +657,22 @@ def _claim_job_lease(
         status = _string(ledger.get("status"))
         if status == "corrupt":
             return "corrupt", dict(ledger)
+        history = _attempt_history(ledger)
+        if status == TERMINAL_AUTHORITY_STATUS:
+            ended_by = _string(ledger.get("terminal_payload_sha256"))
+            # Without both digests nothing proves this is a new request, so the
+            # ending stands (a redelivery must not re-run an ended scene).
+            if not payload_sha256 or not ended_by or ended_by == payload_sha256:
+                return "terminal", dict(ledger)
+            # A different message is a new request for this capture, for example
+            # after the website renewed consent. Keep the ending in the history.
+            history.append({
+                "status": "reopened_after_terminal_authority",
+                "reopened_at": _iso_at(current_time),
+                "terminal_code": ledger.get("terminal_code"),
+                "terminal_payload_sha256": ended_by,
+                "payload_sha256": payload_sha256,
+            })
         if status == "completed":
             retained = _read_optional_json_object(capture_root / "pipeline" / "run_e2e_stage_ledger.json")
             capture_result = _mapping(_mapping(_mapping(retained.get("stages")).get("capture_pipeline")).get("result_snapshot"))
@@ -685,7 +706,7 @@ def _claim_job_lease(
                 "started_at": started_at,
                 "updated_at": _iso_at(current_time),
                 "last_attempt_started_at": _iso_at(current_time),
-                "attempt_history": _attempt_history(ledger),
+                "attempt_history": history,
                 "lease_owner": owner,
                 "lease_token": token,
                 "lease_acquired_at": _iso_at(current_time),
@@ -1202,6 +1223,116 @@ def payload_sha256(payload: bytes | str | Mapping[str, Any]) -> str:
     return sha256(raw).hexdigest()
 
 
+def _write_terminal_receipt(
+    capture_root: Path,
+    *,
+    handoff: HandoffMessage,
+    ledger: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Record, from the committed terminal ledger, why this job ended."""
+
+    receipt: dict[str, Any] = {
+        "schema_version": JOB_TERMINAL_RECEIPT_SCHEMA_VERSION,
+        "status": "authority_ended",
+        "code": ledger.get("terminal_code"),
+        "bucket": handoff.bucket,
+        "scene_id": handoff.scene_id,
+        "capture_id": handoff.capture_id,
+        "attempt_count": int(ledger.get("attempt_count") or 0),
+        "payload_sha256": ledger.get("terminal_payload_sha256"),
+        "ended_at": ledger.get("terminal_at"),
+        "error": str(ledger.get("last_error") or "")[:500],
+    }
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    write_json(capture_root / JOB_TERMINAL_RECEIPT_FILENAME, receipt)
+    return receipt
+
+
+def _terminal_authority_result(
+    handoff: HandoffMessage,
+    *,
+    capture_root: Path,
+    ledger: Mapping[str, Any],
+    status: str,
+) -> dict[str, Any]:
+    return {
+        "schema_version": "v1",
+        "status": status,
+        "queue_disposition": TERMINAL_AUTHORITY_STATUS,
+        "bucket": handoff.bucket,
+        "scene_id": handoff.scene_id,
+        "capture_id": handoff.capture_id,
+        "capture_root": str(capture_root),
+        "blockers": [_string(ledger.get("terminal_code")) or TERMINAL_AUTHORITY_STATUS],
+        "job_ledger": dict(ledger),
+    }
+
+
+def _finish_terminal_authority_ending(
+    capture_root: Path,
+    *,
+    handoff: HandoffMessage,
+    owner: str,
+    token: str,
+    code: str,
+    error: BaseException,
+    stage: str,
+    attempt_count: int,
+    attempt_started_at: str,
+    previous_history: Sequence[Mapping[str, Any]],
+    payload_digest: str,
+) -> dict[str, Any]:
+    """End the job for good: the website ended this scene's authority.
+
+    The ledger commits first. A crash before the receipt is written leaves a
+    terminal ledger, and the next redelivery writes the receipt from it.
+    """
+
+    ended_at = utc_now_iso()
+    ledger = _finish_job_lease(
+        capture_root,
+        owner=owner,
+        token=token,
+        update={
+            "status": TERMINAL_AUTHORITY_STATUS,
+            "terminal_code": code,
+            "terminal_at": ended_at,
+            "updated_at": ended_at,
+            "terminal_payload_sha256": payload_digest,
+            "last_error_type": type(error).__name__,
+            "last_error": str(error)[:500],
+            "queue_disposition": TERMINAL_AUTHORITY_STATUS,
+            "attempt_history": [
+                *previous_history,
+                {
+                    "attempt_number": attempt_count,
+                    "status": TERMINAL_AUTHORITY_STATUS,
+                    "stage": stage,
+                    "started_at": attempt_started_at,
+                    "ended_at": ended_at,
+                    "code": code,
+                },
+            ],
+        },
+    )
+    _write_terminal_receipt(capture_root, handoff=handoff, ledger=ledger)
+    logger.warning(
+        "pubsub_handoff.terminal_authority_ended",
+        extra={
+            "scene_id": handoff.scene_id,
+            "capture_id": handoff.capture_id,
+            "terminal_code": code,
+            "stage": stage,
+        },
+    )
+    return _terminal_authority_result(
+        handoff,
+        capture_root=capture_root,
+        ledger=ledger,
+        status=TERMINAL_AUTHORITY_STATUS,
+    )
+
+
 def process_handoff_payload(
     payload: bytes | str | Mapping[str, Any],
     *,
@@ -1218,8 +1349,10 @@ def process_handoff_payload(
     overwrite_control_plane_input: bool = False,
     lease_owner: str | None = None,
     lease_seconds: int = DEFAULT_JOB_LEASE_SECONDS,
+    payload_digest: str | None = None,
 ) -> dict[str, Any]:
     handoff = parse_handoff_payload(payload)
+    digest = payload_digest or payload_sha256(payload)
     capture_root = _handoff_capture_root(handoff, storage_root=storage_root)
     owner = lease_owner or _lease_owner()
     claim_status, ledger = _claim_job_lease(
@@ -1228,7 +1361,29 @@ def process_handoff_payload(
         capture_id=handoff.capture_id,
         owner=owner,
         lease_seconds=lease_seconds,
+        payload_sha256=digest,
     )
+    if claim_status == "terminal":
+        if (
+            not (capture_root / JOB_TERMINAL_RECEIPT_FILENAME).is_file()
+            and _string(ledger.get("terminal_code"))
+            and _string(ledger.get("terminal_payload_sha256"))
+        ):
+            _write_terminal_receipt(capture_root, handoff=handoff, ledger=ledger)
+        logger.info(
+            "pubsub_handoff.skipped_terminal_authority_ended",
+            extra={
+                "scene_id": handoff.scene_id,
+                "capture_id": handoff.capture_id,
+                "terminal_code": ledger.get("terminal_code"),
+            },
+        )
+        return _terminal_authority_result(
+            handoff,
+            capture_root=capture_root,
+            ledger=ledger,
+            status="skipped_terminal_authority_ended",
+        )
     if claim_status == "completed":
         commit = _output_commit(
             capture_root,
@@ -1425,6 +1580,23 @@ def process_handoff_payload(
                 }
             )
     except Exception as exc:
+        code = authority_ending_code(exc)
+        if code is not None:
+            # Retrying cannot revive an ended authority. Finish the job as
+            # terminal and return, so the message is acknowledged.
+            return _finish_terminal_authority_ending(
+                capture_root,
+                handoff=handoff,
+                owner=owner,
+                token=token,
+                code=code,
+                error=exc,
+                stage=failure_stage,
+                attempt_count=attempt_count,
+                attempt_started_at=attempt_started_at,
+                previous_history=previous_history,
+                payload_digest=digest,
+            )
         failed_at = utc_now_iso()
         failure_record = {
             "attempt_number": attempt_count,
@@ -1998,7 +2170,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         json.dumps(
             {
                 "acknowledged": acknowledged,
-                "acknowledged_means_terminal_success_or_permanent_invalid": True,
+                "acknowledged_means_terminal_or_permanent_invalid": True,
                 "storage_root": str(storage_root),
             },
             sort_keys=True,
