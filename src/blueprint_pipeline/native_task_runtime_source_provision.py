@@ -82,12 +82,32 @@ TOP_LEVEL_PACKAGES = (
     "isaaclab_teleop",
     "isaaclab_visualizers",
     "isaaclab_arena",
-    "isaaclab_arena_g1",
-    "onnxruntime",
-    "coloredlogs",
-    "humanfriendly",
-    "flatbuffers",
 )
+WHEEL_TOP_LEVEL_PACKAGES = {
+    "onnxruntime": "onnxruntime",
+    "onnxruntime-gpu": "onnxruntime",
+    "coloredlogs": "coloredlogs",
+    "humanfriendly": "humanfriendly",
+    "flatbuffers": "flatbuffers",
+}
+
+
+def _required_top_level_packages(verified: dict[str, Any]) -> tuple[str, ...]:
+    """Probe the verified packet's closure, including G1 only for a G1 packet.
+
+    Older base packets predate the optional ONNX closure. Requiring packages
+    absent from their sealed wheel list makes an unchanged retained CPU prefix
+    fail on a rented GPU after an unrelated runtime profile is added.
+    """
+
+    names = list(TOP_LEVEL_PACKAGES)
+    if verified.get("runtime_profile") == "unitree_g1":
+        names.append("isaaclab_arena_g1")
+    packages = {str(row["package"]) for row in verified["runtime_dependency_wheels"]}
+    for package, module in WHEEL_TOP_LEVEL_PACKAGES.items():
+        if package in packages and module not in names:
+            names.append(module)
+    return tuple(names)
 RUNTIME_IMPORT_PROBES = (
     {"module": "warp", "expected_version": "1.13.0"},
     {
@@ -458,9 +478,11 @@ def provision_native_task_runtime_sources(
         )
         result["path_file"] = str(path_file)
         result["path_file_sha256"] = _sha256(path_file)
+        package_probe_modules = _required_top_level_packages(verified)
+        result["package_path_probe_modules"] = list(package_probe_modules)
         package_probe = (
             "import importlib.util,json;"
-            f"names={list(TOP_LEVEL_PACKAGES)!r};"
+            f"names={list(package_probe_modules)!r};"
             "found={name:importlib.util.find_spec(name) is not None for name in names};"
             "print(json.dumps(found,sort_keys=True));"
             "raise SystemExit(0 if all(found.values()) else 3)"
