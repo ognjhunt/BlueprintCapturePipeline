@@ -10,6 +10,7 @@ readback without ever invoking the allocator again.
 from __future__ import annotations
 
 from .policy_canary_billing_recovery import reconcile_posted_billing
+from .policy_canary_provider_null_closeout import proven_provider_null_closeout
 from .policy_canary_partial_recovery import (
     recover_partial_policy_canary_result as _recover_partial_policy_canary_result,
 )
@@ -1408,9 +1409,18 @@ def dispatch_policy_canary_activation(
     activation = _read(activation_path, code="policy_canary_activation_manifest_invalid")
     resource = runtime_inputs.get("resource_authority")
     root = Path(output_root).expanduser().resolve()
-    delivery_only = retained_delivery_only or setup["source_commit"] != implementation_commit
-    # A newer controller may publish sealed old-release results, never restart
-    # their provider work. All original authority/bundle/closure checks still run.
+    retained_provider_null = False
+    retained_adapter_path = root / "allocator_result.json"
+    if setup["source_commit"] != implementation_commit and retained_adapter_path.is_file():
+        retained_adapter = _read(retained_adapter_path, code="policy_canary_allocator_result_invalid")
+        retained_provider_null = proven_provider_null_closeout(
+            retained_adapter, root=root, record_file=_record
+        ) is not None
+    delivery_only = retained_delivery_only or (
+        setup["source_commit"] != implementation_commit and not retained_provider_null
+    )
+    # A newer controller may close a proven old-release provider refusal, never
+    # restart its allocator. Ordinary old-release work remains delivery-only.
     retained_delivery = execute and _has_materialized_delivery(root)
     if (
         (delivery_only and not retained_delivery)
@@ -1681,7 +1691,26 @@ def dispatch_policy_canary_activation(
     if delivery_only:
         raise TaskEvaluationPolicyCanaryDispatchError("policy_canary_retained_delivery_missing")
 
-    if _proves_no_provider_allocation(adapter):
+    provider_null = proven_provider_null_closeout(adapter, root=root, record_file=_record)
+    provider_zero_path = root / "post_teardown_global_provider_zero.json"
+    if provider_null is not None:
+        provider_zero = _sealed_provider_zero(provider_zero_path)
+        if provider_zero is None:
+            provider_zero = dict(provider_zero_collector())
+            write_json(provider_zero_path, provider_zero)
+            provider_zero = _sealed_provider_zero(provider_zero_path)
+        if provider_zero is None or provider_zero.get("provider_zero_verified") is not True:
+            pending = {
+                "schema_version": SCHEMA_VERSION,
+                "status": "awaiting_authenticated_vast_provider_zero",
+                "run_id": activation["run_id"],
+                "allocator_invoked": allocator_invoked,
+                "automatic_retry_performed": False,
+                "blockers": ["policy_canary_global_provider_zero_unproven"],
+            }
+            write_json(root / "dispatch_pending.json", pending)
+            return pending
+    if provider_null is not None or _proves_no_provider_allocation(adapter):
         blockers = list(adapter.get("blockers") or ["policy_canary_provider_not_allocated"])
         try:
             terminal_sync = dict(
@@ -1709,28 +1738,38 @@ def dispatch_policy_canary_activation(
             "intake_id": setup["intake_id"],
             "request_digest": setup["request_digest"],
             "allocator_invoked": allocator_invoked,
-            "provider_call_reached": False,
+            "provider_call_reached": provider_null is not None,
             "provider_allocation_performed": False,
             "provider_mutation_performed": False,
-            "provider_zero_required": False,
-            "provider_zero_not_applicable": True,
-            "paid_execution_requested": False,
+            "provider_zero_required": provider_null is not None,
+            "provider_zero_not_applicable": provider_null is None,
+            "paid_execution_requested": provider_null is not None,
             "automatic_retry_authorized": False,
             "automatic_retry_performed": False,
             "retry_cap": 0,
-            "terminal_result_kind": "allocator_no_provider_allocation",
+            "terminal_result_kind": (
+                "definite_provider_create_refusal"
+                if provider_null is not None
+                else "allocator_no_provider_allocation"
+            ),
             "allocator_result": _record(adapter_path),
             "blockers": blockers,
             "terminal_sync": _terminal_sync_observation(terminal_sync),
             "receipt_digest": "",
         }
+        if provider_null is not None:
+            blocked["closeout_release_commit"] = implementation_commit
+            blocked["provider_null_evidence"] = {
+                **provider_null,
+                "provider_zero": _record(provider_zero_path),
+                "official_instance_billing": "not_applicable_no_instance_created",
+            }
         blocked["receipt_digest"] = canonical_digest(
             blocked, digest_field="receipt_digest"
         )
         write_json(root / "no_provider_allocation_blocked.json", blocked)
         return blocked
 
-    provider_zero_path = root / "post_teardown_global_provider_zero.json"
     provider_zero = _sealed_provider_zero(provider_zero_path)
     if provider_zero is None:
         provider_zero = dict(provider_zero_collector())

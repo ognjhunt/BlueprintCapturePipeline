@@ -1596,6 +1596,113 @@ def test_proven_zero_allocation_terminalizes_without_billing_wait(
     assert not (output / "official_billing_reconciliation.json").exists()
 
 
+def test_definite_vast_create_refusal_terminalizes_without_instance_bill(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    activation_result, setup_path, _activation = _inputs(tmp_path)
+    output = tmp_path / "dispatch-refused-create"
+
+    def fake_bundle(**kwargs):
+        job = Path(kwargs["job_dir"])
+        job.mkdir(parents=True, exist_ok=True)
+        receipt = {"bundle_sha256": "sha256:" + "b" * 64}
+        _write(job / "native_task_arena_policy_canary_session_bundle_receipt.v1.json", receipt)
+        return receipt
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.task_evaluation_policy_canary_dispatcher.build_policy_canary_session_bundle",
+        fake_bundle,
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.task_evaluation_policy_canary_dispatcher.validate_provider_bundle",
+        lambda value, **_kwargs: value,
+    )
+
+    def record(path: Path) -> dict[str, object]:
+        data = path.read_bytes()
+        return {"path": str(path), "size_bytes": len(data), "sha256": "sha256:" + hashlib.sha256(data).hexdigest()}
+
+    def refused_create(argv):
+        adapter_path = Path(argv[argv.index("--adapter-output") + 1])
+        provider_path = adapter_path.parent / "refused_provider.json"
+        teardown_path = adapter_path.parent / "refused_teardown.json"
+        _write(provider_path, {
+            "status": "failed", "provider_create_attempted": True,
+            "vast_instance_ids": [], "vast_side_effects_may_have_occurred": False,
+            "continuing_spend_from_this_run": False,
+            "create_failure_diagnosis": {
+                "http_status_code": 410, "definite_create_refusal": True,
+                "create_inventory_verified": True, "create_inventory_http_status_code": 200,
+                "create_produced_no_instance": True, "matching_attempt_instance_ids": [],
+                "attempted_labels": ["test-policy"],
+            },
+            "provider_attempt_classification": {
+                "classification": "pre_execution_provider_null",
+                "scientific_attempt_consumed": False,
+            },
+        })
+        _write(teardown_path, {"status": "completed", "vast_instance_ids": [], "continuing_spend_from_this_run": False})
+        _write(adapter_path, {
+            "status": "blocked", "blockers": ["vast_api_http_error"],
+            "scientific_attempt_started": False, "candidate_policy_queried": False,
+            "continuing_spend_from_this_run": False, "all_staged_objects_absent": True,
+            "adapter_result_path": str(provider_path),
+            "teardown_manifest_path": str(teardown_path),
+            "provider_closeout": {
+                "provider_zero_confirmed": True,
+                "adapter_result": record(provider_path),
+                "teardown_manifest": record(teardown_path),
+            },
+            "independent_watchdog_close": {
+                "status": "retained_until_hard_ttl",
+                "reason": "provider_allocation_identity_ambiguous",
+                "watchdog_retention_liveness_confirmed": True,
+                "watchdog_armed_before_allocation": True,
+                "instance_ids": [],
+                "provider_mutations_performed": 0,
+            },
+        })
+        return 2
+
+    zero = {
+        "schema_version": "task_evaluation_policy_canary_vast_provider_zero.v1",
+        "status": "provider_zero_confirmed", "api_confirmed": True,
+        "provider_zero_verified": True, "live_instance_count": 0,
+        "blockers": [], "receipt_digest": "",
+    }
+    zero["receipt_digest"] = canonical_digest(zero, digest_field="receipt_digest")
+    result = dispatch_policy_canary_activation(
+        activation_result_path=activation_result,
+        execution_setup_path=setup_path,
+        output_root=output,
+        implementation_commit=COMMIT,
+        execute=True,
+        allocator_runner=refused_create,
+        provider_zero_collector=lambda: zero,
+        blocked_sync_runner=lambda **_kwargs: {"status": "succeeded"},
+    )
+    assert result["status"] == "blocked_without_provider_allocation"
+    assert result["terminal_result_kind"] == "definite_provider_create_refusal"
+    assert result["provider_call_reached"] is True
+    assert result["provider_allocation_performed"] is False
+    assert result["provider_null_evidence"]["official_instance_billing"] == "not_applicable_no_instance_created"
+    assert result["provider_null_evidence"]["watchdog_retained_until_hard_ttl"] is True
+    assert not (output / "official_billing_reconciliation.json").exists()
+    resumed = dispatch_policy_canary_activation(
+        activation_result_path=activation_result,
+        execution_setup_path=setup_path,
+        output_root=output,
+        implementation_commit="b" * 40,
+        execute=True,
+        allocator_runner=lambda _argv: pytest.fail("old-release allocator must not rerun"),
+        provider_zero_collector=lambda: pytest.fail("sealed provider zero must be reused"),
+        blocked_sync_runner=lambda **_kwargs: {"status": "succeeded"},
+    )
+    assert resumed["status"] == "blocked_without_provider_allocation"
+    assert resumed["closeout_release_commit"] == "b" * 40
+
+
 def test_post_allocator_failure_is_not_labeled_preprovider_or_retried(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

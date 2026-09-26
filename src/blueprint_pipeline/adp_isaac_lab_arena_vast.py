@@ -37,6 +37,7 @@ from .vast_independent_watchdog_control import (
     arm_independent_vast_watchdog,
     close_independent_vast_watchdog,
 )
+from .vast_create_failure_diagnosis import definite_create_refusal_without_instance
 from .vast_provider_adapter import (
     DEFAULT_VAST_API_KEY_FILE,
     VAST_API_KEY_FILE_ENV,
@@ -808,6 +809,7 @@ def run_arena_native_control_vast(
                     ),
                     provider_allocation_impossible=(
                         adapter.get("provider_create_attempted") is False
+                        or definite_create_refusal_without_instance(adapter)
                     ),
                 )
         finally:
