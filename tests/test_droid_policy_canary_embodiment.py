@@ -76,6 +76,22 @@ def test_pick_place_instruction_uses_configured_relation_and_labels() -> None:
     ) == "Pick up and place the open book into the blue document tray."
 
 
+def test_articulated_instruction_names_the_part_and_opening_action() -> None:
+    spec = {
+        "task_kind": "articulated_open_close",
+        "manipulation_strategy": "articulated_open_close",
+        "instruction_subject_label": "three-drawer wood-front mobile cabinet",
+        "visible_target_label": "middle drawer",
+        "configured_success_criteria": {"joint_type": "prismatic", "closing_required": False},
+    }
+    assert concrete_droid_task_instruction(spec) == (
+        "Pull open the middle drawer of the three-drawer wood-front mobile cabinet."
+    )
+    del spec["visible_target_label"]
+    with pytest.raises(ValueError, match="articulated_instruction_invalid"):
+        concrete_droid_task_instruction(spec)
+
+
 def test_embodiment_parity_requires_real_approach_without_joint_clamping() -> None:
     episode = {
         "state_trace": {

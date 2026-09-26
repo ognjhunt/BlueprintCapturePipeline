@@ -167,7 +167,8 @@ def derived_contract(*, packet_request_path: Path, directive: Mapping[str, Any],
     return derived['task_spec']['task_success_contract'], derived['diagnostic_control_omission_authority']
 
 
-def bind_camera_start(*, directive, plan, contract, cells, construction=None):
+def bind_camera_start(*, directive, plan, contract, cells, construction=None,
+                      scene_plan_path: Path | None = None):
     """Reopen exact owner robot calibration, then check every current cell's framing."""
     import hashlib
     from copy import deepcopy
@@ -208,7 +209,15 @@ def bind_camera_start(*, directive, plan, contract, cells, construction=None):
     current['task_spec']['task_success_contract'] = deepcopy(contract)
     current['plan_digest'] = canonical_digest(current, digest_field='plan_digest')
     materialize = materialize_camera_start_from_plan if construction is None else materialize_camera_start_from_construction
-    binding = materialize(plan=current, **({} if construction is None else {'construction': construction}),
+    direct_kwargs = {}
+    if construction is None and current.get('task_kind') == 'articulated_open_close' and str(current.get('scene_id', '')).endswith('-development'):
+        _require(scene_plan_path is not None, 'camera_scene_plan_path_missing')
+        obstacle = next((row for row in current['objects'] if row.get('semantic_role') == 'scene_collision'), None)
+        _require(obstacle is not None and isinstance(obstacle.get('usd_path'), str), 'camera_scene_collision_missing')
+        collision_path = Path(scene_plan_path).parent / obstacle['usd_path']
+        _safe(collision_path)
+        direct_kwargs['scene_collision_asset_path'] = collision_path
+    binding = materialize(plan=current, **(direct_kwargs if construction is None else {'construction': construction}),
         source_binding=values[0], native_reference_gate=values[1], robot_asset_sha256=robot_sha,
         runtime_digest=robot['runtime_digest'], calibration_digest=calibration['calibration_digest'])
     current['policy_canary_camera_start_configuration'] = binding

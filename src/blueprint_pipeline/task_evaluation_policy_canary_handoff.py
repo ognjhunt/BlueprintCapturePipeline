@@ -919,6 +919,7 @@ def advance_policy_canary_handoff(
             from .task_evaluation_scene_control_omission import bind_camera_start
             typed_omission["policy_canary_camera_start_configuration"] = bind_camera_start(
                 directive=omission, plan=_load(Path(compiled["scene_plan_path"]), blocker="policy_canary_scene_plan_invalid"),
+                scene_plan_path=Path(compiled["scene_plan_path"]),
                 construction=(None if direct else _load(Path(_published_paths["construction_result"]), blocker="policy_canary_construction_result_invalid")),
                 contract=contract, cells=_quick_cells(str(base["configured_scene_revision_digest"]), scene_id=policy_scene_id))
             typed_omission["authority_digest"] = canonical_digest(typed_omission, digest_field="authority_digest")
