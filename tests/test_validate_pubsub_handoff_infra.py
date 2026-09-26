@@ -8,7 +8,9 @@ from scripts import validate_pubsub_handoff_infra as validator
 from scripts.validate_pubsub_handoff_infra import (
     has_project_runtime_dependency,
     has_run_e2e_result_binding,
+    missing_dead_letter_retention,
     missing_dead_letter_service_agent_iam,
+    missing_deploy_dead_letter_retention,
     missing_deploy_dead_letter_service_agent_bindings,
 )
 
@@ -41,6 +43,8 @@ resource "google_pubsub_topic_iam_member" "pipeline_dlq_pubsub_agent_publisher" 
   topic  = google_pubsub_topic.pipeline_dlq.name
   role   = "roles/pubsub.publisher"
   member = local.pubsub_service_agent
+
+  depends_on = [google_pubsub_subscription.pipeline_dlq_retained]
 }
 
 resource "google_pubsub_subscription_iam_member" "pipeline_handoff_listener_pubsub_agent_subscriber" {
@@ -207,3 +211,70 @@ def test_deploy_service_agent_bindings_need_their_own_member_and_role() -> None:
 def test_repository_deploy_script_grants_the_service_agent() -> None:
     deploy_text = (REPO_ROOT / "deploy" / "scripts" / "deploy.sh").read_text(encoding="utf-8")
     assert missing_deploy_dead_letter_service_agent_bindings(deploy_text) == []
+
+
+_DEAD_LETTER_RETAINED_SUBSCRIPTION = """
+resource "google_pubsub_subscription" "pipeline_dlq_retained" {
+  name  = "pipeline-trigger-dlq-retained"
+  topic = google_pubsub_topic.pipeline_dlq.id
+
+  message_retention_duration = "604800s"
+  retain_acked_messages      = false
+
+  expiration_policy {
+    ttl = ""
+  }
+}
+"""
+
+
+def test_dead_lettering_needs_a_retained_never_expiring_subscription() -> None:
+    granted = _MAIN_TF_WITHOUT_DEAD_LETTER_GRANTS + _DEAD_LETTER_GRANTS
+    assert missing_dead_letter_retention(granted) == [
+        "retained dead-letter subscription (7-day retention, never expires)",
+    ]
+    assert missing_dead_letter_retention(granted + _DEAD_LETTER_RETAINED_SUBSCRIPTION) == []
+
+    for weakened in (
+        _DEAD_LETTER_RETAINED_SUBSCRIPTION.replace('"604800s"', '"86400s"'),
+        _DEAD_LETTER_RETAINED_SUBSCRIPTION.replace("retain_acked_messages      = false",
+                                                   "retain_acked_messages      = true"),
+        _DEAD_LETTER_RETAINED_SUBSCRIPTION.replace('    ttl = ""\n', '    ttl = "2678400s"\n'),
+    ):
+        assert missing_dead_letter_retention(granted + weakened) == [
+            "retained dead-letter subscription (7-day retention, never expires)",
+        ]
+
+    ungated = granted.replace("\n  depends_on = [google_pubsub_subscription.pipeline_dlq_retained]\n", "")
+    assert missing_dead_letter_retention(ungated + _DEAD_LETTER_RETAINED_SUBSCRIPTION) == [
+        "dead-letter publisher grant waits for the retained subscription",
+    ]
+
+
+_DEPLOY_DEAD_LETTER_RETAINED_SUBSCRIPTION = (
+    "        gcloud pubsub subscriptions create pipeline-trigger-dlq-retained \\\n"
+    "            --topic pipeline-trigger-dlq \\\n"
+    "            --message-retention-duration 7d \\\n"
+    "            --expiration-period never \\\n"
+    "            --quiet\n"
+)
+
+
+def test_deploy_creates_the_retained_dead_letter_subscription_before_granting() -> None:
+    grants = _DEPLOY_SERVICE_AGENT_IDENTITY + _DEPLOY_SERVICE_AGENT_TOPIC_GRANT
+    assert missing_deploy_dead_letter_retention(_DEPLOY_DEAD_LETTER_RETAINED_SUBSCRIPTION + grants) == []
+    assert missing_deploy_dead_letter_retention(grants) == ["deploy retained dead-letter subscription"]
+    assert missing_deploy_dead_letter_retention(
+        _DEPLOY_DEAD_LETTER_RETAINED_SUBSCRIPTION.replace("--expiration-period never", "--expiration-period 31d")
+        + grants
+    ) == ["deploy retained dead-letter subscription"]
+    assert missing_deploy_dead_letter_retention(grants + _DEPLOY_DEAD_LETTER_RETAINED_SUBSCRIPTION) == [
+        "deploy creates the retained dead-letter subscription before granting dead-letter access",
+    ]
+
+
+def test_repository_retains_dead_lettered_handoffs() -> None:
+    terraform = (REPO_ROOT / "deploy" / "terraform" / "main.tf").read_text(encoding="utf-8")
+    deploy_text = (REPO_ROOT / "deploy" / "scripts" / "deploy.sh").read_text(encoding="utf-8")
+    assert missing_dead_letter_retention(terraform) == []
+    assert missing_deploy_dead_letter_retention(deploy_text) == []

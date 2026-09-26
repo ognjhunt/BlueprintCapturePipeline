@@ -141,6 +141,66 @@ def missing_dead_letter_service_agent_iam(terraform_text: str) -> list[str]:
     return missing
 
 
+DEAD_LETTER_RETAINED_SUBSCRIPTION_HEADER = 'resource "google_pubsub_subscription" "pipeline_dlq_retained" {'
+DEAD_LETTER_RETAINED_SUBSCRIPTION_ATTRIBUTES = (
+    "topic = google_pubsub_topic.pipeline_dlq.id",
+    'message_retention_duration = "604800s"',
+    "retain_acked_messages = false",
+    'expiration_policy { ttl = "" }',
+)
+DEAD_LETTER_PUBLISHER_WAITS_FOR_RETENTION = "depends_on = [google_pubsub_subscription.pipeline_dlq_retained]"
+
+
+def missing_dead_letter_retention(terraform_text: str) -> list[str]:
+    """Describe what keeps dead-lettered handoffs recoverable that is missing.
+
+    Pub/Sub keeps a message only for the subscriptions a topic has when the
+    message is published, so a dead-letter topic without one discards every
+    exhausted handoff. The retained subscription keeps them for seven days and
+    never expires, and the service agent may not publish (dead-letter) until it
+    exists.
+    """
+
+    text = compact(terraform_text)
+    missing: list[str] = []
+    body = terraform_block_body(text, DEAD_LETTER_RETAINED_SUBSCRIPTION_HEADER)
+    if body is None or any(
+        f" {attribute} " not in f" {body} " for attribute in DEAD_LETTER_RETAINED_SUBSCRIPTION_ATTRIBUTES
+    ):
+        missing.append("retained dead-letter subscription (7-day retention, never expires)")
+    publisher = terraform_block_body(text, DEAD_LETTER_SERVICE_AGENT_GRANTS[0][0])
+    if publisher is None or f" {DEAD_LETTER_PUBLISHER_WAITS_FOR_RETENTION} " not in f" {publisher} ":
+        missing.append("dead-letter publisher grant waits for the retained subscription")
+    return missing
+
+
+DEPLOY_DEAD_LETTER_RETAINED_SUBSCRIPTION = "gcloud pubsub subscriptions create pipeline-trigger-dlq-retained"
+DEPLOY_DEAD_LETTER_RETAINED_SUBSCRIPTION_FLAGS = (
+    "--topic pipeline-trigger-dlq",
+    "--message-retention-duration 7d",
+    "--expiration-period never",
+)
+
+
+def missing_deploy_dead_letter_retention(deploy_text: str) -> list[str]:
+    """Describe what deploy.sh lacks to keep dead-lettered handoffs recoverable."""
+
+    commands = shell_commands(deploy_text)
+    created = [
+        index
+        for index, command in enumerate(commands)
+        if command.startswith(f"{DEPLOY_DEAD_LETTER_RETAINED_SUBSCRIPTION} ")
+        and all(f" {flag} " in f" {command} " for flag in DEPLOY_DEAD_LETTER_RETAINED_SUBSCRIPTION_FLAGS)
+    ]
+    if not created:
+        return ["deploy retained dead-letter subscription"]
+    publisher_command = DEPLOY_DEAD_LETTER_SERVICE_AGENT_BINDINGS[0][0]
+    granted = [index for index, command in enumerate(commands) if command.startswith(f"{publisher_command} ")]
+    if granted and min(granted) < min(created):
+        return ["deploy creates the retained dead-letter subscription before granting dead-letter access"]
+    return []
+
+
 def has_project_runtime_dependency(text: str, package_name: str) -> bool:
     """Return whether a package is a direct production dependency.
 
@@ -285,6 +345,9 @@ def main(repo_root: Path | None = None) -> None:
             "dead-letter policy cannot move exhausted handoffs; missing "
             + "; ".join(missing_dead_letter_iam)
         )
+    missing_retention = missing_dead_letter_retention(terraform_text)
+    if missing_retention:
+        fail("dead-lettered handoffs would be discarded; missing " + "; ".join(missing_retention))
     if 'resource "google_project_iam_member" "pipeline_runner_pubsub_subscriber"' in terraform_text:
         fail("pipeline-runner must not retain project-wide Pub/Sub subscriber IAM")
 
@@ -326,6 +389,9 @@ def main(repo_root: Path | None = None) -> None:
             "deploy script cannot enable dead-lettering; missing "
             + "; ".join(missing_deploy_bindings)
         )
+    missing_deploy_retention = missing_deploy_dead_letter_retention(deploy_text)
+    if missing_deploy_retention:
+        fail("deploy script would discard dead-lettered handoffs; " + "; ".join(missing_deploy_retention))
     runner_grants = deploy_text[
         deploy_text.find("RUNNER_EMAIL=") : deploy_text.find("# The persistent-host listener")
     ]

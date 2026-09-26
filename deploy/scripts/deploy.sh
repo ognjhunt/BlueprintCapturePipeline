@@ -866,6 +866,22 @@ create_pubsub_topics() {
         log_info "Created subscription: blueprint-pipeline-handoff-listener"
     fi
 
+    # A topic keeps a message only for the subscriptions it already has, so the
+    # dead-letter topic needs this retained subscription before anything can be
+    # dead-lettered into it. It keeps messages seven days and never expires.
+    if [[ "$DRY_RUN" == "true" ]]; then
+        log_info "[DRY-RUN] Would create retained dead-letter subscription: pipeline-trigger-dlq-retained"
+    elif gcloud pubsub subscriptions describe pipeline-trigger-dlq-retained &>/dev/null; then
+        log_info "Subscription pipeline-trigger-dlq-retained already exists"
+    else
+        gcloud pubsub subscriptions create pipeline-trigger-dlq-retained \
+            --topic pipeline-trigger-dlq \
+            --message-retention-duration 7d \
+            --expiration-period never \
+            --quiet
+        log_info "Created subscription: pipeline-trigger-dlq-retained"
+    fi
+
     # Pub/Sub dead-letters a message as its own service agent. Without publisher
     # on the dead-letter topic and subscriber on the source subscription, the
     # dead-letter policy never moves an exhausted handoff off the listener.
