@@ -1649,6 +1649,9 @@ def test_consent_expired_finishes_the_job_as_terminal_and_is_acknowledged(tmp_pa
         "error": "website scene failed",
     }
     assert not (tmp_path / ".pubsub_delivery_evidence").exists()
+    ack = _read(_capture_root(tmp_path) / "pipeline_job_ack_receipt.json")
+    assert ack["disposition"] == "terminal_authority_ended"
+    assert ack["payload_sha256"] == receipt["payload_sha256"]
 
 
 def test_redelivered_terminal_capture_is_acknowledged_without_staging(tmp_path, monkeypatch):
@@ -1670,6 +1673,9 @@ def test_redelivered_terminal_capture_is_acknowledged_without_staging(tmp_path, 
     assert results[0]["queue_disposition"] == "terminal_authority_ended"
     assert results[0]["blockers"] == ["consent_expired"]
     assert _read(ledger_path) == terminal_ledger
+    ack = _read(_capture_root(tmp_path) / "pipeline_job_ack_receipt.json")
+    assert ack["disposition"] == "terminal_authority_ended"
+    assert (ack["message_id"], ack["delivery_attempt"], ack["acknowledgement_count"]) == ("msg-a2", 2, 2)
 
 
 def test_a_redelivery_repairs_a_terminal_receipt_lost_to_a_crash(tmp_path, monkeypatch):
@@ -1757,3 +1763,91 @@ def test_a_terminal_ledger_without_a_matching_digest_is_not_reopened(tmp_path):
     assert reopened == "claimed"
     assert ledger["attempt_count"] == 2
     assert ledger["attempt_history"][-1]["status"] == "reopened_after_terminal_authority"
+
+
+def test_ack_receipt_is_written_after_acknowledge_returns(tmp_path, monkeypatch):
+    receipt_path = _capture_root(tmp_path) / "pipeline_job_ack_receipt.json"
+    subscriber = FakeSubscriber([
+        _received(ack_id="a1", data=PAYLOAD_BYTES, delivery_attempt=3),
+        _received(ack_id="poison", data=b"{not-json"),
+    ])
+    present_during_acknowledge: list[bool] = []
+    record_acknowledgement = subscriber.acknowledge
+
+    def acknowledge(*, request):
+        present_during_acknowledge.append(receipt_path.exists())
+        record_acknowledgement(request=request)
+
+    subscriber.acknowledge = acknowledge
+    _install_fake_pubsub(monkeypatch, subscriber, storage_client=FakeStorageClient(_website_bundle_blobs()),
+                         run_e2e=lambda **_: {"status": "completed"})
+
+    assert _pull(tmp_path) == 2
+    assert subscriber.acknowledged == ["a1", "poison"]
+    assert present_during_acknowledge == [False]
+    ack = _read(receipt_path)
+    assert datetime.fromisoformat(ack["acknowledged_at"]).tzinfo is not None
+    assert ack == {
+        "schema_version": "pubsub_handoff_ack_receipt.v1",
+        "subscription": SUBSCRIPTION,
+        "message_id": "msg-a1",
+        "payload_sha256": sha256(PAYLOAD_BYTES).hexdigest(),
+        "delivery_attempt": 3,
+        "disposition": "terminal_success",
+        "acknowledged_at": ack["acknowledged_at"],
+        "acknowledgement_count": 1,
+    }
+    # The permanently invalid payload has no capture root and keeps only its delivery evidence.
+    assert list(tmp_path.rglob("pipeline_job_ack_receipt.json")) == [receipt_path]
+    assert len(list((tmp_path / ".pubsub_delivery_evidence" / "permanent_invalid").glob("*.json"))) == 1
+
+    redelivery = FakeSubscriber([_received(ack_id="a2", data=PAYLOAD_BYTES, delivery_attempt=4)])
+    _install_fake_pubsub(monkeypatch, redelivery, storage_client=_ListingForbidden())
+    assert _pull(tmp_path) == 1
+    ack = _read(receipt_path)
+    assert (ack["message_id"], ack["delivery_attempt"], ack["disposition"], ack["acknowledgement_count"]) == (
+        "msg-a2", 4, "terminal_success", 2)
+
+
+def test_no_ack_receipt_when_acknowledge_fails(tmp_path, monkeypatch):
+    subscriber = FakeSubscriber([_received(ack_id="a1", data=PAYLOAD_BYTES)])
+    subscriber.acknowledge = lambda **_k: (_ for _ in ()).throw(RuntimeError("pubsub down"))
+    _install_fake_pubsub(monkeypatch, subscriber,
+                         storage_client=FakeStorageClient(_website_bundle_blobs()), run_e2e=_expired)
+    with pytest.raises(RuntimeError):
+        _pull(tmp_path)
+    assert not (_capture_root(tmp_path) / "pipeline_job_ack_receipt.json").exists()
+    # The job itself still ended; only the acknowledgement is unproven.
+    assert _read(_capture_root(tmp_path) / "pipeline_job_ledger.json")["status"] == "terminal_authority_ended"
+
+
+def test_retryable_results_leave_no_ack_receipt(tmp_path, monkeypatch):
+    def held(**_kwargs):
+        raise listener_module.PipelineError("website_control_task-context_http_409:task_brief_missing")
+
+    subscriber = FakeSubscriber([_received(ack_id="a1", data=PAYLOAD_BYTES)])
+    _install_fake_pubsub(monkeypatch, subscriber,
+                         storage_client=FakeStorageClient(_website_bundle_blobs()), run_e2e=held)
+    assert _pull(tmp_path) == 0
+    assert not (_capture_root(tmp_path) / "pipeline_job_ack_receipt.json").exists()
+
+
+def test_one_unwritable_ack_receipt_does_not_cost_the_others(tmp_path, monkeypatch):
+    other_prefix = "scenes/scene-2/captures/capture-2"
+    other_payload = json.dumps({
+        "bucket": "capture-bucket", "scene_id": "scene-2", "capture_id": "capture-2",
+        "raw_prefix_uri": f"gs://capture-bucket/{other_prefix}/raw"}).encode("utf-8")
+    blocked = _capture_root(tmp_path) / "pipeline_job_ack_receipt.json"
+    blocked.mkdir(parents=True)  # a directory where the receipt file belongs: the write fails
+    subscriber = FakeSubscriber([_received(ack_id="a1", data=PAYLOAD_BYTES),
+                                 _received(ack_id="a2", data=other_payload)])
+    _install_fake_pubsub(
+        monkeypatch, subscriber,
+        storage_client=FakeStorageClient([*_website_bundle_blobs(), *_website_bundle_blobs(other_prefix)]),
+        run_e2e=lambda **_: {"status": "completed"})
+
+    assert _pull(tmp_path) == 2
+    assert subscriber.acknowledged == ["a1", "a2"]
+    assert blocked.is_dir()
+    other = _read(tmp_path / "capture-bucket" / other_prefix / "pipeline_job_ack_receipt.json")
+    assert other["message_id"] == "msg-a2" and other["acknowledgement_count"] == 1

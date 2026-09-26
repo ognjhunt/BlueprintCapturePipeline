@@ -436,6 +436,8 @@ JOB_STATUS_SCHEMA_VERSION = "pipeline_job_status.v1"
 TERMINAL_AUTHORITY_STATUS = "terminal_authority_ended"
 JOB_TERMINAL_RECEIPT_FILENAME = "pipeline_job_terminal_receipt.json"
 JOB_TERMINAL_RECEIPT_SCHEMA_VERSION = "pipeline_job_terminal_receipt.v1"
+JOB_ACK_RECEIPT_FILENAME = "pipeline_job_ack_receipt.json"
+JOB_ACK_RECEIPT_SCHEMA_VERSION = "pubsub_handoff_ack_receipt.v1"
 PROVIDER_OPS_STATUS_SCHEMA_VERSION = "provider_ops_status.v1"
 DEFAULT_JOB_LEASE_SECONDS = 900
 DEFAULT_ACK_DEADLINE_SECONDS = 600
@@ -1820,6 +1822,37 @@ def _write_delivery_evidence(
     return record_path
 
 
+def _write_ack_receipt(
+    *,
+    capture_root: Path,
+    subscription: str,
+    message_id: str | None,
+    payload_digest: str,
+    delivery_attempt: int | None,
+    disposition: str,
+) -> None:
+    """Replace the capture's ack receipt; call only after acknowledge returned."""
+
+    with _locked_job_ledger(capture_root):
+        path = capture_root / JOB_ACK_RECEIPT_FILENAME
+        previous_count = _read_optional_json_object(path).get("acknowledgement_count")
+        if not isinstance(previous_count, int) or isinstance(previous_count, bool) or previous_count < 0:
+            previous_count = 0
+        write_json(
+            path,
+            {
+                "schema_version": JOB_ACK_RECEIPT_SCHEMA_VERSION,
+                "subscription": subscription,
+                "message_id": message_id,
+                "payload_sha256": payload_digest,
+                "delivery_attempt": delivery_attempt,
+                "disposition": disposition,
+                "acknowledged_at": utc_now_iso(),
+                "acknowledgement_count": previous_count + 1,
+            },
+        )
+
+
 def _canonical_subscription_resource(subscription: str) -> str:
     value = _string(subscription)
     parts = value.split("/")
@@ -1865,6 +1898,7 @@ def pull_and_process(
         timeout=30,
     )
     ack_ids: list[str] = []
+    ack_receipts: list[dict[str, Any]] = []
     for received in response.received_messages:
         message = received.message
         logger.info(
@@ -1875,8 +1909,9 @@ def pull_and_process(
             },
         )
         # Contract-invalid payloads are permanent and can be acknowledged after
-        # typed logging. Retryable work is explicitly nacked; the subscription's
-        # configured dead-letter policy owns exhausted delivery routing.
+        # typed logging. Retryable work is never acknowledged: defer_retry()
+        # extends its ack deadline so Pub/Sub redelivers it later, and the
+        # subscription's dead-letter policy owns exhausted delivery routing.
         try:
             parse_handoff_payload(message.data)
         except PipelineError as exc:
@@ -1899,6 +1934,7 @@ def pull_and_process(
             )
             ack_ids.append(received.ack_id)
             continue
+        digest = payload_sha256(message.data)
         heartbeat = _AckDeadlineHeartbeat(
             subscriber=subscriber,
             subscription=subscription_resource,
@@ -1918,6 +1954,7 @@ def pull_and_process(
                     control_plane_work_dir=control_plane_work_dir,
                     control_plane_staged_inputs_path=control_plane_staged_inputs_path,
                     overwrite_control_plane_input=overwrite_control_plane_input,
+                    payload_digest=digest,
                 )
         except Exception:
             delivery_attempt = getattr(received, "delivery_attempt", None)
@@ -1968,9 +2005,36 @@ def pull_and_process(
             heartbeat.defer_retry()
             continue
         ack_ids.append(received.ack_id)
+        capture_root = _string(result.get("capture_root"))
+        if capture_root:
+            delivery_attempt = getattr(received, "delivery_attempt", None)
+            ack_receipts.append(
+                {
+                    "capture_root": Path(capture_root),
+                    "message_id": _string(getattr(message, "message_id", None)) or None,
+                    "payload_digest": digest,
+                    "delivery_attempt": delivery_attempt
+                    if isinstance(delivery_attempt, int) and not isinstance(delivery_attempt, bool)
+                    else None,
+                    "disposition": TERMINAL_AUTHORITY_STATUS
+                    if result.get("queue_disposition") == TERMINAL_AUTHORITY_STATUS
+                    else "terminal_success",
+                }
+            )
 
     if ack_ids:
         subscriber.acknowledge(request={"subscription": subscription_resource, "ack_ids": ack_ids})
+        # Receipts follow the acknowledgement: a receipt never claims an ack that
+        # Pub/Sub did not accept. The ack is already final, so one receipt that
+        # cannot be written is logged and does not cost the others.
+        for receipt in ack_receipts:
+            try:
+                _write_ack_receipt(subscription=subscription_resource, **receipt)
+            except OSError:
+                logger.exception(
+                    "pubsub_handoff.ack_receipt_write_failed",
+                    extra={"message_id": receipt["message_id"]},
+                )
     return len(ack_ids)
 
 
