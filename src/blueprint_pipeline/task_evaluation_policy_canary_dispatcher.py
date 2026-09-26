@@ -561,7 +561,6 @@ def _default_allocator_runner(argv: Sequence[str]) -> int:
 
 def collect_policy_canary_vast_provider_zero() -> dict[str, Any]:
     """Collect fresh authenticated global Vast inventory without other-provider coupling."""
-
     from .gpu_render_providers import VastRenderProvider
 
     inventory = dict(VastRenderProvider().billable_inventory(name_prefix=""))
@@ -969,7 +968,6 @@ def service_access_blockers(
     """
 
     blockers: list[str] = []
-
     def parent_untraversable(target: Path) -> bool:
         parent = _nearest_existing_ancestor(target.parent)
         return parent.is_dir() and not access(parent, os.X_OK)
