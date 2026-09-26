@@ -1510,10 +1510,15 @@ def _repair_terminal_receipt(capture_root: Path, *, handoff: HandoffMessage) -> 
     """Under the ledger lock, make the live receipt describe the current ending.
 
     Covers a process that died between the terminal ledger commit and its
-    receipt, and a receipt left behind by an earlier ending.
+    receipt, and a receipt left behind by an earlier ending. Takes the lock
+    without creating anything, so a capture retired after the claim stays
+    retired.
     """
 
-    with _locked_job_ledger(capture_root) as ledger:
+    with _existing_job_ledger_lock(capture_root) as state:
+        if state != "ledger_present":
+            return
+        ledger = _read_job_ledger(capture_root)
         if (
             _string(ledger.get("status")) != TERMINAL_AUTHORITY_STATUS
             or not _string(ledger.get("terminal_code"))

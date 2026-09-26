@@ -2327,3 +2327,25 @@ def test_an_ended_payload_stays_ended_while_a_reopened_job_retries(tmp_path, mon
     assert replay.acknowledged == ["p1-replay"]
     assert results[0]["status"] == "skipped_terminal_authority_ended"
     assert _read(ledger_path) == retrying  # P2's retry state is untouched
+
+
+def test_receipt_repair_never_recreates_a_capture_retired_after_the_claim(tmp_path, monkeypatch):
+    first = FakeSubscriber([_received(ack_id="p1", data=PAYLOAD_BYTES)])
+    _install_fake_pubsub(monkeypatch, first,
+                         storage_client=FakeStorageClient(_website_bundle_blobs()), run_e2e=_expired)
+    assert _pull(tmp_path) == 1
+    scene_dir = tmp_path / "capture-bucket" / "scenes" / "scene-1"
+    claim = listener_module._claim_job_lease
+
+    def claim_then_retire(*args, **kwargs):
+        outcome = claim(*args, **kwargs)
+        shutil.rmtree(scene_dir)  # retirement wins the race right after the terminal claim
+        return outcome
+
+    monkeypatch.setattr(listener_module, "_claim_job_lease", claim_then_retire)
+    redelivered = FakeSubscriber([_received(ack_id="p1-again", data=PAYLOAD_BYTES, delivery_attempt=2)])
+    results = _install_fake_pubsub(monkeypatch, redelivered, storage_client=_ListingForbidden())
+
+    assert _pull(tmp_path) == 1
+    assert results[0]["status"] == "skipped_terminal_authority_ended"
+    assert not scene_dir.exists()
