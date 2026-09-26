@@ -118,8 +118,15 @@ def prepare(*, config_path: str | Path, expected_commit: str, now: float | None 
             if continuation is None:
                 rows.append({'intent_id': intent_id, 'status': 'retained_started_materialization'})
                 continue
-        result = adoption.provision_terminal_controls_adoption(config=config, catalog=catalog,
-            intent_id=intent_id, expected_production_commit=expected_commit, now=moment)
+        try:
+            result = adoption.provision_terminal_controls_adoption(config=config, catalog=catalog,
+                intent_id=intent_id, expected_production_commit=expected_commit, now=moment)
+        except intake.SceneIntakeError as exc:
+            if str(exc) != 'scene_intake_dependent_source_attempt_required':
+                raise
+            rows.append({'intent_id': intent_id, 'status': 'retained_exhausted_source_attempt',
+                         'blocker': str(exc)})
+            continue
         rows.append({'intent_id': intent_id, 'status': result['status'], 'receipt_digest': result['receipt_digest']})
     return {'status': 'prepared', 'schema_version': 'task_evaluation_terminal_controls_deploy.v1',
             'source_commit': expected_commit, 'rows': rows, 'provider_mutation_performed': False,
