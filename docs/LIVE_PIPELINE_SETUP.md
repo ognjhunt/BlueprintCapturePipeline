@@ -547,8 +547,20 @@ the Pub/Sub ack deadline while work is active, downloads the completed capture b
 the handoff from staged raw sidecars, writes a `robot_eval_job_request.v1`
 envelope into `BLUEPRINT_ROBOT_EVAL_JOB_REQUEST_INBOX`, and records the staged
 request path in `pipeline_job_ledger.json`. Terminal output is committed through
-`pipeline_job_output_commit.json`; retryable/blocked outcomes are nacked and
-permanent-invalid inputs are acknowledged with typed failure evidence. It does not execute simulator or
+`pipeline_job_output_commit.json`. When the WebApp has ended a website scene's
+authority (a 409 `consent_expired` or `source_revoked`), the job finishes as
+`terminal_authority_ended` with `pipeline_job_terminal_receipt.json` and the
+message is acknowledged; a redelivery of the same payload is acknowledged without
+staging, and only a different payload reopens the job. Retryable/blocked outcomes
+are left unacknowledged with a deferred ack deadline, so Pub/Sub redelivers them
+until the subscription's dead-letter policy moves them to `pipeline-trigger-dlq`.
+Dead-lettering needs the Pub/Sub service agent to hold publisher on that topic and
+subscriber on the subscription; Terraform grants both. Permanent-invalid inputs are
+acknowledged with typed failure evidence. After Pub/Sub accepts an acknowledgement,
+the capture records it in `pipeline_job_ack_receipt.json`. Staging records each
+Firebase Storage object it staged (size, generation, MD5, CRC32C) in
+`pipeline_staging_manifest.json` and does not download an unchanged object again.
+It does not execute simulator or
 provider work; the next control-plane pass consumes the inbox and resolves
 `site_package.capture_root` per request.
 
