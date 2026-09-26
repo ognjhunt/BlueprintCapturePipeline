@@ -20,6 +20,10 @@ class _Scene:
         self.robot.data.root_state_w = torch.tensor(
             [[1.0, 2.0, 3.0, 0.1, 0.2, 0.3, 0.9]], dtype=torch.float32
         )
+        self.robot.data.root_pos_w = torch.tensor([[1.0, 2.0, 3.0]])
+        self.robot.data.root_quat_w = torch.tensor([[0.1, 0.2, 0.3, 0.9]])
+        self.robot.data.root_lin_vel_w = torch.tensor([[4.0, 5.0, 6.0]])
+        self.robot.data.root_ang_vel_w = torch.tensor([[7.0, 8.0, 9.0]])
 
     def __getitem__(self, key):
         assert key == "robot"
@@ -106,6 +110,19 @@ def test_native_xyzw_is_shown_as_wxyz_without_mutation():
     assert native.scene["robot"].data.root_state_w[0, 3:7].tolist() == pytest.approx(
         [0.1, 0.2, 0.3, 0.9]
     )
+
+
+def test_incomplete_combined_root_uses_measured_components_without_fabrication():
+    native = _Environment()
+    native.scene.robot.data.root_state_w = torch.empty((1, 0))
+    root = bridge_module.SonicWxyzEnvironmentView(native).scene["robot"].data.root_state_w
+    assert root.shape == (1, 13)
+    assert root[0].tolist() == pytest.approx(
+        [1.0, 2.0, 3.0, 0.9, 0.1, 0.2, 0.3, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]
+    )
+    native.scene.robot.data.root_ang_vel_w = torch.empty((1, 0))
+    with pytest.raises(ValueError, match="g1_sonic_native_root_state_invalid"):
+        _ = bridge_module.SonicWxyzEnvironmentView(native).scene["robot"].data.root_state_w
 
 
 def test_exact_semantic_action_runs_both_onnx_sessions_and_maps_names(tmp_path, monkeypatch):

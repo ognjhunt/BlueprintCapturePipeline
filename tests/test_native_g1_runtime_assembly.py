@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import torch
 
 from blueprint_pipeline import native_g1_runtime_assembly as assembly
 
@@ -29,6 +30,29 @@ def _inputs():
         "sonic_decoder": "/staged/decoder.onnx",
         "sonic_decoder_sha256": "sha256:" + "c" * 64,
     }
+
+
+def test_sonic_bridge_primes_real_root_before_provider_construction() -> None:
+    data = SimpleNamespace(root_state_w=torch.empty((1, 0)),
+                           root_pos_w=torch.tensor([[1.0, 2.0, 3.0]]),
+                           root_quat_w=torch.tensor([[0.1, 0.2, 0.3, 0.9]]),
+                           root_lin_vel_w=torch.zeros((1, 3)),
+                           root_ang_vel_w=torch.zeros((1, 3)))
+    robot = SimpleNamespace(data=data)
+    calls: list[int] = []
+
+    class _Env:
+        scene = {"robot": robot}
+
+        def reset(self, *, seed: int):
+            calls.append(seed)
+            return None
+
+    env = _Env()
+    built = SimpleNamespace(env=env)
+    view = assembly._prime_sonic_native_root(built, env, {"scenario": {"seed": 7}})
+    assert calls == [7]
+    assert view.scene["robot"].data.root_state_w.shape == (1, 13)
 
 
 @pytest.mark.parametrize("url", [
