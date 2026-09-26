@@ -117,9 +117,13 @@ def test_verified_charge_and_zero_allow_owner_only_ingest_once(tmp_path, monkeyp
         return {"status": "registered_private_development_review",
                 "run_id": args["run_id"], "review_digest": "sha256:" + "b" * 64,
                 "artifact_count": 12}
-    def ingest(**_args):
+    def ingest(**args):
         calls.append("ingest")
-        return {"status": "ingested", "review_digest": "sha256:" + "b" * 64,
+        return {"status": "ingested", "run_id": args["run_id"],
+                "owner_user_id": args["owner_user_id"],
+                "organization_id": args["organization_id"],
+                "claim_ceiling": "development_only",
+                "review_digest": "sha256:" + "b" * 64,
                 "review_url": "https://tryblueprint.io/app/g1-reviews/g1-review-one",
                 "access_visibility": "owner_only", "public_redistribution_authorized": False}
     monkeypatch.setattr("blueprint_pipeline.native_g1_team_campaign_settlement.materialize_g1_private_review_delivery", deliver)

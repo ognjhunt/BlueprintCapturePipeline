@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import urllib.parse
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
@@ -108,7 +109,14 @@ def settle_g1_team_campaign(
     settled_path = directory / "settlement.json"
     if settled_path.is_file():
         settled = _read(settled_path, field="settlement_digest")
-        if settled.get("intent_digest") != intent["intent_digest"]:
+        if (
+            settled.get("schema_version") != SCHEMA
+            or settled.get("status") != "delivered_owner_only"
+            or settled.get("intent_digest") != intent["intent_digest"]
+            or settled.get("claim_ceiling") != "development_only"
+            or settled.get("access_visibility") != "owner_only"
+            or settled.get("public_redistribution_authorized") is not False
+        ):
             raise ValueError("g1_team_settlement_existing_conflict")
         return settled
     final = _read(directory / "dispatch_final.json", field="dispatch_digest")
@@ -215,10 +223,10 @@ def settle_g1_team_campaign(
     ):
         raise ValueError("g1_team_settlement_delivery_invalid")
     ingest_path = directory / "private_ingest.json"
+    owner = intent["request"]["owner"]
     if ingest_path.is_file():
         ingested = _strict_json(ingest_path)
     else:
-        owner = intent["request"]["owner"]
         ingested = ingest_g1_private_review(
             adapter_result_path=adapter_path, bundle_receipt_path=bundle_path,
             retained_review_path=review_path, delivery_receipt_path=delivery_path,
@@ -230,11 +238,24 @@ def settle_g1_team_campaign(
         write_exclusive(ingest_path, ingested)
     if (
         ingested.get("status") not in {"ingested", "already_ingested"}
+        or ingested.get("run_id") != run_id
         or ingested.get("review_digest") != review["review_digest"]
+        or ingested.get("owner_user_id") != owner["user_id"]
+        or ingested.get("organization_id") != owner["organization_id"]
         or ingested.get("access_visibility") != "owner_only"
+        or ingested.get("claim_ceiling") != "development_only"
         or ingested.get("public_redistribution_authorized") is not False
     ):
         raise ValueError("g1_team_settlement_ingest_invalid")
+    review_url = urllib.parse.urlsplit(str(ingested.get("review_url") or ""))
+    webapp = urllib.parse.urlsplit(webapp_url)
+    if (
+        review_url.scheme != "https"
+        or review_url.netloc != webapp.netloc
+        or review_url.path != "/app/g1-reviews/" + urllib.parse.quote(run_id, safe="")
+        or review_url.query or review_url.fragment
+    ):
+        raise ValueError("g1_team_settlement_review_url_invalid")
     settled = {
         "schema_version": SCHEMA,
         "status": "delivered_owner_only",
