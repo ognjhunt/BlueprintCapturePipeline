@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -288,6 +289,9 @@ def test_compilation_refuses_low_disk_before_creating_owned_output(
         )
 
     monkeypatch.setattr(worker, "reserve_control_plane_disk", refuse)
+    monkeypatch.setattr(worker, "COMPILATION_DISK_RECHECKS", 2)
+    pauses: list[int] = []
+    monkeypatch.setattr(worker.time, "sleep", pauses.append)
     run = process_episode_compilation_queue(
         queue_root=queue,
         input_root=inputs,
@@ -303,3 +307,47 @@ def test_compilation_refuses_low_disk_before_creating_owned_output(
         "floor_bytes=8:reserved_bytes=0"
     ]
     assert not (outputs / envelope["compilation_id"]).exists()
+    assert pauses == [worker.COMPILATION_DISK_RECHECK_SECONDS] * 2
+
+
+def test_compilation_rechecks_transient_capacity_before_invoking_compiler(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    queue, inputs, envelope = _stage(tmp_path)
+    calls = 0
+    pauses: list[int] = []
+
+    def reserve(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise ControlPlaneDiskBudgetError(
+                "control_plane_disk_budget_exceeded:episode_compilation:"
+                "need_bytes=6:available_bytes=0:free_bytes=8:"
+                "floor_bytes=8:reserved_bytes=0"
+            )
+        return SimpleNamespace(release=lambda: None)
+
+    invoked = []
+
+    def compiler(**_kwargs):
+        invoked.append(True)
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(worker, "reserve_control_plane_disk", reserve)
+    monkeypatch.setattr(worker.time, "sleep", pauses.append)
+    run = process_episode_compilation_queue(
+        queue_root=queue,
+        input_root=inputs,
+        output_root=tmp_path / "outputs",
+        source_commit=envelope["expected_production_commit"],
+        episode_compiler=compiler,
+        disk_reservation_root=tmp_path / "reservations",
+    )
+
+    assert calls == 2
+    assert pauses == [worker.COMPILATION_DISK_RECHECK_SECONDS]
+    assert invoked == [True]
+    assert run["results"][0]["blockers"] == [
+        "episode_compilation_failed:OSError:errno_28"
+    ]

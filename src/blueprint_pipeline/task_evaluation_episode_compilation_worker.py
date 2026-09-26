@@ -15,6 +15,7 @@ import json
 import os
 import re
 import shutil
+import time
 import zipfile
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -54,6 +55,8 @@ from .task_evaluation_native_arena_preparation_adapter import (
 
 COMPILER_OUTPUT_SCHEMA_VERSION = "task_evaluation_episode_compiler_output.v1"
 RESULT_SCHEMA_VERSION = "task_evaluation_episode_compilation_result.v1"
+COMPILATION_DISK_RECHECKS = 6
+COMPILATION_DISK_RECHECK_SECONDS = 15
 EpisodeCompiler = Callable[..., Mapping[str, Any]]
 QUEUE_ROOT_ENV = "BLUEPRINT_TASK_EVALUATION_EPISODE_COMPILATION_QUEUE_ROOT"
 INPUT_ROOT_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_INPUT_ROOT"
@@ -350,22 +353,27 @@ def process_episode_compilation_queue(
                 )
             references = _verified_references(envelope, input_root=inputs)
             if disk_reservation_root is not None:
-                try:
-                    disk_reservation = reserve_control_plane_disk(
-                        "episode_compilation",
-                        target_root=outputs,
-                        expected_bytes=_expected_compilation_bytes(
-                            references,
-                            content_store_root=(
-                                outputs / "content-addressed" / "adapter-members" / "sha256"
-                            ),
-                        ),
-                        reservation_root=disk_reservation_root,
-                    )
-                except ControlPlaneDiskBudgetError as exc:
-                    raise TaskEvaluationEpisodeCompilationWorkerError(
-                        str(exc)
-                    ) from exc
+                expected_bytes = _expected_compilation_bytes(
+                    references,
+                    content_store_root=(
+                        outputs / "content-addressed" / "adapter-members" / "sha256"
+                    ),
+                )
+                for check in range(COMPILATION_DISK_RECHECKS + 1):
+                    try:
+                        disk_reservation = reserve_control_plane_disk(
+                            "episode_compilation",
+                            target_root=outputs,
+                            expected_bytes=expected_bytes,
+                            reservation_root=disk_reservation_root,
+                        )
+                        break
+                    except ControlPlaneDiskBudgetError as exc:
+                        if (not str(exc).startswith(
+                            "control_plane_disk_budget_exceeded:episode_compilation:"
+                        ) or check == COMPILATION_DISK_RECHECKS):
+                            raise TaskEvaluationEpisodeCompilationWorkerError(str(exc)) from exc
+                        time.sleep(COMPILATION_DISK_RECHECK_SECONDS)
             owned_output = outputs / envelope["compilation_id"]
             owned_output.mkdir(mode=0o750, exist_ok=False)
             compiler_output = _validated_compiler_output(

@@ -83,10 +83,9 @@ def test_g1_private_media_uses_live_authenticated_artifact_resolver(tmp_path: Pa
             assert record["content_type"] == (
                 "application/json" if role == "g1_frame_manifest" else "video/mp4"
             )
-    with pytest.raises(ValueError, match="already_registered"):
-        _stage_review_artifacts(
-            review=review, source_root=source, result_root=result_root, run_id=run_id
-        )
+    assert _stage_review_artifacts(
+        review=review, source_root=source, result_root=result_root, run_id=run_id
+    ) == registered
 
 
 def test_g1_private_media_rejects_path_escape_and_changed_bytes(tmp_path: Path) -> None:
@@ -128,6 +127,10 @@ def test_g1_private_media_resolver_detects_post_registration_tamper(tmp_path: Pa
     ).hexdigest()[:32]
     path = result_root / f"{run_id}-activation/evidence" / artifact["relative_path"]
     path.write_bytes(b"changed")
+    with pytest.raises(TaskEvaluationResultDeliveryError, match="reverification_failed"):
+        _stage_review_artifacts(
+            review=review, source_root=source, result_root=result_root, run_id=run_id
+        )
     with pytest.raises(TaskEvaluationResultDeliveryError, match="reverification_failed"):
         resolve_live_pipeline_result_artifact(
             legacy_state_root=tmp_path / "legacy",
