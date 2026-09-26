@@ -75,6 +75,10 @@ NATIVE_TASK_ARENA_DEPENDENCY_IMPORTS = (
     "isaaclab_teleop",
     "isaaclab_visualizers",
     "isaaclab_arena",
+    "isaaclab_arena_g1",
+    "coloredlogs",
+    "humanfriendly",
+    "flatbuffers",
     "isaaclab_arena.environments.arena_env_builder",
     "isaacsim.robot_motion.experimental.motion_generation",
     "isaacsim.robot_motion.pink",
@@ -82,4 +86,6 @@ NATIVE_TASK_ARENA_DEPENDENCY_IMPORTS = (
     "pink",
     "qpsolvers",
     "osqp",
+    "onnxruntime",
+    "google.protobuf",
 )

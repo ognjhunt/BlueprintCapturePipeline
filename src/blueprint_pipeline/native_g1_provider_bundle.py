@@ -106,6 +106,39 @@ OUT_DIR="${BLUEPRINT_ADP_ARENA_OUTPUT_DIR:-$RUNTIME_DIR/../runtime_output}"
 mkdir -p "$OUT_DIR"
 export BLUEPRINT_G1_PINNED_ISAAC_IMAGE="nvcr.io/nvidia/isaac-sim:6.0.1@sha256:b1c542b2ecc549b3d1ebb78c25664aa3bacba1709e6ad8e0a68e09426d57dedb"
 cd "$RUNTIME_DIR"
+echo BLUEPRINT_G1_STAGE_STARTED:media-toolchain
+if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
+  DEBIAN_FRONTEND=noninteractive apt-get update -qq >"$OUT_DIR/media_toolchain_install.log" 2>&1 && \
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ffmpeg >>"$OUT_DIR/media_toolchain_install.log" 2>&1
+fi
+if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
+  echo BLUEPRINT_G1_STAGE_BLOCKED:media-toolchain
+  /isaac-sim/python.sh - "$OUT_DIR" <<'PY'
+import json
+import sys
+from pathlib import Path
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+out = Path(sys.argv[1])
+value = {
+    "schema_version": "native_g1_provider_campaign_result.v1",
+    "status": "blocked",
+    "claim_ceiling": "development_only",
+    "pairs": [],
+    "policy_query_counts": {},
+    "candidate_policy_queried": False,
+    "ranking_eligible": False,
+    "physical_outcome_claimed": False,
+    "stage_reached": "media-toolchain",
+    "blockers": ["g1_provider_media_toolchain_unavailable"],
+}
+value["result_digest"] = canonical_digest(value, digest_field="result_digest")
+(out / "native_g1_provider_campaign_result.v1.json").write_text(
+    json.dumps(value, sort_keys=True, indent=2) + "\\n", encoding="utf-8"
+)
+PY
+  exit 2
+fi
+echo BLUEPRINT_G1_STAGE_FINISHED:media-toolchain
 echo BLUEPRINT_G1_STAGE_STARTED:runtime-source-provisioning
 /isaac-sim/python.sh -m blueprint_pipeline.native_task_runtime_source_provision \\
   --source-receipt "$RUNTIME_DIR/native_task_runtime_sources/native_task_runtime_source_packet.v1.json" \\

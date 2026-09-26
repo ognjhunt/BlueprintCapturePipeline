@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import subprocess
@@ -20,6 +21,7 @@ from blueprint_pipeline.native_g1_provider_bundle import (
     SCHEMA,
     _contract_dependency,
     _runtime_code_files,
+    _entrypoint,
     load_verified_g1_provider_bundle,
 )
 from blueprint_pipeline.provider_runtime_bundle_contract import (
@@ -169,6 +171,14 @@ def test_bundle_code_closure_includes_shared_subpackages() -> None:
 
 
 def test_g1_provider_kind_uses_isaac_and_retains_episode_media() -> None:
+    actual_entrypoint = _entrypoint()
+    for embedded_python in actual_entrypoint.split("<<'PY'\n")[1:]:
+        ast.parse(embedded_python.split("\nPY\n", 1)[0])
+    assert actual_entrypoint.index("BLUEPRINT_G1_STAGE_STARTED:media-toolchain") < actual_entrypoint.index(
+        "native_task_runtime_source_provision"
+    )
+    assert "apt-get install -y -qq ffmpeg" in actual_entrypoint
+    assert "g1_provider_media_toolchain_unavailable" in actual_entrypoint
     assert validate_independent_vast_watchdog_names(
         pod_name_prefix=lane.INSTANCE_LABEL_PREFIX
     )[0] == lane.INSTANCE_LABEL_PREFIX

@@ -49,6 +49,7 @@ def _repository(root: Path, *, arena: bool) -> tuple[Path, str, str]:
             "pyproject.toml": "[build-system]\nrequires=['setuptools']\n",
             "extension.toml": "[package]\nversion='fixture'\n",
             "isaaclab_arena/__init__.py": "VERSION = 'fixture'\n",
+            "isaaclab_arena_g1/__init__.py": "VERSION = 'fixture'\n",
             "ignored.txt": "must not be packaged\n",
         }
     else:
@@ -218,6 +219,7 @@ def test_source_packet_binds_exact_revisions_licenses_and_minimum_closure(
         ("requests", "2.34.2"),
         ("PyYAML", "6.0.3"),
         ("warp-lang", "1.13.0"),
+        ("onnxruntime", "1.22.1"),
     }.issubset(
         {
             (row["package"], row["version"])
@@ -231,6 +233,7 @@ def test_source_packet_binds_exact_revisions_licenses_and_minimum_closure(
         names = set(archive.namelist())
         assert "runtime_sources/isaaclab/ignored.txt" not in names
         assert "runtime_sources/arena/ignored.txt" not in names
+        assert "runtime_sources/arena/isaaclab_arena_g1/__init__.py" in names
         assert (
             "runtime_sources/isaaclab/apps/isaaclab.python.kit" in names
         )

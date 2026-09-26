@@ -342,6 +342,7 @@ def _runtime_source_packet(root: Path) -> Path:
                 "pyproject.toml": "[build-system]\nrequires=['setuptools']\n",
                 "extension.toml": "[package]\nversion='fixture'\n",
                 "isaaclab_arena/__init__.py": "VERSION='fixture'\n",
+                "isaaclab_arena_g1/__init__.py": "VERSION='fixture'\n",
             }
         else:
             files = {
