@@ -688,6 +688,8 @@ def main(argv: list[str] | None = None) -> int:
             keep_last=args.keep_last,
             minimum_age_seconds=args.minimum_age_seconds,
             in_use_commits=in_use(),
+            # Never walk trees while holding the publishers' locks.
+            measure_sizes=not mutating,
         )
         result: dict[str, Any] = (
             {

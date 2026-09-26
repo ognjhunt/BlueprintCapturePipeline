@@ -487,6 +487,13 @@ def test_cli_apply_never_retires_a_tree_a_live_process_uses(
     printed = json.loads(capsys.readouterr().out)
     assert printed["plan"]["protected_commits"][E] == ["in_use_by_live_process"]
     assert (host["releases"] / E / "payload.bin").is_file()
+    # Holding the publishers' lock, the CLI never walks trees to size them.
+    assert printed["plan"]["candidate_bytes"] is None
+
+    # A dry run takes no lock, so it may measure.
+    dry_run = [argument for argument in arguments if argument not in {"--apply", "--ack", EXECUTE_ACK}]
+    assert main([*dry_run, "--no-migrate"]) == 0
+    assert json.loads(capsys.readouterr().out)["candidate_bytes"] == 0
 
 
 def test_publisher_lock_roots_are_distinct_directories(
