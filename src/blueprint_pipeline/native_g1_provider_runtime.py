@@ -138,8 +138,10 @@ def verify_g1_provider_inputs(runtime_root: Path) -> dict[str, Any]:
     )
     if (
         provision.get("status") != "completed"
+        or provision.get("runtime_profile") != "unitree_g1"
         or provision.get("source_packet_sha256") != source_receipt.get("packet_sha256")
         or source_receipt.get("status") != "ready"
+        or source_receipt.get("runtime_profile") != "unitree_g1"
     ):
         raise ValueError("g1_provider_runtime_source_provisioning_incomplete")
     return {

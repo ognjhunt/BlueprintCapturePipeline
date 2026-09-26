@@ -18,6 +18,7 @@ from blueprint_pipeline.native_task_runtime_source_packet import (
     ISAACLAB_RUNTIME_COMPATIBILITY_TREE,
     ISAACLAB_TREE,
     RUNTIME_DEPENDENCY_WHEELS,
+    runtime_dependency_contracts,
     NativeTaskRuntimeSourcePacketError,
     materialize_native_task_runtime_source_packet,
     verify_native_task_runtime_source_packet,
@@ -92,7 +93,9 @@ def _repository(root: Path, *, arena: bool) -> tuple[Path, str, str]:
     return repo, _git(repo, "rev-parse", "HEAD"), _git(repo, "rev-parse", "HEAD^{tree}")
 
 
-def _packet(tmp_path: Path, *, output_name: str = "packet") -> dict:
+def _packet(
+    tmp_path: Path, *, output_name: str = "packet", runtime_profile: str = "base"
+) -> dict:
     isaaclab, isaaclab_commit, isaaclab_tree = _repository(
         tmp_path / "lab-root", arena=False
     )
@@ -101,7 +104,8 @@ def _packet(tmp_path: Path, *, output_name: str = "packet") -> dict:
         output_dir=tmp_path / output_name,
         isaaclab_repo=isaaclab,
         arena_repo=arena,
-        dependency_wheel_dir=_wheelhouse(tmp_path),
+        dependency_wheel_dir=_wheelhouse(tmp_path, runtime_profile=runtime_profile),
+        runtime_profile=runtime_profile,
         generated_at="fixed",
         isaaclab_commit=isaaclab_commit,
         isaaclab_tree=isaaclab_tree,
@@ -121,10 +125,25 @@ def test_default_source_pair_is_the_upstream_601_compatible_release_pair() -> No
     assert ARENA_TREE == "a52514015a8573ac03b6448688bfa61f9cea18a9"
 
 
-def _wheelhouse(root: Path) -> Path:
+def test_g1_runtime_profile_seals_its_native_import_closure_without_changing_base(
+    tmp_path: Path,
+) -> None:
+    receipt = _packet(tmp_path, runtime_profile="unitree_g1")
+    verified = verify_native_task_runtime_source_packet(
+        tmp_path / "packet/native_task_runtime_source_packet.v1.json"
+    )
+    assert receipt["runtime_profile"] == verified["runtime_profile"] == "unitree_g1"
+    packages = {row["package"] for row in verified["runtime_dependency_wheels"]}
+    assert {"pin", "coal", "eigenpy", "protobuf", "numpy"}.issubset(packages)
+    assert not {"pin", "coal", "protobuf"}.intersection(
+        row["package"] for row in RUNTIME_DEPENDENCY_WHEELS
+    )
+
+
+def _wheelhouse(root: Path, *, runtime_profile: str = "base") -> Path:
     wheelhouse = root / "wheelhouse"
     wheelhouse.mkdir(exist_ok=True)
-    for contract in RUNTIME_DEPENDENCY_WHEELS:
+    for contract in runtime_dependency_contracts(runtime_profile):
         path = wheelhouse / contract["filename"]
         if path.is_file():
             continue
@@ -420,6 +439,7 @@ def test_relocated_packet_installs_all_sources_once_without_build_backend(
     assert len(path_lines) == 1
     assert path_lines[0].startswith("import sys;sys.path[:0]=[")
     assert result["runtime_dependency_target"] in path_lines[0]
+    assert "cmeel.prefix/lib/python3.12/site-packages" in path_lines[0]
     assert all(path in path_lines[0] for path in result["install_roots"])
 
 

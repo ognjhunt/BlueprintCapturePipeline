@@ -58,6 +58,7 @@ CONSTRUCTION_RUNTIME_MODULE_NAMES = (
     "native_task_runtime_source_packet.py",
     "native_task_runtime_source_provision.py",
     "native_task_torch_runtime_lock.py",
+    "native_task_g1_runtime_lock.py",
     # The warm construction-repair loop invokes cuRobo as a separate process
     # before the next native attempt.  Ship the exact typed boundary and lazy
     # service entry point; cuRobo itself is independently source-pinned and
@@ -173,6 +174,7 @@ CONTROLS_RUNTIME_MODULE_NAMES = (
     "native_task_runtime_source_packet.py",
     "native_task_runtime_source_provision.py",
     "native_task_torch_runtime_lock.py",
+    "native_task_g1_runtime_lock.py",
     "native_task_servo_command_limits.py",
     "task_evaluation_collision_aware_candidate_generation.py",
     "task_evaluation_curobo_candidate_generator.py",

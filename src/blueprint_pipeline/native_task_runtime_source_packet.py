@@ -25,6 +25,7 @@ from typing import Any
 from datetime import datetime, timezone
 from .decision_evidence_contracts import canonical_digest
 from .native_task_torch_runtime_lock import TORCH_RUNTIME_DEPENDENCY_WHEELS
+from .native_task_g1_runtime_lock import G1_RUNTIME_DEPENDENCY_WHEELS
 
 
 SCHEMA_VERSION = "native_task_runtime_source_packet.v1"
@@ -360,6 +361,15 @@ BASE_RUNTIME_DEPENDENCY_WHEELS = (
 RUNTIME_DEPENDENCY_WHEELS = (
     BASE_RUNTIME_DEPENDENCY_WHEELS + TORCH_RUNTIME_DEPENDENCY_WHEELS
 )
+RUNTIME_PROFILES = ("base", "unitree_g1")
+
+
+def runtime_dependency_contracts(profile: str) -> tuple[dict[str, Any], ...]:
+    if profile == "base":
+        return RUNTIME_DEPENDENCY_WHEELS
+    if profile == "unitree_g1":
+        return RUNTIME_DEPENDENCY_WHEELS + G1_RUNTIME_DEPENDENCY_WHEELS
+    raise NativeTaskRuntimeSourcePacketError(["native_task_runtime_profile_unsupported"])
 
 
 class NativeTaskRuntimeSourcePacketError(ValueError):
@@ -524,8 +534,9 @@ def _repository_rows(
 
 def _runtime_dependency_rows(
     wheel_dir: Path,
+    contracts: Sequence[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], list[tuple[str, Path]]]:
-    expected = {row["filename"] for row in RUNTIME_DEPENDENCY_WHEELS}
+    expected = {row["filename"] for row in contracts}
     observed = {path.name for path in wheel_dir.glob("*.whl")} if wheel_dir.is_dir() else set()
     if observed != expected:
         raise NativeTaskRuntimeSourcePacketError(
@@ -533,7 +544,7 @@ def _runtime_dependency_rows(
         )
     rows: list[dict[str, Any]] = []
     wheel_files: list[tuple[str, Path]] = []
-    for contract in RUNTIME_DEPENDENCY_WHEELS:
+    for contract in contracts:
         path = wheel_dir / contract["filename"]
         try:
             with zipfile.ZipFile(path) as archive:
@@ -582,6 +593,7 @@ def materialize_native_task_runtime_source_packet(
     isaaclab_repo: str | Path,
     arena_repo: str | Path,
     dependency_wheel_dir: str | Path,
+    runtime_profile: str = "base",
     generated_at: str | None = None,
     isaaclab_commit: str = ISAACLAB_COMMIT,
     isaaclab_tree: str = ISAACLAB_TREE,
@@ -595,6 +607,7 @@ def materialize_native_task_runtime_source_packet(
 ) -> dict[str, Any]:
     """Create one deterministic, digest-bound released-source packet."""
 
+    dependency_contracts = runtime_dependency_contracts(runtime_profile)
     destination = Path(output_dir).expanduser().resolve()
     destination.mkdir(parents=True, exist_ok=True)
     # Isaac Lab resolves its Kit experience files relative to the repository
@@ -677,12 +690,13 @@ def materialize_native_task_runtime_source_packet(
         ),
     )
     dependency_rows, dependency_files = _runtime_dependency_rows(
-        Path(dependency_wheel_dir).expanduser().resolve()
+        Path(dependency_wheel_dir).expanduser().resolve(), dependency_contracts
     )
     manifest: dict[str, Any] = {
         "schema_version": MANIFEST_SCHEMA_VERSION,
         "generated_at": generated_at or _utc_now_iso(),
         "status": "ready",
+        "runtime_profile": runtime_profile,
         "repositories": [isaaclab, compatibility, arena],
         "runtime_experience": {
             "relative_path": RUNTIME_EXPERIENCE_RELATIVE_PATH,
@@ -747,6 +761,7 @@ def materialize_native_task_runtime_source_packet(
         "schema_version": SCHEMA_VERSION,
         "generated_at": manifest["generated_at"],
         "status": "ready",
+        "runtime_profile": runtime_profile,
         "manifest_digest": manifest["manifest_digest"],
         "repositories": [
             {
@@ -900,6 +915,11 @@ def verify_native_task_runtime_source_packet(
                 "runtime_dependency_wheels"
             ):
                 errors.append("native_task_runtime_dependency_receipt_manifest_mismatch")
+            if manifest.get("runtime_profile") != receipt.get("runtime_profile") or (
+                manifest.get("runtime_profile") is not None
+                and manifest.get("runtime_profile") not in RUNTIME_PROFILES
+            ):
+                errors.append("native_task_runtime_profile_receipt_manifest_mismatch")
             if manifest.get("runtime_dependency_basis") != receipt.get(
                 "runtime_dependency_basis"
             ):
@@ -935,6 +955,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--isaaclab-repo", required=True)
     parser.add_argument("--arena-repo", required=True)
     parser.add_argument("--dependency-wheel-dir", required=True)
+    parser.add_argument("--runtime-profile", choices=RUNTIME_PROFILES, default="base")
     parser.add_argument("--generated-at")
     args = parser.parse_args(argv)
     receipt = materialize_native_task_runtime_source_packet(
@@ -942,6 +963,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         isaaclab_repo=args.isaaclab_repo,
         arena_repo=args.arena_repo,
         dependency_wheel_dir=args.dependency_wheel_dir,
+        runtime_profile=args.runtime_profile,
         generated_at=args.generated_at,
     )
     print(json.dumps(receipt, sort_keys=True))

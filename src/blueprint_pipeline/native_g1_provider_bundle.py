@@ -238,6 +238,8 @@ def build_g1_provider_bundle(
     ):
         raise ValueError("g1_provider_bundle_publisher_receipt_invalid")
     runtime_source = verify_native_task_runtime_source_packet(runtime_source_receipt)
+    if runtime_source.get("runtime_profile") != "unitree_g1":
+        raise ValueError("g1_provider_bundle_runtime_profile_invalid")
     packets = {
         "manipulation": verify_native_task_arena_packet(manipulation_packet),
         "movement": verify_native_task_arena_packet(movement_packet),
@@ -268,6 +270,7 @@ def build_g1_provider_bundle(
         "campaign_plan_digest": campaign["plan_digest"],
         "publisher_source_receipt_digest": staged_publisher["receipt_digest"],
         "runtime_source_packet": {
+            "runtime_profile": runtime_source["runtime_profile"],
             "receipt_digest": runtime_source["receipt_digest"],
             "packet_sha256": runtime_source["packet_sha256"],
             "packet_size_bytes": runtime_source["packet_size_bytes"],
