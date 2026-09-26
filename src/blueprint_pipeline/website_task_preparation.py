@@ -30,7 +30,7 @@ from .external_scene_frame_registration import _axis_rotations, _sample, _trimme
 from .local_reconstruction_adapters import _sha256_file
 from .website_assembly_coverage import assembly_constraints, assembly_contract, coverage_blockers, coverage_matches
 from .website_task_masks import decode_track_mask, estimate_target_bounds
-from .website_support_geometry import support_under
+from .website_support_geometry import ground_on_observed_floor, support_under
 
 SCHEMA_VERSION = "website_scene_preparation.v1"
 CLAIM_CEILING = "development_only"
@@ -611,6 +611,20 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     collider = None if independent_object else trimesh.load(base_scene["collision_mesh_path"], force="mesh", process=False)
     support = (None if independent_object else
                support_under(collider, subject_min, subject_max, up=up, meters_per_unit=mpu, up_sign=up_sign))
+    # A rebuilt, floor-standing assembly (dishwasher, oven) rarely shows its
+    # lowest band, and a generated world often leaves the empty bay without a
+    # floor: its body reaches down to the floor the footage observed.
+    grounding = None
+    ground = registration.get("ground_plane") or {}
+    if (support is None and articulated and body is not None and not independent_object
+            and anchor is not None and ground.get("checked") is True):
+        floor = float(ground["observed_floor_offset_m"]) / mpu
+        grounding = ground_on_observed_floor(collider, subject_min, subject_max, up=up, meters_per_unit=mpu,
+                                             floor_height=floor if base_scene["up_axis"] == "-Y" else -floor,
+                                             up_sign=up_sign)
+        if grounding is not None:
+            support = grounding
+            (subject_min if up_sign == 1 else subject_max)[up] = grounding["top_runtime_units"]
     snap = 0.0
     if support is None:
         blockers.append("support_surface_not_found_under_subject")
@@ -699,6 +713,12 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                 provider=authoring_provider, output_root=output_root / "reference_frames")
         except (ValueError, FrameBudgetError) as exc:
             blockers.append(str(exc))
+        if contract is not None and grounding is not None:
+            extension_m = grounding["extended_runtime_units"] * mpu
+            contract["body_extent_m"]["height"] = float(contract["body_extent_m"]["height"]) + extension_m
+            contract["body_extent_m"]["grounding"] = {
+                "basis": grounding["basis"], "extended_to_observed_floor_m": extension_m,
+                "reason": "lowest_band_unobserved_on_floor_standing_assembly", "physical_measurement": False}
     authoring_frames = [{"path": row["path"], "sha256": row["sha256"], "role": "observed_source",
                          "frame_id": row["frame_id"], "reason": row["reason"],
                          "source_sha256": row["transmission"]["source_sha256"]}
@@ -717,6 +737,8 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
             front = body_front_normal(body, runtime_to_sim[:3, :3] @ matrix[:3, :3])
             normal = front["estimated_front_normal_world"]
             extent = [float(body[key]) * scale for key in ("depth_m", "width_m", "height_m")]
+            if grounding is not None:
+                extent[2] += grounding["extended_runtime_units"] * mpu
         else:
             front = estimate_front_normal(track, frames_by_id, matrix,
                                           [(subject_min[i] + subject_max[i]) / 2 for i in range(3)],
