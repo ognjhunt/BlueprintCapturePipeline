@@ -34,6 +34,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import stat
 import subprocess  # nosec B404 - fixed git/systemctl argv over validated paths
 import tempfile
@@ -2215,7 +2216,19 @@ def _prepare_terminal_controls_adoptions(*, release_path: str | Path, commit: st
         '--config', str(config_path), '--expected-commit', commit]
     # Retained placement validation exceeded ten minutes on the 4-vCPU host.
     # Keep the deploy locks and quiescence while the existing worker finishes.
-    result = subprocess.run(argv, check=True, capture_output=True, text=True, timeout=1800)
+    try:
+        result = subprocess.run(argv, check=True, capture_output=True, text=True, timeout=1800)
+    except subprocess.CalledProcessError as exc:
+        # The helper's stdout/stderr are captured by systemd-run, not journald.
+        # Surface only a bounded typed error; never echo a child traceback or
+        # its environment into an operator-door deployment receipt.
+        output = (exc.stderr or "") + "\n" + (exc.stdout or "")
+        codes = re.findall(r"(?:[A-Za-z0-9_.]+(?:Error|Exception)):\s*([a-z][a-z0-9_]+)", output)
+        code = codes[-1] if codes else "unclassified"
+        digest = hashlib.sha256(output.encode("utf-8", errors="replace")).hexdigest()
+        raise ControlPlaneDeployError(
+            f"deploy_terminal_controls_adoptions_failed:{code}:exit_{exc.returncode}:stderr_sha256_{digest}"
+        ) from None
     try:
         report = json.loads(result.stdout)
     except ValueError as exc:

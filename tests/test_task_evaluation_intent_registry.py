@@ -127,6 +127,35 @@ def test_interrupted_switch_can_resume_without_rewriting_archive(registry, monke
     assert archive.read_bytes() == _payload(A)
 
 
+def test_supersession_never_links_the_readonly_live_inode(registry, monkeypatch):
+    original_link = module.os.link
+    linked_sources = []
+
+    def safe_link(source, destination, **kwargs):
+        linked_sources.append(Path(source))
+        assert Path(source) != registry  # A root-owned live file cannot be linked by blueprint.
+        return original_link(source, destination, **kwargs)
+
+    monkeypatch.setattr(module.os, "link", safe_link)
+    old_inode = registry.stat().st_ino
+    _install(registry, B)
+    archive = registry.with_name(f"owner.superseded-{A}.json")
+    assert linked_sources
+    assert archive.read_bytes() == _payload(A)
+    assert archive.stat().st_ino != old_inode
+    assert archive.stat().st_mode & 0o777 == 0o440
+    assert not list(registry.parent.glob(".intent-archive-*"))
+
+
+def test_archive_publish_failure_keeps_live_intent_and_cleans_stage(registry, monkeypatch):
+    monkeypatch.setattr(module.os, "link", lambda *_args, **_kwargs: (_ for _ in ()).throw(PermissionError()))
+    with pytest.raises(PermissionError):
+        _install(registry, B)
+    assert registry.read_bytes() == _payload(A)
+    assert not registry.with_name(f"owner.superseded-{A}.json").exists()
+    assert not list(registry.parent.glob(".intent-archive-*"))
+
+
 @pytest.mark.parametrize("state", ["active", "activating", "reloading", "failed", "unknown"])
 def test_supersession_refuses_active_or_unproven_worker_state(monkeypatch, state):
     monkeypatch.setattr(module, "_verified_checkout_head", lambda: B)
