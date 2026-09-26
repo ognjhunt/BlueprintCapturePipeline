@@ -21,6 +21,7 @@ its commit and the governed prerequisites, so retirement destroys no evidence.
 from __future__ import annotations
 
 import contextlib
+import errno
 import json
 import os
 import re
@@ -60,6 +61,8 @@ DEFAULT_LOCK_TIMEOUT_SECONDS = 300.0
 _COMMIT_RE = re.compile(r"[0-9a-f]{40}\Z")
 _RECEIPT_RE = re.compile(r"([0-9a-f]{40})\.publication\.v1\.json\Z")
 _PROTECTION_KINDS = frozenset((*LEASE_KINDS, CONFIG_KIND))
+# A filesystem too full to hold even the staging entry.
+_FULL_DISK_ERRNOS = frozenset({errno.ENOSPC, errno.EDQUOT})
 
 
 class ControlPlaneReleaseRetirementError(RuntimeError):
@@ -413,19 +416,32 @@ def build_release_retirement_plan(
     return plan
 
 
-def _stage_aside(path: Path, token: str) -> Path:
-    """Rename one planned tree into its root's staging directory."""
-
-    staging = path.parent / RETIRING_DIRECTORY
+def _ensure_staging_directory(staging: Path) -> None:
     try:
         os.lstat(staging)
     except FileNotFoundError:
         staging.mkdir(mode=0o700)
     if staging.is_symlink() or not staging.is_dir():
         raise OSError("release retirement staging directory unsafe")
+
+
+def _stage_aside(path: Path, token: str) -> Path:
+    """Rename one planned tree into its root's staging directory."""
+
+    staging = path.parent / RETIRING_DIRECTORY
+    _ensure_staging_directory(staging)
     target = staging / f"{path.name}-{token}"
     os.rename(path, target)
     return target
+
+
+def _delete_now(path: Path, seen: set[tuple[int, int]]) -> tuple[int, int]:
+    freed, shared = _tree_usage(path, seen)
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    else:
+        path.unlink()
+    return freed, shared
 
 
 def apply_release_retirement_plan(
@@ -444,8 +460,11 @@ def apply_release_retirement_plan(
     holds the publishers' locks.  ``in_use_now`` is asked again immediately
     before each commit's paths move: a process that started on a candidate
     after the plan was built keeps it (``in_use_at_apply``), and a probe that
-    fails keeps it too.  If apply is interrupted, the exception carries the
-    partial receipt as ``release_retirement_receipt``.
+    fails keeps it too.  When the filesystem is too full to create the
+    staging entry or rename into it (ENOSPC, EDQUOT), that candidate is
+    deleted directly instead and listed under ``direct_delete_fallback``.  If
+    apply is interrupted, the exception carries the partial receipt as
+    ``release_retirement_receipt``.
     """
 
     if (
@@ -458,7 +477,9 @@ def apply_release_retirement_plan(
     active = _active_commit(Path(active_link).expanduser(), Path(release_root).expanduser())
     token = secrets.token_hex(6)
     renamed: list[dict[str, Any]] = []
+    fallback: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
+    seen: set[tuple[int, int]] = set()
 
     def receipt(status: str) -> dict[str, Any]:
         result: dict[str, Any] = {
@@ -468,6 +489,7 @@ def apply_release_retirement_plan(
             "active_commit": active,
             "renamed_count": len(renamed),
             "renamed": list(renamed),
+            "direct_delete_fallback": list(fallback),
             "skipped": list(skipped),
             "evidence_roots_touched": False,
             "result_digest": "",
@@ -505,8 +527,26 @@ def apply_release_retirement_plan(
                 try:
                     staged = _stage_aside(path, token)
                 except OSError as exc:
-                    skipped.append(
-                        {"commit": commit, "reason": f"rename_failed:{type(exc).__name__}"}
+                    if exc.errno not in _FULL_DISK_ERRNOS:
+                        skipped.append(
+                            {"commit": commit, "reason": f"rename_failed:{type(exc).__name__}"}
+                        )
+                        continue
+                    # A full filesystem cannot take even the staging entry,
+                    # and that is exactly when retirement must still work:
+                    # delete this candidate now, still under the lock.
+                    try:
+                        freed, shared = _delete_now(path, seen)
+                    except OSError as removal:
+                        skipped.append(
+                            {
+                                "commit": commit,
+                                "reason": f"direct_delete_failed:{type(removal).__name__}",
+                            }
+                        )
+                        continue
+                    fallback.append(
+                        {"commit": commit, "path": str(path), "bytes": freed, "shared_bytes": shared}
                     )
                     continue
                 renamed.append({"commit": commit, "path": str(path), "staged_path": str(staged)})

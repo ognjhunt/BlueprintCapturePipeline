@@ -603,3 +603,34 @@ def test_retired_bytes_count_only_inodes_whose_last_link_goes(tmp_path: Path) ->
     assert deletion["deleted_bytes"] == 3 * 128 + 2 * 2
     assert deletion["shared_bytes"] == 1000
     assert kept.read_bytes() == b"w" * 1000
+
+
+def test_a_full_disk_falls_back_to_deleting_the_candidate_directly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import errno
+
+    import blueprint_pipeline.control_plane_release_retirement as retirement
+
+    now = 5_000_000.0
+    host = _host(tmp_path, now=now)
+    plan = _plan(host, now=now)
+
+    def disk_full(_staging: Path) -> None:
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    # Retirement exists for a full disk; not even the staging entry fits.
+    monkeypatch.setattr(retirement, "_ensure_staging_directory", disk_full)
+    receipt = apply_release_retirement_plan(
+        plan, ack=EXECUTE_ACK, active_link=host["active"], release_root=host["releases"]
+    )
+
+    assert receipt["renamed"] == [] and receipt["skipped"] == []
+    fallback = receipt["direct_delete_fallback"]
+    assert {row["commit"] for row in fallback} == {E} and len(fallback) == 5
+    assert sum(row["bytes"] for row in fallback) == 3 * 128 + 2 * 2
+    assert not (host["releases"] / E).exists()
+    for component in ("splat-render", "scene-configuration"):
+        assert not (host["runtimes"] / component / E).exists()
+        assert (host["runtimes"] / component / A).is_dir()
+    assert not (host["releases"] / RETIRING_DIRECTORY).exists()

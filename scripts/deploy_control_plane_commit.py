@@ -989,6 +989,7 @@ def _retire_superseded_release_trees(
         *(Path(runtime_root) / component for component in RELEASE_RUNTIME_COMPONENTS),
     ]
     renamed: list[dict[str, Any]] = []
+    fallback: list[dict[str, Any]] = []
     swept: dict[str, Any] = {"deleted": [], "failed": []}
 
     def in_use() -> list[str]:
@@ -1047,6 +1048,7 @@ def _retire_superseded_release_trees(
                     in_use_now=lambda: set(in_use()),
                 )
                 renamed = list(receipt["renamed"])
+                fallback = list(receipt["direct_delete_fallback"])
                 result = {
                     "status": "applied",
                     "plan_digest": plan["plan_digest"],
@@ -1063,6 +1065,7 @@ def _retire_superseded_release_trees(
         partial = getattr(exc, "release_retirement_receipt", None)
         if isinstance(partial, Mapping):
             renamed = list(partial.get("renamed") or [])
+            fallback = list(partial.get("direct_delete_fallback") or [])
         result = {
             "status": "blocked",
             "blockers": [f"deploy_release_retirement_failed:{type(exc).__name__}"],
@@ -1079,10 +1082,13 @@ def _retire_superseded_release_trees(
             "failed": [{"path": "", "reason": f"deletion_failed:{type(exc).__name__}"}],
         }
     result["renamed"] = renamed
-    result["retired_commits"] = sorted({str(row["commit"]) for row in renamed})
+    result["direct_delete_fallback"] = fallback
+    result["retired_commits"] = sorted({str(row["commit"]) for row in (*renamed, *fallback)})
     result["deleted"] = deletion["deleted"]
-    result["retired_bytes"] = deletion["deleted_bytes"]
-    result["shared_bytes"] = deletion.get("shared_bytes", 0)
+    result["retired_bytes"] = deletion["deleted_bytes"] + sum(row["bytes"] for row in fallback)
+    result["shared_bytes"] = deletion.get("shared_bytes", 0) + sum(
+        row["shared_bytes"] for row in fallback
+    )
     result["swept"] = swept["deleted"]
     result["deletion_failures"] = [*swept["failed"], *deletion["failed"]]
     if result["status"] == "blocked":
