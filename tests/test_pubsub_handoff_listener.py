@@ -1888,7 +1888,10 @@ def test_one_bad_ack_receipt_does_not_cost_the_others(tmp_path, monkeypatch, dam
     if damage == "unwritable":
         assert damaged.is_dir()
     else:
-        assert damaged.read_bytes() == b"\xff\xfe not utf-8"  # left exactly as found
+        # The unreadable receipt is kept under another name, never overwritten.
+        kept = list(damaged.parent.glob("pipeline_job_ack_receipt.unreadable-*.json"))
+        assert len(kept) == 1 and kept[0].read_bytes() == b"\xff\xfe not utf-8"
+        assert _read(damaged)["message_id"] == "msg-a1"
     other = _read(tmp_path / "capture-bucket" / other_prefix / "pipeline_job_ack_receipt.json")
     assert other["message_id"] == "msg-a2" and other["acknowledgement_count"] == 1
 
@@ -2018,3 +2021,34 @@ def test_an_ack_for_a_capture_without_a_ledger_writes_nothing(tmp_path, monkeypa
         assert list(capture_root.iterdir()) == []
     assert any(record.getMessage() == "pubsub_handoff.ack_receipt_skipped_capture_absent"
                for record in caplog.records)
+
+
+def test_an_undecodable_staging_manifest_skips_nothing_and_is_replaced(tmp_path):
+    blob = FakeBlob(f"{_CAPTURE_PREFIX}/raw/capture_upload_complete.json", b"{}", size=2, generation=7)
+    manifest = _capture_root(tmp_path) / "pipeline_staging_manifest.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_bytes(b"\xff\xfe not utf-8")
+
+    stage_handoff_capture(_staging_handoff(), storage_root=tmp_path, storage_client=FakeStorageClient([blob]))
+
+    assert blob.download_count == 1
+    assert _read(manifest)["objects"][0]["generation"] == "7"
+
+
+@pytest.mark.parametrize("damaged", ["pipeline_job_ack_receipt.json", "pipeline_job_ledger.json"])
+def test_status_survives_an_undecodable_record(tmp_path, capsys, damaged):
+    capture_root = _capture_root(tmp_path)
+    capture_root.mkdir(parents=True)
+    (capture_root / "pipeline_job_ledger.json").write_text(json.dumps({
+        "schema_version": "pipeline_job_ledger.v1", "status": "completed", "attempt_count": 1}), encoding="utf-8")
+    (capture_root / damaged).write_bytes(b"\xff\xfe not utf-8")
+
+    assert main(["--status", "--storage-root", str(tmp_path), "--bucket", "capture-bucket",
+                 "--scene-id", "scene-1", "--capture-id", "capture-1"]) == 0
+
+    printed = json.loads(capsys.readouterr().out)
+    if damaged == "pipeline_job_ack_receipt.json":
+        assert printed["status"] == "completed"
+        assert printed["ack_receipt"] is None
+    else:
+        assert printed["status"] == "corrupt"  # the existing fail-closed ledger state

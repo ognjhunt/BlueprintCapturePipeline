@@ -338,13 +338,35 @@ def _preserve_local_website_derivatives(capture_root: Path, uploaded_names: set[
 
 
 def _read_optional_json_object(path: Path) -> dict[str, Any]:
+    """The JSON object at path, or {} when it is missing or unreadable.
+
+    ValueError covers both invalid JSON and bytes that are not UTF-8.
+    """
+
     if not path.is_file():
         return {}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+    except (ValueError, OSError):
         return {}
     return data if isinstance(data, dict) else {}
+
+
+def _set_aside(path: Path, label: str) -> Path:
+    """Rename a record to <stem>.<label>-<UTC compact time><suffix>, keeping its bytes.
+
+    Never overwrites: an existing name gets a numeric suffix. Callers hold the
+    capture's ledger lock.
+    """
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    target = path.with_name(f"{path.stem}.{label}-{stamp}{path.suffix}")
+    counter = 1
+    while target.exists() or target.is_symlink():
+        target = path.with_name(f"{path.stem}.{label}-{stamp}-{counter}{path.suffix}")
+        counter += 1
+    path.rename(target)
+    return target
 
 
 def _first_non_empty(*sources: Mapping[str, Any], keys: Sequence[str]) -> str | None:
@@ -673,7 +695,7 @@ def _read_job_ledger(capture_root: Path) -> dict[str, Any]:
         return {}
     try:
         loaded = json.loads(ledger_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, ValueError) as exc:  # ValueError: invalid JSON or not UTF-8
         return {
             "schema_version": JOB_LEDGER_SCHEMA_VERSION,
             "status": "corrupt",
@@ -1975,7 +1997,10 @@ def _write_ack_receipt(
         if not ledger_present:
             return False
         path = capture_root / JOB_ACK_RECEIPT_FILENAME
-        previous_count = _read_optional_json_object(path).get("acknowledgement_count")
+        previous = _read_optional_json_object(path)
+        if not previous and path.is_file():
+            _set_aside(path, "unreadable")  # a receipt that cannot be read is kept, not overwritten
+        previous_count = previous.get("acknowledgement_count")
         if not isinstance(previous_count, int) or isinstance(previous_count, bool) or previous_count < 0:
             previous_count = 0
         write_json(
