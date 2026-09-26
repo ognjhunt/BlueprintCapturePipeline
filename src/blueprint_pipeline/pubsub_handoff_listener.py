@@ -707,6 +707,32 @@ def _locked_job_ledger(capture_root: Path) -> Iterator[dict[str, Any]]:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
+@contextmanager
+def _existing_job_ledger_lock(capture_root: Path) -> Iterator[bool]:
+    """Hold the ledger lock of a capture that already exists, creating nothing.
+
+    Yields whether the capture's ledger exists while the lock is held. A capture
+    whose workspace was retired (or never staged) has no lock file or no ledger,
+    and recording something about it must not bring its directory back.
+    """
+
+    try:
+        descriptor: int | None = os.open(capture_root / f".{JOB_LEDGER_FILENAME}.lock", os.O_RDONLY)
+    except (FileNotFoundError, NotADirectoryError):
+        descriptor = None
+    if descriptor is None:
+        yield False
+        return
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        try:
+            yield (capture_root / JOB_LEDGER_FILENAME).is_file()
+        finally:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+    finally:
+        os.close(descriptor)
+
+
 def _commit_job_ledger(
     capture_root: Path,
     ledger: Mapping[str, Any],
@@ -1938,10 +1964,16 @@ def _write_ack_receipt(
     payload_digest: str,
     delivery_attempt: int | None,
     disposition: str,
-) -> None:
-    """Replace the capture's ack receipt; call only after acknowledge returned."""
+) -> bool:
+    """Replace the capture's ack receipt; call only after acknowledge returned.
 
-    with _locked_job_ledger(capture_root):
+    Returns False, writing nothing, when the capture has no ledger: a workspace
+    retired after its cloud copy was verified must stay retired.
+    """
+
+    with _existing_job_ledger_lock(capture_root) as ledger_present:
+        if not ledger_present:
+            return False
         path = capture_root / JOB_ACK_RECEIPT_FILENAME
         previous_count = _read_optional_json_object(path).get("acknowledgement_count")
         if not isinstance(previous_count, int) or isinstance(previous_count, bool) or previous_count < 0:
@@ -1959,6 +1991,7 @@ def _write_ack_receipt(
                 "acknowledgement_count": previous_count + 1,
             },
         )
+    return True
 
 
 def _canonical_subscription_resource(subscription: str) -> str:
@@ -2134,13 +2167,20 @@ def pull_and_process(
         subscriber.acknowledge(request={"subscription": subscription_resource, "ack_ids": ack_ids})
         # Receipts follow the acknowledgement: a receipt never claims an ack that
         # Pub/Sub did not accept. The ack is already final, so one receipt that
-        # cannot be written is logged and does not cost the others.
+        # cannot be written is logged and does not cost the others. A capture
+        # with no ledger (its workspace was retired) gets no receipt at all.
         for receipt in ack_receipts:
             try:
-                _write_ack_receipt(subscription=subscription_resource, **receipt)
+                written = _write_ack_receipt(subscription=subscription_resource, **receipt)
             except OSError:
                 logger.exception(
                     "pubsub_handoff.ack_receipt_write_failed",
+                    extra={"message_id": receipt["message_id"]},
+                )
+                continue
+            if not written:
+                logger.warning(
+                    "pubsub_handoff.ack_receipt_skipped_capture_absent",
                     extra={"message_id": receipt["message_id"]},
                 )
     return len(ack_ids)

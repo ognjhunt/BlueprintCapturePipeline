@@ -1,4 +1,6 @@
 import json
+import logging
+import shutil
 import threading
 import types
 from datetime import datetime, timedelta, timezone
@@ -1966,3 +1968,45 @@ def test_status_reports_an_authority_ending_and_its_acknowledgement(tmp_path, mo
     assert status["ack_receipt"]["acknowledgement_count"] == 1
     assert status["retry_expected_on_redelivery"] is False
     assert status["provider_ops_status"]["provider_artifact_count"] == 0
+
+
+def test_an_ack_receipt_never_recreates_a_workspace_retired_after_the_ack(tmp_path, monkeypatch):
+    scene_dir = tmp_path / "capture-bucket" / "scenes" / "scene-1"
+    subscriber = FakeSubscriber([_received(ack_id="a1", data=PAYLOAD_BYTES)])
+    record_acknowledgement = subscriber.acknowledge
+
+    def acknowledge_then_retire(*, request):
+        record_acknowledgement(request=request)
+        shutil.rmtree(scene_dir)  # retirement wins the race to the capture
+
+    subscriber.acknowledge = acknowledge_then_retire
+    _install_fake_pubsub(monkeypatch, subscriber, storage_client=FakeStorageClient(_website_bundle_blobs()),
+                         run_e2e=lambda **_: {"status": "completed"})
+
+    assert _pull(tmp_path) == 1
+    assert subscriber.acknowledged == ["a1"]
+    assert not scene_dir.exists()
+
+
+@pytest.mark.parametrize("workspace", ["absent", "no_ledger"])
+def test_an_ack_for_a_capture_without_a_ledger_writes_nothing(tmp_path, monkeypatch, caplog, workspace):
+    capture_root = _capture_root(tmp_path)
+    if workspace == "no_ledger":
+        capture_root.mkdir(parents=True)
+    subscriber = FakeSubscriber([_received(ack_id="a1", data=PAYLOAD_BYTES)])
+    monkeypatch.setattr(google.cloud, "pubsub_v1",
+                        types.SimpleNamespace(SubscriberClient=lambda: subscriber), raising=False)
+    # A redelivery answered for a retired scene still names its (gone) capture root.
+    monkeypatch.setattr(listener_module, "process_handoff_payload", lambda *_args, **_kwargs: {
+        "status": "skipped_retired_terminal", "queue_disposition": "terminal_success",
+        "capture_root": str(capture_root)})
+    caplog.set_level(logging.WARNING, logger=listener_module.logger.name)
+
+    assert _pull(tmp_path) == 1
+    assert subscriber.acknowledged == ["a1"]
+    if workspace == "absent":
+        assert not (tmp_path / "capture-bucket").exists()
+    else:
+        assert list(capture_root.iterdir()) == []
+    assert any(record.getMessage() == "pubsub_handoff.ack_receipt_skipped_capture_absent"
+               for record in caplog.records)
