@@ -56,7 +56,7 @@ from blueprint_pipeline.task_evaluation_release_reference_lock import (
 from blueprint_pipeline.control_plane_release_leases import (
     DEFAULT_LEASE_ROOT,
     RunStateResolver,
-    evaluate_binding_lease,
+    evaluate_binding_leases,
 )
 
 
@@ -665,6 +665,7 @@ def _evidence_binding_leases(
     protected: dict[str, set[str]] = {}
     documents: list[dict[str, Any]] = []
     lapsed: list[dict[str, Any]] = []
+    validated: list[tuple[Path, Mapping[str, Any], dict[str, Any]]] = []
     for path, value, evidence in _json_documents(
         root,
         blocker="release_retention_evidence_binding_root",
@@ -685,15 +686,17 @@ def _evidence_binding_leases(
             raise ReleaseRetentionError(
                 f"release_retention_evidence_binding_invalid:{path.name}"
             )
-        outcome = evaluate_binding_lease(
-            name=path.name,
-            binding_sha256=str(evidence["sha256"]),
-            binding=value,
-            lease_root=lease_root,
-            resolver=resolver,
-            now=moment,
-            migrate=False,
-        )
+        validated.append((path, value, evidence))
+    # Evaluated together so a binding a protected descendant builds on is kept.
+    outcomes = evaluate_binding_leases(
+        [(path.name, str(evidence["sha256"]), value) for path, value, evidence in validated],
+        lease_root=lease_root,
+        resolver=resolver,
+        now=moment,
+        migrate=False,
+    )
+    for path, value, evidence in validated:
+        outcome = outcomes[path.name]
         if outcome["status"] == "blocked":
             raise ReleaseRetentionError(str(outcome["blocker"]))
         documents.append(evidence)
@@ -704,7 +707,8 @@ def _evidence_binding_leases(
             lapsed.append(
                 {
                     "binding": path.name,
-                    "source_commit": commit,
+                    "source_commit": value["source_commit"],
+                    "commits": list(outcome["commits"]),
                     "why": outcome["why"],
                     "owner": lease["owner"],
                     "run_ref": lease["run_ref"],
@@ -713,7 +717,14 @@ def _evidence_binding_leases(
                 }
             )
             continue
-        protected.setdefault(commit, set()).add(f"required_evidence:{path.name}")
+        # Every commit the binding keeps, including retained_release.source_commit.
+        for commit in outcome["commits"]:
+            protected.setdefault(commit, set()).add(f"required_evidence:{path.name}")
+        for inherited in outcome["inherited"]:
+            for commit in inherited["commits"]:
+                protected.setdefault(commit, set()).add(
+                    f"required_evidence_ancestor:{inherited['binding']}"
+                )
     return protected, documents, lapsed
 
 

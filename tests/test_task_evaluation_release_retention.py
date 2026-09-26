@@ -1430,6 +1430,7 @@ def test_two_step_tool_ignores_lapsed_bindings(
         {
             "binding": "lapsed.json",
             "source_commit": lapsed_commit,
+            "commits": [lapsed_commit],
             "why": "expired",
             "owner": "legacy-migration",
             "run_ref": None,
@@ -1464,3 +1465,107 @@ def test_two_step_tool_ignores_lapsed_bindings(
     )
     assert {row["source_commit"] for row in receipt["removed"]} == {lapsed_commit}
     assert (evidence_root / "lapsed.json").read_bytes() == lapsed_bytes
+
+
+def test_two_step_tool_protects_every_commit_a_binding_keeps(tmp_path: Path) -> None:
+    active, source, retained = "a" * 40, "c" * 40, "e" * 40
+    state = _base_state(tmp_path, commits=[active, source, retained], active_commit=active)
+    evidence_root = state["evidence_binding_root"]
+    assert isinstance(evidence_root, Path)
+    _write_json(
+        evidence_root / "pinned.json",
+        {
+            "schema_version": EVIDENCE_BINDING_SCHEMA_VERSION,
+            "status": "required",
+            "source_commit": source,
+            "reason": "completed prefix replay reopens its renderer",
+            "retained_release": {"path": "/retained", "source_commit": retained, "tree": "9" * 40},
+        },
+    )
+
+    plan = build_release_retention_plan(
+        **state, current_deploy_commit=active  # type: ignore[arg-type]
+    )
+
+    # retained_release.tree is a git tree id and names nothing.
+    assert plan["eligible_commits"] == []
+    assert plan["protected_commits"][source] == ["required_evidence:pinned.json"]
+    assert plan["protected_commits"][retained] == ["required_evidence:pinned.json"]
+
+
+def test_two_step_tool_keeps_a_lapsed_ancestor_a_live_descendant_needs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blueprint_pipeline import task_evaluation_sam31_prefix_adoption as adoption
+    from blueprint_pipeline.control_plane_release_leases import (
+        RunStateResolver,
+        evaluate_binding_lease,
+    )
+    from blueprint_pipeline.decision_evidence_contracts import (
+        canonical_digest as evidence_digest,
+        canonical_json,
+    )
+
+    active, ancestor_commit, descendant_commit = "a" * 40, "c" * 40, "e" * 40
+    state = _base_state(
+        tmp_path, commits=[active, ancestor_commit, descendant_commit], active_commit=active
+    )
+    evidence_root = state["evidence_binding_root"]
+    releases = state["release_root"]
+    assert isinstance(evidence_root, Path) and isinstance(releases, Path)
+    evidence_root.mkdir()
+    lease_root = tmp_path / "release-leases"
+    monkeypatch.setattr(
+        "blueprint_pipeline.public_scene_inpainting_inputs._git_identity",
+        lambda root: {"commit": Path(root).name, "tree": "9" * 40},
+    )
+
+    def adopt(name: str, commit: str, parent: Path | None = None) -> Path:
+        profile: dict = {"schema_version": "fixture_profile", "repo_root": str(releases / commit)}
+        if parent is not None:
+            profile["completed_prefix_adoption"] = adoption.record(parent)
+        profile["profile_digest"] = evidence_digest(profile, digest_field="profile_digest")
+        profile_path = tmp_path / "adoptions" / f"{name}-profile.json"
+        profile_path.parent.mkdir(exist_ok=True)
+        profile_path.write_text(canonical_json(profile), encoding="utf-8")
+        value = {
+            "schema_version": adoption.SCHEMA,
+            "status": "verified_completed_prefix",
+            "original_execution_commit": commit,
+            "source_profile": adoption.record(profile_path),
+            "retained_release_pin": {"path": str(releases / commit), "source_commit": commit,
+                                     "tree": "9" * 40},
+        }
+        value["adoption_digest"] = evidence_digest(value, digest_field="adoption_digest")
+        path = tmp_path / "adoptions" / f"{name}.json"
+        path.write_text(canonical_json(value), encoding="utf-8")
+        return path
+
+    ancestor = adopt("ancestor", ancestor_commit)
+    descendant = adopt("descendant", descendant_commit, parent=ancestor)
+    adoption.publish_adoption_release_binding(descendant, binding_root=evidence_root)
+    ancestor_name = (
+        "sam31-prefix-"
+        + json.loads(ancestor.read_text(encoding="utf-8"))["adoption_digest"].removeprefix("sha256:")
+        + ".json"
+    )
+    # The ancestor's own lease was migrated twenty days ago and has expired.
+    ancestor_bytes = (evidence_root / ancestor_name).read_bytes()
+    migrated_at = NOW.timestamp() - 20 * 86400
+    assert evaluate_binding_lease(
+        name=ancestor_name,
+        binding_sha256="sha256:" + hashlib.sha256(ancestor_bytes).hexdigest(),
+        binding=json.loads(ancestor_bytes),
+        lease_root=lease_root,
+        resolver=RunStateResolver(None, None, None, migrated_at),
+        now=migrated_at,
+        migrate=True,
+    )["migrated"] is True
+
+    plan = build_release_retention_plan(
+        **state, current_deploy_commit=active, lease_root=lease_root  # type: ignore[arg-type]
+    )
+
+    assert plan["eligible_commits"] == []
+    assert plan["protected_commits"][ancestor_commit] == [f"required_evidence:{ancestor_name}"]
+    assert plan["lapsed_evidence_bindings"] == []
