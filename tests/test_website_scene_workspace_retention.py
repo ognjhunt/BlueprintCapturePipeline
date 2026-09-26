@@ -312,6 +312,48 @@ def test_a_terminal_receipt_left_by_an_earlier_payload_does_not_prove_the_ending
     assert _plan(tmp_path, cloud)["reasons"] == [f"capture_not_terminal:{CAPTURE}"]
 
 
+_DEVICE_MANIFEST = {"scene_id": SCENE, "capture_id": CAPTURE, "capture_source": "iphone",
+                    "site_submission_id": "request-1", "capture_job_id": "capture-job-1"}
+
+
+def _manifest(scene: Path, capture: str, manifest: dict | None) -> None:
+    path = scene / "captures" / capture / "raw" / "manifest.json"
+    if manifest is None:
+        path.unlink()
+    else:
+        path.write_text(json.dumps({**manifest, "capture_id": capture}), encoding="utf-8")
+
+
+@pytest.mark.parametrize("captures", [(CAPTURE,), (CAPTURE, "capture-2")], ids=["device", "mixed"])
+def test_a_device_capture_scene_is_never_retired(tmp_path, captures):
+    """Retirement is for finished website scenes; device captures stage differently and stay."""
+
+    scene, cloud = _scene(tmp_path, captures=captures)
+    _manifest(scene, CAPTURE, _DEVICE_MANIFEST)  # the listener detects the lane from raw/manifest.json
+
+    plan = _plan(tmp_path, cloud)
+
+    assert plan["reasons"] == ["not_a_website_scene"] and cloud.listings == []
+
+
+def test_a_capture_without_a_readable_manifest_is_not_proven_a_website_capture(tmp_path):
+    scene, cloud = _scene(tmp_path)
+    _manifest(scene, CAPTURE, None)
+    assert _plan(tmp_path, cloud)["reasons"] == ["not_a_website_scene"]
+
+
+def test_an_app_filmed_site_self_capture_is_a_website_scene(tmp_path):
+    scene, cloud = _scene(tmp_path)
+    site_filmed = {**_DEVICE_MANIFEST, "site_self_capture": {
+        "schema_version": "site_self_capture.v1", "authored_by": "blueprint_webapp", "site_filmed_itself": True,
+        "capture_job_exists": False, "request_id": "request-1"}}
+    _manifest(scene, CAPTURE, site_filmed)
+    manifest = scene / "captures" / CAPTURE / "raw" / "manifest.json"
+    cloud.put(f"scenes/{SCENE}/captures/{CAPTURE}/raw/manifest.json", manifest.read_bytes())
+
+    assert _plan(tmp_path, cloud)["status"] == "retirable"
+
+
 def test_a_scene_without_captures_is_retained(tmp_path):
     scene = tmp_path / "pubsub-handoffs" / BUCKET / "scenes" / SCENE
     (scene / "captures").mkdir(parents=True)

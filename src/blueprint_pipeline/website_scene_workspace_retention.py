@@ -11,8 +11,9 @@ A workspace is retirable only when every check passes, cheapest first:
 
 1. the scene path and its parents up to the storage root are real directories,
    and nothing inside is a symlink or special file;
-2. every capture is terminal (a committed output, or an authority ending with
-   its receipt) and holds no live lease;
+2. every capture is a website capture (the listener's own lane test on its
+   ``raw/manifest.json``), is terminal (a committed output, or an authority ending
+   with its receipt) and holds no live lease;
 3. every terminal message was acknowledged (an ack receipt written after the
    terminal state, or a ledger idle past Pub/Sub's message retention);
 4. nothing in the tree changed for ``minimum_idle_seconds``;
@@ -63,6 +64,7 @@ from .task_evaluation_configured_scene_object_store import (
     materialize_configured_scene_artifact,
     publish_configured_scene_stream,
 )
+from .website_capture_entry import is_website_capture_manifest
 
 
 PLAN_SCHEMA = "website_scene_workspace_retirement_plan.v1"
@@ -757,6 +759,13 @@ def _capture_ids(scene: Path) -> list[str] | None:
     return ids
 
 
+def _is_website_capture(capture_root: Path) -> bool:
+    """The lane the listener gave this capture: ``is_website_capture_manifest`` on its raw manifest."""
+
+    state, manifest, _ = _load_json(capture_root / "raw" / "manifest.json")
+    return state == "ok" and is_website_capture_manifest(manifest)
+
+
 def _process_in_use(path: Path) -> bool:
     # This process holds the ledger locks while it re-checks, so it must not count itself.
     return bool(active_reference(path, ignored_process_ids=(os.getpid(),)))
@@ -784,6 +793,9 @@ def _evaluate(*, context: RetentionContext, bucket: str, scene_id: str, scene: P
     capture_ids = _capture_ids(scene) or []
     if not capture_ids:
         reasons.append("scene_has_no_captures")
+    elif not all(_is_website_capture(scene / "captures" / capture_id) for capture_id in capture_ids):
+        # Retirement is for finished website scenes; a device capture's staging has other readers.
+        reasons.append("not_a_website_scene")
     for capture_id in capture_ids:
         row, capture_reasons = _capture(scene / "captures" / capture_id, scene_id=scene_id, capture_id=capture_id,
                                         now=now, ack_retention_seconds=context.ack_retention_seconds)
