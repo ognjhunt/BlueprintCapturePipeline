@@ -73,7 +73,7 @@ def test_endpoint_probes_then_reuses_same_client_without_persisting_secret(tmp_p
     receipt = json.loads((output / (SESSION_SCHEMA + ".json")).read_text())
     assert receipt["status"] == "closed"
     assert receipt["child_teardown_required"] is False
-    assert receipt["site_episode_scored"] is False
+    assert receipt["linked_scored_episode_result_digest"] is None
     assert receipt["receipt_digest"] == canonical_digest(receipt, digest_field="receipt_digest")
     assert "private-token" not in "".join(path.read_text() for path in output.iterdir())
 
@@ -124,12 +124,63 @@ def test_qualified_endpoint_client_runs_same_scored_g1_scene(tmp_path: Path, mon
             setup, profile, scene, session.client, tmp_path, monkeypatch,
             objective_id="task_success",
         )
+        session.link_scored_episode(result)
     assert result["policy_query_count"] == 2
     assert result["score"]["status"] == "scored"
     assert [request["kind"] for request in requests] == [
         "reset", "infer", "reset", "infer", "infer",
     ]
     assert result["policy_runtime_identity_verified"] is False
+    receipt = json.loads((tmp_path / "runtime" / (SESSION_SCHEMA + ".json")).read_text())
+    assert receipt["linked_scored_episode_result_digest"] == result["result_digest"]
+    assert receipt["linked_episode_media_verified_by_session"] is False
+
+
+def test_runtime_session_rejects_a_mismatched_episode_link(tmp_path: Path, monkeypatch) -> None:
+    setup, profile, _ = _inputs(tmp_path, monkeypatch)
+    delivery = profile["delivery"]
+    close_count = []
+
+    class Lease:
+        client = object()
+
+        def close(self):
+            close_count.append(1)
+            return {"status": "container_removed", "receipt_digest": "sha256:" + "c" * 64}
+
+    def launch(**kwargs):
+        kwargs["output_dir"].mkdir()
+        return Lease(), {
+            "status": "synthetic_wire_compatible", "receipt_digest": "sha256:" + "d" * 64,
+            "source_setup_digest": setup["setup_digest"],
+        }
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.native_g1_team_runtime_session.launch_g1_team_container_synthetic_probe",
+        launch,
+    )
+    with open_g1_team_runtime_session(
+        profile=profile, trusted_setup=setup, authenticated_owner=OWNER,
+        approved_binding={
+            "mode": "container", "profile_digest": profile["profile_digest"],
+            "image_ref": delivery["image_ref"], "gpu_device": None,
+        },
+        output_dir=tmp_path / "runtime",
+    ) as session:
+        malformed = {
+            "schema_version": "native_g1_team_scored_scene_episode.v1",
+            "status": "development_only_scored_episode",
+            "profile_digest": "sha256:" + "0" * 64,
+            "candidate_id": "team_policy_" + "0" * 64,
+            "source_setup_digest": setup["setup_digest"],
+            "delivery_mode": "container", "policy_query_count": 1,
+        }
+        malformed["result_digest"] = canonical_digest(malformed, digest_field="result_digest")
+        with pytest.raises(ValueError, match="episode_link_invalid"):
+            session.link_scored_episode(malformed)
+    assert close_count == [1]
+    receipt = json.loads((tmp_path / "runtime" / (SESSION_SCHEMA + ".json")).read_text())
+    assert receipt["linked_scored_episode_result_digest"] is None
 
 
 @pytest.mark.parametrize("mode", ["container", "noncontainer_artifact"])

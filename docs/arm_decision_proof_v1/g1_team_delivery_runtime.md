@@ -30,7 +30,9 @@ SHA-verified staged artifact remain mode-specific operator bindings. Closing
 the session retains the child teardown receipt for process modes; the endpoint
 credential is never written to a receipt. The same returned client can enter
 `run_g1_team_scored_scene_episode` for the retained scene and independent
-scorer. This is a worker seam, not an intake-to-paid-run controller.
+scorer. A scored result can be linked into the session close receipt by digest;
+the session does not claim to verify the score's media or provider teardown.
+This is a worker seam, not an intake-to-paid-run controller.
 
 The existing G1 shared-scene episode seam accepts a qualified client for either
 the book objective or movement objective and writes development-only scores and
