@@ -475,3 +475,29 @@ def test_cli_apply_never_retires_a_tree_a_live_process_uses(
     printed = json.loads(capsys.readouterr().out)
     assert printed["plan"]["protected_commits"][E] == ["in_use_by_live_process"]
     assert (host["releases"] / E / "payload.bin").is_file()
+
+
+def test_publisher_lock_roots_are_distinct_directories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import blueprint_pipeline.control_plane_release_retirement as retirement
+
+    sources = _sources(tmp_path)
+    control_plane = sources.control_plane_root.resolve()
+    # On the host the deploy state root is the control-plane root: one lock.
+    assert retirement.publisher_lock_roots(sources, sources.control_plane_root) == (control_plane,)
+    # Two spellings of one directory (a bind mount, a case-insensitive name)
+    # are one inode, and locking it twice would deadlock the deploy.
+    alias = tmp_path / "state-alias"
+    alias.mkdir()
+    identity = retirement._directory_identity
+    monkeypatch.setattr(
+        retirement,
+        "_directory_identity",
+        lambda path: identity(control_plane if Path(path) == alias.resolve() else path),
+    )
+    assert retirement.publisher_lock_roots(sources, alias) == (control_plane,)
+    # A root that does not exist yet keeps its own entry (and fails to lock).
+    assert retirement.publisher_lock_roots(sources, tmp_path / "absent") == tuple(
+        sorted([(tmp_path / "absent").resolve(), control_plane])
+    )

@@ -79,6 +79,7 @@ from blueprint_pipeline.control_plane_release_leases import (  # noqa: E402
     collect_release_protections,
 )
 from blueprint_pipeline.control_plane_release_retirement import (  # noqa: E402
+    DEFAULT_LOCK_TIMEOUT_SECONDS as DEFAULT_RELEASE_LOCK_TIMEOUT_SECONDS,
     EXECUTE_ACK as RELEASE_RETIREMENT_ACK,
     apply_release_retirement_plan,
     build_release_retirement_plan,
@@ -961,6 +962,7 @@ def _retire_superseded_release_trees(
     now: Callable[[], float] = time.time,
     proc_root: str | Path = "/proc",
     summary_path: str | Path | None = None,
+    lock_timeout_seconds: float = DEFAULT_RELEASE_LOCK_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
     """Retire release and runtime trees this deploy has superseded.
 
@@ -990,7 +992,11 @@ def _retire_superseded_release_trees(
         )
         with contextlib.ExitStack() as held:
             for root in roots:
-                held.enter_context(release_reference_lock(root, exclusive=True))
+                held.enter_context(
+                    release_reference_lock(
+                        root, exclusive=True, timeout_seconds=lock_timeout_seconds
+                    )
+                )
             created_roots = _install_release_protection_roots(protection_sources)
             _install_release_lease_root(protection_sources.lease_root)
             protections = collect_release_protections(

@@ -50,6 +50,8 @@ RUNTIME_COMPONENTS = ("splat-render", "scene-configuration")
 DEFAULT_KEEP_LAST = 3
 DEFAULT_MINIMUM_AGE_SECONDS = 24 * 60 * 60
 MAX_REPORTED_WARNINGS = 50
+#: How long retirement waits for publishers to release the reference lock.
+DEFAULT_LOCK_TIMEOUT_SECONDS = 300.0
 _COMMIT_RE = re.compile(r"[0-9a-f]{40}\Z")
 _RECEIPT_RE = re.compile(r"([0-9a-f]{40})\.publication\.v1\.json\Z")
 _PROTECTION_KINDS = frozenset((*LEASE_KINDS, CONFIG_KIND))
@@ -59,42 +61,68 @@ class ControlPlaneReleaseRetirementError(RuntimeError):
     """The retirement plan could not be built or applied safely."""
 
 
+def _directory_identity(path: str | Path) -> tuple[int, int] | None:
+    try:
+        info = os.stat(path)
+    except FileNotFoundError:
+        return None
+    return (info.st_dev, info.st_ino)
+
+
 def publisher_lock_roots(
     sources: ProtectionSources, *extra_roots: str | Path
 ) -> tuple[Path, ...]:
     """Every distinct directory a release-reference publisher locks, sorted.
 
     Queue writers lock the parent of their queue root (the control-plane
-    root), the standing-authorization materializer locks the parent of its
-    output directory, and the launch-profile publisher locks the parent of the
-    public catalog, which lives in the control-plane root.  Callers add their
-    own state root, which release activation locks.  Roots are resolved so a
-    directory is never locked twice: a second descriptor on the same inode
-    would deadlock an exclusive holder against itself.
+    root), the standing-authorization materializer and the SAM prefix binding
+    writer lock the parent of their directories, and the launch-profile
+    publisher locks the parent of the public catalog, which lives in the
+    control-plane root.  Callers add their own state root, which release
+    activation locks.  Directories are distinct by inode, not by spelling: a
+    second descriptor on the same directory (a bind mount, a case-insensitive
+    name) would deadlock an exclusive holder against itself.  A root that does
+    not exist keeps its own entry, and locking it fails.
     """
 
-    return tuple(
-        sorted(
-            {
-                Path(root).expanduser().resolve()
-                for root in (
-                    sources.control_plane_root,
-                    Path(sources.standing_authorization_dir).parent,
-                    Path(sources.binding_root).parent,
-                    *extra_roots,
-                )
-            }
-        )
+    candidates = sorted(
+        {
+            Path(root).expanduser().resolve()
+            for root in (
+                sources.control_plane_root,
+                Path(sources.standing_authorization_dir).parent,
+                Path(sources.binding_root).parent,
+                *extra_roots,
+            )
+        }
     )
+    roots: list[Path] = []
+    seen: set[tuple[int, int]] = set()
+    for root in candidates:
+        identity = _directory_identity(root)
+        if identity is not None:
+            if identity in seen:
+                continue
+            seen.add(identity)
+        roots.append(root)
+    return tuple(roots)
 
 
 @contextlib.contextmanager
-def holding_publisher_locks(roots: Sequence[str | Path]):
-    """Hold every publisher lock exclusively, acquired in the given order."""
+def holding_publisher_locks(
+    roots: Sequence[str | Path], *, timeout_seconds: float | None = DEFAULT_LOCK_TIMEOUT_SECONDS
+):
+    """Hold every publisher lock exclusively, acquired in the given order.
+
+    Each acquisition waits at most ``timeout_seconds``, then refuses with
+    ``release_reference_lock_busy``.
+    """
 
     with contextlib.ExitStack() as stack:
         for root in roots:
-            stack.enter_context(release_reference_lock(root, exclusive=True))
+            stack.enter_context(
+                release_reference_lock(root, exclusive=True, timeout_seconds=timeout_seconds)
+            )
         yield
 
 
@@ -511,6 +539,7 @@ def main(argv: list[str] | None = None) -> int:
 __all__ = [
     "ControlPlaneReleaseRetirementError",
     "DEFAULT_KEEP_LAST",
+    "DEFAULT_LOCK_TIMEOUT_SECONDS",
     "DEFAULT_MINIMUM_AGE_SECONDS",
     "EXECUTE_ACK",
     "MAX_REPORTED_WARNINGS",

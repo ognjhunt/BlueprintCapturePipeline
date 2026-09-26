@@ -2562,7 +2562,8 @@ def test_deploy_retirement_holds_publisher_locks_and_writes_its_summary(
     events: list[tuple] = []
 
     @contextlib.contextmanager
-    def recorder(root, *, exclusive):
+    def recorder(root, *, exclusive, **bounded):
+        assert bounded["timeout_seconds"] == deploy.DEFAULT_RELEASE_LOCK_TIMEOUT_SECONDS
         events.append(("lock", Path(root), exclusive))
         try:
             yield
@@ -2610,6 +2611,34 @@ def test_deploy_retirement_holds_publisher_locks_and_writes_its_summary(
     source = Path(deploy.__file__).read_text(encoding="utf-8")
     assert "            state_root=state,\n" in source
     assert 'summary_path=state / "release-retention" / RELEASE_RETIREMENT_SUMMARY_NAME' in source
+
+
+def test_deploy_retirement_gives_up_when_a_publisher_holds_the_lock(tmp_path: Path) -> None:
+    """A stuck publisher costs this deploy its retirement, never the deploy itself."""
+    import time
+
+    from blueprint_pipeline.task_evaluation_release_reference_lock import release_reference_lock
+
+    releases = tmp_path / "releases"
+    no_processes = tmp_path / "proc"
+    no_processes.mkdir()
+    current, superseded = "a" * 40, "b" * 40
+    _release_trees(releases, {current: 3_600, superseded: 10 * 86_400}, now=time.time())
+    active = tmp_path / "active"
+    active.symlink_to(releases / current, target_is_directory=True)
+    sources = _protection_sources(tmp_path)
+
+    with release_reference_lock(sources.control_plane_root, exclusive=False):
+        result = deploy._retire_superseded_release_trees(
+            release_root=releases, runtime_root=tmp_path / "runtimes", active_link=active,
+            current_commit=current, protection_sources=sources, keep_last=1,
+            proc_root=no_processes, lock_timeout_seconds=0.2,
+        )
+
+    assert result["status"] == "blocked"
+    assert result["blockers"] == ["release_reference_lock_busy"]
+    assert result["alerts"] == ["release_retirement_blocked:release_reference_lock_busy"]
+    assert (releases / superseded).is_dir()
 
 
 def _stage_real_units(tmp_path: Path) -> Path:
