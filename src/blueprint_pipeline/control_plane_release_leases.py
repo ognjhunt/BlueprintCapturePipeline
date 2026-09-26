@@ -261,10 +261,14 @@ def _read_profiles(profile_dir: Path, collection: _Collection) -> _Profiles:
 
     commits: dict[str, str | None] = {}
     documents: dict[str, Mapping[str, Any]] = {}
-    if not profile_dir.is_dir() or profile_dir.is_symlink():
+    try:
+        if profile_dir.is_symlink() or not profile_dir.is_dir():
+            raise ValueError("profile_dir_unsafe")
+        names = _json_names(profile_dir)
+    except (OSError, ValueError):
         collection.warnings.add("release_protection_profile_dir_unreadable")
         return _Profiles(commits, documents)
-    for name in _json_names(profile_dir):
+    for name in names:
         try:
             _payload, profile, _info = _read_document(profile_dir / name)
         except (OSError, ValueError):

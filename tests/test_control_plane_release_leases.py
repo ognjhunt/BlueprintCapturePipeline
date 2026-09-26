@@ -393,6 +393,17 @@ def test_consumption_records_and_profiles_alone_do_not_protect(tmp_path: Path) -
     assert result["lapsed"] == []
     assert result["blockers"] == []
 
+    # An unlistable profile directory is only a warning; profiles never protect
+    # alone.  (Root ignores directory permissions, so only a user can see it.)
+    if os.geteuid() != 0:
+        sources.profile_dir.chmod(0)
+        try:
+            unlistable = collect_release_protections(sources, now=NOW, migrate=False)
+        finally:
+            sources.profile_dir.chmod(0o755)
+        assert unlistable["blockers"] == []
+        assert "release_protection_profile_dir_unreadable" in unlistable["warnings"]
+
 
 BINDING_REASON = "Completed SAM prefix replay requires its original immutable renderer release"
 
