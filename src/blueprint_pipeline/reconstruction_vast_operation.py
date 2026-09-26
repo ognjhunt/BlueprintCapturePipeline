@@ -29,8 +29,10 @@ from .paid_lane_guard import (
     open_pending_teardown,
 )
 from .paid_provider_lane_lease import (
+    _lease_is_stale,
     acquire_paid_provider_lane_lease,
     build_paid_provider_lane_reconciliation,
+    read_lease,
     release_paid_provider_lane_lease,
 )
 from .paid_resource_admission import (
@@ -61,6 +63,18 @@ TEARDOWN_SCHEMA_VERSION = "reconstruction_vast_operation_teardown.v1"
 PROVIDER_ZERO_SCHEMA_VERSION = "reconstruction_vast_operation_provider_zero.v1"
 PAID_LANE = "reconstruction_gpu_canary"
 NAME_PREFIX = "blueprint-reconstruction-"
+#: Provider zero for one operation under concurrent paid slots: its own lane
+#: label and its own instance are gone. Other lanes' instances hold their own
+#: slots, leases and teardown proofs, so they are recorded here, never required
+#: to be absent.
+SLOT_SCOPE = "instance_and_lane_scoped.v1"
+CONCURRENT_SLOT_RECONCILIATION_SCHEMA_VERSION = (
+    "reconstruction_vast_operation_concurrent_slot_reconciliation.v1"
+)
+_SLOT_ONLY_BLOCKERS = frozenset({
+    "reconstruction_vast_operation_teardown_verification_failed",
+    "reconstruction_vast_operation_paid_lane_release_blocked",
+})
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 _EXPECTED_RESULTS = {
     "website_mapanything": "website_mapanything_result.v1",
@@ -463,9 +477,14 @@ def run_reconstruction_vast_operation(
         )
     scoped_before = provider.billable_inventory(name_prefix=NAME_PREFIX)
     global_before = provider.billable_inventory(name_prefix="")
-    if not all(
-        row.get("api_confirmed") is True and row.get("live_resource_count") == 0
-        for row in (scoped_before, global_before)
+    # This lane must be empty; other lanes may hold the remaining paid slots.
+    global_live_before = global_before.get("live_resource_count")
+    if not (
+        scoped_before.get("api_confirmed") is True
+        and scoped_before.get("live_resource_count") == 0
+        and global_before.get("api_confirmed") is True
+        and type(global_live_before) is int
+        and 0 <= global_live_before < _max_concurrent_paid_slots()
     ):
         raise ReconstructionVastOperationError(
             ["reconstruction_vast_operation_provider_not_zero_before_launch"]
@@ -473,7 +492,7 @@ def run_reconstruction_vast_operation(
     reconciliation = build_paid_provider_lane_reconciliation(
         provider="vast",
         lane=PAID_LANE,
-        provider_inventory=global_before,
+        provider_inventory=scoped_before,
         open_pending_teardowns=load_pending_teardowns(registry_dir=pending_dir),
     )
     lease = acquire_paid_provider_lane_lease(
@@ -747,10 +766,10 @@ def run_reconstruction_vast_operation(
             provider_mutations += 1
         scoped_after = provider.billable_inventory(name_prefix=NAME_PREFIX)
         global_after = provider.billable_inventory(name_prefix="")
-        provider_zero = all(
-            row.get("api_confirmed") is True and row.get("live_resource_count") == 0
-            for row in (scoped_after, global_after)
+        slot_zero = _slot_scoped_provider_zero(
+            scoped=scoped_after, global_inventory=global_after, instance_id=instance_id
         )
+        provider_zero = slot_zero["passed"]
         teardown_passed = bool(
             provider_zero
             and (
@@ -792,7 +811,7 @@ def run_reconstruction_vast_operation(
         terminal_reconciliation = build_paid_provider_lane_reconciliation(
             provider="vast",
             lane=PAID_LANE,
-            provider_inventory=global_after,
+            provider_inventory=scoped_after,
             open_pending_teardowns=load_pending_teardowns(registry_dir=pending_dir),
         )
         lease_release = release_paid_provider_lane_lease(
@@ -813,8 +832,13 @@ def run_reconstruction_vast_operation(
             "operation": operation,
             "request_digest": request_digest,
             "bound_request_digest": request.get("bound_request_digest"),
+            "scope": SLOT_SCOPE,
             "scoped_live_resource_count": scoped_after.get("live_resource_count"),
             "global_live_resource_count": global_after.get("live_resource_count"),
+            "other_slot_live_resource_count": slot_zero["other_slot_live_resource_count"],
+            "instance_absent_from_global_inventory": slot_zero[
+                "instance_absent_from_global_inventory"
+            ],
             "api_confirmed": bool(
                 scoped_after.get("api_confirmed") is True
                 and global_after.get("api_confirmed") is True
@@ -891,6 +915,214 @@ def run_reconstruction_vast_operation(
     )
     write_json(root / "reconstruction_vast_operation_execution.json", execution)
     return execution
+
+
+def _max_concurrent_paid_slots() -> int:
+    from .vast_provider_adapter import _max_concurrent_paid_launches
+
+    return _max_concurrent_paid_launches()
+
+
+def _slot_scoped_provider_zero(
+    *, scoped: Mapping[str, Any], global_inventory: Mapping[str, Any], instance_id: Any
+) -> dict[str, Any]:
+    """This operation's lane label and instance are absent from confirmed inventory."""
+    global_ids = {
+        str(row.get("instance_id"))
+        for row in global_inventory.get("resources") or []
+        if isinstance(row, Mapping)
+    }
+    instance_absent = instance_id is None or str(instance_id) not in global_ids
+    global_count = global_inventory.get("live_resource_count")
+    passed = bool(
+        scoped.get("api_confirmed") is True
+        and scoped.get("live_resource_count") == 0
+        and global_inventory.get("api_confirmed") is True
+        and type(global_count) is int
+        and global_count >= 0
+        and instance_absent
+    )
+    return {
+        "passed": passed,
+        "instance_absent_from_global_inventory": instance_absent,
+        # With the lane label at zero, every remaining instance is another slot's.
+        "other_slot_live_resource_count": global_count if passed else None,
+    }
+
+
+def _slot_scoped_zero_recorded(provider_zero: Mapping[str, Any]) -> bool:
+    return bool(
+        provider_zero.get("global_live_resource_count") == 0
+        or (
+            provider_zero.get("scope") == SLOT_SCOPE
+            and provider_zero.get("instance_absent_from_global_inventory") is True
+            and type(provider_zero.get("global_live_resource_count")) is int
+        )
+    )
+
+
+def reconcile_concurrent_slot_teardown(
+    *,
+    job_dir: str | Path,
+    bound_request: Mapping[str, Any],
+    provider: GpuRenderProvider,
+) -> dict[str, Any]:
+    """Re-verify a teardown that failed only because another slot was live.
+
+    Before slot-scoped provider zero, a completed and retrieved operation whose
+    own instance was stopped still failed when any other lane held a paid
+    instance at the same moment. This re-reads live inventory, and only when the
+    operation's instance and lane label are both absent does it supersede the
+    failed receipts. The originals are kept, and the new receipts name them.
+    """
+    root = Path(job_dir)
+    execution_path = root / "reconstruction_vast_operation_execution.json"
+    if json.loads(execution_path.read_text()).get("status") == "completed":
+        return {"status": "not_required"}
+    superseded = root / "superseded"
+
+    def original(name: str) -> dict[str, Any]:
+        # An interrupted reconciliation resumes from the preserved originals.
+        kept = superseded / name
+        return json.loads((kept if kept.is_file() else root / name).read_text())
+
+    execution = original("reconstruction_vast_operation_execution.json")
+    teardown = original("teardown_receipt.json")
+    provider_zero = original("provider_zero_verification.json")
+    output_receipt = json.loads((root / "validated_output_bundle_receipt.json").read_text())
+    request = dict(bound_request)
+    instance_id = execution.get("instance_id")
+    blockers = set(execution.get("blockers") or [])
+    eligible = bool(
+        execution.get("status") == "failed"
+        and "reconstruction_vast_operation_teardown_verification_failed" in blockers
+        and blockers <= _SLOT_ONLY_BLOCKERS
+        and execution.get("execution_result_digest")
+        == canonical_digest(execution, digest_field="execution_result_digest")
+        and request.get("bound_request_digest")
+        == canonical_digest(request, digest_field="bound_request_digest")
+        and execution.get("bound_request_digest") == request.get("bound_request_digest")
+        and instance_id is not None
+        and execution.get("output_retrieved_before_teardown") is True
+        and execution.get("output_bundle_receipt_digest")
+        == output_receipt.get("output_bundle_receipt_digest")
+        and output_receipt.get("output_bundle_receipt_digest")
+        == canonical_digest(output_receipt, digest_field="output_bundle_receipt_digest")
+        and teardown.get("teardown_receipt_digest")
+        == canonical_digest(teardown, digest_field="teardown_receipt_digest")
+        and execution.get("teardown_receipt_digest") == teardown.get("teardown_receipt_digest")
+        and teardown.get("status") == "FAIL"
+        and str(teardown.get("instance_id")) == str(instance_id)
+        and teardown.get("output_retrieved_before_teardown") is True
+        and (teardown.get("terminate_result") or {}).get("status")
+        in {"stopped", "terminated", "deleted"}
+        and provider_zero.get("provider_zero_digest")
+        == canonical_digest(provider_zero, digest_field="provider_zero_digest")
+        and execution.get("provider_zero_digest") == provider_zero.get("provider_zero_digest")
+        and provider_zero.get("api_confirmed") is True
+        and provider_zero.get("scoped_live_resource_count") == 0
+        and type(provider_zero.get("global_live_resource_count")) is int
+        and provider_zero["global_live_resource_count"] > 0
+    )
+    if not eligible:
+        return {"status": "not_eligible"}
+    scoped_now = provider.billable_inventory(name_prefix=NAME_PREFIX)
+    global_now = provider.billable_inventory(name_prefix="")
+    zero = _slot_scoped_provider_zero(
+        scoped=scoped_now, global_inventory=global_now, instance_id=instance_id
+    )
+    if not zero["passed"]:
+        return {"status": "not_verified",
+                "instance_absent_from_global_inventory": zero["instance_absent_from_global_inventory"]}
+    reconciled_at = utc_now_iso()
+    new_zero = {
+        key: provider_zero.get(key)
+        for key in ("schema_version", "provider", "operation", "request_digest", "bound_request_digest")
+    }
+    new_zero.update({
+        "status": "PASS",
+        "scope": SLOT_SCOPE,
+        "scoped_live_resource_count": scoped_now.get("live_resource_count"),
+        "global_live_resource_count": global_now.get("live_resource_count"),
+        "other_slot_live_resource_count": zero["other_slot_live_resource_count"],
+        "instance_absent_from_global_inventory": True,
+        "api_confirmed": True,
+        "timestamp": reconciled_at,
+        "supersedes_provider_zero_digest": provider_zero["provider_zero_digest"],
+    })
+    new_zero["provider_zero_digest"] = canonical_digest(new_zero, digest_field="provider_zero_digest")
+    new_teardown = {k: v for k, v in teardown.items() if k != "teardown_receipt_digest"}
+    new_teardown.update({
+        "status": "PASS",
+        "provider_zero_verified": True,
+        "provider_zero_scope": SLOT_SCOPE,
+        "reconciled_at": reconciled_at,
+        "supersedes_teardown_receipt_digest": teardown["teardown_receipt_digest"],
+    })
+    new_teardown["teardown_receipt_digest"] = canonical_digest(
+        new_teardown, digest_field="teardown_receipt_digest"
+    )
+    lease_dir = root / "leases"
+    lease_release: dict[str, Any] = {"status": "already_released", "released": False}
+    held = read_lease("vast", PAID_LANE, lease_dir)
+    if held is not None:
+        # Only the dead attempt's own lease: a live owner is still tearing down.
+        if held.get("lane") != PAID_LANE or not _lease_is_stale(held)[0]:
+            return {"status": "lease_owner_live"}
+        lease_release = release_paid_provider_lane_lease(
+            {"lease": held},
+            reason="reconstruction_operation_concurrent_slot_reconciled",
+            provider_mutation_started=True,
+            terminal_reconciliation=build_paid_provider_lane_reconciliation(
+                provider="vast", lane=PAID_LANE, provider_inventory=scoped_now,
+                open_pending_teardowns=[],
+            ),
+            lease_dir=lease_dir,
+        )
+        if lease_release.get("released") is not True:
+            return {"status": "lease_release_blocked"}
+    for record in load_pending_teardowns(registry_dir=root / "pending_teardowns"):
+        if record.get("status") == "open" and str(record.get("instance_id")) == str(instance_id):
+            close_pending_teardown(Path(str(record["path"])), new_teardown)
+    superseded.mkdir(exist_ok=True)
+    for name, value in (("teardown_receipt.json", teardown),
+                        ("provider_zero_verification.json", provider_zero),
+                        ("reconstruction_vast_operation_execution.json", execution)):
+        target = superseded / name
+        if not target.exists():
+            write_json(target, value)
+    reconciliation = {
+        "schema_version": CONCURRENT_SLOT_RECONCILIATION_SCHEMA_VERSION,
+        "instance_id": instance_id,
+        "request_digest": execution.get("request_digest"),
+        "superseded_execution_result_digest": execution["execution_result_digest"],
+        "superseded_teardown_receipt_digest": teardown["teardown_receipt_digest"],
+        "superseded_provider_zero_digest": provider_zero["provider_zero_digest"],
+        "teardown_receipt_digest": new_teardown["teardown_receipt_digest"],
+        "provider_zero_digest": new_zero["provider_zero_digest"],
+        "lease_release_status": lease_release.get("status"),
+        "reconciled_at": reconciled_at,
+    }
+    reconciliation["reconciliation_digest"] = canonical_digest(
+        reconciliation, digest_field="reconciliation_digest"
+    )
+    write_json(root / "concurrent_slot_reconciliation.json", reconciliation)
+    write_json(root / "teardown_receipt.json", new_teardown)
+    write_json(root / "provider_zero_verification.json", new_zero)
+    new_execution = {k: v for k, v in execution.items() if k != "execution_result_digest"}
+    new_execution.update({
+        "status": "completed",
+        "blockers": sorted(blockers - _SLOT_ONLY_BLOCKERS),
+        "teardown_receipt_digest": new_teardown["teardown_receipt_digest"],
+        "provider_zero_digest": new_zero["provider_zero_digest"],
+        "provider_zero_verified": True,
+        "concurrent_slot_reconciliation_digest": reconciliation["reconciliation_digest"],
+    })
+    new_execution["execution_result_digest"] = canonical_digest(
+        new_execution, digest_field="execution_result_digest"
+    )
+    write_json(execution_path, new_execution)
+    return {"status": "reconciled", "reconciliation_digest": reconciliation["reconciliation_digest"]}
 
 
 def replay_reconstruction_vast_operation(
@@ -1022,7 +1254,7 @@ def replay_reconstruction_vast_operation(
         or provider_zero.get("status") != "PASS"
         or provider_zero.get("api_confirmed") is not True
         or provider_zero.get("scoped_live_resource_count") != 0
-        or provider_zero.get("global_live_resource_count") != 0
+        or not _slot_scoped_zero_recorded(provider_zero)
     ):
         blockers.append("reconstruction_vast_operation_replay_teardown_not_verified")
     replay = {
@@ -1045,6 +1277,7 @@ def replay_reconstruction_vast_operation(
 
 __all__ = [
     "ReconstructionVastOperationError",
+    "reconcile_concurrent_slot_teardown",
     "replay_reconstruction_vast_operation",
     "run_reconstruction_vast_operation",
 ]

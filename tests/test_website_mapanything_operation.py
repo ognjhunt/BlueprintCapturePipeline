@@ -392,3 +392,35 @@ def test_runtime_upgrade_preserves_prior_bundle_and_reuses_identical_bytes(packe
         members = [name for name in archive.namelist() if name.endswith(wheel.name)]
         assert len(members) == 1
         assert archive.read(members[0]) == wheel.read_bytes()
+
+
+def test_controller_reuses_output_after_concurrent_slot_teardown_reconciles(packet, tmp_path, monkeypatch):
+    from blueprint_pipeline import website_geometry_dispatch as dispatch
+
+    path, _, _ = packet
+    inputs = json.loads(path.read_text())
+    output = tmp_path / "geometry"
+    first = output / "controller_geometry"
+    first.mkdir(parents=True)
+    write_json(first / "dispatch.json", {"input_digest": inputs["digest"], "task_context_digest": DIGEST})
+    reconciled: list[Path] = []
+    outcomes = iter(["requires", "estimated"])
+
+    def reuse(root, _inputs):
+        if next(outcomes) == "requires":
+            raise ValueError("website_mapanything_existing_attempt_requires_reconciliation")
+        return {"status": "estimated", "root": str(root)}
+
+    def reconcile(root):
+        reconciled.append(root)
+        return "reconciled"
+
+    monkeypatch.setattr(dispatch, "_reuse", reuse)
+    monkeypatch.setattr(dispatch, "_reconcile_concurrent_slot", reconcile)
+    result = dispatch.dispatch_geometry(
+        input_manifest=path, output_root=output, task_context={"context_digest": DIGEST},
+        source_commit=SHA, allocate=lambda *_a, **_k: pytest.fail("reconciled output must not be rented again"))
+
+    assert result == {"status": "estimated", "root": str(first)}
+    assert reconciled == [first]
+    assert not (output / "controller_geometry_retry_1").exists()
