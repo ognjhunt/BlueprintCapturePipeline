@@ -843,6 +843,11 @@ def _claim_job_lease(
                 "terminal_payload_sha256": ended_by,
                 "payload_sha256": payload_sha256,
             })
+            # The ended run's receipt is kept, but never under the live name,
+            # which only ever describes the ledger's current ending.
+            live_receipt = capture_root / JOB_TERMINAL_RECEIPT_FILENAME
+            if live_receipt.exists() or live_receipt.is_symlink():
+                _set_aside(live_receipt, "superseded")
         if status == "completed":
             retained = _read_optional_json_object(capture_root / "pipeline" / "run_e2e_stage_ledger.json")
             capture_result = _mapping(_mapping(_mapping(retained.get("stages")).get("capture_pipeline")).get("result_snapshot"))
@@ -931,7 +936,10 @@ def _finish_job_lease(
     owner: str,
     token: str,
     update: Mapping[str, Any],
+    after_commit: Callable[[dict[str, Any]], Any] | None = None,
 ) -> dict[str, Any]:
+    """Commit the lease's final ledger; after_commit runs under the same lock."""
+
     with _locked_job_ledger(capture_root) as ledger:
         if (
             ledger.get("status") != "processing"
@@ -940,7 +948,7 @@ def _finish_job_lease(
         ):
             raise PipelineError("Pub/Sub job ledger lease ownership was lost before commit.")
         revision = int(ledger.get("revision") or 0)
-        return _commit_job_ledger(
+        committed = _commit_job_ledger(
             capture_root,
             {
                 **ledger,
@@ -951,6 +959,9 @@ def _finish_job_lease(
             },
             previous_revision=revision,
         )
+        if after_commit is not None:
+            after_commit(committed)
+        return committed
 
 
 class _JobLeaseHeartbeat:
@@ -1229,7 +1240,10 @@ def read_handoff_job_status(
         capture_root / "raw" / "capture_upload_complete.json"
     ).is_file()
     pipeline_handoff_present = (capture_root / "pipeline_handoff.json").is_file()
-    terminal_receipt_present = (capture_root / JOB_TERMINAL_RECEIPT_FILENAME).is_file()
+    # Present means an intact receipt of the ledger's current ending, not just a file.
+    terminal_receipt_present = _terminal_receipt_current(
+        _read_optional_json_object(capture_root / JOB_TERMINAL_RECEIPT_FILENAME), ledger
+    )
     ack_receipt = _read_optional_json_object(capture_root / JOB_ACK_RECEIPT_FILENAME) or None
     provider_ops_status = _provider_ops_status(capture_root)
     if ledger:
@@ -1446,6 +1460,57 @@ def _write_terminal_receipt(
     return receipt
 
 
+def _terminal_receipt_current(receipt: Mapping[str, Any], ledger: Mapping[str, Any]) -> bool:
+    """Whether receipt is an intact record of the ledger's current authority ending."""
+
+    ended_by = _string(ledger.get("terminal_payload_sha256"))
+    return bool(
+        _string(ledger.get("status")) == TERMINAL_AUTHORITY_STATUS
+        and ended_by
+        and receipt.get("schema_version") == JOB_TERMINAL_RECEIPT_SCHEMA_VERSION
+        and receipt.get("status") == "authority_ended"
+        and receipt.get("payload_sha256") == ended_by
+        and receipt.get("code") == ledger.get("terminal_code")
+        and receipt.get("receipt_digest") == canonical_digest(receipt, digest_field="receipt_digest")
+    )
+
+
+def _replace_terminal_receipt(
+    capture_root: Path,
+    *,
+    handoff: HandoffMessage,
+    ledger: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Write the ledger's receipt, first setting aside whatever held the live name.
+
+    Callers hold the capture's ledger lock.
+    """
+
+    live = capture_root / JOB_TERMINAL_RECEIPT_FILENAME
+    if live.exists() or live.is_symlink():
+        _set_aside(live, "superseded")
+    return _write_terminal_receipt(capture_root, handoff=handoff, ledger=ledger)
+
+
+def _repair_terminal_receipt(capture_root: Path, *, handoff: HandoffMessage) -> None:
+    """Under the ledger lock, make the live receipt describe the current ending.
+
+    Covers a process that died between the terminal ledger commit and its
+    receipt, and a receipt left behind by an earlier ending.
+    """
+
+    with _locked_job_ledger(capture_root) as ledger:
+        if (
+            _string(ledger.get("status")) != TERMINAL_AUTHORITY_STATUS
+            or not _string(ledger.get("terminal_code"))
+            or not _string(ledger.get("terminal_payload_sha256"))
+        ):
+            return
+        receipt = _read_optional_json_object(capture_root / JOB_TERMINAL_RECEIPT_FILENAME)
+        if not _terminal_receipt_current(receipt, ledger):
+            _replace_terminal_receipt(capture_root, handoff=handoff, ledger=ledger)
+
+
 def _terminal_authority_result(
     handoff: HandoffMessage,
     *,
@@ -1483,8 +1548,9 @@ def _finish_terminal_authority_ending(
 ) -> dict[str, Any]:
     """End the job for good: the website ended this scene's authority.
 
-    The ledger commits first. A crash before the receipt is written leaves a
-    terminal ledger, and the next redelivery writes the receipt from it.
+    The ledger commits first and the receipt follows under the same lock. A
+    crash before the receipt is written leaves a terminal ledger, and the next
+    redelivery writes the receipt from it.
     """
 
     ended_at = utc_now_iso()
@@ -1492,6 +1558,9 @@ def _finish_terminal_authority_ending(
         capture_root,
         owner=owner,
         token=token,
+        after_commit=lambda committed: _replace_terminal_receipt(
+            capture_root, handoff=handoff, ledger=committed
+        ),
         update={
             "status": TERMINAL_AUTHORITY_STATUS,
             "terminal_code": code,
@@ -1517,7 +1586,6 @@ def _finish_terminal_authority_ending(
             ],
         },
     )
-    _write_terminal_receipt(capture_root, handoff=handoff, ledger=ledger)
     logger.warning(
         "pubsub_handoff.terminal_authority_ended",
         extra={
@@ -1566,12 +1634,7 @@ def process_handoff_payload(
         payload_sha256=digest,
     )
     if claim_status == "terminal":
-        if (
-            not (capture_root / JOB_TERMINAL_RECEIPT_FILENAME).is_file()
-            and _string(ledger.get("terminal_code"))
-            and _string(ledger.get("terminal_payload_sha256"))
-        ):
-            _write_terminal_receipt(capture_root, handoff=handoff, ledger=ledger)
+        _repair_terminal_receipt(capture_root, handoff=handoff)
         logger.info(
             "pubsub_handoff.skipped_terminal_authority_ended",
             extra={

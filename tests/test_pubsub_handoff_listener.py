@@ -1761,8 +1761,17 @@ def test_a_new_payload_reopens_a_terminal_capture(tmp_path, monkeypatch):
     assert reopened["terminal_code"] == "consent_expired"
     assert reopened["terminal_payload_sha256"] == sha256(PAYLOAD_BYTES).hexdigest()
     assert reopened["payload_sha256"] == sha256(reopened_payload).hexdigest()
-    # The earlier ending stays on disk as evidence; the ledger is the current state.
-    assert (_capture_root(tmp_path) / "pipeline_job_terminal_receipt.json").is_file()
+    # The earlier ending's receipt is kept as evidence, but never under the live name.
+    capture_root = _capture_root(tmp_path)
+    assert not (capture_root / "pipeline_job_terminal_receipt.json").exists()
+    superseded = list(capture_root.glob("pipeline_job_terminal_receipt.superseded-*.json"))
+    assert len(superseded) == 1
+    kept = _read(superseded[0])
+    assert kept["payload_sha256"] == sha256(PAYLOAD_BYTES).hexdigest()
+    assert kept["receipt_digest"] == canonical_digest(kept, digest_field="receipt_digest")
+    status = read_handoff_job_status(storage_root=tmp_path, bucket="capture-bucket",
+                                     scene_id="scene-1", capture_id="capture-1")
+    assert status["terminal_receipt_present"] is False
 
 
 def test_non_terminal_409_stays_retryable(tmp_path, monkeypatch):
@@ -2156,3 +2165,66 @@ def test_a_payload_that_already_ended_stays_ended_after_a_later_ending(tmp_path,
     assert _pull(tmp_path) == 1
     assert results[0]["status"] == "skipped_terminal_authority_ended"
     assert _read(ledger_path) == ended_twice
+
+
+def _live_terminal_receipt(storage_root: Path) -> Path:
+    return _capture_root(storage_root) / "pipeline_job_terminal_receipt.json"
+
+
+def _status(storage_root: Path) -> dict:
+    return read_handoff_job_status(storage_root=storage_root, bucket="capture-bucket",
+                                   scene_id="scene-1", capture_id="capture-1")
+
+
+def test_a_reopened_ending_that_crashed_before_its_receipt_is_repaired(tmp_path, monkeypatch):
+    first = FakeSubscriber([_received(ack_id="p1", data=PAYLOAD_BYTES)])
+    _install_fake_pubsub(monkeypatch, first,
+                         storage_client=FakeStorageClient(_website_bundle_blobs()), run_e2e=_expired)
+    assert _pull(tmp_path) == 1
+
+    # P2 reopens the capture and ends too, but the process dies before its receipt.
+    write_receipt = listener_module._write_terminal_receipt
+
+    def killed(*_args, **_kwargs):
+        raise RuntimeError("process killed before the terminal receipt")
+
+    monkeypatch.setattr(listener_module, "_write_terminal_receipt", killed)
+    second = FakeSubscriber([_received(ack_id="p2", data=_second_payload())])
+    _install_fake_pubsub(monkeypatch, second,
+                         storage_client=FakeStorageClient(_website_bundle_blobs()), run_e2e=_expired)
+    assert _pull(tmp_path) == 0
+    ledger = _read(_capture_root(tmp_path) / "pipeline_job_ledger.json")
+    assert ledger["terminal_payload_sha256"] == sha256(_second_payload()).hexdigest()
+    assert _status(tmp_path)["terminal_receipt_present"] is False
+
+    monkeypatch.setattr(listener_module, "_write_terminal_receipt", write_receipt)
+    redelivered = FakeSubscriber([_received(ack_id="p2-again", data=_second_payload(), delivery_attempt=2)])
+    _install_fake_pubsub(monkeypatch, redelivered, storage_client=_ListingForbidden())
+    assert _pull(tmp_path) == 1
+
+    receipt = _read(_live_terminal_receipt(tmp_path))
+    assert receipt["payload_sha256"] == sha256(_second_payload()).hexdigest()
+    assert receipt["receipt_digest"] == canonical_digest(receipt, digest_field="receipt_digest")
+    assert _status(tmp_path)["terminal_receipt_present"] is True
+
+
+def test_a_stale_receipt_under_the_live_name_is_set_aside_and_rewritten(tmp_path, monkeypatch):
+    for ack_id, payload in (("p1", PAYLOAD_BYTES), ("p2", _second_payload())):
+        subscriber = FakeSubscriber([_received(ack_id=ack_id, data=payload)])
+        _install_fake_pubsub(monkeypatch, subscriber,
+                             storage_client=FakeStorageClient(_website_bundle_blobs()), run_e2e=_expired)
+        assert _pull(tmp_path) == 1
+    capture_root = _capture_root(tmp_path)
+    (p1_receipt,) = capture_root.glob("pipeline_job_terminal_receipt.superseded-*.json")
+    stale = p1_receipt.read_bytes()
+    _live_terminal_receipt(tmp_path).write_bytes(stale)  # P1's receipt back under the live name
+    assert _status(tmp_path)["terminal_receipt_present"] is False
+
+    redelivered = FakeSubscriber([_received(ack_id="p2-again", data=_second_payload(), delivery_attempt=2)])
+    _install_fake_pubsub(monkeypatch, redelivered, storage_client=_ListingForbidden())
+    assert _pull(tmp_path) == 1
+
+    assert _read(_live_terminal_receipt(tmp_path))["payload_sha256"] == sha256(_second_payload()).hexdigest()
+    kept = sorted(capture_root.glob("pipeline_job_terminal_receipt.superseded-*.json"))
+    assert [path.read_bytes() for path in kept].count(stale) == 2  # both copies of P1's receipt are kept
+    assert _status(tmp_path)["terminal_receipt_present"] is True
