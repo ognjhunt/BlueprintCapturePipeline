@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import threading
 from pathlib import Path
@@ -18,6 +19,10 @@ from blueprint_pipeline.native_g1_provider_runtime import (
     _stage_models,
     _template,
     run_g1_provider_campaign,
+)
+from blueprint_pipeline.native_g1_sonic_cuda_runtime import (
+    preflight_sonic_cuda_models,
+    require_sonic_cuda_runtime,
 )
 
 
@@ -54,13 +59,20 @@ def test_model_staging_fetches_distinct_candidates_concurrently_in_pair_order(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     barrier = threading.Barrier(len(PAIR_ORDER))
+    stages: list[str] = []
 
     def fetch(*, inventory_path: Path, candidate_id: str, output_dir: Path) -> dict:
+        stages.append("checkpoint")
         barrier.wait(timeout=5)
         return {"candidate_id": candidate_id}
 
     def sonic(*, inventory_path: Path, output_dir: Path) -> dict:
+        stages.append("sonic")
         return {"files": []}
+
+    def probe(_assets: dict) -> dict:
+        stages.append("cuda-session-probe")
+        return {"status": "sonic_cuda_sessions_ready_no_inference"}
 
     monkeypatch.setattr(
         "blueprint_pipeline.native_g1_provider_runtime._load_script",
@@ -70,10 +82,13 @@ def test_model_staging_fetches_distinct_candidates_concurrently_in_pair_order(
             else SimpleNamespace(stage_sonic_assets=sonic)
         ),
     )
+    monkeypatch.setattr(provider_runtime, "preflight_sonic_cuda_models", probe)
     output = tmp_path / "output"
     output.mkdir()
     result = _stage_models(tmp_path / "runtime", output)
 
+    assert stages[:2] == ["sonic", "cuda-session-probe"]
+    assert result["sonic_cuda_preflight"]["status"] == "sonic_cuda_sessions_ready_no_inference"
     assert [row["candidate_id"] for row in result["checkpoints"]] == list(PAIR_ORDER)
     assert [
         json.loads((output / "models" / (candidate + ".json")).read_text())["candidate_id"]
@@ -127,3 +142,44 @@ def test_runtime_import_preflight_retains_all_failures_before_model_staging(
         (output / "native_g1_runtime_import_preflight.v1.json").read_text(encoding="utf-8")
     ) == result
     assert result["receipt_digest"] == canonical_digest(result, digest_field="receipt_digest")
+
+
+def test_sonic_cuda_runtime_refuses_cpu_wheel_and_requires_preloaded_gpu_provider() -> None:
+    calls: list[str] = []
+    cpu = SimpleNamespace(__version__="1.22.1", preload_dlls=lambda: None,
+                          get_available_providers=lambda: ["CPUExecutionProvider"])
+    with pytest.raises(RuntimeError, match="version_mismatch"):
+        require_sonic_cuda_runtime(cpu)
+    gpu_without_provider = SimpleNamespace(__version__="1.24.4",
+        preload_dlls=lambda: calls.append("preload"),
+        get_available_providers=lambda: ["CPUExecutionProvider"])
+    with pytest.raises(RuntimeError, match="cuda_execution_provider_unavailable"):
+        require_sonic_cuda_runtime(gpu_without_provider)
+    gpu = SimpleNamespace(__version__="1.24.4",
+        preload_dlls=lambda: calls.append("preload"),
+        get_available_providers=lambda: ["CUDAExecutionProvider", "CPUExecutionProvider"])
+    assert require_sonic_cuda_runtime(gpu)["cuda_execution_provider_available"] is True
+    assert calls == ["preload", "preload"]
+
+
+def test_sonic_cuda_model_preflight_rejects_session_fallback(tmp_path: Path) -> None:
+    files = []
+    for role in ("encoder", "decoder"):
+        path = tmp_path / (role + ".onnx")
+        path.write_bytes(role.encode())
+        files.append({"role": role, "path": str(path),
+            "sha256": "sha256:" + hashlib.sha256(role.encode()).hexdigest(),
+            "size_bytes": len(role)})
+
+    class Session:
+        def __init__(self, _path: str, *, providers: list[str]) -> None:
+            assert providers == ["CUDAExecutionProvider"]
+
+        def get_providers(self) -> list[str]:
+            return ["CPUExecutionProvider"]
+
+    runtime = SimpleNamespace(__version__="1.24.4", preload_dlls=lambda: None,
+        get_available_providers=lambda: ["CUDAExecutionProvider", "CPUExecutionProvider"],
+        InferenceSession=Session)
+    with pytest.raises(RuntimeError, match="model_session_fell_back:encoder"):
+        preflight_sonic_cuda_models({"files": files}, runtime)

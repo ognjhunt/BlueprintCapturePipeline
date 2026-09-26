@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline import native_task_runtime_source_packet as source_packet
+from blueprint_pipeline.native_task_g1_runtime_lock import G1_RUNTIME_DEPENDENCY_WHEELS
 from blueprint_pipeline.native_task_runtime_source_packet import (
     ARENA_COMMIT,
     ARENA_TREE,
@@ -135,7 +136,8 @@ def test_g1_runtime_profile_seals_its_native_import_closure_without_changing_bas
     )
     assert receipt["runtime_profile"] == verified["runtime_profile"] == "unitree_g1"
     packages = {row["package"] for row in verified["runtime_dependency_wheels"]}
-    assert {"pin", "coal", "eigenpy", "protobuf", "numpy"}.issubset(packages)
+    assert {"pin", "coal", "eigenpy", "protobuf", "numpy", "onnxruntime-gpu"}.issubset(packages)
+    assert "onnxruntime" not in packages
     assert not {"pin", "coal", "protobuf"}.intersection(
         row["package"] for row in RUNTIME_DEPENDENCY_WHEELS
     )
@@ -190,6 +192,9 @@ def test_g1_extension_reuses_verified_base_sources_and_wheels(tmp_path: Path) ->
     ) as expanded:
         source_name = "runtime_sources/arena/isaaclab_arena_g1/__init__.py"
         assert original.read(source_name) == expanded.read(source_name)
+        assert any("onnxruntime-1.22.1" in name for name in original.namelist())
+        assert not any("onnxruntime-1.22.1" in name for name in expanded.namelist())
+        assert any("onnxruntime_gpu-1.24.4" in name for name in expanded.namelist())
 
 
 def _wheelhouse(
@@ -199,7 +204,7 @@ def _wheelhouse(
     wheelhouse.mkdir(parents=True, exist_ok=True)
     contracts = runtime_dependency_contracts(runtime_profile)
     if only_extension:
-        contracts = contracts[len(RUNTIME_DEPENDENCY_WHEELS):]
+        contracts = G1_RUNTIME_DEPENDENCY_WHEELS
     for contract in contracts:
         path = wheelhouse / contract["filename"]
         if path.is_file():

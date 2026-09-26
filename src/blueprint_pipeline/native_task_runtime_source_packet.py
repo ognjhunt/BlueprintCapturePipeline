@@ -362,13 +362,17 @@ RUNTIME_DEPENDENCY_WHEELS = (
     BASE_RUNTIME_DEPENDENCY_WHEELS + TORCH_RUNTIME_DEPENDENCY_WHEELS
 )
 RUNTIME_PROFILES = ("base", "unitree_g1")
+G1_REPLACED_BASE_PACKAGES = frozenset({"onnxruntime"})
 
 
 def runtime_dependency_contracts(profile: str) -> tuple[dict[str, Any], ...]:
     if profile == "base":
         return RUNTIME_DEPENDENCY_WHEELS
     if profile == "unitree_g1":
-        return RUNTIME_DEPENDENCY_WHEELS + G1_RUNTIME_DEPENDENCY_WHEELS
+        return tuple(
+            row for row in RUNTIME_DEPENDENCY_WHEELS
+            if row["package"] not in G1_REPLACED_BASE_PACKAGES
+        ) + G1_RUNTIME_DEPENDENCY_WHEELS
     raise NativeTaskRuntimeSourcePacketError(["native_task_runtime_profile_unsupported"])
 
 
@@ -826,8 +830,20 @@ def extend_native_task_runtime_source_packet(
         )
     extra_rows, extra_files = _runtime_dependency_rows(
         Path(dependency_wheel_dir).expanduser().resolve(),
-        contracts[len(RUNTIME_DEPENDENCY_WHEELS):],
+        G1_RUNTIME_DEPENDENCY_WHEELS,
     )
+    retained_base_rows = [
+        row for row in base["runtime_dependency_wheels"]
+        if row["package"] not in G1_REPLACED_BASE_PACKAGES
+    ]
+    replaced_archive_paths = {
+        row["archive_path"] for row in base["runtime_dependency_wheels"]
+        if row["package"] in G1_REPLACED_BASE_PACKAGES
+    }
+    if len(retained_base_rows) + len(extra_rows) != len(contracts):
+        raise NativeTaskRuntimeSourcePacketError(
+            ["native_task_runtime_extension_contract_mismatch"]
+        )
     destination = Path(output_dir).expanduser().resolve()
     destination.mkdir(parents=True, exist_ok=True)
     packet_path = destination / "native_task_runtime_sources.zip"
@@ -844,7 +860,7 @@ def extend_native_task_runtime_source_packet(
             "generated_at": generated_at or _utc_now_iso(),
             "runtime_profile": runtime_profile,
             "runtime_dependency_wheels": [
-                *base["runtime_dependency_wheels"], *extra_rows,
+                *retained_base_rows, *extra_rows,
             ],
             "manifest_digest": "",
         })
@@ -856,6 +872,8 @@ def extend_native_task_runtime_source_packet(
         ).encode("utf-8")
         with zipfile.ZipFile(packet_path, "w", allowZip64=True) as output:
             for original in source.infolist():
+                if original.filename in replaced_archive_paths:
+                    continue
                 info = zipfile.ZipInfo(original.filename, date_time=(1980, 1, 1, 0, 0, 0))
                 info.create_system = 3
                 info.external_attr = 0o100644 << 16

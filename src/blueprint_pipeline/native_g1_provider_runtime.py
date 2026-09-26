@@ -34,6 +34,10 @@ from .native_g1_policy_runtime_build import (
     execute_g1_policy_runtime_build,
     prepare_g1_policy_runtime_build,
 )
+from .native_g1_sonic_cuda_runtime import (
+    preflight_sonic_cuda_models,
+    require_sonic_cuda_runtime,
+)
 from .native_g1_publisher_source_stage import verify_g1_publisher_source
 from .native_task_isaaclab_launch import NATIVE_TASK_ARENA_IMAGE
 
@@ -65,10 +69,13 @@ def _preflight_g1_runtime_imports(output: Path) -> dict[str, Any]:
     for name in G1_RUNTIME_IMPORTS:
         try:
             module = importlib.import_module(name)
-            rows.append({
+            row = {
                 "module": name, "available": True,
                 "version": str(getattr(module, "__version__", "unreported")),
-            })
+            }
+            if name == "onnxruntime":
+                row.update(require_sonic_cuda_runtime(module))
+            rows.append(row)
         except Exception as exc:  # noqa: BLE001 - complete paid preflight evidence
             rows.append({
                 "module": name, "available": False,
@@ -198,6 +205,20 @@ def _stage_models(root: Path, output: Path) -> dict[str, Any]:
     models.mkdir()
     checkpoints = models / "checkpoints"
 
+    sonic_root = models / "sonic"
+    with _Heartbeat("sonic-assets"):
+        sonic = sonic_fetcher.stage_sonic_assets(
+            inventory_path=sonic_inventory, output_dir=sonic_root
+        )
+    (models / "sonic.json").write_text(
+        json.dumps(sonic, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    with _Heartbeat("sonic-cuda-session-preflight"):
+        sonic_cuda = preflight_sonic_cuda_models(sonic)
+    (models / "sonic_cuda_preflight.json").write_text(
+        json.dumps(sonic_cuda, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
     def fetch_checkpoint(candidate: str) -> dict[str, Any]:
         with _Heartbeat("checkpoint:" + candidate):
             return checkpoint_fetcher.materialize_candidate(
@@ -214,15 +235,8 @@ def _stage_models(root: Path, output: Path) -> dict[str, Any]:
         (models / (candidate + ".json")).write_text(
             json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
-    sonic_root = models / "sonic"
-    with _Heartbeat("sonic-assets"):
-        sonic = sonic_fetcher.stage_sonic_assets(
-            inventory_path=sonic_inventory, output_dir=sonic_root
-        )
-    (models / "sonic.json").write_text(
-        json.dumps(sonic, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
-    return {"checkpoints": receipts, "sonic": sonic, "root": str(models)}
+    return {"checkpoints": receipts, "sonic": sonic,
+            "sonic_cuda_preflight": sonic_cuda, "root": str(models)}
 
 
 def _template(
