@@ -681,6 +681,59 @@ def _partial_policy_canary_result(
     )
 
 
+def _sparse_preobservation_result(value: Mapping[str, Any]) -> bool:
+    """A signed provider failure before the first query has no episode rows yet."""
+
+    episodes = value.get("episodes")
+    return (
+        value.get("status") == "blocked"
+        and value.get("run_kind") == RUN_KIND
+        and value.get("claim_ceiling") == CLAIM_CEILING
+        and value.get("candidate_policy_queried") is False
+        and (episodes is None or episodes == [])
+        and value.get("result_digest")
+        == canonical_digest(value, digest_field="result_digest")
+    )
+
+
+def _retained_sparse_terminal_gap(root: Path) -> bool:
+    """Permit delivery replay of a closed paid attempt without another allocator."""
+
+    joined_path = root / "policy_canary_terminal_result.json"
+    adapter_path = root / "allocator_result.json"
+    zero_path = root / "post_teardown_global_provider_zero.json"
+    billing_path = root / "official_billing_reconciliation.json"
+    if not all(path.is_file() for path in (joined_path, adapter_path, zero_path, billing_path)):
+        return False
+    joined = _read(joined_path, code="policy_canary_terminal_result_invalid")
+    prior_path = root / "preprovider_evidence" / "prior_terminal_result.json"
+    source_path = root / "preprovider_evidence" / "source_provider_terminal_result.json"
+    sparse_path = (
+        prior_path if prior_path.is_file()
+        else source_path if source_path.is_file()
+        else joined_path
+    )
+    prior = (
+        _read(sparse_path, code="policy_canary_prior_terminal_result_invalid")
+        if sparse_path != joined_path else joined
+    )
+    if (
+        not _sparse_preobservation_result(prior)
+        or joined.get("status") != "blocked"
+        or joined.get("candidate_policy_queried") is not False
+        or joined.get("result_digest")
+        != canonical_digest(joined, digest_field="result_digest")
+    ):
+        return False
+    if _sealed_provider_zero(zero_path) is None:
+        return False
+    try:
+        validate_vast_official_same_goal_reconciliation(billing_path)
+    except Exception:  # a retained bill must pass the normal validator
+        return False
+    return True
+
+
 def _recovered_complete_policy_canary_result(
     *,
     root: Path,
@@ -1422,8 +1475,9 @@ def dispatch_policy_canary_activation(
     # A newer controller may close a proven old-release provider refusal, never
     # restart its allocator. Ordinary old-release work remains delivery-only.
     retained_delivery = execute and _has_materialized_delivery(root)
+    retained_sparse_gap = execute and _retained_sparse_terminal_gap(root)
     if (
-        (delivery_only and not retained_delivery)
+        (delivery_only and not (retained_delivery or retained_sparse_gap))
         or setup["activation_digest"] != activation["activation_digest"]
         or setup["scene_revision_digest"] != runtime_inputs.get("scene_revision_digest")
         or setup.get("task_success_contract")
@@ -1688,7 +1742,7 @@ def dispatch_policy_canary_activation(
     )
     if resumed is not None:
         return resumed
-    if delivery_only:
+    if delivery_only and not retained_sparse_gap:
         raise TaskEvaluationPolicyCanaryDispatchError("policy_canary_retained_delivery_missing")
 
     provider_null = proven_provider_null_closeout(adapter, root=root, record_file=_record)
@@ -1795,6 +1849,7 @@ def dispatch_policy_canary_activation(
             authority=authority,
             runtime_inputs=runtime_inputs,
         )
+    sparse_provider_path: Path | None = None
     if native_path.is_file() or recovered is not None:
         if recovered is not None:
             inner, native_path = recovered
@@ -1808,14 +1863,56 @@ def dispatch_policy_canary_activation(
         )
         if partial is not None:
             inner, native_path = partial
-    else:
+        elif _sparse_preobservation_result(inner):
+            sparse_provider_path = native_path
+    if ((not native_path.is_file() and recovered is None)
+            or sparse_provider_path is not None):
         gap_root = root / "preprovider_evidence"
         gap_root.mkdir(parents=True, exist_ok=True)
+        source_artifacts = []
+        if sparse_provider_path is not None:
+            source_path = gap_root / "source_provider_terminal_result.json"
+            source_bytes = sparse_provider_path.read_bytes()
+            if source_path.exists() and source_path.read_bytes() != source_bytes:
+                raise TaskEvaluationPolicyCanaryDispatchError(
+                    "policy_canary_retained_provider_terminal_result_conflict"
+                )
+            if not source_path.exists():
+                source_path.write_bytes(source_bytes)
+            source_artifacts.append({
+                "role": "source_provider_terminal_result",
+                "relative_path": source_path.name,
+                "media_type": "application/json",
+                "size_bytes": source_path.stat().st_size,
+                "sha256": _sha256(source_path),
+            })
+        if retained_sparse_gap:
+            prior_path = gap_root / "prior_terminal_result.json"
+            if not prior_path.exists():
+                old_joined = root / "policy_canary_terminal_result.json"
+                old_joined_record = _read(
+                    old_joined, code="policy_canary_prior_terminal_result_invalid"
+                )
+                prior_path.write_bytes(
+                    (old_joined if _sparse_preobservation_result(old_joined_record)
+                     else source_path).read_bytes()
+                )
+            source_artifacts.append({
+                "role": "prior_terminal_result",
+                "relative_path": prior_path.name,
+                "media_type": "application/json",
+                "size_bytes": prior_path.stat().st_size,
+                "sha256": _sha256(prior_path),
+            })
         gap_path = gap_root / "typed_media_gap.json"
         gap_value = {
             "schema_version": "task_evaluation_policy_canary_media_gap.v1",
             "type": "before_first_observation",
-            "reason": (adapter.get("blockers") or ["provider_result_missing"])[0],
+            "reason": (
+                (inner.get("blockers") if sparse_provider_path is not None else None)
+                or adapter.get("blockers")
+                or ["provider_result_missing"]
+            )[0],
             "candidate_policy_queried": False,
         }
         write_json(gap_path, gap_value)
@@ -1828,6 +1925,7 @@ def dispatch_policy_canary_activation(
             "task_success_contract_digest": runtime_inputs[
                 "task_success_contract_digest"
             ],
+            "candidate_policy_queried": False,
             "episodes": [
                 {
                     "candidate_id": candidate,
@@ -1860,6 +1958,7 @@ def dispatch_policy_canary_activation(
                 for cell in runtime_inputs["cells"]
             ],
             "artifact_inventory": [
+                *source_artifacts,
                 {
                     "role": "typed_media_gap",
                     "relative_path": gap_path.name,
@@ -1868,7 +1967,11 @@ def dispatch_policy_canary_activation(
                     "sha256": _sha256(gap_path),
                 }
             ],
-            "blockers": list(adapter.get("blockers") or ["provider_result_missing"]),
+            "blockers": list(
+                (inner.get("blockers") if sparse_provider_path is not None else None)
+                or adapter.get("blockers")
+                or ["provider_result_missing"]
+            ),
             "result_digest": "",
         }
         inner["result_digest"] = canonical_digest(inner, digest_field="result_digest")
@@ -2240,7 +2343,8 @@ def process_policy_canary_dispatch_queue(
                 output = outputs / identifier
                 if (row.get("source_commit") != implementation_commit
                         and not (output / "dispatch_receipt.json").exists()
-                        and _has_materialized_delivery(output)):
+                        and (_has_materialized_delivery(output)
+                             or _retained_sparse_terminal_gap(output))):
                     sources.append(path)
             except (OSError, ValueError, TypeError):
                 continue
