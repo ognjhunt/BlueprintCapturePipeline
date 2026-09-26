@@ -7069,6 +7069,19 @@ def vast_launch_lock_paths(lock_path: Path | None = None) -> list[Path]:
     return paths
 
 
+def vast_launch_gate_path(lock_path: Path | None = None) -> Path:
+    """The deploy gate beside the slots.
+
+    A launch holds it shared only while it takes a slot; a deploy holds it
+    exclusively for the whole release swap. So no launch can start during a
+    deploy, while launches that started before it keep their slots and run on
+    their own immutable release tree.
+    """
+
+    base = lock_path or _vast_launch_lock_path()
+    return base.with_name(f"{base.stem}.gate{base.suffix}")
+
+
 def _vast_launch_lock_path() -> Path:
     configured = _string(os.environ.get(VAST_LAUNCH_LOCK_FILE_ENV))
     if configured:
@@ -7090,7 +7103,26 @@ def _try_acquire_vast_launch_lock(
     held_path: Path | None = None
     last_holder = ""
     unusable: list[str] = []
-    for candidate in slots:
+    gate_path = vast_launch_gate_path(lock_path)
+    gate = None
+    gate_closed_for_deploy = False
+    ensure_dir(gate_path.parent)
+    try:
+        gate = gate_path.open("a+", encoding="utf-8")
+        gate_path.chmod(0o600)
+    except OSError as exc:
+        if gate is not None:
+            gate.close()
+            gate = None
+        unusable.append(f"{gate_path.name}:{type(exc).__name__}")
+    if gate is not None:
+        try:
+            fcntl.flock(gate.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError:
+            gate.close()
+            gate = None
+            gate_closed_for_deploy = True
+    for candidate in slots if gate is not None else ():
         ensure_dir(candidate.parent)
         # A slot the launching account cannot open is a provisioning fault, not
         # a busy slot, and no amount of waiting clears it. Production reached
@@ -7121,12 +7153,18 @@ def _try_acquire_vast_launch_lock(
         handle = attempt
         held_path = candidate
         break
+    if gate is not None:
+        # The slot is the run's for its whole life; the gate only spans taking it.
+        fcntl.flock(gate.fileno(), fcntl.LOCK_UN)
+        gate.close()
     if handle is None or held_path is None:
         # Two different refusals share this exit. "Busy" is the fleet at its
         # authorized concurrency and says nothing about whether a *particular*
         # run may proceed. "Unusable" is a host that cannot honour its own
         # semaphore, which an operator has to repair.
-        every_slot_unusable = len(unusable) == len(slots)
+        every_slot_unusable = bool(unusable) and not gate_closed_for_deploy and (
+            len(unusable) == len(slots) or any(item.startswith(gate_path.name) for item in unusable)
+        )
         manifest = {
             "schema_version": "vast_launch_lock_manifest.v1",
             "generated_at": generated_at,
@@ -7141,6 +7179,8 @@ def _try_acquire_vast_launch_lock(
             ],
             "existing_lock_record_prefix": last_holder,
             "unusable_lock_slots": unusable,
+            # Busy for the length of a deploy, then retried like any busy slot.
+            "gate_closed_for_deploy": gate_closed_for_deploy,
             "raw_secret_values_recorded": False,
         }
         write_json(job_dir / "vast_launch_lock_manifest.json", manifest)

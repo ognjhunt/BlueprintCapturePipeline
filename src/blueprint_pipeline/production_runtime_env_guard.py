@@ -225,6 +225,7 @@ def _check_paid_launch_lock_slots(
         DEFAULT_VAST_LAUNCH_LOCK_FILENAME,
         VAST_API_KEY_FILE_ENV,
         VAST_LAUNCH_LOCK_FILE_ENV,
+        vast_launch_gate_path,
         vast_launch_lock_paths,
     )
 
@@ -239,7 +240,9 @@ def _check_paid_launch_lock_slots(
 
     # Rediscovered from the adapter, so changing the ceiling cannot leave a
     # slot unchecked by a list that was never updated alongside it.
-    slots = vast_launch_lock_paths(base)
+    # The deploy gate is provisioned like a slot: a root-owned gate would
+    # refuse every launch just as a root-owned slot does.
+    slots = [*vast_launch_lock_paths(base), vast_launch_gate_path(base)]
     if not base.parent.is_dir():
         # No provider-lock tree on this host. Creating one would scatter state
         # into a directory the deployment never provisioned -- on a developer
