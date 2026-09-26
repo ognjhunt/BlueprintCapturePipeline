@@ -777,6 +777,8 @@ def test_republishing_a_sam_prefix_binding_still_matches(tmp_path: Path) -> None
     from blueprint_pipeline import task_evaluation_sam31_prefix_adoption as adoption
 
     sources = _sources(tmp_path)
+    release = tmp_path / "task-evaluation-control-plane-releases" / B
+    release.mkdir(parents=True)
     profile = {"schema_version": "fixture_profile", "source_commit": B}
     profile["profile_digest"] = canonical_digest(profile, digest_field="profile_digest")
     profile_path = tmp_path / "source-profile.json"
@@ -786,11 +788,7 @@ def test_republishing_a_sam_prefix_binding_still_matches(tmp_path: Path) -> None
         "status": "verified_completed_prefix",
         "original_execution_commit": B,
         "source_profile": {"path": str(profile_path)},
-        "retained_release_pin": {
-            "source_commit": B,
-            "path": f"/opt/blueprint/task-evaluation-control-plane-releases/{B}",
-            "tree": TREE,
-        },
+        "retained_release_pin": {"source_commit": B, "path": str(release), "tree": TREE},
     }
     value["adoption_digest"] = canonical_digest(value, digest_field="adoption_digest")
     adoption_path = tmp_path / "adoption.json"

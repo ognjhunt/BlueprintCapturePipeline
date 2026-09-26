@@ -333,25 +333,42 @@ def _validate_completed_prefix_adoption_document(value, *, roots, expected_sourc
 
 
 def publish_adoption_release_binding(adoption_path, *, binding_root=None):
-    """Publish the existing retention schema after a validated adoption exists."""
-    from .task_evaluation_release_retention import (
-        DEFAULT_EVIDENCE_BINDING_ROOT, EVIDENCE_BINDING_SCHEMA_VERSION, _write_exclusive,
-    )
-    value = read(adoption_path, digest_field="adoption_digest")
-    require(value.get("schema_version") == SCHEMA and value.get("status") == "verified_completed_prefix",
-            "sam31_adoption_retention_binding_invalid")
+    """Publish the existing retention schema after a validated adoption exists.
+
+    Publication holds the release-reference lock shared on the binding root's
+    parent, the directory deploy retirement holds exclusively from collecting
+    protection to moving trees aside, so a binding never appears in between.
+    """
+    from .task_evaluation_release_reference_lock import release_reference_lock
+    from .task_evaluation_release_retention import DEFAULT_EVIDENCE_BINDING_ROOT
     root = Path(binding_root) if binding_root is not None else DEFAULT_EVIDENCE_BINDING_ROOT
     require(root.is_absolute() and root.is_dir() and not any(p.is_symlink() for p in (root, *root.parents)),
             "sam31_adoption_retention_root_invalid")
+    with release_reference_lock(root.parent, exclusive=False):
+        return _publish_adoption_release_binding_locked(adoption_path, binding_root=root)
+
+
+def _publish_adoption_release_binding_locked(adoption_path, *, binding_root):
+    """Publish one binding and, first, its ancestors', under the caller's lock."""
+    from .task_evaluation_release_retention import EVIDENCE_BINDING_SCHEMA_VERSION, _write_exclusive
+    value = read(adoption_path, digest_field="adoption_digest")
+    require(value.get("schema_version") == SCHEMA and value.get("status") == "verified_completed_prefix",
+            "sam31_adoption_retention_binding_invalid")
+    root = binding_root
     profile = read(value["source_profile"]["path"], digest_field="profile_digest")
     retained_release = value["retained_release_pin"]
     if profile.get("completed_prefix_adoption") is not None:
-        publish_adoption_release_binding(profile["completed_prefix_adoption"]["path"], binding_root=root)
+        _publish_adoption_release_binding_locked(profile["completed_prefix_adoption"]["path"], binding_root=root)
         from .public_scene_inpainting_inputs import _git_identity
         source_repo = Path(profile["repo_root"])
         identity = _git_identity(source_repo)
         require(identity["commit"] == value["original_execution_commit"], "sam31_adoption_original_release_changed")
         retained_release = {"path": str(source_repo), "source_commit": identity["commit"], "tree": identity["tree"]}
+    # Under the lock retirement cannot move the release mid-publication, and a
+    # release that is already gone cannot be bound back into existence.
+    retained_path = retained_release.get("path") if isinstance(retained_release, dict) else None
+    require(isinstance(retained_path, str) and Path(retained_path).is_absolute() and Path(retained_path).exists(),
+            "sam31_adoption_retained_release_missing")
     binding = {"schema_version": EVIDENCE_BINDING_SCHEMA_VERSION, "status": "required",
                "source_commit": value["original_execution_commit"],
                "reason": "Completed SAM prefix replay requires its original immutable renderer release",

@@ -967,11 +967,14 @@ def _retire_superseded_release_trees(
     """Retire release and runtime trees this deploy has superseded.
 
     Deploy is the only event that creates per-commit trees, so it is where
-    they are retired.  Every publisher lock root is held exclusively across
-    collecting typed protection, planning and removal, so no release reference
-    can appear in between; publishers take the same locks shared.  Anything the
-    plan cannot prove safe is left in place and reported; a retirement failure
-    never fails a deploy whose surfaces already moved.
+    they are retired.  Every release-reference publisher takes the reference
+    lock shared on its root: queue writers, the launch-profile publisher, the
+    standing-authorization materializer, release activation and the SAM
+    prefix binding writer.  Retirement holds each of those roots exclusively
+    from collecting typed protection through planning and removal, so no
+    reference can appear in between.  Anything the plan cannot prove safe is
+    left in place and reported; a retirement failure never fails a deploy
+    whose surfaces already moved.
     """
 
     roots: list[Path] = []
