@@ -1650,6 +1650,24 @@ def process_handoff_payload(
     handoff = parse_handoff_payload(payload)
     digest = payload_digest or payload_sha256(payload)
     capture_root = _handoff_capture_root(handoff, storage_root=storage_root)
+    if not capture_root.exists():
+        # A retired scene answers the messages its retirement receipt proves terminal,
+        # without staging the capture again (claiming would recreate the workspace).
+        try:
+            from .website_scene_workspace_retention import retired_capture_status
+
+            retired = retired_capture_status(storage_root=storage_root, bucket=handoff.bucket,
+                                             scene_id=handoff.scene_id, capture_id=handoff.capture_id)
+        except Exception:  # noqa: BLE001 - an unanswerable lookup stages normally, as before
+            logger.exception("pubsub_handoff.retirement_lookup_failed")
+            retired = None
+        if retired is not None and digest in retired["payload_sha256s"]:
+            logger.info("pubsub_handoff.skipped_retired_terminal",
+                        extra={"scene_id": handoff.scene_id, "capture_id": handoff.capture_id})
+            return {"schema_version": "v1", "status": "skipped_retired_terminal",
+                    "queue_disposition": retired["queue_disposition"], "bucket": handoff.bucket,
+                    "scene_id": handoff.scene_id, "capture_id": handoff.capture_id,
+                    "capture_root": str(capture_root), "retirement_receipt": retired["receipt"]}
     owner = lease_owner or _lease_owner()
     claim_status, ledger = _claim_job_lease(
         capture_root,

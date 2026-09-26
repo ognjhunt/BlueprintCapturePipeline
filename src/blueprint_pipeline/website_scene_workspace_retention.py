@@ -1317,6 +1317,60 @@ def restore_scene_workspace(
     }
 
 
+# --- what the listener asks about a retired capture -----------------------------------------------
+
+
+def retired_capture_status(*, storage_root: Path, bucket: str, scene_id: str,
+                           capture_id: str) -> dict[str, Any] | None:
+    """What a retired scene's receipt records about one capture, or None when it records nothing.
+
+    The listener asks only when the capture's workspace is absent. A missing, invalid or
+    foreign receipt means "not retired", so the handoff is staged again from Firebase
+    Storage rather than dropped. ``payload_sha256s`` are the message digests the receipt
+    proves terminal: the acknowledged one and, for an authority ending, the ending one.
+    """
+
+    try:
+        bucket, scene_id = _identity(bucket, scene_id)
+        if strict_identifier(capture_id, field="capture_id") != capture_id:
+            return None
+    except (WebsiteSceneWorkspaceRetentionError, SecurityValidationError):
+        return None
+    path = receipt_path(Path(storage_root), bucket, scene_id)
+    state, receipt, _ = _load_json(path)
+    if (
+        state != "ok"
+        or receipt is None
+        or receipt.get("schema_version") != RETIRED_SCHEMA
+        or receipt.get("receipt_digest") != canonical_digest(receipt, digest_field="receipt_digest")
+        or receipt.get("bucket") != bucket
+        or receipt.get("scene_id") != scene_id
+        or not isinstance(receipt.get("captures"), list)
+    ):
+        return None
+    record = next((row for row in receipt["captures"]
+                   if isinstance(row, Mapping) and row.get("capture_id") == capture_id), None)
+    ledger = record.get("ledger") if isinstance(record, Mapping) else None
+    status = ledger.get("status") if isinstance(ledger, Mapping) else None
+    disposition = TERMINAL_DISPOSITIONS.get(status) if isinstance(status, str) else None
+    if disposition is None:
+        return None
+    digests: set[str] = set()
+    ack = record.get("ack_receipt")
+    if isinstance(ack, Mapping) and ack.get("disposition") == disposition and isinstance(ack.get("payload_sha256"), str):
+        digests.add(ack["payload_sha256"])
+    terminal = record.get("terminal_receipt")
+    if (
+        status == TERMINAL_AUTHORITY_STATUS
+        and isinstance(terminal, Mapping)
+        and isinstance(terminal.get("payload_sha256"), str)
+        and terminal["payload_sha256"] == ledger.get("terminal_payload_sha256")
+    ):
+        digests.add(terminal["payload_sha256"])
+    return {"status": status, "queue_disposition": disposition, "payload_sha256s": sorted(digests),
+            "receipt": str(path), "retired_at_epoch": receipt.get("retired_at_epoch")}
+
+
 # --- command line ---------------------------------------------------------------------------------
 
 
@@ -1490,6 +1544,7 @@ __all__ = [
     "plan_scene_workspace_retirement",
     "receipt_path",
     "restore_scene_workspace",
+    "retired_capture_status",
     "scene_path",
     "scene_queue_roots",
     "scene_workspaces",

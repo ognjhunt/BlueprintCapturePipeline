@@ -843,3 +843,29 @@ def test_cli_defaults_protect_every_queue_the_reclaim_timer_protects():
     control_plane = Path("/var/lib/blueprint/pipeline-control-plane")
     assert {control_plane / "sam31-preparation-executions",
             control_plane / "task-evaluation-scene-configuration-activation-intents"} <= set(defaults)
+
+
+# --- what the listener reads back ------------------------------------------------------------------
+
+
+def test_a_retirement_receipt_answers_for_the_messages_it_proves_terminal(tmp_path):
+    scene, cloud = _scene(tmp_path, status="terminal_authority_ended")
+    result = _retire(tmp_path, cloud, _plan(tmp_path, cloud))
+    storage = tmp_path / "pubsub-handoffs"
+
+    status = retention.retired_capture_status(storage_root=storage, bucket=BUCKET, scene_id=SCENE,
+                                              capture_id=CAPTURE)
+
+    assert status is not None and status["receipt"] == result["receipt"]
+    assert (status["status"], status["queue_disposition"]) == ("terminal_authority_ended", "terminal_authority_ended")
+    assert status["payload_sha256s"] == [listener.payload_sha256(_payload(CAPTURE))]
+    for other in ({"capture_id": "capture-9"}, {"scene_id": "scene-2"}, {"bucket": "other-bucket"},
+                  {"capture_id": "../x"}):
+        query = {"storage_root": storage, "bucket": BUCKET, "scene_id": SCENE, "capture_id": CAPTURE, **other}
+        assert retention.retired_capture_status(**query) is None
+    receipt = Path(result["receipt"])
+    document = json.loads(receipt.read_text(encoding="utf-8"))
+    receipt.chmod(0o640)
+    receipt.write_text(json.dumps({**document, "retired_at_epoch": 0}), encoding="utf-8")
+    assert retention.retired_capture_status(storage_root=storage, bucket=BUCKET, scene_id=SCENE,
+                                            capture_id=CAPTURE) is None
