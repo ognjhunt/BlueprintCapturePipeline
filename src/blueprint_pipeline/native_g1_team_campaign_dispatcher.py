@@ -16,10 +16,13 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable, Sequence
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from .decision_evidence_contracts import cross_runtime_canonical_digest as digest
+from .paid_lane_guard import _load_spend_admission_lock
+from .spend_admission_lock import validate_spend_admission_lock
 from .native_g1_team_campaign_intake import INTENT_SCHEMA, _read
 from .native_g1_team_campaign_preparation import (
     _verified_intent,
@@ -34,6 +37,53 @@ DRY_SCHEMA = "native_g1_team_campaign_dry_run.v1"
 START_SCHEMA = "native_g1_team_campaign_execution_start.v1"
 FINAL_SCHEMA = "native_g1_team_campaign_dispatch_result.v1"
 AllocatorRunner = Callable[[list[str], Path], int]
+AdmissionRefresher = Callable[[Path], list[str]]
+
+
+def _refresh_paid_admission(run_root: Path) -> list[str]:
+    """Refresh the canonical fleet/billing lock after slow bundle preparation."""
+    required = {
+        "BLUEPRINT_GPU_SPEND_GUARD_MAX_BOOT_SECONDS": "--max-boot-seconds",
+        "BLUEPRINT_GPU_SPEND_GUARD_MAX_BOOTED_ORPHAN_SECONDS": "--max-booted-orphan-seconds",
+        "BLUEPRINT_GPU_FLEET_MAX_LIVE_INSTANCES": "--max-live-instances",
+        "BLUEPRINT_GPU_FLEET_MAX_BURN_USD_PER_HOUR": "--max-burn-usd-per-hour",
+        "BLUEPRINT_GPU_SPEND_LEDGER": "--spend-ledger",
+        "BLUEPRINT_GPU_FLEET_MAX_DAILY_SPEND_USD": "--max-daily-spend-usd",
+        "BLUEPRINT_GPU_FLEET_MAX_TOTAL_SPEND_USD": "--max-total-spend-usd",
+        "BLUEPRINT_GPU_BILLING_EXPORT": "--billing-export",
+        "BLUEPRINT_PAID_SPEND_ADMISSION_LOCK_PATH": "--admission-lock-report",
+        "BLUEPRINT_GPU_SPEND_GUARD_REPORT": "--json-report",
+    }
+    missing = [name for name in required if not os.environ.get(name)]
+    if missing:
+        return [f"g1_team_campaign_guard_config_missing:{name}" for name in missing]
+    command = [
+        sys.executable,
+        str(Path(__file__).resolve().parents[2] / "scripts" / "gpu_spend_guard.py"),
+        "--reap", "--require-billing-reconciliation",
+        "--output-root",
+        str(Path(os.environ["BLUEPRINT_PAID_SPEND_ADMISSION_LOCK_PATH"]).parent.parent),
+    ]
+    for name, flag in required.items():
+        command.extend([flag, os.environ[name]])
+    if os.environ.get("BLUEPRINT_PAID_SPEND_OVERRIDE_PATH"):
+        command.extend(["--admission-override", os.environ["BLUEPRINT_PAID_SPEND_OVERRIDE_PATH"]])
+    log_path = run_root / f"spend_guard_refresh_{time.time_ns()}.log"
+    try:
+        with log_path.open("x", encoding="utf-8") as stream:
+            result = subprocess.run(
+                command, stdout=stream, stderr=subprocess.STDOUT,
+                check=False, timeout=300,
+            )
+    except (OSError, subprocess.TimeoutExpired):
+        return ["g1_team_campaign_spend_guard_refresh_failed"]
+    if result.returncode != 0:
+        return ["g1_team_campaign_spend_guard_refresh_blocked"]
+    lock = _load_spend_admission_lock(Path(os.environ["BLUEPRINT_PAID_SPEND_ADMISSION_LOCK_PATH"]))
+    return validate_spend_admission_lock(
+        lock, now=datetime.now(timezone.utc), max_age_seconds=180,
+        required_provider="vast",
+    )
 
 
 def _run_allocator(command: list[str], log_path: Path) -> int:
@@ -75,6 +125,7 @@ def _dispatch_one_locked(
     *, intent_path: Path, registry_path: Path, work_root: Path,
     implementation_commit: str, machine_avoidlist_path: Path | None,
     execute: bool, allocator_runner: AllocatorRunner,
+    admission_refresher: AdmissionRefresher,
 ) -> dict[str, Any]:
     intent, _ = _verified_intent(intent_path, registry_path)
     prepared = prepare_g1_team_campaign(
@@ -141,8 +192,17 @@ def _dispatch_one_locked(
         write_exclusive(dry_path, dry)
     if not execute:
         return dry
+    blockers = admission_refresher(run_root)
+    if blockers:
+        return {
+            "schema_version": FINAL_SCHEMA,
+            "status": "blocked_before_provider",
+            "intent_id": intent["intent_id"],
+            "blockers": blockers,
+            "provider_mutation_performed": False,
+        }
     # Intake expiry, registry, packet binding and rights are reopened after the
-    # dry run. The canonical allocator rechecks exact release and bundle again
+    # admission refresh. The canonical allocator rechecks exact release and bundle again
     # immediately before a provider create call.
     intent, _ = _verified_intent(intent_path, registry_path)
     if time.time() >= intent["request"]["authorization"]["expires_at_epoch"]:
@@ -204,6 +264,7 @@ def dispatch_one_g1_team_campaign(
     *, queue_root: Path, registry_path: Path, work_root: Path,
     implementation_commit: str, machine_avoidlist_path: Path | None = None,
     execute: bool = False, allocator_runner: AllocatorRunner = _run_allocator,
+    admission_refresher: AdmissionRefresher = _refresh_paid_admission,
 ) -> dict[str, Any]:
     """Process at most one pending intent; never repeat a paid attempt."""
 
@@ -297,6 +358,7 @@ def dispatch_one_g1_team_campaign(
                 work_root=work, implementation_commit=implementation_commit,
                 machine_avoidlist_path=machine_avoidlist_path,
                 execute=execute, allocator_runner=allocator_runner,
+                admission_refresher=admission_refresher,
             )
         return {
             "schema_version": FINAL_SCHEMA,
