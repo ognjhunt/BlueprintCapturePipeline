@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import urllib.parse
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -95,9 +96,15 @@ def settle_g1_team_campaign(
     from .adp009d_provider_zero import collect_provider_zero_receipt
 
     intent = _read(Path(intent_path), field="intent_digest")
-    if intent.get("schema_version") != INTENT_SCHEMA:
+    intent_id = intent.get("intent_id")
+    if (
+        intent.get("schema_version") != INTENT_SCHEMA
+        or not isinstance(intent_id, str)
+        or re.fullmatch(r"g1-[0-9a-f]{64}", intent_id) is None
+        or Path(intent_path).parent.name != intent_id
+    ):
         raise ValueError("g1_team_settlement_intent_invalid")
-    directory = Path(work_root) / str(intent.get("intent_id"))
+    directory = Path(work_root) / intent_id
     if (
         not Path(work_root).is_absolute() or Path(work_root).is_symlink()
         or directory.is_symlink() or not directory.is_dir()
@@ -134,6 +141,8 @@ def settle_g1_team_campaign(
         or start.get("preparation_digest") != prepared.get("preparation_digest")
         or prepared.get("schema_version") != PREPARATION_SCHEMA
         or prepared.get("intent_digest") != intent["intent_digest"]
+        or final.get("implementation_commit") != prepared.get("implementation_commit")
+        or start.get("implementation_commit") != prepared.get("implementation_commit")
     ):
         raise ValueError("g1_team_settlement_controller_incomplete")
     bundle_path = Path(prepared["bundle_receipt_path"])
@@ -145,6 +154,8 @@ def settle_g1_team_campaign(
     run_root = directory / "run"
     adapter_path = run_root / "adapter_paid.json"
     adapter = _strict_json(adapter_path)
+    if adapter.get("attempt_root") != str(run_root / "attempts/attempt_001"):
+        raise ValueError("g1_team_settlement_attempt_root_changed")
     verification = verify_g1_paid_output(adapter, bundle)
     if adapter.get("g1_output_verification") != verification:
         raise ValueError("g1_team_settlement_output_verification_changed")

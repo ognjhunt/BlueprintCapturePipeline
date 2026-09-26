@@ -50,16 +50,19 @@ def _case(tmp_path, monkeypatch):
         "schema_version": START_SCHEMA,
         "intent_digest": intent["intent_digest"],
         "preparation_digest": prepared["preparation_digest"],
+        "implementation_commit": "a" * 40,
     }, "start_digest")
     _sealed(directory / "dispatch_final.json", {
         "schema_version": FINAL_SCHEMA,
         "status": "controller_completed_pending_billing_and_private_delivery",
         "intent_digest": intent["intent_digest"],
         "start_digest": started["start_digest"],
+        "implementation_commit": "a" * 40,
         "four_episodes_verified": True,
         "run_teardown_confirmed_by_adapter": True,
     }, "dispatch_digest")
-    adapter = {"status": "completed", "g1_output_verification": {"episodes": [1, 2, 3, 4]},
+    adapter = {"status": "completed", "attempt_root": str(run / "attempts/attempt_001"),
+               "g1_output_verification": {"episodes": [1, 2, 3, 4]},
                "g1_private_review": {"path": str(run / "native_g1_private_review.v1.json")}}
     (run / "adapter_paid.json").write_text(json.dumps(adapter))
     review = {"review_digest": "sha256:" + "b" * 64}
