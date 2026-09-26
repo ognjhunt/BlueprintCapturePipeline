@@ -2571,7 +2571,12 @@ def test_deploy_retirement_holds_publisher_locks_and_writes_its_summary(
             events.append(("unlock", Path(root)))
 
     collect, apply = deploy.collect_release_protections, deploy.apply_release_retirement_plan
+    delete = deploy.delete_retiring_trees
     monkeypatch.setattr(deploy, "release_reference_lock", recorder)
+    monkeypatch.setattr(
+        deploy, "delete_retiring_trees",
+        lambda roots: events.append(("delete",)) or delete(roots),
+    )
     monkeypatch.setattr(
         deploy, "collect_release_protections",
         lambda *args, **kwargs: events.append(("collect", kwargs["migrate"])) or collect(*args, **kwargs),
@@ -2589,13 +2594,17 @@ def test_deploy_retirement_holds_publisher_locks_and_writes_its_summary(
     )
 
     roots = sorted([state.resolve(), sources.control_plane_root.resolve()])
+    # Leftovers are swept and this run's trees deleted only while no lock is held;
+    # under the lock the deploy only collects, plans and renames.
     assert events == [
+        ("delete",),
         ("lock", roots[0], True),
         ("lock", roots[1], True),
         ("collect", True),
         ("apply",),
         ("unlock", roots[1]),
         ("unlock", roots[0]),
+        ("delete",),
     ]
     assert result["status"] == "applied" and result["retired_commits"] == [superseded]
     assert result["lock_roots"] == [str(root) for root in roots]
@@ -2611,6 +2620,63 @@ def test_deploy_retirement_holds_publisher_locks_and_writes_its_summary(
     source = Path(deploy.__file__).read_text(encoding="utf-8")
     assert "            state_root=state,\n" in source
     assert 'summary_path=state / "release-retention" / RELEASE_RETIREMENT_SUMMARY_NAME' in source
+
+
+def test_deploy_retirement_reports_what_it_moved_deleted_and_swept(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Receipts list every rename and deletion, even when apply stops halfway."""
+    import time
+
+    releases, runtimes = tmp_path / "releases", tmp_path / "runtimes"
+    no_processes = tmp_path / "proc"
+    no_processes.mkdir()
+    now = time.time()
+    current, superseded, older = "a" * 40, "b" * 40, "c" * 40
+    _release_trees(releases, {current: 3_600, superseded: 10 * 86_400, older: 11 * 86_400}, now=now)
+    for component in ("splat-render", "scene-configuration"):
+        _release_trees(runtimes / component, {superseded: 10 * 86_400}, now=now)
+    active = tmp_path / "active"
+    active.symlink_to(releases / current, target_is_directory=True)
+    # A previous deploy stopped after moving a tree aside and before deleting it.
+    leftover = releases / ".retiring" / f"{'d' * 40}-0123456789ab"
+    leftover.mkdir(parents=True)
+    (leftover / "payload").write_bytes(b"x" * 64)
+    sources = _protection_sources(tmp_path)
+
+    import blueprint_pipeline.control_plane_release_retirement as retirement
+
+    stage = retirement._stage_aside
+    moved: list[Path] = []
+
+    def stop_after_two(path: Path, token: str) -> Path:
+        if len(moved) == 2:
+            raise RuntimeError("interrupted")
+        moved.append(stage(path, token))
+        return moved[-1]
+
+    monkeypatch.setattr(retirement, "_stage_aside", stop_after_two)
+    result = deploy._retire_superseded_release_trees(
+        release_root=releases, runtime_root=runtimes, active_link=active,
+        current_commit=current, protection_sources=sources, keep_last=1, proc_root=no_processes,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["blockers"] == ["deploy_release_retirement_failed:RuntimeError"]
+    assert result["swept"] == [{"path": str(leftover), "bytes": 64}]
+    assert [row["staged_path"] for row in result["renamed"]] == [str(path) for path in moved]
+    assert sorted(row["path"] for row in result["deleted"]) == sorted(str(path) for path in moved)
+    assert result["retired_bytes"] == sum(row["bytes"] for row in result["deleted"]) > 0
+    for root in (releases, runtimes / "splat-render", runtimes / "scene-configuration"):
+        assert not (root / ".retiring").exists()
+    # What was not moved stays; the next deploy retires it normally.
+    monkeypatch.setattr(retirement, "_stage_aside", stage)
+    again = deploy._retire_superseded_release_trees(
+        release_root=releases, runtime_root=runtimes, active_link=active,
+        current_commit=current, protection_sources=sources, keep_last=1, proc_root=no_processes,
+    )
+    assert again["status"] == "applied" and again["swept"] == [] and again["deletion_failures"] == []
+    assert sorted(path.name for path in releases.iterdir()) == [current]
 
 
 def test_deploy_retirement_gives_up_when_a_publisher_holds_the_lock(tmp_path: Path) -> None:

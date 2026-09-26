@@ -24,7 +24,9 @@ import contextlib
 import json
 import os
 import re
+import secrets
 import shutil
+import stat
 import time
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -50,6 +52,9 @@ RUNTIME_COMPONENTS = ("splat-render", "scene-configuration")
 DEFAULT_KEEP_LAST = 3
 DEFAULT_MINIMUM_AGE_SECONDS = 24 * 60 * 60
 MAX_REPORTED_WARNINGS = 50
+#: Where apply moves a planned tree, inside its own managed root (so the move is
+#: an atomic rename on one filesystem), for deletion after the locks are released.
+RETIRING_DIRECTORY = ".retiring"
 #: How long retirement waits for publishers to release the reference lock.
 DEFAULT_LOCK_TIMEOUT_SECONDS = 300.0
 _COMMIT_RE = re.compile(r"[0-9a-f]{40}\Z")
@@ -211,6 +216,8 @@ def _managed(root: Path, *, with_receipts: bool) -> tuple[dict[str, list[Path]],
     if not root.is_dir() or root.is_symlink():
         return trees, unmanaged
     for child in sorted(root.iterdir()):
+        if child.name == RETIRING_DIRECTORY:
+            continue  # trees already moved aside for deletion
         if _COMMIT_RE.fullmatch(child.name) and child.is_dir() and not child.is_symlink():
             trees.setdefault(child.name, []).insert(0, child)
             continue
@@ -223,8 +230,9 @@ def _managed(root: Path, *, with_receipts: bool) -> tuple[dict[str, list[Path]],
 
 
 def _tree_bytes(path: Path) -> int:
-    if path.is_file():
-        return path.stat().st_size
+    info = os.lstat(path)
+    if not stat.S_ISDIR(info.st_mode):
+        return info.st_size
     total = 0
     for directory, _subdirectories, files in os.walk(path):
         for name in files:
@@ -246,12 +254,15 @@ def build_release_retirement_plan(
     minimum_age_seconds: int = DEFAULT_MINIMUM_AGE_SECONDS,
     now: Callable[[], float] = time.time,
     in_use_commits: Sequence[str] = (),
+    measure_sizes: bool = True,
 ) -> dict[str, Any]:
     """Decide which superseded commits may be retired; mutate nothing.
 
     ``protections`` is a ``collect_release_protections`` result.  Any of its
     blockers blocks the plan: without readable protection sources it cannot
-    know what is live.
+    know what is live.  ``measure_sizes=False`` skips walking the candidate
+    trees (their sizes are then ``None``); deploy measures them only after
+    the publishers' locks are released, while deleting.
     """
 
     if (
@@ -320,7 +331,9 @@ def build_release_retirement_plan(
             {
                 "commit": commit,
                 "paths": [str(path) for path in paths],
-                "size_bytes": sum(_tree_bytes(path) for path in paths),
+                "size_bytes": (
+                    sum(_tree_bytes(path) for path in paths) if measure_sizes else None
+                ),
             }
         )
     blockers = sorted(set(blockers))
@@ -363,7 +376,9 @@ def build_release_retirement_plan(
         "alerts": alerts,
         "unmanaged_children": sorted(unmanaged),
         "candidate_count": len(candidates),
-        "candidate_bytes": sum(row["size_bytes"] for row in candidates),
+        "candidate_bytes": (
+            sum(row["size_bytes"] for row in candidates) if measure_sizes else None
+        ),
         "candidates": candidates,
         "blockers": blockers,
         "evidence_roots_touched": False,
@@ -371,6 +386,21 @@ def build_release_retirement_plan(
     }
     plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
     return plan
+
+
+def _stage_aside(path: Path, token: str) -> Path:
+    """Rename one planned tree into its root's staging directory."""
+
+    staging = path.parent / RETIRING_DIRECTORY
+    try:
+        os.lstat(staging)
+    except FileNotFoundError:
+        staging.mkdir(mode=0o700)
+    if staging.is_symlink() or not staging.is_dir():
+        raise OSError("release retirement staging directory unsafe")
+    target = staging / f"{path.name}-{token}"
+    os.rename(path, target)
+    return target
 
 
 def apply_release_retirement_plan(
@@ -381,11 +411,16 @@ def apply_release_retirement_plan(
     release_root: str | Path,
     in_use_now: Callable[[], set[str]] | None = None,
 ) -> dict[str, Any]:
-    """Remove exactly the planned trees, re-proving the active release first.
+    """Move exactly the planned trees aside, re-proving the active release first.
 
-    ``in_use_now`` is asked again immediately before each commit's paths are
-    removed: a process that started on a candidate after the plan was built
-    keeps it (``in_use_at_apply``), and a probe that fails keeps it too.
+    Each planned path is renamed into ``<its root>/.retiring/`` (the same
+    filesystem, so the move is atomic) and nothing is deleted: the caller
+    deletes the staged trees with ``delete_retiring_trees`` once it no longer
+    holds the publishers' locks.  ``in_use_now`` is asked again immediately
+    before each commit's paths move: a process that started on a candidate
+    after the plan was built keeps it (``in_use_at_apply``), and a probe that
+    fails keeps it too.  If apply is interrupted, the exception carries the
+    partial receipt as ``release_retirement_receipt``.
     """
 
     if (
@@ -396,51 +431,113 @@ def apply_release_retirement_plan(
     ):
         raise ControlPlaneReleaseRetirementError("release_retirement_apply_not_authorized")
     active = _active_commit(Path(active_link).expanduser(), Path(release_root).expanduser())
-    removed: list[dict[str, Any]] = []
+    token = secrets.token_hex(6)
+    renamed: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
-    for row in plan.get("candidates") or []:
-        commit = str(row.get("commit") or "")
-        if commit in {active, str(plan.get("current_commit") or "")} or _COMMIT_RE.fullmatch(commit) is None:
-            skipped.append({"commit": commit, "reason": "protected_at_apply"})
+
+    def receipt(status: str) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "schema_version": RECEIPT_SCHEMA_VERSION,
+            "status": status,
+            "source_plan_digest": plan["plan_digest"],
+            "active_commit": active,
+            "renamed_count": len(renamed),
+            "renamed": list(renamed),
+            "skipped": list(skipped),
+            "evidence_roots_touched": False,
+            "result_digest": "",
+        }
+        result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+        return result
+
+    try:
+        for row in plan.get("candidates") or []:
+            commit = str(row.get("commit") or "")
+            if (
+                commit in {active, str(plan.get("current_commit") or "")}
+                or _COMMIT_RE.fullmatch(commit) is None
+            ):
+                skipped.append({"commit": commit, "reason": "protected_at_apply"})
+                continue
+            if in_use_now is not None:
+                try:
+                    busy = commit in in_use_now()
+                except (OSError, ValueError) as exc:
+                    skipped.append(
+                        {"commit": commit, "reason": f"in_use_check_failed:{type(exc).__name__}"}
+                    )
+                    continue
+                if busy:
+                    skipped.append({"commit": commit, "reason": "in_use_at_apply"})
+                    continue
+            for raw in row.get("paths") or []:
+                path = Path(str(raw))
+                if path.is_symlink() or not (
+                    path.name == commit or _RECEIPT_RE.fullmatch(path.name)
+                ):
+                    skipped.append({"commit": commit, "reason": "path_changed"})
+                    continue
+                try:
+                    staged = _stage_aside(path, token)
+                except OSError as exc:
+                    skipped.append(
+                        {"commit": commit, "reason": f"rename_failed:{type(exc).__name__}"}
+                    )
+                    continue
+                renamed.append({"commit": commit, "path": str(path), "staged_path": str(staged)})
+    except BaseException as exc:
+        with contextlib.suppress(Exception):
+            exc.release_retirement_receipt = receipt("interrupted")  # type: ignore[attr-defined]
+        raise
+    return receipt("applied")
+
+
+def delete_retiring_trees(roots: Sequence[str | Path]) -> dict[str, Any]:
+    """Delete, and measure, everything moved into each root's ``.retiring`` directory.
+
+    Runs without the publishers' locks: nothing staged there is reachable by
+    any release reference any more.  Deletion never follows a symlink.  A
+    staging directory left empty is removed, so the managed root looks as it
+    did; one that cannot be emptied stays for the next retirement to sweep.
+    """
+
+    deleted: list[dict[str, Any]] = []
+    failed: list[dict[str, Any]] = []
+    for root in roots:
+        staging = Path(root) / RETIRING_DIRECTORY
+        try:
+            info = os.lstat(staging)
+        except FileNotFoundError:
             continue
-        if in_use_now is not None:
+        except OSError as exc:
+            failed.append({"path": str(staging), "reason": f"unreadable:{type(exc).__name__}"})
+            continue
+        if not stat.S_ISDIR(info.st_mode):
+            failed.append({"path": str(staging), "reason": "not_a_directory"})
+            continue
+        try:
+            children = sorted(staging.iterdir())
+        except OSError as exc:
+            failed.append({"path": str(staging), "reason": f"unreadable:{type(exc).__name__}"})
+            continue
+        for child in children:
             try:
-                busy = commit in in_use_now()
-            except (OSError, ValueError) as exc:
-                skipped.append(
-                    {"commit": commit, "reason": f"in_use_check_failed:{type(exc).__name__}"}
-                )
-                continue
-            if busy:
-                skipped.append({"commit": commit, "reason": "in_use_at_apply"})
-                continue
-        for raw in row.get("paths") or []:
-            path = Path(str(raw))
-            if path.is_symlink() or not (path.name == commit or _RECEIPT_RE.fullmatch(path.name)):
-                skipped.append({"commit": commit, "reason": "path_changed"})
-                continue
-            try:
-                if path.is_dir():
-                    shutil.rmtree(path)
-                elif path.is_file():
-                    path.unlink()
+                size = _tree_bytes(child)
+                if child.is_dir() and not child.is_symlink():
+                    shutil.rmtree(child)
+                else:
+                    child.unlink()
             except OSError as exc:
-                skipped.append({"commit": commit, "reason": f"removal_failed:{type(exc).__name__}"})
+                failed.append({"path": str(child), "reason": f"removal_failed:{type(exc).__name__}"})
                 continue
-            removed.append({"commit": commit, "path": str(path)})
-    result: dict[str, Any] = {
-        "schema_version": RECEIPT_SCHEMA_VERSION,
-        "status": "applied",
-        "source_plan_digest": plan["plan_digest"],
-        "active_commit": active,
-        "removed_count": len(removed),
-        "removed": removed,
-        "skipped": skipped,
-        "evidence_roots_touched": False,
-        "result_digest": "",
+            deleted.append({"path": str(child), "bytes": size})
+        with contextlib.suppress(OSError):
+            staging.rmdir()
+    return {
+        "deleted": deleted,
+        "deleted_bytes": sum(row["bytes"] for row in deleted),
+        "failed": failed,
     }
-    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
-    return result
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -494,6 +591,10 @@ def main(argv: list[str] | None = None) -> int:
         intent_root=Path(args.intent_root),
         launch_run_root=Path(args.launch_run_root),
     )
+    staged_roots = [
+        Path(args.release_root),
+        *(Path(args.runtime_root) / component for component in RUNTIME_COMPONENTS),
+    ]
     mutating = args.apply or not args.no_migrate
     with (
         holding_publisher_locks(publisher_lock_roots(sources))
@@ -532,6 +633,9 @@ def main(argv: list[str] | None = None) -> int:
             if args.apply
             else plan
         )
+    if args.apply:
+        # Outside the locks: remove, and measure, what apply moved aside.
+        result["deletion"] = delete_retiring_trees(staged_roots)
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0
 
@@ -543,9 +647,11 @@ __all__ = [
     "DEFAULT_MINIMUM_AGE_SECONDS",
     "EXECUTE_ACK",
     "MAX_REPORTED_WARNINGS",
+    "RETIRING_DIRECTORY",
     "RUNTIME_COMPONENTS",
     "apply_release_retirement_plan",
     "build_release_retirement_plan",
+    "delete_retiring_trees",
     "holding_publisher_locks",
     "live_release_commits",
     "main",

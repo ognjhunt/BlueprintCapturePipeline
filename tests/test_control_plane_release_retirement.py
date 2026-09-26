@@ -18,9 +18,11 @@ from blueprint_pipeline.control_plane_release_leases import (
 )
 from blueprint_pipeline.control_plane_release_retirement import (
     EXECUTE_ACK,
+    RETIRING_DIRECTORY,
     ControlPlaneReleaseRetirementError,
     apply_release_retirement_plan,
     build_release_retirement_plan,
+    delete_retiring_trees,
 )
 
 
@@ -102,6 +104,14 @@ def _host(tmp_path: Path, *, now: float) -> dict:
     }
 
 
+def _retiring_roots(host: dict) -> list[Path]:
+    return [
+        host["releases"],
+        host["runtimes"] / "splat-render",
+        host["runtimes"] / "scene-configuration",
+    ]
+
+
 def _plan(host: dict, *, now: float, **overrides: object) -> dict:
     arguments: dict[str, object] = {
         "release_root": host["releases"],
@@ -181,7 +191,7 @@ def test_apply_removes_only_planned_trees_and_re_proves_the_active_release(tmp_p
     moved = apply_release_retirement_plan(
         plan, ack=EXECUTE_ACK, active_link=host["active"], release_root=host["releases"]
     )
-    assert moved["removed"] == [] and moved["skipped"] == [{"commit": E, "reason": "protected_at_apply"}]
+    assert moved["renamed"] == [] and moved["skipped"] == [{"commit": E, "reason": "protected_at_apply"}]
     assert (host["releases"] / E).is_dir()
 
     host["active"].unlink()
@@ -191,8 +201,10 @@ def test_apply_removes_only_planned_trees_and_re_proves_the_active_release(tmp_p
     )
     assert receipt["status"] == "applied"
     assert receipt["active_commit"] == A
-    assert receipt["removed_count"] == 5 and receipt["skipped"] == []
+    assert receipt["renamed_count"] == 5 and receipt["skipped"] == []
     assert not (host["releases"] / E).exists()
+    deletion = delete_retiring_trees(_retiring_roots(host))
+    assert deletion["deleted_bytes"] == 3 * 128 + 2 * 2 and deletion["failed"] == []
     for component in ("splat-render", "scene-configuration"):
         assert not (host["runtimes"] / component / E).exists()
         assert not (host["runtimes"] / component / f"{E}.publication.v1.json").exists()
@@ -224,7 +236,7 @@ def test_configured_preparation_runtime_is_retained_after_queues_empty(tmp_path:
     result = apply_release_retirement_plan(
         plan, ack=EXECUTE_ACK, active_link=host["active"], release_root=host["releases"]
     )
-    assert E not in {row["commit"] for row in result["removed"]}
+    assert E not in {row["commit"] for row in result["renamed"]}
     assert (renderer / "payload.bin").read_bytes() == b"x" * 128
 
 
@@ -395,7 +407,7 @@ def test_in_use_is_rechecked_at_apply_and_covers_runtime_trees(tmp_path: Path) -
         in_use_now=lambda: probes.append("probe") or {E},
     )
     assert probes == ["probe"]
-    assert busy["removed"] == []
+    assert busy["renamed"] == []
     assert busy["skipped"] == [{"commit": E, "reason": "in_use_at_apply"}]
 
     def unavailable() -> set[str]:
@@ -408,7 +420,7 @@ def test_in_use_is_rechecked_at_apply_and_covers_runtime_trees(tmp_path: Path) -
         release_root=host["releases"],
         in_use_now=unavailable,
     )
-    assert failed["removed"] == []
+    assert failed["renamed"] == []
     assert failed["skipped"] == [{"commit": E, "reason": "in_use_check_failed:OSError"}]
     assert (host["releases"] / E).is_dir()
     for component in ("splat-render", "scene-configuration"):
@@ -422,7 +434,7 @@ def test_in_use_is_rechecked_at_apply_and_covers_runtime_trees(tmp_path: Path) -
         release_root=host["releases"],
         in_use_now=set,
     )
-    assert idle["removed_count"] == 5 and idle["skipped"] == []
+    assert idle["renamed_count"] == 5 and idle["skipped"] == []
 
 
 def test_protection_blockers_retire_nothing(tmp_path: Path) -> None:
@@ -501,3 +513,65 @@ def test_publisher_lock_roots_are_distinct_directories(
     assert retirement.publisher_lock_roots(sources, tmp_path / "absent") == tuple(
         sorted([(tmp_path / "absent").resolve(), control_plane])
     )
+
+
+def test_apply_moves_trees_aside_and_deletion_measures_them(tmp_path: Path) -> None:
+    now = 5_000_000.0
+    host = _host(tmp_path, now=now)
+    plan = _plan(host, now=now)
+
+    receipt = apply_release_retirement_plan(
+        plan, ack=EXECUTE_ACK, active_link=host["active"], release_root=host["releases"]
+    )
+
+    # Apply only renames, atomically and within each managed root.
+    assert receipt["renamed_count"] == 5
+    for row in receipt["renamed"]:
+        original, staged = Path(row["path"]), Path(row["staged_path"])
+        assert row["commit"] == E and not original.exists()
+        assert staged.parent == original.parent / RETIRING_DIRECTORY
+        assert staged.name.startswith(original.name + "-")
+    assert (host["releases"] / RETIRING_DIRECTORY).is_dir()
+    # A later plan never mistakes the staging directory for a tree or a stranger.
+    replanned = _plan(host, now=now)
+    assert replanned["unmanaged_children"] == ["README.txt"]
+    assert E not in replanned["protected_commits"] and replanned["candidates"] == []
+
+    deletion = delete_retiring_trees(_retiring_roots(host))
+
+    assert sorted(Path(row["path"]).name.split("-")[0] for row in deletion["deleted"]) == sorted(
+        [E, E, E, f"{E}.publication.v1.json", f"{E}.publication.v1.json"]
+    )
+    assert deletion["deleted_bytes"] == 3 * 128 + 2 * 2 and deletion["failed"] == []
+    for root in _retiring_roots(host):
+        assert not (root / RETIRING_DIRECTORY).exists()
+    assert (host["releases"] / A).is_dir()
+
+
+def test_an_interrupted_apply_keeps_its_partial_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import blueprint_pipeline.control_plane_release_retirement as retirement
+
+    now = 5_000_000.0
+    host = _host(tmp_path, now=now)
+    plan = _plan(host, now=now)
+    stage = retirement._stage_aside
+    staged: list[Path] = []
+
+    def fail_second(path: Path, token: str) -> Path:
+        if staged:
+            raise RuntimeError("interrupted")
+        staged.append(stage(path, token))
+        return staged[-1]
+
+    monkeypatch.setattr(retirement, "_stage_aside", fail_second)
+    with pytest.raises(RuntimeError) as raised:
+        apply_release_retirement_plan(
+            plan, ack=EXECUTE_ACK, active_link=host["active"], release_root=host["releases"]
+        )
+
+    partial = raised.value.release_retirement_receipt  # type: ignore[attr-defined]
+    assert partial["status"] == "interrupted"
+    assert [row["staged_path"] for row in partial["renamed"]] == [str(staged[0])]
+    assert staged[0].exists()

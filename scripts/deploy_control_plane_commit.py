@@ -81,8 +81,10 @@ from blueprint_pipeline.control_plane_release_leases import (  # noqa: E402
 from blueprint_pipeline.control_plane_release_retirement import (  # noqa: E402
     DEFAULT_LOCK_TIMEOUT_SECONDS as DEFAULT_RELEASE_LOCK_TIMEOUT_SECONDS,
     EXECUTE_ACK as RELEASE_RETIREMENT_ACK,
+    RUNTIME_COMPONENTS as RELEASE_RUNTIME_COMPONENTS,
     apply_release_retirement_plan,
     build_release_retirement_plan,
+    delete_retiring_trees,
     live_release_commits as _live_release_commits,
     publisher_lock_roots,
 )
@@ -959,6 +961,7 @@ def _retire_superseded_release_trees(
     protection_sources: ProtectionSources,
     keep_last: int,
     state_root: str | Path | None = None,
+    extra_config_files: Sequence[str | Path] = (),
     now: Callable[[], float] = time.time,
     proc_root: str | Path = "/proc",
     summary_path: str | Path | None = None,
@@ -971,24 +974,40 @@ def _retire_superseded_release_trees(
     lock shared on its root: queue writers, the launch-profile publisher, the
     standing-authorization materializer, release activation and the SAM
     prefix binding writer.  Retirement holds each of those roots exclusively
-    from collecting typed protection through planning and removal, so no
-    reference can appear in between.  Anything the plan cannot prove safe is
-    left in place and reported; a retirement failure never fails a deploy
-    whose surfaces already moved.
+    only while it collects typed protection, plans, re-checks live processes
+    and renames each candidate into ``<root>/.retiring``, so no reference can
+    appear in between; walking and deleting the moved trees happens after
+    the locks are released, and leftovers of an interrupted retirement are
+    swept before they are taken.  Anything the plan cannot prove safe is left
+    in place and reported; a retirement failure never fails a deploy whose
+    surfaces already moved.
     """
 
     roots: list[Path] = []
+    staged_roots = [
+        Path(release_root),
+        *(Path(runtime_root) / component for component in RELEASE_RUNTIME_COMPONENTS),
+    ]
+    renamed: list[dict[str, Any]] = []
+    swept: dict[str, Any] = {"deleted": [], "failed": []}
 
     def in_use() -> list[str]:
         return _live_release_commits(release_root, runtime_root=runtime_root, proc_root=proc_root)
 
     try:
+        sources = protection_sources
+        extra = [Path(path) for path in extra_config_files if Path(path) not in sources.config_files]
+        if extra:
+            # The bootstrap this deploy installed may name a non-default
+            # machinery file; retirement must read the same configuration.
+            sources = dataclasses.replace(sources, config_files=(*sources.config_files, *extra))
+        # A previous retirement that stopped after renaming left trees that no
+        # reference can reach any more; they go before any lock is taken.
+        swept = delete_retiring_trees(staged_roots)
         # The same directories publishers lock shared, plus this deploy's own
         # state root (release activation locks it), each exactly once.
         roots.extend(
-            publisher_lock_roots(
-                protection_sources, *([] if state_root is None else [state_root])
-            )
+            publisher_lock_roots(sources, *([] if state_root is None else [state_root]))
         )
         with contextlib.ExitStack() as held:
             for root in roots:
@@ -997,11 +1016,9 @@ def _retire_superseded_release_trees(
                         root, exclusive=True, timeout_seconds=lock_timeout_seconds
                     )
                 )
-            created_roots = _install_release_protection_roots(protection_sources)
-            _install_release_lease_root(protection_sources.lease_root)
-            protections = collect_release_protections(
-                protection_sources, now=float(now()), migrate=True
-            )
+            created_roots = _install_release_protection_roots(sources)
+            _install_release_lease_root(sources.lease_root)
+            protections = collect_release_protections(sources, now=float(now()), migrate=True)
             plan = build_release_retirement_plan(
                 release_root=release_root,
                 runtime_root=runtime_root,
@@ -1011,6 +1028,7 @@ def _retire_superseded_release_trees(
                 keep_last=keep_last,
                 now=now,
                 in_use_commits=in_use(),
+                measure_sizes=False,
             )
             if plan["status"] != "dry_run":
                 result: dict[str, Any] = {
@@ -1028,15 +1046,11 @@ def _retire_superseded_release_trees(
                     release_root=release_root,
                     in_use_now=lambda: set(in_use()),
                 )
-                retired = sorted({row["commit"] for row in receipt["removed"]})
+                renamed = list(receipt["renamed"])
                 result = {
                     "status": "applied",
                     "plan_digest": plan["plan_digest"],
                     "receipt_digest": receipt["result_digest"],
-                    "retired_commits": retired,
-                    "retired_bytes": sum(
-                        row["size_bytes"] for row in plan["candidates"] if row["commit"] in retired
-                    ),
                     "unmanaged_children": list(plan["unmanaged_children"]),
                     "skipped": list(receipt["skipped"]),
                     "created_protection_roots": created_roots,
@@ -1046,10 +1060,29 @@ def _retire_superseded_release_trees(
         # Both carry typed codes, never host paths.
         result = {"status": "blocked", "blockers": [str(exc)]}
     except Exception as exc:  # the surfaces already moved; report, never fail the deploy
+        partial = getattr(exc, "release_retirement_receipt", None)
+        if isinstance(partial, Mapping):
+            renamed = list(partial.get("renamed") or [])
         result = {
             "status": "blocked",
             "blockers": [f"deploy_release_retirement_failed:{type(exc).__name__}"],
         }
+    # Outside the locks, whatever happened above: delete, and measure, what
+    # this retirement moved aside.
+    try:
+        deletion = delete_retiring_trees(staged_roots)
+    except Exception as exc:
+        deletion = {
+            "deleted": [],
+            "deleted_bytes": 0,
+            "failed": [{"path": "", "reason": f"deletion_failed:{type(exc).__name__}"}],
+        }
+    result["renamed"] = renamed
+    result["retired_commits"] = sorted({str(row["commit"]) for row in renamed})
+    result["deleted"] = deletion["deleted"]
+    result["retired_bytes"] = deletion["deleted_bytes"]
+    result["swept"] = swept["deleted"]
+    result["deletion_failures"] = [*swept["failed"], *deletion["failed"]]
     if result["status"] == "blocked":
         result["alerts"] = [f"release_retirement_blocked:{result['blockers'][0]}"]
     result["lock_roots"] = [str(root) for root in roots]
@@ -2956,22 +2989,15 @@ def deploy_control_plane_commit(
         # Last, with the new release proven live: retire the trees this deploy
         # superseded, so per-commit growth is bounded by keep_last instead of
         # by the number of deploys ever made.
-        protection_sources = release_protection_sources
-        if bootstrap not in protection_sources.config_files:
-            # The bootstrap this deploy installed may name a non-default
-            # machinery file; retirement must read the same configuration.
-            protection_sources = dataclasses.replace(
-                protection_sources,
-                config_files=(*protection_sources.config_files, bootstrap),
-            )
         release_retirement = _retire_superseded_release_trees(
             release_root=releases,
             runtime_root=scene_configuration_runtime_root,
             active_link=active,
             current_commit=commit,
-            protection_sources=protection_sources,
+            protection_sources=release_protection_sources,
             keep_last=release_retirement_keep_last,
             state_root=state,
+            extra_config_files=(bootstrap,),
             summary_path=state / "release-retention" / RELEASE_RETIREMENT_SUMMARY_NAME,
         )
         _mark_stage("release_retirement")
