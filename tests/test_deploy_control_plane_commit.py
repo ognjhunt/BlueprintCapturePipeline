@@ -396,6 +396,8 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         "PathExistsGlob=/preparations/pending/*.json\n",
         encoding="utf-8",
     )
+    preparation_timer = unit_dir / "blueprint-task-evaluation-launch-preparation.timer"
+    preparation_timer.write_text("[Timer]\nOnUnitInactiveSec=2min\n", encoding="utf-8")
     sam31_service = unit_dir / "blueprint-task-evaluation-sam31-preparation-execution.service"
     sam31_service.write_text("[Service]\nExecStart=/usr/bin/blueprint-sam31-phase\n", encoding="utf-8")
     sam31_path = unit_dir / "blueprint-task-evaluation-sam31-preparation-execution.path"
@@ -569,6 +571,7 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         path_unit,
         preparation_service,
         preparation_path,
+        preparation_timer,
         sam31_service,
         sam31_path,
         sam31_timer,
@@ -633,6 +636,7 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-task-evaluation-launch-dispatcher.path",
         "blueprint-task-evaluation-launch-preparation.service",
         "blueprint-task-evaluation-launch-preparation.path",
+        "blueprint-task-evaluation-launch-preparation.timer",
         "blueprint-task-evaluation-sam31-preparation-execution.service",
         "blueprint-task-evaluation-sam31-preparation-execution.path",
         "blueprint-task-evaluation-sam31-preparation-execution.timer",
@@ -682,6 +686,7 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-scene-object-discovery.path",
     )
     assert deploy.DEFAULT_ALWAYS_ARM_TIMER_UNITS == (
+        "blueprint-task-evaluation-launch-preparation.timer",
         "blueprint-native-g1-team-campaign-dispatcher.timer",
         "blueprint-native-g1-team-campaign-settlement.timer",
         "blueprint-agent-run-dispatcher.timer",

@@ -210,6 +210,12 @@ def test_exact_sha_deployer_installs_and_arms_all_no_spend_intake_paths() -> Non
     assert "blueprint-task-evaluation-launch-preparation.path" in (
         deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS
     )
+    assert "blueprint-task-evaluation-launch-preparation.timer" in (
+        deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS
+    )
+    assert "blueprint-task-evaluation-launch-preparation.timer" in (
+        deploy.DEFAULT_ALWAYS_ARM_TIMER_UNITS
+    )
     assert deploy.DEFAULT_ALWAYS_ARM_PATH_UNITS == (
         "blueprint-task-evaluation-launch-preparation.path",
         "blueprint-task-evaluation-episode-compilation.path",

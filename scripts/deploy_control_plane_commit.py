@@ -105,6 +105,7 @@ DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     "blueprint-task-evaluation-launch-dispatcher.path",
     "blueprint-task-evaluation-launch-preparation.service",
     "blueprint-task-evaluation-launch-preparation.path",
+    "blueprint-task-evaluation-launch-preparation.timer",
     "blueprint-task-evaluation-sam31-preparation-execution.service",
     "blueprint-task-evaluation-sam31-preparation-execution.path",
     "blueprint-task-evaluation-sam31-preparation-execution.timer",
@@ -180,6 +181,7 @@ DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS = (
 #: moment a no-spend canary compiles, so it carries the same progression
 #: authority rather than the no-spend watcher category.
 DEFAULT_ALWAYS_ARM_TIMER_UNITS = (
+    "blueprint-task-evaluation-launch-preparation.timer",
     "blueprint-native-g1-team-campaign-dispatcher.timer",
     "blueprint-native-g1-team-campaign-settlement.timer",
     # The service retains its explicit enable flag and capture scope. Installing
