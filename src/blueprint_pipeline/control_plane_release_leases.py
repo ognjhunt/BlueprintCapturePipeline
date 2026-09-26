@@ -145,14 +145,58 @@ def _valid_commit(value: Any) -> str | None:
     return value if isinstance(value, str) and _COMMIT.fullmatch(value) else None
 
 
+def _absent(path: Path) -> bool:
+    """True only when nothing exists at ``path``.
+
+    Any other failure to look (a permission error, a file where a directory
+    belongs) propagates, so the caller blocks instead of reading "unreadable"
+    as "empty".
+    """
+
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        return True
+    return False
+
+
+def _require_regular(path: Path) -> None:
+    """Refuse anything but a regular file before another module reads it.
+
+    Those readers open with a blocking ``read_text``; a FIFO in their place
+    would hang the deploy, so it is refused here first.
+    """
+
+    if not stat.S_ISREG(os.lstat(path).st_mode):
+        raise ValueError("release_protection_document_unsafe")
+
+
+def _require_regular_children(directory: Path) -> None:
+    """Every ``*.json`` another module will read from ``directory`` is a regular file."""
+
+    if _absent(directory):
+        return
+    if directory.is_symlink() or not directory.is_dir():
+        raise ValueError("release_protection_document_unsafe")
+    for name in os.listdir(directory):
+        if name.endswith(".json"):
+            _require_regular(directory / name)
+
+
 def _read_document(path: Path) -> tuple[bytes, Any, os.stat_result]:
     """Read one regular JSON file without following a symlink.
 
     Raises ``OSError`` or ``ValueError`` for anything that is not a regular
-    file of at most 16 MiB holding valid JSON.
+    file of at most 16 MiB holding valid JSON.  The open never blocks: a FIFO
+    where a document belongs is refused instead of hanging the deploy.
     """
 
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
     descriptor = os.open(path, flags)
     try:
         info = os.fstat(descriptor)
@@ -320,9 +364,9 @@ def _collect_queues(
     for queue, states in LIVE_QUEUE_STATES.items():
         for state in states:
             directory = root / queue / state
-            if not os.path.lexists(directory):
-                continue  # a queue state never used on this host holds nothing
             try:
+                if _absent(directory):
+                    continue  # a queue state never used on this host holds nothing
                 if directory.is_symlink() or not directory.is_dir():
                     raise ValueError("queue_state_unsafe")
                 names = _json_names(directory)
@@ -413,11 +457,11 @@ def _standing_authorization_state(
 
     path = directory / f"{profile_id}.json"
     try:
-        if path.is_symlink() or not path.is_file():
-            raise ValueError("standing_authorization_source_invalid")
+        _require_regular(path)
         authorization = load_standing_authorization(profile_id=profile_id, directory=directory)
         if authorization is None or authorization.get("profile_id") != profile_id:
             raise ValueError("standing_authorization_identity_invalid")
+        _require_regular_children(directory / "consumed" / profile_id)
         launches, spend = consumption_totals(directory=directory, profile_id=profile_id)
         profile = documents.get(profile_id) or {
             # The typed two-step tool's stand-in when the profile is unreadable:
@@ -449,9 +493,9 @@ def _collect_standing_authorizations(
 ) -> None:
     """A release stays while an authorization can still launch the profile that runs it."""
 
-    if not os.path.lexists(directory):
-        return
     try:
+        if _absent(directory):
+            return
         if directory.is_symlink() or not directory.is_dir():
             raise ValueError("standing_authorization_root_unsafe")
         names = _json_names(directory)
@@ -563,11 +607,13 @@ class RunStateResolver:
         directory = self.intent_root / intent_id
         if directory.is_symlink() or not directory.is_dir():
             return "unknown"
-        if os.path.lexists(directory / "revoked.json"):
+        if not _absent(directory / "revoked.json"):
             return "terminal"
+        _require_regular(directory / "intent.json")
         intent = intake._read(directory / "intent.json", "intent_digest")
         progression = directory / "progression.json"
-        if os.path.lexists(progression):
+        if not _absent(progression):
+            _require_regular(progression)
             projection = intake._read(progression, "progression_digest")
             if projection.get("intent_digest") != intent.get("intent_digest"):
                 return "unknown"
@@ -575,6 +621,7 @@ class RunStateResolver:
                 return "terminal"
         # The same effective window the progression worker enforces, including
         # owner-approved extensions.
+        _require_regular_children(directory / "execution-window-extensions")
         if self.now >= intake.effective_execution_expiry(directory, intent):
             return "terminal"
         return "live"
@@ -590,9 +637,7 @@ class RunStateResolver:
             or Path(name).name != name
         ):
             return "unknown"
-        if any(
-            os.path.lexists(self.control_plane_root / queue / state / name) for state in states
-        ):
+        if any(not _absent(self.control_plane_root / queue / state / name) for state in states):
             return "live"
         return "terminal"
 
@@ -601,7 +646,7 @@ class RunStateResolver:
         if self.launch_run_root is None or not _identifier(launch_id):
             return "unknown"
         directory = self.launch_run_root / launch_id
-        if os.path.lexists(directory / "launch_receipt.json") or os.path.lexists(
+        if not _absent(directory / "launch_receipt.json") or not _absent(
             self.launch_run_root / f"{launch_id}{_OFFLOAD_POINTER_SUFFIX}"
         ):
             return "terminal"
@@ -741,51 +786,47 @@ def _fsync_directory(directory: Path) -> None:
         os.close(descriptor)
 
 
+def _write_all(descriptor: int, payload: bytes) -> None:
+    view = memoryview(payload)
+    while view:
+        view = view[os.write(descriptor, view):]
+
+
 def _write_sidecar(path: Path, lease: Mapping[str, Any], *, replace: bool) -> None:
-    """Create a sidecar exclusively, or atomically replace one; mode 0640."""
+    """Publish a complete sidecar (mode 0640) or nothing.
+
+    The bytes go to a temporary file in the same directory and are fsynced
+    first; creation then links that file into place (refusing an existing
+    sidecar) and renewal renames it over the old one.  A short write (a full
+    disk) leaves no partial sidecar that would block every later deploy.
+    """
 
     directory = path.parent
     for level in (directory.parent, directory):
-        if os.path.lexists(level):
-            if level.is_symlink() or not level.is_dir():
-                raise ValueError("release_protection_lease_root_unsafe")
-        else:
+        if _absent(level):
             level.mkdir(mode=0o750)
+        elif level.is_symlink() or not level.is_dir():
+            raise ValueError("release_protection_lease_root_unsafe")
     payload = (
         json.dumps(lease, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n"
     ).encode("utf-8")
-    if replace:
-        descriptor, temporary = tempfile.mkstemp(
-            prefix=f".{path.name}.", suffix=".tmp", dir=directory
-        )
-        try:
-            with os.fdopen(descriptor, "wb") as stream:
-                stream.write(payload)
-                stream.flush()
-                os.fchmod(stream.fileno(), 0o640)
-                os.fsync(stream.fileno())
-            os.replace(temporary, path)
-        except BaseException:
-            with contextlib.suppress(OSError):
-                os.unlink(temporary)
-            raise
-    else:
-        flags = (
-            os.O_WRONLY
-            | os.O_CREAT
-            | os.O_EXCL
-            | getattr(os, "O_NOFOLLOW", 0)
-            | getattr(os, "O_CLOEXEC", 0)
-        )
-        descriptor = os.open(path, flags, 0o640)
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=directory)
+    try:
         try:
             os.fchmod(descriptor, 0o640)
-            view = memoryview(payload)
-            while view:
-                view = view[os.write(descriptor, view):]
+            _write_all(descriptor, payload)
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
+        if replace:
+            os.replace(temporary, path)
+        else:
+            os.link(temporary, path)
+            os.unlink(temporary)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(temporary)
+        raise
     _fsync_directory(directory)
 
 
@@ -846,9 +887,13 @@ def evaluate_binding_lease(
         if lease_root is not None
         else None
     )
-    if lease is None and sidecar is not None and os.path.lexists(sidecar):
+    try:
+        sidecar_exists = sidecar is not None and not _absent(sidecar)
+    except OSError:
+        return blocked(f"release_protection_lease_invalid:{name}")
+    if lease is None and sidecar_exists:
         try:
-            sidecar_payload, recorded, _info = _read_document(sidecar)
+            sidecar_payload, recorded, _info = _read_document(sidecar)  # type: ignore[arg-type]
         except (OSError, ValueError):
             return blocked(f"release_protection_lease_invalid:{name}")
         problem = _sidecar_problem(
@@ -946,9 +991,9 @@ def _collect_bindings(
     collection: _Collection,
 ) -> None:
     root = Path(sources.binding_root)
-    if not os.path.lexists(root):
-        return
     try:
+        if _absent(root):
+            return
         if root.is_symlink() or not root.is_dir():
             raise ValueError("binding_root_unsafe")
         names = _json_names(root)
@@ -1012,9 +1057,9 @@ def _collect_configuration(config_files: tuple[Path, ...], collection: _Collecti
             continue
         seen.add(str(path))
         name = path.name
-        if not os.path.lexists(path) and not followed:
-            continue  # an optional configuration file this host does not use
         try:
+            if _absent(path) and not followed:
+                continue  # an optional configuration file this host does not use
             _payload, value, _info = _read_document(path)
         except (OSError, ValueError):
             collection.blockers.add(f"release_protection_config_unreadable:{name}")

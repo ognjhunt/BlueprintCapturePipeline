@@ -10,13 +10,18 @@ authorizations.  These tests pin the typed sources that replaced the grep.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
 import stat
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
+import blueprint_pipeline.control_plane_release_leases as leases
 from blueprint_pipeline.control_plane_release_leases import (
     CONFIG_KIND,
     DEFAULT_MAX_LIFETIME_SECONDS,
@@ -713,3 +718,78 @@ def test_republishing_a_sam_prefix_binding_still_matches(tmp_path: Path) -> None
         adoption_path, binding_root=sources.binding_root
     ) == pin
     assert Path(pin["path"]).read_bytes() == before
+
+
+def test_permission_errors_block_instead_of_reading_as_absent(tmp_path: Path) -> None:
+    if os.geteuid() == 0:
+        pytest.skip("root ignores directory permissions")
+    sources = _sources(tmp_path)
+    queue_root = sources.control_plane_root / "task-evaluation-launches"
+    queue_root.chmod(0)
+    try:
+        result = collect_release_protections(sources, now=NOW, migrate=False)
+    finally:
+        queue_root.chmod(0o755)
+
+    # An unsearchable queue is not an empty one.
+    assert result["blockers"] == [
+        "release_protection_queue_unreadable:task-evaluation-launches/pending",
+        "release_protection_queue_unreadable:task-evaluation-launches/processing",
+    ]
+
+
+def test_a_fifo_where_a_document_belongs_blocks_without_hanging(tmp_path: Path) -> None:
+    sources = _sources(tmp_path)
+    os.mkfifo(sources.control_plane_root / "task-evaluation-launches" / "pending" / "stuck.json")
+    # Documents read on the deploy's behalf by other modules are guarded too:
+    # a consumption record of a live authorization, and a binding's intent.
+    _authorize(sources, _profile(sources, "consuming", C), expires_at=NOW + DAY)
+    consumed = sources.standing_authorization_dir / "consumed" / "consuming"
+    consumed.mkdir(parents=True)
+    os.mkfifo(consumed / "launch-1.json")
+    intent = _intent(sources, "scene-fifo", expires_at=NOW + DAY)
+    (intent / "intent.json").unlink()
+    os.mkfifo(intent / "intent.json")
+    _binding(sources, "fifo-intent.json", D, intent_id="scene-fifo")
+    outcome: dict = {}
+
+    def collect() -> None:
+        outcome["result"] = collect_release_protections(sources, now=NOW, migrate=False)
+
+    worker = threading.Thread(target=collect, daemon=True)
+    worker.start()
+    worker.join(timeout=10)
+
+    assert not worker.is_alive(), "opening a FIFO with no writer must not block the deploy"
+    result = outcome["result"]
+    assert result["blockers"] == [
+        "release_protection_queue_unreadable:task-evaluation-launches/pending/stuck.json",
+        "release_protection_standing_authorization_invalid:consuming",
+    ]
+    # An intent that cannot be read leaves its binding's run unknown: protected.
+    assert D in _protected(result)
+
+
+def test_a_short_sidecar_write_leaves_no_partial_lease(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sources = _sources(tmp_path)
+    _binding(sources, "short.json", B)
+    complete_write = leases._write_all
+
+    def short_write(descriptor: int, payload: bytes) -> None:
+        os.write(descriptor, payload[: len(payload) // 2])
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(leases, "_write_all", short_write)
+    failed = collect_release_protections(sources, now=NOW, migrate=True)
+
+    assert failed["blockers"] == ["release_protection_lease_write_failed:short.json"]
+    assert not _sidecar(sources, "short.json").exists()
+    assert list((sources.lease_root / "bindings").iterdir()) == []
+
+    # With space again the next deploy migrates it; nothing was wedged.
+    monkeypatch.setattr(leases, "_write_all", complete_write)
+    retried = collect_release_protections(sources, now=NOW, migrate=True)
+    assert retried["blockers"] == [] and retried["migrated"] == ["short.json"]
+    assert json.loads(_sidecar(sources, "short.json").read_text(encoding="utf-8"))["binding"] == "short.json"
