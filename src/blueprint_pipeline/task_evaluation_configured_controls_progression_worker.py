@@ -396,8 +396,10 @@ def _activation_capacity_ready(queue_root: Path) -> bool:
     ledger = os.getenv("BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT")
     if not ledger:
         return True  # The activation worker always retains its own disk gate.
-    from .control_plane_disk_budget import disk_headroom, footprint_bytes
-    return disk_headroom(target_root=queue_root, reservation_root=ledger)["available_bytes"] >= footprint_bytes("launch_activation")
+    from .control_plane_disk_budget import disk_headroom, effective_footprint_bytes
+    # The footprint the activation's own reservation will hold, not the ceiling.
+    return disk_headroom(target_root=queue_root, reservation_root=ledger)["available_bytes"] >= (
+        effective_footprint_bytes("launch_activation", reservation_root=ledger))
 
 
 def _policy_canary_activation_id(run_id: str) -> str:

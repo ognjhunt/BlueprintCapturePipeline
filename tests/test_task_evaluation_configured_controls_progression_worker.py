@@ -2165,6 +2165,19 @@ def test_activation_capacity_wait_uses_live_reserved_headroom(tmp_path, monkeypa
     assert worker._activation_capacity_ready(tmp_path) is expected
 
 
+def test_activation_capacity_wait_uses_the_measured_activation_footprint(tmp_path, monkeypatch):
+    from blueprint_pipeline import control_plane_disk_budget as disk_budget
+    ledger = tmp_path / 'ledger'
+    for _ in range(10):
+        assert disk_budget.record_footprint_sample(reservation_root=ledger, role='launch_activation',
+                                                   observed_bytes=100 * 1024**2, reserved_bytes=2 * 1024**3)
+    monkeypatch.setenv('BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT', str(ledger))
+    monkeypatch.setattr('blueprint_pipeline.control_plane_disk_budget.disk_headroom',
+                        lambda **_kwargs: {'available_bytes': 1024**3})
+    # 1 GiB is below the 2 GiB ceiling but above the 125 MiB the activation will reserve.
+    assert worker._activation_capacity_ready(tmp_path) is True
+
+
 def test_production_submitter_recovers_exact_accepted_request(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
