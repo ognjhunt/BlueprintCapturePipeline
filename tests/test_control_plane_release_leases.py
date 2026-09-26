@@ -10,19 +10,23 @@ authorizations.  These tests pin the typed sources that replaced the grep.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import stat
 from datetime import datetime, timezone
 from pathlib import Path
 
 from blueprint_pipeline.control_plane_release_leases import (
     CONFIG_KIND,
     DEFAULT_MAX_LIFETIME_SECONDS,
+    LEASE_SCHEMA,
     LIVE_QUEUE_STATES,
     PROTECTIONS_SCHEMA,
     ProtectionSources,
     collect_release_protections,
 )
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest, canonical_json
 
 
 DAY = 86_400.0
@@ -388,3 +392,313 @@ def test_consumption_records_and_profiles_alone_do_not_protect(tmp_path: Path) -
     assert result["leases"] == []
     assert result["lapsed"] == []
     assert result["blockers"] == []
+
+
+BINDING_REASON = "Completed SAM prefix replay requires its original immutable renderer release"
+
+
+def _intent(
+    sources: ProtectionSources,
+    intent_id: str,
+    *,
+    expires_at: float,
+    status: str | None = None,
+    revoked: bool = False,
+) -> Path:
+    from blueprint_pipeline import task_evaluation_scene_intake as intake
+
+    assert sources.intent_root is not None
+    directory = sources.intent_root / intent_id
+    directory.mkdir(parents=True)
+    intent = intake._seal(
+        {
+            "schema_version": intake.INTENT_SCHEMA,
+            "intent_id": intent_id,
+            "request": {"owner": {"tenant_id": "tenant"}, "execution": {"expires_at_epoch": expires_at}},
+            "authenticated_issuer": "blueprint-webapp",
+            "accepted_at_epoch": NOW - 2 * DAY,
+        },
+        "intent_digest",
+    )
+    _write(directory / "intent.json", intent)
+    if status is not None:
+        projection = intake._seal(
+            {
+                "schema_version": "task_evaluation_scene_progression.v1",
+                "intent_id": intent_id,
+                "intent_digest": intent["intent_digest"],
+                "status": status,
+                "phase": "fixture",
+            },
+            "progression_digest",
+        )
+        _write(directory / "progression.json", projection)
+    if revoked:
+        _write(directory / "revoked.json", {"status": "revoked"})
+    return directory
+
+
+def _binding(
+    sources: ProtectionSources,
+    name: str,
+    commit: str,
+    *,
+    intent_id: str | None = None,
+    retained: dict | None = None,
+) -> Path:
+    value: dict[str, object] = {
+        "schema_version": "task_evaluation_release_retention_binding.v1",
+        "status": "required",
+        "source_commit": commit,
+        "reason": BINDING_REASON,
+    }
+    if intent_id is not None:
+        evidence = (
+            sources.control_plane_root.parent
+            / "task-evaluation-inputs"
+            / "completed-scene-preparation"
+            / intent_id
+            / "attempt-1"
+            / "adoption.json"
+        )
+        value["evidence"] = {"path": str(evidence), "sha256": "sha256:" + "0" * 64, "size_bytes": 1}
+    if retained is not None:
+        value["retained_release"] = retained
+    path = sources.binding_root / name
+    path.write_bytes(json.dumps(value, sort_keys=True, separators=(",", ":")).encode() + b"\n")
+    return path
+
+
+def _sidecar(sources: ProtectionSources, name: str) -> Path:
+    return sources.lease_root / "bindings" / f"{name}.lease.v1.json"
+
+
+def _lapsed(result: dict) -> list[tuple[str, str]]:
+    return sorted((row["commit"], row["why"]) for row in result["lapsed"])
+
+
+def test_legacy_binding_is_migrated_to_a_sidecar_lease_and_reported(tmp_path: Path) -> None:
+    sources = _sources(tmp_path)
+    _intent(sources, "scene-live", expires_at=NOW + 10 * DAY)
+    binding = _binding(
+        sources,
+        "sam31-prefix-1.json",
+        B,
+        intent_id="scene-live",
+        retained={
+            "path": f"/opt/blueprint/task-evaluation-control-plane-releases/{C}",
+            "source_commit": C,
+            "tree": TREE,
+        },
+    )
+    before = binding.read_bytes()
+
+    result = collect_release_protections(sources, now=NOW, migrate=True)
+
+    assert binding.read_bytes() == before
+    sidecar = _sidecar(sources, "sam31-prefix-1.json")
+    lease = json.loads(sidecar.read_text(encoding="utf-8"))
+    assert lease == {
+        "schema_version": LEASE_SCHEMA,
+        "binding": "sam31-prefix-1.json",
+        "binding_sha256": "sha256:" + hashlib.sha256(before).hexdigest(),
+        "commits": [B, C],
+        "owner": "legacy-migration",
+        "reason": BINDING_REASON,
+        "run_ref": {"kind": "scene_intent", "intent_id": "scene-live"},
+        "created_at_epoch": NOW,
+        "expires_at_epoch": NOW + 14 * DAY,
+        "max_expires_at_epoch": NOW + 30 * DAY,
+        "migrated": True,
+        "lease_digest": canonical_digest(lease, digest_field="lease_digest"),
+    }
+    assert stat.S_IMODE(sidecar.stat().st_mode) == 0o640
+    assert result["migrated"] == ["sam31-prefix-1.json"]
+    assert result["blockers"] == []
+    source = "task-evaluation-release-retention-bindings/sam31-prefix-1.json"
+    assert _protected(result) == {
+        B: [f"retention_binding:{source}"],
+        C: [f"retention_binding:{source}"],
+    }
+    assert next(row for row in result["leases"] if row["commit"] == B) == {
+        "commit": B,
+        "kind": "retention_binding",
+        "owner": "legacy-migration",
+        "reason": BINDING_REASON,
+        "run_ref": {"kind": "scene_intent", "intent_id": "scene-live"},
+        "expires_at_epoch": NOW + 14 * DAY,
+        "source": source,
+    }
+
+    # A dry run treats an unmigrated binding as that would-be lease and writes nothing.
+    _binding(sources, "legacy-dry-run.json", D)
+    dry_run = collect_release_protections(sources, now=NOW + DAY, migrate=False)
+    assert dry_run["migrated"] == []
+    assert not _sidecar(sources, "legacy-dry-run.json").exists()
+    assert D in _protected(dry_run)
+
+    # A second migration reuses the first sidecar and migrates only what is new.
+    lease_bytes = sidecar.read_bytes()
+    again = collect_release_protections(sources, now=NOW + DAY, migrate=True)
+    assert again["migrated"] == ["legacy-dry-run.json"]
+    assert sidecar.read_bytes() == lease_bytes
+
+
+def test_expired_binding_no_longer_protects(tmp_path: Path) -> None:
+    sources = _sources(tmp_path)
+    _binding(sources, "unowned.json", B)  # no evidence path: the run is unknown
+
+    first = collect_release_protections(sources, now=NOW, migrate=True)
+    assert B in _protected(first)
+
+    later = collect_release_protections(sources, now=NOW + 15 * DAY, migrate=True)
+    assert _protected(later) == {}
+    assert _lapsed(later) == [(B, "expired")]
+    assert later["migrated"] == [] and later["renewed"] == [] and later["blockers"] == []
+
+
+def test_live_run_ref_still_protects_and_renews_within_max_lifetime(tmp_path: Path) -> None:
+    sources = _sources(tmp_path)
+    _intent(sources, "scene-running", expires_at=NOW + 60 * DAY, status="running")
+    binding = _binding(sources, "running.json", B, intent_id="scene-running")
+    before = binding.read_bytes()
+    collect_release_protections(sources, now=NOW, migrate=True)
+    sidecar = _sidecar(sources, "running.json")
+
+    def lease() -> dict:
+        return json.loads(sidecar.read_text(encoding="utf-8"))
+
+    quiet = collect_release_protections(sources, now=NOW + 6 * DAY, migrate=True)
+    assert quiet["renewed"] == [] and lease()["expires_at_epoch"] == NOW + 14 * DAY
+
+    # Past its own expiry the lease still protects a live run; a dry run never renews.
+    dry_run = collect_release_protections(sources, now=NOW + 15 * DAY, migrate=False)
+    assert B in _protected(dry_run) and dry_run["renewed"] == []
+    assert lease()["expires_at_epoch"] == NOW + 14 * DAY
+
+    renewed = collect_release_protections(sources, now=NOW + 15 * DAY, migrate=True)
+    assert B in _protected(renewed) and renewed["renewed"] == ["running.json"]
+    assert lease()["expires_at_epoch"] == NOW + 29 * DAY
+    assert lease()["max_expires_at_epoch"] == NOW + 30 * DAY
+    assert lease()["lease_digest"] == canonical_digest(lease(), digest_field="lease_digest")
+
+    capped = collect_release_protections(sources, now=NOW + 23 * DAY, migrate=True)
+    assert capped["renewed"] == ["running.json"]
+    assert lease()["expires_at_epoch"] == NOW + 30 * DAY
+
+    ended = collect_release_protections(sources, now=NOW + 30 * DAY, migrate=True)
+    assert _protected(ended) == {}
+    assert _lapsed(ended) == [(B, "max_lifetime")]
+    assert ended["warnings"] == ["release_protection_lease_past_max_lifetime:running.json"]
+    assert binding.read_bytes() == before
+
+
+def test_binding_for_a_terminal_run_lapses(tmp_path: Path) -> None:
+    sources = _sources(tmp_path)
+    _intent(sources, "scene-completed", expires_at=NOW + 10 * DAY, status="completed")
+    _intent(sources, "scene-revoked", expires_at=NOW + 10 * DAY, revoked=True)
+    _intent(sources, "scene-expired", expires_at=NOW - 1)
+    _intent(sources, "scene-running", expires_at=NOW + 10 * DAY, status="running")
+    _binding(sources, "completed.json", B, intent_id="scene-completed")
+    _binding(sources, "revoked.json", C, intent_id="scene-revoked")
+    _binding(sources, "expired.json", D, intent_id="scene-expired")
+    _binding(sources, "running.json", E, intent_id="scene-running")
+
+    result = collect_release_protections(sources, now=NOW, migrate=True)
+
+    assert _protected(result) == {
+        E: ["retention_binding:task-evaluation-release-retention-bindings/running.json"]
+    }
+    assert sorted(
+        (row["commit"], row["why"], row["run_ref"]["intent_id"]) for row in result["lapsed"]
+    ) == [
+        (B, "run_terminal", "scene-completed"),
+        (C, "run_terminal", "scene-revoked"),
+        (D, "run_terminal", "scene-expired"),
+    ]
+    # Every binding still gets its lease on record, lapsed or not.
+    assert result["migrated"] == ["completed.json", "expired.json", "revoked.json", "running.json"]
+    assert result["blockers"] == []
+
+
+def test_misplaced_plan_is_a_warning_not_protection(tmp_path: Path) -> None:
+    sources = _sources(tmp_path)
+    _write(
+        sources.binding_root / "plan-20260828T234417Z.json",
+        {
+            "schema_version": "task_evaluation_release_retention_plan.v1",
+            "status": "dry_run",
+            "protected_commits": {B: ["active_release"], C: ["keep_last"]},
+            "eligible_commits": [{"source_commit": D}],
+        },
+    )
+
+    result = collect_release_protections(sources, now=NOW, migrate=True)
+
+    assert result["leases"] == [] and result["lapsed"] == []
+    assert result["blockers"] == [] and result["migrated"] == []
+    assert result["warnings"] == ["misplaced_retention_plan:plan-20260828T234417Z.json"]
+    assert not _sidecar(sources, "plan-20260828T234417Z.json").exists()
+
+
+def test_changed_binding_bytes_block(tmp_path: Path) -> None:
+    sources = _sources(tmp_path)
+    binding = _binding(sources, "sam31-prefix-2.json", B)
+    collect_release_protections(sources, now=NOW, migrate=True)
+    value = json.loads(binding.read_text(encoding="utf-8"))
+    binding.write_text(json.dumps({**value, "reason": "rewritten in place"}), encoding="utf-8")
+    _write(
+        sources.binding_root / "optional.json",
+        {
+            "schema_version": "task_evaluation_release_retention_binding.v1",
+            "status": "optional",
+            "source_commit": C,
+            "reason": "not a required binding",
+        },
+    )
+
+    result = collect_release_protections(sources, now=NOW + DAY, migrate=True)
+
+    assert result["blockers"] == [
+        "release_protection_binding_changed:sam31-prefix-2.json",
+        "release_protection_binding_invalid:optional.json",
+    ]
+    assert result["migrated"] == []
+
+
+def test_republishing_a_sam_prefix_binding_still_matches(tmp_path: Path) -> None:
+    from blueprint_pipeline import task_evaluation_sam31_prefix_adoption as adoption
+
+    sources = _sources(tmp_path)
+    profile = {"schema_version": "fixture_profile", "source_commit": B}
+    profile["profile_digest"] = canonical_digest(profile, digest_field="profile_digest")
+    profile_path = tmp_path / "source-profile.json"
+    profile_path.write_text(canonical_json(profile), encoding="utf-8")
+    value = {
+        "schema_version": adoption.SCHEMA,
+        "status": "verified_completed_prefix",
+        "original_execution_commit": B,
+        "source_profile": {"path": str(profile_path)},
+        "retained_release_pin": {
+            "source_commit": B,
+            "path": f"/opt/blueprint/task-evaluation-control-plane-releases/{B}",
+            "tree": TREE,
+        },
+    }
+    value["adoption_digest"] = canonical_digest(value, digest_field="adoption_digest")
+    adoption_path = tmp_path / "adoption.json"
+    adoption_path.write_text(canonical_json(value), encoding="utf-8")
+
+    pin = adoption.publish_adoption_release_binding(adoption_path, binding_root=sources.binding_root)
+    before = Path(pin["path"]).read_bytes()
+    result = collect_release_protections(sources, now=NOW, migrate=True)
+
+    assert result["migrated"] == [Path(pin["path"]).name]
+    assert _protected(result) == {
+        B: [f"retention_binding:task-evaluation-release-retention-bindings/{Path(pin['path']).name}"]
+    }
+    # The writer compares whole documents on republish: still no conflict.
+    assert adoption.publish_adoption_release_binding(
+        adoption_path, binding_root=sources.binding_root
+    ) == pin
+    assert Path(pin["path"]).read_bytes() == before

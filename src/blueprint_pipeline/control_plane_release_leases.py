@@ -19,6 +19,12 @@ run it serves (``run_ref``):
     A standing launch authorization that can still admit a launch of the
     profile that runs the commit.  It lapses when it expires or runs out of
     launches or spend; its consumption records never protect anything.
+``retention_binding``
+    A required-evidence binding.  Binding bytes never change (their writer
+    compares whole documents on republish), so a legacy binding's lease lives
+    in a sidecar under the lease root, written once by migration and renewed
+    only while its run is live.  It lapses when its run ends, when it expires
+    with its run unknown, and at the latest at its maximum lifetime.
 ``configured_runtime``
     A runtime path named by current host configuration.  It has no expiry: the
     configuration is re-read on every deploy.
@@ -30,19 +36,27 @@ deletes anything; the retirement plan decides from these rows.
 
 from __future__ import annotations
 
+import contextlib
+import hashlib
 import json
+import math
 import os
 import re
 import stat
+import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .decision_evidence_contracts import canonical_digest
+
 
 LEASE_SCHEMA = "control_plane_release_lease.v1"
 PROTECTIONS_SCHEMA = "control_plane_release_protections.v1"
+BINDING_SCHEMA = "task_evaluation_release_retention_binding.v1"
+RETENTION_PLAN_SCHEMA = "task_evaluation_release_retention_plan.v1"
 DEFAULT_CONTROL_PLANE_ROOT = Path("/var/lib/blueprint/pipeline-control-plane")
 DEFAULT_LEASE_ROOT = DEFAULT_CONTROL_PLANE_ROOT / "release-leases"
 DEFAULT_TTL_SECONDS = 14 * 24 * 3600
@@ -87,6 +101,10 @@ _MANAGED_TREE = re.compile(
 )
 _COMMIT_FIELDS = ("expected_production_commit", "source_commit", "expected_source_commit")
 _MAX_DOCUMENT_BYTES = 16 * 1024 * 1024
+_IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,191}\Z")
+_SIDECAR_SUFFIX = ".lease.v1.json"
+_OFFLOAD_POINTER_SUFFIX = ".offloaded.v1.json"
+_INLINE_LEASE_FIELDS = ("owner", "expires_at_epoch", "max_expires_at_epoch", "run_ref")
 # The blockers after which a standing authorization can never admit again.
 _EXPECTED_TERMINAL_AUTHORIZATION_BLOCKERS = frozenset(
     {
@@ -370,7 +388,11 @@ def _text_or(value: Any, default: str) -> str:
 
 
 def _standing_authorization_state(
-    directory: Path, profile_id: str, profiles: _Profiles, *, now: float
+    directory: Path,
+    profile_id: str,
+    documents: Mapping[str, Mapping[str, Any]],
+    *,
+    now: float,
 ) -> tuple[str, Mapping[str, Any] | None]:
     """``("live" | "terminal" | "invalid", authorization)`` for one profile id.
 
@@ -393,7 +415,7 @@ def _standing_authorization_state(
         if authorization is None or authorization.get("profile_id") != profile_id:
             raise ValueError("standing_authorization_identity_invalid")
         launches, spend = consumption_totals(directory=directory, profile_id=profile_id)
-        profile = profiles.documents.get(profile_id) or {
+        profile = documents.get(profile_id) or {
             # The typed two-step tool's stand-in when the profile is unreadable:
             # it checks bounds and expiry without inventing a per-launch spend.
             "profile_id": profile_id,
@@ -437,7 +459,7 @@ def _collect_standing_authorizations(
         # authorization documents themselves are read.
         profile_id = name[: -len(".json")]
         state, authorization = _standing_authorization_state(
-            directory, profile_id, profiles, now=now
+            directory, profile_id, profiles.documents, now=now
         )
         if state == "invalid" or authorization is None:
             collection.blockers.add(
@@ -469,6 +491,512 @@ def _collect_standing_authorizations(
             collection.protect({commit}, row)
         else:
             collection.lapse({commit}, row, "run_terminal")
+
+
+def _identifier(value: Any) -> bool:
+    return isinstance(value, str) and _IDENTIFIER.fullmatch(value) is not None
+
+
+def _number(value: Any) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+    )
+
+
+class RunStateResolver:
+    """Whether the run a lease serves can still use its release.
+
+    ``state`` answers ``"terminal"``, ``"live"`` or ``"unknown"``.  A run that
+    cannot be read is unknown, never terminal: an unknown run keeps its lease
+    until the lease expires.
+    """
+
+    def __init__(
+        self,
+        intent_root: str | Path | None,
+        launch_run_root: str | Path | None,
+        control_plane_root: str | Path | None,
+        now: float,
+        *,
+        standing_authorization_dir: str | Path | None = None,
+        profile_documents: Mapping[str, Mapping[str, Any]] | None = None,
+    ) -> None:
+        self.intent_root = Path(intent_root) if intent_root is not None else None
+        self.launch_run_root = Path(launch_run_root) if launch_run_root is not None else None
+        self.control_plane_root = (
+            Path(control_plane_root) if control_plane_root is not None else None
+        )
+        self.now = float(now)
+        self.standing_authorization_dir = (
+            Path(standing_authorization_dir) if standing_authorization_dir is not None else None
+        )
+        self.profile_documents = dict(profile_documents or {})
+
+    def state(self, run_ref: Any) -> str:
+        if not isinstance(run_ref, Mapping):
+            return "unknown"
+        resolver = {
+            "scene_intent": self._scene_intent,
+            "queue_envelope": self._queue_envelope,
+            "launch": self._launch,
+            "standing_authorization": self._standing_authorization,
+        }.get(run_ref.get("kind"))
+        if resolver is None:
+            return "unknown"
+        try:
+            return resolver(run_ref)
+        except Exception:  # a run we cannot read is unknown, never terminal
+            return "unknown"
+
+    def _scene_intent(self, run_ref: Mapping[str, Any]) -> str:
+        from . import task_evaluation_scene_intake as intake
+
+        intent_id = run_ref.get("intent_id")
+        if self.intent_root is None or not _identifier(intent_id):
+            return "unknown"
+        directory = self.intent_root / intent_id
+        if directory.is_symlink() or not directory.is_dir():
+            return "unknown"
+        if os.path.lexists(directory / "revoked.json"):
+            return "terminal"
+        intent = intake._read(directory / "intent.json", "intent_digest")
+        progression = directory / "progression.json"
+        if os.path.lexists(progression):
+            projection = intake._read(progression, "progression_digest")
+            if projection.get("intent_digest") != intent.get("intent_digest"):
+                return "unknown"
+            if projection.get("status") == "completed":
+                return "terminal"
+        # The same effective window the progression worker enforces, including
+        # owner-approved extensions.
+        if self.now >= intake.effective_execution_expiry(directory, intent):
+            return "terminal"
+        return "live"
+
+    def _queue_envelope(self, run_ref: Mapping[str, Any]) -> str:
+        queue, name = run_ref.get("queue"), run_ref.get("name")
+        states = LIVE_QUEUE_STATES.get(queue) if isinstance(queue, str) else None
+        if (
+            self.control_plane_root is None
+            or states is None
+            or not isinstance(name, str)
+            or not name.endswith(".json")
+            or Path(name).name != name
+        ):
+            return "unknown"
+        if any(
+            os.path.lexists(self.control_plane_root / queue / state / name) for state in states
+        ):
+            return "live"
+        return "terminal"
+
+    def _launch(self, run_ref: Mapping[str, Any]) -> str:
+        launch_id = run_ref.get("launch_id")
+        if self.launch_run_root is None or not _identifier(launch_id):
+            return "unknown"
+        directory = self.launch_run_root / launch_id
+        if os.path.lexists(directory / "launch_receipt.json") or os.path.lexists(
+            self.launch_run_root / f"{launch_id}{_OFFLOAD_POINTER_SUFFIX}"
+        ):
+            return "terminal"
+        if directory.is_dir() and not directory.is_symlink():
+            return "live"
+        return "unknown"
+
+    def _standing_authorization(self, run_ref: Mapping[str, Any]) -> str:
+        profile_id = run_ref.get("profile_id")
+        if self.standing_authorization_dir is None or not _identifier(profile_id):
+            return "unknown"
+        state, _authorization = _standing_authorization_state(
+            self.standing_authorization_dir, profile_id, self.profile_documents, now=self.now
+        )
+        return {"live": "live", "terminal": "terminal"}.get(state, "unknown")
+
+
+def binding_commits(binding: Mapping[str, Any]) -> list[str] | None:
+    """The commits a valid required-evidence binding names, or ``None``.
+
+    ``retained_release.tree`` is a git tree id and is never read as a commit.
+    """
+
+    commit = _valid_commit(binding.get("source_commit"))
+    reason = binding.get("reason")
+    if (
+        binding.get("schema_version") != BINDING_SCHEMA
+        or binding.get("status") != "required"
+        or commit is None
+        or not isinstance(reason, str)
+        or not reason.strip()
+    ):
+        return None
+    commits = {commit}
+    retained = binding.get("retained_release")
+    if isinstance(retained, Mapping):
+        retained_commit = _valid_commit(retained.get("source_commit"))
+        if retained_commit is not None:
+            commits.add(retained_commit)
+    return sorted(commits)
+
+
+def _run_ref_valid(value: Any) -> bool:
+    return value is None or (isinstance(value, Mapping) and _identifier(value.get("kind")))
+
+
+def _inline_lease(binding: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Lease fields a future binding writer carries inline; ``None`` for a legacy binding."""
+
+    if not any(field in binding for field in _INLINE_LEASE_FIELDS):
+        return None
+    owner, expires_at = binding.get("owner"), binding.get("expires_at_epoch")
+    # Inline bytes cannot be renewed, so without an explicit bound the
+    # writer's own expiry is also the maximum lifetime.
+    max_expires_at = binding.get("max_expires_at_epoch", expires_at)
+    run_ref = binding.get("run_ref")
+    if (
+        not isinstance(owner, str)
+        or not owner.strip()
+        or not _number(expires_at)
+        or not _number(max_expires_at)
+        or not _run_ref_valid(run_ref)
+    ):
+        raise ValueError("release_protection_inline_lease_invalid")
+    return {
+        "owner": owner.strip(),
+        "reason": binding["reason"],
+        "run_ref": run_ref,
+        "expires_at_epoch": float(expires_at),
+        "max_expires_at_epoch": float(max_expires_at),
+    }
+
+
+def _scene_intent_run_ref(binding: Mapping[str, Any], intent_root: Path | None) -> dict | None:
+    """The scene intent whose factory output holds the binding's evidence, if any.
+
+    Factory output is laid out ``<factory_output_root>/<intent_id>/<attempt_id>/...``,
+    so the first component of ``evidence.path`` that is an intent directory
+    names the run.
+    """
+
+    if intent_root is None:
+        return None
+    evidence = binding.get("evidence")
+    path_text = evidence.get("path") if isinstance(evidence, Mapping) else None
+    if not isinstance(path_text, str) or not path_text:
+        return None
+    for part in Path(path_text).parts:
+        if not _identifier(part):
+            continue
+        candidate = intent_root / part
+        if candidate.is_dir() and not candidate.is_symlink():
+            return {"kind": "scene_intent", "intent_id": part}
+    return None
+
+
+def _sealed_lease(lease: Mapping[str, Any]) -> dict[str, Any]:
+    sealed = {**lease, "lease_digest": ""}
+    sealed["lease_digest"] = canonical_digest(sealed, digest_field="lease_digest")
+    return sealed
+
+
+def _sidecar_problem(
+    lease: Any, *, name: str, commits: list[str], binding_sha256: str
+) -> str | None:
+    if (
+        not isinstance(lease, Mapping)
+        or lease.get("schema_version") != LEASE_SCHEMA
+        or lease.get("binding") != name
+        or lease.get("lease_digest") != canonical_digest(lease, digest_field="lease_digest")
+    ):
+        return f"release_protection_lease_invalid:{name}"
+    if lease.get("binding_sha256") != binding_sha256:
+        return f"release_protection_binding_changed:{name}"
+    recorded = lease.get("commits")
+    if (
+        not isinstance(recorded, list)
+        or not all(isinstance(commit, str) for commit in recorded)
+        or sorted(recorded) != commits
+        or not isinstance(lease.get("owner"), str)
+        or not lease["owner"].strip()
+        or not isinstance(lease.get("reason"), str)
+        or not lease["reason"].strip()
+        or not _run_ref_valid(lease.get("run_ref"))
+        or not _number(lease.get("expires_at_epoch"))
+        or not _number(lease.get("max_expires_at_epoch"))
+    ):
+        return f"release_protection_lease_invalid:{name}"
+    return None
+
+
+def _fsync_directory(directory: Path) -> None:
+    descriptor = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _write_sidecar(path: Path, lease: Mapping[str, Any], *, replace: bool) -> None:
+    """Create a sidecar exclusively, or atomically replace one; mode 0640."""
+
+    directory = path.parent
+    for level in (directory.parent, directory):
+        if os.path.lexists(level):
+            if level.is_symlink() or not level.is_dir():
+                raise ValueError("release_protection_lease_root_unsafe")
+        else:
+            level.mkdir(mode=0o750)
+    payload = (
+        json.dumps(lease, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n"
+    ).encode("utf-8")
+    if replace:
+        descriptor, temporary = tempfile.mkstemp(
+            prefix=f".{path.name}.", suffix=".tmp", dir=directory
+        )
+        try:
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(payload)
+                stream.flush()
+                os.fchmod(stream.fileno(), 0o640)
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(temporary)
+            raise
+    else:
+        flags = (
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+        )
+        descriptor = os.open(path, flags, 0o640)
+        try:
+            os.fchmod(descriptor, 0o640)
+            view = memoryview(payload)
+            while view:
+                view = view[os.write(descriptor, view):]
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    _fsync_directory(directory)
+
+
+def evaluate_binding_lease(
+    *,
+    name: str,
+    payload: bytes,
+    binding: Mapping[str, Any],
+    lease_root: str | Path | None,
+    resolver: RunStateResolver,
+    now: float,
+    migrate: bool,
+    ttl_seconds: int = DEFAULT_TTL_SECONDS,
+    max_lifetime_seconds: int = DEFAULT_MAX_LIFETIME_SECONDS,
+) -> dict[str, Any]:
+    """Decide whether one required-evidence binding still protects its commits.
+
+    ``payload`` is the binding's exact bytes; they are hashed, never written.
+    The lease comes from inline fields, else the sidecar
+    ``<lease_root>/bindings/<name>.lease.v1.json``, else a legacy migration:
+    written exclusively when ``migrate`` is true, otherwise only evaluated as
+    the lease that migration would write.  Only ``migrate`` writes, and it also
+    renews the sidecar of a live run that is within half a TTL of expiring.
+
+    Returns ``{"status": "protected" | "lapsed" | "blocked", "commits", "lease",
+    "run_state", "why", "blocker", "warnings", "migrated", "renewed",
+    "sidecar"}``.
+    """
+
+    outcome: dict[str, Any] = {
+        "status": "blocked",
+        "commits": [],
+        "lease": None,
+        "run_state": None,
+        "why": None,
+        "blocker": None,
+        "warnings": [],
+        "migrated": False,
+        "renewed": False,
+        "sidecar": None,
+    }
+
+    def blocked(code: str) -> dict[str, Any]:
+        outcome["blocker"] = code
+        return outcome
+
+    commits = binding_commits(binding)
+    if commits is None:
+        return blocked(f"release_protection_binding_invalid:{name}")
+    outcome["commits"] = commits
+    binding_sha256 = "sha256:" + hashlib.sha256(payload).hexdigest()
+    try:
+        lease = _inline_lease(binding)
+    except ValueError:
+        return blocked(f"release_protection_binding_invalid:{name}")
+    lease_source = "inline"
+    sidecar = (
+        Path(lease_root) / "bindings" / f"{name}{_SIDECAR_SUFFIX}"
+        if lease_root is not None
+        else None
+    )
+    if lease is None and sidecar is not None and os.path.lexists(sidecar):
+        try:
+            sidecar_payload, recorded, _info = _read_document(sidecar)
+        except (OSError, ValueError):
+            return blocked(f"release_protection_lease_invalid:{name}")
+        problem = _sidecar_problem(
+            recorded, name=name, commits=commits, binding_sha256=binding_sha256
+        )
+        if problem is not None:
+            return blocked(problem)
+        lease, lease_source = dict(recorded), "sidecar"
+        outcome["sidecar"] = {
+            "path": str(sidecar),
+            "sha256": "sha256:" + hashlib.sha256(sidecar_payload).hexdigest(),
+            "size_bytes": len(sidecar_payload),
+        }
+    elif lease is None:
+        lease = _sealed_lease(
+            {
+                "schema_version": LEASE_SCHEMA,
+                "binding": name,
+                "binding_sha256": binding_sha256,
+                "commits": commits,
+                "owner": "legacy-migration",
+                "reason": binding["reason"],
+                "run_ref": _scene_intent_run_ref(binding, resolver.intent_root),
+                "created_at_epoch": now,
+                "expires_at_epoch": now + ttl_seconds,
+                "max_expires_at_epoch": now + max_lifetime_seconds,
+                "migrated": True,
+            }
+        )
+        lease_source = "would_be_migrated"
+        if migrate and sidecar is not None:
+            try:
+                _write_sidecar(sidecar, lease, replace=False)
+            except (OSError, ValueError):
+                return blocked(f"release_protection_lease_write_failed:{name}")
+            lease_source, outcome["migrated"] = "migrated", True
+    expires_at = float(lease["expires_at_epoch"])
+    max_expires_at = float(lease["max_expires_at_epoch"])
+    run_state = resolver.state(lease.get("run_ref"))
+    outcome["run_state"] = run_state
+    past_max_lifetime = f"release_protection_lease_past_max_lifetime:{name}"
+    if run_state == "terminal":
+        outcome["status"], outcome["why"] = "lapsed", "run_terminal"
+    elif run_state == "live" and now >= max_expires_at:
+        outcome["status"], outcome["why"] = "lapsed", "max_lifetime"
+        outcome["warnings"].append(past_max_lifetime)
+    elif run_state == "live":
+        outcome["status"] = "protected"
+        renewed_expiry = min(now + ttl_seconds, max_expires_at)
+        if (
+            migrate
+            and lease_source == "sidecar"
+            and expires_at - now < ttl_seconds / 2
+            and renewed_expiry > expires_at
+        ):
+            renewed = _sealed_lease(
+                {**lease, "expires_at_epoch": renewed_expiry, "renewed_at_epoch": now}
+            )
+            try:
+                _write_sidecar(sidecar, renewed, replace=True)  # type: ignore[arg-type]
+            except (OSError, ValueError):
+                # The run is live, so it stays protected this time; the next
+                # deploy retries the renewal.
+                outcome["warnings"].append(f"release_protection_lease_renewal_failed:{name}")
+            else:
+                lease, expires_at, outcome["renewed"] = renewed, renewed_expiry, True
+    elif now >= expires_at:
+        # An unknown or unnamed run keeps its lease only until it expires.
+        outcome["status"], outcome["why"] = "lapsed", "expired"
+    elif now >= max_expires_at:
+        # Only a hand-edited lease can outlive its own maximum lifetime.
+        outcome["status"], outcome["why"] = "lapsed", "max_lifetime"
+        outcome["warnings"].append(past_max_lifetime)
+    else:
+        outcome["status"] = "protected"
+    outcome["lease"] = {
+        "owner": lease["owner"],
+        "reason": lease["reason"],
+        "run_ref": lease.get("run_ref"),
+        "expires_at_epoch": expires_at,
+        "max_expires_at_epoch": max_expires_at,
+        "lease_source": lease_source,
+    }
+    return outcome
+
+
+def _collect_bindings(
+    sources: ProtectionSources,
+    resolver: RunStateResolver,
+    *,
+    now: float,
+    migrate: bool,
+    ttl_seconds: int,
+    max_lifetime_seconds: int,
+    collection: _Collection,
+) -> None:
+    root = Path(sources.binding_root)
+    if not os.path.lexists(root):
+        return
+    try:
+        if root.is_symlink() or not root.is_dir():
+            raise ValueError("binding_root_unsafe")
+        names = _json_names(root)
+    except (OSError, ValueError):
+        collection.blockers.add("release_protection_binding_root_unreadable")
+        return
+    for name in names:
+        try:
+            payload, binding, _info = _read_document(root / name)
+        except (OSError, ValueError):
+            binding = None
+        if isinstance(binding, Mapping) and binding.get("schema_version") == RETENTION_PLAN_SCHEMA:
+            # A dry-run plan written into the wrong directory lists every
+            # commit; it is not evidence and protects nothing.
+            collection.warnings.add(f"misplaced_retention_plan:{name}")
+            continue
+        if not isinstance(binding, Mapping):
+            collection.blockers.add(f"release_protection_binding_invalid:{name}")
+            continue
+        outcome = evaluate_binding_lease(
+            name=name,
+            payload=payload,
+            binding=binding,
+            lease_root=sources.lease_root,
+            resolver=resolver,
+            now=now,
+            migrate=migrate,
+            ttl_seconds=ttl_seconds,
+            max_lifetime_seconds=max_lifetime_seconds,
+        )
+        collection.warnings.update(outcome["warnings"])
+        if outcome["migrated"]:
+            collection.migrated.add(name)
+        if outcome["renewed"]:
+            collection.renewed.add(name)
+        if outcome["status"] == "blocked":
+            collection.blockers.add(outcome["blocker"])
+            continue
+        lease = outcome["lease"]
+        row = {
+            "kind": "retention_binding",
+            "owner": lease["owner"],
+            "reason": lease["reason"],
+            "run_ref": lease["run_ref"],
+            "expires_at_epoch": lease["expires_at_epoch"],
+            "source": f"{root.name}/{name}",
+        }
+        if outcome["status"] == "protected":
+            collection.protect(outcome["commits"], row)
+        else:
+            collection.lapse(outcome["commits"], row, outcome["why"])
 
 
 def _collect_configuration(config_files: tuple[Path, ...], collection: _Collection) -> None:
@@ -524,6 +1052,9 @@ def collect_release_protections(
     ``{"commit", "kind", "owner", "reason", "run_ref", "expires_at_epoch",
     "source"}``; a lapsed row adds ``why``.  Any blocker means the caller
     cannot know what is live and must retire nothing.
+
+    ``migrate`` is the only write: it creates the sidecar lease of a legacy
+    binding and renews the sidecar of a live run.  Dry runs pass ``False``.
     """
 
     if (
@@ -550,11 +1081,29 @@ def collect_release_protections(
     _collect_standing_authorizations(
         Path(sources.standing_authorization_dir), profiles, now=now, collection=collection
     )
+    resolver = RunStateResolver(
+        sources.intent_root,
+        sources.launch_run_root,
+        sources.control_plane_root,
+        now,
+        standing_authorization_dir=sources.standing_authorization_dir,
+        profile_documents=profiles.documents,
+    )
+    _collect_bindings(
+        sources,
+        resolver,
+        now=now,
+        migrate=migrate,
+        ttl_seconds=ttl_seconds,
+        max_lifetime_seconds=max_lifetime_seconds,
+        collection=collection,
+    )
     _collect_configuration(tuple(sources.config_files), collection)
     return collection.result(now)
 
 
 __all__ = [
+    "BINDING_SCHEMA",
     "CONFIG_KIND",
     "DEFAULT_CONTROL_PLANE_ROOT",
     "DEFAULT_LEASE_ROOT",
@@ -568,5 +1117,9 @@ __all__ = [
     "LIVE_QUEUE_STATES",
     "PROTECTIONS_SCHEMA",
     "ProtectionSources",
+    "RETENTION_PLAN_SCHEMA",
+    "RunStateResolver",
+    "binding_commits",
     "collect_release_protections",
+    "evaluate_binding_lease",
 ]
