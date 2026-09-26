@@ -241,3 +241,21 @@ def test_measure_mount_honors_the_floor_override_and_ignores_other_devices(tmp_p
     row = cap.measure_mount(tmp_path, reservation_root=ledger, disk_usage=_usage(free_gib=10.0), now=1.0)
     assert row["floor_bytes"] == max(4 * GIB, int(154 * GIB * 0.05))
     assert row["reserved_bytes"] == 0
+
+
+def test_invalid_budget_configuration_waits_instead_of_crashing_the_gate(tmp_path, monkeypatch):
+    # The ledger refuses every reservation under a malformed override; the
+    # controller reports it and the chain gate waits rather than raising out of
+    # scene progression.
+    monkeypatch.setenv("BLUEPRINT_CONTROL_PLANE_DISK_FOOTPRINT_LAUNCH_ACTIVATION_BYTES", "not-a-number")
+    row = cap.measure_mount(tmp_path, reservation_root=tmp_path / "ledger", disk_usage=_usage(80.0), now=1.0)
+    assert row["status"] == "configuration_invalid"
+    assert row["blocker"].startswith("control_plane_disk_budget_configuration_invalid:")
+    gate = cap.whole_chain_admission(tmp_path, reservation_root=tmp_path / "ledger", now=1.0,
+                                     disk_usage=_usage(80.0))
+    assert gate["status"] == "waiting_for_capacity"
+    assert gate["required_workspace_basis"] == "declared_default"
+    report = cap.build_capacity_report(mounts=[tmp_path], reservation_root=tmp_path / "ledger",
+                                       disk_usage=_usage(80.0), now=1.0)
+    assert report["level"] == "critical"
+    assert report["alerts"] == [{"mount": str(tmp_path), "code": "mount_configuration_invalid"}]

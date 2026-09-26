@@ -190,7 +190,17 @@ def whole_chain_admission(
     measured = measure_mount(mount, reservation_root=reservation_root, disk_usage=disk_usage, now=now)
     footprints = measured.get("footprints")
     if not isinstance(footprints, Mapping):
-        footprints = chain_footprints(reservation_root)
+        try:
+            footprints = chain_footprints(reservation_root)
+        except disk_budget.ControlPlaneDiskBudgetError:
+            # The measurement already failed closed, so this chain cannot be
+            # admitted; report the declared ceilings and wait instead of raising
+            # out of the caller's progression pass.
+            footprints = {
+                role: {"bytes": int(disk_budget.ROLE_FOOTPRINT_BYTES[role]),
+                       "basis": "declared_default", "sample_count": None}
+                for role in CHAIN_ROLES
+            }
     required = sum(int(row["bytes"]) for row in footprints.values())
     passed = measured.get('status') == 'measured' and measured['available_bytes'] >= required
     return {
