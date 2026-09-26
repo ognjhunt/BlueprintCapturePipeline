@@ -277,6 +277,77 @@ def test_verified_provenance_supersedes_same_commit_iteration_once(
     assert "superseded_iteration_provenance" not in repeated
 
 
+def test_merged_canary_provenance_upgrades_to_iteration_once(
+    tmp_path: Path,
+) -> None:
+    commit = "e" * 40
+    state_root = tmp_path / "state"
+    canary_payload, canary_receipt = _iteration_provenance(commit)
+    canary_receipt["status"] = "canary"
+    canary_payload = json.dumps(canary_receipt, sort_keys=True).encode()
+    iteration_payload, iteration_receipt = _iteration_provenance(commit)
+    deploy._install_release_provenance(
+        payload=canary_payload,
+        state_root=state_root,
+        source_commit=commit,
+        receipt=canary_receipt,
+    )
+
+    installed = deploy._install_release_provenance(
+        payload=iteration_payload,
+        state_root=state_root,
+        source_commit=commit,
+        receipt=iteration_receipt,
+    )
+    canonical = state_root / commit / deploy.DEPLOY_RELEASE_PROVENANCE_NAME
+    superseded = state_root / commit / deploy.SUPERSEDED_ITERATION_PROVENANCE_NAME
+    assert canonical.read_bytes() == iteration_payload
+    assert superseded.read_bytes() == canary_payload
+    assert installed["superseded_iteration_provenance"]["status"] == "canary"
+    assert canonical.stat().st_mode & 0o777 == 0o440
+    assert superseded.stat().st_mode & 0o777 == 0o440
+
+    repeated = deploy._install_release_provenance(
+        payload=iteration_payload,
+        state_root=state_root,
+        source_commit=commit,
+        receipt=iteration_receipt,
+    )
+    assert "superseded_iteration_provenance" not in repeated
+    assert superseded.read_bytes() == canary_payload
+
+
+def test_canary_provenance_cannot_upgrade_to_changed_development_claim(
+    tmp_path: Path,
+) -> None:
+    commit = "f" * 40
+    state_root = tmp_path / "state"
+    canary_payload, canary_receipt = _iteration_provenance(commit)
+    canary_receipt["status"] = "canary"
+    canary_payload = json.dumps(canary_receipt, sort_keys=True).encode()
+    deploy._install_release_provenance(
+        payload=canary_payload,
+        state_root=state_root,
+        source_commit=commit,
+        receipt=canary_receipt,
+    )
+    iteration_payload, iteration_receipt = _iteration_provenance(commit)
+    iteration_receipt["claim_boundary"]["evidence_grade"] = "production_promoted"
+    iteration_payload = json.dumps(iteration_receipt).encode()
+    with pytest.raises(
+        deploy.ControlPlaneDeployError, match="deploy_release_provenance_conflict"
+    ):
+        deploy._install_release_provenance(
+            payload=iteration_payload,
+            state_root=state_root,
+            source_commit=commit,
+            receipt=iteration_receipt,
+        )
+    canonical = state_root / commit / deploy.DEPLOY_RELEASE_PROVENANCE_NAME
+    assert canonical.read_bytes() == canary_payload
+    assert not (state_root / commit / deploy.SUPERSEDED_ITERATION_PROVENANCE_NAME).exists()
+
+
 def test_release_provenance_never_downgrades_verified_to_iteration(
     tmp_path: Path,
 ) -> None:
