@@ -345,7 +345,11 @@ def test_compilation_reservation_measures_its_own_compilation_directory(
     assert calls[0]["target_root"] == outputs
     assert calls[0]["workspace"] == outputs / envelope["compilation_id"]
     assert calls[0]["workload"] == "compiled_episode"
-    assert (tmp_path / "reservations" / "history" / "episode_compilation.jsonl").is_file()
+    history = tmp_path / "reservations" / "history" / "episode_compilation.jsonl"
+    [sample] = [json.loads(line) for line in history.read_text().splitlines()]
+    # The compiler raised and its partial output was removed: a failed sample,
+    # which never shapes admission, not a completed one of zero bytes.
+    assert sample["outcome"] == "failed" and sample["workload"] == "compiled_episode"
 
 
 def test_compilation_rechecks_transient_capacity_before_invoking_compiler(
@@ -364,7 +368,7 @@ def test_compilation_rechecks_transient_capacity_before_invoking_compiler(
                 "need_bytes=6:available_bytes=0:free_bytes=8:"
                 "floor_bytes=8:reserved_bytes=0"
             )
-        return SimpleNamespace(release=lambda: None)
+        return SimpleNamespace(release=lambda **_kwargs: None)
 
     invoked = []
 

@@ -1679,8 +1679,13 @@ def process_launch_preparation_queue(
                 result["result_digest"] = canonical_digest(
                     result, digest_field="result_digest"
                 )
+        # Only a materialized preparation measured its whole footprint: one that
+        # raised is "failed", one paused on its children or on capacity "blocked".
+        footprint_outcome = {"materialized": "completed", "blocked": "failed"}.get(
+            terminal_state, "blocked"
+        )
         for reservation in disk_reservations:
-            reservation.release()
+            reservation.release(outcome=footprint_outcome)
         if storage_pins_root is not None and terminal_state not in {"blocked", "awaiting_capacity"}:
             # Keep this preparation's directory alive for the storage reaper
             # until the activation that consumes it reaches a terminal receipt.

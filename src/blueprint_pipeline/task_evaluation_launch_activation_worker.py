@@ -1870,7 +1870,11 @@ def process_launch_activation_queue(
                 result, digest_field="result_digest"
             )
         if disk_reservation is not None:
-            disk_reservation.release()
+            # This role reserves its measured footprint, so an activation that
+            # raised must never be counted as a completed one.
+            disk_reservation.release(
+                outcome="completed" if terminal_state == "prepared" else "failed"
+            )
         if terminal_state == "prepared":
             storage_pins.pin_activation_best_effort(request, activation_base)
         result_path = results_root / source.name

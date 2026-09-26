@@ -641,7 +641,7 @@ def test_capacity_wait_resumes_same_preparation_after_headroom_recovers(
     assert first["results"][0]["status"] == "awaiting_capacity"
 
     class Held:
-        def release(self):
+        def release(self, **_kwargs):
             pass
 
     monkeypatch.setattr(worker, "reserve_control_plane_disk", lambda *_args, **_kwargs: Held())
@@ -752,6 +752,41 @@ def test_preparation_reservation_measures_its_own_preparation_directory(
     [sample] = [json.loads(line) for line in history.read_text().splitlines()]
     assert sample["workload"] == "prepared_references" and sample["outcome"] == "completed"
     assert sample["observed_bytes"] > 0
+
+
+def test_a_preparation_that_fails_after_admission_records_a_failed_sample(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blueprint_pipeline import control_plane_disk_budget as disk_budget
+
+    value, _payloads = request_with_fetchable_bytes()
+    queue = tmp_path / "queue"
+    stage_launch_preparation_request(value=value, queue_root=queue, submitted_by="blueprint-webapp")
+    real = disk_budget.reserve_control_plane_disk
+
+    def roomy(*args, **kwargs):
+        return real(*args, **kwargs, disk_usage=lambda _path: types.SimpleNamespace(
+            total=100 * 1024**3, used=0, free=90 * 1024**3))
+
+    def unreachable(*_args):
+        raise OSError("fixture object store unreachable")
+
+    monkeypatch.setattr(worker, "reserve_control_plane_disk", roomy)
+    run = process_launch_preparation_queue(
+        queue_root=queue, input_root=tmp_path / "inputs",
+        allowed_uri_prefixes=["s3://blueprint-production-inputs/"],
+        service_account=SERVICE_ACCOUNT,
+        source_commit=value["expected_production_commit"],
+        fetcher=unreachable, adapter_materializer=fake_adapter,
+        episode_compilation_queue_root=tmp_path / "episode-compilation",
+        disk_reservation_root=tmp_path / "reservations",
+    )
+
+    assert run["results"][0]["status"] == "blocked"
+    history = tmp_path / "reservations" / "history" / "launch_preparation.jsonl"
+    [sample] = [json.loads(line) for line in history.read_text().splitlines()]
+    # A preparation that raised measured only part of its footprint.
+    assert sample["outcome"] == "failed" and sample["workload"] == "prepared_references"
 
 
 def test_preparation_disk_recovers_after_transient_capacity_refusal(

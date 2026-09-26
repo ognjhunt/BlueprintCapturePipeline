@@ -481,7 +481,11 @@ def process_episode_compilation_queue(
                 "result_digest": "",
             }
         if disk_reservation is not None:
-            disk_reservation.release()
+            # A compile that raised removed its partial output; its sample must
+            # not count as a completed footprint.
+            disk_reservation.release(
+                outcome="completed" if terminal_state == "completed" else "failed"
+            )
         if (
             storage_pins_root is not None
             and owned_output is not None
