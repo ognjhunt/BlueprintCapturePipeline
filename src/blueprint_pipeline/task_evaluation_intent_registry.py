@@ -22,11 +22,14 @@ class IntentRegistryError(ValueError):
 def _supersession_authority(expected_commit: str) -> None:
     if _verified_checkout_head() != expected_commit:
         raise IntentRegistryError("intent_registry_execution_commit_mismatch")
-    # These triggers own both scene activation and controls progression. Merely
-    # checking MainPID leaves a timer race, so all triggers must be stopped too.
+    # A separate installer must see every trigger stopped. The progression
+    # service itself is serialized by systemd: a path/timer wake cannot start a
+    # second copy while its MainPID is publishing the successor. Admit only
+    # that exact process; an external writer still needs full quiescence.
     units = ["blueprint-task-evaluation-configured-controls-progression." + suffix
              for suffix in ("service", "path", "timer")]
-    for unit in units:
+    current_worker = False
+    for index, unit in enumerate(units):
         try:
             result = subprocess.run(  # nosec B603 B607 - fixed read-only systemctl invocation
                 ["systemctl", "show", unit, "-p", "LoadState", "-p", "ActiveState", "-p", "MainPID"],
@@ -34,8 +37,16 @@ def _supersession_authority(expected_commit: str) -> None:
             values = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
         except (OSError, subprocess.SubprocessError) as exc:
             raise IntentRegistryError("intent_registry_worker_quiescence_unproven") from exc
-        if (values.get("LoadState") != "loaded" or values.get("ActiveState") != "inactive"
-                or values.get("MainPID", "0") != "0"):
+        if values.get("LoadState") != "loaded":
+            raise IntentRegistryError("intent_registry_worker_quiescence_unproven")
+        if index == 0 and (values.get("ActiveState") in {"active", "activating"}
+                           and values.get("MainPID") == str(os.getpid())):
+            current_worker = True
+            continue
+        if (current_worker and index > 0 and values.get("ActiveState") in {"active", "inactive"}
+                and values.get("MainPID", "0") == "0"):
+            continue
+        if values.get("ActiveState") != "inactive" or values.get("MainPID", "0") != "0":
             raise IntentRegistryError("intent_registry_worker_quiescence_unproven")
 
 

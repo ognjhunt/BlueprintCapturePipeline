@@ -149,6 +149,21 @@ def test_supersession_checks_actual_release_and_every_trigger(monkeypatch):
     assert [call[2].rsplit(".", 1)[-1] for call in calls] == ["service", "path", "timer"]
 
 
+def test_supersession_allows_only_the_running_progression_worker(monkeypatch):
+    monkeypatch.setattr(module, "_verified_checkout_head", lambda: B)
+    pid = str(module.os.getpid())
+    def unit_state(command, **kwargs):
+        suffix = command[2].rsplit(".", 1)[-1]
+        state = (f"ActiveState=activating\nMainPID={pid}\n" if suffix == "service"
+                 else "ActiveState=active\nMainPID=0\n")
+        return SimpleNamespace(stdout="LoadState=loaded\n" + state)
+    monkeypatch.setattr(module.subprocess, "run", unit_state)
+    module._supersession_authority(B)
+    monkeypatch.setattr(module.os, "getpid", lambda: int(pid) + 1)
+    with pytest.raises(module.IntentRegistryError, match="quiescence_unproven"):
+        module._supersession_authority(B)
+
+
 def test_symlink_lock_cannot_redirect_serialization(registry):
     lock = registry.parent / ".owner.json.registry.lock"
     lock.unlink()
