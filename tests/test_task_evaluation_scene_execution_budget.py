@@ -2,6 +2,7 @@
 import copy
 import hashlib
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -24,6 +25,19 @@ def extend(root, owner_record, **overrides):
 def loaded(root, owner):
     directory = root / owner['intent_id']
     return directory, intake._read(directory / 'intent.json', 'intent_digest')
+
+
+def test_extension_refuses_different_issuer_uid_before_publishing(tmp_path, monkeypatch):
+    owner = stage(tmp_path)
+    directory, intent = loaded(tmp_path, owner)
+    original = (directory / 'intent.json').read_bytes()
+    monkeypatch.setattr(budget.os, 'geteuid', lambda: os.stat(directory).st_uid + 1)
+
+    with pytest.raises(ValueError, match='issuer_user_mismatch'):
+        extend(tmp_path, owner)
+
+    assert (directory / 'intent.json').read_bytes() == original
+    assert not (directory / budget.DIRECTORY).exists()
 
 
 def replace_record(result, change, *, reseal=True):

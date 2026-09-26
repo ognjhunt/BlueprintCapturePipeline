@@ -5,6 +5,7 @@ changes only cumulative spend/count ceilings, never per-action limits or consent
 """
 from __future__ import annotations
 
+import os
 import time
 from pathlib import Path
 from typing import Any, Mapping
@@ -124,6 +125,11 @@ def extend_scene_execution_budget(*, queue_root: str | Path, intent_id: str, int
     with intake._lock(root):
         directory = root / intent_id
         _safe(directory)
+        # write_exclusive publishes a read-only file owned by the caller. A
+        # root-run amendment in a service-owned scene would seal a valid grant
+        # that the controller cannot read on its next pass. Require the issuer
+        # to run as the scene service account before publishing anything.
+        _require(os.geteuid() == directory.stat().st_uid, 'issuer_user_mismatch')
         _safe(directory / 'revoked.json')
         intent = intake._read(directory / 'intent.json', 'intent_digest')
         _require(intent['intent_digest'] == intent_digest and intent['request']['owner'] == dict(owner)
