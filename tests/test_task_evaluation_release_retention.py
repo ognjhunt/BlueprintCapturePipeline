@@ -1375,3 +1375,92 @@ def test_missing_object_store_alternate_marks_a_release_tree_as_orphaned(tmp_pat
     assert _git_metadata_unreachable(release) is True
     (release / ".git").write_text("not a pointer\n", encoding="utf-8")
     assert _git_metadata_unreachable(release) is False
+
+
+def test_two_step_tool_ignores_lapsed_bindings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blueprint_pipeline.control_plane_release_leases import (
+        RunStateResolver,
+        evaluate_binding_lease,
+    )
+
+    active = "a" * 40
+    lapsed_commit = "c" * 40
+    current_commit = "e" * 40
+    state = _base_state(
+        tmp_path, commits=[active, lapsed_commit, current_commit], active_commit=active
+    )
+    evidence_root = state["evidence_binding_root"]
+    assert isinstance(evidence_root, Path)
+    lease_root = tmp_path / "release-leases"
+    for name, commit in (("lapsed.json", lapsed_commit), ("current.json", current_commit)):
+        _write_json(
+            evidence_root / name,
+            {
+                "schema_version": EVIDENCE_BINDING_SCHEMA_VERSION,
+                "status": "required",
+                "source_commit": commit,
+                "reason": "terminal qualification replay remains open",
+            },
+        )
+    # A deploy twenty days ago gave the first binding a 14-day sidecar lease.
+    lapsed_bytes = (evidence_root / "lapsed.json").read_bytes()
+    migrated_at = NOW.timestamp() - 20 * 86400
+    migrated = evaluate_binding_lease(
+        name="lapsed.json",
+        binding_sha256="sha256:" + hashlib.sha256(lapsed_bytes).hexdigest(),
+        binding=json.loads(lapsed_bytes),
+        lease_root=lease_root,
+        resolver=RunStateResolver(None, None, None, migrated_at),
+        now=migrated_at,
+        migrate=True,
+    )
+    assert migrated["migrated"] is True
+    sidecar = lease_root / "bindings" / "lapsed.json.lease.v1.json"
+
+    plan = build_release_retention_plan(
+        **state, current_deploy_commit=active, lease_root=lease_root  # type: ignore[arg-type]
+    )
+
+    assert [row["source_commit"] for row in plan["eligible_commits"]] == [lapsed_commit]
+    assert plan["protected_commits"][current_commit] == ["required_evidence:current.json"]
+    assert lapsed_commit not in plan["protected_commits"]
+    assert plan["lapsed_evidence_bindings"] == [
+        {
+            "binding": "lapsed.json",
+            "source_commit": lapsed_commit,
+            "why": "expired",
+            "owner": "legacy-migration",
+            "run_ref": None,
+            "expires_at_epoch": migrated_at + 14 * 86400,
+            "lease_source": "sidecar",
+        }
+    ]
+    assert plan["lease_root"] == str(lease_root)
+    assert str(sidecar) in {row["path"] for row in plan["reference_documents"]}
+    # The dry run writes no lease: the other binding stays an unwritten would-be lease.
+    assert not (lease_root / "bindings" / "current.json.lease.v1.json").exists()
+
+    # Apply reproduces the same lease decision from the plan's own inputs.
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(json.dumps(plan), encoding="utf-8")
+    removed: list[Path] = []
+
+    def remove(path: Path, **_kwargs: object) -> None:
+        removed.append(path)
+        if path.is_dir():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+
+    monkeypatch.setattr(retention, "_remove_git_worktree", remove)
+    monkeypatch.setattr(retention, "_remove_runtime_tree", remove)
+    monkeypatch.setattr(retention, "_remove_publication_receipt", remove)
+    receipt = apply_release_retention_plan(
+        dry_run_plan_path=plan_path,
+        acknowledgement=APPLY_ACKNOWLEDGEMENT,
+        receipt_out=tmp_path / "receipt.json",
+    )
+    assert {row["source_commit"] for row in receipt["removed"]} == {lapsed_commit}
+    assert (evidence_root / "lapsed.json").read_bytes() == lapsed_bytes

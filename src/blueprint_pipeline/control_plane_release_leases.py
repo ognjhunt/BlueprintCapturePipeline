@@ -788,7 +788,7 @@ def _write_sidecar(path: Path, lease: Mapping[str, Any], *, replace: bool) -> No
 def evaluate_binding_lease(
     *,
     name: str,
-    payload: bytes,
+    binding_sha256: str,
     binding: Mapping[str, Any],
     lease_root: str | Path | None,
     resolver: RunStateResolver,
@@ -799,8 +799,8 @@ def evaluate_binding_lease(
 ) -> dict[str, Any]:
     """Decide whether one required-evidence binding still protects its commits.
 
-    ``payload`` is the binding's exact bytes; they are hashed, never written.
-    The lease comes from inline fields, else the sidecar
+    ``binding_sha256`` is ``"sha256:<hex>"`` of the binding's exact bytes,
+    which are never written.  The lease comes from inline fields, else the sidecar
     ``<lease_root>/bindings/<name>.lease.v1.json``, else a legacy migration:
     written exclusively when ``migrate`` is true, otherwise only evaluated as
     the lease that migration would write.  Only ``migrate`` writes, and it also
@@ -832,7 +832,6 @@ def evaluate_binding_lease(
     if commits is None:
         return blocked(f"release_protection_binding_invalid:{name}")
     outcome["commits"] = commits
-    binding_sha256 = "sha256:" + hashlib.sha256(payload).hexdigest()
     try:
         lease = _inline_lease(binding)
     except ValueError:
@@ -967,7 +966,7 @@ def _collect_bindings(
             continue
         outcome = evaluate_binding_lease(
             name=name,
-            payload=payload,
+            binding_sha256="sha256:" + hashlib.sha256(payload).hexdigest(),
             binding=binding,
             lease_root=sources.lease_root,
             resolver=resolver,
