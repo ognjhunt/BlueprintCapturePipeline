@@ -21,6 +21,7 @@ from .provider_billing_reconciler import (
     VAST_CHARGES_URL,
 )
 from .policy_canary_official_billing import policy_canary_terminal_evidence
+from .native_g1_official_billing import g1_paid_campaign_terminal_evidence
 from .runtime_preflight_official_billing import runtime_preflight_terminal_evidence
 from .vast_official_billing_serialization import _canonical_json, _record, _sha256_bytes
 RECONCILIATION_SCHEMA_VERSION = "blueprint.vast_official_same_goal_reconciliation.v1"
@@ -933,6 +934,13 @@ def _terminal_evidence(
         error_factory=VastOfficialBillingExtractionError)
     if preflight is not None:
         return preflight
+    g1 = g1_paid_campaign_terminal_evidence(
+        instance_id=instance_id, result_path=result_path, result=result,
+        result_bytes=result_bytes, json_file=_json_file, record=_record,
+        error_factory=VastOfficialBillingExtractionError,
+    )
+    if g1 is not None:
+        return g1
     if result.get("schema_version") == (
         "task_evaluation_native_direct_execution_adoption.v1"
     ):
