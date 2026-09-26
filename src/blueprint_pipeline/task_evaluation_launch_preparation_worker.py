@@ -15,6 +15,7 @@ import os
 import pwd
 import re
 import stat
+import time
 import urllib.request
 import uuid
 import zipfile
@@ -870,6 +871,8 @@ def _validated_configured_scene_revision(
 # the same message; the large runtime-source layer is reserved separately once
 # the wrapper names it.
 PREPARATION_RESERVATION_MARGIN_BYTES = 512 * 1024**2
+PREPARATION_DISK_RECHECKS = 6
+PREPARATION_DISK_RECHECK_SECONDS = 15
 
 
 def _missing_reference_bytes(
@@ -897,17 +900,27 @@ def _reserve_preparation_disk(
     disk_reservation_root: str | Path,
     disk_reservations: list[DiskReservation],
 ) -> None:
-    try:
-        disk_reservations.append(
-            reserve_control_plane_disk(
-                "launch_preparation",
-                target_root=input_root,
-                expected_bytes=max(1, int(expected_bytes)),
-                reservation_root=disk_reservation_root,
+    # A just-finished provider inventory or other bounded controller job can
+    # briefly occupy disk after the launch has been queued. Recheck only the
+    # capacity refusal; every other ledger error remains an immediate failure.
+    # The queue claim stays owned by this worker and no bytes are fetched until
+    # the reservation succeeds.
+    for check in range(PREPARATION_DISK_RECHECKS + 1):
+        try:
+            disk_reservations.append(
+                reserve_control_plane_disk(
+                    "launch_preparation",
+                    target_root=input_root,
+                    expected_bytes=max(1, int(expected_bytes)),
+                    reservation_root=disk_reservation_root,
+                )
             )
-        )
-    except ControlPlaneDiskBudgetError as exc:
-        raise TaskEvaluationLaunchPreparationWorkerError(str(exc)) from exc
+            return
+        except ControlPlaneDiskBudgetError as exc:
+            if (not str(exc).startswith("control_plane_disk_budget_exceeded:launch_preparation:")
+                    or check == PREPARATION_DISK_RECHECKS):
+                raise TaskEvaluationLaunchPreparationWorkerError(str(exc)) from exc
+            time.sleep(PREPARATION_DISK_RECHECK_SECONDS)
 
 
 def _declares_external_layers(bundle_path: Path) -> bool:
