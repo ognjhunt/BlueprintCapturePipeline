@@ -120,6 +120,7 @@ OUTCOME_OPENED_THEN_REBOUNDED = "opened_then_rebounded"
 OUTCOME_NON_TASK_JOINT_MOVED = "non_task_joint_moved"
 OUTCOME_LIMIT_OR_CONTAINMENT_VIOLATION = "joint_limit_or_containment_violation"
 OUTCOME_COLLISION_FAILURE = "robot_or_scene_collision_failure"
+OUTCOME_CONTACT_NOT_ESTABLISHED = "task_contact_not_established_before_motion"
 OUTCOME_RELEASE_OR_RETREAT_INCOMPLETE = "release_or_retreat_incomplete"
 OUTCOME_OPENED_AND_SETTLED = "opened_and_settled"
 OUTCOME_PUSHED_AND_SETTLED = "pushed_and_settled"
@@ -129,6 +130,7 @@ _ARTICULATED_OUTCOME_RANK = {
     OUTCOME_NON_TASK_JOINT_MOVED: 0,
     OUTCOME_LIMIT_OR_CONTAINMENT_VIOLATION: 0,
     OUTCOME_COLLISION_FAILURE: 0,
+    OUTCOME_CONTACT_NOT_ESTABLISHED: 0,
     OUTCOME_MOVED_BELOW_THRESHOLD: 1,
     OUTCOME_OPENED_THEN_REBOUNDED: 2,
     OUTCOME_RELEASE_OR_RETREAT_INCOMPLETE: 3,
@@ -1135,6 +1137,15 @@ def score_articulated_task_episode(
         sample["robot_collision_failure"] or sample["scene_collision_failure"]
         for sample in normalized
     )
+    # Current graph-backed prismatic tasks represent pulling a handle. Legacy
+    # scalar-angle receipts and revolute doors keep their frozen scoring rules.
+    contact_required = (spec["schema_version"] == TASK_SPEC_GRAPH_SCHEMA_VERSION
+                        and any(row["joint_id"] == target and row["joint_type"] == "prismatic"
+                                for row in spec["articulation_graph"]["joints"]))
+    first_motion_index = next((index for index, position in enumerate(target_positions)
+                               if abs(position - resets[target]) > float(spec["movement_epsilon_rad"])), None)
+    contact_before_motion = (not contact_required or first_motion_index is None or any(
+        sample["task_contact_active"] for sample in normalized[:first_motion_index + 1]))
     released_in_settle = settle_available and all(
         not sample["task_contact_active"] for sample in settle
     )
@@ -1146,6 +1157,7 @@ def score_articulated_task_episode(
         and not hard_limit_violation
         and not containment_violation
         and not collision_failure
+        and contact_before_motion
         and released_in_settle
         and retreat_completed
     )
@@ -1157,6 +1169,8 @@ def score_articulated_task_episode(
         outcome = OUTCOME_COLLISION_FAILURE
     elif not non_task_locked:
         outcome = OUTCOME_NON_TASK_JOINT_MOVED
+    elif not contact_before_motion:
+        outcome = OUTCOME_CONTACT_NOT_ESTABLISHED
     elif settle_in_interval and settle_speed_ok and (
         not released_in_settle or not retreat_completed
     ):
@@ -1211,6 +1225,9 @@ def score_articulated_task_episode(
             ),
             "released_in_settle": released_in_settle,
             "retreat_completed": retreat_completed,
+            "first_motion_step_index": (normalized[first_motion_index]["step_index"]
+                                        if first_motion_index is not None else None),
+            "contact_established_before_motion": contact_before_motion,
         },
         "predicates": {
             "settle_in_success_interval": settle_in_interval,
@@ -1221,6 +1238,7 @@ def score_articulated_task_episode(
             "joint_hard_limits_respected": not hard_limit_violation,
             "containment_respected": not containment_violation,
             "collision_failure_absent": not collision_failure,
+            "task_contact_established_before_motion": contact_before_motion,
             "task_contact_released": released_in_settle,
             "retreat_completed": retreat_completed,
         },
@@ -1306,6 +1324,7 @@ __all__ = [
     "RigidTaskEventLedgerExpectation",
     "RigidTaskSuccessContract",
     "OUTCOME_COLLISION_FAILURE",
+    "OUTCOME_CONTACT_NOT_ESTABLISHED",
     "OUTCOME_LIMIT_OR_CONTAINMENT_VIOLATION",
     "OUTCOME_MOVED_BELOW_THRESHOLD",
     "OUTCOME_NEVER_MOVED",

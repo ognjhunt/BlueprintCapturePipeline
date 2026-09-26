@@ -389,6 +389,14 @@ def test_dishwasher_packages_one_passive_revolute_door_and_passes_static_qualifi
     assert [str(t) for t in joint.GetBody0Rel().GetTargets()] == ["/Asset/links/body"]
     drive = UsdPhysics.DriveAPI(revolute[0], "angular")
     assert drive.GetStiffnessAttr().Get() == 0.0 and drive.GetDampingAttr().Get() == pytest.approx(math.radians(0.5))
+    friction = plan["task_joint"]["passive_friction"]
+    assert friction["basis"] == "estimated_unobserved_joint_resistance_prior"
+    assert friction["physical_measurement_proven"] is False
+    assert "PhysxJointAxisAPI:angular" in revolute[0].GetMetadata("apiSchemas").GetAppliedItems()
+    assert revolute[0].GetAttribute("physxJointAxis:angular:staticFrictionEffort").Get() == pytest.approx(
+        friction["static_effort"])
+    assert revolute[0].GetAttribute("physxJointAxis:angular:dynamicFrictionEffort").Get() == pytest.approx(
+        friction["dynamic_effort"])
     # Closed, both joint frames sit on the hinge line.
     body_rest, door_rest = (np.array(row["rest_translation_m"]) for row in plan["links"][:2])
     anchor = np.array(plan["task_joint"]["anchor_asset_frame_m"])

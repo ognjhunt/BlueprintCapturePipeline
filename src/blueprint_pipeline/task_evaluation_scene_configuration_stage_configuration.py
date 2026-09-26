@@ -490,6 +490,24 @@ def _stage_three_refusal(
             or not _bounded_pair((mechanism.get("passive_dynamics") or {}).get("joint_damping_bounds"), positive_lower=True)
         ):
             return "mechanism"
+        effort = mechanism.get("opening_effort_reference")
+        if effort is not None:
+            value = effort.get("value_n") if isinstance(effort, Mapping) else None
+            values = value if isinstance(value, list) else [value]
+            if (mechanism["joint_type"] != "prismatic"
+                    or not isinstance(effort, Mapping)
+                    or not values or len(values) > 2
+                    or any(not _positive_finite(v) for v in values)
+                    or (len(values) == 2 and values[0] > values[1])
+                    or effort.get("product_match") not in {
+                        "exact_model", "model_family", "brand_category", "comparable_class"}
+                    or not isinstance(effort.get("source_urls"), list)
+                    or not effort["source_urls"]
+                    or any(not isinstance(url, str) or not url.startswith("https://")
+                           for url in effort["source_urls"])
+                    or not str(effort.get("object_spec_digest") or "").startswith("sha256:")
+                    or effort.get("claim") != "published_product_or_comparable_not_measured_on_captured_unit"):
+                return "mechanism"
         if (
             required.get("format") != "OpenUSD"
             or required.get("articulation_root") is not True

@@ -318,6 +318,30 @@ def _usd_findings(path: Path, *, graph: Mapping[str, Any], physics_bounds: Mappi
                     or not _close_sequence([passive_drive.GetStiffnessAttr().Get()], [0.0])
                     or not _close_sequence([passive_drive.GetDampingAttr().Get()], [usd_damping])))):
             findings.append("replacement_target_joint_drive_mismatch")
+        passive_friction = (plan.get("task_joint") or {}).get("passive_friction")
+        axis = "angular" if revolute else "linear"
+        schemas = task_joint.GetMetadata("apiSchemas")
+        applied = schemas is not None and f"PhysxJointAxisAPI:{axis}" in schemas.GetAppliedItems()
+        static_attr = task_joint.GetAttribute(f"physxJointAxis:{axis}:staticFrictionEffort")
+        dynamic_attr = task_joint.GetAttribute(f"physxJointAxis:{axis}:dynamicFrictionEffort")
+        if passive_friction is not None:
+            try:
+                static, dynamic = (float(passive_friction[key]) for key in ("static_effort", "dynamic_effort"))
+                low, high = (float(value) for value in passive_friction["admitted_interval"])
+                valid = (0 < low <= dynamic <= static <= high
+                         and passive_friction["units"] == ("N_m" if revolute else "N")
+                         and passive_friction["basis"] == "estimated_unobserved_joint_resistance_prior"
+                         and passive_friction["physical_measurement_proven"] is False)
+            except (KeyError, TypeError, ValueError):
+                valid = False
+            if (not valid or not applied or not static_attr.IsValid() or not dynamic_attr.IsValid()
+                    or not _close_authored_float32_sequence([static, dynamic],
+                          [static_attr.Get(), dynamic_attr.Get()])
+                    or task_joint.GetCustomDataByKey("blueprint:passiveFrictionBasis")
+                    != passive_friction["basis"]):
+                findings.append("replacement_target_joint_passive_friction_mismatch")
+        elif applied or static_attr.IsValid() or dynamic_attr.IsValid():
+            findings.append("replacement_target_joint_undeclared_passive_friction")
         observed_joint = {"prim_path": str(task_joint.GetPath()), "joint_type": target_row["joint_type"],
                           "limits": [float(lower), float(upper)] if lower is not None and upper is not None else None,
                           "reset_position": reset}

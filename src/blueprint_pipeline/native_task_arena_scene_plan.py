@@ -87,6 +87,7 @@ def _verified_articulation_row(
     from .native_task_arena_runtime import (
         NativeTaskArenaRuntimeError,
         verify_grounded_articulation,
+        verify_passive_joint_friction_overlay,
     )
 
     try:
@@ -106,6 +107,11 @@ def _verified_articulation_row(
         raise NativeTaskArenaScenePlanError(
             [f"native_task_arena_articulation_adaptation_mismatch:{role}"]
         )
+    if isinstance(declared, Mapping) and isinstance(declared.get("passive_joint_friction"), Mapping):
+        try:
+            verify_passive_joint_friction_overlay(asset_path, declared["passive_joint_friction"])
+        except NativeTaskArenaRuntimeError as exc:
+            raise NativeTaskArenaScenePlanError(list(exc.errors)) from exc
     if isinstance(declared, Mapping):
         return dict(declared)
     return {

@@ -797,6 +797,71 @@ def verify_grounded_articulation(staged_usd: str | Path) -> dict[str, Any]:
     }
 
 
+def author_passive_joint_friction_overlay(
+    source_usd: str | Path, destination: str | Path, *, joint_prim_path: str,
+) -> dict[str, Any] | None:
+    """Add a labelled, bounded prismatic breakaway prior to a derived runtime copy.
+
+    This only adapts legacy task joints with no authored PhysX joint friction.
+    The sealed candidate stays untouched. Published pull force is not treated
+    as a measured static joint coefficient; this 1..15 N prior is the same
+    development-only interval admitted at website preparation.
+    """
+    from pxr import Sdf, Usd, UsdPhysics
+
+    source = Path(source_usd).expanduser().resolve()
+    stage = Usd.Stage.Open(str(source))
+    prim = stage.GetPrimAtPath(joint_prim_path) if stage else None
+    if prim is None or not prim.IsValid() or not prim.IsA(UsdPhysics.PrismaticJoint):
+        raise NativeTaskArenaRuntimeError(["native_task_arena_passive_joint_target_invalid"])
+    axis = "linear"
+    static_name = f"physxJointAxis:{axis}:staticFrictionEffort"
+    dynamic_name = f"physxJointAxis:{axis}:dynamicFrictionEffort"
+    static_attr, dynamic_attr = prim.GetAttribute(static_name), prim.GetAttribute(dynamic_name)
+    if static_attr.IsValid() or dynamic_attr.IsValid():
+        if not static_attr.IsValid() or not dynamic_attr.IsValid():
+            raise NativeTaskArenaRuntimeError(["native_task_arena_passive_joint_partial_source"])
+        static, dynamic = float(static_attr.Get()), float(dynamic_attr.Get())
+        if not (math.isfinite(static) and math.isfinite(dynamic) and 0 <= dynamic <= static):
+            raise NativeTaskArenaRuntimeError(["native_task_arena_passive_joint_source_invalid"])
+        return None
+    static, dynamic = 8.0, 1.0
+    prim.AddAppliedSchema("PhysxJointAxisAPI:linear")
+    prim.CreateAttribute(static_name, Sdf.ValueTypeNames.Float, custom=False).Set(static)
+    prim.CreateAttribute(dynamic_name, Sdf.ValueTypeNames.Float, custom=False).Set(dynamic)
+    prim.SetCustomDataByKey("blueprint:passiveFrictionBasis", "estimated_unobserved_joint_resistance_prior")
+    output = Path(destination).expanduser().resolve()
+    if output == source:
+        raise NativeTaskArenaRuntimeError(["native_task_arena_passive_joint_would_mutate_source"])
+    output.parent.mkdir(parents=True, exist_ok=True)
+    stage.GetRootLayer().Export(str(output))
+    result = {"joint_prim_path": joint_prim_path, "static_effort_n": static,
+              "dynamic_effort_n": dynamic, "admitted_interval_n": [1.0, 15.0],
+              "basis": "estimated_unobserved_joint_resistance_prior",
+              "physical_measurement_proven": False, "source_sha256": _sha256(source)}
+    verify_passive_joint_friction_overlay(output, result)
+    return result
+
+
+def verify_passive_joint_friction_overlay(staged_usd: str | Path, declared: Mapping[str, Any]) -> None:
+    """Read exact authored PhysX axis values back before a GPU can be rented."""
+    from pxr import Usd, UsdPhysics
+
+    stage = Usd.Stage.Open(str(Path(staged_usd).expanduser().resolve()))
+    prim = stage.GetPrimAtPath(str(declared.get("joint_prim_path") or "")) if stage else None
+    if prim is None or not prim.IsValid() or not prim.IsA(UsdPhysics.PrismaticJoint):
+        raise NativeTaskArenaRuntimeError(["native_task_arena_passive_joint_readback_invalid"])
+    schemas = prim.GetMetadata("apiSchemas")
+    attrs = [prim.GetAttribute(f"physxJointAxis:linear:{name}")
+             for name in ("staticFrictionEffort", "dynamicFrictionEffort")]
+    if (schemas is None or "PhysxJointAxisAPI:linear" not in schemas.GetAppliedItems()
+            or any(not attr.IsValid() for attr in attrs)
+            or [float(attr.Get()) for attr in attrs]
+            != [float(declared["static_effort_n"]), float(declared["dynamic_effort_n"])]
+            or prim.GetCustomDataByKey("blueprint:passiveFrictionBasis") != declared.get("basis")):
+        raise NativeTaskArenaRuntimeError(["native_task_arena_passive_joint_readback_mismatch"])
+
+
 #: PhysX refuses to build GPU-compatible convex hulls for very thin shapes
 #: ("oblong"), and ONE such mesh silently demotes the whole simulation to the
 #: CPU pipeline -- surfacing later as a cuda/cpu device mismatch in whatever
@@ -1020,6 +1085,8 @@ def _validate_articulation_adaptability(
         # create: no kinematic links, and a valid anchor when grounded
         verified = verify_grounded_articulation(usd)
         declared = row.get("articulation_adaptation")
+        if isinstance(declared, Mapping) and isinstance(declared.get("passive_joint_friction"), Mapping):
+            verify_passive_joint_friction_overlay(usd, declared["passive_joint_friction"])
         declared_base = (
             declared.get("fixed_base_body_prim_path")
             if isinstance(declared, Mapping)
