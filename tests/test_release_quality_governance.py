@@ -18,7 +18,11 @@ from scripts.build_container_production_evidence import (
 from scripts.build_cpu_full_lane_evidence import build_cpu_full_lane_evidence
 from scripts.build_gpu_provider_canary_evidence import build_gpu_provider_canary_evidence
 from scripts.build_release_evidence_bundle import build_bundle
-from scripts.build_supply_chain_evidence import build_evidence, read_reviewed_lock_keys
+from scripts.build_supply_chain_evidence import (
+    build_evidence,
+    read_reviewed_lock_keys,
+    reviewed_g1_runtime_wheel_keys,
+)
 from scripts.run_pubsub_emulator_integration import _validated_emulator_host
 from scripts.validate_release_signature_evidence import validate_signature_evidence
 from scripts.verify_bandit_policy import finding_fingerprint, validate_policy
@@ -1192,6 +1196,28 @@ def test_worker_lock_reviewed_components_are_not_orphans(
         blocker.startswith("orphaned_license_review:")
         for blocker in report["blockers"]
     )
+
+
+def test_g1_provider_wheels_are_accounted_for_without_exempting_dynamic_pins(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "checkout"
+    lock = root / "src/blueprint_pipeline/native_task_g1_runtime_lock.py"
+    lock.parent.mkdir(parents=True)
+    lock.write_text(
+        'G1_RUNTIME_DEPENDENCY_WHEELS = ({"package": "pin", "version": "4.1.0"},)\n'
+    )
+    assert reviewed_g1_runtime_wheel_keys(root) == frozenset({"pin==4.1.0"})
+
+    # A computed or duplicated source definition cannot silently exempt a
+    # reviewed component from orphan detection.
+    lock.write_text('G1_RUNTIME_DEPENDENCY_WHEELS = load_wheels()\n')
+    assert not reviewed_g1_runtime_wheel_keys(root)
+    lock.write_text(
+        'G1_RUNTIME_DEPENDENCY_WHEELS = ({"package": "pin", "version": "4.1.0"},)\n'
+        'G1_RUNTIME_DEPENDENCY_WHEELS = ({"package": "other", "version": "1"},)\n'
+    )
+    assert not reviewed_g1_runtime_wheel_keys(root)
 
 
 def _retention_policy(groups: list[str]) -> dict[str, object]:
