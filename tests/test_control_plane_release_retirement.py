@@ -575,3 +575,31 @@ def test_an_interrupted_apply_keeps_its_partial_receipt(
     assert partial["status"] == "interrupted"
     assert [row["staged_path"] for row in partial["renamed"]] == [str(staged[0])]
     assert staged[0].exists()
+
+
+def test_retired_bytes_count_only_inodes_whose_last_link_goes(tmp_path: Path) -> None:
+    now = 5_000_000.0
+    host = _host(tmp_path, now=now)
+    old = now - 10 * DAY
+    # E's runtime hardlinks weights that A's runtime still uses (as every
+    # scene-configuration runtime shares its model weights): deleting E frees
+    # none of those bytes.
+    kept = host["runtimes"] / "scene-configuration" / A / "weights.bin"
+    kept.write_bytes(b"w" * 1000)
+    retired_runtime = host["runtimes"] / "scene-configuration" / E
+    os.link(kept, retired_runtime / "weights.bin")
+    for path in (retired_runtime / "weights.bin", retired_runtime):
+        os.utime(path, (old, old), follow_symlinks=False)
+
+    plan = _plan(host, now=now)
+    assert [row["commit"] for row in plan["candidates"]] == [E]
+    assert plan["candidate_bytes"] == 3 * 128 + 2 * 2
+
+    apply_release_retirement_plan(
+        plan, ack=EXECUTE_ACK, active_link=host["active"], release_root=host["releases"]
+    )
+    deletion = delete_retiring_trees(_retiring_roots(host))
+
+    assert deletion["deleted_bytes"] == 3 * 128 + 2 * 2
+    assert deletion["shared_bytes"] == 1000
+    assert kept.read_bytes() == b"w" * 1000

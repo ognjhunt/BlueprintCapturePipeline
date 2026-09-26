@@ -1075,12 +1075,14 @@ def _retire_superseded_release_trees(
         deletion = {
             "deleted": [],
             "deleted_bytes": 0,
+            "shared_bytes": 0,
             "failed": [{"path": "", "reason": f"deletion_failed:{type(exc).__name__}"}],
         }
     result["renamed"] = renamed
     result["retired_commits"] = sorted({str(row["commit"]) for row in renamed})
     result["deleted"] = deletion["deleted"]
     result["retired_bytes"] = deletion["deleted_bytes"]
+    result["shared_bytes"] = deletion.get("shared_bytes", 0)
     result["swept"] = swept["deleted"]
     result["deletion_failures"] = [*swept["failed"], *deletion["failed"]]
     if result["status"] == "blocked":

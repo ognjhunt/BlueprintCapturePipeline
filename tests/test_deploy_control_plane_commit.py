@@ -2677,7 +2677,7 @@ def test_deploy_retirement_reports_what_it_moved_deleted_and_swept(
 
     assert result["status"] == "blocked"
     assert result["blockers"] == ["deploy_release_retirement_failed:RuntimeError"]
-    assert result["swept"] == [{"path": str(leftover), "bytes": 64}]
+    assert result["swept"] == [{"path": str(leftover), "bytes": 64, "shared_bytes": 0}]
     assert [row["staged_path"] for row in result["renamed"]] == [str(path) for path in moved]
     assert sorted(row["path"] for row in result["deleted"]) == sorted(str(path) for path in moved)
     assert result["retired_bytes"] == sum(row["bytes"] for row in result["deleted"]) > 0

@@ -229,18 +229,43 @@ def _managed(root: Path, *, with_receipts: bool) -> tuple[dict[str, list[Path]],
     return trees, unmanaged
 
 
-def _tree_bytes(path: Path) -> int:
+def _tree_usage(path: Path, seen: set[tuple[int, int]]) -> tuple[int, int]:
+    """``(freed, shared)`` bytes of the files under ``path``, never following a symlink.
+
+    Each inode counts once (``seen`` spans a whole retirement).  A file's
+    bytes are freed by deleting it only when this is its last link
+    (``st_nlink == 1``); a hardlinked file, such as model weights every
+    scene-configuration runtime shares, is reported as shared instead.
+    """
+
+    freed = shared = 0
     info = os.lstat(path)
-    if not stat.S_ISDIR(info.st_mode):
-        return info.st_size
-    total = 0
-    for directory, _subdirectories, files in os.walk(path):
-        for name in files:
-            try:
-                total += (Path(directory) / name).lstat().st_size
-            except OSError:
-                continue
-    return total
+    entries = [(path, info)]
+    if stat.S_ISDIR(info.st_mode):
+        entries = []
+        for directory, _subdirectories, files in os.walk(path):
+            for name in files:
+                child = Path(directory) / name
+                try:
+                    entries.append((child, os.lstat(child)))
+                except OSError:
+                    continue
+    for _child, child_info in entries:
+        identity = (child_info.st_dev, child_info.st_ino)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        if child_info.st_nlink == 1:
+            freed += child_info.st_size
+        else:
+            shared += child_info.st_size
+    return freed, shared
+
+
+def _tree_bytes(path: Path) -> int:
+    """Bytes deleting ``path`` would free."""
+
+    return _tree_usage(path, set())[0]
 
 
 def build_release_retirement_plan(
@@ -496,13 +521,17 @@ def delete_retiring_trees(roots: Sequence[str | Path]) -> dict[str, Any]:
     """Delete, and measure, everything moved into each root's ``.retiring`` directory.
 
     Runs without the publishers' locks: nothing staged there is reachable by
-    any release reference any more.  Deletion never follows a symlink.  A
-    staging directory left empty is removed, so the managed root looks as it
-    did; one that cannot be emptied stays for the next retirement to sweep.
+    any release reference any more.  Deletion never follows a symlink.
+    ``deleted_bytes`` counts only files whose last link was deleted, each
+    inode once; bytes of hardlinked files still linked elsewhere are reported
+    as ``shared_bytes``.  A staging directory left empty is removed, so the
+    managed root looks as it did; one that cannot be emptied stays for the
+    next retirement to sweep.
     """
 
     deleted: list[dict[str, Any]] = []
     failed: list[dict[str, Any]] = []
+    seen: set[tuple[int, int]] = set()
     for root in roots:
         staging = Path(root) / RETIRING_DIRECTORY
         try:
@@ -522,7 +551,7 @@ def delete_retiring_trees(roots: Sequence[str | Path]) -> dict[str, Any]:
             continue
         for child in children:
             try:
-                size = _tree_bytes(child)
+                freed, shared = _tree_usage(child, seen)
                 if child.is_dir() and not child.is_symlink():
                     shutil.rmtree(child)
                 else:
@@ -530,12 +559,13 @@ def delete_retiring_trees(roots: Sequence[str | Path]) -> dict[str, Any]:
             except OSError as exc:
                 failed.append({"path": str(child), "reason": f"removal_failed:{type(exc).__name__}"})
                 continue
-            deleted.append({"path": str(child), "bytes": size})
+            deleted.append({"path": str(child), "bytes": freed, "shared_bytes": shared})
         with contextlib.suppress(OSError):
             staging.rmdir()
     return {
         "deleted": deleted,
         "deleted_bytes": sum(row["bytes"] for row in deleted),
+        "shared_bytes": sum(row["shared_bytes"] for row in deleted),
         "failed": failed,
     }
 
