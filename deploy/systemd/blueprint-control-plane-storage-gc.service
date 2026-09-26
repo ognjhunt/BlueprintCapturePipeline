@@ -1,5 +1,5 @@
 [Unit]
-Description=Retire terminal derived directories, reap unreferenced content-store blobs, and offload sealed evidence
+Description=Retire terminal derived directories and finished scene workspaces, reap unreferenced content-store blobs, and offload sealed evidence
 Documentation=https://github.com/ognjhunt/BlueprintCapturePipeline
 Wants=network-online.target
 After=network-online.target
@@ -38,7 +38,9 @@ ReadWritePaths=/var/lib/blueprint/task-evaluation-inputs/prepared-references /va
 ReadOnlyPaths=/etc/blueprint/provider-secrets
 ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/disk-reservations
 ReadWritePaths=/var/lib/blueprint/task-evaluation-inputs/semantic-pretraining
-ReadOnlyPaths=-/var/lib/blueprint/pubsub-handoffs -/var/lib/blueprint/spend-authority -/var/lib/blueprint/pipeline-control-plane/capture-reconstruction-derived -/var/lib/blueprint/pipeline-control-plane/capture-reconstruction-queue -/var/lib/blueprint/pipeline-control-plane/capture-reconstruction-runs -/var/lib/blueprint/pipeline-control-plane/gpu_spend_guard/billing-audit -/var/lib/blueprint/pipeline-control-plane/task-evaluation-terminal-resource-releases -/var/lib/blueprint/pipeline-control-plane/task-evaluation-terminal-resource-releases-state
+# Finished website scene workspaces are retired here, and their receipts written beside them.
+ReadWritePaths=-/var/lib/blueprint/pubsub-handoffs
+ReadOnlyPaths=-/var/lib/blueprint/spend-authority -/var/lib/blueprint/pipeline-control-plane/capture-reconstruction-derived -/var/lib/blueprint/pipeline-control-plane/capture-reconstruction-queue -/var/lib/blueprint/pipeline-control-plane/capture-reconstruction-runs -/var/lib/blueprint/pipeline-control-plane/gpu_spend_guard/billing-audit -/var/lib/blueprint/pipeline-control-plane/task-evaluation-terminal-resource-releases -/var/lib/blueprint/pipeline-control-plane/task-evaluation-terminal-resource-releases-state
 TasksMax=512
 LimitNOFILE=4096
 MemoryMax=8G
@@ -74,6 +76,13 @@ Environment=BLUEPRINT_CONTROL_PLANE_GC_SCRATCH_MINIMUM_AGE_SECONDS=259200
 Environment=BLUEPRINT_CONTROL_PLANE_GC_DERIVED_MINIMUM_AGE_SECONDS=3600
 Environment=BLUEPRINT_CONTROL_PLANE_GC_WORKSPACE_BUNDLE_ROOTS=/var/lib/blueprint/task-evaluation-inputs/semantic-pretraining
 Environment=BLUEPRINT_CONTROL_PLANE_GC_WORKSPACE_BUNDLE_MINIMUM_AGE_SECONDS=21600
+# Website scene working copies are retired once every file verifies in Firebase Storage or is
+# archived to the artifact store behind a replayable receipt, and no ledger lease, pin, queue,
+# live process or open scene intent can still read them. Like offload, retirement applies only
+# with BLUEPRINT_CONTROL_PLANE_SCENE_WORKSPACE_RETIREMENT=1 (or, unset, the offload opt-in) in the
+# operator environment file, which also supplies GOOGLE_APPLICATION_CREDENTIALS for the listing.
+Environment=BLUEPRINT_CONTROL_PLANE_GC_SCENE_WORKSPACE_ROOTS=/var/lib/blueprint/pubsub-handoffs
+Environment=BLUEPRINT_CONTROL_PLANE_GC_SCENE_INTENT_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-intents
 Environment=BLUEPRINT_CONTROL_PLANE_STORAGE_PINS_ROOT=/var/lib/blueprint/pipeline-control-plane/storage-pins
 Environment=BLUEPRINT_CONTROL_PLANE_GC_REPORT_ROOT=/var/lib/blueprint/pipeline-control-plane/storage-gc
 Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_ACCESS_KEY_ID_FILE=/etc/blueprint/provider-secrets/backblaze_b2_key_id

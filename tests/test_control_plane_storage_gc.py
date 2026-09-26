@@ -37,6 +37,11 @@ def isolated_disk_ledger(tmp_path, monkeypatch):
     monkeypatch.setattr("blueprint_pipeline.completed_replay_cache_retention.active_reference", lambda _, **kwargs: False)
     monkeypatch.setattr("blueprint_pipeline.control_plane_evidence_offload.DEFAULT_RESERVATION_ROOT",
                         tmp_path / "disk-reservations")
+    monkeypatch.setattr("blueprint_pipeline.website_scene_workspace_retention.reserve_control_plane_disk",
+                        functools.partial(reserve_control_plane_disk,
+                            disk_usage=lambda _: SimpleNamespace(total=100 * 1024**3, free=80 * 1024**3)))
+    monkeypatch.setattr("blueprint_pipeline.website_scene_workspace_retention.DEFAULT_RESERVATION_ROOT",
+                        tmp_path / "disk-reservations")
 
 
 def _blob(root, payload: bytes):
@@ -953,3 +958,139 @@ def test_run_cli_honours_the_derived_minimum_age_from_the_unit_environment(tmp_p
         "run", "--pins-root", str(tmp_path / "pins"), "--derived-minimum-age-seconds", "86400",
     ]) == 0
     assert json.loads(capsys.readouterr().out)["derived_directories"]["candidate_count"] == 0
+
+
+# --- scene workspace retirement ---------------------------------------------------------------------
+
+
+def _scene_tick(tmp_path, *, ack: bool = True):
+    """One website scene staged through the real listener, and the tick arguments that reach it."""
+
+    from tests.test_control_plane_evidence_streaming import MultipartClient
+    from tests import test_website_scene_workspace_retention as scenes
+
+    scene, cloud = scenes._scene(tmp_path, ack=ack)
+    scenes._context(tmp_path)  # the pins, queue, intent and binding roots
+    now = time.time() + 72 * 3600
+    client = MultipartClient()
+    common = dict(
+        content_store_roots=[], derived_roots=[], queue_roots=[tmp_path / "queue"], pins_root=tmp_path / "pins",
+        scene_workspace_roots=[tmp_path / "pubsub-handoffs"], scene_intent_root=tmp_path / "intents",
+        scene_binding_root=tmp_path / "bindings", scene_cloud_factory=lambda: cloud,
+        scene_stream_publisher=functools.partial(store.publish_configured_scene_stream, client=client,
+                                                 bucket=scenes.ARTIFACT_BUCKET),
+        scene_process_checker=lambda _path: False, now=lambda: now, classifier=_noclass,
+    )
+    return scene, common
+
+
+def test_gc_phase_retires_verified_terminal_workspace(tmp_path) -> None:
+    scene, common = _scene_tick(tmp_path)
+
+    report = run_storage_gc(**common, apply=True, ack=RUN_ACK, scene_workspace_retirement_enabled=True)
+
+    phase = report["scene_workspaces"]
+    receipt = scene.parent / "scene-1.retired.v1.json"
+    assert (phase["status"], phase["enabled"]) == ("applied", True)
+    assert (phase["candidate_count"], phase["retired_count"]) == (1, 1)
+    assert phase["retired_bytes"] > 0 and phase["archive_bytes"] > 0 and phase["retained_counts"] == {}
+    assert phase["results"] == [{"bucket": "capture-bucket", "scene_id": "scene-1", "status": "retired",
+                                 "receipt": str(receipt), "removal_complete": True}]
+    assert not scene.exists() and receipt.is_file()
+    assert "phase_errors" not in report
+
+    again = run_storage_gc(**common, apply=True, ack=RUN_ACK, scene_workspace_retirement_enabled=True)
+    assert again["scene_workspaces"]["candidate_count"] == 0 and receipt.is_file()
+
+
+def test_gc_phase_only_plans_without_the_opt_in(tmp_path) -> None:
+    scene, common = _scene_tick(tmp_path)
+
+    report = run_storage_gc(**common, apply=True, ack=RUN_ACK, scene_workspace_retirement_enabled=False)
+
+    phase = report["scene_workspaces"]
+    assert (phase["status"], phase["enabled"], phase["candidate_count"], phase["retired_count"]) == (
+        "dry_run", False, 1, 0)
+    assert phase["results"][0]["status"] == "retirable" and scene.is_dir()
+    dry = run_storage_gc(**common, scene_workspace_retirement_enabled=True)  # no --apply: a dry run too
+    assert dry["scene_workspaces"]["status"] == "dry_run" and scene.is_dir()
+
+
+def test_gc_phase_counts_why_scenes_are_retained(tmp_path) -> None:
+    scene, common = _scene_tick(tmp_path, ack=False)
+
+    phase = run_storage_gc(**common, apply=True, ack=RUN_ACK, scene_workspace_retirement_enabled=True)[
+        "scene_workspaces"]
+
+    assert phase["retained_counts"] == {"acknowledgement_unproven": 1} and phase["retired_count"] == 0
+    assert phase["results"] == [{"bucket": "capture-bucket", "scene_id": "scene-1", "status": "retained",
+                                 "reasons": ["acknowledgement_unproven:capture-1"]}]
+    assert scene.is_dir()
+
+
+@pytest.mark.parametrize(("retirement", "offload", "enabled"), [
+    (None, None, False), (None, "1", True), ("0", "1", False), ("yes", None, True), ("false", "true", False),
+])
+def test_scene_retirement_follows_the_offload_opt_in_unless_set(monkeypatch, retirement, offload, enabled):
+    for name, value in ((gc_module.SCENE_WORKSPACE_RETIREMENT_ENV, retirement), (gc_module.EVIDENCE_OFFLOAD_ENV, offload)):
+        if value is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, value)
+    assert gc_module.scene_workspace_retirement_enabled() is enabled
+    monkeypatch.setenv(gc_module.SCENE_WORKSPACE_RETIREMENT_ENV, "maybe")
+    with pytest.raises(ControlPlaneStorageGCError, match="environment_bool_invalid"):
+        gc_module.scene_workspace_retirement_enabled()
+
+
+def test_a_failing_phase_does_not_abort_the_tick(tmp_path, monkeypatch, capsys) -> None:
+    now = 5_000_000.0
+    derived = tmp_path / "prepared-references"
+    derived.mkdir()
+    scratch = tmp_path / "engineering"
+    _scratch(scratch, "old-probe", age=4 * 86400, now=now)
+
+    def broken(**_kwargs):
+        raise RuntimeError("derived manifest failed")
+
+    monkeypatch.setattr(gc_module, "build_derived_directory_manifest", broken)
+    report = run_storage_gc(content_store_roots=[], derived_roots=[derived], queue_roots=[], pins_root=tmp_path / "pins",
+                            scratch_roots=[scratch], scratch_minimum_age_seconds=3 * 86400, now=lambda: now,
+                            classifier=_noclass)
+
+    assert report["derived_directories"] == {"status": "error", "error": "RuntimeError"}
+    assert report["phase_errors"] == ["derived_directories"]
+    assert report["scratch_directories"]["candidate_count"] == 1, "later phases still run"
+    assert report["report_digest"] == gc_module.canonical_digest(report, digest_field="report_digest")
+
+    # The command line still writes the whole report, then fails so the unit shows the error.
+    monkeypatch.setenv("BLUEPRINT_CONTROL_PLANE_GC_DERIVED_ROOTS", str(derived))
+    monkeypatch.setenv("BLUEPRINT_CONTROL_PLANE_GC_QUEUE_ROOTS", "")
+    monkeypatch.setattr(gc_module, "require_storage_class", _noclass)
+    out = tmp_path / "storage-gc" / "latest.json"
+    assert gc_main(["run", "--pins-root", str(tmp_path / "pins"), "--report-out", str(out)]) == 1
+    assert json.loads(out.read_text(encoding="utf-8"))["phase_errors"] == ["derived_directories"]
+    assert "derived manifest failed" in capsys.readouterr().err
+
+
+def test_gc_unit_can_write_scene_workspace_roots() -> None:
+    unit = (Path(__file__).resolve().parents[1] / "deploy/systemd/blueprint-control-plane-storage-gc.service").read_text(
+        encoding="utf-8"
+    )
+    roots: list[str] = []
+    writable: set[str] = set()
+    read_only: set[str] = set()
+    for line in unit.splitlines():
+        if line.startswith("Environment=" + gc_module.SCENE_WORKSPACE_ROOTS_ENV + "="):
+            roots.extend(part for part in line.split("=", 2)[2].split(":") if part)
+        if line.startswith("ReadWritePaths="):
+            writable.update(part.lstrip("-") for part in line.split("=", 1)[1].split())
+        if line.startswith("ReadOnlyPaths="):
+            read_only.update(part.lstrip("-") for part in line.split("=", 1)[1].split())
+    assert roots == ["/var/lib/blueprint/pubsub-handoffs"]
+    assert all(any(root == path or root.startswith(path + "/") for path in writable) for root in roots)
+    # A read-only entry at or below a writable root would win over it.
+    assert not any(path == root or path.startswith(root + "/") for root in roots for path in read_only)
+    assert f"Environment={gc_module.SCENE_INTENT_ROOT_ENV}=" in unit
+    for opt_in in (gc_module.SCENE_WORKSPACE_RETIREMENT_ENV, gc_module.EVIDENCE_OFFLOAD_ENV):
+        assert f"Environment={opt_in}=" not in unit, "retirement stays an operator opt-in"
