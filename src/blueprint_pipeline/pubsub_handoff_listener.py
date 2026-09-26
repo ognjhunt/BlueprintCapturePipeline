@@ -2063,8 +2063,14 @@ def pull_and_process(
         },
         timeout=30,
     )
-    ack_ids: list[str] = []
-    ack_receipts: list[dict[str, Any]] = []
+    acknowledged = 0
+
+    def acknowledge(ack_id: str) -> None:
+        # One call per message, the moment it finishes: an ack ID held back for
+        # the end of the batch could expire while later messages run, and the
+        # acknowledgement (and its receipt) would claim something Pub/Sub dropped.
+        subscriber.acknowledge(request={"subscription": subscription_resource, "ack_ids": [ack_id]})
+
     for received in response.received_messages:
         message = received.message
         logger.info(
@@ -2098,7 +2104,8 @@ def pull_and_process(
                     "failure_evidence_path": str(evidence_path),
                 },
             )
-            ack_ids.append(received.ack_id)
+            acknowledge(received.ack_id)
+            acknowledged += 1
             continue
         digest = payload_sha256(message.data)
         heartbeat = _AckDeadlineHeartbeat(
@@ -2170,45 +2177,56 @@ def pull_and_process(
             )
             heartbeat.defer_retry()
             continue
-        ack_ids.append(received.ack_id)
-        capture_root = _string(result.get("capture_root"))
-        if capture_root:
-            delivery_attempt = getattr(received, "delivery_attempt", None)
-            ack_receipts.append(
-                {
-                    "capture_root": Path(capture_root),
-                    "message_id": _string(getattr(message, "message_id", None)) or None,
-                    "payload_digest": digest,
-                    "delivery_attempt": delivery_attempt
-                    if isinstance(delivery_attempt, int) and not isinstance(delivery_attempt, bool)
-                    else None,
-                    "disposition": TERMINAL_AUTHORITY_STATUS
-                    if result.get("queue_disposition") == TERMINAL_AUTHORITY_STATUS
-                    else "terminal_success",
-                }
-            )
+        acknowledge(received.ack_id)
+        acknowledged += 1
+        _record_acknowledgement(
+            result,
+            subscription=subscription_resource,
+            message=message,
+            received=received,
+            payload_digest=digest,
+        )
+    return acknowledged
 
-    if ack_ids:
-        subscriber.acknowledge(request={"subscription": subscription_resource, "ack_ids": ack_ids})
-        # Receipts follow the acknowledgement: a receipt never claims an ack that
-        # Pub/Sub did not accept. The ack is already final, so one receipt that
-        # cannot be written is logged and does not cost the others. A capture
-        # with no ledger (its workspace was retired) gets no receipt at all.
-        for receipt in ack_receipts:
-            try:
-                written = _write_ack_receipt(subscription=subscription_resource, **receipt)
-            except (OSError, ValueError):  # ValueError covers an undecodable old receipt
-                logger.exception(
-                    "pubsub_handoff.ack_receipt_write_failed",
-                    extra={"message_id": receipt["message_id"]},
-                )
-                continue
-            if not written:
-                logger.warning(
-                    "pubsub_handoff.ack_receipt_skipped_capture_absent",
-                    extra={"message_id": receipt["message_id"]},
-                )
-    return len(ack_ids)
+
+def _record_acknowledgement(
+    result: Mapping[str, Any],
+    *,
+    subscription: str,
+    message: Any,
+    received: Any,
+    payload_digest: str,
+) -> None:
+    """Write the capture's ack receipt; call only after acknowledge returned.
+
+    A receipt never claims an ack that Pub/Sub did not accept. The ack is
+    already final, so a receipt that cannot be written is logged, never raised.
+    A capture with no ledger (its workspace was retired) gets no receipt.
+    """
+
+    capture_root = _string(result.get("capture_root"))
+    if not capture_root:
+        return
+    message_id = _string(getattr(message, "message_id", None)) or None
+    delivery_attempt = getattr(received, "delivery_attempt", None)
+    try:
+        written = _write_ack_receipt(
+            capture_root=Path(capture_root),
+            subscription=subscription,
+            message_id=message_id,
+            payload_digest=payload_digest,
+            delivery_attempt=delivery_attempt
+            if isinstance(delivery_attempt, int) and not isinstance(delivery_attempt, bool)
+            else None,
+            disposition=TERMINAL_AUTHORITY_STATUS
+            if result.get("queue_disposition") == TERMINAL_AUTHORITY_STATUS
+            else "terminal_success",
+        )
+    except (OSError, ValueError):
+        logger.exception("pubsub_handoff.ack_receipt_write_failed", extra={"message_id": message_id})
+        return
+    if not written:
+        logger.warning("pubsub_handoff.ack_receipt_skipped_capture_absent", extra={"message_id": message_id})
 
 
 def _required_string(data: Mapping[str, Any], key: str) -> str:

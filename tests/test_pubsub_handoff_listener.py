@@ -134,6 +134,7 @@ class FakeSubscriber:
     def __init__(self, received_messages: list[object]) -> None:
         self.received_messages = received_messages
         self.acknowledged: list[str] = []
+        self.acknowledge_requests: list[dict] = []
         self.ack_deadline_requests: list[dict] = []
         self.pull_requests: list[dict] = []
 
@@ -142,6 +143,7 @@ class FakeSubscriber:
         return types.SimpleNamespace(received_messages=self.received_messages)
 
     def acknowledge(self, *, request: dict) -> None:
+        self.acknowledge_requests.append(request)
         self.acknowledged.extend(request["ack_ids"])
 
     def modify_ack_deadline(self, *, request: dict) -> None:
@@ -1803,11 +1805,11 @@ def test_ack_receipt_is_written_after_acknowledge_returns(tmp_path, monkeypatch)
         _received(ack_id="a1", data=PAYLOAD_BYTES, delivery_attempt=3),
         _received(ack_id="poison", data=b"{not-json"),
     ])
-    present_during_acknowledge: list[bool] = []
+    present_during_acknowledge: list[tuple[list[str], bool]] = []
     record_acknowledgement = subscriber.acknowledge
 
     def acknowledge(*, request):
-        present_during_acknowledge.append(receipt_path.exists())
+        present_during_acknowledge.append((request["ack_ids"], receipt_path.exists()))
         record_acknowledgement(request=request)
 
     subscriber.acknowledge = acknowledge
@@ -1816,7 +1818,8 @@ def test_ack_receipt_is_written_after_acknowledge_returns(tmp_path, monkeypatch)
 
     assert _pull(tmp_path) == 2
     assert subscriber.acknowledged == ["a1", "poison"]
-    assert present_during_acknowledge == [False]
+    # a1's receipt appears only after a1's own acknowledgement returned.
+    assert present_during_acknowledge == [(["a1"], False), (["poison"], True)]
     ack = _read(receipt_path)
     assert datetime.fromisoformat(ack["acknowledged_at"]).tzinfo is not None
     assert ack == {
@@ -2052,3 +2055,30 @@ def test_status_survives_an_undecodable_record(tmp_path, capsys, damaged):
         assert printed["ack_receipt"] is None
     else:
         assert printed["status"] == "corrupt"  # the existing fail-closed ledger state
+
+
+def test_each_message_is_acknowledged_as_soon_as_it_finishes(tmp_path, monkeypatch):
+    other_prefix = "scenes/scene-2/captures/capture-2"
+    other_payload = json.dumps({
+        "bucket": "capture-bucket", "scene_id": "scene-2", "capture_id": "capture-2",
+        "raw_prefix_uri": f"gs://capture-bucket/{other_prefix}/raw"}).encode("utf-8")
+    subscriber = FakeSubscriber([_received(ack_id="a1", data=PAYLOAD_BYTES),
+                                 _received(ack_id="poison", data=b"{not-json"),
+                                 _received(ack_id="a2", data=other_payload)])
+    seen_when_processing: list[tuple[list[str], bool]] = []
+
+    def prepare(**_kwargs):
+        first_receipt = _capture_root(tmp_path) / "pipeline_job_ack_receipt.json"
+        seen_when_processing.append((list(subscriber.acknowledged), first_receipt.exists()))
+        return {"status": "completed"}
+
+    _install_fake_pubsub(
+        monkeypatch, subscriber,
+        storage_client=FakeStorageClient([*_website_bundle_blobs(), *_website_bundle_blobs(other_prefix)]),
+        run_e2e=prepare)
+
+    assert _pull(tmp_path) == 3
+    # An ack ID is spent the moment its message finishes, so a later long-running
+    # message cannot outlive the earlier message's ack deadline.
+    assert seen_when_processing == [([], False), (["a1", "poison"], True)]
+    assert [request["ack_ids"] for request in subscriber.acknowledge_requests] == [["a1"], ["poison"], ["a2"]]
