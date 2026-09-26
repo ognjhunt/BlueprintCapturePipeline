@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -51,6 +52,37 @@ ReadinessMaterializer = Callable[..., Mapping[str, Any]]
 
 class TaskEvaluationConfiguredControlsProgressionError(RuntimeError):
     """The configured-scene controls progression could not advance safely."""
+
+
+class TaskEvaluationConfiguredControlsCapacityDeferred(
+    TaskEvaluationConfiguredControlsProgressionError
+):
+    """Wait before publishing a one-shot preparation queue identity."""
+
+
+def _preparation_capacity_ready(known_references: Mapping[str, Any]) -> bool:
+    input_root = os.getenv("BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_INPUT_ROOT")
+    reservation_root = os.getenv("BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT")
+    if not input_root or not reservation_root:
+        return True  # The preparation worker still owns the mandatory reservation.
+    from .control_plane_disk_budget import disk_headroom
+    from .task_evaluation_launch_preparation_worker import (
+        PREPARATION_RESERVATION_MARGIN_BYTES,
+        _missing_reference_bytes,
+        collect_preparation_references,
+    )
+
+    missing_bytes = _missing_reference_bytes(
+        collect_preparation_references(known_references),
+        Path(input_root) / "content-addressed" / "sha256",
+    )
+    # The six small readiness documents do not exist until this stage writes
+    # them. Leave room for them before claiming the immutable queue identity.
+    expected_bytes = missing_bytes + PREPARATION_RESERVATION_MARGIN_BYTES + 16 * 1024**2
+    available = disk_headroom(
+        target_root=input_root, reservation_root=reservation_root
+    )["available_bytes"]
+    return available >= expected_bytes
 
 
 def _bounded_launch_id(activation_id: str) -> str:
@@ -289,6 +321,14 @@ def stage_configured_controls_episode_preparation(
     if set(runtime) != {"runtime", "execution_adapter", "spend"}:
         raise TaskEvaluationConfiguredControlsProgressionError(
             "configured_controls_progression_runtime_binding_invalid"
+        )
+    if not _preparation_capacity_ready({
+        "scene": publication["configured_scene_revision_reference"],
+        "runtime": runtime["runtime"],
+        "execution_adapter": runtime["execution_adapter"],
+    }):
+        raise TaskEvaluationConfiguredControlsCapacityDeferred(
+            "configured_controls_progression_preparation_capacity_pending"
         )
     progression_input_digest = canonical_digest(
         {

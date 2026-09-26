@@ -7,6 +7,7 @@ import pytest
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_configured_controls_progression import (
+    TaskEvaluationConfiguredControlsCapacityDeferred,
     TaskEvaluationConfiguredControlsProgressionError,
     build_authorized_webapp_launch_request,
     stage_configured_controls_activation,
@@ -256,6 +257,52 @@ def _episode_progression(tmp_path: Path) -> dict[str, object]:
         readiness_materializer=_fake_materializer,
         preparation_stager=_stage_preparation,
     )
+
+
+def test_episode_preparation_waits_before_one_shot_queue_when_disk_is_low(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blueprint_pipeline import task_evaluation_configured_controls_progression as progression
+
+    monkeypatch.setattr(progression, "_preparation_capacity_ready", lambda _request: False)
+    with pytest.raises(TaskEvaluationConfiguredControlsCapacityDeferred):
+        _episode_progression(tmp_path)
+    assert not (tmp_path / "readiness" / "configured_controls_progression.v1.json").exists()
+    assert not (tmp_path / "preparation-queue").exists()
+
+
+def test_episode_preparation_capacity_uses_known_uncached_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blueprint_pipeline import task_evaluation_configured_controls_progression as progression
+    from blueprint_pipeline.task_evaluation_launch_preparation_worker import (
+        PREPARATION_RESERVATION_MARGIN_BYTES,
+        collect_preparation_references,
+    )
+
+    request = _episode_progression(tmp_path)["episode_preparation_request"]
+    input_root = tmp_path / "inputs"
+    ledger = tmp_path / "ledger"
+    monkeypatch.setenv("BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_INPUT_ROOT", str(input_root))
+    monkeypatch.setenv("BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT", str(ledger))
+    known_references = {
+        "scene": request["scene"]["configured_revision"],
+        "runtime": request["runtime"],
+        "execution_adapter": request["execution_adapter"],
+    }
+    references = collect_preparation_references(known_references)
+    unique = {(row["digest"], row["size_bytes"]) for row in references}
+    needed = sum(size for _digest, size in unique) + PREPARATION_RESERVATION_MARGIN_BYTES + 16 * 1024**2
+    available = needed - 1
+
+    def headroom(**kwargs):
+        assert kwargs == {"target_root": str(input_root), "reservation_root": str(ledger)}
+        return {"available_bytes": available}
+
+    monkeypatch.setattr("blueprint_pipeline.control_plane_disk_budget.disk_headroom", headroom)
+    assert not progression._preparation_capacity_ready(known_references)
+    available = needed
+    assert progression._preparation_capacity_ready(known_references)
 
 
 def test_qualifying_configuration_queues_digest_bound_episode_preparation(tmp_path: Path) -> None:

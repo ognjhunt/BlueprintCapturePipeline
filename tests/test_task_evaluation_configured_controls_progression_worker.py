@@ -1201,6 +1201,29 @@ def test_qualifying_terminal_and_post_teardown_zero_auto_queue_preparation(
     assert observed["submitted_by"] == "configured-controls-progression"
 
 
+def test_low_disk_defers_before_queuing_preparation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    launch_root, _ = _source(tmp_path)
+    plan = _plan(tmp_path)
+
+    def stage(**_kwargs):
+        raise worker.TaskEvaluationConfiguredControlsCapacityDeferred(
+            "configured_controls_progression_preparation_capacity_pending"
+        )
+
+    monkeypatch.setattr(worker, "stage_configured_controls_episode_preparation", stage)
+    result = worker.advance_configured_controls_plan(
+        plan_path=plan,
+        launch_state_root=launch_root,
+        progression_root=tmp_path / "progressions",
+        preparation_queue_root=tmp_path / "preparations",
+        activation_queue_root=tmp_path / "activations",
+        publisher_factory=lambda: object(),
+    )
+    assert result["status"] == "awaiting_episode_preparation_capacity"
+
+
 def test_destination_plan_stages_native_qualification_before_episode_preparation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
