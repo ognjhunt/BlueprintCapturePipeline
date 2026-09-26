@@ -4,14 +4,19 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
+import stat
 import subprocess
 from pathlib import Path, PurePosixPath
+
+import pytest
 
 from blueprint_pipeline.control_plane_storage_roots import STORAGE_ROOTS
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "deploy" / "host" / "mount_work_volume.sh"
 SYSTEMD_DIR = REPO_ROOT / "deploy" / "systemd"
+ACK = "move-work-roots-to-volume"
 STATE = PurePosixPath("/var/lib/blueprint")
 # Classes whose bytes are bulk by nature; they belong on the growable volume.
 BULK_CLASSES = frozenset({"cache", "evidence_cold", "scratch", "scene_workspace"})
@@ -41,6 +46,29 @@ def _state(tmp_path: Path) -> Path:
         (state / rel / "payload.bin").write_bytes(b"x" * 4096)
     (state / "pipeline-control-plane" / "task-evaluation-launches" / "pending").mkdir(parents=True)
     return state
+
+
+def _bound_state(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """A host from the September layout: prepared-references bound from the volume on its own."""
+    state = tmp_path / "var" / "lib" / "blueprint"
+    volume = tmp_path / "mnt" / "blueprint-work"
+    inputs = state / "task-evaluation-inputs"
+    (inputs / "prepared-references").mkdir(parents=True)  # the old bind's mount point
+    (inputs / "launch-activations").mkdir()
+    (inputs / "launch-activations" / "payload.bin").write_bytes(b"a" * 4096)
+    (volume / "task-evaluation-inputs" / "prepared-references").mkdir(parents=True)
+    (volume / "task-evaluation-inputs" / "prepared-references" / "payload.bin").write_bytes(b"p" * 4096)
+    bound = tmp_path / "bound-roots"
+    bound.write_text("/var/lib/blueprint/task-evaluation-inputs/prepared-references\n", encoding="utf-8")
+    return state, volume, bound
+
+
+def _hermetic(tmp_path: Path, bound: Path) -> tuple[str, ...]:
+    return ("--device", "/dev/null", "--root-prefix", str(tmp_path), "--bound-roots-file", str(bound))
+
+
+def _tree(root: Path) -> list[str]:
+    return sorted(str(p.relative_to(root)) for p in root.rglob("*"))
 
 
 def _script_array(name: str) -> list[str]:
@@ -152,6 +180,9 @@ def test_every_bulk_storage_class_root_is_on_the_volume_and_queues_never_move() 
         and not (root.storage_class == "work" and PurePosixPath(root.path) in BULK_WORK_ROOTS)
     )
     assert kept_on_root_disk == [], "queues, ledgers and hot evidence never move"
+    # The hot evidence the inputs tree carries is exactly what the plan names for the owner.
+    carried_hot = sorted(root.path for root in carried if root.storage_class == "evidence_hot")
+    assert carried_hot == sorted(str(STATE / rel) for rel in _script_array("EVIDENCE_HOT_ON_VOLUME"))
 
     # Roots outside the state tree are not in the storage table; each must be
     # production storage that a unit writes, bound to the same path on the volume.
@@ -202,3 +233,153 @@ def test_apply_refuses_without_the_acknowledgement_and_moves_roots_with_it(tmp_p
         assert not original.with_name(original.name + ".migrated-to-volume").exists()
     assert (state / "pipeline-control-plane" / "task-evaluation-launches" / "pending").is_dir()
     assert os.access(SCRIPT, os.X_OK)
+
+
+def test_apply_consolidates_previously_bound_children_into_one_tree_bind(tmp_path: Path) -> None:
+    state, volume, bound = _bound_state(tmp_path)
+
+    applied = _run(*_hermetic(tmp_path, bound), "--apply", "--ack", ACK)
+
+    assert applied.returncode == 0, applied.stderr + applied.stdout
+    inputs = volume / "task-evaluation-inputs"
+    assert (inputs / "prepared-references" / "payload.bin").read_bytes() == b"p" * 4096
+    assert (inputs / "launch-activations" / "payload.bin").read_bytes() == b"a" * 4096
+    local = state / "task-evaluation-inputs"
+    assert local.is_dir() and list(local.iterdir()) == []
+    assert not (state / "task-evaluation-inputs.migrated-to-volume").exists()
+    # The per-store bind is gone and the tree is bound whole, so a second run has nothing to do.
+    assert bound.read_text(encoding="utf-8").splitlines() == ["/var/lib/blueprint/task-evaluation-inputs"]
+    again = _run(*_hermetic(tmp_path, bound), "--apply", "--ack", ACK)
+    assert again.returncode == 0 and "nothing to move" in again.stdout, again.stderr
+
+
+def test_plan_reports_consolidation_and_evidence_hot_on_volume(tmp_path: Path) -> None:
+    state, volume, bound = _bound_state(tmp_path)
+    (state / "pipeline-control-plane" / "engineering").mkdir(parents=True)
+    with bound.open("a", encoding="utf-8") as handle:
+        handle.write("/var/lib/blueprint/pipeline-control-plane/engineering\n")
+    before = _tree(tmp_path)
+
+    completed = _run(*_hermetic(tmp_path, bound), "--plan")
+
+    assert completed.returncode == 0, completed.stderr
+    assert (
+        f"consolidate {state}/task-evaluation-inputs -> {volume}/task-evaluation-inputs ("
+        in completed.stdout
+    )
+    assert "; bound children: prepared-references)" in completed.stdout
+    assert f"bound    {state}/pipeline-control-plane/engineering (" in completed.stdout
+    for rel in ("sam31-profile-registry", "task-evaluation-terminal-results", "g1-team-campaign-registry.json"):
+        assert f"evidence_hot on volume: {state}/task-evaluation-inputs/{rel}" in completed.stdout
+    assert "nothing changed" in completed.stdout
+    assert _tree(tmp_path) == before
+
+
+def test_hardlinks_across_input_stores_survive_the_move(tmp_path: Path) -> None:
+    probe = subprocess.run(["rsync", "--help"], capture_output=True, text=True, check=False)
+    if "--hard-links" not in probe.stdout + probe.stderr:
+        pytest.skip("the local rsync does not offer --hard-links")
+    state = tmp_path / "var" / "lib" / "blueprint"
+    blob = state / "task-evaluation-inputs" / "prepared-references" / "content-addressed" / "sha256" / "ab"
+    member = state / "task-evaluation-inputs" / "compiled-episodes" / "episode-1" / "member.bin"
+    blob.parent.mkdir(parents=True)
+    member.parent.mkdir(parents=True)
+    blob.write_bytes(b"m" * 4096)
+    os.link(blob, member)
+
+    applied = _run("--device", "/dev/null", "--root-prefix", str(tmp_path), "--apply", "--ack", ACK)
+
+    assert applied.returncode == 0, applied.stderr + applied.stdout
+    volume = tmp_path / "mnt" / "blueprint-work"
+    moved_blob = os.stat(volume / blob.relative_to(state))
+    moved_member = os.stat(volume / member.relative_to(state))
+    assert (moved_blob.st_ino, moved_blob.st_nlink) == (moved_member.st_ino, 2)
+
+
+def test_apply_keeps_the_original_when_it_holds_bytes_the_volume_copy_lacks(tmp_path: Path) -> None:
+    state, volume, bound = _bound_state(tmp_path)
+    # Bytes written under the old bind's mount point before it was mounted are
+    # hidden by it, and surface once it is unmounted.
+    (state / "task-evaluation-inputs" / "prepared-references" / "hidden.bin").write_bytes(b"h" * 1024)
+
+    applied = _run(*_hermetic(tmp_path, bound), "--apply", "--ack", ACK)
+
+    assert applied.returncode == 3, applied.stderr + applied.stdout
+    assert "hidden.bin" in applied.stderr
+    kept = state / "task-evaluation-inputs.migrated-to-volume"
+    assert (kept / "prepared-references" / "hidden.bin").read_bytes() == b"h" * 1024
+    # The old bind's mount point is never copied onto its own volume copy.
+    assert not (volume / "task-evaluation-inputs" / "prepared-references" / "hidden.bin").exists()
+    assert (volume / "task-evaluation-inputs" / "prepared-references" / "payload.bin").is_file()
+    replanned = _run(*_hermetic(tmp_path, bound), "--plan")
+    assert f"kept     {kept} (" in replanned.stdout
+
+
+def test_apply_rewrites_fstab_atomically_after_a_backup(tmp_path: Path) -> None:
+    _bound_state(tmp_path)
+    fstab = tmp_path / "etc" / "fstab"
+    fstab.parent.mkdir()
+    child = "/var/lib/blueprint/task-evaluation-inputs/prepared-references"
+    original = [
+        "UUID=root / ext4 defaults 0 1",
+        "UUID=volume /mnt/blueprint-work ext4 defaults,nofail,noatime,discard 0 2",
+        f"# /mnt/blueprint-work/task-evaluation-inputs/prepared-references {child} none bind 0 0",
+        f"/mnt/blueprint-work/task-evaluation-inputs/prepared-references {child} none bind 0 0",
+        "/mnt/blueprint-work/pipeline-control-plane/engineering /var/lib/blueprint/pipeline-control-plane/engineering none bind 0 0",
+    ]
+    fstab.write_text("\n".join(original) + "\n", encoding="utf-8")
+    fstab.chmod(0o644)
+
+    applied = _run(*_hermetic(tmp_path, tmp_path / "bound-roots"), "--apply", "--ack", ACK)
+
+    assert applied.returncode == 0, applied.stderr + applied.stdout
+    backups = sorted(fstab.parent.glob("fstab.blueprint-*.bak"))
+    assert len(backups) == 1 and backups[0].read_text(encoding="utf-8").splitlines() == original
+    assert fstab.read_text(encoding="utf-8").splitlines() == [
+        *original[:3],
+        original[4],
+        "/mnt/blueprint-work/task-evaluation-inputs /var/lib/blueprint/task-evaluation-inputs none bind 0 0",
+    ]
+    assert stat.S_IMODE(fstab.stat().st_mode) == 0o644
+    assert sorted(p.name for p in fstab.parent.iterdir()) == sorted(["fstab", backups[0].name])
+
+
+def test_apply_refuses_to_move_a_root_over_a_copy_an_earlier_move_kept(tmp_path: Path) -> None:
+    state = _state(tmp_path)
+    kept = state / "task-evaluation-inputs.migrated-to-volume"
+    kept.mkdir()
+    (kept / "evidence.bin").write_bytes(b"e" * 64)
+
+    applied = _run("--device", "/dev/null", "--root-prefix", str(tmp_path), "--apply", "--ack", ACK)
+
+    assert applied.returncode == 2, applied.stderr + applied.stdout
+    assert f"{kept}" in applied.stderr
+    assert (kept / "evidence.bin").read_bytes() == b"e" * 64
+    assert (state / "task-evaluation-inputs" / "prepared-references" / "payload.bin").is_file()
+    assert not (tmp_path / "mnt" / "blueprint-work" / "task-evaluation-inputs").exists()
+
+
+def test_apply_refuses_a_bound_child_the_volume_has_no_copy_of(tmp_path: Path) -> None:
+    state, volume, bound = _bound_state(tmp_path)
+    shutil.rmtree(volume / "task-evaluation-inputs" / "prepared-references")
+    before = _tree(state), bound.read_text(encoding="utf-8")
+
+    applied = _run(*_hermetic(tmp_path, bound), "--apply", "--ack", ACK)
+
+    assert applied.returncode == 2, applied.stderr + applied.stdout
+    assert "prepared-references" in applied.stderr
+    assert (_tree(state), bound.read_text(encoding="utf-8")) == before
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root writes through a read-only file")
+def test_apply_keeps_the_old_binds_when_one_will_not_unmount(tmp_path: Path) -> None:
+    state, volume, bound = _bound_state(tmp_path)
+    bound.chmod(0o444)  # the hermetic stand-in for a busy mount point
+    before = _tree(state), bound.read_text(encoding="utf-8")
+
+    applied = _run(*_hermetic(tmp_path, bound), "--apply", "--ack", ACK)
+
+    assert applied.returncode == 2, applied.stderr + applied.stdout
+    assert "could not unmount /var/lib/blueprint/task-evaluation-inputs/prepared-references" in applied.stderr
+    assert (_tree(state), bound.read_text(encoding="utf-8")) == before
+    assert (volume / "task-evaluation-inputs" / "prepared-references" / "payload.bin").is_file()
