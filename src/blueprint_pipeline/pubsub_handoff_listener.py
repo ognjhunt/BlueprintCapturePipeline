@@ -952,7 +952,14 @@ def _finish_job_lease(
     update: Mapping[str, Any],
     after_commit: Callable[[dict[str, Any]], Any] | None = None,
 ) -> dict[str, Any]:
-    """Commit the lease's final ledger; after_commit runs under the same lock."""
+    """Commit the lease's final ledger; after_commit runs under the same lock.
+
+    after_commit runs after the commit. If it raises, the commit stands (the
+    ledger is already durable) and the exception propagates to the caller.
+    The terminal path relies on this: a terminal receipt that failed to write
+    leaves the message unacknowledged, and the redelivery repairs the receipt
+    from the committed ledger.
+    """
 
     with _locked_job_ledger(capture_root) as ledger:
         if (

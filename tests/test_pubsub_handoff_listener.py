@@ -1,3 +1,4 @@
+import fcntl
 import json
 import logging
 import shutil
@@ -2349,3 +2350,32 @@ def test_receipt_repair_never_recreates_a_capture_retired_after_the_claim(tmp_pa
     assert _pull(tmp_path) == 1
     assert results[0]["status"] == "skipped_terminal_authority_ended"
     assert not scene_dir.exists()
+
+
+def test_terminal_receipts_are_written_under_the_ledger_lock(tmp_path, monkeypatch):
+    lock_held_while_writing: list[bool] = []
+    write_receipt = listener_module._write_terminal_receipt
+
+    def probe_then_write(capture_root, *, handoff, ledger):
+        # flock locks from separate opens conflict even within one process.
+        with (capture_root / ".pipeline_job_ledger.json.lock").open("a+b") as probe:
+            try:
+                fcntl.flock(probe.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                lock_held_while_writing.append(True)
+            else:
+                fcntl.flock(probe.fileno(), fcntl.LOCK_UN)
+                lock_held_while_writing.append(False)
+        return write_receipt(capture_root, handoff=handoff, ledger=ledger)
+
+    monkeypatch.setattr(listener_module, "_write_terminal_receipt", probe_then_write)
+    ending = FakeSubscriber([_received(ack_id="p1", data=PAYLOAD_BYTES)])
+    _install_fake_pubsub(monkeypatch, ending,
+                         storage_client=FakeStorageClient(_website_bundle_blobs()), run_e2e=_expired)
+    assert _pull(tmp_path) == 1
+    _live_terminal_receipt(tmp_path).unlink()  # lost to a crash: the redelivery repairs it
+    repair = FakeSubscriber([_received(ack_id="p1-again", data=PAYLOAD_BYTES, delivery_attempt=2)])
+    _install_fake_pubsub(monkeypatch, repair, storage_client=_ListingForbidden())
+    assert _pull(tmp_path) == 1
+
+    assert lock_held_while_writing == [True, True]  # the ending, then the repair
