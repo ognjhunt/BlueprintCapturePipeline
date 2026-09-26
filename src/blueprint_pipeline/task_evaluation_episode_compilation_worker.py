@@ -260,8 +260,10 @@ def _validated_compiler_output(
 
 
 # Packet materialization, the built construction archive, and adapter receipts;
-# runtime members are counted only when the shared member store lacks them.
-COMPILATION_RESERVATION_MARGIN_BYTES = 2 * 1024**3
+# Runtime members are counted only when the shared member store lacks them.
+# On a cache hit the large runtime packet is hard-linked; this margin covers
+# the new episode archive and metadata without reserving another whole copy.
+COMPILATION_RESERVATION_MARGIN_BYTES = 512 * 1024**2
 
 
 def _expected_compilation_bytes(
