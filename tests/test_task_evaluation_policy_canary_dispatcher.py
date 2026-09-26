@@ -22,6 +22,10 @@ from blueprint_pipeline.task_evaluation_policy_canary_dispatcher import (
     dispatch_policy_canary_activation,
     process_policy_canary_dispatch_queue,
 )
+from blueprint_pipeline.task_evaluation_result_delivery import (
+    TaskEvaluationResultDeliveryError,
+    materialize_policy_canary_result_delivery,
+)
 from tests.test_task_evaluation_policy_canary_setup import _setup as public_setup
 
 
@@ -1065,6 +1069,8 @@ def _inputs(tmp_path: Path) -> tuple[Path, Path, Path]:
                             "task_success_contract_digest": (
                                 task_success_contract_digest
                             ),
+                            "checkpoint_digest": "sha256:" + "c" * 64,
+                            "runtime_identity_digest": "sha256:" + "d" * 64,
                         }
                         if name.endswith("execution_spec")
                         else {}
@@ -1312,6 +1318,156 @@ def test_allocator_invocation_marker_prevents_unrecorded_retry(
             execute=True,
             allocator_runner=lambda _argv: pytest.fail("allocator invoked twice"),
         )
+
+
+def test_sparse_provider_failure_gets_typed_gaps_and_delivery_only_replay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    activation_result, setup_path, _activation = _inputs(tmp_path)
+    output = tmp_path / "dispatches" / "activation-1"
+    allocator_calls = 0
+
+    def fake_bundle(**kwargs):
+        job = Path(kwargs["job_dir"])
+        job.mkdir(parents=True, exist_ok=True)
+        return _write(
+            job / "native_task_arena_policy_canary_session_bundle_receipt.v1.json",
+            {"bundle_sha256": "sha256:" + "b" * 64},
+        ) and {"bundle_sha256": "sha256:" + "b" * 64}
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.task_evaluation_policy_canary_dispatcher.build_policy_canary_session_bundle",
+        fake_bundle,
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.task_evaluation_policy_canary_dispatcher.validate_provider_bundle",
+        lambda value, **_kwargs: value,
+    )
+
+    def fake_allocator(argv):
+        nonlocal allocator_calls
+        allocator_calls += 1
+        attempt = output / "allocator" / "attempts" / "attempt-1"
+        evidence = attempt / "immutable_execution"
+        evidence.mkdir(parents=True)
+        sparse = {
+            "schema_version": "native_task_arena_policy_canary_session_result.v1",
+            "status": "blocked",
+            "run_kind": "internal_policy_canary",
+            "claim_ceiling": "diagnostic_policy_execution",
+            "candidate_policy_queried": False,
+            "blockers": ["policy_canary_runtime_source_provision_failed"],
+            "result_digest": "",
+        }
+        sparse["result_digest"] = canonical_digest(sparse, digest_field="result_digest")
+        native = _write(
+            evidence / "native_task_arena_policy_canary_session_result.v1.json", sparse,
+        )
+        teardown = _write(attempt / "vast_teardown_manifest.json", {"status": "completed"})
+        _write(Path(argv[argv.index("--adapter-output") + 1]), {
+            "status": "blocked", "vast_instance_ids": [52835359],
+            "native_control_result_path": str(native),
+            "teardown_manifest_path": str(teardown),
+            "continuing_spend_from_this_run": False,
+            "provider_closeout": {
+                "provider_zero_confirmed": True,
+                "warm_session_retained": False,
+                "all_staged_objects_absent": True,
+            },
+        })
+        return 0
+
+    zero = {
+        "schema_version": "task_evaluation_policy_canary_vast_provider_zero.v1",
+        "status": "provider_zero_confirmed", "api_confirmed": True,
+        "provider_zero_verified": True, "live_instance_count": 0,
+        "blockers": [], "receipt_digest": "",
+    }
+    zero["receipt_digest"] = canonical_digest(zero, digest_field="receipt_digest")
+    _write(output / "official_billing_reconciliation.json", {
+        "status": "reconciled_official_posted_charges", "official_total_usd": 0.114,
+    })
+    monkeypatch.setattr(
+        "blueprint_pipeline.task_evaluation_policy_canary_dispatcher.validate_vast_official_same_goal_reconciliation",
+        lambda _path: {},
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.task_evaluation_policy_canary_dispatcher.materialize_policy_canary_result_delivery",
+        lambda **_kwargs: (_ for _ in ()).throw(TaskEvaluationResultDeliveryError("sentinel_delivery")),
+    )
+    kwargs = dict(
+        activation_result_path=activation_result,
+        execution_setup_path=setup_path,
+        output_root=output,
+        implementation_commit=COMMIT,
+        execute=True,
+        provider_zero_collector=lambda: zero,
+        progress_sync_runner=lambda **_kwargs: {"status": "succeeded"},
+    )
+    with pytest.raises(TaskEvaluationPolicyCanaryDispatchError, match="sentinel_delivery"):
+        dispatch_policy_canary_activation(**kwargs, allocator_runner=fake_allocator)
+    first = json.loads((output / "policy_canary_terminal_result.json").read_text())
+    assert first["status"] == "blocked"
+    assert len(first["episodes"]) == 20
+    assert all(row["candidate_policy_queried"] is False for row in first["episodes"])
+    assert (output / "preprovider_evidence/source_provider_terminal_result.json").is_file()
+
+    with pytest.raises(TaskEvaluationPolicyCanaryDispatchError, match="sentinel_delivery"):
+        dispatch_policy_canary_activation(
+            **kwargs,
+            retained_delivery_only=True,
+            allocator_runner=lambda _argv: pytest.fail("retained delivery reallocated a GPU"),
+        )
+    assert allocator_calls == 1
+    assert (output / "preprovider_evidence/prior_terminal_result.json").is_file()
+
+    queue = tmp_path / "queue"
+    for name in ("pending", "processing", "completed", "blocked"):
+        (queue / name).mkdir(parents=True)
+    envelope = {
+        "schema_version": "task_evaluation_policy_canary_dispatch_envelope.v1",
+        "activation_id": "activation-1", "run_kind": "internal_policy_canary",
+        "claim_ceiling": "diagnostic_policy_execution", "source_commit": COMMIT,
+        "activation_result": _record(activation_result),
+        "capture_session_id": "capture-839873", "intake_id": "intake-839873",
+        "request_digest": "sha256:" + "7" * 64,
+        "maximum_provider_allocations": 1, "retry_cap": 0,
+        "automatic_retry_authorized": False, "provider_mutation_performed": False,
+        "paid_execution_requested": False, "envelope_digest": "",
+    }
+    envelope["envelope_digest"] = canonical_digest(envelope, digest_field="envelope_digest")
+    _write(queue / "blocked" / "activation-1.json", envelope)
+    setups = tmp_path / "setups"
+    setups.mkdir()
+    (setups / "activation-1.json").write_bytes(setup_path.read_bytes())
+    real_dispatch = dispatch_policy_canary_activation
+    monkeypatch.setattr(
+        "blueprint_pipeline.task_evaluation_policy_canary_dispatcher.dispatch_policy_canary_activation",
+        lambda **_kwargs: {"status": "selected", "allocator_invoked": False},
+    )
+    selected = process_policy_canary_dispatch_queue(
+        dispatch_queue_root=queue, execution_setup_root=setups,
+        dispatch_root=output.parent, implementation_commit="b" * 40, execute=True,
+    )
+    assert selected["processed_count"] == 1
+    monkeypatch.setattr(
+        "blueprint_pipeline.task_evaluation_policy_canary_dispatcher.dispatch_policy_canary_activation",
+        real_dispatch,
+    )
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.task_evaluation_policy_canary_dispatcher.materialize_policy_canary_result_delivery",
+        materialize_policy_canary_result_delivery,
+    )
+    pending = dispatch_policy_canary_activation(
+        **kwargs,
+        retained_delivery_only=True,
+        allocator_runner=lambda _argv: pytest.fail("retained delivery reallocated a GPU"),
+        sync_runner=lambda **_kwargs: {"status": "failed", "reason": "test_transport"},
+    )
+    assert pending["status"] == "awaiting_website_sync_or_notification"
+    assert (output / "artifacts/result_delivery/delivery.json").is_file()
+    assert allocator_calls == 1
 
 
 def test_live_shaped_result_waits_for_billing_and_never_launches_twice(
