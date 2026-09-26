@@ -1,0 +1,11 @@
+[Unit]
+Description=Reconcile completed G1 team campaign billing and private review
+
+[Timer]
+OnBootSec=5min
+OnUnitInactiveSec=5min
+Unit=blueprint-native-g1-team-campaign-settlement.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target

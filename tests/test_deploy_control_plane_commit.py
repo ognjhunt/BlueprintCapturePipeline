@@ -439,6 +439,10 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
     )
     g1_timer = unit_dir / "blueprint-native-g1-team-campaign-dispatcher.timer"
     g1_timer.write_text("[Timer]\nOnUnitInactiveSec=2min\n", encoding="utf-8")
+    g1_settlement_service = unit_dir / "blueprint-native-g1-team-campaign-settlement.service"
+    g1_settlement_service.write_text("[Service]\nExecStart=/usr/bin/blueprint-g1-settlement\n", encoding="utf-8")
+    g1_settlement_timer = unit_dir / "blueprint-native-g1-team-campaign-settlement.timer"
+    g1_settlement_timer.write_text("[Timer]\nOnUnitInactiveSec=5min\n", encoding="utf-8")
     discovery_service = unit_dir / "blueprint-scene-object-discovery.service"
     discovery_service.write_text(
         "[Service]\nExecStart=/usr/bin/blueprint-discover-scene-objects\n",
@@ -564,6 +568,8 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         canary_path,
         g1_service,
         g1_timer,
+        g1_settlement_service,
+        g1_settlement_timer,
         discovery_service,
         discovery_path,
         progression_service,
@@ -626,6 +632,8 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-task-evaluation-policy-canary-dispatcher.path",
         "blueprint-native-g1-team-campaign-dispatcher.service",
         "blueprint-native-g1-team-campaign-dispatcher.timer",
+        "blueprint-native-g1-team-campaign-settlement.service",
+        "blueprint-native-g1-team-campaign-settlement.timer",
         "blueprint-scene-object-discovery.service",
         "blueprint-scene-object-discovery.path",
         "blueprint-task-evaluation-configured-controls-progression.service",
@@ -663,6 +671,7 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
     )
     assert deploy.DEFAULT_ALWAYS_ARM_TIMER_UNITS == (
         "blueprint-native-g1-team-campaign-dispatcher.timer",
+        "blueprint-native-g1-team-campaign-settlement.timer",
         "blueprint-agent-run-dispatcher.timer",
         "blueprint-agent-stage-replay.timer",
         "blueprint-task-evaluation-scene-progression.timer",

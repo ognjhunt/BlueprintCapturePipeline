@@ -116,6 +116,8 @@ DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     "blueprint-task-evaluation-policy-canary-dispatcher.path",
     "blueprint-native-g1-team-campaign-dispatcher.service",
     "blueprint-native-g1-team-campaign-dispatcher.timer",
+    "blueprint-native-g1-team-campaign-settlement.service",
+    "blueprint-native-g1-team-campaign-settlement.timer",
     "blueprint-scene-object-discovery.service",
     "blueprint-scene-object-discovery.path",
     "blueprint-task-evaluation-configured-controls-progression.service",
@@ -179,6 +181,7 @@ DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS = (
 #: authority rather than the no-spend watcher category.
 DEFAULT_ALWAYS_ARM_TIMER_UNITS = (
     "blueprint-native-g1-team-campaign-dispatcher.timer",
+    "blueprint-native-g1-team-campaign-settlement.timer",
     # The service retains its explicit enable flag and capture scope. Installing
     # its timer makes admitted website runs progress after deployment/reboot.
     "blueprint-agent-run-dispatcher.timer",

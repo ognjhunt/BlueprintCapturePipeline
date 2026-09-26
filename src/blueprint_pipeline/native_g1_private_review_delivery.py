@@ -76,6 +76,57 @@ def _media(review: Mapping[str, Any]) -> list[tuple[str, Mapping[str, Any]]]:
     return records
 
 
+def _existing_review_delivery(
+    *, review: Mapping[str, Any], target: Path, run_id: str
+) -> dict[str, Any]:
+    """Reopen a completed registration after receipt-write interruption."""
+
+    if target.is_symlink() or not target.is_dir():
+        raise ValueError("g1_review_delivery_run_already_registered")
+    if (target / "artifacts").is_symlink() or (target / "artifacts/result_delivery").is_symlink():
+        raise ValueError("g1_review_delivery_existing_registry_invalid")
+    registry = _read(target / "artifacts/result_delivery/artifact_registry.json")
+    expected = _media(review)
+    records = registry.get("artifacts")
+    if (
+        registry.get("schema_version") != REGISTRY_SCHEMA_VERSION
+        or registry.get("run_id") != run_id
+        or registry.get("delivery_digest") != review["review_digest"]
+        or registry.get("registry_digest")
+        != canonical_digest(registry, digest_field="registry_digest")
+        or not isinstance(records, list)
+        or len(records) != len(expected)
+    ):
+        raise ValueError("g1_review_delivery_existing_registry_invalid")
+    for (role, row), record in zip(expected, records, strict=True):
+        relative = row["relative_path"]
+        artifact_id = _artifact_id(role, relative, row["sha256"])
+        path, resolved = resolve_task_evaluation_result_artifact(
+            run_root=target, run_id=run_id, artifact_id=artifact_id,
+        )
+        if (
+            record != resolved
+            or resolved.get("role") != role
+            or resolved.get("relative_path") != relative
+            or resolved.get("sha256") != row["sha256"]
+            or resolved.get("size_bytes") != row["size_bytes"]
+            or not path.is_file()
+            or path.stat().st_size != row["size_bytes"]
+            or _sha256(path) != row["sha256"]
+        ):
+            raise ValueError("g1_review_delivery_existing_artifact_changed")
+    return {
+        "schema_version": "native_g1_private_review_delivery.v1",
+        "status": "registered_private_development_review",
+        "run_id": run_id,
+        "review_digest": review["review_digest"],
+        "registry_digest": registry["registry_digest"],
+        "artifact_count": len(records),
+        "run_root": str(target),
+        "public_redistribution_authorized": False,
+    }
+
+
 def _stage_review_artifacts(
     *, review: Mapping[str, Any], source_root: Path, result_root: Path, run_id: str
 ) -> dict[str, Any]:
@@ -89,7 +140,7 @@ def _stage_review_artifacts(
         raise ValueError("g1_review_delivery_root_invalid")
     target = root / f"{run}-activation"
     if target.exists() or target.is_symlink():
-        raise ValueError("g1_review_delivery_run_already_registered")
+        return _existing_review_delivery(review=review, target=target, run_id=run)
     stage = Path(tempfile.mkdtemp(prefix=f".g1-{run}-", dir=root))
     try:
         os.chmod(stage, 0o750)

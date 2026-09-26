@@ -44,6 +44,7 @@ WORKER_UNITS=(
   blueprint-task-evaluation-launch-dispatcher.path
   blueprint-task-evaluation-policy-canary-dispatcher.path
   blueprint-native-g1-team-campaign-dispatcher.timer
+  blueprint-native-g1-team-campaign-settlement.timer
   blueprint-task-evaluation-configured-controls-progression.timer
   blueprint-task-evaluation-configured-controls-progression.path
   blueprint-task-evaluation-terminal-resource-release.path
@@ -55,6 +56,7 @@ WORKER_UNITS=(
   blueprint-task-evaluation-launch-dispatcher.service
   blueprint-task-evaluation-policy-canary-dispatcher.service
   blueprint-native-g1-team-campaign-dispatcher.service
+  blueprint-native-g1-team-campaign-settlement.service
   blueprint-task-evaluation-configured-controls-progression.service
   blueprint-task-evaluation-terminal-resource-release.service
   blueprint-control-plane-storage-gc.service
