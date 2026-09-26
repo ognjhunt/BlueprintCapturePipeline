@@ -723,20 +723,46 @@ def _read_job_ledger(capture_root: Path) -> dict[str, Any]:
     return loaded
 
 
+class HandoffCaptureRetired(PipelineError):
+    """The capture's workspace was retired (or removed) while this process reached for its lock."""
+
+
+def _lock_names_capture(lock_file: Any, lock_path: Path, capture_root: Path) -> bool:
+    """Whether the lock file held open is still the one the capture's path names."""
+
+    try:
+        held = os.fstat(lock_file.fileno())
+        named = os.stat(lock_path)
+    except OSError:
+        return False
+    return (held.st_dev, held.st_ino) == (named.st_dev, named.st_ino) and capture_root.is_dir()
+
+
 @contextmanager
-def _locked_job_ledger(capture_root: Path) -> Iterator[dict[str, Any]]:
+def _locked_job_ledger(capture_root: Path, *, create: bool = True) -> Iterator[dict[str, Any]]:
     """Hold the per-capture ledger lock while reading or committing state.
 
     ``flock`` supplies cross-process exclusion. ``write_json`` supplies the
     same-filesystem temp/fsync/replace commit, so a killed writer leaves either
-    the prior complete ledger or the complete next revision.
+    the prior complete ledger or the complete next revision. Scene workspace
+    retirement takes this same lock and removes the workspace under it, so a
+    lock acquired after that no longer names the capture: that raises
+    ``HandoffCaptureRetired`` rather than recreating a retired workspace, as
+    does ``create=False`` when the capture is already gone.
     """
 
-    capture_root.mkdir(parents=True, exist_ok=True)
+    if create:
+        capture_root.mkdir(parents=True, exist_ok=True)
     lock_path = capture_root / f".{JOB_LEDGER_FILENAME}.lock"
-    with lock_path.open("a+b") as lock_file:
+    try:
+        lock_file = lock_path.open("a+b")
+    except (FileNotFoundError, NotADirectoryError) as exc:
+        raise HandoffCaptureRetired("pubsub_handoff_capture_retired") from exc
+    with lock_file:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
         try:
+            if not _lock_names_capture(lock_file, lock_path, capture_root):
+                raise HandoffCaptureRetired("pubsub_handoff_capture_retired")
             yield _read_job_ledger(capture_root)
         finally:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
@@ -824,9 +850,10 @@ def _claim_job_lease(
     lease_seconds: int,
     now: datetime | None = None,
     payload_sha256: str | None = None,
+    create_capture_root: bool = True,
 ) -> tuple[str, dict[str, Any]]:
     current_time = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-    with _locked_job_ledger(capture_root) as ledger:
+    with _locked_job_ledger(capture_root, create=create_capture_root) as ledger:
         revision = int(ledger.get("revision") or 0)
         status = _string(ledger.get("status"))
         if status == "corrupt":
@@ -1650,7 +1677,8 @@ def process_handoff_payload(
     handoff = parse_handoff_payload(payload)
     digest = payload_digest or payload_sha256(payload)
     capture_root = _handoff_capture_root(handoff, storage_root=storage_root)
-    if not capture_root.exists():
+
+    def retired_terminal() -> dict[str, Any] | None:
         # A retired scene answers the messages its retirement receipt proves terminal,
         # without staging the capture again (claiming would recreate the workspace).
         try:
@@ -1660,23 +1688,39 @@ def process_handoff_payload(
                                              scene_id=handoff.scene_id, capture_id=handoff.capture_id)
         except Exception:  # noqa: BLE001 - an unanswerable lookup stages normally, as before
             logger.exception("pubsub_handoff.retirement_lookup_failed")
-            retired = None
-        if retired is not None and digest in retired["payload_sha256s"]:
-            logger.info("pubsub_handoff.skipped_retired_terminal",
-                        extra={"scene_id": handoff.scene_id, "capture_id": handoff.capture_id})
-            return {"schema_version": "v1", "status": "skipped_retired_terminal",
-                    "queue_disposition": retired["queue_disposition"], "bucket": handoff.bucket,
-                    "scene_id": handoff.scene_id, "capture_id": handoff.capture_id,
-                    "capture_root": str(capture_root), "retirement_receipt": retired["receipt"]}
+            return None
+        if retired is None or digest not in retired["payload_sha256s"]:
+            return None
+        logger.info("pubsub_handoff.skipped_retired_terminal",
+                    extra={"scene_id": handoff.scene_id, "capture_id": handoff.capture_id})
+        return {"schema_version": "v1", "status": "skipped_retired_terminal",
+                "queue_disposition": retired["queue_disposition"], "bucket": handoff.bucket,
+                "scene_id": handoff.scene_id, "capture_id": handoff.capture_id,
+                "capture_root": str(capture_root), "retirement_receipt": retired["receipt"]}
+
+    capture_present = capture_root.exists()
+    if not capture_present and (skipped := retired_terminal()) is not None:
+        return skipped
     owner = lease_owner or _lease_owner()
-    claim_status, ledger = _claim_job_lease(
-        capture_root,
-        scene_id=handoff.scene_id,
-        capture_id=handoff.capture_id,
-        owner=owner,
-        lease_seconds=lease_seconds,
-        payload_sha256=digest,
-    )
+    try:
+        claim_status, ledger = _claim_job_lease(
+            capture_root,
+            scene_id=handoff.scene_id,
+            capture_id=handoff.capture_id,
+            owner=owner,
+            lease_seconds=lease_seconds,
+            payload_sha256=digest,
+            # A capture that was here a moment ago and is gone now was retired: never recreate it.
+            create_capture_root=not capture_present,
+        )
+    except HandoffCaptureRetired:
+        # Retirement removed the workspace while this claim waited for its lock. Acknowledge
+        # what the receipt proves terminal; anything else waits for its next delivery.
+        return retired_terminal() or {
+            "schema_version": "v1", "status": "capture_retired_retryable", "queue_disposition": "retryable",
+            "bucket": handoff.bucket, "scene_id": handoff.scene_id, "capture_id": handoff.capture_id,
+            "capture_root": str(capture_root), "blockers": ["handoff_capture_retired_while_claiming"],
+        }
     if claim_status == "terminal":
         _repair_terminal_receipt(capture_root, handoff=handoff)
         logger.info(
