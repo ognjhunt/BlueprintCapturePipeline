@@ -1950,12 +1950,15 @@ def test_unchanged_objects_are_not_downloaded_again(tmp_path):
 
     capture_root = stage_handoff_capture(handoff, storage_root=tmp_path, storage_client=client)
     first = _read(capture_root / "pipeline_staging_manifest.json")
+    blob.md5_hash = "bGlzdGVkLW1kNQ=="  # the listing now reports an MD5 for the same generation and size
     stage_handoff_capture(handoff, storage_root=tmp_path, storage_client=client)
 
     assert blob.download_count == 1
     assert unversioned.download_count == 2  # a blob whose generation or size is unknown always downloads
     second = _read(capture_root / "pipeline_staging_manifest.json")
-    assert second["objects"] == first["objects"]  # the skipped blob keeps its row
+    # The skipped blob is recorded as the listing reports it now, not as it was staged.
+    assert second["objects"][0] == {**first["objects"][0], "md5_hash": "bGlzdGVkLW1kNQ=="}
+    assert second["objects"][1] == first["objects"][1]
 
 
 def test_changed_generation_downloads_again(tmp_path):

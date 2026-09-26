@@ -202,11 +202,12 @@ def stage_handoff_capture(
             name=blob_name,
             relative_path=PurePosixPath(*blob_path.parts[prefix_depth:]).as_posix(),
         )
+        # Every row is the listing's view of the object now; a skipped object
+        # only keeps its local bytes.
+        manifest_rows.append(row)
         previous = previously_staged.get(blob_name)
         if previous is not None and _staged_copy_is_current(previous, row, destination):
-            manifest_rows.append(previous)
             continue
-        manifest_rows.append(row)
         downloads.append((blob, destination))
 
     for blob, destination in downloads:
@@ -284,7 +285,16 @@ def _staged_copy_is_current(
 ) -> bool:
     """Whether the object is unchanged since it was staged and its local copy is intact.
 
-    An object whose generation or size is unknown is never assumed unchanged.
+    Unchanged means the listing still reports the generation and size recorded
+    at the last successful staging. An object whose generation or size is
+    unknown is never assumed unchanged.
+
+    The local copy counts as intact when it is a regular file of that same
+    size; its bytes are not hashed. A local edit that keeps the size is
+    therefore not undone by restaging. Staging's consumers catch that case:
+    run_e2e always reruns materialization, which rebuilds the descriptor and
+    QA projections, and the raw verifier checks raw bytes against
+    raw/hashes.json.
     """
 
     generation = current.get("generation")
