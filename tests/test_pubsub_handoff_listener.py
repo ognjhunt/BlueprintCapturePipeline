@@ -2082,3 +2082,39 @@ def test_each_message_is_acknowledged_as_soon_as_it_finishes(tmp_path, monkeypat
     # message cannot outlive the earlier message's ack deadline.
     assert seen_when_processing == [([], False), (["a1", "poison"], True)]
     assert [request["ack_ids"] for request in subscriber.acknowledge_requests] == [["a1"], ["poison"], ["a2"]]
+
+
+def _acknowledged_capture_with_ledger(tmp_path: Path) -> Path:
+    capture_root = _capture_root(tmp_path)
+    capture_root.mkdir(parents=True)
+    (capture_root / "pipeline_job_ledger.json").write_text('{"status": "completed"}', encoding="utf-8")
+    (capture_root / ".pipeline_job_ledger.json.lock").touch()
+    return capture_root
+
+
+@pytest.mark.parametrize("disposition,recorded", [
+    ("terminal_success", True),
+    ("terminal_authority_ended", True),
+    ("terminal_mystery", False),
+    (None, False),
+])
+def test_ack_receipts_record_only_known_dispositions(tmp_path, monkeypatch, caplog, disposition, recorded):
+    capture_root = _acknowledged_capture_with_ledger(tmp_path)
+    result = {"status": "processed", "capture_root": str(capture_root)}
+    if disposition is not None:
+        result["queue_disposition"] = disposition
+    subscriber = FakeSubscriber([_received(ack_id="a1", data=PAYLOAD_BYTES)])
+    monkeypatch.setattr(google.cloud, "pubsub_v1",
+                        types.SimpleNamespace(SubscriberClient=lambda: subscriber), raising=False)
+    monkeypatch.setattr(listener_module, "process_handoff_payload", lambda *_args, **_kwargs: result)
+    caplog.set_level(logging.WARNING, logger=listener_module.logger.name)
+
+    assert _pull(tmp_path) == 1
+
+    receipt = capture_root / "pipeline_job_ack_receipt.json"
+    if recorded:
+        assert _read(receipt)["disposition"] == disposition
+    else:
+        assert not receipt.exists()
+        assert any(record.getMessage() == "pubsub_handoff.ack_receipt_skipped_disposition_unrecognized"
+                   for record in caplog.records)

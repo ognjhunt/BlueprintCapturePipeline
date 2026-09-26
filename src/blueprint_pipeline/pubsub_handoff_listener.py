@@ -558,6 +558,8 @@ JOB_TERMINAL_RECEIPT_FILENAME = "pipeline_job_terminal_receipt.json"
 JOB_TERMINAL_RECEIPT_SCHEMA_VERSION = "pipeline_job_terminal_receipt.v1"
 JOB_ACK_RECEIPT_FILENAME = "pipeline_job_ack_receipt.json"
 JOB_ACK_RECEIPT_SCHEMA_VERSION = "pubsub_handoff_ack_receipt.v1"
+# The only outcomes an ack receipt may record; retirement matches them to the ledger.
+_ACK_RECEIPT_DISPOSITIONS = frozenset({"terminal_success", TERMINAL_AUTHORITY_STATUS})
 STAGING_MANIFEST_FILENAME = "pipeline_staging_manifest.json"
 STAGING_MANIFEST_SCHEMA_VERSION = "pipeline_handoff_staging_manifest.v1"
 PROVIDER_OPS_STATUS_SCHEMA_VERSION = "provider_ops_status.v1"
@@ -2208,6 +2210,13 @@ def _record_acknowledgement(
     if not capture_root:
         return
     message_id = _string(getattr(message, "message_id", None)) or None
+    disposition = _string(result.get("queue_disposition"))
+    if disposition not in _ACK_RECEIPT_DISPOSITIONS:
+        logger.warning(
+            "pubsub_handoff.ack_receipt_skipped_disposition_unrecognized",
+            extra={"message_id": message_id, "queue_disposition": disposition or None},
+        )
+        return
     delivery_attempt = getattr(received, "delivery_attempt", None)
     try:
         written = _write_ack_receipt(
@@ -2218,9 +2227,7 @@ def _record_acknowledgement(
             delivery_attempt=delivery_attempt
             if isinstance(delivery_attempt, int) and not isinstance(delivery_attempt, bool)
             else None,
-            disposition=TERMINAL_AUTHORITY_STATUS
-            if result.get("queue_disposition") == TERMINAL_AUTHORITY_STATUS
-            else "terminal_success",
+            disposition=disposition,
         )
     except (OSError, ValueError):
         logger.exception("pubsub_handoff.ack_receipt_write_failed", extra={"message_id": message_id})
