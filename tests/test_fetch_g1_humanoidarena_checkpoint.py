@@ -72,6 +72,48 @@ def test_fetch_then_verify_exact_candidate_bytes(tmp_path: Path, monkeypatch) ->
     assert len(calls) == 1
 
 
+def test_private_cache_fetch_uses_pinned_url_and_redacts_transport_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    content = b"cached-checkpoint"
+    inventory = _inventory(tmp_path, content)
+    private_url = "https://private.example/model?signature=secret"
+    cache_manifest = tmp_path / "private-cache.json"
+    cache_manifest.write_text(json.dumps({
+        "schema_version": "native_g1_private_checkpoint_transfer.v1",
+        "files": [{
+            "relative_path": "small/HOI_pp_box/model/config.json",
+            "sha256": "sha256:" + hashlib.sha256(content).hexdigest(),
+            "size_bytes": len(content), "url": private_url,
+        }],
+    }))
+    calls: list[str] = []
+
+    def open_private(url: str) -> _Response:
+        calls.append(url)
+        return _Response(content, url)
+
+    monkeypatch.setattr(fetch, "_open_https", open_private)
+    result = fetch.materialize_candidate(
+        inventory_path=inventory, candidate_id="dp", output_dir=tmp_path / "out",
+        cache_manifest_path=cache_manifest,
+    )
+    assert result["status"] == "checkpoint_bytes_verified"
+    assert calls == [private_url]
+    assert private_url not in json.dumps(result)
+
+    def fail_private(url: str) -> _Response:
+        raise OSError("sensitive URL was " + url)
+
+    monkeypatch.setattr(fetch, "_open_https", fail_private)
+    with pytest.raises(ValueError, match="g1_checkpoint_private_cache_transfer_failed:OSError") as exc:
+        fetch.materialize_candidate(
+            inventory_path=inventory, candidate_id="dp", output_dir=tmp_path / "second",
+            cache_manifest_path=cache_manifest,
+        )
+    assert private_url not in str(exc.value)
+
+
 def test_bad_download_never_publishes_checkpoint(tmp_path: Path, monkeypatch) -> None:
     inventory = _inventory(tmp_path, b"expected")
     monkeypatch.setattr(

@@ -37,6 +37,25 @@ from blueprint_pipeline.vast_independent_watchdog_control import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _fake_private_checkpoint_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Paid controller tests isolate cache transfer from the provider mock."""
+
+    monkeypatch.setenv(lane.CACHE_ROOT_ENV, str(tmp_path / "checkpoint-cache"))
+    secret = tmp_path / "private-cache-urls.json"
+    secret.write_text("private-test-url")
+    monkeypatch.setattr(lane, "stage_g1_checkpoint_cache", lambda **_kwargs: {
+        "status": "completed", "file_count": 24, "cache_hit_count": 24,
+        "upload_count": 0, "inventory_rows_digest": "sha256:" + "1" * 64,
+        "signed_url_file_path": str(secret), "raw_signed_urls_recorded": False,
+    })
+    monkeypatch.setattr(lane, "close_g1_checkpoint_cache", lambda _path: {
+        "status": "completed", "signed_url_file_removed": True,
+    })
+
+
 def _args(tmp_path: Path, **changes: object) -> SimpleNamespace:
     value = {
         "provider": "vast",
@@ -133,6 +152,66 @@ def test_exact_main_and_sealed_receipt_required_before_paid_mutation(
     assert "g1_paid_campaign_controller_not_exact_main" in result["blockers"]
     assert "g1_paid_campaign_execute_requires_dry_run_bundle_receipt" in result["blockers"]
     assert json.loads((tmp_path / "admission.json").read_text())["status"] == "blocked"
+
+
+def test_paid_g1_refuses_missing_private_checkpoint_cache_before_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commit = "a" * 40
+    monkeypatch.delenv(lane.CACHE_ROOT_ENV)
+    monkeypatch.setattr(
+        lane, "load_verified_g1_provider_bundle",
+        lambda *_a, **_k: {"status": "ready", "bundle_sha256": "sha256:" + "b" * 64},
+    )
+    monkeypatch.setattr(
+        lane, "run_arena_native_control_vast",
+        lambda **_kwargs: pytest.fail("provider called without private cache"),
+    )
+    result = lane.dispatch_g1_paid_campaign(
+        _args(tmp_path, g1_campaign_bundle_receipt=str(tmp_path / "receipt.json")),
+        control_identity={
+            "orchestrator_source_commit": commit,
+            "origin_main_commit": commit,
+            "remote_main_commit": commit,
+        },
+        control_blockers=[],
+    )
+    assert result["status"] == "blocked"
+    assert result["blockers"] == ["g1_private_checkpoint_cache_root_missing"]
+    assert result["provider_mutations_performed"] == 0
+    assert json.loads((tmp_path / "admission.json").read_text())["status"] == "blocked"
+
+
+def test_no_spend_dry_run_stages_private_cache_before_declaring_admitted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commit = "a" * 40
+    bundle = {"status": "ready", "bundle_sha256": "sha256:" + "b" * 64}
+    monkeypatch.setattr(lane, "load_verified_g1_provider_bundle", lambda *_a, **_k: bundle)
+    seen: dict[str, object] = {}
+
+    def fake_run(**kwargs: object) -> dict[str, object]:
+        seen.update(kwargs)
+        return {"status": "ready_no_spend"}
+
+    monkeypatch.setattr(lane, "run_arena_native_control_vast", fake_run)
+    args = _args(tmp_path, execute=False,
+                 g1_campaign_bundle_receipt=str(tmp_path / "receipt.json"))
+    result = lane.dispatch_g1_paid_campaign(
+        args,
+        control_identity={
+            "orchestrator_source_commit": commit,
+            "origin_main_commit": commit,
+            "remote_main_commit": commit,
+        },
+        control_blockers=[],
+    )
+    assert result["status"] == "ready_no_spend"
+    assert seen["execute"] is False
+    assert seen["runtime_secret_file_paths"] == {
+        lane.PROVIDER_CACHE_FILE_ENV: str(tmp_path / "private-cache-urls.json")
+    }
+    assert json.loads((tmp_path / "admission.json").read_text())["status"] == "admitted"
 
 
 def test_active_deployed_release_survives_main_advance_but_rechecks_before_create(

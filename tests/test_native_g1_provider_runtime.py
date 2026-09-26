@@ -60,8 +60,11 @@ def test_model_staging_fetches_distinct_candidates_concurrently_in_pair_order(
 ) -> None:
     barrier = threading.Barrier(len(PAIR_ORDER))
     stages: list[str] = []
+    cache_manifest = tmp_path / "private-cache.json"
 
-    def fetch(*, inventory_path: Path, candidate_id: str, output_dir: Path) -> dict:
+    def fetch(*, inventory_path: Path, candidate_id: str, output_dir: Path,
+              cache_manifest_path: Path) -> dict:
+        assert cache_manifest_path == cache_manifest
         stages.append("checkpoint")
         barrier.wait(timeout=5)
         return {"status": "checkpoint_bytes_verified", "candidate_id": candidate_id}
@@ -85,7 +88,9 @@ def test_model_staging_fetches_distinct_candidates_concurrently_in_pair_order(
     monkeypatch.setattr(provider_runtime, "preflight_sonic_cuda_models", probe)
     output = tmp_path / "output"
     output.mkdir()
-    result = _stage_models(tmp_path / "runtime", output)
+    result = _stage_models(
+        tmp_path / "runtime", output, cache_manifest_path=cache_manifest,
+    )
 
     assert stages[:2] == ["sonic", "cuda-session-probe"]
     assert result["sonic_cuda_preflight"]["status"] == "sonic_cuda_sessions_ready_no_inference"

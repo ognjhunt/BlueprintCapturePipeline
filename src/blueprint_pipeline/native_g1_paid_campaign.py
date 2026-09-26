@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import zipfile
 from pathlib import Path
 from typing import Any, Callable
@@ -18,6 +19,12 @@ from .native_g1_development_pair import (
     TRACE_FILENAME,
     _score_from_episode,
     _verified_review_media,
+)
+from .native_g1_checkpoint_cache import (
+    CACHE_ROOT_ENV,
+    PROVIDER_CACHE_FILE_ENV,
+    close_g1_checkpoint_cache,
+    stage_g1_checkpoint_cache,
 )
 from .native_g1_provider_bundle import (
     PROVIDER_BUNDLE_KIND,
@@ -259,6 +266,25 @@ def dispatch_g1_paid_campaign(
                 raise ValueError("g1_paid_campaign_bundle_receipt_missing")
         except (OSError, ValueError, json.JSONDecodeError, zipfile.BadZipFile) as exc:
             blockers.append("g1_paid_campaign_bundle_preparation_failed:" + type(exc).__name__)
+    cache_job = Path(args.adp_job_dir) / "private_checkpoint_cache" if args.adp_job_dir else None
+    cache_staging: dict[str, Any] | None = None
+    if not blockers and bundle is not None and cache_job is not None:
+        cache_root = os.environ.get(CACHE_ROOT_ENV)
+        if not cache_root:
+            blockers.append("g1_private_checkpoint_cache_root_missing")
+        else:
+            try:
+                cache_staging = stage_g1_checkpoint_cache(
+                    cache_root=Path(cache_root), job_dir=cache_job,
+                    key_prefix=os.getenv(
+                        "BLUEPRINT_ADP_ARENA_OBJECT_STORE_PREFIX", "blueprint/adp-arena"
+                    ),
+                    expiration_seconds=max(ttl + 1800, 18_000),
+                )
+            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                blockers.append(
+                    "g1_private_checkpoint_cache_staging_failed:" + type(exc).__name__
+                )
     allocation_binding = {
         "program_id": "arm-decision-proof-v1",
         "probe_kind": PROBE_KIND,
@@ -273,6 +299,9 @@ def dispatch_g1_paid_campaign(
         "runtime_source_packet_sha256": (
             (bundle.get("runtime_source_packet") or {}).get("packet_sha256")
             if bundle else None
+        ),
+        "checkpoint_cache_rows_digest": (
+            cache_staging.get("inventory_rows_digest") if cache_staging else None
         ),
         "max_hourly_rate_usd": rate,
         "hard_cap_usd": cap,
@@ -290,6 +319,9 @@ def dispatch_g1_paid_campaign(
         "release_authority": release_authority,
         "bundle_sha256": bundle.get("bundle_sha256") if bundle else None,
         "campaign_plan_digest": bundle.get("campaign_plan_digest") if bundle else None,
+        "checkpoint_cache_rows_digest": (
+            cache_staging.get("inventory_rows_digest") if cache_staging else None
+        ),
         "max_hourly_rate_usd": rate,
         "hard_cap_usd": cap,
         "hard_ttl_seconds": ttl,
@@ -318,6 +350,8 @@ def dispatch_g1_paid_campaign(
             except PaidResourceAdmissionBlocked as exc:
                 result = {"schema_version": RESULT_SCHEMA, "status": "blocked",
                           "blockers": exc.blockers, "provider_mutations_performed": 0}
+                if cache_staging is not None and cache_job is not None:
+                    close_g1_checkpoint_cache(cache_job)
                 if args.adapter_output:
                     write_json(Path(args.adapter_output), result)
                 return result
@@ -358,30 +392,44 @@ def dispatch_g1_paid_campaign(
                     "blockers": ["g1_paid_campaign_attempt_already_consumed"],
                 }
             return consumption
-        result = run_arena_native_control_vast(
-            pre_provider_mutation_hook=before_provider_create if args.execute else None,
-            approval_path=args.g1_campaign_bundle_receipt or args.g1_campaign_book_handoff,
-            job_dir=args.adp_job_dir,
-            paid_resource_admission_grant=grant,
-            execute=args.execute,
-            prepared_bundle=bundle,
-            machine_avoidlist_path=args.adp_machine_avoidlist,
-            max_hourly_rate_usd=rate,
-            hard_cap_usd=cap,
-            hard_ttl_seconds=ttl,
-            expected_output_filename=RESULT_FILENAME,
-            container_image=NATIVE_TASK_ARENA_IMAGE,
-            provider_bundle_kind=PROVIDER_BUNDLE_KIND,
-            result_schema_version=RESULT_SCHEMA,
-            instance_label_prefix=INSTANCE_LABEL_PREFIX,
-            blocker_prefix="native_g1_campaign",
-            min_gpu_ram_mb=48_000,
-            candidate_policy_query_expected=True,
-            require_independent_watchdog=True,
-            allowed_active_instance_ids=args.adp_allowed_active_vast_instance_id,
-            expected_provider_download_bytes=12_000_000_000,
-            expected_provider_upload_bytes=10_000_000_000,
-        )
+        try:
+            result = run_arena_native_control_vast(
+                pre_provider_mutation_hook=before_provider_create if args.execute else None,
+                approval_path=args.g1_campaign_bundle_receipt or args.g1_campaign_book_handoff,
+                job_dir=args.adp_job_dir,
+                paid_resource_admission_grant=grant,
+                execute=args.execute,
+                prepared_bundle=bundle,
+                machine_avoidlist_path=args.adp_machine_avoidlist,
+                max_hourly_rate_usd=rate,
+                hard_cap_usd=cap,
+                hard_ttl_seconds=ttl,
+                expected_output_filename=RESULT_FILENAME,
+                container_image=NATIVE_TASK_ARENA_IMAGE,
+                provider_bundle_kind=PROVIDER_BUNDLE_KIND,
+                result_schema_version=RESULT_SCHEMA,
+                instance_label_prefix=INSTANCE_LABEL_PREFIX,
+                blocker_prefix="native_g1_campaign",
+                min_gpu_ram_mb=48_000,
+                candidate_policy_query_expected=True,
+                require_independent_watchdog=True,
+                allowed_active_instance_ids=args.adp_allowed_active_vast_instance_id,
+                expected_provider_download_bytes=12_000_000_000,
+                expected_provider_upload_bytes=10_000_000_000,
+                **({"runtime_secret_file_paths": {
+                    PROVIDER_CACHE_FILE_ENV: cache_staging["signed_url_file_path"]
+                }} if cache_staging else {}),
+            )
+        finally:
+            if cache_staging is not None and cache_job is not None:
+                close_g1_checkpoint_cache(cache_job)
+        if cache_staging is not None:
+            result["private_checkpoint_cache"] = {
+                key: cache_staging[key] for key in (
+                    "status", "file_count", "cache_hit_count", "upload_count",
+                    "inventory_rows_digest", "raw_signed_urls_recorded",
+                )
+            }
         if args.execute and result.get("status") == "completed":
             try:
                 result["g1_output_verification"] = verify_g1_paid_output(result, bundle)
