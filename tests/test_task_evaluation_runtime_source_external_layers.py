@@ -16,12 +16,17 @@ import hashlib
 import json
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from blueprint_pipeline import task_evaluation_configured_scene_object_store as store
 from blueprint_pipeline import task_evaluation_launch_preparation_worker as worker
 from blueprint_pipeline import task_evaluation_activation_runtime_layers as activation_layers
+from blueprint_pipeline.control_plane_disk_budget import (
+    ControlPlaneDiskBudgetError,
+    reserve_control_plane_disk,
+)
 from blueprint_pipeline.task_evaluation_episode_compilation_worker import (
     COMPILATION_RESERVATION_MARGIN_BYTES,
     _expected_compilation_bytes,
@@ -519,6 +524,23 @@ def test_compilation_reserves_only_the_runtime_members_the_member_store_lacks(
         _expected_compilation_bytes(references(wrapper), content_store_root=store_root)
         == COMPILATION_RESERVATION_MARGIN_BYTES
     )
+    # The retained drawer run had 1.5 GiB above the 8 GiB floor. Cache hits
+    # should be admitted there; genuinely missing large members still refuse.
+    gib = 1024**3
+    def usage(_path: Path) -> SimpleNamespace:
+        return SimpleNamespace(total=100 * gib, used=int(90.5 * gib), free=int(9.5 * gib))
+    reservation = reserve_control_plane_disk(
+        "episode_compilation", target_root=tmp_path,
+        expected_bytes=_expected_compilation_bytes(references(wrapper), content_store_root=store_root),
+        reservation_root=tmp_path / "reservations", disk_usage=usage,
+    )
+    reservation.release()
+    with pytest.raises(ControlPlaneDiskBudgetError, match="control_plane_disk_budget_exceeded"):
+        reserve_control_plane_disk(
+            "episode_compilation", target_root=tmp_path,
+            expected_bytes=COMPILATION_RESERVATION_MARGIN_BYTES + 2 * gib,
+            reservation_root=tmp_path / "reservations", disk_usage=usage,
+        )
 
     with zipfile.ZipFile(v1_wrapper) as archive:
         v1_entries = json.loads(archive.read(MANIFEST_NAME))["entries"]
