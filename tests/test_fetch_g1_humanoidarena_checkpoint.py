@@ -221,6 +221,10 @@ def test_large_checkpoint_deadline_cleans_partial_without_publication(
     assert not list(output.rglob(".g1-checkpoint-*"))
 
 
+def test_large_checkpoint_deadline_is_bounded_to_thirty_minutes() -> None:
+    assert fetch.RANGED_DOWNLOAD_DEADLINE_SECONDS == 30 * 60
+
+
 def test_pinned_navigation_candidates_are_distinct_40_value_movement_policies() -> None:
     inventory = json.loads(fetch.DEFAULT_INVENTORY.read_text())
     candidates = {row["candidate_id"]: row for row in inventory["candidates"]}

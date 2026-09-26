@@ -22,7 +22,11 @@ from typing import Any
 
 MODEL_BASE = "https://modelscope.cn/models/Twang2026/HumanoidArena_models/resolve/master/"
 RANGED_DOWNLOAD_MIN_BYTES = 512 * 1024 * 1024
-RANGED_DOWNLOAD_DEADLINE_SECONDS = 15 * 60
+# Large pi0.5 weights are 9.35 GB each. The previous 15-minute deadline
+# exhausted on a healthy but slow source transfer before any policy query.
+# Both large candidates are fetched concurrently under the allocator's
+# independent four-hour paid-run TTL and dollar cap.
+RANGED_DOWNLOAD_DEADLINE_SECONDS = 30 * 60
 DEFAULT_INVENTORY = (
     Path(__file__).resolve().parents[1]
     / "configs/g1_humanoidarena_checkpoint_inventory.v1.json"
@@ -204,6 +208,10 @@ def materialize_candidate(
                 if _sha256_and_size(temporary) != expected:
                     raise ValueError("g1_checkpoint_download_identity_mismatch")
                 os.link(temporary, destination)
+            except _DownloadDeadlineExceeded as exc:
+                raise _DownloadDeadlineExceeded(
+                    f"g1_checkpoint_download_deadline_exceeded:{candidate_id}:{relative}"
+                ) from exc
             finally:
                 if temporary is not None:
                     temporary.unlink(missing_ok=True)
