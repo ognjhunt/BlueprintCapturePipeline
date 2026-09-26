@@ -347,17 +347,18 @@ def test_apply_rewrites_fstab_atomically_after_a_backup(tmp_path: Path) -> None:
     assert sorted(p.name for p in fstab.parent.iterdir()) == sorted(["fstab", backups[0].name])
 
 
-def test_apply_refuses_to_move_a_root_over_a_copy_an_earlier_move_kept(tmp_path: Path) -> None:
+@pytest.mark.parametrize("suffix", [".migrated-to-volume", ".new-mount-point"])
+def test_apply_refuses_to_move_a_root_beside_what_an_earlier_move_left(tmp_path: Path, suffix: str) -> None:
     state = _state(tmp_path)
-    kept = state / "task-evaluation-inputs.migrated-to-volume"
-    kept.mkdir()
-    (kept / "evidence.bin").write_bytes(b"e" * 64)
+    left = state / f"task-evaluation-inputs{suffix}"
+    left.mkdir()
+    (left / "evidence.bin").write_bytes(b"e" * 64)
 
     applied = _run("--device", "/dev/null", "--root-prefix", str(tmp_path), "--apply", "--ack", ACK)
 
     assert applied.returncode == 2, applied.stderr + applied.stdout
-    assert f"{kept}" in applied.stderr
-    assert (kept / "evidence.bin").read_bytes() == b"e" * 64
+    assert f"{left}" in applied.stderr
+    assert (left / "evidence.bin").read_bytes() == b"e" * 64
     assert (state / "task-evaluation-inputs" / "prepared-references" / "payload.bin").is_file()
     assert not (tmp_path / "mnt" / "blueprint-work" / "task-evaluation-inputs").exists()
 
@@ -374,17 +375,25 @@ def test_apply_refuses_a_bound_child_the_volume_has_no_copy_of(tmp_path: Path) -
     assert (_tree(state), bound.read_text(encoding="utf-8")) == before
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="root writes through a read-only file")
-def test_apply_keeps_the_old_binds_when_one_will_not_unmount(tmp_path: Path) -> None:
+@pytest.mark.parametrize("busy", ["prepared-references", "compiled-episodes"])
+def test_apply_binds_back_what_it_undid_when_a_child_will_not_unmount(tmp_path: Path, busy: str) -> None:
     state, volume, bound = _bound_state(tmp_path)
-    bound.chmod(0o444)  # the hermetic stand-in for a busy mount point
-    before = _tree(state), bound.read_text(encoding="utf-8")
+    (state / "task-evaluation-inputs" / "compiled-episodes").mkdir()
+    (volume / "task-evaluation-inputs" / "compiled-episodes").mkdir()
+    children = {name: f"/var/lib/blueprint/task-evaluation-inputs/{name}" for name in ("prepared-references", "compiled-episodes")}
+    # "busy" marks a mount point that will not unmount: the hermetic stand-in for EBUSY.
+    bound.write_text("".join(f"{path}{' busy' if name == busy else ''}\n" for name, path in children.items()), encoding="utf-8")
+    before = _tree(state)
 
     applied = _run(*_hermetic(tmp_path, bound), "--apply", "--ack", ACK)
 
     assert applied.returncode == 2, applied.stderr + applied.stdout
-    assert "could not unmount /var/lib/blueprint/task-evaluation-inputs/prepared-references" in applied.stderr
-    assert (_tree(state), bound.read_text(encoding="utf-8")) == before
+    assert f"could not unmount {children[busy]}" in applied.stderr
+    # Deepest first unmounts prepared-references first; whatever was undone is bound back.
+    assert sorted(line.split()[0] for line in bound.read_text(encoding="utf-8").splitlines()) == sorted(children.values())
+    if busy == "compiled-episodes":
+        assert f"bound back {state}/task-evaluation-inputs/prepared-references" in applied.stdout
+    assert _tree(state) == before, "nothing moved, and the prepared mount point is gone again"
     assert (volume / "task-evaluation-inputs" / "prepared-references" / "payload.bin").is_file()
 
 

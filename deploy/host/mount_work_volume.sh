@@ -130,7 +130,8 @@ usage: $0 --device /dev/disk/by-id/<volume> [--mount ${MOUNT_DEFAULT}] [--plan |
                       made, and DIR/etc/fstab is edited only when it exists)
   --bound-roots-file  with --root-prefix: the mount points to assume, one host path
                       per line as findmnt lists them; apply edits it in place of
-                      mount and umount
+                      mount and umount.  A path followed by "busy" will not
+                      unmount (the stand-in for EBUSY)
 USAGE
 }
 
@@ -308,6 +309,9 @@ is_volume_bind() {  # child host path, the filesystem root it must bind from the
 
 # --- /etc/fstab ----------------------------------------------------------------
 FSTAB_BACKUP=""
+FSTAB_NEXT=""     # a rewritten fstab beside the real one, not yet renamed into place
+FSTAB_NOTE=""
+FSTAB_CHANGED=""
 
 fstab_enabled() { [ -z "${ROOT_PREFIX}" ] || [ -f "${FSTAB}" ]; }
 
@@ -331,33 +335,53 @@ backup_fstab() {  # once per run, before the first edit
   echo "backed up ${FSTAB} to ${FSTAB_BACKUP}"
 }
 
-# Record a root's bind and drop its bound children's entries in one atomic rename
-# (a temp file beside /etc/fstab with the same mode), after a backup.
-fstab_record_root() {  # index
-  fstab_enabled || return 0
-  local i="$1" host="${ROOT_HOST[$1]}" rel drop="" add=0 tmp before hits after
-  local line="${MOUNT}/${ROOT_VREL[$1]} ${ROOT_HOST[$1]} none bind 0 0"
+# Write the rewritten /etc/fstab beside it, keeping its mode: the entries whose
+# targets $1 lists (one per line) dropped, and entry $2 appended when its target
+# has none.  Nothing changes until fstab_install renames it into place, so the
+# write (and the backup) can come before the first change of a swap.
+fstab_prepare() {  # targets to drop, entry to add (may be empty)
+  local drop="$1" line="$2" add=0 target tmp before hits after
   local begin='BEGIN { count = split(ENVIRON["DROP"], names, "\n"); for (k = 1; k <= count; k++) if (names[k] != "") drop[names[k]] = 1 }'
   # shellcheck disable=SC2016  # awk code: $2 is awk's second field
   local match='!/^[[:space:]]*#/ && ($2 in drop)'
-  # shellcheck disable=SC2086  # child names were validated: no whitespace or glob characters
-  for rel in ${CHILDREN[i]}; do drop="${drop}${host}/${rel}"$'\n'; done
-  fstab_has_target "${host}" || add=1
+  FSTAB_NEXT=""
+  FSTAB_NOTE=""
+  if [ -n "${line}" ]; then
+    target="${line#* }"
+    target="${target%% *}"
+    fstab_has_target "${target}" || add=1
+  fi
   if [ -z "${drop}" ] && [ "${add}" -eq 0 ]; then return 0; fi
   backup_fstab
   tmp="${FSTAB}.blueprint-edit.$$"
   before="$(awk 'END { print NR }' "${FSTAB}")"
   hits="$(DROP="${drop}" awk "${begin} ${match} { hits++ } END { print hits + 0 }" "${FSTAB}")"
   cp -p "${FSTAB}" "${tmp}"
+  FSTAB_NEXT="${tmp}"
   DROP="${drop}" awk "${begin} ${match} { next } { print }" "${FSTAB}" > "${tmp}"
   if [ "${add}" -eq 1 ]; then printf '%s\n' "${line}" >> "${tmp}"; fi
   after="$(awk 'END { print NR }' "${tmp}")"
   if [ "${after}" -ne $((before - hits + add)) ]; then
-    rm -f "${tmp}"
     refuse 2 "the rewritten ${FSTAB} has ${after} lines, not $((before - hits + add)); left it unchanged"
   fi
-  mv "${tmp}" "${FSTAB}"
-  echo "recorded ${line} in ${FSTAB}${drop:+, dropped $(printf '%s' "${drop%$'\n'}" | tr '\n' ' ')}"
+  if [ "${add}" -eq 1 ]; then FSTAB_NOTE="recorded ${line} in ${FSTAB}"; else FSTAB_NOTE="rewrote ${FSTAB}"; fi
+  FSTAB_NOTE="${FSTAB_NOTE}${drop:+, dropped $(printf '%s' "${drop%$'\n'}" | tr '\n' ' ')}"
+}
+
+fstab_prepare_root() {  # index: drop the bound children's entries, record the root's bind
+  fstab_enabled || return 0
+  local i="$1" host="${ROOT_HOST[$1]}" rel drop=""
+  # shellcheck disable=SC2086  # child names were validated: no whitespace or glob characters
+  for rel in ${CHILDREN[i]}; do drop="${drop}${host}/${rel}"$'\n'; done
+  fstab_prepare "${drop}" "${MOUNT}/${ROOT_VREL[$1]} ${host} none bind 0 0"
+}
+
+fstab_install() {  # one atomic rename
+  [ -n "${FSTAB_NEXT}" ] || return 0
+  mv -- "${FSTAB_NEXT}" "${FSTAB}"
+  FSTAB_NEXT=""
+  FSTAB_CHANGED="yes"
+  echo "${FSTAB_NOTE}"
 }
 
 # --- classification ------------------------------------------------------------
@@ -386,6 +410,8 @@ classify_roots() {
       STATUS[i]=bound
     elif exists "${root}.migrated-to-volume"; then
       block "${i}" "an earlier move kept ${root}.migrated-to-volume; reconcile it with ${dest} first"
+    elif exists "${root}.new-mount-point"; then
+      block "${i}" "an earlier move left ${root}.new-mount-point; check it and remove it first"
     elif [ -L "${root}" ]; then
       block "${i}" "the root is a symlink"
     elif ! exists "${root}"; then
@@ -591,20 +617,46 @@ bind_at() {  # volume path, host path of the mount point
   fi
 }
 
+held_busy() {  # hermetic: the bound-roots file marks a mount point that will not unmount
+  local i=0
+  while [ "${i}" -lt "${#MT_TARGET[@]}" ]; do
+    if [ "${MT_TARGET[i]}" = "$1" ] && [ "${MT_DEVICE[i]}" = busy ]; then return 0; fi
+    i=$((i + 1))
+  done
+  return 1
+}
+
 unbind_at() {  # host path of a mount point
   if [ -z "${ROOT_PREFIX}" ]; then
     umount "$1"
   else
+    if held_busy "$1"; then return 1; fi
     local tmp="${BOUND_ROOTS_FILE}.edit.$$"
     cp -p "${BOUND_ROOTS_FILE}" "${tmp}" &&
-      LINE="$1" awk '$0 != ENVIRON["LINE"]' "${BOUND_ROOTS_FILE}" > "${tmp}" &&
+      LINE="$1" awk '$1 != ENVIRON["LINE"]' "${BOUND_ROOTS_FILE}" > "${tmp}" &&
       mv "${tmp}" "${BOUND_ROOTS_FILE}"
+  fi
+}
+
+# Rename $1 to $2, which must not exist, so it can never land inside a directory
+# that appeared there meanwhile.  GNU mv -T renames onto the name itself (at most
+# replacing an empty directory); the hermetic path checks first.
+rename_to() {
+  if [ -z "${ROOT_PREFIX}" ]; then
+    mv -T -- "$1" "$2"
+  elif exists "$2"; then
+    echo "$2 appeared during the swap" >&2
+    return 1
+  else
+    mv -- "$1" "$2"
   fi
 }
 
 # A root between its old and new mounts.  The worker units stay stopped while one
 # is set, so nothing writes into a half-swapped tree.
 SWAPPING=""
+# A prepared mount point that has not been renamed into place yet.
+STAGED=""
 
 rebind_children() {  # index, then the children unbound so far (deepest first)
   local i="$1" host="${ROOT_HOST[$1]}" vrel="${ROOT_VREL[$1]}" k
@@ -656,23 +708,32 @@ swap_root() {  # index
     owner="$(stat -f '%u:%g' "${root}")"
     mode="$(stat -f '%OLp' "${root}")"
   fi
-  SWAPPING="${root}"
+  # Everything the swap writes to the root disk comes first (the new mount point
+  # and the rewritten fstab), so a full disk refuses here and never halfway.
+  STAGED="${root}.new-mount-point"
+  mkdir "${STAGED}"
+  chown "${owner}" "${STAGED}"
+  chmod "${mode}" "${STAGED}"
+  fstab_prepare_root "${i}"
   if [ "${STATUS[i]}" = consolidate ]; then
+    SWAPPING="${root}"
     unbind_children "${i}"
   else
     load_mount_table
     below="$(mounts_below "${host}")"
     if [ -n "${below}" ] || is_mount_point "${host}"; then
-      SWAPPING=""
       refuse 2 "${host} gained a mount during the copy; it was not moved" "${below}"
     fi
+    SWAPPING="${root}"
   fi
-  mv "${root}" "${kept}"
-  mkdir "${root}"
-  chown "${owner}" "${root}"
-  chmod "${mode}" "${root}"
-  fstab_record_root "${i}"
+  # Two renames and a mount.  Intake stays up and may recreate a cache root it
+  # writes; if it does so in between, the second rename fails instead of landing
+  # inside it.
+  rename_to "${root}" "${kept}"
+  rename_to "${STAGED}" "${root}"
+  STAGED=""
   bind_at "${dest}" "${host}"
+  fstab_install
   SWAPPING=""
   echo "bound    ${root} <- ${dest}"
 
@@ -698,13 +759,24 @@ swap_root() {  # index
 RUNNING_UNITS=()
 
 restart_units() {
-  if [ -n "${SWAPPING}" ]; then
-    echo "leaving the worker units stopped: ${SWAPPING} is between its old and new mounts; finish or undo that swap by hand, then start: ${RUNNING_UNITS[*]:-nothing}" >&2
-    return 0
-  fi
   [ "${#RUNNING_UNITS[@]}" -gt 0 ] || return 0
   echo "restarting worker units that were running: ${RUNNING_UNITS[*]}"
   systemctl start "${RUNNING_UNITS[@]}" || true
+}
+
+# On every exit of an apply: reload systemd once /etc/fstab changed, so the old
+# children's generated mount units cannot come back over the tree; then, unless a
+# root is half swapped, drop staging that never went live and start again the
+# units that were running.
+finish() {
+  if [ -z "${ROOT_PREFIX}" ] && [ -n "${FSTAB_CHANGED}" ]; then systemctl daemon-reload || true; fi
+  if [ -n "${SWAPPING}" ]; then
+    echo "leaving the worker units stopped: ${SWAPPING} is between its old and new mounts${FSTAB_NEXT:+, and its rewritten fstab waits at ${FSTAB_NEXT}}; finish or undo the swap by hand (docs/CONTROL_PLANE_STORAGE.md, Volume layout), then start: ${RUNNING_UNITS[*]:-nothing}" >&2
+    return 0
+  fi
+  if [ -n "${STAGED}" ]; then rmdir -- "${STAGED}" 2>/dev/null || true; fi
+  if [ -n "${FSTAB_NEXT}" ]; then rm -f -- "${FSTAB_NEXT}"; fi
+  restart_units
 }
 
 stop_units() {
@@ -713,7 +785,6 @@ stop_units() {
     if systemctl is-active --quiet "${unit}"; then RUNNING_UNITS+=("${unit}"); fi
   done
   echo "stopping worker units for the move"
-  trap restart_units EXIT
   systemctl stop "${WORKER_UNITS[@]}" || true
   for unit in "${WORKER_UNITS[@]}"; do
     state="$(systemctl is-active "${unit}" 2>/dev/null || true)"
@@ -730,19 +801,31 @@ stop_units() {
 apply() {
   [ "${ACK}" = "${ACK_REQUIRED}" ] || { echo "refusing: --ack ${ACK_REQUIRED} is required to move production roots" >&2; exit 2; }
   [ -n "${ROOT_PREFIX}" ] || [ "$(id -u)" = "0" ] || { echo "refusing: --apply must run as root" >&2; exit 2; }
+  trap finish EXIT
   if [ -z "${ROOT_PREFIX}" ]; then
+    # One run at a time: a second one could rename a root into the first one's
+    # kept original.
+    exec 9>/run/lock/blueprint-mount-work-volume.lock
+    flock -n 9 || refuse 2 "another run holds /run/lock/blueprint-mount-work-volume.lock"
     [ -b "${DEVICE}" ] || { echo "refusing: ${DEVICE} is not a block device" >&2; exit 2; }
-    if ! blkid -o value -s TYPE "${DEVICE}" >/dev/null 2>&1; then
-      echo "formatting ${DEVICE} as ext4 (no filesystem present)"
-      mkfs.ext4 -F -L blueprint-work "${DEVICE}"
-    fi
+    # Format only a device blkid reports as blank (exit 2); any other probe
+    # failure, an ambivalent result included, refuses instead.
+    local probed=0
+    blkid -o value -s TYPE "${DEVICE}" >/dev/null 2>&1 || probed=$?
+    case "${probed}" in
+      0) ;;
+      2)
+        echo "formatting ${DEVICE} as ext4 (no filesystem present)"
+        mkfs.ext4 -F -L blueprint-work "${DEVICE}"
+        ;;
+      *) refuse 2 "blkid could not probe ${DEVICE} (exit ${probed}); it was not formatted" ;;
+    esac
     mkdir -p "${HOST_MOUNT}"
-    local uuid
+    local uuid fstype
     uuid="$(blkid -o value -s UUID "${DEVICE}")"
-    if ! fstab_has_target "${MOUNT}"; then
-      backup_fstab
-      echo "UUID=${uuid} ${HOST_MOUNT} ext4 defaults,nofail,noatime,discard 0 2" >> "${FSTAB}"
-    fi
+    fstype="$(blkid -o value -s TYPE "${DEVICE}")"
+    fstab_prepare "" "UUID=${uuid} ${MOUNT} ${fstype} defaults,nofail,noatime,discard 0 2"
+    fstab_install
     mountpoint -q "${HOST_MOUNT}" || mount "${HOST_MOUNT}"
   else
     mkdir -p "${HOST_MOUNT}"
@@ -831,7 +914,6 @@ apply() {
   for i in "${PENDING[@]}"; do
     swap_root "${i}"
   done
-  if [ -z "${ROOT_PREFIX}" ]; then systemctl daemon-reload; fi
   echo "done"
 }
 

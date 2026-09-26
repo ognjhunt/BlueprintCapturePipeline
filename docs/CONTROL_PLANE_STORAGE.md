@@ -194,13 +194,18 @@ the new roots and consolidates the old binds:
 
    The run does the following, in order:
    - Stops the worker units; intake stays up.
-   - Copies the tree around the old binds and verifies the copy.
-   - Unmounts the old binds, deepest first.
-   - Rewrites `/etc/fstab` in one rename after backing it up to
-     `/etc/fstab.blueprint-<epoch>.bak`, then binds the tree whole.
-   - Compares each original with its volume copy again, and only then
-     removes it.
-   - Starts again the units that were running.
+   - Copies the tree around the old binds, and compares the copy with its root
+     in both directions.
+   - Prepares the new mount point and the rewritten `/etc/fstab`, after backing
+     up the old one to `/etc/fstab.blueprint-<epoch>.bak`. A full root disk
+     therefore refuses before anything changes.
+   - Unmounts the old binds, deepest first, and binds them back if one will not
+     go.
+   - Swaps the root for its new mount point with two renames, binds the tree
+     whole, and renames the new `/etc/fstab` into place.
+   - Compares each original with its volume copy again, and only then removes
+     it.
+   - Reloads systemd and starts again the units that were running.
 4. Check. `findmnt -R /var/lib/blueprint/task-evaluation-inputs` shows the
    tree's bind and no mount below it. `--plan` reports `bound` for every root
    that exists. After the next compile,
@@ -229,9 +234,9 @@ When a run stops:
   holds is still needed. `--plan` shows a `kept` line until then.
 - `leaving the worker units stopped: <root> is between its old and new mounts`
   means a swap failed halfway. Finish it by hand: bind the volume copy at the
-  root and record it in `/etc/fstab`. Or undo it: move the `.migrated-to-volume`
-  original back and restore `/etc/fstab` from the backup. Then start the units
-  the message names.
+  root and move the rewritten fstab the message names into place. Or undo it:
+  move the `.migrated-to-volume` original back, bind the old children again, and
+  restore `/etc/fstab` from the backup. Then start the units the message names.
 
 ### Owner decisions
 
