@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path, PurePosixPath
 
@@ -22,6 +23,11 @@ INPUTS_TREE = STATE / "task-evaluation-inputs"
 BULK_WORK_ROOTS = frozenset(
     {STATE / "pubsub-handoffs", STATE / "pipeline-control-plane" / "native-g1-team-campaign-work"}
 )
+# Intake stays up during the move: it writes queues, which never move, and the
+# reproducible result artifact cache, where a write that lands mid-move is
+# caught by the script's verification.
+UNITS_LEFT_RUNNING = frozenset({"blueprint-pipeline-intake.service"})
+_HOST_PATH = re.compile(r"(?<![A-Za-z0-9_.-])(/var/lib/blueprint[A-Za-z0-9_./-]*|/workspace[A-Za-z0-9_./-]*)")
 
 
 def _run(*args: str) -> subprocess.CompletedProcess:
@@ -63,6 +69,53 @@ def _read_write_paths(unit: Path) -> list[PurePosixPath]:
         if line.startswith("ReadWritePaths="):
             paths += [PurePosixPath(entry.lstrip("-").rstrip("/")) for entry in line.split("=", 1)[1].split()]
     return paths
+
+
+def _volume_roots() -> list[PurePosixPath]:
+    return [STATE / rel for rel in _script_array("ROOTS")] + [
+        PurePosixPath(path) for path in _script_array("ABSOLUTE_ROOTS")
+    ]
+
+
+def _writes_under(service: Path, roots: list[PurePosixPath]) -> bool:
+    """A writable sandbox path is a moved root or lies inside one, or covers a moved path the unit names."""
+    writable = _read_write_paths(service)
+    named = [
+        PurePosixPath(match.rstrip("/"))
+        for line in service.read_text(encoding="utf-8").splitlines()
+        if not line.startswith(("ReadOnlyPaths=", "InaccessiblePaths=", "Condition", "#"))
+        for match in _HOST_PATH.findall(line)
+    ]
+    return any(
+        any(_within(path, root) for path in writable)
+        or any(_within(path, root) and any(_within(path, w) for w in writable) for path in named)
+        for root in roots
+    )
+
+
+def _triggers(service: Path) -> list[Path]:
+    """Timers and path units that would start the service again."""
+    triggers: list[Path] = []
+    for unit in sorted([*SYSTEMD_DIR.glob("blueprint-*.timer"), *SYSTEMD_DIR.glob("blueprint-*.path")]):
+        lines = unit.read_text(encoding="utf-8").splitlines()
+        target = next((line.split("=", 1)[1].strip() for line in lines if line.startswith("Unit=")), f"{unit.stem}.service")
+        if target == service.name:
+            triggers.append(unit)
+    return triggers
+
+
+def test_every_unit_that_writes_under_a_moved_root_stops_for_the_move() -> None:
+    listed = _script_array("WORKER_UNITS")
+    assert sorted(unit for unit in listed if not (SYSTEMD_DIR / unit).is_file()) == [], "every listed unit exists"
+    roots = _volume_roots()
+    running = sorted(
+        unit.name
+        for service in SYSTEMD_DIR.glob("blueprint-*.service")
+        if service.name not in UNITS_LEFT_RUNNING and _writes_under(service, roots)
+        for unit in (service, *_triggers(service))
+        if unit.name not in listed
+    )
+    assert running == [], "these units write under a moved root and would keep running during the move"
 
 
 def test_every_bulk_storage_class_root_is_on_the_volume_and_queues_never_move() -> None:

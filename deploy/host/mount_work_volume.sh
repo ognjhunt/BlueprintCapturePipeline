@@ -52,9 +52,15 @@ ROOTS=(
 # Roots outside --state-root, each bound to the same path under the mount.
 ABSOLUTE_ROOTS=(/workspace)                              # bound to ${MOUNT}/workspace
 
-# Units that write under the moved roots.  Intake stays up: it writes queues only.
+# Units that write under the moved roots, with the timers and path units that
+# would start them again (tests/test_mount_work_volume_script.py derives the set
+# from deploy/systemd).  They are all stopped for the move, and only the ones that
+# were running start again.  Intake stays up: it writes queues, which never move,
+# and the reproducible result artifact cache, where a write that lands during the
+# copy shows up as drift and the swap is refused.
 WORKER_UNITS=(
   blueprint-task-evaluation-launch-preparation.path
+  blueprint-task-evaluation-launch-preparation.timer
   blueprint-task-evaluation-sam31-preparation-execution.path
   blueprint-task-evaluation-sam31-preparation-execution.timer
   blueprint-task-evaluation-episode-compilation.path
@@ -72,6 +78,9 @@ WORKER_UNITS=(
   blueprint-capture-reconstruction-dispatcher.path
   blueprint-capture-reconstruction-dispatcher.timer
   blueprint-agent-stage-replay.timer
+  blueprint-completed-replay-cache-gc.timer
+  blueprint-scene-object-discovery.path
+  blueprint-task-evaluation-launch-reconciler.timer
   blueprint-task-evaluation-launch-preparation.service
   blueprint-task-evaluation-sam31-preparation-execution.service
   blueprint-task-evaluation-episode-compilation.service
@@ -86,6 +95,11 @@ WORKER_UNITS=(
   blueprint-pubsub-handoff-listener.service
   blueprint-task-evaluation-scene-progression.service
   blueprint-capture-reconstruction-dispatcher.service
+  blueprint-agent-stage-replay.service
+  blueprint-completed-replay-cache-gc.service
+  blueprint-scene-object-discovery.service
+  blueprint-task-evaluation-launch-reconciler.service
+  blueprint-production-gpu-campaign-control-plane.service
 )
 
 usage() {
@@ -199,6 +213,37 @@ rsync_pending_relative() {
 PENDING=()
 RSYNC_FLAGS=(-a)
 
+# Worker units that were running when the move began.  Only these start again,
+# so a unit an operator had stopped stays stopped.
+RUNNING_UNITS=()
+
+restart_units() {
+  [ "${#RUNNING_UNITS[@]}" -gt 0 ] || return 0
+  echo "restarting worker units that were running: ${RUNNING_UNITS[*]}"
+  systemctl start "${RUNNING_UNITS[@]}" || true
+}
+
+stop_units() {
+  local unit state still=()
+  for unit in "${WORKER_UNITS[@]}"; do
+    if systemctl is-active --quiet "${unit}"; then RUNNING_UNITS+=("${unit}"); fi
+  done
+  echo "stopping worker units for the move"
+  trap restart_units EXIT
+  systemctl stop "${WORKER_UNITS[@]}" || true
+  for unit in "${WORKER_UNITS[@]}"; do
+    state="$(systemctl is-active "${unit}" 2>/dev/null || true)"
+    case "${state}" in
+      inactive|failed|unknown|"") ;;
+      *) still+=("${unit}:${state}") ;;
+    esac
+  done
+  if [ "${#still[@]}" -gt 0 ]; then
+    echo "refusing: worker units still running after the stop: ${still[*]}" >&2
+    exit 2
+  fi
+}
+
 apply() {
   [ "${ACK}" = "${ACK_REQUIRED}" ] || { echo "refusing: --ack ${ACK_REQUIRED} is required to move production roots" >&2; exit 2; }
   [ -n "${ROOT_PREFIX}" ] || [ "$(id -u)" = "0" ] || { echo "refusing: --apply must run as root" >&2; exit 2; }
@@ -216,9 +261,7 @@ apply() {
     fi
     mountpoint -q "${HOST_MOUNT}" || mount "${HOST_MOUNT}"
     systemctl daemon-reload
-    echo "stopping worker units for the move"
-    systemctl stop "${WORKER_UNITS[@]}" || true
-    trap 'echo "restarting worker units"; systemctl start "${WORKER_UNITS[@]}" || true' EXIT
+    stop_units
   else
     mkdir -p "${HOST_MOUNT}"
   fi
