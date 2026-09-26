@@ -551,6 +551,19 @@ probe_rsync() {
   if printf '%s' "${help}" | grep -q -- "--relative" && printf '%s' "${help}" | grep -q -- "--itemize-changes"; then
     RELATIVE="yes"
   fi
+  # On a host a missing flag is not a smaller copy but a wrong one: without
+  # --hard-links the content stores would be copied apart, and the verification
+  # runs with the same flags, so it would not notice.
+  if [ -z "${ROOT_PREFIX}" ]; then
+    local missing=()
+    for opt in --hard-links --acls --xattrs --numeric-ids; do
+      case " ${RSYNC_FLAGS[*]} " in *" ${opt} "*) ;; *) missing+=("${opt}") ;; esac
+    done
+    [ -n "${RELATIVE}" ] || missing+=("--relative with --itemize-changes")
+    if [ "${#missing[@]}" -gt 0 ]; then
+      refuse 2 "this host's rsync lacks what the move needs" "${missing[@]}"
+    fi
+  fi
 }
 
 # rsync the pending roots below each base directory in one relative invocation.
