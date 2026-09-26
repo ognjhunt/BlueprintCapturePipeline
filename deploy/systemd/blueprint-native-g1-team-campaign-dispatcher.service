@@ -48,6 +48,9 @@ Environment=BLUEPRINT_NATIVE_G1_TEAM_CAMPAIGN_WORK_ROOT=/var/lib/blueprint/pipel
 # review and first dry-run bundle have been checked on the deployed release.
 Environment=BLUEPRINT_NATIVE_G1_TEAM_CAMPAIGN_EXECUTE=false
 Environment=BLUEPRINT_NATIVE_G1_TEAM_CAMPAIGN_MACHINE_AVOIDLIST=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs/vast_machine_avoidlist.json
+# The sealed runtime archive is served from the US-East artifact bucket. Prefer
+# a nearby GPU when otherwise comparable offers pass Isaac and budget filters.
+Environment=BLUEPRINT_VAST_PREFERRED_GEOLOCATION_REGEX=_us$
 Environment=VAST_API_KEY_FILE=/etc/blueprint/provider-secrets/vast_api_key
 Environment=BLUEPRINT_VAST_CREDIT_GUARD_ENABLED=true
 Environment=BLUEPRINT_VAST_SSH_IDENTITY_FILE=/etc/blueprint/provider-secrets/vast_ssh_id_ed25519
