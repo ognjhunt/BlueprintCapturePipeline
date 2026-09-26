@@ -1,6 +1,6 @@
 # G1 runtime dependency review — 2026-09-26
 
-Status: **pending exact owner review**. These CPython 3.12 Linux x86_64 wheels are proposed for internal, `development_only` Unitree G1 simulation. The previous paid preflight verified that `pinocchio` and `google.protobuf` were absent before any model download or episode. The selected `pin==4.1.0` release depends on the CMeel/Coal closure below. No external model weights are included in these wheels.
+Status: **pending exact owner review for 14 components**. These 16 CPython 3.12 Linux x86_64 wheels are proposed for internal, `development_only` Unitree G1 simulation. The exact `numpy==2.3.1` and `protobuf==6.33.6` versions already have unexpired owner approvals in `docs/runtime_dependency_license_policy.json`; the other 14 exact name/version pairs do not. The previous paid preflight verified that `pinocchio` and `google.protobuf` were absent before any model download or episode. The selected `pin==4.1.0` release depends on the CMeel/Coal closure below. No external model weights are included in these wheels.
 
 The repository policy in `docs/runtime_dependency_license_policy.json` requires owner review for each new exact name/version before runtime use. This table records PyPI wheel bytes and their embedded license metadata. PyPI release metadata and the embedded wheel licenses should be inspected before approval. The Qhull wheel carries its own notice and redistribution conditions; the immutable wheel retains that notice.
 
@@ -25,4 +25,4 @@ The repository policy in `docs/runtime_dependency_license_policy.json` requires 
 
 Review scope: internal G1 simulation inside a pinned provider image, immutable packet staging, no public media or physical deployment claim. The wheel archive and its license files are retained with the packet. The source packet verifier checks every wheel hash before GPU allocation; the provider verifies the packet and imports before policy checkpoint download.
 
-Owner decision: pending. Do not treat the previous approval of the pi0.5 base model and NVIDIA SONIC weights as approval of this new dependency set.
+Owner decision: pending for the 14 unreviewed exact components. Do not treat the previous approval of the pi0.5 base model and NVIDIA SONIC weights as approval of these dependencies.
