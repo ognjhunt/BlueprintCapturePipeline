@@ -744,6 +744,10 @@ swap_root() {  # index
     owner="$(stat -f '%u:%g' "${root}")"
     mode="$(stat -f '%OLp' "${root}")"
   fi
+  if [ -z "${ROOT_PREFIX}" ]; then
+    require_units_stopped
+    require_no_door_requests
+  fi
   # Everything the swap writes to the root disk comes first (the new mount point
   # and the rewritten fstab), so a full disk refuses here and never halfway.
   STAGED="${root}.new-mount-point"
@@ -818,12 +822,20 @@ finish() {
 }
 
 stop_units() {
-  local unit state still=()
+  local unit
   for unit in "${WORKER_UNITS[@]}"; do
     if systemctl is-active --quiet "${unit}"; then RUNNING_UNITS+=("${unit}"); fi
   done
   echo "stopping worker units for the move"
   systemctl stop "${WORKER_UNITS[@]}" || true
+  require_units_stopped
+}
+
+# Checked after the stop and again right before every swap: a unit that came
+# back (started by hand, or by something outside the stop list) would write into
+# a tree that is about to change mounts.
+require_units_stopped() {
+  local unit state still=()
   for unit in "${WORKER_UNITS[@]}"; do
     state="$(systemctl is-active "${unit}" 2>/dev/null || true)"
     case "${state}" in
@@ -832,7 +844,23 @@ stop_units() {
     esac
   done
   if [ "${#still[@]}" -gt 0 ]; then
-    refuse 2 "worker units still running after the stop" "${still[@]}"
+    refuse 2 "worker units are running; the move needs them stopped" "${still[@]}"
+  fi
+}
+
+# The operator door runs each request (a deploy, an upgrade, a scene-workspace
+# retirement) as a transient blueprint-operator-door-* unit that may write under
+# the roots.  Its own runner units are static and always present, so only
+# transient units count.
+require_no_door_requests() {
+  local unit rest listed requests=()
+  listed="$(systemctl list-units --plain --no-legend --state=active,activating,deactivating,reloading 'blueprint-operator-door-*' 2>/dev/null || true)"
+  while read -r unit rest; do
+    [ -n "${unit}" ] || continue
+    if [ "$(systemctl show -p Transient --value "${unit}" 2>/dev/null || true)" = yes ]; then requests+=("${unit}"); fi
+  done <<< "${listed}"
+  if [ "${#requests[@]}" -gt 0 ]; then
+    refuse 2 "operator door requests are running; let them finish first" "${requests[@]}"
   fi
 }
 
@@ -889,6 +917,7 @@ apply() {
 
   probe_rsync
   if [ -z "${ROOT_PREFIX}" ]; then
+    require_no_door_requests
     systemctl daemon-reload
     stop_units
   fi

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -95,6 +96,48 @@ def _script_array_reasons(name: str) -> dict[str, str]:
         for word in code.split():
             entries[word.strip("'\"")] = comment.strip()
     raise AssertionError(f"{name} is not assigned in {SCRIPT.name}")
+
+
+def _shell_functions(*names: str) -> str:
+    """The script's own definitions of the named functions, for unit-level shell tests."""
+    text = SCRIPT.read_text(encoding="utf-8")
+    blocks = []
+    for name in names:
+        match = re.search(rf"^{name}\(\) \{{.*?^\}}$", text, re.S | re.M)
+        assert match, f"{name} is not defined in {SCRIPT.name}"
+        blocks.append(match.group(0))
+    return "\n".join(blocks) + "\n"
+
+
+def _stub(tmp_path: Path, name: str, body: str) -> None:
+    """A stand-in command on PATH, inside the test's own directory."""
+    stub = tmp_path / "bin" / name
+    stub.parent.mkdir(exist_ok=True)
+    stub.write_text("#!/bin/sh\n" + body, encoding="utf-8")
+    stub.chmod(0o755)
+
+
+def _call(tmp_path: Path, functions: tuple[str, ...], body: str, **env: str) -> subprocess.CompletedProcess:
+    """Run script functions under bash with the stubs in tmp_path/bin first on PATH."""
+    program = "set -euo pipefail\n" + _shell_functions(*functions) + body
+    environment = {**os.environ, "PATH": f"{tmp_path / 'bin'}:{os.environ['PATH']}", **env}
+    return subprocess.run(["bash", "-c", program], capture_output=True, text=True, check=False, timeout=60, env=environment)
+
+
+# systemctl as the host would answer: ACTIVE_UNITS are active, DOOR_UNITS are
+# listed by list-units, and TRANSIENT_UNITS report Transient=yes.
+_SYSTEMCTL = """case "$1" in
+  is-active)
+    if [ "$2" = --quiet ]; then unit=$3; else unit=$2; fi
+    case " $ACTIVE_UNITS " in *" $unit "*) state=active ;; *) state=inactive ;; esac
+    [ "$2" = --quiet ] || echo "$state"
+    [ "$state" = active ] ;;
+  list-units) for unit in $DOOR_UNITS; do echo "$unit loaded active running stub"; done ;;
+  show)
+    for arg in "$@"; do unit=$arg; done
+    case " $TRANSIENT_UNITS " in *" $unit "*) echo yes ;; *) echo no ;; esac ;;
+esac
+"""
 
 
 def _within(path: PurePosixPath, root: PurePosixPath) -> bool:
@@ -454,3 +497,29 @@ def test_apply_unmounts_nested_children_deepest_first(tmp_path: Path) -> None:
     assert unbound == [str(state / nested), str(state / "task-evaluation-inputs" / "prepared-references")]
     assert (volume / nested / "blob").read_bytes() == b"b"
     assert bound.read_text(encoding="utf-8").splitlines() == ["/var/lib/blueprint/task-evaluation-inputs"]
+
+
+def test_the_swap_refuses_while_a_worker_unit_runs_again(tmp_path: Path) -> None:
+    _stub(tmp_path, "systemctl", _SYSTEMCTL)
+    check = 'WORKER_UNITS=(blueprint-a.timer blueprint-a.service); require_units_stopped; echo stopped\n'
+
+    stopped = _call(tmp_path, ("refuse", "require_units_stopped"), check, ACTIVE_UNITS="")
+    restarted = _call(tmp_path, ("refuse", "require_units_stopped"), check, ACTIVE_UNITS="blueprint-a.service")
+
+    assert stopped.returncode == 0 and "stopped" in stopped.stdout, stopped.stderr
+    assert restarted.returncode == 2 and "blueprint-a.service:active" in restarted.stderr, restarted.stderr
+
+
+def test_the_move_refuses_while_an_operator_door_request_runs(tmp_path: Path) -> None:
+    _stub(tmp_path, "systemctl", _SYSTEMCTL)
+    check = "require_no_door_requests; echo quiet\n"
+    # The door's own runner units are static and always around; only the
+    # transient units it starts for requests write under the roots.
+    static = "blueprint-operator-door-runner.path blueprint-operator-door-runner.service"
+    request = "blueprint-operator-door-deploy-0123456789ab-1a2b"
+
+    quiet = _call(tmp_path, ("refuse", "require_no_door_requests"), check, DOOR_UNITS=static, TRANSIENT_UNITS="")
+    busy = _call(tmp_path, ("refuse", "require_no_door_requests"), check, DOOR_UNITS=f"{static} {request}", TRANSIENT_UNITS=request)
+
+    assert quiet.returncode == 0 and "quiet" in quiet.stdout, quiet.stderr
+    assert busy.returncode == 2 and request in busy.stderr, busy.stderr
