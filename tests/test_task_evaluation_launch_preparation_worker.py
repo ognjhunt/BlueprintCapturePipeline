@@ -568,7 +568,11 @@ def test_worker_refuses_low_disk_before_fetch(
         value=value, queue_root=queue, submitted_by="blueprint-webapp"
     )
 
+    checks = 0
+
     def refuse(*_args, **_kwargs):
+        nonlocal checks
+        checks += 1
         raise ControlPlaneDiskBudgetError(
             "control_plane_disk_budget_exceeded:launch_preparation:"
             "need_bytes=6:available_bytes=0:free_bytes=8:"
@@ -576,6 +580,7 @@ def test_worker_refuses_low_disk_before_fetch(
         )
 
     monkeypatch.setattr(worker, "reserve_control_plane_disk", refuse)
+    monkeypatch.setattr(worker.time, "sleep", lambda _seconds: None)
     run = process_launch_preparation_queue(
         queue_root=queue,
         input_root=tmp_path / "inputs",
@@ -593,6 +598,39 @@ def test_worker_refuses_low_disk_before_fetch(
         "floor_bytes=8:reserved_bytes=0"
     ]
     assert not (tmp_path / "inputs" / value["preparation_id"]).exists()
+    assert checks == worker.PREPARATION_DISK_RECHECKS + 1
+
+
+def test_preparation_disk_recovers_after_transient_capacity_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    checks = 0
+    waits: list[int] = []
+    reservation = object()
+
+    def reserve(*_args, **_kwargs):
+        nonlocal checks
+        checks += 1
+        if checks < 3:
+            raise ControlPlaneDiskBudgetError(
+                "control_plane_disk_budget_exceeded:launch_preparation:"
+                "need_bytes=6:available_bytes=0:free_bytes=8:"
+                "floor_bytes=8:reserved_bytes=0"
+            )
+        return reservation
+
+    monkeypatch.setattr(worker, "reserve_control_plane_disk", reserve)
+    monkeypatch.setattr(worker.time, "sleep", waits.append)
+    held = []
+    worker._reserve_preparation_disk(
+        expected_bytes=6,
+        input_root=tmp_path / "inputs",
+        disk_reservation_root=tmp_path / "reservations",
+        disk_reservations=held,
+    )
+    assert checks == 3
+    assert waits == [worker.PREPARATION_DISK_RECHECK_SECONDS] * 2
+    assert held == [reservation]
 
 
 def test_episode_evaluation_reuses_revision_built_by_older_release(tmp_path) -> None:
