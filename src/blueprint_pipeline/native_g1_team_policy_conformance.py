@@ -144,7 +144,11 @@ def run_g1_team_process_synthetic_conformance(
     )
     if bound["delivery"]["mode"] not in {"container", "noncontainer_artifact"}:
         raise ValueError("g1_team_policy_conformance_process_mode_invalid")
-    client = NativeG1TeamPolicyJsonlClient(process, timeout_seconds=timeout_seconds)
+    client = NativeG1TeamPolicyJsonlClient(
+        process,
+        timeout_seconds=timeout_seconds,
+        profile_digest=bound["profile_digest"],
+    )
     return run_g1_team_policy_synthetic_conformance(
         profile=bound,
         trusted_setup=trusted_setup,

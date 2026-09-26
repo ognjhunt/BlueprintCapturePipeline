@@ -20,6 +20,7 @@ def _process(response: str) -> subprocess.Popen[bytes]:
             f"    value = {response}",
             "    value['protocol'] = request['protocol']",
             "    value.setdefault('request_id', request['request_id'])",
+            "    if 'profile_digest' in request: value.setdefault('profile_digest', request['profile_digest'])",
             "    print(json.dumps(value), flush=True)",
         ]
     )
@@ -61,6 +62,18 @@ def test_jsonl_client_rejects_wrong_response_identity() -> None:
     process = _process("{'ok': True, 'request_id': 999}")
     try:
         client = NativeG1TeamPolicyJsonlClient(process, timeout_seconds=2)
+        with pytest.raises(ValueError, match="response_identity_invalid"):
+            client.reset(seed=9)
+    finally:
+        _close(process)
+
+
+def test_bound_jsonl_client_requires_profile_echo() -> None:
+    process = _process("{'ok': True, 'profile_digest': 'sha256:' + 'f' * 64}")
+    try:
+        client = NativeG1TeamPolicyJsonlClient(
+            process, timeout_seconds=2, profile_digest="sha256:" + "a" * 64
+        )
         with pytest.raises(ValueError, match="response_identity_invalid"):
             client.reset(seed=9)
     finally:
