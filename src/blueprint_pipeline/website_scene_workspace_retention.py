@@ -33,21 +33,34 @@ byte. Nothing is deleted that cannot be restored.
 
 from __future__ import annotations
 
+import argparse
 import base64
+import fcntl
 import hashlib
 import json
 import os
+import secrets
+import shutil
 import stat
+import tarfile
+import tempfile
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
 from .completed_replay_cache_retention import active_reference
+from .control_plane_disk_budget import DEFAULT_RESERVATION_ROOT, reserve_control_plane_disk
+from .control_plane_evidence_offload import ControlPlaneEvidenceOffloadError, _HashingSink, _pack_stream
 from .control_plane_storage_gc import _pinned_workspace, _queue_reference_text
-from .control_plane_storage_pins import live_pinned_paths
+from .control_plane_storage_pins import DEFAULT_PINS_ROOT, PINS_ROOT_ENV, live_pinned_paths
 from .core.security_controls import SecurityValidationError, strict_gcs_bucket, strict_identifier
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
+from .task_evaluation_configured_scene_object_store import (
+    materialize_configured_scene_artifact,
+    publish_configured_scene_stream,
+)
 
 
 PLAN_SCHEMA = "website_scene_workspace_retirement_plan.v1"
@@ -55,12 +68,36 @@ RETIRED_SCHEMA = "website_scene_workspace_retired.v1"
 RESTORE_SCHEMA = "website_scene_workspace_restore_receipt.v1"
 RETIRE_ACK = "retire-scene-workspace"
 ARTIFACT_KIND = "website-scene-workspace"
+ARCHIVE_FILENAME = "workspace.tar"
 RETIRED_SUFFIX = ".retired.v1.json"
 DEFAULT_MINIMUM_IDLE_SECONDS = 48 * 3600
 #: Pub/Sub message retention (deploy/terraform/main.tf): after it, a message can no longer be redelivered.
 DEFAULT_ACK_RETENTION_SECONDS = 7 * 24 * 3600
 #: A website sponsorship lasts at most 24 hours, so an intent claims its registration well within this.
 DEFAULT_ORPHAN_REGISTRATION_SECONDS = 72 * 3600
+
+# Production roots. The operator door runs the command line with only the control-plane
+# environment file loaded, so every default must already name the production tree.
+_CONTROL_PLANE = "/var/lib/blueprint/pipeline-control-plane"
+DEFAULT_STORAGE_ROOT = Path("/var/lib/blueprint/pubsub-handoffs")
+DEFAULT_INTENT_ROOT = Path(f"{_CONTROL_PLANE}/task-evaluation-scene-intents")
+#: The reclaim timer's queue roots (BLUEPRINT_CONTROL_PLANE_GC_QUEUE_ROOTS); a test pins them to the unit.
+DEFAULT_QUEUE_ROOTS = tuple(Path(f"{_CONTROL_PLANE}/{name}") for name in (
+    "task-evaluation-launches",
+    "task-evaluation-launch-preparations",
+    "task-evaluation-episode-compilations",
+    "task-evaluation-launch-activations",
+    "task-evaluation-policy-canary-dispatches",
+    "task-evaluation-scene-constructions",
+))
+#: Queues beside the scene intents that also carry scene ids: SAM preparation children and
+#: configured-scene activation intents.
+SCENE_QUEUE_CHILDREN = ("sam31-preparation-executions", "task-evaluation-scene-configuration-activation-intents")
+STORAGE_ROOT_ENV = "BLUEPRINT_PUBSUB_HANDOFF_STORAGE_ROOT"
+INTENT_ROOT_ENV = "BLUEPRINT_CONTROL_PLANE_GC_SCENE_INTENT_ROOT"
+INTAKE_ROOT_ENV = "BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT"
+BINDING_ROOT_ENV = "BLUEPRINT_WEBSITE_SCENE_BINDING_ROOT"
+QUEUE_ROOTS_ENV = "BLUEPRINT_CONTROL_PLANE_GC_QUEUE_ROOTS"
 
 #: What the Pub/Sub handoff listener writes into each capture (pubsub_handoff_listener). Copied rather
 #: than imported so the reclaim timer does not load the pipeline; a test pins them to the listener.
@@ -194,6 +231,24 @@ def scene_path(storage_root: Path, bucket: str, scene_id: str) -> Path:
 
 def receipt_path(storage_root: Path, bucket: str, scene_id: str) -> Path:
     return Path(storage_root) / bucket / "scenes" / f"{scene_id}{RETIRED_SUFFIX}"
+
+
+def binding_root_for(intent_root: Path | None, environ: Mapping[str, str] = os.environ) -> Path | None:
+    """Where website sources are registered, as ``website_scene_dispatch.binding_root`` finds it."""
+
+    configured = str(environ.get(BINDING_ROOT_ENV) or "").strip()
+    if configured:
+        return Path(configured)
+    return None if intent_root is None else Path(intent_root).parent / "website-source-bindings"
+
+
+def scene_queue_roots(queue_roots: Sequence[str | Path], intent_root: Path | None) -> tuple[Path, ...]:
+    """The reclaim timer's queues plus the scene queues kept beside the intents."""
+
+    roots = [Path(root) for root in queue_roots]
+    if intent_root is not None:
+        roots.extend(Path(intent_root).parent / name for name in SCENE_QUEUE_CHILDREN)
+    return tuple(dict.fromkeys(roots))
 
 
 def _load_json(path: Path) -> tuple[str, dict[str, Any] | None, os.stat_result | None]:
@@ -795,15 +850,18 @@ def plan_scene_workspace_retirement(
     now: float,
     cloud: CloudInventory,
     index: ReferenceIndex | None = None,
-    process_checker: Callable[[Path], bool] = _process_in_use,
+    process_checker: Callable[[Path], bool] | None = None,
 ) -> dict[str, Any]:
-    """Decide, without touching anything, whether one scene workspace may be retired."""
+    """Decide, without touching anything, whether one scene workspace may be retired.
+
+    ``process_checker`` defaults to ``active_reference`` over ``/proc``, ignoring this process.
+    """
 
     bucket, scene_id = _identity(bucket, scene_id)
     observed_at = float(now)
     scene = scene_path(context.storage_root, bucket, scene_id)
     evaluation = _evaluate(context=context, bucket=bucket, scene_id=scene_id, scene=scene, now=observed_at,
-                           index=index, process_checker=process_checker)
+                           index=index, process_checker=process_checker or _process_in_use)
     reasons = list(evaluation.reasons)
     verified: list[dict[str, Any]] = []
     archive: list[dict[str, Any]] = []
@@ -837,13 +895,585 @@ def plan_scene_workspace_retirement(
     return plan
 
 
+# --- apply ----------------------------------------------------------------------------------------
+
+
+class _CaptureLocks:
+    """The listener's own per-capture ledger locks, taken in sorted order without waiting.
+
+    The lock files are opened read-only and never created, so taking them changes nothing
+    in the workspace; closing the descriptors releases them.
+    """
+
+    def __init__(self, scene: Path, capture_ids: Sequence[str]) -> None:
+        self._paths = [scene / "captures" / capture_id / LEDGER_LOCK for capture_id in sorted(capture_ids)]
+        self._descriptors: list[int] = []
+        self.refusal: str | None = None
+
+    def __enter__(self) -> "_CaptureLocks":
+        try:
+            for path in self._paths:
+                try:
+                    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                except OSError:
+                    self.refusal = "candidate_changed"  # the lock the plan saw is gone or replaced
+                    return self
+                self._descriptors.append(descriptor)
+                if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                    self.refusal = "candidate_changed"
+                    return self
+                try:
+                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except OSError:  # BlockingIOError: the listener holds it right now
+                    self.refusal = "candidate_busy"
+                    return self
+        except BaseException:
+            self.__exit__()
+            raise
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        while self._descriptors:
+            os.close(self._descriptors.pop())
+
+
+def _authorized_plan(plan: Any, *, ack: str, context: RetentionContext) -> tuple[str, str, Path]:
+    refused = WebsiteSceneWorkspaceRetentionError("website_scene_workspace_retirement_apply_not_authorized")
+    if (
+        ack != RETIRE_ACK
+        or not isinstance(plan, Mapping)
+        or plan.get("schema_version") != PLAN_SCHEMA
+        or plan.get("status") != "retirable"
+        or plan.get("reasons")
+        or plan.get("plan_digest") != canonical_digest(dict(plan), digest_field="plan_digest")
+    ):
+        raise refused
+    try:
+        bucket, scene_id = _identity(plan.get("bucket"), plan.get("scene_id"))
+        scene = scene_path(context.storage_root, bucket, scene_id)
+        well_formed = (
+            plan.get("workspace") == str(scene)
+            and all(isinstance(row["capture_id"], str) for row in plan["captures"])
+            and all(isinstance(row["relative_path"], str) for row in (*plan["cloud_verified"], *plan["archive"]))
+            and isinstance(plan["snapshot"], list)
+        )
+    except (WebsiteSceneWorkspaceRetentionError, KeyError, TypeError) as exc:
+        raise refused from exc
+    if not well_formed:
+        raise refused
+    return bucket, scene_id, scene
+
+
+def _capture_records(scene: Path, captures: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Parsed copies of each capture's records, so a retired capture stays idempotent."""
+
+    def parsed(path: Path) -> dict[str, Any] | None:
+        state, value, _ = _load_json(path)
+        return value if state == "ok" else None
+
+    records = []
+    for row in captures:
+        root = scene / "captures" / row["capture_id"]
+        record: dict[str, Any] = {"capture_id": row["capture_id"], "ledger": parsed(root / LISTENER_FILES["ledger"])}
+        if row["ledger_status"] == TERMINAL_AUTHORITY_STATUS:
+            record["terminal_receipt"] = parsed(root / LISTENER_FILES["terminal_receipt"])
+        else:
+            record["output_commit"] = parsed(root / LISTENER_FILES["output_commit"])
+        record["ack_receipt"] = parsed(root / LISTENER_FILES["ack_receipt"])
+        record["staging_manifest"] = parsed(root / LISTENER_FILES["staging_manifest"])
+        records.append(record)
+    return records
+
+
+def _archive(scene: Path, rows: Sequence[Mapping[str, Any]],
+             publisher: Callable[..., Mapping[str, Any]]) -> tuple[dict[str, Any] | None, str | None]:
+    """Stream exactly the planned local-only files to the artifact store and prove the remote bytes."""
+
+    members = [str(row["relative_path"]) for row in rows]
+    sink = _HashingSink()
+    try:
+        packed = _pack_stream(scene, sink, members=members)
+    except (OSError, ControlPlaneEvidenceOffloadError):
+        return None, "candidate_changed"
+    planned = [(row["relative_path"], row["size_bytes"], row["sha256"]) for row in rows]
+    if [(row["relative_path"], row["size_bytes"], row["sha256"]) for row in packed] != planned:
+        return None, "candidate_changed"
+    digest, size = "sha256:" + sink.digest.hexdigest(), sink.size
+    try:
+        reference = dict(publisher(
+            write_stream=lambda stream: _pack_stream(scene, stream, members=members),
+            digest=digest, size_bytes=size, filename=ARCHIVE_FILENAME, artifact_kind=ARTIFACT_KIND))
+    except Exception:  # noqa: BLE001 - any publication failure keeps every local byte
+        return None, "archive_readback_failed"
+    if (
+        reference.get("digest") != digest
+        or reference.get("size_bytes") != size
+        or reference.get("full_byte_service_account_readback_passed") is not True
+        or not isinstance(reference.get("uri"), str)
+    ):
+        return None, "archive_readback_failed"
+    return {"uri": reference["uri"], "digest": digest, "size_bytes": size,
+            "member_count": len(packed), "members": packed}, None
+
+
+def _cloud_unchanged(cloud: CloudInventory, *, bucket: str, scene_id: str,
+                     rows: Sequence[Mapping[str, Any]]) -> str | None:
+    prefix = f"scenes/{scene_id}/"
+    try:
+        listing = dict(cloud.list_objects(bucket, prefix))
+    except Exception:  # noqa: BLE001 - an unproven cloud copy keeps the local one
+        return "cloud_inventory_unavailable"
+    for row in rows:
+        remote = listing.get(prefix + row["relative_path"])
+        if remote is None or (remote.generation, remote.size, remote.md5_hash, remote.crc32c) != (
+            row["generation"], row["size"], row["md5_hash"], row["crc32c"]
+        ):
+            return "cloud_changed"
+    return None
+
+
+def _fsync_directory(path: Path) -> None:
+    try:
+        descriptor = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(descriptor)
+    except OSError:
+        pass
+    finally:
+        os.close(descriptor)
+
+
+def _publish_receipt(path: Path, document: Mapping[str, Any]) -> bool:
+    """Create the receipt exclusively and completely, owned like the ``scenes/`` directory it lives in.
+
+    Returns False, writing nothing, when a receipt already exists.
+    """
+
+    data = (json.dumps(document, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    owner = os.lstat(path.parent)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o640)
+    try:
+        try:
+            view = memoryview(data)
+            while view:
+                view = view[os.write(descriptor, view):]
+            os.fchmod(descriptor, 0o640)
+            # The GC runs as root; the listener that reads receipts runs as the service account.
+            os.fchown(descriptor, owner.st_uid, owner.st_gid)
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            return False
+        _fsync_directory(path.parent)
+        return True
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _receipt_budget(plan: Mapping[str, Any], files: Sequence[tuple[str, os.stat_result]]) -> int:
+    records = set(LISTENER_FILES.values())
+    record_bytes = sum(info.st_size for relative, info in files
+                       if relative.startswith("captures/") and relative.rsplit("/", 1)[-1] in records)
+    estimate = len(json.dumps(plan).encode("utf-8")) + record_bytes + 65536
+    return max(1024 * 1024, 2 * estimate)
+
+
+def apply_scene_workspace_retirement(
+    plan: Mapping[str, Any],
+    *,
+    context: RetentionContext,
+    ack: str,
+    cloud: CloudInventory,
+    now: float,
+    index: ReferenceIndex | None = None,
+    stream_publisher: Callable[..., Mapping[str, Any]] | None = None,
+    process_checker: Callable[[Path], bool] | None = None,
+) -> dict[str, Any]:
+    """Retire one planned workspace, or skip it with a typed reason and delete nothing.
+
+    Under the listener's ledger locks: re-prove checks 1-8 and the planned snapshot,
+    stream the local-only files to the artifact store with a full readback, re-verify
+    the cloud objects, write the receipt, and only then remove the workspace.
+    ``stream_publisher`` defaults to ``publish_configured_scene_stream`` (the private
+    artifact store) and ``index`` is re-read when not given.
+    """
+
+    bucket, scene_id, scene = _authorized_plan(plan, ack=ack, context=context)
+    publisher = stream_publisher or publish_configured_scene_stream
+    observed_at = float(now)
+    receipt = receipt_path(context.storage_root, bucket, scene_id)
+    base = {"bucket": bucket, "scene_id": scene_id, "source_plan_digest": plan["plan_digest"]}
+
+    def skipped(reason: str) -> dict[str, Any]:
+        return {**base, "status": "skipped", "reason": reason}
+
+    if os.path.lexists(receipt):
+        return {**skipped("already_retired"), "receipt": str(receipt)}
+    planned_ids = [row["capture_id"] for row in plan["captures"]]
+    with _CaptureLocks(scene, planned_ids) as locks:
+        if locks.refusal is not None:
+            return skipped(locks.refusal)
+        evaluation = _evaluate(context=context, bucket=bucket, scene_id=scene_id, scene=scene, now=observed_at,
+                               index=index, process_checker=process_checker or _process_in_use)
+        if (
+            evaluation.reasons
+            or evaluation.capture_ids != planned_ids
+            or _snapshot(evaluation.files) != plan["snapshot"]
+        ):
+            return skipped("candidate_changed")
+        records = _capture_records(scene, evaluation.captures)
+        try:
+            reservation = reserve_control_plane_disk(
+                "evidence_offload", target_root=receipt.parent,
+                expected_bytes=_receipt_budget(plan, evaluation.files),
+                reservation_root=DEFAULT_RESERVATION_ROOT)
+        except Exception:  # noqa: BLE001 - no room for the receipt means no retirement
+            return skipped("disk_reservation_refused")
+        try:
+            archive: dict[str, Any] | None = None
+            if plan["archive"]:
+                archive, refusal = _archive(scene, plan["archive"], publisher)
+                if refusal is not None:
+                    return skipped(refusal)
+            if _snapshot(_walk(scene).files) != plan["snapshot"]:
+                return skipped("candidate_changed")  # written to while it was archived
+            refusal = _cloud_unchanged(cloud, bucket=bucket, scene_id=scene_id, rows=plan["cloud_verified"])
+            if refusal is not None:
+                return skipped(refusal)
+            document: dict[str, Any] = {
+                "schema_version": RETIRED_SCHEMA,
+                "bucket": bucket,
+                "scene_id": scene_id,
+                "workspace": str(scene),
+                "retired_at_epoch": observed_at,
+                "source_plan_digest": plan["plan_digest"],
+                "captures": records,
+                "cloud_verified": list(plan["cloud_verified"]),
+                "archive": archive,
+                "totals": dict(plan["totals"]),
+                "evidence_deleted": False,
+                "receipt_digest": "",
+            }
+            document["receipt_digest"] = canonical_digest(document, digest_field="receipt_digest")
+            if not _publish_receipt(receipt, document):
+                return {**skipped("already_retired"), "receipt": str(receipt)}
+            # Everything below is restorable from the receipt, so a partial removal loses nothing.
+            shutil.rmtree(scene, ignore_errors=True)
+        finally:
+            reservation.release()
+    return {
+        **base,
+        "status": "retired",
+        "receipt": str(receipt),
+        "removal_complete": not os.path.lexists(scene),
+        "freed_allocated_bytes": evaluation.allocated_bytes,
+        "archive_bytes": archive["size_bytes"] if archive else 0,
+        "archive_member_count": archive["member_count"] if archive else 0,
+        "cloud_verified_count": len(plan["cloud_verified"]),
+    }
+
+
+# --- restore --------------------------------------------------------------------------------------
+
+
+def _safe_relative(value: Any) -> str:
+    if not isinstance(value, str) or not value or value.startswith("/") or "\\" in value or "\x00" in value:
+        raise ValueError("relative path invalid")
+    if any(part in {"", ".", ".."} for part in value.split("/")):
+        raise ValueError("relative path invalid")
+    return value
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while chunk := stream.read(1 << 20):
+            digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
+
+
+def restore_scene_workspace(
+    *,
+    receipt_path: Path,
+    destination: Path,
+    cloud: CloudInventory,
+    materializer: Callable[..., Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Replay a retirement receipt into ``destination``, verifying every byte before exposing it.
+
+    Cloud-verified files are downloaded and re-checked by size and MD5 (or CRC32C); the
+    archive is materialized, its digest re-checked, extracted with the ``data`` filter and
+    every member's SHA-256 re-checked. The union must be exactly the retired file set.
+    """
+
+    materialize = materializer or materialize_configured_scene_artifact
+    invalid = WebsiteSceneWorkspaceRetentionError("website_scene_workspace_restore_receipt_invalid")
+    state, receipt, _ = _load_json(Path(receipt_path))
+    if (
+        state != "ok"
+        or receipt is None
+        or receipt.get("schema_version") != RETIRED_SCHEMA
+        or receipt.get("receipt_digest") != canonical_digest(receipt, digest_field="receipt_digest")
+    ):
+        raise invalid
+    try:
+        bucket, scene_id = _identity(receipt.get("bucket"), receipt.get("scene_id"))
+        verified = list(receipt["cloud_verified"])
+        archive = receipt.get("archive")
+        members = list(archive["members"]) if archive else []
+        planned = [_safe_relative(row["relative_path"]) for row in (*verified, *members)]
+    except (KeyError, TypeError, ValueError, WebsiteSceneWorkspaceRetentionError) as exc:
+        raise invalid from exc
+    if len(set(planned)) != len(planned):
+        raise invalid
+    target = Path(destination)
+    if os.path.lexists(target):
+        raise WebsiteSceneWorkspaceRetentionError("website_scene_workspace_restore_destination_exists")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=".restore-", dir=target.parent))
+    try:
+        tree = staging / "tree"
+        tree.mkdir()
+        prefix = f"scenes/{scene_id}/"
+        for row in verified:
+            path = tree / row["relative_path"]
+            path.parent.mkdir(parents=True, exist_ok=True)
+            cloud.download(bucket, prefix + row["relative_path"], path)
+            expected = CloudObject(name=prefix + row["relative_path"], size=row["size"],
+                                   generation=row.get("generation"), md5_hash=row.get("md5_hash"),
+                                   crc32c=row.get("crc32c"))
+            if not _verifies(expected, _hash_file(path)):
+                raise WebsiteSceneWorkspaceRetentionError("website_scene_workspace_restore_cloud_mismatch")
+        if archive:
+            mismatch = WebsiteSceneWorkspaceRetentionError("website_scene_workspace_restore_archive_mismatch")
+            bundle = staging / ARCHIVE_FILENAME
+            materialize(
+                reference={
+                    "schema_version": "task_evaluation_scene_artifact_reference.v1",
+                    "status": "remote_verified",
+                    "artifact_kind": ARTIFACT_KIND,
+                    "uri": archive["uri"],
+                    "digest": archive["digest"],
+                    "size_bytes": archive["size_bytes"],
+                    # A receipt exists only after a full remote readback of this archive.
+                    "remote_identity_verified": True,
+                    "full_byte_service_account_readback_passed": True,
+                    "raw_secret_values_recorded": False,
+                },
+                destination=bundle,
+                maximum_size_bytes=int(archive["size_bytes"]),
+            )
+            if _sha256_file(bundle) != archive["digest"]:
+                raise mismatch
+            extracted = staging / "archive"
+            extracted.mkdir()
+            with tarfile.open(bundle) as source:
+                source.extractall(extracted, filter="data")
+            expected_members = {row["relative_path"]: row for row in members}
+            observed: dict[str, Path] = {}
+            for path in extracted.rglob("*"):
+                if path.is_symlink():
+                    raise mismatch
+                if path.is_file():
+                    observed[path.relative_to(extracted).as_posix()] = path
+            if set(observed) != set(expected_members) or any(
+                observed[name].stat().st_size != row["size_bytes"] or _sha256_file(observed[name]) != row["sha256"]
+                for name, row in expected_members.items()
+            ):
+                raise mismatch
+            for name, path in observed.items():
+                placed = tree / name
+                placed.parent.mkdir(parents=True, exist_ok=True)
+                if os.path.lexists(placed):
+                    raise invalid
+                os.replace(path, placed)
+        restored = sorted(path.relative_to(tree).as_posix() for path in tree.rglob("*")
+                          if path.is_file() or path.is_symlink())
+        if restored != sorted(planned):
+            raise WebsiteSceneWorkspaceRetentionError("website_scene_workspace_restore_incomplete")
+        # Downloads and the archive (which normalizes ownership to root) take the destination's owner.
+        owner = os.lstat(target.parent)
+        for path in (tree, *tree.rglob("*")):
+            os.chown(path, owner.st_uid, owner.st_gid, follow_symlinks=False)
+        os.replace(tree, target)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+    return {
+        "schema_version": RESTORE_SCHEMA,
+        "status": "restored",
+        "bucket": bucket,
+        "scene_id": scene_id,
+        "destination": str(target),
+        "file_count": len(planned),
+        "cloud_file_count": len(verified),
+        "archive_member_count": len(members),
+        "source_receipt_digest": receipt["receipt_digest"],
+    }
+
+
+# --- command line ---------------------------------------------------------------------------------
+
+
+def _now() -> float:
+    return time.time()
+
+
+def _cloud_inventory() -> CloudInventory:
+    return GcsCloudInventory()
+
+
+def _context_from_arguments(args: argparse.Namespace) -> RetentionContext:
+    intent_root = Path(args.intent_root) if args.intent_root else None
+    base = args.queue_root or [item for item in str(os.getenv(QUEUE_ROOTS_ENV) or "").split(":") if item]
+    return RetentionContext(
+        storage_root=Path(args.storage_root),
+        pins_root=Path(args.pins_root),
+        queue_roots=scene_queue_roots(base or DEFAULT_QUEUE_ROOTS, intent_root),
+        intent_root=intent_root,
+        binding_root=Path(args.binding_root) if args.binding_root else binding_root_for(intent_root),
+    )
+
+
+def _find_bucket(storage_root: Path, scene_id: str) -> str:
+    """The one bucket holding this scene's workspace or retirement receipt."""
+
+    try:
+        buckets = sorted(os.listdir(storage_root))
+    except OSError:
+        buckets = []
+    matches = [
+        bucket for bucket in buckets
+        if not bucket.startswith(".")
+        and (os.path.lexists(scene_path(storage_root, bucket, scene_id))
+             or os.path.lexists(receipt_path(storage_root, bucket, scene_id)))
+    ]
+    if len(matches) > 1:
+        raise WebsiteSceneWorkspaceRetentionError("scene_workspace_bucket_ambiguous")
+    if not matches:
+        raise WebsiteSceneWorkspaceRetentionError("scene_workspace_not_found")
+    return matches[0]
+
+
+def _resolve_scene(args: argparse.Namespace, context: RetentionContext) -> tuple[str, str]:
+    try:
+        scene_id = strict_identifier(args.scene_id, field="scene_id")
+    except SecurityValidationError as exc:
+        raise WebsiteSceneWorkspaceRetentionError("website_scene_workspace_identity_invalid") from exc
+    if scene_id != args.scene_id:
+        raise WebsiteSceneWorkspaceRetentionError("website_scene_workspace_identity_invalid")
+    return _identity(args.bucket or _find_bucket(context.storage_root, scene_id), scene_id)
+
+
+def _retire_command(args: argparse.Namespace) -> dict[str, Any]:
+    """``planned``, ``retained`` (with reasons), ``retired``; errors become ``failed`` in ``main``."""
+
+    context = _context_from_arguments(args)
+    bucket, scene_id = _resolve_scene(args, context)
+    identity = {"bucket": bucket, "scene_id": scene_id}
+    receipt = receipt_path(context.storage_root, bucket, scene_id)
+    if not os.path.lexists(scene_path(context.storage_root, bucket, scene_id)):
+        if os.path.lexists(receipt):
+            return {"status": "retired", **identity, "already_retired": True, "receipt": str(receipt)}
+        raise WebsiteSceneWorkspaceRetentionError("scene_workspace_not_found")
+    now = _now()
+    cloud = _cloud_inventory()
+    plan = plan_scene_workspace_retirement(context=context, bucket=bucket, scene_id=scene_id, now=now, cloud=cloud)
+    if plan["status"] != "retirable":
+        return {"status": "retained", **identity, "reasons": plan["reasons"], "plan": plan}
+    if not args.apply:
+        return {"status": "planned", **identity, "plan": plan}
+    outcome = apply_scene_workspace_retirement(plan, context=context, ack=args.ack, cloud=cloud, now=now)
+    if outcome["status"] == "retired":
+        return {**outcome, "plan_digest": plan["plan_digest"]}
+    return {"status": "retained", **identity, "reasons": [outcome["reason"]], "apply": outcome, "plan": plan}
+
+
+def _write_result(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(text + "\n")
+        os.chmod(temporary, 0o644)
+        os.replace(temporary, path)
+    except BaseException:
+        Path(temporary).unlink(missing_ok=True)
+        raise
+
+
+def _add_root_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--storage-root", default=os.getenv(STORAGE_ROOT_ENV) or str(DEFAULT_STORAGE_ROOT))
+    parser.add_argument("--pins-root", default=os.getenv(PINS_ROOT_ENV) or str(DEFAULT_PINS_ROOT))
+    parser.add_argument("--intent-root", default=os.getenv(INTENT_ROOT_ENV) or os.getenv(INTAKE_ROOT_ENV)
+                        or str(DEFAULT_INTENT_ROOT))
+    parser.add_argument("--binding-root", default=None,
+                        help=f"default: ${BINDING_ROOT_ENV}, else <intent root parent>/website-source-bindings")
+    parser.add_argument("--queue-root", action="append", default=None,
+                        help=f"default: ${QUEUE_ROOTS_ENV}, else the reclaim timer's queues")
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """``plan`` | ``retire [--apply --ack retire-scene-workspace]`` | ``restore``; JSON on stdout.
+
+    ``retire`` reports exactly one of ``planned``, ``retained``, ``retired`` or ``failed``
+    (exit 1), the statuses the operator door maps to its outcome.
+    """
+
+    parser = argparse.ArgumentParser(prog="python -m blueprint_pipeline.website_scene_workspace_retention")
+    commands = parser.add_subparsers(dest="command", required=True)
+    for name in ("plan", "retire"):
+        command = commands.add_parser(name)
+        command.add_argument("--scene-id", required=True)
+        command.add_argument("--bucket")
+        _add_root_arguments(command)
+        command.add_argument("--result-out")
+        if name == "retire":
+            command.add_argument("--apply", action="store_true")
+            command.add_argument("--ack", default="")
+    restore = commands.add_parser("restore")
+    restore.add_argument("--receipt", required=True)
+    restore.add_argument("--destination", required=True)
+    restore.add_argument("--result-out")
+    args = parser.parse_args(argv)
+    try:
+        if args.command == "retire":
+            result = _retire_command(args)
+        elif args.command == "plan":
+            context = _context_from_arguments(args)
+            bucket, scene_id = _resolve_scene(args, context)
+            result = plan_scene_workspace_retirement(context=context, bucket=bucket, scene_id=scene_id,
+                                                     now=_now(), cloud=_cloud_inventory())
+        else:
+            result = restore_scene_workspace(receipt_path=Path(args.receipt), destination=Path(args.destination),
+                                             cloud=_cloud_inventory())
+    except WebsiteSceneWorkspaceRetentionError as exc:
+        result = {"status": "failed", "code": str(exc)}
+    except Exception as exc:  # noqa: BLE001 - the door records a typed failure, never a traceback
+        result = {"status": "failed", "code": f"website_scene_workspace_error:{type(exc).__name__}"}
+    text = json.dumps(result, indent=2, sort_keys=True)
+    if args.result_out:
+        _write_result(Path(args.result_out), text)
+    print(text)
+    return 1 if result.get("status") == "failed" else 0
+
+
 __all__ = [
+    "ARCHIVE_FILENAME",
     "ARTIFACT_KIND",
     "CloudInventory",
     "CloudObject",
     "DEFAULT_ACK_RETENTION_SECONDS",
+    "DEFAULT_INTENT_ROOT",
     "DEFAULT_MINIMUM_IDLE_SECONDS",
     "DEFAULT_ORPHAN_REGISTRATION_SECONDS",
+    "DEFAULT_QUEUE_ROOTS",
+    "DEFAULT_STORAGE_ROOT",
     "GcsCloudInventory",
     "PLAN_SCHEMA",
     "RESTORE_SCHEMA",
@@ -853,7 +1483,18 @@ __all__ = [
     "ReferenceIndex",
     "RetentionContext",
     "WebsiteSceneWorkspaceRetentionError",
+    "apply_scene_workspace_retirement",
+    "binding_root_for",
     "build_reference_index",
+    "main",
     "plan_scene_workspace_retirement",
+    "receipt_path",
+    "restore_scene_workspace",
+    "scene_path",
+    "scene_queue_roots",
     "scene_workspaces",
 ]
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
