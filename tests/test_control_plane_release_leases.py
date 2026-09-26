@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 
 from blueprint_pipeline.control_plane_release_leases import (
@@ -256,3 +257,134 @@ def test_configured_runtime_paths_protect_and_bootstrap_machinery_path_is_follow
     assert blocked["blockers"] == [
         "release_protection_config_unreadable:task-evaluation-public-scene-machinery.json"
     ]
+
+
+def _iso(epoch: float) -> str:
+    return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat()
+
+
+def _profile(sources: ProtectionSources, profile_id: str, commit: str) -> dict:
+    profile = {
+        "profile_id": profile_id,
+        "profile_digest": f"sha256:{profile_id}",
+        "source_commit": commit,
+        "allocator": {"max_spend_usd": 4.0},
+    }
+    _write(sources.profile_dir / f"{profile_id}.json", profile)
+    return profile
+
+
+def _authorize(
+    sources: ProtectionSources,
+    profile: dict,
+    *,
+    expires_at: float,
+    max_launches: int = 3,
+    max_total_spend_usd: float = 20.0,
+    consumed_usd: tuple[float, ...] = (),
+    **fields: object,
+) -> None:
+    value = {
+        "schema_version": "task_evaluation_standing_launch_authorization.v1",
+        "profile_id": profile["profile_id"],
+        "profile_digest": profile["profile_digest"],
+        "authorized_by": "ops-lead@blueprint",
+        "authorization_reference": "OPS-4242",
+        "issued_at": _iso(NOW - 2 * DAY),
+        "expires_at": _iso(expires_at),
+        "max_launches": max_launches,
+        "max_total_spend_usd": max_total_spend_usd,
+        **fields,
+    }
+    directory = sources.standing_authorization_dir
+    _write(directory / f"{profile['profile_id']}.json", value)
+    for index, amount in enumerate(consumed_usd):
+        _write(
+            directory / "consumed" / profile["profile_id"] / f"launch-{index}.json",
+            {"profile_id": profile["profile_id"], "max_spend_usd": amount},
+        )
+
+
+def test_standing_authorization_protects_only_while_valid(tmp_path: Path) -> None:
+    sources = _sources(tmp_path)
+    _authorize(sources, _profile(sources, "valid", B), expires_at=NOW + 3 * DAY)
+    _authorize(
+        sources,
+        _profile(sources, "anonymous", "1" * 40),
+        expires_at=NOW + DAY,
+        authorized_by="",
+        authorization_reference=None,
+    )
+    _authorize(sources, _profile(sources, "expired", C), expires_at=NOW - 1)
+    _authorize(
+        sources,
+        _profile(sources, "exhausted", D),
+        expires_at=NOW + DAY,
+        max_launches=1,
+        consumed_usd=(1.0,),
+    )
+    _authorize(
+        sources,
+        _profile(sources, "ceiling", E),
+        expires_at=NOW + DAY,
+        max_total_spend_usd=5.0,
+        consumed_usd=(2.0,),
+    )
+    _authorize(sources, _profile(sources, "malformed", F), expires_at=NOW + DAY)
+    malformed = sources.standing_authorization_dir / "malformed.json"
+    value = json.loads(malformed.read_text(encoding="utf-8"))
+    malformed.write_text(json.dumps({**value, "expires_at": "next tuesday"}), encoding="utf-8")
+
+    result = collect_release_protections(sources, now=NOW, migrate=False)
+
+    assert result["blockers"] == ["release_protection_standing_authorization_invalid:malformed"]
+    assert [row for row in result["leases"] if row["commit"] == B] == [
+        {
+            "commit": B,
+            "kind": "standing_authorization",
+            "owner": "ops-lead@blueprint",
+            "reason": "OPS-4242",
+            "run_ref": {"kind": "standing_authorization", "profile_id": "valid"},
+            "expires_at_epoch": NOW + 3 * DAY,
+            "source": "standing-authorizations/valid.json",
+        }
+    ]
+    anonymous = next(row for row in result["leases"] if row["commit"] == "1" * 40)
+    assert anonymous["owner"] == "unknown"
+    assert anonymous["reason"] == "unconsumed_standing_authorization:anonymous"
+    assert _protected(result) == {
+        B: ["standing_authorization:standing-authorizations/valid.json"],
+        "1" * 40: ["standing_authorization:standing-authorizations/anonymous.json"],
+    }
+    assert {(row["commit"], row["why"]) for row in result["lapsed"]} == {
+        (C, "run_terminal"),
+        (D, "run_terminal"),
+        (E, "run_terminal"),
+    }
+
+
+def test_consumption_records_and_profiles_alone_do_not_protect(tmp_path: Path) -> None:
+    sources = _sources(tmp_path)
+    # A published profile with no live launch and no authorization.
+    _write(
+        sources.profile_dir / f"scene-unauthorized-{B}.json",
+        {
+            "profile_id": f"scene-unauthorized-{B}",
+            "allocator": {"argv": ["--expected-source-commit", C, "--tree", TREE]},
+        },
+    )
+    # Consumption records and step logs of an authorization that is gone.
+    standing = sources.standing_authorization_dir
+    _write(
+        standing / "consumed" / "retired-profile" / "launch-1.json",
+        {"profile_id": "retired-profile", "source_commit": D, "max_spend_usd": 1.0},
+    )
+    (standing / "retired-profile.json.standing_authorization.stdout.log").write_text(
+        f"launched {E}\n", encoding="utf-8"
+    )
+
+    result = collect_release_protections(sources, now=NOW, migrate=False)
+
+    assert result["leases"] == []
+    assert result["lapsed"] == []
+    assert result["blockers"] == []

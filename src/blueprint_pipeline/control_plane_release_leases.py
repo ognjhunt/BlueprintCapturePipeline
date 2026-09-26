@@ -15,6 +15,10 @@ run it serves (``run_ref``):
     A live envelope in a queue that executes a release, read through its typed
     commit fields and managed-tree paths only.  It lapses when it leaves the
     live states, and at the latest at its maximum lifetime.
+``standing_authorization``
+    A standing launch authorization that can still admit a launch of the
+    profile that runs the commit.  It lapses when it expires or runs out of
+    launches or spend; its consumption records never protect anything.
 ``configured_runtime``
     A runtime path named by current host configuration.  It has no expiry: the
     configuration is re-read on every deploy.
@@ -32,6 +36,7 @@ import re
 import stat
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -82,6 +87,14 @@ _MANAGED_TREE = re.compile(
 )
 _COMMIT_FIELDS = ("expected_production_commit", "source_commit", "expected_source_commit")
 _MAX_DOCUMENT_BYTES = 16 * 1024 * 1024
+# The blockers after which a standing authorization can never admit again.
+_EXPECTED_TERMINAL_AUTHORIZATION_BLOCKERS = frozenset(
+    {
+        "standing_authorization_expired",
+        "standing_authorization_launches_exhausted",
+        "standing_authorization_spend_ceiling_reached",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -339,6 +352,125 @@ def _collect_queues(
                     collection.protect(commits, row)
 
 
+def _parse_epoch(value: Any) -> float | None:
+    text = value.strip() if isinstance(value, str) else ""
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
+
+
+def _text_or(value: Any, default: str) -> str:
+    return value.strip() if isinstance(value, str) and value.strip() else default
+
+
+def _standing_authorization_state(
+    directory: Path, profile_id: str, profiles: _Profiles, *, now: float
+) -> tuple[str, Mapping[str, Any] | None]:
+    """``("live" | "terminal" | "invalid", authorization)`` for one profile id.
+
+    Live means the authorization can still admit a launch.  Terminal means it
+    never can again: expired, out of launches, or out of spend.  Anything else
+    is invalid, which blocks rather than guesses.
+    """
+
+    from .task_evaluation_standing_launch_authorization import (
+        consumption_totals,
+        load_standing_authorization,
+        validate_standing_authorization,
+    )
+
+    path = directory / f"{profile_id}.json"
+    try:
+        if path.is_symlink() or not path.is_file():
+            raise ValueError("standing_authorization_source_invalid")
+        authorization = load_standing_authorization(profile_id=profile_id, directory=directory)
+        if authorization is None or authorization.get("profile_id") != profile_id:
+            raise ValueError("standing_authorization_identity_invalid")
+        launches, spend = consumption_totals(directory=directory, profile_id=profile_id)
+        profile = profiles.documents.get(profile_id) or {
+            # The typed two-step tool's stand-in when the profile is unreadable:
+            # it checks bounds and expiry without inventing a per-launch spend.
+            "profile_id": profile_id,
+            "profile_digest": authorization.get("profile_digest"),
+            "allocator": {"max_spend_usd": 0.0},
+        }
+        blockers = set(
+            validate_standing_authorization(
+                authorization,
+                profile=profile,
+                launches_consumed=launches,
+                spend_consumed_usd=spend,
+                now=datetime.fromtimestamp(now, tz=timezone.utc),
+            )
+        )
+    except (AttributeError, OSError, TypeError, ValueError):
+        return "invalid", None
+    if not blockers:
+        return "live", authorization
+    if blockers <= _EXPECTED_TERMINAL_AUTHORIZATION_BLOCKERS:
+        return "terminal", authorization
+    return "invalid", authorization
+
+
+def _collect_standing_authorizations(
+    directory: Path, profiles: _Profiles, *, now: float, collection: _Collection
+) -> None:
+    """A release stays while an authorization can still launch the profile that runs it."""
+
+    if not os.path.lexists(directory):
+        return
+    try:
+        if directory.is_symlink() or not directory.is_dir():
+            raise ValueError("standing_authorization_root_unsafe")
+        names = _json_names(directory)
+    except (OSError, ValueError):
+        collection.blockers.add("release_protection_standing_authorization_root_unreadable")
+        return
+    for name in names:
+        # consumed/ is a directory and step logs are not JSON; only the
+        # authorization documents themselves are read.
+        profile_id = name[: -len(".json")]
+        state, authorization = _standing_authorization_state(
+            directory, profile_id, profiles, now=now
+        )
+        if state == "invalid" or authorization is None:
+            collection.blockers.add(
+                f"release_protection_standing_authorization_invalid:{profile_id}"
+            )
+            continue
+        commit = (
+            profiles.commits[profile_id]
+            if profile_id in profiles.commits
+            else _trailing_commit(profile_id)
+        )
+        row = {
+            "kind": "standing_authorization",
+            "owner": _text_or(authorization.get("authorized_by"), "unknown"),
+            "reason": _text_or(
+                authorization.get("authorization_reference"),
+                f"unconsumed_standing_authorization:{profile_id}",
+            ),
+            "run_ref": {"kind": "standing_authorization", "profile_id": profile_id},
+            "expires_at_epoch": _parse_epoch(authorization.get("expires_at")),
+            "source": f"{directory.name}/{name}",
+        }
+        if commit is None:
+            # The profile pins no release, so it runs from the active one.
+            collection.warnings.add(
+                f"release_protection_standing_authorization_commit_unknown:{profile_id}"
+            )
+        elif state == "live":
+            collection.protect({commit}, row)
+        else:
+            collection.lapse({commit}, row, "run_terminal")
+
+
 def _collect_configuration(config_files: tuple[Path, ...], collection: _Collection) -> None:
     configured = [Path(path) for path in config_files]
     pending = [(path, False) for path in configured]
@@ -415,6 +547,9 @@ def collect_release_protections(
             max_lifetime_seconds=max_lifetime_seconds,
             collection=collection,
         )
+    _collect_standing_authorizations(
+        Path(sources.standing_authorization_dir), profiles, now=now, collection=collection
+    )
     _collect_configuration(tuple(sources.config_files), collection)
     return collection.result(now)
 
