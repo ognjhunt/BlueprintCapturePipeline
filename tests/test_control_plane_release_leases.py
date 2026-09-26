@@ -793,3 +793,58 @@ def test_a_short_sidecar_write_leaves_no_partial_lease(
     retried = collect_release_protections(sources, now=NOW, migrate=True)
     assert retried["blockers"] == [] and retried["migrated"] == ["short.json"]
     assert json.loads(_sidecar(sources, "short.json").read_text(encoding="utf-8"))["binding"] == "short.json"
+
+
+def test_standing_authorization_commit_comes_from_the_id_prefix_or_blocks(tmp_path: Path) -> None:
+    sources = _sources(tmp_path)
+    directory = sources.standing_authorization_dir
+
+    def authorize(profile_id: str) -> None:
+        _write(
+            directory / f"{profile_id}.json",
+            {
+                "schema_version": "task_evaluation_standing_launch_authorization.v1",
+                "profile_id": profile_id,
+                "profile_digest": f"sha256:{profile_id}",
+                "max_launches": 2,
+                "max_total_spend_usd": 5.0,
+                "expires_at": _iso(NOW + DAY),
+            },
+        )
+
+    # No readable profile: the commit is the 40-hex segment after the prefix,
+    # never a later one (a revision or digest suffix).
+    authorize(f"lane-{B}-{C}")
+    # No readable profile and nothing in the id: which release it needs is unknown.
+    authorize("lane-without-commit")
+    # A readable profile that pins no release runs from the active one.
+    _write(sources.profile_dir / "unpinned.json", {"profile_id": "unpinned", "profile_digest": "sha256:unpinned",
+                                                   "allocator": {"max_spend_usd": 1.0}})
+    authorize("unpinned")
+
+    result = collect_release_protections(sources, now=NOW, migrate=False)
+
+    assert _protected(result) == {B: [f"standing_authorization:standing-authorizations/lane-{B}-{C}.json"]}
+    assert result["blockers"] == [
+        "release_protection_standing_authorization_commit_unknown:lane-without-commit"
+    ]
+    assert result["warnings"] == ["release_protection_profile_commit_unpinned:unpinned"]
+
+
+def test_blocker_codes_never_carry_raw_identities(tmp_path: Path) -> None:
+    sources = _sources(tmp_path)
+    pending = sources.control_plane_root / "task-evaluation-launches" / "pending"
+    _write(pending / "launch.json", {"launch_profile_id": "../../etc/shadow"})
+    (pending / "odd name\n.json").write_text("{", encoding="utf-8")
+
+    result = collect_release_protections(sources, now=NOW, migrate=False)
+
+    assert len(result["blockers"]) == 2
+    for code in result["blockers"]:
+        identity = code.rpartition(":")[2].rpartition("/")[2]
+        assert identity.startswith("invalid-") and len(identity) == len("invalid-") + 12, code
+        assert "/etc" not in code and "\n" not in code and " " not in code
+    assert {code.rpartition(":")[0] for code in result["blockers"]} == {
+        "release_protection_profile_missing",
+        "release_protection_queue_unreadable",
+    }

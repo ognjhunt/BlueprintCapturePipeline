@@ -231,13 +231,31 @@ def _managed_tree_commits(value: Any) -> set[str]:
     return commits
 
 
-def _trailing_commit(profile_id: str) -> str | None:
-    """The last dash-separated 40-hex segment of ``<prefix>-<commit>[-...]``."""
+def _profile_id_commit(profile_id: str) -> str | None:
+    """The commit a profile id names: ``<prefix>-<commit>[-<revision>][-binding-<digest>]``.
 
-    for segment in reversed(profile_id.split("-")):
+    The commit is the first 40-hex segment after the prefix; a later 40-hex
+    segment is a revision or digest suffix, never the release.
+    """
+
+    for segment in profile_id.split("-"):
         if _COMMIT.fullmatch(segment):
             return segment
     return None
+
+
+def _code_id(value: str) -> str:
+    """An identity safe to embed in a typed refusal code.
+
+    Names come from file names and envelope fields; anything that is not a
+    plain identifier (a path, whitespace, a control character) is replaced by
+    a short digest so a code never carries raw host input.
+    """
+
+    if _IDENTIFIER.fullmatch(value):
+        return value
+    digest = hashlib.sha256(value.encode("utf-8", "surrogateescape")).hexdigest()
+    return f"invalid-{digest[:12]}"
 
 
 class _Collection:
@@ -293,7 +311,7 @@ def _profile_commit(profile: Mapping[str, Any], profile_id: str) -> str | None:
                 commit = _valid_commit(item.split("=", 1)[1])
             if commit is not None:
                 return commit
-    return _trailing_commit(profile_id)
+    return _profile_id_commit(profile_id)
 
 
 def _read_profiles(profile_dir: Path, collection: _Collection) -> _Profiles:
@@ -318,7 +336,7 @@ def _read_profiles(profile_dir: Path, collection: _Collection) -> _Profiles:
         except (OSError, ValueError):
             profile = None
         if not isinstance(profile, Mapping):
-            collection.warnings.add(f"release_protection_profile_unreadable:{name}")
+            collection.warnings.add(f"release_protection_profile_unreadable:{_code_id(name)}")
             continue
         declared = profile.get("profile_id")
         profile_id = declared if isinstance(declared, str) and declared else name[: -len(".json")]
@@ -375,23 +393,26 @@ def _collect_queues(
                 continue
             for name in names:
                 source = f"{queue}/{state}/{name}"
+                code_source = f"{queue}/{state}/{_code_id(name)}"
                 try:
                     _payload, envelope, info = _read_document(directory / name)
                 except (OSError, ValueError):
                     envelope = None
                 if not isinstance(envelope, Mapping):
-                    collection.blockers.add(f"release_protection_queue_unreadable:{source}")
+                    collection.blockers.add(f"release_protection_queue_unreadable:{code_source}")
                     continue
                 commits = _envelope_commits(envelope)
                 for profile_id in sorted(_envelope_profile_ids(envelope)):
                     if profile_id not in profiles.commits:
-                        collection.blockers.add(f"release_protection_profile_missing:{profile_id}")
+                        collection.blockers.add(
+                            f"release_protection_profile_missing:{_code_id(profile_id)}"
+                        )
                         continue
                     commit = profiles.commits[profile_id]
                     if commit is None:
                         # The profile pins no release: it runs from the active one.
                         collection.warnings.add(
-                            f"release_protection_profile_commit_unknown:{profile_id}"
+                            f"release_protection_profile_commit_unpinned:{_code_id(profile_id)}"
                         )
                     else:
                         commits.add(commit)
@@ -412,7 +433,7 @@ def _collect_queues(
                 if now >= expires_at:
                     collection.lapse(commits, row, "max_lifetime")
                     collection.warnings.add(
-                        f"release_protection_queue_envelope_past_max_lifetime:{source}"
+                        f"release_protection_queue_envelope_past_max_lifetime:{code_source}"
                     )
                 else:
                     collection.protect(commits, row)
@@ -511,13 +532,13 @@ def _collect_standing_authorizations(
         )
         if state == "invalid" or authorization is None:
             collection.blockers.add(
-                f"release_protection_standing_authorization_invalid:{profile_id}"
+                f"release_protection_standing_authorization_invalid:{_code_id(profile_id)}"
             )
             continue
         commit = (
             profiles.commits[profile_id]
             if profile_id in profiles.commits
-            else _trailing_commit(profile_id)
+            else _profile_id_commit(profile_id)
         )
         row = {
             "kind": "standing_authorization",
@@ -530,15 +551,23 @@ def _collect_standing_authorizations(
             "expires_at_epoch": _parse_epoch(authorization.get("expires_at")),
             "source": f"{directory.name}/{name}",
         }
-        if commit is None:
-            # The profile pins no release, so it runs from the active one.
+        if commit is not None:
+            if state == "live":
+                collection.protect({commit}, row)
+            else:
+                collection.lapse({commit}, row, "run_terminal")
+        elif state != "live":
+            continue  # it can never launch again, so it needs no release
+        elif profile_id in profiles.documents:
+            # The readable profile pins no release, so it runs from the active one.
             collection.warnings.add(
-                f"release_protection_standing_authorization_commit_unknown:{profile_id}"
+                f"release_protection_profile_commit_unpinned:{_code_id(profile_id)}"
             )
-        elif state == "live":
-            collection.protect({commit}, row)
         else:
-            collection.lapse({commit}, row, "run_terminal")
+            # It can still launch, but nothing says which release that needs.
+            collection.blockers.add(
+                f"release_protection_standing_authorization_commit_unknown:{_code_id(profile_id)}"
+            )
 
 
 def _identifier(value: Any) -> bool:
@@ -758,9 +787,9 @@ def _sidecar_problem(
         or lease.get("binding") != name
         or lease.get("lease_digest") != canonical_digest(lease, digest_field="lease_digest")
     ):
-        return f"release_protection_lease_invalid:{name}"
+        return f"release_protection_lease_invalid:{_code_id(name)}"
     if lease.get("binding_sha256") != binding_sha256:
-        return f"release_protection_binding_changed:{name}"
+        return f"release_protection_binding_changed:{_code_id(name)}"
     recorded = lease.get("commits")
     if (
         not isinstance(recorded, list)
@@ -774,7 +803,7 @@ def _sidecar_problem(
         or not _number(lease.get("expires_at_epoch"))
         or not _number(lease.get("max_expires_at_epoch"))
     ):
-        return f"release_protection_lease_invalid:{name}"
+        return f"release_protection_lease_invalid:{_code_id(name)}"
     return None
 
 
@@ -875,12 +904,12 @@ def evaluate_binding_lease(
 
     commits = binding_commits(binding)
     if commits is None:
-        return blocked(f"release_protection_binding_invalid:{name}")
+        return blocked(f"release_protection_binding_invalid:{_code_id(name)}")
     outcome["commits"] = commits
     try:
         lease = _inline_lease(binding)
     except ValueError:
-        return blocked(f"release_protection_binding_invalid:{name}")
+        return blocked(f"release_protection_binding_invalid:{_code_id(name)}")
     lease_source = "inline"
     sidecar = (
         Path(lease_root) / "bindings" / f"{name}{_SIDECAR_SUFFIX}"
@@ -890,12 +919,12 @@ def evaluate_binding_lease(
     try:
         sidecar_exists = sidecar is not None and not _absent(sidecar)
     except OSError:
-        return blocked(f"release_protection_lease_invalid:{name}")
+        return blocked(f"release_protection_lease_invalid:{_code_id(name)}")
     if lease is None and sidecar_exists:
         try:
             sidecar_payload, recorded, _info = _read_document(sidecar)  # type: ignore[arg-type]
         except (OSError, ValueError):
-            return blocked(f"release_protection_lease_invalid:{name}")
+            return blocked(f"release_protection_lease_invalid:{_code_id(name)}")
         problem = _sidecar_problem(
             recorded, name=name, commits=commits, binding_sha256=binding_sha256
         )
@@ -928,13 +957,13 @@ def evaluate_binding_lease(
             try:
                 _write_sidecar(sidecar, lease, replace=False)
             except (OSError, ValueError):
-                return blocked(f"release_protection_lease_write_failed:{name}")
+                return blocked(f"release_protection_lease_write_failed:{_code_id(name)}")
             lease_source, outcome["migrated"] = "migrated", True
     expires_at = float(lease["expires_at_epoch"])
     max_expires_at = float(lease["max_expires_at_epoch"])
     run_state = resolver.state(lease.get("run_ref"))
     outcome["run_state"] = run_state
-    past_max_lifetime = f"release_protection_lease_past_max_lifetime:{name}"
+    past_max_lifetime = f"release_protection_lease_past_max_lifetime:{_code_id(name)}"
     if run_state == "terminal":
         outcome["status"], outcome["why"] = "lapsed", "run_terminal"
     elif run_state == "live" and now >= max_expires_at:
@@ -957,7 +986,7 @@ def evaluate_binding_lease(
             except (OSError, ValueError):
                 # The run is live, so it stays protected this time; the next
                 # deploy retries the renewal.
-                outcome["warnings"].append(f"release_protection_lease_renewal_failed:{name}")
+                outcome["warnings"].append(f"release_protection_lease_renewal_failed:{_code_id(name)}")
             else:
                 lease, expires_at, outcome["renewed"] = renewed, renewed_expiry, True
     elif now >= expires_at:
@@ -1008,10 +1037,10 @@ def _collect_bindings(
         if isinstance(binding, Mapping) and binding.get("schema_version") == RETENTION_PLAN_SCHEMA:
             # A dry-run plan written into the wrong directory lists every
             # commit; it is not evidence and protects nothing.
-            collection.warnings.add(f"misplaced_retention_plan:{name}")
+            collection.warnings.add(f"misplaced_retention_plan:{_code_id(name)}")
             continue
         if not isinstance(binding, Mapping):
-            collection.blockers.add(f"release_protection_binding_invalid:{name}")
+            collection.blockers.add(f"release_protection_binding_invalid:{_code_id(name)}")
             continue
         outcome = evaluate_binding_lease(
             name=name,
@@ -1062,7 +1091,7 @@ def _collect_configuration(config_files: tuple[Path, ...], collection: _Collecti
                 continue  # an optional configuration file this host does not use
             _payload, value, _info = _read_document(path)
         except (OSError, ValueError):
-            collection.blockers.add(f"release_protection_config_unreadable:{name}")
+            collection.blockers.add(f"release_protection_config_unreadable:{_code_id(name)}")
             continue
         collection.protect(
             _managed_tree_commits(value),
@@ -1082,7 +1111,7 @@ def _collect_configuration(config_files: tuple[Path, ...], collection: _Collecti
             if target.is_absolute():
                 pending.append((target, True))
             else:
-                collection.blockers.add(f"release_protection_config_unreadable:{name}")
+                collection.blockers.add(f"release_protection_config_unreadable:{_code_id(name)}")
 
 
 def collect_release_protections(
