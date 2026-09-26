@@ -876,6 +876,7 @@ create_pubsub_topics() {
     else
         gcloud pubsub subscriptions create pipeline-trigger-dlq-retained \
             --topic pipeline-trigger-dlq \
+            --ack-deadline 600 \
             --message-retention-duration 7d \
             --expiration-period never \
             --quiet

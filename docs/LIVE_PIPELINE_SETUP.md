@@ -568,19 +568,31 @@ A handoff moves to `pipeline-trigger-dlq` after five failed deliveries (about an
 hour with the 600-second retry deferral). That applies to every retryable outcome,
 including 409s a person can fix and capacity holds. The
 `pipeline-trigger-dlq-retained` subscription keeps dead-lettered handoffs for seven
-days and never expires. To replay one after fixing its cause, pull it, republish
-its data unchanged to the handoff topic, then acknowledge it on the retained
-subscription:
+days and never expires. To replay one after fixing its cause, republish its
+`message.data` byte for byte to the handoff topic, and acknowledge it on the retained
+subscription only after the publish succeeds (with `GOOGLE_CLOUD_PROJECT` set and
+publisher access to the handoff topic):
 
 ```bash
-gcloud pubsub subscriptions pull pipeline-trigger-dlq-retained --limit=1 --format=json
-# message.data is base64; publish the decoded JSON exactly as it was delivered
-gcloud pubsub topics publish blueprint-capture-bridge-handoff --message='<decoded message.data>'
-gcloud pubsub subscriptions ack pipeline-trigger-dlq-retained --ack-ids='<ackId>'
+python3 - <<'PY'
+import os
+from google.cloud import pubsub_v1
+
+project = os.environ["GOOGLE_CLOUD_PROJECT"]
+subscriber, publisher = pubsub_v1.SubscriberClient(), pubsub_v1.PublisherClient()
+retained = subscriber.subscription_path(project, "pipeline-trigger-dlq-retained")
+topic = publisher.topic_path(project, "blueprint-capture-bridge-handoff")
+response = subscriber.pull(request={"subscription": retained, "max_messages": 1}, timeout=30)
+for received in response.received_messages:
+    publisher.publish(topic, received.message.data).result()  # the exact bytes, never re-encoded
+    subscriber.acknowledge(request={"subscription": retained, "ack_ids": [received.ack_id]})
+    print("replayed", received.message.message_id)
+PY
 ```
 
 Republishing the same bytes keeps the payload digest, so a capture whose authority
-already ended is still acknowledged without staging.
+already ended is still acknowledged without staging. Do not decode and retype the
+payload: any change to its bytes is a different payload digest.
 
 Install templates live under:
 

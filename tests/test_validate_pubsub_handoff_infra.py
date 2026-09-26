@@ -219,6 +219,7 @@ resource "google_pubsub_subscription" "pipeline_dlq_retained" {
   name  = "pipeline-trigger-dlq-retained"
   topic = google_pubsub_topic.pipeline_dlq.id
 
+  ack_deadline_seconds       = 600
   message_retention_duration = "604800s"
   retain_acked_messages      = false
 
@@ -241,6 +242,7 @@ def test_dead_lettering_needs_a_retained_never_expiring_subscription() -> None:
         _DEAD_LETTER_RETAINED_SUBSCRIPTION.replace("retain_acked_messages      = false",
                                                    "retain_acked_messages      = true"),
         _DEAD_LETTER_RETAINED_SUBSCRIPTION.replace('    ttl = ""\n', '    ttl = "2678400s"\n'),
+        _DEAD_LETTER_RETAINED_SUBSCRIPTION.replace("  ack_deadline_seconds       = 600\n", ""),
     ):
         assert missing_dead_letter_retention(granted + weakened) == [
             "retained dead-letter subscription (7-day retention, never expires)",
@@ -255,6 +257,7 @@ def test_dead_lettering_needs_a_retained_never_expiring_subscription() -> None:
 _DEPLOY_DEAD_LETTER_RETAINED_SUBSCRIPTION = (
     "        gcloud pubsub subscriptions create pipeline-trigger-dlq-retained \\\n"
     "            --topic pipeline-trigger-dlq \\\n"
+    "            --ack-deadline 600 \\\n"
     "            --message-retention-duration 7d \\\n"
     "            --expiration-period never \\\n"
     "            --quiet\n"
@@ -265,10 +268,11 @@ def test_deploy_creates_the_retained_dead_letter_subscription_before_granting() 
     grants = _DEPLOY_SERVICE_AGENT_IDENTITY + _DEPLOY_SERVICE_AGENT_TOPIC_GRANT
     assert missing_deploy_dead_letter_retention(_DEPLOY_DEAD_LETTER_RETAINED_SUBSCRIPTION + grants) == []
     assert missing_deploy_dead_letter_retention(grants) == ["deploy retained dead-letter subscription"]
-    assert missing_deploy_dead_letter_retention(
-        _DEPLOY_DEAD_LETTER_RETAINED_SUBSCRIPTION.replace("--expiration-period never", "--expiration-period 31d")
-        + grants
-    ) == ["deploy retained dead-letter subscription"]
+    for weakened in (
+        _DEPLOY_DEAD_LETTER_RETAINED_SUBSCRIPTION.replace("--expiration-period never", "--expiration-period 31d"),
+        _DEPLOY_DEAD_LETTER_RETAINED_SUBSCRIPTION.replace("            --ack-deadline 600 \\\n", ""),
+    ):
+        assert missing_deploy_dead_letter_retention(weakened + grants) == ["deploy retained dead-letter subscription"]
     assert missing_deploy_dead_letter_retention(grants + _DEPLOY_DEAD_LETTER_RETAINED_SUBSCRIPTION) == [
         "deploy creates the retained dead-letter subscription before granting dead-letter access",
     ]
@@ -293,3 +297,9 @@ def test_the_pubsub_service_agent_is_defined_in_the_locals_section() -> None:
     terraform = validator.compact((REPO_ROOT / "deploy" / "terraform" / "main.tf").read_text(encoding="utf-8"))
     assert terraform.count("locals {") == 1
     assert validator.PUBSUB_SERVICE_AGENT_LOCAL in validator.terraform_block_body(terraform, "locals {")
+
+
+def test_the_documented_dead_letter_replay_republishes_the_exact_bytes() -> None:
+    guide = (REPO_ROOT / "docs" / "LIVE_PIPELINE_SETUP.md").read_text(encoding="utf-8")
+    assert "<decoded message.data>" not in guide  # a hand-decoded copy can change the payload digest
+    assert "publisher.publish(topic, received.message.data).result()" in guide

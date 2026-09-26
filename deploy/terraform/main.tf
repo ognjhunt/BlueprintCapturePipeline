@@ -912,6 +912,8 @@ resource "google_pubsub_subscription" "pipeline_dlq_retained" {
   name  = "pipeline-trigger-dlq-retained"
   topic = google_pubsub_topic.pipeline_dlq.id
 
+  # Long enough to republish a message before acknowledging it on replay.
+  ack_deadline_seconds       = 600
   message_retention_duration = "604800s"
   retain_acked_messages      = false
 

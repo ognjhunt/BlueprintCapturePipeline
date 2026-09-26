@@ -144,6 +144,9 @@ def missing_dead_letter_service_agent_iam(terraform_text: str) -> list[str]:
 DEAD_LETTER_RETAINED_SUBSCRIPTION_HEADER = 'resource "google_pubsub_subscription" "pipeline_dlq_retained" {'
 DEAD_LETTER_RETAINED_SUBSCRIPTION_ATTRIBUTES = (
     "topic = google_pubsub_topic.pipeline_dlq.id",
+    # A replay pulls, republishes and only then acknowledges; the default 10 s
+    # deadline would redeliver a message mid-replay.
+    "ack_deadline_seconds = 600",
     'message_retention_duration = "604800s"',
     "retain_acked_messages = false",
     'expiration_policy { ttl = "" }',
@@ -177,6 +180,7 @@ def missing_dead_letter_retention(terraform_text: str) -> list[str]:
 DEPLOY_DEAD_LETTER_RETAINED_SUBSCRIPTION = "gcloud pubsub subscriptions create pipeline-trigger-dlq-retained"
 DEPLOY_DEAD_LETTER_RETAINED_SUBSCRIPTION_FLAGS = (
     "--topic pipeline-trigger-dlq",
+    "--ack-deadline 600",
     "--message-retention-duration 7d",
     "--expiration-period never",
 )
