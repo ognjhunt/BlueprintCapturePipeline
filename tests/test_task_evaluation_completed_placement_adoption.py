@@ -287,6 +287,8 @@ def test_retained_placement_provenance_accepts_identical_cached_plans_only(tmp_p
     write_plan("old-b", old)
     write_plan("new-a", new)
     duplicate = write_plan("new-b", new)
+    for index in range(20):
+        write_plan(f"old-retained-{index}", old)
     monkeypatch.setattr(projector, "placement_trajectory_from_native_plan", lambda plan: {
         "trajectory_digest": "sha256:" + ("a" if plan["adapter_digest"] == "old" else "b") * 64,
     })

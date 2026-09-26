@@ -73,10 +73,11 @@ def _validated_trajectory_provenance_rebound(
     def native_plan(base_pose_path: str, digest: str) -> dict[str, Any]:
         root = Path(base_pose_path).parent / "deferred-inputs"
         _placement_require(root.is_dir() and not root.is_symlink(), "trajectory_provenance_invalid")
-        paths = list(root.glob("*/native_trajectory_plan.v1.json"))
-        _placement_require(0 < len(paths) <= 16, "trajectory_provenance_invalid")
+        paths = root.glob("*/native_trajectory_plan.v1.json")
         matches = []
+        found_any = False
         for path in paths:
+            found_any = True
             _placement_require(path.is_file() and not path.is_symlink(), "trajectory_provenance_invalid")
             candidate = _read(path)
             if candidate.get("plan_digest") == digest:
@@ -86,7 +87,7 @@ def _validated_trajectory_provenance_rebound(
                 )
                 matches.append(candidate)
         _placement_require(
-            bool(matches) and all(candidate == matches[0] for candidate in matches[1:]),
+            found_any and bool(matches) and all(candidate == matches[0] for candidate in matches[1:]),
             "trajectory_provenance_invalid",
         )
         return matches[0]
