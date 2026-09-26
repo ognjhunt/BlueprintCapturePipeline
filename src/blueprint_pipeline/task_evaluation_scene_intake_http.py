@@ -14,6 +14,7 @@ from starlette.concurrency import run_in_threadpool
 from .native_g1_team_campaign_intake import (
     QUEUE_ENV as G1_QUEUE_ENV,
     REGISTRY_ENV as G1_REGISTRY_ENV,
+    list_g1_team_campaign_setups,
     stage_g1_team_campaign,
 )
 from .task_evaluation_scene_intake import (
@@ -23,6 +24,33 @@ from .task_evaluation_scene_intake import (
 
 def register_scene_intake_routes(app: FastAPI, require_admission: Callable,
                                  deployment_identity: Callable) -> None:
+    @app.post("/api/live-pipeline/native-g1-team-campaign-setups",
+              dependencies=[Depends(require_admission)])
+    async def inspect_native_g1_team_campaign_setups(request: Request) -> JSONResponse:
+        trusted = {v.strip() for v in os.getenv(CLIENTS_ENV, "blueprint-webapp").split(",") if v.strip()}
+        if (not request.headers.get("x-blueprint-pipeline-signature")
+                or getattr(request.state, "intake_client_id", "") not in trusted):
+            raise HTTPException(status_code=403, detail="G1 team catalog issuer not authorized")
+        try:
+            payload = await request.json()
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail="invalid JSON body") from exc
+        if not isinstance(payload, dict) or set(payload) != {"owner"}:
+            raise HTTPException(status_code=422, detail="G1 team catalog request invalid")
+        registry = os.getenv(G1_REGISTRY_ENV, "").strip()
+        if not registry:
+            raise HTTPException(status_code=503, detail="G1 team catalog not configured")
+        try:
+            catalog = await run_in_threadpool(
+                list_g1_team_campaign_setups,
+                registry_path=Path(registry), owner=payload["owner"],
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except (OSError, KeyError, TypeError, RuntimeError) as exc:
+            raise HTTPException(status_code=503, detail="G1 team catalog unavailable") from exc
+        return JSONResponse(content=catalog, headers={"Cache-Control": "private, no-store"})
+
     @app.post("/api/live-pipeline/native-g1-team-campaigns",
               dependencies=[Depends(require_admission)])
     async def intake_native_g1_team_campaign(request: Request) -> JSONResponse:

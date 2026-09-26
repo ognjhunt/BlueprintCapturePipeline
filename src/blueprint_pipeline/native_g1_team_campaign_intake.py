@@ -26,6 +26,7 @@ from .task_evaluation_packet_planning_setup import make_packet_planning_setup
 REGISTRY_SCHEMA = "native_g1_team_campaign_registry.v1"
 INTENT_SCHEMA = "native_g1_team_campaign_intent.v1"
 RECEIPT_SCHEMA = "native_g1_team_campaign_intake_receipt.v1"
+CATALOG_SCHEMA = "native_g1_team_campaign_setup_catalog.v1"
 REGISTRY_ENV = "BLUEPRINT_NATIVE_G1_TEAM_CAMPAIGN_REGISTRY_PATH"
 QUEUE_ENV = "BLUEPRINT_NATIVE_G1_TEAM_CAMPAIGN_QUEUE_ROOT"
 BINDING_FIELDS = frozenset({
@@ -89,6 +90,60 @@ def _selected_binding(registry: dict[str, Any], request: dict[str, Any]) -> dict
     for value in rights.values():
         _binding_path(value, directory=False)
     return binding
+
+
+def list_g1_team_campaign_setups(
+    *, registry_path: Path, owner: dict[str, str]
+) -> dict[str, Any]:
+    """Expose only packet-bound planning setups for one authenticated team."""
+
+    if (
+        not isinstance(owner, dict)
+        or set(owner) != {"user_id", "organization_id"}
+        or any(not isinstance(value, str) or not value for value in owner.values())
+    ):
+        raise ValueError("g1_team_campaign_owner_invalid")
+    registry = _read(registry_path, field="registry_digest")
+    if (
+        set(registry) != {"schema_version", "bindings", "registry_digest"}
+        or registry["schema_version"] != REGISTRY_SCHEMA
+        or not isinstance(registry["bindings"], list)
+        or not 1 <= len(registry["bindings"]) <= 100
+    ):
+        raise ValueError("g1_team_campaign_registry_invalid")
+    setups = []
+    seen = set()
+    for row in registry["bindings"]:
+        if not isinstance(row, dict):
+            raise ValueError("g1_team_campaign_registry_invalid")
+        if row.get("owner") != owner:
+            continue
+        binding = _selected_binding(registry, {
+            "owner": owner,
+            "source_packet_receipt_digest": row.get("source_packet_receipt_digest"),
+        })
+        setup = make_packet_planning_setup(
+            source_packet_dir=Path(binding["source_packet_dir"])
+        )
+        if (
+            binding["scene_id"] != setup["scene_id"]
+            or binding["task_id"] != setup["task_id"]
+            or binding["source_packet_receipt_digest"]
+            != setup["source_packet_receipt_digest"]
+            or setup["setup_digest"] in seen
+        ):
+            raise ValueError("g1_team_campaign_binding_packet_mismatch")
+        seen.add(setup["setup_digest"])
+        setups.append(setup)
+    catalog = {
+        "schema_version": CATALOG_SCHEMA,
+        "owner": owner,
+        "setups": setups,
+        "claim_ceiling": "planning_only",
+        "provider_mutation_performed": False,
+    }
+    catalog["catalog_digest"] = digest(catalog, digest_field="catalog_digest")
+    return catalog
 
 
 @contextmanager
@@ -186,4 +241,7 @@ def stage_g1_team_campaign(
     return receipt
 
 
-__all__ = ["QUEUE_ENV", "REGISTRY_ENV", "REGISTRY_SCHEMA", "stage_g1_team_campaign"]
+__all__ = [
+    "CATALOG_SCHEMA", "QUEUE_ENV", "REGISTRY_ENV", "REGISTRY_SCHEMA",
+    "list_g1_team_campaign_setups", "stage_g1_team_campaign",
+]

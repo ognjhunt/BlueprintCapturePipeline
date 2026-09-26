@@ -18,6 +18,7 @@ from blueprint_pipeline.native_g1_team_campaign_intake import (
     QUEUE_ENV,
     REGISTRY_ENV,
     REGISTRY_SCHEMA,
+    list_g1_team_campaign_setups,
     stage_g1_team_campaign,
 )
 from blueprint_pipeline.task_evaluation_scene_intake import CLIENTS_ENV
@@ -80,6 +81,24 @@ def test_stages_one_immutable_no_spend_intent(tmp_path, monkeypatch):
     assert intent["provider_mutation_performed"] is False
     assert intent["intent_digest"] == receipt["intent_digest"]
     assert stage_g1_team_campaign(**args) == receipt
+
+
+def test_catalog_exposes_only_matching_team_setup_without_operator_paths(tmp_path, monkeypatch):
+    setup, request = _request(tmp_path, monkeypatch)
+    registry, _ = _registry(tmp_path, request)
+    monkeypatch.setattr(
+        "blueprint_pipeline.native_g1_team_campaign_intake.make_packet_planning_setup",
+        lambda **_: setup,
+    )
+    catalog = list_g1_team_campaign_setups(registry_path=registry, owner=OWNER)
+    assert catalog["setups"] == [setup]
+    assert catalog["provider_mutation_performed"] is False
+    assert catalog["catalog_digest"] == digest(catalog, digest_field="catalog_digest")
+    assert str(tmp_path) not in json.dumps(catalog)
+    other = list_g1_team_campaign_setups(
+        registry_path=registry, owner={"user_id": "other", "organization_id": "other"}
+    )
+    assert other["setups"] == []
 
 
 def test_rejects_changed_request_for_same_run_id(tmp_path, monkeypatch):
@@ -185,3 +204,38 @@ def test_http_requires_signature_and_stages_without_provider(tmp_path, monkeypat
         "x-blueprint-pipeline-nonce": nonce,
         "x-blueprint-pipeline-signature": "sha256=" + signature,
     }).status_code == 401
+
+
+def test_http_catalog_is_signed_and_owner_scoped(tmp_path, monkeypatch):
+    setup, request = _request(tmp_path, monkeypatch)
+    registry, _ = _registry(tmp_path, request)
+    monkeypatch.setattr(
+        "blueprint_pipeline.native_g1_team_campaign_intake.make_packet_planning_setup",
+        lambda **_: setup,
+    )
+    monkeypatch.setenv(REGISTRY_ENV, str(registry))
+    monkeypatch.setenv(service.INTAKE_TOKEN_ENV, "test-token")
+    monkeypatch.delenv(service.INTAKE_CLIENT_SECRETS_ENV, raising=False)
+    monkeypatch.setenv(service.INTAKE_NONCE_STORE_DIR_ENV, str(tmp_path / "nonces"))
+    monkeypatch.setenv(service.INTAKE_WORK_DIR_ENV, str(tmp_path / "admission"))
+    monkeypatch.setenv(CLIENTS_ENV, "webapp")
+    service._INTAKE_NONCE_CACHE.clear()
+    client = TestClient(service.create_app())
+    endpoint = "/api/live-pipeline/native-g1-team-campaign-setups"
+    body = json.dumps({"owner": OWNER})
+    assert client.post(endpoint, content=body).status_code == 401
+    timestamp = datetime.now(timezone.utc).isoformat()
+    nonce = "native-g1-team-catalog-test"
+    signature = hmac.new(
+        b"test-token", f"{timestamp}.webapp.{nonce}.{body}".encode(), "sha256"
+    ).hexdigest()
+    response = client.post(endpoint, content=body, headers={
+        "content-type": "application/json",
+        "x-blueprint-pipeline-client-id": "webapp",
+        "x-blueprint-pipeline-timestamp": timestamp,
+        "x-blueprint-pipeline-nonce": nonce,
+        "x-blueprint-pipeline-signature": "sha256=" + signature,
+    })
+    assert response.status_code == 200, response.text
+    assert response.json()["setups"] == [setup]
+    assert str(tmp_path) not in response.text
