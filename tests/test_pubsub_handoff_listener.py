@@ -94,11 +94,26 @@ def _robot_eval_dataset_blobs(prefix: str) -> "list[FakeBlob]":
 
 
 class FakeBlob:
-    def __init__(self, name: str, data: bytes) -> None:
+    def __init__(
+        self,
+        name: str,
+        data: bytes,
+        *,
+        size: int | None = None,
+        generation: int | None = None,
+        md5_hash: str | None = None,
+        crc32c: str | None = None,
+    ) -> None:
         self.name = name
         self._data = data
+        self.size = size
+        self.generation = generation
+        self.md5_hash = md5_hash
+        self.crc32c = crc32c
+        self.download_count = 0
 
     def download_to_filename(self, destination: str) -> None:
+        self.download_count += 1
         Path(destination).write_bytes(self._data)
 
 
@@ -1851,3 +1866,70 @@ def test_one_unwritable_ack_receipt_does_not_cost_the_others(tmp_path, monkeypat
     assert blocked.is_dir()
     other = _read(tmp_path / "capture-bucket" / other_prefix / "pipeline_job_ack_receipt.json")
     assert other["message_id"] == "msg-a2" and other["acknowledgement_count"] == 1
+
+
+def _staging_handoff() -> HandoffMessage:
+    return HandoffMessage(bucket="capture-bucket", scene_id="scene-1", capture_id="capture-1",
+                          raw_prefix_uri=f"gs://capture-bucket/{_CAPTURE_PREFIX}/raw",
+                          pipeline_handoff_uri=None)
+
+
+def test_staging_manifest_records_cloud_identity(tmp_path):
+    video = FakeBlob(f"{_CAPTURE_PREFIX}/raw/walkthrough.mov", b"video", size=5,
+                     generation=1790000000000001, md5_hash="bWQ1LWJhc2U2NA==", crc32c="Y3JjMzJj")
+    complete = FakeBlob(f"{_CAPTURE_PREFIX}/raw/capture_upload_complete.json", b"{}", size=2, generation=7)
+    folder_marker = FakeBlob(f"{_CAPTURE_PREFIX}/raw/", b"")
+    client = FakeStorageClient([video, complete, folder_marker])
+
+    capture_root = stage_handoff_capture(_staging_handoff(), storage_root=tmp_path, storage_client=client)
+
+    manifest = _read(capture_root / "pipeline_staging_manifest.json")
+    assert manifest["schema_version"] == "pipeline_handoff_staging_manifest.v1"
+    assert manifest["bucket"] == "capture-bucket"
+    assert manifest["prefix"] == f"{_CAPTURE_PREFIX}/"
+    assert datetime.fromisoformat(manifest["staged_at"]).tzinfo is not None
+    assert manifest["objects"] == [
+        {"name": f"{_CAPTURE_PREFIX}/raw/walkthrough.mov", "relative_path": "raw/walkthrough.mov",
+         "size": 5, "generation": "1790000000000001", "md5_hash": "bWQ1LWJhc2U2NA==", "crc32c": "Y3JjMzJj"},
+        {"name": f"{_CAPTURE_PREFIX}/raw/capture_upload_complete.json",
+         "relative_path": "raw/capture_upload_complete.json",
+         "size": 2, "generation": "7", "md5_hash": None, "crc32c": None},
+    ]
+    # Local derivations are not cloud objects and are not in the manifest.
+    assert (capture_root / "pipeline_handoff.json").is_file()
+
+
+def test_unchanged_objects_are_not_downloaded_again(tmp_path):
+    blob = FakeBlob(f"{_CAPTURE_PREFIX}/raw/capture_upload_complete.json", b"{}", size=2, generation=7)
+    unversioned = FakeBlob(f"{_CAPTURE_PREFIX}/raw/walkthrough.mov", b"video")  # generation/size unknown
+    client = FakeStorageClient([blob, unversioned])
+    handoff = _staging_handoff()
+
+    capture_root = stage_handoff_capture(handoff, storage_root=tmp_path, storage_client=client)
+    first = _read(capture_root / "pipeline_staging_manifest.json")
+    stage_handoff_capture(handoff, storage_root=tmp_path, storage_client=client)
+
+    assert blob.download_count == 1
+    assert unversioned.download_count == 2  # a blob whose generation or size is unknown always downloads
+    second = _read(capture_root / "pipeline_staging_manifest.json")
+    assert second["objects"] == first["objects"]  # the skipped blob keeps its row
+
+
+def test_changed_generation_downloads_again(tmp_path):
+    name = f"{_CAPTURE_PREFIX}/raw/capture_upload_complete.json"
+    handoff = _staging_handoff()
+    capture_root = stage_handoff_capture(
+        handoff, storage_root=tmp_path,
+        storage_client=FakeStorageClient([FakeBlob(name, b"{}", size=2, generation=7)]))
+
+    replaced = FakeBlob(name, b"[]", size=2, generation=8)
+    stage_handoff_capture(handoff, storage_root=tmp_path, storage_client=FakeStorageClient([replaced]))
+    assert replaced.download_count == 1
+    assert (capture_root / "raw/capture_upload_complete.json").read_bytes() == b"[]"
+    assert _read(capture_root / "pipeline_staging_manifest.json")["objects"][0]["generation"] == "8"
+
+    # Same generation, but the local copy no longer has the staged size: download it again.
+    (capture_root / "raw/capture_upload_complete.json").write_bytes(b"[ ]")
+    stage_handoff_capture(handoff, storage_root=tmp_path, storage_client=FakeStorageClient([replaced]))
+    assert replaced.download_count == 2
+    assert (capture_root / "raw/capture_upload_complete.json").read_bytes() == b"[]"

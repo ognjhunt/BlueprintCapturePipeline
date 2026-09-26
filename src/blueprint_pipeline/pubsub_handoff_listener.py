@@ -158,13 +158,20 @@ def stage_handoff_capture(
     )
     capture_root.mkdir(parents=True, exist_ok=True)
 
-    blobs = list(client.list_blobs(handoff.bucket, prefix=f"{handoff.capture_prefix}/"))
+    expected_prefix = f"{handoff.capture_prefix}/"
+    blobs = list(client.list_blobs(handoff.bucket, prefix=expected_prefix))
     if not blobs:
         raise PipelineError(f"No objects found for handoff prefix: {handoff.capture_prefix}/")
 
+    # Decide everything before writing anything: every name is validated, and
+    # an object whose generation and size match the previous staging (with the
+    # local copy intact) is not downloaded again.
+    prefix_depth = len(PurePosixPath(handoff.capture_prefix).parts)
+    previously_staged = _previous_staging_rows(capture_root, handoff=handoff)
+    manifest_rows: list[dict[str, Any]] = []
+    downloads: list[tuple[Any, Path]] = []
     for blob in blobs:
         blob_name = str(blob.name or "")
-        expected_prefix = f"{handoff.capture_prefix}/"
         if not blob_name.startswith(expected_prefix):
             raise PipelineError("Pub/Sub blob escaped the declared capture prefix")
         blob_path = PurePosixPath(blob_name)
@@ -190,8 +197,31 @@ def stage_handoff_capture(
             )
         except SecurityValidationError as exc:
             raise PipelineError(str(exc)) from exc
+        row = _staging_manifest_row(
+            blob,
+            name=blob_name,
+            relative_path=PurePosixPath(*blob_path.parts[prefix_depth:]).as_posix(),
+        )
+        previous = previously_staged.get(blob_name)
+        if previous is not None and _staged_copy_is_current(previous, row, destination):
+            manifest_rows.append(previous)
+            continue
+        manifest_rows.append(row)
+        downloads.append((blob, destination))
+
+    for blob, destination in downloads:
         destination.parent.mkdir(parents=True, exist_ok=True)
         blob.download_to_filename(str(destination))
+    write_json(
+        capture_root / STAGING_MANIFEST_FILENAME,
+        {
+            "schema_version": STAGING_MANIFEST_SCHEMA_VERSION,
+            "bucket": handoff.bucket,
+            "prefix": expected_prefix,
+            "staged_at": utc_now_iso(),
+            "objects": manifest_rows,
+        },
+    )
 
     if not (capture_root / "raw" / "capture_upload_complete.json").is_file():
         raise PipelineError(
@@ -205,6 +235,74 @@ def stage_handoff_capture(
         # capture_job_id / site_submission_id / buyer_request_id data contract stays intact.
         _synthesize_pipeline_handoff(handoff, capture_root=capture_root)
     return capture_root
+
+
+def _staging_manifest_row(blob: Any, *, name: str, relative_path: str) -> dict[str, Any]:
+    """The cloud identity of one staged object, as the listing reported it."""
+
+    size = getattr(blob, "size", None)
+    generation = getattr(blob, "generation", None)
+    md5_hash = getattr(blob, "md5_hash", None)
+    crc32c = getattr(blob, "crc32c", None)
+    return {
+        "name": name,
+        "relative_path": relative_path,
+        "size": size if isinstance(size, int) and not isinstance(size, bool) and size >= 0 else None,
+        "generation": str(generation) if generation is not None and str(generation).strip() else None,
+        "md5_hash": md5_hash if isinstance(md5_hash, str) and md5_hash else None,
+        "crc32c": crc32c if isinstance(crc32c, str) and crc32c else None,
+    }
+
+
+def _previous_staging_rows(capture_root: Path, *, handoff: HandoffMessage) -> dict[str, dict[str, Any]]:
+    """Rows of this capture's last staging manifest, keyed by object name.
+
+    A manifest for another bucket or prefix, or one that is unreadable, proves
+    nothing, so every object downloads again.
+    """
+
+    manifest = _read_optional_json_object(capture_root / STAGING_MANIFEST_FILENAME)
+    objects = manifest.get("objects")
+    if (
+        manifest.get("schema_version") != STAGING_MANIFEST_SCHEMA_VERSION
+        or manifest.get("bucket") != handoff.bucket
+        or manifest.get("prefix") != f"{handoff.capture_prefix}/"
+        or not isinstance(objects, list)
+    ):
+        return {}
+    return {
+        row["name"]: dict(row)
+        for row in objects
+        if isinstance(row, Mapping) and isinstance(row.get("name"), str)
+    }
+
+
+def _staged_copy_is_current(
+    previous: Mapping[str, Any],
+    current: Mapping[str, Any],
+    destination: Path,
+) -> bool:
+    """Whether the object is unchanged since it was staged and its local copy is intact.
+
+    An object whose generation or size is unknown is never assumed unchanged.
+    """
+
+    generation = current.get("generation")
+    size = current.get("size")
+    if generation is None or size is None:
+        return False
+    previous_size = previous.get("size")
+    if (
+        previous.get("generation") != generation
+        or not isinstance(previous_size, int)
+        or isinstance(previous_size, bool)
+        or previous_size != size
+    ):
+        return False
+    try:
+        return destination.is_file() and destination.stat().st_size == size
+    except OSError:
+        return False
 
 
 def _preserve_local_website_derivatives(capture_root: Path, uploaded_names: set[str], prefix: str) -> None:
@@ -438,6 +536,8 @@ JOB_TERMINAL_RECEIPT_FILENAME = "pipeline_job_terminal_receipt.json"
 JOB_TERMINAL_RECEIPT_SCHEMA_VERSION = "pipeline_job_terminal_receipt.v1"
 JOB_ACK_RECEIPT_FILENAME = "pipeline_job_ack_receipt.json"
 JOB_ACK_RECEIPT_SCHEMA_VERSION = "pubsub_handoff_ack_receipt.v1"
+STAGING_MANIFEST_FILENAME = "pipeline_staging_manifest.json"
+STAGING_MANIFEST_SCHEMA_VERSION = "pipeline_handoff_staging_manifest.v1"
 PROVIDER_OPS_STATUS_SCHEMA_VERSION = "provider_ops_status.v1"
 DEFAULT_JOB_LEASE_SECONDS = 900
 DEFAULT_ACK_DEADLINE_SECONDS = 600
