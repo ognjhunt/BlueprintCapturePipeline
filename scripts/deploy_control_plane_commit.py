@@ -388,13 +388,13 @@ def _validated_release_provenance(
 def _install_release_provenance(
     *, payload: bytes, state_root: Path, source_commit: str, receipt: Mapping[str, Any]
 ) -> dict[str, Any]:
-    """Install promotion proof, permitting only the documented one-way upgrade.
+    """Install promotion proof, permitting only documented one-way upgrades.
 
-    An iteration deploy writes a development-only receipt before the full lane
-    finishes.  The same exact commit must later be promotable without deleting
-    that earlier evidence.  Preserve the iteration receipt beside the canonical
-    path, then atomically replace the canonical receipt with the verified one.
-    Every other content change remains a conflict.
+    A pushed canary may later merge to main at the same commit. Its canonical
+    iteration deploy must preserve the earlier canary receipt rather than fail
+    on the different provenance label. A development-only receipt may also be
+    promoted after the full lane. Preserve either predecessor beside the
+    canonical path, then atomically replace it. Every other change conflicts.
     """
 
     destination = state_root / source_commit / DEPLOY_RELEASE_PROVENANCE_NAME
@@ -423,7 +423,7 @@ def _install_release_provenance(
                     else None
                 )
                 incoming_claim = receipt.get("claim_boundary")
-                is_same_commit_iteration = (
+                is_same_commit_development = (
                     isinstance(existing_receipt, Mapping)
                     and existing_receipt.get("schema_version")
                     == "blueprint.deploy_release_provenance.v1"
@@ -431,8 +431,22 @@ def _install_release_provenance(
                     and existing_receipt.get("git_sha") == source_commit
                     and existing_receipt.get("promotion_eligible") is False
                     and isinstance(existing_claim, Mapping)
+                    and set(existing_claim) == {
+                        "canonical_full_lane_verified", "promotion_eligible", "evidence_grade"
+                    }
                     and existing_claim.get("canonical_full_lane_verified") is False
                     and existing_claim.get("promotion_eligible") is False
+                    and existing_claim.get("evidence_grade") == "development_only"
+                )
+                is_canary_to_iteration = (
+                    is_same_commit_development
+                    and existing_receipt.get("status") == "canary"
+                    and receipt.get("schema_version")
+                    == "blueprint.deploy_release_provenance.v1"
+                    and receipt.get("status") == "iteration"
+                    and receipt.get("git_sha") == source_commit
+                    and receipt.get("promotion_eligible") is False
+                    and incoming_claim == existing_claim
                 )
                 is_verified_upgrade = (
                     receipt.get("schema_version")
@@ -443,7 +457,9 @@ def _install_release_provenance(
                     and isinstance(incoming_claim, Mapping)
                     and incoming_claim.get("canonical_full_lane_verified") is True
                 )
-                if not (is_same_commit_iteration and is_verified_upgrade):
+                if not (is_canary_to_iteration or (
+                    is_same_commit_development and is_verified_upgrade
+                )):
                     raise ControlPlaneDeployError(
                         "deploy_release_provenance_conflict"
                     )
