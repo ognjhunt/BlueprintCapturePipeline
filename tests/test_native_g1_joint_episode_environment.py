@@ -4,9 +4,22 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+import torch
 
 from blueprint_pipeline.gear_sonic_joint_order_contract import PROTOCOL_V4_FULL_JOINT_ORDER
 from blueprint_pipeline.native_g1_joint_episode_environment import NativeG1JointEpisodeEnvironment
+
+
+def test_beta2_proxy_camera_buffer_uses_expanded_torch_view() -> None:
+    class _Proxy:
+        def __init__(self, tensor):
+            self.shape = (tensor.shape[0],)
+            self.torch = tensor
+
+    measured = torch.zeros((1, 480, 640, 4), dtype=torch.uint8)
+    result = NativeG1JointEpisodeEnvironment._array(_Proxy(measured))
+    assert result.shape == (1, 480, 640, 4)
+    assert result.dtype == np.uint8
 
 
 def _adapter():
@@ -48,13 +61,17 @@ def _adapter():
         reset=lambda *, seed: calls.append(("reset", seed)),
         step=lambda action: calls.append(("step", action)),
     )
-    plan = {"robot": {
-        "robot_id": "unitree_g1",
-        "joint_position_limits_rad": {name: [-1.0, 1.0] for name in names},
-    }, "cadence": {"control_frequency_hz": 50.0}}
+    plan = {
+        "robot": {
+            "robot_id": "unitree_g1",
+            "joint_position_limits_rad": {name: [-1.0, 1.0] for name in names},
+        },
+        "cadence": {"control_frequency_hz": 50.0},
+    }
     adapter = NativeG1JointEpisodeEnvironment(
         built=SimpleNamespace(
-            plan=plan, env=env,
+            plan=plan,
+            env=env,
             camera_scene_names={"head": "head_camera", "overview": "overview_camera"},
         ),
         to_tensor=lambda value: value,

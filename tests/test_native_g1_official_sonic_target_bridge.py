@@ -13,6 +13,14 @@ class _Session:
         return [0]
 
 
+class _Beta2ProxyArray:
+    """Isaac Lab's Warp shape hides vec/state columns until .torch is read."""
+
+    def __init__(self, tensor):
+        self.shape = (tensor.shape[0],)
+        self.torch = tensor
+
+
 class _Scene:
     def __init__(self):
         self.robot = type("Robot", (), {})()
@@ -87,8 +95,10 @@ def _adapter(tmp_path: Path, monkeypatch, provider):
     return bridge_module.NativeG1OfficialSonicTargetBridge(
         provider=provider,
         source_path=source,
-        encoder_sha256="sha256:" + hashlib.sha256(Path(provider.encoder_path).read_bytes()).hexdigest(),
-        decoder_sha256="sha256:" + hashlib.sha256(Path(provider.decoder_path).read_bytes()).hexdigest(),
+        encoder_sha256="sha256:"
+        + hashlib.sha256(Path(provider.encoder_path).read_bytes()).hexdigest(),
+        decoder_sha256="sha256:"
+        + hashlib.sha256(Path(provider.decoder_path).read_bytes()).hexdigest(),
         joint_limits={name: [-1.0, 1.0] for name in PROTOCOL_V4_FULL_JOINT_ORDER},
     )
 
@@ -109,6 +119,40 @@ def test_native_xyzw_is_shown_as_wxyz_without_mutation():
     )
     assert native.scene["robot"].data.root_state_w[0, 3:7].tolist() == pytest.approx(
         [0.1, 0.2, 0.3, 0.9]
+    )
+
+
+def test_beta2_proxy_root_state_uses_expanded_torch_view_without_mutation():
+    native = _Environment()
+    data = native.scene.robot.data
+    measured = torch.tensor([[1.0, 2.0, 3.0, 0.1, 0.2, 0.3, 0.9, 4, 5, 6, 7, 8, 9]])
+    data.root_state_w = _Beta2ProxyArray(measured)
+    converted = bridge_module.SonicWxyzEnvironmentView(native).scene["robot"].data.root_state_w
+    assert converted.shape == (1, 13)
+    assert converted[0, :7].tolist() == pytest.approx([1, 2, 3, 0.9, 0.1, 0.2, 0.3])
+    assert measured[0, 3:7].tolist() == pytest.approx([0.1, 0.2, 0.3, 0.9])
+
+
+def test_beta2_proxy_root_refuses_nonfinite_measured_state():
+    native = _Environment()
+    native.scene.robot.data.root_state_w = _Beta2ProxyArray(
+        torch.tensor([[1.0, 2.0, 3.0, 0.1, 0.2, float("nan"), 0.9]])
+    )
+    with pytest.raises(ValueError, match="nonfinite_combined_state"):
+        _ = bridge_module.SonicWxyzEnvironmentView(native).scene["robot"].data.root_state_w
+
+
+def test_beta2_proxy_measured_pose_fallback_uses_expanded_torch_fields():
+    native = _Environment()
+    data = native.scene.robot.data
+    data.root_state_w = _Beta2ProxyArray(torch.empty((1, 0)))
+    data.root_pos_w = _Beta2ProxyArray(torch.tensor([[1.0, 2.0, 3.0]]))
+    data.root_quat_w = _Beta2ProxyArray(torch.tensor([[0.1, 0.2, 0.3, 0.9]]))
+    data.root_lin_vel_w = _Beta2ProxyArray(torch.tensor([[4.0, 5.0, 6.0]]))
+    data.root_ang_vel_w = _Beta2ProxyArray(torch.tensor([[7.0, 8.0, 9.0]]))
+    root = bridge_module.SonicWxyzEnvironmentView(native).scene["robot"].data.root_state_w
+    assert root[0].tolist() == pytest.approx(
+        [1.0, 2.0, 3.0, 0.9, 0.1, 0.2, 0.3, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]
     )
 
 
@@ -140,7 +184,9 @@ def test_incomplete_combined_root_rejects_unmeasured_pose():
     native = _Environment()
     native.scene.robot.data.root_state_w = torch.empty((1, 0))
     native.scene.robot.data.root_quat_w = torch.empty((1, 0))
-    with pytest.raises(ValueError, match=r"g1_sonic_native_root_state_invalid:.*quaternion_shape=\(1, 0\)"):
+    with pytest.raises(
+        ValueError, match=r"g1_sonic_native_root_state_invalid:.*quaternion_shape=\(1, 0\)"
+    ):
         _ = bridge_module.SonicWxyzEnvironmentView(native).scene["robot"].data.root_state_w
 
 

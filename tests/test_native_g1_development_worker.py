@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import torch
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline import native_g1_development_worker as worker
@@ -17,14 +18,30 @@ INVENTORY = "sha256:" + "b" * 64
 CANDIDATE = "humanoidarena_dp_g1_dex3_sonic"
 
 
+def test_beta2_proxy_array_converts_to_expanded_measured_tensor() -> None:
+    class _Proxy:
+        def __init__(self, tensor):
+            self.shape = (tensor.shape[0],) if hasattr(tensor, "shape") else (1,)
+            self.torch = tensor
+
+    measured = torch.tensor([[1.0, 2.0, 3.0]])
+    assert worker._to_tensor(_Proxy(measured)) is measured
+    assert worker._to_tensor(measured) is measured
+    with pytest.raises(TypeError, match="sim_array_unsupported"):
+        worker._to_tensor(_Proxy([1.0, 2.0, 3.0]))
+
+
 def _request(tmp_path: Path) -> dict:
     bundle = tmp_path / "packet"
     bundle.mkdir()
     (bundle / "native_task_arena_scene_plan.v1.json").write_text(
-        json.dumps({
-            "plan_digest": SCENE, "task_kind": "rigid_pick_place",
-            "robot": {"robot_id": "unitree_g1"},
-        })
+        json.dumps(
+            {
+                "plan_digest": SCENE,
+                "task_kind": "rigid_pick_place",
+                "robot": {"robot_id": "unitree_g1"},
+            }
+        )
     )
     rights = {
         "schema_version": worker.RIGHTS_SCHEMA,
@@ -135,20 +152,14 @@ def test_failed_episode_retains_blocker_and_closes_resources(tmp_path: Path, mon
         raise RuntimeError("controller_inference_failed")
 
     monkeypatch.setattr(worker, "run_g1_supervised_built_scene_episode", fail)
-    result = worker.run_g1_development_worker(
-        request=request, output_dir=tmp_path / "failed"
-    )
+    result = worker.run_g1_development_worker(request=request, output_dir=tmp_path / "failed")
     assert result["status"] == "blocked"
     assert result["phase_reached"] == "episode"
-    assert result["blocker"] == {
-        "type": "RuntimeError", "message": "controller_inference_failed"
-    }
+    assert result["blocker"] == {"type": "RuntimeError", "message": "controller_inference_failed"}
     assert closed == ["environment", "simulator"]
 
 
-def test_scene_failure_is_sealed_before_isaac_close_can_exit(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_scene_failure_is_sealed_before_isaac_close_can_exit(tmp_path: Path, monkeypatch) -> None:
     request = _request(tmp_path)
     monkeypatch.setattr(worker, "preflight_g1_shared_scene_run", _preflight)
     monkeypatch.setattr(worker, "_verify_packet", _packet)
@@ -164,16 +175,18 @@ def test_scene_failure_is_sealed_before_isaac_close_can_exit(
         )
         raise SystemExit(0)
 
-    monkeypatch.setattr(worker, "_launch_scene", lambda **_kwargs: (
-        SimpleNamespace(close=close_with_exit), {"status": "launched"}
-    ))
-    monkeypatch.setattr(worker, "_build_scene", lambda **_kwargs: (
-        (_ for _ in ()).throw(ValueError("scene_builder_refused"))
-    ))
-
-    result = worker.run_g1_development_worker(
-        request=request, output_dir=tmp_path / "scene-failed"
+    monkeypatch.setattr(
+        worker,
+        "_launch_scene",
+        lambda **_kwargs: (SimpleNamespace(close=close_with_exit), {"status": "launched"}),
     )
+    monkeypatch.setattr(
+        worker,
+        "_build_scene",
+        lambda **_kwargs: (_ for _ in ()).throw(ValueError("scene_builder_refused")),
+    )
+
+    result = worker.run_g1_development_worker(request=request, output_dir=tmp_path / "scene-failed")
     assert result["status"] == "blocked"
     assert result["blocker"]["message"] == "scene_builder_refused"
     assert result["teardown"]["simulator"] == "closed"
@@ -200,7 +213,9 @@ def test_g1_scene_dependency_preflight_retains_import_traceback(
     path = tmp_path / "native_task_dependency_matrix.v1.json"
     with pytest.raises(ValueError, match="g1_worker_dependency_preflight_failed"):
         worker._build_scene(
-            plan={}, bundle_root=tmp_path, device="cuda:0",
+            plan={},
+            bundle_root=tmp_path,
+            device="cuda:0",
             dependency_receipt_path=path,
         )
     assert json.loads(path.read_text(encoding="utf-8")) == matrix
@@ -238,9 +253,11 @@ def test_usd_preflight_waits_for_isaac_runtime_and_keeps_rights_gate(
         "sonic_encoder": {},
         "sonic_decoder": {},
     }
-    monkeypatch.setattr(worker, "verify_g1_host_asset_identities", lambda **kwargs: (
-        events.append("model_bytes_verified") or assets
-    ))
+    monkeypatch.setattr(
+        worker,
+        "verify_g1_host_asset_identities",
+        lambda **kwargs: events.append("model_bytes_verified") or assets,
+    )
 
     def preflight(**kwargs):
         events.append("usd_preflight")
@@ -265,38 +282,50 @@ def test_usd_preflight_waits_for_isaac_runtime_and_keeps_rights_gate(
         return app, {"status": "launched"}
 
     monkeypatch.setattr(worker, "_launch_scene", launch)
-    monkeypatch.setattr(worker, "_build_scene", lambda **kwargs: (
-        (_ for _ in ()).throw(AssertionError("scene must not build after test stop"))
-    ))
-    result = worker.run_g1_development_worker(
-        request=request, output_dir=tmp_path / "usd-runtime"
+    monkeypatch.setattr(
+        worker,
+        "_build_scene",
+        lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("scene must not build after test stop")
+        ),
     )
+    result = worker.run_g1_development_worker(request=request, output_dir=tmp_path / "usd-runtime")
     assert result["status"] == "blocked"
     assert result["phase_reached"] == "scene_build"
     assert events == [
-        "usd_preflight", "model_bytes_verified", "rights_verified", "simulator_launched",
-        "usd_preflight", "simulator_closed",
+        "usd_preflight",
+        "model_bytes_verified",
+        "rights_verified",
+        "simulator_launched",
+        "usd_preflight",
+        "simulator_closed",
     ]
 
 
-def test_usd_runtime_fallback_rejects_rights_before_launch(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_usd_runtime_fallback_rejects_rights_before_launch(tmp_path: Path, monkeypatch) -> None:
     request = _request(tmp_path)
     request["rights_review"]["checkpoint_terms_reviewed"] = False
     request["request_digest"] = canonical_digest(request, digest_field="request_digest")
     monkeypatch.setattr(worker, "_verify_packet", _packet)
-    monkeypatch.setattr(worker, "preflight_g1_shared_scene_run", lambda **kwargs: (
-        (_ for _ in ()).throw(ValueError("g1_preflight_pxr_unavailable"))
-    ))
-    monkeypatch.setattr(worker, "verify_g1_host_asset_identities", lambda **kwargs: {
-        "candidate_id": CANDIDATE,
-        "policy_role": "manipulation",
-        "inventory_file_sha256": INVENTORY,
-    })
-    monkeypatch.setattr(worker, "_launch_scene", lambda **kwargs: (
-        (_ for _ in ()).throw(AssertionError("launched without rights"))
-    ))
+    monkeypatch.setattr(
+        worker,
+        "preflight_g1_shared_scene_run",
+        lambda **kwargs: (_ for _ in ()).throw(ValueError("g1_preflight_pxr_unavailable")),
+    )
+    monkeypatch.setattr(
+        worker,
+        "verify_g1_host_asset_identities",
+        lambda **kwargs: {
+            "candidate_id": CANDIDATE,
+            "policy_role": "manipulation",
+            "inventory_file_sha256": INVENTORY,
+        },
+    )
+    monkeypatch.setattr(
+        worker,
+        "_launch_scene",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("launched without rights")),
+    )
     result = worker.run_g1_development_worker(
         request=request, output_dir=tmp_path / "usd-rights-blocked"
     )
@@ -309,7 +338,8 @@ def test_usd_runtime_fallback_rejects_rights_before_launch(
 def test_changed_packet_binding_refuses_simulator_launch(tmp_path: Path, monkeypatch) -> None:
     request = _request(tmp_path)
     monkeypatch.setattr(
-        worker, "_verify_packet",
+        worker,
+        "_verify_packet",
         lambda root: {"arena_scene_plan_digest": "sha256:" + "0" * 64},
     )
     monkeypatch.setattr(worker, "preflight_g1_shared_scene_run", _preflight)
@@ -335,12 +365,11 @@ def test_unverified_episode_receipt_cannot_complete_worker(tmp_path: Path, monke
     monkeypatch.setattr(worker, "_launch_scene", lambda **kwargs: (app, {}))
     monkeypatch.setattr(worker, "_build_scene", lambda **kwargs: (SimpleNamespace(env=env), {}))
     monkeypatch.setattr(
-        worker, "run_g1_supervised_built_scene_episode",
+        worker,
+        "run_g1_supervised_built_scene_episode",
         lambda **kwargs: {"status": "blocked"},
     )
-    result = worker.run_g1_development_worker(
-        request=request, output_dir=tmp_path / "unverified"
-    )
+    result = worker.run_g1_development_worker(request=request, output_dir=tmp_path / "unverified")
     assert result["status"] == "blocked"
     assert result["blocker"]["message"] == "g1_worker_supervised_episode_incomplete"
 
@@ -349,9 +378,7 @@ def test_output_cannot_mutate_sealed_packet(tmp_path: Path) -> None:
     request = _request(tmp_path)
     packet = Path(request["bundle_root"])
     try:
-        worker.run_g1_development_worker(
-            request=request, output_dir=packet / "episode-output"
-        )
+        worker.run_g1_development_worker(request=request, output_dir=packet / "episode-output")
     except ValueError as exc:
         assert str(exc) == "g1_worker_output_directory_exists"
     else:
@@ -371,10 +398,15 @@ def test_navigation_candidate_requires_visible_goal_before_launch(
     )
     request["request_digest"] = canonical_digest(request, digest_field="request_digest")
     monkeypatch.setattr(worker, "_verify_packet", _packet)
-    monkeypatch.setattr(worker, "preflight_g1_shared_scene_run", lambda **kwargs: {
-        **_preflight(**kwargs), "candidate_id": candidate,
-        "policy_role": "movement_navigation",
-    })
+    monkeypatch.setattr(
+        worker,
+        "preflight_g1_shared_scene_run",
+        lambda **kwargs: {
+            **_preflight(**kwargs),
+            "candidate_id": candidate,
+            "policy_role": "movement_navigation",
+        },
+    )
 
     def must_not_launch(**kwargs):
         raise AssertionError("launched without visible navigation goal")
@@ -398,25 +430,31 @@ def test_navigation_candidate_requires_team_goal_authority_before_launch(
         json.dumps(plan)
     )
     request["candidate_id"] = candidate
-    request["rights_review"].update(
-        candidate_id=candidate, scene_plan_digest=plan["plan_digest"]
-    )
+    request["rights_review"].update(candidate_id=candidate, scene_plan_digest=plan["plan_digest"])
     request["rights_review"]["rights_review_digest"] = canonical_digest(
         request["rights_review"], digest_field="rights_review_digest"
     )
     request["request_digest"] = canonical_digest(request, digest_field="request_digest")
-    monkeypatch.setattr(worker, "_verify_packet", lambda _root: {
-        "arena_scene_plan_digest": plan["plan_digest"],
-        "receipt_digest": "sha256:" + "f" * 64,
-    })
-    monkeypatch.setattr(worker, "preflight_g1_shared_scene_run", lambda **_kwargs: {
-        "status": "staged_inputs_verified",
-        "scene_plan_digest": plan["plan_digest"],
-        "candidate_id": candidate,
-        "inventory_file_sha256": INVENTORY,
-        "robot_id": "unitree_g1",
-        "policy_role": "movement_navigation",
-    })
+    monkeypatch.setattr(
+        worker,
+        "_verify_packet",
+        lambda _root: {
+            "arena_scene_plan_digest": plan["plan_digest"],
+            "receipt_digest": "sha256:" + "f" * 64,
+        },
+    )
+    monkeypatch.setattr(
+        worker,
+        "preflight_g1_shared_scene_run",
+        lambda **_kwargs: {
+            "status": "staged_inputs_verified",
+            "scene_plan_digest": plan["plan_digest"],
+            "candidate_id": candidate,
+            "inventory_file_sha256": INVENTORY,
+            "robot_id": "unitree_g1",
+            "policy_role": "movement_navigation",
+        },
+    )
 
     def must_not_launch(**_kwargs):
         raise AssertionError("simulator launched without confirmed movement goal")
@@ -437,12 +475,18 @@ def test_navigation_candidate_requires_team_goal_authority_before_launch(
     app = SimpleNamespace(close=lambda: None)
     env = SimpleNamespace(close=lambda: None)
     monkeypatch.setattr(worker, "_launch_scene", lambda **_kwargs: (app, {"status": "launched"}))
-    monkeypatch.setattr(worker, "_build_scene", lambda **_kwargs: (
-        SimpleNamespace(env=env, plan=plan), {"passed": True}
-    ))
-    monkeypatch.setattr(worker, "run_g1_supervised_built_scene_episode", lambda **_kwargs: {
-        "status": "completed_development_only",
-    })
+    monkeypatch.setattr(
+        worker,
+        "_build_scene",
+        lambda **_kwargs: (SimpleNamespace(env=env, plan=plan), {"passed": True}),
+    )
+    monkeypatch.setattr(
+        worker,
+        "run_g1_supervised_built_scene_episode",
+        lambda **_kwargs: {
+            "status": "completed_development_only",
+        },
+    )
     completed = worker.run_g1_development_worker(
         request=request, output_dir=tmp_path / "confirmed-goal-authority"
     )
