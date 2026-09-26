@@ -21,6 +21,7 @@ from blueprint_pipeline.native_task_runtime_source_packet import (
     runtime_dependency_contracts,
     NativeTaskRuntimeSourcePacketError,
     materialize_native_task_runtime_source_packet,
+    extend_native_task_runtime_source_packet,
     verify_native_task_runtime_source_packet,
 )
 from blueprint_pipeline.native_task_runtime_source_provision import (
@@ -163,10 +164,43 @@ def test_g1_runtime_profile_seals_its_native_import_closure_without_changing_bas
     ).read_text(encoding="utf-8")
 
 
-def _wheelhouse(root: Path, *, runtime_profile: str = "base") -> Path:
+def test_g1_extension_reuses_verified_base_sources_and_wheels(tmp_path: Path) -> None:
+    base = _packet(tmp_path)
+    extension = extend_native_task_runtime_source_packet(
+        base_receipt_path=tmp_path / "packet/native_task_runtime_source_packet.v1.json",
+        output_dir=tmp_path / "g1-packet",
+        dependency_wheel_dir=_wheelhouse(
+            tmp_path / "g1-extra", runtime_profile="unitree_g1", only_extension=True
+        ),
+        runtime_profile="unitree_g1",
+        generated_at="fixed-g1",
+    )
+    verified = verify_native_task_runtime_source_packet(
+        tmp_path / "g1-packet/native_task_runtime_source_packet.v1.json"
+    )
+    assert verified["runtime_profile"] == "unitree_g1"
+    assert len(verified["runtime_dependency_wheels"]) == len(
+        runtime_dependency_contracts("unitree_g1")
+    )
+    assert verify_native_task_runtime_source_packet(
+        tmp_path / "packet/native_task_runtime_source_packet.v1.json"
+    )["packet_sha256"] == base["packet_sha256"]
+    with zipfile.ZipFile(base["packet_path"]) as original, zipfile.ZipFile(
+        extension["packet_path"]
+    ) as expanded:
+        source_name = "runtime_sources/arena/isaaclab_arena_g1/__init__.py"
+        assert original.read(source_name) == expanded.read(source_name)
+
+
+def _wheelhouse(
+    root: Path, *, runtime_profile: str = "base", only_extension: bool = False
+) -> Path:
     wheelhouse = root / "wheelhouse"
-    wheelhouse.mkdir(exist_ok=True)
-    for contract in runtime_dependency_contracts(runtime_profile):
+    wheelhouse.mkdir(parents=True, exist_ok=True)
+    contracts = runtime_dependency_contracts(runtime_profile)
+    if only_extension:
+        contracts = contracts[len(RUNTIME_DEPENDENCY_WHEELS):]
+    for contract in contracts:
         path = wheelhouse / contract["filename"]
         if path.is_file():
             continue
