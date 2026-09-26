@@ -670,6 +670,43 @@ def _number(value: Any) -> bool:
     )
 
 
+def _attempt_in_flight(directory: Path, intent: Mapping[str, Any]) -> bool:
+    """Whether a paid attempt reserved under the intent has not ended.
+
+    Read the way the progression worker reads execution ownership: every row
+    under ``attempts`` holds it unless a validated cancellation or terminal
+    settlement retires it.  A row or cancellation that cannot be proven raises,
+    which leaves the run unknown rather than over.
+    """
+
+    from . import task_evaluation_scene_intake as intake
+    from .task_evaluation_retained_controls_evidence import (
+        DIRECTORY as CANCELLATIONS,
+        validated_cancellation,
+    )
+
+    attempts = directory / "attempts"
+    if _absent(attempts):
+        return False
+    if attempts.is_symlink() or not attempts.is_dir():
+        raise ValueError("release_protection_attempts_unsafe")
+    for name in sorted(os.listdir(attempts)):
+        if not name.endswith(".json"):
+            continue
+        _require_regular(attempts / name)
+        row = intake._read(attempts / name, "attempt_digest")
+        if row.get("intent_digest") != intent.get("intent_digest") or not _identifier(
+            row.get("attempt_id")
+        ):
+            raise ValueError("release_protection_attempt_binding_invalid")
+        cancellation = directory / CANCELLATIONS / f"{row['attempt_id']}.json"
+        if not _absent(cancellation):
+            _require_regular(cancellation)
+        if validated_cancellation(directory, row) is None:
+            return True
+    return False
+
+
 class RunStateResolver:
     """Whether the run a lease serves can still use its release.
 
@@ -716,6 +753,16 @@ class RunStateResolver:
             return "unknown"
 
     def _scene_intent(self, run_ref: Mapping[str, Any]) -> str:
+        """Terminal only when the intent can never execute again.
+
+        A completed intent is over.  Revocation and expiry close *new*
+        execution only: an attempt already reserved keeps running to its own
+        terminal state, so while one is in flight the run is live.  With none
+        in flight a revoked intent is over, but an expired one is not: its
+        owner may still extend the window after expiry, so it stays unknown
+        and keeps its lease until the lease runs out.
+        """
+
         from . import task_evaluation_scene_intake as intake
 
         intent_id = run_ref.get("intent_id")
@@ -724,8 +771,6 @@ class RunStateResolver:
         directory = self.intent_root / intent_id
         if directory.is_symlink() or not directory.is_dir():
             return "unknown"
-        if not _absent(directory / "revoked.json"):
-            return "terminal"
         _require_regular(directory / "intent.json")
         intent = intake._read(directory / "intent.json", "intent_digest")
         progression = directory / "progression.json"
@@ -736,12 +781,16 @@ class RunStateResolver:
                 return "unknown"
             if projection.get("status") == "completed":
                 return "terminal"
+        revoked = not _absent(directory / "revoked.json")
         # The same effective window the progression worker enforces, including
         # owner-approved extensions.
         _require_regular_children(directory / "execution-window-extensions")
-        if self.now >= intake.effective_execution_expiry(directory, intent):
-            return "terminal"
-        return "live"
+        expired = self.now >= intake.effective_execution_expiry(directory, intent)
+        if not revoked and not expired:
+            return "live"
+        if _attempt_in_flight(directory, intent):
+            return "live"
+        return "terminal" if revoked else "unknown"
 
     def _queue_envelope(self, run_ref: Mapping[str, Any]) -> str:
         queue, name = run_ref.get("queue"), run_ref.get("name")

@@ -420,6 +420,7 @@ def _intent(
     expires_at: float,
     status: str | None = None,
     revoked: bool = False,
+    attempts: tuple[str, ...] = (),
 ) -> Path:
     from blueprint_pipeline import task_evaluation_scene_intake as intake
 
@@ -451,6 +452,22 @@ def _intent(
         _write(directory / "progression.json", projection)
     if revoked:
         _write(directory / "revoked.json", {"status": "revoked"})
+    for attempt_id in attempts:
+        # A reserved paid attempt with no cancellation or settlement: in flight.
+        row = intake._seal(
+            {
+                "schema_version": intake.ATTEMPT_SCHEMA,
+                "intent_id": intent_id,
+                "intent_digest": intent["intent_digest"],
+                "attempt_id": attempt_id,
+                "source_commit": B,
+                "provider": "vast",
+                "maximum_spend_usd": 1.0,
+                "status": "reserved",
+            },
+            "attempt_digest",
+        )
+        _write(directory / "attempts" / f"{attempt_id}.json", row)
     return directory
 
 
@@ -613,11 +630,9 @@ def test_binding_for_a_terminal_run_lapses(tmp_path: Path) -> None:
     sources = _sources(tmp_path)
     _intent(sources, "scene-completed", expires_at=NOW + 10 * DAY, status="completed")
     _intent(sources, "scene-revoked", expires_at=NOW + 10 * DAY, revoked=True)
-    _intent(sources, "scene-expired", expires_at=NOW - 1)
     _intent(sources, "scene-running", expires_at=NOW + 10 * DAY, status="running")
     _binding(sources, "completed.json", B, intent_id="scene-completed")
     _binding(sources, "revoked.json", C, intent_id="scene-revoked")
-    _binding(sources, "expired.json", D, intent_id="scene-expired")
     _binding(sources, "running.json", E, intent_id="scene-running")
 
     result = collect_release_protections(sources, now=NOW, migrate=True)
@@ -630,11 +645,85 @@ def test_binding_for_a_terminal_run_lapses(tmp_path: Path) -> None:
     ) == [
         (B, "run_terminal", "scene-completed"),
         (C, "run_terminal", "scene-revoked"),
-        (D, "run_terminal", "scene-expired"),
     ]
     # Every binding still gets its lease on record, lapsed or not.
-    assert result["migrated"] == ["completed.json", "expired.json", "revoked.json", "running.json"]
+    assert result["migrated"] == ["completed.json", "revoked.json", "running.json"]
     assert result["blockers"] == []
+
+
+def test_an_expired_intent_keeps_its_binding_until_the_lease_ends(tmp_path: Path) -> None:
+    sources = _sources(tmp_path)
+    _intent(sources, "scene-expired", expires_at=NOW - 1)
+    _binding(sources, "expired.json", D, intent_id="scene-expired")
+
+    # Expiry closes new execution, but the owner may still extend the window,
+    # so the run is unknown rather than over: the lease runs its TTL.
+    first = collect_release_protections(sources, now=NOW, migrate=True)
+    assert _protected(first) == {
+        D: ["retention_binding:task-evaluation-release-retention-bindings/expired.json"]
+    }
+
+    later = collect_release_protections(sources, now=NOW + 15 * DAY, migrate=True)
+    assert _protected(later) == {}
+    assert _lapsed(later) == [(D, "expired")]
+
+
+def test_an_attempt_in_flight_keeps_a_revoked_or_expired_intent_live(tmp_path: Path) -> None:
+    sources = _sources(tmp_path)
+    _intent(sources, "scene-revoked-running", expires_at=NOW + 90 * DAY, revoked=True,
+            attempts=("attempt-1",))
+    _intent(sources, "scene-expired-running", expires_at=NOW - 1, attempts=("attempt-1",))
+    unprovable = _intent(sources, "scene-revoked-unprovable", expires_at=NOW + 90 * DAY,
+                         revoked=True, attempts=("attempt-1",))
+    # A cancellation record that does not validate proves nothing about the attempt.
+    _write(unprovable / "cancelled-unstarted-controls" / "attempt-1.json", {"schema_version": "bogus"})
+    _binding(sources, "revoked-running.json", B, intent_id="scene-revoked-running")
+    _binding(sources, "expired-running.json", C, intent_id="scene-expired-running")
+    _binding(sources, "unprovable.json", D, intent_id="scene-revoked-unprovable")
+    collect_release_protections(sources, now=NOW, migrate=True)
+
+    # Past the 14-day TTL: live runs still protect (and renew); unknown ones lapse.
+    result = collect_release_protections(sources, now=NOW + 15 * DAY, migrate=True)
+
+    assert sorted(_protected(result)) == [B, C]
+    assert result["renewed"] == ["expired-running.json", "revoked-running.json"]
+    assert _lapsed(result) == [(D, "expired")]
+    assert result["blockers"] == []
+
+
+def test_an_owner_can_extend_an_expired_intent_and_keep_its_release(tmp_path: Path) -> None:
+    from blueprint_pipeline.task_evaluation_scene_execution_window import (
+        ACK,
+        extend_scene_execution_window,
+    )
+
+    sources = _sources(tmp_path)
+    directory = _intent(sources, "scene-extended", expires_at=NOW - 1)
+    _binding(sources, "extended.json", D, intent_id="scene-extended")
+    # Between expiry and the owner's extension, the release must still be there.
+    expired = collect_release_protections(sources, now=NOW, migrate=True)
+    assert D in _protected(expired) and expired["lapsed"] == []
+    intent = json.loads((directory / "intent.json").read_text(encoding="utf-8"))
+
+    # Ten days after expiry the owner extends the window; nothing had lapsed yet.
+    extend_scene_execution_window(
+        queue_root=sources.intent_root,
+        intent_id="scene-extended",
+        intent_digest=intent["intent_digest"],
+        owner=intent["request"]["owner"],
+        authenticated_client="blueprint-webapp",
+        trusted_clients={"blueprint-webapp"},
+        expires_at_epoch=NOW + 12 * DAY,
+        authorization_reference="OWNER-7",
+        ack=ACK,
+        now=NOW + 10 * DAY,
+    )
+    extended = collect_release_protections(sources, now=NOW + 10 * DAY, migrate=True)
+
+    assert D in _protected(extended)
+    assert extended["renewed"] == ["extended.json"]
+    lease = json.loads(_sidecar(sources, "extended.json").read_text(encoding="utf-8"))
+    assert lease["expires_at_epoch"] == NOW + 24 * DAY
 
 
 def test_misplaced_plan_is_a_warning_not_protection(tmp_path: Path) -> None:
