@@ -69,12 +69,13 @@ EVIDENCE_HOT_ON_VOLUME=(
   task-evaluation-inputs/g1-team-campaign-registry.json
 )
 
-# Units that write under the moved roots, with the timers and path units that
-# would start them again (tests/test_mount_work_volume_script.py derives the set
-# from deploy/systemd).  They are all stopped for the move, and only the ones that
-# were running start again.  Intake stays up: it writes queues, which never move,
-# and the reproducible result artifact cache, where a write that lands during the
-# move shows up as drift and the script refuses or keeps the original.
+# Units whose sandbox can write under the moved roots, with the timers and path
+# units that would start them again.  They are all stopped for the move, and only
+# the ones that were running start again.  The spend guard stops too: its orphan
+# scan reads pod owner files under the moved trees, and one scan while a root is
+# between its old and new mounts could reap a live pod.  Every unit that can write
+# under /var/lib/blueprint is either here or in UNITS_LEFT_RUNNING
+# (tests/test_mount_work_volume_script.py derives the set from deploy/systemd).
 WORKER_UNITS=(
   blueprint-task-evaluation-launch-preparation.path
   blueprint-task-evaluation-launch-preparation.timer
@@ -98,6 +99,10 @@ WORKER_UNITS=(
   blueprint-completed-replay-cache-gc.timer
   blueprint-scene-object-discovery.path
   blueprint-task-evaluation-launch-reconciler.timer
+  blueprint-pipeline-control-plane.timer
+  blueprint-agent-run-dispatcher.timer
+  blueprint-existing-policy-canary-continuation.timer
+  blueprint-gpu-spend-guard.timer
   blueprint-task-evaluation-launch-preparation.service
   blueprint-task-evaluation-sam31-preparation-execution.service
   blueprint-task-evaluation-episode-compilation.service
@@ -117,6 +122,21 @@ WORKER_UNITS=(
   blueprint-scene-object-discovery.service
   blueprint-task-evaluation-launch-reconciler.service
   blueprint-production-gpu-campaign-control-plane.service
+  blueprint-pipeline-control-plane.service
+  blueprint-agent-run-dispatcher.service
+  blueprint-existing-policy-canary-continuation.service
+  blueprint-existing-policy-canary-watchdog.service
+  blueprint-gpu-spend-guard.service
+)
+
+# Units whose sandbox can write under /var/lib/blueprint but that keep running
+# during the move, one per line with the reason that is safe.
+# shellcheck disable=SC2034  # read by tests/test_mount_work_volume_script.py
+UNITS_LEFT_RUNNING=(
+  blueprint-pipeline-intake.service                # by design; queues never move, and a result-cache write mid-move shows up as drift or a stale copy
+  blueprint-provider-billing-reconciler.service    # writes billing evidence under gpu_spend_guard only, which never moves
+  blueprint-production-gpu-worker-pool.service     # its only state is production-gpu-worker-pool.sqlite, which never moves
+  blueprint-production-gpu-worker-agent.service    # writes host, cache and warm evidence under /var/lib/blueprint/evidence, which never moves
 )
 
 usage() {

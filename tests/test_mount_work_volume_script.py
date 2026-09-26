@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import re
 import shutil
 import stat
 import subprocess
@@ -28,11 +27,6 @@ INPUTS_TREE = STATE / "task-evaluation-inputs"
 BULK_WORK_ROOTS = frozenset(
     {STATE / "pubsub-handoffs", STATE / "pipeline-control-plane" / "native-g1-team-campaign-work"}
 )
-# Intake stays up during the move: it writes queues, which never move, and the
-# reproducible result artifact cache, where a write that lands mid-move is
-# caught by the script's verification.
-UNITS_LEFT_RUNNING = frozenset({"blueprint-pipeline-intake.service"})
-_HOST_PATH = re.compile(r"(?<![A-Za-z0-9_.-])(/var/lib/blueprint[A-Za-z0-9_./-]*|/workspace[A-Za-z0-9_./-]*)")
 
 
 def _run(*args: str) -> subprocess.CompletedProcess:
@@ -87,6 +81,22 @@ def _script_array(name: str) -> list[str]:
     raise AssertionError(f"{name} is not assigned in {SCRIPT.name}")
 
 
+def _script_array_reasons(name: str) -> dict[str, str]:
+    """Each entry of a one-entry-per-line bash array, with the comment on its line."""
+    entries: dict[str, str] = {}
+    inside = False
+    for line in SCRIPT.read_text(encoding="utf-8").splitlines():
+        if not inside:
+            inside = line.startswith(f"{name}=(")
+            continue
+        if line.strip() == ")":
+            return entries
+        code, _, comment = line.partition("#")
+        for word in code.split():
+            entries[word.strip("'\"")] = comment.strip()
+    raise AssertionError(f"{name} is not assigned in {SCRIPT.name}")
+
+
 def _within(path: PurePosixPath, root: PurePosixPath) -> bool:
     return path == root or root in path.parents
 
@@ -105,20 +115,11 @@ def _volume_roots() -> list[PurePosixPath]:
     ]
 
 
-def _writes_under(service: Path, roots: list[PurePosixPath]) -> bool:
-    """A writable sandbox path is a moved root or lies inside one, or covers a moved path the unit names."""
-    writable = _read_write_paths(service)
-    named = [
-        PurePosixPath(match.rstrip("/"))
-        for line in service.read_text(encoding="utf-8").splitlines()
-        if not line.startswith(("ReadOnlyPaths=", "InaccessiblePaths=", "Condition", "#"))
-        for match in _HOST_PATH.findall(line)
-    ]
-    return any(
-        any(_within(path, root) for path in writable)
-        or any(_within(path, root) and any(_within(path, w) for w in writable) for path in named)
-        for root in roots
-    )
+def _may_write_under(service: Path, roots: list[PurePosixPath]) -> bool:
+    """Its sandbox can write a moved root: a writable path is the root, lies inside it, or holds it."""
+    if "ProtectSystem=strict" not in service.read_text(encoding="utf-8"):
+        return True  # without a strict sandbox it can write anywhere
+    return any(_within(path, root) or _within(root, path) for path in _read_write_paths(service) for root in roots)
 
 
 def _triggers(service: Path) -> list[Path]:
@@ -132,18 +133,25 @@ def _triggers(service: Path) -> list[Path]:
     return triggers
 
 
-def test_every_unit_that_writes_under_a_moved_root_stops_for_the_move() -> None:
-    listed = _script_array("WORKER_UNITS")
+def test_every_unit_that_can_write_under_a_moved_root_stops_or_says_why_it_runs() -> None:
+    stopped = set(_script_array("WORKER_UNITS"))
+    left_running = _script_array_reasons("UNITS_LEFT_RUNNING")
+    listed = [*stopped, *left_running]
     assert sorted(unit for unit in listed if not (SYSTEMD_DIR / unit).is_file()) == [], "every listed unit exists"
+    assert sorted(stopped & set(left_running)) == [], "a unit is stopped or left running, not both"
+    assert sorted(unit for unit, reason in left_running.items() if not reason) == [], "each unit left running says why"
     roots = _volume_roots()
-    running = sorted(
+    # A sandbox that can write /var/lib/blueprint (or any path overlapping a moved
+    # root) must be stopped with the timers and path units that restart it, or be
+    # left running for a stated reason.
+    undecided = sorted(
         unit.name
         for service in SYSTEMD_DIR.glob("blueprint-*.service")
-        if service.name not in UNITS_LEFT_RUNNING and _writes_under(service, roots)
-        for unit in (service, *_triggers(service))
-        if unit.name not in listed
+        if _may_write_under(service, roots)
+        for unit in ([service] if service.name in left_running else [service, *_triggers(service)])
+        if unit.name not in stopped and unit.name not in left_running
     )
-    assert running == [], "these units write under a moved root and would keep running during the move"
+    assert undecided == [], "these units can write under a moved root: stop them for the move or say why they run"
 
 
 def test_every_bulk_storage_class_root_is_on_the_volume_and_queues_never_move() -> None:
