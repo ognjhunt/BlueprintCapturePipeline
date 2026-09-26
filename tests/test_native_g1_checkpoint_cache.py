@@ -49,7 +49,10 @@ def test_private_checkpoint_transfer_seals_urls_and_scrubs_after_use(
                 "cache_hit": True, "upload_performed": False}
 
     monkeypatch.setattr(cache, "stage_cached_runtime_dependency_object_store", stage)
-    monkeypatch.setattr(cache, "close_cached_runtime_dependency_staging", lambda _: {})
+    monkeypatch.setattr(
+        cache, "close_cached_runtime_dependency_staging",
+        lambda _: {"signed_url_file_removed": True},
+    )
     job = tmp_path / "transfer"
     result = cache.stage_g1_checkpoint_cache(
         cache_root=model_root, job_dir=job,
@@ -63,5 +66,6 @@ def test_private_checkpoint_transfer_seals_urls_and_scrubs_after_use(
     assert secret_path.stat().st_mode & 0o777 == 0o600
     assert len(json.loads(secret_path.read_text())["files"]) == len(PAIR_ORDER)
     closeout = cache.close_g1_checkpoint_cache(job)
+    assert closeout["status"] == "completed"
     assert closeout["signed_url_file_removed"] is True
     assert not secret_path.exists()

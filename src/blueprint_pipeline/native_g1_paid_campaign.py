@@ -351,7 +351,9 @@ def dispatch_g1_paid_campaign(
                 result = {"schema_version": RESULT_SCHEMA, "status": "blocked",
                           "blockers": exc.blockers, "provider_mutations_performed": 0}
                 if cache_staging is not None and cache_job is not None:
-                    close_g1_checkpoint_cache(cache_job)
+                    result["private_checkpoint_cache_closeout"] = close_g1_checkpoint_cache(
+                        cache_job
+                    )
                 if args.adapter_output:
                     write_json(Path(args.adapter_output), result)
                 return result
@@ -392,6 +394,7 @@ def dispatch_g1_paid_campaign(
                     "blockers": ["g1_paid_campaign_attempt_already_consumed"],
                 }
             return consumption
+        cache_closeout: dict[str, Any] | None = None
         try:
             result = run_arena_native_control_vast(
                 pre_provider_mutation_hook=before_provider_create if args.execute else None,
@@ -422,7 +425,7 @@ def dispatch_g1_paid_campaign(
             )
         finally:
             if cache_staging is not None and cache_job is not None:
-                close_g1_checkpoint_cache(cache_job)
+                cache_closeout = close_g1_checkpoint_cache(cache_job)
         if cache_staging is not None:
             result["private_checkpoint_cache"] = {
                 key: cache_staging[key] for key in (
@@ -430,6 +433,13 @@ def dispatch_g1_paid_campaign(
                     "inventory_rows_digest", "raw_signed_urls_recorded",
                 )
             }
+            result["private_checkpoint_cache_closeout"] = cache_closeout
+            if cache_closeout is None or cache_closeout.get("status") != "completed":
+                result["status"] = "blocked"
+                result["blockers"] = sorted(set([
+                    *(result.get("blockers") or []),
+                    "g1_private_checkpoint_cache_closeout_failed",
+                ]))
         if args.execute and result.get("status") == "completed":
             try:
                 result["g1_output_verification"] = verify_g1_paid_output(result, bundle)

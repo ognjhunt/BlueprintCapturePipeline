@@ -126,13 +126,23 @@ def close_g1_checkpoint_cache(job_dir: Path) -> dict[str, Any]:
 
     job = Path(job_dir)
     private_path = job / "g1_checkpoint_transfer_urls.json"
-    private_path.unlink(missing_ok=True)
+    blockers = []
+    try:
+        private_path.unlink(missing_ok=True)
+    except OSError:
+        blockers.append("g1_checkpoint_transfer_manifest_not_removed")
     for child in sorted(job.glob("file-[0-9][0-9]")):
         if child.is_dir() and not child.is_symlink():
-            close_cached_runtime_dependency_staging(child)
+            try:
+                closeout = close_cached_runtime_dependency_staging(child)
+                if closeout.get("signed_url_file_removed") is not True:
+                    blockers.append("g1_checkpoint_signed_url_not_removed")
+            except OSError:
+                blockers.append("g1_checkpoint_signed_url_not_removed")
     return {
         "schema_version": "native_g1_checkpoint_cache_closeout.v1",
-        "status": "completed" if not private_path.exists() else "blocked",
+        "status": "completed" if not blockers and not private_path.exists() else "blocked",
         "signed_url_file_removed": not private_path.exists(),
+        "blockers": sorted(set(blockers)),
         "content_addressed_cache_objects_retained": True,
     }
