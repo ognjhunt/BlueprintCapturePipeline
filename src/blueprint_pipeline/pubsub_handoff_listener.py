@@ -2176,22 +2176,29 @@ def pull_and_process(
 
     subscriber = pubsub_v1.SubscriberClient()
     subscription_resource = _canonical_subscription_resource(subscription)
-    response = subscriber.pull(
-        request={
-            "subscription": subscription_resource,
-            "max_messages": max_messages,
-        },
-        timeout=30,
-    )
     acknowledged = 0
 
+    def pulled_one_at_a_time() -> Iterator[Any]:
+        # A message's ack deadline runs from the moment it is pulled. Pulled in
+        # a batch, the later messages would wait out the earlier ones' runs and
+        # could reach their turn with expired ack IDs. So pull one message only
+        # when the previous one is finished, and stop at an empty pull.
+        for _ in range(max(1, max_messages)):
+            response = subscriber.pull(
+                request={"subscription": subscription_resource, "max_messages": 1},
+                timeout=30,
+            )
+            received_messages = list(response.received_messages)
+            if not received_messages:
+                return
+            yield from received_messages
+
     def acknowledge(ack_id: str) -> None:
-        # One call per message, the moment it finishes: an ack ID held back for
-        # the end of the batch could expire while later messages run, and the
-        # acknowledgement (and its receipt) would claim something Pub/Sub dropped.
+        # One call per message, the moment it finishes, then its receipt: the
+        # receipt must never claim an acknowledgement Pub/Sub did not accept.
         subscriber.acknowledge(request={"subscription": subscription_resource, "ack_ids": [ack_id]})
 
-    for received in response.received_messages:
+    for received in pulled_one_at_a_time():
         message = received.message
         logger.info(
             "pubsub_handoff.received",

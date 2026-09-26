@@ -137,7 +137,7 @@ class FakeStorageClient:
 
 class FakeSubscriber:
     def __init__(self, received_messages: list[object]) -> None:
-        self.received_messages = received_messages
+        self.received_messages = list(received_messages)  # still waiting in the subscription
         self.acknowledged: list[str] = []
         self.acknowledge_requests: list[dict] = []
         self.ack_deadline_requests: list[dict] = []
@@ -145,7 +145,9 @@ class FakeSubscriber:
 
     def pull(self, *, request: dict, timeout: int) -> object:
         self.pull_requests.append({"request": request, "timeout": timeout})
-        return types.SimpleNamespace(received_messages=self.received_messages)
+        batch = self.received_messages[: request["max_messages"]]
+        del self.received_messages[: len(batch)]
+        return types.SimpleNamespace(received_messages=batch)
 
     def acknowledge(self, *, request: dict) -> None:
         self.acknowledge_requests.append(request)
@@ -1623,7 +1625,7 @@ def _pull(storage_root: Path) -> int:
     # The deployed listener stages control-plane input and skips run_e2e for
     # device captures; website captures still run their preparation.
     return pull_and_process(subscription=SUBSCRIPTION, storage_root=storage_root, provider="openai",
-                            max_messages=1, stage_control_plane=True, run_e2e_enabled=False)
+                            max_messages=10, stage_control_plane=True, run_e2e_enabled=False)
 
 
 def _capture_root(storage_root: Path) -> Path:
@@ -2252,3 +2254,49 @@ def test_a_terminal_ending_whose_lease_was_lost_is_not_acknowledged(tmp_path, mo
     assert "terminal_code" not in ledger
     assert not _live_terminal_receipt(tmp_path).exists()
     assert not (_capture_root(tmp_path) / "pipeline_job_ack_receipt.json").exists()
+
+
+def test_each_pull_takes_one_message_and_a_run_stops_at_an_empty_queue(tmp_path, monkeypatch):
+    events: list[str] = []
+
+    class RecordingSubscriber(FakeSubscriber):
+        def pull(self, *, request, timeout):
+            response = super().pull(request=request, timeout=timeout)
+            events.append(f"pull:{len(response.received_messages)}")
+            return response
+
+        def modify_ack_deadline(self, *, request):
+            super().modify_ack_deadline(request=request)
+            events.append(f"lease:{request['ack_ids'][0]}")
+
+        def acknowledge(self, *, request):
+            super().acknowledge(request=request)
+            events.append(f"ack:{request['ack_ids'][0]}")
+
+    def handoff(scene: str) -> bytes:
+        return json.dumps({"bucket": "capture-bucket", "scene_id": scene, "capture_id": "capture-1",
+                           "raw_prefix_uri": f"gs://capture-bucket/scenes/{scene}/captures/capture-1/raw"}).encode()
+
+    subscriber = RecordingSubscriber([_received(ack_id="a1", data=handoff("scene-a")),
+                                      _received(ack_id="a2", data=handoff("scene-b")),
+                                      _received(ack_id="a3", data=handoff("scene-c"))])
+    monkeypatch.setattr(google.cloud, "pubsub_v1",
+                        types.SimpleNamespace(SubscriberClient=lambda: subscriber), raising=False)
+
+    def process(payload: bytes, **_kwargs: object) -> dict:
+        events.append("process:" + json.loads(payload)["scene_id"])
+        return {"status": "processed", "queue_disposition": "terminal_success"}
+
+    monkeypatch.setattr(listener_module, "process_handoff_payload", process)
+    run = dict(subscription=SUBSCRIPTION, storage_root=tmp_path, provider="openai")
+
+    assert pull_and_process(**run, max_messages=2) == 2
+    assert [pull["request"]["max_messages"] for pull in subscriber.pull_requests] == [1, 1]
+    assert len(subscriber.received_messages) == 1  # the third waits for the next run
+    # A message is leased the moment it is pulled; the next pull waits until it is acknowledged.
+    assert events == ["pull:1", "lease:a1", "process:scene-a", "ack:a1",
+                      "pull:1", "lease:a2", "process:scene-b", "ack:a2"]
+
+    events.clear()
+    assert pull_and_process(**run, max_messages=10) == 1
+    assert events == ["pull:1", "lease:a3", "process:scene-c", "ack:a3", "pull:0"]
