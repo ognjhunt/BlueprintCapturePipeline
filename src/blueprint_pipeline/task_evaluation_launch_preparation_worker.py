@@ -20,7 +20,7 @@ import urllib.request
 import uuid
 import zipfile
 from collections.abc import Callable, Mapping, Sequence
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -873,6 +873,81 @@ def _validated_configured_scene_revision(
 PREPARATION_RESERVATION_MARGIN_BYTES = 256 * 1024**2
 PREPARATION_DISK_RECHECKS = 6
 PREPARATION_DISK_RECHECK_SECONDS = 15
+PREPARATION_CAPACITY_WAIT_MAX_SECONDS = 2 * 60 * 60
+
+
+def _resume_capacity_waits(
+    *, queue_root: Path, input_root: Path, reservation_root: Path,
+    source_commit: str, max_messages: int,
+) -> list[dict[str, Any]]:
+    """Retry no-spend capacity waits without replaying a sealed result."""
+    from .control_plane_disk_budget import disk_headroom
+
+    content_store = input_root / "content-addressed" / "sha256"
+    resumed: list[dict[str, Any]] = []
+    for source in sorted((queue_root / "awaiting_capacity").glob("*.json"))[:max_messages]:
+        envelope = _load_envelope(source)
+        try:
+            submitted_at = datetime.fromisoformat(envelope["submitted_at_iso"])
+        except (TypeError, ValueError) as exc:
+            raise TaskEvaluationLaunchPreparationWorkerError(
+                "launch_preparation_capacity_wait_timestamp_invalid"
+            ) from exc
+        if submitted_at.tzinfo is None:
+            raise TaskEvaluationLaunchPreparationWorkerError(
+                "launch_preparation_capacity_wait_timestamp_invalid"
+            )
+        request = envelope["request"]
+        need = _missing_reference_bytes(
+            collect_preparation_references(request), content_store
+        ) + PREPARATION_RESERVATION_MARGIN_BYTES
+        available = disk_headroom(
+            target_root=input_root, reservation_root=reservation_root
+        )["available_bytes"]
+        if datetime.now(timezone.utc) - submitted_at < timedelta(
+            seconds=PREPARATION_CAPACITY_WAIT_MAX_SECONDS
+        ):
+            if available >= need:
+                os.replace(source, queue_root / "pending" / source.name)
+                resumed.append({"preparation_id": request["preparation_id"], "status": "capacity_recovered"})
+            continue
+        result = {
+            "schema_version": RESULT_SCHEMA_VERSION,
+            "status": "blocked",
+            "source_commit": source_commit,
+            "preparation_id": request["preparation_id"],
+            "blockers": ["launch_preparation_capacity_wait_expired"],
+            "provider_mutation_performed": False,
+            "catalog_mutation_performed": False,
+            "paid_execution_requested": False,
+            "observed_at_iso": datetime.now(timezone.utc).isoformat(),
+            "result_digest": "",
+        }
+        result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+        result_path = queue_root / "results" / source.name
+        try:
+            write_launch_preparation_record_exclusive(result_path, result)
+        except FileExistsError:
+            try:
+                existing = json.loads(result_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise TaskEvaluationLaunchPreparationWorkerError(
+                    "launch_preparation_capacity_wait_result_conflict"
+                ) from exc
+            if (
+                existing.get("schema_version") != RESULT_SCHEMA_VERSION
+                or existing.get("status") != "blocked"
+                or existing.get("preparation_id") != request["preparation_id"]
+                or existing.get("blockers") != ["launch_preparation_capacity_wait_expired"]
+                or existing.get("result_digest")
+                != canonical_digest(existing, digest_field="result_digest")
+            ):
+                raise TaskEvaluationLaunchPreparationWorkerError(
+                    "launch_preparation_capacity_wait_result_conflict"
+                )
+        os.replace(source, queue_root / "blocked" / source.name)
+        resumed.append({"preparation_id": request["preparation_id"], "status": "capacity_wait_expired"})
+    return resumed
 
 
 def _missing_reference_bytes(
@@ -1066,6 +1141,13 @@ def process_launch_preparation_queue(
         queue_root=root, approved_roots=source_evidence_roots, max_messages=max_messages,
     )
     content_store_root = Path(input_root) / "content-addressed" / "sha256"
+    capacity_resumes = (
+        _resume_capacity_waits(
+            queue_root=root, input_root=Path(input_root),
+            reservation_root=Path(disk_reservation_root),
+            source_commit=observed_source_commit, max_messages=max_messages,
+        ) if disk_reservation_root is not None else []
+    )
     processed: list[dict[str, Any]] = []
     for source in sorted((root / "pending").glob("*.json"))[:max_messages]:
         claimed = root / "processing" / source.name
@@ -1545,40 +1627,52 @@ def process_launch_preparation_queue(
             terminal_state = WAITING_STATE
             result = pause.progress
         except Exception as exc:
-            terminal_state = "blocked"
-            result = {
-                "schema_version": RESULT_SCHEMA_VERSION,
-                "status": "blocked",
-                "source_commit": observed_source_commit,
-                "preparation_id": re.sub(
-                    r"-[0-9a-f]{64}\.json$", "", source.name
-                ),
-                "blockers": [
-                    str(exc)
-                    if isinstance(
-                        exc,
-                        (
+            if (
+                isinstance(exc, TaskEvaluationLaunchPreparationWorkerError)
+                and str(exc).startswith("control_plane_disk_budget_exceeded:launch_preparation:")
+                and not disk_reservations
+                and not (Path(input_root) / re.sub(r"-[0-9a-f]{64}\.json$", "", source.name)).exists()
+            ):
+                terminal_state = "awaiting_capacity"
+                result = {
+                    "schema_version": RESULT_SCHEMA_VERSION,
+                    "status": "awaiting_capacity",
+                    "source_commit": observed_source_commit,
+                    "preparation_id": re.sub(r"-[0-9a-f]{64}\.json$", "", source.name),
+                    "blockers": [str(exc)],
+                    "provider_mutation_performed": False,
+                    "catalog_mutation_performed": False,
+                    "paid_execution_requested": False,
+                }
+            else:
+                terminal_state = "blocked"
+                result = {
+                    "schema_version": RESULT_SCHEMA_VERSION,
+                    "status": "blocked",
+                    "source_commit": observed_source_commit,
+                    "preparation_id": re.sub(r"-[0-9a-f]{64}\.json$", "", source.name),
+                    "blockers": [
+                        str(exc)
+                        if isinstance(exc, (
                             TaskEvaluationLaunchPreparationWorkerError,
                             Sam31PreparationQueueError,
                             TaskEvaluationLaunchPreparationQueueError,
                             TaskEvaluationSceneConstructionQueueError,
                             TaskEvaluationEpisodeCompilationQueueError,
-                        ),
-                    )
-                    else worker_failure_blocker(exc)
-                ],
-                "provider_mutation_performed": False,
-                "catalog_mutation_performed": False,
-                "paid_execution_requested": False,
-                "observed_at_iso": datetime.now(timezone.utc).isoformat(),
-                "result_digest": "",
-            }
-            result["result_digest"] = canonical_digest(
-                result, digest_field="result_digest"
-            )
+                        )) else worker_failure_blocker(exc)
+                    ],
+                    "provider_mutation_performed": False,
+                    "catalog_mutation_performed": False,
+                    "paid_execution_requested": False,
+                    "observed_at_iso": datetime.now(timezone.utc).isoformat(),
+                    "result_digest": "",
+                }
+                result["result_digest"] = canonical_digest(
+                    result, digest_field="result_digest"
+                )
         for reservation in disk_reservations:
             reservation.release()
-        if storage_pins_root is not None and result.get("status") != "blocked":
+        if storage_pins_root is not None and terminal_state not in {"blocked", "awaiting_capacity"}:
             # Keep this preparation's directory alive for the storage reaper
             # until the activation that consumes it reaches a terminal receipt.
             try:
@@ -1590,8 +1684,8 @@ def process_launch_preparation_queue(
                 )
             except (ControlPlaneStoragePinError, OSError):
                 pass
-        if terminal_state == WAITING_STATE:
-            os.replace(claimed, root / WAITING_STATE / source.name)
+        if terminal_state in {WAITING_STATE, "awaiting_capacity"}:
+            os.replace(claimed, root / terminal_state / source.name)
             processed.append(result)
             continue
         result_path = results_root / source.name
@@ -1641,6 +1735,7 @@ def process_launch_preparation_queue(
         "status": "processed" if processed else "idle",
         "processed_count": len(processed),
         "resume_results": resume_results,
+        "capacity_resumes": capacity_resumes,
         "results": processed,
         "provider_mutation_performed": False,
         "catalog_mutation_performed": False,

@@ -314,6 +314,9 @@ run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-launch-preparation.path" \
   "${SYSTEMD_DIR}/blueprint-task-evaluation-launch-preparation.path"
 run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-launch-preparation.timer" \
+  "${SYSTEMD_DIR}/blueprint-task-evaluation-launch-preparation.timer"
+run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-scene-object-discovery.service" \
   "${SYSTEMD_DIR}/blueprint-scene-object-discovery.service"
 run install -m 0644 \
@@ -583,6 +586,7 @@ if [[ "${ENABLE_NOW}" == "true" ]]; then
   systemctl enable --now blueprint-control-plane-preflight.timer
   systemctl enable --now blueprint-task-evaluation-launch-dispatcher.path
   systemctl enable --now blueprint-task-evaluation-launch-preparation.path
+  systemctl enable --now blueprint-task-evaluation-launch-preparation.timer
   systemctl enable --now blueprint-scene-object-discovery.path
   systemctl enable --now blueprint-task-evaluation-episode-compilation.path
   systemctl enable --now blueprint-task-evaluation-launch-activation.path
@@ -602,6 +606,7 @@ else
   echo "enable compilation-result progression wake-up with: systemctl enable --now blueprint-task-evaluation-configured-controls-progression.path"
   echo "enable durable launch queue watch with: systemctl enable --now blueprint-task-evaluation-launch-dispatcher.path"
   echo "enable no-spend launch preparation queue with: systemctl enable --now blueprint-task-evaluation-launch-preparation.path"
+  echo "enable bounded disk-capacity preparation retries with: systemctl enable --now blueprint-task-evaluation-launch-preparation.timer"
   echo "enable whole-splat object discovery queue with: systemctl enable --now blueprint-scene-object-discovery.path"
   echo "enable no-spend episode compilation queue with: systemctl enable --now blueprint-task-evaluation-episode-compilation.path"
   echo "enable release-window-gated launch activation queue with: systemctl enable --now blueprint-task-evaluation-launch-activation.path"

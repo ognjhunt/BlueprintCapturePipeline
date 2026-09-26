@@ -7,6 +7,7 @@ import os
 import pwd
 import sys
 import types
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -559,7 +560,7 @@ def test_worker_claims_queue_and_seals_terminal_no_spend_result(tmp_path) -> Non
     assert compilation["customer_supplied_prebuilt_episode_packet"] is False
 
 
-def test_worker_refuses_low_disk_before_fetch(
+def test_worker_defers_low_disk_without_sealing_one_shot_result(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     value, _payloads = request_with_fetchable_bytes()
@@ -592,6 +593,7 @@ def test_worker_refuses_low_disk_before_fetch(
         disk_reservation_root=tmp_path / "reservations",
     )
 
+    assert run["results"][0]["status"] == "awaiting_capacity"
     assert run["results"][0]["blockers"] == [
         "control_plane_disk_budget_exceeded:launch_preparation:"
         "need_bytes=6:available_bytes=0:free_bytes=8:"
@@ -599,6 +601,117 @@ def test_worker_refuses_low_disk_before_fetch(
     ]
     assert not (tmp_path / "inputs" / value["preparation_id"]).exists()
     assert checks == worker.PREPARATION_DISK_RECHECKS + 1
+    assert list((queue / "awaiting_capacity").glob("*.json"))
+    assert not list((queue / "results").glob("*.json"))
+    capacity_status = launch_preparation_status(
+        preparation_id=value["preparation_id"], queue_root=queue
+    )
+    assert capacity_status["status"] == "awaiting_capacity"
+    assert capacity_status["automatic_progression_required"] is True
+    assert capacity_status["paid_execution_requested"] is False
+
+
+def test_capacity_wait_resumes_same_preparation_after_headroom_recovers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    value, payloads = request_with_fetchable_bytes()
+    queue = tmp_path / "queue"
+    stage_launch_preparation_request(
+        value=value, queue_root=queue, submitted_by="blueprint-webapp"
+    )
+
+    def refuse(*_args, **_kwargs):
+        raise ControlPlaneDiskBudgetError(
+            "control_plane_disk_budget_exceeded:launch_preparation:"
+            "need_bytes=6:available_bytes=0:free_bytes=8:"
+            "floor_bytes=8:reserved_bytes=0"
+        )
+
+    monkeypatch.setattr(worker, "reserve_control_plane_disk", refuse)
+    monkeypatch.setattr(worker.time, "sleep", lambda _seconds: None)
+    first = process_launch_preparation_queue(
+        queue_root=queue, input_root=tmp_path / "inputs",
+        allowed_uri_prefixes=["s3://blueprint-production-inputs/"],
+        service_account=SERVICE_ACCOUNT,
+        source_commit=value["expected_production_commit"],
+        fetcher=lambda *_args: pytest.fail("fetcher must not run"),
+        episode_compilation_queue_root=tmp_path / "episode-compilation",
+        disk_reservation_root=tmp_path / "reservations",
+    )
+    assert first["results"][0]["status"] == "awaiting_capacity"
+
+    class Held:
+        def release(self):
+            pass
+
+    monkeypatch.setattr(worker, "reserve_control_plane_disk", lambda *_args, **_kwargs: Held())
+    monkeypatch.setattr(
+        "blueprint_pipeline.control_plane_disk_budget.disk_headroom",
+        lambda **_kwargs: {"available_bytes": 2 * 1024**3},
+    )
+    second = process_launch_preparation_queue(
+        queue_root=queue, input_root=tmp_path / "inputs",
+        allowed_uri_prefixes=["s3://blueprint-production-inputs/"],
+        service_account=SERVICE_ACCOUNT,
+        source_commit=value["expected_production_commit"],
+        fetcher=fetcher(payloads), adapter_materializer=fake_adapter,
+        episode_compilation_queue_root=tmp_path / "episode-compilation",
+        disk_reservation_root=tmp_path / "reservations",
+    )
+    assert second["capacity_resumes"] == [
+        {"preparation_id": value["preparation_id"], "status": "capacity_recovered"}
+    ]
+    assert second["results"][0]["status"] == "queued_for_production_episode_compilation"
+    assert not list((queue / "awaiting_capacity").glob("*.json"))
+
+
+def test_capacity_wait_expires_without_provider_or_fetch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    value, _payloads = request_with_fetchable_bytes()
+    queue = tmp_path / "queue"
+    stage_launch_preparation_request(value=value, queue_root=queue, submitted_by="blueprint-webapp")
+
+    def refuse(*_args, **_kwargs):
+        raise ControlPlaneDiskBudgetError(
+            "control_plane_disk_budget_exceeded:launch_preparation:"
+            "need_bytes=6:available_bytes=0:free_bytes=8:"
+            "floor_bytes=8:reserved_bytes=0"
+        )
+
+    monkeypatch.setattr(worker, "reserve_control_plane_disk", refuse)
+    monkeypatch.setattr(worker.time, "sleep", lambda _seconds: None)
+    args = dict(
+        queue_root=queue, input_root=tmp_path / "inputs",
+        allowed_uri_prefixes=["s3://blueprint-production-inputs/"],
+        service_account=SERVICE_ACCOUNT,
+        source_commit=value["expected_production_commit"],
+        fetcher=lambda *_args: pytest.fail("fetcher must not run"),
+        episode_compilation_queue_root=tmp_path / "episode-compilation",
+        disk_reservation_root=tmp_path / "reservations",
+    )
+    first = process_launch_preparation_queue(**args)
+    assert first["results"][0]["status"] == "awaiting_capacity"
+    waiting = next((queue / "awaiting_capacity").glob("*.json"))
+    envelope = json.loads(waiting.read_text())
+    envelope["submitted_at_iso"] = (
+        datetime.now(timezone.utc) - timedelta(hours=3)
+    ).isoformat()
+    envelope["envelope_digest"] = canonical_digest(envelope, digest_field="envelope_digest")
+    waiting.chmod(0o640)
+    waiting.write_text(json.dumps(envelope))
+    monkeypatch.setattr(
+        "blueprint_pipeline.control_plane_disk_budget.disk_headroom",
+        lambda **_kwargs: {"available_bytes": 0},
+    )
+    second = process_launch_preparation_queue(**args)
+    assert second["capacity_resumes"] == [
+        {"preparation_id": value["preparation_id"], "status": "capacity_wait_expired"}
+    ]
+    assert not list((queue / "awaiting_capacity").glob("*.json"))
+    result = json.loads(next((queue / "results").glob("*.json")).read_text())
+    assert result["blockers"] == ["launch_preparation_capacity_wait_expired"]
+    assert result["provider_mutation_performed"] is False
 
 
 def test_preparation_disk_recovers_after_transient_capacity_refusal(
