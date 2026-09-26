@@ -188,10 +188,11 @@ class _Heartbeat:
         self.thread.start()
         return self
 
-    def __exit__(self, *_: Any) -> None:
+    def __exit__(self, exc_type: Any, *_: Any) -> None:
         self.stop.set()
         self.thread.join(timeout=5)
-        print("BLUEPRINT_G1_STAGE_FINISHED:" + self.stage, flush=True)
+        state = "FAILED" if exc_type is not None else "FINISHED"
+        print("BLUEPRINT_G1_STAGE_" + state + ":" + self.stage, flush=True)
 
 
 def _stage_models(root: Path, output: Path) -> dict[str, Any]:
@@ -220,21 +221,34 @@ def _stage_models(root: Path, output: Path) -> dict[str, Any]:
     )
 
     def fetch_checkpoint(candidate: str) -> dict[str, Any]:
-        with _Heartbeat("checkpoint:" + candidate):
-            return checkpoint_fetcher.materialize_candidate(
-                inventory_path=inventory,
-                candidate_id=candidate,
-                output_dir=checkpoints,
+        try:
+            with _Heartbeat("checkpoint:" + candidate):
+                receipt = checkpoint_fetcher.materialize_candidate(
+                    inventory_path=inventory,
+                    candidate_id=candidate,
+                    output_dir=checkpoints,
+                )
+            if (
+                receipt.get("status") != "checkpoint_bytes_verified"
+                or receipt.get("candidate_id") != candidate
+            ):
+                raise ValueError("g1_checkpoint_receipt_invalid:" + candidate)
+            (models / (candidate + ".json")).write_text(
+                json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8"
             )
+            print("BLUEPRINT_G1_CHECKPOINT_VERIFIED:" + candidate, flush=True)
+            return receipt
+        except Exception as exc:
+            print(
+                "BLUEPRINT_G1_CHECKPOINT_BLOCKED:" + candidate + ":" + type(exc).__name__,
+                flush=True,
+            )
+            raise
 
     # Candidate downloads use distinct pinned paths. Fetch them together so
     # large pi0.5 weights do not consume the whole bounded GPU lease serially.
     with ThreadPoolExecutor(max_workers=len(PAIR_ORDER)) as pool:
         receipts = list(pool.map(fetch_checkpoint, PAIR_ORDER))
-    for candidate, receipt in zip(PAIR_ORDER, receipts, strict=True):
-        (models / (candidate + ".json")).write_text(
-            json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-        )
     return {"checkpoints": receipts, "sonic": sonic,
             "sonic_cuda_preflight": sonic_cuda, "root": str(models)}
 

@@ -64,7 +64,7 @@ def test_model_staging_fetches_distinct_candidates_concurrently_in_pair_order(
     def fetch(*, inventory_path: Path, candidate_id: str, output_dir: Path) -> dict:
         stages.append("checkpoint")
         barrier.wait(timeout=5)
-        return {"candidate_id": candidate_id}
+        return {"status": "checkpoint_bytes_verified", "candidate_id": candidate_id}
 
     def sonic(*, inventory_path: Path, output_dir: Path) -> dict:
         stages.append("sonic")
@@ -94,6 +94,44 @@ def test_model_staging_fetches_distinct_candidates_concurrently_in_pair_order(
         json.loads((output / "models" / (candidate + ".json")).read_text())["candidate_id"]
         for candidate in PAIR_ORDER
     ] == list(PAIR_ORDER)
+
+
+def test_model_staging_preserves_verified_receipts_after_another_candidate_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    barrier = threading.Barrier(len(PAIR_ORDER))
+    failed_candidate = PAIR_ORDER[-1]
+
+    def fetch(*, inventory_path: Path, candidate_id: str, output_dir: Path) -> dict:
+        barrier.wait(timeout=5)
+        if candidate_id == failed_candidate:
+            raise TimeoutError("g1_checkpoint_download_deadline_exceeded:" + candidate_id)
+        return {"status": "checkpoint_bytes_verified", "candidate_id": candidate_id}
+
+    monkeypatch.setattr(
+        provider_runtime, "_load_script",
+        lambda path, name: (
+            SimpleNamespace(materialize_candidate=fetch)
+            if name == "g1_checkpoint_fetcher"
+            else SimpleNamespace(stage_sonic_assets=lambda **_: {"files": []})
+        ),
+    )
+    monkeypatch.setattr(
+        provider_runtime, "preflight_sonic_cuda_models",
+        lambda _: {"status": "sonic_cuda_sessions_ready_no_inference"},
+    )
+    output = tmp_path / "output"
+    output.mkdir()
+    with pytest.raises(TimeoutError, match=failed_candidate):
+        _stage_models(tmp_path / "runtime", output)
+    for candidate in PAIR_ORDER[:-1]:
+        assert json.loads((output / "models" / (candidate + ".json")).read_text()) == {
+            "status": "checkpoint_bytes_verified", "candidate_id": candidate,
+        }
+    assert not (output / "models" / (failed_candidate + ".json")).exists()
+    markers = capsys.readouterr().out
+    assert "BLUEPRINT_G1_CHECKPOINT_BLOCKED:" + failed_candidate + ":TimeoutError" in markers
+    assert "BLUEPRINT_G1_STAGE_FAILED:checkpoint:" + failed_candidate in markers
 
 
 def test_query_count_requires_digest_bound_observed_policy_queries(tmp_path: Path) -> None:
