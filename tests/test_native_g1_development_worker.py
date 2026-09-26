@@ -144,6 +144,39 @@ def test_failed_episode_retains_blocker_and_closes_resources(tmp_path: Path, mon
     assert closed == ["environment", "simulator"]
 
 
+def test_scene_failure_is_sealed_before_isaac_close_can_exit(
+    tmp_path: Path, monkeypatch
+) -> None:
+    request = _request(tmp_path)
+    monkeypatch.setattr(worker, "preflight_g1_shared_scene_run", _preflight)
+    monkeypatch.setattr(worker, "_verify_packet", _packet)
+
+    def close_with_exit() -> None:
+        preclose_path = tmp_path / "scene-failed" / worker.PRECLOSE_FILENAME
+        preclose = json.loads(preclose_path.read_text(encoding="utf-8"))
+        assert preclose["phase_reached"] == "scene_build"
+        assert preclose["blocker"]["message"] == "scene_builder_refused"
+        assert preclose["teardown"]["simulator"] == "close_requested"
+        assert preclose["preclose_digest"] == canonical_digest(
+            preclose, digest_field="preclose_digest"
+        )
+        raise SystemExit(0)
+
+    monkeypatch.setattr(worker, "_launch_scene", lambda **_kwargs: (
+        SimpleNamespace(close=close_with_exit), {"status": "launched"}
+    ))
+    monkeypatch.setattr(worker, "_build_scene", lambda **_kwargs: (
+        (_ for _ in ()).throw(ValueError("scene_builder_refused"))
+    ))
+
+    result = worker.run_g1_development_worker(
+        request=request, output_dir=tmp_path / "scene-failed"
+    )
+    assert result["status"] == "blocked"
+    assert result["blocker"]["message"] == "scene_builder_refused"
+    assert result["teardown"]["simulator"] == "closed"
+
+
 def test_preflight_failure_still_writes_terminal_receipt(tmp_path: Path, monkeypatch) -> None:
     request = _request(tmp_path)
     monkeypatch.setattr(worker, "_verify_packet", _packet)

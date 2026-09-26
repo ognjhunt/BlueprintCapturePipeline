@@ -19,7 +19,10 @@ from typing import Any
 from .decision_evidence_contracts import canonical_digest
 from .native_g1_development_worker import (
     PATH_FIELDS,
+    PRECLOSE_FILENAME,
+    PRECLOSE_SCHEMA,
     RESULT_FILENAME,
+    RESULT_SCHEMA,
     _request,
     run_g1_development_worker,
 )
@@ -144,6 +147,69 @@ def _read_result(
     ):
         raise ValueError("g1_pair_worker_receipt_invalid")
     return value
+
+
+def _recover_worker_result_from_preclose(
+    *, path: Path, result_path: Path, candidate_id: str,
+    scene_plan_digest: str, request_digest: str, returncode: int,
+) -> bool:
+    """Seal a child's pre-close evidence if Isaac exits the interpreter in close()."""
+
+    if not path.is_file() or path.is_symlink():
+        return False
+    preclose = json.loads(path.read_text(encoding="utf-8"))
+    teardown = preclose.get("teardown") or {}
+    if (
+        preclose.get("schema_version") != PRECLOSE_SCHEMA
+        or preclose.get("status") != "awaiting_simulator_close"
+        or preclose.get("preclose_digest")
+        != canonical_digest(preclose, digest_field="preclose_digest")
+        or preclose.get("candidate_id") != candidate_id
+        or preclose.get("request_digest") != request_digest
+        or preclose.get("scene_plan_digest") != scene_plan_digest
+        or preclose.get("ranking_eligible") is not False
+        or preclose.get("physical_outcome_claimed") is not False
+        or not isinstance(teardown, Mapping)
+        or teardown.get("simulator") != "close_requested"
+        or not isinstance(returncode, int)
+    ):
+        raise ValueError("g1_pair_worker_preclose_invalid")
+    supervised = preclose.get("supervised_episode") or {}
+    completed = (
+        returncode == 0
+        and preclose.get("blocker") is None
+        and teardown.get("environment") == "closed"
+        and isinstance(supervised, Mapping)
+        and supervised.get("status") == "completed_development_only"
+    )
+    result = {
+        **{key: value for key, value in preclose.items() if key != "preclose_digest"},
+        "schema_version": RESULT_SCHEMA,
+        "status": "completed_development_only" if completed else "blocked",
+        "teardown": {
+            **teardown,
+            "simulator": (
+                "process_exited_after_close_request"
+                if returncode == 0 else "process_failed_after_close_request"
+            ),
+        },
+        "blocker": preclose.get("blocker") or (
+            None if completed else {
+                "type": "RuntimeError",
+                "message": f"g1_worker_process_exited_during_simulator_close:{returncode}",
+            }
+        ),
+        "process_exit_evidence": {
+            "returncode": returncode,
+            "preclose_digest": preclose["preclose_digest"],
+        },
+    }
+    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+    result_path.write_text(
+        json.dumps(result, indent=2, sort_keys=True, allow_nan=False) + "\n",
+        encoding="utf-8",
+    )
+    return True
 
 
 def _score_from_episode(
@@ -373,6 +439,16 @@ def run_g1_development_pair(
                 )
                 result_path = attempt_root / RESULT_FILENAME
                 episode_path = attempt_root / "episode" / EPISODE_FILENAME
+                recovered = False
+                if not result_path.is_file():
+                    recovered = _recover_worker_result_from_preclose(
+                        path=attempt_root / PRECLOSE_FILENAME,
+                        result_path=result_path,
+                        candidate_id=candidate_id,
+                        scene_plan_digest=pair["scene_plan_digest"],
+                        request_digest=worker_request_digest,
+                        returncode=process.returncode,
+                    )
                 if not result_path.is_file():
                     raise ValueError(f"g1_pair_worker_exited_without_receipt:{process.returncode}")
                 worker = _read_result(
@@ -380,7 +456,9 @@ def run_g1_development_pair(
                     scene_plan_digest=pair["scene_plan_digest"],
                     request_digest=worker_request_digest,
                 )
-                if process.returncode != (0 if worker["status"] == "completed_development_only" else 1):
+                if process.returncode != (0 if worker["status"] == "completed_development_only" else 1) and not (
+                    recovered and worker["status"] == "blocked" and process.returncode == 0
+                ):
                     raise ValueError(f"g1_pair_worker_exit_or_receipt_mismatch:{process.returncode}")
             else:
                 from .native_g1_container_run import prepare_g1_container_run

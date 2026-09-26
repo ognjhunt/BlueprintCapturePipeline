@@ -9,7 +9,9 @@ import pytest
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline import native_g1_development_pair as pair
-from blueprint_pipeline.native_g1_development_worker import RESULT_FILENAME
+from blueprint_pipeline.native_g1_development_worker import (
+    PRECLOSE_FILENAME, PRECLOSE_SCHEMA, RESULT_FILENAME,
+)
 from blueprint_pipeline.native_g1_navigation_goal import seal_g1_navigation_goal_authority
 from blueprint_pipeline.native_g1_shared_scene_episode import run_g1_shared_scene_episode
 from tests.test_native_g1_development_worker import _request as worker_request
@@ -221,6 +223,92 @@ def test_subprocess_native_exit_retains_pair_receipt_and_exit_diagnostic(
     }
     assert "native simulator stopped" in (diagnostics / f"{DP}.log").read_text()
     assert json.loads((tmp_path / "comparison" / (pair.SCHEMA + ".json")).read_text()) == result
+
+
+def test_subprocess_seals_preclose_failure_after_native_exit_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths, plan = _paired_requests(tmp_path)
+    launcher = tmp_path / "python.sh"
+    launcher.write_text("#!/bin/sh\n", encoding="utf-8")
+
+    def exit_inside_close(command, *, stdout, stderr, check, timeout):
+        request = json.loads(Path(command[4]).read_text(encoding="utf-8"))
+        output = Path(command[6])
+        output.mkdir()
+        preclose = {
+            "schema_version": PRECLOSE_SCHEMA,
+            "status": "awaiting_simulator_close",
+            "candidate_id": request["candidate_id"],
+            "request_digest": request["request_digest"],
+            "scene_plan_digest": plan["plan_digest"],
+            "phase_reached": "scene_build",
+            "supervised_episode": None,
+            "teardown": {"environment": "not_started", "simulator": "close_requested"},
+            "blocker": {"type": "ValueError", "message": "scene_builder_refused"},
+            "ranking_eligible": False,
+            "physical_outcome_claimed": False,
+        }
+        preclose["preclose_digest"] = canonical_digest(
+            preclose, digest_field="preclose_digest"
+        )
+        (output / PRECLOSE_FILENAME).write_text(json.dumps(preclose), encoding="utf-8")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(pair.sys, "platform", "linux")
+    monkeypatch.setattr(pair.subprocess, "run", exit_inside_close)
+    result = pair.run_g1_development_pair(
+        request_paths=paths, output_dir=tmp_path / "comparison",
+        mode="subprocess", worker_launcher=launcher,
+    )
+    attempt = result["attempts"][0]
+    assert result["status"] == "blocked"
+    assert result["not_attempted_candidate_ids"] == [PI]
+    assert attempt["blocker"]["message"] == "scene_builder_refused"
+    recovered = json.loads((tmp_path / "comparison" / DP / RESULT_FILENAME).read_text())
+    assert recovered["teardown"]["simulator"] == "process_exited_after_close_request"
+    assert recovered["process_exit_evidence"]["returncode"] == 0
+
+
+def test_subprocess_completes_scored_pair_after_isaac_close_exits_interpreter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths, _ = _paired_requests(tmp_path)
+    launcher = tmp_path / "python.sh"
+    launcher.write_text("#!/bin/sh\n", encoding="utf-8")
+
+    def exit_inside_close(command, *, stdout, stderr, check, timeout):
+        request = json.loads(Path(command[4]).read_text(encoding="utf-8"))
+        output = Path(command[6])
+        completed = _fake_result(request, output)
+        (output / RESULT_FILENAME).unlink()
+        preclose = {
+            **{key: value for key, value in completed.items() if key != "result_digest"},
+            "schema_version": PRECLOSE_SCHEMA,
+            "status": "awaiting_simulator_close",
+            "supervised_episode": {
+                **completed["supervised_episode"],
+                "status": "completed_development_only",
+            },
+            "teardown": {"environment": "closed", "simulator": "close_requested"},
+            "blocker": None,
+        }
+        preclose["preclose_digest"] = canonical_digest(
+            preclose, digest_field="preclose_digest"
+        )
+        (output / PRECLOSE_FILENAME).write_text(json.dumps(preclose), encoding="utf-8")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(pair.sys, "platform", "linux")
+    monkeypatch.setattr(pair.subprocess, "run", exit_inside_close)
+    result = pair.run_g1_development_pair(
+        request_paths=paths, output_dir=tmp_path / "comparison",
+        mode="subprocess", worker_launcher=launcher,
+    )
+    assert result["status"] == "completed_development_only"
+    assert result["not_attempted_candidate_ids"] == []
+    assert all(attempt["score"]["outcome"] == "failure" for attempt in result["attempts"])
+    assert all(attempt["review_media"]["frame_manifest_digest"] for attempt in result["attempts"])
 
 
 def test_subprocess_preserves_episode_layout_and_scores(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

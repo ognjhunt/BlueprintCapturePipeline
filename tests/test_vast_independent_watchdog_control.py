@@ -126,12 +126,26 @@ def test_terminal_evidence_honors_the_watchdogs_informational_global_scope(
     assert control._terminal_evidence_matches_handle(evidence, handle=handle, instance_id="50812297") is False
     evidence["global_inventory_informational_only"] = True
     assert control._terminal_evidence_matches_handle(evidence, handle=handle, instance_id="50812297")
-    # The informational scope never admits a claimed observation of a foreign instance,
-    # a "blocked" read that lists resources, or an unconfirmed direct inspection.
+    # A fully observed foreign lane is informational while a same-lane or
+    # recorded-instance resource defeats the exact teardown claim.
     foreign = {**evidence, "final_global_inventory": {**evidence["initial_global_inventory"],
         "status": "observed", "api_confirmed": True, "live_resource_count": 1,
         "resources": [{"instance_id": "50812298", "name": "someone-else"}]}}
-    assert control._terminal_evidence_matches_handle(foreign, handle=handle, instance_id="50812297") is False
+    assert control._terminal_evidence_matches_handle(foreign, handle=handle, instance_id="50812297")
+    same_lane = {**foreign, "final_global_inventory": {
+        **foreign["final_global_inventory"],
+        "resources": [{"instance_id": "50812298", "name": handle.pod_name_prefix + "leak"}],
+    }}
+    assert control._terminal_evidence_matches_handle(same_lane, handle=handle, instance_id="50812297") is False
+    own_instance = {**foreign, "final_global_inventory": {
+        **foreign["final_global_inventory"],
+        "resources": [{"instance_id": "50812297", "name": "someone-else"}],
+    }}
+    assert control._terminal_evidence_matches_handle(own_instance, handle=handle, instance_id="50812297") is False
+    malformed = {**foreign, "final_global_inventory": {
+        **foreign["final_global_inventory"], "live_resource_count": 2,
+    }}
+    assert control._terminal_evidence_matches_handle(malformed, handle=handle, instance_id="50812297") is False
     listed = {**evidence, failed_read: {**BLOCKED_GLOBAL_READ, "resources": [{"instance_id": "50812298"}]}}
     assert control._terminal_evidence_matches_handle(listed, handle=handle, instance_id="50812297") is False
     unproven = {**evidence, "recorded_vast_instance_teardown": {
@@ -170,6 +184,32 @@ def test_close_reports_provider_terminal_with_a_blocked_informational_global_rea
     assert result["provider_absence_confirmed"] is True
     assert result["global_inventory_read_blocked"] is True
     assert json.loads((tmp_path / control.HANDOFF_NAME).read_text())["status"] == "provider_terminal"
+
+
+def test_close_reports_lane_terminal_while_another_paid_lane_is_observed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handle = _lane_handle(tmp_path, monkeypatch)
+    evidence = _exact_terminal_evidence(handle, 52668033)
+    evidence["global_inventory_informational_only"] = True
+    foreign = {
+        **evidence["final_global_inventory"],
+        "live_resource_count": 1,
+        "resources": [{
+            "instance_id": "52669076",
+            "name": "blueprint-native-task-policy-canary-bc10e1671bd48f8316de66c29b690a5d",
+        }],
+    }
+    evidence["initial_global_inventory"] = foreign
+    evidence["final_global_inventory"] = foreign
+    (handle.out_dir / control.EVIDENCE_NAME).write_text(json.dumps(evidence), encoding="utf-8")
+    handle.process.returncode = 0
+    result = control.close_independent_vast_watchdog(
+        job_dir=tmp_path, handle=handle, instance_ids=[52668033],
+        provider_teardown_completed=True, wait_seconds=0.1,
+    )
+    assert result["status"] == "provider_terminal"
+    assert result["provider_absence_confirmed"] is True
 
 
 def test_watchdog_is_armed_detached_before_allocation(
