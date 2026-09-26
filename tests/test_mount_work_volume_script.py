@@ -545,3 +545,33 @@ def test_the_original_stays_unless_its_root_is_still_mounted_from_the_volume(tmp
     assert "removable" not in unmounted.stdout
     # The worker units stay stopped: the root shows an empty mount point.
     assert f"swapping={tmp_path}/var/lib/blueprint/pubsub-handoffs" in unmounted.stdout
+
+
+# blkid as the host would answer "blkid -o value -s TOKEN DEVICE": the value from
+# STUB_UUID or STUB_TYPE, or nothing and exit 2 when that is empty.
+_BLKID = """case "$4" in UUID) value=$STUB_UUID ;; TYPE) value=$STUB_TYPE ;; *) value= ;; esac
+[ -n "$value" ] || exit 2
+echo "$value"
+"""
+
+
+@pytest.mark.parametrize(("uuid", "fstype"), [("", "ext4"), ("5f0c-volume", "")])
+def test_the_volume_line_refuses_a_device_blkid_cannot_name(tmp_path: Path, uuid: str, fstype: str) -> None:
+    _stub(tmp_path, "blkid", _BLKID)
+    fstab = tmp_path / "fstab"
+    fstab.write_text("UUID=root / ext4 defaults 0 1\n", encoding="utf-8")
+    functions = ("refuse", "exists", "fstab_has_target", "backup_fstab", "fstab_prepare", "fstab_install", "record_volume_in_fstab")
+    setup = (
+        f'ROOT_PREFIX=""; FSTAB="{fstab}"; EPOCH=1; DEVICE=/dev/disk/by-id/volume; MOUNT=/mnt/blueprint-work\n'
+        'FSTAB_BACKUP=""; FSTAB_NEXT=""; FSTAB_NOTE=""; FSTAB_CHANGED=""\n'
+    )
+
+    refused = _call(tmp_path, functions, setup + "record_volume_in_fstab\n", STUB_UUID=uuid, STUB_TYPE=fstype)
+    named = _call(tmp_path, functions, setup + "record_volume_in_fstab\n", STUB_UUID="5f0c-volume", STUB_TYPE="ext4")
+
+    assert refused.returncode == 2 and "no UUID or filesystem type" in refused.stderr, refused.stderr
+    assert named.returncode == 0, named.stderr
+    lines = fstab.read_text(encoding="utf-8").splitlines()
+    assert lines == ["UUID=root / ext4 defaults 0 1", "UUID=5f0c-volume /mnt/blueprint-work ext4 defaults,nofail,noatime,discard 0 2"]
+    # One backup, taken by the run that wrote; the refused run touched nothing.
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["bin", "fstab", "fstab.blueprint-1.bak"]

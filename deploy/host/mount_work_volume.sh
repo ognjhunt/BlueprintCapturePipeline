@@ -407,6 +407,20 @@ fstab_install() {  # one atomic rename
   echo "${FSTAB_NOTE}"
 }
 
+# The volume's own line.  An empty UUID or filesystem type would record a line
+# that cannot mount the volume at the next boot, so refuse before touching the
+# file.
+record_volume_in_fstab() {
+  local uuid fstype
+  uuid="$(blkid -o value -s UUID "${DEVICE}" 2>/dev/null || true)"
+  fstype="$(blkid -o value -s TYPE "${DEVICE}" 2>/dev/null || true)"
+  if [ -z "${uuid}" ] || [ -z "${fstype}" ]; then
+    refuse 2 "blkid reports no UUID or filesystem type for ${DEVICE}; ${FSTAB} was not touched" "UUID=${uuid:-(none)} TYPE=${fstype:-(none)}"
+  fi
+  fstab_prepare "" "UUID=${uuid} ${MOUNT} ${fstype} defaults,nofail,noatime,discard 0 2"
+  fstab_install
+}
+
 # --- classification ------------------------------------------------------------
 # bound:       the root itself is a mount point; left alone.
 # move:        a plain directory; copied, then bound.
@@ -901,12 +915,8 @@ apply() {
         ;;
       *) refuse 2 "blkid could not probe ${DEVICE} (exit ${probed}); it was not formatted" ;;
     esac
+    record_volume_in_fstab
     mkdir -p "${HOST_MOUNT}"
-    local uuid fstype
-    uuid="$(blkid -o value -s UUID "${DEVICE}")"
-    fstype="$(blkid -o value -s TYPE "${DEVICE}")"
-    fstab_prepare "" "UUID=${uuid} ${MOUNT} ${fstype} defaults,nofail,noatime,discard 0 2"
-    fstab_install
     mountpoint -q "${HOST_MOUNT}" || mount "${HOST_MOUNT}"
   else
     mkdir -p "${HOST_MOUNT}"
