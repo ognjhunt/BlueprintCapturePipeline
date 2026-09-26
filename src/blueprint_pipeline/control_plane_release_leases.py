@@ -1243,7 +1243,9 @@ def evaluate_binding_leases(
     ``binding_ancestry``) of a binding that does.  An ancestor kept that way
     is ``protected`` with ``ancestor_of`` naming the descendant; an ancestor
     whose binding is missing is listed under the descendant's ``inherited``
-    so its commits are still kept.
+    so its commits are still kept.  A protected binding whose chain cannot be
+    read to its root (a broken link, or longer than the chain bound) is
+    ``blocked`` with ``release_protection_ancestry_unreadable``.
     """
 
     chains = {name: binding_ancestry(binding) for name, _sha, binding in bindings}
@@ -1279,6 +1281,13 @@ def evaluate_binding_leases(
                 )
             elif ancestor["status"] == "lapsed":
                 ancestor["status"], ancestor["why"], ancestor["ancestor_of"] = "protected", None, name
+    # A binding that protects but whose chain could not be followed to its
+    # root cannot extend that protection to the ancestors past the break;
+    # letting those lapse silently would retire a release it may need.
+    for name, outcome in outcomes.items():
+        if outcome["status"] == "protected" and not chains[name][1]:
+            outcome["status"] = "blocked"
+            outcome["blocker"] = f"release_protection_ancestry_unreadable:{_code_id(name)}"
     return outcomes
 
 
