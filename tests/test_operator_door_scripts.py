@@ -255,8 +255,12 @@ def test_installer_creates_the_deploy_key_once_and_root_only() -> None:
 RETIRE_ID = "20260926T120000Z-retire-scene-workspace-0000abcd"
 RETIRE_PYTHON_STUB = r"""#!/bin/bash
 { echo "retention $*"; echo "cwd $PWD"; echo "pythonpath ${PYTHONPATH:-}"
-  echo "from-env-file ${FAKE_FROM_ENV_FILE:-unset}"
-  echo "artifact-bucket ${BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_EXPECTED_BUCKET:-unset}"; } >> "$STUB_LOG"
+  echo "from-env-file ${BLUEPRINT_FAKE_FROM_ENV_FILE:-unset}"
+  echo "artifact-bucket ${BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_EXPECTED_BUCKET:-unset}"
+  echo "probe ${BLUEPRINT_PROBE-unset}"; echo "ticks ${BLUEPRINT_TICKS-unset}"
+  echo "credentials ${GOOGLE_APPLICATION_CREDENTIALS-unset}"
+  echo "indented ${BLUEPRINT_INDENTED-unset}"; echo "exported ${BLUEPRINT_EXPORTED-unset}"
+  echo "unlisted ${UNLISTED_SETTING-unset}"; } >> "$STUB_LOG"
 while [ $# -gt 0 ]; do
   case "$1" in
     --result-out) [ -n "${FAKE_RETIREMENT:-}" ] && printf '%s' "$FAKE_RETIREMENT" > "$2"; shift ;;
@@ -274,7 +278,7 @@ def retire_env(env: dict[str, str], tmp_path: Path) -> dict[str, str]:
     release.mkdir(parents=True)
     (tmp_path / "active").symlink_to(release)
     env_file = tmp_path / "pipeline-control-plane.env"
-    env_file.write_text("FAKE_FROM_ENV_FILE=loaded\nGOOGLE_APPLICATION_CREDENTIALS=/etc/blueprint/sa.json\n",
+    env_file.write_text("BLUEPRINT_FAKE_FROM_ENV_FILE=loaded\nGOOGLE_APPLICATION_CREDENTIALS=/etc/blueprint/sa.json\n",
                         encoding="utf-8")
     values = {**env, "DOOR_VENV_PYTHON": str(tmp_path / "retention-python"),
               "DOOR_CONTROL_PLANE_REPO": str(tmp_path / "active"), "DOOR_CONTROL_PLANE_ENV_FILE": str(env_file),
@@ -316,10 +320,41 @@ def test_retirement_runs_the_active_release_module_with_the_control_plane_enviro
     assert calls[0] == ("retention -m blueprint_pipeline.website_scene_workspace_retention retire "
                         "--scene-id site-capture-1 --bucket blueprint-8c1ca.appspot.com "
                         f"--apply --ack retire-scene-workspace --result-out {result}")
-    assert calls[1:] == [f"cwd {tmp_path / 'releases' / SHA}", "pythonpath src", "from-env-file loaded",
-                         "artifact-bucket blueprint-task-evaluation-artifacts-prod"]
+    assert calls[1:6] == [f"cwd {tmp_path / 'releases' / SHA}", "pythonpath src", "from-env-file loaded",
+                          "artifact-bucket blueprint-task-evaluation-artifacts-prod", "probe unset"]
+    assert "credentials /etc/blueprint/sa.json" in calls
     log = (Path(retire_env["DOOR_RESULTS_DIR"]) / f"{RETIRE_ID}.log").read_text(encoding="utf-8")
     assert "sa.json" not in log and "FAKE_FROM_ENV_FILE" not in log, "the environment file is never echoed"
+
+
+def test_the_environment_file_is_read_as_data_never_run(retire_env: dict[str, str], tmp_path: Path) -> None:
+    """systemd's KEY=VALUE format, not shell: nothing in it is expanded, run, or allowed to steer the script."""
+
+    ran = tmp_path / "command-substitution-ran"
+    Path(retire_env["DOOR_CONTROL_PLANE_ENV_FILE"]).write_text(
+        "# the operator environment\n"
+        "\n"
+        f"BLUEPRINT_PROBE=$(touch {ran})\n"
+        f"BLUEPRINT_TICKS=`touch {ran}`\n"
+        'BLUEPRINT_FAKE_FROM_ENV_FILE="double quoted"\n'
+        "GOOGLE_APPLICATION_CREDENTIALS='/etc/blueprint/sa.json'\n"
+        "PATH=/nonexistent\n"
+        "DOOR_SCENE_ID=hijacked\n"
+        "UNLISTED_SETTING=1\n"
+        "  BLUEPRINT_INDENTED=skipped\n"
+        "export BLUEPRINT_EXPORTED=skipped\n"
+        "not an assignment\n",
+        encoding="utf-8")
+
+    rc, outcome, calls = _run("door-retire-scene-workspace.sh", retire_env, DOOR_REQUEST_ID=RETIRE_ID,
+                              FAKE_RETIREMENT=json.dumps({"status": "planned"}))
+
+    assert rc == 0 and outcome["status"] == "planned", "PATH from the file would have broken the script"
+    assert not ran.exists()
+    assert f"probe $(touch {ran})" in calls and f"ticks `touch {ran}`" in calls
+    assert "from-env-file double quoted" in calls and "credentials /etc/blueprint/sa.json" in calls
+    assert "--scene-id site-capture-1 " in calls[0] and outcome["scene_id"] == "site-capture-1"
+    assert {"indented unset", "exported unset", "unlisted unset"} <= set(calls)
 
 
 def test_a_dry_run_passes_neither_apply_nor_the_ack(retire_env: dict[str, str]) -> None:

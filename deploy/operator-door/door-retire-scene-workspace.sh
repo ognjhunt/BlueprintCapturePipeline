@@ -26,13 +26,28 @@ case "${DOOR_APPLY:-}" in
 esac
 echo "[$(date -u +%FT%TZ)] retire-scene-workspace ${DOOR_SCENE_ID} apply=${DOOR_APPLY:-0} (request ${DOOR_REQUEST_ID})"
 
-# The control-plane environment (Firebase Storage credentials among it), exported and never echoed.
+# The control-plane environment (Firebase Storage credentials among it), never echoed. It is
+# systemd's KEY=VALUE format, not shell, so it is read as data: one KEY=VALUE per line, matching
+# surrounding quotes stripped, nothing expanded or run. Only the module's own settings
+# (BLUEPRINT_*, GOOGLE_*, GCLOUD_PROJECT) are exported, so the file cannot steer this script.
 env_file="${DOOR_CONTROL_PLANE_ENV_FILE:-/etc/blueprint/pipeline-control-plane.env}"
 if [ -r "$env_file" ]; then
-  set -a
-  # shellcheck disable=SC1090
-  . "$env_file"
-  set +a
+  assignment='^([A-Za-z_][A-Za-z0-9_]*)=(.*)$'
+  double_quoted='^"(.*)"$'
+  single_quoted="^'(.*)'\$"
+  while IFS= read -r line || [ -n "$line" ]; do
+    [[ "$line" =~ $assignment ]] || continue  # comments, blank and indented lines never match
+    key="${BASH_REMATCH[1]}"
+    value="${BASH_REMATCH[2]}"
+    case "$key" in
+      BLUEPRINT_* | GOOGLE_* | GCLOUD_PROJECT) ;;
+      *) continue ;;
+    esac
+    if [[ "$value" =~ $double_quoted ]] || [[ "$value" =~ $single_quoted ]]; then
+      value="${BASH_REMATCH[1]}"
+    fi
+    export "$key=$value"
+  done <"$env_file"
 fi
 # Archive to the same private artifact store the reclaim timer uses (its unit sets these), so a
 # receipt restores the same way whichever path retired the scene.
