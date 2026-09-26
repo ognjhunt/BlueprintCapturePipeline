@@ -533,6 +533,9 @@ def test_read_handoff_job_status_reports_not_staged(tmp_path: Path) -> None:
     assert status["staged_capture_present"] is False
     assert status["job_ledger_present"] is False
     assert status["attempt_count"] == 0
+    assert status["terminal_code"] is None
+    assert status["terminal_receipt_present"] is False
+    assert status["ack_receipt"] is None
 
 
 def test_crashed_processing_run_is_retried_not_skipped(tmp_path: Path) -> None:
@@ -1933,3 +1936,21 @@ def test_changed_generation_downloads_again(tmp_path):
     stage_handoff_capture(handoff, storage_root=tmp_path, storage_client=FakeStorageClient([replaced]))
     assert replaced.download_count == 2
     assert (capture_root / "raw/capture_upload_complete.json").read_bytes() == b"[]"
+
+
+def test_status_reports_an_authority_ending_and_its_acknowledgement(tmp_path, monkeypatch):
+    subscriber = FakeSubscriber([_received(ack_id="a1", data=PAYLOAD_BYTES)])
+    _install_fake_pubsub(monkeypatch, subscriber,
+                         storage_client=FakeStorageClient(_website_bundle_blobs()), run_e2e=_expired)
+    assert _pull(tmp_path) == 1
+
+    status = read_handoff_job_status(storage_root=tmp_path, bucket="capture-bucket",
+                                     scene_id="scene-1", capture_id="capture-1")
+
+    assert status["status"] == "terminal_authority_ended"
+    assert status["terminal_code"] == "consent_expired"
+    assert status["terminal_receipt_present"] is True
+    assert status["ack_receipt"]["disposition"] == "terminal_authority_ended"
+    assert status["ack_receipt"]["acknowledgement_count"] == 1
+    assert status["retry_expected_on_redelivery"] is False
+    assert status["provider_ops_status"]["provider_artifact_count"] == 0

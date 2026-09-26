@@ -1148,6 +1148,8 @@ def read_handoff_job_status(
         capture_root / "raw" / "capture_upload_complete.json"
     ).is_file()
     pipeline_handoff_present = (capture_root / "pipeline_handoff.json").is_file()
+    terminal_receipt_present = (capture_root / JOB_TERMINAL_RECEIPT_FILENAME).is_file()
+    ack_receipt = _read_optional_json_object(capture_root / JOB_ACK_RECEIPT_FILENAME) or None
     provider_ops_status = _provider_ops_status(capture_root)
     if ledger:
         status = str(ledger.get("status") or "unknown").strip() or "unknown"
@@ -1207,6 +1209,10 @@ def read_handoff_job_status(
         "last_failed_at": ledger.get("last_failed_at") if ledger else None,
         "last_error_type": ledger.get("last_error_type") if ledger else None,
         "last_error": ledger.get("last_error") if ledger else None,
+        "terminal_code": ledger.get("terminal_code") if ledger else None,
+        "terminal_receipt_present": terminal_receipt_present,
+        "ack_receipt": ack_receipt,
+        # An authority ending is terminal: a redelivery is acknowledged, not retried.
         "retry_expected_on_redelivery": status in _JOB_RETRYABLE_STATUSES,
         "completed_redelivery_is_noop": status == "completed",
         "attempt_history": _attempt_history(ledger),
