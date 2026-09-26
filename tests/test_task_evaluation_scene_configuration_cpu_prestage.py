@@ -165,7 +165,9 @@ def test_prestage_reservation_measures_the_work_dir_before_it_is_cleared(tmp_pat
 
     monkeypatch.setattr(disk, "reserve_control_plane_disk", recording)
     _prepare(tmp_path, _fake_entrypoint(["stage-1", "stage-2", "stage-3", "stage-4"]))
-    assert calls[0]["workspace"] == tmp_path / "workspace"
+    # Admission reads the work dir's filesystem; the workspace itself is bound
+    # after the initial clear (see the leftovers test below).
+    assert calls[0]["target_root"] == tmp_path / "workspace"
     assert calls[0]["workload"] == "cpu_prestage"
     history = tmp_path / "reservations" / "history" / "cpu_prestage.jsonl"
     [sample] = [json.loads(line) for line in history.read_text().splitlines()]
@@ -174,6 +176,23 @@ def test_prestage_reservation_measures_the_work_dir_before_it_is_cleared(tmp_pat
     # sample is the peak taken before that cleanup, not the empty work dir.
     assert sorted(p.name for p in (tmp_path / "workspace").iterdir()) == [".cpu-prestage.lock"]
     assert sample["observed_bytes"] > 0
+
+
+def test_prestage_measures_from_the_cleared_work_dir_not_from_crash_leftovers(tmp_path):
+    observed = {}
+    for name in ("clean", "leftovers"):
+        root = tmp_path / name
+        (root / "workspace").mkdir(parents=True)
+        if name == "leftovers":
+            # A crashed attempt's archive, larger than everything this prefix writes.
+            (root / "workspace" / (BUNDLE + ".zip")).write_bytes(b"l" * 512 * 1024)
+        _prepare(root, _fake_entrypoint(["stage-1", "stage-2", "stage-3", "stage-4"]))
+        history = root / "reservations" / "history" / "cpu_prestage.jsonl"
+        [sample] = [json.loads(line) for line in history.read_text().splitlines()]
+        observed[name] = sample["observed_bytes"]
+    # The baseline is the work dir after the initial clear, so leftovers neither
+    # shrink the sample nor hide it.
+    assert observed["clean"] > 0 and observed["leftovers"] == observed["clean"]
 
 
 def test_prefix_drops_host_raw_credentials_and_preserves_scoped_secret_files(tmp_path):

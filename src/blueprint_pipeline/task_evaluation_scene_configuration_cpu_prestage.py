@@ -353,10 +353,13 @@ def prepare_stage_prefix_before_gpu(
     with _exclusive_work_dir(work):
         with reserve_control_plane_disk("cpu_prestage", target_root=work, expected_bytes=peak_bytes,
                                         reservation_root=reservation_root or DEFAULT_RESERVATION_ROOT,
-                                        disk_usage=disk_usage, workspace=work,
+                                        disk_usage=disk_usage,
                                         workload="cpu_prestage") as reservation:
             # The exclusive lock proves no cooperating producer owns leftovers.
             _clear_work_products(work)
+            # Measure from the cleared work dir, so a crashed attempt's leftovers
+            # neither shrink nor hide this prefix's footprint.
+            reservation.bind_workspace(work)
             _extract(bundle, root)
             _require((root / ENTRYPOINT).is_file(), "entrypoint_missing")
             output.mkdir(mode=0o750)
