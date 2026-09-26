@@ -1,6 +1,8 @@
 # G1 runtime dependency review — 2026-09-26
 
-Status: **approved by owner Nijel Hunt on 2026-09-26 for all 14 exact new name/version pairs, internal `development_only` simulation only**. These 16 CPython 3.12 Linux x86_64 wheels are pinned for the Unitree G1 run. The exact `numpy==2.3.1` and `protobuf==6.33.6` versions already had unexpired owner approvals in `docs/runtime_dependency_license_policy.json`; the other 14 are now recorded there. The previous paid preflight verified that `pinocchio` and `google.protobuf` were absent before any model download or episode. The selected `pin==4.1.0` release depends on the CMeel/Coal closure below. No external model weights are included in these wheels.
+Status: **approved by owner Nijel Hunt on 2026-09-26 for all 14 exact new name/version pairs, internal `development_only` simulation only**. These 17 CPython 3.12 Linux x86_64 wheels are pinned for the Unitree G1 run. The exact `numpy==2.3.1`, `protobuf==6.33.6`, and `onnxruntime-gpu==1.24.4` versions already had unexpired owner approvals in `docs/runtime_dependency_license_policy.json`; the other 14 are recorded there. The previous paid preflight verified that `pinocchio` and `google.protobuf` were absent before any model download or episode. The selected `pin==4.1.0` release depends on the CMeel/Coal closure below. No external model weights are included in these wheels.
+
+The 2026-09-26 paid G1 attempt then built the scene but stopped before any policy query because SONIC found only CPU ONNX Runtime providers. The G1 packet now replaces the base packet's CPU-only `onnxruntime==1.22.1` wheel with the previously approved GPU wheel, and the provider checks `CUDAExecutionProvider` before checkpoint download.
 
 The repository policy in `docs/runtime_dependency_license_policy.json` requires owner review for each new exact name/version before runtime use. This table records PyPI wheel bytes and their embedded license metadata. PyPI release metadata and the embedded wheel licenses should be inspected before approval. The Qhull wheel carries its own notice and redistribution conditions; the immutable wheel retains that notice.
 
@@ -20,6 +22,7 @@ The repository policy in `docs/runtime_dependency_license_policy.json` requires 
 | `libcoal` | `3.0.3` | `BSD-3-Clause` | `28fa1473d80728994f7275b8c8797858959ab77a643f07f2222feb6de155bb8e` |
 | `libpinocchio` | `4.1.0` | `BSD-3-Clause` | `dbcc81e9e302ae57700775af0b86ed353effe47b5d33fa12aff9936ac33c0ae0` |
 | `numpy` | `2.3.1` | `BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0` | `e7cbf5a5eafd8d230a3ce356d892512185230e4781a361229bd902ff403bc660` |
+| `onnxruntime-gpu` | `1.24.4` | `MIT` | `eb0e38f0c1ef3b76ae0081c8e51eed20dd8925aa916f0fc6f9b8b17d05610e99` |
 | `pin` | `4.1.0` | `BSD-3-Clause` | `5971393ade6d5f0577bb18e532b294a2d8ea1a7bd552d0bbc3b064368c8777ab` |
 | `protobuf` | `6.33.6` | `BSD-3-Clause` | `77179e006c476e69bf8e8ce866640091ec42e1beb80b213c3900006ecfba6901` |
 

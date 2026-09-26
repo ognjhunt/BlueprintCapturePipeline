@@ -11,6 +11,16 @@ from __future__ import annotations
 
 
 G1_RUNTIME_DEPENDENCY_WHEELS = (
+    # SONIC runs its encoder and decoder on CUDA. The task-neutral packet's
+    # CPU-only onnxruntime wheel is replaced for this G1 profile.
+    {
+        "filename": "onnxruntime_gpu-1.24.4-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+        "package": "onnxruntime-gpu",
+        "version": "1.24.4",
+        "license_spdx": "MIT",
+        "pure_python": False,
+        "wheel_tag": "cp312-cp312-manylinux_2_28_x86_64",
+    },
     {
         "filename": "cmeel-0.61.0-py3-none-any.whl",
         "package": "cmeel",

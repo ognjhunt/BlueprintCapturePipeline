@@ -28,6 +28,7 @@ from .native_g1_policy_server_supervisor import (
     _source_revision,
     start_g1_policy_server,
 )
+from .native_g1_sonic_cuda_runtime import require_sonic_cuda_runtime
 from .native_g1_shared_scene_episode import run_g1_built_scene_policy_episode
 
 
@@ -83,6 +84,7 @@ def build_pinned_g1_sonic_bridge(
     _source_revision(source_path, expected_parent="action_provider")
     root = source_path.resolve().parents[1]
     _require_official_module_closure(root)
+    require_sonic_cuda_runtime()
     if str(root) not in sys.path:
         sys.path.insert(0, str(root))
     module = importlib.import_module("action_provider.action_provider_sonic")
