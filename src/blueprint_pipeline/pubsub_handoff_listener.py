@@ -616,8 +616,9 @@ _PROVIDER_STATUS_FIELD_NAMES = {
 AUTHORITY_ENDING_CODES = frozenset({"consent_expired", "source_revoked"})
 # The same token boundary on both sides: no identifier character or hyphen may
 # touch the typed refusal, so "...:source_revokedX" is not "source_revoked".
+# Group 1 is the refusing operation (e.g. scene-sponsorship), group 2 the code.
 _AUTHORITY_ENDING_RE = re.compile(
-    r"(?<![A-Za-z0-9_-])website_control_[a-z0-9-]+_http_409:("
+    r"(?<![A-Za-z0-9_-])website_control_([a-z0-9-]+)_http_409:("
     + "|".join(re.escape(code) for code in sorted(AUTHORITY_ENDING_CODES))
     + r")(?![A-Za-z0-9_-])"
 )
@@ -824,12 +825,18 @@ def _claim_job_lease(
         if status == TERMINAL_AUTHORITY_STATUS:
             ended_by = _string(ledger.get("terminal_payload_sha256"))
             # Without both digests nothing proves this is a new request, so the
-            # ending stands (a redelivery must not re-run an ended scene).
-            if not payload_sha256 or not ended_by or ended_by == payload_sha256:
+            # ending stands (a redelivery must not re-run an ended scene). Any
+            # payload that ended before, not only the latest, stays ended.
+            if (
+                not payload_sha256
+                or not ended_by
+                or payload_sha256 in _ended_payload_digests(ledger)
+            ):
                 return "terminal", dict(ledger)
             # A different message is a new request for this capture, for example
             # after the website renewed consent. Keep the ending in the history.
             history.append({
+                "attempt_number": int(ledger.get("attempt_count") or 0) + 1,
                 "status": "reopened_after_terminal_authority",
                 "reopened_at": _iso_at(current_time),
                 "terminal_code": ledger.get("terminal_code"),
@@ -1008,6 +1015,19 @@ def _attempt_history(ledger: Mapping[str, Any]) -> list[dict[str, Any]]:
     if not isinstance(history, list):
         return []
     return [dict(item) for item in history if isinstance(item, Mapping)]
+
+
+def _ended_payload_digests(ledger: Mapping[str, Any]) -> set[str]:
+    """Every payload digest whose run this capture ended for lost authority."""
+
+    digests = {_string(ledger.get("terminal_payload_sha256"))}
+    for row in _attempt_history(ledger):
+        if row.get("status") == TERMINAL_AUTHORITY_STATUS:
+            digests.add(_string(row.get("payload_sha256")))
+        elif row.get("status") == "reopened_after_terminal_authority":
+            digests.add(_string(row.get("terminal_payload_sha256")))
+    digests.discard("")
+    return digests
 
 
 def _output_commit(
@@ -1271,6 +1291,7 @@ def read_handoff_job_status(
         "last_error_type": ledger.get("last_error_type") if ledger else None,
         "last_error": ledger.get("last_error") if ledger else None,
         "terminal_code": ledger.get("terminal_code") if ledger else None,
+        "terminal_operation": ledger.get("terminal_operation") if ledger else None,
         "terminal_receipt_present": terminal_receipt_present,
         "ack_receipt": ack_receipt,
         # An authority ending is terminal: a redelivery is acknowledged, not retried.
@@ -1351,13 +1372,13 @@ def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
 
 
-def authority_ending_code(exc: BaseException) -> str | None:
-    """The WebApp authority code that permanently ended this job, if any.
+def authority_ending(exc: BaseException) -> tuple[str, str] | None:
+    """(refusing operation, code) of the WebApp refusal that ended this job, if any.
 
     Walks the exception chain (__cause__, then __context__), at most 16 links, and
-    guards against cycles. Only exact typed WebApp 409 codes qualify. The code may
+    guards against cycles. Only exact typed WebApp 409 codes qualify. The token may
     sit inside a longer message, because a StageError joins its blockers, but it
-    must be a whole token.
+    must be whole.
     """
 
     seen: set[int] = set()
@@ -1372,9 +1393,16 @@ def authority_ending_code(exc: BaseException) -> str | None:
             text = ""
         match = _AUTHORITY_ENDING_RE.search(text)
         if match:
-            return match.group(1)
+            return match.group(1), match.group(2)
         current = current.__cause__ if current.__cause__ is not None else current.__context__
     return None
+
+
+def authority_ending_code(exc: BaseException) -> str | None:
+    """The WebApp authority code that permanently ended this job, if any."""
+
+    ending = authority_ending(exc)
+    return ending[1] if ending else None
 
 
 def payload_sha256(payload: bytes | str | Mapping[str, Any]) -> str:
@@ -1404,6 +1432,7 @@ def _write_terminal_receipt(
         "schema_version": JOB_TERMINAL_RECEIPT_SCHEMA_VERSION,
         "status": "authority_ended",
         "code": ledger.get("terminal_code"),
+        "terminal_operation": ledger.get("terminal_operation"),
         "bucket": handoff.bucket,
         "scene_id": handoff.scene_id,
         "capture_id": handoff.capture_id,
@@ -1443,6 +1472,7 @@ def _finish_terminal_authority_ending(
     handoff: HandoffMessage,
     owner: str,
     token: str,
+    operation: str,
     code: str,
     error: BaseException,
     stage: str,
@@ -1465,6 +1495,7 @@ def _finish_terminal_authority_ending(
         update={
             "status": TERMINAL_AUTHORITY_STATUS,
             "terminal_code": code,
+            "terminal_operation": operation,
             "terminal_at": ended_at,
             "updated_at": ended_at,
             "terminal_payload_sha256": payload_digest,
@@ -1480,6 +1511,8 @@ def _finish_terminal_authority_ending(
                     "started_at": attempt_started_at,
                     "ended_at": ended_at,
                     "code": code,
+                    "operation": operation,
+                    "payload_sha256": payload_digest,
                 },
             ],
         },
@@ -1749,15 +1782,17 @@ def process_handoff_payload(
                 }
             )
     except Exception as exc:
-        code = authority_ending_code(exc)
-        if code is not None:
+        ending = authority_ending(exc)
+        if ending is not None:
             # Retrying cannot revive an ended authority. Finish the job as
             # terminal and return, so the message is acknowledged.
+            operation, code = ending
             return _finish_terminal_authority_ending(
                 capture_root,
                 handoff=handoff,
                 owner=owner,
                 token=token,
+                operation=operation,
                 code=code,
                 error=exc,
                 stage=failure_stage,

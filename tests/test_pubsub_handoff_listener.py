@@ -1667,18 +1667,20 @@ def test_consent_expired_finishes_the_job_as_terminal_and_is_acknowledged(tmp_pa
     assert ledger["last_error_type"] == "PipelineError"
     assert ledger["last_error"] == "website scene failed"
     assert ledger["lease_owner"] is None and ledger["lease_expires_at"] is None
+    assert ledger["terminal_operation"] == "scene-sponsorship"
     assert ledger["attempt_history"] == [{
         "attempt_number": 1, "status": "terminal_authority_ended", "stage": "run_e2e",
         "started_at": ledger["last_attempt_started_at"], "ended_at": ledger["terminal_at"],
-        "code": "consent_expired",
+        "code": "consent_expired", "operation": "scene-sponsorship",
+        "payload_sha256": sha256(PAYLOAD_BYTES).hexdigest(),
     }]
     receipt = _read(_capture_root(tmp_path) / "pipeline_job_terminal_receipt.json")
     assert receipt["status"] == "authority_ended" and receipt["receipt_digest"].startswith("sha256:")
     assert receipt["receipt_digest"] == canonical_digest(receipt, digest_field="receipt_digest")
     assert {key: value for key, value in receipt.items() if key != "receipt_digest"} == {
         "schema_version": "pipeline_job_terminal_receipt.v1", "status": "authority_ended",
-        "code": "consent_expired", "bucket": "capture-bucket", "scene_id": "scene-1",
-        "capture_id": "capture-1", "attempt_count": 1,
+        "code": "consent_expired", "terminal_operation": "scene-sponsorship",
+        "bucket": "capture-bucket", "scene_id": "scene-1", "capture_id": "capture-1", "attempt_count": 1,
         "payload_sha256": sha256(PAYLOAD_BYTES).hexdigest(), "ended_at": ledger["terminal_at"],
         "error": "website scene failed",
     }
@@ -1755,6 +1757,7 @@ def test_a_new_payload_reopens_a_terminal_capture(tmp_path, monkeypatch):
     assert [row["status"] for row in ledger["attempt_history"]] == [
         "terminal_authority_ended", "reopened_after_terminal_authority", "completed"]
     reopened = ledger["attempt_history"][1]
+    assert reopened["attempt_number"] == 2
     assert reopened["terminal_code"] == "consent_expired"
     assert reopened["terminal_payload_sha256"] == sha256(PAYLOAD_BYTES).hexdigest()
     assert reopened["payload_sha256"] == sha256(reopened_payload).hexdigest()
@@ -1977,6 +1980,7 @@ def test_status_reports_an_authority_ending_and_its_acknowledgement(tmp_path, mo
 
     assert status["status"] == "terminal_authority_ended"
     assert status["terminal_code"] == "consent_expired"
+    assert status["terminal_operation"] == "scene-sponsorship"
     assert status["terminal_receipt_present"] is True
     assert status["ack_receipt"]["disposition"] == "terminal_authority_ended"
     assert status["ack_receipt"]["acknowledgement_count"] == 1
@@ -2120,3 +2124,35 @@ def test_ack_receipts_record_only_known_dispositions(tmp_path, monkeypatch, capl
         assert not receipt.exists()
         assert any(record.getMessage() == "pubsub_handoff.ack_receipt_skipped_disposition_unrecognized"
                    for record in caplog.records)
+
+
+def test_authority_ending_keeps_the_refusing_operation():
+    held = StageError("website_scene_preparation", "website_control_prepared-scene_http_409:source_revoked")
+    assert listener_module.authority_ending(held) == ("prepared-scene", "source_revoked")
+    assert listener_module.authority_ending(ValueError("website_control_task-context_http_409:task_brief_missing")) is None
+
+
+def _second_payload() -> bytes:
+    return json.dumps({
+        **PAYLOAD,
+        "pipeline_handoff_uri": f"gs://capture-bucket/{_CAPTURE_PREFIX}/pipeline_handoff.json",
+    }).encode("utf-8")
+
+
+def test_a_payload_that_already_ended_stays_ended_after_a_later_ending(tmp_path, monkeypatch):
+    for ack_id, payload in (("p1", PAYLOAD_BYTES), ("p2", _second_payload())):
+        subscriber = FakeSubscriber([_received(ack_id=ack_id, data=payload)])
+        _install_fake_pubsub(monkeypatch, subscriber,
+                             storage_client=FakeStorageClient(_website_bundle_blobs()), run_e2e=_expired)
+        assert _pull(tmp_path) == 1
+    ledger_path = _capture_root(tmp_path) / "pipeline_job_ledger.json"
+    ended_twice = _read(ledger_path)
+    assert ended_twice["terminal_payload_sha256"] == sha256(_second_payload()).hexdigest()
+
+    redelivered = FakeSubscriber([_received(ack_id="p1-again", data=PAYLOAD_BYTES, delivery_attempt=2)])
+    results = _install_fake_pubsub(monkeypatch, redelivered, storage_client=_ListingForbidden(),
+                                   run_e2e=lambda **_: pytest.fail("an ended payload must not run again"))
+
+    assert _pull(tmp_path) == 1
+    assert results[0]["status"] == "skipped_terminal_authority_ended"
+    assert _read(ledger_path) == ended_twice
