@@ -1999,6 +1999,32 @@ def _require_terminal_controls_quiescence(*, wait_seconds: float = 0) -> None:
             subprocess.run(['systemctl', 'reset-failed', unit], check=True, capture_output=True, text=True, timeout=10)
 
 
+def _terminal_controls_artifact_store_env(release: Path) -> list[str]:
+    """Give the deploy helper the same scoped artifact store as its worker."""
+    unit = release / 'deploy/systemd/blueprint-task-evaluation-configured-controls-progression.service'
+    required = (
+        'BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_ACCESS_KEY_ID_FILE',
+        'BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_SECRET_ACCESS_KEY_FILE',
+        'BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_BUCKET_FILE',
+        'BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_ENDPOINT_URL_FILE',
+        'BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_REGION_FILE',
+        'BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_EXPECTED_BUCKET',
+    )
+    values: dict[str, str] = {}
+    for line in unit.read_text().splitlines():
+        if not line.startswith('Environment=') or '=' not in line[len('Environment='):]:
+            continue
+        name, value = line[len('Environment='):].split('=', 1)
+        if name in required:
+            if name in values or not value or (name.endswith('_FILE') and
+                    not value.startswith('/etc/blueprint/provider-secrets/')):
+                raise ControlPlaneDeployError('deploy_terminal_controls_artifact_store_env_invalid')
+            values[name] = value
+    if set(values) != set(required):
+        raise ControlPlaneDeployError('deploy_terminal_controls_artifact_store_env_missing')
+    return [f'--setenv={name}={values[name]}' for name in required]
+
+
 def _prepare_terminal_controls_adoptions(*, release_path: str | Path, commit: str,
                                         config_path: str | Path) -> dict[str, Any]:
     """Use the registry's required quiescence before restoring its worker.
@@ -2013,6 +2039,7 @@ def _prepare_terminal_controls_adoptions(*, release_path: str | Path, commit: st
         '--property=Type=exec', '--property=User=blueprint', '--property=Group=blueprint',
         '--property=EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env',
         '--property=EnvironmentFile=-/etc/blueprint/task-evaluation-scene-progression.env',
+        *_terminal_controls_artifact_store_env(release),
         '/usr/bin/env', f'PYTHONPATH={release / "src"}', 'PYTHONDONTWRITEBYTECODE=1',
         'GIT_CONFIG_COUNT=1', 'GIT_CONFIG_KEY_0=safe.directory', f'GIT_CONFIG_VALUE_0={release}',
         sys.executable, '-m', 'blueprint_pipeline.task_evaluation_terminal_controls_deploy',

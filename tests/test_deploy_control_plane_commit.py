@@ -40,6 +40,9 @@ _SPEC.loader.exec_module(deploy)
 def test_terminal_controls_are_prepared_as_service_user_before_workers_resume(monkeypatch, tmp_path):
     calls = []
     commit = 'a'*40
+    unit = tmp_path/'deploy/systemd/blueprint-task-evaluation-configured-controls-progression.service'
+    unit.parent.mkdir(parents=True)
+    unit.write_bytes((REPO_ROOT/'deploy/systemd/blueprint-task-evaluation-configured-controls-progression.service').read_bytes())
     def run(argv, **kwargs):
         calls.append(argv)
         if argv[:2] == ['systemctl', 'show']:
@@ -48,6 +51,7 @@ def test_terminal_controls_are_prepared_as_service_user_before_workers_resume(mo
             return SimpleNamespace(stdout='')
         assert argv[0] == 'systemd-run' and '--wait' in argv
         assert '--property=User=blueprint' in argv
+        assert sum(arg.startswith('--setenv=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_') for arg in argv) == 6
         assert f'PYTHONPATH={tmp_path / "src"}' in argv
         assert 'blueprint_pipeline.task_evaluation_terminal_controls_deploy' in argv
         assert kwargs['timeout'] >= 1800  # retained validation exceeded ten minutes on the host
@@ -57,6 +61,14 @@ def test_terminal_controls_are_prepared_as_service_user_before_workers_resume(mo
     result = deploy._prepare_terminal_controls_adoptions(release_path=tmp_path, commit=commit, config_path=tmp_path/'config.json')
     assert result['status'] == 'prepared'
     assert sum(argv[:2] == ['systemctl','reset-failed'] for argv in calls) == 3
+
+
+def test_terminal_controls_deploy_refuses_missing_scoped_artifact_store(tmp_path):
+    unit = tmp_path/'deploy/systemd/blueprint-task-evaluation-configured-controls-progression.service'
+    unit.parent.mkdir(parents=True)
+    unit.write_text('[Service]\nEnvironment=BLUEPRINT_WAM_OBJECT_STORE_BUCKET_FILE=/tmp/legacy\n')
+    with pytest.raises(deploy.ControlPlaneDeployError, match='artifact_store_env_missing'):
+        deploy._terminal_controls_artifact_store_env(tmp_path)
 
 
 @pytest.mark.parametrize('active,pid', [('active','0'), ('inactive','12'), ('activating','0')])
