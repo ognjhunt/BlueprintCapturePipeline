@@ -2228,3 +2228,25 @@ def test_a_stale_receipt_under_the_live_name_is_set_aside_and_rewritten(tmp_path
     kept = sorted(capture_root.glob("pipeline_job_terminal_receipt.superseded-*.json"))
     assert [path.read_bytes() for path in kept].count(stale) == 2  # both copies of P1's receipt are kept
     assert _status(tmp_path)["terminal_receipt_present"] is True
+
+
+def test_a_terminal_ending_whose_lease_was_lost_is_not_acknowledged(tmp_path, monkeypatch):
+    ledger_path = _capture_root(tmp_path) / "pipeline_job_ledger.json"
+
+    def lease_lost_then_expired(**_kwargs):
+        # Another worker recovered this job's lease while this one was still running.
+        listener_module.write_json(ledger_path, {**_read(ledger_path), "lease_owner": "other-worker",
+                                                 "lease_token": "other-token"})
+        _expired()
+
+    subscriber = FakeSubscriber([_received(ack_id="a1", data=PAYLOAD_BYTES)])
+    _install_fake_pubsub(monkeypatch, subscriber, storage_client=FakeStorageClient(_website_bundle_blobs()),
+                         run_e2e=lease_lost_then_expired)
+
+    assert _pull(tmp_path) == 0
+    assert subscriber.acknowledged == []
+    ledger = _read(ledger_path)
+    assert (ledger["status"], ledger["lease_owner"]) == ("processing", "other-worker")
+    assert "terminal_code" not in ledger
+    assert not _live_terminal_receipt(tmp_path).exists()
+    assert not (_capture_root(tmp_path) / "pipeline_job_ack_receipt.json").exists()
