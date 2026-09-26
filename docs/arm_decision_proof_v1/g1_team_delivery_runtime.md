@@ -23,6 +23,15 @@ no network. Raw stderr stays quarantined. Its receipt proves one synthetic G1
 wire exchange and process teardown; it does not prove model rights, paid-resource
 admission, site-task scoring, or public redistribution.
 
+`native_g1_team_runtime_session.open_g1_team_runtime_session` gives a worker
+one mode-independent client after the matching synthetic wire probe. The
+reviewed HTTPS origin and secret reference, pinned local OCI image, or
+SHA-verified staged artifact remain mode-specific operator bindings. Closing
+the session retains the child teardown receipt for process modes; the endpoint
+credential is never written to a receipt. The same returned client can enter
+`run_g1_team_scored_scene_episode` for the retained scene and independent
+scorer. This is a worker seam, not an intake-to-paid-run controller.
+
 The existing G1 shared-scene episode seam accepts a qualified client for either
 the book objective or movement objective and writes development-only scores and
 traces. A future controller must bind the selected registered policy, its
