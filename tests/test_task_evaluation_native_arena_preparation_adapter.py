@@ -11,6 +11,7 @@ import pytest
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_native_arena_preparation_adapter import (
     TaskEvaluationNativeArenaAdapterError,
+    _verify_task_subject_binding,
     build_task_evaluation_adapter_bundle,
     build_task_evaluation_runtime_source_bundle,
     materialize_native_arena_adapter,
@@ -19,6 +20,102 @@ from blueprint_pipeline.task_evaluation_native_arena_preparation_adapter import 
 from tests.test_native_task_arena_bundle import _packet, _runtime_source_packet
 from tests.test_task_evaluation_launch_preparation_contract import request
 from tests.test_task_evaluation_configured_scene_revision import revision
+
+
+def _passive_joint_overlay_binding(tmp_path: Path) -> tuple[dict, dict, Path, dict]:
+    from pxr import Usd, UsdGeom, UsdPhysics
+
+    from blueprint_pipeline.native_task_arena_runtime import author_passive_joint_friction_overlay
+
+    source = tmp_path / "sealed-cabinet.usda"
+    stage = Usd.Stage.CreateNew(str(source))
+    cabinet = UsdGeom.Xform.Define(stage, "/Cabinet")
+    stage.SetDefaultPrim(cabinet.GetPrim())
+    body = UsdGeom.Xform.Define(stage, "/Cabinet/body")
+    UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+    anchor = UsdPhysics.FixedJoint.Define(stage, "/Cabinet/fixed_base_anchor")
+    anchor.GetBody1Rel().SetTargets([body.GetPath()])
+    joint_path = "/Cabinet/joints/middle_drawer_joint"
+    UsdPhysics.PrismaticJoint.Define(stage, joint_path)
+    stage.GetRootLayer().Save()
+
+    packet = _packet(tmp_path, scene_id="public-scene-17")
+    staged = packet / "assets/task_object.usd"
+    friction = author_passive_joint_friction_overlay(
+        source, staged, joint_prim_path=joint_path)
+    assert friction is not None
+    adaptation = {
+        "adaptation": "estimated_passive_joint_friction_overlay",
+        "fixed_base_body_prim_path": "/Cabinet/body",
+        "candidate_bytes_modified": False,
+        "derived_from_sha256": _identity(source)["digest"],
+        "passive_joint_friction": friction,
+    }
+    value = request()
+    value["task"]["kind"] = "articulated_manipulation"
+    value["task"]["strategy"] = "articulated_open_close"
+    value["task"]["subject"]["identity"] = {"id": "admitted-can", "version": "v1"}
+    value["task"]["configured_scene_revision_digest"] = "sha256:" + "a" * 64
+    configured = revision()
+    configured["revision_digest"] = value["task"]["configured_scene_revision_digest"]
+    configured["replacement"]["identity"] = value["task"]["subject"]["identity"]
+    configured["replacement"]["asset"] = _identity(source)
+
+    contract_path = packet / "native_task_runtime_contract.v1.json"
+    contract = json.loads(contract_path.read_text())
+    contract["task_kind"] = "articulated_open_close"
+    contract["task_spec"] = {
+        "manipulation_strategy": "articulated_open_close",
+        "subject_asset_id": "admitted_can",
+        "source_subject_identity": "admitted-can",
+    }
+    contract["task_subject_asset_id"] = "admitted_can"
+    contract["objects"] = [{
+        "asset_id": "admitted_can", "task_subject": True,
+        "object_type": "ARTICULATION", "sha256": _identity(staged)["digest"],
+        "articulation_adaptation": adaptation,
+    }]
+    contract_path.write_text(json.dumps(contract), encoding="utf-8")
+    receipt = json.loads((packet / "native_task_arena_packet_receipt.v1.json").read_text())
+    binding = next(row for row in receipt["source_bindings"]
+                   if row["semantic_role"] == "task_object")
+    binding.update({
+        "runtime_asset_id": "admitted_can", "source": {
+            "sha256": _identity(staged)["digest"],
+            "size_bytes": staged.stat().st_size,
+        },
+        "staged_relative_path": "assets/task_object.usd",
+        "staged_sha256": _identity(staged)["digest"],
+        "staged_size_bytes": staged.stat().st_size,
+    })
+    return value, configured, packet, receipt
+
+
+def test_adapter_accepts_only_readback_verified_passive_joint_derivation(tmp_path: Path) -> None:
+    value, configured, packet, receipt = _passive_joint_overlay_binding(tmp_path)
+    _verify_task_subject_binding(
+        request=value, configured_revision=configured,
+        packet_root=packet, packet_receipt=receipt)
+
+    wrong_source = copy.deepcopy(receipt)
+    binding = next(row for row in wrong_source["source_bindings"]
+                   if row["semantic_role"] == "task_object")
+    binding["source"]["sha256"] = "sha256:" + "0" * 64
+    with pytest.raises(TaskEvaluationNativeArenaAdapterError,
+                       match="task_subject_binding_mismatch"):
+        _verify_task_subject_binding(
+            request=value, configured_revision=configured,
+            packet_root=packet, packet_receipt=wrong_source)
+
+    contract_path = packet / "native_task_runtime_contract.v1.json"
+    contract = json.loads(contract_path.read_text())
+    contract["objects"][0]["articulation_adaptation"]["passive_joint_friction"]["static_effort_n"] = 9.0
+    contract_path.write_text(json.dumps(contract), encoding="utf-8")
+    with pytest.raises(TaskEvaluationNativeArenaAdapterError,
+                       match="task_subject_overlay_invalid"):
+        _verify_task_subject_binding(
+            request=value, configured_revision=configured,
+            packet_root=packet, packet_receipt=receipt)
 
 
 def _identity(path: Path) -> dict[str, object]:
