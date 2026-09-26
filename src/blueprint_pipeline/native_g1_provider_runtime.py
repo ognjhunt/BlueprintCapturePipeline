@@ -9,10 +9,12 @@ before this process starts, so newly installed Isaac packages are importable.
 from __future__ import annotations
 
 import argparse
+import importlib
 import importlib.util
 import json
 import os
 import threading
+import traceback
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -41,6 +43,10 @@ RESULT_FILENAME = SCHEMA + ".json"
 CAMPAIGN_FILENAME = "native_g1_development_campaign.v1.json"
 MANIPULATION = "task_success"
 MOVEMENT = "g1_navigation_goal"
+G1_RUNTIME_IMPORTS = (
+    "isaaclab_arena_g1", "pinocchio", "pink", "scipy", "qpsolvers",
+    "onnxruntime", "google.protobuf",
+)
 
 
 def _json(path: Path) -> dict[str, Any]:
@@ -50,6 +56,35 @@ def _json(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError("g1_provider_runtime_input_invalid")
     return value
+
+
+def _preflight_g1_runtime_imports(output: Path) -> dict[str, Any]:
+    """Retain the G1 import closure before policy build and model downloads."""
+
+    rows: list[dict[str, Any]] = []
+    for name in G1_RUNTIME_IMPORTS:
+        try:
+            module = importlib.import_module(name)
+            rows.append({
+                "module": name, "available": True,
+                "version": str(getattr(module, "__version__", "unreported")),
+            })
+        except Exception as exc:  # noqa: BLE001 - complete paid preflight evidence
+            rows.append({
+                "module": name, "available": False,
+                "error_type": type(exc).__name__, "error": str(exc),
+                "traceback": traceback.format_exc(),
+            })
+    result = {
+        "schema_version": "native_g1_runtime_import_preflight.v1",
+        "status": "passed" if all(row["available"] for row in rows) else "blocked",
+        "imports": rows,
+    }
+    result["receipt_digest"] = canonical_digest(result, digest_field="receipt_digest")
+    (output / "native_g1_runtime_import_preflight.v1.json").write_text(
+        json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    return result
 
 
 def _rights_paths(root: Path) -> dict[str, Path]:
@@ -265,6 +300,11 @@ def run_g1_provider_campaign(runtime_root: Path, output_dir: Path) -> dict[str, 
     try:
         with _Heartbeat(stage):
             identity = verify_g1_provider_inputs(root)
+        stage = "runtime-import-preflight"
+        with _Heartbeat(stage):
+            runtime_imports = _preflight_g1_runtime_imports(output)
+        if runtime_imports["status"] != "passed":
+            raise ValueError("g1_provider_runtime_dependency_preflight_blocked")
         stage = "policy-runtime-build"
         with _Heartbeat(stage):
             build = execute_g1_policy_runtime_build(

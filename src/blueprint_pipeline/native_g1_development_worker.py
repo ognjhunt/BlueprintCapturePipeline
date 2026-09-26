@@ -149,7 +149,8 @@ def _launch_scene(
 
 
 def _build_scene(
-    *, plan: Mapping[str, Any], bundle_root: Path, device: str
+    *, plan: Mapping[str, Any], bundle_root: Path, device: str,
+    dependency_receipt_path: Path,
 ) -> tuple[Any, dict[str, Any]]:
     from .native_task_arena_construction_worker import preflight_native_dependency_matrix
     from .native_task_arena_device_readback import read_native_task_arena_device_binding
@@ -157,6 +158,10 @@ def _build_scene(
     from .native_task_arena_runtime import build_native_task_arena_environment
 
     dependencies = preflight_native_dependency_matrix(robot_id="unitree_g1")
+    dependency_receipt_path.write_text(
+        json.dumps(dependencies, indent=2, sort_keys=True, allow_nan=False) + "\n",
+        encoding="utf-8",
+    )
     if dependencies.get("all_required_available") is not True:
         raise ValueError("g1_worker_dependency_preflight_failed:" + ",".join(dependencies.get("blockers") or []))
     preconstruction = prepare_native_task_arena_preconstruction(expected_device=device)
@@ -274,7 +279,8 @@ def run_g1_development_worker(
         phase = "scene_build"
         print("BLUEPRINT_G1_WORKER_PHASE:scene_build", flush=True)
         built, device_binding = _build_scene(
-            plan=plan, bundle_root=inputs["bundle_root"], device=sealed["device"]
+            plan=plan, bundle_root=inputs["bundle_root"], device=sealed["device"],
+            dependency_receipt_path=output_dir / "native_task_dependency_matrix.v1.json",
         )
         phase = "episode"
         print("BLUEPRINT_G1_WORKER_PHASE:episode", flush=True)
@@ -324,6 +330,10 @@ def run_g1_development_worker(
             ),
             "isaaclab_launch": launch,
             "device_binding": device_binding,
+            "native_dependency_matrix": (
+                json.loads((output_dir / "native_task_dependency_matrix.v1.json").read_text(encoding="utf-8"))
+                if (output_dir / "native_task_dependency_matrix.v1.json").is_file() else None
+            ),
             "supervised_episode": supervised,
             "ranking_eligible": False,
             "physical_outcome_claimed": False,

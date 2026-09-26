@@ -327,6 +327,35 @@ BASE_RUNTIME_DEPENDENCY_WHEELS = (
         "pure_python": False,
         "wheel_tag": "cp312-cp312-manylinux_2_28_x86_64",
     },
+    # The selected G1 embodiment imports Arena's WBC policy factory, which
+    # imports its ONNX session adapter at module import time. The qualified
+    # Isaac image does not promise Arena's separate runtime dependencies.
+    {
+        "filename": "onnxruntime-1.22.1-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+        "package": "onnxruntime",
+        "version": "1.22.1",
+        "license_spdx": "MIT",
+        "pure_python": False,
+        "wheel_tag": "cp312-cp312-manylinux_2_28_x86_64",
+    },
+    {
+        "filename": "coloredlogs-15.0.1-py2.py3-none-any.whl",
+        "package": "coloredlogs",
+        "version": "15.0.1",
+        "license_spdx": "MIT",
+    },
+    {
+        "filename": "humanfriendly-10.0-py2.py3-none-any.whl",
+        "package": "humanfriendly",
+        "version": "10.0",
+        "license_spdx": "MIT",
+    },
+    {
+        "filename": "flatbuffers-25.12.19-py2.py3-none-any.whl",
+        "package": "flatbuffers",
+        "version": "25.12.19",
+        "license_spdx": "Apache-2.0",
+    },
 )
 RUNTIME_DEPENDENCY_WHEELS = (
     BASE_RUNTIME_DEPENDENCY_WHEELS + TORCH_RUNTIME_DEPENDENCY_WHEELS
@@ -642,7 +671,10 @@ def materialize_native_task_runtime_source_packet(
         license_id="Apache-2.0",
         license_path="LICENSE.md",
         archive_namespace="arena",
-        prefixes=("LICENSE.md", "setup.py", "pyproject.toml", "extension.toml", "isaaclab_arena"),
+        prefixes=(
+            "LICENSE.md", "setup.py", "pyproject.toml", "extension.toml",
+            "isaaclab_arena", "isaaclab_arena_g1",
+        ),
     )
     dependency_rows, dependency_files = _runtime_dependency_rows(
         Path(dependency_wheel_dir).expanduser().resolve()

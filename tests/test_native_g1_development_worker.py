@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline import native_g1_development_worker as worker
 from blueprint_pipeline.native_g1_navigation_goal import seal_g1_navigation_goal_authority
@@ -175,6 +177,33 @@ def test_scene_failure_is_sealed_before_isaac_close_can_exit(
     assert result["status"] == "blocked"
     assert result["blocker"]["message"] == "scene_builder_refused"
     assert result["teardown"]["simulator"] == "closed"
+
+
+def test_g1_scene_dependency_preflight_retains_import_traceback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blueprint_pipeline import native_task_arena_construction_worker as construction
+
+    matrix = {
+        "schema_version": "native_task_dependency_matrix.v1",
+        "all_required_available": False,
+        "blockers": ["native_task_arena_embodiment_scope_failed:unitree_g1"],
+        "embodiment_scope": {
+            "error_type": "ModuleNotFoundError",
+            "error": "No module named 'isaaclab_arena_g1'",
+            "traceback": "exact import stack",
+        },
+    }
+    monkeypatch.setattr(
+        construction, "preflight_native_dependency_matrix", lambda **_kwargs: matrix
+    )
+    path = tmp_path / "native_task_dependency_matrix.v1.json"
+    with pytest.raises(ValueError, match="g1_worker_dependency_preflight_failed"):
+        worker._build_scene(
+            plan={}, bundle_root=tmp_path, device="cuda:0",
+            dependency_receipt_path=path,
+        )
+    assert json.loads(path.read_text(encoding="utf-8")) == matrix
 
 
 def test_preflight_failure_still_writes_terminal_receipt(tmp_path: Path, monkeypatch) -> None:

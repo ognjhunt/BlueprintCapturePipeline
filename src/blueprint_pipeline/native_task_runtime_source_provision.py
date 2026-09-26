@@ -82,6 +82,11 @@ TOP_LEVEL_PACKAGES = (
     "isaaclab_teleop",
     "isaaclab_visualizers",
     "isaaclab_arena",
+    "isaaclab_arena_g1",
+    "onnxruntime",
+    "coloredlogs",
+    "humanfriendly",
+    "flatbuffers",
 )
 RUNTIME_IMPORT_PROBES = (
     {"module": "warp", "expected_version": "1.13.0"},

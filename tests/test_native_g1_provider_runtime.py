@@ -7,6 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from blueprint_pipeline import native_g1_provider_runtime as provider_runtime
+
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.native_g1_development_pair import EPISODE_FILENAME, TRACE_FILENAME
 from blueprint_pipeline.native_g1_development_selection import TEMPLATE_FIELDS
@@ -102,3 +104,26 @@ def test_runner_refuses_unpinned_non_isaac_environment(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="g1_provider_runtime_environment_invalid"):
         run_g1_provider_campaign(tmp_path, output)
     assert list(output.iterdir()) == []
+
+
+def test_runtime_import_preflight_retains_all_failures_before_model_staging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output = tmp_path / "output"
+    output.mkdir()
+
+    def probe(name: str) -> SimpleNamespace:
+        if name in {"isaaclab_arena_g1", "onnxruntime"}:
+            raise ModuleNotFoundError(name)
+        return SimpleNamespace(__version__="available")
+
+    monkeypatch.setattr(provider_runtime.importlib, "import_module", probe)
+    result = provider_runtime._preflight_g1_runtime_imports(output)
+    assert result["status"] == "blocked"
+    assert [row["module"] for row in result["imports"] if not row["available"]] == [
+        "isaaclab_arena_g1", "onnxruntime",
+    ]
+    assert json.loads(
+        (output / "native_g1_runtime_import_preflight.v1.json").read_text(encoding="utf-8")
+    ) == result
+    assert result["receipt_digest"] == canonical_digest(result, digest_field="receipt_digest")
