@@ -44,9 +44,11 @@ Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/Bluepr
 Environment=BLUEPRINT_NATIVE_G1_TEAM_CAMPAIGN_REGISTRY_PATH=/var/lib/blueprint/task-evaluation-inputs/g1-team-campaign-registry.json
 Environment=BLUEPRINT_NATIVE_G1_TEAM_CAMPAIGN_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/native-g1-team-campaigns
 Environment=BLUEPRINT_NATIVE_G1_TEAM_CAMPAIGN_WORK_ROOT=/var/lib/blueprint/pipeline-control-plane/native-g1-team-campaign-work
-# The operator enables paid dispatch only after the exact runtime dependency
-# review and first dry-run bundle have been checked on the deployed release.
-Environment=BLUEPRINT_NATIVE_G1_TEAM_CAMPAIGN_EXECUTE=false
+# Owner-approved development requests enter through authenticated, signed intake.
+# The dispatcher still builds a no-spend bundle and runs allocator dry admission
+# before its one-use paid start; the allocator owns all three guarded GPU slots,
+# budget, watchdog, provider teardown, and exact-release verification.
+Environment=BLUEPRINT_NATIVE_G1_TEAM_CAMPAIGN_EXECUTE=true
 Environment=BLUEPRINT_NATIVE_G1_TEAM_CAMPAIGN_MACHINE_AVOIDLIST=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs/vast_machine_avoidlist.json
 # The sealed runtime archive is served from the US-East artifact bucket. Prefer
 # a nearby GPU when otherwise comparable offers pass Isaac and budget filters.

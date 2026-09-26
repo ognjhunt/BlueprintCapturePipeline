@@ -266,6 +266,32 @@ def dispatch_one_g1_team_campaign(
                 final["dispatch_digest"] = digest(final, digest_field="dispatch_digest")
                 write_exclusive(final_path, final)
                 return final
+            preparation_path = work / intent_id / "preparation.json"
+            if preparation_path.exists() or preparation_path.is_symlink():
+                preparation = _read(preparation_path, field="preparation_digest")
+                if preparation.get("intent_digest") != intent["intent_digest"]:
+                    raise ValueError("g1_team_campaign_preparation_intent_mismatch")
+                if preparation.get("implementation_commit") != implementation_commit:
+                    final = {
+                        "schema_version": FINAL_SCHEMA,
+                        "status": "superseded_before_provider_by_release",
+                        "intent_id": intent_id,
+                        "intent_digest": intent["intent_digest"],
+                        "preparation_digest": preparation["preparation_digest"],
+                        "prepared_implementation_commit": preparation["implementation_commit"],
+                        "implementation_commit": implementation_commit,
+                        "provider_mutation_performed": False,
+                        "four_episodes_verified": False,
+                        "global_provider_zero_verified": False,
+                        "official_billing_reconciled": False,
+                        "private_review_delivered": False,
+                        "blockers": ["g1_team_campaign_prepared_on_prior_release"],
+                        "claim_ceiling": "development_only",
+                    }
+                    final["dispatch_digest"] = digest(final, digest_field="dispatch_digest")
+                    final_path.parent.mkdir(mode=0o750, exist_ok=True)
+                    write_exclusive(final_path, final)
+                    return final
             return _dispatch_one_locked(
                 intent_path=intent_path, registry_path=Path(registry_path),
                 work_root=work, implementation_commit=implementation_commit,
@@ -303,6 +329,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0 if result["status"] in {
         "no_pending_intent", "dry_run_ready",
         "authorization_expired_before_provider",
+        "superseded_before_provider_by_release",
         "controller_completed_pending_billing_and_private_delivery",
     } else 2
 

@@ -119,3 +119,26 @@ def test_expired_authority_is_sealed_without_provider_or_bundle_work(tmp_path, m
     assert not calls
     assert not list(args["work_root"].glob("g1-*/bundle"))
     assert dispatch_one_g1_team_campaign(**args, execute=True, allocator_runner=runner)["status"] == "no_pending_intent"
+
+
+def test_prior_release_dry_bundle_is_preserved_and_superseded_without_paid_start(tmp_path, monkeypatch):
+    args = _ready(tmp_path, monkeypatch)
+    commands = []
+    def runner(command, log_path):
+        commands.append(command)
+        _write_adapter(command, {"status": "dry_run_ready"})
+        return 0
+    dry = dispatch_one_g1_team_campaign(**args, allocator_runner=runner)
+    assert dry["status"] == "dry_run_ready"
+    old_bundle = next(args["work_root"].glob("g1-*/bundle/native_g1_provider_bundle.v1.json"))
+    old_bytes = old_bundle.read_bytes()
+    args["implementation_commit"] = "b" * 40
+    superseded = dispatch_one_g1_team_campaign(**args, execute=True, allocator_runner=runner)
+    assert superseded["status"] == "superseded_before_provider_by_release"
+    assert superseded["provider_mutation_performed"] is False
+    assert superseded["prepared_implementation_commit"] == COMMIT
+    assert superseded["implementation_commit"] == "b" * 40
+    assert old_bundle.read_bytes() == old_bytes
+    assert len(commands) == 1
+    assert not list(args["work_root"].glob("g1-*/execution_started.json"))
+    assert dispatch_one_g1_team_campaign(**args, execute=True, allocator_runner=runner)["status"] == "no_pending_intent"
