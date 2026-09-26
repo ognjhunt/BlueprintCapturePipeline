@@ -19,7 +19,9 @@ A workspace is retirable only when every check passes, cheapest first:
 5. no live storage pin names it, lies inside it or contains it;
 6. no pending or processing queue message names the scene;
 7. no live process holds it;
-8. no open scene intent can still resolve a website source registered inside it;
+8. no scene intent that can still run resolves a website source registered inside it
+   (an expired intent stays open for a grace period, since its owner may extend it,
+   and a revoked or expired intent is held by any attempt it has not settled);
 9. every file is recoverable: it verifies against its Firebase Storage object
    (size, and MD5 or, without MD5, CRC32C) or it is archived. Raw capture bytes
    are never archived, so a raw file that does not verify keeps the workspace.
@@ -75,6 +77,9 @@ DEFAULT_MINIMUM_IDLE_SECONDS = 48 * 3600
 DEFAULT_ACK_RETENTION_SECONDS = 7 * 24 * 3600
 #: A website sponsorship lasts at most 24 hours, so an intent claims its registration well within this.
 DEFAULT_ORPHAN_REGISTRATION_SECONDS = 72 * 3600
+#: An owner may extend an expired intent's execution window, and scene progression would then resolve
+#: its website source again, so an expired intent stays open this long after its effective expiry.
+DEFAULT_EXPIRED_GRACE_SECONDS = 7 * 24 * 3600
 
 # Production roots. The operator door runs the command line with only the control-plane
 # environment file loaded, so every default must already name the production tree.
@@ -192,6 +197,7 @@ class RetentionContext:
     minimum_idle_seconds: int = DEFAULT_MINIMUM_IDLE_SECONDS
     ack_retention_seconds: int = DEFAULT_ACK_RETENTION_SECONDS
     orphan_registration_seconds: int = DEFAULT_ORPHAN_REGISTRATION_SECONDS
+    expired_grace_seconds: int = DEFAULT_EXPIRED_GRACE_SECONDS
 
 
 @dataclass(frozen=True)
@@ -202,7 +208,8 @@ class ReferenceIndex:
     binding_root: Path | None = None
     #: {"path", "request_digest", "reference_paths", "registered_at_epoch"}
     registrations: tuple[Mapping[str, Any], ...] = ()
-    #: {"intent_id", "request_digest", "finished": "completed" | "revoked" | "expired" | None}
+    #: {"intent_id", "request_digest", "finished": "completed" | "revoked" | "expired" | None,
+    #:  "open_attempts": attempt ids a revoked or expired intent still holds live}
     intents: tuple[Mapping[str, Any], ...] = ()
 
 
@@ -464,11 +471,14 @@ def _registrations(binding_root: Path | None) -> tuple[Mapping[str, Any], ...]:
     return tuple(rows)
 
 
-def _intent_finished(directory: Path, intent: Mapping[str, Any], *, now: float) -> str | None:
+def _intent_finished(directory: Path, intent: Mapping[str, Any], *, now: float,
+                     expired_grace_seconds: int) -> str | None:
     """Why scene progression will never resolve this intent's source again, or None.
 
     Mirrors ``task_evaluation_scene_progression._advance_intent``: a completed
     progression, a revocation, or an elapsed (possibly extended) execution window.
+    An owner can still extend an elapsed window, so expiry counts only once the
+    grace period after it has passed too.
     """
 
     from . import task_evaluation_scene_intake as intake
@@ -482,12 +492,39 @@ def _intent_finished(directory: Path, intent: Mapping[str, Any], *, now: float) 
             return "completed"
     if (directory / "revoked.json").exists():
         return "revoked"
-    if now >= intake.effective_execution_expiry(directory, intent):
+    if now >= intake.effective_execution_expiry(directory, intent) + expired_grace_seconds:
         return "expired"
     return None
 
 
-def _intents(intent_root: Path | None, *, now: float) -> tuple[Mapping[str, Any], ...]:
+def _open_attempts(directory: Path) -> tuple[str, ...]:
+    """Attempt rows scene progression still treats as live: no validated cancellation or settlement.
+
+    Read the way progression reads them (``attempts/*.json`` under the intent, each
+    digest-checked, terminal only through ``validated_cancellation``); anything
+    unreadable raises and so protects every scene.
+    """
+
+    from . import task_evaluation_scene_intake as intake
+    from .task_evaluation_retained_controls_evidence import validated_cancellation
+
+    attempts = directory / "attempts"
+    try:
+        mode = os.lstat(attempts).st_mode
+    except FileNotFoundError:
+        return ()
+    if not stat.S_ISDIR(mode):
+        raise _Unreadable
+    live = []
+    for path in sorted(attempts.glob("*.json")):
+        row = intake._read(path, "attempt_digest")
+        if validated_cancellation(directory, row) is None:
+            live.append(str(row.get("attempt_id") or path.stem))
+    return tuple(live)
+
+
+def _intents(intent_root: Path | None, *, now: float,
+             expired_grace_seconds: int = DEFAULT_EXPIRED_GRACE_SECONDS) -> tuple[Mapping[str, Any], ...]:
     from . import task_evaluation_scene_intake as intake
 
     if intent_root is None:
@@ -513,10 +550,16 @@ def _intents(intent_root: Path | None, *, now: float) -> tuple[Mapping[str, Any]
             request = intent.get("request")
             if intent.get("intent_id") != name or not isinstance(request, Mapping):
                 raise _Unreadable
+            finished = _intent_finished(directory, intent, now=now, expired_grace_seconds=expired_grace_seconds)
             rows.append({
                 "intent_id": name,
                 "request_digest": cross_runtime_canonical_digest(request),
-                "finished": _intent_finished(directory, intent, now=now),
+                "finished": finished,
+                # A completed intent's attempts ended with it: progression completes only after
+                # joining the attempt's terminal result, and only retired predecessors are ever
+                # settled, so its own row stays a spend hold forever. A revoked or expired intent
+                # still holds whatever attempt it has not cancelled or settled.
+                "open_attempts": _open_attempts(directory) if finished in {"revoked", "expired"} else (),
             })
         except _Unreadable:
             raise
@@ -530,7 +573,7 @@ def build_reference_index(context: RetentionContext, *, now: float) -> Reference
 
     try:
         registrations = _registrations(context.binding_root)
-        intents = _intents(context.intent_root, now=float(now))
+        intents = _intents(context.intent_root, now=float(now), expired_grace_seconds=context.expired_grace_seconds)
     except _Unreadable:
         return ReferenceIndex(readable=False, binding_root=context.binding_root)
     return ReferenceIndex(readable=True, binding_root=context.binding_root,
@@ -586,6 +629,8 @@ def _reference_reasons(
             continue
         claimed = [row for row in index.intents if row["request_digest"] == registration["request_digest"]]
         reasons.extend(f"open_scene_intent:{row['intent_id']}" for row in claimed if row["finished"] is None)
+        reasons.extend(f"open_scene_attempt:{row['intent_id']}/{attempt}"
+                       for row in claimed for attempt in row.get("open_attempts", ()))
         if not claimed and now - float(registration["registered_at_epoch"]) < context.orphan_registration_seconds:
             reasons.append("unclaimed_source_registration")
     for capture_id in capture_ids:
@@ -1523,6 +1568,7 @@ __all__ = [
     "CloudInventory",
     "CloudObject",
     "DEFAULT_ACK_RETENTION_SECONDS",
+    "DEFAULT_EXPIRED_GRACE_SECONDS",
     "DEFAULT_INTENT_ROOT",
     "DEFAULT_MINIMUM_IDLE_SECONDS",
     "DEFAULT_ORPHAN_REGISTRATION_SECONDS",

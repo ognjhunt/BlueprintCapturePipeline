@@ -409,7 +409,8 @@ def test_an_old_registration_no_intent_claimed_does_not_hold_the_scene(tmp_path)
 def test_retired_once_the_intent_is_completed_revoked_or_expired(tmp_path, finished):
     scene, cloud = _scene(tmp_path)
     now = time.time() + 60 * HOUR
-    request = _request(now - 1 if finished == "expired" else now + DAY)
+    # An expired intent counts as finished only after the grace period in which it may be extended.
+    request = _request(now - retention.DEFAULT_EXPIRED_GRACE_SECONDS - 1 if finished == "expired" else now + DAY)
     _register(tmp_path, scene, request)
     _intent(tmp_path, request, finished=None if finished == "expired" else finished)
 
@@ -417,6 +418,104 @@ def test_retired_once_the_intent_is_completed_revoked_or_expired(tmp_path, finis
         context=_context(tmp_path), bucket=BUCKET, scene_id=SCENE, now=now, cloud=cloud, process_checker=_idle)
 
     assert plan["status"] == "retirable", plan["reasons"]
+
+
+def _attempt(tmp_path: Path, intent_id: str, *, cancelled: bool = False) -> None:
+    """A reserved attempt row, as reserve_scene_attempt seals it; optionally cancelled before it started."""
+
+    directory = tmp_path / "intents" / intent_id
+    intent = json.loads((directory / "intent.json").read_text(encoding="utf-8"))
+    row = intake._seal({"schema_version": "task_evaluation_scene_attempt.v1", "intent_id": intent_id,
+                        "intent_digest": intent["intent_digest"], "attempt_id": "attempt-1",
+                        "source_commit": "a" * 40, "runtime_digest": "sha256:" + "d" * 64,
+                        "input_digest": "sha256:" + "e" * 64, "provider": "vast", "maximum_spend_usd": 5.0,
+                        "status": "reserved", "reserved_at_epoch": 1.0}, "attempt_digest")
+    (directory / "attempts").mkdir(exist_ok=True)
+    (directory / "attempts" / "attempt-1.json").write_text(json.dumps(row), encoding="utf-8")
+    if cancelled:
+        original = {"schema_version": "task_evaluation_launch_receipt.v1", "status": "blocked",
+                    "source_commit": "a" * 40}
+        original["receipt_digest"] = cross_runtime_canonical_digest(original, digest_field="receipt_digest")
+        cancellation = {"schema_version": "task_evaluation_unstarted_controls_cancellation.v1",
+                        "status": "cancelled_before_controls_eligibility", "attempt_id": "attempt-1",
+                        "attempt_digest": row["attempt_digest"], "intent_digest": row["intent_digest"],
+                        "maximum_spend_usd": 5.0, "provider": "vast", "original_blocked_launch_receipt": original,
+                        "downstream_execution_eligible": False, "provider_mutation_performed": False}
+        cancellation["receipt_digest"] = canonical_digest(cancellation, digest_field="receipt_digest")
+        (directory / "cancelled-unstarted-controls").mkdir(exist_ok=True)
+        (directory / "cancelled-unstarted-controls" / "attempt-1.json").write_text(json.dumps(cancellation),
+                                                                                     encoding="utf-8")
+
+
+def test_an_expired_intent_stays_open_while_it_could_still_be_extended(tmp_path):
+    """An owner may extend an expired intent's window, and it would then resolve its source again."""
+
+    scene, cloud = _scene(tmp_path)
+    now = time.time() + 60 * HOUR
+    request = _request(now - DAY)
+    _register(tmp_path, scene, request)
+    intent_id = _intent(tmp_path, request)
+
+    def plan(**overrides):
+        return retention.plan_scene_workspace_retirement(
+            context=_context(tmp_path, **overrides), bucket=BUCKET, scene_id=SCENE, now=now, cloud=cloud,
+            process_checker=_idle)
+
+    assert plan()["reasons"] == [f"open_scene_intent:{intent_id}"]
+    assert plan(expired_grace_seconds=DAY - 1)["status"] == "retirable"
+
+
+@pytest.mark.parametrize("finished", ["revoked", "expired"])
+def test_a_live_attempt_keeps_a_revoked_or_expired_intents_workspace(tmp_path, finished):
+    scene, cloud = _scene(tmp_path)
+    now = time.time() + 60 * HOUR
+    request = _request(now - 8 * DAY if finished == "expired" else now + DAY)
+    _register(tmp_path, scene, request)
+    intent_id = _intent(tmp_path, request, finished="revoked" if finished == "revoked" else None)
+    _attempt(tmp_path, intent_id)
+
+    def plan():
+        return retention.plan_scene_workspace_retirement(
+            context=_context(tmp_path), bucket=BUCKET, scene_id=SCENE, now=now, cloud=cloud, process_checker=_idle)
+
+    assert plan()["reasons"] == [f"open_scene_attempt:{intent_id}/attempt-1"]
+    _attempt(tmp_path, intent_id, cancelled=True)  # progression's own terminal proof for the row
+    assert plan()["status"] == "retirable"
+
+
+def test_a_completed_intents_attempt_rows_do_not_hold_its_workspace(tmp_path):
+    """Only retired predecessors are ever settled; a completed run's own row stays a spend hold forever.
+
+    Progression completes an intent only after joining its attempt's terminal result, and a
+    website attempt copies every workspace input into its own submission when it materializes.
+    """
+
+    scene, cloud = _scene(tmp_path)
+    now = time.time() + 60 * HOUR
+    request = _request(now + DAY)
+    _register(tmp_path, scene, request)
+    intent_id = _intent(tmp_path, request, finished="completed")
+    _attempt(tmp_path, intent_id)
+
+    plan = retention.plan_scene_workspace_retirement(
+        context=_context(tmp_path), bucket=BUCKET, scene_id=SCENE, now=now, cloud=cloud, process_checker=_idle)
+
+    assert plan["status"] == "retirable", plan["reasons"]
+
+
+def test_an_attempt_that_cannot_be_read_protects_every_scene(tmp_path):
+    scene, cloud = _scene(tmp_path)
+    now = time.time() + 60 * HOUR
+    request = _request(now - 8 * DAY)
+    _register(tmp_path, scene, request)
+    intent_id = _intent(tmp_path, request)
+    (tmp_path / "intents" / intent_id / "attempts").mkdir()
+    (tmp_path / "intents" / intent_id / "attempts" / "attempt-1.json").write_text("{}", encoding="utf-8")
+
+    plan = retention.plan_scene_workspace_retirement(
+        context=_context(tmp_path), bucket=BUCKET, scene_id=SCENE, now=now, cloud=cloud, process_checker=_idle)
+
+    assert plan["reasons"] == ["reference_index_unreadable"]
 
 
 def test_a_registration_elsewhere_keeps_the_scene_it_names(tmp_path):
