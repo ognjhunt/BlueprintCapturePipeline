@@ -222,8 +222,6 @@ def _verify_task_subject_binding(
             declared_runtime_subject_id is not None
             and declared_runtime_subject_id != runtime_subject_id
         )
-        or binding.get("staged_sha256") != asset["digest"]
-        or binding.get("staged_size_bytes") != asset["size_bytes"]
     ):
         raise TaskEvaluationNativeArenaAdapterError(
             "task_evaluation_adapter_task_subject_binding_mismatch"
@@ -257,6 +255,64 @@ def _verify_task_subject_binding(
         for row in packet_objects or []
         if isinstance(row, Mapping) and row.get("task_subject") is True
     ]
+    if len(matching_objects) != 1:
+        raise TaskEvaluationNativeArenaAdapterError(
+            "task_evaluation_adapter_task_subject_binding_mismatch"
+        )
+    runtime_object = matching_objects[0]
+    staged_digest = binding.get("staged_sha256")
+    staged_size = binding.get("staged_size_bytes")
+    source_binding = binding.get("source")
+    adaptation = runtime_object.get("articulation_adaptation")
+    if staged_digest != asset["digest"] or staged_size != asset["size_bytes"]:
+        # Only the compiler's declared passive-friction overlay may differ
+        # from the sealed configured asset. The packet verifier has already
+        # checked the staged bytes against this binding; reopen the joint so
+        # the declaration cannot paper over a missing or altered PhysX value.
+        friction = (
+            adaptation.get("passive_joint_friction")
+            if isinstance(adaptation, Mapping)
+            else None
+        )
+        if (
+            task["kind"] != "articulated_manipulation"
+            or not isinstance(adaptation, Mapping)
+            or adaptation.get("adaptation") != "estimated_passive_joint_friction_overlay"
+            or adaptation.get("candidate_bytes_modified") is not False
+            or adaptation.get("derived_from_sha256") != asset["digest"]
+            or not isinstance(adaptation.get("fixed_base_body_prim_path"), str)
+            or not isinstance(friction, Mapping)
+            or friction.get("source_sha256") != asset["digest"]
+            or not isinstance(source_binding, Mapping)
+            or source_binding.get("sha256") != staged_digest
+            or source_binding.get("size_bytes") != staged_size
+            or runtime_object.get("object_type") != "ARTICULATION"
+            or runtime_object.get("sha256") != staged_digest
+        ):
+            raise TaskEvaluationNativeArenaAdapterError(
+                "task_evaluation_adapter_task_subject_binding_mismatch"
+            )
+        from .native_task_arena_runtime import (
+            verify_grounded_articulation,
+            verify_passive_joint_friction_overlay,
+        )
+
+        staged_path = packet_root / str(binding.get("staged_relative_path") or "")
+        try:
+            verify_passive_joint_friction_overlay(staged_path, friction)
+            grounding = verify_grounded_articulation(staged_path)
+        except (OSError, ValueError, KeyError, TypeError, RuntimeError) as exc:
+            raise TaskEvaluationNativeArenaAdapterError(
+                "task_evaluation_adapter_task_subject_overlay_invalid"
+            ) from exc
+        if grounding["fixed_base_body_prim_path"] != adaptation["fixed_base_body_prim_path"]:
+            raise TaskEvaluationNativeArenaAdapterError(
+                "task_evaluation_adapter_task_subject_overlay_invalid"
+            )
+    elif isinstance(adaptation, Mapping) and adaptation.get("adaptation") == "estimated_passive_joint_friction_overlay":
+        raise TaskEvaluationNativeArenaAdapterError(
+            "task_evaluation_adapter_task_subject_binding_mismatch"
+        )
     if (
         runtime_contract.get("task_kind") != expected_packet_kind
         or runtime_contract.get("task_subject_asset_id")
@@ -267,9 +323,8 @@ def _verify_task_subject_binding(
             and task_spec.get("source_subject_identity") != source_subject_id
         )
         or packet_strategy != task["strategy"]
-        or len(matching_objects) != 1
-        or matching_objects[0].get("asset_id") != expected_runtime_subject_id
-        or matching_objects[0].get("sha256") != asset["digest"]
+        or runtime_object.get("asset_id") != expected_runtime_subject_id
+        or runtime_object.get("sha256") != staged_digest
     ):
         raise TaskEvaluationNativeArenaAdapterError(
             "task_evaluation_adapter_task_subject_binding_mismatch"
