@@ -67,8 +67,14 @@ trees it created.
 Samples are appended to `<ledger>/history/<role>.jsonl` (`root:blueprint`
 `2770`, installed and verified by the deploy), one line per release with the
 workload, outcome, reserved bytes and duration, and compacted to the newest 200
-lines under the ledger lock. A run that exits on an exception is recorded as
-`failed` and never shapes admission.
+lines under the ledger lock. Every sample names how its job ended, and only
+`completed` samples shape admission. A job that raised is recorded as `failed`,
+whether it left a reservation's context on the exception or a worker caught the
+exception and released with that outcome (preparation, compilation,
+activation). A job that returned a blocked result before finishing its work is
+recorded as `blocked`: a preparation paused on its children or on capacity, a
+canary run that returned a `blocked…` status, a scene factory that stopped short
+of publication, or a replay that was refused.
 
 Once a role has at least 10 completed samples among its newest 50, its footprint
 is the nearest-rank p95 of those samples × 1.25, clamped to
