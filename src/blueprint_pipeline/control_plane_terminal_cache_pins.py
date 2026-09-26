@@ -58,32 +58,34 @@ def _closed_proof(pin, evidence_roots, *, hot_window_seconds=DEFAULT_HOT_WINDOW_
     owner, kind = pin["owner_id"], pin["kind"]
     if kind != "activation":
         return None
+    evidence_names = (owner, owner + "-launch") if owner.endswith("-activation-auto") else (owner,)
     for root in evidence_roots:
         root = Path(root)
-        directory = root / owner
-        if (now is not None and directory.is_dir() and not directory.is_symlink()
-                and not (root / (owner + POINTER_SUFFIX)).exists()):
-            receipt = _terminal_receipt(directory)
-            if receipt is None or _has_result_registry(directory):
+        for evidence_name in evidence_names:
+            directory = root / evidence_name
+            if (now is not None and directory.is_dir() and not directory.is_symlink()
+                    and not (root / (evidence_name + POINTER_SUFFIX)).exists()):
+                receipt = _terminal_receipt(directory)
+                if receipt is None or _has_result_registry(directory):
+                    continue
+                latest, size, count = _tree_snapshot(directory)
+                if now - latest < hot_window_seconds:
+                    continue
+                return {"kind": "sealed_cold_run", "path": str(directory), "terminal_receipt": receipt,
+                        "latest_mtime_epoch": latest, "size_bytes": size, "file_count": count}
+            path = root / (evidence_name + ".offloaded.v1.json")
+            value = _read(path)
+            if (value is None or directory.exists()
+                    or value.get("schema_version") != "control_plane_evidence_offload_pointer.v1"
+                    or value.get("pointer_digest") != canonical_digest(value, digest_field="pointer_digest")
+                    or value.get("status") != "offloaded" or value.get("directory") != evidence_name
+                    or value.get("evidence_deleted") is not False
+                    or not str(value.get("uri", "")).startswith("s3://blueprint-task-evaluation-artifacts-prod/")
+                    or value.get("terminal_receipt") not in {"dispatch_receipt.json", "launch_receipt.json", "abandoned_idle"}
+                    or type(value.get("size_bytes")) is not int or value["size_bytes"] <= 0):
                 continue
-            latest, size, count = _tree_snapshot(directory)
-            if now - latest < hot_window_seconds:
-                continue
-            return {"kind": "sealed_cold_run", "path": str(directory), "terminal_receipt": receipt,
-                    "latest_mtime_epoch": latest, "size_bytes": size, "file_count": count}
-        path = root / (owner + ".offloaded.v1.json")
-        value = _read(path)
-        if (value is None or (root / owner).exists()
-                or value.get("schema_version") != "control_plane_evidence_offload_pointer.v1"
-                or value.get("pointer_digest") != canonical_digest(value, digest_field="pointer_digest")
-                or value.get("status") != "offloaded" or value.get("directory") != owner
-                or value.get("evidence_deleted") is not False
-                or not str(value.get("uri", "")).startswith("s3://blueprint-task-evaluation-artifacts-prod/")
-                or value.get("terminal_receipt") not in {"dispatch_receipt.json", "launch_receipt.json", "abandoned_idle"}
-                or type(value.get("size_bytes")) is not int or value["size_bytes"] <= 0):
-            continue
-        return {"kind": "archived_run", "path": str(path), "pointer_digest": value["pointer_digest"],
-                "terminal_receipt": value["terminal_receipt"], "archive_digest": value["digest"]}
+            return {"kind": "archived_run", "path": str(path), "pointer_digest": value["pointer_digest"],
+                    "terminal_receipt": value["terminal_receipt"], "archive_digest": value["digest"]}
     return None
 
 

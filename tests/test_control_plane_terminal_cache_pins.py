@@ -40,6 +40,32 @@ def test_archived_run_releases_dependency_pins_without_removing_evidence_or_byte
     assert not reconcile_terminal_cache_pins(**args, apply=True)["released"]
 
 
+def test_archived_website_launch_releases_its_activation_pin(tmp_path):
+    owner = "website-example-20260920t204229z-activation-auto"
+    cache = tmp_path / "cache" / owner
+    cache.mkdir(parents=True)
+    (cache / "payload.bin").write_bytes(b"reproducible input")
+    pins = tmp_path / "storage-pins"
+    write_storage_pin(pins_root=pins, kind="activation", owner_id=owner,
+                      paths=[cache], now=lambda: 0)
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    launch_id = owner + "-launch"
+    pointer = {"schema_version": "control_plane_evidence_offload_pointer.v1",
+               "status": "offloaded", "directory": launch_id, "evidence_deleted": False,
+               "terminal_receipt": "launch_receipt.json", "size_bytes": 1024,
+               "digest": "sha256:" + "a" * 64,
+               "uri": "s3://blueprint-task-evaluation-artifacts-prod/retained/evidence.tar"}
+    pointer["pointer_digest"] = canonical_digest(pointer, digest_field="pointer_digest")
+    (evidence / (launch_id + ".offloaded.v1.json")).write_text(json.dumps(pointer))
+    args = dict(pins_root=pins, queue_roots=[tmp_path / "queue"], evidence_roots=[evidence],
+                now=30_000, reference_checker=lambda _: False,
+                classifier=lambda *args, **kwargs: None)
+    assert [row["owner_id"] for row in reconcile_terminal_cache_pins(**args)["candidates"]] == [owner]
+    assert len(reconcile_terminal_cache_pins(**args, apply=True)["released"]) == 1
+    assert cache.exists()
+
+
 @pytest.mark.parametrize("reason", ["queue", "process", "tampered", "restored"])
 def test_archived_run_pin_stays_when_reference_or_evidence_is_unsafe(tmp_path, reason):
     args, path = setup_case(tmp_path)
