@@ -1674,9 +1674,16 @@ def test_post_allocator_failure_is_not_labeled_preprovider_or_retried(
     assert (queue / "blocked" / pending.name).is_file()
 
 
+@pytest.mark.parametrize("status,outcome", [
+    ("awaiting_official_billing", "completed"),
+    # A run that returns blocked stopped before its work; it must not shape admission.
+    ("blocked_without_provider_allocation", "blocked"),
+])
 def test_canary_reservation_measures_its_own_dispatch_directory(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    status: str,
+    outcome: str,
 ) -> None:
     from types import SimpleNamespace
 
@@ -1721,8 +1728,8 @@ def test_canary_reservation_measures_its_own_dispatch_directory(
     def writes_run_outputs(**kwargs):
         output = Path(kwargs["output_root"])
         output.mkdir(parents=True, exist_ok=True)
-        (output / "runtime.bin").write_bytes(b"r" * 200_000)
-        return {"status": "blocked_without_provider_allocation", "allocator_invoked": False}
+        (output / "runtime.bin").write_bytes(b"r" * 50_000)
+        return {"status": status, "allocator_invoked": False}
 
     monkeypatch.setattr(dispatcher, "reserve_control_plane_disk", recording)
     monkeypatch.setattr(dispatcher, "dispatch_policy_canary_activation", writes_run_outputs)
@@ -1744,8 +1751,8 @@ def test_canary_reservation_measures_its_own_dispatch_directory(
     assert calls[0]["workload"] == "policy_canary"
     history = tmp_path / "reservations" / "history" / "policy_canary_dispatch.jsonl"
     [sample] = [json.loads(line) for line in history.read_text().splitlines()]
-    assert sample["workload"] == "policy_canary" and sample["outcome"] == "completed"
-    assert sample["observed_bytes"] >= 200_000
+    assert sample["workload"] == "policy_canary" and sample["outcome"] == outcome
+    assert sample["observed_bytes"] >= 50_000
 
 
 def test_paid_queue_waits_for_setup_without_invoking_dispatcher(tmp_path: Path) -> None:

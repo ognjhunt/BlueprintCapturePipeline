@@ -2340,7 +2340,7 @@ def process_policy_canary_dispatch_queue(
                 if disk_reservation_root is not None
                 else contextlib.nullcontext()
             )
-            with reservation:
+            with reservation as held:
                 result = dispatch_policy_canary_activation(
                     activation_result_path=activation_path,
                     execution_setup_path=setup_path,
@@ -2354,6 +2354,10 @@ def process_policy_canary_dispatch_queue(
                     billing_audit_root=billing_audit_root,
                     access=access,
                 )
+                if held is not None and str((result or {}).get("status") or "").startswith("blocked"):
+                    # A run that returned blocked stopped before its work, so its
+                    # footprint sample must not shape admission.
+                    held.release(outcome="blocked")
         except (
             TaskEvaluationPolicyCanaryDispatchError,
             ControlPlaneDiskBudgetError,

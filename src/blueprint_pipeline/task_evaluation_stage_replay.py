@@ -177,6 +177,16 @@ def _bind_replay_workspace(run_root: Path) -> None:
         bind(run_root)
 
 
+# Reports of a replay that stopped before its stage's work: its footprint sample
+# is recorded as blocked and never shapes admission.
+_BLOCKED_REPLAY_STATUSES = frozenset({"paid_stage_not_replayed", "job_refused", "refused", "worker_refused"})
+
+
+def _replay_blocked(report: Mapping[str, Any]) -> bool:
+    status = str(report.get("status") or "")
+    return status in _BLOCKED_REPLAY_STATUSES or "blocked" in status
+
+
 def _reserved_replay(function):
     @wraps(function)
     def run(*, report_admission_refusal=False, **kwargs):
@@ -203,6 +213,8 @@ def _reserved_replay(function):
             stack.enter_context(file_digest_scope())
             stack.callback(_ACTIVE_RESERVATION.reset, _ACTIVE_RESERVATION.set(reservation))
             report = function(**kwargs)
+            if _replay_blocked(report):
+                reservation.release(outcome="blocked")
             report["disk_reservation"] = reservation.receipt()
             if report.get("report_path"):
                 _write_report(Path(report["report_path"]).parent, report)
