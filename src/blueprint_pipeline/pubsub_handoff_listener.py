@@ -590,10 +590,12 @@ _PROVIDER_STATUS_FIELD_NAMES = {
 # source. Other 409 codes (task_brief_missing, idempotency_conflict, ...) can be
 # fixed by a person, so they stay retryable.
 AUTHORITY_ENDING_CODES = frozenset({"consent_expired", "source_revoked"})
+# The same token boundary on both sides: no identifier character or hyphen may
+# touch the typed refusal, so "...:source_revokedX" is not "source_revoked".
 _AUTHORITY_ENDING_RE = re.compile(
     r"(?<![A-Za-z0-9_-])website_control_[a-z0-9-]+_http_409:("
     + "|".join(re.escape(code) for code in sorted(AUTHORITY_ENDING_CODES))
-    + r")(?![a-z0-9_])"
+    + r")(?![A-Za-z0-9_-])"
 )
 _AUTHORITY_ENDING_CHAIN_LIMIT = 16
 

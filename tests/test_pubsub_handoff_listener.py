@@ -1464,9 +1464,21 @@ def test_authority_ending_code_walks_the_exception_chain(code):
     "website_control_scene-sponsorship_http_409:consent_expired_soon",
     "consent_expired",
     "not_website_control_scene-sponsorship_http_409:consent_expired",
+    "website_control_scene-sponsorship_http_409:source_revokedX",
+    "website_control_scene-sponsorship_http_409:source_revoked-x",
+    "website_control_scene-sponsorship_http_409:consent_expiredZ",
 ])
 def test_other_failures_are_not_authority_endings(message):
     assert listener_module.authority_ending_code(ValueError(message)) is None
+
+
+@pytest.mark.parametrize("message,code", [
+    ("website_control_prepared-scene_http_409:source_revoked,task_brief_missing", "source_revoked"),
+    ("held (website_control_task-context_http_409:consent_expired)", "consent_expired"),
+    ("website_control_task-context_http_409:consent_expired: request refused", "consent_expired"),
+])
+def test_authority_endings_are_found_between_separators(message, code):
+    assert listener_module.authority_ending_code(StageError("website_scene_preparation", message)) == code
 
 
 def test_authority_ending_code_follows_implicit_context_and_stops_on_cycles():
