@@ -2,37 +2,55 @@
 # Move the control plane's bulk roots onto a resizable block volume and bind-mount
 # them back at their original paths.
 #
-# Why: the control-plane root disk filled four times because run evidence, caches
-# and scratch shared one 154 GB disk with the host's state.  Bulk bytes belong on a
-# volume that can grow online; state, queues and ledgers stay on the root disk so a
-# cache flood can never starve them.  Bind mounts keep every recorded path and every
-# unit's ReadWritePaths valid, so nothing else changes.
+# Why: the control-plane root disk filled because run evidence, caches, scratch,
+# scene workspaces and the handoff spool shared one disk with the host's state.
+# Bulk bytes belong on a volume that can grow online; state, queues and ledgers
+# stay on the root disk so a cache flood can never starve them.  Bind mounts keep
+# every recorded path and every unit's ReadWritePaths valid, so nothing else
+# changes.
 #
 # Plan by default.  --apply requires the acknowledgement and root, stops the worker
-# units for the duration of one rsync (hardlinks across roots are preserved because
-# all roots move in a single invocation), verifies the copy, swaps each root for a
-# bind mount recorded in /etc/fstab, and only then removes the originals.
+# units for the duration of the copy (one rsync per base directory, so hardlinks
+# between roots are preserved), verifies the copy, swaps each root for a bind
+# mount recorded in /etc/fstab, and only then removes the originals.
 set -euo pipefail
 
 ACK_REQUIRED="move-work-roots-to-volume"
 MOUNT_DEFAULT="/mnt/blueprint-work"
 STATE_ROOT_DEFAULT="/var/lib/blueprint"
 
-# Bulk roots by storage class: cache, evidence_cold and scratch.  Never queues,
-# ledgers, spend guard, intents or the control-plane manifest.
+# Bulk roots, relative to --state-root: every cache, evidence_cold and scratch
+# root, the handoff spool and native run work.  Never queues, ledgers, spend
+# guard, intents or the control-plane manifest.  tests/test_mount_work_volume_script.py
+# ties this list to control_plane_storage_roots.STORAGE_ROOTS.
+#
+# task-evaluation-inputs is ONE root on purpose.  Its stores hardlink into each
+# other (prepared references into compiled episodes, runtime prerequisites into
+# runtime trees), and link(2) fails with EXDEV across mount points even on one
+# filesystem, so a bind per store turns every one of those links into a copy.
 ROOTS=(
-  task-evaluation-inputs/prepared-references
-  task-evaluation-inputs/compiled-episodes
-  task-evaluation-inputs/sam31-preparations
-  task-evaluation-inputs/launch-activations
-  task-evaluation-inputs/render-probes
+  task-evaluation-inputs                                # one tree: its stores hardlink into each other
+  pubsub-handoffs                                       # scene workspaces and the handoff spool
+  production-gpu-artifacts
   pipeline-control-plane/task-evaluation-launch-runs
   pipeline-control-plane/task-evaluation-policy-canaries
+  pipeline-control-plane/capture-reconstruction-runs
+  pipeline-control-plane/capture-reconstruction-derived
   pipeline-control-plane/episode-interpretation-backfills
+  pipeline-control-plane/policy-canary-preprovider-audits
   pipeline-control-plane/scene-configuration-diagnostics
+  pipeline-control-plane/result-artifact-cache
+  pipeline-control-plane/profile-install-staging
+  pipeline-control-plane/policy-canary-presubmission
+  pipeline-control-plane/native-g1-team-campaign-work
   pipeline-control-plane/engineering
   pipeline-control-plane/render-probes
+  pipeline-control-plane/diagnostic-checkouts
+  pipeline-control-plane/release-builds
 )
+
+# Roots outside --state-root, each bound to the same path under the mount.
+ABSOLUTE_ROOTS=(/workspace)                              # bound to ${MOUNT}/workspace
 
 # Units that write under the moved roots.  Intake stays up: it writes queues only.
 WORKER_UNITS=(
@@ -49,6 +67,11 @@ WORKER_UNITS=(
   blueprint-task-evaluation-configured-controls-progression.path
   blueprint-task-evaluation-terminal-resource-release.path
   blueprint-control-plane-storage-gc.timer
+  blueprint-pubsub-handoff-listener.timer
+  blueprint-task-evaluation-scene-progression.timer
+  blueprint-capture-reconstruction-dispatcher.path
+  blueprint-capture-reconstruction-dispatcher.timer
+  blueprint-agent-stage-replay.timer
   blueprint-task-evaluation-launch-preparation.service
   blueprint-task-evaluation-sam31-preparation-execution.service
   blueprint-task-evaluation-episode-compilation.service
@@ -60,6 +83,9 @@ WORKER_UNITS=(
   blueprint-task-evaluation-configured-controls-progression.service
   blueprint-task-evaluation-terminal-resource-release.service
   blueprint-control-plane-storage-gc.service
+  blueprint-pubsub-handoff-listener.service
+  blueprint-task-evaluation-scene-progression.service
+  blueprint-capture-reconstruction-dispatcher.service
 )
 
 usage() {
@@ -97,6 +123,18 @@ done
 HOST_STATE="${ROOT_PREFIX}${STATE_ROOT}"
 HOST_MOUNT="${ROOT_PREFIX}${MOUNT}"
 
+# Every root as its host path, its path relative to the mount (the same path
+# relative to its base directory), and that base directory.
+ROOT_HOST=()
+ROOT_VREL=()
+ROOT_BASE=()
+for rel in "${ROOTS[@]}"; do
+  ROOT_HOST+=("${STATE_ROOT}/${rel}"); ROOT_VREL+=("${rel}"); ROOT_BASE+=("${HOST_STATE}")
+done
+for abs in "${ABSOLUTE_ROOTS[@]}"; do
+  ROOT_HOST+=("${abs}"); ROOT_VREL+=("${abs#/}"); ROOT_BASE+=("${ROOT_PREFIX}/")
+done
+
 size_mib() {
   if [ -d "$1" ]; then du -xsm "$1" 2>/dev/null | cut -f1; else echo 0; fi
 }
@@ -106,29 +144,60 @@ is_bound() {
   [ -z "${ROOT_PREFIX}" ] && mountpoint -q "$1" 2>/dev/null
 }
 
+mounts_below() {
+  # Mount points strictly below a host path.  Moving a root with mounts below it
+  # would copy them onto themselves and then delete through them, so such a root
+  # is blocked.  The hermetic prefix mounts nothing.
+  [ -z "${ROOT_PREFIX}" ] || return 0
+  findmnt -rn -o TARGET | awk -v prefix="$1/" 'index($0, prefix) == 1'
+}
+
 plan() {
   echo "device: ${DEVICE}"
   echo "mount:  ${HOST_MOUNT}"
   if [ -z "${ROOT_PREFIX}" ] && command -v blkid >/dev/null 2>&1; then
     echo "filesystem: $(blkid -o value -s TYPE "${DEVICE}" 2>/dev/null || echo none)"
   fi
-  local total=0
-  for rel in "${ROOTS[@]}"; do
-    local root="${HOST_STATE}/${rel}"
-    local mib
+  local total=0 i=0 root dest mib below
+  while [ "${i}" -lt "${#ROOT_HOST[@]}" ]; do
+    root="${ROOT_PREFIX}${ROOT_HOST[$i]}"
+    dest="${HOST_MOUNT}/${ROOT_VREL[$i]}"
     mib="$(size_mib "${root}")"
-    total=$((total + mib))
     if is_bound "${root}"; then
       echo "bound    ${root} (${mib} MiB)"
     elif [ -d "${root}" ]; then
-      echo "move     ${root} -> ${HOST_MOUNT}/${rel} (${mib} MiB)"
+      below="$(mounts_below "${ROOT_HOST[$i]}")"
+      if [ -n "${below}" ]; then
+        echo "blocked  ${root} (mount points below it: $(printf '%s' "${below}" | tr '\n' ' '))"
+      else
+        total=$((total + mib))
+        echo "move     ${root} -> ${dest} (${mib} MiB)"
+      fi
     else
       echo "missing  ${root}"
     fi
+    i=$((i + 1))
   done
   echo "total to move: ${total} MiB"
   echo "mode: ${MODE}; nothing changed"
 }
+
+# rsync the pending roots below each base directory in one relative invocation,
+# so hardlinks between them survive.  Arguments go before the source paths.
+rsync_pending_relative() {
+  local base i rels
+  for base in "${HOST_STATE}" "${ROOT_PREFIX}/"; do
+    rels=()
+    for i in "${PENDING[@]}"; do
+      if [ "${ROOT_BASE[$i]}" = "${base}" ]; then rels+=("${ROOT_VREL[$i]}"); fi
+    done
+    [ "${#rels[@]}" -gt 0 ] || continue
+    (cd "${base}" && rsync "${RSYNC_FLAGS[@]}" --relative "$@" "${rels[@]}" "${HOST_MOUNT}/") || return $?
+  done
+}
+
+PENDING=()
+RSYNC_FLAGS=(-a)
 
 apply() {
   [ "${ACK}" = "${ACK_REQUIRED}" ] || { echo "refusing: --ack ${ACK_REQUIRED} is required to move production roots" >&2; exit 2; }
@@ -154,44 +223,59 @@ apply() {
     mkdir -p "${HOST_MOUNT}"
   fi
 
-  local pending=()
-  for rel in "${ROOTS[@]}"; do
-    local root="${HOST_STATE}/${rel}"
-    [ -d "${root}" ] || continue
-    is_bound "${root}" && continue
-    pending+=("${rel}")
+  local i=0 below
+  while [ "${i}" -lt "${#ROOT_HOST[@]}" ]; do
+    if [ -d "${ROOT_PREFIX}${ROOT_HOST[$i]}" ] && ! is_bound "${ROOT_PREFIX}${ROOT_HOST[$i]}"; then
+      below="$(mounts_below "${ROOT_HOST[$i]}")"
+      if [ -n "${below}" ]; then
+        echo "refusing: ${ROOT_PREFIX}${ROOT_HOST[$i]} has mount points below it" >&2
+        exit 2
+      fi
+      PENDING+=("${i}")
+    fi
+    i=$((i + 1))
   done
-  if [ ${#pending[@]} -eq 0 ]; then
+  if [ ${#PENDING[@]} -eq 0 ]; then
     echo "nothing to move"
     return 0
   fi
 
-  # One rsync for every root keeps hardlinks that span roots (deduplicated run
+  # One rsync per base directory keeps hardlinks that span roots (deduplicated run
   # artifacts) as hardlinks on the volume.  GNU rsync (the production host) takes
   # the full flag set and copies all roots in one relative invocation; a minimal
   # rsync (macOS openrsync in the hermetic test) copies root by root with what it
   # supports, and the copy is verified with diff.
-  local help flags=(-a)
+  local help relative=""
   help="$(rsync --help 2>&1 || true)"
   for opt in --hard-links --acls --xattrs --numeric-ids; do
-    if printf '%s' "${help}" | grep -q -- "${opt}"; then flags+=("${opt}"); fi
+    if printf '%s' "${help}" | grep -q -- "${opt}"; then RSYNC_FLAGS+=("${opt}"); fi
   done
-  echo "copying ${#pending[@]} roots to ${HOST_MOUNT}"
   if printf '%s' "${help}" | grep -q -- "--relative" && printf '%s' "${help}" | grep -q -- "--itemize-changes"; then
-    (cd "${HOST_STATE}" && rsync "${flags[@]}" --relative "${pending[@]}" "${HOST_MOUNT}/")
+    relative="yes"
+  fi
+  echo "copying ${#PENDING[@]} roots to ${HOST_MOUNT}"
+  local root dest
+  if [ -n "${relative}" ]; then
+    rsync_pending_relative
   else
-    for rel in "${pending[@]}"; do
-      mkdir -p "${HOST_MOUNT}/${rel}"
-      rsync "${flags[@]}" "${HOST_STATE}/${rel}/" "${HOST_MOUNT}/${rel}/"
+    for i in "${PENDING[@]}"; do
+      root="${ROOT_PREFIX}${ROOT_HOST[$i]}"
+      dest="${HOST_MOUNT}/${ROOT_VREL[$i]}"
+      mkdir -p "${dest}"
+      rsync "${RSYNC_FLAGS[@]}" "${root}/" "${dest}/"
     done
   fi
   echo "verifying the copy"
-  local drift=""
-  if printf '%s' "${help}" | grep -q -- "--relative" && printf '%s' "${help}" | grep -q -- "--itemize-changes"; then
-    drift="$(cd "${HOST_STATE}" && rsync "${flags[@]}" --relative -n --itemize-changes "${pending[@]}" "${HOST_MOUNT}/" | grep -v '^\.d' || true)"
+  local drift="" itemized
+  if [ -n "${relative}" ]; then
+    itemized="$(rsync_pending_relative -n --itemize-changes)" || {
+      echo "refusing to swap: the verification rsync failed" >&2
+      exit 3
+    }
+    drift="$(printf '%s\n' "${itemized}" | grep -v -e '^\.d' -e '^$' || true)"
   else
-    for rel in "${pending[@]}"; do
-      drift="${drift}$(diff -rq "${HOST_STATE}/${rel}" "${HOST_MOUNT}/${rel}" || true)"
+    for i in "${PENDING[@]}"; do
+      drift="${drift}$(diff -rq "${ROOT_PREFIX}${ROOT_HOST[$i]}" "${HOST_MOUNT}/${ROOT_VREL[$i]}" || true)"
     done
   fi
   if [ -n "${drift}" ]; then
@@ -200,9 +284,10 @@ apply() {
     exit 3
   fi
 
-  for rel in "${pending[@]}"; do
-    local root="${HOST_STATE}/${rel}"
-    local dest="${HOST_MOUNT}/${rel}"
+  for i in "${PENDING[@]}"; do
+    local host="${ROOT_HOST[$i]}"
+    root="${ROOT_PREFIX}${host}"
+    dest="${HOST_MOUNT}/${ROOT_VREL[$i]}"
     local owner mode
     if stat -c '%u' / >/dev/null 2>&1; then
       owner="$(stat -c '%u:%g' "${root}")"
@@ -224,7 +309,7 @@ apply() {
     rm -rf "${root}.migrated-to-volume"
     echo "bound    ${root} <- ${dest}"
   done
-  [ -z "${ROOT_PREFIX}" ] && systemctl daemon-reload
+  if [ -z "${ROOT_PREFIX}" ]; then systemctl daemon-reload; fi
   echo "done"
 }
 
