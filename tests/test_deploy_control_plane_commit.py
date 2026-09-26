@@ -1519,9 +1519,15 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
         "repaired_paths": [str(tmp_path / "disk-reservations/.lock")],
     }
 
+    reserve_calls: list[dict] = []
+    observed_bytes: list[int] = []
+
     class Reservation:
         def receipt(self):
             return {"reservation_token": "deploy-test"}
+
+        def observe(self, _bytes):
+            observed_bytes.append(_bytes)
 
         def __enter__(self):
             return self
@@ -1537,7 +1543,7 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
     monkeypatch.setattr(
         deploy,
         "reserve_control_plane_disk",
-        lambda *args, **kwargs: Reservation(),
+        lambda *args, **kwargs: reserve_calls.append(kwargs) or Reservation(),
     )
     storage_pins_receipt = {
         "status": "ready",
@@ -1632,6 +1638,12 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
     assert receipt["intake_runtime"]["source_commit"] == commit
     assert receipt["disk_reservation_runtime"] == disk_runtime_receipt
     assert receipt["disk_reservation"] == {"reservation_token": "deploy-test"}
+    # The source is not a git checkout here, so the estimate falls back to the
+    # role's footprint; the staged release checkout is what the deploy observed.
+    assert receipt["disk_reservation_estimate"]["basis"] == "declared_default"
+    assert reserve_calls[0]["expected_bytes"] == receipt["disk_reservation_estimate"]["bytes"]
+    assert reserve_calls[0]["workload"] == "control_plane_release"
+    assert len(observed_bytes) == 1 and observed_bytes[0] > 0
     assert receipt["storage_pins_runtime"] == storage_pins_receipt
     assert receipt["restarted_units"][0]["unit"] == deploy.DEFAULT_RESTART_UNITS[0]
     assert receipt["installed_systemd_units"][0]["unit"] == (
@@ -1679,7 +1691,8 @@ def test_disk_reservation_runtime_repairs_root_owned_ledger_and_reports_receipt(
 
     def stat_reader(path: Path) -> SimpleNamespace:
         metadata = path.stat()
-        uid, gid = ownership[str(path)]
+        # Inodes the installer creates itself start root:root, as on the host.
+        uid, gid = ownership.get(str(path), (0, 0))
         return SimpleNamespace(st_uid=uid, st_gid=gid, st_mode=metadata.st_mode)
 
     monkeypatch.setattr(
@@ -1694,16 +1707,18 @@ def test_disk_reservation_runtime_repairs_root_owned_ledger_and_reports_receipt(
         stat_reader=stat_reader,
     )
 
+    history = root / "history"
     assert chowns == [
         (str(root), 0, blueprint_gid),
         (str(lock), 0, blueprint_gid),
+        (str(history), 0, blueprint_gid),
     ]
     assert root.stat().st_mode & 0o7777 == 0o2770
     assert lock.stat().st_mode & 0o777 == 0o660
     assert receipt == {
         "status": "ready",
         "account": "blueprint",
-        "repaired_paths": [str(root), str(lock)],
+        "repaired_paths": [str(root), str(lock), str(history)],
         "installed": [
             {
                 "kind": "directory",
@@ -1723,6 +1738,15 @@ def test_disk_reservation_runtime_repairs_root_owned_ledger_and_reports_receipt(
                 "owner_gid": blueprint_gid,
                 "mode": "0660",
             },
+            {
+                "kind": "history_directory",
+                "path": str(history),
+                "owner": "root",
+                "group": "blueprint",
+                "owner_uid": 0,
+                "owner_gid": blueprint_gid,
+                "mode": "2770",
+            },
         ],
     }
 
@@ -1732,7 +1756,89 @@ def test_disk_reservation_runtime_repairs_root_owned_ledger_and_reports_receipt(
         stat_reader=stat_reader,
     )
     assert repeated["repaired_paths"] == []
-    assert len(chowns) == 2
+    assert len(chowns) == 3
+
+
+def test_deploy_installs_the_footprint_history_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Root (deploy) and the runtime account both append footprint samples, so the
+    history directory is installed and verified like the ledger itself."""
+
+    root = tmp_path / "disk-reservations"
+    history = root / "history"
+    history.mkdir(parents=True, mode=0o700)
+    ownership: dict[str, tuple[int, int]] = {}
+    chowns: list[tuple[str, int, int]] = []
+
+    def chown(path: Path, uid: int, gid: int) -> None:
+        chowns.append((str(path), uid, gid))
+        ownership[str(path)] = (uid, gid)
+
+    def stat_reader(path: Path) -> SimpleNamespace:
+        uid, gid = ownership.get(str(path), (0, 0))
+        return SimpleNamespace(st_uid=uid, st_gid=gid, st_mode=path.stat().st_mode)
+
+    monkeypatch.setattr(deploy, "_service_account_ids", lambda account: (3101, 2401))
+
+    receipt = deploy._install_disk_reservation_runtime_prerequisites(
+        root, chown=chown, stat_reader=stat_reader
+    )
+
+    assert history.stat().st_mode & 0o7777 == 0o2770
+    assert (str(history), 0, 2401) in chowns and str(history) in receipt["repaired_paths"]
+    assert receipt["installed"][-1] == {
+        "kind": "history_directory", "path": str(history), "owner": "root", "group": "blueprint",
+        "owner_uid": 0, "owner_gid": 2401, "mode": "2770",
+    }
+    history.rmdir()
+    history.symlink_to(tmp_path, target_is_directory=True)
+    with pytest.raises(deploy.ControlPlaneDeployError, match="deploy_disk_reservation_runtime_symlink"):
+        deploy._install_disk_reservation_runtime_prerequisites(root, chown=chown, stat_reader=stat_reader)
+
+
+def _git_repo_with_commit(tmp_path: Path) -> Path:
+    source = tmp_path / "estimate-source"
+    (source / "nested").mkdir(parents=True)
+    (source / "module.py").write_bytes(b"x" * 10_000)
+    (source / "nested" / "data.json").write_bytes(b"{}\n")
+    for argv in (
+        ["git", "init", "-q", "-b", "main"],
+        ["git", "add", "-A"],
+        ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com",
+         "-c", "commit.gpgsign=false", "commit", "-q", "-m", "fixture"],
+    ):
+        subprocess.run(argv, cwd=source, check=True, capture_output=True)
+    return source
+
+
+def _head(source: Path) -> str:
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=source, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+def test_deploy_reserves_a_git_tree_estimate_not_a_flat_two_gib(tmp_path: Path) -> None:
+    source = _git_repo_with_commit(tmp_path)
+    estimate = deploy._release_footprint_estimate(source, _head(source))
+    assert estimate["basis"] == "git_tree_estimate"
+    assert estimate["bytes"] >= estimate["tree_bytes"]
+    assert estimate["bytes"] < 2 * 1024**3
+    assert (estimate["tree_bytes"], estimate["file_count"]) == (10_003, 2)
+    # Blob bytes plus a quarter for block rounding, a block per file, and 256 MiB
+    # for the index and the runtime trees staged beside the release.
+    assert estimate["bytes"] == -(-10_003 * 5 // 4) + 2 * 4096 + 256 * 1024**2
+
+
+def test_release_estimate_falls_back_to_the_role_footprint_without_a_git_tree(
+    tmp_path: Path,
+) -> None:
+    estimate = deploy._release_footprint_estimate(
+        tmp_path / "not-a-checkout", "a" * 40, reservation_root=tmp_path / "ledger"
+    )
+    assert estimate["basis"] == "declared_default"
+    assert estimate["bytes"] == 2 * 1024**3
+    assert estimate["tree_bytes"] is None and estimate["file_count"] is None
 
 
 def test_storage_pins_runtime_repairs_root_owned_directory_and_reports_receipt(
