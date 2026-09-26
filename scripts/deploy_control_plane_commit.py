@@ -796,29 +796,36 @@ def _install_disk_reservation_runtime_prerequisites(
         raise ControlPlaneDeployError(
             "deploy_disk_reservation_directory_not_absolute"
         )
-    if root.is_symlink() or lock.is_symlink() or history.is_symlink():
-        raise ControlPlaneDeployError(
-            f"deploy_disk_reservation_runtime_symlink:{root}"
-        )
+    # A refusal is a typed code: it names the ledger item (directory, lock or
+    # history), never the host path it lives at.
+    items = (("directory", root, 0o2770), ("lock", lock, 0o660), ("history", history, 0o2770))
+    for item, path, _mode in items:
+        if path.is_symlink():
+            raise ControlPlaneDeployError(
+                f"deploy_disk_reservation_runtime_symlink:{item}"
+            )
 
     repaired: list[str] = []
+    item = "directory"
     try:
         root.mkdir(parents=True, exist_ok=True, mode=0o2770)
         if root.is_symlink() or not root.is_dir():
             raise ControlPlaneDeployError(
-                f"deploy_disk_reservation_directory_invalid:{root}"
+                "deploy_disk_reservation_directory_invalid"
             )
+        item = "lock"
         lock.touch(mode=0o660, exist_ok=True)
         if lock.is_symlink() or not lock.is_file():
             raise ControlPlaneDeployError(
-                f"deploy_disk_reservation_lock_invalid:{lock}"
+                "deploy_disk_reservation_lock_invalid"
             )
+        item = "history"
         history.mkdir(exist_ok=True, mode=0o2770)
         if history.is_symlink() or not history.is_dir():
             raise ControlPlaneDeployError(
                 "deploy_disk_reservation_history_directory_invalid"
             )
-        for path, wanted_mode in ((root, 0o2770), (lock, 0o660), (history, 0o2770)):
+        for item, path, wanted_mode in items:
             metadata = stat_reader(path)
             changed = False
             if metadata.st_uid != root_uid or metadata.st_gid != owner_gid:
@@ -834,15 +841,11 @@ def _install_disk_reservation_runtime_prerequisites(
         raise
     except OSError as exc:
         raise ControlPlaneDeployError(
-            f"deploy_disk_reservation_runtime_install_failed:{root}"
+            f"deploy_disk_reservation_runtime_install_failed:{item}"
         ) from exc
 
     installed: list[dict[str, Any]] = []
-    for path, wanted_mode, kind in (
-        (root, 0o2770, "directory"),
-        (lock, 0o660, "lock"),
-        (history, 0o2770, "history_directory"),
-    ):
+    for item, path, wanted_mode in items:
         metadata = stat_reader(path)
         if (
             metadata.st_uid != root_uid
@@ -850,8 +853,9 @@ def _install_disk_reservation_runtime_prerequisites(
             or stat.S_IMODE(metadata.st_mode) != wanted_mode
         ):
             raise ControlPlaneDeployError(
-                f"deploy_disk_reservation_runtime_readback_mismatch:{path}"
+                f"deploy_disk_reservation_runtime_readback_mismatch:{item}"
             )
+        kind = "history_directory" if item == "history" else item
         installed.append(
             {
                 "kind": kind,

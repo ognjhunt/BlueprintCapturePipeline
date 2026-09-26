@@ -1793,8 +1793,47 @@ def test_deploy_installs_the_footprint_history_directory(
     }
     history.rmdir()
     history.symlink_to(tmp_path, target_is_directory=True)
-    with pytest.raises(deploy.ControlPlaneDeployError, match="deploy_disk_reservation_runtime_symlink"):
+    with pytest.raises(deploy.ControlPlaneDeployError) as refused:
         deploy._install_disk_reservation_runtime_prerequisites(root, chown=chown, stat_reader=stat_reader)
+    assert str(refused.value) == "deploy_disk_reservation_runtime_symlink:history"
+
+
+def test_disk_ledger_refusals_name_the_item_never_its_host_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A refusal is a typed code: it names the ledger item, not where it lives."""
+
+    monkeypatch.setattr(deploy, "_service_account_ids", lambda account: (3101, 2401))
+
+    def installed_as(chown, stat_reader, *, root: Path) -> str:
+        with pytest.raises(deploy.ControlPlaneDeployError) as refused:
+            deploy._install_disk_reservation_runtime_prerequisites(
+                root, chown=chown, stat_reader=stat_reader
+            )
+        assert str(tmp_path) not in str(refused.value)
+        return str(refused.value)
+
+    def root_owned(path: Path) -> SimpleNamespace:
+        return SimpleNamespace(st_uid=0, st_gid=0, st_mode=path.stat().st_mode)
+
+    symlinked = tmp_path / "symlinked-lock"
+    symlinked.mkdir()
+    (symlinked / ".lock").symlink_to(tmp_path / "elsewhere")
+    assert installed_as(lambda *_a: None, root_owned, root=symlinked) == (
+        "deploy_disk_reservation_runtime_symlink:lock"
+    )
+    # The group repair does not take: the readback names the first item it checks.
+    assert installed_as(lambda *_a: None, root_owned, root=tmp_path / "unrepaired") == (
+        "deploy_disk_reservation_runtime_readback_mismatch:directory"
+    )
+
+    def refuse_history(path: Path, _uid: int, _gid: int) -> None:
+        if path.name == "history":
+            raise PermissionError(1, "Operation not permitted", str(path))
+
+    assert installed_as(refuse_history, root_owned, root=tmp_path / "unwritable") == (
+        "deploy_disk_reservation_runtime_install_failed:history"
+    )
 
 
 def _git_repo_with_commit(tmp_path: Path) -> Path:
