@@ -121,7 +121,26 @@ def test_incomplete_combined_root_uses_measured_components_without_fabrication()
         [1.0, 2.0, 3.0, 0.9, 0.1, 0.2, 0.3, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]
     )
     native.scene.robot.data.root_ang_vel_w = torch.empty((1, 0))
-    with pytest.raises(ValueError, match="g1_sonic_native_root_state_invalid"):
+    pose = bridge_module.SonicWxyzEnvironmentView(native).scene["robot"].data.root_state_w
+    assert pose[0].tolist() == pytest.approx([1.0, 2.0, 3.0, 0.9, 0.1, 0.2, 0.3])
+
+
+def test_incomplete_combined_root_uses_measured_pose_when_velocity_is_unavailable():
+    native = _Environment()
+    native.scene.robot.data.root_state_w = torch.empty((1, 0))
+    native.scene.robot.data.root_lin_vel_w = torch.empty((1, 0))
+    native.scene.robot.data.root_ang_vel_w = torch.empty((1, 0))
+    root = bridge_module.SonicWxyzEnvironmentView(native).scene["robot"].data.root_state_w
+    assert root.shape == (1, 7)
+    assert root[0].tolist() == pytest.approx([1.0, 2.0, 3.0, 0.9, 0.1, 0.2, 0.3])
+    assert native.scene.robot.data.root_state_w.shape == (1, 0)
+
+
+def test_incomplete_combined_root_rejects_unmeasured_pose():
+    native = _Environment()
+    native.scene.robot.data.root_state_w = torch.empty((1, 0))
+    native.scene.robot.data.root_quat_w = torch.empty((1, 0))
+    with pytest.raises(ValueError, match=r"g1_sonic_native_root_state_invalid:.*quaternion_shape=\(1, 0\)"):
         _ = bridge_module.SonicWxyzEnvironmentView(native).scene["robot"].data.root_state_w
 
 

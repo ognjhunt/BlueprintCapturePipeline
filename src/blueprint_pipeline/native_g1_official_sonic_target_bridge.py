@@ -105,27 +105,40 @@ class WxyzRootDataView:
             converted[:, 4:7] = native[:, 3:6]
             return converted
         # Some native startup readbacks expose an incomplete combined state.
-        # Reconstruct the same world-frame 13-vector from its named tensors;
-        # never synthesize a pose or silently replace missing velocity data.
+        # SONIC reads the first seven root values (position and orientation).
+        # Use the measured named pose even when the optional velocity readbacks
+        # have not been populated; never invent missing velocity values.
         try:
             position = self._native_data.root_pos_w
             quaternion = self._native_data.root_quat_w
-            linear = self._native_data.root_lin_vel_w
-            angular = self._native_data.root_ang_vel_w
             batch = position.shape[0]
             if (
                 batch < 1
                 or position.shape != (batch, 3)
                 or quaternion.shape != (batch, 4)
-                or linear.shape != (batch, 3)
-                or angular.shape != (batch, 3)
-                or any(value.device != position.device or value.dtype != position.dtype
-                       for value in (quaternion, linear, angular))
+                or quaternion.device != position.device
+                or quaternion.dtype != position.dtype
+                or not torch.isfinite(position).all()
+                or not torch.isfinite(quaternion).all()
             ):
-                raise ValueError("g1_sonic_native_root_state_invalid")
-            return torch.cat((
-                position, quaternion[:, [3, 0, 1, 2]], linear, angular,
-            ), dim=1)
+                raise ValueError(
+                    "g1_sonic_native_root_state_invalid:"
+                    f"combined_shape={tuple(native.shape)},"
+                    f"position_shape={tuple(position.shape)},"
+                    f"quaternion_shape={tuple(quaternion.shape)}"
+                )
+            pose = torch.cat((position, quaternion[:, [3, 0, 1, 2]]), dim=1)
+            linear = getattr(self._native_data, "root_lin_vel_w", None)
+            angular = getattr(self._native_data, "root_ang_vel_w", None)
+            if (
+                linear is not None and angular is not None
+                and linear.shape == (batch, 3) and angular.shape == (batch, 3)
+                and all(value.device == position.device and value.dtype == position.dtype
+                        for value in (linear, angular))
+                and torch.isfinite(linear).all() and torch.isfinite(angular).all()
+            ):
+                return torch.cat((pose, linear, angular), dim=1)
+            return pose
         except (AttributeError, IndexError, TypeError) as exc:
             raise ValueError("g1_sonic_native_root_state_invalid") from exc
 
