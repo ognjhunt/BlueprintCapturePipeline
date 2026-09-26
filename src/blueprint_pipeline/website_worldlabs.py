@@ -8,7 +8,7 @@ import math
 import os
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
@@ -190,7 +190,54 @@ def validate_website_prepared_views(*, descriptor: Mapping[str, Any], capture_ro
         image_paths.append(path)
     binding = {"prepared_views_digest": preparation["digest"], "model": "marble-1.1-plus",
                "scene_id": descriptor["scene_id"], "capture_id": descriptor["capture_id"]}
-    return image_paths, binding
+    return image_paths, _equivalent_retained_binding(capture_root=capture_root, binding=binding, frames=frames)
+
+
+def _view_sequence(frames: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    return [{"frame_id": frame.get("frame_id"), "image_digest": frame.get("image_digest")} for frame in frames]
+
+
+def _equivalent_retained_binding(*, capture_root: Path, binding: Mapping[str, Any],
+                                 frames: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """A purchased world stays bound to the exact images it was generated from.
+
+    The prepared-views record also carries review receipts, so a re-review of
+    byte-identical images changes its digest but not what Marble consumed.
+    Only the same images in the same order (the first view anchors the world)
+    with the same model, scene and capture reuse the submitted operation; any
+    other difference keeps the refusal. The reuse is recorded, never silent.
+    """
+    root = capture_root / "pipeline" / "website_reconstruction"
+    path = root / "submission.json"
+    if not path.is_file():
+        return dict(binding)
+    state = json.loads(path.read_text())
+    prior = state.get("binding") or {}
+    if (state.get("request_digest") == canonical_digest(binding) or state.get("status") != "submitted"
+            or not state.get("operation_id") or state.get("request_digest") != canonical_digest(prior)
+            or {key: value for key, value in prior.items() if key != "prepared_views_digest"}
+            != {key: value for key, value in binding.items() if key != "prepared_views_digest"}):
+        return dict(binding)
+    retained = state.get("prepared_views")
+    if retained is None:
+        # Submissions before the view sequence was retained: the run manifest
+        # recorded the frames sent under this exact request digest.
+        manifest_path = capture_root / "pipeline" / "worldlabs_request_manifest.json"
+        manifest = json.loads(manifest_path.read_text()) if manifest_path.is_file() else {}
+        retained = (_view_sequence(manifest.get("prepared_frames") or [])
+                    if manifest.get("request_digest") == state["request_digest"] else None)
+    if not retained or retained != _view_sequence(frames):
+        return dict(binding)
+    receipt = {"schema_version": "website_reconstruction_rebinding.v1", "basis": "identical_ordered_prepared_images",
+               "prior_request_digest": state["request_digest"],
+               "prior_prepared_views_digest": prior["prepared_views_digest"],
+               "prepared_views_digest": binding["prepared_views_digest"], "view_sequence": retained}
+    receipt["digest"] = canonical_digest(receipt, digest_field="digest")
+    receipt_path = root / "rebindings" / f"{binding['prepared_views_digest'][7:]}.json"
+    if not receipt_path.is_file():
+        receipt_path.parent.mkdir(parents=True, exist_ok=True)
+        write_json(receipt_path, receipt)
+    return dict(prior)
 
 
 def validate_website_reconstruction_admission(admission: Mapping[str, Any], request_digest: str) -> None:
@@ -261,7 +308,7 @@ def submit_website_prepared_views(*, descriptor: Mapping[str, Any], capture_root
                                            "reconstruct_images": True,
                                            "text_prompt": "Reconstruct the same real work area shown in these prepared views. Preserve its layout, supports and remaining objects. Do not add objects into cleared regions."}}
             state = {"request_digest": request_digest, "binding": binding, "status": "submitting",
-                     "generation_request": generation}
+                     "generation_request": generation, "prepared_views": _view_sequence(frames)}
             # Persist intent before the billable mutation.
             with state_path.open("x") as stream:
                 json.dump(state, stream, sort_keys=True)
