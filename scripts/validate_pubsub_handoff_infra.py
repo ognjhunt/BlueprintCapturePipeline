@@ -72,6 +72,56 @@ def terraform_block_body(text: str, header: str) -> str | None:
     return None
 
 
+DEPLOY_PROJECT_NUMBER_LOOKUP = "gcloud projects describe \"$PROJECT_ID\" --format='value(projectNumber)'"
+DEPLOY_PUBSUB_SERVICE_AGENT_IDENTITY = (
+    'PUBSUB_SERVICE_AGENT="serviceAccount:service-${PROJECT_NUMBER}@gcp-sa-pubsub.iam.gserviceaccount.com"'
+)
+DEPLOY_PUBSUB_SERVICE_AGENT_MEMBER = '--member "$PUBSUB_SERVICE_AGENT"'
+DEPLOY_DEAD_LETTER_SERVICE_AGENT_BINDINGS = (
+    (
+        "gcloud pubsub topics add-iam-policy-binding pipeline-trigger-dlq",
+        '--role "roles/pubsub.publisher"',
+        "deploy Pub/Sub service agent publisher on the dead-letter topic",
+    ),
+    (
+        "gcloud pubsub subscriptions add-iam-policy-binding blueprint-pipeline-handoff-listener",
+        '--role "roles/pubsub.subscriber"',
+        "deploy Pub/Sub service agent subscriber on the handoff subscription",
+    ),
+)
+
+
+def shell_commands(text: str) -> list[str]:
+    """Logical shell lines: backslash continuations joined, whitespace collapsed."""
+
+    return [compact(line).strip() for line in re.sub(r"\\\r?\n", " ", text).splitlines()]
+
+
+def missing_deploy_dead_letter_service_agent_bindings(deploy_text: str) -> list[str]:
+    """Describe each deploy.sh piece the dead-letter grants need that is missing.
+
+    A binding counts only when one gcloud command names the resource, the
+    service agent as its member and the exact role, so the listener service
+    account's own subscriber grant cannot stand in for the service agent's.
+    """
+
+    commands = shell_commands(deploy_text)
+    missing: list[str] = []
+    if not any(DEPLOY_PROJECT_NUMBER_LOOKUP in command for command in commands):
+        missing.append("deploy project number for the Pub/Sub service agent")
+    if not any(command.startswith(DEPLOY_PUBSUB_SERVICE_AGENT_IDENTITY) for command in commands):
+        missing.append("deploy Pub/Sub service agent identity")
+    for command_prefix, role, description in DEPLOY_DEAD_LETTER_SERVICE_AGENT_BINDINGS:
+        if not any(
+            command.startswith(f"{command_prefix} ")
+            and f" {DEPLOY_PUBSUB_SERVICE_AGENT_MEMBER} " in f" {command} "
+            and f" {role} " in f" {command} "
+            for command in commands
+        ):
+            missing.append(description)
+    return missing
+
+
 def missing_dead_letter_service_agent_iam(terraform_text: str) -> list[str]:
     """Describe each grant the handoff dead-letter policy needs that is missing.
 
@@ -132,8 +182,8 @@ def has_run_e2e_result_binding(text: str) -> bool:
     )
 
 
-def main() -> None:
-    repo_root = Path(__file__).resolve().parents[1]
+def main(repo_root: Path | None = None) -> None:
+    repo_root = repo_root or Path(__file__).resolve().parents[1]
     pyproject = repo_root / "pyproject.toml"
     listener = repo_root / "src" / "blueprint_pipeline" / "pubsub_handoff_listener.py"
     terraform = repo_root / "deploy" / "terraform" / "main.tf"
@@ -258,18 +308,6 @@ def main() -> None:
         ("--max-retry-delay 600s", "deploy subscription retry maximum backoff"),
         ("--dead-letter-topic pipeline-trigger-dlq", "deploy dead-letter topic"),
         ("--max-delivery-attempts 5", "deploy dead-letter delivery cap"),
-        (
-            "gcloud projects describe \"$PROJECT_ID\" --format='value(projectNumber)'",
-            "deploy project number for the Pub/Sub service agent",
-        ),
-        (
-            'PUBSUB_SERVICE_AGENT="serviceAccount:service-${PROJECT_NUMBER}@gcp-sa-pubsub.iam.gserviceaccount.com"',
-            "deploy Pub/Sub service agent identity",
-        ),
-        (
-            "gcloud pubsub topics add-iam-policy-binding pipeline-trigger-dlq",
-            "deploy dead-letter topic publisher grant for the Pub/Sub service agent",
-        ),
         ('"pipeline-handoff-listener"', "deploy dedicated listener service account"),
         (
             "gcloud pubsub subscriptions add-iam-policy-binding blueprint-pipeline-handoff-listener",
@@ -282,6 +320,12 @@ def main() -> None:
         ("python3 \"$PROJECT_ROOT/scripts/validate_pubsub_handoff_infra.py\"", "deploy preflight validator"),
     ]:
         require_contains(deploy_text, needle, description)
+    missing_deploy_bindings = missing_deploy_dead_letter_service_agent_bindings(deploy_text)
+    if missing_deploy_bindings:
+        fail(
+            "deploy script cannot enable dead-lettering; missing "
+            + "; ".join(missing_deploy_bindings)
+        )
     runner_grants = deploy_text[
         deploy_text.find("RUNNER_EMAIL=") : deploy_text.find("# The persistent-host listener")
     ]

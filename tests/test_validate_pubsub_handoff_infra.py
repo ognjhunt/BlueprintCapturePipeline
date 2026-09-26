@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
+
 from scripts import validate_pubsub_handoff_infra as validator
 from scripts.validate_pubsub_handoff_infra import (
     has_project_runtime_dependency,
     has_run_e2e_result_binding,
     missing_dead_letter_service_agent_iam,
+    missing_deploy_dead_letter_service_agent_bindings,
 )
 
 _MAIN_TF_WITHOUT_DEAD_LETTER_GRANTS = """
@@ -115,3 +120,90 @@ def test_dead_letter_grants_must_give_the_service_agent_the_right_role() -> None
 def test_repository_handoff_infra_passes_validation(capsys) -> None:
     validator.main()
     assert "Pub/Sub handoff infra validation passed" in capsys.readouterr().out
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+_VALIDATED_FILES = (
+    "pyproject.toml",
+    "src/blueprint_pipeline/pubsub_handoff_listener.py",
+    "deploy/terraform/main.tf",
+    "deploy/scripts/deploy.sh",
+    "deploy/systemd/blueprint-pubsub-handoff-listener.service",
+    "deploy/systemd/blueprint-pubsub-handoff-listener.timer",
+    "deploy/systemd/pipeline-control-plane.env.example",
+    "scripts/install_live_pipeline_control_plane.sh",
+)
+_DEPLOY_SERVICE_AGENT_SUBSCRIPTION_GRANT = (
+    "        gcloud pubsub subscriptions add-iam-policy-binding blueprint-pipeline-handoff-listener \\\n"
+    '            --project "$PROJECT_ID" \\\n'
+    '            --member "$PUBSUB_SERVICE_AGENT" \\\n'
+    '            --role "roles/pubsub.subscriber" \\\n'
+    "            --quiet\n"
+)
+
+
+def _repository_copy(root: Path) -> Path:
+    for relative in _VALIDATED_FILES:
+        target = root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((REPO_ROOT / relative).read_bytes())
+    return root
+
+
+def test_the_listener_grant_does_not_stand_in_for_the_service_agent_grant(tmp_path, capsys) -> None:
+    root = _repository_copy(tmp_path)
+    deploy_sh = root / "deploy" / "scripts" / "deploy.sh"
+    text = deploy_sh.read_text(encoding="utf-8")
+    assert text.count(_DEPLOY_SERVICE_AGENT_SUBSCRIPTION_GRANT) == 1
+    deploy_sh.write_text(text.replace(_DEPLOY_SERVICE_AGENT_SUBSCRIPTION_GRANT, ""), encoding="utf-8")
+    # The listener service account's own subscriber grant is still there.
+    assert '--member "serviceAccount:${LISTENER_EMAIL}"' in deploy_sh.read_text(encoding="utf-8")
+
+    with pytest.raises(SystemExit):
+        validator.main(root)
+    assert "deploy Pub/Sub service agent subscriber on the handoff subscription" in capsys.readouterr().err
+
+
+_DEPLOY_LISTENER_SUBSCRIPTION_GRANT = (
+    "    gcloud pubsub subscriptions add-iam-policy-binding blueprint-pipeline-handoff-listener \\\n"
+    '        --project "$PROJECT_ID" \\\n'
+    '        --member "serviceAccount:${LISTENER_EMAIL}" \\\n'
+    '        --role "roles/pubsub.subscriber" \\\n'
+    "        --quiet\n"
+)
+_DEPLOY_SERVICE_AGENT_IDENTITY = (
+    "        PROJECT_NUMBER=\"$(gcloud projects describe \"$PROJECT_ID\" --format='value(projectNumber)')\"\n"
+    '        PUBSUB_SERVICE_AGENT="serviceAccount:service-${PROJECT_NUMBER}@gcp-sa-pubsub.iam.gserviceaccount.com"\n'
+)
+_DEPLOY_SERVICE_AGENT_TOPIC_GRANT = (
+    "        gcloud pubsub topics add-iam-policy-binding pipeline-trigger-dlq \\\n"
+    '            --project "$PROJECT_ID" \\\n'
+    '            --member "$PUBSUB_SERVICE_AGENT" \\\n'
+    '            --role "roles/pubsub.publisher" \\\n'
+    "            --quiet\n"
+)
+
+
+def test_deploy_service_agent_bindings_need_their_own_member_and_role() -> None:
+    complete = (_DEPLOY_SERVICE_AGENT_IDENTITY + _DEPLOY_SERVICE_AGENT_TOPIC_GRANT
+                + _DEPLOY_SERVICE_AGENT_SUBSCRIPTION_GRANT + _DEPLOY_LISTENER_SUBSCRIPTION_GRANT)
+    assert missing_deploy_dead_letter_service_agent_bindings(complete) == []
+
+    listener_grant_only = complete.replace(_DEPLOY_SERVICE_AGENT_SUBSCRIPTION_GRANT, "")
+    assert missing_deploy_dead_letter_service_agent_bindings(listener_grant_only) == [
+        "deploy Pub/Sub service agent subscriber on the handoff subscription",
+    ]
+    wrong_role = complete.replace('"roles/pubsub.publisher"', '"roles/pubsub.viewer"')
+    assert missing_deploy_dead_letter_service_agent_bindings(wrong_role) == [
+        "deploy Pub/Sub service agent publisher on the dead-letter topic",
+    ]
+    no_identity = complete.replace(_DEPLOY_SERVICE_AGENT_IDENTITY, "")
+    assert missing_deploy_dead_letter_service_agent_bindings(no_identity) == [
+        "deploy project number for the Pub/Sub service agent",
+        "deploy Pub/Sub service agent identity",
+    ]
+
+
+def test_repository_deploy_script_grants_the_service_agent() -> None:
+    deploy_text = (REPO_ROOT / "deploy" / "scripts" / "deploy.sh").read_text(encoding="utf-8")
+    assert missing_deploy_dead_letter_service_agent_bindings(deploy_text) == []
