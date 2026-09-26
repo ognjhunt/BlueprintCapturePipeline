@@ -157,13 +157,24 @@ def _absolute_path(value: str | Path, *, field: str) -> Path:
     return path
 
 
-def _assert_directory(path: Path, *, blocker: str, allow_missing: bool = False) -> None:
-    if not os.path.lexists(path):
+def _assert_directory(path: Path, *, blocker: str, allow_missing: bool = False) -> bool:
+    """Whether ``path`` is a real directory; absence only when it truly is not there.
+
+    Only ENOENT reads as missing: any other failure to look (a permission
+    error) refuses as unreadable instead of passing for "empty".
+    """
+
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
         if allow_missing:
-            return
-        raise ReleaseRetentionError(blocker + "_missing")
+            return False
+        raise ReleaseRetentionError(blocker + "_missing") from None
+    except OSError as exc:
+        raise ReleaseRetentionError(blocker + "_unreadable") from exc
     if path.is_symlink() or not path.is_dir():
         raise ReleaseRetentionError(blocker + "_invalid")
+    return True
 
 
 def _tree_size(path: Path) -> int:
@@ -320,8 +331,7 @@ def _json_documents(
     blocker: str,
     allow_missing: bool = False,
 ) -> list[tuple[Path, Any, dict[str, Any]]]:
-    _assert_directory(root, blocker=blocker, allow_missing=allow_missing)
-    if not os.path.lexists(root):
+    if not _assert_directory(root, blocker=blocker, allow_missing=allow_missing):
         return []
     documents: list[tuple[Path, Any, dict[str, Any]]] = []
     for path in sorted(root.iterdir(), key=lambda item: item.name):
@@ -666,10 +676,10 @@ def _evidence_binding_leases(
     documents: list[dict[str, Any]] = []
     lapsed: list[dict[str, Any]] = []
     validated: list[tuple[Path, Mapping[str, Any], dict[str, Any]]] = []
+    # A missing binding root is a source that cannot be read, never "no bindings".
     for path, value, evidence in _json_documents(
         root,
         blocker="release_retention_evidence_binding_root",
-        allow_missing=True,
     ):
         if not isinstance(value, Mapping):
             raise ReleaseRetentionError(

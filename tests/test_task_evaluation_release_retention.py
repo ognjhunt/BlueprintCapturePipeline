@@ -218,6 +218,7 @@ def _base_state(
     live_processing = tmp_path / "queue" / "processing"
     live_pending.mkdir(parents=True)
     live_processing.mkdir(parents=True)
+    (tmp_path / "evidence-bindings").mkdir()
     return {
         "release_root": release_root,
         "runtime_root": runtime_root,
@@ -1002,7 +1003,6 @@ def test_missing_release_scene_handoff_requires_all_fail_closed_proofs(
     elif unsafe_change == "other_live_reason":
         evidence = state["evidence_binding_root"]
         assert isinstance(evidence, Path)
-        evidence.mkdir()
         _write_json(
             evidence / "qualification.json",
             {
@@ -1073,6 +1073,7 @@ def test_apply_requires_exact_reviewed_plan_and_removes_only_eligible_sha(
     pending.mkdir()
     processing.mkdir()
     evidence = tmp_path / "evidence"
+    evidence.mkdir()
     plan = build_release_retention_plan(
         release_root=release_root,
         runtime_root=runtime_root,
@@ -1320,7 +1321,7 @@ def test_orphaned_release_tree_without_git_metadata_is_removed_as_an_orphan(
     profile_dir.mkdir()
     catalog = tmp_path / "catalog.json"
     catalog.write_text("[]\n", encoding="utf-8")
-    for name in ("standing", "pending", "processing"):
+    for name in ("standing", "pending", "processing", "evidence"):
         (tmp_path / name).mkdir()
     plan = build_release_retention_plan(
         release_root=release_root,
@@ -1513,7 +1514,6 @@ def test_two_step_tool_keeps_a_lapsed_ancestor_a_live_descendant_needs(
     evidence_root = state["evidence_binding_root"]
     releases = state["release_root"]
     assert isinstance(evidence_root, Path) and isinstance(releases, Path)
-    evidence_root.mkdir()
     lease_root = tmp_path / "release-leases"
     monkeypatch.setattr(
         "blueprint_pipeline.public_scene_inpainting_inputs._git_identity",
@@ -1569,3 +1569,33 @@ def test_two_step_tool_keeps_a_lapsed_ancestor_a_live_descendant_needs(
     assert plan["eligible_commits"] == []
     assert plan["protected_commits"][ancestor_commit] == [f"required_evidence:{ancestor_name}"]
     assert plan["lapsed_evidence_bindings"] == []
+
+
+def test_two_step_tool_refuses_a_missing_or_unreadable_binding_root(tmp_path: Path) -> None:
+    active = "a" * 40
+    state = _base_state(tmp_path, commits=[active], active_commit=active)
+    evidence_root = state["evidence_binding_root"]
+    assert isinstance(evidence_root, Path)
+
+    # A binding root that is not there is not a root with no bindings.
+    evidence_root.rmdir()
+    with pytest.raises(
+        ReleaseRetentionError, match="^release_retention_evidence_binding_root_missing$"
+    ):
+        build_release_retention_plan(**state, current_deploy_commit=active)  # type: ignore[arg-type]
+
+    if os.geteuid() == 0:
+        return  # root ignores directory permissions
+    guarded = tmp_path / "guarded"
+    (guarded / "bindings").mkdir(parents=True)
+    guarded.chmod(0)
+    try:
+        with pytest.raises(
+            ReleaseRetentionError, match="^release_retention_evidence_binding_root_unreadable$"
+        ):
+            build_release_retention_plan(
+                **{**state, "evidence_binding_root": guarded / "bindings"},  # type: ignore[arg-type]
+                current_deploy_commit=active,
+            )
+    finally:
+        guarded.chmod(0o755)
