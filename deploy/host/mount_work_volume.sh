@@ -142,7 +142,8 @@ UNITS_LEFT_RUNNING=(
 usage() {
   cat <<USAGE
 usage: $0 --device /dev/disk/by-id/<volume> [--mount ${MOUNT_DEFAULT}] [--plan | --apply --ack ${ACK_REQUIRED}]
-          [--state-root ${STATE_ROOT_DEFAULT}] [--root-prefix DIR [--bound-roots-file FILE]]
+          [--state-root ${STATE_ROOT_DEFAULT}]
+          [--root-prefix DIR [--bound-roots-file FILE] [--assume-volume-free-mib N]]
 
   --plan              (default) print what would move, with sizes; changes nothing
   --apply             perform the migration; requires root and --ack ${ACK_REQUIRED}
@@ -152,6 +153,9 @@ usage: $0 --device /dev/disk/by-id/<volume> [--mount ${MOUNT_DEFAULT}] [--plan |
                       per line as findmnt lists them; apply edits it in place of
                       mount and umount.  A path followed by "busy" will not
                       unmount (the stand-in for EBUSY)
+  --assume-volume-free-mib
+                      with --root-prefix: the volume's free space to assume, in MiB,
+                      instead of what df reports for DIR's mount path
 USAGE
 }
 
@@ -171,6 +175,7 @@ MOUNT="${MOUNT_DEFAULT}"
 STATE_ROOT="${STATE_ROOT_DEFAULT}"
 ROOT_PREFIX=""
 BOUND_ROOTS_FILE=""
+ASSUME_VOLUME_FREE_MIB=""
 MODE="plan"
 ACK=""
 while [ $# -gt 0 ]; do
@@ -180,6 +185,7 @@ while [ $# -gt 0 ]; do
     --state-root) STATE_ROOT="$2"; shift 2 ;;
     --root-prefix) ROOT_PREFIX="$2"; shift 2 ;;
     --bound-roots-file) BOUND_ROOTS_FILE="$2"; shift 2 ;;
+    --assume-volume-free-mib) ASSUME_VOLUME_FREE_MIB="$2"; shift 2 ;;
     --plan) MODE="plan"; shift ;;
     --apply) MODE="apply"; shift ;;
     --ack) ACK="$2"; shift 2 ;;
@@ -208,6 +214,11 @@ if [ -n "${BOUND_ROOTS_FILE}" ]; then
   # A hermetic-test hook: on a host the mount table is the only authority.
   [ -n "${ROOT_PREFIX}" ] || refuse 2 "--bound-roots-file needs --root-prefix"
   [ -f "${BOUND_ROOTS_FILE}" ] || refuse 2 "--bound-roots-file does not exist"
+fi
+if [ -n "${ASSUME_VOLUME_FREE_MIB}" ]; then
+  # A hermetic-test hook too: on a host the volume's own free space decides.
+  [ -n "${ROOT_PREFIX}" ] || refuse 2 "--assume-volume-free-mib needs --root-prefix"
+  case "${ASSUME_VOLUME_FREE_MIB}" in *[!0-9]*) refuse 2 "--assume-volume-free-mib takes a whole number of MiB" ;; esac
 fi
 
 HOST_STATE="${ROOT_PREFIX}${STATE_ROOT}"
@@ -600,6 +611,36 @@ probe_rsync() {
   fi
 }
 
+# The copy lands on the volume that already serves every bound root, so a copy
+# that cannot fit (with a 5 % margin) is refused before anything stops.  What an
+# earlier run already copied is on the volume, and the old binds' children are
+# the volume's own bytes, so only the difference counts.
+require_volume_room() {
+  local i rel need=0 root_mib have child_mib free margin
+  for i in "${PENDING[@]}"; do
+    root_mib="$(size_mib "${ROOT_PREFIX}${ROOT_HOST[i]}")"
+    have="$(size_mib "${HOST_MOUNT}/${ROOT_VREL[i]}")"
+    # shellcheck disable=SC2086  # child names were validated: no whitespace or glob characters
+    for rel in ${CHILDREN[i]}; do
+      child_mib="$(size_mib "${HOST_MOUNT}/${ROOT_VREL[i]}/${rel}")"
+      have=$((have - child_mib))
+    done
+    if [ "${root_mib}" -gt "${have}" ]; then need=$((need + root_mib - have)); fi
+  done
+  margin=$(((need + 19) / 20))
+  if [ -n "${ASSUME_VOLUME_FREE_MIB}" ]; then
+    free="${ASSUME_VOLUME_FREE_MIB}"
+  else
+    free="$(df -Pk "${HOST_MOUNT}" | awk 'NR == 2 { print int($4 / 1024) }')"
+  fi
+  case "${free}" in ''|*[!0-9]*) refuse 2 "could not read the free space of ${HOST_MOUNT}" ;; esac
+  if [ "${free}" -lt $((need + margin)) ]; then
+    refuse 2 "${HOST_MOUNT} has ${free} MiB free; the move needs ${need} MiB plus ${margin} MiB (5 %)" \
+      "grow the volume, or move an earlier copy on it aside, then rerun"
+  fi
+  echo "volume room: ${free} MiB free for ${need} MiB plus ${margin} MiB (5 %)"
+}
+
 # rsync the pending roots below each base directory in one relative invocation.
 # A consolidating root's bound children are excluded: their bytes are already on
 # the volume, served by the very mounts being replaced.  Arguments go before the
@@ -941,6 +982,7 @@ apply() {
   fi
 
   probe_rsync
+  require_volume_room
   if [ -z "${ROOT_PREFIX}" ]; then
     require_no_door_requests
     systemctl daemon-reload

@@ -575,3 +575,20 @@ def test_the_volume_line_refuses_a_device_blkid_cannot_name(tmp_path: Path, uuid
     assert lines == ["UUID=root / ext4 defaults 0 1", "UUID=5f0c-volume /mnt/blueprint-work ext4 defaults,nofail,noatime,discard 0 2"]
     # One backup, taken by the run that wrote; the refused run touched nothing.
     assert sorted(p.name for p in tmp_path.iterdir()) == ["bin", "fstab", "fstab.blueprint-1.bak"]
+
+
+def test_apply_refuses_a_move_the_volume_has_no_room_for(tmp_path: Path) -> None:
+    _state(tmp_path)
+    args = ("--device", "/dev/null", "--root-prefix", str(tmp_path))
+
+    refused = _run(*args, "--assume-volume-free-mib", "1", "--apply", "--ack", ACK)
+
+    assert refused.returncode == 2, refused.stderr + refused.stdout
+    numbers = re.search(r"has 1 MiB free; the move needs (\d+) MiB plus (\d+) MiB \(5 %\)", refused.stderr)
+    assert numbers and int(numbers.group(1)) >= 2 and int(numbers.group(2)) >= 1, refused.stderr
+    assert not (tmp_path / "mnt" / "blueprint-work" / "task-evaluation-inputs").exists(), "nothing was copied"
+
+    roomy = _run(*args, "--assume-volume-free-mib", "1024", "--apply", "--ack", ACK)
+
+    assert roomy.returncode == 0, roomy.stderr + roomy.stdout
+    assert "volume room: 1024 MiB free" in roomy.stdout
