@@ -164,11 +164,19 @@ from the September migration, and the spool, capture reconstruction, the result
 artifact cache and the other new roots still live on the root disk. One run moves
 the new roots and consolidates the old binds:
 
-1. Check room. The volume serves every bound root, so the copy must not fill it.
+1. Quiesce paid work first. The move stops the launch and canary dispatchers,
+   the launch reconciler, the existing-canary continuation and its watchdog, and
+   the spend guard. A paid GPU run left in flight would go unwatched until they
+   start again. Before applying, `python3 scripts/operator_door.py status` must
+   show no `paid_launch_locks` holders (every paid-launch lock free) and no
+   deploy unit in flight. The move refuses while a transient
+   `blueprint-operator-door-*` unit runs.
+2. Check room. The volume serves every bound root, so the copy must not fill it.
    `df -h /mnt/blueprint-work` must leave headroom after the plan's
    `total to move`. Grow the volume first if it does not (see the 100 GB limit
-   below).
-2. Plan, and read it:
+   below). Apply refuses on its own when free space is below what the roots
+   still need plus 5 %, and states both numbers.
+3. Plan, and read it:
 
    ```bash
    sudo deploy/host/mount_work_volume.sh --device /dev/disk/by-id/<volume> --plan
@@ -186,16 +194,20 @@ the new roots and consolidates the old binds:
      such a bind in `/etc/fstab` by hand.
    - `missing` roots do not exist yet and are not created. Rerun the script
      once they appear.
-3. Apply:
+4. Apply:
 
    ```bash
    sudo deploy/host/mount_work_volume.sh --device /dev/disk/by-id/<volume> --apply --ack move-work-roots-to-volume
    ```
 
    The run does the following, in order:
-   - Stops the worker units; intake stays up.
+   - Stops every unit in the script's `WORKER_UNITS`. The units in
+     `UNITS_LEFT_RUNNING` stay up, each for the reason written beside it; intake
+     is one of them.
    - Copies the tree around the old binds, and compares the copy with its root
      in both directions.
+   - Before each swap, checks again that no worker unit and no door request is
+     running.
    - Prepares the new mount point and the rewritten `/etc/fstab`, after backing
      up the old one to `/etc/fstab.blueprint-<epoch>.bak`. A full root disk
      therefore refuses before anything changes.
@@ -206,7 +218,7 @@ the new roots and consolidates the old binds:
    - Compares each original with its volume copy again, and only then removes
      it.
    - Reloads systemd and starts again the units that were running.
-4. Check. `findmnt -R /var/lib/blueprint/task-evaluation-inputs` shows the
+5. Check. `findmnt -R /var/lib/blueprint/task-evaluation-inputs` shows the
    tree's bind and no mount below it. `--plan` reports `bound` for every root
    that exists. After the next compile,
    `find /var/lib/blueprint/task-evaluation-inputs/compiled-episodes -type f -links +1 | head`
@@ -215,7 +227,11 @@ the new roots and consolidates the old binds:
 When a run stops:
 
 - `refusing: …` before `copying` means nothing moved. Fix the named cause and
-  rerun.
+  rerun. This covers a volume without room, a device blkid cannot name, a
+  running door request, and worker units that would not stop.
+- `refusing: worker units are running` or `refusing: operator door requests are
+  running` after `copying` means the root about to swap was left as it was.
+  Find what started the unit, let the request finish, and rerun.
 - `refusing to swap: copy differs from source` means nothing was swapped. Rerun,
   and rsync resumes.
 - `refusing to swap: the volume copy holds entries its root lacks` means nothing
@@ -232,6 +248,10 @@ When a run stops:
   `sudo rsync -a -n --itemize-changes <root>.migrated-to-volume/ /mnt/blueprint-work/<rel>/`,
   and copy what belongs on the volume. Remove the kept copy only when nothing it
   holds is still needed. `--plan` shows a `kept` line until then.
+- `refusing: <root> is no longer mounted from the volume` means the root's bind
+  went away before its original was removed. The original is kept and the
+  worker units stay stopped. Bind the volume copy at the root again (or move the
+  kept original back), then start the units.
 - `leaving the worker units stopped: <root> is between its old and new mounts`
   means a swap failed halfway. Finish it by hand: bind the volume copy at the
   root and move the rewritten fstab the message names into place. Or undo it:
