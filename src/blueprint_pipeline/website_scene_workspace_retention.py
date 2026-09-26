@@ -22,7 +22,8 @@ A workspace is retirable only when every check passes, cheapest first:
 7. no live process holds it;
 8. no scene intent that can still run resolves a website source registered inside it
    (an expired intent stays open for a grace period, since its owner may extend it,
-   and a revoked or expired intent is held by any attempt it has not settled);
+   and a revoked or expired intent is held by any attempt it has not settled until
+   that same grace period after it finished: every hold expires);
 9. every file is recoverable: it verifies against its Firebase Storage object
    (size, and MD5 or, without MD5, CRC32C) or it is archived. Raw capture bytes
    are never archived, so a raw file that does not verify keeps the workspace.
@@ -41,6 +42,7 @@ import base64
 import fcntl
 import hashlib
 import json
+import math
 import os
 import secrets
 import shutil
@@ -211,7 +213,8 @@ class ReferenceIndex:
     #: {"path", "request_digest", "reference_paths", "registered_at_epoch"}
     registrations: tuple[Mapping[str, Any], ...] = ()
     #: {"intent_id", "request_digest", "finished": "completed" | "revoked" | "expired" | None,
-    #:  "open_attempts": attempt ids a revoked or expired intent still holds live}
+    #:  "open_attempts": unsettled attempt ids a revoked or expired intent still holds, which it
+    #:  does only within the grace period after it finished}
     intents: tuple[Mapping[str, Any], ...] = ()
 
 
@@ -473,14 +476,24 @@ def _registrations(binding_root: Path | None) -> tuple[Mapping[str, Any], ...]:
     return tuple(rows)
 
 
+def _revoked_at(path: Path) -> float:
+    """When an intent was revoked: the time its receipt records, else the receipt file's time."""
+
+    state, receipt, _ = _load_json(path)
+    value = receipt.get("revoked_at_epoch") if state == "ok" and receipt is not None else None
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
+        return float(value)
+    return os.stat(path).st_mtime
+
+
 def _intent_finished(directory: Path, intent: Mapping[str, Any], *, now: float,
-                     expired_grace_seconds: int) -> str | None:
-    """Why scene progression will never resolve this intent's source again, or None.
+                     expired_grace_seconds: int) -> tuple[str | None, float | None]:
+    """Why scene progression will never resolve this intent's source again, and since when.
 
     Mirrors ``task_evaluation_scene_progression._advance_intent``: a completed
     progression, a revocation, or an elapsed (possibly extended) execution window.
     An owner can still extend an elapsed window, so expiry counts only once the
-    grace period after it has passed too.
+    grace period after it has passed too. ``(None, None)`` while the intent is open.
     """
 
     from . import task_evaluation_scene_intake as intake
@@ -491,12 +504,14 @@ def _intent_finished(directory: Path, intent: Mapping[str, Any], *, now: float,
         if projection.get("intent_digest") != intent["intent_digest"] or projection.get("intent_id") != intent["intent_id"]:
             raise _Unreadable
         if projection.get("status") == "completed":
-            return "completed"
-    if (directory / "revoked.json").exists():
-        return "revoked"
-    if now >= intake.effective_execution_expiry(directory, intent) + expired_grace_seconds:
-        return "expired"
-    return None
+            return "completed", None
+    revocation = directory / "revoked.json"
+    if revocation.exists():
+        return "revoked", _revoked_at(revocation)
+    expiry = intake.effective_execution_expiry(directory, intent)
+    if now >= expiry + expired_grace_seconds:
+        return "expired", expiry
+    return None, None
 
 
 def _open_attempts(directory: Path) -> tuple[str, ...]:
@@ -552,16 +567,21 @@ def _intents(intent_root: Path | None, *, now: float,
             request = intent.get("request")
             if intent.get("intent_id") != name or not isinstance(request, Mapping):
                 raise _Unreadable
-            finished = _intent_finished(directory, intent, now=now, expired_grace_seconds=expired_grace_seconds)
+            finished, finished_at = _intent_finished(directory, intent, now=now,
+                                                     expired_grace_seconds=expired_grace_seconds)
+            # A completed intent's attempts ended with it: progression completes only after
+            # joining the attempt's terminal result, and only retired predecessors are ever
+            # settled, so its own row stays a spend hold forever. A revoked or expired intent
+            # holds an attempt it has not cancelled or settled, but only for the grace period
+            # after it finished: materialization copies the workspace inputs into the
+            # attempt's own staging, and no factory pass runs for days, so every hold expires.
+            # (An expired intent's period has passed by the time it counts as finished.)
+            held = finished in {"revoked", "expired"} and now < float(finished_at) + expired_grace_seconds
             rows.append({
                 "intent_id": name,
                 "request_digest": cross_runtime_canonical_digest(request),
                 "finished": finished,
-                # A completed intent's attempts ended with it: progression completes only after
-                # joining the attempt's terminal result, and only retired predecessors are ever
-                # settled, so its own row stays a spend hold forever. A revoked or expired intent
-                # still holds whatever attempt it has not cancelled or settled.
-                "open_attempts": _open_attempts(directory) if finished in {"revoked", "expired"} else (),
+                "open_attempts": _open_attempts(directory) if held else (),
             })
         except _Unreadable:
             raise

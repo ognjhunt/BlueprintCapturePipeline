@@ -369,9 +369,13 @@ scene only when everything in it can come back and nothing can still need it.
    progression would then resolve the source again. A revoked or expired intent is
    also held by any attempt row progression still treats as live (`attempts/*.json`
    with no validated cancellation or settlement:
-   `open_scene_attempt:<intent>/<attempt>`); a completed intent's rows are not, since
-   only retired predecessors are ever settled and progression completes only after
-   the attempt's terminal result. A registration no intent has claimed protects the
+   `open_scene_attempt:<intent>/<attempt>`), but only for seven days after it finished
+   (the revocation time recorded in `revoked.json`, else that file's time; for an
+   expired intent that period ends with its grace period). Every hold expires:
+   materialization copies the workspace inputs into the attempt's own staging, and no
+   factory pass runs for days. A completed intent's rows never hold it, since only
+   retired predecessors are ever settled and progression completes only after the
+   attempt's terminal result. A registration no intent has claimed protects the
    scene for 72 hours
    (`unclaimed_source_registration`); a registration or intent that cannot be read
    protects every scene (`reference_index_unreadable`); a workspace whose website

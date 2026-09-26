@@ -507,22 +507,57 @@ def test_an_expired_intent_stays_open_while_it_could_still_be_extended(tmp_path)
     assert plan(expired_grace_seconds=DAY - 1)["status"] == "retirable"
 
 
-@pytest.mark.parametrize("finished", ["revoked", "expired"])
-def test_a_live_attempt_keeps_a_revoked_or_expired_intents_workspace(tmp_path, finished):
+def _revoke(tmp_path: Path, intent_id: str, *, at: float, recorded: bool = True) -> None:
+    """What revoke_scene_intent writes; an unrecorded receipt leaves only the file's own time."""
+
+    directory = tmp_path / "intents" / intent_id
+    intent = json.loads((directory / "intent.json").read_text(encoding="utf-8"))
+    receipt = intake._seal({"schema_version": "task_evaluation_scene_intent_revocation.v1", "intent_id": intent_id,
+                            "intent_digest": intent["intent_digest"], "owner": intent["request"]["owner"],
+                            "status": "revoked", "revoked_at_epoch": at, "scope": "future_execution",
+                            "provider_mutation_performed": False}, "receipt_digest")
+    path = directory / "revoked.json"
+    path.write_text(json.dumps(receipt) if recorded else "{}", encoding="utf-8")
+    if not recorded:
+        os.utime(path, (at, at))
+
+
+@pytest.mark.parametrize("recorded", [True, False], ids=["recorded_time", "file_time"])
+def test_a_live_attempt_holds_a_revoked_intents_workspace_only_for_the_grace_period(tmp_path, recorded):
     scene, cloud = _scene(tmp_path)
-    now = time.time() + 60 * HOUR
-    request = _request(now - 8 * DAY if finished == "expired" else now + DAY)
+    revoked_at = time.time() + 60 * HOUR  # a recorded time differs from the receipt file's own time
+    request = _request(revoked_at + 30 * DAY)
     _register(tmp_path, scene, request)
-    intent_id = _intent(tmp_path, request, finished="revoked" if finished == "revoked" else None)
+    intent_id = _intent(tmp_path, request)
+    _revoke(tmp_path, intent_id, at=revoked_at, recorded=recorded)
     _attempt(tmp_path, intent_id)
 
-    def plan():
+    def plan(days: float) -> dict:
         return retention.plan_scene_workspace_retirement(
-            context=_context(tmp_path), bucket=BUCKET, scene_id=SCENE, now=now, cloud=cloud, process_checker=_idle)
+            context=_context(tmp_path), bucket=BUCKET, scene_id=SCENE, now=revoked_at + days * DAY, cloud=cloud,
+            process_checker=_idle)
 
-    assert plan()["reasons"] == [f"open_scene_attempt:{intent_id}/attempt-1"]
+    assert plan(6)["reasons"] == [f"open_scene_attempt:{intent_id}/attempt-1"]
+    assert plan(8)["status"] == "retirable", "every hold expires, even while the row stays unsettled"
     _attempt(tmp_path, intent_id, cancelled=True)  # progression's own terminal proof for the row
-    assert plan()["status"] == "retirable"
+    assert plan(1)["status"] == "retirable"
+
+
+def test_a_live_attempt_does_not_hold_an_expired_intent_past_its_grace_period(tmp_path):
+    scene, cloud = _scene(tmp_path)
+    expired_at = time.time() + 60 * HOUR
+    request = _request(expired_at)
+    _register(tmp_path, scene, request)
+    intent_id = _intent(tmp_path, request)
+    _attempt(tmp_path, intent_id)
+
+    def plan(days: float) -> dict:
+        return retention.plan_scene_workspace_retirement(
+            context=_context(tmp_path), bucket=BUCKET, scene_id=SCENE, now=expired_at + days * DAY, cloud=cloud,
+            process_checker=_idle)
+
+    assert plan(6)["reasons"] == [f"open_scene_intent:{intent_id}"]  # its owner may still extend it
+    assert plan(8)["status"] == "retirable"
 
 
 def test_a_completed_intents_attempt_rows_do_not_hold_its_workspace(tmp_path):
@@ -548,9 +583,10 @@ def test_a_completed_intents_attempt_rows_do_not_hold_its_workspace(tmp_path):
 def test_an_attempt_that_cannot_be_read_protects_every_scene(tmp_path):
     scene, cloud = _scene(tmp_path)
     now = time.time() + 60 * HOUR
-    request = _request(now - 8 * DAY)
+    request = _request(now + 30 * DAY)
     _register(tmp_path, scene, request)
     intent_id = _intent(tmp_path, request)
+    _revoke(tmp_path, intent_id, at=now - DAY)  # inside the window in which its attempts still hold
     (tmp_path / "intents" / intent_id / "attempts").mkdir()
     (tmp_path / "intents" / intent_id / "attempts" / "attempt-1.json").write_text("{}", encoding="utf-8")
 
