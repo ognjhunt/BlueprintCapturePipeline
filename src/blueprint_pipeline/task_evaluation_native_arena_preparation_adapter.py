@@ -280,7 +280,10 @@ def _verify_task_subject_binding(
             or adaptation.get("adaptation") != "estimated_passive_joint_friction_overlay"
             or adaptation.get("candidate_bytes_modified") is not False
             or adaptation.get("derived_from_sha256") != asset["digest"]
-            or not isinstance(adaptation.get("fixed_base_body_prim_path"), str)
+            or (
+                adaptation.get("fixed_base_body_prim_path") is not None
+                and not isinstance(adaptation.get("fixed_base_body_prim_path"), str)
+            )
             or not isinstance(friction, Mapping)
             or friction.get("source_sha256") != asset["digest"]
             or not isinstance(source_binding, Mapping)

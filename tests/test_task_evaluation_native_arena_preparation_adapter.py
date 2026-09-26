@@ -22,7 +22,9 @@ from tests.test_task_evaluation_launch_preparation_contract import request
 from tests.test_task_evaluation_configured_scene_revision import revision
 
 
-def _passive_joint_overlay_binding(tmp_path: Path) -> tuple[dict, dict, Path, dict]:
+def _passive_joint_overlay_binding(
+    tmp_path: Path, *, grounded: bool = True,
+) -> tuple[dict, dict, Path, dict]:
     from pxr import Usd, UsdGeom, UsdPhysics
 
     from blueprint_pipeline.native_task_arena_runtime import author_passive_joint_friction_overlay
@@ -33,8 +35,9 @@ def _passive_joint_overlay_binding(tmp_path: Path) -> tuple[dict, dict, Path, di
     stage.SetDefaultPrim(cabinet.GetPrim())
     body = UsdGeom.Xform.Define(stage, "/Cabinet/body")
     UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
-    anchor = UsdPhysics.FixedJoint.Define(stage, "/Cabinet/fixed_base_anchor")
-    anchor.GetBody1Rel().SetTargets([body.GetPath()])
+    if grounded:
+        anchor = UsdPhysics.FixedJoint.Define(stage, "/Cabinet/fixed_base_anchor")
+        anchor.GetBody1Rel().SetTargets([body.GetPath()])
     joint_path = "/Cabinet/joints/middle_drawer_joint"
     UsdPhysics.PrismaticJoint.Define(stage, joint_path)
     stage.GetRootLayer().Save()
@@ -46,7 +49,7 @@ def _passive_joint_overlay_binding(tmp_path: Path) -> tuple[dict, dict, Path, di
     assert friction is not None
     adaptation = {
         "adaptation": "estimated_passive_joint_friction_overlay",
-        "fixed_base_body_prim_path": "/Cabinet/body",
+        "fixed_base_body_prim_path": "/Cabinet/body" if grounded else None,
         "candidate_bytes_modified": False,
         "derived_from_sha256": _identity(source)["digest"],
         "passive_joint_friction": friction,
@@ -116,6 +119,16 @@ def test_adapter_accepts_only_readback_verified_passive_joint_derivation(tmp_pat
         _verify_task_subject_binding(
             request=value, configured_revision=configured,
             packet_root=packet, packet_receipt=receipt)
+
+
+def test_adapter_preserves_verified_movable_articulation_base(tmp_path: Path) -> None:
+    value, configured, packet, receipt = _passive_joint_overlay_binding(
+        tmp_path, grounded=False)
+    contract = json.loads((packet / "native_task_runtime_contract.v1.json").read_text())
+    assert contract["objects"][0]["articulation_adaptation"]["fixed_base_body_prim_path"] is None
+    _verify_task_subject_binding(
+        request=value, configured_revision=configured,
+        packet_root=packet, packet_receipt=receipt)
 
 
 def _identity(path: Path) -> dict[str, object]:
