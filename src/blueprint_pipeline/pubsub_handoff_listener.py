@@ -7,6 +7,7 @@ import fcntl
 import json
 import logging
 import os
+import re
 import socket
 import tempfile
 import threading
@@ -477,6 +478,18 @@ _PROVIDER_STATUS_FIELD_NAMES = {
     "provider_runtime_output_zip_path",
     "provider_output_validation_status",
 }
+# The WebApp ends a website scene's authority with a typed 409 refusal, which
+# website_task_context raises as ValueError("website_control_<op>_http_409:<code>").
+# Retrying the same handoff cannot revive an expired consent or a revoked
+# source. Other 409 codes (task_brief_missing, idempotency_conflict, ...) can be
+# fixed by a person, so they stay retryable.
+AUTHORITY_ENDING_CODES = frozenset({"consent_expired", "source_revoked"})
+_AUTHORITY_ENDING_RE = re.compile(
+    r"(?<![A-Za-z0-9_-])website_control_[a-z0-9-]+_http_409:("
+    + "|".join(re.escape(code) for code in sorted(AUTHORITY_ENDING_CODES))
+    + r")(?![a-z0-9_])"
+)
+_AUTHORITY_ENDING_CHAIN_LIMIT = 16
 
 
 RECONSTRUCTION_POLICY_ROOT_ENV = "BLUEPRINT_CAPTURE_RECONSTRUCTION_POLICY_ROOT"
@@ -1146,6 +1159,47 @@ def _handoff_result_disposition(result: Mapping[str, Any]) -> tuple[str, list[st
 
 def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
+
+
+def authority_ending_code(exc: BaseException) -> str | None:
+    """The WebApp authority code that permanently ended this job, if any.
+
+    Walks the exception chain (__cause__, then __context__), at most 16 links, and
+    guards against cycles. Only exact typed WebApp 409 codes qualify. The code may
+    sit inside a longer message, because a StageError joins its blockers, but it
+    must be a whole token.
+    """
+
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    for _ in range(_AUTHORITY_ENDING_CHAIN_LIMIT):
+        if current is None or id(current) in seen:
+            return None
+        seen.add(id(current))
+        try:
+            text = str(current)
+        except Exception:  # noqa: BLE001 - an unprintable error carries no typed code
+            text = ""
+        match = _AUTHORITY_ENDING_RE.search(text)
+        if match:
+            return match.group(1)
+        current = current.__cause__ if current.__cause__ is not None else current.__context__
+    return None
+
+
+def payload_sha256(payload: bytes | str | Mapping[str, Any]) -> str:
+    """Hex sha256 of the message bytes, as `_write_delivery_evidence` already records it.
+
+    str -> utf-8 bytes; Mapping -> json.dumps(sort_keys=True, separators=(",", ":")).
+    """
+
+    if isinstance(payload, bytes):
+        raw = payload
+    elif isinstance(payload, str):
+        raw = payload.encode("utf-8", errors="replace")
+    else:
+        raw = json.dumps(dict(payload), sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return sha256(raw).hexdigest()
 
 
 def process_handoff_payload(

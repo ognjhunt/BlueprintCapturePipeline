@@ -2,13 +2,18 @@ import json
 import threading
 import types
 from datetime import datetime, timedelta, timezone
+from hashlib import sha256
+from io import BytesIO
 from pathlib import Path
+from urllib.error import HTTPError
 
 import pytest
 import google.cloud
 
 import blueprint_pipeline.pubsub_handoff_listener as listener_module
-from blueprint_pipeline.common import PipelineError
+import blueprint_pipeline.site_package_orchestrator as orchestrator
+from blueprint_pipeline.capture_orchestrator import run_capture_pipeline
+from blueprint_pipeline.common import PipelineError, StageError
 from blueprint_pipeline.live_pipeline_control_plane import (
     LIVE_PIPELINE_CONTROL_PLANE_SCHEMA_VERSION,
 )
@@ -1402,3 +1407,132 @@ def test_recovery_refuses_symlinks_without_moving_anything(tmp_path):
     with pytest.raises(PipelineError, match="recovery_unsafe"):
         listener_module._preserve_local_website_derivatives(tmp_path, set(), "prefix")
     assert source.is_symlink()
+
+
+# ---------------------------------------------------------------------------
+# Website authority endings (consent expired, source revoked)
+# ---------------------------------------------------------------------------
+
+from tests.test_qualification_coverage_edges import (  # noqa: E402
+    _descriptor as _qualification_descriptor,
+    _patch_pipeline_side_effects,
+    _write_descriptor,
+)
+
+PAYLOAD = {
+    "bucket": "capture-bucket",
+    "scene_id": "scene-1",
+    "capture_id": "capture-1",
+    "raw_prefix_uri": "gs://capture-bucket/scenes/scene-1/captures/capture-1/raw",
+}
+PAYLOAD_BYTES = json.dumps(PAYLOAD).encode("utf-8")
+
+
+@pytest.mark.parametrize("code", ["consent_expired", "source_revoked"])
+def test_authority_ending_code_walks_the_exception_chain(code):
+    try:
+        try:
+            raise ValueError(f"website_control_scene-sponsorship_http_409:{code}")
+        except ValueError as inner:
+            raise listener_module.PipelineError("website_task_context failed") from inner
+    except listener_module.PipelineError as outer:
+        assert listener_module.authority_ending_code(outer) == code
+
+
+@pytest.mark.parametrize("message", [
+    "website_control_scene-sponsorship_http_409:task_brief_missing",
+    "website_control_scene-sponsorship_http_503:consent_expired",
+    "website_control_scene-sponsorship_http_409:consent_expired_soon",
+    "consent_expired",
+    "not_website_control_scene-sponsorship_http_409:consent_expired",
+])
+def test_other_failures_are_not_authority_endings(message):
+    assert listener_module.authority_ending_code(ValueError(message)) is None
+
+
+def test_authority_ending_code_follows_implicit_context_and_stops_on_cycles():
+    try:
+        try:
+            raise ValueError("website_control_prepared-scene_http_409:source_revoked")
+        except ValueError:
+            raise RuntimeError("preparation held")  # implicit __context__, no __cause__
+    except RuntimeError as outer:
+        assert listener_module.authority_ending_code(outer) == "source_revoked"
+
+    first, second = RuntimeError("first"), RuntimeError("second")
+    first.__cause__, second.__cause__ = second, first
+    assert listener_module.authority_ending_code(first) is None
+
+    deepest = ValueError("website_control_task-context_http_409:consent_expired")
+    chain = deepest
+    for index in range(20):
+        wrapper = PipelineError(f"wrapper {index}")
+        wrapper.__cause__ = chain
+        chain = wrapper
+    assert listener_module.authority_ending_code(chain) is None
+
+
+def _website_qualification_descriptor(storage_root: Path) -> str:
+    return _write_descriptor(storage_root, _qualification_descriptor(
+        capture_source="unknown", capture_modality="video_only",
+        requested_outputs=["preview_simulation"],
+        metadata={"capture_entry_source": "browser_self_capture",
+                  "capture_rights": {"derived_scene_generation_allowed": True}}))
+
+
+def test_a_real_task_context_refusal_is_recognized_as_an_authority_ending(tmp_path, monkeypatch):
+    """The WebApp's 409 travels through the real transport and qualification lane."""
+    import blueprint_pipeline.website_task_context as website_task_context
+
+    monkeypatch.setenv("PIPELINE_SYNC_WEBAPP_URL", "https://tryblueprint.io/api/internal/pipeline/sync")
+    monkeypatch.setattr(website_task_context, "load_pipeline_sync_token", lambda: "test-secret")
+
+    def refuse(url, **_kwargs):
+        raise HTTPError(url, 409, "request refused", {}, BytesIO(b'{"code":"consent_expired"}'))
+
+    monkeypatch.setattr(website_task_context, "safe_request", refuse)
+    storage_root = tmp_path / "gcs"
+    descriptor_uri = _website_qualification_descriptor(storage_root)
+    with pytest.raises(PipelineError) as failure:
+        run_capture_pipeline(
+            descriptor_gcs_uri=descriptor_uri, lane="qualification",
+            config=types.SimpleNamespace(gcs_root=storage_root, runtime_preflight_enabled=False))
+    assert str(failure.value) == "website_control_task-context_http_409:consent_expired"
+    assert listener_module.authority_ending_code(failure.value) == "consent_expired"
+
+
+def test_a_held_preparation_stage_is_recognized_as_an_authority_ending(tmp_path, monkeypatch):
+    """A refusal folded into preparation blockers surfaces as a StageError, then a PipelineError."""
+    import blueprint_pipeline.website_scene_handoff as website_scene_handoff
+
+    storage_root = tmp_path / "gcs"
+    descriptor_uri = _website_qualification_descriptor(storage_root)
+    _patch_pipeline_side_effects(monkeypatch)
+    monkeypatch.setattr(orchestrator, "load_current_website_task_context", lambda **_: {
+        "description": "Pick the box", "confirmed": True,
+        "capture_rights": {"derived_scene_generation_allowed": True}})
+    monkeypatch.setattr(orchestrator, "load_website_scene_sponsorship", lambda **_: {"sponsor": "blueprint"})
+    monkeypatch.setattr(orchestrator, "run_clean_plate_stage", lambda **_: {
+        "status": "noop", "privacy_status": "no_people_detected", "privacy_verified": True})
+    # prepare_website_scene_handoff catches the transport's ValueError and keeps it as a blocker.
+    monkeypatch.setattr(website_scene_handoff, "prepare_website_scene_handoff", lambda **_: {
+        "status": "intake_ready",
+        "runtime_inputs": {"status": "awaiting_inputs",
+                           "blockers": ["website_control_prepared-scene_http_409:source_revoked"]}})
+    with pytest.raises(PipelineError) as failure:
+        run_capture_pipeline(
+            descriptor_gcs_uri=descriptor_uri, lane="qualification",
+            config=types.SimpleNamespace(gcs_root=storage_root, runtime_preflight_enabled=False))
+    assert isinstance(failure.value.__cause__, StageError)
+    assert listener_module.authority_ending_code(failure.value) == "source_revoked"
+
+
+def test_payload_digest_matches_the_recorded_delivery_evidence(tmp_path):
+    message = types.SimpleNamespace(message_id="m1", data=PAYLOAD_BYTES, attributes={})
+    evidence = listener_module._write_delivery_evidence(
+        storage_root=tmp_path, message=message, received=types.SimpleNamespace(delivery_attempt=1),
+        disposition="permanent_invalid", blockers=[])
+    recorded = json.loads(evidence.read_text(encoding="utf-8"))["payload_sha256"]
+    assert listener_module.payload_sha256(PAYLOAD_BYTES) == recorded
+    assert listener_module.payload_sha256(PAYLOAD_BYTES.decode("utf-8")) == recorded
+    assert listener_module.payload_sha256({"b": 1, "a": 2}) == sha256(b'{"a":2,"b":1}').hexdigest()
