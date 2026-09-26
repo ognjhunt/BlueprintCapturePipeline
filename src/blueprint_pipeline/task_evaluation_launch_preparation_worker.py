@@ -870,7 +870,7 @@ def _validated_configured_scene_revision(
 # Small JSON references and the configured-revision inputs materialized later in
 # the same message; the large runtime-source layer is reserved separately once
 # the wrapper names it.
-PREPARATION_RESERVATION_MARGIN_BYTES = 512 * 1024**2
+PREPARATION_RESERVATION_MARGIN_BYTES = 256 * 1024**2
 PREPARATION_DISK_RECHECKS = 6
 PREPARATION_DISK_RECHECK_SECONDS = 15
 
