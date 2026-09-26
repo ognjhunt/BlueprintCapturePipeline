@@ -308,6 +308,8 @@ class _Collection:
 class _Profiles:
     commits: Mapping[str, str | None]
     documents: Mapping[str, Mapping[str, Any]]
+    #: Profile ids (file stems) whose file exists but could not be read.
+    unreadable: frozenset[str] = frozenset()
 
 
 def _profile_commit(profile: Mapping[str, Any], profile_id: str) -> str | None:
@@ -336,6 +338,7 @@ def _read_profiles(profile_dir: Path, collection: _Collection) -> _Profiles:
 
     commits: dict[str, str | None] = {}
     documents: dict[str, Mapping[str, Any]] = {}
+    unreadable: set[str] = set()
     try:
         if profile_dir.is_symlink() or not profile_dir.is_dir():
             raise ValueError("profile_dir_unsafe")
@@ -350,12 +353,13 @@ def _read_profiles(profile_dir: Path, collection: _Collection) -> _Profiles:
             profile = None
         if not isinstance(profile, Mapping):
             collection.warnings.add(f"release_protection_profile_unreadable:{_code_id(name)}")
+            unreadable.add(name[: -len(".json")])
             continue
         declared = profile.get("profile_id")
         profile_id = declared if isinstance(declared, str) and declared else name[: -len(".json")]
         commits[profile_id] = _profile_commit(profile, profile_id)
         documents[profile_id] = profile
-    return _Profiles(commits, documents)
+    return _Profiles(commits, documents, frozenset(unreadable))
 
 
 def _envelope_commits(envelope: Mapping[str, Any]) -> set[str]:
@@ -438,8 +442,13 @@ def _scan_queues(
                 commits = _envelope_commits(envelope)
                 for profile_id in sorted(_envelope_profile_ids(envelope)):
                     if profile_id not in profiles.commits:
+                        problem = (
+                            "live_profile_unreadable"
+                            if profile_id in profiles.unreadable
+                            else "profile_missing"
+                        )
                         collection.blockers.add(
-                            f"release_protection_profile_missing:{_code_id(profile_id)}"
+                            f"release_protection_{problem}:{_code_id(profile_id)}"
                         )
                         continue
                     commit = profiles.commits[profile_id]
@@ -625,6 +634,13 @@ def _collect_standing_authorizations(
         if state == "invalid" or authorization is None:
             collection.blockers.add(
                 f"release_protection_standing_authorization_invalid:{_code_id(profile_id)}"
+            )
+            continue
+        if state == "live" and profile_id in profiles.unreadable:
+            # It can still launch a profile nobody can read: which release that
+            # pins is unknown, and the commit in its id may be stale.
+            collection.blockers.add(
+                f"release_protection_live_profile_unreadable:{_code_id(profile_id)}"
             )
             continue
         commit = (

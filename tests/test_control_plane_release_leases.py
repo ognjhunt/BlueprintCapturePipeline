@@ -1170,3 +1170,32 @@ def test_a_protected_binding_whose_ancestry_breaks_blocks(
     assert result["blockers"] == sorted(
         f"release_protection_ancestry_unreadable:{_binding_name(path)}" for path in (middle, live)
     )
+
+
+def test_a_live_reference_to_an_unreadable_profile_blocks(tmp_path: Path) -> None:
+    sources = _sources(tmp_path)
+    profile_id = f"lane-{B}"
+    # The profile exists but cannot be read: which release it pins is unknown,
+    # and the commit in its id may be a stale guess.
+    (sources.profile_dir / f"{profile_id}.json").write_text("{", encoding="utf-8")
+    _write(
+        sources.standing_authorization_dir / f"{profile_id}.json",
+        {
+            "schema_version": "task_evaluation_standing_launch_authorization.v1",
+            "profile_id": profile_id,
+            "profile_digest": "sha256:unreadable",
+            "max_launches": 2,
+            "max_total_spend_usd": 5.0,
+            "expires_at": _iso(NOW + DAY),
+        },
+    )
+    _write(
+        sources.control_plane_root / "task-evaluation-launches" / "pending" / "launch.json",
+        {"launch_profile_id": profile_id},
+        mtime=NOW - DAY,
+    )
+
+    result = collect_release_protections(sources, now=NOW, migrate=False)
+
+    assert result["blockers"] == [f"release_protection_live_profile_unreadable:{profile_id}"]
+    assert B not in _protected(result)
