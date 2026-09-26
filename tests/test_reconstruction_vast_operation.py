@@ -577,3 +577,182 @@ def test_watchdog_can_guard_exact_operation_but_never_another_operations_name():
     assert not vast_operation._watchdog_valid(watchdog, now_epoch=1, hard_ttl_seconds=100,
                                              resource_name=vast_operation.NAME_PREFIX + "other")
     assert not vast_operation._watchdog_valid(watchdog, now_epoch=1, hard_ttl_seconds=100)
+
+
+class _SlotProvider(_Provider):
+    """Vast inventory with other lanes' instances holding concurrent paid slots."""
+
+    def __init__(self, *, other_ids=("99",), own_lingers=False, **kwargs):
+        super().__init__(**kwargs)
+        self.other_ids = list(other_ids)
+        self.own_lingers = own_lingers
+
+    def billable_inventory(self, *, name_prefix):
+        rows = [{"instance_id": other, "name": "blueprint-native-g1-team"} for other in self.other_ids]
+        if self.launched or self.own_lingers:
+            rows.append({"instance_id": "42", "name": "blueprint-reconstruction-pose-" + "1" * 12})
+        rows = [row for row in rows if row["name"].startswith(name_prefix)]
+        return {"api_confirmed": True, "live_resource_count": len(rows), "resources": rows}
+
+
+def _run(tmp_path: Path, provider) -> dict:
+    times = iter([1000.0, 1001.0, 1002.0])
+    return run_reconstruction_vast_operation(
+        bound_request=_bound_request(),
+        bundle_receipt=_bundle_receipt(),
+        preflight=_preflight(),
+        job_dir=tmp_path,
+        input_bundle_get_url="https://objects.example/input",
+        input_receipt_get_url="https://objects.example/receipt",
+        output_bundle_put_url="https://objects.example/output-put",
+        output_bundle_get_url="https://objects.example/output-get",
+        provider=provider,
+        paid_resource_admission_grant=_grant(),
+        output_fetcher=_fetcher,
+        output_validator=_validator,
+        sleeper=lambda _seconds: None,
+        clock=lambda: next(times),
+        watchdog_validator=lambda _watchdog, _now, _ttl: True,
+    )
+
+
+def test_another_lanes_concurrent_slot_does_not_fail_this_operations_teardown(tmp_path: Path) -> None:
+    result = _run(tmp_path, _SlotProvider(other_ids=("99", "100")))
+
+    assert result["status"] == "completed"
+    assert result["provider_zero_verified"] is True
+    zero = json.loads((tmp_path / "provider_zero_verification.json").read_text())
+    assert zero["scope"] == vast_operation.SLOT_SCOPE
+    assert zero["scoped_live_resource_count"] == 0
+    assert zero["global_live_resource_count"] == 2
+    assert zero["other_slot_live_resource_count"] == 2
+    assert zero["instance_absent_from_global_inventory"] is True
+    assert not list((tmp_path / "leases").glob("*.lease.json"))
+    replay = replay_reconstruction_vast_operation(
+        job_dir=tmp_path, bound_request=_bound_request(), output_validator=_validator)
+    assert replay["status"] == "replay_verified"
+
+
+def test_own_instance_still_listed_fails_teardown_even_under_slot_scope(tmp_path: Path) -> None:
+    provider = _SlotProvider(other_ids=())
+    provider.terminate = lambda instance_id: {"status": "stopped", "instance_id": instance_id}
+
+    result = _run(tmp_path, provider)
+
+    assert result["status"] == "failed"
+    assert "reconstruction_vast_operation_teardown_verification_failed" in result["blockers"]
+    zero = json.loads((tmp_path / "provider_zero_verification.json").read_text())
+    assert zero["status"] == "FAIL"
+    assert zero["instance_absent_from_global_inventory"] is False
+
+
+def test_launch_is_refused_when_every_paid_slot_is_held(tmp_path: Path) -> None:
+    provider = _SlotProvider(other_ids=("97", "98", "99"))
+
+    with pytest.raises(ReconstructionVastOperationError) as raised:
+        _run(tmp_path, provider)
+
+    assert "reconstruction_vast_operation_provider_not_zero_before_launch" in raised.value.codes
+    assert provider.requests == []
+
+
+def _pre_slot_scope_failure(tmp_path: Path, monkeypatch) -> _SlotProvider:
+    """Reproduce the receipts written before provider zero was slot-scoped."""
+
+    def global_zero(*, scoped, global_inventory, instance_id):
+        passed = all(row.get("live_resource_count") == 0 for row in (scoped, global_inventory))
+        return {"passed": passed, "instance_absent_from_global_inventory": True,
+                "other_slot_live_resource_count": None}
+
+    provider = _SlotProvider(other_ids=("99",))
+    with monkeypatch.context() as patch:
+        patch.setattr(vast_operation, "_slot_scoped_provider_zero", global_zero)
+        result = _run(tmp_path, provider)
+    assert result["status"] == "failed"
+    assert set(result["blockers"]) == {
+        "reconstruction_vast_operation_teardown_verification_failed",
+        "reconstruction_vast_operation_paid_lane_release_blocked",
+    }
+    return provider
+
+
+def test_failed_teardown_from_another_slot_is_reverified_and_reused_without_a_second_rental(
+    tmp_path: Path, monkeypatch
+) -> None:
+    provider = _pre_slot_scope_failure(tmp_path, monkeypatch)
+    failed = json.loads((tmp_path / "reconstruction_vast_operation_execution.json").read_text())
+    assert replay_reconstruction_vast_operation(
+        job_dir=tmp_path, bound_request=_bound_request(), output_validator=_validator,
+    )["status"] == "replay_rejected"
+    monkeypatch.setattr(vast_operation, "_lease_is_stale", lambda lease: (True, "owner_pid_not_alive"))
+
+    outcome = vast_operation.reconcile_concurrent_slot_teardown(
+        job_dir=tmp_path, bound_request=_bound_request(), provider=provider)
+
+    assert outcome["status"] == "reconciled"
+    assert len(provider.requests) == 1
+    execution = json.loads((tmp_path / "reconstruction_vast_operation_execution.json").read_text())
+    assert execution["status"] == "completed" and execution["blockers"] == []
+    record = json.loads((tmp_path / "concurrent_slot_reconciliation.json").read_text())
+    assert record["superseded_execution_result_digest"] == failed["execution_result_digest"]
+    assert json.loads((tmp_path / "superseded/reconstruction_vast_operation_execution.json").read_text()) == failed
+    assert not list((tmp_path / "leases").glob("*.lease.json"))
+    pending = list((tmp_path / "pending_teardowns").glob("*.json"))
+    assert json.loads(pending[0].read_text())["status"] == "closed"
+    assert replay_reconstruction_vast_operation(
+        job_dir=tmp_path, bound_request=_bound_request(), output_validator=_validator,
+    )["status"] == "replay_verified"
+    assert vast_operation.reconcile_concurrent_slot_teardown(
+        job_dir=tmp_path, bound_request=_bound_request(), provider=provider,
+    )["status"] == "not_required"
+
+
+def test_reconciliation_refuses_while_own_instance_is_live_or_lease_owner_runs(
+    tmp_path: Path, monkeypatch
+) -> None:
+    provider = _pre_slot_scope_failure(tmp_path, monkeypatch)
+    before = (tmp_path / "reconstruction_vast_operation_execution.json").read_bytes()
+    provider.own_lingers = True
+    assert vast_operation.reconcile_concurrent_slot_teardown(
+        job_dir=tmp_path, bound_request=_bound_request(), provider=provider,
+    )["status"] == "not_verified"
+    provider.own_lingers = False
+    monkeypatch.setattr(vast_operation, "_lease_is_stale", lambda lease: (False, None))
+    assert vast_operation.reconcile_concurrent_slot_teardown(
+        job_dir=tmp_path, bound_request=_bound_request(), provider=provider,
+    )["status"] == "lease_owner_live"
+    assert (tmp_path / "reconstruction_vast_operation_execution.json").read_bytes() == before
+    assert not (tmp_path / "concurrent_slot_reconciliation.json").exists()
+
+
+def test_reconciliation_never_rescues_a_failure_with_any_other_cause(tmp_path: Path) -> None:
+    provider = _Provider(terminate_status="stop_failed", zero_after=False)
+    _run(tmp_path, provider)
+
+    assert vast_operation.reconcile_concurrent_slot_teardown(
+        job_dir=tmp_path, bound_request=_bound_request(), provider=_SlotProvider(other_ids=()),
+    )["status"] == "not_eligible"
+
+
+def test_interrupted_reconciliation_resumes_from_preserved_originals(tmp_path: Path, monkeypatch) -> None:
+    provider = _pre_slot_scope_failure(tmp_path, monkeypatch)
+    monkeypatch.setattr(vast_operation, "_lease_is_stale", lambda lease: (True, "owner_pid_not_alive"))
+    real_write = vast_operation.write_json
+
+    def crash_before_execution(path, value):
+        if Path(path).name == "reconstruction_vast_operation_execution.json" and Path(path).parent == tmp_path:
+            raise OSError("host lost power")
+        real_write(path, value)
+
+    monkeypatch.setattr(vast_operation, "write_json", crash_before_execution)
+    with pytest.raises(OSError):
+        vast_operation.reconcile_concurrent_slot_teardown(
+            job_dir=tmp_path, bound_request=_bound_request(), provider=provider)
+    monkeypatch.setattr(vast_operation, "write_json", real_write)
+
+    assert vast_operation.reconcile_concurrent_slot_teardown(
+        job_dir=tmp_path, bound_request=_bound_request(), provider=provider,
+    )["status"] == "reconciled"
+    assert replay_reconstruction_vast_operation(
+        job_dir=tmp_path, bound_request=_bound_request(), output_validator=_validator,
+    )["status"] == "replay_verified"

@@ -21,7 +21,8 @@ from .decision_evidence_contracts import canonical_digest
 from .gpu_render_providers import get_render_provider
 from .reconstruction_gpu_admission import collect_reconstruction_vast_preflight
 from .reconstruction_gpu_operation_bundle import build_canary_request_from_operation_bundle
-from .reconstruction_vast_operation import NAME_PREFIX, _canonical_receipt_file, replay_reconstruction_vast_operation, reconstruction_resource_name
+from .reconstruction_vast_operation import (NAME_PREFIX, _canonical_receipt_file, reconcile_concurrent_slot_teardown,
+                                            replay_reconstruction_vast_operation, reconstruction_resource_name)
 from .vast_independent_watchdog_control import arm_independent_vast_watchdog, close_independent_vast_watchdog
 from .wam_provider_object_store import stage_wam_provider_bundle_object_store, cleanup_staged_wam_provider_objects
 from .website_mapanything_operation import compile_input_bundle
@@ -116,6 +117,18 @@ def _failed_attempt_safe_to_retry(root: Path, *, source_commit: str) -> bool:
     )
 
 
+def _reconcile_concurrent_slot(root: Path) -> str:
+    operation = root / "reconstruction_vast_operation"
+    try:
+        bound = json.loads((root / "bound-request.json").read_text())
+    except (OSError, ValueError):
+        return "not_eligible"
+    if not (operation / "reconstruction_vast_operation_execution.json").is_file():
+        return "not_eligible"
+    return str(reconcile_concurrent_slot_teardown(
+        job_dir=operation, bound_request=bound, provider=get_render_provider("vast"))["status"])
+
+
 def dispatch_geometry(*, input_manifest: Path, output_root: Path, task_context: Mapping[str, Any],
                       source_commit: str, allocate: Callable[..., Mapping[str, Any]]) -> dict[str, Any]:
     inputs = json.loads(input_manifest.read_text())
@@ -138,6 +151,11 @@ def dispatch_geometry(*, input_manifest: Path, output_root: Path, task_context: 
             try:
                 return _reuse(root, inputs)
             except ValueError as exc:
+                # A retrieved output whose teardown failed only on another slot's
+                # live instance is re-verified, never rented again.
+                if (str(exc) == "website_mapanything_existing_attempt_requires_reconciliation"
+                        and _reconcile_concurrent_slot(root) == "reconciled"):
+                    return _reuse(root, inputs)
                 if (str(exc) != "website_mapanything_existing_attempt_requires_reconciliation"
                         or attempt_index == 2
                         or not _failed_attempt_safe_to_retry(root, source_commit=source_commit)):
