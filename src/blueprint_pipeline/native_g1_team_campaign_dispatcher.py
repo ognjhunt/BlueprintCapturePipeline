@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from .decision_evidence_contracts import cross_runtime_canonical_digest as digest
-from .native_g1_team_campaign_intake import _read
+from .native_g1_team_campaign_intake import INTENT_SCHEMA, _read
 from .native_g1_team_campaign_preparation import (
     _verified_intent,
     prepare_g1_team_campaign,
@@ -237,6 +237,35 @@ def dispatch_one_g1_team_campaign(
             if started_path.is_file():
                 unresolved_started.append(intent_id)
                 continue
+            # Expired authority is terminal before preparation or provider work.
+            # Seal it so a stale first entry cannot starve later team requests.
+            request = intent.get("request")
+            authorization = request.get("authorization") if isinstance(request, dict) else None
+            expiry = authorization.get("expires_at_epoch") if isinstance(authorization, dict) else None
+            if (
+                intent.get("schema_version") != INTENT_SCHEMA
+                or intent.get("status") != "accepted_not_dispatched"
+                or type(expiry) not in (int, float)
+            ):
+                raise ValueError("g1_team_campaign_intent_invalid")
+            if time.time() >= expiry:
+                final_path.parent.mkdir(mode=0o750, exist_ok=True)
+                final = {
+                    "schema_version": FINAL_SCHEMA,
+                    "status": "authorization_expired_before_provider",
+                    "intent_id": intent_id,
+                    "intent_digest": intent["intent_digest"],
+                    "provider_mutation_performed": False,
+                    "four_episodes_verified": False,
+                    "global_provider_zero_verified": False,
+                    "official_billing_reconciled": False,
+                    "private_review_delivered": False,
+                    "blockers": ["g1_team_campaign_authority_expired"],
+                    "claim_ceiling": "development_only",
+                }
+                final["dispatch_digest"] = digest(final, digest_field="dispatch_digest")
+                write_exclusive(final_path, final)
+                return final
             return _dispatch_one_locked(
                 intent_path=intent_path, registry_path=Path(registry_path),
                 work_root=work, implementation_commit=implementation_commit,
@@ -273,6 +302,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(json.dumps(result, sort_keys=True))
     return 0 if result["status"] in {
         "no_pending_intent", "dry_run_ready",
+        "authorization_expired_before_provider",
         "controller_completed_pending_billing_and_private_delivery",
     } else 2
 

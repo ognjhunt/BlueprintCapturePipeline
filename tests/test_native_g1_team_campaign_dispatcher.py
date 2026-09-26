@@ -98,3 +98,24 @@ def test_interrupted_paid_invocation_is_never_automatically_relaunched(tmp_path,
     assert list(args["work_root"].glob("g1-*/execution_started.json"))
     assert dispatch_one_g1_team_campaign(**args, execute=True, allocator_runner=runner)["status"] == "awaiting_exact_attempt_reconciliation"
     assert len(calls) == 2
+
+
+def test_expired_authority_is_sealed_without_provider_or_bundle_work(tmp_path, monkeypatch):
+    args = _ready(tmp_path, monkeypatch)
+    intent_path = next(args["queue_root"].glob("g1-*/intent.json"))
+    intent = json.loads(intent_path.read_text())
+    expiry = intent["request"]["authorization"]["expires_at_epoch"]
+    monkeypatch.setattr(
+        "blueprint_pipeline.native_g1_team_campaign_dispatcher.time.time",
+        lambda: expiry + 1,
+    )
+    calls = []
+    def runner(command, log_path):
+        calls.append((command, log_path))
+        raise AssertionError("allocator must not run")
+    expired = dispatch_one_g1_team_campaign(**args, execute=True, allocator_runner=runner)
+    assert expired["status"] == "authorization_expired_before_provider"
+    assert expired["provider_mutation_performed"] is False
+    assert not calls
+    assert not list(args["work_root"].glob("g1-*/bundle"))
+    assert dispatch_one_g1_team_campaign(**args, execute=True, allocator_runner=runner)["status"] == "no_pending_intent"
