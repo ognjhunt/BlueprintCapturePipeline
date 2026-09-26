@@ -752,6 +752,16 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                      "observation_timestamps_seconds": sorted({float(frames_by_id[row["source_frame_id"]].get("timestamp_seconds") or 0.0)
                                                               for row in track["observations"]}),
                      "physical_measurement_proven": False}
+        if articulation_kind == "prismatic" and isinstance(spec, Mapping):
+            if (spec.get("status") == "researched"
+                    and spec.get("digest") == canonical_digest(spec, digest_field="digest")):
+                force = (spec.get("specs") or {}).get("opening_pull_force")
+                if isinstance(force, Mapping) and force.get("unit") == "n":
+                    mechanism["opening_effort_reference"] = {
+                        "value_n": force["value"], "source_urls": force["source_urls"],
+                        "product_match": force["match"], "object_spec_digest": spec["digest"],
+                        "claim": "published_product_or_comparable_not_measured_on_captured_unit",
+                    }
         if body is not None:
             # The website admits a rebuilt hinged assembly only with this evidence.
             mechanism["whole_object_coverage"] = {

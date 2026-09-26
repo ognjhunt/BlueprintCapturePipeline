@@ -292,6 +292,21 @@ def _graph_sample(
     }
 
 
+def test_prismatic_opening_requires_native_task_contact_before_joint_motion() -> None:
+    spec = _graph_spec()
+    spec["articulation_graph"]["joints"][0]["joint_type"] = "prismatic"
+    samples = [_graph_sample(0, 0.0), _graph_sample(1, 0.8),
+               *[_graph_sample(step, 0.8) for step in range(2, 6)]]
+    without_contact = score_task_episode_from_spec(task_spec=spec, samples=samples)
+    assert without_contact["task_succeeded"] is False
+    assert without_contact["outcome"] == "task_contact_not_established_before_motion"
+    assert without_contact["measurements"]["first_motion_step_index"] == 1
+    samples[1]["task_contact_active"] = True
+    with_contact = score_task_episode_from_spec(task_spec=spec, samples=samples)
+    assert with_contact["task_succeeded"] is True
+    assert with_contact["predicates"]["task_contact_established_before_motion"] is True
+
+
 def test_general_graph_scores_target_dependent_passive_and_locked_roles() -> None:
     report = score_task_episode_from_spec(
         task_spec=_graph_spec(),

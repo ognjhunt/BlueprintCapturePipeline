@@ -746,9 +746,33 @@ def plan_articulated_assembly(configuration: Mapping[str, Any]) -> dict[str, Any
     # A legacy (familyless) drawer plan is origin/main's and would drop them.
     if "assembly_family" not in configuration and any(configuration.get(key) for key in _CONTRACT_KEYS):
         raise AssetAuthoringError("articulated_assembly_family_undeclared")
-    if family == HINGED_FAMILY:
-        return _plan_hinged_door_appliance(configuration, contract)
-    return _plan_stacked_drawer_cabinet(configuration, contract)
+    plan = (_plan_hinged_door_appliance(configuration, contract) if family == HINGED_FAMILY
+            else _plan_stacked_drawer_cabinet(configuration, contract))
+    # Joint damping resists velocity but does nothing at rest. Use the admitted
+    # *joint* effort interval for a provisional breakaway model on every new
+    # articulated task. This is an estimate, never a measured property of the
+    # captured unit or a direct transfer of a comparable product's pull force.
+    bounds = (configuration.get("mechanism") or {}).get("passive_dynamics", {}).get("joint_friction_bounds")
+    if "assembly_family" in configuration and isinstance(bounds, list) and len(bounds) == 2:
+        low, high = (float(value) for value in bounds)
+        if not (math.isfinite(low) and math.isfinite(high) and 0 < low <= high):
+            raise AssetAuthoringError("articulated_joint_friction_bounds_invalid")
+        plan["task_joint"]["passive_friction"] = {
+            "static_effort": round((low + high) / 2, 6),
+            "dynamic_effort": round(low, 6),
+            "admitted_interval": [low, high],
+            "units": "N" if plan["task_joint"]["joint_type"] == "prismatic" else "N_m",
+            "basis": "estimated_unobserved_joint_resistance_prior",
+            "physical_measurement_proven": False,
+        }
+        plan["construction_assumptions"] = [*plan["construction_assumptions"],
+            "joint_static_and_dynamic_friction_estimated_from_admitted_prior"]
+    reference = (configuration.get("mechanism") or {}).get("opening_effort_reference")
+    if reference is not None:
+        plan["task_joint"]["opening_effort_reference"] = dict(reference)
+        plan["construction_assumptions"] = [*plan["construction_assumptions"],
+            "published_opening_effort_is_comparison_not_direct_joint_friction_or_unit_measurement"]
+    return plan
 
 
 def _plan_stacked_drawer_cabinet(configuration: Mapping[str, Any], contract: Mapping[str, Any]) -> dict[str, Any]:
@@ -1380,6 +1404,17 @@ def package_astra_articulated_candidate(*, requests: Mapping[str, AuthoringReque
         if is_task:
             prim.SetCustomDataByKey("blueprint:graphAxis", Gf.Vec3d(*task_joint["axis_asset_frame"]))
             prim.SetCustomDataByKey("blueprint:declaredDriveType", "none")
+            passive_friction = task_joint.get("passive_friction")
+            if passive_friction is not None:
+                axis = "angular" if revolute else "linear"
+                prim.AddAppliedSchema(f"PhysxJointAxisAPI:{axis}")
+                prim.CreateAttribute(f"physxJointAxis:{axis}:staticFrictionEffort", Sdf.ValueTypeNames.Float,
+                                     custom=False).Set(
+                    float(passive_friction["static_effort"]))
+                prim.CreateAttribute(f"physxJointAxis:{axis}:dynamicFrictionEffort", Sdf.ValueTypeNames.Float,
+                                     custom=False).Set(
+                    float(passive_friction["dynamic_effort"]))
+                prim.SetCustomDataByKey("blueprint:passiveFrictionBasis", passive_friction["basis"])
             damping = float(task_joint["drive"]["damping"])
             if damping > 0.0:
                 # USD angular drive damping is per degree; the plan's is per radian.

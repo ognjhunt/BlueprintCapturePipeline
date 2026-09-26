@@ -439,6 +439,8 @@ def build_articulated_authoring_requests(stage_input: Mapping[str, Any], source_
             "part_frame": "center_XY_bottom_Z_with_the_front_face_at_+X",
             "source_uncertainty_note": uncertainty_note, "construction_assumptions": plan["construction_assumptions"],
             "source_geometry_receipt": plan["source_geometry_receipt"],
+            **({"mechanism_opening_effort_reference": plan["task_joint"]["opening_effort_reference"]}
+               if "opening_effort_reference" in plan["task_joint"] else {}),
             **({"development_geometry_hypothesis": hypothesis} if hypothesis is not None else {}),
             "required_output": configuration["required_output"],
             **({"handle": spec["handle"]} if "handle" in spec else {}),

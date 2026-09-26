@@ -15,11 +15,14 @@ from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
 
 SPEC = "https://www.bosch-home.com/us/specs/SHPM88Z75N"
 RETAIL = "https://retailer.example/p"
+SLIDE = "https://www.accuride-europe.com/example-slide"
 SPEC_PAGE = (b"<html><head><title>Specs</title></head><body><script>var w='99 lb';</script><table>"
              b"<tr><th>Width</th><td>23 9/16 in (59.8 cm)</td></tr><tr><th>Height</th><td>33 7/8 in</td></tr>"
              b"<tr><th>Depth</th><td>22 1/2 in</td></tr><tr><th>Net weight</th><td>97 lbs</td></tr></table>"
              b"<p>Upper rack max load: 10 kg</p></body></html>")
 PAGES = {SPEC: {"status": 200, "headers": {"Content-Type": "text/html; charset=utf-8"}, "body": SPEC_PAGE},
+         SLIDE: {"status": 200, "headers": {"Content-Type": "text/html"},
+                 "body": b"<h1>Drawer slide</h1><p>Opening Pull Force: 25 N +5 N / -5 N</p><p>Weight: 2.5 kg</p>"},
          RETAIL: {"status": 301, "headers": {"Location": "https://www.retailer.example/p2"}, "body": b""},
          "https://www.retailer.example/p2": {"status": 200, "headers": {"Content-Type": "text/html"},
                                              "body": b"<div>Overall height: 34 1/2 in</div>"}}
@@ -186,7 +189,6 @@ def test_brand_read_from_a_label_cannot_claim_an_exact_model(tmp_path, website):
 @pytest.mark.parametrize("env,context,labels,reason", [
     ({}, OWNER, (), "agent_disabled"),
     ({research.ENABLE_ENV: "1"}, OWNER, (), "live_agents_sdk_operators_not_allowed"),
-    ({research.ENABLE_ENV: "1", "BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS": "1"}, _context(), (), "identity_unknown"),
 ])
 def test_closed_gate_or_unknown_identity_is_not_run_and_spends_nothing(tmp_path, website, monkeypatch,
                                                                      env, context, labels, reason):
@@ -199,6 +201,23 @@ def test_closed_gate_or_unknown_identity_is_not_run_and_spends_nothing(tmp_path,
     assert record["status"] == "not_run" and record["research"] == {"status": "not_run", "reason": reason}
     assert record["specs"] == {} and record["blockers"] == []  # Not a blocker: estimates stay estimates.
     assert invoker.calls == website["reserve"] == website["fetch"] == []
+
+
+def test_unknown_object_research_keeps_only_cited_comparable_mechanism_force(tmp_path, website):
+    findings = _findings([
+        _figure("opening_pull_force", 25, "n", SLIDE, "Opening Pull Force: 25 N +5 N / -5 N"),
+        _figure("net_weight", 2.5, "kg", SLIDE, "Weight: 2.5 kg"),
+        _figure("opening_pull_force", 40, "n", SLIDE, "Opening Pull Force: 40 N"),
+    ], match="exact_model")
+    record = _research(tmp_path, website, _Invoker(findings, fetches=(SLIDE,)), kind="prismatic",
+                       context=_context(), coverage=_coverage(tmp_path, labels=()))
+    assert record["identity"]["basis"] == "unknown"
+    assert record["product"]["match"] == "comparable_class"
+    assert record["specs"] == {"opening_pull_force": {"value": 25.0, "unit": "n",
+                            "source_urls": [SLIDE], "match": "comparable_class"}}
+    assert {row["reason"] for row in record["unsourced_dropped"]} == {
+        "comparable_figure_not_transferable", "quote_not_in_page"}
+    assert record["physical_measurement_proven"] is False
 
 
 def test_attach_keeps_matching_records_and_restart_buys_nothing(tmp_path, website):

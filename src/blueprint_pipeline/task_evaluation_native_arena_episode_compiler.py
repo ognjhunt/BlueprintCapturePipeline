@@ -1057,6 +1057,49 @@ def _materialize_native_particlefield_appearance(
     }
 
 
+def _derive_runtime_prismatic_friction_overlay(
+    *, task_spec: Mapping[str, Any], task_definition: Mapping[str, Any],
+    replacement_path: Path, output_root: Path,
+) -> tuple[Path, dict[str, Any] | None]:
+    """Preserve a sealed asset while binding a legacy slide's passive prior."""
+    from .articulation_graph_contract import validate_articulation_graph
+    from .native_task_arena_runtime import (
+        NativeTaskArenaRuntimeError, author_passive_joint_friction_overlay,
+        verify_grounded_articulation,
+    )
+
+    graph = validate_articulation_graph(task_spec["articulation_graph"])
+    targets = [joint for joint in graph["joints"] if joint["role"] == "target"]
+    if len(targets) != 1 or targets[0]["joint_type"] != "prismatic":
+        return replacement_path, None
+    bindings = [row for row in task_definition.get("task_joint_bindings") or []
+                if row.get("joint_id") == targets[0]["joint_id"] and row.get("role") == "target"]
+    if len(bindings) != 1:
+        raise TaskEvaluationNativeArenaEpisodeCompilerError(
+            "episode_compiler_prismatic_joint_binding_missing")
+    derived = output_root / "runtime-passive-joint" / "replacement.usda"
+    try:
+        overlay = author_passive_joint_friction_overlay(
+            replacement_path, derived, joint_prim_path=bindings[0]["joint_prim_path"])
+    except NativeTaskArenaRuntimeError as exc:
+        raise TaskEvaluationNativeArenaEpisodeCompilerError(
+            "episode_compiler_passive_joint_overlay_invalid:" + ",".join(exc.errors)) from exc
+    if overlay is None:
+        return replacement_path, None
+    try:
+        grounding = verify_grounded_articulation(derived)
+    except NativeTaskArenaRuntimeError as exc:
+        raise TaskEvaluationNativeArenaEpisodeCompilerError(
+            "episode_compiler_passive_joint_grounding_invalid:" + ",".join(exc.errors)) from exc
+    return derived, {
+        "adaptation": "estimated_passive_joint_friction_overlay",
+        "fixed_base_body_prim_path": grounding["fixed_base_body_prim_path"],
+        "candidate_bytes_modified": False,
+        "derived_from_sha256": overlay["source_sha256"],
+        "passive_joint_friction": overlay,
+    }
+
+
 def compile_native_arena_episode(
     *,
     envelope: Mapping[str, Any],
@@ -1340,13 +1383,21 @@ def compile_native_arena_episode(
                 "episode_compiler_native_appearance_invalid"
             )
     object_pose = task_definition.get("task_object_pose_world")
+    runtime_replacement_path = configured_assets["replacement"]
+    runtime_articulation_adaptation = None
+    if articulated:
+        runtime_replacement_path, runtime_articulation_adaptation = (
+            _derive_runtime_prismatic_friction_overlay(
+                task_spec=task_spec, task_definition=task_definition,
+                replacement_path=runtime_replacement_path, output_root=root))
     packet_assets = []
     for role, semantic_role in (
         ("appearance", "scene_appearance"),
         ("collision", "scene_collision"),
         ("replacement", "task_object"),
     ):
-        path = native_appearance_path if role == "appearance" else configured_assets[role]
+        path = (native_appearance_path if role == "appearance" else
+                runtime_replacement_path if role == "replacement" else configured_assets[role])
         digest, size = _sha256_and_size(path)
         row: dict[str, Any] = {
             "semantic_role": semantic_role,
@@ -1382,6 +1433,8 @@ def compile_native_arena_episode(
                 source_asset_id=source_subject_asset_id,
                 object_type="ARTICULATION" if articulated else "RIGID",
                 reset_state={"root_pose_world": object_pose, "joint_positions": joint_positions},
+                **({"articulation_adaptation": runtime_articulation_adaptation}
+                   if runtime_articulation_adaptation is not None else {}),
             )
         packet_assets.append(row)
     if destination_asset is not None:

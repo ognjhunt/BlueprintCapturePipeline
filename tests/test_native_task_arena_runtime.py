@@ -21,6 +21,33 @@ from blueprint_pipeline.native_task_arena_runtime import (
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
 
+def test_legacy_prismatic_joint_gets_readback_verified_passive_friction_only_on_derived_asset(tmp_path):
+    from pxr import Usd, UsdGeom, UsdPhysics
+    from blueprint_pipeline.native_task_arena_runtime import (
+        author_passive_joint_friction_overlay, verify_passive_joint_friction_overlay,
+    )
+
+    sealed, derived = tmp_path / "sealed.usda", tmp_path / "derived.usda"
+    stage = Usd.Stage.CreateNew(str(sealed))
+    root = UsdGeom.Xform.Define(stage, "/Asset")
+    stage.SetDefaultPrim(root.GetPrim())
+    UsdPhysics.PrismaticJoint.Define(stage, "/Asset/joints/task_part_joint")
+    stage.GetRootLayer().Save()
+    original_sha = hashlib.sha256(sealed.read_bytes()).hexdigest()
+    record = author_passive_joint_friction_overlay(
+        sealed, derived, joint_prim_path="/Asset/joints/task_part_joint")
+    assert record["static_effort_n"] == 8.0 and record["dynamic_effort_n"] == 1.0
+    assert record["physical_measurement_proven"] is False
+    assert hashlib.sha256(sealed.read_bytes()).hexdigest() == original_sha
+    verify_passive_joint_friction_overlay(derived, record)
+    assert author_passive_joint_friction_overlay(
+        derived, tmp_path / "unused.usda", joint_prim_path="/Asset/joints/task_part_joint") is None
+    assert not (tmp_path / "unused.usda").exists()
+    altered = {**record, "static_effort_n": 0.0}
+    with pytest.raises(NativeTaskArenaRuntimeError, match="passive_joint_readback_mismatch"):
+        verify_passive_joint_friction_overlay(derived, altered)
+
+
 def _camera(role: str, matrix: list[float] | None = None) -> dict:
     wrist = role == "wrist"
     return {

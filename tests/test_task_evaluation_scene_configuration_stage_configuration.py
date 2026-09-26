@@ -268,6 +268,19 @@ def test_articulated_stage_configurations_pass_and_refuse_a_driven_task_joint() 
         validate_immutable_stage_configurations(envelope=envelope, configurations=assisted)
 
 
+def test_comparable_opening_force_stays_a_cited_reference_not_a_measured_joint_setting() -> None:
+    configurations = _articulated_map()
+    force = {"value_n": 25.0, "source_urls": ["https://manufacturer.example/drawer-slide"],
+             "product_match": "comparable_class", "object_spec_digest": "sha256:" + "a" * 64,
+             "claim": "published_product_or_comparable_not_measured_on_captured_unit"}
+    configurations["stage-3"]["mechanism"]["opening_effort_reference"] = force
+    validate_immutable_stage_configurations(envelope=_envelope(), configurations=configurations)
+    assert configurations["stage-3"]["mechanism"]["passive_dynamics"]["joint_friction_bounds"] == [1.0, 15.0]
+    force["value_n"] = -25.0
+    with pytest.raises(ValueError, match="stage-3"):
+        validate_immutable_stage_configurations(envelope=_envelope(), configurations=configurations)
+
+
 def test_anthropic_stage_requires_the_same_launch_request_provider() -> None:
     envelope = _envelope()
     configurations = _articulated_map()

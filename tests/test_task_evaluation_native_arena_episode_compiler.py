@@ -28,6 +28,48 @@ from tests.test_task_evaluation_configured_scene_revision import revision
 from tests.test_task_evaluation_launch_preparation_contract import request
 
 
+def test_website_compiler_derives_legacy_prismatic_resistance_without_changing_source(
+    tmp_path: Path,
+) -> None:
+    from pxr import Usd, UsdGeom, UsdPhysics
+    from tests.test_adp_task_scoring import _graph_spec
+
+    source = tmp_path / "sealed-cabinet.usda"
+    stage = Usd.Stage.CreateNew(str(source))
+    root = UsdGeom.Xform.Define(stage, "/Cabinet")
+    stage.SetDefaultPrim(root.GetPrim())
+    body = UsdGeom.Xform.Define(stage, "/Cabinet/body")
+    UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+    anchor = UsdPhysics.FixedJoint.Define(stage, "/Cabinet/fixed_base_anchor")
+    anchor.GetBody1Rel().SetTargets([body.GetPath()])
+    joint_path = "/Cabinet/joints/middle_drawer_joint"
+    UsdPhysics.PrismaticJoint.Define(stage, joint_path)
+    stage.GetRootLayer().Save()
+    source_digest = _sha(source)
+    task_spec = _graph_spec()
+    target = next(row for row in task_spec["articulation_graph"]["joints"]
+                  if row["role"] == "target")
+    target["joint_type"] = "prismatic"
+    target["limits"] = [0.0, 0.38]
+    task_spec["articulation_graph"]["success_predicate"]["joint_intervals"] = {
+        target["joint_id"]: [0.23, 0.30]}
+
+    derived, adaptation = compiler._derive_runtime_prismatic_friction_overlay(
+        task_spec=task_spec,
+        task_definition={"task_joint_bindings": [{
+            "joint_id": target["joint_id"], "role": "target", "joint_prim_path": joint_path}]},
+        replacement_path=source,
+        output_root=tmp_path / "episode",
+    )
+    assert derived.is_file() and derived != source
+    assert _sha(source) == source_digest
+    assert adaptation["derived_from_sha256"] == source_digest
+    assert adaptation["candidate_bytes_modified"] is False
+    assert adaptation["fixed_base_body_prim_path"] == "/Cabinet/body"
+    from blueprint_pipeline.native_task_arena_runtime import verify_passive_joint_friction_overlay
+    verify_passive_joint_friction_overlay(derived, adaptation["passive_joint_friction"])
+
+
 def _record(path: Path, contract_path: str) -> dict[str, object]:
     payload = path.read_bytes()
     return {

@@ -855,6 +855,8 @@ def articulated_stage_three_configuration(
                 "joint_friction_bounds": [float(v) for v in physics_bounds["joint_friction_bounds"]],
                 "joint_damping_bounds": [float(v) for v in physics_bounds["joint_damping_bounds"]],
             },
+            **({"opening_effort_reference": dict(mechanism["opening_effort_reference"])}
+               if "opening_effort_reference" in mechanism else {}),
         },
         "required_output": {
             "format": "OpenUSD",
