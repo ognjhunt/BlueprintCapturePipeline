@@ -2566,18 +2566,33 @@ def test_deploy_retirement_creates_missing_protection_roots_on_a_fresh_host(tmp_
     sources.standing_authorization_dir.rmdir()
     sources.binding_root.rmdir()
 
-    result = deploy._retire_superseded_release_trees(
-        release_root=releases, runtime_root=runtimes, active_link=active,
-        current_commit=current, protection_sources=sources, keep_last=1, proc_root=no_processes,
-    )
+    def retire() -> dict:
+        return deploy._retire_superseded_release_trees(
+            release_root=releases, runtime_root=runtimes, active_link=active,
+            current_commit=current, protection_sources=sources, keep_last=1,
+            proc_root=no_processes,
+        )
 
-    assert result["status"] == "applied" and result["retired_commits"] == [superseded]
-    assert result["created_protection_roots"] == [
+    # A root that had to be created proves nothing about what used to be in
+    # it, so the deploy that creates one retires nothing and says so.
+    created = retire()
+    assert created["status"] == "skipped" and created["reason"] == "protection_root_created"
+    assert created["alerts"] == [
+        "release_protection_root_created:standing-authorizations",
+        "release_protection_root_created:task-evaluation-release-retention-bindings",
+    ]
+    assert created["created_protection_roots"] == [
         str(sources.standing_authorization_dir), str(sources.binding_root),
     ]
+    assert (releases / superseded).is_dir()
     for root in (sources.standing_authorization_dir, sources.binding_root):
         assert root.is_dir() and list(root.iterdir()) == []
         assert stat.S_IMODE(root.stat().st_mode) == 0o750
+
+    # The next deploy finds them present (and empty) and retires normally.
+    applied = retire()
+    assert applied["status"] == "applied" and applied["retired_commits"] == [superseded]
+    assert applied["created_protection_roots"] == []
 
 
 def test_deploy_retirement_holds_publisher_locks_and_writes_its_summary(

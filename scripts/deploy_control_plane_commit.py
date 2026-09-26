@@ -872,15 +872,27 @@ def _install_release_lease_root(lease_root: str | Path) -> dict[str, Any]:
             "owner": "root" if installed else "deploying_user"}
 
 
+class _ProtectionRootCreated(Exception):
+    """Retirement created a missing protection root and must stop this time."""
+
+    def __init__(self, codes: list[str], roots: list[str]) -> None:
+        super().__init__(",".join(codes))
+        self.codes = codes
+        self.roots = roots
+
+
 def _install_release_protection_roots(
     sources: ProtectionSources, *, account: str = DEFAULT_SERVICE_ACCOUNT
 ) -> list[str]:
-    """Create, empty, the authorization and binding roots a fresh host lacks.
+    """Create, empty, the authorization and binding roots a host lacks.
 
     Retirement treats a missing root as a source it cannot read.  On a fresh
-    host they simply do not exist yet, so deploy creates them with the service
-    account's ownership (0750), exactly as the host installer would; an
-    existing root is never touched, and a symlink or file in its place refuses.
+    host they may simply not exist yet (the host installer creates the
+    standing-authorization directory, but nothing creates the binding root
+    until a binding is published), so deploy creates them with the service
+    account's ownership (0750).  An existing root is never touched, and a
+    symlink or file in its place refuses.  A deploy that had to create one
+    retires nothing: an empty root proves nothing about what used to be in it.
     """
 
     created: list[str] = []
@@ -1019,6 +1031,11 @@ def _retire_superseded_release_trees(
                     )
                 )
             created_roots = _install_release_protection_roots(sources)
+            if created_roots:
+                created = [
+                    f"release_protection_root_created:{Path(path).name}" for path in created_roots
+                ]
+                raise _ProtectionRootCreated(created, created_roots)
             _install_release_lease_root(sources.lease_root)
             protections = collect_release_protections(sources, now=float(now()), migrate=True)
             plan = build_release_retirement_plan(
@@ -1059,6 +1076,15 @@ def _retire_superseded_release_trees(
                     "created_protection_roots": created_roots,
                     **_retirement_protection_summary(plan, protections),
                 }
+    except _ProtectionRootCreated as created:
+        # The roots now exist for the next deploy, which retires normally.
+        result = {
+            "status": "skipped",
+            "reason": "protection_root_created",
+            "blockers": list(created.codes),
+            "created_protection_roots": list(created.roots),
+            "alerts": list(created.codes),
+        }
     except (ReleaseReferenceLockError, ControlPlaneDeployError) as exc:
         # Both carry typed codes, never host paths.
         result = {"status": "blocked", "blockers": [str(exc)]}
