@@ -113,6 +113,130 @@ offloaded: spend guard, deploy receipts, standing authorizations),
 requires every root a production unit names to be classified, and the reclaim
 tools refuse a configured root whose class is not the one they may touch.
 
+## Volume layout
+
+`deploy/host/mount_work_volume.sh` keeps bulk bytes off the root disk:
+
+| Where | What |
+|---|---|
+| Root disk | The OS, the `/opt/blueprint` releases, and small durable state: `evidence_hot` (spend guard, deploy receipts, standing authorizations, the manifest), `ledger` (disk reservations, pins, locks) and the queues. |
+| Scratch volume, `/mnt/blueprint-work`, growable | Every `cache`, `evidence_cold` and `scratch` root. Also the handoff spool `pubsub-handoffs` (every scene's raw capture and workspace), native run work (`native-g1-team-campaign-work`), the whole `task-evaluation-inputs` tree, and `/workspace`. |
+
+Each moved root is bound back at its original path (`/mnt/blueprint-work/<rel>`
+at `/var/lib/blueprint/<rel>`, `/mnt/blueprint-work/workspace` at `/workspace`)
+and recorded in `/etc/fstab`, so unit sandboxes and recorded paths do not change.
+`tests/test_mount_work_volume_script.py` ties the script's root list to
+`control_plane_storage_roots.STORAGE_ROOTS`. The test fails when a bulk root is
+left on the root disk, when a queue, ledger or hot evidence root would move, or
+when a unit that writes under a moved root would keep running during the move.
+
+**Why `task-evaluation-inputs` is one bind.** `link(2)` returns `EXDEV` across
+mount points even on one filesystem. The episode compiler hardlinks
+prepared-reference files into compiled episodes and falls back to a copy
+(`task_evaluation_native_arena_episode_compiler.py`). The September layout bound
+`prepared-references` and `compiled-episodes` separately, so every one of those
+links silently became a full copy. The runtime builder links
+`system-runtime-prerequisites` into `system-runtimes` the same way
+(`scripts/build_task_evaluation_splat_render_runtime.py`). One bind for the
+whole tree keeps all of these links, whichever stores they join.
+
+The tree carries three small `evidence_hot` entries onto the volume:
+`sam31-profile-registry`, `task-evaluation-terminal-results` and
+`g1-team-campaign-registry.json`. This is deliberate. The volume is durable
+block storage, and splitting the tree would break the hardlinks that keep it
+small. `--plan` lists them under `evidence_hot on volume:`.
+
+**Per-volume floors.** Admission measures the filesystem that holds each role's
+target root, so after the move bulk roles reserve against the volume and state
+writers against the root disk. Per-volume admission gives each volume its own
+floor, plus a reserved band that keeps deploys and the listener's own state
+writable when the volume is full. See
+[Admission gate](#admission-gate-blueprint_pipelinecontrol_plane_disk_budget)
+(design: [phase 2](CONTROL_PLANE_DISK_REDESIGN_2026-09-26.md#phase-2-volume-split-a-week)).
+The capacity controller must measure both disks. Set
+`BLUEPRINT_CAPACITY_MOUNTS=/:/var/lib/blueprint:/mnt/blueprint-work` in
+`/etc/blueprint/pipeline-control-plane.env`, which overrides the unit's default.
+
+### Consolidating the September binds
+
+The production host still has one bind per store below `task-evaluation-inputs`
+from the September migration, and the spool, capture reconstruction, the result
+artifact cache and the other new roots still live on the root disk. One run moves
+the new roots and consolidates the old binds:
+
+1. Check room. The volume serves every bound root, so the copy must not fill it.
+   `df -h /mnt/blueprint-work` must leave headroom after the plan's
+   `total to move`. Grow the volume first if it does not (see the 100 GB limit
+   below).
+2. Plan, and read it:
+
+   ```bash
+   sudo deploy/host/mount_work_volume.sh --device /dev/disk/by-id/<volume> --plan
+   ```
+
+   - `consolidate /var/lib/blueprint/task-evaluation-inputs … (bound children: …)`
+     names the old per-store binds.
+   - `move` lines name the new roots, and `bound` lines the six September roots
+     that stay as they are.
+   - `evidence_hot on volume:` lines name the hot entries the tree carries.
+   - A `blocked` line is a refusal in advance: apply moves nothing until it is
+     fixed.
+   - `bound … not in /etc/fstab` marks a hand-made bind that would not survive a
+     reboot. `/workspace` was bound by hand on 2026-09-20, so check it. Record
+     such a bind in `/etc/fstab` by hand.
+   - `missing` roots do not exist yet and are not created. Rerun the script
+     once they appear.
+3. Apply:
+
+   ```bash
+   sudo deploy/host/mount_work_volume.sh --device /dev/disk/by-id/<volume> --apply --ack move-work-roots-to-volume
+   ```
+
+   The run does the following, in order:
+   - Stops the worker units; intake stays up.
+   - Copies the tree around the old binds and verifies the copy.
+   - Unmounts the old binds, deepest first.
+   - Rewrites `/etc/fstab` in one rename after backing it up to
+     `/etc/fstab.blueprint-<epoch>.bak`, then binds the tree whole.
+   - Compares each original with its volume copy again, and only then
+     removes it.
+   - Starts again the units that were running.
+4. Check. `findmnt -R /var/lib/blueprint/task-evaluation-inputs` shows the
+   tree's bind and no mount below it. `--plan` reports `bound` for every root
+   that exists. After the next compile,
+   `find /var/lib/blueprint/task-evaluation-inputs/compiled-episodes -type f -links +1 | head`
+   lists hardlinked members.
+
+When a run stops:
+
+- `refusing: …` before `copying` means nothing moved. Fix the named cause and
+  rerun.
+- `refusing to swap: copy differs from source` means nothing was swapped. Rerun,
+  and rsync resumes.
+- `refusing: could not unmount …` means the old binds are back in place.
+  `fuser -vm <path>` shows what holds the path. Rerun once it is free.
+- `refusing to remove <root>.migrated-to-volume` means the root is already bound
+  to the volume. The kept original holds the listed files, which the volume copy
+  lacks or holds differently: bytes an old bind hid, or a write after the
+  verification. Compare them with
+  `sudo rsync -a -n --itemize-changes <root>.migrated-to-volume/ /mnt/blueprint-work/<rel>/`,
+  and copy what belongs on the volume. Remove the kept copy only when nothing it
+  holds is still needed. `--plan` shows a `kept` line until then.
+- `leaving the worker units stopped: <root> is between its old and new mounts`
+  means a swap failed halfway. Finish it by hand: bind the volume copy at the
+  root and record it in `/etc/fstab`. Or undo it: move the `.migrated-to-volume`
+  original back and restore `/etc/fstab` from the backup. Then start the units
+  the message names.
+
+### Owner decisions
+
+- A separate small durable state volume is optional. The root disk plus
+  snapshots is enough for `evidence_hot`, `ledger` and the queues.
+- DigitalOcean refuses volumes above 100 GB on this account. While that limit
+  holds, attach a second volume and bind a subset of the roots from it (a pool of
+  volumes per class) instead of growing one volume. The script binds every root
+  under one `--mount` today, so this needs a root-subset option first.
+
 ## Pins
 
 Producers pin the derived directories they create under
