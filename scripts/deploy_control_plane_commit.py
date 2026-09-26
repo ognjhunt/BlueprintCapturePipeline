@@ -1114,6 +1114,30 @@ def _sweep_retiring_trees(roots: Sequence[Path]) -> dict[str, Any]:
         }
 
 
+def _prune_release_worktrees(source_repo: str | Path) -> dict[str, Any]:
+    """Make Git forget the release worktrees retirement deleted.  Never raises.
+
+    Release trees are worktrees of the source clone.  Retirement renames and
+    deletes them without ``git worktree remove``, so their registrations stay
+    behind and ``git worktree add`` later refuses the same path as "missing
+    but already registered", which would break a rollback to a retired
+    commit.  ``git worktree prune`` drops only registrations whose
+    directories are gone.
+    """
+
+    checkout = Path(source_repo).resolve()
+    argv = ["git", "-c", f"safe.directory={checkout}", "-C", str(checkout), "worktree", "prune"]
+    try:
+        completed = subprocess.run(  # nosec B603 B607 - fixed argv, no shell
+            argv, capture_output=True, text=True, check=False, timeout=120
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {"status": "failed", "error": type(exc).__name__}
+    if completed.returncode != 0:
+        return {"status": "failed", "returncode": completed.returncode}
+    return {"status": "pruned"}
+
+
 def _finish_release_retirement(
     result: dict[str, Any],
     *,
@@ -1128,8 +1152,10 @@ def _finish_release_retirement(
 
     Runs after the publishers' locks and, in a deploy, after the paid-launch
     gate and disk reservation are released, so no launch or publisher waits
-    while about ninety trees are deleted.  Adds the deletion and alerts to the
-    receipt and writes the retirement summary.  Never raises.
+    while about ninety trees are deleted.  Then prunes the source clone's
+    registrations of the deleted worktrees, adds the deletion, the prune and
+    the alerts to the receipt, and writes the retirement summary.  Never
+    raises.
     """
 
     deletion = _sweep_retiring_trees(retiring_roots)
@@ -1144,6 +1170,11 @@ def _finish_release_retirement(
         result["startup_swept"] = list(startup_sweep["deleted"])
         failures = [*startup_sweep["failed"], *failures]
     result["deletion_failures"] = failures
+    result["worktree_prune"] = (
+        _prune_release_worktrees(source_repo)
+        if source_repo is not None
+        else {"status": "not_requested"}
+    )
     alerts = list(result.get("alerts") or [])
     rename_failures = sum(
         1

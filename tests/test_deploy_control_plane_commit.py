@@ -2799,6 +2799,43 @@ def test_deploy_retirement_alerts_when_a_rename_or_a_deletion_fails(
     ]
 
 
+def test_a_retired_release_can_be_deployed_again_for_a_rollback(tmp_path: Path) -> None:
+    """Retirement deletes a real worktree; Git must forget it so the commit can return."""
+    import time
+
+    from tests.test_task_evaluation_control_plane_release import _git, _source_repo
+
+    repo, first, second = _source_repo(tmp_path)
+    releases, state, active = tmp_path / "releases", tmp_path / "state", tmp_path / "active"
+    for commit in (first, second):
+        deploy.stage_task_evaluation_control_plane_release(
+            source_repo=repo, source_commit=commit, release_root=releases, state_root=state,
+            active_link=active, activate=commit == second,
+        )
+    old = time.time() - 10 * 86_400
+    os.utime(releases / first, (old, old))
+    no_processes = tmp_path / "proc"
+    no_processes.mkdir()
+
+    result = deploy._retire_superseded_release_trees(
+        release_root=releases, runtime_root=tmp_path / "runtimes", active_link=active,
+        current_commit=second, protection_sources=_protection_sources(tmp_path), keep_last=1,
+        proc_root=no_processes, source_repo=repo,
+    )
+
+    assert result["status"] == "applied" and result["retired_commits"] == [first]
+    assert result["worktree_prune"] == {"status": "pruned"}
+    assert not (releases / first).exists()
+    assert str((releases / first).resolve()) not in _git(repo, "worktree", "list", "--porcelain")
+    # Rolling back to the retired commit stages and activates it again.
+    rollback = deploy.stage_task_evaluation_control_plane_release(
+        source_repo=repo, source_commit=first, release_root=releases, state_root=state,
+        active_link=active, activate=True,
+    )
+    assert rollback["created_release_checkout"] is True and rollback["activated"] is True
+    assert _git(releases / first, "rev-parse", "HEAD") == first
+
+
 def test_deploy_retirement_gives_up_when_a_publisher_holds_the_lock(tmp_path: Path) -> None:
     """A stuck publisher costs this deploy its retirement, never the deploy itself."""
     import time
