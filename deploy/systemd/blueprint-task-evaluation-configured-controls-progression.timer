@@ -3,8 +3,8 @@ Description=Advance configured scene controls progression periodically
 
 [Timer]
 OnBootSec=2min
-OnUnitInactiveSec=2min
-RandomizedDelaySec=20s
+OnUnitInactiveSec=1min
+RandomizedDelaySec=10s
 Persistent=true
 Unit=blueprint-task-evaluation-configured-controls-progression.service
 
