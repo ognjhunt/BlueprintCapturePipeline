@@ -8,7 +8,7 @@ import zipfile
 from pathlib import Path
 from typing import Any, Callable
 
-from .adp_isaac_lab_arena_vast import run_arena_native_control_vast
+from .adp_isaac_lab_arena_vast import DEFAULT_KEY_PREFIX, run_arena_native_control_vast
 from .active_deployed_release_admission import inspect_active_deployed_release
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
@@ -277,7 +277,7 @@ def dispatch_g1_paid_campaign(
                 cache_staging = stage_g1_checkpoint_cache(
                     cache_root=Path(cache_root), job_dir=cache_job,
                     key_prefix=os.getenv(
-                        "BLUEPRINT_ADP_ARENA_OBJECT_STORE_PREFIX", "blueprint/adp-arena"
+                        "BLUEPRINT_ADP_ARENA_OBJECT_STORE_PREFIX", DEFAULT_KEY_PREFIX
                     ),
                     expiration_seconds=max(ttl + 1800, 18_000),
                 )
