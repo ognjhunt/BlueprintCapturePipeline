@@ -150,7 +150,8 @@ DROID_PARITY_MINIMUM_APPROACH_M = 0.05
 
 
 def _episode_embodiment_parity_diagnostic(
-    episode: Mapping[str, Any], *, observation_support_qualified: bool
+    episode: Mapping[str, Any], *, observation_support_qualified: bool,
+    legacy_approach_gate: bool = False,
 ) -> dict[str, Any]:
     """Measure harness parity without treating task success as the authority."""
 
@@ -164,6 +165,8 @@ def _episode_embodiment_parity_diagnostic(
             "gripper_body_midpoint_world_m"
         )
         task = row.get("task_object_pose_world") or row.get("can_pose_world")
+        if not legacy_approach_gate:
+            task = row.get("handle_reference_position_world_m") or task
         if (
             isinstance(grasp, list)
             and isinstance(task, list)
@@ -195,8 +198,13 @@ def _episode_embodiment_parity_diagnostic(
         blockers.append("droid_action_joint_limit_or_query_evidence_invalid")
     if approach is None:
         blockers.append("droid_gripper_task_distance_unavailable")
-    elif approach < DROID_PARITY_MINIMUM_APPROACH_M:
+    elif legacy_approach_gate and approach < DROID_PARITY_MINIMUM_APPROACH_M:
         blockers.append("droid_gripper_did_not_approach_task")
+    # Approach is a policy outcome, not evidence that observations and actions
+    # were wired incorrectly. A candidate that moves away from the handle is
+    # a valid scored failure when the native trace and command checks pass.
+    policy_approach_observed = (approach is not None
+                                and approach >= DROID_PARITY_MINIMUM_APPROACH_M)
     value: dict[str, Any] = {
         "schema_version": "droid_policy_canary_embodiment_parity.v1",
         "status": "passed" if not blockers else "blocked",
@@ -214,6 +222,7 @@ def _episode_embodiment_parity_diagnostic(
         "task_success_claimed": False,
         "receipt_digest": "",
     }
+    if not legacy_approach_gate:
+        value["policy_approach_observed"] = policy_approach_observed
     value["receipt_digest"] = canonical_digest(value, digest_field="receipt_digest")
     return value
-
