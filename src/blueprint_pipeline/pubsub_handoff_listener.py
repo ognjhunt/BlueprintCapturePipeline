@@ -832,16 +832,20 @@ def _claim_job_lease(
         if status == "corrupt":
             return "corrupt", dict(ledger)
         history = _attempt_history(ledger)
+        # A payload whose run ended for lost authority never runs again, even
+        # while a later payload reopened the job and is running or retrying.
+        # Only a completed job answers a redelivery from its output commit.
+        if (
+            status != "completed"
+            and payload_sha256
+            and payload_sha256 in _ended_payload_digests(ledger)
+        ):
+            return "terminal", dict(ledger)
         if status == TERMINAL_AUTHORITY_STATUS:
             ended_by = _string(ledger.get("terminal_payload_sha256"))
             # Without both digests nothing proves this is a new request, so the
-            # ending stands (a redelivery must not re-run an ended scene). Any
-            # payload that ended before, not only the latest, stays ended.
-            if (
-                not payload_sha256
-                or not ended_by
-                or payload_sha256 in _ended_payload_digests(ledger)
-            ):
+            # ending stands (a redelivery must not re-run an ended scene).
+            if not payload_sha256 or not ended_by:
                 return "terminal", dict(ledger)
             # A different message is a new request for this capture, for example
             # after the website renewed consent. Keep the ending in the history.

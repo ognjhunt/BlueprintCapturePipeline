@@ -2300,3 +2300,30 @@ def test_each_pull_takes_one_message_and_a_run_stops_at_an_empty_queue(tmp_path,
     events.clear()
     assert pull_and_process(**run, max_messages=10) == 1
     assert events == ["pull:1", "lease:a3", "process:scene-c", "ack:a3", "pull:0"]
+
+
+def test_an_ended_payload_stays_ended_while_a_reopened_job_retries(tmp_path, monkeypatch):
+    first = FakeSubscriber([_received(ack_id="p1", data=PAYLOAD_BYTES)])
+    _install_fake_pubsub(monkeypatch, first,
+                         storage_client=FakeStorageClient(_website_bundle_blobs()), run_e2e=_expired)
+    assert _pull(tmp_path) == 1
+
+    def transient(**_kwargs):
+        raise RuntimeError("provider timeout")
+
+    second = FakeSubscriber([_received(ack_id="p2", data=_second_payload())])
+    _install_fake_pubsub(monkeypatch, second,
+                         storage_client=FakeStorageClient(_website_bundle_blobs()), run_e2e=transient)
+    assert _pull(tmp_path) == 0
+    ledger_path = _capture_root(tmp_path) / "pipeline_job_ledger.json"
+    retrying = _read(ledger_path)
+    assert retrying["status"] == "failed_retryable"
+
+    replay = FakeSubscriber([_received(ack_id="p1-replay", data=PAYLOAD_BYTES)])
+    results = _install_fake_pubsub(monkeypatch, replay, storage_client=_ListingForbidden(),
+                                   run_e2e=lambda **_: pytest.fail("an ended payload must not run again"))
+
+    assert _pull(tmp_path) == 1
+    assert replay.acknowledged == ["p1-replay"]
+    assert results[0]["status"] == "skipped_terminal_authority_ended"
+    assert _read(ledger_path) == retrying  # P2's retry state is untouched
