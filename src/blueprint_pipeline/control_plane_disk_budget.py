@@ -24,10 +24,12 @@ import stat
 import tempfile
 import time
 import uuid
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from .control_plane_disk_usage import tree_usage
 
 
 GIB = 1024**3
@@ -464,6 +466,22 @@ def effective_footprint_bytes(
     return int(measured_footprint(role, reservation_root=reservation_root)["bytes"])
 
 
+def role_footprints(
+    roles: Iterable[str], *, reservation_root: str | Path = DEFAULT_RESERVATION_ROOT
+) -> dict[str, dict[str, Any]]:
+    """{role: {"bytes", "basis", "sample_count"}}: what each role's next reservation holds."""
+
+    rows: dict[str, dict[str, Any]] = {}
+    for role in roles:
+        measured = measured_footprint(role, reservation_root=reservation_root)
+        rows[role] = {
+            "bytes": int(measured["bytes"]),
+            "basis": measured["basis"],
+            "sample_count": measured["sample_count"],
+        }
+    return rows
+
+
 @dataclass
 class DiskReservation:
     role: str
@@ -475,18 +493,80 @@ class DiskReservation:
     path: Path
     token: str
     released: bool = False
+    reservation_root: Path | None = None
+    device: int | None = None
+    footprint_basis: str = "caller_exact"
+    footprint_sample_count: int | None = None
+    workload: str | None = None
+    workspace: Path | None = None
+    baseline_bytes: int = 0
+    # None until a workspace is bound or an observation arrives: only then is
+    # there a measurement worth adding to the role's history.
+    peak_delta_bytes: int | None = None
+    started_at_epoch: float = 0.0
+    clock: Callable[[], float] = field(default=time.time, repr=False, compare=False)
+
+    def bind_workspace(self, path: str | Path) -> None:
+        """Measure growth of ``path`` from now on (a workspace created after admission)."""
+
+        self.workspace = Path(path)
+        self.baseline_bytes = _workspace_allocated_bytes(self.workspace)
+        if self.peak_delta_bytes is None:
+            self.peak_delta_bytes = 0
+
+    def sample(self) -> int | None:
+        """Fold the workspace's current growth into the peak; never raises."""
+
+        if self.workspace is None:
+            return self.peak_delta_bytes
+        try:
+            current = tree_usage(self.workspace).allocated_bytes
+        except Exception:  # a measurement must never break the job it measures
+            return self.peak_delta_bytes
+        delta = max(0, current - self.baseline_bytes)
+        self.peak_delta_bytes = max(self.peak_delta_bytes or 0, delta)
+        return self.peak_delta_bytes
+
+    def observe(self, observed_bytes: int) -> None:
+        """Fold an external measurement (the deploy's staged trees) into the peak."""
+
+        if isinstance(observed_bytes, int) and not isinstance(observed_bytes, bool):
+            self.peak_delta_bytes = max(
+                self.peak_delta_bytes or 0, max(0, observed_bytes)
+            )
 
     def release(self) -> None:
+        self._finish("completed")
+
+    def _finish(self, outcome: str) -> None:
         if self.released:
             return
         self.path.unlink(missing_ok=True)
         self.released = True
+        try:
+            if self.workspace is not None:
+                self.sample()
+            if self.peak_delta_bytes is None or self.reservation_root is None:
+                return
+            record_footprint_sample(
+                reservation_root=self.reservation_root,
+                role=self.role,
+                observed_bytes=self.peak_delta_bytes,
+                reserved_bytes=self.expected_bytes,
+                workload=self.workload,
+                outcome=outcome,
+                duration_seconds=max(0.0, float(self.clock()) - self.started_at_epoch),
+                device=self.device,
+                now=self.clock,
+            )
+        except Exception:  # the reservation is released; a lost sample is harmless
+            pass
 
     def __enter__(self) -> "DiskReservation":
         return self
 
-    def __exit__(self, *_exc: object) -> None:
-        self.release()
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        self._finish("failed" if exc_type is not None else "completed")
 
     def receipt(self) -> dict[str, Any]:
         return {
@@ -498,7 +578,17 @@ class DiskReservation:
             "reserved_bytes_before_admission": self.reserved_bytes,
             "available_bytes_before_admission": self.available_bytes,
             "reservation_token": self.token,
+            "footprint_basis": self.footprint_basis,
+            "footprint_sample_count": self.footprint_sample_count,
+            "workload": self.workload,
         }
+
+
+def _workspace_allocated_bytes(path: Path) -> int:
+    try:
+        return tree_usage(path).allocated_bytes
+    except Exception:  # an unmeasurable baseline of zero over-counts; never under-counts
+        return 0
 
 
 def _snapshot(
@@ -529,19 +619,42 @@ def reserve_control_plane_disk(
     target_root: str | Path,
     expected_bytes: int | None = None,
     reservation_root: str | Path = DEFAULT_RESERVATION_ROOT,
-    ttl_seconds: int = DEFAULT_TTL_SECONDS,
+    ttl_seconds: int | None = None,
     disk_usage: Callable[[str | os.PathLike[str]], Any] = shutil.disk_usage,
     now: Callable[[], float] = time.time,
     pid_alive: Callable[[int], bool] = _pid_alive,
     evictor: Callable[[int], Any] | None = None,
+    workspace: str | Path | None = None,
+    workload: str | None = None,
 ) -> DiskReservation:
-    """Atomically reserve disk headroom or raise a typed refusal."""
+    """Atomically reserve disk headroom or raise a typed refusal.
+
+    ``expected_bytes=None`` reserves the role's measured footprint (or its
+    declared ceiling while the history is short).  ``workspace`` is the per-job
+    directory whose growth is recorded as the role's footprint sample when the
+    reservation is released; ``target_root`` remains the tree whose filesystem
+    admission is computed against.
+    """
 
     if not _ROLE_RE.fullmatch(role) or role not in ROLE_FOOTPRINT_BYTES:
         raise ControlPlaneDiskBudgetError(
             f"control_plane_disk_budget_role_invalid:{role}"
         )
-    need = footprint_bytes(role) if expected_bytes is None else expected_bytes
+    if ttl_seconds is None:
+        ttl_seconds = ROLE_TTL_SECONDS.get(role, DEFAULT_TTL_SECONDS)
+    if workload is not None and (
+        not isinstance(workload, str) or not _ROLE_RE.fullmatch(workload)
+    ):
+        raise ControlPlaneDiskBudgetError(
+            "control_plane_disk_budget_workload_invalid"
+        )
+    if expected_bytes is None:
+        measured = measured_footprint(role, reservation_root=reservation_root)
+        need = measured["bytes"]
+        basis = str(measured["basis"])
+        sample_count: int | None = int(measured["sample_count"])
+    else:
+        need, basis, sample_count = expected_bytes, "caller_exact", None
     if (
         not isinstance(need, int)
         or isinstance(need, bool)
@@ -552,6 +665,10 @@ def reserve_control_plane_disk(
         raise ControlPlaneDiskBudgetError(
             "control_plane_disk_budget_reservation_invalid"
         )
+    # The baseline walk can take a while on a large workspace, so it happens
+    # before the ledger lock every other worker's admission waits on.
+    bound = None if workspace is None else Path(workspace).expanduser()
+    baseline = 0 if bound is None else _workspace_allocated_bytes(bound)
     ledger = _prepare_ledger_root(Path(reservation_root).expanduser())
     lock_path = ledger / ".lock"
     with lock_path.open("a+b") as lock:
@@ -595,6 +712,7 @@ def reserve_control_plane_disk(
                 f"reserved_bytes={reserved}"
             )
         token = uuid.uuid4().hex
+        started = now()
         payload = {
             "schema_version": "control_plane_disk_reservation.v1",
             "token": token,
@@ -602,8 +720,8 @@ def reserve_control_plane_disk(
             "pid": os.getpid(),
             "device": device,
             "expected_bytes": need,
-            "created_at_epoch": now(),
-            "expires_at_epoch": now() + ttl_seconds,
+            "created_at_epoch": started,
+            "expires_at_epoch": started + ttl_seconds,
         }
         descriptor, temporary_name = tempfile.mkstemp(
             prefix=".reservation-", dir=ledger
@@ -629,6 +747,16 @@ def reserve_control_plane_disk(
         available_bytes=available,
         path=path,
         token=token,
+        reservation_root=ledger,
+        device=device,
+        footprint_basis=basis,
+        footprint_sample_count=sample_count,
+        workload=workload,
+        workspace=bound,
+        baseline_bytes=baseline,
+        peak_delta_bytes=None if bound is None else 0,
+        started_at_epoch=float(started),
+        clock=now,
     )
 
 
@@ -654,10 +782,9 @@ def disk_headroom(
         )
     floor = floor_bytes(int(usage.total))
     available = max(0, int(usage.free) - floor - reserved)
+    footprints = role_footprints(ROLE_FOOTPRINT_BYTES, reservation_root=ledger)
     refused = sorted(
-        role
-        for role in ROLE_FOOTPRINT_BYTES
-        if footprint_bytes(role) > available
+        role for role, row in footprints.items() if row["bytes"] > available
     )
     status = (
         "exhausted"
@@ -672,6 +799,7 @@ def disk_headroom(
         "reserved_bytes": reserved,
         "available_bytes": available,
         "refused_roles": refused,
+        "footprints": footprints,
     }
 
 
@@ -696,4 +824,5 @@ __all__ = [
     "measured_footprint",
     "record_footprint_sample",
     "reserve_control_plane_disk",
+    "role_footprints",
 ]

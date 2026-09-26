@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections import namedtuple
 
 import pytest
@@ -264,3 +265,76 @@ def test_live_reservations_filter_device_and_dead_pids(tmp_path):
                                                          "expires_at_epoch": expires}))
     assert disk_budget.live_reservations(ledger, device=1, now=100.0, pid_alive=lambda pid: pid == 11) == (GIB, 1)
     assert sorted(p.name for p in ledger.glob("*.json")) == ["a.json", "b.json", "c.json", "d.json"]
+
+
+def test_release_records_the_workspace_peak_in_unique_inodes(tmp_path):
+    ledger, work = tmp_path / "ledger", tmp_path / "work" / "job-1"
+    work.mkdir(parents=True)
+    (work / "preexisting.bin").write_bytes(b"p" * 8192)  # part of the baseline
+    reservation = reserve_control_plane_disk(
+        "launch_activation", target_root=tmp_path, reservation_root=ledger, workspace=work,
+        disk_usage=lambda _p: Usage(100 * GIB, 10 * GIB, 90 * GIB), now=lambda: 100.0,
+        pid_alive=lambda _pid: True)
+    (work / "new.bin").write_bytes(b"n" * 200_000)
+    os.link(work / "new.bin", work / "new-link.bin")        # counted once
+    reservation.release()
+    rows = [json.loads(line) for line in (ledger / "history" / "launch_activation.jsonl").read_text().splitlines()]
+    assert rows[-1]["outcome"] == "completed"
+    assert 200_000 <= rows[-1]["observed_bytes"] < 200_000 + 64 * 1024
+
+
+def test_context_manager_marks_a_failed_run(tmp_path):
+    ledger, work = tmp_path / "ledger", tmp_path / "job"
+    with pytest.raises(RuntimeError):
+        with reserve_control_plane_disk("launch_activation", target_root=tmp_path, reservation_root=ledger,
+                                        workspace=work, disk_usage=lambda _p: Usage(100 * GIB, 0, 90 * GIB),
+                                        now=lambda: 1.0, pid_alive=lambda _pid: True):
+            raise RuntimeError("boom")
+    rows = (ledger / "history" / "launch_activation.jsonl").read_text().splitlines()
+    assert json.loads(rows[-1])["outcome"] == "failed"
+
+
+def test_receipt_names_the_basis_and_sample_count(tmp_path):
+    ledger = tmp_path / "ledger"
+    _samples(ledger, "launch_activation", [100 * MIB] * 10)
+    reservation = reserve_control_plane_disk("launch_activation", target_root=tmp_path, reservation_root=ledger,
+        disk_usage=lambda _p: Usage(100 * GIB, 0, 90 * GIB), now=lambda: 1.0, pid_alive=lambda _pid: True)
+    receipt = reservation.receipt()
+    assert receipt["expected_bytes"] == 125 * MIB
+    assert receipt["footprint_basis"] == "measured_p95" and receipt["footprint_sample_count"] == 10
+    exact = reserve_control_plane_disk("launch_activation", target_root=tmp_path, reservation_root=ledger,
+        expected_bytes=GIB, disk_usage=lambda _p: Usage(100 * GIB, 0, 90 * GIB), now=lambda: 1.0,
+        pid_alive=lambda _pid: True)
+    assert exact.receipt()["footprint_basis"] == "caller_exact"
+
+
+def test_measurement_failure_never_breaks_release(tmp_path, monkeypatch):
+    ledger, work = tmp_path / "ledger", tmp_path / "job"
+    reservation = reserve_control_plane_disk("launch_activation", target_root=tmp_path, reservation_root=ledger,
+        workspace=work, disk_usage=lambda _p: Usage(100 * GIB, 0, 90 * GIB), now=lambda: 1.0,
+        pid_alive=lambda _pid: True)
+    monkeypatch.setattr(disk_budget, "record_footprint_sample", lambda **_k: (_ for _ in ()).throw(OSError("full")))
+    reservation.release()
+    assert not reservation.path.exists()
+
+
+def test_long_roles_outlive_the_default_ttl(tmp_path):
+    ledger = tmp_path / "ledger"
+    reservation = reserve_control_plane_disk("cpu_prestage", target_root=tmp_path, reservation_root=ledger,
+        expected_bytes=GIB, disk_usage=lambda _p: Usage(100 * GIB, 0, 90 * GIB), now=lambda: 0.0,
+        pid_alive=lambda _pid: True)
+    entry = json.loads(reservation.path.read_text())
+    assert entry["expires_at_epoch"] == 12 * 3600
+
+
+def test_headroom_refuses_roles_by_their_measured_footprint(tmp_path):
+    ledger = tmp_path / "ledger"
+    _samples(ledger, "launch_activation", [100 * MIB] * 10)
+    def usage(_p):
+        return Usage(100 * GIB, 0, 8 * GIB + GIB)  # 1 GiB above the 8 GiB floor
+
+    headroom = disk_headroom(target_root=tmp_path, reservation_root=ledger, disk_usage=usage,
+                             now=lambda: 1.0, pid_alive=lambda _pid: True)
+    assert "launch_activation" not in headroom["refused_roles"]
+    assert "launch_preparation" in headroom["refused_roles"]
+    assert headroom["footprints"]["launch_activation"]["basis"] == "measured_p95"
