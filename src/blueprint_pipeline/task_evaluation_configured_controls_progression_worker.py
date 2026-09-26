@@ -33,6 +33,7 @@ from .decision_evidence_contracts import canonical_digest, cross_runtime_canonic
 from .configured_controls_plan_validation import load_configured_controls_plan as _load_progression_plan
 from .task_evaluation_configured_controls_progression import (
     PROGRESSION_SCHEMA_VERSION,
+    TaskEvaluationConfiguredControlsCapacityDeferred,
     TaskEvaluationConfiguredControlsProgressionError,
     _publish_materialized_file,
     build_configured_controls_activation_request,
@@ -1277,23 +1278,27 @@ def advance_configured_controls_plan(
         )
         if destination_base is None:
             terminal, publication, revision, base_pose, rows, runtime = source_inputs()
-            result = stage_configured_controls_episode_preparation(
-                terminal_result=terminal,
-                publication_result=publication,
-                configured_revision=revision,
-                expected_production_commit=plan["expected_production_commit"],
-                robot_mount_interface_path=plan["robot_mount_interface_path"],
-                scene_camera_calibration_path=plan["scene_camera_calibration_path"],
-                base_pose_candidate=base_pose,
-                cameras=rows,
-                runtime_binding=runtime,
-                output_root=destination_state,
-                publisher=publisher_factory(),
-                queue_root=preparation_queue_root,
-                submitted_by=plan["submitted_by"],
-                destination_qualification_only=True,
-                evaluation_run_id=plan.get("evaluation_run_id"),
-            )
+            try:
+                result = stage_configured_controls_episode_preparation(
+                    terminal_result=terminal,
+                    publication_result=publication,
+                    configured_revision=revision,
+                    expected_production_commit=plan["expected_production_commit"],
+                    robot_mount_interface_path=plan["robot_mount_interface_path"],
+                    scene_camera_calibration_path=plan["scene_camera_calibration_path"],
+                    base_pose_candidate=base_pose,
+                    cameras=rows,
+                    runtime_binding=runtime,
+                    output_root=destination_state,
+                    publisher=publisher_factory(),
+                    queue_root=preparation_queue_root,
+                    submitted_by=plan["submitted_by"],
+                    destination_qualification_only=True,
+                    evaluation_run_id=plan.get("evaluation_run_id"),
+                )
+            except TaskEvaluationConfiguredControlsCapacityDeferred:
+                return {"status": "awaiting_destination_preparation_capacity",
+                        "source_launch_id": plan["source_launch_id"]}
             return {
                 "status": result["status"],
                 "source_launch_id": plan["source_launch_id"],
@@ -1443,24 +1448,28 @@ def advance_configured_controls_plan(
             raise TaskEvaluationConfiguredControlsProgressionWorkerError(
                 "configured_controls_worker_future_activation_identity_mismatch"
             )
-        result = stage_configured_controls_episode_preparation(
-            terminal_result=terminal,
-            publication_result=publication,
-            configured_revision=revision,
-            expected_production_commit=plan["expected_production_commit"],
-            robot_mount_interface_path=plan["robot_mount_interface_path"],
-            scene_camera_calibration_path=plan["scene_camera_calibration_path"],
-            base_pose_candidate=base_pose,
-            cameras=rows,
-            runtime_binding=runtime,
-            output_root=episode_state,
-            publisher=publisher_factory(),
-            queue_root=preparation_queue_root,
-            submitted_by=plan["submitted_by"],
-            destination_qualification_only=False,
-            destination_placement_qualification=placement_reference,
-            evaluation_run_id=plan.get("evaluation_run_id"),
-        )
+        try:
+            result = stage_configured_controls_episode_preparation(
+                terminal_result=terminal,
+                publication_result=publication,
+                configured_revision=revision,
+                expected_production_commit=plan["expected_production_commit"],
+                robot_mount_interface_path=plan["robot_mount_interface_path"],
+                scene_camera_calibration_path=plan["scene_camera_calibration_path"],
+                base_pose_candidate=base_pose,
+                cameras=rows,
+                runtime_binding=runtime,
+                output_root=episode_state,
+                publisher=publisher_factory(),
+                queue_root=preparation_queue_root,
+                submitted_by=plan["submitted_by"],
+                destination_qualification_only=False,
+                destination_placement_qualification=placement_reference,
+                evaluation_run_id=plan.get("evaluation_run_id"),
+            )
+        except TaskEvaluationConfiguredControlsCapacityDeferred:
+            return {"status": "awaiting_episode_preparation_capacity",
+                    "source_launch_id": plan["source_launch_id"]}
         return {"status": result["status"], "source_launch_id": plan["source_launch_id"]}
 
     prep_id = base["episode_preparation_request"]["preparation_id"]
