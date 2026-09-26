@@ -171,3 +171,23 @@ def test_symlink_lock_cannot_redirect_serialization(registry):
     with pytest.raises(OSError):
         _install(registry, B)
     assert registry.read_bytes() == _payload(A)
+
+
+def test_new_lock_is_group_readable_under_restrictive_umask(tmp_path):
+    previous = module.os.umask(0o077)
+    try:
+        _install(tmp_path / "owner.json", A)
+    finally:
+        module.os.umask(previous)
+    lock = tmp_path / ".owner.json.registry.lock"
+    assert lock.stat().st_mode & 0o777 == 0o440
+
+
+def test_reused_group_readable_lock_keeps_its_owner(registry, monkeypatch):
+    lock = registry.parent / ".owner.json.registry.lock"
+    monkeypatch.setattr(module.grp, "getgrnam", lambda name:
+        SimpleNamespace(gr_gid=lock.stat().st_gid))
+    changes = []
+    monkeypatch.setattr(module.os, "fchown", lambda *args: changes.append(args))
+    _install(registry, A, service_group="blueprint")
+    assert len(changes) == 0

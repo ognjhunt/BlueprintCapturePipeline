@@ -84,10 +84,18 @@ def install_release_intent(*, destination: Path, payload: bytes, expected_commit
     # The lock inode is never renamed/unlinked. All registry writers use it.
     lock_fd = os.open(lock_path, os.O_RDONLY | os.O_CREAT | os.O_NOFOLLOW, 0o440)
     try:
-        if not stat.S_ISREG(os.fstat(lock_fd).st_mode):
+        lock_metadata = os.fstat(lock_fd)
+        if not stat.S_ISREG(lock_metadata.st_mode):
             raise IntentRegistryError("intent_registry_lock_invalid")
-        if group_id is not None:
-            os.fchown(lock_fd, os.geteuid(), group_id)
+        # A root-run offline install can leave this lock owned by root. The
+        # service only needs group read access, so preserve its owner on reuse.
+        if group_id is not None and lock_metadata.st_gid != group_id:
+            os.fchown(lock_fd, -1, group_id)
+        # O_CREAT's mode is filtered by umask (the host root umask is 0077).
+        # Repair only when needed; a service user cannot chmod a root-owned
+        # lock that already has the correct group-readable mode.
+        if stat.S_IMODE(lock_metadata.st_mode) != 0o440:
+            os.fchmod(lock_fd, 0o440)
         fcntl.flock(lock_fd, fcntl.LOCK_EX)
         retired_target = destination.with_name(
             f"{destination.stem}.superseded-{expected_commit}.json")
