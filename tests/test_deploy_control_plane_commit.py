@@ -63,6 +63,29 @@ def test_terminal_controls_are_prepared_as_service_user_before_workers_resume(mo
     assert sum(argv[:2] == ['systemctl','reset-failed'] for argv in calls) == 3
 
 
+def test_terminal_controls_child_failure_reports_typed_code_without_stderr(monkeypatch, tmp_path):
+    unit = tmp_path/'deploy/systemd/blueprint-task-evaluation-configured-controls-progression.service'
+    unit.parent.mkdir(parents=True)
+    unit.write_bytes((REPO_ROOT/'deploy/systemd/blueprint-task-evaluation-configured-controls-progression.service').read_bytes())
+
+    def run(argv, **_kwargs):
+        if argv[:2] == ['systemctl', 'show']:
+            return SimpleNamespace(stdout='LoadState=loaded\nActiveState=inactive\nMainPID=0\n')
+        raise subprocess.CalledProcessError(
+            1, argv, output='',
+            stderr='secret-token-value\nConfiguredControlsProvisioningError: configured_controls_provisioning_registry_conflict:permission denied\n',
+        )
+
+    monkeypatch.setattr(deploy.subprocess, 'run', run)
+    with pytest.raises(deploy.ControlPlaneDeployError) as error:
+        deploy._prepare_terminal_controls_adoptions(
+            release_path=tmp_path, commit='a'*40, config_path=tmp_path/'config.json'
+        )
+    assert 'configured_controls_provisioning_registry_conflict' in str(error.value)
+    assert 'secret-token-value' not in str(error.value)
+    assert 'stderr_sha256_' in str(error.value)
+
+
 def test_terminal_controls_deploy_refuses_missing_scoped_artifact_store(tmp_path):
     unit = tmp_path/'deploy/systemd/blueprint-task-evaluation-configured-controls-progression.service'
     unit.parent.mkdir(parents=True)

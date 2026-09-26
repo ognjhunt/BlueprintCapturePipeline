@@ -65,6 +65,42 @@ def _sync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
+def _archive_bytes(*, archive: Path, payload: bytes, group_id: int | None) -> None:
+    """Atomically retain old bytes even when the live inode is root-owned.
+
+    Linux protected-hardlinks forbids the service account from linking a
+    root-owned, group-readable live intent. Stage an owned, read-only copy and
+    publish it with an exclusive hard link instead. A crash can leave only a
+    complete archive or an unpublished temporary file.
+    """
+
+    with tempfile.NamedTemporaryFile(
+        dir=archive.parent, prefix=".intent-archive-", delete=False
+    ) as stream:
+        staged = Path(stream.name)
+        try:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+            if group_id is not None:
+                os.fchown(stream.fileno(), os.geteuid(), group_id)
+            os.fchmod(stream.fileno(), 0o440)
+        except BaseException:
+            staged.unlink(missing_ok=True)
+            raise
+    try:
+        if _read(staged) != payload:
+            raise IntentRegistryError("intent_registry_archive_staging_mismatch")
+        try:
+            os.link(staged, archive, follow_symlinks=False)
+        except FileExistsError:
+            pass
+        if _read(archive) != payload:
+            raise IntentRegistryError("intent_registry_archive_conflict")
+    finally:
+        staged.unlink(missing_ok=True)
+
+
 def install_release_intent(*, destination: Path, payload: bytes, expected_commit: str,
         service_group: str | None, validate: Callable[[Mapping[str, Any]], Any]) -> None:
     """Validate/stage first, archive without overwriting, then switch one live name.
@@ -131,11 +167,7 @@ def install_release_intent(*, destination: Path, payload: bytes, expected_commit
                     raise IntentRegistryError("intent_registry_staging_readback_mismatch")
                 if previous is not None:
                     archive = destination.with_name(f"{destination.stem}.superseded-{previous}.json")
-                    try:
-                        os.link(destination, archive, follow_symlinks=False)
-                    except FileExistsError:
-                        if _read(archive) != current:
-                            raise IntentRegistryError("intent_registry_archive_conflict") from None
+                    _archive_bytes(archive=archive, payload=current, group_id=group_id)
                     if _read(archive) != current or _read(destination) != current:
                         raise IntentRegistryError("intent_registry_current_bytes_changed")
                     _sync_directory(destination.parent)
