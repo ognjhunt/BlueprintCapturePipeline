@@ -29,6 +29,11 @@ from blueprint_pipeline.pubsub_handoff_listener import (
     read_handoff_job_status,
     stage_handoff_capture,
 )
+from tests.test_qualification_coverage_edges import (
+    _descriptor as _qualification_descriptor,
+    _patch_pipeline_side_effects,
+    _write_descriptor,
+)
 
 
 # Real iOS raw bundle namelist per CaptureRawContractV3Validator (no pipeline_handoff.json).
@@ -1435,12 +1440,6 @@ def test_recovery_refuses_symlinks_without_moving_anything(tmp_path):
 # ---------------------------------------------------------------------------
 # Website authority endings (consent expired, source revoked)
 # ---------------------------------------------------------------------------
-
-from tests.test_qualification_coverage_edges import (  # noqa: E402
-    _descriptor as _qualification_descriptor,
-    _patch_pipeline_side_effects,
-    _write_descriptor,
-)
 
 PAYLOAD = {
     "bucket": "capture-bucket",
