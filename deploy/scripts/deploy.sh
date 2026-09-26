@@ -866,6 +866,31 @@ create_pubsub_topics() {
         log_info "Created subscription: blueprint-pipeline-handoff-listener"
     fi
 
+    # Pub/Sub dead-letters a message as its own service agent. Without publisher
+    # on the dead-letter topic and subscriber on the source subscription, the
+    # dead-letter policy never moves an exhausted handoff off the listener.
+    if [[ "$DRY_RUN" == "true" ]]; then
+        log_info "[DRY-RUN] Would grant the Pub/Sub service agent dead-letter access"
+    else
+        PROJECT_NUMBER="$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')"
+        if [[ -z "$PROJECT_NUMBER" ]]; then
+            log_error "Could not resolve the project number for ${PROJECT_ID}"
+            exit 1
+        fi
+        PUBSUB_SERVICE_AGENT="serviceAccount:service-${PROJECT_NUMBER}@gcp-sa-pubsub.iam.gserviceaccount.com"
+        gcloud pubsub topics add-iam-policy-binding pipeline-trigger-dlq \
+            --project "$PROJECT_ID" \
+            --member "$PUBSUB_SERVICE_AGENT" \
+            --role "roles/pubsub.publisher" \
+            --quiet
+        gcloud pubsub subscriptions add-iam-policy-binding blueprint-pipeline-handoff-listener \
+            --project "$PROJECT_ID" \
+            --member "$PUBSUB_SERVICE_AGENT" \
+            --role "roles/pubsub.subscriber" \
+            --quiet
+        log_info "Granted the Pub/Sub service agent dead-letter access"
+    fi
+
     log_success "Pub/Sub topics and subscriptions created"
 }
 

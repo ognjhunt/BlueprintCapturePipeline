@@ -933,6 +933,25 @@ resource "google_storage_bucket_iam_member" "pipeline_handoff_listener_capture_r
   member = "serviceAccount:${google_service_account.pipeline_handoff_listener.email}"
 }
 
+# Pub/Sub dead-letters a message as its own service agent. Without publisher on
+# the dead-letter topic and subscriber on the source subscription, the
+# dead_letter_policy above never moves an exhausted handoff off the listener.
+locals {
+  pubsub_service_agent = "serviceAccount:service-${data.google_project.current.number}@gcp-sa-pubsub.iam.gserviceaccount.com"
+}
+
+resource "google_pubsub_topic_iam_member" "pipeline_dlq_pubsub_agent_publisher" {
+  topic  = google_pubsub_topic.pipeline_dlq.name
+  role   = "roles/pubsub.publisher"
+  member = local.pubsub_service_agent
+}
+
+resource "google_pubsub_subscription_iam_member" "pipeline_handoff_listener_pubsub_agent_subscriber" {
+  subscription = google_pubsub_subscription.pipeline_handoff_listener.name
+  role         = "roles/pubsub.subscriber"
+  member       = local.pubsub_service_agent
+}
+
 # =============================================================================
 # Cloud Tasks Queues (per region)
 # =============================================================================

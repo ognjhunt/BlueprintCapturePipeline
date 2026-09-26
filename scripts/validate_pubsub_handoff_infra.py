@@ -27,6 +27,70 @@ def require_contains(text: str, needle: str, description: str) -> None:
         fail(f"missing {description}: {needle}")
 
 
+PUBSUB_SERVICE_AGENT_LOCAL = (
+    'pubsub_service_agent = "serviceAccount:service-${data.google_project.current.number}'
+    '@gcp-sa-pubsub.iam.gserviceaccount.com"'
+)
+DEAD_LETTER_SERVICE_AGENT_GRANTS = (
+    (
+        'resource "google_pubsub_topic_iam_member" "pipeline_dlq_pubsub_agent_publisher" {',
+        (
+            "topic = google_pubsub_topic.pipeline_dlq.name",
+            'role = "roles/pubsub.publisher"',
+            "member = local.pubsub_service_agent",
+        ),
+        "Pub/Sub service agent publisher on the dead-letter topic",
+    ),
+    (
+        'resource "google_pubsub_subscription_iam_member" '
+        '"pipeline_handoff_listener_pubsub_agent_subscriber" {',
+        (
+            "subscription = google_pubsub_subscription.pipeline_handoff_listener.name",
+            'role = "roles/pubsub.subscriber"',
+            "member = local.pubsub_service_agent",
+        ),
+        "Pub/Sub service agent subscriber on the handoff subscription",
+    ),
+)
+
+
+def terraform_block_body(text: str, header: str) -> str | None:
+    """Return the body of the first block opened by ``header``, or None."""
+
+    start = text.find(header)
+    if start < 0:
+        return None
+    body_start = start + len(header)
+    depth = 1
+    for index in range(body_start, len(text)):
+        if text[index] == "{":
+            depth += 1
+        elif text[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[body_start:index]
+    return None
+
+
+def missing_dead_letter_service_agent_iam(terraform_text: str) -> list[str]:
+    """Describe each grant the handoff dead-letter policy needs that is missing.
+
+    Pub/Sub dead-letters a message as its own service agent, which needs
+    publisher on the dead-letter topic and subscriber on the source
+    subscription. Without both, the policy never moves an exhausted handoff.
+    """
+
+    text = compact(terraform_text)
+    missing: list[str] = []
+    if PUBSUB_SERVICE_AGENT_LOCAL not in text:
+        missing.append("Pub/Sub service agent identity (local.pubsub_service_agent)")
+    for header, attributes, description in DEAD_LETTER_SERVICE_AGENT_GRANTS:
+        body = terraform_block_body(text, header)
+        if body is None or any(f" {attribute} " not in f" {body} " for attribute in attributes):
+            missing.append(description)
+    return missing
+
+
 def has_project_runtime_dependency(text: str, package_name: str) -> bool:
     """Return whether a package is a direct production dependency.
 
@@ -165,6 +229,12 @@ def main() -> None:
         ('output "pubsub_handoff_listener_subscription"', "subscription output"),
     ]:
         require_contains(terraform_text, needle, description)
+    missing_dead_letter_iam = missing_dead_letter_service_agent_iam(terraform_text)
+    if missing_dead_letter_iam:
+        fail(
+            "dead-letter policy cannot move exhausted handoffs; missing "
+            + "; ".join(missing_dead_letter_iam)
+        )
     if 'resource "google_project_iam_member" "pipeline_runner_pubsub_subscriber"' in terraform_text:
         fail("pipeline-runner must not retain project-wide Pub/Sub subscriber IAM")
 
@@ -188,6 +258,18 @@ def main() -> None:
         ("--max-retry-delay 600s", "deploy subscription retry maximum backoff"),
         ("--dead-letter-topic pipeline-trigger-dlq", "deploy dead-letter topic"),
         ("--max-delivery-attempts 5", "deploy dead-letter delivery cap"),
+        (
+            "gcloud projects describe \"$PROJECT_ID\" --format='value(projectNumber)'",
+            "deploy project number for the Pub/Sub service agent",
+        ),
+        (
+            'PUBSUB_SERVICE_AGENT="serviceAccount:service-${PROJECT_NUMBER}@gcp-sa-pubsub.iam.gserviceaccount.com"',
+            "deploy Pub/Sub service agent identity",
+        ),
+        (
+            "gcloud pubsub topics add-iam-policy-binding pipeline-trigger-dlq",
+            "deploy dead-letter topic publisher grant for the Pub/Sub service agent",
+        ),
         ('"pipeline-handoff-listener"', "deploy dedicated listener service account"),
         (
             "gcloud pubsub subscriptions add-iam-policy-binding blueprint-pipeline-handoff-listener",
