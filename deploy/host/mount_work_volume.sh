@@ -792,7 +792,22 @@ swap_root() {  # index
   if [ -n "${below}" ] || is_mount_point "${host}.migrated-to-volume"; then
     refuse 3 "a mount lies below ${kept}; kept it" "${below}"
   fi
+  require_root_bound "${host}" "${kept}"
   if [ -z "${ROOT_PREFIX}" ]; then rm -rf --one-file-system "${kept}"; else rm -rf "${kept}"; fi
+}
+
+# The original goes only while its root is still served from the volume.  If the
+# bind is gone (unmounted while the copy was compared), the root shows the empty
+# mount point and the original is the only copy there: keep it, and keep the
+# worker units stopped.  Without a mount table (--root-prefix alone) there is
+# nothing to check.
+require_root_bound() {  # host path of the root, the kept original
+  [ -z "${ROOT_PREFIX}" ] || [ -n "${BOUND_ROOTS_FILE}" ] || return 0
+  load_mount_table
+  if ! is_mount_point "$1"; then
+    SWAPPING="${ROOT_PREFIX}$1"
+    refuse 3 "${ROOT_PREFIX}$1 is no longer mounted from the volume; kept $2" "bind the volume copy there again, or move $2 back"
+  fi
 }
 
 # --- worker units ----------------------------------------------------------------

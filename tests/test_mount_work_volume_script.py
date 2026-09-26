@@ -523,3 +523,25 @@ def test_the_move_refuses_while_an_operator_door_request_runs(tmp_path: Path) ->
 
     assert quiet.returncode == 0 and "quiet" in quiet.stdout, quiet.stderr
     assert busy.returncode == 2 and request in busy.stderr, busy.stderr
+
+
+def test_the_original_stays_unless_its_root_is_still_mounted_from_the_volume(tmp_path: Path) -> None:
+    bound = tmp_path / "bound-roots"
+    functions = ("refuse", "load_mount_table", "is_mount_point", "require_root_bound")
+    setup = (
+        f'ROOT_PREFIX="{tmp_path}"; BOUND_ROOTS_FILE="{bound}"; MOUNT=/mnt/blueprint-work; SWAPPING=""\n'
+        'MT_TARGET=(); MT_DEVICE=(); MT_FSROOT=(); VOLUME_DEVICE=""; VOLUME_FSROOT=""\n'
+        "trap 'echo \"swapping=${SWAPPING}\"' EXIT\n"
+    )
+    check = 'require_root_bound /var/lib/blueprint/pubsub-handoffs "${ROOT_PREFIX}/kept"; echo removable\n'
+
+    bound.write_text("/var/lib/blueprint/pubsub-handoffs\n", encoding="utf-8")
+    mounted = _call(tmp_path, functions, setup + check)
+    bound.write_text("", encoding="utf-8")  # unmounted between the bind and the removal
+    unmounted = _call(tmp_path, functions, setup + check)
+
+    assert mounted.returncode == 0 and "removable" in mounted.stdout, mounted.stderr
+    assert unmounted.returncode == 3 and "no longer mounted" in unmounted.stderr, unmounted.stderr
+    assert "removable" not in unmounted.stdout
+    # The worker units stay stopped: the root shows an empty mount point.
+    assert f"swapping={tmp_path}/var/lib/blueprint/pubsub-handoffs" in unmounted.stdout
