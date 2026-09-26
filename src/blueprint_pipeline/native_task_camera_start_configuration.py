@@ -70,8 +70,9 @@ def joint_body_poses(chain, joints, base_pose) -> dict[str, np.ndarray]:
     return poses
 
 
-def fixture_reset_clearance(plan, chain, joints, collision_path: Path) -> dict[str, Any]:
-    """Conservative CPU screen for a robot reset against retained fixture obstacles.
+def fixture_reset_clearance(plan, chain, joints, collision_path: Path,
+                            task_asset_path: Path | None = None) -> dict[str, Any]:
+    """Conservative CPU screen against the retained fixture and full task asset.
 
     Link centerlines are only a broad-phase proxy. Native collision and root
     stability still decide whether the final pose is usable.
@@ -104,6 +105,27 @@ def fixture_reset_clearance(plan, chain, joints, collision_path: Path) -> dict[s
         boxes.append((lower, upper))
     if not boxes:
         raise ValueError("policy_camera_fixture_obstacles_missing")
+    task_digest = None
+    if task_asset_path is not None:
+        subjects = [row for row in plan["objects"] if row.get("task_subject") is True]
+        if len(subjects) != 1 or task_asset_path.is_symlink() or not task_asset_path.is_file():
+            raise ValueError("policy_camera_fixture_task_asset_missing")
+        task_digest = "sha256:" + hashlib.sha256(task_asset_path.read_bytes()).hexdigest()
+        if subjects[0].get("sha256") != task_digest:
+            raise ValueError("policy_camera_fixture_task_binding_invalid")
+        task_stage = Usd.Stage.Open(str(task_asset_path))
+        if task_stage is None or not task_stage.GetDefaultPrim().IsValid():
+            raise ValueError("policy_camera_fixture_task_asset_invalid")
+        bound = cache.ComputeWorldBound(task_stage.GetDefaultPrim()).ComputeAlignedRange()
+        lower, upper = np.asarray(bound.GetMin(), dtype=float), np.asarray(bound.GetMax(), dtype=float)
+        if not np.isfinite(lower).all() or not np.isfinite(upper).all() or np.any(upper <= lower):
+            raise ValueError("policy_camera_fixture_task_bounds_invalid")
+        root = subjects[0]["pose_world"]
+        matrix = pose_matrix(root["position_world_m"], root["orientation_xyzw"])
+        corners = np.asarray([[x, y, z, 1.] for x in (lower[0], upper[0])
+                              for y in (lower[1], upper[1]) for z in (lower[2], upper[2])])
+        world = (matrix @ corners.T).T[:, :3]
+        boxes.append((world.min(axis=0), world.max(axis=0)))
     poses = joint_body_poses(chain, joints, plan["robot"]["base_pose_world"])
     names = [f"/panda/panda_link{i}" for i in range(9)]
     names.append(BODY)
@@ -113,18 +135,28 @@ def fixture_reset_clearance(plan, chain, joints, collision_path: Path) -> dict[s
     samples = list(centers)
     for start, end in zip(centers, centers[1:], strict=False):
         samples.extend(start + (end - start) * (index / 10) for index in range(1, 10))
-    minimum = min(float(np.linalg.norm(np.maximum(np.maximum(lower - point, point - upper), 0.0)))
-                  for lower, upper in boxes for point in samples)
+    def distance(box):
+        lower, upper = box
+        return min(float(np.linalg.norm(np.maximum(np.maximum(lower - point, point - upper), 0.0)))
+                   for point in samples)
+    obstacle_minimum = min(map(distance, boxes[:-1] if task_digest is not None else boxes))
+    task_minimum = distance(boxes[-1]) if task_digest is not None else None
     radius = 0.13
     report = {
         "schema_version": "policy_camera_fixture_reset_clearance.v1",
-        "status": "passed" if minimum >= radius else "blocked",
+        "status": "passed" if obstacle_minimum >= radius
+                  and (task_minimum is None or task_minimum >= 0.16) else "blocked",
         "scene_collision_digest": digest,
-        "minimum_link_centerline_to_obstacle_m": minimum,
+        "minimum_link_centerline_to_obstacle_m": obstacle_minimum,
         "conservative_link_radius_m": radius,
         "native_collision_qualified": False,
         "report_digest": "",
     }
+    if task_digest is not None:
+        report.update(task_asset_digest=task_digest,
+                      minimum_link_centerline_to_task_m=task_minimum,
+                      conservative_task_radius_m=0.16,
+                      task_proxy="full_authored_asset_world_aabb")
     report["report_digest"] = canonical_digest(report, digest_field="report_digest")
     return report
 
@@ -239,8 +271,13 @@ def validate_camera_start_configuration(plan, value) -> dict[str, Any]:
     if report["status"] != "passed":
         raise ValueError("policy_camera_final_reset_does_not_frame_task")
     clearance = binding.get("pre_spend_scene_clearance")
+    fixture = (plan.get("task_kind") == "articulated_open_close"
+               and str(plan.get("scene_id", "")).endswith("-development"))
+    if fixture and clearance is None:
+        raise ValueError("policy_camera_fixture_task_clearance_missing")
     if clearance is not None:
         obstacle = next((row for row in plan["objects"] if row.get("semantic_role") == "scene_collision"), None)
+        subject = next((row for row in plan["objects"] if row.get("task_subject") is True), None)
         if (not isinstance(clearance, Mapping)
             or clearance.get("report_digest") != canonical_digest(clearance, digest_field="report_digest")
             or clearance.get("status") != "passed"
@@ -249,6 +286,12 @@ def validate_camera_start_configuration(plan, value) -> dict[str, Any]:
             or clearance.get("minimum_link_centerline_to_obstacle_m", -1)
                < clearance.get("conservative_link_radius_m", 0)):
             raise ValueError("policy_camera_fixture_clearance_binding_invalid")
+        if fixture:
+            if (clearance.get("task_asset_digest") != subject.get("sha256")
+                or clearance.get("task_proxy") != "full_authored_asset_world_aabb"
+                or clearance.get("conservative_task_radius_m") != 0.16
+                or clearance.get("minimum_link_centerline_to_task_m", -1) < 0.16):
+                raise ValueError("policy_camera_fixture_task_clearance_binding_invalid")
     return binding
 
 
@@ -309,7 +352,8 @@ def materialize_camera_start_from_construction(*, plan, construction, source_bin
 
 def materialize_camera_start_from_plan(*, plan, source_binding, native_reference_gate,
         robot_asset_sha256, runtime_digest, calibration_digest,
-        scene_collision_asset_path: Path | None = None):
+        scene_collision_asset_path: Path | None = None,
+        task_asset_path: Path | None = None):
     """Bind the selected reset without claiming a native rehearsal has occurred."""
     reference = _verified_camera_reference(source_binding=source_binding,
         native_reference_gate=native_reference_gate, robot_asset_sha256=robot_asset_sha256)
@@ -328,14 +372,14 @@ def materialize_camera_start_from_plan(*, plan, source_binding, native_reference
         'reset_authority': 'configured_robot_plan_requires_native_readback'}
     fixture = (plan.get('task_kind') == 'articulated_open_close'
                and str(plan.get('scene_id', '')).endswith('-development'))
-    if fixture and scene_collision_asset_path is None:
+    if fixture and (scene_collision_asset_path is None or task_asset_path is None):
         raise ValueError('policy_camera_fixture_collision_asset_missing')
 
     def checked(candidate):
         if fixture:
             clearance = fixture_reset_clearance(
                 plan, candidate['source_joint_chain'], candidate['joint_reset_positions_rad'],
-                Path(scene_collision_asset_path))
+                Path(scene_collision_asset_path), Path(task_asset_path))
             if clearance['status'] != 'passed':
                 raise ValueError('policy_camera_fixture_reset_intersects_obstacle')
             candidate['pre_spend_scene_clearance'] = clearance
@@ -348,6 +392,27 @@ def materialize_camera_start_from_plan(*, plan, source_binding, native_reference
         if str(exc) not in {'policy_camera_final_reset_does_not_frame_task',
                             'policy_camera_fixture_reset_intersects_obstacle'}:
             raise
+    if fixture:
+        # A finite generated pose library is checked against this scene's exact
+        # cabinet bytes, desk bytes, wrist framing, and joint limits. It makes
+        # no native collision claim and never changes the frozen task object.
+        for arm in ((.911, -.582, -1.242, -2.402, .618, 2.786, -.514),
+                    (.874, -.413, -1.228, -2.46, 1.491, 2.651, -.271)):
+            candidate = deepcopy(value)
+            candidate['joint_reset_positions_rad'] = {
+                f'panda_joint{i}': angle for i, angle in enumerate(arm, 1)}
+            candidate['reset_adjustment'] = {
+                'joint_reset_positions_rad': dict(candidate['joint_reset_positions_rad']),
+                'reason': 'articulated_fixture_full_assembly_clearance',
+                'native_validated': False,
+            }
+            try:
+                return checked(candidate)
+            except ValueError as exc:
+                if str(exc) not in {'policy_camera_final_reset_does_not_frame_task',
+                                    'policy_camera_start_joint_margin_invalid',
+                                    'policy_camera_fixture_reset_intersects_obstacle'}:
+                    raise
     # Small wrist-only corrections preserve the selected base and task layout.
     # This is a camera candidate; native reset, visibility and collision checks remain.
     for delta in (.1, -.1, .2, -.2, .3, -.3, .4, -.4):

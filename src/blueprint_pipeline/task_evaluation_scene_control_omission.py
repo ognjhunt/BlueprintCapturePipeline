@@ -217,6 +217,11 @@ def bind_camera_start(*, directive, plan, contract, cells, construction=None,
         collision_path = Path(scene_plan_path).parent / obstacle['usd_path']
         _safe(collision_path)
         direct_kwargs['scene_collision_asset_path'] = collision_path
+        subject = next((row for row in current['objects'] if row.get('task_subject') is True), None)
+        _require(subject is not None and isinstance(subject.get('usd_path'), str), 'camera_task_asset_missing')
+        task_path = Path(scene_plan_path).parent / subject['usd_path']
+        _safe(task_path)
+        direct_kwargs['task_asset_path'] = task_path
     binding = materialize(plan=current, **(direct_kwargs if construction is None else {'construction': construction}),
         source_binding=values[0], native_reference_gate=values[1], robot_asset_sha256=robot_sha,
         runtime_digest=robot['runtime_digest'], calibration_digest=calibration['calibration_digest'])
