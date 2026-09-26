@@ -200,3 +200,67 @@ def test_invalid_environment_override_fails_closed(tmp_path, monkeypatch) -> Non
             target_root=tmp_path,
             reservation_root=tmp_path / "ledger",
         )
+
+
+MIB = 1024**2
+
+
+def _samples(ledger, role, values, outcome="completed"):
+    for value in values:
+        assert disk_budget.record_footprint_sample(
+            reservation_root=ledger, role=role, observed_bytes=value,
+            reserved_bytes=2 * GIB, outcome=outcome, now=lambda: 50.0)
+
+
+def test_short_history_keeps_the_declared_constant(tmp_path):
+    ledger = tmp_path / "ledger"
+    _samples(ledger, "launch_activation", [100 * MIB] * 9)
+    measured = disk_budget.measured_footprint("launch_activation", reservation_root=ledger)
+    assert measured == {"role": "launch_activation", "bytes": 2 * GIB, "basis": "declared_default",
+                        "sample_count": 9, "declared_bytes": 2 * GIB, "p95_bytes": None}
+
+
+def test_p95_times_headroom_is_used_once_ten_samples_exist(tmp_path):
+    ledger = tmp_path / "ledger"
+    _samples(ledger, "launch_activation", [100 * MIB] * 9 + [400 * MIB])
+    measured = disk_budget.measured_footprint("launch_activation", reservation_root=ledger)
+    assert measured["basis"] == "measured_p95"
+    assert measured["p95_bytes"] == 400 * MIB
+    assert measured["bytes"] == 500 * MIB
+
+
+def test_sample_above_the_clamp_cannot_raise_the_reservation(tmp_path):
+    ledger = tmp_path / "ledger"
+    _samples(ledger, "launch_activation", [10 * GIB] * 12)
+    assert disk_budget.effective_footprint_bytes("launch_activation", reservation_root=ledger) == 2 * GIB
+
+
+def test_tiny_samples_are_floored_and_failed_samples_ignored(tmp_path):
+    ledger = tmp_path / "ledger"
+    _samples(ledger, "launch_activation", [1] * 10)
+    _samples(ledger, "launch_activation", [9 * GIB] * 5, outcome="failed")
+    assert disk_budget.effective_footprint_bytes("launch_activation", reservation_root=ledger) == 64 * MIB
+
+
+def test_unreadable_history_falls_back_to_declared(tmp_path):
+    ledger = tmp_path / "ledger"
+    (ledger / "history").mkdir(parents=True)
+    (ledger / "history" / "launch_activation.jsonl").write_text("{not json\n" * 20)
+    assert disk_budget.measured_footprint("launch_activation", reservation_root=ledger)["basis"] == "declared_default"
+
+
+def test_history_is_compacted(tmp_path):
+    ledger = tmp_path / "ledger"
+    _samples(ledger, "launch_activation", [MIB] * 400)
+    lines = (ledger / "history" / "launch_activation.jsonl").read_text().splitlines()
+    assert len(lines) <= 400 and len(lines) >= disk_budget.HISTORY_MAX_LINES
+
+
+def test_live_reservations_filter_device_and_dead_pids(tmp_path):
+    ledger = tmp_path / "ledger"
+    ledger.mkdir()
+    for name, device, pid, expires in (("a", 1, 11, 999.0), ("b", 2, 11, 999.0), ("c", 1, 12, 999.0), ("d", 1, 11, 1.0)):
+        (ledger / f"{name}.json").write_text(json.dumps({"device": device, "pid": pid, "expected_bytes": GIB,
+                                                         "expires_at_epoch": expires}))
+    assert disk_budget.live_reservations(ledger, device=1, now=100.0, pid_alive=lambda pid: pid == 11) == (GIB, 1)
+    assert sorted(p.name for p in ledger.glob("*.json")) == ["a.json", "b.json", "c.json", "d.json"]
