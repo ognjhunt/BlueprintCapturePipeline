@@ -98,6 +98,53 @@ def holding_publisher_locks(roots: Sequence[str | Path]):
         yield
 
 
+def live_release_commits(
+    release_root: str | Path,
+    runtime_root: str | Path | None = None,
+    *,
+    proc_root: str | Path = "/proc",
+) -> list[str]:
+    """Commits whose release or runtime tree a live process runs from; never retired.
+
+    A process counts when its cwd, its executable, any absolute argv entry, or
+    the value of a ``--flag=/abs/path`` argv entry lies inside
+    ``<release_root>/<commit>`` or ``<runtime_root>/<component>/<commit>``.
+    Only a 40-hex first component names a commit.  A missing process table
+    raises: the caller cannot know what is in use.
+    """
+
+    roots = [Path(release_root).expanduser().resolve()]
+    if runtime_root is not None:
+        runtimes = Path(runtime_root).expanduser().resolve()
+        roots.extend(runtimes / component for component in RUNTIME_COMPONENTS)
+    commits: set[str] = set()
+    for entry in Path(proc_root).iterdir():
+        if not entry.name.isdigit():
+            continue
+        candidates: list[str] = []
+        for link in ("cwd", "exe"):
+            with contextlib.suppress(OSError):
+                candidates.append(os.readlink(entry / link))
+        with contextlib.suppress(OSError):
+            for part in (entry / "cmdline").read_bytes().split(b"\0"):
+                if not part:
+                    continue
+                text = part.decode("utf-8", "replace")
+                candidates.append(text)
+                if "=" in text:
+                    candidates.append(text.split("=", 1)[1])
+        for candidate in candidates:
+            path = Path(candidate)
+            if not path.is_absolute():
+                continue
+            for root in roots:
+                if path.is_relative_to(root) and path != root:
+                    first = path.relative_to(root).parts[0]
+                    if _COMMIT_RE.fullmatch(first):
+                        commits.add(first)
+    return sorted(commits)
+
+
 def _active_commit(active_link: Path, release_root: Path) -> str:
     if not active_link.is_symlink():
         raise ControlPlaneReleaseRetirementError("release_retirement_active_link_invalid")
@@ -397,6 +444,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Dry run: evaluate legacy bindings without writing or renewing any lease.",
     )
+    parser.add_argument(
+        "--proc-root",
+        default="/proc",
+        help="Process table used to keep every tree a live process runs from.",
+    )
     parser.add_argument("--keep-last", type=int, default=DEFAULT_KEEP_LAST)
     parser.add_argument("--minimum-age-seconds", type=int, default=DEFAULT_MINIMUM_AGE_SECONDS)
     parser.add_argument("--apply", action="store_true")
@@ -420,6 +472,11 @@ def main(argv: list[str] | None = None) -> int:
         if mutating
         else contextlib.nullcontext()
     ):
+        def in_use() -> list[str]:
+            return live_release_commits(
+                args.release_root, args.runtime_root, proc_root=args.proc_root
+            )
+
         protections = collect_release_protections(
             sources, now=time.time(), migrate=not args.no_migrate
         )
@@ -431,11 +488,19 @@ def main(argv: list[str] | None = None) -> int:
             protections=protections,
             keep_last=args.keep_last,
             minimum_age_seconds=args.minimum_age_seconds,
+            in_use_commits=in_use(),
         )
-        result = (
-            apply_release_retirement_plan(
-                plan, ack=args.ack, active_link=args.active_link, release_root=args.release_root
-            )
+        result: dict[str, Any] = (
+            {
+                "plan": plan,
+                "receipt": apply_release_retirement_plan(
+                    plan,
+                    ack=args.ack,
+                    active_link=args.active_link,
+                    release_root=args.release_root,
+                    in_use_now=lambda: set(in_use()),
+                ),
+            }
             if args.apply
             else plan
         )
@@ -453,6 +518,7 @@ __all__ = [
     "apply_release_retirement_plan",
     "build_release_retirement_plan",
     "holding_publisher_locks",
+    "live_release_commits",
     "main",
     "publisher_lock_roots",
 ]

@@ -444,3 +444,34 @@ def test_protection_blockers_retire_nothing(tmp_path: Path) -> None:
             plan, ack=EXECUTE_ACK, active_link=host["active"], release_root=host["releases"]
         )
     assert (host["releases"] / E).is_dir()
+
+
+def test_cli_apply_never_retires_a_tree_a_live_process_uses(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from blueprint_pipeline.control_plane_release_retirement import main
+
+    now = 5_000_000.0
+    host = _host(tmp_path, now=now)
+    sources = host["sources"]
+    proc = tmp_path / "proc" / "4242"
+    proc.mkdir(parents=True)
+    (proc / "cmdline").write_bytes(b"python\0" + f"--root={host['releases'] / E}/src".encode())
+    arguments = [
+        "--release-root", str(host["releases"]), "--runtime-root", str(host["runtimes"]),
+        "--active-link", str(host["active"]), "--current-commit", A,
+        "--control-plane-root", str(sources.control_plane_root),
+        "--profile-dir", str(sources.profile_dir),
+        "--standing-authorization-dir", str(sources.standing_authorization_dir),
+        "--binding-root", str(sources.binding_root), "--lease-root", str(sources.lease_root),
+        "--config-file", str(tmp_path / "absent.json"),
+        "--intent-root", str(sources.intent_root), "--launch-run-root", str(sources.launch_run_root),
+        "--proc-root", str(tmp_path / "proc"), "--minimum-age-seconds", "0",
+        "--apply", "--ack", EXECUTE_ACK,
+    ]
+
+    assert main(arguments) == 0
+
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["plan"]["protected_commits"][E] == ["in_use_by_live_process"]
+    assert (host["releases"] / E / "payload.bin").is_file()

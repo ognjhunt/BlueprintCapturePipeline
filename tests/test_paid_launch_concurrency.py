@@ -446,8 +446,14 @@ def test_releases_a_live_process_runs_from_are_found_by_cwd_or_argv(tmp_path: Pa
     _proc(tmp_path, 11, cwd=toolchain)
     # A path under a managed root that is not a commit tree is never reported.
     _proc(tmp_path, 12, argv=("python", str(releases / "scratch" / "probe.py")))
+    # A path passed as --flag=/abs/path pins its tree too.
+    flagged = releases / ("e" * 40)
+    flagged.mkdir()
+    _proc(tmp_path, 13, argv=("python", "-m", "tool", f"--repo-root={flagged}/src"))
 
-    assert deploy._live_release_commits(releases, proc_root=root) == ["a" * 40, "b" * 40]
+    assert deploy._live_release_commits(releases, proc_root=root) == [
+        "a" * 40, "b" * 40, "e" * 40,
+    ]
     assert deploy._live_release_commits(releases, runtime_root=runtimes, proc_root=root) == [
-        "a" * 40, "b" * 40, "c" * 40, "d" * 40,
+        "a" * 40, "b" * 40, "c" * 40, "d" * 40, "e" * 40,
     ]

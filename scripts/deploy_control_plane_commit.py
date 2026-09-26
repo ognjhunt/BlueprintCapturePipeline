@@ -35,7 +35,6 @@ import fcntl
 import hashlib
 import json
 import os
-import re
 import stat
 import subprocess  # nosec B404 - fixed git/systemctl argv over validated paths
 import tempfile
@@ -81,9 +80,9 @@ from blueprint_pipeline.control_plane_release_leases import (  # noqa: E402
 )
 from blueprint_pipeline.control_plane_release_retirement import (  # noqa: E402
     EXECUTE_ACK as RELEASE_RETIREMENT_ACK,
-    RUNTIME_COMPONENTS as RELEASE_RUNTIME_COMPONENTS,
     apply_release_retirement_plan,
     build_release_retirement_plan,
+    live_release_commits as _live_release_commits,
     publisher_lock_roots,
 )
 from blueprint_pipeline.task_evaluation_release_reference_lock import (  # noqa: E402
@@ -224,7 +223,6 @@ DEFAULT_RELEASE_PROTECTION_SOURCES = DEFAULT_PROTECTION_SOURCES
 #: (0644) so capacity paging can read its alerts without root.
 RELEASE_RETIREMENT_SUMMARY_NAME = "latest-deploy-retirement.json"
 RELEASE_RETIREMENT_SUMMARY_SCHEMA = "control_plane_release_retirement_summary.v1"
-_RELEASE_COMMIT_RE = re.compile(r"[0-9a-f]{40}\Z")
 DEFAULT_RELEASE_RETIREMENT_KEEP_LAST = 3
 #: The only unit kinds a release may install.  Services and their queue-watching
 #: paths stay paired, while the one fixed progression timer (and its
@@ -1824,49 +1822,6 @@ def _require_in_flight_runs_outside_units(
                 raise ControlPlaneDeployError(
                     f"deploy_refused_paid_launch_in_restarted_unit:{unit}:{run.get('holder')}"
                 )
-
-
-def _live_release_commits(
-    release_root: str | Path,
-    *,
-    runtime_root: str | Path | None = None,
-    proc_root: str | Path = "/proc",
-) -> list[str]:
-    """Commits whose release or runtime tree a live process runs from; never retired.
-
-    A process counts when its cwd, executable or any absolute argv entry lies
-    inside ``<release_root>/<commit>`` or ``<runtime_root>/<component>/<commit>``.
-    Only a 40-hex first component names a commit.
-    """
-
-    roots = [Path(release_root).expanduser().resolve()]
-    if runtime_root is not None:
-        runtimes = Path(runtime_root).expanduser().resolve()
-        roots.extend(runtimes / component for component in RELEASE_RUNTIME_COMPONENTS)
-    commits: set[str] = set()
-    for entry in Path(proc_root).iterdir():
-        if not entry.name.isdigit():
-            continue
-        candidates: list[str] = []
-        for link in ("cwd", "exe"):
-            with contextlib.suppress(OSError):
-                candidates.append(os.readlink(entry / link))
-        with contextlib.suppress(OSError):
-            candidates.extend(
-                part.decode("utf-8", "replace")
-                for part in (entry / "cmdline").read_bytes().split(b"\0")
-                if part
-            )
-        for candidate in candidates:
-            path = Path(candidate)
-            if not path.is_absolute():
-                continue
-            for root in roots:
-                if path.is_relative_to(root) and path != root:
-                    first = path.relative_to(root).parts[0]
-                    if _RELEASE_COMMIT_RE.fullmatch(first):
-                        commits.add(first)
-    return sorted(commits)
 
 
 def _holder_summary(holder: str) -> str:
