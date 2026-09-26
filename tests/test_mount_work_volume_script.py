@@ -592,3 +592,27 @@ def test_apply_refuses_a_move_the_volume_has_no_room_for(tmp_path: Path) -> None
 
     assert roomy.returncode == 0, roomy.stderr + roomy.stdout
     assert "volume room: 1024 MiB free" in roomy.stdout
+
+
+def _unquoted_globs(text: str, name: str) -> list[str]:
+    """Entries of a one-entry-per-line bash array holding a glob character outside quotes."""
+    found: list[str] = []
+    inside = False
+    for line in text.splitlines():
+        if not inside:
+            inside = line.startswith(f"{name}=(")
+            continue
+        if line.strip() == ")":
+            return found
+        for word in line.partition("#")[0].split():
+            quoted = len(word) >= 2 and word[0] == word[-1] and word[0] in "'\""
+            if not quoted and any(char in word for char in "*?["):
+                found.append(word)
+    raise AssertionError(f"{name} is not assigned")
+
+
+def test_every_glob_in_the_declared_hot_evidence_is_quoted() -> None:
+    # Unquoted, a glob in a bash array expands against the working directory.
+    assert _unquoted_globs(SCRIPT.read_text(encoding="utf-8"), "EVIDENCE_HOT_ON_VOLUME") == []
+    example = "EVIDENCE_HOT_ON_VOLUME=(\n  'spool/*/quoted.json'\n  spool/*/bare.json\n)\n"
+    assert _unquoted_globs(example, "EVIDENCE_HOT_ON_VOLUME") == ["spool/*/bare.json"]
