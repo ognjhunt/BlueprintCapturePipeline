@@ -34,12 +34,8 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from .control_plane_disk_budget import (
-    DEFAULT_FLOOR_BYTES,
-    DEFAULT_FLOOR_FRACTION,
-    DEFAULT_RESERVATION_ROOT,
-    ROLE_FOOTPRINT_BYTES,
-)
+from . import control_plane_disk_budget as disk_budget
+from .control_plane_disk_budget import DEFAULT_RESERVATION_ROOT
 from .decision_evidence_contracts import canonical_digest
 
 SCHEMA_VERSION = "control_plane_capacity_report.v1"
@@ -88,26 +84,34 @@ def _read_json(path: Path) -> dict[str, Any] | None:
     return loaded if isinstance(loaded, dict) else None
 
 
-def live_reserved_bytes(reservation_root: Path, *, now: float) -> tuple[int, int]:
-    """Sum the bytes of unexpired reservations exactly as admission counts them."""
+def live_reserved_bytes(
+    reservation_root: Path, *, now: float, mount: str | Path = DEFAULT_MOUNTS[0]
+) -> tuple[int, int]:
+    """Bytes and count of live reservations on ``mount``'s device, as admission counts them.
 
-    reserved = 0
-    count = 0
-    if not reservation_root.is_dir():
-        return 0, 0
-    for path in sorted(reservation_root.iterdir()):
-        if path.name.startswith(".") or not path.is_file() or path.is_symlink():
-            continue
-        document = _read_json(path) or {}
-        expires = document.get("expires_at_epoch")
-        if isinstance(expires, (int, float)) and not isinstance(expires, bool) and expires < now:
-            continue
-        try:
-            reserved += int(document.get("expected_bytes") or document.get("reserved_bytes") or 0)
-        except (TypeError, ValueError):
-            continue
-        count += 1
-    return reserved, count
+    Kept for compatibility; liveness is the ledger's own (device, TTL, live pid).
+    """
+
+    return disk_budget.live_reservations(
+        reservation_root, device=disk_budget.target_device(mount), now=now
+    )
+
+
+def chain_footprints(
+    reservation_root: str | Path = DEFAULT_RESERVATION_ROOT,
+) -> dict[str, dict[str, Any]]:
+    """Each chain role's footprint, computed exactly as its own reservation will."""
+
+    return disk_budget.role_footprints(CHAIN_ROLES, reservation_root=reservation_root)
+
+
+def footprint_basis(footprints: Mapping[str, Mapping[str, Any]]) -> str:
+    """measured_p95 if every role is measured, declared_default if none is, else mixed."""
+
+    measured = [row.get("basis") == "measured_p95" for row in footprints.values()]
+    if measured and all(measured):
+        return "measured_p95"
+    return "mixed" if any(measured) else "declared_default"
 
 
 def measure_mount(
@@ -116,19 +120,33 @@ def measure_mount(
     reservation_root: str | Path = DEFAULT_RESERVATION_ROOT,
     disk_usage: Callable[[str | os.PathLike[str]], Any] = shutil.disk_usage,
     now: float | None = None,
+    pid_alive: Callable[[int], bool] = disk_budget._pid_alive,
 ) -> dict[str, Any]:
-    """One mount's admission projection, computed the way intake computes it."""
+    """One mount's admission projection, computed with the ledger's own functions.
+
+    The floor, the live reservations on this mount's device and each chain
+    role's measured footprint are the values a reservation on this mount would
+    see, so a projected refusal is a refusal intake and the workers will make.
+    """
 
     observed = time.time() if now is None else float(now)
     path = Path(mount)
     try:
         usage = disk_usage(path)
+        device = disk_budget.target_device(path)
     except OSError as exc:
         return {"mount": str(path), "status": "unreadable", "errno": exc.errno}
-    floor = max(DEFAULT_FLOOR_BYTES, int(usage.total * DEFAULT_FLOOR_FRACTION))
-    reserved, live = live_reserved_bytes(Path(reservation_root), now=observed)
+    try:
+        floor = disk_budget.floor_bytes(int(usage.total))
+        footprints = chain_footprints(reservation_root)
+    except disk_budget.ControlPlaneDiskBudgetError as exc:
+        # The ledger refuses every reservation under this configuration too.
+        return {"mount": str(path), "status": "configuration_invalid", "blocker": str(exc)}
+    reserved, live = disk_budget.live_reservations(
+        reservation_root, device=device, now=observed, pid_alive=pid_alive
+    )
     available = max(0, int(usage.free) - floor - reserved)
-    refused = sorted(role for role in CHAIN_ROLES if ROLE_FOOTPRINT_BYTES[role] > available)
+    refused = sorted(role for role, row in footprints.items() if row["bytes"] > available)
     used_fraction = 0.0 if not usage.total else (usage.total - usage.free) / usage.total
     if used_fraction >= CRITICAL_FRACTION or refused:
         level = "critical"
@@ -147,26 +165,40 @@ def measure_mount(
         "live_reservations": live,
         "available_bytes": available,
         "refused_roles": refused,
-        "free_needed_for_one_role_bytes": floor + ROLE_FOOTPRINT_BYTES["launch_preparation"],
+        "footprints": footprints,
+        "free_needed_for_one_role_bytes": floor + footprints["launch_preparation"]["bytes"],
         "free_needed_for_whole_chain_bytes": floor
-        + sum(ROLE_FOOTPRINT_BYTES[role] for role in CHAIN_ROLES),
+        + sum(row["bytes"] for row in footprints.values()),
         "level": level,
     }
 
 
-def whole_chain_admission(mount, *, reservation_root=DEFAULT_RESERVATION_ROOT, now=None):
-    """Check the complete declared workspace before a new scene attempt starts.
+def whole_chain_admission(
+    mount,
+    *,
+    reservation_root=DEFAULT_RESERVATION_ROOT,
+    now=None,
+    disk_usage: Callable[[str | os.PathLike[str]], Any] = shutil.disk_usage,
+):
+    """Check the complete chain workspace before a new scene attempt starts.
 
-    Per-stage reservations remain authoritative during execution. This earlier
-    gate prevents starting a chain that already exceeds available headroom.
+    Each role counts at the footprint its own reservation will hold: the measured
+    p95 once the role has history, its declared ceiling until then.  Per-stage
+    reservations remain authoritative during execution. This earlier gate
+    prevents starting a chain that already exceeds available headroom.
     """
-    measured = measure_mount(mount, reservation_root=reservation_root, now=now)
-    required = sum(ROLE_FOOTPRINT_BYTES[role] for role in CHAIN_ROLES)
+    measured = measure_mount(mount, reservation_root=reservation_root, disk_usage=disk_usage, now=now)
+    footprints = measured.get("footprints")
+    if not isinstance(footprints, Mapping):
+        footprints = chain_footprints(reservation_root)
+    required = sum(int(row["bytes"]) for row in footprints.values())
     passed = measured.get('status') == 'measured' and measured['available_bytes'] >= required
     return {
         'schema_version': 'control_plane_whole_chain_admission.v1',
         'status': 'admitted' if passed else 'waiting_for_capacity',
         'required_workspace_bytes': required,
+        'required_workspace_basis': footprint_basis(footprints),
+        'footprints': footprints,
         'measurement': measured,
         'provider_mutation_performed': False,
         'reservation_granted': False,
@@ -245,7 +277,8 @@ def build_capacity_report(
     alerts = []
     for row in measured:
         if row["status"] != "measured":
-            alerts.append({"mount": row["mount"], "code": "mount_unreadable"})
+            alerts.append({"mount": row["mount"], "code": "mount_unreadable"
+                           if row["status"] == "unreadable" else f"mount_{row['status']}"})
             continue
         if row["refused_roles"]:
             alerts.append({"mount": row["mount"], "code": "admission_refused", "roles": row["refused_roles"]})
@@ -579,6 +612,8 @@ __all__ = [
     "ControlPlaneCapacityError",
     "alert_due",
     "build_capacity_report",
+    "chain_footprints",
+    "footprint_basis",
     "forecast",
     "live_reserved_bytes",
     "main",

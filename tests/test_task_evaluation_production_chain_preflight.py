@@ -188,6 +188,43 @@ def test_disk_admission_projection_reports_every_refused_role(tmp_path: Path, mo
     assert healthy["severity"] == "info" and "refused_roles" not in healthy
 
 
+def test_disk_admission_projection_shares_the_ledgers_floor_footprints_and_liveness(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from blueprint_pipeline import control_plane_disk_budget as disk_budget
+
+    ledger = tmp_path / "reservations"
+    for role in ("launch_preparation", "episode_compilation", "launch_activation",
+                 "launch_dispatch", "policy_canary_dispatch"):
+        for _ in range(10):
+            assert disk_budget.record_footprint_sample(
+                reservation_root=ledger, role=role, observed_bytes=400 * 1024**2, reserved_bytes=2 * GIB)
+    device = tmp_path.stat().st_dev
+    entries = {"live": {"device": device, "pid": os.getpid()},
+               "other-device": {"device": -5, "pid": os.getpid()},
+               "dead-pid": {"device": device, "pid": -1}}
+    for name, entry in entries.items():
+        (ledger / f"{name}.json").write_text(
+            json.dumps({**entry, "expected_bytes": GIB, "expires_at_epoch": 1e12}), encoding="utf-8")
+    monkeypatch.setenv("BLUEPRINT_CONTROL_PLANE_DISK_FLOOR_BYTES", str(10 * GIB))
+    total = 154 * GIB
+    monkeypatch.setattr(preflight, "DISK_TARGET_ROOT", tmp_path)
+    monkeypatch.setattr(preflight, "DISK_RESERVATION_ROOT", ledger)
+    monkeypatch.setattr(preflight.shutil, "disk_usage", lambda _p: Usage(total, total - 14 * GIB, 14 * GIB))
+
+    [finding] = preflight.disk_admission_check({})
+
+    # The operator's floor override, the ledger's own liveness (device and pid),
+    # and the measured footprints each role will actually reserve.
+    assert finding["floor_gib"] == 10.0
+    assert finding["reserved_gib"] == 1.0 and finding["live_reservations"] == 1
+    assert finding["available_gib"] == 3.0
+    assert finding["severity"] == "info" and "refused_roles" not in finding
+    assert finding["free_needed_for_one_role_gib"] == round((10 * GIB + 500 * 1024**2) / GIB, 2)
+    assert finding["free_needed_for_whole_chain_gib"] == round((10 * GIB + 5 * 500 * 1024**2) / GIB, 2)
+    assert finding["required_workspace_basis"] == "measured_p95"
+
+
 def test_handoff_checks_name_each_missing_piece_of_the_canary_chain(tmp_path: Path) -> None:
     secret = tmp_path / "submit_secret"
     secret.write_text("s", encoding="utf-8")

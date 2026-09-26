@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import json
+import os
 from collections import namedtuple
 from pathlib import Path
 
 import pytest
 
 from blueprint_pipeline import control_plane_capacity_controller as cap
+from blueprint_pipeline import control_plane_disk_budget as disk_budget
 
 Usage = namedtuple("Usage", "total used free")
 GIB = 1024**3
+MIB = 1024**2
 
 
 def _usage(free_gib: float, total_gib: float = 154.0):
@@ -21,9 +24,13 @@ def _usage(free_gib: float, total_gib: float = 154.0):
 
 
 def _reservation(root: Path, name: str, *, expected_bytes: int, expires_at: float) -> None:
+    # A live ledger entry as the ledger writes it: on the tmp mount's device and
+    # held by a live pid, so it counts under the ledger's own liveness rules.
     root.mkdir(parents=True, exist_ok=True)
     (root / f"{name}.json").write_text(
-        json.dumps({"expected_bytes": expected_bytes, "expires_at_epoch": expires_at}), encoding="utf-8"
+        json.dumps({"expected_bytes": expected_bytes, "expires_at_epoch": expires_at,
+                    "device": root.stat().st_dev, "pid": os.getpid()}),
+        encoding="utf-8",
     )
 
 
@@ -34,16 +41,16 @@ def test_measurement_projects_admission_exactly_as_intake_does(tmp_path: Path) -
     _reservation(ledger, "live", expected_bytes=GIB, expires_at=2_000.0)
     _reservation(ledger, "expired", expected_bytes=5 * GIB, expires_at=500.0)
 
-    row = cap.measure_mount("/var/lib/blueprint", reservation_root=ledger, disk_usage=_usage(9.67), now=1_000.0)
+    row = cap.measure_mount(tmp_path, reservation_root=ledger, disk_usage=_usage(9.67), now=1_000.0)
 
     assert row["status"] == "measured" and row["level"] == "critical"
     assert row["floor_bytes"] == 8 * GIB
     assert row["reserved_bytes"] == GIB and row["live_reservations"] == 1
     assert row["refused_roles"] == sorted(cap.CHAIN_ROLES)
     assert row["free_needed_for_one_role_bytes"] == 10 * GIB
-    healthy = cap.measure_mount("/var/lib/blueprint", reservation_root=ledger, disk_usage=_usage(60.0), now=1_000.0)
+    healthy = cap.measure_mount(tmp_path, reservation_root=ledger, disk_usage=_usage(60.0), now=1_000.0)
     assert healthy["level"] == "ok" and healthy["refused_roles"] == []
-    warning = cap.measure_mount("/var/lib/blueprint", reservation_root=ledger, disk_usage=_usage(40.0), now=1_000.0)
+    warning = cap.measure_mount(tmp_path, reservation_root=ledger, disk_usage=_usage(40.0), now=1_000.0)
     assert warning["level"] == "warning" and warning["refused_roles"] == []
 
 
@@ -193,17 +200,44 @@ def test_controller_blocks_resize_without_acknowledgement_and_records_the_plan(t
     assert healthy["volume_resize"] == {"status": "not_needed"} and len(resized) == 1
 
 
-def test_whole_chain_admission_rejects_space_that_fits_only_one_stage(tmp_path, monkeypatch):
-    original = cap.measure_mount
-    monkeypatch.setattr(cap, "measure_mount", lambda mount, **kwargs:
-        original(mount, disk_usage=_usage(12.0), **kwargs))
-    result = cap.whole_chain_admission(tmp_path, reservation_root=tmp_path/"ledger", now=1000)
+def test_whole_chain_admission_rejects_space_that_fits_only_one_stage(tmp_path):
+    result = cap.whole_chain_admission(tmp_path, reservation_root=tmp_path/"ledger", now=1000,
+                                       disk_usage=_usage(12.0))
     assert result["status"] == "waiting_for_capacity"
     assert result["measurement"]["refused_roles"] == []
     assert result["required_workspace_bytes"] == 10 * GIB
     assert result["reservation_granted"] is False
-    monkeypatch.setattr(cap, "measure_mount", lambda mount, **kwargs:
-        original(mount, disk_usage=_usage(20.0), **kwargs))
-    assert cap.whole_chain_admission(tmp_path, reservation_root=tmp_path/"ledger", now=1000)["status"] == "admitted"
+    assert cap.whole_chain_admission(tmp_path, reservation_root=tmp_path/"ledger", now=1000,
+                                     disk_usage=_usage(20.0))["status"] == "admitted"
     _reservation(tmp_path/"ledger", "another-run", expected_bytes=3*GIB, expires_at=2000)
-    assert cap.whole_chain_admission(tmp_path, reservation_root=tmp_path/"ledger", now=1000)["status"] == "waiting_for_capacity"
+    assert cap.whole_chain_admission(tmp_path, reservation_root=tmp_path/"ledger", now=1000,
+                                     disk_usage=_usage(20.0))["status"] == "waiting_for_capacity"
+
+
+def test_measured_p95_admits_a_chain_the_constants_refuse(tmp_path):
+    ledger = tmp_path / "ledger"
+    for role in cap.CHAIN_ROLES:
+        for _ in range(10):
+            disk_budget.record_footprint_sample(reservation_root=ledger, role=role,
+                observed_bytes=400 * MIB, reserved_bytes=2 * GIB, now=lambda: 1.0)
+    usage = _usage(free_gib=8.0 + 5.0)            # 5 GiB above the 8 GiB floor
+    admitted = cap.whole_chain_admission(tmp_path, reservation_root=ledger, now=1.0, disk_usage=usage)
+    assert admitted["status"] == "admitted"
+    assert admitted["required_workspace_bytes"] == 5 * 500 * MIB
+    assert admitted["required_workspace_basis"] == "measured_p95"
+    empty = tmp_path / "empty-ledger"
+    refused = cap.whole_chain_admission(tmp_path, reservation_root=empty, now=1.0, disk_usage=usage)
+    assert refused["status"] == "waiting_for_capacity"
+    assert refused["required_workspace_bytes"] == 10 * GIB
+    assert refused["required_workspace_basis"] == "declared_default"
+
+
+def test_measure_mount_honors_the_floor_override_and_ignores_other_devices(tmp_path, monkeypatch):
+    monkeypatch.setenv("BLUEPRINT_CONTROL_PLANE_DISK_FLOOR_BYTES", str(4 * GIB))
+    ledger = tmp_path / "ledger"
+    ledger.mkdir()
+    (ledger / "other.json").write_text(json.dumps({"device": -5, "pid": os.getpid(), "expected_bytes": 50 * GIB,
+                                                   "expires_at_epoch": 1e12}))
+    row = cap.measure_mount(tmp_path, reservation_root=ledger, disk_usage=_usage(free_gib=10.0), now=1.0)
+    assert row["floor_bytes"] == max(4 * GIB, int(154 * GIB * 0.05))
+    assert row["reserved_bytes"] == 0

@@ -1548,35 +1548,26 @@ def provider_credit_check(
 
 
 def disk_admission_check(units: Mapping[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    # The same floor, liveness rules and measured footprints the ledger itself
+    # applies, so a projected refusal is the refusal the chain will meet.
+    from . import control_plane_disk_budget as disk_budget
+    from .control_plane_capacity_controller import chain_footprints, footprint_basis
+
     findings: list[dict[str, Any]] = []
     try:
         usage = shutil.disk_usage(DISK_TARGET_ROOT)
+        device = disk_budget.target_device(DISK_TARGET_ROOT)
     except OSError as exc:
         return [_finding("blocker", "disk_usage_unreadable", path=str(DISK_TARGET_ROOT), errno=exc.errno)]
-    floor = max(8 * GIB, int(usage.total * 0.05))
-    reserved = 0
-    live = 0
-    if DISK_RESERVATION_ROOT.is_dir():
-        now = time.time()
-        for path in DISK_RESERVATION_ROOT.iterdir():
-            if path.name.startswith("."):
-                continue
-            document = _read_json(path) or {}
-            expires = document.get("expires_at_epoch") or document.get("expires_at")
-            if isinstance(expires, (int, float)) and expires < now:
-                continue
-            try:
-                reserved += int(document.get("expected_bytes") or document.get("reserved_bytes") or 0)
-                live += 1
-            except (TypeError, ValueError):
-                continue
+    try:
+        floor = disk_budget.floor_bytes(int(usage.total))
+        footprints = chain_footprints(DISK_RESERVATION_ROOT)
+    except disk_budget.ControlPlaneDiskBudgetError as exc:
+        return [_finding("blocker", "disk_admission_configuration_invalid", blocker=str(exc))]
+    reserved, live = disk_budget.live_reservations(DISK_RESERVATION_ROOT, device=device, now=time.time())
     available = max(0, int(usage.free) - floor - reserved)
-    footprints = {
-        "launch_preparation": 2 * GIB, "episode_compilation": 2 * GIB, "launch_activation": 2 * GIB,
-        "launch_dispatch": 2 * GIB, "policy_canary_dispatch": 2 * GIB,
-    }
-    refused = sorted(role for role, need in footprints.items() if need > available)
-    chain_need = sum(footprints.values())
+    refused = sorted(role for role, row in footprints.items() if row["bytes"] > available)
+    chain_need = sum(row["bytes"] for row in footprints.values())
     findings.append(
         _finding(
             "blocker" if refused else ("warning" if chain_need > available else "info"),
@@ -1587,8 +1578,9 @@ def disk_admission_check(units: Mapping[str, dict[str, Any]]) -> list[dict[str, 
             live_reservations=live,
             available_gib=round(available / GIB, 2),
             refused_roles=refused or None,
-            free_needed_for_one_role_gib=round((floor + 2 * GIB) / GIB, 2),
+            free_needed_for_one_role_gib=round((floor + footprints["launch_preparation"]["bytes"]) / GIB, 2),
             free_needed_for_whole_chain_gib=round((floor + chain_need) / GIB, 2),
+            required_workspace_basis=footprint_basis(footprints),
         )
     )
     return findings

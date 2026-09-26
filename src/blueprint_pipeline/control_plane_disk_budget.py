@@ -130,6 +130,16 @@ def _existing_ancestor(path: Path) -> Path:
     return candidate
 
 
+def target_device(target_root: str | Path) -> int:
+    """The device a reservation against ``target_root`` is recorded under.
+
+    Admission records the device of the target's nearest existing ancestor, so
+    anything that projects admission for a path derives its device the same way.
+    """
+
+    return _existing_ancestor(Path(target_root)).stat().st_dev
+
+
 def _pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
@@ -825,4 +835,5 @@ __all__ = [
     "record_footprint_sample",
     "reserve_control_plane_disk",
     "role_footprints",
+    "target_device",
 ]
