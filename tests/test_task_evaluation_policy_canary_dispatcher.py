@@ -1674,6 +1674,80 @@ def test_post_allocator_failure_is_not_labeled_preprovider_or_retried(
     assert (queue / "blocked" / pending.name).is_file()
 
 
+def test_canary_reservation_measures_its_own_dispatch_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from blueprint_pipeline import task_evaluation_policy_canary_dispatcher as dispatcher
+
+    activation_result, setup_path, _activation = _inputs(tmp_path)
+    queue = tmp_path / "queue"
+    for name in ("pending", "processing", "completed", "blocked"):
+        (queue / name).mkdir(parents=True, exist_ok=True)
+    envelope = {
+        "schema_version": "task_evaluation_policy_canary_dispatch_envelope.v1",
+        "activation_id": "activation-1",
+        "run_kind": "internal_policy_canary",
+        "claim_ceiling": "diagnostic_policy_execution",
+        "source_commit": COMMIT,
+        "activation_result": _record(activation_result),
+        "capture_session_id": "capture-839873",
+        "intake_id": "intake-839873",
+        "request_digest": "sha256:" + "7" * 64,
+        "maximum_provider_allocations": 1,
+        "retry_cap": 0,
+        "automatic_retry_authorized": False,
+        "provider_mutation_performed": False,
+        "paid_execution_requested": False,
+        "envelope_digest": "",
+    }
+    envelope["envelope_digest"] = canonical_digest(envelope, digest_field="envelope_digest")
+    _write(queue / "pending" / "activation-1.json", envelope)
+    setups = tmp_path / "setups"
+    setups.mkdir()
+    (setups / "activation-1.json").write_bytes(setup_path.read_bytes())
+    calls: list[dict[str, object]] = []
+    real = dispatcher.reserve_control_plane_disk
+
+    def roomy(_path):
+        return SimpleNamespace(total=100 * 1024**3, used=0, free=90 * 1024**3)
+
+    def recording(*args, **kwargs):
+        calls.append(kwargs)
+        return real(*args, **kwargs, disk_usage=roomy)
+
+    def writes_run_outputs(**kwargs):
+        output = Path(kwargs["output_root"])
+        output.mkdir(parents=True, exist_ok=True)
+        (output / "runtime.bin").write_bytes(b"r" * 200_000)
+        return {"status": "blocked_without_provider_allocation", "allocator_invoked": False}
+
+    monkeypatch.setattr(dispatcher, "reserve_control_plane_disk", recording)
+    monkeypatch.setattr(dispatcher, "dispatch_policy_canary_activation", writes_run_outputs)
+    process_policy_canary_dispatch_queue(
+        dispatch_queue_root=queue,
+        execution_setup_root=setups,
+        dispatch_root=tmp_path / "dispatches",
+        implementation_commit=COMMIT,
+        execute=True,
+        blocked_sync_runner=lambda **_kwargs: pytest.fail("no preprovider block expected"),
+        provider_zero_collector=lambda: pytest.fail("no provider zero expected"),
+        disk_reservation_root=tmp_path / "reservations",
+    )
+
+    dispatches = (tmp_path / "dispatches").resolve()
+    # Admission reads the shared parent; the sample measures only this run's tree.
+    assert calls[0]["target_root"] == dispatches
+    assert calls[0]["workspace"] == dispatches / "activation-1"
+    assert calls[0]["workload"] == "policy_canary"
+    history = tmp_path / "reservations" / "history" / "policy_canary_dispatch.jsonl"
+    [sample] = [json.loads(line) for line in history.read_text().splitlines()]
+    assert sample["workload"] == "policy_canary" and sample["outcome"] == "completed"
+    assert sample["observed_bytes"] >= 200_000
+
+
 def test_paid_queue_waits_for_setup_without_invoking_dispatcher(tmp_path: Path) -> None:
     activation_result, _setup_path, _activation = _inputs(tmp_path)
     queue = tmp_path / "queue"

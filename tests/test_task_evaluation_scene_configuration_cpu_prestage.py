@@ -154,6 +154,28 @@ def test_prefix_runs_the_bundle_entrypoint_at_the_paid_paths_and_archives_only_c
     assert again == receipt
 
 
+def test_prestage_reservation_measures_the_work_dir_before_it_is_cleared(tmp_path, monkeypatch):
+    from blueprint_pipeline import control_plane_disk_budget as disk
+    calls = []
+    real = disk.reserve_control_plane_disk
+
+    def recording(*args, **kwargs):
+        calls.append(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(disk, "reserve_control_plane_disk", recording)
+    _prepare(tmp_path, _fake_entrypoint(["stage-1", "stage-2", "stage-3", "stage-4"]))
+    assert calls[0]["workspace"] == tmp_path / "workspace"
+    assert calls[0]["workload"] == "cpu_prestage"
+    history = tmp_path / "reservations" / "history" / "cpu_prestage.jsonl"
+    [sample] = [json.loads(line) for line in history.read_text().splitlines()]
+    assert sample["workload"] == "cpu_prestage" and sample["outcome"] == "completed"
+    # The scratch runtime is removed before the reservation is released, so the
+    # sample is the peak taken before that cleanup, not the empty work dir.
+    assert sorted(p.name for p in (tmp_path / "workspace").iterdir()) == [".cpu-prestage.lock"]
+    assert sample["observed_bytes"] > 0
+
+
 def test_prefix_drops_host_raw_credentials_and_preserves_scoped_secret_files(tmp_path):
     from blueprint_pipeline.task_evaluation_scene_configuration_builtin_producers import (
         _RAW_SECRET_ENVIRONMENT_NAMES,

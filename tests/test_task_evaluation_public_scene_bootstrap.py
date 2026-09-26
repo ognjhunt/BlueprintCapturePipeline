@@ -152,6 +152,30 @@ def test_capacity_failure_precedes_all_publisher_reads(tmp_path, monkeypatch):
     assert not Path(config["factory_output_root"]).exists()
 
 
+def test_bootstrap_reservation_measures_its_own_public_source_directory(tmp_path, monkeypatch):
+    from blueprint_pipeline import control_plane_disk_budget as disk
+    values, _choice, intent, config = source_fixture(tmp_path)
+    calls = []
+    roomy = disk.reserve_control_plane_disk  # the hermetic fixture's roomy reservation
+
+    def recording(*args, **kwargs):
+        calls.append(kwargs)
+        return roomy(*args, **kwargs)
+
+    monkeypatch.setattr(disk, "reserve_control_plane_disk", recording)
+    prepare_registered_public_scene(intent=intent, config=config,
+        release={"source_commit": _verified_checkout_head()},
+        downloader=lambda row, output: output.write_bytes(values[row["role"]]))
+    # Admission reads the shared factory root; the sample measures only this source tree.
+    assert calls[0]["target_root"] == config["factory_output_root"]
+    assert calls[0]["workspace"] == Path(config["factory_output_root"]) / intent["intent_id"] / "public-source"
+    assert calls[0]["workload"] == "public_scene_bootstrap"
+    history = tmp_path / "disk-reservations" / "history" / "launch_preparation.jsonl"
+    samples = [json.loads(line) for line in history.read_text().splitlines()]
+    assert [row["workload"] for row in samples] == ["public_scene_bootstrap"]
+    assert samples[0]["outcome"] == "completed" and samples[0]["observed_bytes"] > 0
+
+
 def test_owner_can_select_a_valid_task_different_from_the_catalog_default(tmp_path):
     values, _choice, intent, config = source_fixture(tmp_path, scene_id="112233")
     path = Path(config["public_source_catalog_path"])

@@ -2332,6 +2332,10 @@ def process_policy_canary_dispatch_queue(
                     "policy_canary_dispatch",
                     target_root=outputs,
                     reservation_root=disk_reservation_root,
+                    # Admission reads the shared parent; the footprint sample
+                    # measures only this run's own tree.
+                    workspace=output,
+                    workload="policy_canary",
                 )
                 if disk_reservation_root is not None
                 else contextlib.nullcontext()

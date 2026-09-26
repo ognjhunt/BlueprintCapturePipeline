@@ -129,6 +129,57 @@ def test_activation_refuses_low_disk_before_loading_preparation(
     assert not (tmp_path / "activations" / request["activation_id"]).exists()
 
 
+def test_activation_reservation_measures_its_own_activation_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    request = activation_request()
+    queue = tmp_path / "activation-queue"
+    stage_launch_activation_request(
+        value=request, queue_root=queue, submitted_by="blueprint-webapp"
+    )
+    (tmp_path / "preparation-queue").mkdir()
+    (tmp_path / "preparation-inputs").mkdir()
+    calls: list[dict[str, object]] = []
+    real = worker.disk_budget.reserve_control_plane_disk
+
+    def roomy(_path):
+        return SimpleNamespace(total=100 * 1024**3, used=0, free=90 * 1024**3)
+
+    def recording(*args, **kwargs):
+        calls.append(kwargs)
+        return real(*args, **kwargs, disk_usage=roomy)
+
+    monkeypatch.setattr(worker.disk_budget, "reserve_control_plane_disk", recording)
+    process_launch_activation_queue(
+        queue_root=queue,
+        preparation_queue_root=tmp_path / "preparation-queue",
+        preparation_input_root=tmp_path / "preparation-inputs",
+        activation_root=tmp_path / "activations",
+        allowed_uri_prefixes=["s3://blueprint-production-inputs/"],
+        service_account=SERVICE_ACCOUNT,
+        service_group=SERVICE_ACCOUNT,
+        repository_root=tmp_path,
+        destination_prefix="s3://blueprint-production-inputs/activated",
+        release_window_prefix=(
+            "s3://blueprint-production-inputs/coordinator-release-windows/"
+        ),
+        profile_dir=tmp_path / "profiles",
+        webapp_catalog=tmp_path / "catalog.json",
+        standing_authorization_dir=tmp_path / "standing-authorizations",
+        source_commit=request["expected_production_commit"],
+        disk_reservation_root=tmp_path / "reservations",
+    )
+
+    activations = (tmp_path / "activations").resolve()
+    # Admission reads the shared parent; the sample measures only this job's tree.
+    assert calls[0]["target_root"] == activations
+    assert calls[0]["workspace"] == activations / request["activation_id"]
+    assert calls[0]["workload"] == "launch_activation"
+    assert (tmp_path / "reservations" / "history" / "launch_activation.jsonl").is_file()
+
+
 def test_control_search_requests_initial_warm_retention() -> None:
     authority = {
         "schema_version": "task_evaluation_control_search_authority.v1",

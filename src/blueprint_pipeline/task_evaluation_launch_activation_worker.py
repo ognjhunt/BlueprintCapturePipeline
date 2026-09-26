@@ -1666,6 +1666,10 @@ def process_launch_activation_queue(
                     "launch_activation",
                     target_root=activation_base,
                     reservation_root=disk_reservation_root,
+                    # Admission reads the shared parent; the footprint sample
+                    # measures only this activation's own tree.
+                    workspace=activation_base / request["activation_id"],
+                    workload="launch_activation",
                 )
             if request["expected_production_commit"] != observed_commit:
                 raise TaskEvaluationLaunchActivationWorkerError(

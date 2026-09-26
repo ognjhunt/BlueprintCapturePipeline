@@ -26,7 +26,8 @@ def preparation_storage(config, binding, output_root):
         expected = binding.get("required_staging_bytes")
         require(type(expected) is int and expected > 256 * 1024**2, "website_staging_size_invalid")
     with reserve_control_plane_disk("launch_preparation", target_root=output_root,
-                                   expected_bytes=expected, reservation_root=root):
+                                   expected_bytes=expected, reservation_root=root,
+                                   workspace=output_root, workload="scene_preparation_attempt"):
         yield
 
 

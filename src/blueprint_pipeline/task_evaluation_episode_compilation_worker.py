@@ -368,6 +368,10 @@ def process_episode_compilation_queue(
                             target_root=outputs,
                             expected_bytes=expected_bytes,
                             reservation_root=disk_reservation_root,
+                            # The owned output does not exist yet, so its
+                            # baseline is zero and the sample is its growth.
+                            workspace=outputs / envelope["compilation_id"],
+                            workload="compiled_episode",
                         )
                         break
                     except ControlPlaneDiskBudgetError as exc:
