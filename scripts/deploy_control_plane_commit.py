@@ -816,7 +816,7 @@ def _install_disk_reservation_runtime_prerequisites(
         history.mkdir(exist_ok=True, mode=0o2770)
         if history.is_symlink() or not history.is_dir():
             raise ControlPlaneDeployError(
-                f"deploy_disk_reservation_directory_invalid:{history}"
+                "deploy_disk_reservation_history_directory_invalid"
             )
         for path, wanted_mode in ((root, 0o2770), (lock, 0o660), (history, 0o2770)):
             metadata = stat_reader(path)
