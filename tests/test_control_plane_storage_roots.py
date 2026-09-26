@@ -102,6 +102,35 @@ def test_most_specific_root_wins_and_tools_refuse_wrong_classes() -> None:
         roots_of_class("bogus")
 
 
+def test_scene_workspaces_and_their_receipts_are_classified():
+    base = "/var/lib/blueprint/pubsub-handoffs/blueprint-8c1ca.appspot.com/scenes"
+    assert classify_path(f"{base}/site-capture-1/captures/c/raw/v.mov").storage_class == "scene_workspace"
+    assert classify_path(f"{base}/site-capture-1").storage_class == "scene_workspace"
+    assert classify_path(f"{base}/site-capture-1.retired.v1.json").storage_class == "evidence_hot"
+    assert classify_path("/var/lib/blueprint/pubsub-handoffs/blueprint-8c1ca.appspot.com").storage_class == "work"
+    assert "/var/lib/blueprint/pubsub-handoffs/*/scenes/*" in roots_of_class("scene_workspace")
+
+
+def test_a_pattern_segment_matches_exactly_one_path_component():
+    base = "/var/lib/blueprint/pubsub-handoffs"
+    # The scenes/ directory itself holds workspaces and receipts; it is not a workspace.
+    assert classify_path(f"{base}/bucket/scenes").storage_class == "work"
+    # `*` never spans a separator, so a scene two levels down is not a bucket's scene.
+    assert classify_path(f"{base}/bucket/nested/scenes/s").storage_class == "work"
+    # The more specific literal wins over a pattern of the same depth.
+    assert classify_path(f"{base}/bucket/scenes/s.retired.v1.json").storage_class == "evidence_hot"
+    assert classify_path(f"{base}/bucket/scenes/s.retired.v1.json.tmp").storage_class == "scene_workspace"
+    website = classify_path("/var/lib/blueprint/pipeline-control-plane/website-source-bindings/x.json")
+    assert (website.path, website.storage_class) == (
+        "/var/lib/blueprint/pipeline-control-plane/website-source-bindings", "work")
+
+
+def test_chain_preflight_treats_scene_workspaces_as_written_storage():
+    from blueprint_pipeline.task_evaluation_production_chain_preflight import WRITTEN_STORAGE_CLASSES
+
+    assert "scene_workspace" in WRITTEN_STORAGE_CLASSES
+
+
 @pytest.mark.parametrize(("path", "storage_class", "owner"), [
     ("/var/lib/blueprint/pipeline-control-plane/completed-replay-cache-retention", "evidence_hot", "root"),
     ("/var/lib/blueprint/pipeline-control-plane/scene-project-spend", "evidence_hot", "blueprint"),

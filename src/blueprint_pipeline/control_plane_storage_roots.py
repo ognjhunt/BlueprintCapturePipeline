@@ -29,6 +29,17 @@ This module is the single table of production roots and their storage class:
 ``scratch``
     Reproducible diagnostics and engineering scratch.  Nothing references a
     scratch tree from a queue or a receipt, so it is reaped by idle age alone.
+``scene_workspace``
+    One website scene's staged capture and pipeline working copy.  Retired
+    only after every file verifies against Firebase Storage or is archived to
+    the artifact store behind a replayable receipt, and only when no reader
+    (ledger lease, queue, pin, process or open scene intent) can still need it.
+
+A root path may contain ``*`` segments.  Such a segment matches exactly one
+path component (``fnmatch.fnmatchcase``), so ``pubsub-handoffs/*/scenes/*``
+names every scene of every bucket without naming the ``scenes/`` directory.
+The most specific matching root wins: more segments first, then more literal
+characters.
 
 The storage reclaim tools validate their configured roots against this table,
 so a unit environment that points a reaper at an evidence root is refused.
@@ -36,6 +47,7 @@ so a unit environment that points a reaper at an evidence root is refused.
 
 from __future__ import annotations
 
+import fnmatch
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 
@@ -51,6 +63,7 @@ STORAGE_CLASSES = frozenset(
         "container",
         "staging",
         "scratch",
+        "scene_workspace",
     }
 )
 
@@ -65,6 +78,7 @@ class StorageRoot:
 
 _CONTROL_PLANE = "/var/lib/blueprint/pipeline-control-plane"
 _INPUTS = "/var/lib/blueprint/task-evaluation-inputs"
+_PUBSUB = "/var/lib/blueprint/pubsub-handoffs"
 
 STORAGE_ROOTS: tuple[StorageRoot, ...] = (
     StorageRoot("/var/lib/blueprint", "container", "blueprint", "service state tree"),
@@ -124,7 +138,13 @@ STORAGE_ROOTS: tuple[StorageRoot, ...] = (
     StorageRoot(f"{_CONTROL_PLANE}/result-artifact-cache", "cache", "blueprint", "download payload cache rehydrated from verified remote artifacts under disk reservations"),
     StorageRoot(f"{_CONTROL_PLANE}/profile-install-staging", "cache", "blueprint", "reproducible launch-profile installation staging"),
     StorageRoot(f"{_CONTROL_PLANE}/policy-canary-presubmission", "cache", "blueprint", "reproducible policy-canary presubmission packets"),
-    StorageRoot("/var/lib/blueprint/pubsub-handoffs", "work", "blueprint", "pubsub handoff spool"),
+    StorageRoot(_PUBSUB, "work", "blueprint", "pubsub handoff spool"),
+    StorageRoot(f"{_PUBSUB}/*/scenes/*", "scene_workspace", "blueprint",
+                "one website scene's staged capture and pipeline working copy; retired after cloud verification"),
+    StorageRoot(f"{_PUBSUB}/*/scenes/*.retired.v1.json", "evidence_hot", "blueprint",
+                "scene workspace retirement receipts (replayable)"),
+    StorageRoot(f"{_CONTROL_PLANE}/website-source-bindings", "work", "blueprint",
+                "website scene source registrations read by scene progression"),
     # --- reproducible derived inputs
     StorageRoot(f"{_INPUTS}/prepared-references", "cache", "blueprint", "materialized references and content store"),
     StorageRoot(f"{_INPUTS}/sam31-preparations", "cache", "blueprint", "reproducible SAM preparation artifacts"),
@@ -164,16 +184,36 @@ STORAGE_ROOTS: tuple[StorageRoot, ...] = (
 )
 
 
+def _contains(root_parts: tuple[str, ...], candidate_parts: tuple[str, ...]) -> bool:
+    """Whether the root (whose ``*`` segments match one component each) is or contains the candidate."""
+
+    if len(root_parts) > len(candidate_parts):
+        return False
+    for pattern, part in zip(root_parts, candidate_parts):
+        if "*" in pattern:
+            if not fnmatch.fnmatchcase(part, pattern):
+                return False
+        elif pattern != part:
+            return False
+    return True
+
+
+def _specificity(root_parts: tuple[str, ...]) -> tuple[int, int]:
+    return len(root_parts), sum(len(part.replace("*", "")) for part in root_parts)
+
+
 def classify_path(path: str) -> StorageRoot | None:
     """Return the most specific classified root containing ``path``."""
 
-    candidate = PurePosixPath(str(path))
+    candidate = PurePosixPath(str(path)).parts
     best: StorageRoot | None = None
+    best_rank: tuple[int, int] = (-1, -1)
     for root in STORAGE_ROOTS:
-        root_path = PurePosixPath(root.path)
-        if candidate == root_path or root_path in candidate.parents:
-            if best is None or len(root_path.parts) > len(PurePosixPath(best.path).parts):
-                best = root
+        root_parts = PurePosixPath(root.path).parts
+        if _contains(root_parts, candidate):
+            rank = _specificity(root_parts)
+            if rank > best_rank:
+                best, best_rank = root, rank
     return best
 
 
