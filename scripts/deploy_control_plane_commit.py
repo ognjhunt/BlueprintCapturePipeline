@@ -966,6 +966,8 @@ def _retire_superseded_release_trees(
     proc_root: str | Path = "/proc",
     summary_path: str | Path | None = None,
     lock_timeout_seconds: float = DEFAULT_RELEASE_LOCK_TIMEOUT_SECONDS,
+    source_repo: str | Path | None = None,
+    defer_deletion: bool = False,
 ) -> dict[str, Any]:
     """Retire release and runtime trees this deploy has superseded.
 
@@ -977,17 +979,16 @@ def _retire_superseded_release_trees(
     only while it collects typed protection, plans, re-checks live processes
     and renames each candidate into ``<root>/.retiring``, so no reference can
     appear in between; walking and deleting the moved trees happens after
-    the locks are released, and leftovers of an interrupted retirement are
-    swept before they are taken.  Anything the plan cannot prove safe is left
-    in place and reported; a retirement failure never fails a deploy whose
-    surfaces already moved.
+    the locks are released (``_finish_release_retirement``; with
+    ``defer_deletion`` the caller runs it later, outside its own locks too),
+    and leftovers of an interrupted retirement are swept before they are
+    taken.  Anything the plan cannot prove safe is left in place and
+    reported; a retirement failure never fails a deploy whose surfaces
+    already moved.
     """
 
     roots: list[Path] = []
-    staged_roots = [
-        Path(release_root),
-        *(Path(runtime_root) / component for component in RELEASE_RUNTIME_COMPONENTS),
-    ]
+    staged_roots = _release_retiring_roots(release_root, runtime_root)
     renamed: list[dict[str, Any]] = []
     fallback: list[dict[str, Any]] = []
     swept: dict[str, Any] = {"deleted": [], "failed": []}
@@ -1004,7 +1005,7 @@ def _retire_superseded_release_trees(
             sources = dataclasses.replace(sources, config_files=(*sources.config_files, *extra))
         # A previous retirement that stopped after renaming left trees that no
         # reference can reach any more; they go before any lock is taken.
-        swept = delete_retiring_trees(staged_roots)
+        swept = _sweep_retiring_trees(staged_roots)
         # The same directories publishers lock shared, plus this deploy's own
         # state root (release activation locks it), each exactly once.
         roots.extend(
@@ -1070,30 +1071,90 @@ def _retire_superseded_release_trees(
             "status": "blocked",
             "blockers": [f"deploy_release_retirement_failed:{type(exc).__name__}"],
         }
-    # Outside the locks, whatever happened above: delete, and measure, what
-    # this retirement moved aside.
+    result["renamed"] = renamed
+    result["direct_delete_fallback"] = fallback
+    result["retired_commits"] = sorted({str(row["commit"]) for row in (*renamed, *fallback)})
+    result["swept"] = swept["deleted"]
+    result["deletion_failures"] = list(swept["failed"])
+    if result["status"] == "blocked":
+        result["alerts"] = [f"release_retirement_blocked:{result['blockers'][0]}"]
+    result["lock_roots"] = [str(root) for root in roots]
+    if defer_deletion:
+        return result
+    return _finish_release_retirement(
+        result,
+        retiring_roots=staged_roots,
+        source_repo=source_repo,
+        current_commit=current_commit,
+        summary_path=summary_path,
+        now=now,
+    )
+
+
+def _release_retiring_roots(release_root: str | Path, runtime_root: str | Path) -> list[Path]:
+    """Every managed root whose ``.retiring`` directory holds trees moved aside."""
+
+    return [
+        Path(release_root),
+        *(Path(runtime_root) / component for component in RELEASE_RUNTIME_COMPONENTS),
+    ]
+
+
+def _sweep_retiring_trees(roots: Sequence[Path]) -> dict[str, Any]:
+    """Delete what earlier retirements moved aside; never raises."""
+
     try:
-        deletion = delete_retiring_trees(staged_roots)
+        return delete_retiring_trees(roots)
     except Exception as exc:
-        deletion = {
+        return {
             "deleted": [],
             "deleted_bytes": 0,
             "shared_bytes": 0,
             "failed": [{"path": "", "reason": f"deletion_failed:{type(exc).__name__}"}],
         }
-    result["renamed"] = renamed
-    result["direct_delete_fallback"] = fallback
-    result["retired_commits"] = sorted({str(row["commit"]) for row in (*renamed, *fallback)})
+
+
+def _finish_release_retirement(
+    result: dict[str, Any],
+    *,
+    retiring_roots: Sequence[Path],
+    source_repo: str | Path | None,
+    current_commit: str,
+    summary_path: str | Path | None,
+    now: Callable[[], float] = time.time,
+    startup_sweep: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Outside every lock: delete and measure what retirement moved aside, then report.
+
+    Runs after the publishers' locks and, in a deploy, after the paid-launch
+    gate and disk reservation are released, so no launch or publisher waits
+    while about ninety trees are deleted.  Adds the deletion and alerts to the
+    receipt and writes the retirement summary.  Never raises.
+    """
+
+    deletion = _sweep_retiring_trees(retiring_roots)
+    fallback = list(result.get("direct_delete_fallback") or [])
     result["deleted"] = deletion["deleted"]
     result["retired_bytes"] = deletion["deleted_bytes"] + sum(row["bytes"] for row in fallback)
     result["shared_bytes"] = deletion.get("shared_bytes", 0) + sum(
         row["shared_bytes"] for row in fallback
     )
-    result["swept"] = swept["deleted"]
-    result["deletion_failures"] = [*swept["failed"], *deletion["failed"]]
-    if result["status"] == "blocked":
-        result["alerts"] = [f"release_retirement_blocked:{result['blockers'][0]}"]
-    result["lock_roots"] = [str(root) for root in roots]
+    failures = [*result.get("deletion_failures", []), *deletion["failed"]]
+    if startup_sweep is not None:
+        result["startup_swept"] = list(startup_sweep["deleted"])
+        failures = [*startup_sweep["failed"], *failures]
+    result["deletion_failures"] = failures
+    alerts = list(result.get("alerts") or [])
+    rename_failures = sum(
+        1
+        for row in result.get("skipped") or []
+        if str(row.get("reason", "")).startswith(("rename_failed:", "direct_delete_failed:"))
+    )
+    if rename_failures:
+        alerts.append(f"release_retirement_rename_failed:{rename_failures}")
+    if failures:
+        alerts.append(f"release_retirement_deletion_failed:{len(failures)}")
+    result["alerts"] = alerts
     if summary_path is not None:
         result["summary"] = _write_release_retirement_summary(
             Path(summary_path), result, source_commit=current_commit, generated_at=float(now())
@@ -2750,6 +2811,11 @@ def deploy_control_plane_commit(
         provenance_receipt = dict(provenance_receipt)
         provenance_receipt.setdefault("promotion_eligible", True)
 
+    # Trees an interrupted retirement moved aside are unreachable already;
+    # deleting them first gives this deploy's own disk reservation the space.
+    # No lock is needed for that.
+    retiring_roots = _release_retiring_roots(releases, scene_configuration_runtime_root)
+    startup_sweep = _sweep_retiring_trees(retiring_roots)
     disk_reservation = None
     disk_reservation_runtime = None
     if disk_reservation_root is not None:
@@ -3006,9 +3072,22 @@ def deploy_control_plane_commit(
             keep_last=release_retirement_keep_last,
             state_root=state,
             extra_config_files=(bootstrap,),
-            summary_path=state / "release-retention" / RELEASE_RETIREMENT_SUMMARY_NAME,
+            source_repo=source,
+            defer_deletion=True,
         )
         _mark_stage("release_retirement")
+
+    # The paid-launch gate and the disk reservation are released: delete what
+    # retirement moved aside without holding new launches out meanwhile.
+    release_retirement = _finish_release_retirement(
+        release_retirement,
+        retiring_roots=retiring_roots,
+        source_repo=source,
+        current_commit=commit,
+        summary_path=state / "release-retention" / RELEASE_RETIREMENT_SUMMARY_NAME,
+        startup_sweep=startup_sweep,
+    )
+    _mark_stage("release_retirement_deletion")
 
     return {
         "schema_version": SCHEMA_VERSION,

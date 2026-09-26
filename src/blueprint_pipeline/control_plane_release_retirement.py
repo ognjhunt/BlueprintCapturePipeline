@@ -435,12 +435,18 @@ def _stage_aside(path: Path, token: str) -> Path:
     return target
 
 
-def _delete_now(path: Path, seen: set[tuple[int, int]]) -> tuple[int, int]:
-    freed, shared = _tree_usage(path, seen)
+def _remove_tree(path: Path) -> None:
+    """Remove one retired tree or receipt; never follows a symlink."""
+
     if path.is_dir() and not path.is_symlink():
         shutil.rmtree(path)
     else:
         path.unlink()
+
+
+def _delete_now(path: Path, seen: set[tuple[int, int]]) -> tuple[int, int]:
+    freed, shared = _tree_usage(path, seen)
+    _remove_tree(path)
     return freed, shared
 
 
@@ -592,10 +598,7 @@ def delete_retiring_trees(roots: Sequence[str | Path]) -> dict[str, Any]:
         for child in children:
             try:
                 freed, shared = _tree_usage(child, seen)
-                if child.is_dir() and not child.is_symlink():
-                    shutil.rmtree(child)
-                else:
-                    child.unlink()
+                _remove_tree(child)
             except OSError as exc:
                 failed.append({"path": str(child), "reason": f"removal_failed:{type(exc).__name__}"})
                 continue

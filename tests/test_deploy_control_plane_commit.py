@@ -1615,6 +1615,25 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
     # the host's protection sources, runtime root or process table.
     monkeypatch.setattr(deploy, "_live_release_commits", lambda *args, **kwargs: [])
     protection = _protection_sources(tmp_path / "protection")
+    # A previous deploy stopped between moving a tree aside and deleting it.
+    leftover = tmp_path / "releases" / ".retiring" / f"{'e' * 40}-0123456789ab"
+    leftover.mkdir(parents=True)
+    (leftover / "payload").write_bytes(b"x" * 32)
+    paid_gate_held_while_deleting: list[bool] = []
+    delete_retiring_trees = deploy.delete_retiring_trees
+
+    def observed_delete(roots):
+        with lock.open("r", encoding="utf-8") as probe:
+            try:
+                fcntl.flock(probe.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                paid_gate_held_while_deleting.append(True)
+            else:
+                fcntl.flock(probe.fileno(), fcntl.LOCK_UN)
+                paid_gate_held_while_deleting.append(False)
+        return delete_retiring_trees(roots)
+
+    monkeypatch.setattr(deploy, "delete_retiring_trees", observed_delete)
     receipt = deploy.deploy_control_plane_commit(
         source_repo=source,
         source_commit=commit,
@@ -1678,6 +1697,12 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
     assert json.loads(summary.read_text(encoding="utf-8"))["alerts"] == [
         "release_retirement_blocked:release_retirement_active_target_outside_root"
     ]
+    # Leftovers go before the disk reservation; this deploy's own deletion waits
+    # until the paid-launch gate is open again, so launches are not held out.
+    assert retirement["startup_swept"] == [
+        {"path": str(leftover.resolve()), "bytes": 32, "shared_bytes": 0}
+    ]
+    assert paid_gate_held_while_deleting == [False, True, False]
 
 
 def test_disk_reservation_runtime_repairs_root_owned_ledger_and_reports_receipt(
@@ -2725,6 +2750,53 @@ def test_deploy_retirement_locks_the_control_plane_root_once_when_it_is_the_stat
     assert result["status"] == "applied" and result["retired_commits"] == [superseded]
     assert locked == [sources.control_plane_root.resolve()]
     assert result["lock_roots"] == [str(sources.control_plane_root.resolve())]
+
+
+def test_deploy_retirement_alerts_when_a_rename_or_a_deletion_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import errno
+    import time
+
+    import blueprint_pipeline.control_plane_release_retirement as retirement
+
+    releases, runtimes = tmp_path / "releases", tmp_path / "runtimes"
+    no_processes = tmp_path / "proc"
+    no_processes.mkdir()
+    now = time.time()
+    current, superseded = "a" * 40, "b" * 40
+    _release_trees(releases, {current: 3_600, superseded: 10 * 86_400}, now=now)
+    for component in ("splat-render", "scene-configuration"):
+        _release_trees(runtimes / component, {superseded: 10 * 86_400}, now=now)
+    active = tmp_path / "active"
+    active.symlink_to(releases / current, target_is_directory=True)
+    stage, remove_tree = retirement._stage_aside, retirement._remove_tree
+
+    def refuse_first_rename(path: Path, token: str) -> Path:
+        if path == releases / superseded:
+            raise OSError(errno.EACCES, "Permission denied")
+        return stage(path, token)
+
+    def refuse_splat_render_removal(path: Path) -> None:
+        if path.parent.parent.name == "splat-render":
+            raise OSError(errno.EBUSY, "Device or resource busy")
+        remove_tree(path)
+
+    monkeypatch.setattr(retirement, "_stage_aside", refuse_first_rename)
+    monkeypatch.setattr(retirement, "_remove_tree", refuse_splat_render_removal)
+    result = deploy._retire_superseded_release_trees(
+        release_root=releases, runtime_root=runtimes, active_link=active,
+        current_commit=current, protection_sources=_protection_sources(tmp_path), keep_last=1,
+        proc_root=no_processes,
+    )
+
+    assert result["status"] == "applied"
+    assert result["skipped"] == [{"commit": superseded, "reason": "rename_failed:PermissionError"}]
+    assert [row["reason"] for row in result["deletion_failures"]] == ["removal_failed:OSError"]
+    assert result["alerts"] == [
+        "release_retirement_rename_failed:1",
+        "release_retirement_deletion_failed:1",
+    ]
 
 
 def test_deploy_retirement_gives_up_when_a_publisher_holds_the_lock(tmp_path: Path) -> None:
