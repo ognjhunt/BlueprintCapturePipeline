@@ -31,7 +31,13 @@ from .native_g1_humanoidarena_interface import (
 
 PINNED_ACTION_PROVIDER_SHA256 = "701b75f0effec0c28c215a813a10d70db0a33dbf01000c7f1c142d6a8a60568c"
 OFFICIAL_HAND_ORDER = (
-    "thumb_0", "thumb_1", "thumb_2", "middle_0", "middle_1", "index_0", "index_1"
+    "thumb_0",
+    "thumb_1",
+    "thumb_2",
+    "middle_0",
+    "middle_1",
+    "index_0",
+    "index_1",
 )
 
 
@@ -96,10 +102,22 @@ class WxyzRootDataView:
     def __init__(self, native_data: Any) -> None:
         self._native_data = native_data
 
+    @staticmethod
+    def _tensor(value: Any) -> torch.Tensor:
+        # Isaac Lab 3.0 Beta2 exposes root fields as ProxyArray: its Warp
+        # shape is (num_instances,), while .torch expands vec3/quat/state
+        # components into the measured tensor columns SONIC consumes.
+        tensor = value if isinstance(value, torch.Tensor) else getattr(value, "torch", None)
+        if not isinstance(tensor, torch.Tensor):
+            raise ValueError("g1_sonic_native_root_state_invalid:torch_view_unavailable")
+        return tensor
+
     @property
     def root_state_w(self) -> Any:
-        native = self._native_data.root_state_w
+        native = self._tensor(self._native_data.root_state_w)
         if len(native.shape) == 2 and native.shape[1] >= 7:
+            if not torch.isfinite(native).all():
+                raise ValueError("g1_sonic_native_root_state_invalid:nonfinite_combined_state")
             converted = native.clone()
             converted[:, 3] = native[:, 6]
             converted[:, 4:7] = native[:, 3:6]
@@ -109,8 +127,8 @@ class WxyzRootDataView:
         # Use the measured named pose even when the optional velocity readbacks
         # have not been populated; never invent missing velocity values.
         try:
-            position = self._native_data.root_pos_w
-            quaternion = self._native_data.root_quat_w
+            position = self._tensor(self._native_data.root_pos_w)
+            quaternion = self._tensor(self._native_data.root_quat_w)
             batch = position.shape[0]
             if (
                 batch < 1
@@ -128,14 +146,24 @@ class WxyzRootDataView:
                     f"quaternion_shape={tuple(quaternion.shape)}"
                 )
             pose = torch.cat((position, quaternion[:, [3, 0, 1, 2]]), dim=1)
-            linear = getattr(self._native_data, "root_lin_vel_w", None)
-            angular = getattr(self._native_data, "root_ang_vel_w", None)
+            linear_value = getattr(self._native_data, "root_lin_vel_w", None)
+            angular_value = getattr(self._native_data, "root_ang_vel_w", None)
+            try:
+                linear = self._tensor(linear_value) if linear_value is not None else None
+                angular = self._tensor(angular_value) if angular_value is not None else None
+            except ValueError:
+                linear = angular = None
             if (
-                linear is not None and angular is not None
-                and linear.shape == (batch, 3) and angular.shape == (batch, 3)
-                and all(value.device == position.device and value.dtype == position.dtype
-                        for value in (linear, angular))
-                and torch.isfinite(linear).all() and torch.isfinite(angular).all()
+                linear is not None
+                and angular is not None
+                and linear.shape == (batch, 3)
+                and angular.shape == (batch, 3)
+                and all(
+                    value.device == position.device and value.dtype == position.dtype
+                    for value in (linear, angular)
+                )
+                and torch.isfinite(linear).all()
+                and torch.isfinite(angular).all()
             ):
                 return torch.cat((pose, linear, angular), dim=1)
             return pose
@@ -190,7 +218,8 @@ class NativeG1OfficialSonicTargetBridge:
         if (
             provider.__class__.__name__ != "SonicActionProvider"
             or inspect.getsourcefile(provider.__class__) is None
-            or Path(inspect.getsourcefile(provider.__class__)).resolve() != Path(source_path).resolve()
+            or Path(inspect.getsourcefile(provider.__class__)).resolve()
+            != Path(source_path).resolve()
             or not isinstance(getattr(provider, "env", None), SonicWxyzEnvironmentView)
             or not getattr(provider, "_sonic_joint29_mode", False)
             or getattr(provider, "_use_vla_latent64", True)
@@ -207,7 +236,9 @@ class NativeG1OfficialSonicTargetBridge:
         self.limits = joint_limits
         self.encoder = _CountingSession(provider._encoder)
         self.decoder = _CountingSession(provider._decoder)
-        if not isinstance(provider._perf_encoder_ms, list) or not isinstance(provider._perf_decoder_ms, list):
+        if not isinstance(provider._perf_encoder_ms, list) or not isinstance(
+            provider._perf_decoder_ms, list
+        ):
             raise ValueError("g1_sonic_controller_timing_contract_invalid")
         self.encoder_timings = _CountingTimings(provider._perf_encoder_ms)
         self.decoder_timings = _CountingTimings(provider._perf_decoder_ms)
@@ -221,10 +252,7 @@ class NativeG1OfficialSonicTargetBridge:
         before = (self.encoder.calls, self.decoder.calls)
         before_timings = (self.encoder_timings.appends, self.decoder_timings.appends)
         self.provider._apply_lerobot_semantic_action(np.asarray(action, dtype=np.float32))
-        if not (
-            self.provider._smpl_data_valid
-            and self.provider._latest_consumed_new_this_step
-        ):
+        if not (self.provider._smpl_data_valid and self.provider._latest_consumed_new_this_step):
             raise RuntimeError("g1_sonic_reference_not_consumed")
         self.provider._latest_decoder_target = np.full(29, np.nan, dtype=np.float32)
         self.provider._latest_decoder_raw_action = np.full(29, np.nan, dtype=np.float32)
@@ -239,8 +267,7 @@ class NativeG1OfficialSonicTargetBridge:
             or not np.isfinite(measured_target).all()
             or not np.isfinite(measured_raw).all()
             or not np.allclose(body, measured_target, rtol=0.0, atol=1e-6)
-            or (self.encoder.calls, self.decoder.calls)
-            != (before[0] + 1, before[1] + 1)
+            or (self.encoder.calls, self.decoder.calls) != (before[0] + 1, before[1] + 1)
             or (self.encoder_timings.appends, self.decoder_timings.appends)
             != (before_timings[0] + 1, before_timings[1] + 1)
         ):
@@ -261,6 +288,9 @@ class NativeG1OfficialSonicTargetBridge:
         for name in PROTOCOL_V4_FULL_JOINT_ORDER:
             value = targets[name]
             lower, upper = self.limits[name]
-            if not all(math.isfinite(float(item)) for item in (value, lower, upper)) or not lower <= value <= upper:
+            if (
+                not all(math.isfinite(float(item)) for item in (value, lower, upper))
+                or not lower <= value <= upper
+            ):
                 raise ValueError("g1_sonic_controller_target_out_of_limits")
         return targets
