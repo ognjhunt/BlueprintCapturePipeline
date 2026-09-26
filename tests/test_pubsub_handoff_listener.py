@@ -2379,3 +2379,32 @@ def test_terminal_receipts_are_written_under_the_ledger_lock(tmp_path, monkeypat
     assert _pull(tmp_path) == 1
 
     assert lock_held_while_writing == [True, True]  # the ending, then the repair
+
+
+@pytest.mark.parametrize("tamper", ["code", "receipt_digest"])
+def test_a_tampered_terminal_receipt_is_not_current_and_is_repaired(tmp_path, monkeypatch, tamper):
+    ending = FakeSubscriber([_received(ack_id="p1", data=PAYLOAD_BYTES)])
+    _install_fake_pubsub(monkeypatch, ending,
+                         storage_client=FakeStorageClient(_website_bundle_blobs()), run_e2e=_expired)
+    assert _pull(tmp_path) == 1
+    live = _live_terminal_receipt(tmp_path)
+    receipt = _read(live)
+    ledger = _read(_capture_root(tmp_path) / "pipeline_job_ledger.json")
+    assert listener_module._terminal_receipt_current(receipt, ledger)
+    if tamper == "code":
+        tampered = {**receipt, "code": "source_revoked"}  # a self-consistent receipt of another ending
+        tampered["receipt_digest"] = canonical_digest(tampered, digest_field="receipt_digest")
+    else:
+        tampered = {**receipt, "receipt_digest": "sha256:" + "0" * 64}  # right content, broken digest
+    assert not listener_module._terminal_receipt_current(tampered, ledger)
+    listener_module.write_json(live, tampered)
+    assert _status(tmp_path)["terminal_receipt_present"] is False
+
+    redelivered = FakeSubscriber([_received(ack_id="p1-again", data=PAYLOAD_BYTES, delivery_attempt=2)])
+    _install_fake_pubsub(monkeypatch, redelivered, storage_client=_ListingForbidden())
+    assert _pull(tmp_path) == 1
+
+    assert _read(live) == receipt
+    assert _status(tmp_path)["terminal_receipt_present"] is True
+    kept = list(_capture_root(tmp_path).glob("pipeline_job_terminal_receipt.superseded-*.json"))
+    assert [_read(path) for path in kept] == [tampered]
