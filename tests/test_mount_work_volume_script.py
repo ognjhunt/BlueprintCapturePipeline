@@ -72,7 +72,7 @@ def _tree(root: Path) -> list[str]:
 
 
 def _script_array(name: str) -> list[str]:
-    """Read one bash array assignment out of the script text, ignoring comments."""
+    """Read one bash array assignment out of the script text, ignoring comments and quotes."""
     words: list[str] = []
     inside = False
     for line in SCRIPT.read_text(encoding="utf-8").splitlines():
@@ -81,9 +81,9 @@ def _script_array(name: str) -> list[str]:
             if not code.startswith(f"{name}=("):
                 continue
             code, inside = code[len(name) + 2 :], True
+        words += [word.strip("'\"") for word in code.split(")", 1)[0].split()]
         if ")" in code:
-            return words + code.split(")", 1)[0].split()
-        words += code.split()
+            return words
     raise AssertionError(f"{name} is not assigned in {SCRIPT.name}")
 
 
@@ -175,14 +175,17 @@ def test_every_bulk_storage_class_root_is_on_the_volume_and_queues_never_move() 
     kept_on_root_disk = sorted(
         root.path
         for root in carried
-        if root.storage_class in {"work", "ledger", "evidence_hot"}
+        if root.storage_class in {"work", "ledger"}
         and not _within(PurePosixPath(root.path), INPUTS_TREE)
         and not (root.storage_class == "work" and PurePosixPath(root.path) in BULK_WORK_ROOTS)
     )
-    assert kept_on_root_disk == [], "queues, ledgers and hot evidence never move"
-    # The hot evidence the inputs tree carries is exactly what the plan names for the owner.
+    assert kept_on_root_disk == [], "queues and ledgers never move"
+    # Hot evidence rides on the volume only where the script declares it, and the
+    # plan names every declared entry for the owner.  A new hot root inside a moved
+    # root fails here until it is declared in EVIDENCE_HOT_ON_VOLUME or moved out.
     carried_hot = sorted(root.path for root in carried if root.storage_class == "evidence_hot")
-    assert carried_hot == sorted(str(STATE / rel) for rel in _script_array("EVIDENCE_HOT_ON_VOLUME"))
+    declared_hot = sorted(str(STATE / rel) for rel in _script_array("EVIDENCE_HOT_ON_VOLUME"))
+    assert carried_hot == declared_hot, "hot evidence on the volume must be declared"
 
     # Roots outside the state tree are not in the storage table; each must be
     # production storage that a unit writes, bound to the same path on the volume.

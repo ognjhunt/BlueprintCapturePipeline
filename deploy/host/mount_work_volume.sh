@@ -60,7 +60,9 @@ ABSOLUTE_ROOTS=(/workspace)                              # bound to ${MOUNT}/wor
 
 # Hot evidence that rides inside a bulk root by design: the volume is durable
 # block storage, and splitting task-evaluation-inputs would break the hardlinks
-# that keep it small.  The plan names these so the owner sees them.
+# that keep it small.  The plan names these so the owner sees them, and the
+# governance test refuses hot evidence on the volume that is not listed here.
+# Paths are relative to --state-root; quote a glob.
 EVIDENCE_HOT_ON_VOLUME=(
   task-evaluation-inputs/sam31-profile-registry
   task-evaluation-inputs/task-evaluation-terminal-results
