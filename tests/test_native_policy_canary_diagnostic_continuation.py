@@ -15,7 +15,8 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.groot_n17_droid_policy_runtime import GrootN17DroidPolicyClient, GrootN17DroidPolicySpec
 from blueprint_pipeline.groot_n17_wire_client import encode_wire_message, decode_wire_message
 from blueprint_pipeline.native_policy_canary_diagnostic_continuation import (
-    GATE_FILENAME, PROTOCOL_KEY, assess_diagnostic_first_cell, bind_diagnostic_continuation_protocol,
+    GATE_FILENAME, PROTOCOL_KEY, _expected_protocol, assess_diagnostic_first_cell,
+    bind_diagnostic_continuation_protocol,
     validate_diagnostic_continuation_protocol,
 )
 from blueprint_pipeline.native_task_arena_policy_canary_session import validate_runtime_input_manifest
@@ -218,13 +219,21 @@ def test_protocol_binds_new_inputs_without_changing_originals_or_action_contract
     assert bound["runtime_inputs_digest"] != original["runtime_inputs_digest"]
     assert bound[PROTOCOL_KEY]["base_runtime_inputs_digest"] == original["runtime_inputs_digest"]
     assert bound[PROTOCOL_KEY]["action_admission_changed"] is False
+    assert bound[PROTOCOL_KEY]["schema_version"] == "policy_canary_diagnostic_continuation_protocol.v2"
+    assert bound[PROTOCOL_KEY]["policy_approach_gate"] == "diagnostic_only_scored_policy_outcome"
     assert bound["cells"] == original["cells"]
     assert bound["task_success_contract"] == original["task_success_contract"]
     assert validate_runtime_input_manifest(bound) == bound
     assert bind_diagnostic_continuation_protocol(bound) == bound
 
+    legacy = deepcopy(original)
+    legacy[PROTOCOL_KEY] = _expected_protocol(original, legacy=True)
+    legacy["runtime_inputs_digest"] = canonical_digest(legacy, digest_field="runtime_inputs_digest")
+    assert validate_runtime_input_manifest(legacy) == legacy
+    assert bind_diagnostic_continuation_protocol(legacy) == legacy
 
-def test_verified_rejection_advances_only_with_the_unchanged_independent_witness(tmp_path, retained_pair):
+
+def test_verified_rejection_advances_only_with_independent_native_wiring_witness(tmp_path, retained_pair):
     runtime, child = _copy_pair(tmp_path, retained_pair)
     gate = assess_diagnostic_first_cell(runtime_root=runtime, child_root=child)
     assert gate["status"] == "passed", gate["blockers"]
@@ -234,7 +243,8 @@ def test_verified_rejection_advances_only_with_the_unchanged_independent_witness
     assert rejection["prior_applied_action_count"] == 16
     assert rejection["rejected_query_applied_action_count"] == 0
     assert witness["classification"] == "paired_native_witness"
-    assert witness["existing_approach_threshold_changed"] is False
+    assert witness["existing_approach_threshold_changed"] is True
+    assert witness["policy_approach_is_diagnostic_only"] is True
     child_result = _read(child / worker.PROVIDER_RESULT_FILENAME)
     assert child_result["episodes"][0]["status"] == "blocked"
     assert child_result["episodes"][0]["episode"]["score"]["status"] == "not_scored"

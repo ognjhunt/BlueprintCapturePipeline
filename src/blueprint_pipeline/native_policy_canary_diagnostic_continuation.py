@@ -12,8 +12,9 @@ from typing import Any, Mapping
 from .decision_evidence_contracts import canonical_digest
 
 PROTOCOL_KEY = "diagnostic_continuation_protocol"
-PROTOCOL_SCHEMA = "policy_canary_diagnostic_continuation_protocol.v1"
-PROTOCOL_MODE = "verified_candidate_joint_bound_rejection_with_paired_native_witness"
+LEGACY_PROTOCOL_SCHEMA = "policy_canary_diagnostic_continuation_protocol.v1"
+PROTOCOL_SCHEMA = "policy_canary_diagnostic_continuation_protocol.v2"
+PROTOCOL_MODE = "verified_candidate_joint_bound_rejection_with_wiring_witness"
 GATE_SCHEMA = "policy_canary_diagnostic_continuation_gate.v1"
 GATE_FILENAME = "diagnostic_continuation_gate.v1.json"
 
@@ -27,7 +28,7 @@ def _require(condition: bool, code: str) -> None:
         raise DiagnosticContinuationError("diagnostic_continuation_" + code)
 
 
-def _expected_protocol(inputs: Mapping[str, Any]) -> dict[str, Any]:
+def _expected_protocol(inputs: Mapping[str, Any], *, legacy: bool = False) -> dict[str, Any]:
     base = deepcopy(dict(inputs))
     base.pop(PROTOCOL_KEY, None)
     base["runtime_inputs_digest"] = canonical_digest(base, digest_field="runtime_inputs_digest")
@@ -40,7 +41,9 @@ def _expected_protocol(inputs: Mapping[str, Any]) -> dict[str, Any]:
                 for cell in cells)
         and (base.get("task_success_contract", {}).get("criteria") or {}).get("controls") is None,
         "controls_mode_not_admitted")
-    value = {"schema_version": PROTOCOL_SCHEMA, "mode": PROTOCOL_MODE,
+    value = {"schema_version": LEGACY_PROTOCOL_SCHEMA if legacy else PROTOCOL_SCHEMA,
+        "mode": ("verified_candidate_joint_bound_rejection_with_paired_native_witness"
+                 if legacy else PROTOCOL_MODE),
         "scope": "first_canonical_cell", "controls_mode": "nonblocking_omitted_by_user",
         "run_kind": "internal_policy_canary", "claim_ceiling": "diagnostic_policy_execution",
         "run_id": base["run_id"], "candidate_ids": base["candidate_ids"],
@@ -49,10 +52,13 @@ def _expected_protocol(inputs: Mapping[str, Any]) -> dict[str, Any]:
         "base_runtime_inputs_digest": base["runtime_inputs_digest"],
         "accepted_failure_kind": "finite_absolute_joint_position_bounds_rejection",
         "rejection_candidate_id": "pi05_droid",
-        "witness_requirement": "other_frozen_candidate_unchanged_embodiment_parity_pass",
+        "witness_requirement": ("other_frozen_candidate_unchanged_embodiment_parity_pass"
+                                if legacy else "other_frozen_candidate_native_wiring_and_score_pass"),
         "evidence_contract": "sealed_readiness_reset_request_response_and_lossless_media",
         "qualified_comparison_permitted": False, "action_admission_changed": False,
         "protocol_digest": ""}
+    if not legacy:
+        value["policy_approach_gate"] = "diagnostic_only_scored_policy_outcome"
     value["protocol_digest"] = canonical_digest(value, digest_field="protocol_digest")
     return value
 
@@ -60,7 +66,10 @@ def _expected_protocol(inputs: Mapping[str, Any]) -> dict[str, Any]:
 def validate_diagnostic_continuation_protocol(inputs: Mapping[str, Any]) -> dict[str, Any] | None:
     if PROTOCOL_KEY not in inputs:
         return None
-    expected = _expected_protocol(inputs)
+    actual = inputs[PROTOCOL_KEY]
+    _require(isinstance(actual, Mapping), "protocol_binding_invalid")
+    expected = _expected_protocol(
+        inputs, legacy=actual.get("schema_version") == LEGACY_PROTOCOL_SCHEMA)
     _require(inputs[PROTOCOL_KEY] == expected, "protocol_binding_invalid")
     return expected
 
@@ -70,6 +79,9 @@ def bind_diagnostic_continuation_protocol(runtime_inputs: Mapping[str, Any]) -> 
     from .native_task_arena_policy_canary_session import validate_runtime_input_manifest
 
     inputs = validate_runtime_input_manifest(runtime_inputs)
+    if PROTOCOL_KEY in inputs:
+        validate_diagnostic_continuation_protocol(inputs)
+        return inputs
     inputs[PROTOCOL_KEY] = _expected_protocol(inputs)
     inputs["runtime_inputs_digest"] = canonical_digest(inputs, digest_field="runtime_inputs_digest")
     return validate_runtime_input_manifest(inputs)
@@ -118,7 +130,8 @@ def _reset(value: Any, *, binding: Mapping[str, Any], candidate: str) -> dict:
     return receipt
 
 
-def _witness(root: Path, row: Mapping[str, Any], *, binding: Mapping[str, Any], spec: Mapping[str, Any]) -> dict:
+def _witness(root: Path, row: Mapping[str, Any], *, binding: Mapping[str, Any],
+             spec: Mapping[str, Any], legacy_approach_gate: bool = False) -> dict:
     import numpy as np
     from PIL import Image
     from .native_policy_canary_matrix_gate import _episode_embodiment_parity_diagnostic
@@ -155,16 +168,21 @@ def _witness(root: Path, row: Mapping[str, Any], *, binding: Mapping[str, Any], 
     _require(_read(_safe_path(root, receipt_ref["relative_path"])) == episode,
         "native_witness_episode_receipt_mismatch")
     diagnostic = _episode_embodiment_parity_diagnostic(episode,
-        observation_support_qualified=row.get("observation_support_qualified") is True)
-    _require(diagnostic == row.get("embodiment_parity_diagnostic") and diagnostic["status"] == "passed",
+        observation_support_qualified=row.get("observation_support_qualified") is True,
+        legacy_approach_gate=legacy_approach_gate)
+    _require(diagnostic == row.get("embodiment_parity_diagnostic") and diagnostic["status"] == "passed"
+        and (legacy_approach_gate or "policy_approach_observed" in diagnostic),
         "paired_native_witness_not_passed")
     reset = _reset(episode.get("scientific_reset"), binding=binding, candidate=candidate)
     readiness = _readiness(root, episode.get("prestart_readiness"), candidate=candidate, episode_id=episode_id, reset=reset)
     _require((episode.get("score") or {}).get("status") == "scored", "native_witness_score_unavailable")
-    return {"candidate_id": candidate, "classification": "paired_native_witness",
+    result = {"candidate_id": candidate, "classification": "paired_native_witness",
         "parity_receipt_digest": diagnostic["receipt_digest"], "prestart_readiness_digest": readiness["readiness_digest"],
         "scientific_reset": reset, "episode_receipt": receipt_ref,
-        "task_success_required": False, "existing_approach_threshold_changed": False}
+        "task_success_required": False, "existing_approach_threshold_changed": not legacy_approach_gate}
+    if not legacy_approach_gate:
+        result["policy_approach_is_diagnostic_only"] = True
+    return result
 
 
 def _candidate_rejection(root: Path, row: Mapping[str, Any], *, binding: Mapping[str, Any], spec: Mapping[str, Any]) -> dict:
@@ -311,12 +329,15 @@ def assess_diagnostic_first_cell(*, runtime_root: Path, child_root: Path) -> dic
         for artifact in inventory:
             _verify_artifact(root, artifact)
         checked = []
+        legacy_approach_gate = protocol["schema_version"] == LEGACY_PROTOCOL_SCHEMA
         for row in rows:
             spec = specs[row["candidate_id"]]
             _require(all(row.get(key) == spec.get(key) for key in ("checkpoint_digest", "runtime_identity_digest")),
                 "candidate_execution_identity_invalid")
-            checked.append((_witness if row.get("status") == "completed" else _candidate_rejection)(
-                root, row, binding=binding, spec=spec))
+            checked.append((_witness(root, row, binding=binding, spec=spec,
+                                     legacy_approach_gate=legacy_approach_gate)
+                            if row.get("status") == "completed" else
+                            _candidate_rejection(root, row, binding=binding, spec=spec)))
         _require(any(item["classification"] == "paired_native_witness" for item in checked), "independent_native_witness_missing")
         parity = compare_reset_readbacks(checked[0]["scientific_reset"], checked[1]["scientific_reset"])
         _require(parity["status"] == "matched", "paired_scientific_reset_unverified")
