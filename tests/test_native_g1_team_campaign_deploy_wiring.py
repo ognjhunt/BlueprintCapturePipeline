@@ -26,7 +26,7 @@ def test_g1_team_queue_has_hardened_once_only_controller_and_timer() -> None:
     assert "native_g1_team_campaign_dispatcher" in service
     assert "KillMode=process" in service
     assert "BLUEPRINT_VAST_WATCHDOG_CALLER_EXIT_SURVIVAL=systemd_dispatcher_kill_mode_process" in service
-    assert "BLUEPRINT_NATIVE_G1_TEAM_CAMPAIGN_EXECUTE=false" in service
+    assert "BLUEPRINT_NATIVE_G1_TEAM_CAMPAIGN_EXECUTE=true" in service
     assert 'ARGS+=(--execute)' in service
     assert "VAST_LAUNCH_LOCK_FILE=" in service
     assert "--registry-path" in service and "--queue-root" in service
