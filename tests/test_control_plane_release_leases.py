@@ -874,3 +874,64 @@ def test_missing_protection_sources_block_or_warn(tmp_path: Path) -> None:
         "release_protection_queue_root_missing:task-evaluation-scene-constructions"
     ]
     assert not sources.binding_root.exists()  # the collector never invents a source
+
+
+def test_queue_scan_rescans_when_an_envelope_moves_mid_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sources = _sources(tmp_path)
+    preparations = sources.control_plane_root / "task-evaluation-launch-preparations"
+    _write(
+        preparations / "processing" / "sentinel.json",
+        {"request": {"expected_production_commit": B}},
+        mtime=NOW - DAY,
+    )
+    waiting = _write(
+        preparations / "awaiting_capacity" / "waiting.json",
+        {"request": {"expected_production_commit": C}},
+        mtime=NOW - DAY,
+    )
+    read_document = leases._read_document
+    moved: list[bool] = []
+
+    def capacity_frees_up(path: Path):
+        # After pending was scanned and before awaiting_capacity is listed, the
+        # waiting envelope moves back to pending: one pass never sees it.
+        if path.name == "sentinel.json" and not moved:
+            os.replace(waiting, preparations / "pending" / "waiting.json")
+            moved.append(True)
+        return read_document(path)
+
+    monkeypatch.setattr(leases, "_read_document", capacity_frees_up)
+    result = collect_release_protections(sources, now=NOW, migrate=False)
+
+    assert moved == [True]
+    assert result["blockers"] == []
+    assert _protected(result) == {
+        B: ["live_queue:task-evaluation-launch-preparations/processing/sentinel.json"],
+        C: ["live_queue:task-evaluation-launch-preparations/pending/waiting.json"],
+    }
+
+
+def test_a_queue_that_never_settles_blocks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    sources = _sources(tmp_path)
+    _write(
+        sources.control_plane_root / "task-evaluation-launches" / "pending" / "moving.json",
+        {"source_commit": B},
+        mtime=NOW - DAY,
+    )
+    read_document = leases._read_document
+    reads: list[str] = []
+
+    def always_moving(path: Path):
+        if path.name == "moving.json":
+            reads.append(path.name)
+            raise FileNotFoundError(path)  # moved between listing and reading
+        return read_document(path)
+
+    monkeypatch.setattr(leases, "_read_document", always_moving)
+    result = collect_release_protections(sources, now=NOW, migrate=False)
+
+    # A moved envelope is not an unreadable one; it is retried, then refused.
+    assert result["blockers"] == ["release_protection_queue_unstable"]
+    assert reads == ["moving.json"] * 3

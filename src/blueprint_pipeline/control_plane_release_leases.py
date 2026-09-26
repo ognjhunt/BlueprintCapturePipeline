@@ -105,6 +105,7 @@ _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,191}\Z")
 _SIDECAR_SUFFIX = ".lease.v1.json"
 _OFFLOAD_POINTER_SUFFIX = ".offloaded.v1.json"
 _INLINE_LEASE_FIELDS = ("owner", "expires_at_epoch", "max_expires_at_epoch", "run_ref")
+_QUEUE_SCAN_ATTEMPTS = 3
 # The blockers after which a standing authorization can never admit again.
 _EXPECTED_TERMINAL_AUTHORIZATION_BLOCKERS = frozenset(
     {
@@ -275,6 +276,14 @@ class _Collection:
         for commit in sorted(set(commits)):
             self.lapsed.append({"commit": commit, **row, "why": why})
 
+    def merge(self, other: _Collection) -> None:
+        self.leases.extend(other.leases)
+        self.lapsed.extend(other.lapsed)
+        self.migrated |= other.migrated
+        self.renewed |= other.renewed
+        self.warnings |= other.warnings
+        self.blockers |= other.blockers
+
     def result(self, now: float) -> dict[str, Any]:
         def order(row: Mapping[str, Any]) -> tuple[str, str, str]:
             return (str(row["kind"]), str(row["source"]), str(row["commit"] or ""))
@@ -371,14 +380,22 @@ def _envelope_profile_ids(envelope: Mapping[str, Any]) -> set[str]:
     return profile_ids
 
 
-def _collect_queues(
+def _scan_queues(
     root: Path,
     profiles: _Profiles,
     *,
     now: float,
     max_lifetime_seconds: int,
     collection: _Collection,
-) -> None:
+) -> tuple[set[tuple[str, str]], bool]:
+    """One pass over every live queue state.
+
+    Returns the ``(queue, name)`` pairs it accounted for (read, or blocked as
+    unreadable) and whether an envelope vanished between listing and reading.
+    """
+
+    accounted: set[tuple[str, str]] = set()
+    moved = False
     for queue, states in LIVE_QUEUE_STATES.items():
         try:
             if _absent(root / queue):
@@ -405,8 +422,12 @@ def _collect_queues(
                 code_source = f"{queue}/{state}/{_code_id(name)}"
                 try:
                     _payload, envelope, info = _read_document(directory / name)
+                except FileNotFoundError:
+                    moved = True  # a worker moved it on; the snapshot is retried
+                    continue
                 except (OSError, ValueError):
                     envelope = None
+                accounted.add((queue, name))
                 if not isinstance(envelope, Mapping):
                     collection.blockers.add(f"release_protection_queue_unreadable:{code_source}")
                     continue
@@ -446,6 +467,56 @@ def _collect_queues(
                     )
                 else:
                     collection.protect(commits, row)
+    return accounted, moved
+
+
+def _live_queue_listing(root: Path) -> set[tuple[str, str]]:
+    """``(queue, name)`` of every envelope now in a live state.
+
+    A state that cannot be listed is skipped: the pass already blocked on it.
+    """
+
+    listed: set[tuple[str, str]] = set()
+    for queue, states in LIVE_QUEUE_STATES.items():
+        for state in states:
+            try:
+                listed.update((queue, name) for name in _json_names(root / queue / state))
+            except OSError:
+                continue
+    return listed
+
+
+def _collect_queues(
+    root: Path,
+    profiles: _Profiles,
+    *,
+    now: float,
+    max_lifetime_seconds: int,
+    collection: _Collection,
+) -> None:
+    """Protection from the live queues, read as one consistent snapshot.
+
+    Workers move envelopes between states while the scan runs, and an
+    envelope that moves from a state not yet listed into one already read
+    would be missed.  After each pass every live state is listed again; when
+    an envelope vanished mid-read or one appears that the pass never read, the
+    pass is repeated, and a queue still moving after three passes blocks.
+    """
+
+    for _attempt in range(_QUEUE_SCAN_ATTEMPTS):
+        scan = _Collection()
+        accounted, moved = _scan_queues(
+            root,
+            profiles,
+            now=now,
+            max_lifetime_seconds=max_lifetime_seconds,
+            collection=scan,
+        )
+        if not moved and _live_queue_listing(root) <= accounted:
+            break
+    else:
+        scan.blockers.add("release_protection_queue_unstable")
+    collection.merge(scan)
 
 
 def _parse_epoch(value: Any) -> float | None:
