@@ -142,6 +142,7 @@ _DEPLOY_SERVICE_AGENT_SUBSCRIPTION_GRANT = (
     '            --project "$PROJECT_ID" \\\n'
     '            --member "$PUBSUB_SERVICE_AGENT" \\\n'
     '            --role "roles/pubsub.subscriber" \\\n'
+    "            --format=none \\\n"
     "            --quiet\n"
 )
 
@@ -278,3 +279,17 @@ def test_repository_retains_dead_lettered_handoffs() -> None:
     deploy_text = (REPO_ROOT / "deploy" / "scripts" / "deploy.sh").read_text(encoding="utf-8")
     assert missing_dead_letter_retention(terraform) == []
     assert missing_deploy_dead_letter_retention(deploy_text) == []
+
+
+def test_deploy_service_agent_grants_are_quiet_and_function_local() -> None:
+    commands = validator.shell_commands((REPO_ROOT / "deploy" / "scripts" / "deploy.sh").read_text(encoding="utf-8"))
+    grants = [command for command in commands if '--member "$PUBSUB_SERVICE_AGENT"' in command]
+    assert len(grants) == 2
+    assert all(" --format=none " in f" {command} " for command in grants)  # no IAM policy dump in deploy logs
+    assert "local PROJECT_NUMBER PUBSUB_SERVICE_AGENT" in commands
+
+
+def test_the_pubsub_service_agent_is_defined_in_the_locals_section() -> None:
+    terraform = validator.compact((REPO_ROOT / "deploy" / "terraform" / "main.tf").read_text(encoding="utf-8"))
+    assert terraform.count("locals {") == 1
+    assert validator.PUBSUB_SERVICE_AGENT_LOCAL in validator.terraform_block_body(terraform, "locals {")

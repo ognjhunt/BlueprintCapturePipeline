@@ -522,6 +522,9 @@ locals {
     environment = "production"
     managed-by  = "terraform"
   }
+
+  # Google-managed identity that moves exhausted handoffs to the dead-letter topic.
+  pubsub_service_agent = "serviceAccount:service-${data.google_project.current.number}@gcp-sa-pubsub.iam.gserviceaccount.com"
 }
 
 # =============================================================================
@@ -951,13 +954,10 @@ resource "google_storage_bucket_iam_member" "pipeline_handoff_listener_capture_r
   member = "serviceAccount:${google_service_account.pipeline_handoff_listener.email}"
 }
 
-# Pub/Sub dead-letters a message as its own service agent. Without publisher on
-# the dead-letter topic and subscriber on the source subscription, the
-# dead_letter_policy above never moves an exhausted handoff off the listener.
-locals {
-  pubsub_service_agent = "serviceAccount:service-${data.google_project.current.number}@gcp-sa-pubsub.iam.gserviceaccount.com"
-}
-
+# Pub/Sub dead-letters a message as its own service agent
+# (local.pubsub_service_agent). Without publisher on the dead-letter topic and
+# subscriber on the source subscription, the dead_letter_policy above never
+# moves an exhausted handoff off the listener.
 resource "google_pubsub_topic_iam_member" "pipeline_dlq_pubsub_agent_publisher" {
   topic  = google_pubsub_topic.pipeline_dlq.name
   role   = "roles/pubsub.publisher"

@@ -888,6 +888,8 @@ create_pubsub_topics() {
     if [[ "$DRY_RUN" == "true" ]]; then
         log_info "[DRY-RUN] Would grant the Pub/Sub service agent dead-letter access"
     else
+        # Declared apart from the assignment so set -e still sees a failed lookup.
+        local PROJECT_NUMBER PUBSUB_SERVICE_AGENT
         PROJECT_NUMBER="$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')"
         if [[ -z "$PROJECT_NUMBER" ]]; then
             log_error "Could not resolve the project number for ${PROJECT_ID}"
@@ -898,11 +900,13 @@ create_pubsub_topics() {
             --project "$PROJECT_ID" \
             --member "$PUBSUB_SERVICE_AGENT" \
             --role "roles/pubsub.publisher" \
+            --format=none \
             --quiet
         gcloud pubsub subscriptions add-iam-policy-binding blueprint-pipeline-handoff-listener \
             --project "$PROJECT_ID" \
             --member "$PUBSUB_SERVICE_AGENT" \
             --role "roles/pubsub.subscriber" \
+            --format=none \
             --quiet
         log_info "Granted the Pub/Sub service agent dead-letter access"
     fi
