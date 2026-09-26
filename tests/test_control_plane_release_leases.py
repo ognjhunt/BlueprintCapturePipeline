@@ -492,8 +492,10 @@ def _binding(
             / "completed-scene-preparation"
             / intent_id
             / "attempt-1"
-            / "adoption.json"
+            / "evidence.json"
         )
+        # Evidence that is not a prefix adoption: the binding has no ancestors.
+        _write(evidence, {"schema_version": "fixture_terminal_evidence"})
         value["evidence"] = {"path": str(evidence), "sha256": "sha256:" + "0" * 64, "size_bytes": 1}
     if retained is not None:
         value["retained_release"] = retained
@@ -1024,3 +1026,106 @@ def test_a_queue_that_never_settles_blocks(tmp_path: Path, monkeypatch: pytest.M
     # A moved envelope is not an unreadable one; it is retried, then refused.
     assert result["blockers"] == ["release_protection_queue_unstable"]
     assert reads == ["moving.json"] * 3
+
+
+def _complete(sources: ProtectionSources, intent_id: str) -> None:
+    from blueprint_pipeline import task_evaluation_scene_intake as intake
+
+    assert sources.intent_root is not None
+    directory = sources.intent_root / intent_id
+    intent = json.loads((directory / "intent.json").read_text(encoding="utf-8"))
+    _write(
+        directory / "progression.json",
+        intake._seal(
+            {
+                "schema_version": "task_evaluation_scene_progression.v1",
+                "intent_id": intent_id,
+                "intent_digest": intent["intent_digest"],
+                "status": "completed",
+                "phase": "fixture",
+            },
+            "progression_digest",
+        ),
+    )
+
+
+def test_a_live_descendant_keeps_its_completed_ancestors_release(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blueprint_pipeline import task_evaluation_sam31_prefix_adoption as adoption
+
+    # The collector recognizes adoption records without importing their writer.
+    assert leases._SAM_PREFIX_ADOPTION_SCHEMA == adoption.SCHEMA
+    sources = _sources(tmp_path)
+    factory = tmp_path / "task-evaluation-inputs" / "completed-scene-preparation"
+    releases = tmp_path / "task-evaluation-control-plane-releases"
+    for commit in (B, C):
+        (releases / commit).mkdir(parents=True)
+    monkeypatch.setattr(
+        "blueprint_pipeline.public_scene_inpainting_inputs._git_identity",
+        lambda root: {"commit": Path(root).name, "tree": TREE},
+    )
+
+    def adopt(intent_id: str, commit: str, parent: Path | None = None) -> Path:
+        attempt = factory / intent_id / "attempt-1"
+        attempt.mkdir(parents=True)
+        profile: dict = {"schema_version": "fixture_profile", "repo_root": str(releases / commit)}
+        if parent is not None:
+            profile["completed_prefix_adoption"] = adoption.record(parent)
+        profile["profile_digest"] = canonical_digest(profile, digest_field="profile_digest")
+        (attempt / "profile.json").write_text(canonical_json(profile), encoding="utf-8")
+        value = {
+            "schema_version": adoption.SCHEMA,
+            "status": "verified_completed_prefix",
+            "original_execution_commit": commit,
+            "source_profile": adoption.record(attempt / "profile.json"),
+            "retained_release_pin": {"path": str(releases / commit), "source_commit": commit, "tree": TREE},
+        }
+        value["adoption_digest"] = canonical_digest(value, digest_field="adoption_digest")
+        (attempt / "adoption.json").write_text(canonical_json(value), encoding="utf-8")
+        return attempt / "adoption.json"
+
+    # The ancestor's scene is finished; the descendant's replay reuses its prefix.
+    ancestor = adopt("scene-ancestor", B)
+    descendant = adopt("scene-descendant", C, parent=ancestor)
+    _intent(sources, "scene-ancestor", expires_at=NOW + 10 * DAY, status="completed")
+    _intent(sources, "scene-descendant", expires_at=NOW + 10 * DAY, status="running")
+    pin = adoption.publish_adoption_release_binding(descendant, binding_root=sources.binding_root)
+    descendant_name = Path(pin["path"]).name
+    ancestor_digest = json.loads(ancestor.read_text(encoding="utf-8"))["adoption_digest"]
+    ancestor_name = "sam31-prefix-" + ancestor_digest.removeprefix("sha256:") + ".json"
+    assert sorted(path.name for path in sources.binding_root.iterdir()) == sorted(
+        [ancestor_name, descendant_name]
+    )
+
+    result = collect_release_protections(sources, now=NOW, migrate=True)
+
+    source = "task-evaluation-release-retention-bindings/"
+    assert result["blockers"] == [] and result["lapsed"] == []
+    assert _protected(result) == {
+        B: [f"retention_binding:{source}{ancestor_name}"],
+        C: [f"retention_binding:{source}{descendant_name}"],
+    }
+    assert next(row for row in result["leases"] if row["commit"] == B)["reason"] == (
+        f"ancestor_of:{descendant_name}"
+    )
+
+    # Once the descendant's run ends too, neither release is needed.
+    _complete(sources, "scene-descendant")
+    ended = collect_release_protections(sources, now=NOW + DAY, migrate=True)
+    assert _protected(ended) == {}
+    assert _lapsed(ended) == [(B, "run_terminal"), (C, "run_terminal")]
+
+
+def test_an_unreadable_adoption_chain_never_lapses_as_terminal(tmp_path: Path) -> None:
+    sources = _sources(tmp_path)
+    _intent(sources, "scene-done", expires_at=NOW + 10 * DAY, status="completed")
+    binding = _binding(sources, "sam31-prefix-unreadable.json", B, intent_id="scene-done")
+    # The evidence record is gone, so any ancestor it built on cannot be found.
+    Path(json.loads(binding.read_text(encoding="utf-8"))["evidence"]["path"]).unlink()
+
+    first = collect_release_protections(sources, now=NOW, migrate=True)
+    assert B in _protected(first) and first["lapsed"] == []
+
+    later = collect_release_protections(sources, now=NOW + 15 * DAY, migrate=True)
+    assert _lapsed(later) == [(B, "expired")]

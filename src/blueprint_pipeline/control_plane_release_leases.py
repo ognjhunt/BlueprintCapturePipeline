@@ -106,6 +106,10 @@ _SIDECAR_SUFFIX = ".lease.v1.json"
 _OFFLOAD_POINTER_SUFFIX = ".offloaded.v1.json"
 _INLINE_LEASE_FIELDS = ("owner", "expires_at_epoch", "max_expires_at_epoch", "run_ref")
 _QUEUE_SCAN_ATTEMPTS = 3
+# A completed SAM prefix adoption, and how a binding names the adoption it keeps.
+_SAM_PREFIX_ADOPTION_SCHEMA = "task_evaluation_sam31_completed_prefix_adoption.v1"
+_ADOPTION_DIGEST = re.compile(r"sha256:([0-9a-f]{64})\Z")
+_MAX_ADOPTION_CHAIN = 32
 # The blockers after which a standing authorization can never admit again.
 _EXPECTED_TERMINAL_AUTHORIZATION_BLOCKERS = frozenset(
     {
@@ -886,6 +890,75 @@ def _inline_lease(binding: Mapping[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def _record_path(record: Any) -> Path:
+    path = record.get("path") if isinstance(record, Mapping) else None
+    if not isinstance(path, str) or not Path(path).is_absolute():
+        raise ValueError("release_protection_adoption_record_invalid")
+    return Path(path)
+
+
+def binding_ancestry(binding: Mapping[str, Any]) -> tuple[list[tuple[str, list[str]]], bool]:
+    """The earlier prefix adoptions a binding's adoption builds on, nearest first.
+
+    A SAM prefix binding's evidence is its adoption record.  When the source
+    profile of that adoption itself adopted an earlier completed prefix
+    (``completed_prefix_adoption``), replaying it reopens the earlier
+    adoption's release as well; ``publish_adoption_release_binding``
+    republishes that ancestor's binding for exactly this reason.  Returns
+    ``(ancestors, readable)``: each ancestor is ``(binding name, commits)``,
+    and ``readable`` is false when the chain could not be followed to its end.
+    Evidence that is not a prefix adoption has no ancestors.
+    """
+
+    evidence = binding.get("evidence")
+    path_text = evidence.get("path") if isinstance(evidence, Mapping) else None
+    if not isinstance(path_text, str) or not path_text:
+        return [], True
+    ancestors: list[tuple[str, list[str]]] = []
+    try:
+        _payload, current, _info = _read_document(Path(path_text))
+        if not isinstance(current, Mapping):
+            raise ValueError("release_protection_adoption_record_invalid")
+        if current.get("schema_version") != _SAM_PREFIX_ADOPTION_SCHEMA:
+            return [], True
+        seen: set[Path] = set()
+        for _depth in range(_MAX_ADOPTION_CHAIN):
+            _payload, profile, _info = _read_document(_record_path(current.get("source_profile")))
+            if not isinstance(profile, Mapping):
+                raise ValueError("release_protection_adoption_profile_invalid")
+            parent = profile.get("completed_prefix_adoption")
+            if parent is None:
+                return ancestors, True
+            parent_path = _record_path(parent)
+            if parent_path in seen:
+                raise ValueError("release_protection_adoption_chain_cycle")
+            seen.add(parent_path)
+            _payload, current, _info = _read_document(parent_path)
+            match = (
+                _ADOPTION_DIGEST.fullmatch(str(current.get("adoption_digest") or ""))
+                if isinstance(current, Mapping)
+                and current.get("schema_version") == _SAM_PREFIX_ADOPTION_SCHEMA
+                else None
+            )
+            pin = current.get("retained_release_pin") if match is not None else None
+            commits = sorted(
+                {
+                    commit
+                    for commit in (
+                        _valid_commit(current.get("original_execution_commit")) if match else None,
+                        _valid_commit(pin.get("source_commit")) if isinstance(pin, Mapping) else None,
+                    )
+                    if commit is not None
+                }
+            )
+            if match is None or not commits:
+                raise ValueError("release_protection_adoption_record_invalid")
+            ancestors.append((f"sam31-prefix-{match.group(1)}.json", commits))
+        raise ValueError("release_protection_adoption_chain_too_long")
+    except (OSError, ValueError):
+        return ancestors, False
+
+
 def _scene_intent_run_ref(binding: Mapping[str, Any], intent_root: Path | None) -> dict | None:
     """The scene intent whose factory output holds the binding's evidence, if any.
 
@@ -1007,6 +1080,7 @@ def evaluate_binding_lease(
     migrate: bool,
     ttl_seconds: int = DEFAULT_TTL_SECONDS,
     max_lifetime_seconds: int = DEFAULT_MAX_LIFETIME_SECONDS,
+    chain_readable: bool = True,
 ) -> dict[str, Any]:
     """Decide whether one required-evidence binding still protects its commits.
 
@@ -1016,6 +1090,10 @@ def evaluate_binding_lease(
     written exclusively when ``migrate`` is true, otherwise only evaluated as
     the lease that migration would write.  Only ``migrate`` writes, and it also
     renews the sidecar of a live run that is within half a TTL of expiring.
+
+    When ``chain_readable`` is false the adoptions this binding builds on
+    could not be read, so its run is never treated as terminal (it keeps its
+    lease until the lease expires).
 
     Returns ``{"status": "protected" | "lapsed" | "blocked", "commits", "lease",
     "run_state", "why", "blocker", "warnings", "migrated", "renewed",
@@ -1099,6 +1177,8 @@ def evaluate_binding_lease(
     expires_at = float(lease["expires_at_epoch"])
     max_expires_at = float(lease["max_expires_at_epoch"])
     run_state = resolver.state(lease.get("run_ref"))
+    if run_state == "terminal" and not chain_readable:
+        run_state = "unknown"
     outcome["run_state"] = run_state
     past_max_lifetime = f"release_protection_lease_past_max_lifetime:{_code_id(name)}"
     if run_state == "terminal":
@@ -1146,6 +1226,62 @@ def evaluate_binding_lease(
     return outcome
 
 
+def evaluate_binding_leases(
+    bindings: list[tuple[str, str, Mapping[str, Any]]],
+    *,
+    lease_root: str | Path | None,
+    resolver: RunStateResolver,
+    now: float,
+    migrate: bool,
+    ttl_seconds: int = DEFAULT_TTL_SECONDS,
+    max_lifetime_seconds: int = DEFAULT_MAX_LIFETIME_SECONDS,
+) -> dict[str, dict[str, Any]]:
+    """Evaluate every valid binding ``(name, binding_sha256, binding)`` together.
+
+    Each lease is evaluated on its own, then protection is made transitive: a
+    binding is kept while it protects by itself *or* is an ancestor (see
+    ``binding_ancestry``) of a binding that does.  An ancestor kept that way
+    is ``protected`` with ``ancestor_of`` naming the descendant; an ancestor
+    whose binding is missing is listed under the descendant's ``inherited``
+    so its commits are still kept.
+    """
+
+    chains = {name: binding_ancestry(binding) for name, _sha, binding in bindings}
+    outcomes: dict[str, dict[str, Any]] = {}
+    for name, binding_sha256, binding in bindings:
+        outcome = evaluate_binding_lease(
+            name=name,
+            binding_sha256=binding_sha256,
+            binding=binding,
+            lease_root=lease_root,
+            resolver=resolver,
+            now=now,
+            migrate=migrate,
+            ttl_seconds=ttl_seconds,
+            max_lifetime_seconds=max_lifetime_seconds,
+            chain_readable=chains[name][1],
+        )
+        outcome["ancestor_of"] = None
+        outcome["inherited"] = []
+        outcomes[name] = outcome
+    # Chains are complete (nearest ancestor to root), so one pass over the
+    # bindings that protect by themselves reaches every ancestor they need.
+    for name in sorted(outcomes):
+        outcome = outcomes[name]
+        if outcome["status"] != "protected" or outcome["ancestor_of"] is not None:
+            continue
+        for ancestor_name, commits in chains[name][0]:
+            ancestor = outcomes.get(ancestor_name)
+            if ancestor is None:
+                outcome["inherited"].append({"binding": ancestor_name, "commits": commits})
+                outcome["warnings"].append(
+                    f"release_protection_binding_ancestor_missing:{_code_id(ancestor_name)}"
+                )
+            elif ancestor["status"] == "lapsed":
+                ancestor["status"], ancestor["why"], ancestor["ancestor_of"] = "protected", None, name
+    return outcomes
+
+
 def _collect_bindings(
     sources: ProtectionSources,
     resolver: RunStateResolver,
@@ -1169,6 +1305,7 @@ def _collect_bindings(
     except (OSError, ValueError):
         collection.blockers.add("release_protection_binding_root_unreadable")
         return
+    valid: list[tuple[str, str, Mapping[str, Any]]] = []
     for name in names:
         try:
             payload, binding, _info = _read_document(root / name)
@@ -1179,20 +1316,20 @@ def _collect_bindings(
             # commit; it is not evidence and protects nothing.
             collection.warnings.add(f"misplaced_retention_plan:{_code_id(name)}")
             continue
-        if not isinstance(binding, Mapping):
+        if not isinstance(binding, Mapping) or binding_commits(binding) is None:
             collection.blockers.add(f"release_protection_binding_invalid:{_code_id(name)}")
             continue
-        outcome = evaluate_binding_lease(
-            name=name,
-            binding_sha256="sha256:" + hashlib.sha256(payload).hexdigest(),
-            binding=binding,
-            lease_root=sources.lease_root,
-            resolver=resolver,
-            now=now,
-            migrate=migrate,
-            ttl_seconds=ttl_seconds,
-            max_lifetime_seconds=max_lifetime_seconds,
-        )
+        valid.append((name, "sha256:" + hashlib.sha256(payload).hexdigest(), binding))
+    outcomes = evaluate_binding_leases(
+        valid,
+        lease_root=sources.lease_root,
+        resolver=resolver,
+        now=now,
+        migrate=migrate,
+        ttl_seconds=ttl_seconds,
+        max_lifetime_seconds=max_lifetime_seconds,
+    )
+    for name, outcome in sorted(outcomes.items()):
         collection.warnings.update(outcome["warnings"])
         if outcome["migrated"]:
             collection.migrated.add(name)
@@ -1210,10 +1347,24 @@ def _collect_bindings(
             "expires_at_epoch": lease["expires_at_epoch"],
             "source": f"{root.name}/{name}",
         }
-        if outcome["status"] == "protected":
-            collection.protect(outcome["commits"], row)
-        else:
+        if outcome["status"] != "protected":
             collection.lapse(outcome["commits"], row, outcome["why"])
+            continue
+        descendant = outcome["ancestor_of"]
+        if descendant is not None:
+            # Kept for as long, and for the same run, as the descendant that needs it.
+            kept_by = outcomes[descendant]["lease"]
+            row = {
+                **row,
+                "reason": f"ancestor_of:{descendant}",
+                "run_ref": kept_by["run_ref"],
+                "expires_at_epoch": kept_by["expires_at_epoch"],
+            }
+        collection.protect(outcome["commits"], row)
+        for inherited in outcome["inherited"]:
+            collection.protect(
+                inherited["commits"], {**row, "reason": f"missing_ancestor:{inherited['binding']}"}
+            )
 
 
 def _collect_configuration(config_files: tuple[Path, ...], collection: _Collection) -> None:
@@ -1342,7 +1493,9 @@ __all__ = [
     "ProtectionSources",
     "RETENTION_PLAN_SCHEMA",
     "RunStateResolver",
+    "binding_ancestry",
     "binding_commits",
     "collect_release_protections",
     "evaluate_binding_lease",
+    "evaluate_binding_leases",
 ]
