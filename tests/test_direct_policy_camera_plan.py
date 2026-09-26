@@ -100,3 +100,46 @@ def test_fixture_desk_intersection_is_screened_before_policy_rental(tmp_path):
     assert passed['status'] == 'passed'
     assert passed['minimum_link_centerline_to_obstacle_m'] > 0.13
     assert passed['native_collision_qualified'] is False
+
+
+def test_fixture_task_asset_intersection_blocks_a_desk_clear_reset(tmp_path):
+    value = plan_inputs()
+    plan = value['plan']
+    chain = value['source_binding']['source_joint_chain']
+    joints = dict(plan['robot']['joint_reset_positions_rad'])
+    desk_stage = Usd.Stage.CreateNew(str(tmp_path / 'desk.usda'))
+    desk_root = UsdGeom.Xform.Define(desk_stage, '/Root')
+    desk_stage.SetDefaultPrim(desk_root.GetPrim())
+    desk = UsdGeom.Mesh.Define(desk_stage, '/Root/desk')
+    desk.CreatePointsAttr([Gf.Vec3f(-0.05, -0.05, 0.8), Gf.Vec3f(0.05, -0.05, 0.8),
+                           Gf.Vec3f(-0.05, 0.05, 0.85)])
+    desk.CreateFaceVertexCountsAttr([3])
+    desk.CreateFaceVertexIndicesAttr([0, 1, 2])
+    desk.AddTranslateOp().Set(Gf.Vec3d(10., 0., 0.))
+    UsdPhysics.CollisionAPI.Apply(desk.GetPrim())
+    desk_stage.GetRootLayer().Save()
+    desk_path = tmp_path / 'desk.usda'
+    task_stage = Usd.Stage.CreateNew(str(tmp_path / 'task.usda'))
+    task_root = UsdGeom.Xform.Define(task_stage, '/Root')
+    task_stage.SetDefaultPrim(task_root.GetPrim())
+    task = UsdGeom.Cube.Define(task_stage, '/Root/cabinet')
+    task.CreateSizeAttr(0.1)
+    task_stage.GetRootLayer().Save()
+    task_path = tmp_path / 'task.usda'
+    body = camera.joint_body_poses(chain, joints, plan['robot']['base_pose_world'])[camera.BODY]
+    plan['objects'] = [
+        {'semantic_role': 'scene_collision',
+         'sha256': 'sha256:' + hashlib.sha256(desk_path.read_bytes()).hexdigest(),
+         'pose_world': {'position_world_m': [0., 0., 0.],
+                        'orientation_xyzw': [0., 0., 0., 1.]}},
+        {'task_subject': True, 'sha256': 'sha256:' + hashlib.sha256(task_path.read_bytes()).hexdigest(),
+         'pose_world': {'position_world_m': body[:3, 3].tolist(),
+                        'orientation_xyzw': [0., 0., 0., 1.]}},
+    ]
+    report = camera.fixture_reset_clearance(plan, chain, joints, desk_path, task_path)
+    assert report['minimum_link_centerline_to_obstacle_m'] > 0.13
+    assert report['minimum_link_centerline_to_task_m'] == 0.0
+    assert report['status'] == 'blocked'
+    plan['objects'][1]['sha256'] = 'sha256:' + '0' * 64
+    with pytest.raises(ValueError, match='policy_camera_fixture_task_binding_invalid'):
+        camera.fixture_reset_clearance(plan, chain, joints, desk_path, task_path)
