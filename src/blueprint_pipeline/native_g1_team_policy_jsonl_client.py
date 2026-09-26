@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import selectors
 import subprocess
 import time
@@ -22,6 +23,7 @@ from .native_g1_humanoidarena_policy_client import (
 
 
 PROTOCOL = "jsonl_observation_action_v1"
+_PROFILE_DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 MAX_REQUEST_BYTES = 2 * 1024 * 1024
 
@@ -29,15 +31,29 @@ MAX_REQUEST_BYTES = 2 * 1024 * 1024
 class NativeG1TeamPolicyJsonlClient:
     """Speak one request at a time with a qualified policy subprocess."""
 
-    def __init__(self, process: subprocess.Popen[bytes], *, timeout_seconds: float = 30.0) -> None:
+    def __init__(
+        self,
+        process: subprocess.Popen[bytes],
+        *,
+        timeout_seconds: float = 30.0,
+        profile_digest: str | None = None,
+    ) -> None:
         if (
             process.poll() is not None
             or process.stdin is None
             or process.stdout is None
             or not 0 < timeout_seconds <= 120
+            or (
+                profile_digest is not None
+                and (
+                    not isinstance(profile_digest, str)
+                    or _PROFILE_DIGEST.fullmatch(profile_digest) is None
+                )
+            )
         ):
             raise ValueError("g1_team_policy_process_invalid")
         self.process = process
+        self.profile_digest = profile_digest
         self.timeout_seconds = timeout_seconds
         self._buffer = bytearray()
         self._request_index = 0
@@ -71,6 +87,10 @@ class NativeG1TeamPolicyJsonlClient:
             or value.get("protocol") != PROTOCOL
             or type(value.get("request_id")) is not int
             or value["request_id"] != request_id
+            or (
+                self.profile_digest is not None
+                and value.get("profile_digest") != self.profile_digest
+            )
         ):
             raise ValueError("g1_team_policy_response_identity_invalid")
         return value
@@ -81,6 +101,8 @@ class NativeG1TeamPolicyJsonlClient:
         request_id = self._request_index
         self._request_index += 1
         request = {"protocol": PROTOCOL, "request_id": request_id, "kind": kind, **payload}
+        if self.profile_digest is not None:
+            request["profile_digest"] = self.profile_digest
         body = (json.dumps(request, allow_nan=False, separators=(",", ":")) + "\n").encode("utf-8")
         if len(body) > MAX_REQUEST_BYTES:
             raise ValueError("g1_team_policy_request_oversized")

@@ -8,6 +8,7 @@ only orders their calls. It does not infer task success or attest model bytes.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
@@ -23,14 +24,28 @@ from .native_g1_navigation_goal import (
 )
 
 
-G1_BOX_CANDIDATES = frozenset({
-    "humanoidarena_dp_g1_dex3_sonic",
-    "humanoidarena_pi05_g1_dex3_sonic",
-})
-G1_NAVIGATION_CANDIDATES = frozenset({
-    "humanoidarena_dp_g1_dex3_sonic_vision_navi",
-    "humanoidarena_pi05_g1_dex3_sonic_vision_navi",
-})
+G1_BOX_CANDIDATES = frozenset(
+    {
+        "humanoidarena_dp_g1_dex3_sonic",
+        "humanoidarena_pi05_g1_dex3_sonic",
+    }
+)
+G1_NAVIGATION_CANDIDATES = frozenset(
+    {
+        "humanoidarena_dp_g1_dex3_sonic_vision_navi",
+        "humanoidarena_pi05_g1_dex3_sonic_vision_navi",
+    }
+)
+_PROFILE_DIGEST = re.compile(r"sha256:([0-9a-f]{64})\Z")
+
+
+def team_policy_candidate_id(profile_digest: str) -> str:
+    """Give a registered team policy a stable, path-safe episode identity."""
+
+    match = _PROFILE_DIGEST.fullmatch(profile_digest) if isinstance(profile_digest, str) else None
+    if match is None:
+        raise ValueError("g1_team_policy_profile_digest_invalid")
+    return "team_policy_" + match.group(1)
 
 
 def run_g1_shared_scene_episode(
@@ -43,24 +58,41 @@ def run_g1_shared_scene_episode(
     max_steps: int,
     output_dir: Path,
     read_task_sample: Callable[[], Mapping[str, Any]],
+    team_policy_profile_digest: str | None = None,
+    team_objective_id: str | None = None,
 ) -> dict[str, Any]:
     """Retain every policy input, action, scene step and task readback.
 
     A trace is development-only until a worker verifies checkpoint/runtime
     identity, scores the frozen task, and seals the usual episode receipt.
+    For team policies, the caller must separately verify the saved profile,
+    runtime, rights, and authorization before sending site observations.
     """
 
     plan = getattr(environment, "plan", None)
-    navigation = candidate_id in G1_NAVIGATION_CANDIDATES
+    if team_policy_profile_digest is None:
+        if team_objective_id is not None:
+            raise ValueError("g1_shared_scene_episode_configuration_invalid")
+        candidate_valid = candidate_id in G1_BOX_CANDIDATES | G1_NAVIGATION_CANDIDATES
+        navigation = candidate_id in G1_NAVIGATION_CANDIDATES
+    else:
+        candidate_valid = (
+            team_objective_id in {"task_success", "g1_navigation_goal"}
+            and candidate_id == team_policy_candidate_id(team_policy_profile_digest)
+            and getattr(policy_client, "profile_digest", None) == team_policy_profile_digest
+        )
+        navigation = team_objective_id == "g1_navigation_goal"
     expected_prompt = (
         validate_g1_navigation_goal(plan.get("task_spec") or {})["task_instruction"]
         if navigation and isinstance(plan, Mapping)
-        else (plan.get("task_spec") or {}).get("prompt") if isinstance(plan, Mapping) else None
+        else (plan.get("task_spec") or {}).get("prompt")
+        if isinstance(plan, Mapping)
+        else None
     )
     if (
         not isinstance(plan, Mapping)
         or (plan.get("robot") or {}).get("robot_id") != "unitree_g1"
-        or candidate_id not in G1_BOX_CANDIDATES | G1_NAVIGATION_CANDIDATES
+        or not candidate_valid
         or not isinstance(max_steps, int)
         or isinstance(max_steps, bool)
         or not 1 <= max_steps <= 3000
@@ -85,9 +117,7 @@ def run_g1_shared_scene_episode(
     if initial_task_sample.get("step_index") != 0:
         raise ValueError("g1_shared_scene_initial_task_sample_invalid")
 
-    def retain_observation(
-        images: Mapping[str, Any], *, kind: str
-    ) -> dict[str, Any]:
+    def retain_observation(images: Mapping[str, Any], *, kind: str) -> dict[str, Any]:
         metadata = environment.read_observation_metadata(tuple(images))
         return persist_multicamera_observation(
             images,
@@ -107,9 +137,7 @@ def run_g1_shared_scene_episode(
         if not isinstance(inputs, Mapping):
             raise ValueError("g1_shared_scene_policy_inputs_invalid")
         query_index = len(queries)
-        policy_observation = retain_observation(
-            {"head": inputs["front_rgb"]}, kind="policy-input"
-        )
+        policy_observation = retain_observation({"head": inputs["front_rgb"]}, kind="policy-input")
         policy_observations.append(policy_observation)
         policy_frame = policy_observation["views"]["head"]
         chunk = policy_client.infer_chunk(
@@ -119,14 +147,16 @@ def run_g1_shared_scene_episode(
         )
         if not isinstance(chunk, list) or not chunk:
             raise ValueError("g1_shared_scene_policy_chunk_invalid")
-        queries.append({
-            "query_index": query_index,
-            "step_index": len(steps),
-            "policy_input_frame": policy_frame,
-            "sensor_freshness": inputs["sensor_freshness"],
-            "observation_state": inputs["observation_state"],
-            "returned_action_count": len(chunk),
-        })
+        queries.append(
+            {
+                "query_index": query_index,
+                "step_index": len(steps),
+                "policy_input_frame": policy_frame,
+                "sensor_freshness": inputs["sensor_freshness"],
+                "observation_state": inputs["observation_state"],
+                "returned_action_count": len(chunk),
+            }
+        )
         for action_index, action in enumerate(chunk):
             if len(steps) >= max_steps:
                 break
@@ -148,8 +178,7 @@ def run_g1_shared_scene_episode(
                 "robot_state": state,
                 "task_sample": dict(read_task_sample()),
                 "review_frames": {
-                    role: review_observation["views"][role]
-                    for role in ("head", "overview")
+                    role: review_observation["views"][role] for role in ("head", "overview")
                 },
                 "review_sensor_freshness": review["sensor_freshness"],
             }
@@ -197,6 +226,9 @@ def run_g1_shared_scene_episode(
         "visual_evidence": visual,
         "media_artifacts": artifacts,
     }
+    if team_policy_profile_digest is not None:
+        trace["team_policy_profile_digest"] = team_policy_profile_digest
+        trace["team_objective_id"] = team_objective_id
     try:
         trace = json.loads(json.dumps(trace, allow_nan=False))
     except (TypeError, ValueError) as exc:
@@ -303,8 +335,7 @@ def run_g1_built_scene_policy_episode(
         "scene_plan_digest": plan["plan_digest"],
         "candidate_id": candidate_id,
         "evaluation_task_kind": (
-            "g1_navigation_goal" if candidate_id in G1_NAVIGATION_CANDIDATES
-            else "rigid_pick_place"
+            "g1_navigation_goal" if candidate_id in G1_NAVIGATION_CANDIDATES else "rigid_pick_place"
         ),
         "preflight_receipt_digest": canonical_digest(preflight),
         "trace_digest": trace["trace_digest"],
