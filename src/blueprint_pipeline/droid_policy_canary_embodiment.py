@@ -55,6 +55,21 @@ def _subject_label(task_spec: Mapping[str, Any]) -> str:
 def concrete_droid_task_instruction(task_spec: Mapping[str, Any]) -> str:
     """Return language that names both the visible subject and destination."""
 
+    if (task_spec.get("task_kind") == "articulated_open_close"
+            or task_spec.get("manipulation_strategy") == "articulated_open_close"):
+        assembly = str(task_spec.get("instruction_subject_label") or "").strip()
+        part = str(task_spec.get("visible_target_label") or "").strip()
+        criteria = task_spec.get("configured_success_criteria") or {}
+        joint_type = criteria.get("joint_type")
+        closing = criteria.get("closing_required")
+        if (not assembly or not part or assembly == part
+                or joint_type not in {"prismatic", "revolute"}
+                or type(closing) is not bool):
+            raise ValueError("droid_policy_canary_articulated_instruction_invalid")
+        opening = "Pull open" if joint_type == "prismatic" else "Open"
+        instruction = f"{opening} the {part} of the {assembly}"
+        return f"{instruction}, then close it." if closing else f"{instruction}."
+
     subject = str(task_spec.get("instruction_subject_label") or "").strip()
     if not subject:
         subject = _subject_label(task_spec)
