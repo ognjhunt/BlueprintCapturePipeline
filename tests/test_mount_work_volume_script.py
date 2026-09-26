@@ -428,3 +428,21 @@ def test_a_drift_list_longer_than_a_pipe_still_refuses_with_exit_3(tmp_path: Pat
     assert applied.returncode == 3, applied.stderr[-500:]
     assert "refusing to remove" in applied.stderr
     assert len(list((state / "task-evaluation-inputs.migrated-to-volume" / "prepared-references").iterdir())) == 400
+
+
+def test_apply_unmounts_nested_children_deepest_first(tmp_path: Path) -> None:
+    state, volume, bound = _bound_state(tmp_path)
+    nested = "task-evaluation-inputs/prepared-references/content-addressed"
+    (state / nested).mkdir()
+    (volume / nested).mkdir()
+    (volume / nested / "blob").write_bytes(b"b")
+    with bound.open("a", encoding="utf-8") as handle:
+        handle.write(f"/var/lib/blueprint/{nested}\n")
+
+    applied = _run(*_hermetic(tmp_path, bound), "--apply", "--ack", ACK)
+
+    assert applied.returncode == 0, applied.stderr + applied.stdout
+    unbound = [line.split()[1] for line in applied.stdout.splitlines() if line.startswith("unbound")]
+    assert unbound == [str(state / nested), str(state / "task-evaluation-inputs" / "prepared-references")]
+    assert (volume / nested / "blob").read_bytes() == b"b"
+    assert bound.read_text(encoding="utf-8").splitlines() == ["/var/lib/blueprint/task-evaluation-inputs"]
