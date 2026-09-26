@@ -138,6 +138,29 @@ def test_g1_runtime_profile_seals_its_native_import_closure_without_changing_bas
     assert not {"pin", "coal", "protobuf"}.intersection(
         row["package"] for row in RUNTIME_DEPENDENCY_WHEELS
     )
+    simulator = tmp_path / "isaac-sim"
+    simulator.mkdir()
+    result = provision_native_task_runtime_sources(
+        source_receipt_path=tmp_path / "packet/native_task_runtime_source_packet.v1.json",
+        source_packet_path=receipt["packet_path"],
+        extraction_dir=tmp_path / "extracted",
+        output_path=tmp_path / "provisioning.json",
+        simulator_root=simulator,
+        site_packages_dir=tmp_path / "site-packages",
+        runtime_python_tag="cp312",
+        runtime_platform_tags=("manylinux_2_28_x86_64",),
+        run_command=lambda command, **_kwargs: subprocess.CompletedProcess(
+            command, 0,
+            stdout=(json.dumps(_successful_import_rows())
+                    if "import_module" in command[-1] else "found"),
+            stderr="",
+        ),
+    )
+    assert result["status"] == "completed"
+    assert result["runtime_profile"] == "unitree_g1"
+    assert "cmeel.prefix/lib/python3.12/site-packages" in Path(
+        result["path_file"]
+    ).read_text(encoding="utf-8")
 
 
 def _wheelhouse(root: Path, *, runtime_profile: str = "base") -> Path:
@@ -439,7 +462,7 @@ def test_relocated_packet_installs_all_sources_once_without_build_backend(
     assert len(path_lines) == 1
     assert path_lines[0].startswith("import sys;sys.path[:0]=[")
     assert result["runtime_dependency_target"] in path_lines[0]
-    assert "cmeel.prefix/lib/python3.12/site-packages" in path_lines[0]
+    assert "cmeel.prefix" not in path_lines[0]
     assert all(path in path_lines[0] for path in result["install_roots"])
 
 

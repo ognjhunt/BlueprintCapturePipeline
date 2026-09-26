@@ -441,16 +441,17 @@ def provision_native_task_runtime_sources(
         # site-packages and can silently resolve a different preinstalled
         # version.  Put the verified closure first so the receipt's wheel
         # identities are the code that actually imports.
-        # CMeel wheels put Pinocchio and Coal modules below this prefix.  A
-        # staged .pth file is not processed by site.py, so add the path here.
-        cmeel_sitelib = (
-            dependency_target / "cmeel.prefix/lib"
-            / f"python{target_python_tag[2]}.{target_python_tag[3:]}"
-            / "site-packages"
-        )
-        priority_paths = [
-            str(path) for path in (cmeel_sitelib, dependency_target, *install_roots)
-        ]
+        priority_roots = [dependency_target, *install_roots]
+        if verified.get("runtime_profile") == "unitree_g1":
+            # CMeel puts Pinocchio and Coal modules below this prefix. A
+            # staged .pth file is not processed by site.py.
+            cmeel_sitelib = (
+                dependency_target / "cmeel.prefix/lib"
+                / f"python{target_python_tag[2]}.{target_python_tag[3:]}"
+                / "site-packages"
+            )
+            priority_roots.insert(0, cmeel_sitelib)
+        priority_paths = [str(path) for path in priority_roots]
         path_file.write_text(
             f"import sys;sys.path[:0]={priority_paths!r}\n",
             encoding="utf-8",
