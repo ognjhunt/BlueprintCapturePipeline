@@ -31,6 +31,8 @@ from .native_g1_shared_scene_episode import G1_BOX_CANDIDATES, G1_NAVIGATION_CAN
 REQUEST_SCHEMA = "native_g1_development_episode_request.v1"
 RESULT_SCHEMA = "native_g1_development_worker_result.v1"
 RESULT_FILENAME = RESULT_SCHEMA + ".json"
+PRECLOSE_SCHEMA = "native_g1_development_worker_preclose.v1"
+PRECLOSE_FILENAME = PRECLOSE_SCHEMA + ".json"
 RIGHTS_SCHEMA = "native_g1_development_rights_review.v1"
 PATH_FIELDS = (
     "bundle_root", "inventory_path", "checkpoint_root", "policy_server_source",
@@ -301,15 +303,6 @@ def run_g1_development_worker(
                 teardown["environment"] = "close_failed:" + type(exc).__name__
                 if failure is None:
                     failure = exc
-        if app is not None:
-            try:
-                print("BLUEPRINT_G1_WORKER_PHASE:simulator_close", flush=True)
-                app.close()
-                teardown["simulator"] = "closed"
-            except BaseException as exc:  # noqa: BLE001
-                teardown["simulator"] = "close_failed:" + type(exc).__name__
-                if failure is None:
-                    failure = exc
         supervised_path = output_dir / "episode/native_g1_supervised_built_scene_episode.v1.json"
         try:
             supervised = json.loads(supervised_path.read_text()) if supervised_path.is_file() else episode
@@ -317,15 +310,8 @@ def run_g1_development_worker(
             supervised = None
             if failure is None:
                 failure = exc
-        result = {
+        evidence = {
             "schema_version": RESULT_SCHEMA,
-            "status": (
-                "completed_development_only"
-                if failure is None and episode is not None
-                and episode.get("status") == "completed_development_only"
-                and teardown == {"environment": "closed", "simulator": "closed"}
-                else "blocked"
-            ),
             "phase_reached": phase,
             "request_digest": sealed["request_digest"],
             "packet_receipt_digest": packet_receipt.get("receipt_digest") if packet_receipt else None,
@@ -339,10 +325,61 @@ def run_g1_development_worker(
             "isaaclab_launch": launch,
             "device_binding": device_binding,
             "supervised_episode": supervised,
-            "teardown": teardown,
-            "blocker": {"type": type(failure).__name__, "message": str(failure)} if failure else None,
             "ranking_eligible": False,
             "physical_outcome_claimed": False,
+        }
+        if app is not None:
+            # Isaac/Kit may terminate its interpreter inside close(). Retain
+            # the actual episode or scene-build failure before calling it so
+            # the parent can seal a terminal receipt from the observed exit.
+            preclose = {
+                **evidence,
+                "schema_version": PRECLOSE_SCHEMA,
+                "status": "awaiting_simulator_close",
+                "teardown": {**teardown, "simulator": "close_requested"},
+                "blocker": (
+                    {"type": type(failure).__name__, "message": str(failure)}
+                    if failure else None
+                ),
+            }
+            preclose["preclose_digest"] = canonical_digest(
+                preclose, digest_field="preclose_digest"
+            )
+            (output_dir / PRECLOSE_FILENAME).write_text(
+                json.dumps(preclose, indent=2, sort_keys=True, allow_nan=False) + "\n",
+                encoding="utf-8",
+            )
+            if failure is not None:
+                print(
+                    "BLUEPRINT_G1_WORKER_BLOCKER:" + type(failure).__name__
+                    + ":" + str(failure)[:500], flush=True,
+                )
+            try:
+                print("BLUEPRINT_G1_WORKER_PHASE:simulator_close", flush=True)
+                app.close()
+                teardown["simulator"] = "closed"
+            except SystemExit as exc:
+                if exc.code in (None, 0):
+                    teardown["simulator"] = "closed"
+                else:
+                    teardown["simulator"] = "close_failed:SystemExit"
+                    if failure is None:
+                        failure = exc
+            except BaseException as exc:  # noqa: BLE001
+                teardown["simulator"] = "close_failed:" + type(exc).__name__
+                if failure is None:
+                    failure = exc
+        result = {
+            **evidence,
+            "status": (
+                "completed_development_only"
+                if failure is None and episode is not None
+                and episode.get("status") == "completed_development_only"
+                and teardown == {"environment": "closed", "simulator": "closed"}
+                else "blocked"
+            ),
+            "teardown": teardown,
+            "blocker": {"type": type(failure).__name__, "message": str(failure)} if failure else None,
         }
         result["result_digest"] = canonical_digest(result, digest_field="result_digest")
         (output_dir / RESULT_FILENAME).write_text(

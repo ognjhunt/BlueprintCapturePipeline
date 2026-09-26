@@ -189,8 +189,9 @@ def _terminal_evidence_matches_handle(
     # 22:27: its final global read hit an HTTPError, it still sealed provider_terminal
     # after two direct absence inspections, and this closer refused the evidence as
     # "not exactly bound", stranding a completed $0.012 render. An honest failed read
-    # is admitted only under that informational scope; a claimed observation that
-    # lists a foreign instance is still refused.
+    # is admitted only under that informational scope. An observed foreign
+    # instance is also informational: another paid lane may run concurrently,
+    # but its resources cannot establish or defeat this lane's absence claim.
     global_read_informational = bool(
         evidence.get("global_inventory_informational_only") is True
         and handle.resource_name_exact is None
@@ -230,7 +231,16 @@ def _terminal_evidence_matches_handle(
                 _global_inventory_contains_only_allowed(
                     row, allowed_ids=allowed_ids, allowed_names=allowed_names
                 )
-                or (global_read_informational and _global_inventory_read_blocked(row))
+                or (
+                    global_read_informational
+                    and (
+                        _global_inventory_read_blocked(row)
+                        or _global_inventory_contains_only_foreign(
+                            row, instance_id=instance_id,
+                            pod_name_prefix=handle.pod_name_prefix,
+                        )
+                    )
+                )
             )
             for row in global_inventories
         )
@@ -264,6 +274,42 @@ def _global_inventory_read_blocked(value: Mapping[str, Any]) -> bool:
         and isinstance(value.get("blockers"), list)
         and bool(value.get("blockers"))
     )
+
+
+def _global_inventory_contains_only_foreign(
+    value: Mapping[str, Any], *, instance_id: str, pod_name_prefix: str
+) -> bool:
+    """Accept an observed account inventory only when every resource is foreign to this lane."""
+
+    resources = value.get("resources")
+    count = value.get("live_resource_count")
+    if (
+        value.get("status") != "observed"
+        or value.get("provider") != "vast"
+        or value.get("name_prefix") != ""
+        or value.get("api_confirmed") is not True
+        or not isinstance(count, int)
+        or isinstance(count, bool)
+        or not isinstance(resources, list)
+        or len(resources) != count
+    ):
+        return False
+    observed: set[str] = set()
+    for row in resources:
+        if not isinstance(row, Mapping):
+            return False
+        resource_id = str(row.get("instance_id") or "")
+        resource_name = str(row.get("name") or "")
+        if (
+            not resource_id
+            or not resource_name
+            or resource_id == instance_id
+            or resource_name.startswith(pod_name_prefix)
+            or resource_id in observed
+        ):
+            return False
+        observed.add(resource_id)
+    return True
 
 
 def _global_inventory_contains_only_allowed(
