@@ -358,6 +358,38 @@ def test_dispatcher_refuses_source_alias_changed_after_reservation(tmp_path, mon
     assert not list((tmp_path / "run").rglob("*.input"))
 
 
+def test_dispatcher_never_forwards_a_directory_alias_changed_after_reservation(tmp_path, monkeypatch):
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    for root, payload in ((first, b'{"packet":"sealed"}\n'), (second, b'{"packet":"changed"}\n')):
+        packet_dir = root / "inputs"
+        packet_dir.mkdir(parents=True)
+        (packet_dir / "packet.json").write_bytes(payload)
+    alias = tmp_path / "alias"
+    alias.symlink_to(first, target_is_directory=True)
+    source = first / "inputs" / "packet.json"
+    profile = _profile(tmp_path)
+    profile["immutable_inputs"].append({"name": "packet", "path": str(source), "digest": _path_digest(source)})
+    profile["allocator"]["argv"].extend(["--native-task-arena-packet", str(alias / "inputs")])
+    profile["profile_digest"] = canonical_digest(profile, digest_field="profile_digest")
+    profile_dir, request_path = _write_profile_and_request(tmp_path, profile)
+    calls = []
+
+    def reserve(_role, **_kwargs):
+        alias.unlink()
+        alias.symlink_to(second, target_is_directory=True)
+        return nullcontext()
+
+    monkeypatch.setattr(dispatcher_module, "reserve_control_plane_disk", reserve)
+    receipt = dispatch_launch_request(
+        request_path=request_path, profile_dir=profile_dir, state_root=tmp_path / "state",
+        allocator_runner=lambda argv: calls.append(argv) or 0,
+    )
+    assert receipt["status"] == "blocked"
+    assert "immutable_input_staging_failed:immutable_input_allocator_directory_changed" in receipt["blockers"]
+    assert calls == []
+
+
 def test_dispatcher_disk_refusal_blocks_before_any_provider_call(tmp_path, monkeypatch):
     profile = _profile(tmp_path)
     profile_dir, request_path = _write_profile_and_request(tmp_path, profile)

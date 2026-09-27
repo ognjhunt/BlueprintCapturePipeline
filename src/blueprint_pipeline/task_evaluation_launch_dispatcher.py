@@ -1091,7 +1091,7 @@ def _stage_profile_immutable_inputs(
         for item in profile.get("immutable_inputs") or []
     }
     sources = set(planned_sources.values())
-    projections = _immutable_input_directory_projections(sources, allocator_argv)
+    projections, directory_bindings = _immutable_input_directory_projections(sources, allocator_argv)
     expected_bytes = (
         sum(source.stat().st_size for source in sources)
         + sum(source.stat().st_size for contained in projections.values() for source in contained)
@@ -1109,27 +1109,30 @@ def _stage_profile_immutable_inputs(
         return _stage_profile_immutable_inputs_reserved(
             profile=profile, run_root=run_root, allocator_argv=allocator_argv,
             projections=projections, planned_sources=planned_sources,
+            directory_bindings=directory_bindings,
         )
 
 
 def _immutable_input_directory_projections(
     sources: set[Path], allocator_argv: Sequence[str]
-) -> dict[Path, set[Path]]:
+) -> tuple[dict[Path, set[Path]], dict[int, Path]]:
     """Plan each directory copy once, including overlapping parent directories."""
 
     projections: dict[Path, set[Path]] = {}
-    for argument in allocator_argv:
+    directory_bindings: dict[int, Path] = {}
+    for index, argument in enumerate(allocator_argv):
         candidate = Path(argument).expanduser()
         if not candidate.exists() or not candidate.is_dir():
             continue
         source_directory = candidate.resolve()
+        directory_bindings[index] = source_directory
         contained = {source for source in sources if source.is_relative_to(source_directory)}
         if not contained:
             continue
         if candidate.is_symlink():
             raise TaskEvaluationLaunchError("immutable_input_allocator_directory_symlink")
         projections[source_directory] = contained
-    return projections
+    return projections, directory_bindings
 
 
 def _stage_profile_immutable_inputs_reserved(
@@ -1139,6 +1142,7 @@ def _stage_profile_immutable_inputs_reserved(
     allocator_argv: Sequence[str],
     projections: Mapping[Path, set[Path]],
     planned_sources: Mapping[str, Path],
+    directory_bindings: Mapping[int, Path],
 ) -> tuple[dict[str, Any], list[str]]:
     """Snapshot immutable inputs and redirect exact allocator path arguments."""
 
@@ -1281,9 +1285,17 @@ def _stage_profile_immutable_inputs_reserved(
             rewrite_indices[canonical_source].append(index)
             continue
         directory_argument = Path(argument).expanduser()
+        planned_directory = directory_bindings.get(index)
         canonical_directory = None
-        if directory_argument.exists() and directory_argument.is_dir():
-            canonical_directory = str(directory_argument.resolve())
+        if planned_directory is not None:
+            if not directory_argument.is_dir() or directory_argument.resolve() != planned_directory:
+                raise TaskEvaluationLaunchError("immutable_input_allocator_directory_changed")
+            canonical_directory = str(planned_directory)
+        elif directory_argument.is_dir():
+            current_directory = directory_argument.resolve()
+            if any(source.is_relative_to(current_directory) for source in planned_sources.values()):
+                raise TaskEvaluationLaunchError("immutable_input_allocator_directory_changed")
+            canonical_directory = str(current_directory)
         if canonical_directory in directory_replacements:
             rewritten.append(directory_replacements[canonical_directory])
             next(row for row in directory_rows if row["source_directory"] == canonical_directory)[
