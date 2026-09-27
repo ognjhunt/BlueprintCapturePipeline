@@ -1225,3 +1225,75 @@ def test_the_residue_cap_reads_from_the_unit_environment(tmp_path, monkeypatch, 
     assert phase["max_runs_per_tick"] == expected
     assert [row["retained_reason"] for row in phase["runs"]] == [
         "deferred_tick_cap" if expected == 0 else "publication_failed"]
+
+
+def test_the_residue_bytes_count_once_across_phases() -> None:
+    """What the residue keeps lies inside evidence offload's ``result_registry`` bytes, so the
+    residue phase shows its own breakdown but never adds to the totals across phases."""
+
+    report = {
+        "status": "applied", "observed_at_epoch": NOW,
+        "evidence_offload": {"status": "applied", "candidate_bytes": 0, "offloaded_bytes": 0,
+                             "retained_by_reason": {"result_registry": {"count": 2, "bytes": 1000}}},
+        "result_residue_offload": residue.residue_phase([
+            {"status": "applied", "candidate_count": 1, "candidate_bytes": 100, "offloaded_count": 1,
+             "offloaded_bytes": 100, "skipped_by_reason": {"reader_reopened": {"count": 3, "bytes": 600}}},
+            {"status": "retained", "retained_reason": "deferred_tick_cap", "candidate_count": 1,
+             "candidate_bytes": 200},
+        ], enabled=True, applying=True),
+    }
+
+    summary = build_storage_gc_summary(report)
+
+    assert summary["phases"]["result_residue_offload"]["retained_by_reason"] == {
+        "member_skipped:reader_reopened": {"count": 3, "bytes": 600},
+        "deferred_tick_cap": {"count": 1, "bytes": 200},
+    }
+    assert summary["top_retained_reasons"] == [{"reason": "result_registry", "bytes": 1000}]
+    assert summary["top_retained"] == [
+        {"phase": "evidence_offload", "reason": "result_registry", "count": 2, "bytes": 1000}]
+
+
+def test_a_member_whose_directory_vanished_is_neither_offloaded_nor_kept(tmp_path) -> None:
+    """A name whose directory disappeared before its unlink was not removed by the offload: it is
+    ``member_vanished``, not offloaded, and not kept, so restore still brings its bytes back."""
+
+    f = _sealed_run(tmp_path / "canaries")
+
+    def moving(**kwargs):
+        reference = f.publisher(**kwargs)
+        (f.run / "work" / "stage").rename(tmp_path / "moved-stage")
+        return reference
+
+    result = _offload(f, publisher=moving)
+
+    assert result["status"] == "applied"
+    assert _changed(result["skipped"]) == [{"relative_path": "work/stage/state.npz", "reason": "member_vanished"}]
+    assert result["offloaded_count"] == len(RESIDUE) - 1
+    assert result["offloaded_bytes"] == sum(len(data) for data in RESIDUE.values()) - len(RESIDUE["work/stage/state.npz"])
+    pointer = json.loads(f.pointer.read_text(encoding="utf-8"))
+    assert pointer["kept"] == []
+    assert (tmp_path / "moved-stage" / "state.npz").read_bytes() == RESIDUE["work/stage/state.npz"]
+
+    restored = residue.restore_result_residue(run_root=f.run, now=lambda: NOW, materializer=functools.partial(
+        store.materialize_configured_scene_artifact, client=f.client, bucket=BUCKET))
+
+    assert restored["restored_count"] == len(RESIDUE)
+    assert (f.run / "work" / "stage" / "state.npz").read_bytes() == RESIDUE["work/stage/state.npz"]
+
+
+def test_a_run_whose_only_change_is_a_vanished_member_keeps_its_pointer(tmp_path, monkeypatch) -> None:
+    """The archive is the only record of a vanished member's bytes, so its pointer stays even
+    when nothing else could be evicted."""
+
+    f = _sealed_run(tmp_path / "canaries", residue_files={"work/stage/state.npz": RESIDUE["work/stage/state.npz"]})
+
+    def moving(**kwargs):
+        reference = f.publisher(**kwargs)
+        (f.run / "work" / "stage").rename(tmp_path / "moved-stage")
+        return reference
+
+    result = _offload(f, publisher=moving)
+
+    assert (result["status"], result["offloaded_count"]) == ("applied", 0)
+    assert f.pointer.is_file()

@@ -632,8 +632,11 @@ so each manifest (and its receipt) also records `walked_file_count` and
   reference search does not read as part of a path) when the run is listed, and
   `member_changed`, `path_changed`, `cross_device`,
   `recheck_failed` or `unlink_failed` for a packed member the pointer then
-  records as `kept` (the run row adds the exception type). The summary gives
-  the phase's `enabled` flag too.
+  records as `kept` (the run row adds the exception type), or
+  `member_vanished` for one that went without the offload (restore brings it
+  back). The summary gives the phase's `enabled` flag too. Everything the phase
+  keeps lies inside evidence offload's `result_registry` bytes, so its reasons
+  never add to `top_retained` or `top_retained_reasons`.
 
 With `--report-out` the tick also writes `summary.json`
 (`control_plane_storage_gc_summary.v1`) beside `latest.json`, published the same

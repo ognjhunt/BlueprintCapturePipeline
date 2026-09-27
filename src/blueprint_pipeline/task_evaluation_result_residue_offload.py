@@ -119,7 +119,9 @@ descriptors held from the run root (``completed_replay_cache_retention``'s
 ``_HeldChild`` and ``_remove_group``): device, inode, links, size and mtime are
 rechecked and its bytes hashed once, as the other offloads do, and a member that
 changed, moved or became a link is skipped and recorded in the pointer as
-``kept``; of a hard-linked group cut short, only the names still there are kept.
+``kept``; of a hard-linked group cut short, only the names still there are kept,
+and a name that went without the offload (its directory moved away) is
+``member_vanished``: neither offloaded nor kept, so restore brings it back.
 A pointer behind which nothing could be evicted is withdrawn (``nothing_evicted``)
 so the next tick tries again. ``restore_result_residue`` streams the archive back, verifies every
 member's digest and size, never overwrites a different file, and records a
@@ -767,26 +769,39 @@ def _publish(root: Path, names: list[str], members: Sequence[Mapping[str, Any]],
             archive.unlink(missing_ok=True)
 
 
-def _remove_members(held, group, names, *, sha256):
-    """Remove one planned group; the reason it stopped (or None) and the names that are gone.
+def _still_there(held, name: Path) -> bool:
+    """Whether ``name`` is still listed; a name or directory that cannot be looked at counts as there."""
 
-    ``_remove_group`` unlinks a group's names one by one, so a failure after the
-    first leaves some gone: those are offloaded (restore brings them back) and
-    only the names still there are kept.
+    try:
+        os.stat(name.name, dir_fd=held.directory(name.parts[:-1]), follow_symlinks=False)
+    except FileNotFoundError:
+        return False  # the name, or a directory above it, is gone
+    except OSError:
+        return True
+    return True
+
+
+def _remove_members(held, group, names, *, sha256):
+    """Remove one planned group: the reason it stopped (or None), the names it removed, and the
+    names that vanished without it.
+
+    ``_remove_group`` rechecks every name, then unlinks them in order and stops at
+    the first unlink that fails. So after ``unlink_failed`` the names before the
+    first one still listed were removed here (offloaded: restore brings them
+    back). Any other name that is missing, after any failure, went without this
+    offload: its directory or itself moved or was removed (``member_vanished``).
+    Only the names still listed are kept.
     """
 
     reason = held_files._remove_group(held, group, names, changed="member_changed", sha256=sha256)
     if reason is None:
-        return None, list(names)
-    gone = []
-    for name in names:
-        try:
-            os.stat(name.name, dir_fd=held.directory(name.parts[:-1]), follow_symlinks=False)
-        except FileNotFoundError:
-            gone.append(name)
-        except OSError:
-            continue  # cannot tell: it counts as still there
-    return reason, gone
+        return None, list(names), []
+    listed = [_still_there(held, name) for name in names]
+    removed = 0
+    if reason.startswith("unlink_failed:"):
+        removed = next((index for index, there in enumerate(listed) if there), len(names))
+    vanished = [name for name, there in zip(names[removed:], listed[removed:]) if not there]
+    return reason, list(names[:removed]), vanished
 
 
 def _evict(root: Path, members: Sequence[Mapping[str, Any]], sha_by_name: Mapping[str, str], row) -> list[dict]:
@@ -817,12 +832,16 @@ def _evict(root: Path, members: Sequence[Mapping[str, Any]], sha_by_name: Mappin
                 keep(group, "member_changed")
                 continue
             names = [Path(name) for name in group["relative_paths"]]
-            reason, gone = held.item(functools.partial(_remove_members, sha256=digests.pop()), group, names)
-            gone_names = {name.as_posix() for name in gone}
+            reason, removed, vanished = held.item(
+                functools.partial(_remove_members, sha256=digests.pop()), group, names)
+            gone = {name.as_posix() for name in (*removed, *vanished)}
+            for name in vanished:
+                # Not removed here and not local: the pointer does not keep it, so restore brings it back.
+                _skip(row, name.as_posix(), "member_vanished", group["size_bytes"])
             if reason:
-                keep(group, reason, [name for name in group["relative_paths"] if name not in gone_names])
-            row["offloaded_count"] += len(gone_names)
-            if len(gone_names) == len(names):
+                keep(group, reason, [name for name in group["relative_paths"] if name not in gone])
+            row["offloaded_count"] += len(removed)
+            if len(removed) == len(names):
                 row["offloaded_bytes"] += group["size_bytes"]
     finally:
         held.close()
@@ -950,7 +969,8 @@ def _apply(row, root, pointer, registry, registry_path, registry_bytes, members,
             return _retained(row, "pointer_failed", failure=offload_failure(exc, "pointer"))
         row["pointer"] = pointer.name
         kept = _evict(root, members, {member["relative_path"]: member["sha256"] for member in packed}, row)
-        if row["offloaded_count"] == 0:
+        # The archive is the only record of a vanished member's bytes: its pointer stays.
+        if row["offloaded_count"] == 0 and not row["skipped_by_reason"].get("member_vanished"):
             try:
                 _withdraw(pointer)
             except OSError as exc:
