@@ -198,6 +198,36 @@ def test_preparation_storage_rerun_over_existing_factory_output_records_resumed(
     assert (sample['outcome'], sample['fresh']) == ('resumed', False)
 
 
+def test_invalid_publication_ready_factory_records_failed_footprint(context, monkeypatch):
+    from types import SimpleNamespace
+    from blueprint_pipeline import control_plane_disk_budget as disk
+
+    config_path = configuration(context, monkeypatch)
+    config = json.loads(config_path.read_text())
+    ledger = config_path.parent / 'ledger'
+    config['preparation_worker'] = {'disk_reservation_root': str(ledger)}
+    write(config_path, config, 'config_digest')
+    real_reserve = disk.reserve_control_plane_disk
+    monkeypatch.setattr(disk, 'reserve_control_plane_disk', lambda *args, **kwargs: real_reserve(
+        *args, **kwargs, disk_usage=lambda _path: SimpleNamespace(
+            total=100 * disk.GIB, used=10 * disk.GIB, free=90 * disk.GIB)))
+    real_source = engine._source
+
+    def invalid_source(*args, **kwargs):
+        resolved = real_source(*args, **kwargs)
+        return engine.SourceResolution(
+            resolved.status, resolved.binding_path, resolved.machinery_path,
+            lambda **_kwargs: {'status': 'publication_ready'},
+        )
+
+    monkeypatch.setattr(engine, '_source', invalid_source)
+    result = engine.process_scene_intents(config_path=config_path)
+    assert result['results'][0]['blockers'] == ['scene_progression_factory_receipt_invalid']
+    history = ledger / 'history' / 'launch_preparation.jsonl'
+    [sample] = [json.loads(line) for line in history.read_text().splitlines()]
+    assert sample['outcome'] == 'failed'
+
+
 def test_hermetic_preparation_storage_has_nothing_to_settle():
     from blueprint_pipeline.task_evaluation_scene_preparation_attempts import (
         preparation_storage, settle_preparation_storage,
