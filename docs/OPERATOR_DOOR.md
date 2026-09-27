@@ -248,9 +248,10 @@ no host secrets and no paid calls, and nothing unreviewed runs on the host.
 `usage` answers "what uses the disk?" in one call. It prints `capacity.usage` from
 `status` as tables: each surveyed filesystem's used, surveyed and classified bytes
 and the attributed fraction, then bytes by storage class, the top roots, the top
-owners (`scene:`, `run:`, `release:`, `store:` or a root's child) and every
-unclassified root. Bytes are counted once per inode, so hardlinked stores are not
-double counted. The survey is hourly; the header gives its age. See
+owners (`scene:`, `run:`, `release:`, `store:` or a root's child) and the 20
+largest unclassified roots (fewer if the bounded summary must shrink). Bytes
+are counted once per inode, so hardlinked stores are not double counted. The
+survey is at most hourly; the header gives its age. See
 [`CONTROL_PLANE_STORAGE.md`](CONTROL_PLANE_STORAGE.md#usage-attribution).
 
 ```text

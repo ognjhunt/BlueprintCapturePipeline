@@ -173,8 +173,8 @@ The capacity controller (`blueprint-control-plane-capacity.service`, every ten
 minutes as `root`) also surveys disk usage with
 `control_plane_disk_usage.survey_usage`, so one door call answers "what uses the
 space?". It surveys at most hourly (`BLUEPRINT_CAPACITY_SURVEY_INTERVAL_SECONDS`,
-default 3600, judged by the last survey's `observed_at_epoch`); `--survey` forces
-one.
+default 3600, judged by the last attempted survey even when it failed or the
+process was killed); `--survey` forces one.
 
 **What it counts.** The survey walks the controller's mounts
 (`BLUEPRINT_CAPACITY_MOUNTS`) plus `/`, each within its own filesystem like
@@ -186,9 +186,13 @@ because the content stores and the trees built from them share bytes through
 hardlinks. Bytes on the work volume are attributed at the paths the pipeline uses
 (`/mnt/blueprint-work/workspace` → `/workspace`, any other
 `/mnt/blueprint-work/<rel>` → `/var/lib/blueprint/<rel>`). The walk stops after
-3,000,000 entries or 240 s with `status: "truncated"`, and unreadable entries are
-counted. Paths the unit's sandbox hides (`ProtectHome=`, `PrivateTmp=`) are not
-surveyed.
+3,000,000 entries or 240 s with `status: "truncated"`. A 20,000-entry memory
+bound on buffered directory entries, pending directories, owner rows and shared
+inodes also truncates the survey before the capacity unit's 512 MiB limit is
+at risk. Unreadable entries are counted. Paths the unit's sandbox hides
+(`ProtectHome=`, `PrivateTmp=`), its own `ReadWritePaths=`/`ReadOnlyPaths=` bind
+mounts skipped by the mountinfo rule, and deleted files still held open by a
+process cannot be attributed. These gaps lower `attributed_fraction`.
 
 **Class and root.** A path takes the storage class and root of its
 `control_plane_storage_roots` row; a row with `*` segments reports the concrete
@@ -221,6 +225,7 @@ door, which runs as `blueprint`, can reach the public files):
 |---|---|---|
 | `latest.json`, `history.jsonl` | `0600` | the full report, with project spend and provider funding, and its history |
 | `usage-latest.json` | `0644` | the last survey (`control_plane_disk_usage_survey.v1`), with every unclassified root |
+| `usage-attempt.json` | `0644` | the last survey attempt, including a failed or interrupted attempt's retry clock |
 | `summary.json` | `0644` | `control_plane_capacity_summary.v1`, written every tick: level, alerts, mounts, the usage projection and the resize status. It is projected by named keys, so it carries no spend, funding or URLs, and it stays under 128 KiB. |
 
 `latest.json` and `summary.json` carry the same `usage` projection: the survey's
@@ -229,8 +234,11 @@ owners, and the 20 largest unclassified roots. The controller warns with
 `usage_unclassified_root` for each unclassified root over 1 GiB, and with
 `usage_attribution_low` when a filesystem's `attributed_fraction` (surveyed bytes
 over used bytes, capped at 1) is under 0.9. Either warning raises an `ok` report
-to `warning`. A failed survey keeps the last one and names the error
-(`usage_survey_failed:<type>`); it never stops the capacity tick.
+to `warning`. A survey exception keeps the last result and names the error
+(`usage_survey_failed:<type>`) without stopping the capacity tick. Failed and
+interrupted attempts do not retry on every ten-minute tick. A new non-usage
+warning still pages when a usage warning has already raised the report to
+`warning`.
 
 **Reading it.** `python3 scripts/operator_door.py usage` prints `capacity.usage`
 from door `status` as tables ([`OPERATOR_DOOR.md`](OPERATOR_DOOR.md)):
