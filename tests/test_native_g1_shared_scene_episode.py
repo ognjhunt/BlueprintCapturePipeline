@@ -221,6 +221,45 @@ def test_later_controller_failure_keeps_completed_simulator_step(tmp_path: Path)
     assert step["checkpoint_digest"] == canonical_digest(step, digest_field="checkpoint_digest")
 
 
+def test_projected_target_is_bound_to_step_and_terminal_trace(tmp_path: Path) -> None:
+    scene, policy = _Scene(), _Policy()
+
+    class _ProjectingBridge(_Bridge):
+        def targets_for_action(self, action: list) -> dict:
+            targets = super().targets_for_action(action)
+            self.last_target_projection = [{
+                "joint_name": "joint",
+                "requested_target_rad": 2.0,
+                "applied_target_rad": targets["joint"],
+                "lower_rad": -1.0,
+                "upper_rad": 1.0,
+                "excess_rad": 1.0,
+                "raw_decoder_action": 2.0,
+            }]
+            return targets
+
+    trace = run_g1_shared_scene_episode(
+        environment=scene,
+        policy_client=policy,
+        sonic_bridge=_ProjectingBridge(),
+        candidate_id="humanoidarena_dp_g1_dex3_sonic",
+        task_prompt="pick the box",
+        max_steps=1,
+        output_dir=tmp_path,
+        read_task_sample=lambda: {"step_index": scene.step},
+    )
+    assert trace["controller_target_projection_count"] == 1
+    assert trace["controller_target_projected_step_count"] == 1
+    row = trace["steps"][0]
+    checkpoint = json.loads((tmp_path / row["checkpoint_relative_path"]).read_text())
+    assert row["controller_targets_rad"] == {"joint": 1.0}
+    assert row["target_projections"] == checkpoint["target_projections"]
+    assert row["target_projections"][0]["requested_target_rad"] == 2.0
+    assert checkpoint["checkpoint_digest"] == canonical_digest(
+        checkpoint, digest_field="checkpoint_digest"
+    )
+
+
 def test_unknown_candidate_never_queries_policy(tmp_path: Path) -> None:
     policy = _Policy()
     with pytest.raises(ValueError, match="configuration_invalid"):

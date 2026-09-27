@@ -243,20 +243,43 @@ def test_upstream_default_pose_fallback_cannot_count_as_controller_inference(tmp
         adapter.targets_for_action(_action())
 
 
-def test_out_of_limit_target_is_rejected_not_clipped(tmp_path, monkeypatch):
+def test_finite_out_of_limit_target_is_projected_and_retained(tmp_path, monkeypatch):
     provider = _provider(tmp_path)
     provider.body_target = 2.0
     adapter = _adapter(tmp_path, monkeypatch, provider)
-    with pytest.raises(bridge_module.G1SonicTargetLimitError, match="target_out_of_limits") as raised:
-        adapter.targets_for_action(_action())
-    assert raised.value.violations[0] == {
+    targets = adapter.targets_for_action(_action())
+    assert all(targets[name] == 1.0 for name in CANONICAL_BODY_JOINT_NAMES_29)
+    assert provider._latest_decoder_target == [2.0] * 29
+    assert adapter.last_target_projection[0] == {
         "joint_name": CANONICAL_BODY_JOINT_NAMES_29[0],
-        "target_rad": 2.0,
+        "requested_target_rad": 2.0,
+        "applied_target_rad": 1.0,
         "lower_rad": -1.0,
         "upper_rad": 1.0,
+        "excess_rad": 1.0,
         "raw_decoder_action": 2.0,
     }
-    assert len(raised.value.violations) == 29
+    assert len(adapter.last_target_projection) == 29
+    provider.body_target = 0.0
+    adapter.targets_for_action(_action())
+    assert adapter.last_target_projection == []
+
+
+def test_nonfinite_target_still_fails_closed(tmp_path, monkeypatch):
+    provider = _provider(tmp_path)
+    provider._left_hand_target[0] = float("nan")
+    adapter = _adapter(tmp_path, monkeypatch, provider)
+    with pytest.raises(bridge_module.G1SonicTargetLimitError, match="target_out_of_limits"):
+        adapter.targets_for_action(_action())
+    assert adapter.last_target_projection == []
+
+
+def test_inverted_sealed_limit_still_fails_closed(tmp_path, monkeypatch):
+    adapter = _adapter(tmp_path, monkeypatch, _provider(tmp_path))
+    adapter.limits[CANONICAL_BODY_JOINT_NAMES_29[0]] = [1.0, -1.0]
+    with pytest.raises(bridge_module.G1SonicTargetLimitError, match="target_out_of_limits"):
+        adapter.targets_for_action(_action())
+    assert adapter.last_target_projection == []
 
 
 def test_unpinned_source_is_rejected(tmp_path):
