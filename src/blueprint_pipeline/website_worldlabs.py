@@ -1,4 +1,4 @@
-"""Submit only prepared website images; retain a single Marble operation."""
+"""Submit only prepared website images; retain one Marble operation per admitted attempt."""
 
 from __future__ import annotations
 
@@ -6,6 +6,8 @@ import fcntl
 import json
 import math
 import os
+import time
+from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -19,16 +21,42 @@ from .paid_resource_admission import PaidResourceAdmissionGrant, require_paid_re
 # https://docs.worldlabs.ai/api/pricing (verified 2026-09-19); no HQ mesh export.
 MAX_GENERATION_COST_USD = 3100 / 1250
 
+#: A pre-generation 402 buys nothing and settles at $0, so each one admits one
+#: more attempt bound to the rejected one. On 2026-09-27 the website dishwasher's
+#: only retry ran minutes before the owner added credits, and a single retry
+#: stranded the scene. Bounded, so an account that stays empty cannot loop.
+MAX_CREDIT_REJECTION_RETRIES = 3
+
+
+#: An attempt whose generate outcome was never recorded (the process died, or a
+#: later pass overwrote the run manifest before the 402 was reconciled) is
+#: resolved only from the provider's own index: every generate request carries
+#: its bp-<digest> tag and World Labs lists a world from PENDING onward. Any
+#: in-flight POST holds submission.lock, and this grace outlasts its timeout.
+UNRECORDED_ATTEMPT_GRACE_SECONDS = 600
+_RESOLVED_ATTEMPT_STATUSES = frozenset({"rejected_insufficient_credits", "no_world_generated"})
+
+
+def _attempt_name(stem: str, attempt: int) -> str:
+    return f"{stem}.json" if attempt == 0 else f"{stem}_retry_{attempt}.json"
+
+
+def _latest_attempt(root: Path) -> int:
+    attempt = 0
+    while attempt < MAX_CREDIT_REJECTION_RETRIES and (root / _attempt_name("submission", attempt + 1)).is_file():
+        attempt += 1
+    return attempt
+
 
 def settle_website_reconstruction(*, provider_run: Mapping[str, Any], capture_root: Path,
                                   task_context: Mapping[str, Any]) -> dict[str, Any] | None:
     """Return unused quote capacity only from the retained terminal provider bill."""
     root = capture_root / "pipeline" / "website_reconstruction"
-    retry = (root / "submission_retry_1.json").is_file()
-    submission_path = root / ("submission_retry_1.json" if retry else "submission.json")
-    admission_path = root / ("controller_admission_retry_1.json" if retry else "controller_admission.json")
+    attempt = _latest_attempt(root)
+    submission_path = root / _attempt_name("submission", attempt)
+    admission_path = root / _attempt_name("controller_admission", attempt)
     operation_path = Path(provider_run.get("worldlabs_operation_manifest_uri") or root / "missing")
-    if retry and not admission_path.is_file() and submission_path.is_file():
+    if attempt == 1 and not admission_path.is_file() and submission_path.is_file():
         # The first deployed retry controller wrote its new admission at the
         # original path. Recognize only that exact binding, with the first
         # rejection already settled, so its completed operation can bill.
@@ -63,12 +91,49 @@ def settle_website_reconstruction(*, provider_run: Mapping[str, Any], capture_ro
     if (any(receipt.get(key) != value for key, value in command.items())
             or receipt.get("status") != "settled" or receipt.get("actual_cost_usd") != credits / 1250):
         raise ValueError("website_reconstruction_settlement_receipt_invalid")
-    write_json(root / ("settlement_retry_1.json" if retry else "settlement.json"), receipt)
+    write_json(root / _attempt_name("settlement", attempt), receipt)
     return receipt
 
 
-def rejected_generation_binding(*, capture_root: Path, base_binding: Mapping[str, Any]) -> tuple[dict[str, Any], str] | None:
-    """Bind one retry to the retained, explicit pre-generation credit rejection."""
+def _require_settled_rejection(root: Path, state: Mapping[str, Any], attempt: int) -> None:
+    if state.get("status") == "no_world_generated":
+        proof_path = root / _attempt_name("unrecorded_attempt_proof", attempt)
+        proof = json.loads(proof_path.read_text()) if proof_path.is_file() else {}
+        if (state.get("operation_id") or proof.get("worlds") != []
+                or proof.get("request_digest") != state.get("request_digest")
+                or state.get("no_world_proof_digest") != canonical_digest(proof)):
+            raise ValueError("website_reconstruction_unrecorded_attempt_proof_invalid")
+        return  # Its full reservation stays charged: nothing proves why it was refused.
+    rejection = state.get("provider_rejection") or {}
+    settlement_path = root / _attempt_name("rejection_settlement", attempt)
+    if (state.get("status") != "rejected_insufficient_credits" or state.get("operation_id")
+            or rejection.get("code") != "worldlabs_api_402"
+            or not str(rejection.get("detail") or "").startswith("Insufficient API credits to start world generation")
+            or not settlement_path.is_file()):
+        raise ValueError("website_reconstruction_rejection_evidence_invalid")
+    settlement = json.loads(settlement_path.read_text())
+    if (settlement.get("status") != "settled" or settlement.get("actual_cost_usd") != 0
+            or settlement.get("allocation_binding_digest") != state["request_digest"]
+            or settlement.get("rejection_code") != "insufficient_api_credits_before_generation"):
+        raise ValueError("website_reconstruction_rejection_settlement_invalid")
+
+
+def _attempt_binding(root: Path, base_binding: Mapping[str, Any], attempt: int) -> tuple[dict[str, Any], str | None]:
+    """The binding attempt ``attempt`` carries: each retry names the rejected attempt before it."""
+    binding, digest = dict(base_binding), None
+    for index in range(attempt):
+        state = json.loads((root / _attempt_name("submission", index)).read_text())
+        if state.get("request_digest") != canonical_digest(binding):
+            raise ValueError("website_reconstruction_already_bound_to_other_inputs")
+        _require_settled_rejection(root, state, index)
+        digest = canonical_digest(state)
+        binding = {**base_binding, "rejected_attempt_digest": digest}
+    return binding, digest
+
+
+def rejected_generation_binding(*, capture_root: Path, base_binding: Mapping[str, Any]
+                                ) -> tuple[dict[str, Any], str, int] | None:
+    """Bind the current retry to the retained, explicit pre-generation credit rejections."""
     root = capture_root / "pipeline" / "website_reconstruction"
     first_path = root / "submission.json"
     if not first_path.is_file():
@@ -76,80 +141,82 @@ def rejected_generation_binding(*, capture_root: Path, base_binding: Mapping[str
     first = json.loads(first_path.read_text())
     if first.get("request_digest") != canonical_digest(base_binding):
         raise ValueError("website_reconstruction_already_bound_to_other_inputs")
-    if first.get("status") != "rejected_insufficient_credits" or first.get("operation_id"):
+    latest = _latest_attempt(root)
+    state = json.loads((root / _attempt_name("submission", latest)).read_text())
+    target = latest + 1 if state.get("status") in _RESOLVED_ATTEMPT_STATUSES else latest
+    if target == 0:
         return None
-    rejection = first.get("provider_rejection") or {}
-    if (rejection.get("code") != "worldlabs_api_402"
-            or not str(rejection.get("detail") or "").startswith("Insufficient API credits to start world generation")
-            or not (root / "rejection_settlement.json").is_file()):
-        raise ValueError("website_reconstruction_rejection_evidence_invalid")
-    settlement = json.loads((root / "rejection_settlement.json").read_text())
-    if (settlement.get("status") != "settled" or settlement.get("actual_cost_usd") != 0
-            or settlement.get("allocation_binding_digest") != first["request_digest"]
-            or settlement.get("rejection_code") != "insufficient_api_credits_before_generation"):
-        raise ValueError("website_reconstruction_rejection_settlement_invalid")
-    rejected_digest = canonical_digest(first)
-    return {**base_binding, "rejected_attempt_digest": rejected_digest}, rejected_digest
+    if target > MAX_CREDIT_REJECTION_RETRIES:
+        raise ValueError("website_reconstruction_credit_retry_limit_reached")
+    binding, digest = _attempt_binding(root, base_binding, target)
+    return binding, str(digest), target
 
 
 def website_reconstruction_retry_state(*, descriptor: Mapping[str, Any], capture_root: Path,
                                        base_binding: Mapping[str, Any], provider: Any
-                                       ) -> tuple[dict[str, Any], str | None, dict[str, Any] | None]:
-    """Retain old operations and admit only an explicit pre-generation 402 retry."""
+                                       ) -> tuple[dict[str, Any], str | None, dict[str, Any] | None, int]:
+    """Retain old operations and admit only explicit pre-generation 402 retries."""
     root = capture_root / "pipeline" / "website_reconstruction"
     if not (root / "submission.json").is_file():
-        return dict(base_binding), None, None
+        return dict(base_binding), None, None, 0
     reconcile_website_credit_rejection(capture_root=capture_root, base_binding=base_binding,
         task_context=descriptor["metadata"]["site_task_context"])
     retry = rejected_generation_binding(capture_root=capture_root, base_binding=base_binding)
     if retry is None:
-        return dict(base_binding), None, provider.submit(descriptor=descriptor, capture_root=capture_root)
-    binding, retry_digest = retry
-    if (root / "submission_retry_1.json").is_file():
+        return dict(base_binding), None, provider.submit(descriptor=descriptor, capture_root=capture_root), 0
+    binding, retry_digest, attempt = retry
+    if (root / _attempt_name("submission", attempt)).is_file():
         prepared = {**descriptor, "metadata": {**descriptor["metadata"],
             "website_reconstruction_retry_digest": retry_digest}}
-        return binding, retry_digest, provider.submit(descriptor=prepared, capture_root=capture_root)
-    return binding, retry_digest, None
+        return binding, retry_digest, provider.submit(descriptor=prepared, capture_root=capture_root), attempt
+    return binding, retry_digest, None, attempt
 
 
 def reconcile_website_credit_rejection(*, capture_root: Path, base_binding: Mapping[str, Any],
                                        task_context: Mapping[str, Any]) -> bool:
     """Release a full reservation only for the controller's exact recorded HTTP 402."""
     root = capture_root / "pipeline" / "website_reconstruction"
-    path = root / "submission.json"
-    if not path.is_file():
+    if not (root / "submission.json").is_file():
         return False
-    first = json.loads(path.read_text())
+    first = json.loads((root / "submission.json").read_text())
     if first.get("request_digest") != canonical_digest(base_binding):
         raise ValueError("website_reconstruction_already_bound_to_other_inputs")
-    if first.get("status") == "rejected_insufficient_credits":
+    attempt = _latest_attempt(root)
+    path = root / _attempt_name("submission", attempt)
+    state = json.loads(path.read_text())
+    if state.get("status") in _RESOLVED_ATTEMPT_STATUSES:
         return True
-    if first.get("status") != "submitting" or first.get("operation_id"):
+    if state.get("status") != "submitting" or state.get("operation_id"):
         return False
-    provider_path = capture_root / "pipeline" / "provider_run_manifest.json"
-    admission_path = root / "controller_admission.json"
-    if not provider_path.is_file() or not admission_path.is_file():
+    admission_path = root / _attempt_name("controller_admission", attempt)
+    if not admission_path.is_file():
         return False
-    provider = json.loads(provider_path.read_text())
     admission = json.loads(admission_path.read_text())
-    failure = str(provider.get("failure_reason") or "")
-    if (provider.get("status") != "failed" or provider.get("provider_run_id")
-            or admission.get("allocation_binding_digest") != first["request_digest"]
-            or not failure.startswith("worldlabs_api_402:")):
+    if admission.get("allocation_binding_digest") != state["request_digest"]:
         return False
-    try:
-        error = json.loads(failure.partition(":")[2])
-    except json.JSONDecodeError:
-        return False
-    detail = error.get("detail") if isinstance(error, dict) else None
-    if not str(detail or "").startswith("Insufficient API credits to start world generation"):
-        return False
-    rejection = {"code": "worldlabs_api_402", "detail": detail,
-                 "provider_run_manifest_digest": canonical_digest(provider)}
-    first = {**first, "status": "rejected_insufficient_credits", "provider_rejection": rejection}
-    write_json(root / "rejection_evidence.json", provider)
+    observed = state.get("observed_generation_refusal") or {}
+    detail = _credit_rejection_detail(str(observed.get("failure_reason") or ""))
+    if detail is not None:
+        rejection = {"code": "worldlabs_api_402", "detail": detail,
+                     "observed_generation_refusal_digest": canonical_digest(observed)}
+        evidence = dict(observed)
+    else:
+        provider_path = capture_root / "pipeline" / "provider_run_manifest.json"
+        provider = json.loads(provider_path.read_text()) if provider_path.is_file() else {}
+        # The run manifest is rewritten per attempt; a 402 recorded before this
+        # attempt's intent belongs to an earlier attempt and proves nothing here.
+        detail = (_credit_rejection_detail(str(provider.get("failure_reason") or ""))
+                  if (provider.get("status") == "failed" and not provider.get("provider_run_id")
+                      and provider_path.stat().st_mtime_ns > path.stat().st_mtime_ns) else None)
+        if detail is None:
+            return _resolve_unrecorded_attempt(root=root, path=path, state=state, attempt=attempt)
+        rejection = {"code": "worldlabs_api_402", "detail": detail,
+                     "provider_run_manifest_digest": canonical_digest(provider)}
+        evidence = provider
+    state = {**state, "status": "rejected_insufficient_credits", "provider_rejection": rejection}
+    write_json(root / _attempt_name("rejection_evidence", attempt), evidence)
     command = {"task_context_digest": task_context["context_digest"],
-               "allocation_binding_digest": first["request_digest"], "provider": "world_labs",
+               "allocation_binding_digest": state["request_digest"], "provider": "world_labs",
                "rejection_code": "insufficient_api_credits_before_generation",
                "provider_receipt_digest": canonical_digest(rejection)}
     from .website_task_context import website_webapp_request
@@ -158,8 +225,47 @@ def reconcile_website_credit_rejection(*, capture_root: Path, base_binding: Mapp
     if (any(receipt.get(key) != value for key, value in command.items())
             or receipt.get("status") != "settled" or receipt.get("actual_cost_usd") != 0):
         raise ValueError("website_reconstruction_rejection_settlement_receipt_invalid")
-    write_json(root / "rejection_settlement.json", receipt)
-    write_json(path, first)
+    write_json(root / _attempt_name("rejection_settlement", attempt), receipt)
+    write_json(path, state)
+    return True
+
+
+def _credit_rejection_detail(failure: str) -> str | None:
+    """The provider's detail for an explicit pre-generation credit refusal, else None."""
+    if not failure.startswith("worldlabs_api_402:"):
+        return None
+    try:
+        error = json.loads(failure.partition(":")[2])
+    except json.JSONDecodeError:
+        return None
+    detail = error.get("detail") if isinstance(error, dict) else None
+    return str(detail) if str(detail or "").startswith("Insufficient API credits to start world generation") else None
+
+
+def _resolve_unrecorded_attempt(*, root: Path, path: Path, state: Mapping[str, Any], attempt: int) -> bool:
+    """Close an attempt with no recorded outcome only when World Labs holds no world for it."""
+    if time.time() - path.stat().st_mtime < UNRECORDED_ATTEMPT_GRACE_SECONDS:
+        return False
+    with (root / "submission.lock").open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return False
+        from .provider_preview import _worldlabs_api_request
+        query = {"tags": [f"bp-{state['request_digest'][7:31]}"], "page_size": 10}
+        listing = _worldlabs_api_request("/marble/v1/worlds:list", method="POST", body=query)
+        worlds = listing.get("worlds")
+        if not isinstance(worlds, list) or listing.get("next_page_token"):
+            return False
+        if worlds:
+            # A world was bought but never recorded; adopting it is a separate,
+            # reviewed recovery. Never buy another over it.
+            raise ValueError("website_reconstruction_unrecorded_attempt_generated_world")
+        proof = {"schema_version": "website_reconstruction_unrecorded_attempt_proof.v1",
+                 "request_digest": state["request_digest"], "query": query, "worlds": [],
+                 "checked_at_iso": datetime.now(timezone.utc).isoformat()}
+        write_json(root / _attempt_name("unrecorded_attempt_proof", attempt), proof)
+        write_json(path, {**state, "status": "no_world_generated", "no_world_proof_digest": canonical_digest(proof)})
     return True
 
 
@@ -258,15 +364,16 @@ def submit_website_prepared_views(*, descriptor: Mapping[str, Any], capture_root
     metadata = descriptor["metadata"]
     frames = metadata["clean_plate"]["prepared_views"]["frames"]
     retry_digest = metadata.get("website_reconstruction_retry_digest")
+    attempt = 0
     if retry_digest:
         retry_binding = rejected_generation_binding(capture_root=capture_root, base_binding=binding)
         if retry_binding is None or retry_binding[1] != retry_digest:
             raise ValueError("website_reconstruction_retry_binding_invalid")
-        binding = retry_binding[0]
+        binding, _, attempt = retry_binding
     request_digest = canonical_digest(binding)
     root = capture_root / "pipeline" / "website_reconstruction"
     root.mkdir(parents=True, exist_ok=True)
-    state_path = root / ("submission_retry_1.json" if retry_digest else "submission.json")
+    state_path = root / _attempt_name("submission", attempt)
     with (root / "submission.lock").open("a") as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -319,7 +426,18 @@ def submit_website_prepared_views(*, descriptor: Mapping[str, Any], capture_root
                 os.fsync(directory_fd)
             finally:
                 os.close(directory_fd)
-            operation = api_request("/marble/v1/worlds:generate", method="POST", body=generation)
+            try:
+                operation = api_request("/marble/v1/worlds:generate", method="POST", body=generation)
+            except RuntimeError as exc:
+                if _credit_rejection_detail(str(exc)) is not None:
+                    # Keep the refusal with this attempt: the run manifest that
+                    # also records it is rewritten by every later pass.
+                    state.update(observed_generation_refusal={"failure_reason": str(exc)[:2000],
+                        "observed_at_iso": datetime.now(timezone.utc).isoformat()})
+                    temporary = root / "submission.tmp"
+                    write_json(temporary, state)
+                    os.replace(temporary, state_path)
+                raise
             operation_id = operation.get("operation_id") or operation.get("id")
             if not operation_id:
                 raise ValueError("website_reconstruction_operation_id_missing")

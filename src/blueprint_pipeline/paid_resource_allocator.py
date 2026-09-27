@@ -756,7 +756,7 @@ def submit_sponsored_website_reconstruction(*, descriptor: Mapping[str, Any], ca
     _, binding = validate_website_prepared_views(descriptor=descriptor, capture_root=capture_root)
     root = capture_root / "pipeline" / "website_reconstruction"
     provider = WorldLabsPreviewProvider()
-    binding, retry_digest, retained_result = website_reconstruction_retry_state(
+    binding, retry_digest, retained_result, attempt = website_reconstruction_retry_state(
         descriptor=descriptor, capture_root=capture_root, base_binding=binding, provider=provider)
     if retained_result is not None:
         return retained_result
@@ -766,7 +766,7 @@ def submit_sponsored_website_reconstruction(*, descriptor: Mapping[str, Any], ca
         raise ValueError("website_reconstruction_release_not_admitted:" + ",".join(blockers))
     if not _worldlabs_api_key():
         raise ValueError("website_reconstruction_api_key_missing")
-    retained_path = root / ("controller_admission_retry_1.json" if retry_digest else "controller_admission.json")
+    retained_path = root / ("controller_admission.json" if attempt == 0 else f"controller_admission_retry_{attempt}.json")
     retained = json.loads(retained_path.read_text()) if retained_path.is_file() else None
     admission, grant = reserve_website_preparation_spend(
         task_context=descriptor["metadata"]["site_task_context"], binding_digest=canonical_digest(binding),

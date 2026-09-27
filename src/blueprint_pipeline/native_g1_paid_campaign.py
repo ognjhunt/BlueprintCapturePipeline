@@ -54,9 +54,7 @@ def _early_spend_lock_blockers() -> list[str]:
 
     configured_path = str(os.getenv(SPEND_ADMISSION_LOCK_PATH_ENV) or "").strip()
     if not configured_path:
-        # The shared paid-lane chokepoint still enforces production's required
-        # lock. This early check only avoids costly work when one is configured.
-        return []
+        return ["g1_paid_campaign_spend_admission_lock_path_missing"]
     lock = _load_spend_admission_lock(Path(configured_path).expanduser())
     load_blocker = str(lock.get("_load_blocker") or "").strip()
     if load_blocker:
@@ -64,6 +62,30 @@ def _early_spend_lock_blockers() -> list[str]:
     return validate_spend_admission_lock(
         lock, now=datetime.now(timezone.utc), required_provider="vast"
     )
+
+
+def _early_provider_credit_blockers(required_usd: float) -> list[str]:
+    """Check read-only Vast credit before hashing and staging large checkpoints."""
+
+    from .provider_credit_admission import ENABLED_ENV, configured_vast_credit_admission
+
+    enabled = os.getenv(ENABLED_ENV, "false").strip().lower()
+    if enabled in {"false", "0", ""}:
+        return []
+    if enabled not in {"true", "1"}:
+        return ["provider_credit_guard_config_invalid"]
+    try:
+        from .gpu_render_providers import VastRenderProvider
+
+        api_key = VastRenderProvider()._key()
+        result = configured_vast_credit_admission(
+            api_key=api_key, required_usd=required_usd
+        )
+    except Exception:  # Provider and credential exceptions may contain secrets.
+        return ["provider_credit_unverifiable"]
+    if result.get("status") != "admitted":
+        return result.get("blockers") or ["provider_credit_unverifiable"]
+    return []
 
 
 def _controller_release_authority(
@@ -240,6 +262,8 @@ def dispatch_g1_paid_campaign(
         blockers.append("g1_paid_campaign_execute_requires_dry_run_bundle_receipt")
     if args.execute:
         blockers.extend(_early_spend_lock_blockers())
+        if not blockers:
+            blockers.extend(_early_provider_credit_blockers(cap))
     if args.adp_job_dir:
         job = Path(args.adp_job_dir)
         if not job.is_absolute() or job.is_symlink():

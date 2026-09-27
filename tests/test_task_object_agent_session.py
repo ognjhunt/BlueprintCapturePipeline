@@ -19,7 +19,7 @@ from blueprint_pipeline import task_object_agent_session as session
 from blueprint_pipeline import task_object_astra_authoring as author
 from blueprint_pipeline import task_evaluation_scene_configuration_astra_driver as driver
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
-from blueprint_pipeline.task_object_agent_model import bounded_authoring_input, context_ceiling
+from blueprint_pipeline.task_object_agent_model import AUTHORING_CONTEXT_CEILING, bounded_authoring_input, context_ceiling
 from blueprint_pipeline.task_object_agent_tools import APPEARANCE_SCOPE, AssetTools
 from blueprint_pipeline.task_evaluation_supervisor.agents_sdk import AgentsSDKInvocationBlocked
 from blueprint_pipeline.claude_opus_authoring_invoker import (
@@ -633,7 +633,7 @@ def test_long_retained_session_compacts_before_reserved_request(agent_fixture):
     history = session.SQLiteSession(f.request.object_id, db_path=root / 'conversation.sqlite')
     prior_messages = [
         {'role': 'user', 'content': 'Original task: retain uncertainty and blue material.'},
-        {'type': 'function_call', 'call_id': 'old', 'name': 'build_cad', 'arguments': json.dumps({'program': 'x' * 90000})},
+        {'type': 'function_call', 'call_id': 'old', 'name': 'build_cad', 'arguments': json.dumps({'program': 'x' * 140000})},
         {'type': 'function_call_output', 'call_id': 'old', 'output': 'obsolete compiler error'},
         {'type': 'function_call', 'call_id': 'latest', 'name': 'build_cad', 'arguments': json.dumps({'program': 'latest retained program'})},
         {'type': 'function_call_output', 'call_id': 'latest', 'output': 'latest compiler error'},
@@ -693,36 +693,51 @@ def test_context_preserves_entire_current_reasoning_tool_turn():
 
 
 def test_context_omits_old_inspection_media_before_refusing_drawer_repair():
-    original = {'role': 'user', 'content': 'original frames and task' + 's' * 30000}
-    current = [{'role': 'user', 'content': 'independent review requires repair' + 'r' * 10000},
-               {'type': 'reasoning', 'id': 'current-reasoning', 'encrypted_content': 'c' * 5000}]
+    original = {'role': 'user', 'content': 'original frames and task' + 's' * 45000}
+    current = [{'role': 'user', 'content': 'independent review requires repair' + 'r' * 15000},
+               {'type': 'reasoning', 'id': 'current-reasoning', 'encrypted_content': 'c' * 7500}]
     history = [original,
                {'type': 'function_call', 'call_id': 'render', 'name': 'render_candidate',
-                'arguments': '{"program":"' + 'p' * 10000 + '"}'},
+                'arguments': '{"program":"' + 'p' * 15000 + '"}'},
                {'type': 'function_call_output', 'call_id': 'render', 'output': 'rendered'},
                {'type': 'function_call', 'call_id': 'inspect', 'name': 'inspect_candidate', 'arguments': '{}'},
-               {'type': 'function_call_output', 'call_id': 'inspect', 'output': 'old image' + 'i' * 30000},
+               {'type': 'function_call_output', 'call_id': 'inspect', 'output': 'old image' + 'i' * 45000},
                *current]
     selected, ceiling = bounded_authoring_input({
-        'instructions': 'authoring contract' + 'a' * 8000, 'input': history,
+        'instructions': 'authoring contract' + 'a' * 12000, 'input': history,
         'tools': [], 'output_schema': None})
-    assert ceiling <= 80000
+    assert ceiling <= AUTHORING_CONTEXT_CEILING
     assert selected[0] == original and selected[-len(current):] == current
-    assert 'p' * 10000 in json.dumps(selected)
+    assert 'p' * 15000 in json.dumps(selected)
     assert 'old image' not in json.dumps(selected)
     assert history[4]['output'].startswith('old image')  # Durable history is untouched.
 
 
 def test_context_can_keep_current_turn_when_even_prior_program_is_too_large():
-    original = {'role': 'user', 'content': 'original task' + 's' * 60000}
-    current = {'role': 'user', 'content': 'review repair' + 'r' * 3000}
+    original = {'role': 'user', 'content': 'original task' + 's' * 90000}
+    current = {'role': 'user', 'content': 'review repair' + 'r' * 4500}
     history = [original,
                {'type': 'function_call', 'call_id': 'render', 'name': 'render_candidate',
-                'arguments': '{"program":"' + 'p' * 15000 + '"}'},
+                'arguments': '{"program":"' + 'p' * 22500 + '"}'},
                {'type': 'function_call_output', 'call_id': 'render', 'output': 'rendered'},
                current]
     selected, ceiling = bounded_authoring_input({
-        'instructions': 'authoring contract' + 'a' * 8000, 'input': history,
+        'instructions': 'authoring contract' + 'a' * 12000, 'input': history,
         'tools': [], 'output_schema': None})
-    assert ceiling <= 80000
+    assert ceiling <= AUTHORING_CONTEXT_CEILING
     assert selected == [original, current]
+
+
+def test_a_first_live_turn_over_the_old_ceiling_is_admitted_whole():
+    """2026-09-27 website dishwasher door: 12 frames plus one observe_object turn charged over 80,000."""
+    original = {'role': 'user', 'content': 'task context and twelve frames' + 's' * 70000}
+    turn = [{'type': 'reasoning', 'id': 'r1', 'encrypted_content': 'c' * 6000},
+            {'type': 'function_call', 'call_id': 'observe', 'name': 'observe_object',
+             'arguments': '{"brief":"' + 'b' * 2200 + '"}'},
+            {'type': 'function_call_output', 'call_id': 'observe', 'output': '{"status":"recorded"}'}]
+    history = [original, *turn]
+    selected, ceiling = bounded_authoring_input({
+        'instructions': 'authoring contract' + 'a' * 12000, 'input': history,
+        'tools': [], 'output_schema': None})
+    assert 80_000 < ceiling <= AUTHORING_CONTEXT_CEILING
+    assert selected == history  # A live turn is never truncated.

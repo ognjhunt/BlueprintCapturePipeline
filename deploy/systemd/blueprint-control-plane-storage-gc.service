@@ -38,6 +38,8 @@ ReadWritePaths=/var/lib/blueprint/task-evaluation-inputs/prepared-references /va
 ReadOnlyPaths=/etc/blueprint/provider-secrets
 ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/disk-reservations
 ReadWritePaths=/var/lib/blueprint/task-evaluation-inputs/semantic-pretraining
+# SAM31 preparation cache is inventoried only; no GC phase may remove it without a separate owner decision.
+ReadOnlyPaths=/var/lib/blueprint/task-evaluation-inputs/sam31-preparations
 # Finished website scene workspaces are retired here, and their receipts written beside them.
 ReadWritePaths=-/var/lib/blueprint/pubsub-handoffs
 ReadOnlyPaths=-/var/lib/blueprint/spend-authority -/var/lib/blueprint/pipeline-control-plane/capture-reconstruction-derived -/var/lib/blueprint/pipeline-control-plane/capture-reconstruction-queue -/var/lib/blueprint/pipeline-control-plane/capture-reconstruction-runs -/var/lib/blueprint/pipeline-control-plane/gpu_spend_guard/billing-audit -/var/lib/blueprint/pipeline-control-plane/task-evaluation-terminal-resource-releases -/var/lib/blueprint/pipeline-control-plane/task-evaluation-terminal-resource-releases-state
@@ -52,6 +54,7 @@ Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/Bluepr
 Environment=BLUEPRINT_CONTROL_PLANE_GC_CONTENT_STORE_ROOTS=/var/lib/blueprint/task-evaluation-inputs/prepared-references/content-addressed/sha256:/var/lib/blueprint/task-evaluation-inputs/compiled-episodes/content-addressed/adapter-members/sha256
 # Derived directories (cache class) retired once unpinned, aged, and unreferenced by any queue message.
 Environment=BLUEPRINT_CONTROL_PLANE_GC_DERIVED_ROOTS=/var/lib/blueprint/task-evaluation-inputs/prepared-references:/var/lib/blueprint/task-evaluation-inputs/compiled-episodes:/var/lib/blueprint/task-evaluation-inputs/launch-activations:/var/lib/blueprint/pipeline-control-plane/profile-install-staging:/var/lib/blueprint/pipeline-control-plane/policy-canary-presubmission
+Environment=BLUEPRINT_CONTROL_PLANE_GC_PLAN_ONLY_DERIVED_ROOTS=/var/lib/blueprint/task-evaluation-inputs/sam31-preparations
 Environment=BLUEPRINT_CONTROL_PLANE_GC_QUEUE_ROOTS=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launches:/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-preparations:/var/lib/blueprint/pipeline-control-plane/task-evaluation-episode-compilations:/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-activations:/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canary-dispatches:/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-constructions
 # Sealed run evidence eligible for offload after the hot window; offload itself stays dry-run until
 # BLUEPRINT_CONTROL_PLANE_EVIDENCE_OFFLOAD=1 is set in the operator environment file.
