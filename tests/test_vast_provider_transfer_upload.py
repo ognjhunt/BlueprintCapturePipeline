@@ -179,6 +179,19 @@ def test_provider_output_upload_retries_same_file_and_url_after_transient_transp
     assert "secret=never-log" not in result.stderr
 
 
+def test_provider_output_upload_retries_timeout_after_interim_continue(
+    tmp_path: Path,
+) -> None:
+    result, attempts = _run_upload_with_fake_transport(
+        tmp_path=tmp_path,
+        outcomes=[(28, "100"), (0, "200")],
+    )
+
+    assert "UPLOAD_RC:0" in result.stdout
+    assert len(attempts) == 2
+    assert attempts[0].split()[1:] == attempts[1].split()[1:]
+
+
 def test_provider_output_upload_retries_transient_http_failure(tmp_path: Path) -> None:
     result, attempts = _run_upload_with_fake_transport(
         tmp_path=tmp_path,

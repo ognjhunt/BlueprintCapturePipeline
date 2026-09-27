@@ -94,7 +94,9 @@ def provider_output_upload_shell_fragment(*, scratch_root: str = "/tmp") -> str:
         'rm -f "$blueprint_upload_status_file" "$blueprint_upload_body_file"; return 0;; esac; fi; '
         'blueprint_upload_transient=0; '
         'case "$blueprint_upload_http_status" in 408|425|429|500|502|503|504) blueprint_upload_transient=1;; esac; '
-        'if [ "$blueprint_upload_http_status" = 000 ]; then case "$blueprint_upload_rc" in '
+        # curl can report the interim HTTP 100 response when the final PUT
+        # times out; it is still a transport failure eligible for one retry.
+        'if [ "$blueprint_upload_http_status" = 000 ] || [ "$blueprint_upload_http_status" = 100 ]; then case "$blueprint_upload_rc" in '
         '5|6|7|18|28|35|47|52|55|56|92) blueprint_upload_transient=1;; esac; fi; '
         'if [ "$blueprint_upload_transient" -ne 1 ]; then '
         'rm -f "$blueprint_upload_status_file" "$blueprint_upload_body_file"; '

@@ -30,6 +30,7 @@ DEFAULT_VAST_SSH_IDENTITY_FILE = "~/.ssh/id_ed25519"
 PROVIDER_SECRETS_DIR_ENV = "BLUEPRINT_GPU_PROVIDER_SECRETS_DIR"
 PROVIDER_VAST_SSH_IDENTITY_FILENAME = "vast_ssh_id_ed25519"
 MAX_RECOVERY_SECONDS = 900.0
+MAX_G1_RECOVERY_SECONDS = 1800.0
 
 _REMOTE_ARCHIVE_BY_BUNDLE_KIND = {
     "task_evaluation_scene_configuration": "/workspace/task_evaluation_scene_configuration_provider_output.zip",
@@ -41,6 +42,7 @@ _REMOTE_ARCHIVE_BY_BUNDLE_KIND = {
     "adp009d_articulated_native": "/workspace/adp_arena_provider_runtime_output.zip",
     "native_task_arena": "/workspace/adp_arena_provider_runtime_output.zip",
     "native_task_arena_policy_canary_session": "/workspace/adp_arena_provider_runtime_output.zip",
+    "native_g1_development_campaign": "/workspace/adp_arena_provider_runtime_output.zip",
     "paired_target_native_import": "/workspace/adp_arena_provider_runtime_output.zip",
 }
 
@@ -157,10 +159,15 @@ def recover_provider_output_before_teardown(
             "blockers": ["provider_output_ssh_recovery_identity_invalid"],
             "raw_secret_values_recorded": False,
         }
+    recovery_cap = (
+        MAX_G1_RECOVERY_SECONDS
+        if provider_bundle_kind == "native_g1_development_campaign"
+        else MAX_RECOVERY_SECONDS
+    )
     try:
-        timeout = min(MAX_RECOVERY_SECONDS, max(1.0, float(timeout_seconds)))
+        timeout = min(recovery_cap, max(1.0, float(timeout_seconds)))
     except (TypeError, ValueError):
-        timeout = MAX_RECOVERY_SECONDS
+        timeout = recovery_cap
     enrollment = enroll_vast_ssh_host_key(
         {"ssh_host": host, "ssh_port": port}, attempt_dir=attempt_dir, timeout_seconds=min(15., timeout)
     )
@@ -288,7 +295,10 @@ def recover_provider_output_before_teardown(
             "known_hosts_sha256": known_hosts_sha256,
             "raw_secret_values_recorded": False,
         }
-    if provider_bundle_kind == "task_evaluation_scene_configuration" and not zipfile.is_zipfile(partial):
+    if provider_bundle_kind in {
+        "task_evaluation_scene_configuration",
+        "native_g1_development_campaign",
+    } and not zipfile.is_zipfile(partial):
         partial.unlink(missing_ok=True)
         return {"status": "blocked", "blockers": ["provider_output_ssh_recovery_archive_invalid"],
                 "raw_secret_values_recorded": False}
@@ -306,4 +316,4 @@ def recover_provider_output_before_teardown(
     }
 
 
-__all__ = ["recover_provider_output_before_teardown"]
+__all__ = ["MAX_G1_RECOVERY_SECONDS", "recover_provider_output_before_teardown"]
