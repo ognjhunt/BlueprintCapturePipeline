@@ -283,8 +283,12 @@ def _document_value(raw: bytes) -> Any:
 
 
 def _named_paths(value: Any, run_name: str):
-    """Every path a JSON value's strings may name inside the run: what follows ``/<run>/``,
-    or the string itself when it is relative."""
+    """Every path a JSON value's strings may name inside the run.
+
+    That is what follows each ``/<run>/`` (the run's name may recur deeper in the
+    path, so every occurrence counts), what follows a leading ``<run>/`` (a path
+    relative to the evidence root), and a relative string as written.
+    """
 
     marker = f"/{run_name}/"
     stack = [value]
@@ -296,9 +300,12 @@ def _named_paths(value: Any, run_name: str):
         elif isinstance(item, list):
             stack.extend(item)
         elif isinstance(item, str):
-            if marker in item:
-                yield from item.split(marker)[1:]
-            elif not item.startswith("/"):
+            text = item if item.startswith("/") else "/" + item
+            start = text.find(marker)
+            while start != -1:
+                yield text[start + len(marker):]
+                start = text.find(marker, start + 1)
+            if not item.startswith("/"):
                 yield item
 
 

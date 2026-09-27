@@ -783,3 +783,16 @@ def test_summary_names_member_skips_by_their_typed_reason() -> None:
             "residue_offload_failed": {"count": 1, "bytes": None},
         },
     }
+
+
+def test_every_way_a_kept_document_names_a_run_file_keeps_it() -> None:
+    """A run file may be named absolutely (the run's own name may recur deeper in the path),
+    relative to the evidence root, or relative to the run; each keeps it."""
+
+    name = "run-7"
+    value = {"nested": f"/var/lib/canaries/{name}/work/{name}/state.npz",
+             "rooted": [f"{name}/logs/worker.log"], "relative": "provider/outputs.zip"}
+
+    named = set(residue._named_paths(value, name))
+
+    assert {f"work/{name}/state.npz", "logs/worker.log", "provider/outputs.zip"} <= named
