@@ -177,6 +177,27 @@ def test_preparation_storage_measures_the_attempt_directory(tmp_path, monkeypatc
     assert sample['observed_bytes'] >= 20_000
 
 
+def test_preparation_storage_rerun_over_existing_factory_output_records_resumed(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from blueprint_pipeline import control_plane_disk_budget as disk
+    from blueprint_pipeline.task_evaluation_scene_preparation_attempts import (
+        preparation_storage, settle_preparation_storage,
+    )
+    real = disk.reserve_control_plane_disk
+    monkeypatch.setattr(disk, 'reserve_control_plane_disk', lambda *args, **kwargs: real(
+        *args, **kwargs, disk_usage=lambda _path: SimpleNamespace(
+            total=100 * disk.GIB, used=10 * disk.GIB, free=90 * disk.GIB)))
+    output = tmp_path / 'factory' / 'intent-1' / 'attempt-1'
+    (output / 'materialized').mkdir(parents=True)  # an earlier pass of this attempt's factory
+    (output / 'materialized' / 'scene.bin').write_bytes(b's' * 4096)
+    config = {'preparation_worker': {'disk_reservation_root': str(tmp_path / 'ledger')}}
+    with preparation_storage(config, {'references': {}}, output) as reservation:
+        settle_preparation_storage(reservation, {'status': 'publication_ready'})
+    history = tmp_path / 'ledger' / 'history' / 'launch_preparation.jsonl'
+    [sample] = [json.loads(line) for line in history.read_text().splitlines()]
+    assert (sample['outcome'], sample['fresh']) == ('resumed', False)
+
+
 def test_hermetic_preparation_storage_has_nothing_to_settle():
     from blueprint_pipeline.task_evaluation_scene_preparation_attempts import (
         preparation_storage, settle_preparation_storage,

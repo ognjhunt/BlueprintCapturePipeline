@@ -76,7 +76,11 @@ def prepare_registered_public_scene(*, intent, config, release, downloader=None)
             expected_bytes=expected, reservation_root=(config.get("preparation_worker") or {}).get(
                 "disk_reservation_root", "/var/lib/blueprint/pipeline-control-plane/disk-reservations"),
             workspace=Path(config["factory_output_root"]) / intent["intent_id"] / "public-source",
-            workload="public_scene_bootstrap"):
+            workload="public_scene_bootstrap",
+            # A pass that finds the source's progress on disk re-validates a source
+            # an earlier pass prepared; its growth is not what preparing costs.
+            fresh=False if (Path(config["factory_output_root"]) / intent["intent_id"] / "public-source"
+                            / "bootstrap_progress.json").exists() else None):
         return _prepare_registered_public_scene(intent=intent, config=config, release=release, downloader=downloader)
 
 

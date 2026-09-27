@@ -176,6 +176,17 @@ def test_bootstrap_reservation_measures_its_own_public_source_directory(tmp_path
     assert samples[0]["outcome"] == "completed" and samples[0]["observed_bytes"] > 0
 
 
+def test_only_the_bootstrap_pass_that_prepares_the_source_counts(tmp_path):
+    values, _choice, intent, config = source_fixture(tmp_path)
+    for _ in range(3):  # later passes re-validate the prepared source; they do not prepare it
+        prepare_registered_public_scene(intent=intent, config=config,
+            release={"source_commit": _verified_checkout_head()},
+            downloader=lambda row, output: output.write_bytes(values[row["role"]]))
+    history = tmp_path / "disk-reservations" / "history" / "launch_preparation.jsonl"
+    rows = [json.loads(line) for line in history.read_text().splitlines()]
+    assert [row["outcome"] for row in rows] == ["completed", "resumed", "resumed"]
+
+
 def test_owner_can_select_a_valid_task_different_from_the_catalog_default(tmp_path):
     values, _choice, intent, config = source_fixture(tmp_path, scene_id="112233")
     path = Path(config["public_source_catalog_path"])

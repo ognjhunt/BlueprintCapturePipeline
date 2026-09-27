@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from pathlib import Path
 
 from . import task_evaluation_scene_intake as intake
 from .task_evaluation_scene_owner_authority import reopen_scene_intent
@@ -31,7 +32,11 @@ def preparation_storage(config, binding, output_root):
         require(type(expected) is int and expected > 256 * 1024**2, "website_staging_size_invalid")
     with reserve_control_plane_disk("launch_preparation", target_root=output_root,
                                    expected_bytes=expected, reservation_root=root,
-                                   workspace=output_root, workload="scene_preparation_attempt") as reservation:
+                                   workspace=output_root, workload="scene_preparation_attempt",
+                                   # Factory output already on disk means this re-runs an
+                                   # earlier pass of the attempt; it does not prepare it.
+                                   fresh=False if (Path(output_root) / "materialized").exists()
+                                   else None) as reservation:
         yield reservation
 
 

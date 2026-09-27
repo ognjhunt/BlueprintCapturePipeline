@@ -169,6 +169,7 @@ def test_replay_reports_completion_and_the_outcome(tmp_path: Path, monkeypatch) 
     ("completed", "completed", "completed"),
     # A refused replay stopped before its stage's work; it must not shape admission.
     ("failed", "refused", "blocked"),
+    ("waiting_for_external_result", "waiting", "blocked"),
 ])
 def test_replay_measures_the_scratch_root_it_creates_after_admission(
     tmp_path: Path, monkeypatch, stage_status, report_status, outcome
