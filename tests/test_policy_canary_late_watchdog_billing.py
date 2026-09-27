@@ -12,6 +12,7 @@ from blueprint_pipeline.task_evaluation_policy_canary_dispatcher import (
     _adapter_instance_ids,
     _record,
     _sealed_provider_zero,
+    dispatch_policy_canary_activation,
     process_policy_canary_dispatch_queue,
 )
 from blueprint_pipeline.policy_canary_retained_billing import retained_sparse_billing_gap
@@ -149,7 +150,7 @@ def test_old_no_query_billing_gap_is_delivery_only(tmp_path: Path, monkeypatch: 
             sealed_provider_zero=_sealed_provider_zero,
         )
     assert gate() is True
-    activation_result, setup_path, _activation = _inputs(tmp_path / "inputs")
+    activation_result, setup_path, activation_path = _inputs(tmp_path / "inputs")
     queue = tmp_path / "queue"
     for name in ("pending", "processing", "completed", "blocked"):
         (queue / name).mkdir(parents=True)
@@ -178,6 +179,38 @@ def test_old_no_query_billing_gap_is_delivery_only(tmp_path: Path, monkeypatch: 
     assert selected["processed_count"] == 1
     assert len(called) == 1
     assert called[0]["retained_delivery_only"] is True
+
+    from blueprint_pipeline.native_task_arena_policy_canary_session import build_session_authority
+    runtime_path = Path(json.loads(activation_result.read_text())["policy_canary_runtime_inputs_path"])
+    runtime = json.loads(runtime_path.read_text())
+    activation = json.loads(activation_path.read_text())
+    resource = runtime["resource_authority"]
+    authority = build_session_authority(
+        activation_manifest=activation, activation_record=_record(activation_path),
+        runtime_inputs=runtime, runtime_input_record=_record(runtime_path),
+        resource_name=resource["resource_name"], hard_cap_usd=resource["hard_cap_usd"],
+        hard_ttl_seconds=resource["hard_ttl_seconds"],
+    )
+    (root / "policy_canary_session_authority.json").write_bytes(
+        (json.dumps(authority, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    )
+    _write(root / "bundle/native_task_arena_policy_canary_session_bundle_receipt.v1.json",
+           {"bundle_sha256": "sha256:" + "b" * 64})
+    monkeypatch.setattr(
+        "blueprint_pipeline.task_evaluation_policy_canary_dispatcher.validate_provider_bundle",
+        lambda value, **_kwargs: value,
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.task_evaluation_policy_canary_dispatcher._materialize_official_billing_if_posted",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("reached_billing_without_allocator")),
+    )
+    with pytest.raises(RuntimeError, match="reached_billing_without_allocator"):
+        dispatch_policy_canary_activation(
+            activation_result_path=activation_result, execution_setup_path=setup_path,
+            output_root=root, implementation_commit="b" * 40, execute=True,
+            allocator_runner=lambda _argv: pytest.fail("old attempt reallocated a GPU"),
+            progress_sync_runner=lambda **_kwargs: {"status": "succeeded"},
+        )
     rows[0]["candidate_policy_queried"] = True
     joined["result_digest"] = canonical_digest(joined, digest_field="result_digest")
     _write(root / "policy_canary_terminal_result.json", joined)
