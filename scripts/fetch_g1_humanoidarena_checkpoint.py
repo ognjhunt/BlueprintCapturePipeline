@@ -18,6 +18,7 @@ import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path, PurePosixPath
+from threading import Event
 from typing import Any
 
 
@@ -63,10 +64,15 @@ class _DownloadDeadlineExceeded(TimeoutError):
     pass
 
 
+class _DownloadPeerCancelled(RuntimeError):
+    pass
+
+
 def _download_pinned_ranges(
     url: str, descriptor: int, expected_size: int, *,
     chunk_size: int = 128 * 1024 * 1024, workers: int = 8,
     deadline_seconds: float = RANGED_DOWNLOAD_DEADLINE_SECONDS,
+    cancel_event: Event | None = None,
 ) -> int:
     """Fetch one large model into a private temporary file, then hash it whole."""
 
@@ -74,8 +80,11 @@ def _download_pinned_ranges(
             or deadline_seconds <= 0):
         raise ValueError("g1_checkpoint_range_bounds_invalid")
     deadline = time.monotonic() + deadline_seconds
+    local_cancel = Event()
 
     def check_deadline() -> None:
+        if local_cancel.is_set() or cancel_event is not None and cancel_event.is_set():
+            raise _DownloadPeerCancelled("g1_checkpoint_download_cancelled_after_peer_failure")
         if time.monotonic() >= deadline:
             raise _DownloadDeadlineExceeded("g1_checkpoint_download_deadline_exceeded")
 
@@ -108,6 +117,7 @@ def _download_pinned_ranges(
                         if os.pwrite(descriptor, block, start + written) != len(block):
                             raise ValueError("g1_checkpoint_range_short_write")
                         written += len(block)
+                    check_deadline()
                     if response.read(1):
                         raise ValueError("g1_checkpoint_range_extra_bytes")
                     check_deadline()
@@ -123,7 +133,11 @@ def _download_pinned_ranges(
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = [pool.submit(fetch, start, end) for start, end in intervals]
         for completed in as_completed(futures):
-            total += completed.result()
+            try:
+                total += completed.result()
+            except Exception:
+                local_cancel.set()
+                raise
     if total != expected_size:
         raise ValueError("g1_checkpoint_range_size_mismatch")
     os.fsync(descriptor)
@@ -232,6 +246,7 @@ def _private_cache_urls(path: Path | None) -> dict[str, dict[str, Any]] | None:
 def materialize_candidate(
     *, inventory_path: Path, candidate_id: str, output_dir: Path, verify_only: bool = False,
     cache_manifest_path: Path | None = None,
+    cancel_event: Event | None = None,
 ) -> dict[str, Any]:
     inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
     candidate = _candidate(inventory, candidate_id)
@@ -241,6 +256,8 @@ def materialize_candidate(
         raise ValueError("g1_checkpoint_output_symlink_forbidden")
     verified = []
     for row in candidate["files"]:
+        if cancel_event is not None and cancel_event.is_set():
+            raise _DownloadPeerCancelled("g1_checkpoint_download_cancelled_after_peer_failure")
         relative = PurePosixPath(row["path"])
         destination = output_dir.joinpath(*folder.parts, *relative.parts)
         if any(parent.is_symlink() for parent in (destination, *destination.parents) if parent != Path("/")):
@@ -272,18 +289,28 @@ def materialize_candidate(
                 ) as stream:
                     temporary = Path(stream.name)
                     if expected[1] >= RANGED_DOWNLOAD_MIN_BYTES:
-                        _download_pinned_ranges(url, stream.fileno(), expected[1])
+                        _download_pinned_ranges(
+                            url, stream.fileno(), expected[1], cancel_event=cancel_event,
+                        )
                     else:
                         with _open_https(url) as response:
                             if urllib.parse.urlparse(response.geturl()).scheme != "https":
                                 raise ValueError("g1_checkpoint_insecure_redirect")
                             size = 0
                             while block := response.read(1024 * 1024):
+                                if cancel_event is not None and cancel_event.is_set():
+                                    raise _DownloadPeerCancelled(
+                                        "g1_checkpoint_download_cancelled_after_peer_failure"
+                                    )
                                 size += len(block)
                                 if size > expected[1]:
                                     raise ValueError("g1_checkpoint_download_exceeds_pinned_size")
                                 stream.write(block)
                         stream.flush()
+                if cancel_event is not None and cancel_event.is_set():
+                    raise _DownloadPeerCancelled(
+                        "g1_checkpoint_download_cancelled_after_peer_failure"
+                    )
                 if _sha256_and_size(temporary) != expected:
                     raise ValueError("g1_checkpoint_download_identity_mismatch")
                 os.link(temporary, destination)
@@ -291,6 +318,8 @@ def materialize_candidate(
                 raise _DownloadDeadlineExceeded(
                     f"g1_checkpoint_download_deadline_exceeded:{candidate_id}:{relative}"
                 ) from exc
+            except _DownloadPeerCancelled:
+                raise
             except Exception as exc:
                 if private_cache is not None:
                     raise ValueError(

@@ -5,6 +5,7 @@ import importlib.util
 import io
 import json
 import tempfile
+import threading
 import urllib.error
 from pathlib import Path
 
@@ -293,6 +294,36 @@ def test_private_cache_http_error_code_does_not_expose_signed_url() -> None:
         503, "unavailable", {}, None,
     )
     assert fetch._private_transfer_failure_code(error) == "http_error_503"
+
+
+def test_peer_failure_cancels_ranged_download_and_removes_partial_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    content = b"checkpoint" * 1024
+    inventory = _inventory(tmp_path, content)
+    cancel = threading.Event()
+    monkeypatch.setattr(fetch, "RANGED_DOWNLOAD_MIN_BYTES", 1)
+
+    class CancelResponse(_Response):
+        def read(self, size: int = -1) -> bytes:
+            cancel.set()
+            return super().read(size)
+
+    def open_range(url: str, *, headers: dict[str, str]):
+        response = CancelResponse(content, url)
+        response.status = 206
+        response.headers = {"Content-Range": f"bytes 0-{len(content) - 1}/{len(content)}"}
+        return response
+
+    monkeypatch.setattr(fetch, "_open_https", open_range)
+    output = tmp_path / "checkpoints"
+    with pytest.raises(fetch._DownloadPeerCancelled):
+        fetch.materialize_candidate(
+            inventory_path=inventory, candidate_id="dp", output_dir=output,
+            cancel_event=cancel,
+        )
+    assert not (output / "small/HOI_pp_box/model/config.json").exists()
+    assert not list(output.rglob(".g1-checkpoint-*"))
 
 
 def test_large_checkpoint_deadline_cleans_partial_without_publication(
