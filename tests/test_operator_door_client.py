@@ -84,6 +84,26 @@ def test_whoami_prints_identity_json(door: dict[str, Any]) -> None:
     assert code == 0 and json.loads(out) == {"name": "cloud", "scopes": ["deploy", "operate", "read"]}
 
 
+def test_lane_scratch_client_submits_bounded_commands(door: dict[str, Any]) -> None:
+    digest = "sha256:" + "a" * 64
+    def submitted(out: str) -> dict[str, Any]:
+        request_id = json.loads(out)["id"]
+        path = door["state"] / "requests" / "pending" / f"{request_id}.json"
+        return json.loads(path.read_text(encoding="utf-8"))["request"]
+
+    code, out = _run("lane-scratch", "ls", "g1", "--root", "work", "--limit", "10", "--offset", "20")
+    assert code == 0
+    assert submitted(out) == {"kind": "lane-scratch", "action": "ls", "lane": "g1",
+                              "root": "work", "limit": 10, "offset": 20}
+    code, out = _run("lane-scratch", "renew", "g1", "run-1", "--root", "inputs", "--owner", "agent-1",
+                     "--digest", digest, "--for", "2d")
+    assert code == 0
+    assert submitted(out)["ttl_seconds"] == 172800
+    code, out = _run("lane-scratch", "release", "g1", "run-1", "--root", "work", "--owner", "agent-1",
+                     "--digest", digest)
+    assert code == 0 and submitted(out)["action"] == "release"
+
+
 def test_unauthorized_exits_3(door: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("BLUEPRINT_OPERATOR_DOOR_TOKEN", "x" * 40)
     assert _run("whoami")[0] == 3

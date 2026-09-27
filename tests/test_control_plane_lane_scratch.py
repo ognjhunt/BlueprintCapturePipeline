@@ -144,3 +144,39 @@ def test_tampered_or_symlinked_lease_cannot_be_renewed(tmp_path: Path) -> None:
         renew_lane_scratch(root=root, lane="agent-a", name="job-1", owner="owner-a",
                            expected_digest=lease["lease_digest"], ttl_seconds=3600)
     assert target.read_text() == json.dumps(lease)
+
+
+def test_list_lane_scratch_is_paginated_and_skips_unsafe_folders(tmp_path: Path) -> None:
+    from blueprint_pipeline.control_plane_lane_scratch import list_lane_scratch
+
+    root = tmp_path / "lanes"
+    root.mkdir()
+    _create(root, name="a")
+    _create(root, name="b")
+    _create(root, name="c")
+    (root / "agent-a" / "bad").symlink_to(tmp_path)
+
+    first = list_lane_scratch(root=root, lane="agent-a", limit=2, offset=0)
+    assert [row["name"] for row in first["leases"]] == ["a", "b"]
+    assert first["next_offset"] == 2
+    second = list_lane_scratch(root=root, lane="agent-a", limit=2, offset=2)
+    assert [row["name"] for row in second["leases"]] == ["c"]
+    assert second["next_offset"] is None
+
+
+def test_door_command_writes_bounded_receipts_and_release_keeps_payload(tmp_path: Path) -> None:
+    from blueprint_pipeline.control_plane_lane_scratch_door import main
+
+    root = tmp_path / "lanes"
+    root.mkdir()
+    folder = _create(root)
+    (folder / "payload.bin").write_bytes(b"keep")
+    lease = json.loads((folder / ".lane-scratch.v1.json").read_text())
+    result = tmp_path / "result.json"
+    base = ["--root", str(root), "--lane", "agent-a", "--result-out", str(result)]
+    assert main(["ls", *base, "--limit", "1", "--offset", "0"]) == 0
+    assert json.loads(result.read_text())["leases"][0]["lease_digest"] == lease["lease_digest"]
+    assert main(["release", *base, "--name", "job-1", "--owner", "owner-a",
+                 "--expected-digest", lease["lease_digest"]]) == 0
+    assert json.loads(result.read_text())["status"] == "released"
+    assert (folder / "payload.bin").read_bytes() == b"keep"

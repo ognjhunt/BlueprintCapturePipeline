@@ -277,5 +277,50 @@ def release_lane_scratch(
                          expected_digest=expected_digest, ttl_seconds=None, now=now)
 
 
+def list_lane_scratch(
+    *, root: str | Path = DEFAULT_ROOT, lane: str, limit: int = 50, offset: int = 0,
+) -> dict[str, Any]:
+    """Read at most one bounded page of sealed leases beneath a named lane."""
+
+    lane = _id(lane, "lane")
+    if type(limit) is not int or not 1 <= limit <= 100:
+        raise LaneScratchError("lane_scratch_limit_invalid")
+    if type(offset) is not int or not 0 <= offset <= 10000:
+        raise LaneScratchError("lane_scratch_offset_invalid")
+    with _locked_root(root) as root_fd, _lane_fd(root_fd, lane, create=False) as lane_fd:
+        names = os.listdir(lane_fd)
+        if len(names) > 10000:
+            raise LaneScratchError("lane_scratch_listing_too_large")
+        rows: list[dict[str, Any]] = []
+        skipped = 0
+        for name in sorted(names):
+            if _ID.fullmatch(name) is None:
+                continue
+            try:
+                folder_fd = os.open(name, _DIR_FLAGS, dir_fd=lane_fd)
+            except OSError:
+                skipped += 1
+                continue
+            try:
+                lease = _read_lease(folder_fd)
+            except LaneScratchError:
+                skipped += 1
+                continue
+            finally:
+                os.close(folder_fd)
+            if lease.get("lane") != lane or lease.get("name") != name:
+                skipped += 1
+                continue
+            rows.append({key: lease.get(key) for key in (
+                "name", "owner", "run_ref", "scene_ref", "class_intent", "cleanup",
+                "expires_at_epoch", "released_at_epoch", "size_budget_bytes", "lease_digest",
+            )})
+            if len(rows) > offset + limit:
+                break
+        page = rows[offset:offset + limit]
+        next_offset = offset + len(page) if len(rows) > offset + limit else None
+        return {"lane": lane, "leases": page, "next_offset": next_offset, "skipped": skipped}
+
+
 __all__ = ["DEFAULT_ROOT", "LEASE_FILE", "LaneScratchError", "create_lane_scratch",
-           "renew_lane_scratch", "release_lane_scratch"]
+           "renew_lane_scratch", "release_lane_scratch", "list_lane_scratch"]

@@ -48,7 +48,7 @@ DEFAULT_URL = "https://paperclip.tryblueprint.io/api/live-pipeline/operator/v1"
 DEFAULT_TOKEN_FILE = "~/.blueprint-secrets/operator_door_token"
 # A retirement that planned or retired succeeded; "retained" (the scene did not qualify) exits 1
 # and the printed outcome carries the first reason.
-_TERMINAL_OK = {"deployed", "upgraded", "planned", "retired", "restored"}
+_TERMINAL_OK = {"deployed", "upgraded", "planned", "retired", "restored", "listed", "renewed", "released"}
 
 
 class DoorError(Exception):
@@ -272,6 +272,16 @@ def _hold_duration(value: str) -> int:
     return seconds
 
 
+def _scratch_duration(value: str) -> int:
+    match = re.fullmatch(r"([0-9]+)([dhms])", value)
+    if match is None:
+        raise argparse.ArgumentTypeError("lease duration must be 2d, 12h, 90m, or 3600s")
+    seconds = int(match.group(1)) * {"d": 86400, "h": 3600, "m": 60, "s": 1}[match.group(2)]
+    if not 0 < seconds <= 14 * 86400:
+        raise argparse.ArgumentTypeError("lease duration must be at most 14 days")
+    return seconds
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="operator_door.py", description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -330,6 +340,22 @@ def build_parser() -> argparse.ArgumentParser:
     restore.add_argument("scene_id")
     restore.add_argument("--bucket", required=True)
     _add_wait(restore, 2 * 3600 + 600)
+    scratch = commands.add_parser("lane-scratch", help="inspect or end an owned lane scratch lease")
+    scratch_actions = scratch.add_subparsers(dest="scratch_action", required=True)
+    for action in ("ls", "renew", "release"):
+        sub = scratch_actions.add_parser(action)
+        sub.add_argument("lane")
+        if action != "ls":
+            sub.add_argument("name")
+            sub.add_argument("--owner", required=True)
+            sub.add_argument("--digest", required=True)
+        sub.add_argument("--root", choices=("work", "inputs"), required=True)
+        if action == "ls":
+            sub.add_argument("--limit", type=int, default=50)
+            sub.add_argument("--offset", type=int, default=0)
+        elif action == "renew":
+            sub.add_argument("--for", dest="ttl_seconds", type=_scratch_duration, required=True)
+        _add_wait(sub, 120)
     request = commands.add_parser("request")
     request.add_argument("id")
     _add_wait(request, 3 * 3600)
@@ -385,6 +411,15 @@ def run(args: argparse.Namespace) -> int:
     elif command == "restore-scene-workspace":
         return _submit({"kind": "restore-scene-workspace", "scene_id": args.scene_id,
                         "bucket": args.bucket}, args)
+    elif command == "lane-scratch":
+        body = {"kind": "lane-scratch", "action": args.scratch_action, "root": args.root, "lane": args.lane}
+        if args.scratch_action == "ls":
+            body.update(limit=args.limit, offset=args.offset)
+        else:
+            body.update(name=args.name, owner=args.owner, expected_digest=args.digest)
+            if args.scratch_action == "renew":
+                body["ttl_seconds"] = args.ttl_seconds
+        return _submit(body, args)
     elif command == "request":
         if args.wait:
             return _wait(args.id, timeout=args.timeout, poll=args.poll)
