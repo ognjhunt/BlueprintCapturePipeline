@@ -34,15 +34,18 @@ that stays inside the run, with everything under it (``symlink_target``), and
 every file that a kept or reached text document names by path, in any format
 (JSON, JSON lines or free text), absolutely, relative to the run, the evidence
 root or any directory above the document; each file so reached is searched in
-turn (``receipt_referenced``). A named directory keeps only what is named in
-it: the registry names every evidence root, the run root among them, and the
-surveyed readers reopen bound files, never a named directory's listing. A link,
-a special file, a file on another filesystem than the run root, one newer than
-the registry, one with a hard link outside the residue, or one whose name a tar
-member cannot carry is a typed skip and stays. When what stays cannot be
+turn (``receipt_referenced``). The search streams each file a chunk at a time,
+whatever its size, reading every run of name characters as a candidate path; a
+binary (a NUL in its first 64 KiB) names nothing. A named directory keeps only
+what is named in it: the registry names every evidence root, the run root among
+them, and the surveyed readers reopen bound files, never a named directory's
+listing. A link, a special file, a file on another filesystem than the run root,
+one newer than the registry, one with a hard link outside the residue, or one
+whose name holds a character the search does not read as part of a path
+(``name_unsupported``) is a typed skip and stays. When what stays cannot be
 searched (a directory that cannot be listed, a kept link that leaves the run, a
-kept directory or file on another filesystem, a text document over
-``MAX_REFERENCE_DOCUMENT_BYTES``) the whole run stays (``plan_failed``).
+kept directory or file on another filesystem, a file that cannot be read) the
+whole run stays (``plan_failed``).
 
 **Reader survey** (2026-09-27): who reopens files inside a sealed run.
 
@@ -139,7 +142,7 @@ import stat
 import tarfile
 import tempfile
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import ExitStack
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -194,12 +197,20 @@ READER_REOPENED_DIRECTORIES = frozenset({
     "episode_interpretation_sources",
 })
 _KEPT_NAMES = frozenset({*evidence.TERMINAL_RECEIPT_NAMES, *RETAINED_RECEIPTS})
-#: A kept JSON document larger than this cannot be searched for the files it names: the run stays.
-MAX_REFERENCE_DOCUMENT_BYTES = 64 * 1024 * 1024
+#: A dispatch receipt larger than this is not the dispatcher's.
+_MAX_DISPATCH_RECEIPT_BYTES = 64 * 1024 * 1024
 _MAX_LISTED = 50
 _MIB = 1024 * 1024
-# A run of characters a path in free text is written with.
-_PATH_TOKEN = re.compile(r"[A-Za-z0-9._\-+@%~/]+")
+#: The characters a residue member's name is made of. The reference search reads any run of them
+#: in a text as a candidate path, so a member named with anything else stays (``name_unsupported``).
+_NAME_CHARACTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-+@%~/"
+_PATH_TOKEN = re.compile("[" + re.escape(_NAME_CHARACTERS) + "]+")
+#: A token that can continue into the next chunk, including a ``\`` that may escape a ``/``.
+_CARRIED_CHARACTERS = _NAME_CHARACTERS + "\\"
+_SCAN_CHUNK_BYTES = 1024 * 1024
+#: A token longer than any path keeps its tail, where a path it holds must end.
+_MAX_TOKEN_CHARS = 16 * 1024
+#: A file with a NUL in its first 64 KiB is binary and names nothing.
 _BINARY_SNIFF_BYTES = 64 * 1024
 
 
@@ -303,77 +314,72 @@ def _kept_by_design(relative: str, delivery: Sequence[str], registered: set[str]
 
 
 def _name_supported(relative: str) -> bool:
-    """Whether ``_pack_stream`` can carry the name and the pointer can record it."""
+    """Whether the reference search can recognize the name wherever a text writes it.
 
-    try:
-        relative.encode("utf-8")
-    except UnicodeEncodeError:
-        return False
-    return "\\" not in relative
+    Only such a name can be proven unnamed by every kept document; ``_pack_stream``
+    and the pointer carry it as well.
+    """
+
+    return _PATH_TOKEN.fullmatch(relative) is not None
 
 
-def _read_document(root: Path, relative: str) -> str | None:
-    """A kept or named file's text; None when it is gone or binary (a NUL in its first 64 KiB).
+def _stream_tokens(stream, *, chunk_bytes: int = _SCAN_CHUNK_BYTES) -> Iterator[set[str]]:
+    """The path-like tokens of an open file, one chunk's worth at a time; nothing for a binary.
 
-    It must still be the regular file the walk listed: one that is not, or that is
-    larger than ``MAX_REFERENCE_DOCUMENT_BYTES``, raises, since what it names is unknown.
+    Neither memory nor a chunk's work grows with the file: a token cut by a chunk
+    boundary is carried into the next (only its last ``_MAX_TOKEN_CHARS``, since a
+    path it holds must end there), and ``\\/`` reads as ``/``. Bytes outside the
+    name characters only separate tokens.
+    """
+
+    carry, first = "", True
+    while True:
+        chunk = stream.read(chunk_bytes)
+        if first:
+            first = False
+            if b"\x00" in chunk[:_BINARY_SNIFF_BYTES]:
+                return
+        if not chunk:
+            break
+        text = carry + chunk.decode("latin-1")
+        cut = len(text.rstrip(_CARRIED_CHARACTERS))
+        carry = text[cut:][-_MAX_TOKEN_CHARS:]
+        yield set(_PATH_TOKEN.findall(text[:cut].replace("\\/", "/")))
+    if carry:
+        yield {token[-_MAX_TOKEN_CHARS:] for token in _PATH_TOKEN.findall(carry.replace("\\/", "/"))}
+
+
+def _document_tokens(root: Path, relative: str) -> Iterator[set[str]]:
+    """``_stream_tokens`` of a kept or reached file of the run.
+
+    It must still be the regular file the walk listed. One that is gone names
+    nothing; one that cannot be opened or read, or is no longer a regular file,
+    raises, since what it names is unknown.
     """
 
     try:
         descriptor = os.open(root / relative, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
     except FileNotFoundError:
-        return None  # gone since it was listed: it names nothing
+        return  # gone since it was listed: it names nothing
     except OSError as exc:
         raise ResultResidueOffloadError("result_residue_reference_document_unreadable") from exc
     with os.fdopen(descriptor, "rb") as stream:
         if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
             raise ResultResidueOffloadError("result_residue_reference_document_changed")
-        raw = stream.read(_BINARY_SNIFF_BYTES)
-        if b"\x00" in raw:
-            return None
-        if len(raw) <= MAX_REFERENCE_DOCUMENT_BYTES:
-            raw += stream.read(MAX_REFERENCE_DOCUMENT_BYTES + 1 - len(raw))
-    if len(raw) > MAX_REFERENCE_DOCUMENT_BYTES:
-        raise ResultResidueOffloadError("result_residue_reference_document_too_large")
-    return raw.decode("utf-8", errors="replace")
+        try:
+            yield from _stream_tokens(stream)
+        except OSError as exc:
+            raise ResultResidueOffloadError("result_residue_reference_document_unreadable") from exc
 
 
-def _document_strings(text: str) -> set[str]:
-    """Every string a document can name a file with, whatever its format.
-
-    The strings and keys of its JSON value (of each line, for JSON lines), and
-    every run of path characters in its text.
-    """
-
-    try:
-        values = [json.loads(text)]
-    except ValueError:
-        values = []
-        for line in text.splitlines():
-            try:
-                values.append(json.loads(line))
-            except ValueError:
-                continue
-    strings = set(_PATH_TOKEN.findall(text))
-    while values:
-        value = values.pop()
-        if isinstance(value, dict):
-            values.extend(value.keys())
-            values.extend(value.values())
-        elif isinstance(value, list):
-            values.extend(value)
-        elif isinstance(value, str):
-            strings.add(value)
-    return strings
-
-
-def _named_paths(strings, document: str, run_name: str):
+def _named_paths(strings, document: str, run_name: str, basenames: set[str] | None = None):
     """The run-relative paths a document's strings may name.
 
     That is what follows each ``/<run>/`` (the run's name may recur deeper in the
     path, so every occurrence counts), what follows a leading ``<run>/`` (a path
     relative to the evidence root), and a relative string joined to every
-    directory from the document's own up to the run root.
+    directory from the document's own up to the run root: with ``basenames``,
+    only a string whose last component is the name of a file of the run.
     """
 
     marker = f"/{run_name}/"
@@ -384,7 +390,7 @@ def _named_paths(strings, document: str, run_name: str):
         while start != -1:
             yield text[start + len(marker):]
             start = text.find(marker, start + 1)
-        if not string.startswith("/"):
+        if not string.startswith("/") and (basenames is None or string.rsplit("/", 1)[-1] in basenames):
             for base in bases:
                 yield string if base == "." else f"{base}/{string}"
 
@@ -400,20 +406,19 @@ def _receipt_references(root: Path, documents: Sequence[str], files: Mapping[str
     """
 
     named: set[str] = set()
+    basenames = {PurePosixPath(path).name for path in files}
     queue, searched = list(documents), set()
     while queue:
         document = queue.pop()
         if document in searched:
             continue
         searched.add(document)
-        text = _read_document(root, document)
-        if text is None:
-            continue
-        for name in _named_paths(_document_strings(text), document, root.name):
-            path = posixpath.normpath(name)
-            if path in files and path not in named:
-                named.add(path)
-                queue.append(path)
+        for tokens in _document_tokens(root, document):
+            for name in _named_paths(tokens, document, root.name, basenames):
+                path = posixpath.normpath(name)
+                if path in files and path not in named:
+                    named.add(path)
+                    queue.append(path)
     return named
 
 
@@ -574,7 +579,7 @@ def _dispatch_receipt_reason(root: Path, registry: Mapping[str, Any]) -> str | N
     if path.is_symlink() or not path.is_file():
         return "dispatch_receipt_missing"
     try:
-        if path.stat().st_size > MAX_REFERENCE_DOCUMENT_BYTES:
+        if path.stat().st_size > _MAX_DISPATCH_RECEIPT_BYTES:
             return "dispatch_receipt_invalid"
         receipt = json.loads(path.read_bytes())
     except (OSError, ValueError):

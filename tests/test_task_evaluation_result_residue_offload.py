@@ -303,22 +303,53 @@ def test_what_a_reader_can_reach_from_a_kept_file_stays(tmp_path, case) -> None:
     assert {relative: (run / relative).read_bytes() for relative in reached} == before
 
 
-def test_a_kept_document_too_large_to_search_keeps_the_whole_run(tmp_path, monkeypatch) -> None:
-    """What a kept receipt names must be known before anything moves: one too large to search
-    keeps every file."""
+def test_a_large_reached_text_is_searched_as_a_stream(tmp_path) -> None:
+    """A kept or reached text is searched a chunk at a time, whatever its size: a 70 MiB log
+    naming a file keeps that file, even where the name straddles two chunks, and the run plans
+    instead of failing. Memory stays at a chunk and a carried token."""
 
     f = _sealed_run(tmp_path / "canaries")
-    (f.run / "episode_interpretation").mkdir()
-    (f.run / "episode_interpretation" / "rows.json").write_text(json.dumps({"rows": "r" * 8192}), encoding="utf-8")
+    interpretation = f.run / "episode_interpretation"
+    interpretation.mkdir()
+    chunk, reference, line = residue._SCAN_CHUNK_BYTES, b"logs/worker.log", b"stage 0000001 ok\n"
+    boundary = 40 * chunk
+    with (interpretation / "rollout.log").open("wb") as stream:
+        lines = (boundary - 7) // len(line)
+        stream.write(line * lines)
+        stream.write(b" " * (boundary - 7 - lines * len(line)))
+        stream.write(reference + b"\n")  # seven bytes before the 41st chunk begins, eight after
+        stream.write(line * ((70 * 1024 * 1024 - stream.tell()) // len(line) + 1))
+    assert (interpretation / "rollout.log").stat().st_size > 70 * 1024 * 1024
     _age(f.run)
-    monkeypatch.setattr(residue, "MAX_REFERENCE_DOCUMENT_BYTES", 8000)
-    before = _local_files(f.run)
 
-    result = _offload(f)
+    plan = residue.offload_result_residue(run_root=f.run, hot_window_seconds=2 * DAY, now=lambda: NOW)
 
-    assert (result["status"], result["retained_reason"]) == ("retained", "plan_failed")
-    assert result["failure"] == {"error_type": "ResultResidueOffloadError", "errno": None, "stage": "plan"}
-    assert _local_files(f.run) == before and not f.pointer.exists() and f.client.upload_count == 1
+    assert plan["status"] == "dry_run"
+    reasons = {row["relative_path"]: row["reason"] for row in plan["skipped"]}
+    assert reasons["logs/worker.log"] == "receipt_referenced"
+    assert plan["candidate_count"] == len(RESIDUE) - 1
+
+
+def test_the_stream_search_carries_a_token_and_reads_escaped_slashes() -> None:
+    """A token cut by a chunk boundary is read whole, ``\\/`` reads as ``/``, and a token longer
+    than any path keeps only its tail, so memory stays bounded."""
+
+    import io
+
+    def tokens(raw: bytes, chunk: int = 8) -> set[str]:
+        found: set[str] = set()
+        for part in residue._stream_tokens(io.BytesIO(raw), chunk_bytes=chunk):
+            found |= part
+        return found
+
+    assert "logs/worker.log" in tokens(b'{"log": "logs/worker.log"}')
+    assert "logs/worker.log" in tokens(b'{"log": "logs\\/worker.log"}', chunk=11)
+    assert "logs/worker.log" in tokens(b"a logs/worker.log b", chunk=5)
+    long = tokens(b"x" * (3 * residue._MAX_TOKEN_CHARS) + b"/run-1/logs/worker.log", chunk=4096)
+    assert any(token.endswith("/run-1/logs/worker.log") for token in long)
+    assert all(len(token) <= residue._MAX_TOKEN_CHARS for token in long)
+    # A binary names nothing.
+    assert tokens(b"\x00" + b"logs/worker.log") == set()
 
 
 @pytest.mark.parametrize("case", ["linked_reader_directory", "linked_kept_document", "unlistable_directory"])
@@ -945,19 +976,23 @@ def test_every_way_a_kept_document_names_a_run_file_keeps_it() -> None:
     """A run file may be named absolutely (the run's own name may recur deeper in the path),
     relative to the evidence root, or relative to the run; each keeps it."""
 
+    import io
+
     name = "run-7"
     value = {"nested": f"/var/lib/canaries/{name}/work/{name}/state.npz",
              "rooted": [f"{name}/logs/worker.log"], "relative": "provider/outputs.zip",
              "beside": "notes.txt", "above": "stage/state.npz"}
 
-    strings = residue._document_strings(json.dumps(value))
-    named = set(residue._named_paths(strings, "work/stage/index.json", name))
+    def strings(raw: bytes) -> set[str]:
+        return set().union(*residue._stream_tokens(io.BytesIO(raw)))
+
+    named = set(residue._named_paths(strings(json.dumps(value).encode()), "work/stage/index.json", name))
 
     assert {f"work/{name}/state.npz", "logs/worker.log", "provider/outputs.zip", "work/stage/notes.txt",
             "work/stage/state.npz"} <= named
     # Free text and JSON lines name files too.
-    assert "logs/worker.log" in residue._document_strings("see logs/worker.log, then retry\n")
-    assert f"/x/{name}/a.bin" in residue._document_strings('{"a": 1}\n{"b": "/x/' + name + '/a.bin"}\n')
+    assert "logs/worker.log" in strings(b"see logs/worker.log, then retry\n")
+    assert f"/x/{name}/a.bin" in strings(b'{"a": 1}\n{"b": "/x/' + name.encode() + b'/a.bin"}\n')
 
 
 def test_scene_attempt_recovery_ownership_records_stay(tmp_path) -> None:
