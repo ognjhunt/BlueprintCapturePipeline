@@ -1,6 +1,7 @@
 import fcntl
 import json
 import logging
+import os
 import shutil
 import threading
 import types
@@ -2408,3 +2409,197 @@ def test_a_tampered_terminal_receipt_is_not_current_and_is_repaired(tmp_path, mo
     assert _status(tmp_path)["terminal_receipt_present"] is True
     kept = list(_capture_root(tmp_path).glob("pipeline_job_terminal_receipt.superseded-*.json"))
     assert [_read(path) for path in kept] == [tampered]
+
+
+def _retire_scene(storage_root: Path) -> Path:
+    """What scene workspace retirement leaves behind: a digest-bound receipt and no workspace."""
+
+    from blueprint_pipeline import website_scene_workspace_retention as retention
+
+    scene = storage_root / "capture-bucket" / "scenes" / "scene-1"
+    capture = scene / "captures" / "capture-1"
+    ledger = _read(capture / "pipeline_job_ledger.json")
+    record = {"capture_id": "capture-1", "ledger": ledger,
+              "ack_receipt": _read(capture / "pipeline_job_ack_receipt.json"),
+              "staging_manifest": _read(capture / "pipeline_staging_manifest.json")}
+    if ledger["status"] == "terminal_authority_ended":
+        record["terminal_receipt"] = _read(capture / "pipeline_job_terminal_receipt.json")
+    else:
+        record["output_commit"] = _read(capture / "pipeline_job_output_commit.json")
+    receipt = {"schema_version": retention.RETIRED_SCHEMA, "bucket": "capture-bucket", "scene_id": "scene-1",
+               "workspace": str(scene), "retired_at_epoch": 1.0, "source_plan_digest": "sha256:" + "0" * 64,
+               "captures": [record], "cloud_verified": [], "archive": None, "totals": {},
+               "evidence_deleted": False}
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    path = scene.parent / f"scene-1{retention.RETIRED_SUFFIX}"
+    path.write_text(json.dumps(receipt), encoding="utf-8")
+    shutil.rmtree(scene)
+    return path
+
+
+@pytest.mark.parametrize(("ending", "disposition"), [("completed", "terminal_success"),
+                                                     ("authority_ended", "terminal_authority_ended")])
+def test_redelivery_for_a_retired_scene_is_acknowledged_without_staging(tmp_path, monkeypatch, ending, disposition):
+    first = FakeSubscriber([_received(ack_id="a1", data=PAYLOAD_BYTES)])
+    _install_fake_pubsub(monkeypatch, first, storage_client=FakeStorageClient(_website_bundle_blobs()),
+                         run_e2e=_expired if ending == "authority_ended" else (lambda **_: {"status": "completed"}))
+    assert _pull(tmp_path) == 1
+    receipt = _retire_scene(tmp_path)
+    scene = tmp_path / "capture-bucket" / "scenes" / "scene-1"
+
+    redelivery = FakeSubscriber([_received(ack_id="a2", data=PAYLOAD_BYTES, delivery_attempt=2)])
+    results = _install_fake_pubsub(monkeypatch, redelivery, storage_client=_ListingForbidden(),
+                                   run_e2e=lambda **_: pytest.fail("a retired scene must not run again"))
+
+    assert _pull(tmp_path) == 1
+    assert redelivery.acknowledged == ["a2"]
+    assert results[0]["status"] == "skipped_retired_terminal"
+    assert results[0]["queue_disposition"] == disposition
+    assert results[0]["retirement_receipt"] == str(receipt)
+    assert not scene.exists(), "neither the claim nor the ack receipt may bring a retired workspace back"
+
+    renewed = json.dumps({**PAYLOAD, "pipeline_handoff_uri":
+                          f"gs://capture-bucket/{_CAPTURE_PREFIX}/pipeline_handoff.json"}).encode("utf-8")
+    runs: list[dict] = []
+    third = FakeSubscriber([_received(ack_id="a3", data=renewed)])
+    results = _install_fake_pubsub(monkeypatch, third, storage_client=FakeStorageClient(_website_bundle_blobs()),
+                                   run_e2e=lambda **kwargs: runs.append(kwargs) or {"status": "completed"})
+    assert _pull(tmp_path) == 1
+    if ending == "completed":
+        # A completed capture answers any payload from its output commit, retired or not.
+        assert results[0]["status"] == "skipped_retired_terminal" and not runs and not scene.exists()
+        assert results[0]["queue_disposition"] == "terminal_success"
+    else:
+        # A different payload is a new request for an ended capture (for example renewed consent).
+        assert results[0]["status"] == "processed" and len(runs) == 1 and scene.is_dir()
+
+
+def test_an_unreadable_retirement_receipt_is_not_a_retirement(tmp_path, monkeypatch):
+    (tmp_path / "capture-bucket" / "scenes").mkdir(parents=True)
+    (tmp_path / "capture-bucket" / "scenes" / "scene-1.retired.v1.json").write_text("{not json", encoding="utf-8")
+    subscriber = FakeSubscriber([_received(ack_id="a1", data=PAYLOAD_BYTES)])
+    results = _install_fake_pubsub(monkeypatch, subscriber, storage_client=_ListingForbidden(),
+                                   run_e2e=lambda **_: pytest.fail("an invalid receipt must not restage"))
+    assert _pull(tmp_path) == 0 and subscriber.acknowledged == []
+    assert results[0]["status"] == "retirement_lookup_failed_retryable"
+    assert results[0]["blockers"] == ["retirement_lookup_failed"]
+    assert results[0]["alerts"] == ["retirement_lookup_failed"]
+
+
+def test_reopened_ledger_keeps_ended_payloads_from_the_retirement_receipt(tmp_path):
+    old_digest = "a" * 64
+    new_digest = "b" * 64
+    status, ledger = listener_module._claim_job_lease(
+        tmp_path / "capture", scene_id="scene-1", capture_id="capture-1", owner="test",
+        lease_seconds=60, payload_sha256=new_digest,
+        retired_ended_payload_sha256s=(old_digest,))
+
+    assert status == "claimed" and old_digest in listener_module._ended_payload_digests(ledger)
+
+
+_RENEWED_PAYLOAD = json.dumps({**PAYLOAD, "pipeline_handoff_uri":
+                               f"gs://capture-bucket/{_CAPTURE_PREFIX}/pipeline_handoff.json"}).encode("utf-8")
+
+
+def _flock_that_retires_first(tmp_path: Path, retired: list[Path]):
+    """``fcntl`` for the listener: the claimant has opened the ledger lock; retirement wins it first."""
+
+    import fcntl as real_fcntl
+
+    def flock(descriptor, operation):
+        if operation == real_fcntl.LOCK_EX and not retired:
+            retired.append(_retire_scene(tmp_path))  # removes the workspace the claimant is waiting on
+        return real_fcntl.flock(descriptor, operation)
+
+    return types.SimpleNamespace(flock=flock, LOCK_EX=real_fcntl.LOCK_EX, LOCK_UN=real_fcntl.LOCK_UN,
+                                 LOCK_NB=real_fcntl.LOCK_NB)
+
+
+@pytest.mark.parametrize(("ending", "payload", "status", "acknowledged"), [
+    ("completed", PAYLOAD_BYTES, "skipped_retired_terminal", ["a2"]),
+    ("completed", _RENEWED_PAYLOAD, "skipped_retired_terminal", ["a2"]),
+    ("authority_ended", _RENEWED_PAYLOAD, "capture_retired_retryable", []),
+], ids=["receipt_covers_payload", "completed_covers_any_payload", "new_payload_for_an_ending"])
+def test_a_redelivery_waiting_on_the_ledger_lock_never_recreates_a_retired_scene(
+    tmp_path, monkeypatch, ending, payload, status, acknowledged
+):
+    first = FakeSubscriber([_received(ack_id="a1", data=PAYLOAD_BYTES)])
+    _install_fake_pubsub(monkeypatch, first, storage_client=FakeStorageClient(_website_bundle_blobs()),
+                         run_e2e=_expired if ending == "authority_ended" else (lambda **_: {"status": "completed"}))
+    assert _pull(tmp_path) == 1
+    scene = tmp_path / "capture-bucket" / "scenes" / "scene-1"
+    retired: list[Path] = []
+    monkeypatch.setattr(listener_module, "fcntl", _flock_that_retires_first(tmp_path, retired))
+
+    second = FakeSubscriber([_received(ack_id="a2", data=payload, delivery_attempt=2)])
+    results = _install_fake_pubsub(monkeypatch, second, storage_client=_ListingForbidden(),
+                                   run_e2e=lambda **_: pytest.fail("a retired scene must not run again"))
+
+    assert _pull(tmp_path) == len(acknowledged)
+    assert retired and results[0]["status"] == status
+    assert second.acknowledged == acknowledged
+    assert not scene.exists(), "the claim must not bring the retired workspace back"
+    if acknowledged:
+        assert results[0]["queue_disposition"] == "terminal_success"  # both acknowledged cases completed
+    else:
+        assert results[0]["queue_disposition"] == "retryable"
+        assert results[0]["blockers"] == ["handoff_capture_retired_while_claiming"]
+
+
+def test_a_capture_retired_between_the_hook_and_the_claim_is_not_recreated(tmp_path, monkeypatch):
+    first = FakeSubscriber([_received(ack_id="a1", data=PAYLOAD_BYTES)])
+    _install_fake_pubsub(monkeypatch, first, storage_client=FakeStorageClient(_website_bundle_blobs()),
+                         run_e2e=lambda **_: {"status": "completed"})
+    assert _pull(tmp_path) == 1
+    scene = tmp_path / "capture-bucket" / "scenes" / "scene-1"
+    claim = listener_module._claim_job_lease
+
+    def retire_then_claim(*args, **kwargs):
+        _retire_scene(tmp_path)  # the capture existed when the hook looked; it is gone now
+        return claim(*args, **kwargs)
+
+    monkeypatch.setattr(listener_module, "_claim_job_lease", retire_then_claim)
+    second = FakeSubscriber([_received(ack_id="a2", data=PAYLOAD_BYTES, delivery_attempt=2)])
+    results = _install_fake_pubsub(monkeypatch, second, storage_client=_ListingForbidden())
+
+    assert _pull(tmp_path) == 1
+    assert results[0]["status"] == "skipped_retired_terminal" and not scene.exists()
+
+
+def test_the_ledger_lock_refuses_a_file_that_no_longer_names_the_capture(tmp_path):
+    root = tmp_path / "capture"
+    with listener_module._locked_job_ledger(root):
+        pass
+    lock = root / ".pipeline_job_ledger.json.lock"
+    replacement = root / ".replacement"
+    replacement.write_bytes(b"")
+    stale = lock.open("a+b")
+    try:
+        os.replace(replacement, lock)  # the path now names another file than the one held open
+        assert listener_module._lock_names_capture(stale, lock, root) is False
+    finally:
+        stale.close()
+    with pytest.raises(listener_module.HandoffCaptureRetired):
+        with listener_module._locked_job_ledger(tmp_path / "gone", create=False):
+            pass
+    assert not (tmp_path / "gone").exists()
+    with listener_module._locked_job_ledger(root, create=False) as ledger:
+        assert ledger == {}
+
+
+def test_a_failed_retirement_lookup_waits_rather_than_restaging(tmp_path, monkeypatch):
+    from blueprint_pipeline import website_scene_workspace_retention as retention
+
+    def broken(**_kwargs):
+        raise OSError("retirement receipt unreadable")
+
+    monkeypatch.setattr(retention, "retired_capture_status", broken)
+    subscriber = FakeSubscriber([_received(ack_id="a1", data=PAYLOAD_BYTES)])
+    results = _install_fake_pubsub(monkeypatch, subscriber, storage_client=_ListingForbidden(),
+                                   run_e2e=lambda **_: pytest.fail("an unproven retirement must not restage"))
+
+    assert _pull(tmp_path) == 0 and subscriber.acknowledged == []
+    assert (results[0]["status"], results[0]["queue_disposition"]) == ("retirement_lookup_failed_retryable",
+                                                                      "retryable")
+    assert results[0]["blockers"] == ["retirement_lookup_failed"]
+    assert not (tmp_path / "capture-bucket").exists()

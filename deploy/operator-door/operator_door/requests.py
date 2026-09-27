@@ -16,7 +16,9 @@ Spool layout under ``<state_root>/requests``::
 Only commits already on ``origin/main`` can be deployed: a ``deploy`` token lets
 its holder get merged code running as root, and nothing more. Arbitrary pushed
 branches (canary deploys) and candidate-code stage replays are deliberately not
-offered, because either would run unreviewed code as root.
+offered, because either would run unreviewed code as root. ``retire-scene-workspace``
+(``operate``) runs the active release's own retention module for one scene: a plan,
+or with ``apply`` a retirement that deletes nothing it cannot restore.
 """
 
 from __future__ import annotations
@@ -38,9 +40,24 @@ from .secrets_guard import redact_lines
 SCHEMA = "blueprint_operator_door_request.v1"
 MAX_SPOOL_FILE = 64 * 1024
 STATES = ("pending", "processing", "completed")
-_SCOPES = {"deploy": "deploy", "unit": "operate", "door-upgrade": "deploy"}
+#: Every request kind and the token scope it needs. ``validate_request`` has one explicit
+#: branch per kind, the runner one launch per non-unit kind, and ids name exactly these kinds.
+_SCOPES = {
+    "deploy": "deploy",
+    "unit": "operate",
+    "door-upgrade": "deploy",
+    # Plans or retires one website scene workspace with the active release's own module; it
+    # runs no new code, and the module deletes nothing it cannot restore.
+    "retire-scene-workspace": "operate",
+    "restore-scene-workspace": "operate",
+}
 _COMMIT = re.compile(r"[0-9a-f]{40}")
-_REQUEST_ID = re.compile(r"[0-9]{8}T[0-9]{6}Z-(deploy|unit|door-upgrade)-[0-9a-f]{8}")
+# The grammar the Pub/Sub listener accepts for a scene id and a GCS bucket.
+_SCENE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+_BUCKET = re.compile(r"[a-z0-9][a-z0-9._-]{1,220}[a-z0-9]")
+_REQUEST_ID = re.compile(
+    r"[0-9]{8}T[0-9]{6}Z-(" + "|".join(re.escape(kind) for kind in sorted(_SCOPES)) + r")-[0-9a-f]{8}"
+)
 _UNIT_ACTIONS = ("start", "reset-failed", "stop", "restart")
 _TRIGGER_ONLY_ACTIONS = ("stop", "restart")
 # Timers that protect money or cleanup are never paused through the door.
@@ -55,10 +72,9 @@ class RequestRefused(Exception):
 
 
 def required_scope(kind: str) -> str:
-    try:
-        return _SCOPES[kind]
-    except KeyError as error:
-        raise RequestRefused("kind_unknown") from error
+    if not isinstance(kind, str) or kind not in _SCOPES:
+        raise RequestRefused("kind_unknown")
+    return _SCOPES[kind]
 
 
 def _only(body: dict[str, Any], allowed: tuple[str, ...]) -> None:
@@ -80,8 +96,6 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(body, dict):
         raise RequestRefused("request_not_object")
     kind = body.get("kind")
-    if kind not in _SCOPES:
-        raise RequestRefused("kind_unknown")
     if kind == "deploy":
         _only(body, ("kind", "commit", "wait_for_idle"))
         wait = body.get("wait_for_idle", True)
@@ -104,8 +118,34 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
             if _SAFETY_CRITICAL.search(unit):
                 raise RequestRefused("unit_safety_critical")
         return {"kind": kind, "unit": unit, "action": action}
-    _only(body, ("kind", "commit"))
-    return {"kind": kind, "commit": _commit(body)}
+    if kind == "door-upgrade":
+        _only(body, ("kind", "commit"))
+        return {"kind": kind, "commit": _commit(body)}
+    if kind == "retire-scene-workspace":
+        _only(body, ("kind", "scene_id", "bucket", "apply"))
+        scene_id = body.get("scene_id")
+        if not isinstance(scene_id, str) or not _SCENE_ID.fullmatch(scene_id) or scene_id in {".", ".."}:
+            raise RequestRefused("scene_id_invalid")
+        apply = body.get("apply", False)
+        if not isinstance(apply, bool):
+            raise RequestRefused("apply_invalid")
+        normalized: dict[str, Any] = {"kind": kind, "scene_id": scene_id, "apply": apply}
+        if "bucket" in body:
+            bucket = body["bucket"]
+            if not isinstance(bucket, str) or not _BUCKET.fullmatch(bucket) or ".." in bucket:
+                raise RequestRefused("bucket_invalid")
+            normalized["bucket"] = bucket
+        return normalized
+    if kind == "restore-scene-workspace":
+        _only(body, ("kind", "scene_id", "bucket"))
+        scene_id, bucket = body.get("scene_id"), body.get("bucket")
+        if not isinstance(scene_id, str) or not _SCENE_ID.fullmatch(scene_id) or scene_id in {".", ".."}:
+            raise RequestRefused("scene_id_invalid")
+        if not isinstance(bucket, str) or not _BUCKET.fullmatch(bucket) or ".." in bucket:
+            raise RequestRefused("bucket_invalid")
+        return {"kind": kind, "scene_id": scene_id, "bucket": bucket}
+    # Anything else, however it is shaped, is not a request the door knows.
+    raise RequestRefused("kind_unknown")
 
 
 def new_request_id(kind: str, now: _dt.datetime | None = None) -> str:

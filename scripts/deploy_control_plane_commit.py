@@ -37,6 +37,7 @@ import json
 import math
 import os
 import re
+import signal
 import stat
 import subprocess  # nosec B404 - fixed git/systemctl argv over validated paths
 import tempfile
@@ -119,6 +120,7 @@ from blueprint_pipeline.control_plane_break_glass import (  # noqa: E402
 )
 
 SCHEMA_VERSION = "control_plane_commit_deploy_receipt.v1"
+_DEPLOY_ACTIVE_TRANSITION = False
 #: How long a break-glass note authorizes a deploy from an untrusted source.
 BREAK_GLASS_DEPLOY_NOTE_MAX_AGE_SECONDS = 24 * 3600
 UNTRUSTED_SOURCE_REFUSAL = (
@@ -2967,6 +2969,9 @@ def deploy_control_plane_commit(
     also reports every break-glass note no earlier deploy reported.
     """
 
+    global _DEPLOY_ACTIVE_TRANSITION
+    _DEPLOY_ACTIVE_TRANSITION = False
+
     if preserve_configured_controls_state and arm_path_units:
         raise ControlPlaneDeployError("deploy_conflicting_configured_controls_intent")
     source = Path(source_repo).expanduser().resolve()
@@ -3212,6 +3217,9 @@ def deploy_control_plane_commit(
             expected_commit=source_commit
         )
         _move_source_checkout(source, source_commit)
+        # A termination here must not strand the new active link with old
+        # services. The CLI defers SIGTERM until the release is proven live.
+        _DEPLOY_ACTIVE_TRANSITION = True
         release = stage_task_evaluation_control_plane_release(
             source_repo=source,
             source_commit=source_commit,
@@ -3505,6 +3513,42 @@ def _require_trusted_deploy_source(
     )
 
 
+def _run_deploy_with_signal_cleanup(callback: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+    """Turn a transient unit stop into an exception so deploy rollback runs."""
+
+    global _DEPLOY_ACTIVE_TRANSITION
+    _DEPLOY_ACTIVE_TRANSITION = False
+    deferred: set[str] = set()
+    previous = {number: signal.getsignal(number) for number in (signal.SIGTERM, signal.SIGINT)}
+
+    def interrupted(number: int, _frame: Any) -> None:
+        if _DEPLOY_ACTIVE_TRANSITION:
+            deferred.add(signal.Signals(number).name)
+            return
+        signal.signal(number, signal.SIG_IGN)
+        raise ControlPlaneDeployError(f"deploy_interrupted:{signal.Signals(number).name}")
+
+    try:
+        for number in previous:
+            signal.signal(number, interrupted)
+        result = callback()
+        if deferred:
+            print("deploy_signal_deferred_after_activation:" + ",".join(sorted(deferred)), file=sys.stderr)
+        return result
+    finally:
+        _DEPLOY_ACTIVE_TRANSITION = False
+        for number, handler in previous.items():
+            signal.signal(number, handler)
+
+
+def _write_receipt_and_return(receipt: dict[str, Any], path: str | None) -> dict[str, Any]:
+    if path:
+        out = Path(path).expanduser().resolve()
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(receipt, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+    return receipt
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-repo", required=True)
@@ -3649,7 +3693,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         break_glass_note = _require_trusted_deploy_source(
             args.source_repo, args.break_glass_note
         )
-        receipt = deploy_control_plane_commit(
+        receipt = _run_deploy_with_signal_cleanup(lambda: _write_receipt_and_return({
+            **deploy_control_plane_commit(
             source_repo=args.source_repo,
             source_commit=args.source_commit,
             release_root=args.release_root,
@@ -3686,7 +3731,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 Path(args.state_root).expanduser() / "disk-reservations"
             ),
             break_glass_notes_root=DEFAULT_BREAK_GLASS_NOTES_ROOT,
-        )
+            ),
+            "break_glass_note": break_glass_note,
+        }, args.receipt_out))
     except (OSError, ValueError, ControlPlaneReleaseError) as exc:
         print(
             json.dumps(
@@ -3702,12 +3749,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 2
 
-    # The note that let an untrusted source through, or None when none was needed.
-    receipt["break_glass_note"] = break_glass_note
-    if args.receipt_out:
-        out = Path(args.receipt_out).expanduser().resolve()
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(receipt, indent=1, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps(receipt, indent=1, sort_keys=True))
     return 0
 

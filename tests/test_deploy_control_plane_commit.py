@@ -23,6 +23,7 @@ import importlib.util
 import io
 import json
 import os
+import signal
 import stat
 import subprocess
 import sys
@@ -931,6 +932,65 @@ def test_cli_forwards_explicit_controls_state_preservation(tmp_path, monkeypatch
     ]) == 0
     assert calls[0]["preserve_configured_controls_state"] is True
     assert calls[0]["arm_path_units"] is False
+
+
+def test_cli_sigterm_unwinds_deploy_and_restores_signal_handler(tmp_path, monkeypatch, capsys):
+    original = signal.getsignal(signal.SIGTERM)
+    monkeypatch.setattr(deploy, "trusted_deploy_source", lambda _path: True)
+
+    def interrupted(**_kwargs):
+        signal.raise_signal(signal.SIGTERM)
+
+    monkeypatch.setattr(deploy, "deploy_control_plane_commit", interrupted)
+    assert deploy.main([
+        "--source-repo", str(tmp_path), "--source-commit", "a" * 40,
+        "--release-root", str(tmp_path / "releases"), "--state-root", str(tmp_path / "state"),
+        "--active-link", str(tmp_path / "active"),
+    ]) == 2
+    assert "deploy_interrupted:SIGTERM" in capsys.readouterr().out
+    assert signal.getsignal(signal.SIGTERM) is original
+
+
+def test_cli_defers_sigterm_during_active_release_transition(tmp_path, monkeypatch):
+    original = signal.getsignal(signal.SIGTERM)
+    monkeypatch.setattr(deploy, "trusted_deploy_source", lambda _path: True)
+
+    def transition(**_kwargs):
+        deploy._DEPLOY_ACTIVE_TRANSITION = True
+        signal.raise_signal(signal.SIGTERM)
+        deploy._DEPLOY_ACTIVE_TRANSITION = False
+        return {"status": "deployed"}
+
+    monkeypatch.setattr(deploy, "deploy_control_plane_commit", transition)
+    assert deploy.main([
+        "--source-repo", str(tmp_path), "--source-commit", "a" * 40,
+        "--release-root", str(tmp_path / "releases"), "--state-root", str(tmp_path / "state"),
+        "--active-link", str(tmp_path / "active"),
+    ]) == 0
+    assert signal.getsignal(signal.SIGTERM) is original
+
+
+def test_cli_defers_sigterm_until_success_receipt_is_written(tmp_path, monkeypatch):
+    monkeypatch.setattr(deploy, "trusted_deploy_source", lambda _path: True)
+    def transition(**_kwargs):
+        deploy._DEPLOY_ACTIVE_TRANSITION = True
+        return {"status": "deployed"}
+
+    monkeypatch.setattr(deploy, "deploy_control_plane_commit", transition)
+    real_write = deploy._write_receipt_and_return
+
+    def interrupted_write(receipt, path):
+        signal.raise_signal(signal.SIGTERM)
+        return real_write(receipt, path)
+
+    monkeypatch.setattr(deploy, "_write_receipt_and_return", interrupted_write)
+    output = tmp_path / "receipt.json"
+    assert deploy.main([
+        "--source-repo", str(tmp_path), "--source-commit", "a" * 40,
+        "--release-root", str(tmp_path / "releases"), "--state-root", str(tmp_path / "state"),
+        "--active-link", str(tmp_path / "active"), "--receipt-out", str(output),
+    ]) == 0
+    assert json.loads(output.read_text(encoding="utf-8"))["status"] == "deployed"
 
 
 def _cli_args(tmp_path: Path, source: Path, *extra: str) -> list[str]:

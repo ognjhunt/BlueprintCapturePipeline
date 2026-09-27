@@ -137,7 +137,9 @@ ROOT_LITERAL = re.compile(r'"(/(?:var/lib|var/log|etc|run|opt|srv)/blueprint[^"\
 ENV_NAME = re.compile(r'"((?:BLUEPRINT|VAST|PIPELINE|OPENAI|DOCKER|GOOGLE)_[A-Z0-9_]+)"')
 SHA_IN_PATH = re.compile(r"(?<![0-9a-f])([0-9a-f]{40})(?![0-9a-f])")
 SHA8_IN_INPUT = re.compile(r"-([0-9a-f]{8})-20[0-9]{6}")
-WRITTEN_STORAGE_CLASSES = frozenset({"work", "ledger", "cache", "evidence_hot", "evidence_cold", "staging"})
+WRITTEN_STORAGE_CLASSES = frozenset(
+    {"work", "ledger", "cache", "evidence_hot", "evidence_cold", "staging", "scene_workspace"}
+)
 
 
 def _now() -> str:

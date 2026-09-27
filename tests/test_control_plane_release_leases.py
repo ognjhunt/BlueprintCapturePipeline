@@ -766,11 +766,29 @@ def test_changed_binding_bytes_block(tmp_path: Path) -> None:
 
     result = collect_release_protections(sources, now=NOW + DAY, migrate=True)
 
-    assert result["blockers"] == [
-        "release_protection_binding_changed:sam31-prefix-2.json",
-        "release_protection_binding_invalid:optional.json",
-    ]
+    assert result["blockers"] == ["release_protection_binding_changed:sam31-prefix-2.json"]
+    assert "release_protection_binding_unrecognized_kept:optional.json" in result["warnings"]
+    assert C in _protected(result)
     assert result["migrated"] == []
+
+
+def test_an_unrecognized_binding_keeps_what_it_names_and_blocks_only_when_it_names_nothing(
+    tmp_path: Path,
+) -> None:
+    sources = _sources(tmp_path)
+    # A hand-written guard binding: no schema or reason, but it names its runtime.
+    _write(
+        sources.binding_root / "r22-spend-guard-client.json",
+        {"status": "required", "source_commit": B, "runtime_root": f"{RUNTIMES}/scene-configuration/{C}"},
+    )
+    kept = collect_release_protections(sources, now=NOW, migrate=True)
+    assert kept["blockers"] == []
+    assert sorted(_protected(kept)) == [B, C]
+    assert "release_protection_binding_unrecognized_kept:r22-spend-guard-client.json" in kept["warnings"]
+
+    _write(sources.binding_root / "nothing.json", {"note": "no release named here"})
+    blocked = collect_release_protections(sources, now=NOW, migrate=True)
+    assert blocked["blockers"] == ["release_protection_binding_invalid:nothing.json"]
 
 
 def test_republishing_a_sam_prefix_binding_still_matches(tmp_path: Path) -> None:
@@ -1131,23 +1149,27 @@ def test_a_live_descendant_keeps_its_completed_ancestors_release(
 def test_an_unreadable_adoption_chain_never_lapses_as_terminal(tmp_path: Path) -> None:
     sources = _sources(tmp_path)
     _intent(sources, "scene-done", expires_at=NOW + 10 * DAY, status="completed")
+    _intent(sources, "scene-other", expires_at=NOW + 10 * DAY, status="completed")
     binding = _binding(sources, "sam31-prefix-unreadable.json", B, intent_id="scene-done")
+    _binding(sources, "sam31-prefix-sibling.json", C, intent_id="scene-other")
+    _binding(sources, "unrelated.json", D, intent_id="scene-other")
     # The evidence record is gone, so any ancestor it built on cannot be found:
-    # the binding stays protected (never terminal), and protection it cannot
-    # extend to its ancestors blocks retirement until its lease runs out.
+    # the binding stays protected (never terminal) until its lease runs out, and
+    # every other prefix adoption is kept with it, since an ancestor is always
+    # one. No replay can walk past a deleted record, so nothing else is held.
     Path(json.loads(binding.read_text(encoding="utf-8"))["evidence"]["path"]).unlink()
 
     first = collect_release_protections(sources, now=NOW, migrate=True)
-    assert first["lapsed"] == []
-    assert first["blockers"] == [
-        "release_protection_ancestry_unreadable:sam31-prefix-unreadable.json"
-    ]
+    assert first["blockers"] == []
+    assert "release_protection_ancestry_truncated:sam31-prefix-unreadable.json" in first["warnings"]
+    assert sorted(_protected(first)) == [B, C]
+    assert _lapsed(first) == [(D, "run_terminal")]
 
     later = collect_release_protections(sources, now=NOW + 15 * DAY, migrate=True)
-    assert _lapsed(later) == [(B, "expired")] and later["blockers"] == []
+    assert (B, "expired") in _lapsed(later) and later["blockers"] == []
 
 
-def test_a_protected_binding_whose_ancestry_breaks_blocks(
+def test_a_deleted_link_in_a_live_chain_keeps_every_adoption_release(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from blueprint_pipeline import task_evaluation_sam31_prefix_adoption as adoption
@@ -1162,14 +1184,35 @@ def test_a_protected_binding_whose_ancestry_breaks_blocks(
         _intent(sources, intent_id, expires_at=NOW + 10 * DAY, status=status)
     adoption.publish_adoption_release_binding(live, binding_root=sources.binding_root)
     # The middle adoption's source profile is gone: from the live binding the
-    # chain stops at the middle, so the root's release would silently lapse.
+    # chain stops at the middle. The root's release must not silently lapse.
     Path(json.loads(middle.read_text(encoding="utf-8"))["source_profile"]["path"]).unlink()
 
     result = collect_release_protections(sources, now=NOW, migrate=True)
 
-    assert result["blockers"] == sorted(
-        f"release_protection_ancestry_unreadable:{_binding_name(path)}" for path in (middle, live)
-    )
+    assert result["blockers"] == []
+    assert {B, D} <= set(_protected(result))
+    assert f"release_protection_ancestry_truncated:{_binding_name(live)}" in result["warnings"]
+
+
+def test_a_chain_that_breaks_for_any_other_reason_still_blocks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blueprint_pipeline import task_evaluation_sam31_prefix_adoption as adoption
+
+    sources = _sources(tmp_path)
+    adopt = _prefix_adopter(tmp_path, monkeypatch)
+    root = adopt("scene-root", B)
+    live = adopt("scene-live", C, parent=root)
+    _intent(sources, "scene-root", expires_at=NOW + 10 * DAY, status="completed")
+    _intent(sources, "scene-live", expires_at=NOW + 10 * DAY, status="running")
+    adoption.publish_adoption_release_binding(live, binding_root=sources.binding_root)
+    # A profile that exists but cannot be read as a record is not known to be
+    # permanent: it may be replaced, so the retirement stays blocked.
+    Path(json.loads(live.read_text(encoding="utf-8"))["source_profile"]["path"]).write_text("{not json")
+
+    result = collect_release_protections(sources, now=NOW, migrate=True)
+
+    assert f"release_protection_ancestry_unreadable:{_binding_name(live)}" in result["blockers"]
 
 
 def test_a_live_reference_to_an_unreadable_profile_blocks(tmp_path: Path) -> None:
