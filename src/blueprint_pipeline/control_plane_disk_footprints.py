@@ -15,8 +15,8 @@ import math
 import os
 import re
 import stat
-import tempfile
 import time
+import uuid
 from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
@@ -71,101 +71,114 @@ def _bounded_flock(descriptor: int, operation: int) -> None:
             time.sleep(0.05)
 
 
-def _history_path(reservation_root: str | Path, role: str) -> Path:
-    return (
-        Path(reservation_root).expanduser()
-        / FOOTPRINT_HISTORY_DIRNAME
-        / f"{role}.jsonl"
-    )
+# The ledger directory is group-writable and root appends here too, so every
+# history open refuses a symlink and works relative to the history directory's
+# own descriptor; a mode is repaired only through a descriptor this process owns.
+_NO_FOLLOW = os.O_NOFOLLOW | os.O_CLOEXEC
 
 
-def _prepare_history_directory(ledger: Path) -> Path:
-    history = ledger / FOOTPRINT_HISTORY_DIRNAME
+def _open_history_directory(ledger: Path, *, create: bool) -> int:
+    """Descriptor of ``<ledger>/history``, never reached through a symlink."""
+
+    ledger_fd = os.open(ledger, os.O_RDONLY | os.O_DIRECTORY | _NO_FOLLOW)
     try:
-        history.mkdir(mode=0o2770)
-    except FileExistsError:
-        pass
-    else:
-        # Root (deploy) and the runtime account both append here, so the new
-        # directory takes the ledger's group and the ledger's setgid mode.
-        try:
-            group = ledger.stat().st_gid
-            if history.stat().st_gid != group:
-                os.chown(history, -1, group)
-            history.chmod(0o2770)
-        except OSError:
-            pass
-    if history.is_symlink() or not history.is_dir():
-        raise ControlPlaneDiskBudgetError(
-            "control_plane_disk_budget_history_directory_invalid"
+        created = False
+        if create:
+            try:
+                os.mkdir(FOOTPRINT_HISTORY_DIRNAME, 0o2770, dir_fd=ledger_fd)
+                created = True
+            except FileExistsError:
+                pass
+        history = os.open(
+            FOOTPRINT_HISTORY_DIRNAME, os.O_RDONLY | os.O_DIRECTORY | _NO_FOLLOW, dir_fd=ledger_fd
         )
-    return history
+        if created:
+            # Root (deploy) and the runtime account both append here, so the new
+            # directory takes the ledger's group and the ledger's setgid mode.
+            try:
+                group = os.fstat(ledger_fd).st_gid
+                if os.fstat(history).st_gid != group:
+                    os.fchown(history, -1, group)
+                os.fchmod(history, 0o2770)
+            except OSError:
+                pass
+        return history
+    finally:
+        os.close(ledger_fd)
 
 
-def _compact_history(ledger: Path, path: Path) -> None:
+def _open_history_file(history: int, name: str, flags: int) -> int:
+    descriptor = os.open(name, flags | _NO_FOLLOW, 0o660, dir_fd=history)
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ControlPlaneDiskBudgetError("control_plane_disk_budget_history_file_invalid")
+        if stat.S_IMODE(metadata.st_mode) != 0o660 and metadata.st_uid == os.geteuid():
+            try:
+                os.fchmod(descriptor, 0o660)
+            except OSError:
+                pass
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
+def _compact_history(ledger: Path, history: int, name: str) -> None:
     """Keep the newest HISTORY_MAX_LINES samples, rewritten atomically under the lock."""
 
     lock = open_ledger_lock(ledger)
     try:
         _bounded_flock(lock, fcntl.LOCK_EX)
-        data = path.read_bytes()
+        with os.fdopen(_open_history_file(history, name, os.O_RDONLY), "rb") as stream:
+            data = stream.read()
         if len(data) <= HISTORY_COMPACTION_BYTES:
             return  # another writer compacted while this one waited
         lines = data.splitlines(keepends=True)
         if lines and not lines[-1].endswith(b"\n"):
             lines.pop()  # a torn line from a writer that died mid-append
-        descriptor, temporary_name = tempfile.mkstemp(
-            prefix=".history-", dir=path.parent
-        )
-        temporary = Path(temporary_name)
+        temporary = f".history-{uuid.uuid4().hex}"
+        descriptor = _open_history_file(history, temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
         try:
             with os.fdopen(descriptor, "wb") as stream:
                 stream.writelines(lines[-HISTORY_MAX_LINES:])
                 stream.flush()
                 os.fsync(stream.fileno())
-            temporary.chmod(0o660)
-            os.replace(temporary, path)
-        finally:
-            temporary.unlink(missing_ok=True)
+            os.rename(temporary, name, src_dir_fd=history, dst_dir_fd=history)
+        except BaseException:
+            try:
+                os.unlink(temporary, dir_fd=history)
+            except OSError:
+                pass
+            raise
     finally:
         os.close(lock)
 
 
 def _append_footprint_sample(ledger: Path, role: str, line: bytes) -> None:
-    history = _prepare_history_directory(ledger)
-    path = history / f"{role}.jsonl"
-    lock = open_ledger_lock(ledger)
+    name = f"{role}.jsonl"
+    history = _open_history_directory(ledger, create=True)
     try:
-        # Appenders share the lock so compaction never drops a sample that
-        # lands between its read and its replace.
-        _bounded_flock(lock, fcntl.LOCK_SH)
-        descriptor = os.open(
-            path,
-            os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
-            0o660,
-        )
+        lock = open_ledger_lock(ledger)
         try:
-            metadata = os.fstat(descriptor)
-            if not stat.S_ISREG(metadata.st_mode):
-                raise ControlPlaneDiskBudgetError(
-                    "control_plane_disk_budget_history_file_invalid"
-                )
-            if stat.S_IMODE(metadata.st_mode) != 0o660:
-                try:
-                    os.fchmod(descriptor, 0o660)
-                except OSError:
-                    pass
-            os.write(descriptor, line)
-            size = os.fstat(descriptor).st_size
+            # Appenders share the lock so compaction never drops a sample that
+            # lands between its read and its replace.
+            _bounded_flock(lock, fcntl.LOCK_SH)
+            descriptor = _open_history_file(history, name, os.O_WRONLY | os.O_APPEND | os.O_CREAT)
+            try:
+                os.write(descriptor, line)
+                size = os.fstat(descriptor).st_size
+            finally:
+                os.close(descriptor)
         finally:
-            os.close(descriptor)
+            os.close(lock)
+        if size > HISTORY_COMPACTION_BYTES:
+            try:
+                _compact_history(ledger, history, name)
+            except OSError:
+                pass  # the sample is recorded; the next append compacts
     finally:
-        os.close(lock)
-    if size > HISTORY_COMPACTION_BYTES:
-        try:
-            _compact_history(ledger, path)
-        except OSError:
-            pass  # the sample is recorded; the next append compacts
+        os.close(history)
 
 
 def record_footprint_sample(
@@ -254,11 +267,16 @@ def _completed_samples(reservation_root: str | Path, role: str) -> list[tuple[st
     """(workload, observed bytes) of the newest MEASURED_WINDOW completed samples, oldest first."""
 
     try:
-        lines = _history_path(reservation_root, role).read_text(
-            encoding="utf-8"
-        ).splitlines()
-    except (OSError, UnicodeError):
+        history = _open_history_directory(Path(reservation_root).expanduser(), create=False)
+    except OSError:
         return []
+    try:
+        with os.fdopen(_open_history_file(history, f"{role}.jsonl", os.O_RDONLY), "rb") as stream:
+            lines = stream.read().decode("utf-8").splitlines()
+    except (OSError, UnicodeError, ControlPlaneDiskBudgetError):
+        return []
+    finally:
+        os.close(history)
     values: list[tuple[str | None, int]] = []
     for line in lines:
         try:

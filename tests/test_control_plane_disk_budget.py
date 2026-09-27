@@ -40,7 +40,11 @@ def test_preinstalled_group_writable_lock_is_not_rechmodded(
             raise PermissionError("root-owned correct lock must not be rechmodded")
         original_chmod(path, mode, **kwargs)
 
+    def reject_lock_fchmod(*_args, **_kwargs) -> None:
+        raise PermissionError("root-owned correct lock must not be rechmodded")
+
     monkeypatch.setattr(disk_budget.os, "chmod", reject_lock_chmod)
+    monkeypatch.setattr(disk_budget.os, "fchmod", reject_lock_fchmod)
 
     reservation = reserve_control_plane_disk(
         "launch_activation",
@@ -64,14 +68,11 @@ def test_unsafe_lock_mode_fails_closed_when_owner_rejects_repair(
     lock = ledger / ".lock"
     lock.touch(mode=0o640)
     lock.chmod(0o640)
-    original_chmod = disk_budget.os.chmod
 
-    def reject_lock_chmod(path, mode, **kwargs) -> None:
-        if path == lock:
-            raise PermissionError("runtime account cannot chmod root-owned lock")
-        original_chmod(path, mode, **kwargs)
+    def reject_lock_chmod(*_args, **_kwargs) -> None:
+        raise PermissionError("runtime account cannot chmod root-owned lock")
 
-    monkeypatch.setattr(disk_budget.os, "chmod", reject_lock_chmod)
+    monkeypatch.setattr(disk_budget.os, "fchmod", reject_lock_chmod)
 
     with pytest.raises(
         ControlPlaneDiskBudgetError,
@@ -528,3 +529,44 @@ def test_every_role_ttl_outlives_its_worker_units_start_timeout():
         for name in names:
             timeout = _start_timeout_seconds((units / name).read_text(encoding="utf-8"))
             assert ttl >= timeout, f"{role} TTL {ttl}s < {name} TimeoutStartSec {timeout}s"
+
+
+def test_a_symlinked_lock_is_refused_and_its_target_untouched(tmp_path):
+    # The ledger directory is group-writable, so a runtime account could plant a
+    # symlink there; root must never open, chmod or lock through it.
+    ledger = tmp_path / "ledger"
+    ledger.mkdir()
+    target = tmp_path / "root-owned-secret"
+    target.write_text("secret")
+    target.chmod(0o600)
+    (ledger / ".lock").symlink_to(target)
+    with pytest.raises(ControlPlaneDiskBudgetError, match="control_plane_disk_budget_lock_invalid"):
+        _roomy_reservation(tmp_path, ledger, expected_bytes=GIB)
+    with pytest.raises(ControlPlaneDiskBudgetError, match="control_plane_disk_budget_lock_invalid"):
+        disk_headroom(target_root=tmp_path, reservation_root=ledger,
+                      disk_usage=lambda _p: Usage(100 * GIB, 0, 90 * GIB), now=lambda: 1.0)
+    assert disk_budget.record_footprint_sample(reservation_root=ledger, role="launch_activation",
+        observed_bytes=1, reserved_bytes=GIB) is False
+    assert target.read_text() == "secret" and target.stat().st_mode & 0o777 == 0o600
+
+
+def test_a_symlinked_history_directory_receives_nothing(tmp_path):
+    ledger, elsewhere = tmp_path / "ledger", tmp_path / "elsewhere"
+    ledger.mkdir()
+    elsewhere.mkdir()
+    (ledger / "history").symlink_to(elsewhere, target_is_directory=True)
+    assert disk_budget.record_footprint_sample(reservation_root=ledger, role="launch_activation",
+        observed_bytes=1, reserved_bytes=GIB) is False
+    assert list(elsewhere.iterdir()) == []
+
+
+def test_a_lock_owned_by_someone_else_with_a_wrong_mode_fails_closed(tmp_path, monkeypatch):
+    ledger = tmp_path / "ledger"
+    ledger.mkdir()
+    lock = ledger / ".lock"
+    lock.touch()
+    lock.chmod(0o640)
+    monkeypatch.setattr(disk_budget.os, "geteuid", lambda: os.getuid() + 1)  # not the lock's owner
+    with pytest.raises(ControlPlaneDiskBudgetError, match="control_plane_disk_budget_lock_mode_invalid:0640"):
+        _roomy_reservation(tmp_path, ledger, expected_bytes=GIB)
+    assert lock.stat().st_mode & 0o777 == 0o640

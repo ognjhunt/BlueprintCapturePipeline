@@ -16,7 +16,6 @@ import fcntl
 import json
 import os
 import shutil
-import stat
 import tempfile
 import time
 import uuid
@@ -50,6 +49,7 @@ from .control_plane_disk_ledger import (
     ControlPlaneDiskBudgetError,
     environment_int as _environment_int,
     footprint_bytes,
+    open_ledger_lock,
     prepare_ledger_root as _prepare_ledger_root,
 )
 from .control_plane_disk_usage import tree_usage
@@ -434,24 +434,9 @@ def reserve_control_plane_disk(
     # workspace is fresh and one already holding bytes is not.
     workspace_fresh = _is_fresh(baseline) if fresh is None else bool(fresh)
     ledger = _prepare_ledger_root(Path(reservation_root).expanduser())
-    lock_path = ledger / ".lock"
-    with lock_path.open("a+b") as lock:
-        lock_mode = stat.S_IMODE(os.fstat(lock.fileno()).st_mode)
-        if lock_mode != 0o660:
-            try:
-                os.chmod(  # nosec B103 - shared root/blueprint ledger lock
-                    lock_path, 0o660
-                )
-            except OSError as exc:
-                raise ControlPlaneDiskBudgetError(
-                    f"control_plane_disk_budget_lock_mode_invalid:{lock_mode:04o}"
-                ) from exc
-            installed_mode = stat.S_IMODE(os.fstat(lock.fileno()).st_mode)
-            if installed_mode != 0o660:
-                raise ControlPlaneDiskBudgetError(
-                    "control_plane_disk_budget_lock_mode_repair_failed:"
-                    f"{installed_mode:04o}"
-                )
+    # The lock is opened without following a symlink and must be a 0660 regular
+    # file; only its owner repairs the mode, through the descriptor.
+    with os.fdopen(open_ledger_lock(ledger, require_mode=True), "a+b") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         ledger, usage, device, reserved, stale = _snapshot(
             target_root=target_root,
@@ -537,7 +522,7 @@ def disk_headroom(
     """Return a path-free admission projection suitable for an intake API."""
 
     ledger = _prepare_ledger_root(Path(reservation_root).expanduser())
-    with (ledger / ".lock").open("a+b") as lock:
+    with os.fdopen(open_ledger_lock(ledger), "a+b") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_SH)
         _ledger, usage, _device, reserved, _stale = _snapshot(
             target_root=target_root,
