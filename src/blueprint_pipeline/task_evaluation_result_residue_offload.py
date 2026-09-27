@@ -170,6 +170,9 @@ RESTORE_RECEIPT_SUFFIX = evidence.RESIDUE_RESTORE_SUFFIX
 APPLY_ACK = "offload-sealed-result-residue"
 RESIDUE_OFFLOAD_ENV = "BLUEPRINT_CONTROL_PLANE_GC_RESULT_RESIDUE_OFFLOAD"
 RESIDUE_OFFLOAD_INVALID = "result_residue_offload_setting_invalid"
+#: Like scene workspace retirement, a tick attempts at most this many publications; the rest wait.
+RESIDUE_MAX_RUNS_ENV = "BLUEPRINT_CONTROL_PLANE_GC_RESULT_RESIDUE_MAX_RUNS_PER_TICK"
+DEFAULT_MAX_RUNS_PER_TICK = 5
 DEFAULT_HOT_WINDOW_SECONDS = 172800
 RESULT_DELIVERY = "artifacts/result_delivery"
 DISPATCH_RECEIPT = "dispatch_receipt.json"
@@ -904,6 +907,8 @@ def offload_result_residue(
 
 def _apply(row, root, pointer, registry, registry_path, registry_bytes, members, protection_checker,
            publisher, stream_publisher, now, queue_roots) -> dict[str, Any]:
+    # Counted against the tick's cap whether or not the publication succeeds.
+    row["publication_attempted"] = True
     identity = os.lstat(root)
     names = [name for group in members for name in group["relative_paths"]]
     modes = {name: group["mode"] for group in members for name in group["relative_paths"]}
@@ -1193,6 +1198,42 @@ def residue_row(
         return {"status": "error", "run": name, **offload_failure(exc, "residue")}
 
 
+class ResidueTick:
+    """One storage GC tick's residue phase: a row per registry run, and the phase entry.
+
+    While applying it attempts at most ``max_runs`` publications, counted whether
+    they succeed or not, so a failing publisher costs at most that many uploads a
+    tick and no run is retried within it. Every later run is only planned and
+    reported as ``deferred_tick_cap`` with its candidate bytes; its turn comes in
+    a later tick.
+    """
+
+    def __init__(self, *, applying: bool, enabled: bool, max_runs: int | None = None, **options):
+        max_runs = DEFAULT_MAX_RUNS_PER_TICK if max_runs is None else max_runs
+        if not isinstance(max_runs, int) or isinstance(max_runs, bool) or max_runs < 0:
+            raise ResultResidueOffloadError("result_residue_max_runs_invalid")
+        self.applying, self.enabled, self.max_runs, self.options = bool(applying), bool(enabled), max_runs, options
+        self.rows: list[dict[str, Any]] = []
+        self.attempted = 0
+
+    def add(self, run_root: str | Path, bulk_result: Mapping[str, Any]) -> dict[str, Any]:
+        """Plan or offload one registry run's residue given its per-artifact offload result."""
+
+        applying = self.applying and self.attempted < self.max_runs
+        row = residue_row(run_root, bulk_result, apply=applying, **self.options)
+        if row.get("publication_attempted"):
+            self.attempted += 1
+        elif self.applying and not applying and row.get("status") == "dry_run" and row.get("candidate_count"):
+            row = _retained(row, "deferred_tick_cap")
+        self.rows.append(row)
+        return row
+
+    def phase(self, *, alert: str | None = None) -> dict[str, Any]:
+        entry = residue_phase(self.rows, enabled=self.enabled, applying=self.applying, alert=alert)
+        entry["max_runs_per_tick"], entry["attempted_count"] = self.max_runs, self.attempted
+        return entry
+
+
 def residue_phase(
     rows: Sequence[Mapping[str, Any]], *, enabled: bool, applying: bool, alert: str | None = None,
 ) -> dict[str, Any]:
@@ -1250,9 +1291,11 @@ __all__ = [
     "POINTER_SUFFIX",
     "READER_REOPENED_DIRECTORIES",
     "READER_REOPENED_NAMES",
+    "RESIDUE_MAX_RUNS_ENV",
     "RESIDUE_OFFLOAD_ENV",
     "RESIDUE_OFFLOAD_INVALID",
     "RESTORE_RECEIPT_SUFFIX",
+    "ResidueTick",
     "ResultResidueOffloadError",
     "offload_result_residue",
     "residue_phase",

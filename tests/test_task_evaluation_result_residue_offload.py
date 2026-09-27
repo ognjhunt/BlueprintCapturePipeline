@@ -1139,3 +1139,89 @@ def test_a_dispatch_receipt_of_another_kind_keeps_the_run(tmp_path, field, value
 
     assert (result["status"], result["retained_reason"]) == ("retained", "dispatch_receipt_invalid")
     assert not f.pointer.exists() and set(RESIDUE) <= set(_local_files(f.run))
+
+
+def _three_ready_runs(tmp_path, client=None) -> list[SimpleNamespace]:
+    client = client or _ContentAddressedClient()
+    return [_sealed_run(tmp_path / "canaries", f"run-{index}", client=client) for index in range(3)]
+
+
+def test_a_tick_publishes_at_most_its_cap_and_defers_the_rest(tmp_path) -> None:
+    """Like scene retirement, a tick attempts at most ``max_runs`` publications; the rest are
+    planned and reported as ``deferred_tick_cap`` for a later tick."""
+
+    runs = _three_ready_runs(tmp_path)
+    pins, queue = tmp_path / "pins", tmp_path / "queue"
+    (queue / "pending").mkdir(parents=True)
+    residue_bytes = sum(len(data) for data in RESIDUE.values())
+
+    first = _tick(runs[0], pins, queue, apply=True, ack=RUN_ACK, offload_enabled=True,
+                  result_residue_offload_enabled=True, result_residue_max_runs_per_tick=2)
+
+    phase = first["result_residue_offload"]
+    assert (phase["max_runs_per_tick"], phase["attempted_count"]) == (2, 2)
+    assert [(row["run"], row["status"], row["retained_reason"]) for row in phase["runs"]] == [
+        ("run-0", "applied", None), ("run-1", "applied", None), ("run-2", "retained", "deferred_tick_cap")]
+    assert phase["retained_by_reason"]["deferred_tick_cap"] == {"count": 1, "bytes": residue_bytes}
+    assert (phase["candidate_bytes"], phase["offloaded_bytes"]) == (3 * residue_bytes, 2 * residue_bytes)
+    assert set(RESIDUE) <= set(_local_files(runs[2].run)) and not runs[2].pointer.exists()
+
+    second = _tick(runs[0], pins, queue, apply=True, ack=RUN_ACK, offload_enabled=True,
+                   result_residue_offload_enabled=True, result_residue_max_runs_per_tick=2)
+    assert [(row["run"], row["retained_reason"]) for row in second["result_residue_offload"]["runs"]] == [
+        ("run-0", "already_offloaded"), ("run-1", "already_offloaded"), ("run-2", None)]
+    assert runs[2].pointer.is_file()
+
+
+def test_a_failing_publisher_costs_at_most_the_cap_per_tick(tmp_path) -> None:
+    """A failed publication counts against the cap and is not retried in the same tick."""
+
+    client = _ContentAddressedClient()
+    runs = _three_ready_runs(tmp_path, client)
+    calls: list[str] = []
+
+    def failing(**kwargs):
+        calls.append(Path(kwargs["path"]).name)
+        raise store.TaskEvaluationConfiguredSceneObjectStoreError("configured_scene_artifact_publication_failed")
+
+    pins, queue = tmp_path / "pins", tmp_path / "queue"
+    (queue / "pending").mkdir(parents=True)
+    report = _tick(runs[0], pins, queue, apply=True, ack=RUN_ACK, offload_enabled=True,
+                   result_residue_offload_enabled=True, result_residue_max_runs_per_tick=2, publisher=failing)
+
+    phase = report["result_residue_offload"]
+    assert len(calls) == 2 and phase["attempted_count"] == 2
+    assert [row["retained_reason"] for row in phase["runs"]] == [
+        "publication_failed", "publication_failed", "deferred_tick_cap"]
+    assert [row["failure"]["stage"] for row in phase["runs"][:2]] == ["publish", "publish"]
+    assert all(not run.pointer.exists() and set(RESIDUE) <= set(_local_files(run.run)) for run in runs)
+
+
+@pytest.mark.parametrize("raw,expected", [("", 5), ("0", 0), ("12", 12)])
+def test_the_residue_cap_reads_from_the_unit_environment(tmp_path, monkeypatch, capsys, raw, expected) -> None:
+    f = _sealed_run(tmp_path / "canaries")
+    queue = tmp_path / "queue"
+    (queue / "pending").mkdir(parents=True)
+    for name in (gc_module.CONTENT_STORE_ROOTS_ENV, gc_module.DERIVED_ROOTS_ENV, gc_module.PLAN_ONLY_DERIVED_ROOTS_ENV,
+                 gc_module.SETTLEMENT_ROOTS_ENV, gc_module.SCRATCH_ROOTS_ENV, gc_module.WORKSPACE_BUNDLE_ROOTS_ENV,
+                 gc_module.SCENE_WORKSPACE_ROOTS_ENV, "BLUEPRINT_CONTROL_PLANE_GC_REPLAY_PARENT_ROOTS",
+                 gc_module.SCENE_WORKSPACE_RETIREMENT_ENV, "BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_RETENTION",
+                 gc_module.EVIDENCE_ABANDONED_AFTER_ENV):
+        monkeypatch.setenv(name, "")
+    monkeypatch.setenv(gc_module.QUEUE_ROOTS_ENV, str(queue))
+    monkeypatch.setenv(gc_module.EVIDENCE_ROOTS_ENV, str(f.evidence))
+    monkeypatch.setenv(gc_module.EVIDENCE_OFFLOAD_ENV, "1")
+    monkeypatch.setenv(residue.RESIDUE_OFFLOAD_ENV, "1")
+    monkeypatch.setenv(residue.RESIDUE_MAX_RUNS_ENV, raw)
+    monkeypatch.setattr(gc_module, "require_storage_class", lambda *a, **k: None)
+    monkeypatch.setattr(artifacts, "_artifact_object_store_client", lambda: (f.client, BUCKET))
+    # The unit's stream publisher, against the fixture's fake store.
+    monkeypatch.setattr(evidence, "publish_configured_scene_stream", lambda **kwargs: (_ for _ in ()).throw(
+        store.TaskEvaluationConfiguredSceneObjectStoreError("configured_scene_artifact_publication_failed")))
+
+    assert gc_module.main(["run", "--apply", "--ack", RUN_ACK, "--pins-root", str(tmp_path / "pins")]) == 0
+
+    phase = json.loads(capsys.readouterr().out)["result_residue_offload"]
+    assert phase["max_runs_per_tick"] == expected
+    assert [row["retained_reason"] for row in phase["runs"]] == [
+        "deferred_tick_cap" if expected == 0 else "publication_failed"]

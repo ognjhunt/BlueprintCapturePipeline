@@ -567,7 +567,10 @@ One tick runs nine phases in order:
    reopens and anything a reader can reach from those (a link's target inside
    the run, any file a kept text document names) stay. This step only
    plans until `BLUEPRINT_CONTROL_PLANE_GC_RESULT_RESIDUE_OFFLOAD=1` is set as
-   well.
+   well, and then attempts at most
+   `BLUEPRINT_CONTROL_PLANE_GC_RESULT_RESIDUE_MAX_RUNS_PER_TICK` (default 5)
+   publications a tick, failed ones included; later runs wait
+   (`deferred_tick_cap`).
 7. **Scratch directories** idle for three days
    (`BLUEPRINT_CONTROL_PLANE_GC_SCRATCH_MINIMUM_AGE_SECONDS=259200`) are reaped by
    age alone: nothing references them.
@@ -602,24 +605,32 @@ so each manifest (and its receipt) also records `walked_file_count` and
   `errno` (for an `OSError`) and `stage` (`registry`, `protection`, `publish` or
   `evict`), and so does a skipped artifact. Messages and file names are never
   recorded.
-- Result residue offload (`result_residue_offload`: `enabled`, its totals and
-  a row per registry run): a retained run says why in `retained_reason` (`hot`
-  or a protection reason, as its bulk offload kept it; `bulk_not_remote`,
+- Result residue offload (`result_residue_offload`: `enabled`,
+  `max_runs_per_tick`, `attempted_count`, its totals and a row per registry
+  run): a retained run says why in `retained_reason` (`hot` or a protection
+  reason, as its bulk offload kept it; `bulk_not_remote`,
   `bulk_offload_failed`, `already_offloaded`, `registry_unsealed`,
   `dispatch_receipt_missing` (an operator run, whose continuation and download
   route keep reopening its files), `dispatch_receipt_invalid`,
-  `run_root_invalid`, `offload_locked`, `plan_failed` (what stays cannot be
-  searched for what a reader reaches from it: a directory that cannot be
-  listed, a kept link that leaves the run, a kept directory or file on another
-  filesystem, or a text document over 64 MiB), `publication_failed` (including
-  a member swapped while it was packed), `run_changed_or_active`,
-  `pointer_failed` or `nothing_evicted` (every member stayed, so the pointer was
-  withdrawn and the next tick tries again)). Every file it left counts under
-  `member_skipped:<reason>` with its bytes: `reader_reopened`,
-  `symlink_target` and `receipt_referenced` (what the readers the module
-  docstring surveys can reach), `symlink`, `special_file`, `cross_device`,
-  `newer_than_registry`, `linked_outside_residue` or `name_unsupported` when
-  the run is listed, and `member_changed`, `path_changed`, `cross_device`,
+  `dispatch_row_pending` (a pending or processing queue row names the run, and
+  the dispatcher would re-enter it), `dispatch_queue_unreadable` (a queue row
+  that cannot be read keeps every run), `run_root_invalid`, `offload_locked`,
+  `plan_failed` (what stays cannot be searched for what a reader reaches from
+  it: a directory that cannot be listed, a kept link that leaves the run, a
+  kept directory or file on another filesystem, or a file that cannot be
+  read), `deferred_tick_cap` (the tick's publications were used up),
+  `publication_failed` (including a member swapped while it was packed),
+  `run_changed_or_active`, `pointer_failed` or `nothing_evicted` (every member
+  stayed, so the pointer was withdrawn and the next tick tries again)). Every
+  file it left counts under
+  `member_skipped:<reason>` with its bytes: `reader_reopened` (the surveyed
+  reopened names, including scene-attempt recovery's `*.lease.json` and
+  `pending_teardowns/*.json` ownership records), `symlink_target` and
+  `receipt_referenced` (what the readers the module docstring surveys can
+  reach), `symlink`, `special_file`, `cross_device`, `newer_than_registry`,
+  `linked_outside_residue` or `name_unsupported` (a name with a character the
+  reference search does not read as part of a path) when the run is listed, and
+  `member_changed`, `path_changed`, `cross_device`,
   `recheck_failed` or `unlink_failed` for a packed member the pointer then
   records as `kept` (the run row adds the exception type). The summary gives
   the phase's `enabled` flag too.
