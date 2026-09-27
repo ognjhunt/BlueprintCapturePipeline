@@ -23,6 +23,11 @@ import google.auth
 from google.cloud import storage
 
 from .common import PipelineError, utc_now_iso, write_json
+from .control_plane_disk_budget import (
+    ControlPlaneDiskBudgetError,
+    DEFAULT_RESERVATION_ROOT,
+    reserve_control_plane_disk,
+)
 from .decision_evidence_contracts import canonical_digest
 from .run_e2e import run_end_to_end
 from .core.security_controls import (
@@ -35,6 +40,10 @@ from .core.security_controls import (
 from .website_capture_entry import is_website_capture_manifest
 
 logger = logging.getLogger(__name__)
+
+
+class HandoffStagingCapacityError(PipelineError):
+    """Capture download waits for bulk disk headroom."""
 
 
 @dataclass(frozen=True)
@@ -210,9 +219,30 @@ def stage_handoff_capture(
             continue
         downloads.append((blob, destination))
 
-    for blob, destination in downloads:
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        blob.download_to_filename(str(destination))
+    listed_sizes = {row["name"]: row["size"] or 0 for row in manifest_rows}
+    expected_bytes = sum(
+        listed_sizes[str(blob.name)] for blob, _destination in downloads
+    ) + 64 * 1024 * 1024
+    try:
+        reservation = reserve_control_plane_disk(
+            "handoff_staging",
+            target_root=storage_root,
+            reservation_root=os.getenv(
+                "BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT",
+                str(DEFAULT_RESERVATION_ROOT),
+            ),
+            expected_bytes=expected_bytes,
+            workspace=capture_root,
+            workload="handoff_staging",
+        )
+    except ControlPlaneDiskBudgetError as exc:
+        raise HandoffStagingCapacityError(
+            "pubsub_handoff_staging_capacity_insufficient"
+        ) from exc
+    with reservation:
+        for blob, destination in downloads:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            blob.download_to_filename(str(destination))
     write_json(
         capture_root / STAGING_MANIFEST_FILENAME,
         {
@@ -1949,6 +1979,40 @@ def process_handoff_payload(
                 }
             )
     except Exception as exc:
+        if isinstance(exc, HandoffStagingCapacityError):
+            blocked_at = utc_now_iso()
+            blocker = "pubsub_handoff_staging_capacity_insufficient"
+            _finish_job_lease(
+                capture_root,
+                owner=owner,
+                token=token,
+                update={
+                    "status": "retryable_blocked",
+                    "updated_at": blocked_at,
+                    "last_error_type": type(exc).__name__,
+                    "last_error": str(exc),
+                    "retry_blockers": [blocker],
+                    "queue_disposition": "retryable",
+                    "attempt_history": [*previous_history, {
+                        "attempt_number": attempt_count,
+                        "status": "retryable_blocked",
+                        "stage": failure_stage,
+                        "started_at": attempt_started_at,
+                        "completed_at": blocked_at,
+                        "blockers": [blocker],
+                    }],
+                },
+            )
+            return {
+                "schema_version": "v1",
+                "status": "retryable_blocked",
+                "queue_disposition": "retryable",
+                "blockers": [blocker],
+                "bucket": handoff.bucket,
+                "scene_id": handoff.scene_id,
+                "capture_id": handoff.capture_id,
+                "capture_root": str(capture_root),
+            }
         ending = authority_ending(exc)
         if ending is not None:
             # Retrying cannot revive an ended authority. Finish the job as

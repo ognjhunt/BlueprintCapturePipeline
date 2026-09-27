@@ -5,6 +5,7 @@ import os
 import shutil
 import threading
 import types
+from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from io import BytesIO
@@ -15,6 +16,7 @@ import pytest
 import google.cloud
 
 import blueprint_pipeline.pubsub_handoff_listener as listener_module
+from blueprint_pipeline.control_plane_disk_budget import ControlPlaneDiskBudgetError
 import blueprint_pipeline.site_package_orchestrator as orchestrator
 from blueprint_pipeline.capture_orchestrator import run_capture_pipeline
 from blueprint_pipeline.common import PipelineError, StageError
@@ -36,6 +38,25 @@ from tests.test_qualification_coverage_edges import (
     _patch_pipeline_side_effects,
     _write_descriptor,
 )
+
+
+@pytest.fixture(autouse=True)
+def _local_disk_reservation_root(tmp_path, monkeypatch):
+    monkeypatch.setenv(
+        "BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT", str(tmp_path / "disk-reservations")
+    )
+    actual_reserve = listener_module.reserve_control_plane_disk
+
+    def reserve_on_roomy_test_disk(role, **kwargs):
+        return actual_reserve(
+            role,
+            disk_usage=lambda _path: types.SimpleNamespace(
+                total=200 * 1024**3, used=100 * 1024**3, free=100 * 1024**3
+            ),
+            **kwargs,
+        )
+
+    monkeypatch.setattr(listener_module, "reserve_control_plane_disk", reserve_on_roomy_test_disk)
 
 
 # Real iOS raw bundle namelist per CaptureRawContractV3Validator (no pipeline_handoff.json).
@@ -1918,6 +1939,52 @@ def _staging_handoff() -> HandoffMessage:
     return HandoffMessage(bucket="capture-bucket", scene_id="scene-1", capture_id="capture-1",
                           raw_prefix_uri=f"gs://capture-bucket/{_CAPTURE_PREFIX}/raw",
                           pipeline_handoff_uri=None)
+
+
+def test_staging_reserves_only_blobs_it_will_download(tmp_path, monkeypatch):
+    unchanged = FakeBlob(f"{_CAPTURE_PREFIX}/raw/capture_upload_complete.json", b"{}", size=2,
+                         generation=7)
+    changed = FakeBlob(f"{_CAPTURE_PREFIX}/raw/walkthrough.mov", b"video", size=5,
+                       generation=8)
+    client = FakeStorageClient([unchanged, changed])
+    reservations = []
+
+    def reserve(role, **kwargs):
+        reservations.append((role, kwargs))
+        return nullcontext()
+
+    monkeypatch.setattr(listener_module, "reserve_control_plane_disk", reserve, raising=False)
+    stage_handoff_capture(_staging_handoff(), storage_root=tmp_path, storage_client=client)
+    reservations.clear()
+    changed.generation = 9
+    stage_handoff_capture(_staging_handoff(), storage_root=tmp_path, storage_client=client)
+
+    assert unchanged.download_count == 1
+    assert changed.download_count == 2
+    assert len(reservations) == 1
+    role, kwargs = reservations[0]
+    assert role == "handoff_staging"
+    assert kwargs["expected_bytes"] == 5 + 64 * 1024 * 1024
+    assert kwargs["target_root"] == tmp_path
+    assert kwargs["workspace"] == tmp_path / "capture-bucket" / _CAPTURE_PREFIX
+
+
+def test_full_volume_defers_staging_without_acknowledging(tmp_path, monkeypatch):
+    subscriber = FakeSubscriber([_received(ack_id="a1", data=PAYLOAD_BYTES)])
+    results = _install_fake_pubsub(
+        monkeypatch, subscriber, storage_client=FakeStorageClient(_website_bundle_blobs()),
+        run_e2e=lambda **_: {"status": "completed"},
+    )
+
+    def refuse(*_args, **_kwargs):
+        raise ControlPlaneDiskBudgetError("control_plane_disk_budget_exceeded")
+
+    monkeypatch.setattr(listener_module, "reserve_control_plane_disk", refuse, raising=False)
+    assert _pull(tmp_path) == 0
+    assert subscriber.acknowledged == []
+    assert results[0]["status"] == "retryable_blocked"
+    assert results[0]["blockers"] == ["pubsub_handoff_staging_capacity_insufficient"]
+    assert _read(_capture_root(tmp_path) / "pipeline_job_ledger.json")["status"] == "retryable_blocked"
 
 
 def test_staging_manifest_records_cloud_identity(tmp_path):
