@@ -103,7 +103,7 @@ def test_team_paid_output_verifies_score_queries_and_lossless_media(
     assert verified["official_billing_reconciled"] is False
 
 
-def test_team_paid_output_rejects_missing_frame_and_changed_policy_binding(
+def test_team_paid_output_rejects_tampered_video_and_changed_policy_binding(
     tmp_path: Path, monkeypatch
 ) -> None:
     args, _ = _evidence(tmp_path, monkeypatch)
@@ -116,3 +116,17 @@ def test_team_paid_output_rejects_missing_frame_and_changed_policy_binding(
     packet["packet_digest"] = "sha256:" + "0" * 64
     with pytest.raises(ValueError, match="packet_invalid"):
         verify_g1_team_paid_output(**{**args, "execution_packet": packet})
+
+
+def test_team_paid_output_rejects_missing_policy_input_frame(
+    tmp_path: Path, monkeypatch
+) -> None:
+    args, _ = _evidence(tmp_path, monkeypatch)
+    verified = verify_g1_team_paid_output(**args)
+    manifest = json.loads((
+        args["output_dir"] / verified["media"]["frame_manifest"]["relative_path"]
+    ).read_text())
+    relative = manifest["policy_input_observations"][0]["views"]["head"]["relative_path"]
+    (args["output_dir"] / "episode/episode" / relative).unlink()
+    with pytest.raises(ValueError, match="multicamera_frame_manifest"):
+        verify_g1_team_paid_output(**args)
