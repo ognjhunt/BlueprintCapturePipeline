@@ -1004,14 +1004,22 @@ def test_directories_the_scratch_inputs_leave_empty_are_removed_and_nothing_else
     assert (inputs / "prep" / "file-link.bin").is_symlink()
 
 
-class _OnDevice:
-    """A stat result as the kernel reports one past a mount point: the same entry on another st_dev."""
+class _Reported:
+    """A stat result as the kernel might report it for another entry: the given fields replaced."""
 
-    def __init__(self, info, device):
-        self._info, self.st_dev = info, device
+    def __init__(self, info, **fields):
+        self._info = info
+        self.__dict__.update(fields)
 
     def __getattr__(self, name):
         return getattr(self._info, name)
+
+
+class _OnDevice(_Reported):
+    """A stat result as the kernel reports one past a mount point: the same entry on another st_dev."""
+
+    def __init__(self, info, device):
+        super().__init__(info, st_dev=device)
 
 
 def test_a_group_off_the_replay_childs_filesystem_is_refused_at_apply(tmp_path, monkeypatch):
@@ -1280,3 +1288,32 @@ def test_a_child_that_vanishes_mid_scan_yields_no_groups(tmp_path, monkeypatch):
     for p in plans:
         assert planned_paths(p) == {"working.ply"}
     assert estimate["estimated_candidate_bytes"] == data.stat().st_size and scratch.exists()
+
+
+def test_a_directory_that_changed_between_its_lstat_and_open_is_not_pruned(tmp_path, monkeypatch):
+    """Re-review of PR 10a.1 (optional): the prune lstat'ed a directory and then opened it
+    O_NOFOLLOW with nothing tying the two together. What it opened must now be what it looked at,
+    same device and inode, or the directory is a prune_failed:changed skip: not entered, not
+    removed."""
+    root, child, data, proc = setup(tmp_path)
+    data.unlink()
+    prep = child / "prepared-references" / "prep"
+    _scratch_input(child, "prep/input.bin", b"scratch")
+    swapped = prep / "swapped"
+    (swapped / "empty").mkdir(parents=True)
+    (prep / "plain" / "empty").mkdir(parents=True)
+    target = swapped.lstat().st_ino
+    p = plan(root, proc, **SCRATCH)
+    real_fstat = os.fstat
+
+    def fstat(fd):
+        info = real_fstat(fd)
+        return _Reported(info, st_ino=info.st_ino + 1) if info.st_ino == target else info
+
+    with monkeypatch.context() as patched:
+        patched.setattr(os, "fstat", fstat)
+        result = apply(p, proc, **SCRATCH)
+
+    assert result["removed_bytes"] == len(b"scratch")
+    assert result["skipped"] == [{"path": str(swapped), "reason": "prune_failed:changed"}]
+    assert (swapped / "empty").is_dir() and not (prep / "plain").exists()

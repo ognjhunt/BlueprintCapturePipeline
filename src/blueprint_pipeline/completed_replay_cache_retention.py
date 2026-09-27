@@ -402,17 +402,17 @@ def _remove_empty_directories(held, root):
     Each directory is opened O_NOFOLLOW from its parent's descriptor and removed by rmdir
     relative to it, so a link is never entered or removed and nothing outside
     ``prepared-references`` is reached; ``prepared-references`` itself stays. A directory
-    whose lstat shows another device than the held child's (a mount point) is not entered.
-    One descriptor per level is open at a time. A directory that still holds anything is
-    simply kept. A directory that cannot be looked at, opened or listed is a
-    ``prune_failed:<type>`` skip, and ``rmdir_failed:<type>`` is only rmdir's own failure;
-    a ``prepared-references`` already gone is nothing to do.
+    whose lstat shows another device than the held child's (a mount point) is not entered,
+    and what is opened must be what was looked at, same device and inode, or it is a
+    ``prune_failed:changed`` skip. One descriptor per level is open at a time. A directory
+    that still holds anything is simply kept. A directory that cannot be looked at, opened
+    or listed is a ``prune_failed:<type>`` skip, and ``rmdir_failed:<type>`` is only rmdir's
+    own failure; a ``prepared-references`` already gone is nothing to do.
     """
     skipped = []
 
-    def failed(code, parts, exc):
-        skipped.append({"path": str(root.joinpath(_SCRATCH_INPUTS, *parts)),
-                        "reason": f"{code}:{type(exc).__name__}"})
+    def failed(parts, reason):
+        skipped.append({"path": str(root.joinpath(_SCRATCH_INPUTS, *parts)), "reason": reason})
 
     def entered(parent, name, parts):
         """``name`` in ``parent`` opened as a directory on the held child's device, or None."""
@@ -420,17 +420,26 @@ def _remove_empty_directories(held, root):
             info = _leaf(parent, name)
             if not stat.S_ISDIR(info.st_mode) or info.st_dev != held.device:
                 return None
-            return os.open(name, _DIRECTORY_FLAGS, dir_fd=parent)
+            directory = os.open(name, _DIRECTORY_FLAGS, dir_fd=parent)
         except OSError as exc:
             if parts or exc.errno != errno.ENOENT:
-                failed("prune_failed", parts, exc)
+                failed(parts, f"prune_failed:{type(exc).__name__}")
             return None
+        try:
+            opened = os.fstat(directory)
+            if (opened.st_dev, opened.st_ino) == (info.st_dev, info.st_ino):
+                return directory
+            failed(parts, "prune_failed:changed")
+        except OSError as exc:
+            failed(parts, f"prune_failed:{type(exc).__name__}")
+        os.close(directory)
+        return None
 
     def prune(directory, parts):
         try:
             names = sorted(os.listdir(directory))
         except OSError as exc:
-            failed("prune_failed", parts, exc)
+            failed(parts, f"prune_failed:{type(exc).__name__}")
             return
         for name in names:
             inner = entered(directory, name, (*parts, name))
@@ -444,7 +453,7 @@ def _remove_empty_directories(held, root):
                 os.rmdir(name, dir_fd=directory)
             except OSError as exc:
                 if exc.errno not in _NOT_EMPTY:
-                    failed("rmdir_failed", (*parts, name), exc)
+                    failed((*parts, name), f"rmdir_failed:{type(exc).__name__}")
 
     inputs = entered(held.directory(()), _SCRATCH_INPUTS, ())
     if inputs is not None:
