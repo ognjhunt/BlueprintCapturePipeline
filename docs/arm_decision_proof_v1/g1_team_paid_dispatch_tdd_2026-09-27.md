@@ -1,0 +1,141 @@
+# G1 selected-policy paid dispatch: reviewed TDD plan
+
+## Scope and authority
+
+Owner-requested G1 development extension of ADP-050, Day 28: use the same
+retained site/task with G1 manipulation and movement candidates, expose a
+team-owned selection flow, and support endpoint, container, and noncontainer
+delivery through the same observation/action contract. ADP-060/080 receipt,
+media, and review seams are exercised with a `development_only` ceiling.
+
+The owner authorized bounded GPU spend and requires merge and push. Scene
+841757 and model approvals already recorded on issue #2245 remain the source
+of execution authority. This plan grants no public redistribution, physical
+robot motion, new scene rights, or access to another team's artifacts.
+
+Completion is the whole selection-to-private-review path. Registration,
+synthetic conformance, one failed or completed episode, green tests, and a
+merged PR each prove only their own boundary.
+
+## Observed gaps
+
+- Pipeline PR #2351 accepts a signed selected profile, checks a separate
+  operator approval, seals an execution packet, runs a scored worker, and
+  verifies retained media. It has no canonical paid controller for that packet.
+- WebApp PR #737's UI and signed request pass hosted checks. The launch must
+  remain unavailable until Pipeline dispatch and private result delivery exist.
+- The live Vast Isaac image has no Docker, Podman, bubblewrap, or Docker socket;
+  user namespaces are unavailable. Its local container/artifact adapters cannot
+  execute there. Adding a Docker command to that worker would preserve the gap.
+- The existing built-in four-policy controller owns allocation, spend gates,
+  watchdogs, and provider teardown. Reuse these seams; do not launch directly
+  from HTTP intake, the worker, or a new standalone provider module.
+- PR #2351's 72 unreachable-materializer count reproduces on exact base
+  `a661c47606f67906d594ad6c3ce951b47a47966e`, with no G1 functions in that
+  population. Three import-isolation failures also reproduced on base.
+  Remaining CI failures require exact baseline classification before merge.
+
+## Required end state and evidence
+
+| Requirement | Authoritative completion evidence |
+| --- | --- |
+| Choose G1 and manipulation/movement candidates on the same scene/task | Rendered authenticated UI, owner-scoped registry, exact selected IDs/profile and source packet digests in accepted intent |
+| Run the selection without manual Python glue | Installed queue/CLI entry point reaches canonical allocator, single-attempt start record, current authority checks, live allocation and terminal result |
+| Embodiment-specific placement and wire contract | Registered G1 preset plus exact scene packet; independent setup and action/observation validators; no hidden evaluator state reaches the policy |
+| Authenticated endpoint | Origin/secret review, private credential staging, synthetic handshake, real scored G1 episode and secret-free receipts |
+| Digest-pinned OCI image | Provider-native separate policy container identity, synthetic handshake, real scored episode, independent policy lease teardown and billing |
+| Noncontainer archive | Governed acquisition, exact archive hash and entrypoint, isolated policy runtime, synthetic handshake, real scored episode and process/provider teardown |
+| Reusable configuration | Declarative embodiment/policy profile and delivery bindings; adding a candidate does not require changing HTTP/UI orchestration or simulator task scoring |
+| Complete private output | Query counts, deterministic score, lossless policy-input frames, head/overview review video, digest verification, owner-only review page and working URL |
+| Resource closeout | Both leases, if present, terminal; posted provider charge receipts, fresh billing reconciliation/provider inventory; no orphan instance |
+| Ship the work | Focused gates, exact PR head checks, merged/pushed Pipeline and WebApp changes, deployed identities and exercised deployed flow |
+
+The built-in Diffusion/pi0.5 manipulation/movement campaign must retain all four
+results, including task failures. A complete scored episode need not succeed
+at the task. A missing episode or its media is not equivalent to a task failure.
+
+## Implementation sequence
+
+1. Finish the live built-in four-policy campaign, inspect native failure logs
+   if needed, verify media and resource closeout, and ingest private review.
+2. Finish signed selected-profile preparation and provider bundle. Recheck
+   registry, owner, approval, expiry, scene digest, profile digest, runtime
+   source, and implementation identity before preparation and each paid
+   boundary. Bind all staged credentials/artifacts to the exact profile.
+3. Add a canonical allocator probe for selected G1 policy execution. HTTPS
+   uses the approved endpoint. OCI/artifact modes use a separate controlled
+   policy runtime and a private stream client to the Isaac worker; no nested
+   Docker or privileged host workaround. Provider allocation starts only from
+   the canonical allocator. The combined policy/simulator budget is bounded.
+4. Add the single-attempt queue dispatcher and settlement path. A durable start
+   record precedes allocation; service interruption or observation timeout
+   never causes a second launch. Independent watchdogs survive the dispatcher.
+5. Bind result verification and private ingest to the accepted owner/intent.
+   Register video/frames only after byte verification, retain task failure
+   truth, and return the owner-only review URL to the WebApp workflow.
+6. Verify the three delivery modes on the G1 site/task path, then enable the UI
+   through coordinated Pipeline/WebApp merges and exact deploy receipts.
+
+Before choosing a policy-container launch shape, inspect its provider-native
+entrypoint, stdin/stream transport, nonroot execution, resource and network
+isolation, and image identity through read-only request/capability checks.
+Tests must pin the actual supported shape. Unknown provider capability blocks
+that mode before spend; it must not be replaced by a synthetic-only success.
+
+## TDD cases: red first, then smallest implementation
+
+### Authority and bundle
+
+- A valid signed intent plus matching current operator approval yields a
+  credential-free, exact-byte provider bundle; every mismatch/expiry/revocation
+  fails before allocation or site-observation disclosure.
+- Missing or altered runtime bytes, tokenizer assets where required, source
+  packet, OCI digest, archive digest, entrypoint, or HTTPS origin are rejected.
+- Credential values, signed URLs, endpoint responses, and raw policy stderr
+  never enter public/loggable receipts. Raw stderr stays private quarantine.
+
+### Canonical paid path and paired leases
+
+- Hermetic lifecycle test drives real preparation, allocator dispatch, worker,
+  verification, settlement, and private ingest using fake provider transport.
+  It asserts normalized G1 observations/actions and deterministic scoring.
+- Endpoint mode allocates only Isaac. OCI/artifact mode allocates an isolated
+  policy lease plus Isaac; total admitted rate/spend is bounded together.
+- Failure before the second allocation, policy boot failure, simulator boot
+  failure, malformed action, policy timeout, worker exit without receipt, and
+  settlement failure each preserve typed failure and tear down every lease.
+- Authority changes during slow preparation/credit/billing refresh block the
+  next allocation. Busy slots are respected; available guarded slots are used.
+- Replay/idempotence does not allocate twice. Parent exit cannot kill the
+  independent watchdog or be interpreted as provider-zero proof.
+
+### Scoring and delivery
+
+- Reject zero queries, absent/altered score, missing lossless frames, incorrect
+  frame counts, missing/altered videos, foreign owner/intent, or nonterminal
+  provider state. Preserve scored task failure as failure.
+- Owner can view their result; another owner and unauthenticated user cannot.
+  Browser test exercises choose → request → progress → review with real route
+  contracts. A mocked render alone does not prove deployed authorization.
+
+### Verification gates
+
+Run focused changed-contract tests, provider import closure, lifecycle
+rehearsal, launch-bypass/spend/watchdog/teardown sentinels, and changed-file Ruff.
+Use full-suite results only to classify a concrete dependency boundary or for
+explicit promotion; reproduce unrelated failures on exact base instead of
+changing retired lanes. Live tests use reviewed assets, current admission,
+independent watchdogs, bounded spend/TTL, and retained native logs.
+
+## Review record
+
+Codex design review, 2026-09-27: reviewed against the selected worker/session,
+canonical built-in allocator, queue dispatcher, delivery profile, paid-output
+verifier, live provider capability evidence, and PR #737 workflow contract.
+The plan preserves the full user goal and explicitly closes the provider and
+delivery gaps. Accepted for test-first implementation. This is an agent design
+review, not a new human rights approval or proof of live execution.
+
+Main integration on PR #2351: merged tokenizer fix `fe6061cc...` into the draft;
+27 focused worker/output/assembly/episode/tokenizer tests passed. The draft is
+still not an operational selected-policy launch and is not ready to merge.
