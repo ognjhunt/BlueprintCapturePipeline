@@ -120,7 +120,7 @@ def test_unconsumed_stale_preparation_pin_is_released(tmp_path) -> None:
     assert applied["cache_or_evidence_bytes_removed"] is False
 
 
-@pytest.mark.parametrize("reason", ["depended", "young", "recent", "queued", "process", "path_class"])
+@pytest.mark.parametrize("reason", ["depended", "young", "recent", "queued", "parked", "process", "path_class"])
 def test_depended_or_young_or_queued_preparation_pin_is_kept(tmp_path, reason) -> None:
     args = _args(tmp_path)
     age = {"young": LAPSE - DAY, "recent": 3600}.get(reason, LAPSE + DAY)
@@ -130,6 +130,14 @@ def test_depended_or_young_or_queued_preparation_pin_is_kept(tmp_path, reason) -
         _pin(args, "activation", "act-x", age=DAY, depends_on=[{"kind": "preparation", "owner_id": "prep-x"}])
     if reason == "queued":
         _queue_row(args, json.dumps({"preparation_id": "prep-x"}))
+    if reason == "parked":
+        # A preparation paused on its source preparation is pinned and still in flight,
+        # though its row sits in neither pending nor processing.
+        preparations = tmp_path / "task-evaluation-launch-preparations"
+        (preparations / "awaiting_source_preparation").mkdir(parents=True)
+        (preparations / "awaiting_source_preparation" / f"prep-x-{'0' * 64}.json").write_text(
+            json.dumps({"preparation_id": "prep-x"}), encoding="utf-8")
+        args["queue_roots"] = [*args["queue_roots"], preparations]
     if reason == "process":
         args["reference_checker"] = lambda path: path.name == "prep-x"
 
@@ -137,7 +145,7 @@ def test_depended_or_young_or_queued_preparation_pin_is_kept(tmp_path, reason) -
 
     assert _kept(result)[("preparation", "prep-x")] == {
         "depended": "depended_on", "young": "pin_not_stale", "recent": "pin_young", "queued": "active_reference",
-        "process": "active_reference", "path_class": "path_class_invalid"}[reason]
+        "parked": "active_reference", "process": "active_reference", "path_class": "path_class_invalid"}[reason]
     assert not any(row["owner_id"] == "prep-x" for row in result["candidates"])
     assert result["released"] == [] and _states(args)[("preparation", "prep-x")] == "live"
 

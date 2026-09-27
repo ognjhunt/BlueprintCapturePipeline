@@ -546,7 +546,9 @@ One tick runs nine phases in order:
    pin no live pin depends on, created more than eight days ago, naming only
    `cache` paths). Every proof keeps the six-hour minimum pin age, the
    dependency closure's queue and process checks, and a re-derivation at the
-   mutation edge. Only the pin ledger changes.
+   mutation edge; the extended proofs also count a queue row parked in a state
+   that will still run (`LIVE_QUEUE_STATES`), such as a preparation awaiting
+   its source preparation. Only the pin ledger changes.
 3. **Derived directories** under the configured `cache` roots are retired when
    no live pin names them, no pending or processing queue message mentions
    them, and they have been idle for an hour

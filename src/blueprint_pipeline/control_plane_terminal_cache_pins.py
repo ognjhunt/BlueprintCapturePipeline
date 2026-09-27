@@ -28,7 +28,9 @@ candidates are listed with ``"enabled": false``:
 
 Every proof keeps the six-hour minimum pin age, the dependency closure (a pin
 is released only when no queue row or process references any pin in it), and
-a re-derivation at the mutation edge. The report names every live pin: as a
+a re-derivation at the mutation edge. The extended proofs also count a row
+parked in a queue state that will still run, such as a preparation awaiting
+its source preparation. The report names every live pin: as a
 candidate with its ``proof``, or in ``kept`` with a typed reason. A candidate
 whose references change at the mutation edge is kept too, as
 ``reference_changed``.
@@ -323,6 +325,34 @@ def _derive(pin, live_pins, context):
         return None, "proof_error", type(exc).__name__
 
 
+def _parked_queue_text(queue_roots):
+    """Rows parked in a queue state that will still run, beyond pending and processing.
+
+    ``LIVE_QUEUE_STATES`` names those states: a preparation that paused on its
+    source preparation or on capacity is pinned and still in flight, yet its row
+    sits in ``awaiting_source_preparation`` or ``awaiting_capacity``. The extended
+    proofs read these rows as references too; rows are read as
+    ``queue_reference_text`` reads them.
+    """
+
+    from .control_plane_release_leases import LIVE_QUEUE_STATES
+    from .control_plane_storage_references import MAX_QUEUE_MESSAGE_BYTES, QUEUE_STATES
+    chunks = []
+    for raw_root in queue_roots:
+        root = Path(raw_root).expanduser()
+        for state in LIVE_QUEUE_STATES.get(root.name, ()):
+            directory = root / state
+            if state in QUEUE_STATES or not directory.is_dir() or directory.is_symlink():
+                continue
+            for path in sorted(directory.glob("*.json")):
+                try:
+                    if not path.is_symlink() and path.stat().st_size <= MAX_QUEUE_MESSAGE_BYTES:
+                        chunks.append(path.read_text(encoding="utf-8"))
+                except (OSError, UnicodeDecodeError):
+                    continue
+    return "\n".join(chunks)
+
+
 def _live_pins(pins_root, now):
     return {(p["kind"], p["owner_id"]): p for p in load_storage_pins(pins_root, now=lambda: now) if p["status"] == "live"}
 
@@ -377,6 +407,7 @@ def reconcile_terminal_cache_pins(*, pins_root, queue_roots, evidence_roots, now
         classifier(str(root), expected="evidence_cold", code="terminal_cache_pin_evidence_root_invalid")
     pins = _live_pins(pins_root, now)
     queue_text = _queue_reference_text(queue_roots)
+    live_queue_text = "\n".join((queue_text, _parked_queue_text(queue_roots)))
     context = {"classifier": classifier, "now": now, "evidence_roots": evidence_roots,
                "hot_window_seconds": hot_window_seconds, "activation_queue_root": activation_queue_root}
     candidates, kept, released = [], [], []
@@ -398,7 +429,7 @@ def reconcile_terminal_cache_pins(*, pins_root, queue_roots, evidence_roots, now
             if proof is not None:
                 try:
                     closure = _closure(identity, pins)
-                    reason = _closure_reason(identity, closure, pins, queue_text, reference_checker)
+                    reason = _closure_reason(identity, closure, pins, live_queue_text, reference_checker)
                 except Exception as exc:  # noqa: BLE001 - an extended candidate never costs the original proofs
                     reason, error = "proof_error", type(exc).__name__
             if error is not None:
@@ -425,7 +456,7 @@ def reconcile_terminal_cache_pins(*, pins_root, queue_roots, evidence_roots, now
         # reading queue rows before the ledger: the stale-pin proof rests on the ledger,
         # and a consumer arriving meanwhile shows up in one or the other.
         with storage_pin_guard(pins_root, exclusive=True):
-            fresh = _queue_reference_text(queue_roots)
+            fresh = "\n".join((_queue_reference_text(queue_roots), _parked_queue_text(queue_roots)))
             if (proof != _derive(pin, _live_pins(pins_root, now), context)[0]
                     or _referenced(closure, fresh, reference_checker)):
                 kept.append({**candidate, "reason": "reference_changed"})
