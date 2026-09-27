@@ -547,10 +547,52 @@ the Pub/Sub ack deadline while work is active, downloads the completed capture b
 the handoff from staged raw sidecars, writes a `robot_eval_job_request.v1`
 envelope into `BLUEPRINT_ROBOT_EVAL_JOB_REQUEST_INBOX`, and records the staged
 request path in `pipeline_job_ledger.json`. Terminal output is committed through
-`pipeline_job_output_commit.json`; retryable/blocked outcomes are nacked and
-permanent-invalid inputs are acknowledged with typed failure evidence. It does not execute simulator or
+`pipeline_job_output_commit.json`. When the WebApp has ended a website scene's
+authority (a 409 `consent_expired` or `source_revoked`), the job finishes as
+`terminal_authority_ended` with `pipeline_job_terminal_receipt.json` and the
+message is acknowledged; a redelivery of the same payload is acknowledged without
+staging, and only a different payload reopens the job. Retryable/blocked outcomes
+are left unacknowledged with a deferred ack deadline, so Pub/Sub redelivers them
+until the subscription's dead-letter policy moves them to `pipeline-trigger-dlq`.
+Dead-lettering needs the Pub/Sub service agent to hold publisher on that topic and
+subscriber on the subscription; Terraform grants both. Permanent-invalid inputs are
+acknowledged with typed failure evidence. After Pub/Sub accepts an acknowledgement,
+the capture records it in `pipeline_job_ack_receipt.json`. Staging records each
+Firebase Storage object it staged (size, generation, MD5, CRC32C) in
+`pipeline_staging_manifest.json` and does not download an unchanged object again.
+It does not execute simulator or
 provider work; the next control-plane pass consumes the inbox and resolves
 `site_package.capture_root` per request.
+
+A handoff moves to `pipeline-trigger-dlq` after five failed deliveries (about an
+hour with the 600-second retry deferral). That applies to every retryable outcome,
+including 409s a person can fix and capacity holds. The
+`pipeline-trigger-dlq-retained` subscription keeps dead-lettered handoffs for seven
+days and never expires. To replay one after fixing its cause, republish its
+`message.data` byte for byte to the handoff topic, and acknowledge it on the retained
+subscription only after the publish succeeds (with `GOOGLE_CLOUD_PROJECT` set and
+publisher access to the handoff topic):
+
+```bash
+python3 - <<'PY'
+import os
+from google.cloud import pubsub_v1
+
+project = os.environ["GOOGLE_CLOUD_PROJECT"]
+subscriber, publisher = pubsub_v1.SubscriberClient(), pubsub_v1.PublisherClient()
+retained = subscriber.subscription_path(project, "pipeline-trigger-dlq-retained")
+topic = publisher.topic_path(project, "blueprint-capture-bridge-handoff")
+response = subscriber.pull(request={"subscription": retained, "max_messages": 1}, timeout=30)
+for received in response.received_messages:
+    publisher.publish(topic, received.message.data).result()  # the exact bytes, never re-encoded
+    subscriber.acknowledge(request={"subscription": retained, "ack_ids": [received.ack_id]})
+    print("replayed", received.message.message_id)
+PY
+```
+
+Republishing the same bytes keeps the payload digest, so a capture whose authority
+already ended is still acknowledged without staging. Do not decode and retype the
+payload: any change to its bytes is a different payload digest.
 
 Install templates live under:
 

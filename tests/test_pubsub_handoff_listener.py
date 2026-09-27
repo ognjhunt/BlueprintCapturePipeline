@@ -1,14 +1,23 @@
+import fcntl
 import json
+import logging
+import shutil
 import threading
 import types
 from datetime import datetime, timedelta, timezone
+from hashlib import sha256
+from io import BytesIO
 from pathlib import Path
+from urllib.error import HTTPError
 
 import pytest
 import google.cloud
 
 import blueprint_pipeline.pubsub_handoff_listener as listener_module
-from blueprint_pipeline.common import PipelineError
+import blueprint_pipeline.site_package_orchestrator as orchestrator
+from blueprint_pipeline.capture_orchestrator import run_capture_pipeline
+from blueprint_pipeline.common import PipelineError, StageError
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.live_pipeline_control_plane import (
     LIVE_PIPELINE_CONTROL_PLANE_SCHEMA_VERSION,
 )
@@ -20,6 +29,11 @@ from blueprint_pipeline.pubsub_handoff_listener import (
     process_handoff_payload,
     read_handoff_job_status,
     stage_handoff_capture,
+)
+from tests.test_qualification_coverage_edges import (
+    _descriptor as _qualification_descriptor,
+    _patch_pipeline_side_effects,
+    _write_descriptor,
 )
 
 
@@ -88,11 +102,26 @@ def _robot_eval_dataset_blobs(prefix: str) -> "list[FakeBlob]":
 
 
 class FakeBlob:
-    def __init__(self, name: str, data: bytes) -> None:
+    def __init__(
+        self,
+        name: str,
+        data: bytes,
+        *,
+        size: int | None = None,
+        generation: int | None = None,
+        md5_hash: str | None = None,
+        crc32c: str | None = None,
+    ) -> None:
         self.name = name
         self._data = data
+        self.size = size
+        self.generation = generation
+        self.md5_hash = md5_hash
+        self.crc32c = crc32c
+        self.download_count = 0
 
     def download_to_filename(self, destination: str) -> None:
+        self.download_count += 1
         Path(destination).write_bytes(self._data)
 
 
@@ -109,16 +138,20 @@ class FakeStorageClient:
 
 class FakeSubscriber:
     def __init__(self, received_messages: list[object]) -> None:
-        self.received_messages = received_messages
+        self.received_messages = list(received_messages)  # still waiting in the subscription
         self.acknowledged: list[str] = []
+        self.acknowledge_requests: list[dict] = []
         self.ack_deadline_requests: list[dict] = []
         self.pull_requests: list[dict] = []
 
     def pull(self, *, request: dict, timeout: int) -> object:
         self.pull_requests.append({"request": request, "timeout": timeout})
-        return types.SimpleNamespace(received_messages=self.received_messages)
+        batch = self.received_messages[: request["max_messages"]]
+        del self.received_messages[: len(batch)]
+        return types.SimpleNamespace(received_messages=batch)
 
     def acknowledge(self, *, request: dict) -> None:
+        self.acknowledge_requests.append(request)
         self.acknowledged.extend(request["ack_ids"])
 
     def modify_ack_deadline(self, *, request: dict) -> None:
@@ -512,6 +545,9 @@ def test_read_handoff_job_status_reports_not_staged(tmp_path: Path) -> None:
     assert status["staged_capture_present"] is False
     assert status["job_ledger_present"] is False
     assert status["attempt_count"] == 0
+    assert status["terminal_code"] is None
+    assert status["terminal_receipt_present"] is False
+    assert status["ack_receipt"] is None
 
 
 def test_crashed_processing_run_is_retried_not_skipped(tmp_path: Path) -> None:
@@ -1402,3 +1438,973 @@ def test_recovery_refuses_symlinks_without_moving_anything(tmp_path):
     with pytest.raises(PipelineError, match="recovery_unsafe"):
         listener_module._preserve_local_website_derivatives(tmp_path, set(), "prefix")
     assert source.is_symlink()
+
+
+# ---------------------------------------------------------------------------
+# Website authority endings (consent expired, source revoked)
+# ---------------------------------------------------------------------------
+
+PAYLOAD = {
+    "bucket": "capture-bucket",
+    "scene_id": "scene-1",
+    "capture_id": "capture-1",
+    "raw_prefix_uri": "gs://capture-bucket/scenes/scene-1/captures/capture-1/raw",
+}
+PAYLOAD_BYTES = json.dumps(PAYLOAD).encode("utf-8")
+
+
+@pytest.mark.parametrize("code", ["consent_expired", "source_revoked"])
+def test_authority_ending_code_walks_the_exception_chain(code):
+    try:
+        try:
+            raise ValueError(f"website_control_scene-sponsorship_http_409:{code}")
+        except ValueError as inner:
+            raise listener_module.PipelineError("website_task_context failed") from inner
+    except listener_module.PipelineError as outer:
+        assert listener_module.authority_ending_code(outer) == code
+
+
+@pytest.mark.parametrize("message", [
+    "website_control_scene-sponsorship_http_409:task_brief_missing",
+    "website_control_scene-sponsorship_http_503:consent_expired",
+    "website_control_scene-sponsorship_http_409:consent_expired_soon",
+    "consent_expired",
+    "not_website_control_scene-sponsorship_http_409:consent_expired",
+    "website_control_scene-sponsorship_http_409:source_revokedX",
+    "website_control_scene-sponsorship_http_409:source_revoked-x",
+    "website_control_scene-sponsorship_http_409:consent_expiredZ",
+])
+def test_other_failures_are_not_authority_endings(message):
+    assert listener_module.authority_ending_code(ValueError(message)) is None
+
+
+@pytest.mark.parametrize("message,code", [
+    ("website_control_prepared-scene_http_409:source_revoked,task_brief_missing", "source_revoked"),
+    ("held (website_control_task-context_http_409:consent_expired)", "consent_expired"),
+    ("website_control_task-context_http_409:consent_expired: request refused", "consent_expired"),
+])
+def test_authority_endings_are_found_between_separators(message, code):
+    assert listener_module.authority_ending_code(StageError("website_scene_preparation", message)) == code
+
+
+def test_authority_ending_code_follows_implicit_context_and_stops_on_cycles():
+    try:
+        try:
+            raise ValueError("website_control_prepared-scene_http_409:source_revoked")
+        except ValueError:
+            raise RuntimeError("preparation held")  # implicit __context__, no __cause__
+    except RuntimeError as outer:
+        assert listener_module.authority_ending_code(outer) == "source_revoked"
+
+    first, second = RuntimeError("first"), RuntimeError("second")
+    first.__cause__, second.__cause__ = second, first
+    assert listener_module.authority_ending_code(first) is None
+
+    deepest = ValueError("website_control_task-context_http_409:consent_expired")
+    chain = deepest
+    for index in range(20):
+        wrapper = PipelineError(f"wrapper {index}")
+        wrapper.__cause__ = chain
+        chain = wrapper
+    assert listener_module.authority_ending_code(chain) is None
+
+
+def _website_qualification_descriptor(storage_root: Path) -> str:
+    return _write_descriptor(storage_root, _qualification_descriptor(
+        capture_source="unknown", capture_modality="video_only",
+        requested_outputs=["preview_simulation"],
+        metadata={"capture_entry_source": "browser_self_capture",
+                  "capture_rights": {"derived_scene_generation_allowed": True}}))
+
+
+def test_a_real_task_context_refusal_is_recognized_as_an_authority_ending(tmp_path, monkeypatch):
+    """The WebApp's 409 travels through the real transport and qualification lane."""
+    import blueprint_pipeline.website_task_context as website_task_context
+
+    monkeypatch.setenv("PIPELINE_SYNC_WEBAPP_URL", "https://tryblueprint.io/api/internal/pipeline/sync")
+    monkeypatch.setattr(website_task_context, "load_pipeline_sync_token", lambda: "test-secret")
+
+    def refuse(url, **_kwargs):
+        raise HTTPError(url, 409, "request refused", {}, BytesIO(b'{"code":"consent_expired"}'))
+
+    monkeypatch.setattr(website_task_context, "safe_request", refuse)
+    storage_root = tmp_path / "gcs"
+    descriptor_uri = _website_qualification_descriptor(storage_root)
+    with pytest.raises(PipelineError) as failure:
+        run_capture_pipeline(
+            descriptor_gcs_uri=descriptor_uri, lane="qualification",
+            config=types.SimpleNamespace(gcs_root=storage_root, runtime_preflight_enabled=False))
+    assert str(failure.value) == "website_control_task-context_http_409:consent_expired"
+    assert listener_module.authority_ending_code(failure.value) == "consent_expired"
+
+
+def test_a_held_preparation_stage_is_recognized_as_an_authority_ending(tmp_path, monkeypatch):
+    """A refusal folded into preparation blockers surfaces as a StageError, then a PipelineError."""
+    import blueprint_pipeline.website_scene_handoff as website_scene_handoff
+
+    storage_root = tmp_path / "gcs"
+    descriptor_uri = _website_qualification_descriptor(storage_root)
+    _patch_pipeline_side_effects(monkeypatch)
+    monkeypatch.setattr(orchestrator, "load_current_website_task_context", lambda **_: {
+        "description": "Pick the box", "confirmed": True,
+        "capture_rights": {"derived_scene_generation_allowed": True}})
+    monkeypatch.setattr(orchestrator, "load_website_scene_sponsorship", lambda **_: {"sponsor": "blueprint"})
+    monkeypatch.setattr(orchestrator, "run_clean_plate_stage", lambda **_: {
+        "status": "noop", "privacy_status": "no_people_detected", "privacy_verified": True})
+    # prepare_website_scene_handoff catches the transport's ValueError and keeps it as a blocker.
+    monkeypatch.setattr(website_scene_handoff, "prepare_website_scene_handoff", lambda **_: {
+        "status": "intake_ready",
+        "runtime_inputs": {"status": "awaiting_inputs",
+                           "blockers": ["website_control_prepared-scene_http_409:source_revoked"]}})
+    with pytest.raises(PipelineError) as failure:
+        run_capture_pipeline(
+            descriptor_gcs_uri=descriptor_uri, lane="qualification",
+            config=types.SimpleNamespace(gcs_root=storage_root, runtime_preflight_enabled=False))
+    assert isinstance(failure.value.__cause__, StageError)
+    assert listener_module.authority_ending_code(failure.value) == "source_revoked"
+
+
+def test_payload_digest_matches_the_recorded_delivery_evidence(tmp_path):
+    message = types.SimpleNamespace(message_id="m1", data=PAYLOAD_BYTES, attributes={})
+    evidence = listener_module._write_delivery_evidence(
+        storage_root=tmp_path, message=message, received=types.SimpleNamespace(delivery_attempt=1),
+        disposition="permanent_invalid", blockers=[])
+    recorded = json.loads(evidence.read_text(encoding="utf-8"))["payload_sha256"]
+    assert listener_module.payload_sha256(PAYLOAD_BYTES) == recorded
+    assert listener_module.payload_sha256(PAYLOAD_BYTES.decode("utf-8")) == recorded
+    assert listener_module.payload_sha256({"b": 1, "a": 2}) == sha256(b'{"a":2,"b":1}').hexdigest()
+
+
+SUBSCRIPTION = "projects/p/subscriptions/s"
+_CAPTURE_PREFIX = "scenes/scene-1/captures/capture-1"
+_WEBSITE_MANIFEST = {"scene_id": "scene-1", "capture_id": "capture-1",
+                     "capture_source": "browser_self_capture", "site_submission_id": "request-1"}
+_ORIGINAL_PROCESS_HANDOFF_PAYLOAD = listener_module.process_handoff_payload
+
+
+def _website_bundle_blobs(prefix: str = _CAPTURE_PREFIX) -> "list[FakeBlob]":
+    return [
+        FakeBlob(f"{prefix}/raw/manifest.json", json.dumps(_WEBSITE_MANIFEST).encode("utf-8")),
+        FakeBlob(f"{prefix}/raw/capture_upload_complete.json", b"{}"),
+        FakeBlob(f"{prefix}/raw/walkthrough.mov", b"video"),
+    ]
+
+
+def _received(*, ack_id: str, data: bytes, delivery_attempt: int = 1) -> object:
+    return types.SimpleNamespace(
+        ack_id=ack_id,
+        delivery_attempt=delivery_attempt,
+        message=types.SimpleNamespace(message_id=f"msg-{ack_id}", data=data, attributes={}),
+    )
+
+
+def _install_fake_pubsub(monkeypatch, subscriber, *, storage_client=None, run_e2e=None) -> "list[dict]":
+    """Point pull_and_process at a fake subscriber and the real handoff processor.
+
+    pull_and_process has no storage or run_e2e seams of its own, so the real
+    process_handoff_payload is wrapped with them. Returns every result it produced.
+    """
+
+    monkeypatch.setattr(google.cloud, "pubsub_v1",
+                        types.SimpleNamespace(SubscriberClient=lambda: subscriber), raising=False)
+    results: list[dict] = []
+
+    def process(payload, **kwargs):
+        if storage_client is not None:
+            kwargs["storage_client"] = storage_client
+        if run_e2e is not None:
+            kwargs["run_e2e"] = run_e2e
+        result = _ORIGINAL_PROCESS_HANDOFF_PAYLOAD(payload, **kwargs)
+        results.append(result)
+        return result
+
+    monkeypatch.setattr(listener_module, "process_handoff_payload", process)
+    return results
+
+
+def _pull(storage_root: Path) -> int:
+    # The deployed listener stages control-plane input and skips run_e2e for
+    # device captures; website captures still run their preparation.
+    return pull_and_process(subscription=SUBSCRIPTION, storage_root=storage_root, provider="openai",
+                            max_messages=10, stage_control_plane=True, run_e2e_enabled=False)
+
+
+def _capture_root(storage_root: Path) -> Path:
+    return storage_root / "capture-bucket" / _CAPTURE_PREFIX
+
+
+def _read(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _expired(*_args, **_kwargs):
+    try:
+        raise ValueError("website_control_scene-sponsorship_http_409:consent_expired")
+    except ValueError as exc:
+        raise listener_module.PipelineError("website scene failed") from exc
+
+
+class _ListingForbidden:
+    def list_blobs(self, *_args, **_kwargs):
+        pytest.fail("a capture whose authority ended must not be staged again")
+
+
+def test_consent_expired_finishes_the_job_as_terminal_and_is_acknowledged(tmp_path, monkeypatch):
+    subscriber = FakeSubscriber([_received(ack_id="a1", data=PAYLOAD_BYTES, delivery_attempt=1)])
+    results = _install_fake_pubsub(monkeypatch, subscriber,
+                                   storage_client=FakeStorageClient(_website_bundle_blobs()), run_e2e=_expired)
+
+    acknowledged = _pull(tmp_path)
+
+    assert acknowledged == 1 and subscriber.acknowledged == ["a1"]
+    assert results[0]["status"] == "terminal_authority_ended"
+    assert results[0]["queue_disposition"] == "terminal_authority_ended"
+    assert results[0]["blockers"] == ["consent_expired"]
+    ledger = _read(_capture_root(tmp_path) / "pipeline_job_ledger.json")
+    assert ledger["status"] == "terminal_authority_ended"
+    assert ledger["terminal_code"] == "consent_expired"
+    assert ledger["terminal_payload_sha256"] == sha256(PAYLOAD_BYTES).hexdigest()
+    assert ledger["queue_disposition"] == "terminal_authority_ended"
+    assert ledger["updated_at"] == ledger["terminal_at"]
+    assert ledger["last_error_type"] == "PipelineError"
+    assert ledger["last_error"] == "website scene failed"
+    assert ledger["lease_owner"] is None and ledger["lease_expires_at"] is None
+    assert ledger["terminal_operation"] == "scene-sponsorship"
+    assert ledger["attempt_history"] == [{
+        "attempt_number": 1, "status": "terminal_authority_ended", "stage": "run_e2e",
+        "started_at": ledger["last_attempt_started_at"], "ended_at": ledger["terminal_at"],
+        "code": "consent_expired", "operation": "scene-sponsorship",
+        "payload_sha256": sha256(PAYLOAD_BYTES).hexdigest(),
+    }]
+    receipt = _read(_capture_root(tmp_path) / "pipeline_job_terminal_receipt.json")
+    assert receipt["status"] == "authority_ended" and receipt["receipt_digest"].startswith("sha256:")
+    assert receipt["receipt_digest"] == canonical_digest(receipt, digest_field="receipt_digest")
+    assert {key: value for key, value in receipt.items() if key != "receipt_digest"} == {
+        "schema_version": "pipeline_job_terminal_receipt.v1", "status": "authority_ended",
+        "code": "consent_expired", "terminal_operation": "scene-sponsorship",
+        "bucket": "capture-bucket", "scene_id": "scene-1", "capture_id": "capture-1", "attempt_count": 1,
+        "payload_sha256": sha256(PAYLOAD_BYTES).hexdigest(), "ended_at": ledger["terminal_at"],
+        "error": "website scene failed",
+    }
+    assert not (tmp_path / ".pubsub_delivery_evidence").exists()
+    ack = _read(_capture_root(tmp_path) / "pipeline_job_ack_receipt.json")
+    assert ack["disposition"] == "terminal_authority_ended"
+    assert ack["payload_sha256"] == receipt["payload_sha256"]
+
+
+def test_redelivered_terminal_capture_is_acknowledged_without_staging(tmp_path, monkeypatch):
+    first = FakeSubscriber([_received(ack_id="a1", data=PAYLOAD_BYTES)])
+    _install_fake_pubsub(monkeypatch, first,
+                         storage_client=FakeStorageClient(_website_bundle_blobs()), run_e2e=_expired)
+    assert _pull(tmp_path) == 1
+    ledger_path = _capture_root(tmp_path) / "pipeline_job_ledger.json"
+    terminal_ledger = _read(ledger_path)
+
+    second = FakeSubscriber([_received(ack_id="a2", data=PAYLOAD_BYTES, delivery_attempt=2)])
+    results = _install_fake_pubsub(monkeypatch, second, storage_client=_ListingForbidden(),
+                                   run_e2e=lambda **_: pytest.fail("a terminal capture must not run again"))
+
+    assert _pull(tmp_path) == 1
+    assert second.acknowledged == ["a2"]
+    second_result_status = results[0]["status"]
+    assert second_result_status == "skipped_terminal_authority_ended"
+    assert results[0]["queue_disposition"] == "terminal_authority_ended"
+    assert results[0]["blockers"] == ["consent_expired"]
+    assert _read(ledger_path) == terminal_ledger
+    ack = _read(_capture_root(tmp_path) / "pipeline_job_ack_receipt.json")
+    assert ack["disposition"] == "terminal_authority_ended"
+    assert (ack["message_id"], ack["delivery_attempt"], ack["acknowledgement_count"]) == ("msg-a2", 2, 2)
+
+
+def test_a_redelivery_repairs_a_terminal_receipt_lost_to_a_crash(tmp_path, monkeypatch):
+    first = FakeSubscriber([_received(ack_id="a1", data=PAYLOAD_BYTES)])
+    _install_fake_pubsub(monkeypatch, first,
+                         storage_client=FakeStorageClient(_website_bundle_blobs()), run_e2e=_expired)
+    assert _pull(tmp_path) == 1
+    receipt_path = _capture_root(tmp_path) / "pipeline_job_terminal_receipt.json"
+    original = receipt_path.read_bytes()
+    receipt_path.unlink()  # the ledger committed; the process died before the receipt
+
+    second = FakeSubscriber([_received(ack_id="a2", data=PAYLOAD_BYTES, delivery_attempt=2)])
+    _install_fake_pubsub(monkeypatch, second, storage_client=_ListingForbidden())
+    assert _pull(tmp_path) == 1
+    assert receipt_path.read_bytes() == original
+
+
+def test_a_new_payload_reopens_a_terminal_capture(tmp_path, monkeypatch):
+    first = FakeSubscriber([_received(ack_id="a1", data=PAYLOAD_BYTES)])
+    _install_fake_pubsub(monkeypatch, first,
+                         storage_client=FakeStorageClient(_website_bundle_blobs()), run_e2e=_expired)
+    assert _pull(tmp_path) == 1
+    reopened_payload = json.dumps({
+        **PAYLOAD,
+        "pipeline_handoff_uri": f"gs://capture-bucket/{_CAPTURE_PREFIX}/pipeline_handoff.json",
+    }).encode("utf-8")
+    run_e2e_calls: list[dict] = []
+
+    def prepare(**kwargs):
+        run_e2e_calls.append(kwargs)
+        return {"status": "completed"}
+
+    second = FakeSubscriber([_received(ack_id="a2", data=reopened_payload)])
+    results = _install_fake_pubsub(monkeypatch, second,
+                                   storage_client=FakeStorageClient(_website_bundle_blobs()), run_e2e=prepare)
+
+    assert _pull(tmp_path) == 1
+    assert len(run_e2e_calls) == 1  # the reopened job runs
+    assert results[0]["status"] == "processed"
+    ledger = _read(_capture_root(tmp_path) / "pipeline_job_ledger.json")
+    assert ledger["status"] == "completed"
+    assert ledger["attempt_count"] == 2
+    assert [row["status"] for row in ledger["attempt_history"]] == [
+        "terminal_authority_ended", "reopened_after_terminal_authority", "completed"]
+    reopened = ledger["attempt_history"][1]
+    assert reopened["attempt_number"] == 2
+    assert reopened["terminal_code"] == "consent_expired"
+    assert reopened["terminal_payload_sha256"] == sha256(PAYLOAD_BYTES).hexdigest()
+    assert reopened["payload_sha256"] == sha256(reopened_payload).hexdigest()
+    # The earlier ending's receipt is kept as evidence, but never under the live name.
+    capture_root = _capture_root(tmp_path)
+    assert not (capture_root / "pipeline_job_terminal_receipt.json").exists()
+    superseded = list(capture_root.glob("pipeline_job_terminal_receipt.superseded-*.json"))
+    assert len(superseded) == 1
+    kept = _read(superseded[0])
+    assert kept["payload_sha256"] == sha256(PAYLOAD_BYTES).hexdigest()
+    assert kept["receipt_digest"] == canonical_digest(kept, digest_field="receipt_digest")
+    status = read_handoff_job_status(storage_root=tmp_path, bucket="capture-bucket",
+                                     scene_id="scene-1", capture_id="capture-1")
+    assert status["terminal_receipt_present"] is False
+
+
+def test_non_terminal_409_stays_retryable(tmp_path, monkeypatch):
+    def held(**_kwargs):
+        try:
+            raise ValueError("website_control_task-context_http_409:task_brief_missing")
+        except ValueError as exc:
+            raise listener_module.PipelineError(str(exc)) from exc
+
+    subscriber = FakeSubscriber([_received(ack_id="a1", data=PAYLOAD_BYTES)])
+    _install_fake_pubsub(monkeypatch, subscriber,
+                         storage_client=FakeStorageClient(_website_bundle_blobs()), run_e2e=held)
+
+    assert _pull(tmp_path) == 0
+    assert subscriber.acknowledged == []
+    ledger = _read(_capture_root(tmp_path) / "pipeline_job_ledger.json")
+    assert ledger["status"] == "failed_retryable"
+    assert "terminal_code" not in ledger
+    assert not (_capture_root(tmp_path) / "pipeline_job_terminal_receipt.json").exists()
+
+
+def test_a_terminal_ledger_without_a_matching_digest_is_not_reopened(tmp_path):
+    root = tmp_path / "capture"
+    root.mkdir()
+    (root / "pipeline_job_ledger.json").write_text(json.dumps({
+        "status": "terminal_authority_ended", "terminal_code": "source_revoked",
+        "terminal_payload_sha256": "a" * 64, "attempt_count": 1}), encoding="utf-8")
+    claim = listener_module._claim_job_lease
+    same, _ = claim(root, scene_id="s", capture_id="c", owner="w", lease_seconds=60, payload_sha256="a" * 64)
+    unknown, _ = claim(root, scene_id="s", capture_id="c", owner="w", lease_seconds=60)
+    assert (same, unknown) == ("terminal", "terminal")
+    assert _read(root / "pipeline_job_ledger.json")["status"] == "terminal_authority_ended"
+    reopened, ledger = claim(root, scene_id="s", capture_id="c", owner="w", lease_seconds=60,
+                             payload_sha256="b" * 64)
+    assert reopened == "claimed"
+    assert ledger["attempt_count"] == 2
+    assert ledger["attempt_history"][-1]["status"] == "reopened_after_terminal_authority"
+
+
+def test_ack_receipt_is_written_after_acknowledge_returns(tmp_path, monkeypatch):
+    receipt_path = _capture_root(tmp_path) / "pipeline_job_ack_receipt.json"
+    subscriber = FakeSubscriber([
+        _received(ack_id="a1", data=PAYLOAD_BYTES, delivery_attempt=3),
+        _received(ack_id="poison", data=b"{not-json"),
+    ])
+    present_during_acknowledge: list[tuple[list[str], bool]] = []
+    record_acknowledgement = subscriber.acknowledge
+
+    def acknowledge(*, request):
+        present_during_acknowledge.append((request["ack_ids"], receipt_path.exists()))
+        record_acknowledgement(request=request)
+
+    subscriber.acknowledge = acknowledge
+    _install_fake_pubsub(monkeypatch, subscriber, storage_client=FakeStorageClient(_website_bundle_blobs()),
+                         run_e2e=lambda **_: {"status": "completed"})
+
+    assert _pull(tmp_path) == 2
+    assert subscriber.acknowledged == ["a1", "poison"]
+    # a1's receipt appears only after a1's own acknowledgement returned.
+    assert present_during_acknowledge == [(["a1"], False), (["poison"], True)]
+    ack = _read(receipt_path)
+    assert datetime.fromisoformat(ack["acknowledged_at"]).tzinfo is not None
+    assert ack == {
+        "schema_version": "pubsub_handoff_ack_receipt.v1",
+        "subscription": SUBSCRIPTION,
+        "message_id": "msg-a1",
+        "payload_sha256": sha256(PAYLOAD_BYTES).hexdigest(),
+        "delivery_attempt": 3,
+        "disposition": "terminal_success",
+        "acknowledged_at": ack["acknowledged_at"],
+        "acknowledgement_count": 1,
+    }
+    # The permanently invalid payload has no capture root and keeps only its delivery evidence.
+    assert list(tmp_path.rglob("pipeline_job_ack_receipt.json")) == [receipt_path]
+    assert len(list((tmp_path / ".pubsub_delivery_evidence" / "permanent_invalid").glob("*.json"))) == 1
+
+    redelivery = FakeSubscriber([_received(ack_id="a2", data=PAYLOAD_BYTES, delivery_attempt=4)])
+    _install_fake_pubsub(monkeypatch, redelivery, storage_client=_ListingForbidden())
+    assert _pull(tmp_path) == 1
+    ack = _read(receipt_path)
+    assert (ack["message_id"], ack["delivery_attempt"], ack["disposition"], ack["acknowledgement_count"]) == (
+        "msg-a2", 4, "terminal_success", 2)
+
+
+def test_no_ack_receipt_when_acknowledge_fails(tmp_path, monkeypatch):
+    subscriber = FakeSubscriber([_received(ack_id="a1", data=PAYLOAD_BYTES)])
+    subscriber.acknowledge = lambda **_k: (_ for _ in ()).throw(RuntimeError("pubsub down"))
+    _install_fake_pubsub(monkeypatch, subscriber,
+                         storage_client=FakeStorageClient(_website_bundle_blobs()), run_e2e=_expired)
+    with pytest.raises(RuntimeError):
+        _pull(tmp_path)
+    assert not (_capture_root(tmp_path) / "pipeline_job_ack_receipt.json").exists()
+    # The job itself still ended; only the acknowledgement is unproven.
+    assert _read(_capture_root(tmp_path) / "pipeline_job_ledger.json")["status"] == "terminal_authority_ended"
+
+
+def test_retryable_results_leave_no_ack_receipt(tmp_path, monkeypatch):
+    def held(**_kwargs):
+        raise listener_module.PipelineError("website_control_task-context_http_409:task_brief_missing")
+
+    subscriber = FakeSubscriber([_received(ack_id="a1", data=PAYLOAD_BYTES)])
+    _install_fake_pubsub(monkeypatch, subscriber,
+                         storage_client=FakeStorageClient(_website_bundle_blobs()), run_e2e=held)
+    assert _pull(tmp_path) == 0
+    assert not (_capture_root(tmp_path) / "pipeline_job_ack_receipt.json").exists()
+
+
+@pytest.mark.parametrize("damage", ["unwritable", "malformed"])
+def test_one_bad_ack_receipt_does_not_cost_the_others(tmp_path, monkeypatch, damage):
+    other_prefix = "scenes/scene-2/captures/capture-2"
+    other_payload = json.dumps({
+        "bucket": "capture-bucket", "scene_id": "scene-2", "capture_id": "capture-2",
+        "raw_prefix_uri": f"gs://capture-bucket/{other_prefix}/raw"}).encode("utf-8")
+    damaged = _capture_root(tmp_path) / "pipeline_job_ack_receipt.json"
+    if damage == "unwritable":
+        damaged.mkdir(parents=True)  # a directory where the receipt file belongs: the write fails
+    else:
+        damaged.parent.mkdir(parents=True)
+        damaged.write_bytes(b"\xff\xfe not utf-8")  # reading the previous count raises UnicodeDecodeError
+    subscriber = FakeSubscriber([_received(ack_id="a1", data=PAYLOAD_BYTES),
+                                 _received(ack_id="a2", data=other_payload)])
+    _install_fake_pubsub(
+        monkeypatch, subscriber,
+        storage_client=FakeStorageClient([*_website_bundle_blobs(), *_website_bundle_blobs(other_prefix)]),
+        run_e2e=lambda **_: {"status": "completed"})
+
+    assert _pull(tmp_path) == 2
+    assert subscriber.acknowledged == ["a1", "a2"]
+    if damage == "unwritable":
+        assert damaged.is_dir()
+    else:
+        # The unreadable receipt is kept under another name, never overwritten.
+        kept = list(damaged.parent.glob("pipeline_job_ack_receipt.unreadable-*.json"))
+        assert len(kept) == 1 and kept[0].read_bytes() == b"\xff\xfe not utf-8"
+        assert _read(damaged)["message_id"] == "msg-a1"
+    other = _read(tmp_path / "capture-bucket" / other_prefix / "pipeline_job_ack_receipt.json")
+    assert other["message_id"] == "msg-a2" and other["acknowledgement_count"] == 1
+
+
+def _staging_handoff() -> HandoffMessage:
+    return HandoffMessage(bucket="capture-bucket", scene_id="scene-1", capture_id="capture-1",
+                          raw_prefix_uri=f"gs://capture-bucket/{_CAPTURE_PREFIX}/raw",
+                          pipeline_handoff_uri=None)
+
+
+def test_staging_manifest_records_cloud_identity(tmp_path):
+    video = FakeBlob(f"{_CAPTURE_PREFIX}/raw/walkthrough.mov", b"video", size=5,
+                     generation=1790000000000001, md5_hash="bWQ1LWJhc2U2NA==", crc32c="Y3JjMzJj")
+    complete = FakeBlob(f"{_CAPTURE_PREFIX}/raw/capture_upload_complete.json", b"{}", size=2, generation=7)
+    folder_marker = FakeBlob(f"{_CAPTURE_PREFIX}/raw/", b"")
+    client = FakeStorageClient([video, complete, folder_marker])
+
+    capture_root = stage_handoff_capture(_staging_handoff(), storage_root=tmp_path, storage_client=client)
+
+    manifest = _read(capture_root / "pipeline_staging_manifest.json")
+    assert manifest["schema_version"] == "pipeline_handoff_staging_manifest.v1"
+    assert manifest["bucket"] == "capture-bucket"
+    assert manifest["prefix"] == f"{_CAPTURE_PREFIX}/"
+    assert datetime.fromisoformat(manifest["staged_at"]).tzinfo is not None
+    assert manifest["objects"] == [
+        {"name": f"{_CAPTURE_PREFIX}/raw/walkthrough.mov", "relative_path": "raw/walkthrough.mov",
+         "size": 5, "generation": "1790000000000001", "md5_hash": "bWQ1LWJhc2U2NA==", "crc32c": "Y3JjMzJj"},
+        {"name": f"{_CAPTURE_PREFIX}/raw/capture_upload_complete.json",
+         "relative_path": "raw/capture_upload_complete.json",
+         "size": 2, "generation": "7", "md5_hash": None, "crc32c": None},
+    ]
+    # Local derivations are not cloud objects and are not in the manifest.
+    assert (capture_root / "pipeline_handoff.json").is_file()
+
+
+def test_unchanged_objects_are_not_downloaded_again(tmp_path):
+    blob = FakeBlob(f"{_CAPTURE_PREFIX}/raw/capture_upload_complete.json", b"{}", size=2, generation=7)
+    unversioned = FakeBlob(f"{_CAPTURE_PREFIX}/raw/walkthrough.mov", b"video")  # generation/size unknown
+    client = FakeStorageClient([blob, unversioned])
+    handoff = _staging_handoff()
+
+    capture_root = stage_handoff_capture(handoff, storage_root=tmp_path, storage_client=client)
+    first = _read(capture_root / "pipeline_staging_manifest.json")
+    blob.md5_hash = "bGlzdGVkLW1kNQ=="  # the listing now reports an MD5 for the same generation and size
+    stage_handoff_capture(handoff, storage_root=tmp_path, storage_client=client)
+
+    assert blob.download_count == 1
+    assert unversioned.download_count == 2  # a blob whose generation or size is unknown always downloads
+    second = _read(capture_root / "pipeline_staging_manifest.json")
+    # The skipped blob is recorded as the listing reports it now, not as it was staged.
+    assert second["objects"][0] == {**first["objects"][0], "md5_hash": "bGlzdGVkLW1kNQ=="}
+    assert second["objects"][1] == first["objects"][1]
+
+
+def test_changed_generation_downloads_again(tmp_path):
+    name = f"{_CAPTURE_PREFIX}/raw/capture_upload_complete.json"
+    handoff = _staging_handoff()
+    capture_root = stage_handoff_capture(
+        handoff, storage_root=tmp_path,
+        storage_client=FakeStorageClient([FakeBlob(name, b"{}", size=2, generation=7)]))
+
+    replaced = FakeBlob(name, b"[]", size=2, generation=8)
+    stage_handoff_capture(handoff, storage_root=tmp_path, storage_client=FakeStorageClient([replaced]))
+    assert replaced.download_count == 1
+    assert (capture_root / "raw/capture_upload_complete.json").read_bytes() == b"[]"
+    assert _read(capture_root / "pipeline_staging_manifest.json")["objects"][0]["generation"] == "8"
+
+    # Same generation, but the local copy no longer has the staged size: download it again.
+    (capture_root / "raw/capture_upload_complete.json").write_bytes(b"[ ]")
+    stage_handoff_capture(handoff, storage_root=tmp_path, storage_client=FakeStorageClient([replaced]))
+    assert replaced.download_count == 2
+    assert (capture_root / "raw/capture_upload_complete.json").read_bytes() == b"[]"
+
+
+def test_status_reports_an_authority_ending_and_its_acknowledgement(tmp_path, monkeypatch):
+    subscriber = FakeSubscriber([_received(ack_id="a1", data=PAYLOAD_BYTES)])
+    _install_fake_pubsub(monkeypatch, subscriber,
+                         storage_client=FakeStorageClient(_website_bundle_blobs()), run_e2e=_expired)
+    assert _pull(tmp_path) == 1
+
+    status = read_handoff_job_status(storage_root=tmp_path, bucket="capture-bucket",
+                                     scene_id="scene-1", capture_id="capture-1")
+
+    assert status["status"] == "terminal_authority_ended"
+    assert status["terminal_code"] == "consent_expired"
+    assert status["terminal_operation"] == "scene-sponsorship"
+    assert status["terminal_receipt_present"] is True
+    assert status["ack_receipt"]["disposition"] == "terminal_authority_ended"
+    assert status["ack_receipt"]["acknowledgement_count"] == 1
+    assert status["retry_expected_on_redelivery"] is False
+    assert status["provider_ops_status"]["provider_artifact_count"] == 0
+
+
+def test_an_ack_receipt_never_recreates_a_workspace_retired_after_the_ack(tmp_path, monkeypatch):
+    scene_dir = tmp_path / "capture-bucket" / "scenes" / "scene-1"
+    subscriber = FakeSubscriber([_received(ack_id="a1", data=PAYLOAD_BYTES)])
+    record_acknowledgement = subscriber.acknowledge
+
+    def acknowledge_then_retire(*, request):
+        record_acknowledgement(request=request)
+        shutil.rmtree(scene_dir)  # retirement wins the race to the capture
+
+    subscriber.acknowledge = acknowledge_then_retire
+    _install_fake_pubsub(monkeypatch, subscriber, storage_client=FakeStorageClient(_website_bundle_blobs()),
+                         run_e2e=lambda **_: {"status": "completed"})
+
+    assert _pull(tmp_path) == 1
+    assert subscriber.acknowledged == ["a1"]
+    assert not scene_dir.exists()
+
+
+@pytest.mark.parametrize("workspace", ["absent", "no_ledger"])
+def test_an_ack_for_a_capture_without_a_ledger_writes_nothing(tmp_path, monkeypatch, caplog, workspace):
+    capture_root = _capture_root(tmp_path)
+    if workspace == "no_ledger":
+        capture_root.mkdir(parents=True)
+    subscriber = FakeSubscriber([_received(ack_id="a1", data=PAYLOAD_BYTES)])
+    monkeypatch.setattr(google.cloud, "pubsub_v1",
+                        types.SimpleNamespace(SubscriberClient=lambda: subscriber), raising=False)
+    # A redelivery answered for a retired scene still names its (gone) capture root.
+    monkeypatch.setattr(listener_module, "process_handoff_payload", lambda *_args, **_kwargs: {
+        "status": "skipped_retired_terminal", "queue_disposition": "terminal_success",
+        "capture_root": str(capture_root)})
+    caplog.set_level(logging.WARNING, logger=listener_module.logger.name)
+
+    assert _pull(tmp_path) == 1
+    assert subscriber.acknowledged == ["a1"]
+    if workspace == "absent":
+        assert not (tmp_path / "capture-bucket").exists()
+    else:
+        assert list(capture_root.iterdir()) == []
+    expected = {"absent": "pubsub_handoff.ack_receipt_skipped_capture_absent",
+                "no_ledger": "pubsub_handoff.ack_receipt_skipped_ledger_absent"}[workspace]
+    assert [record.getMessage() for record in caplog.records
+            if record.getMessage().startswith("pubsub_handoff.ack_receipt_skipped")] == [expected]
+
+
+def test_an_undecodable_staging_manifest_skips_nothing_and_is_replaced(tmp_path):
+    blob = FakeBlob(f"{_CAPTURE_PREFIX}/raw/capture_upload_complete.json", b"{}", size=2, generation=7)
+    manifest = _capture_root(tmp_path) / "pipeline_staging_manifest.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_bytes(b"\xff\xfe not utf-8")
+
+    stage_handoff_capture(_staging_handoff(), storage_root=tmp_path, storage_client=FakeStorageClient([blob]))
+
+    assert blob.download_count == 1
+    assert _read(manifest)["objects"][0]["generation"] == "7"
+
+
+@pytest.mark.parametrize("damaged", ["pipeline_job_ack_receipt.json", "pipeline_job_ledger.json"])
+def test_status_survives_an_undecodable_record(tmp_path, capsys, damaged):
+    capture_root = _capture_root(tmp_path)
+    capture_root.mkdir(parents=True)
+    (capture_root / "pipeline_job_ledger.json").write_text(json.dumps({
+        "schema_version": "pipeline_job_ledger.v1", "status": "completed", "attempt_count": 1}), encoding="utf-8")
+    (capture_root / damaged).write_bytes(b"\xff\xfe not utf-8")
+
+    assert main(["--status", "--storage-root", str(tmp_path), "--bucket", "capture-bucket",
+                 "--scene-id", "scene-1", "--capture-id", "capture-1"]) == 0
+
+    printed = json.loads(capsys.readouterr().out)
+    if damaged == "pipeline_job_ack_receipt.json":
+        assert printed["status"] == "completed"
+        assert printed["ack_receipt"] is None
+    else:
+        assert printed["status"] == "corrupt"  # the existing fail-closed ledger state
+
+
+def test_each_message_is_acknowledged_as_soon_as_it_finishes(tmp_path, monkeypatch):
+    other_prefix = "scenes/scene-2/captures/capture-2"
+    other_payload = json.dumps({
+        "bucket": "capture-bucket", "scene_id": "scene-2", "capture_id": "capture-2",
+        "raw_prefix_uri": f"gs://capture-bucket/{other_prefix}/raw"}).encode("utf-8")
+    subscriber = FakeSubscriber([_received(ack_id="a1", data=PAYLOAD_BYTES),
+                                 _received(ack_id="poison", data=b"{not-json"),
+                                 _received(ack_id="a2", data=other_payload)])
+    seen_when_processing: list[tuple[list[str], bool]] = []
+
+    def prepare(**_kwargs):
+        first_receipt = _capture_root(tmp_path) / "pipeline_job_ack_receipt.json"
+        seen_when_processing.append((list(subscriber.acknowledged), first_receipt.exists()))
+        return {"status": "completed"}
+
+    _install_fake_pubsub(
+        monkeypatch, subscriber,
+        storage_client=FakeStorageClient([*_website_bundle_blobs(), *_website_bundle_blobs(other_prefix)]),
+        run_e2e=prepare)
+
+    assert _pull(tmp_path) == 3
+    # An ack ID is spent the moment its message finishes, so a later long-running
+    # message cannot outlive the earlier message's ack deadline.
+    assert seen_when_processing == [([], False), (["a1", "poison"], True)]
+    assert [request["ack_ids"] for request in subscriber.acknowledge_requests] == [["a1"], ["poison"], ["a2"]]
+
+
+def _acknowledged_capture_with_ledger(tmp_path: Path) -> Path:
+    capture_root = _capture_root(tmp_path)
+    capture_root.mkdir(parents=True)
+    (capture_root / "pipeline_job_ledger.json").write_text('{"status": "completed"}', encoding="utf-8")
+    (capture_root / ".pipeline_job_ledger.json.lock").touch()
+    return capture_root
+
+
+@pytest.mark.parametrize("disposition,recorded", [
+    ("terminal_success", True),
+    ("terminal_authority_ended", True),
+    ("terminal_mystery", False),
+    (None, False),
+])
+def test_ack_receipts_record_only_known_dispositions(tmp_path, monkeypatch, caplog, disposition, recorded):
+    capture_root = _acknowledged_capture_with_ledger(tmp_path)
+    result = {"status": "processed", "capture_root": str(capture_root)}
+    if disposition is not None:
+        result["queue_disposition"] = disposition
+    subscriber = FakeSubscriber([_received(ack_id="a1", data=PAYLOAD_BYTES)])
+    monkeypatch.setattr(google.cloud, "pubsub_v1",
+                        types.SimpleNamespace(SubscriberClient=lambda: subscriber), raising=False)
+    monkeypatch.setattr(listener_module, "process_handoff_payload", lambda *_args, **_kwargs: result)
+    caplog.set_level(logging.WARNING, logger=listener_module.logger.name)
+
+    assert _pull(tmp_path) == 1
+
+    receipt = capture_root / "pipeline_job_ack_receipt.json"
+    if recorded:
+        assert _read(receipt)["disposition"] == disposition
+    else:
+        assert not receipt.exists()
+        assert any(record.getMessage() == "pubsub_handoff.ack_receipt_skipped_disposition_unrecognized"
+                   for record in caplog.records)
+
+
+def test_authority_ending_keeps_the_refusing_operation():
+    held = StageError("website_scene_preparation", "website_control_prepared-scene_http_409:source_revoked")
+    assert listener_module.authority_ending(held) == ("prepared-scene", "source_revoked")
+    assert listener_module.authority_ending(ValueError("website_control_task-context_http_409:task_brief_missing")) is None
+
+
+def _second_payload() -> bytes:
+    return json.dumps({
+        **PAYLOAD,
+        "pipeline_handoff_uri": f"gs://capture-bucket/{_CAPTURE_PREFIX}/pipeline_handoff.json",
+    }).encode("utf-8")
+
+
+def test_a_payload_that_already_ended_stays_ended_after_a_later_ending(tmp_path, monkeypatch):
+    for ack_id, payload in (("p1", PAYLOAD_BYTES), ("p2", _second_payload())):
+        subscriber = FakeSubscriber([_received(ack_id=ack_id, data=payload)])
+        _install_fake_pubsub(monkeypatch, subscriber,
+                             storage_client=FakeStorageClient(_website_bundle_blobs()), run_e2e=_expired)
+        assert _pull(tmp_path) == 1
+    ledger_path = _capture_root(tmp_path) / "pipeline_job_ledger.json"
+    ended_twice = _read(ledger_path)
+    assert ended_twice["terminal_payload_sha256"] == sha256(_second_payload()).hexdigest()
+
+    redelivered = FakeSubscriber([_received(ack_id="p1-again", data=PAYLOAD_BYTES, delivery_attempt=2)])
+    results = _install_fake_pubsub(monkeypatch, redelivered, storage_client=_ListingForbidden(),
+                                   run_e2e=lambda **_: pytest.fail("an ended payload must not run again"))
+
+    assert _pull(tmp_path) == 1
+    assert results[0]["status"] == "skipped_terminal_authority_ended"
+    assert _read(ledger_path) == ended_twice
+
+
+def _live_terminal_receipt(storage_root: Path) -> Path:
+    return _capture_root(storage_root) / "pipeline_job_terminal_receipt.json"
+
+
+def _status(storage_root: Path) -> dict:
+    return read_handoff_job_status(storage_root=storage_root, bucket="capture-bucket",
+                                   scene_id="scene-1", capture_id="capture-1")
+
+
+def test_a_reopened_ending_that_crashed_before_its_receipt_is_repaired(tmp_path, monkeypatch):
+    first = FakeSubscriber([_received(ack_id="p1", data=PAYLOAD_BYTES)])
+    _install_fake_pubsub(monkeypatch, first,
+                         storage_client=FakeStorageClient(_website_bundle_blobs()), run_e2e=_expired)
+    assert _pull(tmp_path) == 1
+
+    # P2 reopens the capture and ends too, but the process dies before its receipt.
+    write_receipt = listener_module._write_terminal_receipt
+
+    def killed(*_args, **_kwargs):
+        raise RuntimeError("process killed before the terminal receipt")
+
+    monkeypatch.setattr(listener_module, "_write_terminal_receipt", killed)
+    second = FakeSubscriber([_received(ack_id="p2", data=_second_payload())])
+    _install_fake_pubsub(monkeypatch, second,
+                         storage_client=FakeStorageClient(_website_bundle_blobs()), run_e2e=_expired)
+    assert _pull(tmp_path) == 0
+    ledger = _read(_capture_root(tmp_path) / "pipeline_job_ledger.json")
+    assert ledger["terminal_payload_sha256"] == sha256(_second_payload()).hexdigest()
+    assert _status(tmp_path)["terminal_receipt_present"] is False
+
+    monkeypatch.setattr(listener_module, "_write_terminal_receipt", write_receipt)
+    redelivered = FakeSubscriber([_received(ack_id="p2-again", data=_second_payload(), delivery_attempt=2)])
+    _install_fake_pubsub(monkeypatch, redelivered, storage_client=_ListingForbidden())
+    assert _pull(tmp_path) == 1
+
+    receipt = _read(_live_terminal_receipt(tmp_path))
+    assert receipt["payload_sha256"] == sha256(_second_payload()).hexdigest()
+    assert receipt["receipt_digest"] == canonical_digest(receipt, digest_field="receipt_digest")
+    assert _status(tmp_path)["terminal_receipt_present"] is True
+
+
+def test_a_stale_receipt_under_the_live_name_is_set_aside_and_rewritten(tmp_path, monkeypatch):
+    for ack_id, payload in (("p1", PAYLOAD_BYTES), ("p2", _second_payload())):
+        subscriber = FakeSubscriber([_received(ack_id=ack_id, data=payload)])
+        _install_fake_pubsub(monkeypatch, subscriber,
+                             storage_client=FakeStorageClient(_website_bundle_blobs()), run_e2e=_expired)
+        assert _pull(tmp_path) == 1
+    capture_root = _capture_root(tmp_path)
+    (p1_receipt,) = capture_root.glob("pipeline_job_terminal_receipt.superseded-*.json")
+    stale = p1_receipt.read_bytes()
+    _live_terminal_receipt(tmp_path).write_bytes(stale)  # P1's receipt back under the live name
+    assert _status(tmp_path)["terminal_receipt_present"] is False
+
+    redelivered = FakeSubscriber([_received(ack_id="p2-again", data=_second_payload(), delivery_attempt=2)])
+    _install_fake_pubsub(monkeypatch, redelivered, storage_client=_ListingForbidden())
+    assert _pull(tmp_path) == 1
+
+    assert _read(_live_terminal_receipt(tmp_path))["payload_sha256"] == sha256(_second_payload()).hexdigest()
+    kept = sorted(capture_root.glob("pipeline_job_terminal_receipt.superseded-*.json"))
+    assert [path.read_bytes() for path in kept].count(stale) == 2  # both copies of P1's receipt are kept
+    assert _status(tmp_path)["terminal_receipt_present"] is True
+
+
+def test_a_terminal_ending_whose_lease_was_lost_is_not_acknowledged(tmp_path, monkeypatch):
+    ledger_path = _capture_root(tmp_path) / "pipeline_job_ledger.json"
+
+    def lease_lost_then_expired(**_kwargs):
+        # Another worker recovered this job's lease while this one was still running.
+        listener_module.write_json(ledger_path, {**_read(ledger_path), "lease_owner": "other-worker",
+                                                 "lease_token": "other-token"})
+        _expired()
+
+    subscriber = FakeSubscriber([_received(ack_id="a1", data=PAYLOAD_BYTES)])
+    _install_fake_pubsub(monkeypatch, subscriber, storage_client=FakeStorageClient(_website_bundle_blobs()),
+                         run_e2e=lease_lost_then_expired)
+
+    assert _pull(tmp_path) == 0
+    assert subscriber.acknowledged == []
+    ledger = _read(ledger_path)
+    assert (ledger["status"], ledger["lease_owner"]) == ("processing", "other-worker")
+    assert "terminal_code" not in ledger
+    assert not _live_terminal_receipt(tmp_path).exists()
+    assert not (_capture_root(tmp_path) / "pipeline_job_ack_receipt.json").exists()
+
+
+def test_each_pull_takes_one_message_and_a_run_stops_at_an_empty_queue(tmp_path, monkeypatch):
+    events: list[str] = []
+
+    class RecordingSubscriber(FakeSubscriber):
+        def pull(self, *, request, timeout):
+            response = super().pull(request=request, timeout=timeout)
+            events.append(f"pull:{len(response.received_messages)}")
+            return response
+
+        def modify_ack_deadline(self, *, request):
+            super().modify_ack_deadline(request=request)
+            events.append(f"lease:{request['ack_ids'][0]}")
+
+        def acknowledge(self, *, request):
+            super().acknowledge(request=request)
+            events.append(f"ack:{request['ack_ids'][0]}")
+
+    def handoff(scene: str) -> bytes:
+        return json.dumps({"bucket": "capture-bucket", "scene_id": scene, "capture_id": "capture-1",
+                           "raw_prefix_uri": f"gs://capture-bucket/scenes/{scene}/captures/capture-1/raw"}).encode()
+
+    subscriber = RecordingSubscriber([_received(ack_id="a1", data=handoff("scene-a")),
+                                      _received(ack_id="a2", data=handoff("scene-b")),
+                                      _received(ack_id="a3", data=handoff("scene-c"))])
+    monkeypatch.setattr(google.cloud, "pubsub_v1",
+                        types.SimpleNamespace(SubscriberClient=lambda: subscriber), raising=False)
+
+    def process(payload: bytes, **_kwargs: object) -> dict:
+        events.append("process:" + json.loads(payload)["scene_id"])
+        return {"status": "processed", "queue_disposition": "terminal_success"}
+
+    monkeypatch.setattr(listener_module, "process_handoff_payload", process)
+    run = dict(subscription=SUBSCRIPTION, storage_root=tmp_path, provider="openai")
+
+    assert pull_and_process(**run, max_messages=2) == 2
+    assert [pull["request"]["max_messages"] for pull in subscriber.pull_requests] == [1, 1]
+    assert len(subscriber.received_messages) == 1  # the third waits for the next run
+    # A message is leased the moment it is pulled; the next pull waits until it is acknowledged.
+    assert events == ["pull:1", "lease:a1", "process:scene-a", "ack:a1",
+                      "pull:1", "lease:a2", "process:scene-b", "ack:a2"]
+
+    events.clear()
+    assert pull_and_process(**run, max_messages=10) == 1
+    assert events == ["pull:1", "lease:a3", "process:scene-c", "ack:a3", "pull:0"]
+
+
+def test_an_ended_payload_stays_ended_while_a_reopened_job_retries(tmp_path, monkeypatch):
+    first = FakeSubscriber([_received(ack_id="p1", data=PAYLOAD_BYTES)])
+    _install_fake_pubsub(monkeypatch, first,
+                         storage_client=FakeStorageClient(_website_bundle_blobs()), run_e2e=_expired)
+    assert _pull(tmp_path) == 1
+
+    def transient(**_kwargs):
+        raise RuntimeError("provider timeout")
+
+    second = FakeSubscriber([_received(ack_id="p2", data=_second_payload())])
+    _install_fake_pubsub(monkeypatch, second,
+                         storage_client=FakeStorageClient(_website_bundle_blobs()), run_e2e=transient)
+    assert _pull(tmp_path) == 0
+    ledger_path = _capture_root(tmp_path) / "pipeline_job_ledger.json"
+    retrying = _read(ledger_path)
+    assert retrying["status"] == "failed_retryable"
+
+    replay = FakeSubscriber([_received(ack_id="p1-replay", data=PAYLOAD_BYTES)])
+    results = _install_fake_pubsub(monkeypatch, replay, storage_client=_ListingForbidden(),
+                                   run_e2e=lambda **_: pytest.fail("an ended payload must not run again"))
+
+    assert _pull(tmp_path) == 1
+    assert replay.acknowledged == ["p1-replay"]
+    assert results[0]["status"] == "skipped_terminal_authority_ended"
+    assert _read(ledger_path) == retrying  # P2's retry state is untouched
+
+
+def test_receipt_repair_never_recreates_a_capture_retired_after_the_claim(tmp_path, monkeypatch):
+    first = FakeSubscriber([_received(ack_id="p1", data=PAYLOAD_BYTES)])
+    _install_fake_pubsub(monkeypatch, first,
+                         storage_client=FakeStorageClient(_website_bundle_blobs()), run_e2e=_expired)
+    assert _pull(tmp_path) == 1
+    scene_dir = tmp_path / "capture-bucket" / "scenes" / "scene-1"
+    claim = listener_module._claim_job_lease
+
+    def claim_then_retire(*args, **kwargs):
+        outcome = claim(*args, **kwargs)
+        shutil.rmtree(scene_dir)  # retirement wins the race right after the terminal claim
+        return outcome
+
+    monkeypatch.setattr(listener_module, "_claim_job_lease", claim_then_retire)
+    redelivered = FakeSubscriber([_received(ack_id="p1-again", data=PAYLOAD_BYTES, delivery_attempt=2)])
+    results = _install_fake_pubsub(monkeypatch, redelivered, storage_client=_ListingForbidden())
+
+    assert _pull(tmp_path) == 1
+    assert results[0]["status"] == "skipped_terminal_authority_ended"
+    assert not scene_dir.exists()
+
+
+def test_terminal_receipts_are_written_under_the_ledger_lock(tmp_path, monkeypatch):
+    lock_held_while_writing: list[bool] = []
+    write_receipt = listener_module._write_terminal_receipt
+
+    def probe_then_write(capture_root, *, handoff, ledger):
+        # flock locks from separate opens conflict even within one process.
+        with (capture_root / ".pipeline_job_ledger.json.lock").open("a+b") as probe:
+            try:
+                fcntl.flock(probe.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                lock_held_while_writing.append(True)
+            else:
+                fcntl.flock(probe.fileno(), fcntl.LOCK_UN)
+                lock_held_while_writing.append(False)
+        return write_receipt(capture_root, handoff=handoff, ledger=ledger)
+
+    monkeypatch.setattr(listener_module, "_write_terminal_receipt", probe_then_write)
+    ending = FakeSubscriber([_received(ack_id="p1", data=PAYLOAD_BYTES)])
+    _install_fake_pubsub(monkeypatch, ending,
+                         storage_client=FakeStorageClient(_website_bundle_blobs()), run_e2e=_expired)
+    assert _pull(tmp_path) == 1
+    _live_terminal_receipt(tmp_path).unlink()  # lost to a crash: the redelivery repairs it
+    repair = FakeSubscriber([_received(ack_id="p1-again", data=PAYLOAD_BYTES, delivery_attempt=2)])
+    _install_fake_pubsub(monkeypatch, repair, storage_client=_ListingForbidden())
+    assert _pull(tmp_path) == 1
+
+    assert lock_held_while_writing == [True, True]  # the ending, then the repair
+
+
+@pytest.mark.parametrize("tamper", ["code", "receipt_digest"])
+def test_a_tampered_terminal_receipt_is_not_current_and_is_repaired(tmp_path, monkeypatch, tamper):
+    ending = FakeSubscriber([_received(ack_id="p1", data=PAYLOAD_BYTES)])
+    _install_fake_pubsub(monkeypatch, ending,
+                         storage_client=FakeStorageClient(_website_bundle_blobs()), run_e2e=_expired)
+    assert _pull(tmp_path) == 1
+    live = _live_terminal_receipt(tmp_path)
+    receipt = _read(live)
+    ledger = _read(_capture_root(tmp_path) / "pipeline_job_ledger.json")
+    assert listener_module._terminal_receipt_current(receipt, ledger)
+    if tamper == "code":
+        tampered = {**receipt, "code": "source_revoked"}  # a self-consistent receipt of another ending
+        tampered["receipt_digest"] = canonical_digest(tampered, digest_field="receipt_digest")
+    else:
+        tampered = {**receipt, "receipt_digest": "sha256:" + "0" * 64}  # right content, broken digest
+    assert not listener_module._terminal_receipt_current(tampered, ledger)
+    listener_module.write_json(live, tampered)
+    assert _status(tmp_path)["terminal_receipt_present"] is False
+
+    redelivered = FakeSubscriber([_received(ack_id="p1-again", data=PAYLOAD_BYTES, delivery_attempt=2)])
+    _install_fake_pubsub(monkeypatch, redelivered, storage_client=_ListingForbidden())
+    assert _pull(tmp_path) == 1
+
+    assert _read(live) == receipt
+    assert _status(tmp_path)["terminal_receipt_present"] is True
+    kept = list(_capture_root(tmp_path).glob("pipeline_job_terminal_receipt.superseded-*.json"))
+    assert [_read(path) for path in kept] == [tampered]
