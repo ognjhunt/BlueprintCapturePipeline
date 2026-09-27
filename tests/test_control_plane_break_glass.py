@@ -22,6 +22,7 @@ import pytest
 
 from blueprint_pipeline import control_plane_break_glass as break_glass
 from blueprint_pipeline.control_plane_storage_roots import classify_path
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "deploy" / "operator-door"))
 
@@ -112,6 +113,27 @@ def test_an_edited_or_renamed_note_no_longer_verifies(
 
     with pytest.raises(break_glass.BreakGlassNoteError, match=f"^{code}$"):
         break_glass.verify_note(path)
+
+
+@pytest.mark.parametrize("defect", ["lone_surrogate", "epoch_out_of_range"])
+def test_a_hand_sealed_note_with_impossible_fields_is_refused_with_a_code(
+    tmp_path: Path, defect: str
+) -> None:
+    root = tmp_path / "cleanup-receipts"
+    path = _record(root)
+    note = json.loads(path.read_text(encoding="utf-8"))
+    if defect == "lone_surrogate":
+        note["reason"] = "\ud800"  # the canonical digest cannot even be computed
+    else:
+        note["created_at_epoch"] = 10**20
+        note["note_digest"] = canonical_digest(note, digest_field="note_digest")
+    path.write_text(json.dumps(note), encoding="utf-8")
+
+    with pytest.raises(break_glass.BreakGlassNoteError, match="^break_glass_note_fields_invalid$"):
+        break_glass.verify_note(path)
+    assert break_glass.unreported_notes(root) == [
+        {"name": path.name, "error": "break_glass_note_fields_invalid"}
+    ]
 
 
 def test_verify_enforces_a_maximum_age_and_refuses_future_notes(tmp_path: Path) -> None:

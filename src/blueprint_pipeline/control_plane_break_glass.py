@@ -82,6 +82,7 @@ _ACTION = re.compile(r"[a-z0-9][a-z0-9-]{0,63}\Z")
 _COMMIT = re.compile(r"[0-9a-f]{40}\Z")
 _MAX_FIELD_CHARS = 255
 _MAX_PATH_CHARS = 4096
+_MAX_EPOCH = 253402300799  # 9999-12-31T23:59:59Z, the last time a note name can carry
 
 
 class BreakGlassNoteError(ValueError):
@@ -156,7 +157,11 @@ def _check_note(note: Any) -> dict[str, Any]:
     _checked_actions(note["actions"])
     _checked_paths(note["paths"])
     epoch = note["created_at_epoch"]
-    if type(epoch) is not int or epoch < 0 or note["created_at"] != _iso(epoch):
+    if (
+        type(epoch) is not int
+        or not 0 <= epoch <= _MAX_EPOCH
+        or note["created_at"] != _iso(epoch)
+    ):
         raise BreakGlassNoteError("break_glass_note_fields_invalid")
     if not isinstance(note["host"], str) or not all(
         value is None
@@ -302,7 +307,14 @@ def _verified(
         value = json.loads(raw)
     except (ValueError, RecursionError):
         raise BreakGlassNoteError("break_glass_note_not_json") from None
-    note = _check_note(value)
+    try:
+        note = _check_note(value)
+    except BreakGlassNoteError:
+        raise
+    except (TypeError, ValueError, ArithmeticError):
+        # A hand-made document, e.g. a lone surrogate the digest cannot encode:
+        # refused with a code, never with an exception message.
+        raise BreakGlassNoteError("break_glass_note_fields_invalid") from None
     if name != note_name(note):
         raise BreakGlassNoteError("break_glass_note_name_mismatch")
     if max_age_seconds is not None:
@@ -493,6 +505,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         dest="actions",
         action="append",
         required=True,
+        metavar="SLUG",
         help=(
             "what was done, as a lowercase slug (repeatable), e.g. unit-restart or "
             f"{DEPLOY_FROM_UNTRUSTED_SOURCE}"
@@ -503,6 +516,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         dest="paths",
         action="append",
         default=[],
+        metavar="PATH",
         help="an absolute path that was changed (repeatable)",
     )
     commands.add_parser("list", help="print the notes no deploy has reported yet")
