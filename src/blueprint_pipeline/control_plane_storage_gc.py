@@ -122,6 +122,7 @@ SCENE_INTENT_ROOT_ENV = "BLUEPRINT_CONTROL_PLANE_GC_SCENE_INTENT_ROOT"
 SCENE_BINDING_ROOT_ENV = "BLUEPRINT_WEBSITE_SCENE_BINDING_ROOT"
 SCENE_WORKSPACE_RETIREMENT_ENV = "BLUEPRINT_CONTROL_PLANE_SCENE_WORKSPACE_RETIREMENT"
 SCENE_WORKSPACE_RETIREMENT_INVALID = "scene_workspace_retirement_setting_invalid"
+REPORT_ROOT_ENV = "BLUEPRINT_CONTROL_PLANE_GC_REPORT_ROOT"
 DEFAULT_MAX_SCENE_RETIREMENTS = 20
 _MAX_SCENE_RESULTS = 50
 _TRUE = frozenset({"1", "true", "yes"})
@@ -1090,18 +1091,24 @@ def retire_scene_workspaces(
     stream_publisher: Callable[..., Any] | None = None,
     process_checker: Callable[[Path], bool] | None = None,
     max_retirements: int = DEFAULT_MAX_SCENE_RETIREMENTS,
+    hash_budget_bytes: int | None = None,
+    inventory_cache_root: Path | None = None,
 ) -> dict[str, Any]:
     """Plan every scene workspace; attempt at most ``max_retirements`` retirements per tick when enabled.
 
     The bound counts attempts, not successes: each one can publish a large archive,
     so a failing publisher costs at most that many uploads per tick. The reference
     index (registrations and intents) is read once per root for the plans; each
-    retirement re-reads it under the capture locks. One scene's failure is recorded
-    on its row and never stops the others.
+    retirement re-reads it under the capture locks. Plans hash at most
+    ``hash_budget_bytes`` uncached bytes per tick (twenty GiB by default) and cache
+    file digests under ``inventory_cache_root``, dropping a scene's cache once it is
+    retired or gone. One scene's failure is recorded on its row and never stops the others.
     """
 
     from .website_scene_workspace_retention import (
+        DEFAULT_HASH_BUDGET_BYTES,
         RETIRE_ACK,
+        HashBudget,
         apply_scene_workspace_retirement,
         build_reference_index,
         plan_scene_workspace_retirement,
@@ -1111,6 +1118,8 @@ def retire_scene_workspaces(
 
     applying = bool(apply and enabled)
     observed_at = float(now)
+    budget = HashBudget(remaining_bytes=DEFAULT_HASH_BUDGET_BYTES if hash_budget_bytes is None else hash_budget_bytes)
+    live_scenes: set[tuple[str, str]] = set()
     report: dict[str, Any] = {
         "status": "applied" if applying else "dry_run",
         "enabled": bool(enabled),
@@ -1144,10 +1153,11 @@ def retire_scene_workspaces(
         cloud = cloud if cloud is not None else cloud_factory()
         for bucket, scene_id, _path in workspaces:
             row: dict[str, Any] = {"bucket": bucket, "scene_id": scene_id}
+            live_scenes.add((bucket, scene_id))
             try:
                 plan = plan_scene_workspace_retirement(
                     context=context, bucket=bucket, scene_id=scene_id, now=observed_at, cloud=cloud,
-                    index=index, process_checker=process_checker)
+                    index=index, process_checker=process_checker, hash_budget=budget)
                 if plan["status"] != "retirable":
                     retained(plan["reasons"])
                     rows.append({**row, "status": "retained", "reasons": plan["reasons"][:5]})
@@ -1166,6 +1176,7 @@ def retire_scene_workspaces(
                 rows.append({**row, "status": "error", "error": type(exc).__name__})
                 continue
             if outcome["status"] == "retired":
+                live_scenes.discard((bucket, scene_id))
                 report["retired_count"] += 1
                 report["retired_bytes"] += int(outcome["freed_allocated_bytes"])
                 report["archive_bytes"] += int(outcome["archive_bytes"])
@@ -1174,6 +1185,12 @@ def retire_scene_workspaces(
             else:
                 retained([outcome["reason"]])
                 rows.append({**row, "status": "skipped", "reason": outcome["reason"]})
+    if inventory_cache_root is not None:
+        # A cache is only worth keeping for a workspace that still exists.
+        for cache in sorted(Path(inventory_cache_root).glob("*/*.json")):
+            if (cache.parent.name, cache.stem) not in live_scenes:
+                cache.unlink(missing_ok=True)
+    report["hashed_bytes"] = budget.hashed_bytes
     report["result_count"] = len(rows)
     report["results"] = rows[:_MAX_SCENE_RESULTS]
     return report
@@ -1225,6 +1242,8 @@ def run_storage_gc(
     scene_cloud_factory: Callable[[], Any] | None = None,
     scene_stream_publisher: Callable[..., Any] | None = None,
     scene_process_checker: Callable[[Path], bool] | None = None,
+    scene_inventory_cache_root: str | Path | None = None,
+    scene_hash_budget_bytes: int | None = None,
     now: Callable[[], float] = time.time,
     publisher: Callable[..., Any] | None = None,
     classifier: Callable[..., Any] = require_storage_class,
@@ -1419,18 +1438,20 @@ def run_storage_gc(
             else:
                 binding_root = None if intent_root is None else intent_root.parent / "website-source-bindings"
             scene_queues = scene_queue_roots(queue_roots, intent_root)
+            cache_root = Path(scene_inventory_cache_root) if scene_inventory_cache_root else None
 
             def context_factory(storage_root: Path) -> Any:
                 # Without an intent root the reference index is unreadable, so nothing retires.
                 return RetentionContext(storage_root=storage_root, pins_root=Path(pins_root),
                                         queue_roots=scene_queues, intent_root=intent_root,
-                                        binding_root=binding_root)
+                                        binding_root=binding_root, inventory_cache_root=cache_root)
 
             return retire_scene_workspaces(
                 storage_roots=scene_present, context_factory=context_factory, apply=apply,
                 enabled=scene_workspace_retirement_enabled, now=observed_at,
                 cloud_factory=scene_cloud_factory or GcsCloudInventory,
                 stream_publisher=scene_stream_publisher, process_checker=scene_process_checker,
+                hash_budget_bytes=scene_hash_budget_bytes, inventory_cache_root=cache_root,
             )
 
         _isolated(report, "scene_workspaces", scene_phase)
@@ -1516,6 +1537,9 @@ def _run_main(argv: list[str]) -> int:
     retirement_enabled, retirement_alert = scene_workspace_retirement_setting()
     if retirement_alert:
         print(f"storage_gc_alert:{retirement_alert}", file=sys.stderr)
+    report_root = str(os.getenv(REPORT_ROOT_ENV) or "").strip()
+    if not report_root and args.report_out:
+        report_root = str(Path(args.report_out).expanduser().parent)
     report = run_storage_gc(
         content_store_roots=args.content_store_root or _split_env(CONTENT_STORE_ROOTS_ENV),
         derived_roots=args.derived_root or _split_env(DERIVED_ROOTS_ENV),
@@ -1546,6 +1570,8 @@ def _run_main(argv: list[str]) -> int:
         scene_binding_root=str(os.getenv(SCENE_BINDING_ROOT_ENV) or "").strip() or None,
         scene_workspace_retirement_enabled=retirement_enabled,
         scene_workspace_retirement_alert=retirement_alert,
+        # Per-file digests, so an hourly plan re-reads only what changed.
+        scene_inventory_cache_root=Path(report_root) / "scene-workspace-inventory" if report_root else None,
         classifier=require_storage_class,
     )
     if args.report_out:

@@ -147,3 +147,9 @@ def test_owner_delivery_and_replay_roots_keep_their_retention_law(path, storage_
     if storage_class == "evidence_hot":
         with pytest.raises(ValueError, match="cannot_evict:evidence_hot"):
             require_storage_class(path, expected="cache", code="cannot_evict")
+
+
+def test_the_scene_digest_cache_is_a_cache_inside_the_reclaim_reports():
+    root = classify_path("/var/lib/blueprint/pipeline-control-plane/storage-gc/scene-workspace-inventory/b/s.json")
+    assert (root.storage_class, root.owner) == ("cache", "root")
+    assert classify_path("/var/lib/blueprint/pipeline-control-plane/storage-gc/latest.json").storage_class == "evidence_hot"

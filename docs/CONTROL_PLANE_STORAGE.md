@@ -385,7 +385,13 @@ scene only when everything in it can come back and nothing can still need it.
    `gs://<bucket>/scenes/<scene>/<path>` by size and MD5 (CRC32C when the object has
    no MD5), or it is marked for the archive. Raw capture bytes are never archived:
    a raw file that does not verify keeps the scene
-   (`raw_not_verified_in_cloud:<path>`).
+   (`raw_not_verified_in_cloud:<path>`). On the timer each file's digests are cached
+   by (path, size, mtime, inode) in
+   `storage-gc/scene-workspace-inventory/<bucket>/<scene>.json` (root, `0600`), so an
+   hourly plan re-reads only what changed, and a tick hashes at most 20 GiB of
+   uncached bytes; a scene it cannot finish waits for the next tick
+   (`inventory_deferred`). Retirement never trusts the cache: it re-reads every file
+   it is about to delete.
 
 **Retire** takes the listener's own per-capture ledger locks without waiting
 (`candidate_busy`), re-proves checks 1-8 and the planned file snapshot

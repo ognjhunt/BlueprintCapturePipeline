@@ -1174,3 +1174,35 @@ def test_the_tick_bounds_retirement_attempts_not_only_successes(tmp_path, monkey
     assert attempts == ["scene-0", "scene-1"]
     assert (report["attempted_count"], report["retired_count"], report["candidate_count"]) == (2, 0, 3)
     assert [row["status"] for row in report["results"]] == ["skipped", "skipped", "retirable"]
+
+
+def test_ticks_reuse_cached_digests_and_drop_them_once_a_scene_is_retired(tmp_path) -> None:
+    scene, common = _scene_tick(tmp_path)
+    cache_root = tmp_path / "storage-gc" / "scene-workspace-inventory"
+    cache = cache_root / "capture-bucket" / "scene-1.json"
+
+    first = run_storage_gc(**common, scene_inventory_cache_root=cache_root)["scene_workspaces"]
+    second = run_storage_gc(**common, scene_inventory_cache_root=cache_root)["scene_workspaces"]
+
+    assert first["hashed_bytes"] > 0 and second["hashed_bytes"] == 0 and cache.is_file()
+    run_storage_gc(**common, apply=True, ack=RUN_ACK, scene_workspace_retirement_enabled=True,
+                   scene_inventory_cache_root=cache_root)
+    assert not scene.exists() and not cache.exists()
+
+
+def test_a_tick_defers_scenes_beyond_its_hashing_budget(tmp_path) -> None:
+    scene, common = _scene_tick(tmp_path)
+
+    phase = run_storage_gc(**common, scene_hash_budget_bytes=16)["scene_workspaces"]
+
+    assert phase["retained_counts"] == {"inventory_deferred": 1} and phase["hashed_bytes"] <= 16
+
+
+def test_the_command_line_caches_scene_digests_under_the_report_root(tmp_path, monkeypatch) -> None:
+    seen: list[dict] = []
+    monkeypatch.setattr(gc_module, "run_storage_gc", lambda **kwargs: seen.append(kwargs) or {"report_digest": ""})
+    monkeypatch.setenv("BLUEPRINT_CONTROL_PLANE_GC_REPORT_ROOT", str(tmp_path / "storage-gc"))
+
+    assert gc_main(["run", "--pins-root", str(tmp_path / "pins")]) == 0
+
+    assert seen[0]["scene_inventory_cache_root"] == tmp_path / "storage-gc" / "scene-workspace-inventory"

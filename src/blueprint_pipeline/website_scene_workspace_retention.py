@@ -88,6 +88,10 @@ DEFAULT_ORPHAN_REGISTRATION_SECONDS = 72 * 3600
 #: An owner may extend an expired intent's execution window, and scene progression would then resolve
 #: its website source again, so an expired intent stays open this long after its effective expiry.
 DEFAULT_EXPIRED_GRACE_SECONDS = 7 * 24 * 3600
+#: Every hourly plan would otherwise re-read every candidate scene (tens of GB): digests are cached
+#: per file identity, and a tick hashes at most this many uncached bytes.
+DEFAULT_HASH_BUDGET_BYTES = 20 * 1024**3
+INVENTORY_CACHE_SCHEMA = "website_scene_workspace_inventory_cache.v1"
 
 # Production roots. The operator door runs the command line with only the control-plane
 # environment file loaded, so every default must already name the production tree.
@@ -217,6 +221,23 @@ class RetentionContext:
     ack_retention_seconds: int = DEFAULT_ACK_RETENTION_SECONDS
     orphan_registration_seconds: int = DEFAULT_ORPHAN_REGISTRATION_SECONDS
     expired_grace_seconds: int = DEFAULT_EXPIRED_GRACE_SECONDS
+    #: <root>/<bucket>/<scene_id>.json per-file digests for plans; None re-hashes everything.
+    inventory_cache_root: Path | None = None
+
+
+@dataclass
+class HashBudget:
+    """Uncached bytes the current tick may still hash, shared by every scene it plans."""
+
+    remaining_bytes: int
+    hashed_bytes: int = 0
+
+    def allows(self, size: int) -> bool:
+        return size <= self.remaining_bytes
+
+    def spend(self, size: int) -> None:
+        self.remaining_bytes -= size
+        self.hashed_bytes += size
 
 
 @dataclass(frozen=True)
@@ -950,25 +971,94 @@ def _verifies(cloud: CloudObject, local: _Digests) -> bool:
     return bool(cloud.crc32c) and cloud.crc32c == local.crc32c
 
 
+def inventory_cache_path(cache_root: Path, bucket: str, scene_id: str) -> Path:
+    return Path(cache_root) / bucket / f"{scene_id}.json"
+
+
+def _load_inventory_cache(path: Path, *, bucket: str, scene_id: str) -> dict[str, Any]:
+    """Cached digests by relative path, or nothing when the cache is absent or not this scene's."""
+
+    state, cache, _ = _load_json(path)
+    files = cache.get("files") if state == "ok" and cache is not None else None
+    if (
+        not isinstance(files, dict)
+        or cache.get("schema_version") != INVENTORY_CACHE_SCHEMA
+        or cache.get("bucket") != bucket
+        or cache.get("scene_id") != scene_id
+    ):
+        return {}
+    return files
+
+
+def _cached_digests(entry: Any, identity: list[int]) -> _Digests | None:
+    try:
+        if entry["identity"] != identity:
+            return None
+        digests = entry["digests"]
+        return _Digests(size=int(digests["size"]), sha256=str(digests["sha256"]), md5=str(digests["md5"]),
+                        crc32c=digests["crc32c"] if isinstance(digests["crc32c"], str) else None)
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _save_inventory_cache(path: Path, *, bucket: str, scene_id: str, files: Mapping[str, Any]) -> None:
+    """Replace the scene's digest cache atomically; readable by its owner (root) alone."""
+
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    document = {"schema_version": INVENTORY_CACHE_SCHEMA, "bucket": bucket, "scene_id": scene_id,
+                "files": dict(files)}
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            json.dump(document, stream, sort_keys=True)
+        os.replace(temporary, path)
+    except BaseException:
+        Path(temporary).unlink(missing_ok=True)
+        raise
+
+
 def _inventory(*, scene: Path, bucket: str, scene_id: str, files: Sequence[tuple[str, os.stat_result]],
-               cloud: CloudInventory) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
+               cloud: CloudInventory, cache_path: Path | None = None,
+               budget: HashBudget | None = None) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str], int]:
+    """Match every file to its cloud object, hashing only files the cache does not already know.
+
+    A cached digest counts only for the same (size, mtime_ns, inode). A file the tick's
+    budget cannot cover is deferred (``inventory_deferred``); what was hashed is cached, so
+    the next tick carries on. Apply never trusts the cache: it re-hashes what it deletes.
+    """
+
     prefix = f"scenes/{scene_id}/"
     try:
         listing = dict(cloud.list_objects(bucket, prefix))
     except Exception:  # noqa: BLE001 - without a listing nothing is proven recoverable
-        return [], [], ["cloud_inventory_unavailable"]
+        return [], [], ["cloud_inventory_unavailable"], 0
+    cache = _load_inventory_cache(cache_path, bucket=bucket, scene_id=scene_id) if cache_path else {}
+    fresh: dict[str, Any] = {}
     verified: list[dict[str, Any]] = []
     archive: list[dict[str, Any]] = []
     reasons: list[str] = []
+    hashed = 0
     for relative, info in files:
-        try:
-            digests = _hash_file(scene / relative)
-        except OSError:
-            reasons.append(f"unsafe_entry:{relative}")
-            continue
+        identity = [info.st_size, info.st_mtime_ns, info.st_ino]
+        digests = _cached_digests(cache.get(relative), identity)
+        if digests is None:
+            if budget is not None and not budget.allows(info.st_size):
+                reasons.append("inventory_deferred")
+                continue
+            try:
+                digests = _hash_file(scene / relative)
+            except OSError:
+                reasons.append(f"unsafe_entry:{relative}")
+                continue
+            hashed += digests.size
+            if budget is not None:
+                budget.spend(digests.size)
         if digests.size != info.st_size:
             reasons.append("recently_active")  # it changed while it was read
             continue
+        fresh[relative] = {"identity": identity, "digests": {"size": digests.size, "sha256": digests.sha256,
+                                                             "md5": digests.md5, "crc32c": digests.crc32c}}
         remote = listing.get(prefix + relative)
         if remote is not None and _verifies(remote, digests):
             verified.append({"relative_path": relative, "uri": f"gs://{bucket}/{prefix}{relative}",
@@ -980,7 +1070,9 @@ def _inventory(*, scene: Path, bucket: str, scene_id: str, files: Sequence[tuple
         else:
             archive.append({"relative_path": relative, "size_bytes": digests.size,
                             "sha256": _SHA256 + digests.sha256})
-    return verified, archive, reasons
+    if cache_path is not None:
+        _save_inventory_cache(cache_path, bucket=bucket, scene_id=scene_id, files=fresh)
+    return verified, archive, reasons, hashed
 
 
 # --- plan -----------------------------------------------------------------------------------------
@@ -995,10 +1087,13 @@ def plan_scene_workspace_retirement(
     cloud: CloudInventory,
     index: ReferenceIndex | None = None,
     process_checker: Callable[[Path], bool] | None = None,
+    hash_budget: HashBudget | None = None,
 ) -> dict[str, Any]:
-    """Decide, without touching anything, whether one scene workspace may be retired.
+    """Decide, without touching the workspace, whether one scene workspace may be retired.
 
     ``process_checker`` defaults to ``active_reference`` over ``/proc``, ignoring this process.
+    With ``context.inventory_cache_root`` file digests are cached, and ``hash_budget`` bounds the
+    uncached bytes this plan may hash.
     """
 
     bucket, scene_id = _identity(bucket, scene_id)
@@ -1009,9 +1104,13 @@ def plan_scene_workspace_retirement(
     reasons = list(evaluation.reasons)
     verified: list[dict[str, Any]] = []
     archive: list[dict[str, Any]] = []
+    hashed = 0
     if not reasons:  # the cloud inventory runs only when nothing cheaper retained the scene
-        verified, archive, inventory_reasons = _inventory(scene=scene, bucket=bucket, scene_id=scene_id,
-                                                          files=evaluation.files, cloud=cloud)
+        cache_path = (inventory_cache_path(context.inventory_cache_root, bucket, scene_id)
+                      if context.inventory_cache_root is not None else None)
+        verified, archive, inventory_reasons, hashed = _inventory(
+            scene=scene, bucket=bucket, scene_id=scene_id, files=evaluation.files, cloud=cloud,
+            cache_path=cache_path, budget=hash_budget)
         reasons = sorted(set(inventory_reasons))
     plan: dict[str, Any] = {
         "schema_version": PLAN_SCHEMA,
@@ -1032,6 +1131,7 @@ def plan_scene_workspace_retirement(
             "cloud_verified_bytes": 0 if reasons else sum(row["size"] for row in verified),
             "archive_bytes": 0 if reasons else sum(row["size_bytes"] for row in archive),
             "workspace_allocated_bytes": evaluation.allocated_bytes,
+            "hashed_bytes": hashed,
         },
         "plan_digest": "",
     }
@@ -1298,6 +1398,16 @@ def apply_scene_workspace_retirement(
             or _snapshot(evaluation.files) != plan["snapshot"]
         ):
             return skipped("candidate_changed")
+        # The plan may have used cached digests; never delete on them. Re-read every file the
+        # cloud copy replaces (the archive's members are re-read as they are packed).
+        for row in plan["cloud_verified"]:
+            expected = CloudObject(name=row["relative_path"], size=row["size"], generation=row["generation"],
+                                   md5_hash=row["md5_hash"], crc32c=row["crc32c"])
+            try:
+                if not _verifies(expected, _hash_file(scene / row["relative_path"])):
+                    return skipped("candidate_changed")
+            except OSError:
+                return skipped("candidate_changed")
         records = _capture_records(scene, evaluation.captures)
         identity = {"bucket": bucket, "scene_id": scene_id, "scene": scene, "observed_at": observed_at,
                     "plan": plan, "records": records}
@@ -1732,7 +1842,9 @@ __all__ = [
     "DEFAULT_ORPHAN_REGISTRATION_SECONDS",
     "DEFAULT_QUEUE_ROOTS",
     "DEFAULT_STORAGE_ROOT",
+    "DEFAULT_HASH_BUDGET_BYTES",
     "GcsCloudInventory",
+    "HashBudget",
     "PLAN_SCHEMA",
     "RESTORE_SCHEMA",
     "RETIRED_SCHEMA",
@@ -1745,6 +1857,7 @@ __all__ = [
     "binding_root_for",
     "build_reference_index",
     "ended_payload_digests",
+    "inventory_cache_path",
     "main",
     "plan_scene_workspace_retirement",
     "receipt_path",

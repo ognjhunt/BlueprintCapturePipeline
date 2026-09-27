@@ -1212,3 +1212,60 @@ def test_pending_capture_reconstruction_work_keeps_the_scene(tmp_path, state):
     assert _plan(tmp_path, cloud, context=context)["reasons"] == ["queue_referenced"]
     job.unlink()
     assert _plan(tmp_path, cloud, context=context)["status"] == "retirable"
+
+
+# --- hashing is cached, bounded per tick, and repeated at the mutation edge ----------------------------
+
+
+def _cached_context(tmp_path: Path) -> retention.RetentionContext:
+    return _context(tmp_path, inventory_cache_root=tmp_path / "storage-gc" / "scene-workspace-inventory")
+
+
+def test_a_second_plan_rehashes_only_what_changed(tmp_path):
+    scene, cloud = _scene(tmp_path)
+    context = _cached_context(tmp_path)
+    total = sum(path.stat().st_size for path in scene.rglob("*") if path.is_file())
+
+    first = _plan(tmp_path, cloud, context=context)
+    second = _plan(tmp_path, cloud, context=context)
+    preparation = scene / "captures" / CAPTURE / "pipeline" / "preparation.json"
+    preparation.write_text(json.dumps({"stage": "prepared again"}), encoding="utf-8")
+    third = _plan(tmp_path, cloud, context=context)
+
+    assert (first["totals"]["hashed_bytes"], second["totals"]["hashed_bytes"]) == (total, 0)
+    assert third["totals"]["hashed_bytes"] == preparation.stat().st_size
+    assert second["cloud_verified"] == first["cloud_verified"] and third["status"] == "retirable"
+    cache = context.inventory_cache_root / BUCKET / f"{SCENE}.json"
+    assert oct(cache.stat().st_mode & 0o777) == oct(0o600)
+
+
+def test_a_tick_hashes_at_most_its_budget_and_defers_the_rest(tmp_path):
+    scene, cloud = _scene(tmp_path)
+    context = _cached_context(tmp_path)
+    budget = retention.HashBudget(remaining_bytes=64)
+
+    deferred = _plan(tmp_path, cloud, context=context, hash_budget=budget)
+
+    assert deferred["reasons"] == ["inventory_deferred"] and budget.hashed_bytes <= 64
+    # What was hashed is kept, so the next tick carries on where this one stopped.
+    finished = _plan(tmp_path, cloud, context=context, hash_budget=retention.HashBudget(remaining_bytes=10**9))
+    assert finished["status"] == "retirable"
+    assert finished["totals"]["hashed_bytes"] < sum(p.stat().st_size for p in scene.rglob("*") if p.is_file())
+
+
+def test_apply_rehashes_what_it_deletes_even_when_the_plan_used_the_cache(tmp_path):
+    scene, cloud = _scene(tmp_path)
+    context = _cached_context(tmp_path)
+    _plan(tmp_path, cloud, context=context)
+    video = scene / "captures" / CAPTURE / "raw" / "walkthrough.mov"
+    before = video.stat()
+    with video.open("r+b") as stream:  # same size, same inode, and the mtime put back: the cache cannot tell
+        stream.write(b"X")
+    os.utime(video, ns=(before.st_atime_ns, before.st_mtime_ns))
+    stale = _plan(tmp_path, cloud, context=context)
+    assert stale["status"] == "retirable" and stale["totals"]["hashed_bytes"] == 0
+
+    result = _retire(tmp_path, cloud, stale, context=context)
+
+    assert result["status"] == "skipped" and result["reason"] == "candidate_changed"
+    assert video.is_file() and not (scene.parent / f"{SCENE}{retention.RETIRED_SUFFIX}").exists()
