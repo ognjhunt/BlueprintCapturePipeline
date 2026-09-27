@@ -483,7 +483,13 @@ def completed_report(root, *, any_parent_status=False):
 
 
 def _finished_report(root, *, any_parent_status):
-    """``completed_report`` and whether a parent replay wrote it: ``(path, parent)`` or ``(None, False)``."""
+    """``completed_report``, and whether the parent replay that ran in ``root`` wrote it.
+
+    ``(path, ran_here)``, or ``(None, False)``. ``replay_parent`` has recorded its scratch
+    queue as ``<its own root>/launch-preparations`` since 2026-09-05, so a parent report
+    with no scratch queue, or one in another root (a report copied from elsewhere), is not
+    the word of the replay that made this root's scratch inputs.
+    """
     for name in ("stage_replay_report.v1.json", "replay_report.json", "replay.json", "report.json"):
         path = root / name
         if not path.is_file() or path.is_symlink() or path.stat().st_size > 4 * 1024**2:
@@ -522,7 +528,8 @@ def _finished_report(root, *, any_parent_status):
             and value.get("appearance_qualified") is False
         )
         if parent or legacy:
-            return path, parent
+            queue = value.get("scratch_queue_root")
+            return path, parent and isinstance(queue, str) and Path(queue).parent.name == root.name
     return None, False
 
 
@@ -603,7 +610,7 @@ def _scan(
     for child in sorted(root.iterdir()):
         if not child.is_dir() or child.is_symlink():
             continue
-        report, parent = _finished_report(child, any_parent_status=finished)
+        report, ran_here = _finished_report(child, any_parent_status=finished)
         if report is None or clock - report.stat().st_mtime < minimum_closed_seconds:
             continue
         # Without the opt-ins, the order this module always had: a live reader keeps the root
@@ -613,7 +620,7 @@ def _scan(
             continue
         report_mtime_ns = report.stat().st_mtime_ns
         copies, inputs, seen = [], [], set()
-        if reclaim_scratch_inputs and parent:
+        if reclaim_scratch_inputs and ran_here:
             # The whole subtree is scratch here, its store copies included: each inode is planned once.
             inputs, seen = _scratch_inputs(child, report_mtime_ns)
         elif reclaim_store_copies:
@@ -729,7 +736,7 @@ def apply_replay_cache_retention(
         root = Path(row["root"])
         if root.parent != base or any(p.is_symlink() for p in (root, *root.parents)):
             raise ValueError("replay_cache_root_changed")
-        report, parent = _finished_report(root, any_parent_status=reclaim_store_copies or reclaim_scratch_inputs)
+        report, ran_here = _finished_report(root, any_parent_status=reclaim_store_copies or reclaim_scratch_inputs)
         if (
             report is None
             or str(report) != row["report_path"]
@@ -737,8 +744,9 @@ def apply_replay_cache_retention(
         ):
             skipped.append({"root": str(root), "reason": "report_changed"})
             continue
-        if row.get("scratch_inputs") and not parent:
-            # Only a parent replay made its scratch inputs; no plan makes another replay's files scratch.
+        if row.get("scratch_inputs") and not ran_here:
+            # Only the parent replay that ran in this root made its scratch inputs; however a plan
+            # was sealed, nothing else's report makes files here scratch.
             skipped.append({"root": str(root), "reason": "report_not_parent_replay"})
             continue
         if active_reference(root, process_root=process_root):

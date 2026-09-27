@@ -51,6 +51,7 @@ def _activation(parent_root: Path, name: str = "scene-841007-preparation") -> tu
     report.write_text(json.dumps({
         "schema_version": "task_evaluation_parent_replay_report.v1", "nothing_fetched": True,
         "paid_execution_requested": False, "provider_mutation_performed": False,
+        "scratch_queue_root": str(replay_child / "launch-preparations"),
     }))
     lookahead_report = lookahead / ("f" * 64 + ".json")
     lookahead_report.write_text(json.dumps({"schema_version": "task_evaluation_progression_replay.v1"}))

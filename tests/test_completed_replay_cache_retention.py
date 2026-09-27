@@ -37,6 +37,8 @@ def setup(tmp_path):
                 "nothing_fetched": True,
                 "paid_execution_requested": False,
                 "provider_mutation_performed": False,
+                # replay_parent's scratch queue is <its own root>/launch-preparations.
+                "scratch_queue_root": str(child / "launch-preparations"),
             }
         )
     )
@@ -869,7 +871,8 @@ def test_unfinished_or_referenced_lookahead_keeps_its_scratch(tmp_path):
         other = root / name
         other.mkdir()
         if report is not None:
-            (other / "stage_replay_report.v1.json").write_text(json.dumps(report))
+            own = {"scratch_queue_root": str(other / "launch-preparations")}
+            (other / "stage_replay_report.v1.json").write_text(json.dumps({**report, **own}))
         if name == "parent-recent":
             soon = time.time() + 100  # plan() looks from 120 s ahead: closed only 20 s ago
             os.utime(other / "stage_replay_report.v1.json", (soon, soon))
@@ -1118,3 +1121,34 @@ def test_prune_failures_name_the_call_that_failed(tmp_path, monkeypatch):
     shutil.rmtree(child / "prepared-references")
     assert apply(p, proc, **SCRATCH)["skipped"] == [
         {"paths": [str(again)], "reason": "recheck_failed:FileNotFoundError"}]
+
+
+def test_a_report_makes_scratch_only_of_the_root_its_replay_ran_in(tmp_path):
+    """Review of PR 10a.1: the scratch-input rule took a parent report's word that its directory was
+    a replay's own. replay_parent has recorded its scratch queue as <its root>/launch-preparations
+    since 2026-09-05, so the rule now also requires that of the report: one with no scratch queue,
+    or one naming another root's (a report copied from elsewhere), makes nothing there scratch,
+    however a plan was sealed. The store-copy rule does not rest on it, and still takes the
+    digest-verified copies."""
+    root, child, data, proc = setup(tmp_path)
+    data.unlink()
+    report = child / "stage_replay_report.v1.json"
+    value = json.loads(report.read_text())
+    copy = _store_copy(child, b"a digest-named copy")
+    scratch = _scratch_input(child, "prep/derived.json", b"scratch with no store name")
+    bound = plan(root, proc, **SCRATCH)
+    assert planned_paths(bound) == {str(copy.relative_to(child)), str(scratch.relative_to(child))}
+
+    for queue in (None, str(root / "parent-elsewhere" / "launch-preparations"), 42):
+        written = {k: v for k, v in value.items() if k != "scratch_queue_root"}
+        report.write_text(json.dumps(written if queue is None else {**written, "scratch_queue_root": queue}))
+        p = plan(root, proc, **SCRATCH)
+        [row] = p["rows"]
+        assert (planned_paths(p), row["scratch_inputs"]) == ({str(copy.relative_to(child))}, []), queue
+        forged = reseal(p, {**row, "store_copies": [], "scratch_inputs": bound["rows"][0]["scratch_inputs"]})
+        assert apply(forged, proc, **SCRATCH)["skipped"] == [
+            {"root": str(child), "reason": "report_not_parent_replay"}], queue
+    size = copy.stat().st_size
+    result = apply(p, proc, **SCRATCH)
+    assert (result["removed_bytes"], result["skipped"]) == (size, [])
+    assert not copy.exists() and scratch.exists()
