@@ -1421,7 +1421,7 @@ def run_storage_gc(
                 return protection_reason(directory) is not None
             # Keep authenticated downloads usable after cold evidence reclamation.
             from .task_evaluation_result_artifact_store import (
-                APPLY_ACK as RESULT_ARTIFACT_ACK, offload_result_artifacts,
+                APPLY_ACK as RESULT_ARTIFACT_ACK, offload_failure, offload_result_artifacts,
             )
             report["result_artifact_offload"] = []
             for evidence_root in evidence_present:
@@ -1433,12 +1433,14 @@ def run_storage_gc(
                             apply=apply and offload_enabled,
                             ack=RESULT_ARTIFACT_ACK if apply and offload_enabled else "",
                             hot_window_seconds=hot_window_seconds,
-                            protection_checker=evidence_protected, now=clock,
+                            # A reason is truthy; the run records it as retained_reason.
+                            protection_checker=protection_reason, now=clock,
                             publisher=publisher,
                         )
                     except Exception as exc:
+                        # Type, errno and stage only: a message can carry a host path.
                         result = {"status": "retained", "run_directory": registry_path.parents[2].name,
-                                  "reason": type(exc).__name__}
+                                  "reason": type(exc).__name__, **offload_failure(exc)}
                     report["result_artifact_offload"].append(result)
             offload = build_evidence_offload_manifest(
                 evidence_roots=evidence_present,

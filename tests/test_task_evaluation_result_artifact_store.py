@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import hashlib
 import json
 from functools import partial
@@ -348,6 +349,98 @@ def test_existing_gc_tick_uses_per_artifact_offload(setup, monkeypatch, tmp_path
     assert report["evidence_offload"]["offloaded_count"] == 0
     assert f.registry_path.exists() and not f.path.exists()
     assert _get(f.client, f.token, f.run_id, "gc-remote").content == f.payload
+
+
+def _gc_tick(f, tmp_path):
+    from blueprint_pipeline.control_plane_storage_gc import RUN_ACK, run_storage_gc
+
+    return run_storage_gc(
+        content_store_roots=[], derived_roots=[], queue_roots=[], pins_root=tmp_path / "pins",
+        evidence_roots=[f.root.parent], offload_enabled=True, apply=True, ack=RUN_ACK, hot_window_seconds=0,
+        classifier=lambda *a, **kw: None,
+        publisher=partial(store.publish_configured_scene_artifact, client=f.objects, bucket="private-bucket"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("stage", "error_type", "error_number"),
+    [
+        ("registry", "TaskEvaluationResultDeliveryError", None),
+        ("protection", "PermissionError", errno.EACCES),
+        ("publish", "ControlPlaneDiskBudgetError", None),
+        ("evict", "PermissionError", errno.EPERM),
+    ],
+)
+def test_result_artifact_offload_failure_records_stage_and_errno(
+    setup, monkeypatch, tmp_path, stage, error_type, error_number
+):
+    """2026-09-27: six registry runs failed result-artifact offload and the GC recorded only
+    ``PermissionError``: not the step that raised it, nor the errno that tells a refused
+    /proc read (EACCES) from a refused chmod (EPERM). Neither message nor path is kept."""
+    from blueprint_pipeline.control_plane_disk_budget import ControlPlaneDiskBudgetError
+
+    f = setup
+    host_path = str(tmp_path / "host-only-path")
+    process = "blueprint_pipeline.completed_replay_cache_retention.process_reference"
+    monkeypatch.setattr(process, lambda _, **kw: None)
+
+    def refuse(error):
+        def raising(*_args, **_kwargs):
+            raise error
+        return raising
+
+    if stage == "registry":
+        (f.registry_path.parent / "delivery.json").write_text("{}")
+    elif stage == "protection":
+        monkeypatch.setattr(process, refuse(PermissionError(errno.EACCES, "Permission denied", host_path)))
+    elif stage == "publish":
+        monkeypatch.setattr(offload, "reserve_control_plane_disk",
+                            refuse(ControlPlaneDiskBudgetError("control_plane_disk_budget_exceeded")))
+    else:
+        monkeypatch.setattr(offload, "acquire_artifact_read_lease",
+                            refuse(PermissionError(errno.EPERM, "Operation not permitted", host_path)))
+
+    report = _gc_tick(f, tmp_path)
+
+    assert report["result_artifact_offload"] == [{
+        "status": "retained", "run_directory": f.root.name, "reason": error_type,
+        "error_type": error_type, "errno": error_number, "stage": stage,
+    }]
+    assert f.path.read_bytes() == f.payload and f.registry_path.exists()
+    assert host_path not in json.dumps(report)
+
+
+def test_a_skipped_artifact_records_its_stage_and_errno(setup, monkeypatch, tmp_path):
+    f = setup
+    monkeypatch.setattr(
+        "blueprint_pipeline.completed_replay_cache_retention.process_reference", lambda _, **kw: None)
+
+    def full_disk(**_kwargs):
+        raise OSError(errno.ENOSPC, "No space left on device", str(tmp_path / "host-only-path"))
+
+    result = apply(f, publisher=full_disk)
+
+    assert result["offloaded_count"] == 0
+    assert result["skipped"] == [{
+        "relative_path": "evidence/external.mp4", "reason": "OSError",
+        "error_type": "OSError", "errno": errno.ENOSPC, "stage": "publish",
+    }]
+    assert "host-only-path" not in json.dumps(result)
+    assert f.path.read_bytes() == f.payload
+
+
+def test_a_retained_run_says_why(setup, monkeypatch, tmp_path):
+    f = setup
+    assert offload.offload_result_artifacts(run_root=f.root)["retained_reason"] == "hot"
+    assert apply(f, protection_checker=lambda _: True)["retained_reason"] == "protected"
+    assert apply(f, protection_checker=lambda _: "protected_pin")["retained_reason"] == "protected_pin"
+    # The GC passes its evidence protection reason through.
+    monkeypatch.setattr("blueprint_pipeline.completed_replay_cache_retention.process_reference",
+                        lambda _, **kw: "inventory_unreadable")
+    [row] = _gc_tick(f, tmp_path)["result_artifact_offload"]
+    assert (row["status"], row["retained_reason"]) == (
+        "retained_hot_or_active", "protected_process_inventory_unreadable")
+    assert f.path.read_bytes() == f.payload
 
 
 def test_disk_reservation_refusal_does_not_upload_or_delete(setup, monkeypatch):
