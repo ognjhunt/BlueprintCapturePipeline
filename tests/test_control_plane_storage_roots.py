@@ -139,6 +139,7 @@ def test_chain_preflight_treats_scene_workspaces_as_written_storage():
     ("/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-intents", "work", "blueprint"),
     ("/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-configuration-activation-intents", "work", "blueprint"),
     ("/var/lib/blueprint/pipeline-control-plane/release-leases", "ledger", "root"),
+    ("/var/lib/blueprint/pipeline-control-plane/cleanup-receipts", "evidence_hot", "root"),
 ])
 def test_owner_delivery_and_replay_roots_keep_their_retention_law(path, storage_class, owner):
     root = classify_path(path + "/retained-record.json")
