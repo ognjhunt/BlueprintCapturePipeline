@@ -2198,7 +2198,7 @@ def test_a_redeploy_that_creates_nothing_records_no_release_footprint(tmp_path: 
     before = deploy._release_runtime_trees(runtime_root, commit)
 
     def created(checkout: bool):
-        return deploy._created_release_bytes(
+        return deploy._created_release_usage(
             created_release_checkout=checkout, release_path=release, runtime_root=runtime_root,
             commit=commit, runtime_trees_before=before)
 
@@ -2207,8 +2207,32 @@ def test_a_redeploy_that_creates_nothing_records_no_release_footprint(tmp_path: 
     tree = runtime_root / "scene-configuration" / commit
     tree.mkdir(parents=True)
     (tree / "toolchain.bin").write_bytes(b"t" * 4096)
-    assert created(False) >= 4096
-    assert created(True) >= created(False) + 4096
+    assert created(False).allocated_bytes >= 4096
+    assert created(True).allocated_bytes >= created(False).allocated_bytes + 4096
+
+
+def test_unreadable_created_release_is_an_incomplete_measurement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from blueprint_pipeline.control_plane_disk_usage import TreeUsage
+
+    release = tmp_path / "release"
+    release.mkdir()
+    monkeypatch.setattr(
+        deploy, "tree_usage",
+        lambda _path: TreeUsage(allocated_bytes=4096, unreadable=1),
+    )
+    usage = deploy._created_release_usage(
+        created_release_checkout=True, release_path=release,
+        runtime_root=tmp_path / "runtime", commit="a" * 40,
+        runtime_trees_before=set(),
+    )
+    assert usage is not None and usage.unreadable == 1
+    observed = []
+    reservation = SimpleNamespace(observe=observed.append, measurement_incomplete=False)
+    deploy._observe_created_release_usage(reservation, usage)
+    assert observed == [4096]
+    assert reservation.measurement_incomplete is True
 
 
 def _git_repo_with_commit(tmp_path: Path) -> Path:

@@ -72,10 +72,11 @@ from blueprint_pipeline.control_plane_disk_budget import (  # noqa: E402
     DEFAULT_RESERVATION_ROOT,
     FOOTPRINT_HISTORY_DIRNAME,
     ControlPlaneDiskBudgetError,
+    DiskReservation,
     measured_footprint,
     reserve_control_plane_disk,
 )
-from blueprint_pipeline.control_plane_disk_usage import tree_usage  # noqa: E402
+from blueprint_pipeline.control_plane_disk_usage import TreeUsage, tree_usage  # noqa: E402
 from blueprint_pipeline.control_plane_storage_pins import (  # noqa: E402
     DEFAULT_PINS_ROOT,
 )
@@ -2119,15 +2120,15 @@ def _release_runtime_trees(runtime_root: Path, commit: str) -> set[Path]:
         return set()
 
 
-def _created_release_bytes(
+def _created_release_usage(
     *,
     created_release_checkout: bool,
     release_path: str | Path,
     runtime_root: Path,
     commit: str,
     runtime_trees_before: set[Path],
-) -> int | None:
-    """Allocated bytes of what this deploy created, or None when it created nothing.
+) -> TreeUsage | None:
+    """Allocated bytes and scan completeness, or None when nothing was created.
 
     A redeploy that reuses an existing checkout and runtime trees costs nothing
     to stage; recording it as a zero-byte sample would only drag the role's
@@ -2137,8 +2138,23 @@ def _created_release_bytes(
     created_trees = _release_runtime_trees(runtime_root, commit) - runtime_trees_before
     if not created_release_checkout and not created_trees:
         return None
-    total = tree_usage(release_path).allocated_bytes if created_release_checkout else 0
-    return total + sum(tree_usage(path).allocated_bytes for path in sorted(created_trees))
+    usages = ([tree_usage(release_path)] if created_release_checkout else []) + [
+        tree_usage(path) for path in sorted(created_trees)
+    ]
+    return TreeUsage(
+        allocated_bytes=sum(usage.allocated_bytes for usage in usages),
+        unreadable=sum(usage.unreadable for usage in usages),
+    )
+
+
+def _observe_created_release_usage(
+    reservation: DiskReservation, usage: TreeUsage | None,
+) -> None:
+    if usage is None:
+        return
+    reservation.observe(usage.allocated_bytes)
+    if usage.unreadable:
+        reservation.measurement_incomplete = True
 
 
 def _surface_commit(path: Path, *, name: str) -> str:
@@ -3183,15 +3199,14 @@ def deploy_control_plane_commit(
             scene_preparation_installation = {"status": "not_configured", "bootstrap_path": str(bootstrap),
                                               "provider_mutation_performed": False}
         if disk_reservation is not None:
-            created_bytes = _created_release_bytes(
+            created_usage = _created_release_usage(
                 created_release_checkout=bool(staged_release.get("created_release_checkout")),
                 release_path=staged_release["release_path"],
                 runtime_root=runtime_trees_root,
                 commit=source_commit,
                 runtime_trees_before=runtime_trees_before,
             )
-            if created_bytes is not None:
-                disk_reservation.observe(created_bytes)
+            _observe_created_release_usage(disk_reservation, created_usage)
         _mark_stage("runtime_trees_provisioned")
         agent_pre_activation_drain = _drain_agent_execution_before_release_switch(
             expected_commit=source_commit
