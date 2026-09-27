@@ -415,6 +415,7 @@ def test_storage_gc_timer_pair_is_deployed_armed_and_scoped_by_storage_class() -
     from blueprint_pipeline.control_plane_storage_gc import (
         CONTENT_STORE_ROOTS_ENV,
         DERIVED_ROOTS_ENV,
+        PLAN_ONLY_DERIVED_ROOTS_ENV,
         EVIDENCE_ROOTS_ENV,
         QUEUE_ROOTS_ENV,
         RUN_ACK,
@@ -442,6 +443,11 @@ def test_storage_gc_timer_pair_is_deployed_armed_and_scoped_by_storage_class() -
 
     for root in roots(DERIVED_ROOTS_ENV):
         assert classify_path(root).storage_class == "cache", root
+    assert roots(PLAN_ONLY_DERIVED_ROOTS_ENV) == [
+        "/var/lib/blueprint/task-evaluation-inputs/sam31-preparations"
+    ]
+    assert not set(roots(PLAN_ONLY_DERIVED_ROOTS_ENV)) & set(roots(DERIVED_ROOTS_ENV))
+    assert "ReadOnlyPaths=/var/lib/blueprint/task-evaluation-inputs/sam31-preparations" in service
     for root in roots(CONTENT_STORE_ROOTS_ENV):
         assert root.endswith("/sha256") and classify_path(root).storage_class == "cache", root
     for root in roots(EVIDENCE_ROOTS_ENV):

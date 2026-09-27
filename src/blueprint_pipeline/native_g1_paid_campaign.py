@@ -54,9 +54,7 @@ def _early_spend_lock_blockers() -> list[str]:
 
     configured_path = str(os.getenv(SPEND_ADMISSION_LOCK_PATH_ENV) or "").strip()
     if not configured_path:
-        # The shared paid-lane chokepoint still enforces production's required
-        # lock. This early check only avoids costly work when one is configured.
-        return []
+        return ["g1_paid_campaign_spend_admission_lock_path_missing"]
     lock = _load_spend_admission_lock(Path(configured_path).expanduser())
     load_blocker = str(lock.get("_load_blocker") or "").strip()
     if load_blocker:
