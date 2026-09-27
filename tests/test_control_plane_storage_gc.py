@@ -33,6 +33,11 @@ from tests.test_task_evaluation_configured_scene_object_store import _ContentAdd
 @pytest.fixture(autouse=True)
 def isolated_disk_ledger(tmp_path, monkeypatch):
     from blueprint_pipeline.control_plane_disk_budget import reserve_control_plane_disk
+    monkeypatch.setenv("BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT",
+                       str(tmp_path / "disk-reservations"))
+    monkeypatch.setattr("blueprint_pipeline.pubsub_handoff_disk_admission.reserve_control_plane_disk",
+                        functools.partial(reserve_control_plane_disk,
+                            disk_usage=lambda _: SimpleNamespace(total=100 * 1024**3, free=80 * 1024**3)))
     monkeypatch.setattr("blueprint_pipeline.control_plane_evidence_offload.reserve_control_plane_disk",
                         functools.partial(reserve_control_plane_disk,
                             disk_usage=lambda _: SimpleNamespace(total=100 * 1024**3, free=80 * 1024**3)))
