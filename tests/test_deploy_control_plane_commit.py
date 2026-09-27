@@ -882,6 +882,56 @@ def test_configured_controls_timer_is_installed_and_armed_by_default(
     ]
 
 
+def test_deploy_never_rearms_a_held_timer(tmp_path, monkeypatch) -> None:
+    unit = "blueprint-task-evaluation-scene-progression.timer"
+    holds = tmp_path / "holds"
+    holds.mkdir()
+    (holds / f"{unit}.json").write_text(json.dumps({
+        "schema": "blueprint_operator_door_hold.v1", "unit": unit, "owner": "alice",
+        "reason": "inspect capture", "request_id": "20260927T000000Z-hold-0000abcd",
+        "status": "active", "expires_at": "2099-01-01T00:00:00+00:00",
+        "expires_at_epoch": 4070908800,
+    }), encoding="utf-8")
+    active, warning = deploy._active_door_holds(holds)
+    assert warning is None and active[unit]["owner"] == "alice"
+    calls = []
+    state = {"enabled": "enabled", "state": "inactive"}
+
+    def completed(argv, **_kwargs):
+        calls.append(tuple(argv))
+        if argv[:2] == ["systemctl", "stop"]:
+            state["state"] = "inactive"
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(deploy.subprocess, "run", completed)
+    monkeypatch.setattr(deploy, "_systemd_unit_state", lambda _unit: dict(state))
+    restored = deploy._restore_installed_path_units(
+        [{"unit": unit}], before={unit: {"enabled": "enabled", "state": "active"}},
+        arm_path_units=False, always_arm_timer_units=deploy.DEFAULT_ALWAYS_ARM_TIMER_UNITS,
+        held_units=active,
+    )
+    assert calls == [("systemctl", "stop", unit)]
+    assert restored[0]["held"] is True
+    assert {key: restored[0][key] for key in ("owner", "reason", "expires_at")} == {
+        "owner": "alice", "reason": "inspect capture", "expires_at": "2099-01-01T00:00:00+00:00"}
+    assert restored[0]["after"] == {"enabled": "enabled", "state": "inactive"}
+
+
+def test_expired_door_hold_is_ignored_and_unreadable_holds_warn(tmp_path) -> None:
+    unit = "blueprint-task-evaluation-scene-progression.timer"
+    holds = tmp_path / "holds"
+    holds.mkdir()
+    (holds / f"{unit}.json").write_text(json.dumps({
+        "schema": "blueprint_operator_door_hold.v1", "unit": unit, "owner": "alice", "reason": "inspect",
+        "request_id": "20260927T000000Z-hold-0000abcd", "status": "active",
+        "expires_at": "2026-01-01T00:00:00+00:00", "expires_at_epoch": 1767225600,
+    }), encoding="utf-8")
+    assert deploy._active_door_holds(holds) == ({}, None)
+    bad = tmp_path / "not-a-directory"
+    bad.write_text("", encoding="utf-8")
+    assert deploy._active_door_holds(bad) == ({}, "door_holds_unreadable")
+
+
 @pytest.mark.parametrize("unit", deploy.CONFIGURED_CONTROLS_AUTOMATION_UNITS)
 @pytest.mark.parametrize("enabled", ["disabled", "enabled"])
 def test_explicit_controls_pause_survives_default_progression_arming(
@@ -1265,6 +1315,28 @@ def test_deploy_reports_and_marks_break_glass_notes(tmp_path, monkeypatch) -> No
     assert len(again["break_glass_notes"]) == 2
     # A direct caller that names no notes root reports nothing and reads nothing.
     assert "break_glass_notes" not in deploy.deploy_control_plane_commit(**arguments)
+
+
+def test_deploy_reads_held_units_at_restore_and_warns_on_unreadable_records(tmp_path, monkeypatch) -> None:
+    commit = "d" * 40
+    args = _stub_host_deploy(monkeypatch, tmp_path, commit)
+    unit = "blueprint-task-evaluation-scene-progression.timer"
+    holds = tmp_path / "holds"
+    holds.mkdir()
+    (holds / f"{unit}.json").write_text(json.dumps({
+        "schema": "blueprint_operator_door_hold.v1", "unit": unit, "owner": "alice",
+        "reason": "inspect", "request_id": "20260927T000000Z-hold-0000abcd", "status": "active",
+        "expires_at": "2099-01-01T00:00:00+00:00", "expires_at_epoch": 4070908800,
+    }), encoding="utf-8")
+    passed = []
+    monkeypatch.setattr(deploy, "_restore_installed_path_units",
+                        lambda _installed, **kwargs: passed.append(kwargs["held_units"]) or [])
+    receipt = deploy.deploy_control_plane_commit(**args, door_holds_dir=holds)
+    assert receipt["status"] == "deployed" and passed[0][unit]["owner"] == "alice"
+    bad = tmp_path / "bad-holds"
+    bad.write_text("", encoding="utf-8")
+    receipt = deploy.deploy_control_plane_commit(**args, door_holds_dir=bad)
+    assert "door_holds_unreadable" in receipt["alerts"]
 
 
 def test_unreadable_break_glass_notes_never_fail_a_finished_deploy(tmp_path, monkeypatch) -> None:

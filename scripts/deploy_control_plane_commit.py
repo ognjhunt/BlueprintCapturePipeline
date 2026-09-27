@@ -136,6 +136,7 @@ DEFAULT_PAID_LAUNCH_LOCKS = (
     "/var/lib/blueprint/pipeline-control-plane/provider-locks/vast_paid_launch.lock",
 )
 DEFAULT_RESTART_UNITS = ("blueprint-pipeline-intake.service",)
+DEFAULT_DOOR_HOLDS_DIR = "/var/lib/blueprint-operator-door/requests/holds"
 DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     "blueprint-pubsub-handoff-listener.service",
     "blueprint-pubsub-handoff-listener.timer",
@@ -2249,6 +2250,73 @@ def _quiesce_active_path_units(
     return stopped
 
 
+def _active_door_holds(root: str | Path, *, now: float | None = None) -> tuple[dict[str, dict[str, Any]], str | None]:
+    """Read the root-owned hold records without trusting symlinks or malformed JSON."""
+
+    directory = Path(root)
+    if directory.is_symlink():
+        return {}, "door_holds_unreadable"
+    if not directory.exists():
+        return {}, None
+    if not directory.is_dir():
+        return {}, "door_holds_unreadable"
+    moment = time.time() if now is None else now
+    found: dict[str, dict[str, Any]] = {}
+    try:
+        paths = list(directory.glob("*.json"))
+        if len(paths) > 1024:
+            return {}, "door_holds_unreadable"
+        for path in paths:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            try:
+                info = os.fstat(fd)
+                if not stat.S_ISREG(info.st_mode) or info.st_size > 16 * 1024:
+                    raise ValueError("hold_record_unsafe")
+                raw = os.read(fd, 16 * 1024 + 1)
+            finally:
+                os.close(fd)
+            if len(raw) > 16 * 1024:
+                raise ValueError("hold_record_unsafe")
+            record = json.loads(raw)
+            unit = path.name.removesuffix(".json")
+            if (not isinstance(record, dict) or record.get("schema") != "blueprint_operator_door_hold.v1"
+                    or record.get("unit") != unit or not re.fullmatch(r"blueprint-[A-Za-z0-9_.@-]+\.(timer|path)", unit)
+                    or not isinstance(record.get("owner"), str) or not isinstance(record.get("reason"), str)
+                    or not isinstance(record.get("expires_at"), str)
+                    or type(record.get("expires_at_epoch")) is not int):
+                raise ValueError("hold_record_invalid")
+            if record.get("status") == "active" and record["expires_at_epoch"] > moment:
+                found[unit] = record
+    except (OSError, ValueError, UnicodeDecodeError):
+        return {}, "door_holds_unreadable"
+    return found, None
+
+
+@contextlib.contextmanager
+def _locked_door_holds(root: str | Path):
+    """Keep a matching expiry or new hold from racing the deploy's unit restore."""
+
+    directory = Path(root)
+    if directory.is_symlink() or not directory.exists() or not directory.is_dir():
+        yield _active_door_holds(directory)
+        return
+    fd: int | None = None
+    try:
+        fd = os.open(directory / ".lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(errno.EINVAL, "unsafe hold lock")
+        fcntl.flock(fd, fcntl.LOCK_EX)
+    except OSError:
+        if fd is not None:
+            os.close(fd)
+        yield {}, "door_holds_unreadable"
+        return
+    try:
+        yield _active_door_holds(directory)
+    finally:
+        os.close(fd)
+
+
 def _restore_installed_path_units(
     installed_units: Sequence[Mapping[str, Any]],
     *,
@@ -2258,6 +2326,7 @@ def _restore_installed_path_units(
     always_arm_authority_gated_units: Sequence[str] = (),
     always_arm_timer_units: Sequence[str] = (),
     preserve_configured_controls_state: bool = False,
+    held_units: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Restore path/timer intent without widening arbitrary launch authority.
 
@@ -2276,6 +2345,23 @@ def _restore_installed_path_units(
         if not unit.endswith((".path", ".timer")):
             continue
         prior = dict(before.get(unit) or {"enabled": "disabled", "state": "inactive"})
+        hold = (held_units or {}).get(unit)
+        if hold is not None:
+            # Keep the existing boot policy; do not enable, restart or start a
+            # trigger whose owner has explicitly held it through this deploy.
+            result = subprocess.run(  # nosec B603 B607 - fixed systemctl argv
+                ["systemctl", "stop", unit], capture_output=True, text=True, check=False,
+            )
+            after = _systemd_unit_state(unit)
+            if result.returncode != 0 and after["state"] != "inactive":
+                raise ControlPlaneDeployError(f"deploy_held_unit_stop_failed:{unit}")
+            if after["state"] != "inactive":
+                raise ControlPlaneDeployError(f"deploy_held_unit_active_state_mismatch:{unit}:{after['state']}")
+            receipts.append({"unit": unit, "before": prior, "requested_intent": "hold", "after": after,
+                             "operator_freeze_preserved": True, "held": True,
+                             "owner": hold["owner"], "reason": hold["reason"],
+                             "expires_at": hold["expires_at"]})
+            continue
         arm_no_spend = unit in always_arm_units
         arm_authority_gated = unit in always_arm_authority_gated_units
         arm_progression = unit in always_arm_timer_units and not (
@@ -2847,6 +2933,7 @@ def deploy_control_plane_commit(
     release_protection_sources: ProtectionSources = DEFAULT_RELEASE_PROTECTION_SOURCES,
     release_retirement_keep_last: int = DEFAULT_RELEASE_RETIREMENT_KEEP_LAST,
     break_glass_notes_root: str | Path | None = None,
+    door_holds_dir: str | Path = DEFAULT_DOOR_HOLDS_DIR,
 ) -> dict[str, Any]:
     """Move the mutable clone and the release link, then verify both.
 
@@ -3196,17 +3283,19 @@ def deploy_control_plane_commit(
         # Last inside the held locks: the queue watcher only starts watching
         # once the restarted intake has proven the new commit, and no launch
         # can slip in between the watcher restart and the lock release.
-        automation_unit_state_receipts = _restore_installed_path_units(
-            installed_systemd_units,
-            before=automation_unit_states_before,
-            arm_path_units=arm_path_units,
-            always_arm_units=DEFAULT_ALWAYS_ARM_PATH_UNITS,
-            always_arm_authority_gated_units=(
-                DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS
-            ),
-            always_arm_timer_units=DEFAULT_ALWAYS_ARM_TIMER_UNITS,
-            preserve_configured_controls_state=preserve_configured_controls_state,
-        )
+        with _locked_door_holds(door_holds_dir) as (held_units, door_holds_warning):
+            automation_unit_state_receipts = _restore_installed_path_units(
+                installed_systemd_units,
+                before=automation_unit_states_before,
+                arm_path_units=arm_path_units,
+                always_arm_units=DEFAULT_ALWAYS_ARM_PATH_UNITS,
+                always_arm_authority_gated_units=(
+                    DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS
+                ),
+                always_arm_timer_units=DEFAULT_ALWAYS_ARM_TIMER_UNITS,
+                preserve_configured_controls_state=preserve_configured_controls_state,
+                held_units=held_units,
+            )
         # Last, with the new release proven live: retire the trees this deploy
         # superseded, so per-commit growth is bounded by keep_last instead of
         # by the number of deploys ever made.
@@ -3330,6 +3419,8 @@ def deploy_control_plane_commit(
             "before."
         ),
     }
+    if door_holds_warning:
+        receipt.setdefault("alerts", []).append(door_holds_warning)
     # Last, once every surface has moved: host changes made outside the door
     # since the previous deploy are reported here, and never fail this one.
     if break_glass_notes_root is not None:
