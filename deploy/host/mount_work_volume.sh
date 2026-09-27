@@ -280,7 +280,8 @@ load_mount_table() {
     table=""
     if [ -n "${BOUND_ROOTS_FILE}" ]; then table="$(cat "${BOUND_ROOTS_FILE}")"; fi
   else
-    table="$(findmnt -rn -o TARGET,MAJ:MIN,FSROOT)"
+    # A failure leaves the table without "/", which refuses below with a reason.
+    table="$(findmnt -rn -o TARGET,MAJ:MIN,FSROOT)" || true
   fi
   while read -r target device fsroot; do
     [ -n "${target}" ] || continue
@@ -631,7 +632,8 @@ require_volume_room() {
   if [ -n "${ASSUME_VOLUME_FREE_MIB}" ]; then
     free="${ASSUME_VOLUME_FREE_MIB}"
   else
-    free="$(df -Pk "${HOST_MOUNT}" | awk 'NR == 2 { print int($4 / 1024) }')"
+    # A failure leaves no number, which refuses below with a reason.
+    free="$(df -Pk "${HOST_MOUNT}" | awk 'NR == 2 { print int($4 / 1024) }')" || true
   fi
   case "${free}" in ''|*[!0-9]*) refuse 2 "could not read the free space of ${HOST_MOUNT}" ;; esac
   if [ "${free}" -lt $((need + margin)) ]; then

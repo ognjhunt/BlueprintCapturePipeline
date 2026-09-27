@@ -30,8 +30,9 @@ BULK_WORK_ROOTS = frozenset(
 )
 
 
-def _run(*args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(["bash", str(SCRIPT), *args], capture_output=True, text=True, check=False, timeout=120)
+def _run(*args: str, path_first: Path | None = None) -> subprocess.CompletedProcess:
+    env = None if path_first is None else {**os.environ, "PATH": f"{path_first}:{os.environ['PATH']}"}
+    return subprocess.run(["bash", str(SCRIPT), *args], capture_output=True, text=True, check=False, timeout=120, env=env)
 
 
 def _state(tmp_path: Path) -> Path:
@@ -616,3 +617,31 @@ def test_every_glob_in_the_declared_hot_evidence_is_quoted() -> None:
     assert _unquoted_globs(SCRIPT.read_text(encoding="utf-8"), "EVIDENCE_HOT_ON_VOLUME") == []
     example = "EVIDENCE_HOT_ON_VOLUME=(\n  'spool/*/quoted.json'\n  spool/*/bare.json\n)\n"
     assert _unquoted_globs(example, "EVIDENCE_HOT_ON_VOLUME") == ["spool/*/bare.json"]
+
+
+def test_apply_refuses_with_a_reason_when_df_cannot_answer(tmp_path: Path) -> None:
+    _state(tmp_path)
+    _stub(tmp_path, "df", 'echo "df: cannot read the volume" >&2\nexit 1\n')
+
+    refused = _run("--device", "/dev/null", "--root-prefix", str(tmp_path), "--apply", "--ack", ACK, path_first=tmp_path / "bin")
+
+    assert refused.returncode == 2, refused.stderr + refused.stdout
+    assert "could not read the free space" in refused.stderr
+    assert not (tmp_path / "mnt" / "blueprint-work" / "task-evaluation-inputs").exists(), "nothing was copied"
+
+
+def test_the_mount_table_refuses_with_a_reason_when_findmnt_cannot_answer(tmp_path: Path) -> None:
+    functions = ("refuse", "load_mount_table", "is_mount_point")
+    setup = (
+        'ROOT_PREFIX=""; BOUND_ROOTS_FILE=""; MOUNT=/mnt/blueprint-work\n'
+        'MT_TARGET=(); MT_DEVICE=(); MT_FSROOT=(); VOLUME_DEVICE=""; VOLUME_FSROOT=""\n'
+    )
+    check = 'load_mount_table; echo "volume=${VOLUME_DEVICE} ${VOLUME_FSROOT}"\n'
+
+    _stub(tmp_path, "findmnt", 'printf "/ 252:1 /\\n/mnt/blueprint-work 8:16 /\\n/var/lib/blueprint/pubsub-handoffs 8:16 /pubsub-handoffs\\n"\n')
+    read = _call(tmp_path, functions, setup + check)
+    _stub(tmp_path, "findmnt", 'echo "findmnt: cannot read the mount table" >&2\nexit 1\n')
+    failed = _call(tmp_path, functions, setup + check)
+
+    assert read.returncode == 0 and "volume=8:16 /" in read.stdout, read.stderr
+    assert failed.returncode == 2 and "could not read the mount table" in failed.stderr, failed.stderr
