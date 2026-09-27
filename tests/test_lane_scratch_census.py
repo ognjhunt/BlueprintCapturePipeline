@@ -198,6 +198,28 @@ def test_census_marks_unsafe_queue_state_and_file_incomplete(tmp_path: Path) -> 
     assert "queue_inventory_unreadable" in report["scan_errors"]
 
 
+def test_census_does_not_treat_unreadable_queue_state_as_absent(tmp_path: Path, monkeypatch) -> None:
+    from blueprint_pipeline.control_plane_lane_scratch_census import build_census
+
+    work, inputs = tmp_path / "work", tmp_path / "inputs"
+    work.mkdir()
+    inputs.mkdir()
+    folder = work / "g1-unknown"
+    folder.mkdir()
+    queue = tmp_path / "queue" / "pending"
+    queue.mkdir(parents=True)
+    (queue / "item.json").write_text(json.dumps({"scratch": folder.name}))
+    (tmp_path / "proc").mkdir()
+    (tmp_path / "pins").mkdir()
+    (tmp_path / "release").mkdir()
+    original_exists = Path.exists
+    monkeypatch.setattr(Path, "exists", lambda path: False if path == queue else original_exists(path))
+    report = build_census(work_root=work, inputs_root=inputs, process_root=tmp_path / "proc",
+                          pins_root=tmp_path / "pins", queue_roots=(queue.parent,),
+                          release_link=tmp_path / "release", active_run_roots=())
+    assert report["rows"][0]["references"] == ["queue"]
+
+
 def test_census_deadline_marks_partial_scan_incomplete(tmp_path: Path) -> None:
     from blueprint_pipeline.control_plane_lane_scratch_census import build_census
 

@@ -11,3 +11,4 @@ def test_installer_provisions_lane_roots_on_the_work_volume() -> None:
     assert 'mountpoint -q -- "${WORK_VOLUME_ROOT}"' in source
     assert '"${WORK_VOLUME_ROOT}/lanes"' in source
     assert 'install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}"' in source
+    assert source.index('mountpoint -q -- "${WORK_VOLUME_ROOT}"') < source.index('run chown -R')

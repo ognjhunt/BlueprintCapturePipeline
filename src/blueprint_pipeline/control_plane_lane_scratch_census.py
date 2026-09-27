@@ -266,10 +266,15 @@ def _queue_references(paths: Sequence[Path], queue_roots: Sequence[Path], errors
         for state in ("pending", "processing", "waiting_external", "awaiting_source_preparation",
                       "awaiting_capacity", "prepared", "blocked"):
             directory = root / state
-            if directory.is_symlink():
+            try:
+                state_info = directory.lstat()
+            except FileNotFoundError:
+                continue
+            except OSError:
                 errors.append("queue_inventory_unavailable")
                 continue
-            if not directory.exists():
+            if not stat.S_ISDIR(state_info.st_mode):
+                errors.append("queue_inventory_unavailable")
                 continue
             try:
                 directory_fd = _open_directory(directory)

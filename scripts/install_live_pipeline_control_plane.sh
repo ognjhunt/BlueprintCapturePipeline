@@ -98,6 +98,14 @@ if [[ "${EUID}" -ne 0 && "${DRY_RUN}" != "true" ]]; then
   echo "Run as root or use --dry-run." >&2
   exit 1
 fi
+if [[ -L "${WORK_VOLUME_ROOT}" ]]; then
+  echo "ERROR: work volume root is a symlink" >&2
+  exit 1
+fi
+if [[ "${DRY_RUN}" != "true" ]] && ! mountpoint -q -- "${WORK_VOLUME_ROOT}"; then
+  echo "ERROR: mount the work volume before installing the lane scratch root" >&2
+  exit 1
+fi
 
 if ! getent group "${SERVICE_GROUP}" >/dev/null 2>&1; then
   run groupadd --system "${SERVICE_GROUP}"
@@ -192,14 +200,6 @@ run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
   "${TASK_EVALUATION_INPUT_ROOT}/lanes" \
   "${TASK_EVALUATION_INPUT_ROOT}/policy-canary-execution-setups" \
   "${TASK_EVALUATION_INPUT_ROOT}/system-runtimes"
-if [[ -L "${WORK_VOLUME_ROOT}" ]]; then
-  echo "ERROR: work volume root is a symlink" >&2
-  exit 1
-fi
-if [[ "${DRY_RUN}" != "true" ]] && ! mountpoint -q -- "${WORK_VOLUME_ROOT}"; then
-  echo "ERROR: mount the work volume before installing the lane scratch root" >&2
-  exit 1
-fi
 run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
   "${WORK_VOLUME_ROOT}/lanes"
 run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
