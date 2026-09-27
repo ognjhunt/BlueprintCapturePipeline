@@ -1343,13 +1343,13 @@ def run_storage_gc(
             del observed_text
 
             def protection_reason(directory: Path) -> str | None:
-                # Re-reads settlements and queues on every check; see evidence_protection_reason.
+                # The one protection hook for the manifest, its apply and the per-artifact
+                # offload: a reason keeps the run and names why. Re-reads settlements and
+                # queues on every check; see evidence_protection_reason.
                 return evidence_protection_reason(
                     directory, settlement_roots=settlement_roots, pins_root=pins_root,
                     queue_roots=queue_roots, now=clock, ignored_process_ids=(os.getpid(),))
 
-            def evidence_protected(directory: Path) -> bool:
-                return protection_reason(directory) is not None
             # Keep authenticated downloads usable after cold evidence reclamation.
             from .task_evaluation_result_artifact_store import (
                 APPLY_ACK as RESULT_ARTIFACT_ACK, offload_failure, offload_result_artifacts,
@@ -1364,7 +1364,6 @@ def run_storage_gc(
                             apply=apply and offload_enabled,
                             ack=RESULT_ARTIFACT_ACK if apply and offload_enabled else "",
                             hot_window_seconds=hot_window_seconds,
-                            # A reason is truthy; the run records it as retained_reason.
                             protection_checker=protection_reason, now=clock,
                             publisher=publisher,
                         )
@@ -1379,12 +1378,12 @@ def run_storage_gc(
                 abandoned_after_seconds=abandoned_after_seconds,
                 now=clock,
                 classifier=classifier,
-                protection_reason=protection_reason,
+                protection_checker=protection_reason,
             )
             if apply and offload_enabled:
                 extra = {"publisher": publisher} if publisher is not None else {}
                 report["evidence_offload"] = apply_evidence_offload(
-                    offload, ack=OFFLOAD_ACK, now=clock, protection_checker=evidence_protected, **extra
+                    offload, ack=OFFLOAD_ACK, now=clock, protection_checker=protection_reason, **extra
                 )
             else:
                 report["evidence_offload"] = offload

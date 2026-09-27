@@ -192,9 +192,10 @@ def test_evidence_manifest_names_each_retention_reason_with_bytes(tmp_path: Path
 
     monkeypatch.setattr(offload, "_tree_snapshot", counted)
 
+    # One hook: a checker that returns a string names the reason.
     manifest = build_evidence_offload_manifest(
         evidence_roots=[root], hot_window_seconds=2 * day, abandoned_after_seconds=3 * day,
-        now=lambda: now, classifier=_unclassified, protection_reason=lambda directory: protection.get(directory.name),
+        now=lambda: now, classifier=_unclassified, protection_checker=lambda directory: protection.get(directory.name),
     )
 
     bytes_of = {name: _bytes_under(directory) for name, directory in runs.items()}
@@ -214,7 +215,7 @@ def test_evidence_manifest_names_each_retention_reason_with_bytes(tmp_path: Path
     assert sorted(walked) == sorted(runs)
 
     # Without an abandonment window an unsealed run is kept for that reason, and a
-    # bare protection checker still protects, counted as ``protected``.
+    # checker that returns True still protects, counted as ``protected``.
     legacy = build_evidence_offload_manifest(
         evidence_roots=[root], hot_window_seconds=2 * day, now=lambda: now, classifier=_unclassified,
         protection_checker=lambda directory: directory.name in protection,
@@ -224,6 +225,9 @@ def test_evidence_manifest_names_each_retention_reason_with_bytes(tmp_path: Path
     assert legacy["retained_by_reason"]["unsealed_no_window"] == {"count": 1, "bytes": bytes_of["run-unsealed"]}
     assert legacy["retained_counts"] == manifest["retained_counts"]
     assert [row["name"] for row in legacy["candidates"]] == ["run-candidate"]
+    import inspect
+
+    assert "protection_reason" not in inspect.signature(build_evidence_offload_manifest).parameters
 
 
 def test_local_write_during_archive_publication_prevents_eviction(tmp_path):

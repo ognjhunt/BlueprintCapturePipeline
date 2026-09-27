@@ -107,8 +107,7 @@ def build_evidence_offload_manifest(
     abandoned_after_seconds: int | None = None,
     now: Callable[[], float] = time.time,
     classifier: Callable[..., Any] = require_storage_class,
-    protection_checker: Callable[[Path], bool] | None = None,
-    protection_reason: Callable[[Path], str | None] | None = None,
+    protection_checker: Callable[[Path], bool | str | None] | None = None,
 ) -> dict[str, Any]:
     """List sealed run directories past their hot window, without mutating anything.
 
@@ -118,8 +117,8 @@ def build_evidence_offload_manifest(
     ``retained_by_reason`` says why every other entry was kept, with its count
     and bytes: ``unsafe`` (a link or a non-directory, sized by itself and never
     followed), ``result_registry``, ``already_offloaded``, the reason
-    ``protection_reason`` names (``protected`` when only ``protection_checker``
-    protects it), ``unsealed_no_window``, ``unsealed_recent`` and ``hot``.
+    ``protection_checker`` returns (a string names it; ``True`` is
+    ``protected``), ``unsealed_no_window``, ``unsealed_recent`` and ``hot``.
     ``retained_counts`` keeps the four coarse counters it always had.
     """
 
@@ -139,12 +138,10 @@ def build_evidence_offload_manifest(
         count_retained(retained_by_reason, reason, size)
 
     def protected_by(directory: Path) -> str | None:
-        reason = protection_reason(directory) if protection_reason is not None else None
-        if reason:
-            return reason if isinstance(reason, str) else "protected"
-        if protection_checker is not None and protection_checker(directory):
-            return "protected"
-        return None
+        verdict = protection_checker(directory) if protection_checker is not None else None
+        if not verdict:
+            return None
+        return verdict if isinstance(verdict, str) else "protected"
 
     roots: list[str] = []
     for raw_root in evidence_roots:
@@ -383,9 +380,13 @@ def apply_evidence_offload(
     publisher: Callable[..., Mapping[str, Any]] | None = None,
     stream_publisher: Callable[..., Mapping[str, Any]] = publish_configured_scene_stream,
     now: Callable[[], float] = time.time,
-    protection_checker: Callable[[Path], bool] | None = None,
+    protection_checker: Callable[[Path], bool | str | None] | None = None,
 ) -> dict[str, Any]:
-    """Offload every manifest candidate whose state is unchanged; keep the rest."""
+    """Offload every manifest candidate whose state is unchanged; keep the rest.
+
+    ``protection_checker`` is the manifest's: any truthy answer (a reason or
+    ``True``) keeps the candidate.
+    """
 
     if (
         ack != EXECUTE_ACK
