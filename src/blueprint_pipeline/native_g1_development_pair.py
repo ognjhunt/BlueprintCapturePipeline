@@ -18,9 +18,7 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from .control_plane_disk_usage import DEFAULT_SURVEY_ALIASES
 from .control_plane_lane_scratch import create_lane_scratch
-from .control_plane_storage_roots import classify_path
 from .decision_evidence_contracts import canonical_digest
 from .native_g1_development_worker import (
     PATH_FIELDS,
@@ -55,30 +53,11 @@ LANE_SCRATCH_ROOTS = (
 )
 WORK_VOLUME_ROOT = Path("/mnt/blueprint-work")
 INPUTS_ROOT = Path("/var/lib/blueprint/task-evaluation-inputs")
-_BOUND_WORK_VOLUME_ALIASES = tuple(
-    (Path(path).relative_to(WORK_VOLUME_ROOT), Path(logical))
-    for path, logical in DEFAULT_SURVEY_ALIASES.items()
-    if Path(path).is_relative_to(WORK_VOLUME_ROOT)
-)
+CONTROL_PLANE_ROOT = Path("/var/lib/blueprint/pipeline-control-plane")
 _PROVIDER_PREFLIGHT_FILE = "native_g1_runtime_import_preflight.v1.json"
 CANDIDATE_FIELDS = frozenset({
     "candidate_id", "rights_review", "request_digest",
 })
-
-
-def _classified_host_output(output: Path) -> bool:
-    if output.is_relative_to(INPUTS_ROOT):
-        logical = Path("/var/lib/blueprint/task-evaluation-inputs") / output.relative_to(INPUTS_ROOT)
-        classified = classify_path(str(logical))
-        return classified is not None and classified.storage_class not in {"container", "lane_scratch"}
-    for physical, logical in _BOUND_WORK_VOLUME_ALIASES:
-        root = WORK_VOLUME_ROOT / physical
-        if output.is_relative_to(root):
-            classified = classify_path(str(logical / output.relative_to(root)))
-            return classified is not None and classified.storage_class not in {
-                "container", "lane_scratch",
-            }
-    return False
 
 
 def _verified_provider_run_output(output: Path, provider_run_root: Path | None) -> bool:
@@ -488,9 +467,11 @@ def run_g1_development_pair(
     elif any(value is not None for value in scratch_metadata):
         raise ValueError("g1_pair_lane_scratch_output_invalid")
     else:
-        if (output.is_relative_to(WORK_VOLUME_ROOT) or output.is_relative_to(INPUTS_ROOT)) and not (
-            _classified_host_output(output) or provider_run_proved
-        ):
+        # A storage class or self-sealed provider preflight is not proof that
+        # this exact host run owns a new child. Host scratch uses a lane lease.
+        if any(output.is_relative_to(root) for root in (
+            WORK_VOLUME_ROOT, INPUTS_ROOT, CONTROL_PLANE_ROOT,
+        )):
             raise ValueError("g1_pair_unbound_work_volume_output")
         output.mkdir(parents=True)
     diagnostics = output / "_worker_diagnostics"
