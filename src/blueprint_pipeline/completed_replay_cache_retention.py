@@ -373,36 +373,54 @@ def _remove_empty_directories(held, root):
     ``prepared-references`` is reached; ``prepared-references`` itself stays. A directory
     whose lstat shows another device than the held child's (a mount point) is not entered.
     One descriptor per level is open at a time. A directory that still holds anything is
-    simply kept.
+    simply kept. A directory that cannot be looked at, opened or listed is a
+    ``prune_failed:<type>`` skip, and ``rmdir_failed:<type>`` is only rmdir's own failure;
+    a ``prepared-references`` already gone is nothing to do.
     """
     skipped = []
 
-    def failed(parts, exc):
+    def failed(code, parts, exc):
         skipped.append({"path": str(root.joinpath(_SCRATCH_INPUTS, *parts)),
-                        "reason": f"rmdir_failed:{type(exc).__name__}"})
+                        "reason": f"{code}:{type(exc).__name__}"})
+
+    def entered(parent, name, parts):
+        """``name`` in ``parent`` opened as a directory on the held child's device, or None."""
+        try:
+            info = _leaf(parent, name)
+            if not stat.S_ISDIR(info.st_mode) or info.st_dev != held.device:
+                return None
+            return os.open(name, _DIRECTORY_FLAGS, dir_fd=parent)
+        except OSError as exc:
+            if parts or exc.errno != errno.ENOENT:
+                failed("prune_failed", parts, exc)
+            return None
 
     def prune(directory, parts):
-        for name in sorted(os.listdir(directory)):
+        try:
+            names = sorted(os.listdir(directory))
+        except OSError as exc:
+            failed("prune_failed", parts, exc)
+            return
+        for name in names:
+            inner = entered(directory, name, (*parts, name))
+            if inner is None:
+                continue
             try:
-                info = _leaf(directory, name)
-                if not stat.S_ISDIR(info.st_mode) or info.st_dev != held.device:
-                    continue
-                inner = os.open(name, _DIRECTORY_FLAGS, dir_fd=directory)
-                try:
-                    prune(inner, (*parts, name))
-                finally:
-                    os.close(inner)
+                prune(inner, (*parts, name))
+            finally:
+                os.close(inner)
+            try:
                 os.rmdir(name, dir_fd=directory)
             except OSError as exc:
                 if exc.errno not in _NOT_EMPTY:
-                    failed((*parts, name), exc)
+                    failed("rmdir_failed", (*parts, name), exc)
 
-    try:
-        inputs = held.directory((_SCRATCH_INPUTS,))
-        if os.fstat(inputs).st_dev == held.device:
+    inputs = entered(held.directory(()), _SCRATCH_INPUTS, ())
+    if inputs is not None:
+        try:
             prune(inputs, ())
-    except OSError as exc:
-        failed((), exc)
+        finally:
+            os.close(inputs)
     return skipped
 
 

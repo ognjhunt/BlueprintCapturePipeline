@@ -5,6 +5,7 @@ import errno
 import hashlib
 import json
 import os
+import shutil
 import signal
 import stat
 import time
@@ -1059,3 +1060,61 @@ def test_a_directory_on_another_device_is_neither_planned_nor_pruned(tmp_path, m
     assert p["candidate_bytes"] == estimate["estimated_candidate_bytes"] == len(b"on the replay's own filesystem")
     assert (result["removed_bytes"], result["skipped"]) == (p["candidate_bytes"], [])
     assert theirs.exists() and (mounted / "empty").is_dir() and not ours.exists()
+
+
+def test_prune_failures_name_the_call_that_failed(tmp_path, monkeypatch):
+    """Review of PR 10a.1: every prune failure read rmdir_failed, whatever had failed. A directory
+    that cannot be looked at, opened or listed is prune_failed:<type>, rmdir_failed:<type> is
+    rmdir's own failure, and a prepared-references already gone is nothing to do."""
+    root, child, data, proc = setup(tmp_path)
+    data.unlink()
+    prep = child / "prepared-references" / "prep"
+    _scratch_input(child, "prep/input.bin", b"scratch")
+    for name in ("stuck", "unlisted", "unopened", "unstated"):
+        (prep / name / "empty").mkdir(parents=True)
+    unlisted = (prep / "unlisted").stat().st_ino
+    real_listdir, real_open, real_leaf, real_rmdir = os.listdir, os.open, gc._leaf, os.rmdir
+    denied = PermissionError(errno.EACCES, "denied")
+
+    def listdir(path=".", *args, **kwargs):
+        if isinstance(path, int) and os.fstat(path).st_ino == unlisted:
+            raise denied
+        return real_listdir(path, *args, **kwargs)
+
+    def open_(path, *args, **kwargs):
+        if path == "unopened":
+            raise denied
+        return real_open(path, *args, **kwargs)
+
+    def leaf(directory, name):
+        if name == "unstated":
+            raise denied
+        return real_leaf(directory, name)
+
+    def rmdir(path, *args, **kwargs):
+        if path == "stuck":
+            raise denied
+        return real_rmdir(path, *args, **kwargs)
+
+    p = plan(root, proc, **SCRATCH)
+    for name, fake in (("listdir", listdir), ("open", open_), ("rmdir", rmdir)):
+        monkeypatch.setattr(os, name, fake)
+    monkeypatch.setattr(gc, "_leaf", leaf)
+    result = apply(p, proc, **SCRATCH)
+    monkeypatch.undo()
+
+    assert result["removed_bytes"] == len(b"scratch")
+    assert result["skipped"] == [
+        {"path": str(prep / "stuck"), "reason": "rmdir_failed:PermissionError"},
+        {"path": str(prep / "unlisted"), "reason": "prune_failed:PermissionError"},
+        {"path": str(prep / "unopened"), "reason": "prune_failed:PermissionError"},
+        {"path": str(prep / "unstated"), "reason": "prune_failed:PermissionError"},
+    ]
+    assert not (prep / "stuck" / "empty").exists() and (prep / "unlisted" / "empty").is_dir()
+
+    # Gone before apply: its group is a recheck failure, and the prune has nothing to do.
+    again = _scratch_input(child, "prep/again.bin", b"again")
+    p = plan(root, proc, **SCRATCH)
+    shutil.rmtree(child / "prepared-references")
+    assert apply(p, proc, **SCRATCH)["skipped"] == [
+        {"paths": [str(again)], "reason": "recheck_failed:FileNotFoundError"}]
