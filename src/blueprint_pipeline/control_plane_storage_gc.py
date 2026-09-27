@@ -21,6 +21,9 @@ acknowledgement:
   Storage or is archived to the artifact store behind a replayable receipt, and
   nothing can still need them. It only plans until its own explicit opt-in,
   ``BLUEPRINT_CONTROL_PLANE_SCENE_WORKSPACE_RETIREMENT=1``, enables it.
+* **Replay caches** (``work`` class: activation lookaheads): the store copies
+  left in completed parent replays are removed by ``control_plane_replay_cache_gc``,
+  which only plans until ``BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_RETENTION=1``.
 
 Each phase runs isolated: an exception is recorded under its report key and the
 remaining phases still run. Evidence-hot roots, release worktrees, and runtime
@@ -50,6 +53,9 @@ from .control_plane_evidence_offload import (
     EXECUTE_ACK as OFFLOAD_ACK,
     apply_evidence_offload,
     build_evidence_offload_manifest,
+)
+from .control_plane_replay_cache_gc import (
+    REPLAY_PARENT_ROOTS_ENV, reclaim_replay_caches, replay_cache_retention_setting,
 )
 from .control_plane_storage_pins import PINS_ROOT_ENV, live_pinned_paths
 from .control_plane_storage_roots import require_storage_class
@@ -1265,11 +1271,14 @@ def run_storage_gc(
     scene_process_checker: Callable[[Path], bool] | None = None,
     scene_inventory_cache_root: str | Path | None = None,
     scene_hash_budget_bytes: int | None = None,
+    replay_parent_roots: Sequence[str | Path] = (),
+    replay_cache_retention_enabled: bool = False,
+    replay_cache_retention_alert: str | None = None,
     now: Callable[[], float] = time.time,
     publisher: Callable[..., Any] | None = None,
     classifier: Callable[..., Any] = require_storage_class,
 ) -> dict[str, Any]:
-    """One timer tick: stranded rows, derived directories, blobs, offload, scratch, scenes.
+    """One timer tick: stranded rows, derived directories, blobs, offload, scratch, replay caches, scenes.
 
     Stranded rows go first so the derived-directory step in the same tick no
     longer sees them as live queue references. Every phase is isolated.
@@ -1292,8 +1301,9 @@ def run_storage_gc(
         "apply": apply,
         "skipped_roots": [],
     }
-    if scene_workspace_retirement_alert:
-        report["alerts"] = [scene_workspace_retirement_alert]
+    alerts = [alert for alert in (scene_workspace_retirement_alert, replay_cache_retention_alert) if alert]
+    if alerts:
+        report["alerts"] = alerts
     queue_present, _absent_queue_roots = _existing(queue_roots)
     if queue_present:
         def stranded_phase() -> Any:
@@ -1462,6 +1472,12 @@ def run_storage_gc(
             return apply_workspace_bundle_manifest(bundles, ack=WORKSPACE_BUNDLE_ACK, now=clock) if apply else bundles
 
         _isolated(report, "workspace_bundles", bundle_phase)
+    replay_present, absent = _existing(replay_parent_roots)
+    report["skipped_roots"].extend(absent)
+    if replay_present:
+        _isolated(report, "replay_caches", lambda: reclaim_replay_caches(
+            parent_roots=replay_present, apply=apply, enabled=replay_cache_retention_enabled,
+            now=clock, classifier=classifier))
     scene_present, absent = _existing(scene_workspace_roots)
     report["skipped_roots"].extend(absent)
     if scene_present:
@@ -1542,6 +1558,7 @@ def _run_main(argv: list[str]) -> int:
     parser.add_argument("--scene-workspace-root", action="append", default=None)
     parser.add_argument("--scene-intent-root", default=os.getenv(SCENE_INTENT_ROOT_ENV) or None)
     parser.add_argument("--scratch-root", action="append", default=None)
+    parser.add_argument("--replay-parent-root", action="append", default=None)
     parser.add_argument("--workspace-bundle-root", action="append", default=None)
     parser.add_argument(
         "--workspace-bundle-minimum-age-seconds",
@@ -1575,8 +1592,10 @@ def _run_main(argv: list[str]) -> int:
     if not pins_root:
         raise ControlPlaneStorageGCError("control_plane_storage_gc_pins_root_missing")
     retirement_enabled, retirement_alert = scene_workspace_retirement_setting()
-    if retirement_alert:
-        print(f"storage_gc_alert:{retirement_alert}", file=sys.stderr)
+    replay_enabled, replay_alert = replay_cache_retention_setting()
+    for alert in (retirement_alert, replay_alert):
+        if alert:
+            print(f"storage_gc_alert:{alert}", file=sys.stderr)
     report_root = str(os.getenv(REPORT_ROOT_ENV) or "").strip()
     if not report_root and args.report_out:
         report_root = str(Path(args.report_out).expanduser().parent)
@@ -1611,6 +1630,9 @@ def _run_main(argv: list[str]) -> int:
         scene_binding_root=str(os.getenv(SCENE_BINDING_ROOT_ENV) or "").strip() or None,
         scene_workspace_retirement_enabled=retirement_enabled,
         scene_workspace_retirement_alert=retirement_alert,
+        replay_parent_roots=args.replay_parent_root or _split_env(REPLAY_PARENT_ROOTS_ENV),
+        replay_cache_retention_enabled=replay_enabled,
+        replay_cache_retention_alert=replay_alert,
         # Per-file digests, so an hourly plan re-reads only what changed.
         scene_inventory_cache_root=None,
         classifier=require_storage_class,
