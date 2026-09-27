@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -39,11 +40,30 @@ from .paid_resource_admission import (
     build_paid_lane_admission,
     require_paid_resource_admission,
 )
+from .paid_lane_guard import SPEND_ADMISSION_LOCK_PATH_ENV, _load_spend_admission_lock
+from .spend_admission_lock import validate_spend_admission_lock
 
 
 PROBE_KIND = "native-g1-development-campaign"
 RESULT_SCHEMA = "native_g1_paid_campaign_result.v1"
 INSTANCE_LABEL_PREFIX = "blueprint-native-task-arena-g1-841757-"
+
+
+def _early_spend_lock_blockers() -> list[str]:
+    """Catch an unusable launch actor or stale guard before checkpoint staging."""
+
+    configured_path = str(os.getenv(SPEND_ADMISSION_LOCK_PATH_ENV) or "").strip()
+    if not configured_path:
+        # The shared paid-lane chokepoint still enforces production's required
+        # lock. This early check only avoids costly work when one is configured.
+        return []
+    lock = _load_spend_admission_lock(Path(configured_path).expanduser())
+    load_blocker = str(lock.get("_load_blocker") or "").strip()
+    if load_blocker:
+        return [load_blocker]
+    return validate_spend_admission_lock(
+        lock, now=datetime.now(timezone.utc), required_provider="vast"
+    )
 
 
 def _controller_release_authority(
@@ -218,6 +238,8 @@ def dispatch_g1_paid_campaign(
         blockers.append("g1_paid_campaign_allowed_active_instance_id_invalid")
     if args.execute and not args.g1_campaign_bundle_receipt:
         blockers.append("g1_paid_campaign_execute_requires_dry_run_bundle_receipt")
+    if args.execute:
+        blockers.extend(_early_spend_lock_blockers())
     if args.adp_job_dir:
         job = Path(args.adp_job_dir)
         if not job.is_absolute() or job.is_symlink():
