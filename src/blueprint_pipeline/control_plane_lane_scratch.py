@@ -118,24 +118,32 @@ def _opened_directory_path(path: Path, *, unsafe_code: str) -> Iterator[int]:
 
 
 @contextmanager
+def _locked_root_descriptor(root_fd: int) -> Iterator[int]:
+    """Share the root's coordination lock with retained-descriptor consumers."""
+
+    try:
+        lock_fd = os.open(".lane-scratch.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW,
+                          0o600, dir_fd=root_fd)
+    except OSError as exc:
+        raise LaneScratchError("lane_scratch_lock_unsafe") from exc
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        yield root_fd
+    finally:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        finally:
+            os.close(lock_fd)
+
+
+@contextmanager
 def _locked_root(root: str | Path) -> Iterator[int]:
     path = Path(root)
     if not path.is_absolute():
         raise LaneScratchError("lane_scratch_root_not_absolute")
     with _opened_directory_path(path, unsafe_code="lane_scratch_root_unsafe") as root_fd:
-        try:
-            lock_fd = os.open(".lane-scratch.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW,
-                              0o600, dir_fd=root_fd)
-        except OSError as exc:
-            raise LaneScratchError("lane_scratch_lock_unsafe") from exc
-        try:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        with _locked_root_descriptor(root_fd):
             yield root_fd
-        finally:
-            try:
-                fcntl.flock(lock_fd, fcntl.LOCK_UN)
-            finally:
-                os.close(lock_fd)
 
 
 @contextmanager
