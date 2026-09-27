@@ -105,6 +105,8 @@ def test_gc_apply_requires_ack_and_rechecks_link_count(tmp_path) -> None:
 
     os.link(candidate, tmp_path / "late-projection")
     changed = apply_gc_manifest(manifest, ack=EXECUTE_ACK)
+    assert changed["candidate_count"] == manifest["candidate_count"]
+    assert changed["candidate_bytes"] == manifest["candidate_bytes"]
     assert changed["removed_count"] == 0
     assert changed["skipped"] == [
         {"digest": "sha256:" + candidate.name, "reason": "candidate_changed"}
@@ -714,6 +716,8 @@ def test_scratch_is_reaped_by_idle_age_alone_and_touched_trees_survive(tmp_path)
     with pytest.raises(ControlPlaneStorageGCError, match="scratch_apply_not_authorized"):
         gc_module.apply_scratch_manifest(manifest, ack="wrong")
     receipt = gc_module.apply_scratch_manifest(manifest, ack=gc_module.SCRATCH_ACK, now=lambda: now)
+    assert receipt["candidate_count"] == manifest["candidate_count"]
+    assert receipt["candidate_bytes"] == manifest["candidate_bytes"]
     assert [row["name"] for row in receipt["removed"]] == ["old.log"]
     assert receipt["skipped"] == [{"name": "old-probe", "reason": "candidate_changed"}]
     assert idle.exists() and recent.exists() and not idle_file.exists()
@@ -803,6 +807,8 @@ def test_workspace_bundles_are_reaped_only_from_idle_workspaces_and_keep_outputs
     receipt = gc_module.apply_workspace_bundle_manifest(
         manifest, ack=gc_module.WORKSPACE_BUNDLE_ACK, now=lambda: now
     )
+    assert receipt["candidate_count"] == manifest["candidate_count"]
+    assert receipt["candidate_bytes"] == manifest["candidate_bytes"]
     assert [row["workspace"] for row in receipt["removed"]] == ["a" * 64]
     assert receipt["skipped"] == [{"workspace": "b" * 64, "reason": "candidate_changed"}]
     assert receipt["evidence_removed"] is False
