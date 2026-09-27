@@ -148,6 +148,38 @@ def test_page_webhook_has_route_fingerprint_runbook_and_short_summary(monkeypatc
     assert "2.0 days" in payload["summary"] and len(payload["summary"]) <= 200
 
 
+def test_release_retirement_attention_appears_in_capacity_report(tmp_path: Path) -> None:
+    summary = tmp_path / "release-retention" / "latest-deploy-retirement.json"
+    summary.parent.mkdir()
+    summary.write_text(json.dumps({"status": "blocked", "alerts": ["lease_unreadable"]}))
+    report = cap.run_controller(mounts=[str(tmp_path)], report_root=tmp_path / "capacity",
+                                reservation_root=tmp_path / "ledger", webhook_url="https://alerts.example/hook",
+                                volume=None, ack="", token="", survey=None,
+                                release_retirement_summary_path=summary,
+                                break_glass_notes_root=tmp_path / "absent-notes",
+                                disk_usage=_usage(80.0), now=1000.0)
+    attention = next(a for a in report["alerts"] if a["code"] == "release_retirement_attention")
+    assert attention == {"code": "release_retirement_attention", "status": "blocked",
+                         "alert_count": 1, "severity": "warn"}
+    assert any(a["code"] == "release_retirement_attention" for a in cap.capacity_summary(report)["alerts"])
+
+
+def test_unreported_break_glass_note_warns_without_disclosing_note(tmp_path: Path, monkeypatch) -> None:
+    from blueprint_pipeline import control_plane_break_glass
+
+    monkeypatch.setattr(control_plane_break_glass, "unreported_notes",
+                        lambda root: [{"name": "private-note.json", "reason": "sensitive detail"}])
+    report = cap.run_controller(mounts=[str(tmp_path)], report_root=tmp_path / "capacity",
+                                reservation_root=tmp_path / "ledger", webhook_url="https://alerts.example/hook",
+                                volume=None, ack="", token="", survey=None,
+                                release_retirement_summary_path=tmp_path / "absent-summary",
+                                break_glass_notes_root=tmp_path / "notes",
+                                disk_usage=_usage(80.0), now=1000.0)
+    attention = next(a for a in report["alerts"] if a["code"] == "break_glass_notes_unreported")
+    assert attention == {"code": "break_glass_notes_unreported", "count": 1, "severity": "warn"}
+    assert "sensitive detail" not in json.dumps(cap.capacity_summary(report))
+
+
 def test_controller_writes_evidence_alerts_on_escalation_and_repeats_hourly_while_critical(
     tmp_path: Path,
 ) -> None:

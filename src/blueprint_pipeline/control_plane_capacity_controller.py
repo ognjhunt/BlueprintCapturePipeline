@@ -33,6 +33,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -60,6 +61,10 @@ USAGE_ATTRIBUTION_ALERT_FRACTION = 0.9
 USAGE_PROJECTED_UNCLASSIFIED_ROOTS = 20
 RESIZE_RECEIPT_SCHEMA_VERSION = "control_plane_volume_resize_receipt.v1"
 DEFAULT_REPORT_ROOT = Path("/var/lib/blueprint/pipeline-control-plane/capacity")
+DEFAULT_RELEASE_RETIREMENT_SUMMARY = Path(
+    "/var/lib/blueprint/pipeline-control-plane/release-retention/latest-deploy-retirement.json"
+)
+DEFAULT_BREAK_GLASS_NOTES_ROOT = Path("/var/lib/blueprint/pipeline-control-plane/cleanup-receipts")
 DEFAULT_MOUNTS: tuple[str, ...] = ("/var/lib/blueprint",)
 WORK_VOLUME_MOUNT = "/mnt/blueprint-work"
 _DEFAULT_SURVEY = object()
@@ -128,6 +133,31 @@ def _read_json(path: Path) -> dict[str, Any] | None:
     except (OSError, ValueError):
         return None
     return loaded if isinstance(loaded, dict) else None
+
+
+def _read_attention_summary(path: Path) -> dict[str, Any] | None:
+    """Read a small local summary; distinguish absence from malformed evidence."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return {"status": "unreadable"}
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return {"status": "unreadable"}
+        raw = os.read(fd, 128 * 1024 + 1)
+    except OSError:
+        return {"status": "unreadable"}
+    finally:
+        os.close(fd)
+    if len(raw) > 128 * 1024:
+        return {"status": "unreadable"}
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        return {"status": "unreadable"}
+    return value if isinstance(value, dict) else {"status": "unreadable"}
 
 
 def live_reserved_bytes(
@@ -585,7 +615,7 @@ _SUMMARY_MOUNT_KEYS = (
 )
 _SUMMARY_ALERT_KEYS = (
     "code", "mount", "provider", "roles", "used_fraction", "days_until_floor", "root",
-    "allocated_bytes", "attributed_fraction", "severity", "reason",
+    "allocated_bytes", "attributed_fraction", "severity", "reason", "status", "alert_count", "count",
 )
 
 
@@ -870,6 +900,8 @@ def run_controller(
     survey: Callable[..., Mapping[str, Any]] | None | object = _DEFAULT_SURVEY,
     survey_interval_seconds: float = DEFAULT_SURVEY_INTERVAL_SECONDS,
     force_survey: bool = False,
+    release_retirement_summary_path: Path = DEFAULT_RELEASE_RETIREMENT_SUMMARY,
+    break_glass_notes_root: Path = DEFAULT_BREAK_GLASS_NOTES_ROOT,
 ) -> dict[str, Any]:
     """One tick. By default, survey when stale or forced. Pass ``survey=None``
     only to reuse an existing report without scanning."""
@@ -921,6 +953,27 @@ def run_controller(
         report["usage"] = usage_projection(usage, now=observed, error=usage_error)
     if usage is not None and (warnings := usage_alerts(usage)):
         report["alerts"].extend(warnings)
+        if report["level"] == "ok":
+            report["level"] = "warning"
+    retirement = _read_attention_summary(release_retirement_summary_path)
+    if retirement is not None:
+        retirement_alerts = retirement.get("alerts")
+        alert_count = len(retirement_alerts) if isinstance(retirement_alerts, list) else 0
+        if retirement.get("status") != "applied" or alert_count:
+            report["alerts"].append({"code": "release_retirement_attention",
+                                     "status": str(retirement.get("status") or "unreadable"),
+                                     "alert_count": alert_count})
+            if report["level"] == "ok":
+                report["level"] = "warning"
+    from .control_plane_break_glass import unreported_notes
+    try:
+        unreported_count = len(unreported_notes(break_glass_notes_root))
+    except (OSError, ValueError):
+        report["alerts"].append({"code": "break_glass_notes_unreadable"})
+        unreported_count = 0
+    if unreported_count:
+        report["alerts"].append({"code": "break_glass_notes_unreported", "count": unreported_count})
+    if unreported_count or any(a["code"] == "break_glass_notes_unreadable" for a in report["alerts"]):
         if report["level"] == "ok":
             report["level"] = "warning"
     if not webhook_url:
