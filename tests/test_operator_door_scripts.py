@@ -452,6 +452,8 @@ def test_hold_expiry_script_releases_only_matching_active_expired_generation(tmp
     path.write_text(json.dumps(record), encoding="utf-8")
     assert run(new_id) == 0
     assert log.read_text().splitlines() == [f"enable -- {unit}", f"--no-block start -- {unit}"]
-    assert json.loads(path.read_text())["status"] == "expired_released"
+    assert not path.exists()
+    archived = holds / "history" / f"{unit}.{new_id}.json"
+    assert json.loads(archived.read_text())["status"] == "expired_released"
     assert run(new_id) == 0
     assert log.read_text().splitlines() == [f"enable -- {unit}", f"--no-block start -- {unit}"], "expiry is idempotent"
