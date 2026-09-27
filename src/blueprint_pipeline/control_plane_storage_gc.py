@@ -79,7 +79,7 @@ from .control_plane_replay_cache_gc import (
 )
 from .control_plane_storage_gc_reasons import (
     SUMMARY_FILENAME, WalkMeter, build_storage_gc_summary, count_retained, entry_bytes,
-    evidence_protection_reason, live_pin_kinds, walked_bytes,
+    evidence_protection_reason, live_pin_kinds, pin_protection, walked_bytes,
 )
 from .control_plane_storage_pins import PINS_ROOT_ENV, live_pinned_paths
 # Kept under their old names for every existing caller.
@@ -1423,6 +1423,7 @@ def run_storage_gc(
                 now=clock,
                 classifier=classifier,
                 protection_checker=protection_reason,
+                protection_detail=lambda directory: pin_protection(directory, pins_root=pins_root, now=clock),
             )
             if apply and offload_enabled:
                 extra = {"publisher": publisher} if publisher is not None else {}

@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 import re
 import time
-from collections.abc import Callable, Mapping, MutableMapping, Sequence
+from collections.abc import Callable, Collection, Mapping, MutableMapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -47,21 +47,15 @@ EVIDENCE_PROTECTION_REASONS = (
 )
 
 
-class PinProtection(str):
-    """``protected_pin``, naming the live pins that hold a run: their kinds and how many there are.
+def pin_protection(
+    directory: Path, *, pins_root: str | Path, now: Callable[[], float]
+) -> tuple[str, frozenset[tuple[str, str]]] | None:
+    """The live pins that name ``directory``, lie inside it or contain it: their kinds and identities, or None.
 
-    It is the reason string itself, so it compares, hashes and serializes as
-    ``protected_pin`` wherever a reason is read, and ``count_retained`` alone reads
-    its detail. ``pin_kind`` is the kinds joined by ``+``, as ``live_pin_kinds``
-    joins them, and ``owner_count`` the number of pins: never a path or an owner.
+    The kinds are sorted and joined by ``+``, as ``live_pin_kinds`` joins them.
+    ``evidence_protection_reason`` decides ``protected_pin`` from the same pins,
+    and the evidence manifest counts their kind and owners from this.
     """
-
-    pin_kind = "unknown"
-    owner_count = 0
-
-
-def _pin_protection(directory: Path, *, pins_root: str | Path, now: Callable[[], float]) -> PinProtection | None:
-    """The live pins that name ``directory``, lie inside it or contain it, as a reason; None when none do."""
 
     holders: set[tuple[str, str]] = set()
     for pin in load_storage_pins(pins_root, now=now):
@@ -72,10 +66,7 @@ def _pin_protection(directory: Path, *, pins_root: str | Path, now: Callable[[],
             holders.add((str(pin["kind"]), str(pin["owner_id"])))
     if not holders:
         return None
-    reason = PinProtection(PROTECTED_PIN)
-    reason.pin_kind = "+".join(sorted({kind for kind, _owner in holders}))
-    reason.owner_count = len(holders)
-    return reason
+    return "+".join(sorted({kind for kind, _owner in holders})), frozenset(holders)
 
 
 def evidence_protection_reason(
@@ -97,8 +88,8 @@ def evidence_protection_reason(
        read, which proves nothing is unreferenced;
     2. ``protected_process``, or ``protected_process_inventory_unreadable`` when a
        process entry could not be read and none was seen holding the directory;
-    3. ``protected_pin``: a live storage pin names it, lies inside it or contains it,
-       returned as a ``PinProtection`` that names those pins' kinds and number;
+    3. ``protected_pin``: a live storage pin names it, lies inside it or contains it
+       (``pin_protection`` names those pins);
     4. ``protected_settlement``: a settlement record reopens a path under it that
        the offload pointer does not retain;
     5. ``protected_queue``: a pending or processing queue message names it.
@@ -119,9 +110,8 @@ def evidence_protection_reason(
         return PROTECTED_PROCESS_INVENTORY_UNREADABLE
     if process:
         return PROTECTED_PROCESS
-    pinned = _pin_protection(directory, pins_root=pins_root, now=now)
-    if pinned is not None:
-        return pinned
+    if pin_protection(directory, pins_root=pins_root, now=now) is not None:
+        return PROTECTED_PIN
     if settlement_reopens_beyond_retained_receipts(directory.name, settlement_text):
         return PROTECTED_SETTLEMENT
     if directory.name in queue_reference_text(queue_roots):
@@ -130,17 +120,21 @@ def evidence_protection_reason(
 
 
 def count_retained(
-    by_reason: MutableMapping[str, dict[str, Any]], reason: str, size_bytes: int, *, kind: str | None = None
+    by_reason: MutableMapping[str, dict[str, Any]],
+    reason: str,
+    size_bytes: int,
+    *,
+    kind: str | None = None,
+    owners: Collection[Any] | None = None,
 ) -> None:
     """Count one retained entry of ``size_bytes`` under ``reason``, and under ``kind`` within it when given.
 
-    A ``PinProtection`` reason names its own kind and adds the pins holding the
-    entry to that kind's ``owner_count``.
+    ``owners``, when given with ``kind``, is every owner the caller has seen hold
+    an entry of that kind so far; the kind's ``owner_count`` is their number, so
+    an owner holding several entries counts once.
     """
 
-    owners = getattr(reason, "owner_count", None)
-    kind = kind if kind is not None else getattr(reason, "pin_kind", None)
-    row = by_reason.setdefault(str(reason), {"count": 0, "bytes": 0})
+    row = by_reason.setdefault(reason, {"count": 0, "bytes": 0})
     row["count"] += 1
     row["bytes"] += int(size_bytes)
     if kind is not None:
@@ -148,7 +142,7 @@ def count_retained(
         detail["count"] += 1
         detail["bytes"] += int(size_bytes)
         if owners is not None:
-            detail["owner_count"] = detail.get("owner_count", 0) + int(owners)
+            detail["owner_count"] = len(owners)
 
 
 class WalkMeter:
@@ -457,7 +451,6 @@ __all__ = [
     "PROTECTED_QUEUE",
     "PROTECTED_SETTLEMENT",
     "PROTECTED_UNREADABLE_SETTLEMENT",
-    "PinProtection",
     "SUMMARY_FILENAME",
     "SUMMARY_SCHEMA_VERSION",
     "build_storage_gc_summary",
@@ -465,6 +458,7 @@ __all__ = [
     "entry_bytes",
     "evidence_protection_reason",
     "live_pin_kinds",
+    "pin_protection",
     "WalkMeter",
     "walked_bytes",
 ]

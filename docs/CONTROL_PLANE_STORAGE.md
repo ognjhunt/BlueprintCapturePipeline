@@ -646,8 +646,8 @@ so each manifest (and its receipt) also records `walked_file_count` and
   `protected_pin`, `protected_settlement`, `protected_queue`. A `/proc` entry
   the tick cannot read protects the run (`protected_process_inventory_unreadable`)
   instead of failing the check. `protected_pin` carries `by_kind`: the kinds of
-  the live pins holding each run, and their `owner_count`, so the runs can be
-  checked against the pin proofs.
+  the live pins holding each run, with the number of distinct pins holding each
+  kind's runs (`owner_count`), so the runs can be checked against the pin proofs.
 - Terminal cache pins: every live pin is a candidate, with its `proof` and
   whether it is `enabled`, or a `kept` row with a typed reason, counted in
   `retained_counts`: `pin_young`, `pin_invalid` (no numeric creation time),

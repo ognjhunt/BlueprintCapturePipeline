@@ -20,13 +20,13 @@ import shutil
 import tarfile
 import tempfile
 import time
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .control_plane_storage_roots import require_storage_class
 from .control_plane_disk_budget import DEFAULT_RESERVATION_ROOT, reserve_control_plane_disk
-from .control_plane_storage_gc_reasons import WalkMeter, count_retained, entry_bytes, walked_bytes
+from .control_plane_storage_gc_reasons import PROTECTED_PIN, WalkMeter, count_retained, entry_bytes, walked_bytes
 from .decision_evidence_contracts import canonical_digest
 from .control_plane_retained_receipt import MAX_RECEIPT_BYTES, RETAINED_RECEIPTS
 from .task_evaluation_configured_scene_object_store import (
@@ -108,6 +108,7 @@ def build_evidence_offload_manifest(
     now: Callable[[], float] = time.time,
     classifier: Callable[..., Any] = require_storage_class,
     protection_checker: Callable[[Path], bool | str | None] | None = None,
+    protection_detail: Callable[[Path], tuple[str, Collection[Any]] | None] | None = None,
 ) -> dict[str, Any]:
     """List sealed run directories past their hot window, without mutating anything.
 
@@ -121,6 +122,9 @@ def build_evidence_offload_manifest(
     ``protected``), ``unsealed_no_window``, ``unsealed_recent`` and ``hot``.
     ``retained_counts`` keeps the four coarse counters it always had, and
     ``walked_file_count`` and ``walk_seconds`` what walking the trees cost.
+    ``protection_detail`` names the pins behind a ``protected_pin`` run, as
+    ``(kind, owners)``; ``protected_pin`` then counts ``by_kind``, with the number
+    of distinct owners holding each kind's runs.
     """
 
     if (
@@ -134,10 +138,19 @@ def build_evidence_offload_manifest(
     retained = {"active_or_unsealed": 0, "hot": 0, "already_offloaded": 0, "unsafe": 0}
     retained_by_reason: dict[str, dict[str, Any]] = {}
     walk = WalkMeter(_tree_snapshot)
+    pin_owners: dict[str, set[Any]] = {}
 
-    def retain(reason: str, counter: str, size: int) -> None:
+    def retain(reason: str, counter: str, size: int, directory: Path | None = None) -> None:
         retained[counter] += 1
-        count_retained(retained_by_reason, reason, size)
+        detail = (protection_detail(directory) if reason == PROTECTED_PIN and protection_detail is not None
+                  and directory is not None else None)
+        if detail is None:
+            count_retained(retained_by_reason, reason, size)
+            return
+        kind, holders = detail
+        owners = pin_owners.setdefault(kind, set())
+        owners.update(holders)
+        count_retained(retained_by_reason, reason, size, kind=kind, owners=owners)
 
     def protected_by(directory: Path) -> str | None:
         verdict = protection_checker(directory) if protection_checker is not None else None
@@ -171,7 +184,7 @@ def build_evidence_offload_manifest(
             receipt = _terminal_receipt(child)
             protection = protected_by(child)
             if protection is not None:
-                retain(protection, "active_or_unsealed", walked_bytes(walk, child))
+                retain(protection, "active_or_unsealed", walked_bytes(walk, child), child)
                 continue
             if receipt is None and abandoned_after_seconds is None:
                 retain("unsealed_no_window", "active_or_unsealed", walked_bytes(walk, child))
