@@ -312,6 +312,29 @@ def test_the_summary_stays_small_and_names_only_typed_reasons() -> None:
         "evidence_offload": None, "scene_workspace_retirement": None, "replay_cache_retention": None}
 
 
+def test_summary_ranks_global_reason_totals_before_phase_and_top_ten_caps() -> None:
+    one_byte_reasons = {
+        f"reason_{index:02d}": {"count": 1, "bytes": 1} for index in range(60)
+    }
+    one_byte_reasons["zz_shared"] = {"count": 1, "bytes": 1}
+    report = {
+        "status": "applied", "observed_at_epoch": NOW,
+        "derived_directories": {"status": "applied", "retained_by_reason": one_byte_reasons},
+        "content_store": {"status": "applied", "retained_by_reason": {
+            "zz_shared": {"count": 1, "bytes": 1},
+        }},
+    }
+
+    summary = reasons.build_storage_gc_summary(report)
+
+    assert "zz_shared" not in summary["phases"]["derived_directories"]["retained_by_reason"]
+    assert summary["top_retained_reasons"] == [
+        {"reason": "zz_shared", "bytes": 2},
+        {"reason": "reason_00", "bytes": 1},
+        {"reason": "reason_01", "bytes": 1},
+    ]
+
+
 def _quiet_tick(monkeypatch) -> None:
     """Every configured root empty: a tick that only reconciles an empty pin ledger."""
 
