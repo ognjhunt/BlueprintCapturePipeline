@@ -620,6 +620,34 @@ def test_articulated_configuration_authors_each_part_and_seals_one_assembly(comp
     assert len(authored_parts) == 2
 
 
+def test_a_refused_part_does_not_stop_the_parts_after_it(component, retained):
+    """2026-09-27 website dishwasher: the door's refusal left every later part unbuilt."""
+    from blueprint_pipeline.task_object_astra_authoring import AssetAuthoringError
+    configuration = _articulated_configuration()
+    retained.input["configuration"] = configuration
+    retained.config.clear()
+    retained.config.update(configuration)
+    Path(component.environment[driver._INPUT_ENV]).write_text(json.dumps(retained.input))
+    attempted = []
+
+    def author(**kw):
+        object_id = kw["request_value"]["object_id"]
+        attempted.append(object_id)
+        raise AssetAuthoringError("authoring_session_context_ceiling_exceeded" if object_id.endswith("carcass")
+                                  else "authoring_independent_review_limit_reached")
+
+    component.kwargs["authoring_executor"] = author
+    component.kwargs["package_candidate"] = None
+    with pytest.raises(Exception, match="articulated_parts_failed:carcass=authoring_session_context_ceiling_"
+                                        "exceeded;drawer=authoring_independent_review_limit_reached"):
+        driver.execute_astra_component(**component.kwargs)
+    # The first refusal no longer stops the second part from being authored.
+    assert attempted == ["source_cabinet__carcass", "source_cabinet__drawer"]
+    [failures] = list(retained.root.rglob("part_failures.json"))
+    record = json.loads(failures.read_text())
+    assert record["assembly_packaged"] is False and set(record["failed_parts"]) == {"carcass", "drawer"}
+
+
 # Computed on origin/main 8f22c8801 with this exact fixture (paths normalized,
 # request_digest dropped): a legacy drawer's plan and part requests must not
 # move, or an already-bought carcass is bought again.
