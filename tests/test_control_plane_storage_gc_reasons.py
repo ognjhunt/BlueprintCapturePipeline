@@ -18,7 +18,7 @@ from blueprint_pipeline import completed_replay_cache_retention as retention
 from blueprint_pipeline import control_plane_storage_gc_reasons as reasons
 from blueprint_pipeline import task_evaluation_configured_scene_object_store as store
 from blueprint_pipeline.control_plane_storage_gc import RUN_ACK, run_storage_gc
-from blueprint_pipeline.control_plane_storage_pins import release_storage_pin, write_storage_pin
+from blueprint_pipeline.control_plane_storage_pins import live_pinned_paths, release_storage_pin, write_storage_pin
 from tests.test_completed_replay_cache_retention import _refuse_reading
 from tests.test_task_evaluation_configured_scene_object_store import _ContentAddressedClient
 
@@ -132,3 +132,19 @@ def test_unreadable_process_inventory_protects_with_a_reason(tmp_path, monkeypat
     assert "phase_errors" not in applied
     assert applied["evidence_offload"]["offloaded_count"] == 0
     assert run.is_dir() and (run / "frames.bin").stat().st_size == 5000
+
+
+def test_pin_kinds_name_exactly_the_live_pinned_paths(tmp_path) -> None:
+    """The kind map only labels what ``live_pinned_paths`` pins; it never decides."""
+
+    pins = tmp_path / "pins"
+    first, shared, expired = (tmp_path / name for name in ("first", "shared", "expired"))
+    write_storage_pin(pins_root=pins, kind="activation", owner_id="act", paths=[first, shared], now=lambda: NOW)
+    write_storage_pin(pins_root=pins, kind="preparation", owner_id="prep", paths=[shared], now=lambda: NOW)
+    write_storage_pin(pins_root=pins, kind="compilation", owner_id="comp", paths=[expired], now=lambda: NOW,
+                      ttl_seconds=1)
+
+    kinds = reasons.live_pin_kinds(pins, now=lambda: NOW + 10)
+
+    assert kinds == {str(first): "activation", str(shared): "activation+preparation"}
+    assert set(kinds) == live_pinned_paths(pins, now=lambda: NOW + 10)

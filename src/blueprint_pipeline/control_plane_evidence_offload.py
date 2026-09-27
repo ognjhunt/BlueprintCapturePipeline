@@ -26,7 +26,7 @@ from typing import Any
 
 from .control_plane_storage_roots import require_storage_class
 from .control_plane_disk_budget import DEFAULT_RESERVATION_ROOT, reserve_control_plane_disk
-from .control_plane_storage_gc_reasons import count_retained
+from .control_plane_storage_gc_reasons import count_retained, entry_bytes, walked_bytes
 from .decision_evidence_contracts import canonical_digest
 from .control_plane_retained_receipt import MAX_RECEIPT_BYTES, RETAINED_RECEIPTS
 from .task_evaluation_configured_scene_object_store import (
@@ -81,24 +81,6 @@ def _tree_snapshot(directory: Path) -> tuple[float, int, int]:
             size += metadata.st_size
             count += 1
     return latest, size, count
-
-
-def _retained_bytes(directory: Path) -> int:
-    """The bytes a kept directory holds; one that vanished since it was listed holds none."""
-
-    try:
-        return _tree_snapshot(directory)[1]
-    except OSError:
-        return 0
-
-
-def _entry_bytes(entry: Path) -> int:
-    """A link's or a stray file's own size: an unsafe entry is never followed."""
-
-    try:
-        return entry.lstat().st_size
-    except OSError:
-        return 0
 
 
 def _terminal_receipt(directory: Path) -> str | None:
@@ -177,23 +159,23 @@ def build_evidence_offload_manifest(
             if child.name.startswith(".") or child.name.endswith(POINTER_SUFFIX):
                 continue
             if child.is_symlink() or not child.is_dir():
-                retain("unsafe", "unsafe", _entry_bytes(child))
+                retain("unsafe", "unsafe", entry_bytes(child))
                 continue
             # Published downloads retain their registry and closure metadata.
             # Their bulk payloads use per-artifact offload, never whole-run removal.
             if _has_result_registry(child):
-                retain("result_registry", "active_or_unsealed", _retained_bytes(child))
+                retain("result_registry", "active_or_unsealed", walked_bytes(_tree_snapshot, child))
                 continue
             if (root / f"{child.name}{POINTER_SUFFIX}").exists():
-                retain("already_offloaded", "already_offloaded", _retained_bytes(child))
+                retain("already_offloaded", "already_offloaded", walked_bytes(_tree_snapshot, child))
                 continue
             receipt = _terminal_receipt(child)
             protection = protected_by(child)
             if protection is not None:
-                retain(protection, "active_or_unsealed", _retained_bytes(child))
+                retain(protection, "active_or_unsealed", walked_bytes(_tree_snapshot, child))
                 continue
             if receipt is None and abandoned_after_seconds is None:
-                retain("unsealed_no_window", "active_or_unsealed", _retained_bytes(child))
+                retain("unsealed_no_window", "active_or_unsealed", walked_bytes(_tree_snapshot, child))
                 continue
             latest, size, count = _tree_snapshot(child)
             idle_seconds = observed_at - latest

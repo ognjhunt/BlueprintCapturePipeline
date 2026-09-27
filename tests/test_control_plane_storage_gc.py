@@ -230,6 +230,62 @@ def test_derived_directories_retire_only_when_unpinned_unqueued_and_idle(tmp_pat
         )
 
 
+def test_derived_manifest_names_each_retention_reason_with_bytes(tmp_path, monkeypatch) -> None:
+    """2026-09-27: the derived phase counted what it kept, but no count said how many bytes it
+    held, and a pinned count did not say what kind of pin held it."""
+
+    root = tmp_path / "launch-activations"
+    root.mkdir()
+    now, day = 12_000_000.0, 86400
+
+    def derived(name: str, size: int, *, age: float = 10 * day) -> Path:
+        directory = root / name
+        directory.mkdir()
+        (directory / "set.bin").write_bytes(b"d" * size)
+        for path in (directory / "set.bin", directory):
+            os.utime(path, (now - age, now - age))
+        return directory
+
+    derived("act-idle", 100)
+    by_activation = derived("act-pinned", 200)
+    by_two_kinds = derived("act-pinned-twice", 300)
+    derived("act-queued", 400)
+    derived("act-young", 500, age=3600)
+    (root / "act-link").symlink_to(root / "act-idle")
+    (root / "stray.bin").write_bytes(b"s" * 9)
+    pins = tmp_path / "pins"
+    for kind, owner, path in (("activation", "act-pinned", by_activation),
+                              ("activation", "act-pinned-twice", by_two_kinds),
+                              ("preparation", "prep-1", by_two_kinds)):
+        write_storage_pin(pins_root=pins, kind=kind, owner_id=owner, paths=[path], now=lambda: now)
+    queue = tmp_path / "queue"
+    (queue / "pending").mkdir(parents=True)
+    (queue / "pending" / "row.json").write_text(json.dumps({"activation_id": "act-queued"}), encoding="utf-8")
+    walked: list[str] = []
+    real_snapshot = gc_module._tree_snapshot
+    monkeypatch.setattr(gc_module, "_tree_snapshot", lambda path: walked.append(path.name) or real_snapshot(path))
+
+    manifest = build_derived_directory_manifest(
+        derived_roots=[root], pins_root=pins, queue_roots=[queue], minimum_age_seconds=day,
+        now=lambda: now, classifier=_noclass,
+    )
+
+    assert manifest["retained_by_reason"] == {
+        "pinned": {"count": 2, "bytes": 500, "by_kind": {
+            "activation": {"count": 1, "bytes": 200},
+            "activation+preparation": {"count": 1, "bytes": 300},
+        }},
+        "queue_referenced": {"count": 1, "bytes": 400},
+        "young": {"count": 1, "bytes": 500},
+        "unsafe": {"count": 2, "bytes": os.lstat(root / "act-link").st_size + 9},
+    }
+    assert manifest["retained_counts"] == {"pinned": 2, "queue_referenced": 1, "young": 1, "unsafe": 2}
+    assert [row["name"] for row in manifest["candidates"]] == ["act-idle"]
+    assert manifest["candidate_bytes"] == 100
+    # Each directory is walked once; a link or stray file never is.
+    assert sorted(walked) == ["act-idle", "act-pinned", "act-pinned-twice", "act-queued", "act-young"]
+
+
 def test_apply_skips_a_directory_pinned_or_queued_after_the_dry_run(tmp_path) -> None:
     root = tmp_path / "compiled-episodes"
     root.mkdir()

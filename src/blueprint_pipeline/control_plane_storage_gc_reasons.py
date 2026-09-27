@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from . import completed_replay_cache_retention as retention
-from .control_plane_storage_pins import live_pinned_paths
+from .control_plane_storage_pins import live_pinned_paths, load_storage_pins
 
 PROTECTED_UNREADABLE_SETTLEMENT = "protected_unreadable_settlement"
 PROTECTED_PROCESS = "protected_process"
@@ -104,6 +104,43 @@ def count_retained(
         detail["bytes"] += int(size_bytes)
 
 
+def walked_bytes(walk: Callable[[Path], tuple[Any, ...]], directory: Path) -> int:
+    """The bytes ``walk`` (a manifest's ``_tree_snapshot``) finds in a kept directory.
+
+    A directory that vanished since it was listed holds none; sizing what is
+    kept never fails the phase that keeps it.
+    """
+
+    try:
+        return int(walk(directory)[1])
+    except OSError:
+        return 0
+
+
+def entry_bytes(entry: Path) -> int:
+    """A link's or a stray file's own size: an unsafe entry is never followed."""
+
+    try:
+        return entry.lstat().st_size
+    except OSError:
+        return 0
+
+
+def live_pin_kinds(pins_root: str | Path, *, now: Callable[[], float]) -> dict[str, str]:
+    """Each live-pinned path with the kinds of the pins that name it, sorted and joined by ``+``.
+
+    For reporting only: the paths are exactly ``live_pinned_paths``, which alone
+    decides what is pinned.
+    """
+
+    kinds: dict[str, set[str]] = {}
+    for pin in load_storage_pins(pins_root, now=now):
+        if pin["status"] == "live":
+            for path in pin.get("paths") or []:
+                kinds.setdefault(str(path), set()).add(str(pin["kind"]))
+    return {path: "+".join(sorted(names)) for path, names in kinds.items()}
+
+
 __all__ = [
     "EVIDENCE_PROTECTION_REASONS",
     "PROTECTED_PIN",
@@ -113,5 +150,8 @@ __all__ = [
     "PROTECTED_SETTLEMENT",
     "PROTECTED_UNREADABLE_SETTLEMENT",
     "count_retained",
+    "entry_bytes",
     "evidence_protection_reason",
+    "live_pin_kinds",
+    "walked_bytes",
 ]

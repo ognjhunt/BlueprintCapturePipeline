@@ -69,7 +69,9 @@ from .control_plane_evidence_offload import (
 from .control_plane_replay_cache_gc import (
     REPLAY_PARENT_ROOTS_ENV, _truthy_setting, reclaim_replay_caches, replay_cache_retention_setting,
 )
-from .control_plane_storage_gc_reasons import evidence_protection_reason
+from .control_plane_storage_gc_reasons import (
+    count_retained, entry_bytes, evidence_protection_reason, live_pin_kinds, walked_bytes,
+)
 from .control_plane_storage_pins import PINS_ROOT_ENV, live_pinned_paths
 from .control_plane_storage_roots import require_storage_class
 from .decision_evidence_contracts import canonical_digest
@@ -424,7 +426,11 @@ def build_derived_directory_manifest(
     now: Callable[[], float] = time.time,
     classifier: Callable[..., Any] = require_storage_class,
 ) -> dict[str, Any]:
-    """List derived directories no pin, queue message, or recent write still needs."""
+    """List derived directories no pin, queue message, or recent write still needs.
+
+    ``retained_by_reason`` gives the count and bytes behind each ``retained_counts``
+    reason, and for ``pinned`` the kinds of the pins that hold them (``by_kind``).
+    """
 
     if (
         not derived_roots
@@ -438,6 +444,8 @@ def build_derived_directory_manifest(
     queue_text = _queue_reference_text(queue_roots)
     candidates: list[dict[str, Any]] = []
     retained = {"pinned": 0, "queue_referenced": 0, "young": 0, "unsafe": 0}
+    by_reason: dict[str, dict[str, Any]] = {}
+    pin_kinds: dict[str, str] | None = None
     roots: list[str] = []
     for raw_root in derived_roots:
         root = Path(raw_root).expanduser()
@@ -448,16 +456,22 @@ def build_derived_directory_manifest(
         for child in _derived_children(root):
             if child.is_symlink() or not child.is_dir():
                 retained["unsafe"] += 1
+                count_retained(by_reason, "unsafe", entry_bytes(child))
                 continue
             if str(child) in pinned or str(child.resolve()) in pinned:
                 retained["pinned"] += 1
+                pin_kinds = live_pin_kinds(pins_root, now=lambda: observed_at) if pin_kinds is None else pin_kinds
+                kind = pin_kinds.get(str(child)) or pin_kinds.get(str(child.resolve())) or "unknown"
+                count_retained(by_reason, "pinned", walked_bytes(_tree_snapshot, child), kind=kind)
                 continue
             if child.name in queue_text:
                 retained["queue_referenced"] += 1
+                count_retained(by_reason, "queue_referenced", walked_bytes(_tree_snapshot, child))
                 continue
             latest, size = _tree_snapshot(child)
             if observed_at - latest < minimum_age_seconds:
                 retained["young"] += 1
+                count_retained(by_reason, "young", size)
                 continue
             candidates.append(
                 {
@@ -476,6 +490,7 @@ def build_derived_directory_manifest(
         "candidate_bytes": sum(row["size_bytes"] for row in candidates),
         "candidates": candidates,
         "retained_counts": retained,
+        "retained_by_reason": by_reason,
         "evidence_roots_scanned": False,
         "manifest_digest": "",
     }
