@@ -238,7 +238,27 @@ When a run stops:
   was swapped. The copy never deletes, and the bind would expose everything on
   the volume. Something there (an earlier run's copy of what was since removed,
   or a store copy that is no longer bound) would go live. Check the listed paths
-  under `/mnt/blueprint-work`, move them aside, and rerun.
+  under `/mnt/blueprint-work`, move them aside, and rerun. This advice does not
+  apply after an interrupted consolidation (next item). There the listed
+  entries are the old binds' live bytes, only unmounted: restore the binds
+  instead.
+- After an abnormal stop, the plan may show
+  `blocked  <root> (/etc/fstab mounts <path> inside the root)`, and apply refuses
+  the same way. An abnormal stop is a run that was killed, lost its terminal, or
+  saw the host go down in the middle of a consolidation. It unmounted some old
+  binds before it could record the tree in `/etc/fstab`, which still lists them.
+  Nothing was deleted: the old binds' bytes are on the volume, and the tree's own
+  bytes are still in place.
+  - Put the old layout back first. Reboot, or mount each path the line names
+    from `/etc/fstab` (`sudo mount <path>`, or `sudo mount -a`), until
+    `findmnt -R /var/lib/blueprint/task-evaluation-inputs` shows the old binds
+    again. Then rerun.
+  - Do not delete those `/etc/fstab` lines to get past the block.
+  - If the plan instead says that an earlier move kept
+    `<root>.migrated-to-volume` or left `<root>.new-mount-point`, and the root
+    is not mounted, the stop came in the middle of the swap itself. Move the
+    original back to `<root>` in place of the empty mount point, restore the
+    old binds the same way, and rerun.
 - `refusing: could not unmount …` means the old binds are back in place.
   `fuser -vm <path>` shows what holds the path. Rerun once it is free.
 - `refusing to remove <root>.migrated-to-volume` means the root is already bound
