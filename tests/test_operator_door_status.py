@@ -50,6 +50,29 @@ class FakeRunner:
         return CommandResult(0, "", "")
 
 
+CAPACITY_SUMMARY = {
+    "schema_version": "control_plane_capacity_summary.v1",
+    "observed_at_epoch": 1_000.0,
+    "level": "warning",
+    "report_digest": "sha256:" + "0" * 64,
+    "alerts": [{"code": "usage_unclassified_root", "root": "/var/lib/blueprint/x", "allocated_bytes": 2 * 1024**3}],
+    "mounts": [{"mount": "/var/lib/blueprint", "status": "measured", "level": "ok", "free_bytes": 1}],
+    "usage": {
+        "status": "complete", "observed_at_epoch": 900.0, "age_seconds": 100.0,
+        "mounts": [{"mount": "/", "used_bytes": 100, "surveyed_bytes": 97, "classified_bytes": 90,
+                    "attributed_fraction": 0.97}],
+        "by_class": [{"storage_class": "work", "allocated_bytes": 60, "apparent_bytes": 58, "files": 3}],
+        "top_roots": [{"root": "/var/lib/blueprint/pubsub-handoffs", "storage_class": "work", "allocated_bytes": 60}],
+        "top_owners": [{"owner": "scene:site-capture-1", "root": "/var/lib/blueprint/pubsub-handoffs",
+                        "storage_class": "work", "allocated_bytes": 60}],
+        "unclassified_roots": [{"root": "/var/lib/blueprint/x", "allocated_bytes": 2 * 1024**3}],
+    },
+    "volume_resize": None,
+    # Not a summary key: the door must never pass it through.
+    "project_spend": {"spend_usd": 3.0},
+}
+
+
 @pytest.fixture()
 def host_tree(tmp_path: Path) -> dict[str, Path]:
     base = tmp_path.resolve()
@@ -77,7 +100,10 @@ def host_tree(tmp_path: Path) -> dict[str, Path]:
     link = base / "active"
     os.symlink(releases, link)
     (base / "door" / "requests" / "pending" / "x.json").write_text("{}", encoding="utf-8")
-    return {"base": base, "state": state, "link": link}
+    summary = state / "capacity" / "summary.json"
+    summary.parent.mkdir()
+    summary.write_text(json.dumps(CAPACITY_SUMMARY), encoding="utf-8")
+    return {"base": base, "state": state, "link": link, "summary": summary}
 
 
 def _config(tree: dict[str, Path]) -> DoorConfig:
@@ -88,6 +114,7 @@ def _config(tree: dict[str, Path]) -> DoorConfig:
         active_release_link=str(tree["link"]),
         state_root=str(tree["base"] / "door"),
         controller_units=("blueprint-pipeline-intake.service",),
+        capacity_summary=str(tree["summary"]),
     )
 
 
@@ -191,3 +218,24 @@ def test_a_receipt_with_credential_shaped_content_names_the_refusal(host_tree: d
     newest = status["deploys"]["recent_receipts"][0]
     assert newest["name"] == receipt.name and newest["error"] == "secret_content_refused"
     assert "status" not in newest
+
+
+def test_status_reports_capacity_usage(host_tree: dict[str, Path]) -> None:
+    status = build_status(_config(host_tree), _host(host_tree, FakeRunner({})), caller={"name": "cloud"})
+    assert status["capacity"]["level"] == "warning"
+    assert status["capacity"]["usage"]["top_owners"][0]["owner"] == "scene:site-capture-1"
+    assert "project_spend" not in status["capacity"]
+    assert set(status["disk"])
+
+
+def test_status_capacity_section_fails_soft(host_tree: dict[str, Path]) -> None:
+    host_tree["summary"].unlink()
+    status = build_status(_config(host_tree), _host(host_tree, FakeRunner({})), caller={})
+    assert status["capacity"] == {"error": "capacity_unavailable:FileNotFoundError"}
+    assert status["active_release"]["commit"] == "a" * 40
+
+
+def test_a_capacity_summary_with_credential_shaped_content_is_refused(host_tree: dict[str, Path]) -> None:
+    host_tree["summary"].write_text(json.dumps({**CAPACITY_SUMMARY, "level": "sk-" + "A" * 30}), encoding="utf-8")
+    status = build_status(_config(host_tree), _host(host_tree, FakeRunner({})), caller={})
+    assert status["capacity"] == {"error": "capacity_unavailable:SecretContentRefused"}
