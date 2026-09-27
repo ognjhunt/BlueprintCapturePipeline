@@ -259,3 +259,138 @@ def test_invalid_budget_configuration_waits_instead_of_crashing_the_gate(tmp_pat
                                        disk_usage=_usage(80.0), now=1.0)
     assert report["level"] == "critical"
     assert report["alerts"] == [{"mount": str(tmp_path), "code": "mount_configuration_invalid"}]
+
+
+def _survey_result(**overrides):
+    result = {"schema_version": "control_plane_disk_usage_survey.v1", "status": "complete",
+              "observed_at_epoch": 1_000.0, "mounts": [], "by_class": [], "top_roots": [],
+              "top_owners": [], "unclassified_roots": []}
+    result.update(overrides)
+    return result
+
+
+def _no_project_spend(monkeypatch, value=None):
+    monkeypatch.setattr(
+        "blueprint_pipeline.task_evaluation_scene_spend.refresh_configured_scene_project_spend",
+        lambda: value,
+    )
+
+
+def test_summary_is_door_readable_and_secret_free(tmp_path, monkeypatch):
+    # Project spend is in the root-only report and never in the door-readable summary.
+    _no_project_spend(monkeypatch, {"spend_usd": 12.5})
+    previous = os.umask(0o077)  # the capacity unit's UMask
+    try:
+        report = cap.run_controller(mounts=[str(tmp_path)], report_root=tmp_path / "capacity",
+            reservation_root=tmp_path / "ledger", webhook_url="", volume=None, ack="", token="",
+            disk_usage=_usage(free_gib=100.0), now=1_000.0,
+            survey=lambda **_k: {"schema_version": "control_plane_disk_usage_survey.v1", "status": "complete",
+                                 "observed_at_epoch": 1_000.0, "mounts": [], "by_class": [], "top_roots": [],
+                                 "top_owners": [], "unclassified_roots": [{"root": "/var/lib/blueprint/x",
+                                                                           "allocated_bytes": 2 * GIB}]})
+    finally:
+        os.umask(previous)
+    summary_path = tmp_path / "capacity" / "summary.json"
+    assert oct(summary_path.stat().st_mode & 0o777) == "0o644"
+    assert oct((tmp_path / "capacity").stat().st_mode & 0o777) == "0o755"
+    assert oct((tmp_path / "capacity" / "usage-latest.json").stat().st_mode & 0o777) == "0o644"
+    summary = json.loads(summary_path.read_text())
+    assert summary["schema_version"] == "control_plane_capacity_summary.v1"
+    assert "project_spend" not in summary and "provider_funding" not in summary
+    assert report["project_spend"] == {"spend_usd": 12.5}
+    assert {"mount": None, "code": "usage_unclassified_root", "root": "/var/lib/blueprint/x"} in [
+        {k: a.get(k) for k in ("mount", "code", "root")} for a in report["alerts"]]
+    assert report["level"] == summary["level"] == "warning"
+    assert summary["usage"]["unclassified_roots"] == [{"root": "/var/lib/blueprint/x", "allocated_bytes": 2 * GIB}]
+    assert summary["usage"]["age_seconds"] == 0.0
+    assert set(summary["mounts"][0]) <= {"mount", "status", "total_bytes", "free_bytes", "used_fraction",
+                                         "floor_bytes", "reserved_bytes", "available_bytes", "refused_roles",
+                                         "forecast", "level"}
+    assert summary["report_digest"] == report["report_digest"]
+    latest = json.loads((tmp_path / "capacity" / "latest.json").read_text())
+    assert latest["usage"] == summary["usage"]
+
+
+def test_survey_runs_at_most_hourly(tmp_path, monkeypatch):
+    _no_project_spend(monkeypatch)
+    calls = []
+    def survey(**kwargs):
+        calls.append(kwargs)
+        return {"schema_version": "control_plane_disk_usage_survey.v1", "status": "complete",
+                "observed_at_epoch": 1_000.0, "mounts": [], "by_class": [], "top_roots": [],
+                "top_owners": [], "unclassified_roots": []}
+    for now in (1_000.0, 1_600.0, 4_700.0):
+        cap.run_controller(mounts=[str(tmp_path)], report_root=tmp_path / "capacity",
+            reservation_root=tmp_path / "ledger", webhook_url="", volume=None, ack="", token="",
+            disk_usage=_usage(free_gib=100.0), now=now, survey=survey)
+    assert len(calls) == 2
+    assert calls[0] == {"mounts": [str(tmp_path), "/"]}
+    forced = cap.run_controller(mounts=[str(tmp_path)], report_root=tmp_path / "capacity",
+        reservation_root=tmp_path / "ledger", webhook_url="", volume=None, ack="", token="",
+        disk_usage=_usage(free_gib=100.0), now=4_800.0, survey=survey, force_survey=True)
+    assert len(calls) == 3 and forced["usage"]["age_seconds"] == 3_800.0
+
+
+def test_a_failed_survey_keeps_the_last_one_and_never_stops_the_tick(tmp_path, monkeypatch):
+    _no_project_spend(monkeypatch)
+    common = dict(mounts=[str(tmp_path)], report_root=tmp_path / "capacity", reservation_root=tmp_path / "ledger",
+                  webhook_url="", volume=None, ack="", token="", disk_usage=_usage(free_gib=100.0))
+    cap.run_controller(**common, now=1_000.0, survey=lambda **_k: _survey_result(
+        top_owners=[{"owner": "scene:s", "root": "/r", "storage_class": "work", "allocated_bytes": 1}]))
+
+    def broken(**_kwargs):
+        raise RuntimeError("walk failed")
+
+    report = cap.run_controller(**common, now=9_000.0, survey=broken)
+    assert report["usage"]["error"] == "usage_survey_failed:RuntimeError"
+    assert report["usage"]["top_owners"][0]["owner"] == "scene:s"
+    assert report["usage"]["age_seconds"] == 8_000.0
+    assert json.loads((tmp_path / "capacity" / "summary.json").read_text())["usage"]["error"] == (
+        "usage_survey_failed:RuntimeError")
+    unsurveyed = cap.run_controller(**{**common, "report_root": tmp_path / "fresh"}, now=1_000.0, survey=broken)
+    assert unsurveyed["usage"] == {"status": "unavailable", "error": "usage_survey_failed:RuntimeError"}
+    assert unsurveyed["level"] == "ok"
+
+
+def test_low_attribution_warns_but_never_masks_critical(tmp_path, monkeypatch):
+    _no_project_spend(monkeypatch)
+    survey = lambda **_k: _survey_result(mounts=[  # noqa: E731
+        {"mount": "/", "used_bytes": 100, "surveyed_bytes": 50, "classified_bytes": 40, "attributed_fraction": 0.5}])
+    common = dict(mounts=[str(tmp_path)], reservation_root=tmp_path / "ledger", webhook_url="", volume=None,
+                  ack="", token="", survey=survey, now=1_000.0)
+    warned = cap.run_controller(**common, report_root=tmp_path / "a", disk_usage=_usage(free_gib=100.0))
+    assert {"mount": "/", "code": "usage_attribution_low", "attributed_fraction": 0.5} in warned["alerts"]
+    assert warned["level"] == "warning"
+    critical = cap.run_controller(**common, report_root=tmp_path / "b", disk_usage=_usage(free_gib=9.0))
+    assert critical["level"] == "critical"
+
+
+def test_summary_stays_under_128_kib(tmp_path):
+    report = {"schema_version": cap.SCHEMA_VERSION, "observed_at_epoch": 1.0, "level": "warning",
+              "report_digest": "sha256:" + "0" * 64, "mounts": [],
+              "alerts": [{"code": "usage_unclassified_root", "root": f"/var/lib/blueprint/{index:05d}" + "x" * 200,
+                          "allocated_bytes": 2 * GIB} for index in range(2_000)],
+              "usage": {"status": "complete", "top_owners": [], "top_roots": [], "unclassified_roots": []}}
+    cap.write_report(tmp_path / "capacity", report)
+    text = (tmp_path / "capacity" / "summary.json").read_text()
+    summary = json.loads(text)
+    assert len(text.encode()) <= 128 * 1024
+    assert summary["truncated"] is True and 0 < len(summary["alerts"]) < 2_000
+    assert summary["alerts"][0]["root"].startswith("/var/lib/blueprint/00000")
+
+
+def test_cli_survey_flag_forces_a_survey(tmp_path, monkeypatch):
+    seen = {}
+
+    def fake_run_controller(**kwargs):
+        seen.update(kwargs)
+        return {"level": "ok", "alerts": [], "report_digest": "sha256:0"}
+
+    monkeypatch.setattr(cap, "run_controller", fake_run_controller)
+    monkeypatch.setenv("BLUEPRINT_CAPACITY_SURVEY_INTERVAL_SECONDS", "900")
+    monkeypatch.delenv("BLUEPRINT_CAPACITY_VOLUME_ID", raising=False)
+    assert cap.main(["--survey", "--mount", str(tmp_path), "--report-root", str(tmp_path / "capacity")]) == 0
+    assert seen["force_survey"] is True and seen["survey_interval_seconds"] == 900
+    assert seen["survey"] is cap.survey_usage
+    assert cap.main(["--mount", str(tmp_path), "--report-root", str(tmp_path / "capacity")]) == 0
+    assert seen["force_survey"] is False

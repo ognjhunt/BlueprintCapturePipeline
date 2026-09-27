@@ -15,6 +15,12 @@ resizable block volume is configured and acknowledged, grows it one step and
 resizes the filesystem online.  The report it writes is ``evidence_hot``: the
 capacity record of the host, never pruned.
 
+At most hourly it also surveys usage (``control_plane_disk_usage.survey_usage``):
+every byte on its mounts and the root disk, once per inode, by storage class, root
+and owner.  The survey is written to ``usage-latest.json``, a compact projection is
+embedded in the report, and every tick writes ``summary.json``: a secret-free view
+of the report that the operator door, which runs as the service account, can read.
+
 It spends nothing unless the resize acknowledgement is set, and even then it
 grows only the configured volume, only up to the configured maximum, only when
 the volume's mount is critical.
@@ -36,9 +42,19 @@ from typing import Any
 
 from . import control_plane_disk_budget as disk_budget
 from .control_plane_disk_budget import DEFAULT_RESERVATION_ROOT
+from .control_plane_disk_usage import SURVEY_SCHEMA_VERSION, survey_usage
 from .decision_evidence_contracts import canonical_digest
 
 SCHEMA_VERSION = "control_plane_capacity_report.v1"
+SUMMARY_SCHEMA_VERSION = "control_plane_capacity_summary.v1"
+USAGE_FILENAME = "usage-latest.json"
+SUMMARY_FILENAME = "summary.json"
+# The door's status reader refuses files over 256 KiB; the summary keeps half that.
+SUMMARY_MAX_BYTES = 128 * 1024
+DEFAULT_SURVEY_INTERVAL_SECONDS = 60 * 60
+USAGE_UNCLASSIFIED_ALERT_BYTES = 1024**3
+USAGE_ATTRIBUTION_ALERT_FRACTION = 0.9
+USAGE_PROJECTED_UNCLASSIFIED_ROOTS = 20
 RESIZE_RECEIPT_SCHEMA_VERSION = "control_plane_volume_resize_receipt.v1"
 DEFAULT_REPORT_ROOT = Path("/var/lib/blueprint/pipeline-control-plane/capacity")
 DEFAULT_MOUNTS: tuple[str, ...] = ("/var/lib/blueprint",)
@@ -60,6 +76,7 @@ VOLUME_DEVICE_ENV = "BLUEPRINT_CAPACITY_VOLUME_DEVICE"
 VOLUME_MAX_GIB_ENV = "BLUEPRINT_CAPACITY_VOLUME_MAX_GIB"
 VOLUME_STEP_GIB_ENV = "BLUEPRINT_CAPACITY_VOLUME_STEP_GIB"
 RESIZE_ACK_ENV = "BLUEPRINT_CAPACITY_AUTORESIZE_ACK"
+SURVEY_INTERVAL_ENV = "BLUEPRINT_CAPACITY_SURVEY_INTERVAL_SECONDS"
 DO_TOKEN_FILE_ENV = "DIGITALOCEAN_API_TOKEN_FILE"
 DO_VOLUME_ACTIONS_URL = "https://api.digitalocean.com/v2/volumes/{volume_id}/actions"
 
@@ -309,6 +326,177 @@ def build_capacity_report(
     return report
 
 
+def survey_mounts(mounts: Sequence[str | Path]) -> list[str]:
+    """The controller's mounts plus ``/``: the usage survey also answers for the root disk."""
+
+    listed = [str(mount) for mount in mounts]
+    if "/" not in {os.path.normpath(mount) for mount in listed}:
+        listed.append("/")
+    return listed
+
+
+def _write_public_json(path: Path, document: Mapping[str, Any]) -> None:
+    """Replace ``path`` atomically with a world-readable (0644) JSON document.
+
+    The unit's ``UMask=0077`` makes new files root-only, so the mode is set before
+    the rename and the published file is never unreadable to the door.
+    """
+
+    temporary = path.with_name(f".{path.name}-{os.getpid()}.tmp")
+    try:
+        temporary.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        os.chmod(temporary, 0o644)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _refresh_usage(
+    report_root: Path,
+    *,
+    survey: Callable[..., Mapping[str, Any]] | None,
+    mounts: Sequence[str | Path],
+    interval_seconds: float,
+    force: bool,
+    now: float,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """The latest usage survey, re-run when it is missing, stale or forced, and any error."""
+
+    path = report_root / USAGE_FILENAME
+    latest = _read_json(path)
+    if latest is not None and latest.get("schema_version") != SURVEY_SCHEMA_VERSION:
+        latest = None
+    if survey is None:
+        return latest, None
+    observed_at = (latest or {}).get("observed_at_epoch")
+    fresh = (
+        isinstance(observed_at, (int, float))
+        and not isinstance(observed_at, bool)
+        and 0 <= now - float(observed_at) < interval_seconds
+    )
+    if fresh and not force:
+        return latest, None
+    try:
+        result = survey(mounts=survey_mounts(mounts))
+    except Exception as exc:  # noqa: BLE001 - a failed survey must never stop the capacity tick
+        return latest, f"usage_survey_failed:{type(exc).__name__}"
+    if not isinstance(result, Mapping) or result.get("schema_version") != SURVEY_SCHEMA_VERSION:
+        return latest, "usage_survey_invalid"
+    try:
+        report_root.mkdir(parents=True, exist_ok=True, mode=0o750)
+        _write_public_json(path, result)
+    except OSError as exc:
+        return dict(result), f"usage_survey_unwritten:{type(exc).__name__}"
+    return dict(result), None
+
+
+def usage_projection(
+    survey: Mapping[str, Any] | None, *, now: float, error: str | None = None
+) -> dict[str, Any]:
+    """The compact usage view embedded in the report and in the door-readable summary."""
+
+    if survey is None:
+        projection: dict[str, Any] = {"status": "unavailable"}
+    else:
+        observed_at = survey.get("observed_at_epoch")
+        timed = isinstance(observed_at, (int, float)) and not isinstance(observed_at, bool)
+        projection = {
+            "observed_at_epoch": observed_at if timed else None,
+            "age_seconds": round(max(0.0, now - float(observed_at)), 1) if timed else None,
+            "status": survey.get("status"),
+            "survey_digest": survey.get("survey_digest"),
+            **{key: list(survey.get(key) or []) for key in ("mounts", "by_class", "top_roots", "top_owners")},
+            "unclassified_roots": list(survey.get("unclassified_roots") or [])[
+                :USAGE_PROJECTED_UNCLASSIFIED_ROOTS
+            ],
+        }
+    if error:
+        projection["error"] = error
+    return projection
+
+
+def usage_alerts(survey: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Warnings from a survey: large unclassified roots and poorly attributed mounts."""
+
+    def number(value: Any) -> bool:
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+    alerts: list[dict[str, Any]] = []
+    for row in survey.get("unclassified_roots") or []:
+        size = row.get("allocated_bytes") if isinstance(row, Mapping) else None
+        if number(size) and size > USAGE_UNCLASSIFIED_ALERT_BYTES:
+            alerts.append({"code": "usage_unclassified_root", "root": row.get("root"), "allocated_bytes": size})
+    for row in survey.get("mounts") or []:
+        fraction = row.get("attributed_fraction") if isinstance(row, Mapping) else None
+        if number(fraction) and fraction < USAGE_ATTRIBUTION_ALERT_FRACTION:
+            alerts.append({"mount": row.get("mount"), "code": "usage_attribution_low",
+                           "attributed_fraction": fraction})
+    return alerts
+
+
+_SUMMARY_MOUNT_KEYS = (
+    "mount", "status", "total_bytes", "free_bytes", "used_fraction", "floor_bytes",
+    "reserved_bytes", "available_bytes", "refused_roles", "forecast", "level",
+)
+_SUMMARY_ALERT_KEYS = (
+    "code", "mount", "provider", "roles", "used_fraction", "days_until_floor", "root",
+    "allocated_bytes", "attributed_fraction",
+)
+
+
+def capacity_summary(report: Mapping[str, Any], *, max_bytes: int = SUMMARY_MAX_BYTES) -> dict[str, Any]:
+    """The secret-free projection of a report that the operator door reads.
+
+    Named keys only: no project spend, no provider funding, no alert error text and
+    no URLs. When the document would exceed ``max_bytes`` its longest list is halved
+    until it fits, and ``truncated`` says so.
+    """
+
+    usage = report.get("usage")
+    resize = report.get("volume_resize")
+    summary: dict[str, Any] = {
+        "schema_version": SUMMARY_SCHEMA_VERSION,
+        "observed_at_epoch": report.get("observed_at_epoch"),
+        "level": report.get("level"),
+        "report_digest": report.get("report_digest"),
+        "alerts": [
+            {key: alert[key] for key in _SUMMARY_ALERT_KEYS if key in alert}
+            for alert in report.get("alerts") or []
+            if isinstance(alert, Mapping)
+        ],
+        "mounts": [
+            {key: row[key] for key in _SUMMARY_MOUNT_KEYS if key in row}
+            for row in report.get("mounts") or []
+            if isinstance(row, Mapping)
+        ],
+        "usage": dict(usage) if isinstance(usage, Mapping) else {"status": "unavailable"},
+        "volume_resize": (
+            {key: resize[key] for key in ("status", "reason") if key in resize}
+            if isinstance(resize, Mapping)
+            else None
+        ),
+    }
+
+    def size() -> int:
+        return len(json.dumps(summary, indent=2, sort_keys=True)) + 1
+
+    if size() > max_bytes:
+        summary["truncated"] = True
+    while size() > max_bytes:
+        usage_lists = [(summary["usage"], key) for key in
+                       ("unclassified_roots", "top_owners", "top_roots", "by_class", "mounts")]
+        candidates = [
+            (len(json.dumps(holder[key])), holder, key)
+            for holder, key in [(summary, "alerts"), (summary, "mounts"), *usage_lists]
+            if isinstance(holder.get(key), list) and holder[key]
+        ]
+        if not candidates:
+            break
+        _size, holder, key = max(candidates, key=lambda candidate: candidate[0])
+        holder[key] = holder[key][: len(holder[key]) // 2]
+    return summary
+
+
 def write_report(report_root: Path, report: Mapping[str, Any]) -> Path:
     report_root.mkdir(parents=True, exist_ok=True, mode=0o750)
     latest = report_root / "latest.json"
@@ -318,6 +506,10 @@ def write_report(report_root: Path, report: Mapping[str, Any]) -> Path:
     with (report_root / "history.jsonl").open("a", encoding="utf-8") as stream:
         for row in report.get("mounts") or []:
             stream.write(json.dumps({k: v for k, v in row.items() if k != "forecast"}, sort_keys=True) + "\n")
+    # latest.json and history.jsonl stay root-only; the door (the service account)
+    # reads the secret-free summary, so the directory itself becomes traversable.
+    _write_public_json(report_root / SUMMARY_FILENAME, capacity_summary(report))
+    os.chmod(report_root, 0o755)
     return latest
 
 
@@ -484,7 +676,14 @@ def run_controller(
     credit_collector: Callable[[], Mapping[str, Any]] | None = None,
     credit_warning_usd: float = 5.0,
     credit_reserve_usd: float = 1.0,
+    survey: Callable[..., Mapping[str, Any]] | None = None,
+    survey_interval_seconds: float = DEFAULT_SURVEY_INTERVAL_SECONDS,
+    force_survey: bool = False,
 ) -> dict[str, Any]:
+    """One tick. ``survey`` (``main`` passes ``survey_usage``) re-runs when the last
+    usage survey is older than ``survey_interval_seconds`` or ``force_survey`` is set;
+    without one the tick only embeds the survey already on disk."""
+
     observed = time.time() if now is None else float(now)
     previous = _read_json(report_root / "latest.json")
     report = build_capacity_report(
@@ -522,6 +721,16 @@ def run_controller(
             report["level"] = "critical"
             report["alerts"].extend({"provider": "vast", "code": code}
                                     for code in funding["blockers"])
+    usage, usage_error = _refresh_usage(
+        report_root, survey=survey, mounts=mounts, interval_seconds=survey_interval_seconds,
+        force=force_survey, now=observed,
+    )
+    if usage is not None or usage_error is not None:
+        report["usage"] = usage_projection(usage, now=observed, error=usage_error)
+    if usage is not None and (warnings := usage_alerts(usage)):
+        report["alerts"].extend(warnings)
+        if report["level"] == "ok":
+            report["level"] = "warning"
     report["alert_posted"] = False
     if webhook_url and alert_due(previous, report, now=observed):
         try:
@@ -591,6 +800,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--webhook-url", default=os.getenv(WEBHOOK_URL_ENV) or "")
     parser.add_argument("--print", action="store_true", dest="print_report")
+    parser.add_argument("--survey", action="store_true",
+                        help="survey disk usage now, whatever the age of the last survey")
     args = parser.parse_args(argv)
     mounts = args.mount or [item for item in str(os.getenv(MOUNTS_ENV) or "").split(":") if item] or list(DEFAULT_MOUNTS)
     report = run_controller(
@@ -605,6 +816,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                           not in {"false", "0", ""} else None),
         credit_warning_usd=float(os.getenv(WARNING_ENV, "5")),
         credit_reserve_usd=float(os.getenv(RESERVE_ENV, "1")),
+        survey=survey_usage,
+        survey_interval_seconds=_env_int(SURVEY_INTERVAL_ENV, DEFAULT_SURVEY_INTERVAL_SECONDS),
+        force_survey=args.survey,
     )
     if args.print_report:
         print(json.dumps(report, indent=2, sort_keys=True))
@@ -618,10 +832,12 @@ __all__ = [
     "CRITICAL_FRACTION",
     "RESIZE_ACK",
     "SCHEMA_VERSION",
+    "SUMMARY_SCHEMA_VERSION",
     "WARNING_FRACTION",
     "ControlPlaneCapacityError",
     "alert_due",
     "build_capacity_report",
+    "capacity_summary",
     "chain_footprints",
     "footprint_basis",
     "forecast",
@@ -631,6 +847,9 @@ __all__ = [
     "plan_volume_resize",
     "resize_volume",
     "run_controller",
+    "survey_mounts",
+    "usage_alerts",
+    "usage_projection",
     "write_report",
 ]
 
