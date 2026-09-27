@@ -6,6 +6,8 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
+from .policy_canary_late_watchdog import late_watchdog_instance
+
 
 def policy_canary_terminal_evidence(
     *,
@@ -27,6 +29,7 @@ def policy_canary_terminal_evidence(
     watchdog = result.get("independent_watchdog")
     instance_ids = result.get("vast_instance_ids")
     watchdog_instance_lineage_valid = True
+    late_watchdog_path: Path | None = None
     if instance_ids is None and isinstance(watchdog, Mapping):
         # The canonical paid allocator owns the provider identity and already
         # seals it in the caller-surviving watchdog close receipt.  Early
@@ -34,11 +37,21 @@ def policy_canary_terminal_evidence(
         # so billing must consume the authoritative closure field instead of
         # waiting forever for a redundant projection that cannot appear after
         # teardown.
-        instance_ids = watchdog.get("instance_ids")
-        watchdog_instance_lineage_valid = bool(
-            watchdog.get("status") == "provider_terminal"
-            and watchdog.get("provider_absence_confirmed") is True
-        )
+        if watchdog.get("status") == "retained_until_hard_ttl":
+            late = late_watchdog_instance(
+                result_path=result_path, result=result,
+                read_json=lambda path, code: json_file(path, code=code)[1],
+                error_factory=error_factory,
+            )
+            instance_ids = [late[0]] if late is not None else None
+            late_watchdog_path = late[1] if late is not None else None
+            watchdog_instance_lineage_valid = late is not None
+        else:
+            instance_ids = watchdog.get("instance_ids")
+            watchdog_instance_lineage_valid = bool(
+                watchdog.get("status") == "provider_terminal"
+                and watchdog.get("provider_absence_confirmed") is True
+            )
     elif instance_ids is None:
         watchdog_instance_lineage_valid = False
     if (
@@ -90,6 +103,11 @@ def policy_canary_terminal_evidence(
     }
     for role, (path, _value, payload) in loaded.items():
         terminal[role] = record(path, payload)
+    if late_watchdog_path is not None:
+        path, _value, payload = json_file(
+            late_watchdog_path, code="vast_official_policy_canary_late_watchdog_invalid"
+        )
+        terminal["independent_watchdog_terminal"] = record(path, payload)
     return terminal
 
 

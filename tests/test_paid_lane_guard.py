@@ -145,6 +145,20 @@ class TestRequirePreSpendPreflight:
         )
         assert recorded["status"] == "FAIL"
 
+    def test_untrusted_lock_owner_reports_root_cause_only(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(guard.SPEND_ADMISSION_LOCK_PATH_ENV, str(tmp_path / "lock.json"))
+        monkeypatch.setattr(
+            guard, "_load_spend_admission_lock",
+            lambda _path: {"_load_blocker": "spend_admission_lock_owner_untrusted"},
+        )
+        with pytest.raises(PreSpendPreflightBlocked) as exc_info:
+            require_pre_spend_preflight(**_good_preflight_kwargs())
+        assert exc_info.value.preflight["blockers"] == [
+            "spend_admission:spend_admission_lock_owner_untrusted"
+        ]
+
 
 class TestImageContractFromRef:
     def test_versioned_tag_is_pinned(self) -> None:

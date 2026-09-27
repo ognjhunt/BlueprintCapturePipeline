@@ -4,6 +4,7 @@ import functools
 import hashlib
 import json
 import os
+import shutil
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,6 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 from blueprint_pipeline import control_plane_storage_gc as gc_module
+from blueprint_pipeline import website_scene_workspace_retention as retention_module
 from blueprint_pipeline import task_evaluation_configured_scene_object_store as store
 from blueprint_pipeline.control_plane_storage_gc import (
     ControlPlaneStorageGCError,
@@ -36,6 +38,11 @@ def isolated_disk_ledger(tmp_path, monkeypatch):
                             disk_usage=lambda _: SimpleNamespace(total=100 * 1024**3, free=80 * 1024**3)))
     monkeypatch.setattr("blueprint_pipeline.completed_replay_cache_retention.active_reference", lambda _, **kwargs: False)
     monkeypatch.setattr("blueprint_pipeline.control_plane_evidence_offload.DEFAULT_RESERVATION_ROOT",
+                        tmp_path / "disk-reservations")
+    monkeypatch.setattr("blueprint_pipeline.website_scene_workspace_retention.reserve_control_plane_disk",
+                        functools.partial(reserve_control_plane_disk,
+                            disk_usage=lambda _: SimpleNamespace(total=100 * 1024**3, free=80 * 1024**3)))
+    monkeypatch.setattr("blueprint_pipeline.website_scene_workspace_retention.DEFAULT_RESERVATION_ROOT",
                         tmp_path / "disk-reservations")
 
 
@@ -953,3 +960,284 @@ def test_run_cli_honours_the_derived_minimum_age_from_the_unit_environment(tmp_p
         "run", "--pins-root", str(tmp_path / "pins"), "--derived-minimum-age-seconds", "86400",
     ]) == 0
     assert json.loads(capsys.readouterr().out)["derived_directories"]["candidate_count"] == 0
+
+
+# --- scene workspace retirement ---------------------------------------------------------------------
+
+
+def _scene_tick(tmp_path, *, ack: bool = True):
+    """One website scene staged through the real listener, and the tick arguments that reach it."""
+
+    from tests.test_control_plane_evidence_streaming import MultipartClient
+    from tests import test_website_scene_workspace_retention as scenes
+
+    scene, cloud = scenes._scene(tmp_path, ack=ack)
+    scenes._context(tmp_path)  # the pins, queue, intent and binding roots
+    now = time.time() + 72 * 3600
+    client = MultipartClient()
+    common = dict(
+        content_store_roots=[], derived_roots=[], queue_roots=[tmp_path / "queue"], pins_root=tmp_path / "pins",
+        scene_workspace_roots=[tmp_path / "pubsub-handoffs"], scene_intent_root=tmp_path / "intents",
+        scene_binding_root=tmp_path / "bindings", scene_cloud_factory=lambda: cloud,
+        scene_stream_publisher=functools.partial(store.publish_configured_scene_stream, client=client,
+                                                 bucket=scenes.ARTIFACT_BUCKET),
+        scene_process_checker=lambda _path: False, now=lambda: now, classifier=_noclass,
+    )
+    return scene, common
+
+
+def test_gc_phase_retires_verified_terminal_workspace(tmp_path) -> None:
+    scene, common = _scene_tick(tmp_path)
+
+    report = run_storage_gc(**common, apply=True, ack=RUN_ACK, scene_workspace_retirement_enabled=True)
+
+    phase = report["scene_workspaces"]
+    receipt = scene.parent / "scene-1.retired.v1.json"
+    assert (phase["status"], phase["enabled"]) == ("applied", True)
+    assert (phase["candidate_count"], phase["retired_count"]) == (1, 1)
+    assert phase["retired_bytes"] > 0 and phase["archive_bytes"] > 0 and phase["retained_counts"] == {}
+    assert phase["results"] == [{"bucket": "capture-bucket", "scene_id": "scene-1", "status": "retired",
+                                 "receipt": str(receipt), "removal_complete": True}]
+    assert not scene.exists() and receipt.is_file()
+    assert "phase_errors" not in report
+
+    again = run_storage_gc(**common, apply=True, ack=RUN_ACK, scene_workspace_retirement_enabled=True)
+    assert again["scene_workspaces"]["candidate_count"] == 0 and receipt.is_file()
+
+
+def test_gc_phase_only_plans_without_the_opt_in(tmp_path) -> None:
+    scene, common = _scene_tick(tmp_path)
+
+    report = run_storage_gc(**common, apply=True, ack=RUN_ACK, scene_workspace_retirement_enabled=False)
+
+    phase = report["scene_workspaces"]
+    assert (phase["status"], phase["enabled"], phase["candidate_count"], phase["retired_count"]) == (
+        "dry_run", False, 1, 0)
+    assert phase["results"][0]["status"] == "retirable" and scene.is_dir()
+    dry = run_storage_gc(**common, scene_workspace_retirement_enabled=True)  # no --apply: a dry run too
+    assert dry["scene_workspaces"]["status"] == "dry_run" and scene.is_dir()
+
+
+def test_gc_phase_counts_why_scenes_are_retained(tmp_path) -> None:
+    scene, common = _scene_tick(tmp_path, ack=False)
+
+    phase = run_storage_gc(**common, apply=True, ack=RUN_ACK, scene_workspace_retirement_enabled=True)[
+        "scene_workspaces"]
+
+    assert phase["retained_counts"] == {"acknowledgement_unproven": 1} and phase["retired_count"] == 0
+    assert phase["results"] == [{"bucket": "capture-bucket", "scene_id": "scene-1", "status": "retained",
+                                 "reasons": ["acknowledgement_unproven:capture-1"]}]
+    assert scene.is_dir()
+
+
+@pytest.mark.parametrize(("retirement", "offload", "enabled", "alert"), [
+    (None, None, False, None),
+    (None, "1", False, None),  # the offload opt-in never enables retirement
+    ("1", None, True, None),
+    ("true", "0", True, None),
+    ("0", "1", False, None),
+    ("maybe", "1", False, "scene_workspace_retirement_setting_invalid"),
+])
+def test_scene_retirement_needs_its_own_explicit_opt_in(monkeypatch, retirement, offload, enabled, alert):
+    for name, value in ((gc_module.SCENE_WORKSPACE_RETIREMENT_ENV, retirement), (gc_module.EVIDENCE_OFFLOAD_ENV, offload)):
+        if value is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, value)
+    assert gc_module.scene_workspace_retirement_setting() == (enabled, alert)
+
+
+def test_an_invalid_retirement_setting_only_plans_and_alerts_without_aborting(tmp_path) -> None:
+    scene, common = _scene_tick(tmp_path)
+    alert = "scene_workspace_retirement_setting_invalid"
+
+    report = run_storage_gc(**common, apply=True, ack=RUN_ACK, scene_workspace_retirement_enabled=False,
+                            scene_workspace_retirement_alert=alert)
+
+    assert report["alerts"] == [alert] and "phase_errors" not in report
+    phase = report["scene_workspaces"]
+    assert (phase["status"], phase["candidate_count"], phase["alerts"]) == ("dry_run", 1, [alert])
+    assert scene.is_dir()
+
+
+def test_the_command_line_reads_the_opt_in_from_the_environment(tmp_path, monkeypatch, capsys) -> None:
+    seen: list[dict] = []
+
+    def run(**kwargs):
+        seen.append(kwargs)
+        return {"schema_version": gc_module.RUN_SCHEMA_VERSION, "report_digest": "sha256:0"}
+
+    monkeypatch.setattr(gc_module, "run_storage_gc", run)
+    monkeypatch.setenv(gc_module.EVIDENCE_OFFLOAD_ENV, "1")
+    monkeypatch.setenv(gc_module.SCENE_WORKSPACE_RETIREMENT_ENV, "sometimes")
+
+    assert gc_main(["run", "--pins-root", str(tmp_path / "pins")]) == 0
+
+    assert (seen[0]["scene_workspace_retirement_enabled"], seen[0]["scene_workspace_retirement_alert"]) == (
+        False, "scene_workspace_retirement_setting_invalid")
+    assert "scene_workspace_retirement_setting_invalid" in capsys.readouterr().err
+
+
+def test_a_failing_phase_does_not_abort_the_tick(tmp_path, monkeypatch, capsys) -> None:
+    now = 5_000_000.0
+    derived = tmp_path / "prepared-references"
+    derived.mkdir()
+    scratch = tmp_path / "engineering"
+    _scratch(scratch, "old-probe", age=4 * 86400, now=now)
+
+    def broken(**_kwargs):
+        raise RuntimeError("derived manifest failed")
+
+    monkeypatch.setattr(gc_module, "build_derived_directory_manifest", broken)
+    report = run_storage_gc(content_store_roots=[], derived_roots=[derived], queue_roots=[], pins_root=tmp_path / "pins",
+                            scratch_roots=[scratch], scratch_minimum_age_seconds=3 * 86400, now=lambda: now,
+                            classifier=_noclass)
+
+    assert report["derived_directories"] == {"status": "error", "error": "RuntimeError"}
+    assert report["phase_errors"] == ["derived_directories"]
+    assert report["scratch_directories"]["candidate_count"] == 1, "later phases still run"
+    assert report["report_digest"] == gc_module.canonical_digest(report, digest_field="report_digest")
+
+    # The command line still writes the whole report, then fails so the unit shows the error.
+    monkeypatch.setenv("BLUEPRINT_CONTROL_PLANE_GC_DERIVED_ROOTS", str(derived))
+    monkeypatch.setenv("BLUEPRINT_CONTROL_PLANE_GC_QUEUE_ROOTS", "")
+    monkeypatch.setattr(gc_module, "require_storage_class", _noclass)
+    out = tmp_path / "storage-gc" / "latest.json"
+    assert gc_main(["run", "--pins-root", str(tmp_path / "pins"), "--report-out", str(out)]) == 1
+    assert json.loads(out.read_text(encoding="utf-8"))["phase_errors"] == ["derived_directories"]
+    assert "derived manifest failed" in capsys.readouterr().err
+
+
+def test_gc_unit_can_write_scene_workspace_roots() -> None:
+    unit = (Path(__file__).resolve().parents[1] / "deploy/systemd/blueprint-control-plane-storage-gc.service").read_text(
+        encoding="utf-8"
+    )
+    roots: list[str] = []
+    writable: set[str] = set()
+    read_only: set[str] = set()
+    for line in unit.splitlines():
+        if line.startswith("Environment=" + gc_module.SCENE_WORKSPACE_ROOTS_ENV + "="):
+            roots.extend(part for part in line.split("=", 2)[2].split(":") if part)
+        if line.startswith("ReadWritePaths="):
+            writable.update(part.lstrip("-") for part in line.split("=", 1)[1].split())
+        if line.startswith("ReadOnlyPaths="):
+            read_only.update(part.lstrip("-") for part in line.split("=", 1)[1].split())
+    assert roots == ["/var/lib/blueprint/pubsub-handoffs"]
+    assert all(any(root == path or root.startswith(path + "/") for path in writable) for root in roots)
+    # A read-only entry at or below a writable root would win over it.
+    assert not any(path == root or path.startswith(root + "/") for root in roots for path in read_only)
+    assert f"Environment={gc_module.SCENE_INTENT_ROOT_ENV}=" in unit
+    for opt_in in (gc_module.SCENE_WORKSPACE_RETIREMENT_ENV, gc_module.EVIDENCE_OFFLOAD_ENV):
+        assert f"Environment={opt_in}=" not in unit, "retirement stays an operator opt-in"
+
+
+def test_each_tick_first_finishes_removals_a_crash_left_behind(tmp_path) -> None:
+    scene, common = _scene_tick(tmp_path)
+    copy = tmp_path / "scene-before-retirement"
+    shutil.copytree(scene, copy)
+    run_storage_gc(**common, apply=True, ack=RUN_ACK, scene_workspace_retirement_enabled=True)
+    receipt = json.loads((scene.parent / "scene-1.retired.v1.json").read_text(encoding="utf-8"))
+    leftover = scene.parent / f".retiring-scene-1-{receipt['retiring_token']}"
+    os.rename(copy, leftover)
+
+    dry = run_storage_gc(**common, scene_workspace_retirement_enabled=True)["scene_workspaces"]
+    assert leftover.is_dir() and dry["retiring_removable_count"] == 1, "a dry-run tick deletes nothing"
+
+    # The opt-in also governs the crash-left sweep.
+    off = run_storage_gc(**common, apply=True, ack=RUN_ACK, scene_workspace_retirement_enabled=False)[
+        "scene_workspaces"]
+    assert leftover.is_dir() and off["retiring_removable_count"] == 1
+    phase = run_storage_gc(**common, apply=True, ack=RUN_ACK, scene_workspace_retirement_enabled=True)[
+        "scene_workspaces"]
+
+    assert not leftover.exists()
+    assert phase["retiring_removed_count"] == 1 and phase["retiring_kept_without_receipt"] == []
+
+
+def test_the_tick_bounds_retirement_attempts_not_only_successes(tmp_path, monkeypatch) -> None:
+    """Each attempt can publish a large archive, so a failing publisher must not be retried per scene."""
+
+    from blueprint_pipeline import website_scene_workspace_retention as retention
+
+    attempts: list[str] = []
+    monkeypatch.setattr(retention, "scene_workspaces",
+                        lambda root: [("bucket", f"scene-{index}", root / f"scene-{index}") for index in range(3)])
+    monkeypatch.setattr(retention, "sweep_retiring_workspaces",
+                        lambda root, apply=True: {"removed" if apply else "removable": [], "kept_without_receipt": []})
+    monkeypatch.setattr(retention, "build_reference_index", lambda context, now: None)
+    monkeypatch.setattr(retention, "plan_scene_workspace_retirement", lambda **kwargs: {
+        "status": "retirable", "reasons": [], "scene_id": kwargs["scene_id"],
+        "totals": {"workspace_allocated_bytes": 10, "archive_bytes": 5}})
+
+    def failing_apply(plan, **_kwargs):
+        attempts.append(plan["scene_id"])
+        return {"status": "skipped", "reason": "archive_readback_failed"}
+
+    monkeypatch.setattr(retention, "apply_scene_workspace_retirement", failing_apply)
+
+    report = gc_module.retire_scene_workspaces(
+        storage_roots=[tmp_path], context_factory=lambda root: SimpleNamespace(storage_root=root), apply=True,
+        enabled=True, now=1.0, cloud_factory=lambda: None, max_retirements=2)
+
+    assert attempts == ["scene-0", "scene-1"]
+    assert (report["attempted_count"], report["retired_count"], report["candidate_count"]) == (2, 0, 3)
+    assert [row["status"] for row in report["results"]] == ["skipped", "skipped", "retirable"]
+
+
+def test_post_upload_archive_reference_survives_result_truncation(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(retention_module, "scene_workspaces", lambda root: [
+        ("bucket", f"scene-{index}", root / f"scene-{index}") for index in range(51)])
+    monkeypatch.setattr(retention_module, "sweep_retiring_workspaces", lambda root, apply=True: {
+        "removed" if apply else "removable": [], "kept_without_receipt": []})
+    monkeypatch.setattr(retention_module, "sweep_retirement_temporaries", lambda root, now: [])
+    monkeypatch.setattr(retention_module, "build_reference_index", lambda context, now: None)
+    monkeypatch.setattr(retention_module, "plan_scene_workspace_retirement", lambda **kwargs: {
+        "status": "retirable", "reasons": [], "scene_id": kwargs["scene_id"],
+        "totals": {"workspace_allocated_bytes": 10, "archive_bytes": 5}})
+
+    def skipped(plan, **_kwargs):
+        result = {"status": "skipped", "reason": "candidate_changed_during_archive"}
+        if plan["scene_id"] == "scene-50":
+            result["published_archive"] = {"uri": "s3://example/orphan", "digest": "sha256:abc", "size_bytes": 5}
+        return result
+
+    monkeypatch.setattr(retention_module, "apply_scene_workspace_retirement", skipped)
+    report = gc_module.retire_scene_workspaces(
+        storage_roots=[tmp_path], context_factory=lambda root: SimpleNamespace(storage_root=root, inventory_cache_root=None),
+        apply=True, enabled=True, now=1.0, cloud_factory=lambda: object(), max_retirements=51)
+
+    assert report["result_count"] == 51 and len(report["results"]) == 50
+    assert report["published_archives"] == [{"bucket": "bucket", "scene_id": "scene-50",
+                                              "uri": "s3://example/orphan", "digest": "sha256:abc", "size_bytes": 5}]
+
+
+def test_ticks_reuse_cached_digests_and_drop_them_once_a_scene_is_retired(tmp_path) -> None:
+    scene, common = _scene_tick(tmp_path)
+    cache_root = tmp_path / "storage-gc" / "scene-workspace-inventory"
+    cache = cache_root / "capture-bucket" / "scene-1.json"
+
+    first = run_storage_gc(**common, scene_inventory_cache_root=cache_root)["scene_workspaces"]
+    second = run_storage_gc(**common, scene_inventory_cache_root=cache_root)["scene_workspaces"]
+
+    assert first["hashed_bytes"] > 0 and second["hashed_bytes"] == 0 and cache.is_file()
+    run_storage_gc(**common, apply=True, ack=RUN_ACK, scene_workspace_retirement_enabled=True,
+                   scene_inventory_cache_root=cache_root)
+    assert not scene.exists() and not cache.exists()
+
+
+def test_a_tick_defers_scenes_beyond_its_hashing_budget(tmp_path) -> None:
+    scene, common = _scene_tick(tmp_path)
+
+    phase = run_storage_gc(**common, scene_hash_budget_bytes=16)["scene_workspaces"]
+
+    assert phase["retained_counts"] == {"inventory_deferred": 1} and phase["hashed_bytes"] <= 16
+
+
+def test_the_command_line_caches_scene_digests_with_the_spool(tmp_path, monkeypatch) -> None:
+    seen: list[dict] = []
+    monkeypatch.setattr(gc_module, "run_storage_gc", lambda **kwargs: seen.append(kwargs) or {"report_digest": ""})
+    monkeypatch.setenv("BLUEPRINT_CONTROL_PLANE_GC_REPORT_ROOT", str(tmp_path / "storage-gc"))
+
+    assert gc_main(["run", "--pins-root", str(tmp_path / "pins")]) == 0
+
+    assert seen[0]["scene_inventory_cache_root"] is None  # context derives each spool's cache root

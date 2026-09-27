@@ -6,7 +6,9 @@
 # the formats again, write their log and outcome next to the runner's result,
 # and never read the spool themselves.
 
-door_init() {
+# door_init_request KIND: check the request id, then send everything to the
+# request's log and make sure an outcome is written however the script ends.
+door_init_request() {
   local kind="$1"
   : "${DOOR_REQUEST_ID:?}" "${DOOR_RESULTS_DIR:?}"
   # The id names the log and outcome files, so it is checked before any path use.
@@ -14,14 +16,19 @@ door_init() {
     echo "refused: request_id_invalid" >&2
     exit 2
   fi
+  DOOR_KIND="$kind"
   DOOR_LOG="$DOOR_RESULTS_DIR/$DOOR_REQUEST_ID.log"
   DOOR_OUTCOME="$DOOR_RESULTS_DIR/$DOOR_REQUEST_ID.outcome.json"
   DOOR_TOOL=""
   exec >>"$DOOR_LOG" 2>&1
   trap 'door_on_exit $?' EXIT
+}
+
+# door_init_git: the commit and source settings of a kind that fetches and runs a commit.
+door_init_git() {
   : "${DOOR_COMMIT:?}" "${DOOR_SOURCE_CLONE:?}" "${DOOR_UPSTREAM_URL:?}" "${DOOR_VENV_PYTHON:?}"
   [[ "$DOOR_COMMIT" =~ ^[0-9a-f]{40}$ ]] || door_fail commit_invalid
-  echo "[$(date -u +%FT%TZ)] ${kind} ${DOOR_COMMIT} (request ${DOOR_REQUEST_ID})"
+  echo "[$(date -u +%FT%TZ)] ${DOOR_KIND} ${DOOR_COMMIT} (request ${DOOR_REQUEST_ID})"
 }
 
 # door_outcome STATUS CODE EXIT_CODE [KEY VALUE]... -> results/<id>.outcome.json

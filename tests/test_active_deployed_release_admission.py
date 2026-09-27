@@ -103,6 +103,35 @@ def test_receipt_source_clone_outside_approved_root_is_refused(deployed, monkeyp
         'gpu_canary_deployed_release_receipt_unverified']
 
 
+@pytest.mark.parametrize('source_kind', ['canonical', 'tools_clone', 'outside', 'symlink', 'nested',
+                                         'group_writable', 'tools_root', 'missing'])
+def test_trusted_deploy_source_matches_gpu_admission(deployed, monkeypatch, source_kind):
+    """The deploy CLI asks the same question GPU admission asks of its receipt."""
+    tools_root = deployed['root'] / 'config-tools'
+    tools_root.mkdir(mode=0o755)
+    monkeypatch.setattr(release, 'CONFIG_TOOLS_ROOT', tools_root)
+    outside = deployed['root'] / 'outside'
+    outside.mkdir()
+    sources = {'canonical': deployed['source'], 'tools_clone': tools_root / 'clone',
+               'outside': outside, 'symlink': tools_root / 'link', 'nested': tools_root / 'nested' / 'clone',
+               'group_writable': tools_root / 'shared', 'tools_root': tools_root,
+               'missing': tools_root / 'missing'}
+    sources['tools_clone'].mkdir(mode=0o755)
+    sources['symlink'].symlink_to(outside, target_is_directory=True)
+    sources['nested'].mkdir(parents=True)
+    sources['group_writable'].mkdir()
+    sources['group_writable'].chmod(0o775)
+    source = sources[source_kind]
+    deployed['receipt']['surfaces'][1]['path'] = str(source)
+    _write(deployed['receipt_path'], deployed['receipt'])
+
+    admitted = release.inspect_active_deployed_release(deployed['checkout'], COMMIT)['status'] == (
+        'verified_active_release')
+
+    assert admitted is (source_kind in {'canonical', 'tools_clone'})
+    assert release.trusted_deploy_source(source) is admitted
+
+
 @pytest.mark.parametrize('defect', [None, 'claim_upgrade', 'binding_status', 'extra_authority'])
 def test_current_canary_uses_exact_root_receipt_without_promotion(deployed, defect):
     value = deployed['provenance']

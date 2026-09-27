@@ -12,6 +12,7 @@ laptop too. Standard library only.
     python3 scripts/operator_door.py journal blueprint-task-evaluation-scene-progression.service -n 200
     python3 scripts/operator_door.py deploy <sha on main> --wait
     python3 scripts/operator_door.py unit start blueprint-pubsub-handoff-listener.timer
+    python3 scripts/operator_door.py retire-scene-workspace <scene_id> [--bucket B] [--apply] --wait
 
 Authentication: in a cloud session the egress proxy adds the bearer token, so
 nothing is configured in the VM and no header is sent. Elsewhere the token
@@ -41,7 +42,9 @@ from typing import Any
 
 DEFAULT_URL = "https://paperclip.tryblueprint.io/api/live-pipeline/operator/v1"
 DEFAULT_TOKEN_FILE = "~/.blueprint-secrets/operator_door_token"
-_TERMINAL_OK = {"deployed", "upgraded"}
+# A retirement that planned or retired succeeded; "retained" (the scene did not qualify) exits 1
+# and the printed outcome carries the first reason.
+_TERMINAL_OK = {"deployed", "upgraded", "planned", "retired", "restored"}
 
 
 class DoorError(Exception):
@@ -226,6 +229,18 @@ def build_parser() -> argparse.ArgumentParser:
     upgrade = commands.add_parser("upgrade-door")
     upgrade.add_argument("commit")
     _add_wait(upgrade, 1800)
+    retire = commands.add_parser(
+        "retire-scene-workspace",
+        help="plan a finished website scene workspace's retirement; --apply retires it behind a receipt",
+    )
+    retire.add_argument("scene_id")
+    retire.add_argument("--bucket")
+    retire.add_argument("--apply", action="store_true")
+    _add_wait(retire, 2 * 3600 + 600)
+    restore = commands.add_parser("restore-scene-workspace", help="restore a retired scene at its canonical path")
+    restore.add_argument("scene_id")
+    restore.add_argument("--bucket", required=True)
+    _add_wait(restore, 2 * 3600 + 600)
     request = commands.add_parser("request")
     request.add_argument("id")
     _add_wait(request, 3 * 3600)
@@ -266,6 +281,14 @@ def run(args: argparse.Namespace) -> int:
                         "wait_for_idle": not args.no_wait_for_idle}, args)
     elif command == "upgrade-door":
         return _submit({"kind": "door-upgrade", "commit": args.commit}, args)
+    elif command == "retire-scene-workspace":
+        body = {"kind": "retire-scene-workspace", "scene_id": args.scene_id, "apply": args.apply}
+        if args.bucket:
+            body["bucket"] = args.bucket
+        return _submit(body, args)
+    elif command == "restore-scene-workspace":
+        return _submit({"kind": "restore-scene-workspace", "scene_id": args.scene_id,
+                        "bucket": args.bucket}, args)
     elif command == "request":
         if args.wait:
             return _wait(args.id, timeout=args.timeout, poll=args.poll)

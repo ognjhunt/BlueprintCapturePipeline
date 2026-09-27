@@ -14,7 +14,8 @@ umask 022
 # shellcheck source-path=SCRIPTDIR source=door-common.sh
 . "$(dirname "$0")/door-common.sh"
 
-door_init deploy
+door_init_request deploy
+door_init_git
 : "${DOOR_STATE_ROOT:?}"
 
 if [ "${DOOR_WAIT_FOR_IDLE:-1}" = "1" ]; then

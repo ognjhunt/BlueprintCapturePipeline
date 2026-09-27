@@ -113,10 +113,31 @@ Request kinds:
 | `deploy` | deploy | `commit` on `origin/main`, `wait_for_idle` | refuses while any `blueprint-*deploy*` unit is active; otherwise `door-deploy.sh` |
 | `unit` | operate | `unit` (`blueprint-*`), `action` `start`\|`reset-failed`\|`stop`\|`restart` | `systemctl --no-block <action> -- <unit>`; `stop`/`restart` only for `.timer`/`.path`, never the door's own units or a spend-guard, watchdog, teardown or reaper trigger |
 | `door-upgrade` | deploy | `commit` on `origin/main` | `door-upgrade.sh`: that commit's `install.sh --upgrade`, rolled back on a failed health check |
+| `retire-scene-workspace` | operate | `scene_id`, optional `bucket`, `apply` (default `false`) | `door-retire-scene-workspace.sh`: the active release's `website_scene_workspace_retention retire` for that scene; without `apply` it only plans. Outcome `planned`, `retained` (code = first reason), `retired` or `failed`; the module's full result is `results/<id>.retirement.json` |
+| `restore-scene-workspace` | operate | `scene_id`, required `bucket` | `door-restore-scene-workspace.sh`: replays the retired receipt to the canonical workspace path, checks every byte and moves the historical receipt aside. Outcome `restored` or `failed`; the module's full result is `results/<id>.restore.json` |
 
 **`deploy` is root-equivalent.** Whoever holds it can get code that is on
 `origin/main` running as root, which is what a deploy is. Give it only to
 tokens that should be able to ship; `read` and `operate` never run code.
+
+Every script runs in a transient unit named
+`blueprint-operator-door-{deploy,upgrade}-<sha12>-<id8>.service` or
+`blueprint-operator-door-retire-<sha256(scene_id)[:12]>-<id8>.service` (a hash, so
+a scene id can never match `blueprint-*deploy*`), and the request view shows its live
+state. Each unit's `RuntimeMaxSec` equals its start timeout,
+because `TimeoutStartSec` does not bound an `exec` unit once it has started:
+deploy 3 h, door upgrade 30 min, retirement 2 h. A retirement unit is further
+sandboxed (`ProtectSystem=strict`, `PrivateTmp`, `PrivateDevices`, `ProtectHome`,
+`ProtectKernelTunables`, `ProtectControlGroups`, `NoNewPrivileges`, and a narrow
+capability set including `CAP_SYS_PTRACE` for the `/proc` reference check) and may write
+only `/var/lib/blueprint/pubsub-handoffs`, the disk reservation ledger, the
+storage-pin lock, and the door's results. Deploy and door-upgrade also have
+`RuntimeMaxSec` limits and receive SIGTERM when they run past them. It reads
+`/etc/blueprint/pipeline-control-plane.env` as data, never
+as shell (only `KEY=VALUE` lines, matching quotes stripped, nothing expanded or run,
+and only `BLUEPRINT_*`, `GOOGLE_*` and `GCLOUD_PROJECT` exported), never echoes it,
+and archives to the same artifact store as the reclaim timer. See
+"Scene workspace retirement" in `docs/CONTROL_PLANE_STORAGE.md` for what it checks.
 
 ### What a door deploy does
 
@@ -234,7 +255,14 @@ python3 scripts/operator_door.py pull /var/lib/blueprint/pipeline-control-plane/
 python3 scripts/operator_door.py journal blueprint-task-evaluation-scene-progression.service -n 200 --since -1h
 python3 scripts/operator_door.py unit start blueprint-task-evaluation-scene-progression.service
 python3 scripts/operator_door.py deploy <sha on main> --wait
+python3 scripts/operator_door.py retire-scene-workspace <scene_id> --wait           # plan only
+python3 scripts/operator_door.py retire-scene-workspace <scene_id> --apply --wait   # retire behind a receipt
+python3 scripts/operator_door.py restore-scene-workspace <scene_id> --bucket <bucket> --wait
 ```
+
+A retirement that plans or retires exits 0; one the scene does not qualify for
+(`retained`) exits 1 and prints the outcome with its first reason, for example
+`acknowledgement_unproven:<capture>` or `open_scene_intent:<intent>`.
 
 To replay a failed stage against candidate code, pull the child's retained job
 and inputs (`pull` of the `sam31-preparation-executions/<state>/<child>` job and

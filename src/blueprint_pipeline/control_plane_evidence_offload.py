@@ -20,8 +20,8 @@ import shutil
 import tarfile
 import tempfile
 import time
-from collections.abc import Callable, Mapping, Sequence
-from pathlib import Path
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .control_plane_storage_roots import require_storage_class
@@ -195,45 +195,81 @@ def _pack(directory: Path, archive_path: Path) -> list[dict[str, Any]]:
         return _pack_stream(directory, stream)
 
 
-def _pack_stream(directory: Path, stream) -> list[dict[str, Any]]:
-    members: list[dict[str, Any]] = []
+def _walked_members(directory: Path) -> Iterator[tuple[Path, str]]:
+    """Every regular file under ``directory`` in sorted walk order, never through a link."""
+
+    for root, directories, files in os.walk(directory):
+        directories.sort()
+        directories[:] = [
+            name for name in directories if not (Path(root) / name).is_symlink()
+        ]
+        for name in sorted(files):
+            path = Path(root) / name
+            if path.is_symlink() or not path.is_file():
+                continue
+            yield path, path.relative_to(directory).as_posix()
+
+
+def _listed_members(directory: Path, members: Sequence[str]) -> Iterator[tuple[Path, str]]:
+    """Exactly the listed regular files, in the given order.
+
+    A caller that names its members expects every one of them in the archive,
+    so a missing, linked or escaping member is refused rather than skipped.
+    """
+
+    for relative in members:
+        parts = PurePosixPath(relative).parts if isinstance(relative, str) else ()
+        if (
+            not parts
+            or PurePosixPath(relative).is_absolute()
+            or any(part in {"", ".", ".."} for part in parts)
+            or "\\" in relative
+            or "\x00" in relative
+        ):
+            raise ControlPlaneEvidenceOffloadError("control_plane_evidence_offload_member_invalid")
+        path = directory
+        for part in parts:
+            path = path / part
+            if path.is_symlink():
+                raise ControlPlaneEvidenceOffloadError("control_plane_evidence_offload_member_invalid")
+        if not path.is_file():
+            raise ControlPlaneEvidenceOffloadError("control_plane_evidence_offload_member_invalid")
+        yield path, PurePosixPath(*parts).as_posix()
+
+
+def _pack_stream(directory: Path, stream, members: Sequence[str] | None = None) -> list[dict[str, Any]]:
+    """Pack ``directory`` as a tar stream: every regular file, or exactly ``members``."""
+
+    packed: list[dict[str, Any]] = []
+    sources = _walked_members(directory) if members is None else _listed_members(directory, members)
     with tarfile.open(fileobj=stream, mode="w|") as archive:
-        for root, directories, files in os.walk(directory):
-            directories.sort()
-            directories[:] = [
-                name for name in directories if not (Path(root) / name).is_symlink()
-            ]
-            for name in sorted(files):
-                path = Path(root) / name
-                if path.is_symlink() or not path.is_file():
-                    continue
-                relative = path.relative_to(directory).as_posix()
-                info = archive.gettarinfo(str(path), arcname=relative)
-                info.uid = info.gid = 0
-                info.uname = info.gname = ""
-                digest = hashlib.sha256()
-                # Tar stores later names of an inode as zero-byte hardlink
-                # headers. The evidence manifest describes the restored file,
-                # whose bytes and size are those of its target, not the header.
-                size = path.stat().st_size
-                with path.open("rb") as stream:
-                    class HashingReader:
-                        def read(self, size=-1):
-                            chunk = stream.read(size)
-                            digest.update(chunk)
-                            return chunk
-                    archive.addfile(info, HashingReader())
-                    if info.islnk():
-                        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                            digest.update(chunk)
-                members.append(
-                    {
-                        "relative_path": relative,
-                        "size_bytes": size,
-                        "sha256": "sha256:" + digest.hexdigest(),
-                    }
-                )
-    return members
+        for path, relative in sources:
+            info = archive.gettarinfo(str(path), arcname=relative)
+            info.uid = info.gid = 0
+            info.uname = info.gname = ""
+            digest = hashlib.sha256()
+            # Tar stores later names of an inode as zero-byte hardlink
+            # headers. The evidence manifest describes the restored file,
+            # whose bytes and size are those of its target, not the header.
+            size = path.stat().st_size
+            with path.open("rb") as source:
+                class HashingReader:
+                    def read(self, size=-1):
+                        chunk = source.read(size)
+                        digest.update(chunk)
+                        return chunk
+                archive.addfile(info, HashingReader())
+                if info.islnk():
+                    for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                        digest.update(chunk)
+            packed.append(
+                {
+                    "relative_path": relative,
+                    "size_bytes": size,
+                    "sha256": "sha256:" + digest.hexdigest(),
+                }
+            )
+    return packed
 
 
 class _HashingSink:

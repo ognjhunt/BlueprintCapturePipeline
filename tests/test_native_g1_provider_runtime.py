@@ -63,8 +63,9 @@ def test_model_staging_fetches_distinct_candidates_concurrently_in_pair_order(
     cache_manifest = tmp_path / "private-cache.json"
 
     def fetch(*, inventory_path: Path, candidate_id: str, output_dir: Path,
-              cache_manifest_path: Path) -> dict:
+              cache_manifest_path: Path, cancel_event: threading.Event) -> dict:
         assert cache_manifest_path == cache_manifest
+        assert not cancel_event.is_set()
         stages.append("checkpoint")
         barrier.wait(timeout=5)
         return {"status": "checkpoint_bytes_verified", "candidate_id": candidate_id}
@@ -107,7 +108,8 @@ def test_model_staging_preserves_verified_receipts_after_another_candidate_fails
     barrier = threading.Barrier(len(PAIR_ORDER))
     failed_candidate = PAIR_ORDER[-1]
 
-    def fetch(*, inventory_path: Path, candidate_id: str, output_dir: Path) -> dict:
+    def fetch(*, inventory_path: Path, candidate_id: str, output_dir: Path,
+              cancel_event: threading.Event) -> dict:
         barrier.wait(timeout=5)
         if candidate_id == failed_candidate:
             raise TimeoutError("g1_checkpoint_download_deadline_exceeded:" + candidate_id)
@@ -137,6 +139,46 @@ def test_model_staging_preserves_verified_receipts_after_another_candidate_fails
     markers = capsys.readouterr().out
     assert "BLUEPRINT_G1_CHECKPOINT_BLOCKED:" + failed_candidate + ":TimeoutError" in markers
     assert "BLUEPRINT_G1_STAGE_FAILED:checkpoint:" + failed_candidate in markers
+
+
+def test_model_staging_cancels_peer_downloads_after_first_transfer_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    barrier = threading.Barrier(len(PAIR_ORDER))
+    stopped: list[str] = []
+
+    class _DownloadPeerCancelled(RuntimeError):
+        pass
+
+    def fetch(*, inventory_path: Path, candidate_id: str, output_dir: Path,
+              cancel_event: threading.Event) -> dict:
+        barrier.wait(timeout=5)
+        if candidate_id == PAIR_ORDER[1]:
+            raise ValueError("primary_private_cache_transfer_failure")
+        if candidate_id in PAIR_ORDER[2:]:
+            assert cancel_event.wait(timeout=3)
+            stopped.append(candidate_id)
+            raise _DownloadPeerCancelled("cancelled")
+        return {"status": "checkpoint_bytes_verified", "candidate_id": candidate_id}
+
+    monkeypatch.setattr(
+        provider_runtime, "_load_script",
+        lambda path, name: (
+            SimpleNamespace(materialize_candidate=fetch)
+            if name == "g1_checkpoint_fetcher"
+            else SimpleNamespace(stage_sonic_assets=lambda **_: {"files": []})
+        ),
+    )
+    monkeypatch.setattr(
+        provider_runtime, "preflight_sonic_cuda_models",
+        lambda _: {"status": "sonic_cuda_sessions_ready_no_inference"},
+    )
+    output = tmp_path / "output"
+    output.mkdir()
+    with pytest.raises(ValueError, match="primary_private_cache_transfer_failure"):
+        _stage_models(tmp_path / "runtime", output)
+    assert set(stopped) == set(PAIR_ORDER[2:])
+    assert (output / "models" / (PAIR_ORDER[0] + ".json")).is_file()
 
 
 def test_query_count_requires_digest_bound_observed_policy_queries(tmp_path: Path) -> None:

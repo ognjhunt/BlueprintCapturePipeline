@@ -5,8 +5,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Sequence
@@ -58,9 +60,11 @@ def test_deploy_launches_the_door_deploy_script_with_validated_parameters(config
     runner = FakeRunner()
     assert process_spool(config, runner=runner) == 0
     launch = [call for call in runner.calls if call[0] == "systemd-run"][0]
-    unit = f"blueprint-operator-door-deploy-{SHA[:12]}-{request_id[-8:]}"
+    unit = f"blueprint-operator-door-deploy-{SHA[:12]}-{request_id[-8:]}.service"
     assert launch[:6] == ["systemd-run", f"--unit={unit}", "--collect", "--service-type=exec",
                           "--property=TimeoutStartSec=3h", "--setenv=PYTHONDONTWRITEBYTECODE=1"]
+    # TimeoutStartSec does not bound an exec unit once it has started; RuntimeMaxSec does.
+    assert "--property=RuntimeMaxSec=3h" in launch
     assert launch[-2:] == ["/bin/bash", "/opt/blueprint/operator-door/door-deploy.sh"]
     env = dict(part.removeprefix("--setenv=").split("=", 1) for part in launch if part.startswith("--setenv="))
     assert env["DOOR_REQUEST_ID"] == request_id and env["DOOR_COMMIT"] == SHA
@@ -105,8 +109,11 @@ def test_door_upgrade_launches_the_upgrade_script(config: DoorConfig) -> None:
     runner = FakeRunner()
     process_spool(config, runner=runner)
     launch = [call for call in runner.calls if call[0] == "systemd-run"][0]
-    assert f"--unit=blueprint-operator-door-upgrade-{SHA[:12]}-{request_id[-8:]}" in launch
+    assert f"--unit=blueprint-operator-door-upgrade-{SHA[:12]}-{request_id[-8:]}.service" in launch
+    assert "--property=TimeoutStartSec=30min" in launch and "--property=RuntimeMaxSec=30min" in launch
     assert launch[-1] == "/opt/blueprint/operator-door/door-upgrade.sh"
+    env = dict(part.removeprefix("--setenv=").split("=", 1) for part in launch if part.startswith("--setenv="))
+    assert env["DOOR_COMMIT"] == SHA and "DOOR_WAIT_FOR_IDLE" not in env  # only what the kind defines
 
 
 def test_tampered_spool_files_are_refused_not_executed(config: DoorConfig) -> None:
@@ -199,3 +206,74 @@ def test_stranded_claims_are_failed_after_an_hour(config: DoorConfig) -> None:
     assert not stranded.exists()
     assert _result(config, "20260923T000000Z-deploy-0000cafe") == {
         **_result(config, "20260923T000000Z-deploy-0000cafe"), "status": "failed", "code": "stranded"}
+
+
+def test_every_launched_unit_is_a_named_service_the_door_can_inspect(config: DoorConfig) -> None:
+    """``unit_properties`` accepts only ``.service`` names, so a bare name left ``unit_state`` null."""
+
+    from operator_door.hostinfo import UNIT_NAME
+
+    for body in ({"kind": "deploy", "commit": SHA}, {"kind": "door-upgrade", "commit": SHA}):
+        request_id = _spooled(config, body)
+        process_spool(config, runner=FakeRunner())
+        assert UNIT_NAME.fullmatch(_result(config, request_id)["unit"])
+
+
+@pytest.mark.parametrize(("body", "extra_env"), [
+    ({"kind": "retire-scene-workspace", "scene_id": "site-capture-with-a-long-name-1"}, {}),
+    ({"kind": "retire-scene-workspace", "scene_id": "s", "bucket": "blueprint-8c1ca.appspot.com", "apply": True},
+     {"DOOR_BUCKET": "blueprint-8c1ca.appspot.com", "DOOR_APPLY": "1"}),
+])
+def test_retire_scene_workspace_launches_a_bounded_sandboxed_service(config: DoorConfig, body: dict,
+                                                                   extra_env: dict) -> None:
+    request_id = _spooled(config, body)
+    runner = FakeRunner()
+    process_spool(config, runner=runner)
+
+    label = hashlib.sha256(body["scene_id"].encode("utf-8")).hexdigest()[:12]
+    unit = f"blueprint-operator-door-retire-{label}-{request_id[-8:]}.service"
+    results = str(Path(config.spool_root) / "results")
+    env = {"DOOR_REQUEST_ID": request_id, "DOOR_RESULTS_DIR": results, "DOOR_VENV_PYTHON": DoorConfig().venv_python,
+           "DOOR_SCENE_ID": body["scene_id"], **extra_env}
+    assert [call for call in runner.calls if call[0] == "systemd-run"] == [[
+        "systemd-run", f"--unit={unit}", "--collect", "--service-type=exec",
+        "--property=TimeoutStartSec=2h", "--setenv=PYTHONDONTWRITEBYTECODE=1", "--property=RuntimeMaxSec=2h",
+        "--property=ProtectSystem=strict", "--property=PrivateTmp=yes", "--property=NoNewPrivileges=yes",
+        "--property=PrivateDevices=yes", "--property=ProtectHome=yes",
+        "--property=ProtectKernelTunables=yes", "--property=ProtectControlGroups=yes",
+        "--property=CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_CHOWN CAP_SYS_PTRACE",
+        "--property=AmbientCapabilities=CAP_DAC_OVERRIDE",
+        "--property=ReadWritePaths=/var/lib/blueprint/pubsub-handoffs "
+        "/var/lib/blueprint/pipeline-control-plane/disk-reservations "
+        f"/var/lib/blueprint/pipeline-control-plane/storage-pins {results}",
+        *(f"--setenv={key}={value}" for key, value in env.items()),
+        "--", "/bin/bash", "/opt/blueprint/operator-door/door-retire-scene-workspace.sh",
+    ]]
+    assert _result(config, request_id) == {**_result(config, request_id), "status": "launched", "unit": unit}
+    # A retirement is not a deploy: it neither waits for nor blocks one.
+    assert not any(call[:2] == ["systemctl", "list-units"] for call in runner.calls)
+
+
+def test_a_retirement_unit_never_names_its_scene(config: DoorConfig) -> None:
+    """A scene id is caller text; in a unit name it could match `blueprint-*deploy*` and block deploys."""
+
+    request_id = _spooled(config, {"kind": "retire-scene-workspace", "scene_id": "site-deploy-1"})
+    process_spool(config, runner=FakeRunner())
+
+    unit = _result(config, request_id)["unit"]
+    assert "deploy" not in unit and "site" not in unit
+    assert re.fullmatch(r"blueprint-operator-door-retire-[0-9a-f]{12}-[0-9a-f]{8}\.service", unit)
+
+
+def test_restore_launches_the_active_release_in_a_bounded_sandbox(config: DoorConfig) -> None:
+    request_id = _spooled(config, {"kind": "restore-scene-workspace", "scene_id": "scene-1",
+                                   "bucket": "blueprint-8c1ca.appspot.com"})
+    runner = FakeRunner()
+    process_spool(config, runner=runner)
+    [call] = [row for row in runner.calls if row[0] == "systemd-run"]
+    assert call[1].startswith("--unit=blueprint-operator-door-restore-")
+    assert "--property=RuntimeMaxSec=2h" in call
+    assert "--property=ProtectHome=yes" in call
+    assert "--setenv=DOOR_BUCKET=blueprint-8c1ca.appspot.com" in call
+    assert call[-1] == "/opt/blueprint/operator-door/door-restore-scene-workspace.sh"
+    assert _result(config, request_id)["status"] == "launched"

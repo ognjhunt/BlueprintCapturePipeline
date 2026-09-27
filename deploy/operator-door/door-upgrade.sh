@@ -9,7 +9,8 @@ umask 022
 # shellcheck source-path=SCRIPTDIR source=door-common.sh
 . "$(dirname "$0")/door-common.sh"
 
-door_init door-upgrade
+door_init_request door-upgrade
+door_init_git
 door_prepare_source
 door_require_on_main
 door_add_tool

@@ -10,6 +10,8 @@ readback without ever invoking the allocator again.
 from __future__ import annotations
 
 from .policy_canary_billing_recovery import reconcile_posted_billing
+from .policy_canary_retained_billing import adapter_instance_ids as _retained_adapter_instance_ids
+from .policy_canary_retained_billing import retained_sparse_billing_gap as _retained_sparse_billing_gap
 from .policy_canary_provider_null_closeout import proven_provider_null_closeout
 from .policy_canary_partial_recovery import (
     recover_partial_policy_canary_result as _recover_partial_policy_canary_result,
@@ -600,28 +602,20 @@ def collect_policy_canary_vast_provider_zero() -> dict[str, Any]:
     return value
 
 
-def _adapter_instance_ids(adapter: Mapping[str, Any]) -> list[int]:
-    values = adapter.get("vast_instance_ids")
-    watchdog = adapter.get("independent_watchdog")
-    if values is None and isinstance(watchdog, Mapping) and (
-        watchdog.get("status") == "provider_terminal"
-        and watchdog.get("provider_absence_confirmed") is True
-    ):
-        values = watchdog.get("instance_ids")
-    if not isinstance(values, list) or any(
-        isinstance(value, bool) or not isinstance(value, int) or value <= 0
-        for value in values
-    ):
-        return []
-    return list(values)
+def _adapter_instance_ids(adapter: Mapping[str, Any], *, result_path: Path | None = None) -> list[int]:
+    return _retained_adapter_instance_ids(
+        adapter, result_path=result_path, read_json=lambda path, code: _read(path, code=code),
+        error_factory=TaskEvaluationPolicyCanaryDispatchError,
+    )
 
 
 def _join_session_closeout(
-    *, inner: Mapping[str, Any], adapter: Mapping[str, Any], provider_zero: Mapping[str, Any]
+    *, inner: Mapping[str, Any], adapter: Mapping[str, Any], provider_zero: Mapping[str, Any],
+    adapter_path: Path | None = None,
 ) -> dict[str, Any]:
     value = json.loads(json.dumps(dict(inner), allow_nan=False))
     episodes = value.get("episodes")
-    instance_ids = _adapter_instance_ids(adapter)
+    instance_ids = _adapter_instance_ids(adapter, result_path=adapter_path)
     closeout = adapter.get("provider_closeout")
     teardown_complete = (
         isinstance(closeout, Mapping)
@@ -896,7 +890,9 @@ def _recovered_complete_policy_canary_result(
 
 
 def _materialize_official_billing_if_posted(**kwargs) -> bool:
-    return reconcile_posted_billing(**kwargs, instance_ids_from_adapter=_adapter_instance_ids,
+    return reconcile_posted_billing(**kwargs,
+        instance_ids_from_adapter=lambda adapter: _adapter_instance_ids(
+            adapter, result_path=kwargs["adapter_result_path"]),
         validate_reconciliation=validate_vast_official_same_goal_reconciliation,
         materialize_reconciliation=materialize_vast_official_same_goal_reconciliation,
         record_file=_record, write_json=write_json, dispatch_error=TaskEvaluationPolicyCanaryDispatchError)
@@ -1474,8 +1470,10 @@ def dispatch_policy_canary_activation(
     # restart its allocator. Ordinary old-release work remains delivery-only.
     retained_delivery = execute and _has_materialized_delivery(root)
     retained_sparse_gap = execute and _retained_sparse_terminal_gap(root)
+    retained_billing_gap = execute and _retained_sparse_billing_gap(root,
+        read_json=lambda path, code: _read(path, code=code), sealed_provider_zero=_sealed_provider_zero)
     if (
-        (delivery_only and not (retained_delivery or retained_sparse_gap))
+        (delivery_only and not (retained_delivery or retained_sparse_gap or retained_billing_gap))
         or setup["activation_digest"] != activation["activation_digest"]
         or setup["scene_revision_digest"] != runtime_inputs.get("scene_revision_digest")
         or setup.get("task_success_contract")
@@ -1740,7 +1738,7 @@ def dispatch_policy_canary_activation(
     )
     if resumed is not None:
         return resumed
-    if delivery_only and not retained_sparse_gap:
+    if delivery_only and not (retained_sparse_gap or retained_billing_gap):
         raise TaskEvaluationPolicyCanaryDispatchError("policy_canary_retained_delivery_missing")
 
     provider_null = proven_provider_null_closeout(adapter, root=root, record_file=_record)
@@ -1975,12 +1973,13 @@ def dispatch_policy_canary_activation(
         inner["result_digest"] = canonical_digest(inner, digest_field="result_digest")
         native_path = gap_root / "policy_canary_provider_gap_result.json"
         write_json(native_path, inner)
-    joined = _join_session_closeout(inner=inner, adapter=adapter, provider_zero=provider_zero)
+    joined = _join_session_closeout(inner=inner, adapter=adapter,
+        provider_zero=provider_zero, adapter_path=adapter_path)
     joined["run_id"] = activation["run_id"]
     joined["configuration_digest"] = runtime_inputs["configuration_digest"]
     joined["scene_revision_digest"] = setup["scene_revision_digest"]
     joined["provider"] = "vast"
-    joined["provider_instance_ids"] = list(adapter.get("vast_instance_ids") or [])
+    joined["provider_instance_ids"] = _adapter_instance_ids(adapter, result_path=adapter_path)
     selected_container = str(adapter.get("selected_container_image") or "")
     container_match = re.search(r"sha256:[0-9a-f]{64}", selected_container)
     if container_match:
@@ -2342,7 +2341,7 @@ def process_policy_canary_dispatch_queue(
                 if (row.get("source_commit") != implementation_commit
                         and not (output / "dispatch_receipt.json").exists()
                         and (_has_materialized_delivery(output)
-                             or _retained_sparse_terminal_gap(output))):
+                             or _retained_sparse_terminal_gap(output) or _retained_sparse_billing_gap(output, read_json=lambda p,c: _read(p, code=c), sealed_provider_zero=_sealed_provider_zero))):
                     sources.append(path)
             except (OSError, ValueError, TypeError):
                 continue

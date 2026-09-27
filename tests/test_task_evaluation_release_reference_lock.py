@@ -51,3 +51,24 @@ write_launch_preparation_record_exclusive(
     process.wait(timeout=5)
     assert process.returncode == 0
     assert destination.is_file()
+
+
+def test_a_bounded_acquisition_gives_up_on_a_busy_lock_with_a_typed_code(tmp_path: Path) -> None:
+    import pytest
+
+    from blueprint_pipeline.task_evaluation_release_reference_lock import (
+        ReleaseReferenceLockError,
+    )
+
+    with release_reference_lock(tmp_path, exclusive=False):  # a publisher mid-write
+        started = time.monotonic()
+        with pytest.raises(ReleaseReferenceLockError, match="^release_reference_lock_busy$"):
+            with release_reference_lock(
+                tmp_path, exclusive=True, timeout_seconds=0.3, poll_seconds=0.05
+            ):
+                pass
+        waited = time.monotonic() - started
+        assert 0.3 <= waited < 5
+    # Once the publisher is done the same bounded acquisition succeeds at once.
+    with release_reference_lock(tmp_path, exclusive=True, timeout_seconds=0.3):
+        pass

@@ -16,7 +16,7 @@ import os
 import threading
 import traceback
 from collections.abc import Mapping, Sequence
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
@@ -223,6 +223,8 @@ def _stage_models(
         json.dumps(sonic_cuda, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
 
+    cancel_event = threading.Event()
+
     def fetch_checkpoint(candidate: str) -> dict[str, Any]:
         try:
             with _Heartbeat("checkpoint:" + candidate):
@@ -230,6 +232,7 @@ def _stage_models(
                     inventory_path=inventory,
                     candidate_id=candidate,
                     output_dir=checkpoints,
+                    cancel_event=cancel_event,
                     **({"cache_manifest_path": cache_manifest_path} if cache_manifest_path else {}),
                 )
             if (
@@ -247,12 +250,28 @@ def _stage_models(
                 "BLUEPRINT_G1_CHECKPOINT_BLOCKED:" + candidate + ":" + type(exc).__name__,
                 flush=True,
             )
+            cancel_event.set()
             raise
 
     # Candidate downloads use distinct pinned paths. Fetch them together so
     # large pi0.5 weights do not consume the whole bounded GPU lease serially.
+    receipts_by_candidate: dict[str, dict[str, Any]] = {}
+    failures: list[Exception] = []
     with ThreadPoolExecutor(max_workers=len(PAIR_ORDER)) as pool:
-        receipts = list(pool.map(fetch_checkpoint, PAIR_ORDER))
+        futures = {pool.submit(fetch_checkpoint, candidate): candidate for candidate in PAIR_ORDER}
+        for completed in as_completed(futures):
+            try:
+                receipts_by_candidate[futures[completed]] = completed.result()
+            except Exception as exc:
+                cancel_event.set()
+                failures.append(exc)
+    if failures:
+        primary = next(
+            (exc for exc in failures if type(exc).__name__ != "_DownloadPeerCancelled"),
+            failures[0],
+        )
+        raise primary
+    receipts = [receipts_by_candidate[candidate] for candidate in PAIR_ORDER]
     return {"checkpoints": receipts, "sonic": sonic,
             "sonic_cuda_preflight": sonic_cuda, "root": str(models)}
 

@@ -525,3 +525,25 @@ def test_oversized_accounting_receipt_keeps_original_run(tmp_path):
     assert result['offloaded_count'] == 0
     assert run.is_dir()
     assert not (root / ('run' + POINTER_SUFFIX)).exists()
+
+
+def test_explicit_members_pack_exactly_those_files_and_never_follow_links(tmp_path: Path) -> None:
+    from blueprint_pipeline.control_plane_evidence_offload import _HashingSink, _pack_stream
+
+    (tmp_path / "a").mkdir()
+    (tmp_path / "a" / "one.bin").write_bytes(b"1")
+    (tmp_path / "two.bin").write_bytes(b"22")
+    (tmp_path / "skip.bin").write_bytes(b"3")
+
+    listed = _pack_stream(tmp_path, _HashingSink(), members=["two.bin", "a/one.bin"])
+    walked = _pack_stream(tmp_path, _HashingSink())
+
+    assert [row["relative_path"] for row in listed] == ["two.bin", "a/one.bin"]
+    assert listed[0] == {"relative_path": "two.bin", "size_bytes": 2,
+                         "sha256": "sha256:" + hashlib.sha256(b"22").hexdigest()}
+    assert [row["relative_path"] for row in walked] == ["skip.bin", "two.bin", "a/one.bin"]
+    (tmp_path / "link").symlink_to(tmp_path / "two.bin")
+    (tmp_path / "linked-dir").symlink_to(tmp_path / "a")
+    for bad in (["link"], ["linked-dir/one.bin"], ["../x"], ["/etc/hosts"], ["missing"], ["a"], [""]):
+        with pytest.raises(ControlPlaneEvidenceOffloadError, match="member_invalid"):
+            _pack_stream(tmp_path, _HashingSink(), members=bad)
