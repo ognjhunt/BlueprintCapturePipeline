@@ -11,10 +11,13 @@ SYSTEMD_DIR = REPO_ROOT / "deploy" / "systemd"
 sys.path.insert(0, str(REPO_ROOT / "deploy" / "operator-door"))
 
 from operator_door.config import DoorConfig  # noqa: E402
+from operator_door.requests import RequestRefused, validate_request  # noqa: E402
 
 DOOR = SYSTEMD_DIR / "blueprint-operator-door.service"
 RUNNER = SYSTEMD_DIR / "blueprint-operator-door-runner.service"
 TRIGGER = SYSTEMD_DIR / "blueprint-operator-door-runner.path"
+HOLD_SWEEP = SYSTEMD_DIR / "blueprint-operator-door-hold-sweep.service"
+HOLD_SWEEP_TIMER = SYSTEMD_DIR / "blueprint-operator-door-hold-sweep.timer"
 
 
 def _unit(path: Path) -> configparser.RawConfigParser:
@@ -62,3 +65,40 @@ def test_path_unit_watches_the_spool_the_door_writes() -> None:
     path = _unit(TRIGGER)["Path"]
     assert path["PathExistsGlob"] == f"{DoorConfig().spool_root}/pending/*.json"
     assert path["Unit"] == RUNNER.name
+
+
+def test_hold_sweep_runs_before_boot_triggers_and_repeats_after_boot() -> None:
+    service = _unit(HOLD_SWEEP)
+    assert set(service["Unit"]["Before"].split()) == {"timers.target", "paths.target"}
+    assert service["Service"]["User"] == "root"
+    assert service["Service"]["ExecStart"].endswith(
+        "-m operator_door.holds --sweep --holds-dir /var/lib/blueprint-operator-door/requests/holds"
+    )
+    assert service["Service"]["ReadWritePaths"] == DoorConfig().spool_root
+    assert set(service["Install"]["WantedBy"].split()) == {"timers.target", "paths.target"}
+    timer = _unit(HOLD_SWEEP_TIMER)
+    assert timer["Timer"]["OnBootSec"] and timer["Timer"]["OnUnitActiveSec"]
+    assert timer["Install"]["WantedBy"] == "timers.target"
+    installer = (REPO_ROOT / "deploy" / "operator-door" / "install.sh").read_text(encoding="utf-8")
+    assert "blueprint-operator-door-hold-sweep.service" in installer
+    assert "blueprint-operator-door-hold-sweep.timer" in installer
+
+
+def test_every_holdable_trigger_waits_for_boot_hold_reconciliation() -> None:
+    holdable = []
+    for path in sorted(SYSTEMD_DIR.iterdir()):
+        if path.suffix not in {".timer", ".path"}:
+            continue
+        try:
+            validate_request({"kind": "hold", "unit": path.name, "owner": "operator",
+                              "reason": "maintenance", "expires_in_seconds": 60})
+        except RequestRefused:
+            continue
+        holdable.append(path.name)
+        unit = _unit(path)["Unit"]
+        assert "blueprint-operator-door-hold-sweep.service" in unit["After"].split(), path.name
+        assert "blueprint-operator-door-hold-sweep.service" in unit["Wants"].split(), path.name
+        assert unit["ConditionPathExists"] == (
+            f"!/var/lib/blueprint-operator-door/requests/holds/{path.name}.json"
+        ), path.name
+    assert holdable

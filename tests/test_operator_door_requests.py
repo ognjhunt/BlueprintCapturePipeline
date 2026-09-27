@@ -67,8 +67,8 @@ def test_invalid_requests_are_refused(body: object, code: str) -> None:
 def test_unit_actions_are_limited_to_safe_shapes() -> None:
     assert validate_request({"kind": "unit", "unit": "blueprint-gpu-spend-guard.service", "action": "start"})
     assert validate_request(
-        {"kind": "unit", "unit": "blueprint-pubsub-handoff-listener.timer", "action": "stop"}
-    )["action"] == "stop"
+        {"kind": "unit", "unit": "blueprint-pubsub-handoff-listener.timer", "action": "restart"}
+    )["action"] == "restart"
     assert required_scope("unit") == "operate"
 
 
@@ -83,6 +83,13 @@ def test_unit_actions_are_limited_to_safe_shapes() -> None:
         ("blueprint-operator-door.service", "start", "unit_is_door"),
         ("blueprint-gpu-spend-guard.timer", "stop", "unit_safety_critical"),
         ("blueprint-existing-policy-canary-watchdog.timer", "restart", "unit_safety_critical"),
+        ("blueprint-pubsub-handoff-listener.timer", "stop", "unit_stop_requires_hold"),
+        ("blueprint-scene-progression.path", "stop", "unit_stop_requires_hold"),
+        ("blueprint-task-evaluation-terminal-resource-release.path", "restart", "unit_safety_critical"),
+        ("blueprint-control-plane-storage-gc.timer", "restart", "unit_safety_critical"),
+        ("blueprint-control-plane-capacity.timer", "restart", "unit_safety_critical"),
+        ("blueprint-completed-replay-cache-gc.timer", "restart", "unit_safety_critical"),
+        ("blueprint-task-evaluation-preflight.timer", "restart", "unit_safety_critical"),
         ("blueprint-gpu-spend-guard.timer\n", "start", "unit_name_invalid"),
     ],
 )
@@ -108,6 +115,48 @@ def test_request_ids_name_exactly_the_known_kinds() -> None:
     for bad in ("20260926T000000Z-shell-0123abcd", "20260926T000000Z-deploy-0123ABCD"):
         with pytest.raises(RequestRefused):
             validate_request_id(bad)
+
+
+def test_hold_and_release_hold_have_operate_scope_and_strict_fields() -> None:
+    hold = {"kind": "hold", "unit": "blueprint-scene-progression.timer", "owner": "alice@example.org",
+            "reason": "pause for inspected capture", "expires_in_seconds": 3600}
+    assert validate_request(hold) == hold
+    assert required_scope("hold") == "operate"
+    release = {"kind": "release-hold", "unit": hold["unit"]}
+    assert validate_request(release) == release
+    assert required_scope("release-hold") == "operate"
+
+
+@pytest.mark.parametrize(("change", "code"), [
+    ({"owner": ""}, "hold_owner_invalid"),
+    ({"owner": "bad name"}, "hold_owner_invalid"),
+    ({"reason": ""}, "hold_reason_invalid"),
+    ({"reason": "x" * 201}, "hold_reason_invalid"),
+    ({"reason": "line\nbreak"}, "hold_reason_invalid"),
+    ({"expires_in_seconds": True}, "hold_expiry_invalid"),
+    ({"expires_in_seconds": 59}, "hold_expiry_invalid"),
+    ({"expires_in_seconds": 86401}, "hold_expiry_invalid"),
+    ({"unit": "blueprint-scene-progression.service"}, "hold_unit_invalid"),
+    ({"unit": "blueprint-control-plane-storage-gc.timer"}, "unit_safety_critical"),
+    ({"extra": "ignored"}, "request_key_unknown:extra"),
+])
+def test_hold_refuses_invalid_fields(change: dict, code: str) -> None:
+    body = {"kind": "hold", "unit": "blueprint-scene-progression.timer", "owner": "alice",
+            "reason": "pause", "expires_in_seconds": 60, **change}
+    with pytest.raises(RequestRefused) as caught:
+        validate_request(body)
+    assert caught.value.code == code
+
+
+@pytest.mark.parametrize(("unit", "code"), [
+    ("blueprint-scene-progression.service", "hold_unit_invalid"),
+    ("blueprint-gpu-spend-guard.timer", "unit_safety_critical"),
+    ("blueprint-operator-door-runner.path", "unit_is_door"),
+])
+def test_release_hold_refuses_unsafe_units(unit: str, code: str) -> None:
+    with pytest.raises(RequestRefused) as caught:
+        validate_request({"kind": "release-hold", "unit": unit})
+    assert caught.value.code == code
 
 
 def test_restore_requires_an_exact_scene_and_bucket() -> None:

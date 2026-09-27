@@ -23,6 +23,12 @@ import google.auth
 from google.cloud import storage
 
 from .common import PipelineError, utc_now_iso, write_json
+from .pubsub_handoff_disk_admission import (
+    HandoffStagingCapacityError,
+    download_with_reservation,
+    finish_staging_capacity_blocked,
+    staging_manifest_row as _staging_manifest_row,
+)
 from .decision_evidence_contracts import canonical_digest
 from .run_e2e import run_end_to_end
 from .core.security_controls import (
@@ -210,9 +216,10 @@ def stage_handoff_capture(
             continue
         downloads.append((blob, destination))
 
-    for blob, destination in downloads:
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        blob.download_to_filename(str(destination))
+    download_with_reservation(
+        downloads=downloads, manifest_rows=manifest_rows,
+        storage_root=storage_root, capture_root=capture_root,
+    )
     write_json(
         capture_root / STAGING_MANIFEST_FILENAME,
         {
@@ -236,23 +243,6 @@ def stage_handoff_capture(
         # capture_job_id / site_submission_id / buyer_request_id data contract stays intact.
         _synthesize_pipeline_handoff(handoff, capture_root=capture_root)
     return capture_root
-
-
-def _staging_manifest_row(blob: Any, *, name: str, relative_path: str) -> dict[str, Any]:
-    """The cloud identity of one staged object, as the listing reported it."""
-
-    size = getattr(blob, "size", None)
-    generation = getattr(blob, "generation", None)
-    md5_hash = getattr(blob, "md5_hash", None)
-    crc32c = getattr(blob, "crc32c", None)
-    return {
-        "name": name,
-        "relative_path": relative_path,
-        "size": size if isinstance(size, int) and not isinstance(size, bool) and size >= 0 else None,
-        "generation": str(generation) if generation is not None and str(generation).strip() else None,
-        "md5_hash": md5_hash if isinstance(md5_hash, str) and md5_hash else None,
-        "crc32c": crc32c if isinstance(crc32c, str) and crc32c else None,
-    }
 
 
 def _previous_staging_rows(capture_root: Path, *, handoff: HandoffMessage) -> dict[str, dict[str, Any]]:
@@ -1949,6 +1939,13 @@ def process_handoff_payload(
                 }
             )
     except Exception as exc:
+        if isinstance(exc, HandoffStagingCapacityError):
+            return finish_staging_capacity_blocked(
+                capture_root=capture_root, handoff=handoff, owner=owner, token=token,
+                attempt_count=attempt_count, attempt_started_at=attempt_started_at,
+                previous_history=previous_history, failure_stage=failure_stage,
+                finish_job_lease=_finish_job_lease,
+            )
         ending = authority_ending(exc)
         if ending is not None:
             # Retrying cannot revive an ended authority. Finish the job as

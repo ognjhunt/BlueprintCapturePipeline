@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import fcntl
 import hashlib
 import json
 import subprocess
@@ -44,6 +45,9 @@ def _fake_private_checkpoint_cache(
     """Paid controller tests isolate cache transfer from the provider mock."""
 
     monkeypatch.setenv(lane.CACHE_ROOT_ENV, str(tmp_path / "checkpoint-cache"))
+    gate = tmp_path / "vast_paid_launch.gate.lock"
+    gate.touch()
+    monkeypatch.setattr(lane, "vast_launch_gate_path", lambda: gate)
     monkeypatch.setenv(lane.SPEND_ADMISSION_LOCK_PATH_ENV, str(tmp_path / "lock.json"))
     monkeypatch.setattr(lane, "_load_spend_admission_lock", lambda _path: {})
     monkeypatch.setattr(lane, "validate_spend_admission_lock", lambda *_args, **_kwargs: [])
@@ -237,6 +241,110 @@ def test_paid_g1_checks_credit_before_checkpoint_staging(
     assert result["status"] == "blocked"
     assert result["blockers"] == ["provider_credit_insufficient"]
     assert result["provider_mutations_performed"] == 0
+
+
+def test_paid_g1_refuses_active_deploy_before_checkpoint_staging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commit = "a" * 40
+    gate = lane.vast_launch_gate_path()
+    monkeypatch.setattr(lane, "_early_provider_credit_blockers", lambda _cap: [])
+    monkeypatch.setattr(
+        lane, "stage_g1_checkpoint_cache",
+        lambda **_kwargs: pytest.fail("checkpoint staging ran while deploy held gate"),
+    )
+    with gate.open("r") as deploy:
+        fcntl.flock(deploy.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        result = lane.dispatch_g1_paid_campaign(
+            _args(tmp_path, g1_campaign_bundle_receipt=str(tmp_path / "receipt.json")),
+            control_identity={
+                "orchestrator_source_commit": commit,
+                "origin_main_commit": commit,
+                "remote_main_commit": commit,
+            },
+            control_blockers=[],
+        )
+    assert result["status"] == "blocked"
+    assert result["blockers"] == ["g1_paid_campaign_deploy_in_progress"]
+    assert result["provider_mutations_performed"] == 0
+
+
+def test_paid_g1_holds_deploy_gate_until_provider_create_authority_is_consumed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commit = "a" * 40
+    gate = lane.vast_launch_gate_path()
+    monkeypatch.setattr(lane, "_early_provider_credit_blockers", lambda _cap: [])
+    monkeypatch.setattr(
+        lane, "load_verified_g1_provider_bundle",
+        lambda *_args, **_kwargs: {"status": "ready", "bundle_sha256": "sha256:" + "b" * 64},
+    )
+
+    def deploy_is_waiting() -> None:
+        with gate.open("r") as deploy:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(deploy.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def stage(**_kwargs: object) -> dict[str, object]:
+        deploy_is_waiting()
+        return {
+            "status": "completed", "file_count": 24, "cache_hit_count": 24,
+            "upload_count": 0, "inventory_rows_digest": "sha256:" + "1" * 64,
+            "signed_url_file_path": str(tmp_path / "private-cache-urls.json"),
+            "raw_signed_urls_recorded": False,
+        }
+
+    def run(**kwargs: object) -> dict[str, object]:
+        deploy_is_waiting()
+        hook = kwargs["pre_provider_mutation_hook"]
+        assert callable(hook)
+        assert hook()["status"] == "consumed"
+        with gate.open("r") as deploy:
+            fcntl.flock(deploy.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return {"status": "blocked", "blockers": ["test_no_provider"],
+                "provider_mutations_performed": 0}
+
+    monkeypatch.setattr(lane, "stage_g1_checkpoint_cache", stage)
+    monkeypatch.setattr(lane, "run_arena_native_control_vast", run)
+    result = lane.dispatch_g1_paid_campaign(
+        _args(tmp_path, g1_campaign_bundle_receipt=str(tmp_path / "receipt.json")),
+        control_identity={
+            "orchestrator_source_commit": commit,
+            "origin_main_commit": commit,
+            "remote_main_commit": commit,
+        },
+        control_blockers=[],
+    )
+    assert result["blockers"] == ["test_no_provider"]
+    assert (tmp_path / "job" / "native_g1_paid_attempt_consumption.v1.json").is_file()
+
+
+def test_paid_g1_releases_deploy_gate_after_checkpoint_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commit = "a" * 40
+    gate = lane.vast_launch_gate_path()
+    monkeypatch.setattr(lane, "_early_provider_credit_blockers", lambda _cap: [])
+    monkeypatch.setattr(
+        lane, "load_verified_g1_provider_bundle",
+        lambda *_args, **_kwargs: {"status": "ready", "bundle_sha256": "sha256:" + "b" * 64},
+    )
+    monkeypatch.setattr(
+        lane, "stage_g1_checkpoint_cache",
+        lambda **_kwargs: (_ for _ in ()).throw(ValueError("bad cache")),
+    )
+    result = lane.dispatch_g1_paid_campaign(
+        _args(tmp_path, g1_campaign_bundle_receipt=str(tmp_path / "receipt.json")),
+        control_identity={
+            "orchestrator_source_commit": commit,
+            "origin_main_commit": commit,
+            "remote_main_commit": commit,
+        },
+        control_blockers=[],
+    )
+    assert result["blockers"] == ["g1_private_checkpoint_cache_staging_failed:ValueError"]
+    with gate.open("r") as deploy:
+        fcntl.flock(deploy.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
 
 
 def test_early_credit_guard_is_read_only_and_admits_only_funded_runs(

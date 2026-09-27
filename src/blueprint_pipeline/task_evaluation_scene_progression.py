@@ -662,19 +662,20 @@ def _advance_intent(directory, intent, config, release, *, resolver, publisher, 
     if state.get("factory"):
         factory = read(_reference(state["factory"]), digest_field="factory_digest")
     else:
-        from .task_evaluation_scene_preparation_attempts import preparation_storage
-        with preparation_storage(config, binding, output):
+        from .task_evaluation_scene_preparation_attempts import preparation_storage, settle_preparation_storage
+        with preparation_storage(config, binding, output) as storage:
             factory = resolution.materializer(intent_path=directory / "intent.json", source_binding_path=binding_path,
                 machinery_path=machinery_path, release_binding_path=release_path, output_root=output / "materialized",
                 attempt_id=active_id)
-        if factory.get("status") in {"needs_input", "awaiting_source", "blocked"}:
-            return emit(factory["status"], "factory", factory.get("blockers", []))
-        require(factory.get("status") == "publication_ready"
-                and factory.get("source_commit") == attempt["source_commit"]
-                and factory.get("intent_digest") == intent["intent_digest"]
-                and factory.get("attempt_digest") == attempt["attempt_digest"]
-                and factory.get("factory_digest") == canonical_digest(factory, digest_field="factory_digest")
-                and factory.get("provider_mutation_performed") is False, "factory_receipt_invalid")
+            settle_preparation_storage(storage, factory)
+            if factory.get("status") in {"needs_input", "awaiting_source", "blocked"}:
+                return emit(factory["status"], "factory", factory.get("blockers", []))
+            require(factory.get("status") == "publication_ready"
+                    and factory.get("source_commit") == attempt["source_commit"]
+                    and factory.get("intent_digest") == intent["intent_digest"]
+                    and factory.get("attempt_digest") == attempt["attempt_digest"]
+                    and factory.get("factory_digest") == canonical_digest(factory, digest_field="factory_digest")
+                    and factory.get("provider_mutation_performed") is False, "factory_receipt_invalid")
         _put(factory_path, factory)
         state["factory"] = record(factory_path)
     request_path = _reference(factory["submission_request"])

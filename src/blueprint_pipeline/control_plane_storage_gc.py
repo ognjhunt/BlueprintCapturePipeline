@@ -1,12 +1,20 @@
 """Conservative reclamation for control-plane caches, on a timer.
 
-Three reclaim steps, each dry-run first and applied only with its typed
-acknowledgement:
+One tick (``run_storage_gc``) runs nine phases in this order. Every phase
+plans before it mutates, and a tick applies nothing unless it runs with
+``--apply`` and its typed acknowledgement. The plan-only phase never applies:
 
+* **Stranded queue rows**: pending rows bound to a release other than the
+  running one are moved to ``stranded/`` beside a receipt, so they stop
+  counting as live queue references.  Nothing is deleted.
+* **Terminal cache pins** whose run is proven closed by archived-run evidence
+  are released.  This changes only the pin ledger.
 * **Derived directories** (``cache`` class: prepared references, compiled
   episodes, activation launch sets) are retired when no live storage pin names
   them, no pending or processing queue message mentions them, and they have
   been idle longer than the grace period.
+* **Planned derived directories** inventory configured roots such as SAM31
+  preparation output. They are reported but never applied by this phase.
 * **Content-store blobs**: only direct children of an explicitly supplied
   ``sha256`` directory are ever eligible.  A blob is reclaimable when its name
   is its SHA-256 digest, it is an ordinary non-symlink file, its link count is
@@ -14,8 +22,12 @@ acknowledgement:
   period.  The link-count rule makes every derived-directory hardlink an
   implicit pin, so retiring directories first is what frees blobs.
 * **Evidence offload** (``evidence_cold`` class) migrates sealed run
-  directories to the artifact store behind a digest-bound pointer; it stays a
-  dry run until the operator enables it.
+  directories, and first their result artifacts, to the artifact store behind
+  a digest-bound pointer; it stays a dry run until the operator enables it.
+* **Scratch directories** (``scratch`` class) idle longer than their window
+  are reaped by age alone: nothing references them.
+* **Workspace bundles**: the reproducible ``bundle/`` copy inside an idle,
+  unpinned semantic-pretraining workspace is removed behind a sealed marker.
 * **Scene workspaces** (``scene_workspace`` class) are retired by
   ``website_scene_workspace_retention`` once every file verifies in Firebase
   Storage or is archived to the artifact store behind a replayable receipt, and
@@ -45,8 +57,8 @@ from pathlib import Path
 from typing import Any
 
 import os
+import secrets
 import shutil
-import tempfile
 
 from .control_plane_evidence_offload import (
     DEFAULT_HOT_WINDOW_SECONDS,
@@ -1528,12 +1540,43 @@ def _env_int(name: str, default: int | None) -> int | None:
 
 
 def _write_report(path: Path, report: Mapping[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
-    descriptor, temporary = tempfile.mkstemp(prefix=".gc-report-", dir=path.parent)
-    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-        json.dump(report, stream, indent=2, sort_keys=True)
-        stream.write("\n")
-    os.replace(temporary, path)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
+    # The door runs without root privileges. Repair directories created by older
+    # ticks under the service's 0077 umask before publishing the secret-free report.
+    parent_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        try:
+            os.fchmod(parent_fd, 0o755)
+        except PermissionError:
+            # Earlier GC units ran as blueprint. The current root unit has
+            # CAP_CHOWN but not CAP_FOWNER, so take ownership before chmod.
+            os.fchown(parent_fd, os.geteuid(), -1)
+            os.fchmod(parent_fd, 0o755)
+        temporary = f".gc-report-{secrets.token_hex(12)}"
+        descriptor = os.open(
+            temporary,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o600,
+            dir_fd=parent_fd,
+        )
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                json.dump(report, stream, indent=2, sort_keys=True)
+                stream.write("\n")
+                stream.flush()
+                os.fchmod(stream.fileno(), 0o644)
+            os.replace(temporary, path.name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+        finally:
+            try:
+                os.unlink(temporary, dir_fd=parent_fd)
+            except FileNotFoundError:
+                pass
+        published_parent = os.stat(path.parent, follow_symlinks=False)
+        bound_parent = os.fstat(parent_fd)
+        if (published_parent.st_dev, published_parent.st_ino) != (bound_parent.st_dev, bound_parent.st_ino):
+            raise ControlPlaneStorageGCError("storage_gc_report_directory_retargeted")
+    finally:
+        os.close(parent_fd)
 
 
 def _run_main(argv: list[str]) -> int:

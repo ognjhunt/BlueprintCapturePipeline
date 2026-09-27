@@ -606,6 +606,42 @@ def test_deployment_identity_fails_closed_without_exact_source_commit(
     }
 
 
+def test_configured_disk_headroom_passes_role_targets(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    target = tmp_path / "default"
+    scratch = tmp_path / "scratch"
+    monkeypatch.setenv(service.CONTROL_PLANE_DISK_TARGET_ROOT_ENV, str(target))
+    monkeypatch.setenv(service.CONTROL_PLANE_DISK_RESERVATION_ROOT_ENV, str(tmp_path / "ledger"))
+    monkeypatch.setenv(
+        "BLUEPRINT_CONTROL_PLANE_DISK_ROLE_TARGETS",
+        f"handoff_staging={scratch},launch_dispatch={scratch}",
+    )
+    seen: dict[str, object] = {}
+
+    def fake_headroom(**kwargs: object) -> dict[str, object]:
+        seen.update(kwargs)
+        return {"status": "ok", "refused_roles": []}
+
+    monkeypatch.setattr(service, "disk_headroom", fake_headroom)
+    assert service._configured_disk_headroom()["status"] == "ok"
+    assert seen["role_targets"] == {
+        "handoff_staging": scratch,
+        "launch_dispatch": scratch,
+    }
+
+
+def test_configured_disk_headroom_fails_closed_for_invalid_targets(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv(service.CONTROL_PLANE_DISK_TARGET_ROOT_ENV, str(tmp_path))
+    monkeypatch.setenv(service.CONTROL_PLANE_DISK_RESERVATION_ROOT_ENV, str(tmp_path / "ledger"))
+    monkeypatch.setenv("BLUEPRINT_CONTROL_PLANE_DISK_ROLE_TARGETS", "launch_dispatch=relative")
+    result = service._configured_disk_headroom()
+    assert result["status"] == "unknown_fail_closed"
+    assert "policy_canary_dispatch" in result["refused_roles"]
+
+
 def test_live_pipeline_intake_service_error_edges(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -4,7 +4,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from contextlib import contextmanager
 import fcntl
-from functools import wraps
+from functools import partial, wraps
 import importlib.util
 import hashlib
 import inspect
@@ -57,6 +57,12 @@ BACKEND = "astra_cad_blender_v1"
 ARTICULATED_AUTHORING_SCHEMA_VERSION = "articulated_replacement_authoring_configuration.v1"
 ARTICULATED_GRAPH_SCHEMA_VERSION = "task_evaluation_articulated_replacement_graph.v1"
 ARTICULATED_RECEIPT_SCHEMA_VERSION = "task_evaluation_articulated_replacement_authoring_result.v1"
+# A website assembly is sized by the video estimate or, since the 2026-09-27
+# website dishwasher incident, by verified published figures for its identified
+# product or its category's standard (website_object_spec_research.published_body_size).
+# Nothing else: never a measurement this footage cannot provide.
+WEBSITE_ARTICULATED_DIMENSION_AUTHORITIES = frozenset({"estimated", "published_product_specification",
+                                                       "published_category_standard"})
 BLENDER_ROOT_ENV = "BLUEPRINT_BLENDER_RUNTIME_ROOT"
 _CAD_PACKAGE_FILES = ("text_to_cad_skills_source.zip", "multi_agent_cad_source.zip",
                       "cad_skill_source_receipt.json", "multi_agent_cad_skill.md")
@@ -325,7 +331,7 @@ def build_articulated_authoring_requests(stage_input: Mapping[str, Any], source_
             or disclosure.get("provider_training") is not False
             or disclosure.get("public_redistribution") is not False):
         raise AstraStageError("astra_derived_disclosure_not_admitted")
-    if website_capture and configuration.get("dimension_authority") != "estimated":
+    if website_capture and configuration.get("dimension_authority") not in WEBSITE_ARTICULATED_DIMENSION_AUTHORITIES:
         raise AstraStageError("astra_website_dimensions_must_remain_estimated")
     envelope = _metric_envelope_spec(configuration)
     tolerance = float(envelope["maximum_dimension_relative_error"])
@@ -360,6 +366,11 @@ def build_articulated_authoring_requests(stage_input: Mapping[str, Any], source_
         uncertainty_note = ("Cabinet depth uses a development-only estimate with an explicit interval that disagrees "
                             "with the retained source AABB; other axes use source-envelope tolerance proxies. "
                             "No part dimension is physically measured.")
+    elif family != DRAWER_FAMILY and plan["body_depth"]["basis"].startswith("published_"):
+        uncertainty_note = (f"Body depth, width and height are {plan['body_depth']['basis']} figures, which describe "
+                            "the identified product or its category, not this unit; part dimensions add recorded "
+                            "construction priors. Envelope relative tolerance is an explicit uncertainty proxy. "
+                            "None is measured.")
     elif family != DRAWER_FAMILY:
         uncertainty_note = (f"Body depth basis {plan['body_depth']['basis']}; width and height from the closed front; "
                             "part dimensions add recorded construction priors. Envelope relative tolerance is an "
@@ -513,9 +524,17 @@ def _reuse_prior_part_result(prior_roots: list[Path], part_id: str, request: Aut
 def _author_articulated_parts(*, plan, part_requests, authored_root, runtime, prior_roots, invoker, sandbox, blender,
                               cad_root, verified_sources, authoring_instructions, configuration, authoring_executor,
                               mac_executor) -> dict[str, Any]:
-    """Author each part in its own bounded session; completed parts are checkpoints for a retry."""
+    """Author each part in its own bounded session; completed parts are checkpoints for a retry.
+
+    A part the author refuses no longer stops the parts after it. On
+    2026-09-27 the website dishwasher's door hit the context ceiling after the
+    body was built, and the racks and basket queued behind it were never
+    authored or reviewed. Every planned part is now attempted; the assembly
+    still fails closed when any part failed, so nothing partial is packaged.
+    """
     parts: dict[str, Any] = {}
     reused: list[str] = []
+    failures: dict[str, str] = {}
     for part_id, part_request in part_requests.items():
         part_root = authored_root / "parts" / part_id
         prior = _reuse_prior_part_result(prior_roots, part_id, part_request)
@@ -532,14 +551,23 @@ def _author_articulated_parts(*, plan, part_requests, authored_root, runtime, pr
                          blender_runner=sandbox, blender_executable=blender["executable"],
                          authoring_instructions=authoring_instructions)
         if authoring_executor is execute_asset_authoring and configuration.get("source_observation_kind") == "website_capture_frames":
-            from functools import partial
             from .task_object_agent_cad import execute_cad_program
             from .task_object_agent_session import execute_agent_authoring
-            parts[part_id] = execute_agent_authoring(**arguments, budget_root=runtime / "inference" / "parts" / part_id,
+            author = partial(execute_agent_authoring, budget_root=runtime / "inference" / "parts" / part_id,
                 cad_executor=partial(execute_cad_program, cad_root=cad_root / "text-to-cad",
                     mac_root=cad_root / "Multi-Agent-CAD", sandbox=sandbox, verified_sources=verified_sources))
         else:
-            parts[part_id] = authoring_executor(**arguments, mac_executor=mac_executor)
+            author = partial(authoring_executor, mac_executor=mac_executor)
+        try:
+            parts[part_id] = author(**arguments)
+        except AssetAuthoringError as exc:
+            failures[part_id] = str(exc)[:500]
+    if failures:
+        _write(authored_root / "part_failures.json", {
+            "schema_version": "articulated_part_failures.v1", "failed_parts": dict(sorted(failures.items())),
+            "authored_parts": sorted(parts), "reused_part_ids": reused, "assembly_packaged": False})
+        raise AssetAuthoringError("articulated_parts_failed:" + ";".join(
+            f"{part_id}={reason}" for part_id, reason in sorted(failures.items())))
     authored = {"schema_version": ARTICULATED_AUTHORING_RESULT_SCHEMA_VERSION,
                 "status": "parts_authored_pending_native_qualification", "model": next(iter(parts.values()))["model"],
                 "plan": dict(plan), "parts": parts, "reused_part_ids": reused,

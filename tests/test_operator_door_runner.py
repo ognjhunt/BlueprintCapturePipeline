@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "deploy" / "operato
 
 from operator_door.config import DoorConfig  # noqa: E402
 from operator_door.hostinfo import CommandResult  # noqa: E402
+from operator_door import holds  # noqa: E402
 from operator_door.requests import SCHEMA, enqueue, validate_request  # noqa: E402
 from operator_door.spool_runner import process_spool  # noqa: E402
 
@@ -26,25 +27,54 @@ SHA = "0123456789abcdef0123456789abcdef01234567"
 
 
 class FakeRunner:
-    def __init__(self, active_deploy: str = "", systemd_run_rc: int = 0) -> None:
+    guard_root = Path("/var/lib/blueprint-operator-door/requests/holds")
+
+    def __init__(self, active_deploy: str = "", systemd_run_rc: int = 0,
+                 enabled_state: str = "enabled", guarded: bool = True,
+                 need_daemon_reload: str = "no", active_state: str = "inactive",
+                 stop_rc: int = 0, initial_active_state: str = "active") -> None:
         self.calls: list[list[str]] = []
         self.active_deploy = active_deploy
         self.systemd_run_rc = systemd_run_rc
+        self.enabled_state = enabled_state
+        self.guarded = guarded
+        self.need_daemon_reload = need_daemon_reload
+        self.active_state = active_state
+        self.stop_rc = stop_rc
+        self.initial_active_state = initial_active_state
+        self.stop_count = 0
 
     def run(self, argv: Sequence[str], timeout: float) -> CommandResult:
         self.calls.append(list(argv))
         if argv[:2] == ["systemctl", "list-units"]:
             return CommandResult(0, self.active_deploy, "")
+        if argv[:2] == ["systemctl", "is-enabled"]:
+            return CommandResult(0 if self.enabled_state == "enabled" else 1,
+                                 self.enabled_state + "\n", "")
+        if argv[:2] == ["systemctl", "is-active"]:
+            state = self.initial_active_state if self.stop_count == 0 else self.active_state
+            return CommandResult(0 if state == "active" else 3, state + "\n", "")
+        if argv[:2] == ["systemctl", "cat"]:
+            unit = argv[-1]
+            guard = f"ConditionPathExists=!{self.guard_root / f'{unit}.json'}"
+            return CommandResult(0, f"[Unit]\n{guard}\n" if self.guarded else "[Unit]\n", "")
+        if argv[:2] == ["systemctl", "show"]:
+            return CommandResult(0, self.need_daemon_reload + "\n", "")
+        if argv[:2] == ["systemctl", "stop"]:
+            self.stop_count += 1
+            return CommandResult(self.stop_rc, "", "stop failed" if self.stop_rc else "")
         if argv[0] == "systemd-run":
             return CommandResult(self.systemd_run_rc, "", "Failed to start" if self.systemd_run_rc else "")
         return CommandResult(0, "", "")
 
 
 @pytest.fixture()
-def config(tmp_path: Path) -> DoorConfig:
+def config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> DoorConfig:
     for state in ("pending", "processing", "completed", "results"):
         (tmp_path / "requests" / state).mkdir(parents=True)
-    return DoorConfig(state_root=str(tmp_path), install_root="/opt/blueprint/operator-door")
+    config = DoorConfig(state_root=str(tmp_path), install_root="/opt/blueprint/operator-door")
+    monkeypatch.setattr(FakeRunner, "guard_root", Path(config.spool_root) / "holds")
+    return config
 
 
 def _result(config: DoorConfig, request_id: str) -> dict:
@@ -104,6 +134,281 @@ def test_unit_actions_use_no_block_systemctl(config: DoorConfig) -> None:
     assert _result(config, request_id)["status"] == "done"
 
 
+def _hold(config: DoorConfig, owner: str = "alice") -> str:
+    return _spooled(config, {"kind": "hold", "unit": "blueprint-scene-progression.timer",
+                             "owner": owner, "reason": "inspect capture", "expires_in_seconds": 3600})
+
+
+def test_hold_stops_a_timer_records_owner_and_schedules_expiry(config: DoorConfig) -> None:
+    request_id = _hold(config)
+    runner = FakeRunner()
+    process_spool(config, runner=runner)
+    unit = "blueprint-scene-progression.timer"
+    assert runner.calls[:3] == [
+        ["systemctl", "cat", "--", unit],
+        ["systemctl", "show", "--property=NeedDaemonReload", "--value", "--", unit],
+        ["systemctl", "is-enabled", "--", unit],
+    ]
+    assert runner.calls[3:9] == [
+        ["systemctl", "is-active", "--", unit],
+        ["systemctl", "stop", "--", unit],
+        ["systemctl", "is-active", "--", unit],
+        ["systemctl", "stop", "--", unit],
+        ["systemctl", "is-active", "--", unit],
+        ["systemctl", "disable", "--", unit],
+    ]
+    launch = runner.calls[9]
+    assert launch[0] == "systemd-run"
+    assert f"--unit=blueprint-operator-door-hold-expiry-{request_id[-8:]}" in launch
+    assert "--on-active=3600s" in launch and "--collect" in launch
+    assert f"--setenv=DOOR_HOLD_UNIT={unit}" in launch
+    assert f"--setenv=DOOR_HOLD_REQUEST_ID={request_id}" in launch
+    assert launch[-2:] == ["/bin/bash", "/opt/blueprint/operator-door/door-hold-expire.sh"]
+    record = Path(config.spool_root) / "holds" / f"{unit}.json"
+    hold = json.loads(record.read_text(encoding="utf-8"))
+    assert record.stat().st_mode & 0o777 == 0o644
+    assert {key: hold[key] for key in ("schema", "unit", "owner", "reason", "requested_by", "request_id", "status")} == {
+        "schema": "blueprint_operator_door_hold.v1", "unit": unit, "owner": "alice",
+        "reason": "inspect capture", "requested_by": "cloud", "request_id": request_id, "status": "active"}
+    assert hold["enabled_before"] is True
+    assert hold["expires_at"] > hold["created_at"]
+    assert _result(config, request_id)["status"] == "done"
+
+
+def test_hold_publishes_its_boot_guard_before_stopping_or_disabling(config: DoorConfig) -> None:
+    unit = "blueprint-scene-progression.timer"
+    record = Path(config.spool_root) / "holds" / f"{unit}.json"
+
+    class ObserveDisable(FakeRunner):
+        stops = 0
+
+        def run(self, argv: Sequence[str], timeout: float) -> CommandResult:
+            if argv[:2] == ["systemctl", "stop"]:
+                self.stops += 1
+                if self.stops == 1:
+                    assert not record.exists()
+                else:
+                    assert json.loads(record.read_text())["status"] == "active"
+            if argv[:2] == ["systemctl", "disable"]:
+                assert json.loads(record.read_text())["status"] == "active"
+            return super().run(argv, timeout)
+
+    request_id = _hold(config)
+    process_spool(config, runner=ObserveDisable())
+    assert _result(config, request_id)["status"] == "done"
+    assert json.loads(record.read_text())["status"] == "active"
+
+
+def test_hold_does_not_succeed_while_the_trigger_is_still_active(config: DoorConfig) -> None:
+    request_id = _hold(config)
+    runner = FakeRunner(active_state="active")
+    process_spool(config, runner=runner)
+    assert _result(config, request_id)["code"] == "hold_stop_incomplete"
+    assert ["systemctl", "stop", "--", "blueprint-scene-progression.timer"] in runner.calls
+    assert ["systemctl", "is-active", "--", "blueprint-scene-progression.timer"] in runner.calls
+    assert not any(call[:2] == ["systemctl", "disable"] for call in runner.calls)
+    assert not (Path(config.spool_root) / "holds" / "blueprint-scene-progression.timer.json").exists()
+
+
+@pytest.mark.parametrize("runner", [FakeRunner(active_state="unknown"), FakeRunner(stop_rc=1)])
+def test_failed_first_stop_restores_an_unheld_trigger(config: DoorConfig, runner: FakeRunner) -> None:
+    request_id = _hold(config)
+    process_spool(config, runner=runner)
+    result = _result(config, request_id)
+    assert result["status"] == "failed" and result["rollback_returncode"] == 0
+    assert ["systemctl", "enable", "--", "blueprint-scene-progression.timer"] in runner.calls
+    assert ["systemctl", "--no-block", "start", "--", "blueprint-scene-progression.timer"] in runner.calls
+    assert not (Path(config.spool_root) / "holds" / "blueprint-scene-progression.timer.json").exists()
+
+
+def test_failed_hold_does_not_start_a_previously_inactive_disabled_trigger(config: DoorConfig) -> None:
+    request_id = _hold(config)
+    runner = FakeRunner(enabled_state="disabled", initial_active_state="inactive", systemd_run_rc=1)
+    process_spool(config, runner=runner)
+    assert _result(config, request_id)["code"] == "hold_expiry_schedule_failed"
+    assert not any(call[:3] == ["systemctl", "--no-block", "start"] for call in runner.calls)
+    assert not any(call[:2] == ["systemctl", "enable"] for call in runner.calls)
+    assert not (Path(config.spool_root) / "holds" / "blueprint-scene-progression.timer.json").exists()
+
+
+def test_failed_hold_record_write_restores_a_stopped_trigger(config: DoorConfig,
+                                                              monkeypatch: pytest.MonkeyPatch) -> None:
+    request_id = _hold(config)
+    runner = FakeRunner()
+
+    def no_space(*_args: object, **_kwargs: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(holds, "write", no_space)
+    process_spool(config, runner=runner)
+    assert _result(config, request_id)["status"] == "failed"
+    assert ["systemctl", "enable", "--", "blueprint-scene-progression.timer"] in runner.calls
+    assert ["systemctl", "--no-block", "start", "--", "blueprint-scene-progression.timer"] in runner.calls
+    assert not (Path(config.spool_root) / "holds" / "blueprint-scene-progression.timer.json").exists()
+
+
+def test_hold_refuses_a_host_unit_without_a_durable_guard(config: DoorConfig) -> None:
+    request_id = _spooled(config, {"kind": "hold", "unit": "blueprint-extra-job.timer",
+                                   "owner": "alice", "reason": "inspect", "expires_in_seconds": 3600})
+    runner = FakeRunner(guarded=False)
+    process_spool(config, runner=runner)
+    assert _result(config, request_id)["code"] == "hold_unit_guard_missing"
+    assert runner.calls == [["systemctl", "cat", "--", "blueprint-extra-job.timer"]]
+    assert not (Path(config.spool_root) / "holds" / "blueprint-extra-job.timer.json").exists()
+
+
+def test_hold_refuses_a_guard_for_a_different_state_root(config: DoorConfig) -> None:
+    request_id = _hold(config)
+    runner = FakeRunner()
+    runner.guard_root = Path("/var/lib/blueprint-operator-door/requests/holds")
+    process_spool(config, runner=runner)
+    assert _result(config, request_id)["code"] == "hold_unit_guard_missing"
+    assert runner.calls == [["systemctl", "cat", "--", "blueprint-scene-progression.timer"]]
+
+
+@pytest.mark.parametrize("reload_state", ["yes", "unknown"])
+def test_hold_refuses_when_systemd_has_stale_loaded_unit(config: DoorConfig, reload_state: str) -> None:
+    request_id = _hold(config)
+    runner = FakeRunner(need_daemon_reload=reload_state)
+    process_spool(config, runner=runner)
+    assert _result(config, request_id)["code"] == "hold_unit_guard_missing"
+    assert [call[:2] for call in runner.calls] == [["systemctl", "cat"], ["systemctl", "show"]]
+
+
+def test_hold_refuses_a_unit_whose_drop_in_resets_its_guard(config: DoorConfig) -> None:
+    request_id = _hold(config)
+
+    class ResetGuard(FakeRunner):
+        def run(self, argv: Sequence[str], timeout: float) -> CommandResult:
+            result = super().run(argv, timeout)
+            if argv[:2] == ["systemctl", "cat"]:
+                return CommandResult(0, result.stdout + "[Unit]\nConditionPathExists=\n", "")
+            return result
+
+    runner = ResetGuard()
+    process_spool(config, runner=runner)
+    assert _result(config, request_id)["code"] == "hold_unit_guard_missing"
+    assert runner.calls == [["systemctl", "cat", "--", "blueprint-scene-progression.timer"]]
+
+
+def test_other_owner_cannot_replace_an_active_hold_but_same_owner_can_extend(config: DoorConfig) -> None:
+    first = _hold(config)
+    process_spool(config, runner=FakeRunner())
+    other = _hold(config, "bob")
+    refused_runner = FakeRunner()
+    process_spool(config, runner=refused_runner)
+    assert _result(config, other)["status"] == "refused"
+    assert _result(config, other)["code"] == "hold_active:alice"
+    assert refused_runner.calls == []
+    extended = _hold(config)
+    process_spool(config, runner=FakeRunner())
+    record = Path(config.spool_root) / "holds" / "blueprint-scene-progression.timer.json"
+    assert json.loads(record.read_text())["request_id"] == extended
+    assert _result(config, extended)["status"] == "done"
+    assert first != extended
+
+
+def test_same_owner_renewal_never_shortens_an_active_hold(config: DoorConfig) -> None:
+    first = _spooled(config, {"kind": "hold", "unit": "blueprint-scene-progression.timer",
+                              "owner": "alice", "reason": "inspect", "expires_in_seconds": 86400})
+    process_spool(config, runner=FakeRunner())
+    record = Path(config.spool_root) / "holds" / "blueprint-scene-progression.timer.json"
+    first_expiry = json.loads(record.read_text())["expires_at_epoch"]
+    renewed = _spooled(config, {"kind": "hold", "unit": "blueprint-scene-progression.timer",
+                                "owner": "alice", "reason": "still inspecting", "expires_in_seconds": 60})
+
+    process_spool(config, runner=FakeRunner())
+
+    saved = json.loads(record.read_text())
+    assert saved["request_id"] == renewed != first
+    assert saved["expires_at_epoch"] >= first_expiry
+
+
+def test_release_hold_starts_the_timer_and_marks_the_record(config: DoorConfig) -> None:
+    _hold(config)
+    process_spool(config, runner=FakeRunner())
+    release = _spooled(config, {"kind": "release-hold", "unit": "blueprint-scene-progression.timer"})
+    marker = Path(config.spool_root) / "holds" / "blueprint-scene-progression.timer.json"
+
+    class ObserveStart(FakeRunner):
+        def run(self, argv: Sequence[str], timeout: float) -> CommandResult:
+            if argv[:3] == ["systemctl", "--no-block", "start"]:
+                assert not marker.exists(), "the active guard must be removed before start"
+            return super().run(argv, timeout)
+
+    runner = ObserveStart()
+    process_spool(config, runner=runner)
+    assert runner.calls == [
+        ["systemctl", "enable", "--", "blueprint-scene-progression.timer"],
+        ["systemctl", "--no-block", "start", "--", "blueprint-scene-progression.timer"],
+    ]
+    assert not marker.exists()
+    archived = list((Path(config.spool_root) / "holds" / "history").glob("*.json"))
+    assert len(archived) == 1
+    hold = json.loads(archived[0].read_text())
+    assert hold["status"] == "released" and hold["released_by"] == "cloud" and hold["released_at"]
+    result = _result(config, release)
+    assert result["status"] == "done"
+    assert result["hold"]["released_at"] == hold["released_at"]
+    assert result["hold"]["released_by"] == hold["released_by"]
+    again = _spooled(config, {"kind": "release-hold", "unit": "blueprint-scene-progression.timer"})
+    runner = FakeRunner()
+    process_spool(config, runner=runner)
+    assert _result(config, again)["code"] == "hold_not_active"
+    assert runner.calls == []
+
+
+def test_release_preserves_a_previously_disabled_boot_policy(config: DoorConfig) -> None:
+    request_id = _hold(config)
+    process_spool(config, runner=FakeRunner(enabled_state="disabled"))
+    record = Path(config.spool_root) / "holds" / "blueprint-scene-progression.timer.json"
+    assert json.loads(record.read_text())["enabled_before"] is False
+    release = _spooled(config, {"kind": "release-hold", "unit": "blueprint-scene-progression.timer"})
+    runner = FakeRunner(enabled_state="disabled")
+
+    process_spool(config, runner=runner)
+
+    assert _result(config, request_id)["status"] == "done"
+    assert _result(config, release)["status"] == "done"
+    assert ["systemctl", "enable", "--", "blueprint-scene-progression.timer"] not in runner.calls
+    assert ["systemctl", "--no-block", "start", "--", "blueprint-scene-progression.timer"] in runner.calls
+
+
+def test_failed_expiry_scheduling_restores_a_new_timer_but_preserves_an_existing_hold(config: DoorConfig) -> None:
+    first = _hold(config)
+    runner = FakeRunner(systemd_run_rc=1)
+    process_spool(config, runner=runner)
+    assert _result(config, first)["code"] == "hold_expiry_schedule_failed"
+    assert [call[:3] for call in runner.calls] == [
+        ["systemctl", "cat", "--"],
+        ["systemctl", "show", "--property=NeedDaemonReload"],
+        ["systemctl", "is-enabled", "--"],
+        ["systemctl", "is-active", "--"],
+        ["systemctl", "stop", "--"],
+        ["systemctl", "is-active", "--"],
+        ["systemctl", "stop", "--"],
+        ["systemctl", "is-active", "--"],
+        ["systemctl", "disable", "--"],
+        ["systemd-run", runner.calls[9][1], "--on-active=3600s"],
+        ["systemctl", "enable", "--"],
+        ["systemctl", "--no-block", "start"],
+    ]
+    record = Path(config.spool_root) / "holds" / "blueprint-scene-progression.timer.json"
+    assert not record.exists()
+    archived = list((Path(config.spool_root) / "holds" / "history").glob("*.json"))
+    assert len(archived) == 1 and json.loads(archived[0].read_text())["status"] == "failed_released"
+
+    existing = _hold(config)
+    process_spool(config, runner=FakeRunner())
+    renewed = _hold(config)
+    runner = FakeRunner(systemd_run_rc=1)
+    process_spool(config, runner=runner)
+    assert _result(config, renewed)["code"] == "hold_expiry_schedule_failed"
+    assert not any(call[:3] == ["systemctl", "--no-block", "start"] for call in runner.calls)
+    saved = json.loads(record.read_text())
+    assert saved["request_id"] == existing and saved["status"] == "active"
+
+
 def test_door_upgrade_launches_the_upgrade_script(config: DoorConfig) -> None:
     request_id = _spooled(config, {"kind": "door-upgrade", "commit": SHA})
     runner = FakeRunner()
@@ -138,6 +443,23 @@ def test_mismatched_ids_are_refused(config: DoorConfig) -> None:
     }), encoding="utf-8")
     process_spool(config, runner=FakeRunner())
     assert _result(config, request_id)["code"] == "spool_id_mismatch"
+
+
+def test_hold_with_another_kinds_id_is_refused_before_stopping_a_timer(config: DoorConfig) -> None:
+    request_id = "20260923T000000Z-unit-0000abcd"
+    pending = Path(config.spool_root) / "pending"
+    (pending / f"{request_id}.json").write_text(json.dumps({
+        "schema": SCHEMA, "id": request_id, "requested_by": "cloud",
+        "request": {"kind": "hold", "unit": "blueprint-scene-progression.timer",
+                    "owner": "alice", "reason": "inspect", "expires_in_seconds": 3600},
+    }), encoding="utf-8")
+    runner = FakeRunner()
+
+    process_spool(config, runner=runner)
+
+    assert _result(config, request_id)["code"] == "spool_kind_mismatch"
+    assert runner.calls == []
+    assert not (Path(config.spool_root) / "holds").exists()
 
 
 def test_junk_files_are_drained_so_the_path_unit_cannot_loop(config: DoorConfig, tmp_path: Path) -> None:

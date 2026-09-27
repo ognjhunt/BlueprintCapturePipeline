@@ -1,0 +1,10 @@
+[Unit]
+Description=Recheck owned operator door hold expiry
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+Unit=blueprint-operator-door-hold-sweep.service
+
+[Install]
+WantedBy=timers.target

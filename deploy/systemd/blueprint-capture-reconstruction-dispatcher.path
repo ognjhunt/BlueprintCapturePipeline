@@ -1,4 +1,7 @@
 [Unit]
+Wants=blueprint-operator-door-hold-sweep.service
+After=blueprint-operator-door-hold-sweep.service
+ConditionPathExists=!/var/lib/blueprint-operator-door/requests/holds/blueprint-capture-reconstruction-dispatcher.path.json
 Description=Watch for immutable Blueprint capture reconstruction requests
 
 [Path]

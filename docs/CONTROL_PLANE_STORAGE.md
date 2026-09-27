@@ -23,26 +23,121 @@ Three structural causes, each now closed by code rather than by cleanup:
 Every write-heavy control-plane role reserves its footprint in a shared ledger
 (`/var/lib/blueprint/pipeline-control-plane/disk-reservations`, `root:blueprint`
 `2770`) before it mutates anything. Admission is
-`free - floor - live reservations >= need`, where the floor is
-`max(8 GiB, 5 % of the disk)` (`BLUEPRINT_CONTROL_PLANE_DISK_FLOOR_BYTES`).
+`free - floor - live reservations >= need`, where the bulk floor is
+`max(8 GiB, 5 % of the disk)` (`BLUEPRINT_CONTROL_PLANE_DISK_FLOOR_BYTES`) and a
+live reservation is a ledger entry on the same device, inside its TTL, whose
+pid is alive.
+`control_plane_deploy` may use the protected band below that bulk floor down to
+`max(1 GiB, 1 % of the disk)`
+(`BLUEPRINT_CONTROL_PLANE_DISK_CRITICAL_FLOOR_BYTES`). Other bulk writes stop at
+the bulk floor, leaving room for deploys, the listener's small state writes,
+teardown and provider-zero evidence.
 A refusal is the typed blocker
 `control_plane_disk_budget_exceeded:<role>:need_bytes=..:available_bytes=..:free_bytes=..:floor_bytes=..:reserved_bytes=..`
 and never a host path.
 
-| Role | Reserves | Where it refuses |
-|---|---|---|
-| `control_plane_deploy` | 2 GiB | `deploy_control_plane_commit.py` before provenance or staging |
-| `launch_preparation` | exact bytes of references the content store lacks, plus 512 MiB; the runtime-source layer separately on a miss | preparation worker, before any fetch |
-| `episode_compilation` | exact bytes of runtime members the member store lacks, plus 2 GiB | compile worker, before the output directory exists |
-| `launch_activation` | 2 GiB | activation worker |
-| `policy_canary_dispatch` | 2 GiB | canary dispatcher queue boundary |
+| Role | Declared ceiling | Its reservation holds | Where it refuses |
+|---|---|---|---|
+| `control_plane_deploy` | 2 GiB | the release's git-tree estimate: blob bytes × 1.25, plus 4 KiB per file, plus 256 MiB (the measured footprint if the tree cannot be listed) | `deploy_control_plane_commit.py` before provenance or staging |
+| `launch_preparation` | 2 GiB | exact bytes of references the content store lacks, plus 256 MiB; the runtime-source layer separately on a miss | preparation worker, before any fetch |
+| `episode_compilation` | 2 GiB | exact bytes of runtime members the member store lacks, plus 256 MiB | compile worker, before the output directory exists |
+| `launch_activation` | 2 GiB | the measured footprint, never less than the reference bytes the request declares plus 256 MiB | activation worker |
+| `policy_canary_dispatch` | 2 GiB | the measured footprint | canary dispatcher queue boundary |
+| `handoff_staging` | 4 GiB | sizes of the capture blobs being downloaded plus 64 MiB | listener before downloading; refusal remains retryable and unacknowledged |
+| `launch_dispatch` | 2 GiB | unique immutable input file sizes, each allocator directory projection copy, plus 64 MiB | dispatcher before copying and before any allocator call |
 
-The intake version endpoint reports `disk_headroom` with `refused_roles`; the
-launch-preparation, launch-activation, and task-evaluation-launch intakes refuse
-a submission (HTTP 503, typed blocker) while its role is refused.
+The intake version endpoint reports `disk_headroom` with `refused_roles` and each
+role's `footprints` and `targets` (device, floor, reservations and available
+bytes). `BLUEPRINT_CONTROL_PLANE_DISK_ROLE_TARGETS` maps each bulk role to its
+absolute write root; unspecified roles use the default target. A malformed map
+fails closed for the whole chain. The launch-preparation, launch-activation, and
+task-evaluation-launch intakes refuse a submission (HTTP 503, typed blocker)
+while its role is refused.
+The staging reservation is renewed while a blob download is in progress, so a
+long download does not release its bytes merely because the original lease
+period elapsed.
 
-Per-role defaults can be tuned with
+Declared ceilings can be tuned with
 `BLUEPRINT_CONTROL_PLANE_DISK_FOOTPRINT_<ROLE>_BYTES`.
+
+### Measured footprints (`blueprint_pipeline.control_plane_disk_footprints`)
+
+A declared footprint is a ceiling, not what admission keeps reserving. Each
+reservation names the per-job directory it writes (its `workspace`: the
+preparation, compilation, activation or canary run directory under the shared
+parent it reserves against) and, when released, records how much that directory
+grew. Growth counts each inode once, in allocated blocks
+(`control_plane_disk_usage.tree_usage`), so hardlinked names are not double
+counted. Names hardlinked from a content store still count as this job's bytes;
+that over-counts cache hits, which errs conservative, and the ceiling bounds
+it. The cpu prestage and semantic pretraining jobs sample just before they remove
+their scratch trees, and the deploy observes the release checkout and runtime
+trees it created (a redeploy that created nothing records no sample).
+
+Samples are appended to `<ledger>/history/<role>.jsonl` (`root:blueprint`
+`2770`, installed and verified by the deploy), one line per release with the
+workload, outcome, reserved bytes, duration, the workspace's baseline and
+whether it was fresh, and compacted to the newest 200 lines under the ledger
+lock. Every sample names how its job ended, and only `completed` samples shape
+admission:
+
+| Outcome | Meaning |
+|---|---|
+| `completed` | the job finished from a fresh workspace and every byte was read |
+| `failed` | the job raised (its reservation context exited on the exception, or a worker caught it and released with this outcome: preparation, compilation, activation) |
+| `blocked` | the job returned a blocked result before finishing: a preparation paused on its children or on capacity, a canary run with a `blocked…` status, a scene factory short of publication, or a replay that did not succeed (only a child replay whose stage completed, or a parent replay queued for production, counts) |
+| `resumed` | the pass started from a workspace an earlier pass had filled, so its growth is not the job's footprint |
+| `incomplete` | part of the workspace could not be read, so the measurement under-counts |
+
+A workspace is fresh when it is bound if it did not exist or held less than
+1 MiB. Callers that know better say so (`fresh=` on the reservation or on
+`bind_workspace`): the cpu prestage asserts freshness right after it clears its
+work dir, and these passes reserve as not fresh because an earlier pass already
+wrote there: a canary whose session authority or allocator start is on disk (it
+resumes a run awaiting billing, provider zero or interpretation), a public
+bootstrap whose progress file exists, a launch preparation whose directory
+exists, and a scene preparation attempt whose materialized output exists.
+
+Once a role has at least 10 completed samples among its newest 50, its footprint
+is the nearest-rank p95 of each workload's samples, taken at the largest
+workload (a rare large workload is never averaged away by a frequent small
+one), × 1.25, clamped as `min(declared ceiling, max(64 MiB, p95 × 1.25))`, so
+the declared ceiling always wins. Until then, or whenever the history cannot be
+read, it is the declared ceiling, so a new role stays conservative; a sample
+above the ceiling can never raise a reservation. Activation samples are
+labelled by lane. Reservations made without explicit bytes hold this
+footprint (or `minimum_bytes`, what the job declares, when that is larger), and
+every reservation receipt names its `footprint_basis` (`measured_p95`,
+`declared_default`, `declared_minimum` or `caller_exact`), its
+`footprint_sample_count` and its `workload`.
+
+Intake headroom, the capacity controller (`measure_mount`),
+`whole_chain_admission` and the chain preflight use the ledger's own floor,
+live-reservation rule and footprints, so a projected refusal is the refusal the
+workers will make. A reservation ledger that cannot be read is never read as
+empty: the controller reports the mount as unreadable and the preflight reports
+a `disk_reservations_unreadable` blocker. `whole_chain_admission` groups chain
+roles by target device and admits only when each device has room for its roles
+together. It reports each device's required and available bytes and whether it
+passed. It also sums the chain roles' footprints into `required_workspace_bytes` and reports
+`required_workspace_basis`: `measured_p95` when every chain role is measured,
+`declared_default` when none is, `mixed` otherwise, with the per-role
+`footprints` beside it. The capacity controller reports these footprints, like its
+forecast, only in `latest.json`; its never-pruned `history.jsonl` keeps each
+tick's measurement alone.
+
+Pid liveness is the primary liveness signal and the TTL only a backstop for a
+recycled pid. A job holds its reservation for at most its systemd unit's
+`TimeoutStartSec`, so each role's TTL outlives that timeout (a test pins this
+against `deploy/systemd`): `cpu_prestage` and `semantic_pretraining` 12 h,
+`stage_replay`, `policy_canary_dispatch` and `launch_dispatch` 6 h,
+`control_plane_deploy` and `evidence_offload` 4 h, every other role 2 h.
+
+The ledger directory is group-writable and root uses it too, so nothing in it
+is followed through a symlink: the ledger, its lock and the history directory
+are opened with `O_NOFOLLOW`, history writes work relative to the history
+directory's descriptor, and a mode is repaired only through a descriptor, only
+by the file's owner.
 
 ## Runtime-source wrappers with external layers
 
@@ -154,15 +249,19 @@ block storage, and splitting the tree would break the hardlinks that keep it
 small. `--plan` lists them under `evidence_hot on volume:`.
 
 **Per-volume floors.** Admission measures the filesystem that holds each role's
-target root, so after the move bulk roles reserve against the volume and state
-writers against the root disk. Per-volume admission gives each volume its own
-floor, plus a reserved band that keeps deploys and the listener's own state
-writable when the volume is full. See
+target root, so after the move bulk roles reserve against the volume. Per-volume
+admission gives each volume its own floor. "Full" here means below the bulk
+floor, with physical free space still reserved: the listener's job ledger lives
+inside its scratch-volume capture tree and can use that remaining space after a
+new capture download is refused. Deploys use the separate critical floor on
+their target device. At zero physical free bytes, no local state write can be
+guaranteed. See
 [Admission gate](#admission-gate-blueprint_pipelinecontrol_plane_disk_budget)
 (design: [phase 2](CONTROL_PLANE_DISK_REDESIGN_2026-09-26.md#phase-2-volume-split-a-week)).
-The capacity controller must measure both disks. Set
-`BLUEPRINT_CAPACITY_MOUNTS=/:/var/lib/blueprint:/mnt/blueprint-work` in
-`/etc/blueprint/pipeline-control-plane.env`, which overrides the unit's default.
+The capacity unit measures `/`, `/var/lib/blueprint` and `/mnt/blueprint-work`.
+A configured mount that is not present is reported as absent; an existing
+unreadable mount remains critical. The intake, scene progression and capacity
+units share the same role-target map.
 
 ### Consolidating the September binds
 
@@ -294,6 +393,100 @@ When a run stops:
   volumes per class) instead of growing one volume. The script binds every root
   under one `--mount` today, so this needs a root-subset option first.
 
+## Usage attribution
+
+The capacity controller (`blueprint-control-plane-capacity.service`, every ten
+minutes as `root`) also surveys disk usage with
+`control_plane_disk_usage.survey_usage`, so one door call answers "what uses the
+space?". It surveys at most hourly (`BLUEPRINT_CAPACITY_SURVEY_INTERVAL_SECONDS`,
+default 3600, judged by the last attempted survey even when it failed or the
+process was killed); `--survey` forces one.
+
+**What it counts.** The survey walks the controller's mounts
+(`BLUEPRINT_CAPACITY_MOUNTS`) plus `/` and `/mnt/blueprint-work` when that
+physical work volume is mounted. Before it is mounted, the survey skips it.
+Each root is walked within its own filesystem like
+`du -x`: a directory on another device or listed as a mount point in
+`/proc/self/mountinfo` is skipped, a listed mount nested inside another is walked
+once, and symlinks are never followed. Every inode counts once, in allocated
+bytes. On 2026-09-26 a per-name listing counted about 470 GB on the 165 GB disk,
+because the content stores and the trees built from them share bytes through
+hardlinks. Bytes on the work volume are attributed at the paths the pipeline uses
+(`/mnt/blueprint-work/workspace` → `/workspace`, any other
+`/mnt/blueprint-work/<rel>` → `/var/lib/blueprint/<rel>`). The walk stops after
+3,000,000 entries or 240 s with `status: "truncated"`. A 20,000-entry memory
+bound on buffered directory entries, pending directories, owner rows and shared
+inodes also truncates the survey before the capacity unit's 512 MiB limit is
+at risk. Unreadable entries are counted. Paths the unit's sandbox hides
+(`ProtectHome=`, `PrivateTmp=`), its own `ReadWritePaths=`/`ReadOnlyPaths=` bind
+mounts skipped by the mountinfo rule, and deleted files still held open by a
+process cannot be attributed. These gaps lower `attributed_fraction`.
+
+**Class and root.** A path takes the storage class and root of its
+`control_plane_storage_roots` row; a row with `*` segments reports the concrete
+directory it matched. A path under a `container`, or under `/var/lib/blueprint`,
+`/opt/blueprint` or `/workspace`, that no row claims is `unclassified`, rooted at
+the child it lies in. Everything else is `host`, rooted at its first two
+components (`/var/log`, `/usr/lib`).
+
+**Owner.** The first matching rule wins:
+
+| Path | Owner |
+|---|---|
+| `…/pubsub-handoffs/<bucket>/scenes/<scene>/…` | `scene:<scene>` |
+| `…/system-runtimes/<component>/<sha>/…`, `…/task-evaluation-control-plane-releases/<sha>/…` | `release:<sha[:12]>` |
+| `…/content-addressed/…` | `store:<root basename>` |
+| `…/task-evaluation-launch-runs/<id>/…`, `…/task-evaluation-policy-canaries/<id>/…` | `run:<id>` |
+| `…/task-evaluation-scene-intents/<id>/…` | `scene-intent:<id>` |
+| any other classified path | `<root basename>/<first child>`, or `<root basename>` for a file directly under the root |
+| `unclassified` or `host` | the root |
+
+`<id>`, `<scene>` and `<sha>` are directories, and a `<sha>` starts with a 40-hex
+commit; a pointer or marker file beside them keeps the generic owner. An inode with several
+names belongs to the smallest of its names under a `content-addressed` directory,
+else to its smallest name, whatever order the walk met them in.
+
+**Files** in `/var/lib/blueprint/pipeline-control-plane/capacity` (`0755`, so the
+door, which runs as `blueprint`, can reach the public files):
+
+| File | Mode | Holds |
+|---|---|---|
+| `latest.json`, `history.jsonl` | `0600` | the full report, with project spend and provider funding, and its history |
+| `usage-latest.json` | `0644` | the last survey (`control_plane_disk_usage_survey.v1`), with every unclassified root |
+| `usage-attempt.json` | `0644` | the last survey attempt, including a failed or interrupted attempt's retry clock |
+| `summary.json` | `0644` | `control_plane_capacity_summary.v1`, written every tick: level, alerts, mounts, the usage projection and the resize status. It is projected by named keys, so it carries no spend, funding or URLs, and it stays under 128 KiB. |
+
+Credential-shaped filesystem names are redacted from the public survey and
+summary before publication. Their byte totals and storage classes remain in the
+report. Existing surveys are sanitized when the controller reads them.
+
+`latest.json` and `summary.json` carry the same `usage` projection: the survey's
+age and status, its filesystem rows, bytes per class, the top ten roots and
+owners, and the 20 largest unclassified roots. The controller warns with
+`usage_unclassified_root` for each unclassified root over 1 GiB, and with
+`usage_attribution_low` when a filesystem's `attributed_fraction` (surveyed bytes
+over used bytes, capped at 1) is under 0.9. Either warning raises an `ok` report
+to `warning`. A survey exception keeps the last result and names the error
+(`usage_survey_failed:<type>`) without stopping the capacity tick. Failed and
+interrupted attempts do not retry on every ten-minute tick. A new non-usage
+warning still pages when a usage warning has already raised the report to
+`warning`. A warning on another mount pages even when its code is already
+present, and a failed webhook post is retried on the next tick.
+
+**Reading it.** `python3 scripts/operator_door.py usage` prints `capacity.usage`
+from door `status` as tables ([`OPERATOR_DOOR.md`](OPERATOR_DOOR.md)):
+
+- The mount table's `attributed` column is the fraction of the filesystem's used
+  bytes that the survey found. A low value means bytes it could not see: a
+  truncated walk, unreadable or sandbox-hidden paths, or deleted files still held
+  open by a process.
+- The owner table says what to retire. `scene:` workspaces, `run:` evidence
+  (offloadable by the reclaim timer), `release:` trees (retired by deploy) and
+  `store:` blobs (reaped once nothing hardlinks them) each have their own
+  retention rule.
+- An unclassified root is a tree the storage table does not know. Classify it in
+  `control_plane_storage_roots` before any tool may reclaim it.
+
 ## Pins
 
 Producers pin the derived directories they create under
@@ -325,23 +518,50 @@ are reported separately and never invalidate proven resource closure.
 
 `blueprint-control-plane-storage-gc.timer` runs
 `python -m blueprint_pipeline.control_plane_storage_gc run --apply --ack reclaim-control-plane-storage`
-every six hours as the `blueprint` service account and writes
-`/var/lib/blueprint/pipeline-control-plane/storage-gc/latest.json`. One tick:
+hourly (`OnUnitInactiveSec=1h`: an hour after the previous tick finished) as
+`root`, confined by its unit to the roots it may write, and writes
+`/var/lib/blueprint/pipeline-control-plane/storage-gc/latest.json`. The report
+directory is traversable (0755) and the atomic report is readable (0644), so the
+owner can inspect it with `python3 scripts/operator_door.py cat
+/var/lib/blueprint/pipeline-control-plane/storage-gc/latest.json` before enabling
+scene-workspace retirement. The door still scans report content for secrets.
+One tick runs nine phases in order:
 
-1. **Derived directories** under the configured `cache` roots are retired when
+1. **Stranded queue rows**: pending rows bound to a release other than the
+   running one move to `stranded/` beside a receipt, so they stop counting as
+   live queue references. Nothing is deleted.
+2. **Terminal cache pins** whose run is proven closed by archived-run evidence
+   are released. Only the pin ledger changes.
+3. **Derived directories** under the configured `cache` roots are retired when
    no live pin names them, no pending or processing queue message mentions
-   them, and they have been idle for seven days.
-2. **Content-store blobs** whose link count is one (nothing hardlinks them any
+   them, and they have been idle for an hour
+   (`BLUEPRINT_CONTROL_PLANE_GC_DERIVED_MINIMUM_AGE_SECONDS=3600`).
+4. **Planned derived directories** under configured plan-only roots, including
+   SAM31 preparation output, are inventoried but never removed by this phase.
+5. **Content-store blobs** whose link count is one (nothing hardlinks them any
    more), whose bytes still match their digest, and which are older than a day
    are removed. Retiring directories first is what frees blobs.
-3. **Evidence offload** lists sealed run directories (terminal receipt present,
-   idle past the 14-day hot window) under the `evidence_cold` roots. It applies
-   only when `BLUEPRINT_CONTROL_PLANE_EVIDENCE_OFFLOAD=1` is set in
+6. **Evidence offload** lists run directories under the `evidence_cold` roots
+   that are sealed (terminal receipt present) and idle past the two-day hot
+   window (`BLUEPRINT_CONTROL_PLANE_EVIDENCE_HOT_WINDOW_SECONDS=172800`), or that
+   have no receipt and have not changed for three days (abandoned by a superseded
+   or torn-down worker). It applies only when
+   `BLUEPRINT_CONTROL_PLANE_EVIDENCE_OFFLOAD=1` is set in
    `/etc/blueprint/pipeline-control-plane.env`: the directory is packed, published
    to the artifact store under kind `control-plane-evidence` with full readback,
    replaced by `<name>.offloaded.v1.json` (URI, digest, size, per-member digests),
    and only then removed. Bytes are migrated, never deleted; the spend guard and
    every other `evidence_hot` root are outside the tool's reach.
+7. **Scratch directories** idle for three days
+   (`BLUEPRINT_CONTROL_PLANE_GC_SCRATCH_MINIMUM_AGE_SECONDS=259200`) are reaped by
+   age alone: nothing references them.
+8. **Workspace bundles**: the reproducible `bundle/` copy inside a
+   semantic-pretraining workspace that has been idle and unpinned for six hours
+   is removed behind a sealed marker.
+9. **Scene workspaces** are retired only after terminal, acknowledgement,
+   reference, and remote-copy checks pass. This phase plans until
+   `BLUEPRINT_CONTROL_PLANE_SCENE_WORKSPACE_RETIREMENT=1` enables it; its
+   detailed contract is below.
 
 Restore an offloaded run with
 `python -c 'from blueprint_pipeline.control_plane_evidence_offload import restore_offloaded_evidence as r; r(pointer_path=..., destination=...)'`;

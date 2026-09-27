@@ -60,7 +60,7 @@ def test_capacity_reports_low_credit_without_disk_pressure(tmp_path):
         mounts=["/test"], report_root=tmp_path / "report", reservation_root=tmp_path / "ledger",
         webhook_url="https://test.invalid", volume=None, ack="", token="",
         disk_usage=lambda _: usage, poster=lambda url, report: alerts.append(report["alerts"]),
-        credit_collector=lambda: observation(2), now=100,
+        credit_collector=lambda: observation(2), now=100, survey=None,
     )
     assert result["level"] == "critical"
     assert result["provider_funding"]["blockers"] == ["provider_credit_insufficient"]
@@ -80,7 +80,7 @@ def test_run_controller_does_not_flag_a_just_taken_credit_observation_stale(tmp_
     result = capacity.run_controller(
         mounts=["/test"], report_root=tmp_path / "report", reservation_root=tmp_path / "ledger",
         webhook_url="", volume=None, ack="", token="", disk_usage=lambda _: usage,
-        credit_collector=lambda: later, now=100,
+        credit_collector=lambda: later, now=100, survey=None,
     )
     assert "provider_credit_observation_stale" not in result["provider_funding"]["blockers"]
     assert result["provider_funding"]["status"] == "admitted"
@@ -90,7 +90,7 @@ def test_run_controller_does_not_flag_a_just_taken_credit_observation_stale(tmp_
     stale = capacity.run_controller(
         mounts=["/test"], report_root=tmp_path / "report2", reservation_root=tmp_path / "ledger2",
         webhook_url="", volume=None, ack="", token="", disk_usage=lambda _: usage,
-        credit_collector=lambda: old, now=1000,
+        credit_collector=lambda: old, now=1000, survey=None,
     )
     assert stale["provider_funding"]["blockers"] == ["provider_credit_observation_stale"]
 

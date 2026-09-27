@@ -882,6 +882,82 @@ def test_configured_controls_timer_is_installed_and_armed_by_default(
     ]
 
 
+def test_deploy_never_rearms_a_held_timer(tmp_path, monkeypatch) -> None:
+    unit = "blueprint-task-evaluation-scene-progression.timer"
+    holds = tmp_path / "holds"
+    holds.mkdir()
+    (holds / f"{unit}.json").write_text(json.dumps({
+        "schema": "blueprint_operator_door_hold.v1", "unit": unit, "owner": "alice",
+        "reason": "inspect capture", "request_id": "20260927T000000Z-hold-0000abcd",
+        "status": "active", "expires_at": "2099-01-01T00:00:00+00:00",
+        "expires_at_epoch": 4070908800,
+    }), encoding="utf-8")
+    active, warning = deploy._active_door_holds(holds)
+    assert warning is None and active[unit]["owner"] == "alice"
+    calls = []
+    state = {"enabled": "enabled", "state": "inactive"}
+
+    def completed(argv, **_kwargs):
+        calls.append(tuple(argv))
+        if argv[:2] == ["systemctl", "stop"]:
+            state["state"] = "inactive"
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(deploy.subprocess, "run", completed)
+    monkeypatch.setattr(deploy, "_systemd_unit_state", lambda _unit: dict(state))
+    restored = deploy._restore_installed_path_units(
+        [{"unit": unit}], before={unit: {"enabled": "enabled", "state": "active"}},
+        arm_path_units=False, always_arm_timer_units=deploy.DEFAULT_ALWAYS_ARM_TIMER_UNITS,
+        held_units=active,
+    )
+    assert calls == [("systemctl", "stop", unit)]
+    assert restored[0]["held"] is True
+    assert {key: restored[0][key] for key in ("owner", "reason", "expires_at")} == {
+        "owner": "alice", "reason": "inspect capture", "expires_at": "2099-01-01T00:00:00+00:00"}
+    assert restored[0]["after"] == {"enabled": "enabled", "state": "inactive"}
+
+
+def test_expired_door_hold_is_ignored_and_unreadable_holds_warn(tmp_path) -> None:
+    unit = "blueprint-task-evaluation-scene-progression.timer"
+    holds = tmp_path / "holds"
+    holds.mkdir()
+    (holds / f"{unit}.json").write_text(json.dumps({
+        "schema": "blueprint_operator_door_hold.v1", "unit": unit, "owner": "alice", "reason": "inspect",
+        "request_id": "20260927T000000Z-hold-0000abcd", "status": "active",
+        "expires_at": "2026-01-01T00:00:00+00:00", "expires_at_epoch": 1767225600,
+    }), encoding="utf-8")
+    assert deploy._active_door_holds(holds) == ({}, None)
+    bad = tmp_path / "not-a-directory"
+    bad.write_text("", encoding="utf-8")
+    assert deploy._active_door_holds(bad) == ({}, "door_holds_unreadable")
+
+
+def test_failed_deploy_rechecks_a_hold_created_after_unit_snapshot(tmp_path, monkeypatch) -> None:
+    unit = "blueprint-task-evaluation-scene-progression.timer"
+    holds = tmp_path / "holds"
+    holds.mkdir()
+    restored = []
+    monkeypatch.setattr(deploy, "_installed_path_unit_states", lambda _units: {
+        unit: {"enabled": "enabled", "state": "active"}
+    })
+    monkeypatch.setattr(deploy, "_quiesce_active_path_units", lambda _before: [])
+    monkeypatch.setattr(deploy, "_restore_installed_path_units", lambda _units, **kwargs: restored.append(kwargs))
+
+    with pytest.raises(ValueError, match="deploy_failed"):
+        with deploy._restore_path_unit_states_on_deploy_failure(
+            [{"unit": unit}], door_holds_dir=holds,
+        ):
+            (holds / f"{unit}.json").write_text(json.dumps({
+                "schema": "blueprint_operator_door_hold.v1", "unit": unit, "owner": "alice",
+                "reason": "inspect", "request_id": "20260927T000000Z-hold-0000abcd",
+                "status": "active", "expires_at": "2099-01-01T00:00:00+00:00",
+                "expires_at_epoch": 4070908800,
+            }), encoding="utf-8")
+            raise ValueError("deploy_failed")
+
+    assert restored[0]["held_units"][unit]["owner"] == "alice"
+
+
 @pytest.mark.parametrize("unit", deploy.CONFIGURED_CONTROLS_AUTOMATION_UNITS)
 @pytest.mark.parametrize("enabled", ["disabled", "enabled"])
 def test_explicit_controls_pause_survives_default_progression_arming(
@@ -1265,6 +1341,28 @@ def test_deploy_reports_and_marks_break_glass_notes(tmp_path, monkeypatch) -> No
     assert len(again["break_glass_notes"]) == 2
     # A direct caller that names no notes root reports nothing and reads nothing.
     assert "break_glass_notes" not in deploy.deploy_control_plane_commit(**arguments)
+
+
+def test_deploy_reads_held_units_at_restore_and_warns_on_unreadable_records(tmp_path, monkeypatch) -> None:
+    commit = "d" * 40
+    args = _stub_host_deploy(monkeypatch, tmp_path, commit)
+    unit = "blueprint-task-evaluation-scene-progression.timer"
+    holds = tmp_path / "holds"
+    holds.mkdir()
+    (holds / f"{unit}.json").write_text(json.dumps({
+        "schema": "blueprint_operator_door_hold.v1", "unit": unit, "owner": "alice",
+        "reason": "inspect", "request_id": "20260927T000000Z-hold-0000abcd", "status": "active",
+        "expires_at": "2099-01-01T00:00:00+00:00", "expires_at_epoch": 4070908800,
+    }), encoding="utf-8")
+    passed = []
+    monkeypatch.setattr(deploy, "_restore_installed_path_units",
+                        lambda _installed, **kwargs: passed.append(kwargs["held_units"]) or [])
+    receipt = deploy.deploy_control_plane_commit(**args, door_holds_dir=holds)
+    assert receipt["status"] == "deployed" and passed[0][unit]["owner"] == "alice"
+    bad = tmp_path / "bad-holds"
+    bad.write_text("", encoding="utf-8")
+    receipt = deploy.deploy_control_plane_commit(**args, door_holds_dir=bad)
+    assert "door_holds_unreadable" in receipt["alerts"]
 
 
 def test_unreadable_break_glass_notes_never_fail_a_finished_deploy(tmp_path, monkeypatch) -> None:
@@ -2011,9 +2109,15 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
         "repaired_paths": [str(tmp_path / "disk-reservations/.lock")],
     }
 
+    reserve_calls: list[dict] = []
+    observed_bytes: list[int] = []
+
     class Reservation:
         def receipt(self):
             return {"reservation_token": "deploy-test"}
+
+        def observe(self, _bytes):
+            observed_bytes.append(_bytes)
 
         def __enter__(self):
             return self
@@ -2029,7 +2133,7 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
     monkeypatch.setattr(
         deploy,
         "reserve_control_plane_disk",
-        lambda *args, **kwargs: Reservation(),
+        lambda *args, **kwargs: reserve_calls.append(kwargs) or Reservation(),
     )
     storage_pins_receipt = {
         "status": "ready",
@@ -2151,6 +2255,12 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
     assert receipt["intake_runtime"]["source_commit"] == commit
     assert receipt["disk_reservation_runtime"] == disk_runtime_receipt
     assert receipt["disk_reservation"] == {"reservation_token": "deploy-test"}
+    # The source is not a git checkout here, so the estimate falls back to the
+    # role's footprint; the staged release checkout is what the deploy observed.
+    assert receipt["disk_reservation_estimate"]["basis"] == "declared_default"
+    assert reserve_calls[0]["expected_bytes"] == receipt["disk_reservation_estimate"]["bytes"]
+    assert reserve_calls[0]["workload"] == "control_plane_release"
+    assert len(observed_bytes) == 1 and observed_bytes[0] > 0
     assert receipt["storage_pins_runtime"] == storage_pins_receipt
     assert receipt["restarted_units"][0]["unit"] == deploy.DEFAULT_RESTART_UNITS[0]
     assert receipt["installed_systemd_units"][0]["unit"] == (
@@ -2217,7 +2327,8 @@ def test_disk_reservation_runtime_repairs_root_owned_ledger_and_reports_receipt(
 
     def stat_reader(path: Path) -> SimpleNamespace:
         metadata = path.stat()
-        uid, gid = ownership[str(path)]
+        # Inodes the installer creates itself start root:root, as on the host.
+        uid, gid = ownership.get(str(path), (0, 0))
         return SimpleNamespace(st_uid=uid, st_gid=gid, st_mode=metadata.st_mode)
 
     monkeypatch.setattr(
@@ -2232,16 +2343,18 @@ def test_disk_reservation_runtime_repairs_root_owned_ledger_and_reports_receipt(
         stat_reader=stat_reader,
     )
 
+    history = root / "history"
     assert chowns == [
         (str(root), 0, blueprint_gid),
         (str(lock), 0, blueprint_gid),
+        (str(history), 0, blueprint_gid),
     ]
     assert root.stat().st_mode & 0o7777 == 0o2770
     assert lock.stat().st_mode & 0o777 == 0o660
     assert receipt == {
         "status": "ready",
         "account": "blueprint",
-        "repaired_paths": [str(root), str(lock)],
+        "repaired_paths": [str(root), str(lock), str(history)],
         "installed": [
             {
                 "kind": "directory",
@@ -2261,6 +2374,15 @@ def test_disk_reservation_runtime_repairs_root_owned_ledger_and_reports_receipt(
                 "owner_gid": blueprint_gid,
                 "mode": "0660",
             },
+            {
+                "kind": "history_directory",
+                "path": str(history),
+                "owner": "root",
+                "group": "blueprint",
+                "owner_uid": 0,
+                "owner_gid": blueprint_gid,
+                "mode": "2770",
+            },
         ],
     }
 
@@ -2270,7 +2392,175 @@ def test_disk_reservation_runtime_repairs_root_owned_ledger_and_reports_receipt(
         stat_reader=stat_reader,
     )
     assert repeated["repaired_paths"] == []
-    assert len(chowns) == 2
+    assert len(chowns) == 3
+
+
+def test_deploy_installs_the_footprint_history_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Root (deploy) and the runtime account both append footprint samples, so the
+    history directory is installed and verified like the ledger itself."""
+
+    root = tmp_path / "disk-reservations"
+    history = root / "history"
+    history.mkdir(parents=True, mode=0o700)
+    ownership: dict[str, tuple[int, int]] = {}
+    chowns: list[tuple[str, int, int]] = []
+
+    def chown(path: Path, uid: int, gid: int) -> None:
+        chowns.append((str(path), uid, gid))
+        ownership[str(path)] = (uid, gid)
+
+    def stat_reader(path: Path) -> SimpleNamespace:
+        uid, gid = ownership.get(str(path), (0, 0))
+        return SimpleNamespace(st_uid=uid, st_gid=gid, st_mode=path.stat().st_mode)
+
+    monkeypatch.setattr(deploy, "_service_account_ids", lambda account: (3101, 2401))
+
+    receipt = deploy._install_disk_reservation_runtime_prerequisites(
+        root, chown=chown, stat_reader=stat_reader
+    )
+
+    assert history.stat().st_mode & 0o7777 == 0o2770
+    assert (str(history), 0, 2401) in chowns and str(history) in receipt["repaired_paths"]
+    assert receipt["installed"][-1] == {
+        "kind": "history_directory", "path": str(history), "owner": "root", "group": "blueprint",
+        "owner_uid": 0, "owner_gid": 2401, "mode": "2770",
+    }
+    history.rmdir()
+    history.symlink_to(tmp_path, target_is_directory=True)
+    with pytest.raises(deploy.ControlPlaneDeployError) as refused:
+        deploy._install_disk_reservation_runtime_prerequisites(root, chown=chown, stat_reader=stat_reader)
+    assert str(refused.value) == "deploy_disk_reservation_runtime_symlink:history"
+
+
+def test_disk_ledger_refusals_name_the_item_never_its_host_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A refusal is a typed code: it names the ledger item, not where it lives."""
+
+    monkeypatch.setattr(deploy, "_service_account_ids", lambda account: (3101, 2401))
+
+    def installed_as(chown, stat_reader, *, root: Path) -> str:
+        with pytest.raises(deploy.ControlPlaneDeployError) as refused:
+            deploy._install_disk_reservation_runtime_prerequisites(
+                root, chown=chown, stat_reader=stat_reader
+            )
+        assert str(tmp_path) not in str(refused.value)
+        return str(refused.value)
+
+    def root_owned(path: Path) -> SimpleNamespace:
+        return SimpleNamespace(st_uid=0, st_gid=0, st_mode=path.stat().st_mode)
+
+    symlinked = tmp_path / "symlinked-lock"
+    symlinked.mkdir()
+    (symlinked / ".lock").symlink_to(tmp_path / "elsewhere")
+    assert installed_as(lambda *_a: None, root_owned, root=symlinked) == (
+        "deploy_disk_reservation_runtime_symlink:lock"
+    )
+    # The group repair does not take: the readback names the first item it checks.
+    assert installed_as(lambda *_a: None, root_owned, root=tmp_path / "unrepaired") == (
+        "deploy_disk_reservation_runtime_readback_mismatch:directory"
+    )
+
+    def refuse_history(path: Path, _uid: int, _gid: int) -> None:
+        if path.name == "history":
+            raise PermissionError(1, "Operation not permitted", str(path))
+
+    assert installed_as(refuse_history, root_owned, root=tmp_path / "unwritable") == (
+        "deploy_disk_reservation_runtime_install_failed:history"
+    )
+
+
+def test_a_redeploy_that_creates_nothing_records_no_release_footprint(tmp_path: Path) -> None:
+    commit = "a" * 40
+    runtime_root = tmp_path / "system-runtimes"
+    (runtime_root / "splat-render" / commit).mkdir(parents=True)  # an earlier deploy's tree
+    release = tmp_path / "release"
+    release.mkdir()
+    (release / "module.py").write_bytes(b"m" * 4096)
+    before = deploy._release_runtime_trees(runtime_root, commit)
+
+    def created(checkout: bool):
+        return deploy._created_release_usage(
+            created_release_checkout=checkout, release_path=release, runtime_root=runtime_root,
+            commit=commit, runtime_trees_before=before)
+
+    # Nothing new on disk: no sample, rather than a zero that drags the p95 down.
+    assert created(False) is None
+    tree = runtime_root / "scene-configuration" / commit
+    tree.mkdir(parents=True)
+    (tree / "toolchain.bin").write_bytes(b"t" * 4096)
+    assert created(False).allocated_bytes >= 4096
+    assert created(True).allocated_bytes >= created(False).allocated_bytes + 4096
+
+
+def test_unreadable_created_release_is_an_incomplete_measurement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from blueprint_pipeline.control_plane_disk_usage import TreeUsage
+
+    release = tmp_path / "release"
+    release.mkdir()
+    monkeypatch.setattr(
+        deploy, "tree_usage",
+        lambda _path: TreeUsage(allocated_bytes=4096, unreadable=1),
+    )
+    usage = deploy._created_release_usage(
+        created_release_checkout=True, release_path=release,
+        runtime_root=tmp_path / "runtime", commit="a" * 40,
+        runtime_trees_before=set(),
+    )
+    assert usage is not None and usage.unreadable == 1
+    observed = []
+    reservation = SimpleNamespace(observe=observed.append, measurement_incomplete=False)
+    deploy._observe_created_release_usage(reservation, usage)
+    assert observed == [4096]
+    assert reservation.measurement_incomplete is True
+
+
+def _git_repo_with_commit(tmp_path: Path) -> Path:
+    source = tmp_path / "estimate-source"
+    (source / "nested").mkdir(parents=True)
+    (source / "module.py").write_bytes(b"x" * 10_000)
+    (source / "nested" / "data.json").write_bytes(b"{}\n")
+    for argv in (
+        ["git", "init", "-q", "-b", "main"],
+        ["git", "add", "-A"],
+        ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com",
+         "-c", "commit.gpgsign=false", "commit", "-q", "-m", "fixture"],
+    ):
+        subprocess.run(argv, cwd=source, check=True, capture_output=True)
+    return source
+
+
+def _head(source: Path) -> str:
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=source, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+def test_deploy_reserves_a_git_tree_estimate_not_a_flat_two_gib(tmp_path: Path) -> None:
+    source = _git_repo_with_commit(tmp_path)
+    estimate = deploy._release_footprint_estimate(source, _head(source))
+    assert estimate["basis"] == "git_tree_estimate"
+    assert estimate["bytes"] >= estimate["tree_bytes"]
+    assert estimate["bytes"] < 2 * 1024**3
+    assert (estimate["tree_bytes"], estimate["file_count"]) == (10_003, 2)
+    # Blob bytes plus a quarter for block rounding, a block per file, and 256 MiB
+    # for the index and the runtime trees staged beside the release.
+    assert estimate["bytes"] == -(-10_003 * 5 // 4) + 2 * 4096 + 256 * 1024**2
+
+
+def test_release_estimate_falls_back_to_the_role_footprint_without_a_git_tree(
+    tmp_path: Path,
+) -> None:
+    estimate = deploy._release_footprint_estimate(
+        tmp_path / "not-a-checkout", "a" * 40, reservation_root=tmp_path / "ledger"
+    )
+    assert estimate["basis"] == "declared_default"
+    assert estimate["bytes"] == 2 * 1024**3
+    assert estimate["tree_bytes"] is None and estimate["file_count"] is None
 
 
 def test_storage_pins_runtime_repairs_root_owned_directory_and_reports_receipt(
@@ -2667,6 +2957,7 @@ def test_scene_runtime_failure_blocks_before_source_or_active_release_moves(
             "before": {watcher: {"enabled": "enabled", "state": "active"}},
             "arm_path_units": False,
             "always_arm_units": (),
+            "held_units": {},
         }
     ]
 

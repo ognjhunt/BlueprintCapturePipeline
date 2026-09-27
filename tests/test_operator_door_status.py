@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Sequence
 
@@ -50,6 +51,29 @@ class FakeRunner:
         return CommandResult(0, "", "")
 
 
+CAPACITY_SUMMARY = {
+    "schema_version": "control_plane_capacity_summary.v1",
+    "observed_at_epoch": 1_000.0,
+    "level": "warning",
+    "report_digest": "sha256:" + "0" * 64,
+    "alerts": [{"code": "usage_unclassified_root", "root": "/var/lib/blueprint/x", "allocated_bytes": 2 * 1024**3}],
+    "mounts": [{"mount": "/var/lib/blueprint", "status": "measured", "level": "ok", "free_bytes": 1}],
+    "usage": {
+        "status": "complete", "observed_at_epoch": 900.0, "age_seconds": 100.0,
+        "mounts": [{"mount": "/", "used_bytes": 100, "surveyed_bytes": 97, "classified_bytes": 90,
+                    "attributed_fraction": 0.97}],
+        "by_class": [{"storage_class": "work", "allocated_bytes": 60, "apparent_bytes": 58, "files": 3}],
+        "top_roots": [{"root": "/var/lib/blueprint/pubsub-handoffs", "storage_class": "work", "allocated_bytes": 60}],
+        "top_owners": [{"owner": "scene:site-capture-1", "root": "/var/lib/blueprint/pubsub-handoffs",
+                        "storage_class": "work", "allocated_bytes": 60}],
+        "unclassified_roots": [{"root": "/var/lib/blueprint/x", "allocated_bytes": 2 * 1024**3}],
+    },
+    "volume_resize": None,
+    # Not a summary key: the door must never pass it through.
+    "project_spend": {"spend_usd": 3.0},
+}
+
+
 @pytest.fixture()
 def host_tree(tmp_path: Path) -> dict[str, Path]:
     base = tmp_path.resolve()
@@ -77,7 +101,10 @@ def host_tree(tmp_path: Path) -> dict[str, Path]:
     link = base / "active"
     os.symlink(releases, link)
     (base / "door" / "requests" / "pending" / "x.json").write_text("{}", encoding="utf-8")
-    return {"base": base, "state": state, "link": link}
+    summary = state / "capacity" / "summary.json"
+    summary.parent.mkdir()
+    summary.write_text(json.dumps(CAPACITY_SUMMARY), encoding="utf-8")
+    return {"base": base, "state": state, "link": link, "summary": summary}
 
 
 def _config(tree: dict[str, Path]) -> DoorConfig:
@@ -88,6 +115,7 @@ def _config(tree: dict[str, Path]) -> DoorConfig:
         active_release_link=str(tree["link"]),
         state_root=str(tree["base"] / "door"),
         controller_units=("blueprint-pipeline-intake.service",),
+        capacity_summary=str(tree["summary"]),
     )
 
 
@@ -173,8 +201,45 @@ def test_status_assembles_every_section(host_tree: dict[str, Path]) -> None:
     assert status["spend_guard"] == {"live_resource_count": 0, "spend_usd": 1.2}
     assert status["failed_units"] == ["blueprint-a.service"]
     assert status["door_requests"] == {"pending": 1, "processing": 0}
+    assert status["holds"] == []
+    assert status["break_glass"] == {"unreported": 0, "latest": None}
     assert status["door"]["caller"] == {"name": "cloud"}
     assert set(status["disk"]) and "loadavg" in status["load"]
+
+
+def test_status_shows_active_and_overdue_holds_with_remaining_seconds(host_tree: dict[str, Path]) -> None:
+    root = host_tree["base"] / "door" / "requests" / "holds"
+    root.mkdir()
+    now = int(time.time())
+    for unit, expiry in (("blueprint-scene-progression.timer", now + 120),
+                         ("blueprint-pubsub-handoff-listener.timer", now - 1)):
+        (root / f"{unit}.json").write_text(json.dumps({
+            "schema": "blueprint_operator_door_hold.v1", "unit": unit, "owner": "alice",
+            "reason": "inspect", "requested_by": "cloud", "request_id": "20260926T120000Z-hold-0000abcd",
+            "created_at": "2026-09-26T12:00:00+00:00", "expires_at": "2026-09-26T13:00:00+00:00",
+            "expires_at_epoch": expiry, "status": "active"}), encoding="utf-8")
+    status = build_status(_config(host_tree), _host(host_tree, FakeRunner({})), caller={})
+    assert len(status["holds"]) == 2
+    hold = next(row for row in status["holds"] if row["unit"] == "blueprint-scene-progression.timer")
+    assert hold["unit"] == "blueprint-scene-progression.timer" and hold["owner"] == "alice"
+    assert 0 < hold["remaining_seconds"] <= 120
+    overdue = next(row for row in status["holds"] if row["unit"] == "blueprint-pubsub-handoff-listener.timer")
+    assert overdue["remaining_seconds"] == 0 and overdue["expired"] is True
+
+
+def test_status_counts_unreported_break_glass_notes(host_tree: dict[str, Path]) -> None:
+    root = host_tree["state"] / "cleanup-receipts"
+    root.mkdir()
+    old = "20260926T120000Z-0123456789ab.json"
+    new = "20260927T120000Z-abcdef012345.json"
+    for name, epoch, operator in ((old, 1790424000, "alice"), (new, 1790510400, "bob")):
+        (root / name).write_text(json.dumps({"created_at_epoch": epoch, "created_at": "2026-09-27T12:00:00Z",
+                                             "operator": operator, "reason": "door repair"}), encoding="utf-8")
+    (root / "reported.jsonl").write_text(json.dumps({"name": old}) + "\n", encoding="utf-8")
+    status = build_status(_config(host_tree), _host(host_tree, FakeRunner({})), caller={})
+    assert status["break_glass"] == {"unreported": 1,
+                                     "latest": {"created_at": "2026-09-27T12:00:00Z",
+                                                "operator": "bob", "reason": "door repair"}}
 
 
 def test_status_survives_a_failing_section(host_tree: dict[str, Path]) -> None:
@@ -191,3 +256,24 @@ def test_a_receipt_with_credential_shaped_content_names_the_refusal(host_tree: d
     newest = status["deploys"]["recent_receipts"][0]
     assert newest["name"] == receipt.name and newest["error"] == "secret_content_refused"
     assert "status" not in newest
+
+
+def test_status_reports_capacity_usage(host_tree: dict[str, Path]) -> None:
+    status = build_status(_config(host_tree), _host(host_tree, FakeRunner({})), caller={"name": "cloud"})
+    assert status["capacity"]["level"] == "warning"
+    assert status["capacity"]["usage"]["top_owners"][0]["owner"] == "scene:site-capture-1"
+    assert "project_spend" not in status["capacity"]
+    assert set(status["disk"])
+
+
+def test_status_capacity_section_fails_soft(host_tree: dict[str, Path]) -> None:
+    host_tree["summary"].unlink()
+    status = build_status(_config(host_tree), _host(host_tree, FakeRunner({})), caller={})
+    assert status["capacity"] == {"error": "capacity_unavailable:FileNotFoundError"}
+    assert status["active_release"]["commit"] == "a" * 40
+
+
+def test_a_capacity_summary_with_credential_shaped_content_is_refused(host_tree: dict[str, Path]) -> None:
+    host_tree["summary"].write_text(json.dumps({**CAPACITY_SUMMARY, "level": "sk-" + "A" * 30}), encoding="utf-8")
+    status = build_status(_config(host_tree), _host(host_tree, FakeRunner({})), caller={})
+    assert status["capacity"] == {"error": "capacity_unavailable:SecretContentRefused"}

@@ -262,12 +262,17 @@ def test_audit_log_rotates_when_large(tmp_path: Path) -> None:
         import time
 
         rotated = audit.with_name("audit.jsonl.1")
+        audit_lines: list[str] = []
         for _ in range(100):  # allowed requests are audited just after the reply is sent
             if rotated.exists() and audit.exists():
-                break
+                contents = audit.read_text(encoding="utf-8")
+                if contents.endswith("\n"):
+                    audit_lines = contents.splitlines()
+                    break
             time.sleep(0.02)
         assert rotated.stat().st_size == 1001
-        assert json.loads(audit.read_text(encoding="utf-8").splitlines()[-1])["route"] == "/whoami"
+        assert audit_lines, "request audit entry was not written before the deadline"
+        assert json.loads(audit_lines[-1])["route"] == "/whoami"
     finally:
         server.shutdown()
         server.server_close()

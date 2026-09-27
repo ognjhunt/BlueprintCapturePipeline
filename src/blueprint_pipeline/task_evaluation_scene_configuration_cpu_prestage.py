@@ -353,9 +353,14 @@ def prepare_stage_prefix_before_gpu(
     with _exclusive_work_dir(work):
         with reserve_control_plane_disk("cpu_prestage", target_root=work, expected_bytes=peak_bytes,
                                         reservation_root=reservation_root or DEFAULT_RESERVATION_ROOT,
-                                        disk_usage=disk_usage):
+                                        disk_usage=disk_usage,
+                                        workload="cpu_prestage") as reservation:
             # The exclusive lock proves no cooperating producer owns leftovers.
             _clear_work_products(work)
+            # Measure from the cleared work dir, so a crashed attempt's leftovers
+            # neither shrink nor hide this prefix's footprint; the clear makes it
+            # fresh whatever unrelated content the work dir also holds.
+            reservation.bind_workspace(work, fresh=True)
             _extract(bundle, root)
             _require((root / ENTRYPOINT).is_file(), "entrypoint_missing")
             output.mkdir(mode=0o750)
@@ -402,6 +407,9 @@ def prepare_stage_prefix_before_gpu(
                     zipped.writestr(_TRANSPORT_NAME, canonical_json(transport) + "\n")
                 validate_stage_prefix_capsule(capsule, expected_stage_ids=expected_ids)
             finally:
+                # The footprint is the scratch runtime at its peak, so measure it
+                # before the cleanup below returns the work dir to empty.
+                reservation.sample()
                 # Keep failed-stage authoring and cost reservations as well as
                 # successful checkpoints before removing the scratch runtime.
                 # A crash after spending must not look like an untouched job.

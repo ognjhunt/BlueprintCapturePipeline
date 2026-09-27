@@ -310,6 +310,48 @@ def test_compilation_refuses_low_disk_before_creating_owned_output(
     assert pauses == [worker.COMPILATION_DISK_RECHECK_SECONDS] * 2
 
 
+def test_compilation_reservation_measures_its_own_compilation_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blueprint_pipeline import control_plane_disk_budget as disk_budget
+
+    queue, inputs, envelope = _stage(tmp_path)
+    calls: list[dict[str, object]] = []
+    real = disk_budget.reserve_control_plane_disk
+
+    def roomy(_path):
+        return SimpleNamespace(total=100 * 1024**3, used=0, free=90 * 1024**3)
+
+    def recording(*args, **kwargs):
+        calls.append(kwargs)
+        return real(*args, **kwargs, disk_usage=roomy)
+
+    def compiler(*, output_root, **_kwargs):
+        (Path(output_root) / "partial.bin").write_bytes(b"partial")
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(worker, "reserve_control_plane_disk", recording)
+    process_episode_compilation_queue(
+        queue_root=queue,
+        input_root=inputs,
+        output_root=tmp_path / "outputs",
+        source_commit=envelope["expected_production_commit"],
+        episode_compiler=compiler,
+        disk_reservation_root=tmp_path / "reservations",
+    )
+
+    outputs = (tmp_path / "outputs").resolve()
+    # Admission reads the shared parent; the sample measures only this job's tree.
+    assert calls[0]["target_root"] == outputs
+    assert calls[0]["workspace"] == outputs / envelope["compilation_id"]
+    assert calls[0]["workload"] == "compiled_episode"
+    history = tmp_path / "reservations" / "history" / "episode_compilation.jsonl"
+    [sample] = [json.loads(line) for line in history.read_text().splitlines()]
+    # The compiler raised and its partial output was removed: a failed sample,
+    # which never shapes admission, not a completed one of zero bytes.
+    assert sample["outcome"] == "failed" and sample["workload"] == "compiled_episode"
+
+
 def test_compilation_rechecks_transient_capacity_before_invoking_compiler(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -326,7 +368,7 @@ def test_compilation_rechecks_transient_capacity_before_invoking_compiler(
                 "need_bytes=6:available_bytes=0:free_bytes=8:"
                 "floor_bytes=8:reserved_bytes=0"
             )
-        return SimpleNamespace(release=lambda: None)
+        return SimpleNamespace(release=lambda **_kwargs: None)
 
     invoked = []
 

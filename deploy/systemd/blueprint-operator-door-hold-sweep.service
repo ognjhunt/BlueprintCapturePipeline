@@ -1,0 +1,43 @@
+[Unit]
+Description=Reconcile owned operator door holds before timer and path activation
+DefaultDependencies=no
+After=local-fs.target
+Before=timers.target paths.target
+RequiresMountsFor=/var/lib/blueprint-operator-door/requests/holds
+
+[Service]
+Type=oneshot
+User=root
+UMask=0022
+Environment=PYTHONPATH=/opt/blueprint/operator-door
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 -m operator_door.holds --sweep --holds-dir /var/lib/blueprint-operator-door/requests/holds
+CapabilityBoundingSet=
+AmbientCapabilities=
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+PrivateNetwork=true
+RestrictAddressFamilies=AF_UNIX
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+ReadWritePaths=/var/lib/blueprint-operator-door/requests
+TasksMax=32
+MemoryMax=256M
+TimeoutStartSec=5min
+
+[Install]
+WantedBy=timers.target paths.target

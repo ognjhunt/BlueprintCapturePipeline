@@ -641,7 +641,7 @@ def test_capacity_wait_resumes_same_preparation_after_headroom_recovers(
     assert first["results"][0]["status"] == "awaiting_capacity"
 
     class Held:
-        def release(self):
+        def release(self, **_kwargs):
             pass
 
     monkeypatch.setattr(worker, "reserve_control_plane_disk", lambda *_args, **_kwargs: Held())
@@ -712,6 +712,111 @@ def test_capacity_wait_expires_without_provider_or_fetch(
     result = json.loads(next((queue / "results").glob("*.json")).read_text())
     assert result["blockers"] == ["launch_preparation_capacity_wait_expired"]
     assert result["provider_mutation_performed"] is False
+
+
+def test_preparation_reservation_measures_its_own_preparation_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blueprint_pipeline import control_plane_disk_budget as disk_budget
+
+    value, payloads = request_with_fetchable_bytes()
+    queue = tmp_path / "queue"
+    stage_launch_preparation_request(value=value, queue_root=queue, submitted_by="blueprint-webapp")
+    calls: list[dict] = []
+    real = disk_budget.reserve_control_plane_disk
+
+    def roomy(_path):
+        return types.SimpleNamespace(total=100 * 1024**3, used=0, free=90 * 1024**3)
+
+    def recording(*args, **kwargs):
+        calls.append(kwargs)
+        return real(*args, **kwargs, disk_usage=roomy)
+
+    monkeypatch.setattr(worker, "reserve_control_plane_disk", recording)
+    run = process_launch_preparation_queue(
+        queue_root=queue, input_root=tmp_path / "inputs",
+        allowed_uri_prefixes=["s3://blueprint-production-inputs/"],
+        service_account=SERVICE_ACCOUNT,
+        source_commit=value["expected_production_commit"],
+        fetcher=fetcher(payloads), adapter_materializer=fake_adapter,
+        episode_compilation_queue_root=tmp_path / "episode-compilation",
+        disk_reservation_root=tmp_path / "reservations",
+    )
+
+    assert run["results"][0]["status"] == "queued_for_production_episode_compilation"
+    # Admission reads the shared parent; the sample measures only this job's tree.
+    assert calls[0]["target_root"] == tmp_path / "inputs"
+    assert calls[0]["workspace"] == tmp_path / "inputs" / value["preparation_id"]
+    assert calls[0]["workload"] == "prepared_references"
+    history = tmp_path / "reservations" / "history" / "launch_preparation.jsonl"
+    [sample] = [json.loads(line) for line in history.read_text().splitlines()]
+    assert sample["workload"] == "prepared_references" and sample["outcome"] == "completed"
+    assert sample["observed_bytes"] > 0
+
+
+def test_a_pass_over_an_existing_preparation_directory_records_resumed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blueprint_pipeline import control_plane_disk_budget as disk_budget
+
+    value, payloads = request_with_fetchable_bytes()
+    queue = tmp_path / "queue"
+    stage_launch_preparation_request(value=value, queue_root=queue, submitted_by="blueprint-webapp")
+    # An earlier pass (one that paused on its SAM children, say) already wrote here.
+    earlier = tmp_path / "inputs" / value["preparation_id"]
+    earlier.mkdir(parents=True)
+    (earlier / "earlier-pass.bin").write_bytes(b"e" * 4096)
+    real = disk_budget.reserve_control_plane_disk
+    monkeypatch.setattr(worker, "reserve_control_plane_disk", lambda *args, **kwargs: real(
+        *args, **kwargs, disk_usage=lambda _path: types.SimpleNamespace(
+            total=100 * 1024**3, used=0, free=90 * 1024**3)))
+    process_launch_preparation_queue(
+        queue_root=queue, input_root=tmp_path / "inputs",
+        allowed_uri_prefixes=["s3://blueprint-production-inputs/"],
+        service_account=SERVICE_ACCOUNT,
+        source_commit=value["expected_production_commit"],
+        fetcher=fetcher(payloads), adapter_materializer=fake_adapter,
+        episode_compilation_queue_root=tmp_path / "episode-compilation",
+        disk_reservation_root=tmp_path / "reservations",
+    )
+    history = tmp_path / "reservations" / "history" / "launch_preparation.jsonl"
+    [sample] = [json.loads(line) for line in history.read_text().splitlines()]
+    assert (sample["outcome"], sample["fresh"]) == ("resumed", False)
+
+
+def test_a_preparation_that_fails_after_admission_records_a_failed_sample(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blueprint_pipeline import control_plane_disk_budget as disk_budget
+
+    value, _payloads = request_with_fetchable_bytes()
+    queue = tmp_path / "queue"
+    stage_launch_preparation_request(value=value, queue_root=queue, submitted_by="blueprint-webapp")
+    real = disk_budget.reserve_control_plane_disk
+
+    def roomy(*args, **kwargs):
+        return real(*args, **kwargs, disk_usage=lambda _path: types.SimpleNamespace(
+            total=100 * 1024**3, used=0, free=90 * 1024**3))
+
+    def unreachable(*_args):
+        raise OSError("fixture object store unreachable")
+
+    monkeypatch.setattr(worker, "reserve_control_plane_disk", roomy)
+    run = process_launch_preparation_queue(
+        queue_root=queue, input_root=tmp_path / "inputs",
+        allowed_uri_prefixes=["s3://blueprint-production-inputs/"],
+        service_account=SERVICE_ACCOUNT,
+        source_commit=value["expected_production_commit"],
+        fetcher=unreachable, adapter_materializer=fake_adapter,
+        episode_compilation_queue_root=tmp_path / "episode-compilation",
+        disk_reservation_root=tmp_path / "reservations",
+    )
+
+    assert run["results"][0]["status"] == "blocked"
+    history = tmp_path / "reservations" / "history" / "launch_preparation.jsonl"
+    [sample] = [json.loads(line) for line in history.read_text().splitlines()]
+    # A preparation that raised measured only part of its footprint.
+    assert sample["outcome"] == "failed" and sample["workload"] == "prepared_references"
 
 
 def test_preparation_disk_recovers_after_transient_capacity_refusal(

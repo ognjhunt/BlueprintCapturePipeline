@@ -103,7 +103,9 @@ from .decision_evidence_contracts import canonical_digest
 from .control_plane_disk_budget import (
     ControlPlaneDiskBudgetError,
     disk_headroom,
+    parse_role_targets,
 )
+from .control_plane_capacity_controller import CHAIN_ROLES
 from .scene_placement.robot_profile import default_robot_id_for_embodiment
 from .scene_object_discovery_contract import SceneObjectDiscoveryContractError
 from .scene_object_discovery_queue import (
@@ -1639,17 +1641,15 @@ def _configured_disk_headroom() -> Dict[str, Any]:
         return disk_headroom(
             target_root=target_root,
             reservation_root=reservation_root,
+            role_targets=parse_role_targets(
+                os.getenv("BLUEPRINT_CONTROL_PLANE_DISK_ROLE_TARGETS")
+            ),
         )
     except (ControlPlaneDiskBudgetError, OSError):
         return {
             "schema_version": "control_plane_disk_headroom.v1",
             "status": "unknown_fail_closed",
-            "refused_roles": [
-                "launch_preparation",
-                "episode_compilation",
-                "launch_activation",
-                "launch_dispatch",
-            ],
+            "refused_roles": list(CHAIN_ROLES),
         }
 
 

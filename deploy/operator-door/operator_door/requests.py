@@ -45,6 +45,8 @@ STATES = ("pending", "processing", "completed")
 _SCOPES = {
     "deploy": "deploy",
     "unit": "operate",
+    "hold": "operate",
+    "release-hold": "operate",
     "door-upgrade": "deploy",
     # Plans or retires one website scene workspace with the active release's own module; it
     # runs no new code, and the module deletes nothing it cannot restore.
@@ -60,8 +62,12 @@ _REQUEST_ID = re.compile(
 )
 _UNIT_ACTIONS = ("start", "reset-failed", "stop", "restart")
 _TRIGGER_ONLY_ACTIONS = ("stop", "restart")
+_HOLD_OWNER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@-]{0,63}\Z")
 # Timers that protect money or cleanup are never paused through the door.
-_SAFETY_CRITICAL = re.compile(r"spend-guard|watchdog|teardown|reaper|provider-zero")
+_SAFETY_CRITICAL = re.compile(
+    r"spend-guard|watchdog|teardown|reaper|provider-zero|"
+    r"terminal-resource-release|storage-gc|capacity|replay-cache-gc|preflight"
+)
 _LOG_TAIL_LINES = 200
 
 
@@ -88,6 +94,16 @@ def _commit(body: dict[str, Any]) -> str:
     if not isinstance(commit, str) or not _COMMIT.fullmatch(commit):
         raise RequestRefused("commit_invalid")
     return commit
+
+
+def _hold_unit(unit: Any) -> str:
+    if not isinstance(unit, str) or not UNIT_NAME.fullmatch(unit) or not unit.endswith((".timer", ".path")):
+        raise RequestRefused("hold_unit_invalid")
+    if unit.startswith("blueprint-operator-door"):
+        raise RequestRefused("unit_is_door")
+    if _SAFETY_CRITICAL.search(unit):
+        raise RequestRefused("unit_safety_critical")
+    return unit
 
 
 def validate_request(body: dict[str, Any]) -> dict[str, Any]:
@@ -117,7 +133,24 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
                 raise RequestRefused("unit_action_not_allowed")
             if _SAFETY_CRITICAL.search(unit):
                 raise RequestRefused("unit_safety_critical")
+            if action == "stop":
+                raise RequestRefused("unit_stop_requires_hold")
         return {"kind": kind, "unit": unit, "action": action}
+    if kind == "hold":
+        _only(body, ("kind", "unit", "owner", "reason", "expires_in_seconds"))
+        unit = _hold_unit(body.get("unit"))
+        owner, reason, duration = body.get("owner"), body.get("reason"), body.get("expires_in_seconds")
+        if not isinstance(owner, str) or not _HOLD_OWNER.fullmatch(owner):
+            raise RequestRefused("hold_owner_invalid")
+        if not isinstance(reason, str) or not 1 <= len(reason) <= 200 or not reason.isprintable():
+            raise RequestRefused("hold_reason_invalid")
+        if type(duration) is not int or not 60 <= duration <= 86400:
+            raise RequestRefused("hold_expiry_invalid")
+        return {"kind": kind, "unit": unit, "owner": owner, "reason": reason,
+                "expires_in_seconds": duration}
+    if kind == "release-hold":
+        _only(body, ("kind", "unit"))
+        return {"kind": kind, "unit": _hold_unit(body.get("unit"))}
     if kind == "door-upgrade":
         _only(body, ("kind", "commit"))
         return {"kind": kind, "commit": _commit(body)}

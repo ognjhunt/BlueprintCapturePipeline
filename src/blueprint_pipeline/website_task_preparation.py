@@ -6,7 +6,8 @@ static and native Isaac qualification, scene assembly, configured-scene
 publication, and the Franka DROID controls. This module only compiles the
 website preparation (confirmed task, SAM 3.1 masks, MapAnything estimates,
 clean-plate removal manifest, Marble world) into that path's typed inputs.
-Every scale here is estimated; nothing is promoted to a physical measurement.
+Every scale here is estimated, or published for the identified product or its
+category; nothing is promoted to a physical measurement.
 """
 
 from __future__ import annotations
@@ -31,6 +32,14 @@ from .local_reconstruction_adapters import _sha256_file
 from .website_assembly_coverage import assembly_constraints, assembly_contract, coverage_blockers, coverage_matches
 from .website_task_masks import decode_track_mask, estimate_target_bounds
 from .website_support_geometry import ground_on_observed_floor, support_under
+
+
+class RegistrationRefusal(ValueError):
+    """A registration refusal that carries the scores it was decided on."""
+
+    def __init__(self, code: str, evidence: Mapping[str, Any]):
+        super().__init__(code)
+        self.evidence = dict(evidence)
 
 SCHEMA_VERSION = "website_scene_preparation.v1"
 CLAIM_CEILING = "development_only"
@@ -302,10 +311,25 @@ def register_source_to_runtime(*, source_geometry: Mapping[str, Any], collision_
         # Only poses at a scale the anchor admits are evidence: a generated
         # world that extends past the observed footage rewards inflated-scale
         # poses, which the declared scale already refuses.
-        if any(row[0] * 1.2 < best[0] and best[0] - row[0] > 0.005 * extent_norm
-               and ANCHOR_SCALE_RATIO_BOUNDS[0] <= row[1] * mpu <= ANCHOR_SCALE_RATIO_BOUNDS[1]
-               for row in better if not same_hypothesis(row)):
-            raise ValueError("website_registration_conflicts_provider_anchor")
+        conflicting = [row for row in better if not same_hypothesis(row)
+                       and row[0] * 1.2 < best[0] and best[0] - row[0] > 0.005 * extent_norm
+                       and ANCHOR_SCALE_RATIO_BOUNDS[0] <= row[1] * mpu <= ANCHOR_SCALE_RATIO_BOUNDS[1]]
+        if conflicting:
+            def summary(row):
+                return {"score_m": float(row[0] * mpu), "scale_ratio_to_declared": float(row[1] * mpu),
+                        "rotation_from_anchored_degrees": _rotation_degrees(row[2], best[2]),
+                        "translation_from_anchored_m": float(np.linalg.norm(row[3] - best[3]) * mpu)}
+            raise RegistrationRefusal("website_registration_conflicts_provider_anchor", {
+                "anchored": {"score_m": float(best[0] * mpu), "roll_degrees": roll,
+                             "scale_ratio_to_declared": float(best[1] * mpu),
+                             "hypothesis_axis": "camera_optical" if floor is None else "declared_up",
+                             "levelled_tilt_degrees": _rotation_degrees(level, np.eye(3)),
+                             "rotation_from_prior_degrees": _rotation_degrees(best[2], prior[1])},
+                "anchored_alternatives": [{"roll_degrees": row[1], "score_m": float(row[0][0] * mpu)}
+                                          for row in anchored[1:4]],
+                "conflicting_unconstrained": [summary(row) for row in conflicting[:5]],
+                "extent_m": extent_norm * mpu, "declared_meters_per_unit": mpu,
+                "source_point_count": int(len(source)), "target_point_count": int(len(target))})
         # The same pose reached from an unconstrained seed is the same
         # hypothesis; keep whichever solution of it converged better.
         same_pose = [row for row in better if same_hypothesis(row)]
@@ -483,6 +507,34 @@ def levelled_body_bounds(body: Mapping[str, Any], source_to_runtime: np.ndarray,
     return (center - half).tolist(), (center + half).tolist()
 
 
+def published_body_bounds(body: Mapping[str, Any], published: Mapping[str, Any], *,
+                          source_to_simulator_scale: float) -> dict[str, Any]:
+    """The coverage body resized to its best published overall size (2026-09-27 incident).
+
+    Scaled about the bottom-front anchor, never moved: the closed front plane
+    and the lowest observed band stay where the footage put them, depth grows
+    back into the cabinet, height upward and width evenly about the front's
+    centre line. Kept in source-estimate units (published metres over the
+    registration scale) so levelled bounds, support, grounding, masses, the
+    metric envelope and the builder contract all read one body. The video
+    estimate travels with it for comparison.
+    """
+    normal, up = np.asarray(body["front_normal"], dtype=float), np.asarray(body["up"], dtype=float)
+    across = np.cross(up, normal)  # The orthonormal frame estimate_body_bounds built the corners in.
+    corners = np.asarray(body["corners"], dtype=float)
+    front, bottom, middle = float(np.max(corners @ normal)), float(np.min(corners @ up)), float(np.mean(corners @ across))
+    depth, width, height = (float(published[key]) / float(source_to_simulator_scale)
+                            for key in ("depth_m", "width_m", "height_m"))
+    resized = np.array([n * normal + a * across + b * up for n in (front - depth, front)
+                        for a in (middle - width / 2, middle + width / 2) for b in (bottom, bottom + height)])
+    return {**body, "corners": resized.tolist(), "minimum": resized.min(axis=0).tolist(),
+            "maximum": resized.max(axis=0).tolist(), "depth_m": depth, "width_m": width, "height_m": height,
+            "dimension_authority": published["dimension_authority"], "unit": "published_meters_over_registration_scale",
+            "sizing_anchor": "observed_closed_front_bottom_centre",
+            "video_estimate": {key: body[key] for key in ("depth_m", "width_m", "height_m", "corners", "basis")},
+            "metric_measurement_proven": False}
+
+
 def body_front_normal(body: Mapping[str, Any], source_to_sim_linear: np.ndarray) -> dict[str, Any]:
     """The closed front plane's outward normal, levelled, in the simulator frame."""
     sim = np.asarray(source_to_sim_linear, dtype=float) @ np.asarray(body["front_normal"], dtype=float)
@@ -573,6 +625,12 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
             collision_mesh_path=Path(base_scene["collision_mesh_path"]),
             anchor=anchor, focus_bounds=subject_target["estimated_visible_bounds"])
     except ValueError as exc:
+        if isinstance(exc, RegistrationRefusal):
+            # A refusal is decided on scores; keep them, or it cannot be reviewed.
+            write_json(output_root / "registration_refusal.json", {
+                "schema_version": "website_registration_refusal.v1", "blocker": str(exc),
+                "collision_mesh_digest": base_scene.get("collision_mesh_digest"),
+                "anchor": anchor, **exc.evidence})
         from .website_development_test import enabled
         from .website_object_local_frame import REGISTRATION_REFUSALS, estimated_object_frame
         if str(exc) not in REGISTRATION_REFUSALS or not enabled(task_context["context_digest"]):
@@ -601,6 +659,19 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     coverage_bound = coverage is not None and coverage_matches(coverage, target=subject_target,
                                                                source_geometry=source_geometry)
     body = coverage["body_bounds"] if coverage_bound and coverage["status"] == "complete" else None
+    # Source-estimate units to simulator metres.
+    scale = abs(float(np.linalg.det(runtime_to_sim[:3, :3] @ matrix[:3, :3]))) ** (1 / 3)
+    # 2026-09-27 website dishwasher incident: published figures only checked
+    # a short video estimate. The best verified published size (exact model >
+    # model family > brand category > category standard) now sizes the body;
+    # only when none gives every axis within tolerance does the estimate.
+    estimated_body, published = body, None
+    if body is not None:
+        from .website_object_spec_research import published_body_size
+        published = published_body_size(subject_target.get("object_spec"),
+                                        max_relative_half_range=DIMENSION_RELATIVE_ERROR)
+        if published is not None:
+            body = published_body_bounds(body, published, source_to_simulator_scale=scale)
     if body is not None:
         subject_min, subject_max = levelled_body_bounds(body, matrix, up=up)
     else:
@@ -624,7 +695,10 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                                              up_sign=up_sign)
         if grounding is not None:
             support = grounding
-            (subject_min if up_sign == 1 else subject_max)[up] = grounding["top_runtime_units"]
+            # A published overall height already includes the unobserved lowest
+            # band: the snap below moves that body down onto the floor instead.
+            if published is None:
+                (subject_min if up_sign == 1 else subject_max)[up] = grounding["top_runtime_units"]
     snap = 0.0
     if support is None:
         blockers.append("support_surface_not_found_under_subject")
@@ -704,21 +778,27 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     contract = None
     if body is not None:
         from .authoring_frame_budget import FrameBudgetError, fit_reference_frames
-        scale = abs(float(np.linalg.det(runtime_to_sim[:3, :3] @ matrix[:3, :3]))) ** (1 / 3)
         try:
             # Frames go to the builder as provider-sized derivatives of the
             # retained upright views; both digests stay on each row.
             contract = fit_reference_frames(
-                assembly_contract(coverage, articulation_kind=articulation_kind, source_to_simulator_scale=scale),
+                assembly_contract({**coverage, "body_bounds": body}, articulation_kind=articulation_kind,
+                                  source_to_simulator_scale=scale),
                 provider=authoring_provider, output_root=output_root / "reference_frames")
         except (ValueError, FrameBudgetError) as exc:
             blockers.append(str(exc))
         if contract is not None and grounding is not None:
             extension_m = grounding["extended_runtime_units"] * mpu
-            contract["body_extent_m"]["height"] = float(contract["body_extent_m"]["height"]) + extension_m
-            contract["body_extent_m"]["grounding"] = {
-                "basis": grounding["basis"], "extended_to_observed_floor_m": extension_m,
-                "reason": "lowest_band_unobserved_on_floor_standing_assembly", "physical_measurement": False}
+            if published is None:
+                contract["body_extent_m"]["height"] = float(contract["body_extent_m"]["height"]) + extension_m
+                contract["body_extent_m"]["grounding"] = {
+                    "basis": grounding["basis"], "extended_to_observed_floor_m": extension_m,
+                    "reason": "lowest_band_unobserved_on_floor_standing_assembly", "physical_measurement": False}
+            else:
+                contract["body_extent_m"]["grounding"] = {
+                    "basis": grounding["basis"], "moved_down_to_observed_floor_m": extension_m,
+                    "reason": "published_overall_height_includes_unobserved_lowest_band",
+                    "physical_measurement": False}
     authoring_frames = [{"path": row["path"], "sha256": row["sha256"], "role": "observed_source",
                          "frame_id": row["frame_id"], "reason": row["reason"],
                          "source_sha256": row["transmission"]["source_sha256"]}
@@ -737,8 +817,12 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
             front = body_front_normal(body, runtime_to_sim[:3, :3] @ matrix[:3, :3])
             normal = front["estimated_front_normal_world"]
             extent = [float(body[key]) * scale for key in ("depth_m", "width_m", "height_m")]
+            estimated_extent = [float(estimated_body[key]) * scale for key in ("depth_m", "width_m", "height_m")]
             if grounding is not None:
-                extent[2] += grounding["extended_runtime_units"] * mpu
+                # Same bottom either way, so the estimate would have grown by the same gap.
+                estimated_extent[2] += grounding["extended_runtime_units"] * mpu
+                if published is None:
+                    extent[2] += grounding["extended_runtime_units"] * mpu
         else:
             front = estimate_front_normal(track, frames_by_id, matrix,
                                           [(subject_min[i] + subject_max[i]) / 2 for i in range(3)],
@@ -746,6 +830,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
             normal = front["estimated_front_normal_world"]
             extent = [abs(normal[0]) * dimensions_m[0] + abs(normal[1]) * dimensions_m[1],
                       abs(normal[1]) * dimensions_m[0] + abs(normal[0]) * dimensions_m[1], dimensions_m[2]]
+            estimated_extent = extent
         depth_m = extent[0]
         from .website_articulated_mass import articulated_mass_bounds
         masses = articulated_mass_bounds(subject_target, joint_type=articulation_kind, body_extent_m=extent,
@@ -757,16 +842,26 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         physics["mass_authority"] = masses["mass_authority"]
         # A published exact-model size that contradicts the body as it will be
         # built (simulator metres) holds the build; it is never silently resolved.
+        # That body may come from a lower-precedence source (the estimate, or a
+        # category standard when the exact model is silent on an axis). The
+        # video estimate is also compared, advisory, when published figures size it.
         spec = subject_target.get("object_spec")
+        size_check = estimate_check = None
         if spec and spec.get("status") == "researched":
             from .website_object_spec_research import dimension_check
             size_check = dimension_check(spec, {"depth_m": extent[0], "width_m": extent[1], "height_m": extent[2]})
             blockers.extend(size_check["blockers"])
+            if published is not None:
+                estimate_check = {**dimension_check(spec, dict(zip(("depth_m", "width_m", "height_m"),
+                                                                   estimated_extent))),
+                                  "blockers": [], "basis": "published_product_figures_vs_video_estimate_advisory"}
         travel = ({"estimated_usable_stroke_m": round(DRAWER_USABLE_STROKE_FRACTION_OF_DEPTH * depth_m, 4)}
                   if articulation_kind == "prismatic" else {"estimated_usable_swing_rad": DOOR_USABLE_SWING_RAD})
         mechanism = {"assembly_label": subject_entry.get("semantic_label") or subject_entry["target_id"],
                      "part_label": articulated_part or "unspecified part", "joint_type": articulation_kind,
-                     **travel, "travel_authority": ("object_prior_estimate_from_observed_body_depth" if body is not None
+                     **travel, "travel_authority": ("object_prior_estimate_from_published_body_depth" if published
+                                                    else "object_prior_estimate_from_observed_body_depth"
+                                                    if body is not None
                                                     else "object_prior_estimate_from_estimated_visible_bounds"),
                      "estimated_front_normal_world": normal, "front_normal_basis": front["basis"],
                      "lock_status": "unknown",
@@ -805,6 +900,17 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                                        mass_source_urls=masses["source_urls"])
         if contract is not None:
             authoring_configuration.update(contract)
+        if published is not None:
+            # What sized the build, where it came from, and the estimate it replaced.
+            authoring_configuration["dimension_sizing"] = {
+                "dimension_authority": published["dimension_authority"],
+                "dimension_match": published["dimension_match"],
+                "object_spec_digest": published["object_spec_digest"], "product": published["product"],
+                "source_urls": published["source_urls"], "axes": published["axes"],
+                "published_m": {axis: published[axis + "_m"] for axis in ("depth", "width", "height")},
+                "video_estimate_m": dict(zip(("depth", "width", "height"), (round(v, 5) for v in estimated_extent))),
+                "published_check": size_check, "video_estimate_check": estimate_check,
+                "anchor": body["sizing_anchor"], "claim": published["claim"], "physical_measurement_proven": False}
     else:
         physics = screen_physics(dimensions_m)
         authoring_configuration = stage_three_configuration(
@@ -817,10 +923,13 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         )
     authoring_configuration.update(
         source_object_identity=subject_entry["target_id"],
-        source_observation_kind="website_capture_frames", dimension_authority="estimated",
+        source_observation_kind="website_capture_frames",
+        dimension_authority=published["dimension_authority"] if published else "estimated",
         appearance_inputs=("digest_bound_upright_coverage_frames" if body is not None
                            else "digest_bound_original_capture_frames"),
-        geometry_support=("whole_body_bounds_from_closed_front_and_open_interior_depth" if body is not None
+        geometry_support=(f"published_{published['dimension_match']}_size_about_observed_closed_front_bottom"
+                          if published
+                          else "whole_body_bounds_from_closed_front_and_open_interior_depth" if body is not None
                           else "unregistered_object_local_estimated_visible_bounds" if independent_object
                           else "registered_partial_visible_bounds_from_estimated_source_geometry"),
         construction_constraints={
@@ -947,7 +1056,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                              "metric_envelope": {"minimum_xyz_m": sim_min,
                                                  "maximum_xyz_m": sim_max,
                                                  "maximum_dimension_relative_error": DIMENSION_RELATIVE_ERROR},
-                             "dimension_authority": "estimated"},
+                             "dimension_authority": published["dimension_authority"] if published else "estimated"},
         "physics": physics, "thumbnail": {key: value for key, value in thumbnail.items() if key != "png_base64"},
         "intake_request": request, "compose_back": compose_back,
         "recipe_plan": {"observed_appearance_object_removal": "satisfied_by_website_clean_plate_before_reconstruction",

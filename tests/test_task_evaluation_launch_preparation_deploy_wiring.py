@@ -172,7 +172,12 @@ def test_every_disk_reservation_worker_has_exact_systemd_write_access() -> None:
         ),
     }
     for unit, module in workers.items():
-        assert "reserve_control_plane_disk(" in text(module)
+        reservation_module = module
+        if unit == "blueprint-task-evaluation-policy-canary-dispatcher.service":
+            reservation_module = "src/blueprint_pipeline/task_evaluation_policy_canary_disk.py"
+            assert "from .task_evaluation_policy_canary_disk import canary_disk_reservation" in text(module)
+            assert "canary_disk_reservation(" in text(module)
+        assert "reserve_control_plane_disk(" in text(reservation_module)
         service = text(f"deploy/systemd/{unit}")
         assert (
             f"Environment=BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT="

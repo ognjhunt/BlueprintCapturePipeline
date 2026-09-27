@@ -389,8 +389,215 @@ def test_published_size_conflict_holds_compile_before_anything_is_bought(tmp_pat
         args.update(_dishwasher_inputs(tmp_path / root, object_spec=spec))
         args["removal_manifest"] = DISHWASHER_REMOVAL
         return compile_website_scene_preparation(**args)
-    # Compared with the body as it will be built (simulator metres), not source units.
+    # Compared with the video-estimated body in simulator metres, not source units.
     exact = compiled("exact_model", "exact")
     assert exact["status"] == "needs_input" and "website_object_spec_dimension_conflict" in exact["blockers"]
     family = compiled("model_family", "family")
     assert "website_object_spec_dimension_conflict" not in family["blockers"]
+
+
+# 2026-09-27 website dishwasher incident: the best verified published size sizes the build.
+PUBLISHED = {"depth": 0.66, "width": 0.6, "height": 0.62}  # Estimate: 0.60 deep, 0.48 wide, 0.52 tall.
+CATEGORY = {"depth": 0.64, "width": 0.58, "height": 0.6}
+SPEC_URL = "https://example.com/ex-24/specs"
+GUIDE_URL = "https://retailer.example/guides/dishwasher-dimensions"
+
+
+def _length(value, match, url):
+    return {"value": value, "unit": "m", "source_urls": [url], "match": match,
+            "quotes": [{"source_url": url, "quote": f"{value} m"}]}
+
+
+def _sized_spec(*, match="exact_model", basis="label_read", status="researched", sizes=PUBLISHED, category=None,
+                **overrides):
+    """A researched record: product-level figures at ``match`` (None: none), plus category standards."""
+    specs = {f"overall_{axis}": _length(value, match, SPEC_URL) for axis, value in sizes.items()} if match else {}
+    specs.update(overrides)
+    spec = {"schema_version": "website_object_spec.v1", "target_id": "cup-1", "status": status,
+            "identity": {"basis": basis}, "specs": {k: v for k, v in specs.items() if v is not None},
+            "category_specs": {f"overall_{axis}": _length(value, "category_standard", GUIDE_URL)
+                               for axis, value in (category or {}).items()},
+            "product": ({"brand": "ExampleBrand", "model": "EX-24", "model_family": None, "match": match}
+                        if match else None)}
+    spec["digest"] = canonical_digest(spec, digest_field="digest")
+    return spec
+
+
+def _prepared(tmp_path, root, spec=None, monkeypatch=None, ground_gap=None):
+    (tmp_path / root).mkdir()
+    args = _arguments(tmp_path / root)
+    args.update(_dishwasher_inputs(tmp_path / root, object_spec=spec))
+    args["removal_manifest"] = DISHWASHER_REMOVAL
+    if ground_gap is not None:
+        _floor_unseen_below_the_body(monkeypatch, args, ground_gap)
+    return args, compile_website_scene_preparation(**args)
+
+
+def _floor_unseen_below_the_body(monkeypatch, args, gap):
+    """No collider surface under the body; the registered floor lies ``gap`` runtime units below it."""
+    from blueprint_pipeline import website_task_preparation as prep
+    real = prep.register_source_to_runtime
+
+    def register(**kwargs):
+        value = real(**{**kwargs, "anchor": None})
+        return {**value, "ground_plane": {"checked": True, "observed_floor_offset_m": 0.0}}
+
+    def ground(mesh, lower, upper, *, up, meters_per_unit, floor_height, up_sign=1):
+        return {"top_runtime_units": float(lower[up]) - gap, "aabb_min": list(lower), "aabb_max": list(upper),
+                "face_indices": [], "extended_runtime_units": gap, "basis": "registered_observed_floor_plane",
+                "physical_measurement": False}
+    monkeypatch.setattr(prep, "register_source_to_runtime", register)
+    monkeypatch.setattr(prep, "support_under", lambda *args, **kwargs: None)
+    monkeypatch.setattr(prep, "ground_on_observed_floor", ground)
+    args["base_scene"] = {**args["base_scene"], "anchor": {"frame_id": "frame-0", "kind": "test"}}
+
+
+def _envelope(preparation):
+    envelope = preparation["authoring_inputs"]["metric_envelope"]
+    return np.asarray(envelope["minimum_xyz_m"]), np.asarray(envelope["maximum_xyz_m"])
+
+
+def _build(configuration, tmp_path):
+    envelope = {"run_id": "join-run", "envelope_digest": ""}
+    envelope["envelope_digest"] = canonical_digest(envelope, digest_field="envelope_digest")
+    handoff = next((tmp_path / "observations").glob("*/observations.json"))
+    _, references = validate_observation_handoff(handoff, configuration=configuration)
+    source = driver._file_record(next(handoff.parent.glob("source_object_candidate.usda")))
+    return driver.build_articulated_authoring_requests(
+        {"run_id": "join-run", "source_commit": "a" * 40, "construction_envelope": envelope,
+         "configuration": configuration, "configuration_sha256": canonical_digest(configuration)},
+        source, references, {})
+
+
+def test_exact_model_published_size_sizes_the_whole_envelope_about_the_observed_bottom_front(tmp_path, monkeypatch):
+    _, estimated = _prepared(tmp_path, "estimated")
+    spec = _sized_spec(category=CATEGORY)  # The exact model outranks its category's standard.
+    args, published = _prepared(tmp_path, "published", spec)
+    assert published["status"] == "intake_ready", published["blockers"]
+    configuration = published["authoring_inputs"]["configuration"]
+    assert configuration["dimension_authority"] == published["authoring_inputs"]["dimension_authority"] \
+        == "published_product_specification"
+    assert estimated["authoring_inputs"]["configuration"]["dimension_authority"] == "estimated"
+    extent = configuration["body_extent_m"]
+    assert [extent[axis] for axis in PUBLISHED] == pytest.approx(list(PUBLISHED.values()), abs=1e-9)
+    assert extent["basis"] == "published_product_specification" and extent["unit"] == "published_meters"
+    assert configuration["body_depth"]["value_m"] == pytest.approx(PUBLISHED["depth"], abs=1e-9)
+    assert configuration["body_depth"]["basis"] == "published_product_specification"
+    assert configuration["body_depth"]["frame_ids"] == ["frame-1"]  # The observed interior is still shown.
+    # Front faces -Y: the closed front, the bottom and the front's centre line stay where observed;
+    # depth grows back, height up, width evenly.
+    (low_e, high_e), (low_p, high_p) = _envelope(estimated), _envelope(published)
+    assert low_p[1] == pytest.approx(low_e[1], abs=1e-6) and low_p[2] == pytest.approx(low_e[2], abs=1e-6)
+    assert (low_p[0] + high_p[0]) / 2 == pytest.approx((low_e[0] + high_e[0]) / 2, abs=1e-6)
+    assert list(high_p - low_p) == pytest.approx([PUBLISHED["width"], PUBLISHED["depth"], PUBLISHED["height"]],
+                                                 abs=1e-6)
+    subject = published["subject"]
+    assert subject["aabb_min_xyz"] == pytest.approx(list(low_p)) and subject["aabb_max_xyz"] == pytest.approx(list(high_p))
+    assert published["physics"]["dimensions_m"] == pytest.approx(list(high_p - low_p))
+    # Masses follow the published body; the record says what sized it and what it replaced.
+    assert configuration["required_output"]["mass_kg_bounds"][1] > \
+        estimated["authoring_inputs"]["configuration"]["required_output"]["mass_kg_bounds"][1]
+    sizing = configuration["dimension_sizing"]
+    assert sizing["dimension_match"] == "exact_model" and sizing["object_spec_digest"] == spec["digest"]
+    assert sizing["source_urls"] == [SPEC_URL] and sizing["published_m"] == PUBLISHED
+    assert sizing["axes"]["depth"]["quotes"] == [{"source_url": SPEC_URL, "quote": "0.66 m"}]
+    assert sizing["video_estimate_m"] == pytest.approx({"depth": 0.6, "width": 0.48, "height": 0.52}, abs=1e-4)
+    assert sizing["published_check"]["blockers"] == [] and sizing["video_estimate_check"]["blockers"] == []
+    assert sizing["anchor"] == "observed_closed_front_bottom_centre" and sizing["physical_measurement_proven"] is False
+    assert "never measurements of this unit" in sizing["claim"]
+    # The builder plans the published body and the driver admits the authority, and nothing else.
+    plan = plan_articulated_assembly(configuration)
+    assert plan["assembly_dimensions_m"] == {"depth_x": 0.66, "width_y": 0.6, "height_z": 0.62,
+                                             "authority": "body_depth_published_product_specification"}
+    configuration, _, _, requests = _briefs(tmp_path, monkeypatch, args, published)
+    assert set(requests) == {"body", "door", "upper_rack", "lower_rack"}
+    assert "published_product_specification figures" in requests["body"].construction_constraints
+    for authority in ("manufacturer", "capture_measurement", "owner_specification", None):
+        with pytest.raises(driver.AstraStageError, match="astra_website_dimensions_must_remain_estimated"):
+            _build({**configuration, "dimension_authority": authority}, tmp_path)
+
+
+@pytest.mark.parametrize("spec,authority,match,expected", [
+    (_sized_spec(match="model_family"), "published_product_specification", "model_family", PUBLISHED),
+    # Brand known, no model or family figure verified: the brand's category figures.
+    (_sized_spec(match="brand_category", basis="label_read", category=CATEGORY),
+     "published_product_specification", "brand_category", PUBLISHED),
+    # Nothing known of the make: the verified standard size of its category.
+    (_sized_spec(match=None, basis="unknown", category=CATEGORY), "published_category_standard",
+     "category_standard", CATEGORY),
+    # The exact model is silent on the depth: the whole body comes from the category standard.
+    (_sized_spec(overall_depth=None, category=CATEGORY), "published_category_standard", "category_standard",
+     CATEGORY),
+    # Sources disagree within tolerance: the midpoint, the range kept.
+    (_sized_spec(overall_height=_length([0.61, 0.63], "exact_model", SPEC_URL)), "published_product_specification",
+     "exact_model", PUBLISHED),
+], ids=["model_family", "brand_category", "category_standard", "exact_silent_axis_falls_to_category", "range"])
+def test_the_best_verified_published_level_sizes_the_envelope(tmp_path, spec, authority, match, expected):
+    _, prepared = _prepared(tmp_path, "sized", spec)
+    assert prepared["status"] == "intake_ready", prepared["blockers"]
+    configuration = prepared["authoring_inputs"]["configuration"]
+    assert configuration["dimension_authority"] == prepared["authoring_inputs"]["dimension_authority"] == authority
+    assert configuration["dimension_sizing"]["dimension_match"] == match
+    assert configuration["body_depth"]["basis"] == configuration["body_extent_m"]["basis"] == authority
+    low, high = _envelope(prepared)
+    assert list(high - low) == pytest.approx([expected["width"], expected["depth"], expected["height"]], abs=1e-6)
+    assert plan_articulated_assembly(configuration)["assembly_dimensions_m"]["authority"] == "body_depth_" + authority
+
+
+@pytest.mark.parametrize("spec", [
+    _sized_spec(overall_height=_length([0.4, 0.9], "exact_model", SPEC_URL)),  # Too wide to size within tolerance.
+    _sized_spec(match="comparable_class", basis="unknown"),
+    _sized_spec(overall_depth=None),  # An axis the record is silent on, and no category standard.
+    _sized_spec(status="held", category=CATEGORY),
+    _sized_spec(match=None, basis="unknown", category={"width": 0.6, "height": 0.86}),
+], ids=["wide_range", "comparable", "silent_axis", "held", "partial_category"])
+def test_nothing_that_gives_every_axis_keeps_the_estimate(tmp_path, spec):
+    _, estimated = _prepared(tmp_path, "estimated")
+    _, kept = _prepared(tmp_path, "kept", spec)
+    configuration = kept["authoring_inputs"]["configuration"]
+    assert configuration["dimension_authority"] == kept["authoring_inputs"]["dimension_authority"] == "estimated"
+    assert "dimension_sizing" not in configuration
+    assert configuration["body_extent_m"] == estimated["authoring_inputs"]["configuration"]["body_extent_m"]
+    assert kept["authoring_inputs"]["metric_envelope"] == estimated["authoring_inputs"]["metric_envelope"]
+    assert "website_object_spec_dimension_conflict" not in kept["blockers"]
+
+
+def test_exact_model_figure_that_contradicts_a_lower_precedence_build_holds_it(tmp_path):
+    # The exact model publishes only a width, so the category standard sizes the body; the exact width
+    # disagrees with it by more than the tolerance, which holds the build, never silently resolved.
+    wide = {"overall_width": _length(0.9, "exact_model", SPEC_URL), "overall_depth": None, "overall_height": None}
+    _, held = _prepared(tmp_path, "held", _sized_spec(category=CATEGORY, **wide))
+    assert held["status"] == "needs_input" and "website_object_spec_dimension_conflict" in held["blockers"]
+    sizing = held["authoring_inputs"]["configuration"]["dimension_sizing"]
+    assert sizing["dimension_match"] == "category_standard"
+    assert sizing["published_check"]["comparisons"]["width"]["within_tolerance"] is False
+    agreeing = {**wide, "overall_width": _length(0.6, "exact_model", SPEC_URL)}
+    _, built = _prepared(tmp_path, "agreeing", _sized_spec(category=CATEGORY, **agreeing))
+    assert built["status"] == "intake_ready", built["blockers"]
+
+
+def test_exact_model_size_outranks_a_video_estimate_it_contradicts(tmp_path):
+    # Owner precedence: the verified exact model sizes the body; the far-off estimate is recorded, advisory.
+    _, sized = _prepared(tmp_path, "sized", _sized_spec(sizes={**PUBLISHED, "depth": 1.0}))
+    assert sized["status"] == "intake_ready", sized["blockers"]
+    sizing = sized["authoring_inputs"]["configuration"]["dimension_sizing"]
+    assert sizing["video_estimate_check"]["comparisons"]["depth"]["within_tolerance"] is False
+    assert sizing["video_estimate_check"]["blockers"] == [] and sizing["published_m"]["depth"] == 1.0
+
+
+def test_published_height_moves_a_floor_standing_body_down_instead_of_stretching_it(tmp_path, monkeypatch):
+    gap = 0.05  # runtime units: 0.1 m at 2 m per unit.
+    _, estimated = _prepared(tmp_path, "estimated", monkeypatch=monkeypatch, ground_gap=gap)
+    _, published = _prepared(tmp_path, "published", _sized_spec(), monkeypatch=monkeypatch, ground_gap=gap)
+    assert estimated["status"] == published["status"] == "intake_ready", published["blockers"]
+    (low_e, high_e), (low_p, high_p) = _envelope(estimated), _envelope(published)
+    # The estimate is stretched down to the floor; the published body stands on it at its published height.
+    extent_e = estimated["authoring_inputs"]["configuration"]["body_extent_m"]
+    assert extent_e["height"] == pytest.approx(0.52 + 0.1, abs=1e-6) and high_e[2] - low_e[2] == pytest.approx(0.62)
+    assert low_p[2] == pytest.approx(low_e[2], abs=1e-6)
+    assert high_p[2] - low_p[2] == pytest.approx(PUBLISHED["height"], abs=1e-6)
+    configuration = published["authoring_inputs"]["configuration"]
+    assert configuration["body_extent_m"]["height"] == pytest.approx(PUBLISHED["height"], abs=1e-9)
+    assert configuration["body_extent_m"]["grounding"]["moved_down_to_observed_floor_m"] == pytest.approx(0.1)
+    assert configuration["dimension_sizing"]["video_estimate_m"]["height"] == pytest.approx(0.62, abs=1e-4)
+    assert plan_articulated_assembly(configuration)["assembly_dimensions_m"]["height_z"] == PUBLISHED["height"]

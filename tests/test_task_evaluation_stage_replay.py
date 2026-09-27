@@ -167,6 +167,33 @@ def test_replay_reports_completion_and_the_outcome(tmp_path: Path, monkeypatch) 
     assert report["fired_predicates"] == []
 
 
+@pytest.mark.parametrize("stage_status,report_status,outcome", [
+    ("completed", "completed", "completed"),
+    # A refused replay stopped before its stage's work; it must not shape admission.
+    ("failed", "refused", "blocked"),
+    ("waiting_for_external_result", "waiting", "blocked"),
+])
+def test_replay_measures_the_scratch_root_it_creates_after_admission(
+    tmp_path: Path, monkeypatch, stage_status, report_status, outcome
+) -> None:
+    root, _, _ = _queue(tmp_path, state="completed")
+    _fake_validation(monkeypatch)
+    monkeypatch.setattr(stages, "execute_stage", lambda job: {"status": stage_status, "artifacts": {}})
+    report = replay.replay_child(
+        queue_root=root, child_id=CHILD, parent_queue_root=tmp_path / "parent", input_root=tmp_path / "inputs",
+        replay_root=tmp_path / "replays", approved_roots=(tmp_path,),
+    )
+
+    assert report["status"] == report_status
+    assert report["disk_reservation"]["workload"] == "stage_replay"
+    history = tmp_path / "disk-reservations" / "history" / "stage_replay.jsonl"
+    [sample] = [json.loads(line) for line in history.read_text().splitlines()]
+    # The scratch root is made after admission and bound then, so the sample is
+    # what this replay wrote into it (its report at least), not the shared root.
+    assert sample["workload"] == "stage_replay" and sample["outcome"] == outcome
+    assert sample["observed_bytes"] > 0
+
+
 def test_calibration_replay_passes_validated_request_to_cpu_only_continuation(tmp_path, monkeypatch):
     from blueprint_pipeline import source_calibration_finalization_reuse as continuation
     root, job_path, job = _queue(tmp_path)

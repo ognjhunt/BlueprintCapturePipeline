@@ -35,6 +35,7 @@ import errno
 import fcntl
 import hashlib
 import json
+import math
 import os
 import re
 import signal
@@ -70,9 +71,14 @@ from blueprint_pipeline.task_evaluation_configured_controls_autostart import (  
     validate_configured_controls_autostart_intent,
 )
 from blueprint_pipeline.control_plane_disk_budget import (  # noqa: E402
+    DEFAULT_RESERVATION_ROOT,
+    FOOTPRINT_HISTORY_DIRNAME,
     ControlPlaneDiskBudgetError,
+    DiskReservation,
+    measured_footprint,
     reserve_control_plane_disk,
 )
+from blueprint_pipeline.control_plane_disk_usage import TreeUsage, tree_usage  # noqa: E402
 from blueprint_pipeline.control_plane_storage_pins import (  # noqa: E402
     DEFAULT_PINS_ROOT,
 )
@@ -136,6 +142,7 @@ DEFAULT_PAID_LAUNCH_LOCKS = (
     "/var/lib/blueprint/pipeline-control-plane/provider-locks/vast_paid_launch.lock",
 )
 DEFAULT_RESTART_UNITS = ("blueprint-pipeline-intake.service",)
+DEFAULT_DOOR_HOLDS_DIR = "/var/lib/blueprint-operator-door/requests/holds"
 DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     "blueprint-pubsub-handoff-listener.service",
     "blueprint-pubsub-handoff-listener.timer",
@@ -807,8 +814,10 @@ def _install_disk_reservation_runtime_prerequisites(
     ownership, leaving the runtime unable to enter the directory or open the
     lock after an otherwise successful deploy.
 
-    Reconcile both inodes before any service restart and verify their installed
-    ownership and modes instead of trusting the privileged mutations.
+    Reconcile these inodes before any service restart and verify their installed
+    ownership and modes instead of trusting the privileged mutations.  The
+    footprint ``history`` directory gets the same treatment: root appends the
+    deploy's samples and the runtime account appends every worker's.
     """
 
     account_ids = _service_account_ids(account)
@@ -819,28 +828,41 @@ def _install_disk_reservation_runtime_prerequisites(
     _owner_uid, owner_gid = account_ids
     root = Path(reservation_root).expanduser()
     lock = root / ".lock"
+    history = root / FOOTPRINT_HISTORY_DIRNAME
     if not root.is_absolute():
         raise ControlPlaneDeployError(
             "deploy_disk_reservation_directory_not_absolute"
         )
-    if root.is_symlink() or lock.is_symlink():
-        raise ControlPlaneDeployError(
-            f"deploy_disk_reservation_runtime_symlink:{root}"
-        )
+    # A refusal is a typed code: it names the ledger item (directory, lock or
+    # history), never the host path it lives at.
+    items = (("directory", root, 0o2770), ("lock", lock, 0o660), ("history", history, 0o2770))
+    for item, path, _mode in items:
+        if path.is_symlink():
+            raise ControlPlaneDeployError(
+                f"deploy_disk_reservation_runtime_symlink:{item}"
+            )
 
     repaired: list[str] = []
+    item = "directory"
     try:
         root.mkdir(parents=True, exist_ok=True, mode=0o2770)
         if root.is_symlink() or not root.is_dir():
             raise ControlPlaneDeployError(
-                f"deploy_disk_reservation_directory_invalid:{root}"
+                "deploy_disk_reservation_directory_invalid"
             )
+        item = "lock"
         lock.touch(mode=0o660, exist_ok=True)
         if lock.is_symlink() or not lock.is_file():
             raise ControlPlaneDeployError(
-                f"deploy_disk_reservation_lock_invalid:{lock}"
+                "deploy_disk_reservation_lock_invalid"
             )
-        for path, wanted_mode in ((root, 0o2770), (lock, 0o660)):
+        item = "history"
+        history.mkdir(exist_ok=True, mode=0o2770)
+        if history.is_symlink() or not history.is_dir():
+            raise ControlPlaneDeployError(
+                "deploy_disk_reservation_history_directory_invalid"
+            )
+        for item, path, wanted_mode in items:
             metadata = stat_reader(path)
             changed = False
             if metadata.st_uid != root_uid or metadata.st_gid != owner_gid:
@@ -856,14 +878,11 @@ def _install_disk_reservation_runtime_prerequisites(
         raise
     except OSError as exc:
         raise ControlPlaneDeployError(
-            f"deploy_disk_reservation_runtime_install_failed:{root}"
+            f"deploy_disk_reservation_runtime_install_failed:{item}"
         ) from exc
 
     installed: list[dict[str, Any]] = []
-    for path, wanted_mode, kind in (
-        (root, 0o2770, "directory"),
-        (lock, 0o660, "lock"),
-    ):
+    for item, path, wanted_mode in items:
         metadata = stat_reader(path)
         if (
             metadata.st_uid != root_uid
@@ -871,8 +890,9 @@ def _install_disk_reservation_runtime_prerequisites(
             or stat.S_IMODE(metadata.st_mode) != wanted_mode
         ):
             raise ControlPlaneDeployError(
-                f"deploy_disk_reservation_runtime_readback_mismatch:{path}"
+                f"deploy_disk_reservation_runtime_readback_mismatch:{item}"
             )
+        kind = "history_directory" if item == "history" else item
         installed.append(
             {
                 "kind": kind,
@@ -2051,6 +2071,109 @@ def _git(repo: Path, *arguments: str) -> tuple[int, str]:
     return result.returncode, result.stdout.strip()
 
 
+RELEASE_ESTIMATE_HEADROOM = 1.25
+RELEASE_ESTIMATE_BLOCK_BYTES = 4096
+RELEASE_ESTIMATE_OVERHEAD_BYTES = 256 * 1024**2
+
+
+def _release_footprint_estimate(
+    source: Path,
+    commit: str,
+    *,
+    reservation_root: str | Path = DEFAULT_RESERVATION_ROOT,
+) -> dict[str, Any]:
+    """What staging ``commit`` costs on disk, read from its git tree.
+
+    The blob bytes plus a quarter for block rounding, one block per file, and
+    256 MiB for the checkout's index and the runtime trees provisioned beside
+    it.  When the tree cannot be listed, the deploy role's measured footprint
+    (or its declared ceiling while the history is short) stands in.
+    """
+
+    code, listing = _git(Path(source), "ls-tree", "-r", "-l", "--full-tree", commit)
+    tree_bytes = 0
+    file_count = 0
+    readable = code == 0
+    if readable:
+        for line in listing.splitlines():
+            # "<mode> <type> <object> <size>\t<path>"; a submodule's size is "-".
+            fields = line.split("\t", 1)[0].split()
+            if len(fields) != 4 or not (fields[3] == "-" or fields[3].isdigit()):
+                readable = False
+                break
+            file_count += 1
+            tree_bytes += 0 if fields[3] == "-" else int(fields[3])
+    if not readable:
+        measured = measured_footprint(
+            "control_plane_deploy", reservation_root=reservation_root
+        )
+        return {
+            "bytes": int(measured["bytes"]),
+            "basis": measured["basis"],
+            "sample_count": measured["sample_count"],
+            "tree_bytes": None,
+            "file_count": None,
+        }
+    return {
+        "bytes": math.ceil(tree_bytes * RELEASE_ESTIMATE_HEADROOM)
+        + RELEASE_ESTIMATE_BLOCK_BYTES * file_count
+        + RELEASE_ESTIMATE_OVERHEAD_BYTES,
+        "basis": "git_tree_estimate",
+        "tree_bytes": tree_bytes,
+        "file_count": file_count,
+    }
+
+
+def _release_runtime_trees(runtime_root: Path, commit: str) -> set[Path]:
+    """The per-release runtime trees, ``<runtime_root>/<component>/<commit>``, present now."""
+
+    try:
+        return {
+            path
+            for path in runtime_root.glob(f"*/{commit}")
+            if path.is_dir() and not path.is_symlink()
+        }
+    except OSError:
+        return set()
+
+
+def _created_release_usage(
+    *,
+    created_release_checkout: bool,
+    release_path: str | Path,
+    runtime_root: Path,
+    commit: str,
+    runtime_trees_before: set[Path],
+) -> TreeUsage | None:
+    """Allocated bytes and scan completeness, or None when nothing was created.
+
+    A redeploy that reuses an existing checkout and runtime trees costs nothing
+    to stage; recording it as a zero-byte sample would only drag the role's
+    measured footprint down, so it records no sample at all.
+    """
+
+    created_trees = _release_runtime_trees(runtime_root, commit) - runtime_trees_before
+    if not created_release_checkout and not created_trees:
+        return None
+    usages = ([tree_usage(release_path)] if created_release_checkout else []) + [
+        tree_usage(path) for path in sorted(created_trees)
+    ]
+    return TreeUsage(
+        allocated_bytes=sum(usage.allocated_bytes for usage in usages),
+        unreadable=sum(usage.unreadable for usage in usages),
+    )
+
+
+def _observe_created_release_usage(
+    reservation: DiskReservation, usage: TreeUsage | None,
+) -> None:
+    if usage is None:
+        return
+    reservation.observe(usage.allocated_bytes)
+    if usage.unreadable:
+        reservation.measurement_incomplete = True
+
+
 def _surface_commit(path: Path, *, name: str) -> str:
     """What commit does this surface *say* it is? Refuse if it cannot say."""
 
@@ -2249,6 +2372,73 @@ def _quiesce_active_path_units(
     return stopped
 
 
+def _active_door_holds(root: str | Path, *, now: float | None = None) -> tuple[dict[str, dict[str, Any]], str | None]:
+    """Read the root-owned hold records without trusting symlinks or malformed JSON."""
+
+    directory = Path(root)
+    if directory.is_symlink():
+        return {}, "door_holds_unreadable"
+    if not directory.exists():
+        return {}, None
+    if not directory.is_dir():
+        return {}, "door_holds_unreadable"
+    moment = time.time() if now is None else now
+    found: dict[str, dict[str, Any]] = {}
+    try:
+        paths = list(directory.glob("*.json"))
+        if len(paths) > 1024:
+            return {}, "door_holds_unreadable"
+        for path in paths:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            try:
+                info = os.fstat(fd)
+                if not stat.S_ISREG(info.st_mode) or info.st_size > 16 * 1024:
+                    raise ValueError("hold_record_unsafe")
+                raw = os.read(fd, 16 * 1024 + 1)
+            finally:
+                os.close(fd)
+            if len(raw) > 16 * 1024:
+                raise ValueError("hold_record_unsafe")
+            record = json.loads(raw)
+            unit = path.name.removesuffix(".json")
+            if (not isinstance(record, dict) or record.get("schema") != "blueprint_operator_door_hold.v1"
+                    or record.get("unit") != unit or not re.fullmatch(r"blueprint-[A-Za-z0-9_.@-]+\.(timer|path)", unit)
+                    or not isinstance(record.get("owner"), str) or not isinstance(record.get("reason"), str)
+                    or not isinstance(record.get("expires_at"), str)
+                    or type(record.get("expires_at_epoch")) is not int):
+                raise ValueError("hold_record_invalid")
+            if record.get("status") == "active" and record["expires_at_epoch"] > moment:
+                found[unit] = record
+    except (OSError, ValueError, UnicodeDecodeError):
+        return {}, "door_holds_unreadable"
+    return found, None
+
+
+@contextlib.contextmanager
+def _locked_door_holds(root: str | Path):
+    """Keep a matching expiry or new hold from racing the deploy's unit restore."""
+
+    directory = Path(root)
+    if directory.is_symlink() or not directory.exists() or not directory.is_dir():
+        yield _active_door_holds(directory)
+        return
+    fd: int | None = None
+    try:
+        fd = os.open(directory / ".lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(errno.EINVAL, "unsafe hold lock")
+        fcntl.flock(fd, fcntl.LOCK_EX)
+    except OSError:
+        if fd is not None:
+            os.close(fd)
+        yield {}, "door_holds_unreadable"
+        return
+    try:
+        yield _active_door_holds(directory)
+    finally:
+        os.close(fd)
+
+
 def _restore_installed_path_units(
     installed_units: Sequence[Mapping[str, Any]],
     *,
@@ -2258,6 +2448,7 @@ def _restore_installed_path_units(
     always_arm_authority_gated_units: Sequence[str] = (),
     always_arm_timer_units: Sequence[str] = (),
     preserve_configured_controls_state: bool = False,
+    held_units: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Restore path/timer intent without widening arbitrary launch authority.
 
@@ -2276,6 +2467,23 @@ def _restore_installed_path_units(
         if not unit.endswith((".path", ".timer")):
             continue
         prior = dict(before.get(unit) or {"enabled": "disabled", "state": "inactive"})
+        hold = (held_units or {}).get(unit)
+        if hold is not None:
+            # Keep the existing boot policy; do not enable, restart or start a
+            # trigger whose owner has explicitly held it through this deploy.
+            result = subprocess.run(  # nosec B603 B607 - fixed systemctl argv
+                ["systemctl", "stop", unit], capture_output=True, text=True, check=False,
+            )
+            after = _systemd_unit_state(unit)
+            if result.returncode != 0 and after["state"] != "inactive":
+                raise ControlPlaneDeployError(f"deploy_held_unit_stop_failed:{unit}")
+            if after["state"] != "inactive":
+                raise ControlPlaneDeployError(f"deploy_held_unit_active_state_mismatch:{unit}:{after['state']}")
+            receipts.append({"unit": unit, "before": prior, "requested_intent": "hold", "after": after,
+                             "operator_freeze_preserved": True, "held": True,
+                             "owner": hold["owner"], "reason": hold["reason"],
+                             "expires_at": hold["expires_at"]})
+            continue
         arm_no_spend = unit in always_arm_units
         arm_authority_gated = unit in always_arm_authority_gated_units
         arm_progression = unit in always_arm_timer_units and not (
@@ -2364,6 +2572,8 @@ def _restore_installed_path_units(
 @contextlib.contextmanager
 def _restore_path_unit_states_on_deploy_failure(
     installed_units: Sequence[Mapping[str, Any]],
+    *,
+    door_holds_dir: str | Path = DEFAULT_DOOR_HOLDS_DIR,
 ):
     """Quiesce watchers and restore their exact prior state on any failure.
 
@@ -2382,12 +2592,14 @@ def _restore_path_unit_states_on_deploy_failure(
         yield before, quiesced
     except BaseException as deployment_error:
         try:
-            _restore_installed_path_units(
-                installed_units,
-                before=before,
-                arm_path_units=False,
-                always_arm_units=(),
-            )
+            with _locked_door_holds(door_holds_dir) as (held_units, _warning):
+                _restore_installed_path_units(
+                    installed_units,
+                    before=before,
+                    arm_path_units=False,
+                    always_arm_units=(),
+                    held_units=held_units,
+                )
         except Exception as restore_error:
             raise ControlPlaneDeployError(
                 "deploy_failed_path_unit_restore_failed:"
@@ -2847,6 +3059,7 @@ def deploy_control_plane_commit(
     release_protection_sources: ProtectionSources = DEFAULT_RELEASE_PROTECTION_SOURCES,
     release_retirement_keep_last: int = DEFAULT_RELEASE_RETIREMENT_KEEP_LAST,
     break_glass_notes_root: str | Path | None = None,
+    door_holds_dir: str | Path = DEFAULT_DOOR_HOLDS_DIR,
 ) -> dict[str, Any]:
     """Move the mutable clone and the release link, then verify both.
 
@@ -2962,15 +3175,23 @@ def deploy_control_plane_commit(
     startup_sweep = _sweep_retiring_trees(retiring_roots)
     disk_reservation = None
     disk_reservation_runtime = None
+    disk_reservation_estimate = None
     if disk_reservation_root is not None:
         disk_reservation_runtime = _install_disk_reservation_runtime_prerequisites(
             disk_reservation_root
         )
         try:
+            # Reserve what this release costs to stage, not a flat 2 GiB: on
+            # 2026-09-26 the flat figure refused a deploy the disk could hold.
+            disk_reservation_estimate = _release_footprint_estimate(
+                source, source_commit, reservation_root=disk_reservation_root
+            )
             disk_reservation = reserve_control_plane_disk(
                 "control_plane_deploy",
                 target_root=releases,
+                expected_bytes=disk_reservation_estimate["bytes"],
                 reservation_root=disk_reservation_root,
+                workload="control_plane_release",
             )
         except ControlPlaneDiskBudgetError as exc:
             raise ControlPlaneDeployError(
@@ -3001,7 +3222,9 @@ def deploy_control_plane_commit(
     with (
         disk_reservation or contextlib.nullcontext(),
         _holding_paid_launch_gate(paid_launch_locks) as paid_runs_in_flight,
-        _restore_path_unit_states_on_deploy_failure(automation_unit_names) as (
+        _restore_path_unit_states_on_deploy_failure(
+            automation_unit_names, door_holds_dir=door_holds_dir,
+        ) as (
             automation_unit_states_before,
             quiesced_automation_units,
         ),
@@ -3024,6 +3247,12 @@ def deploy_control_plane_commit(
             allow_unmerged_remote_commit=canary,
         )
         _mark_stage("release_staged")
+        # Record what this deploy really stages (the release checkout it created
+        # and the runtime trees it provisions) as the deploy role's footprint.
+        runtime_trees_root = Path(scene_configuration_runtime_root).expanduser()
+        runtime_trees_before: set[Path] = set()
+        if disk_reservation is not None:
+            runtime_trees_before = _release_runtime_trees(runtime_trees_root, source_commit)
         # Every path the new units' sandboxes name must exist before the
         # release link moves, or the first worker to start after the switch
         # dies on mount setup and the deploy still reports success.
@@ -3074,6 +3303,15 @@ def deploy_control_plane_commit(
         else:
             scene_preparation_installation = {"status": "not_configured", "bootstrap_path": str(bootstrap),
                                               "provider_mutation_performed": False}
+        if disk_reservation is not None:
+            created_usage = _created_release_usage(
+                created_release_checkout=bool(staged_release.get("created_release_checkout")),
+                release_path=staged_release["release_path"],
+                runtime_root=runtime_trees_root,
+                commit=source_commit,
+                runtime_trees_before=runtime_trees_before,
+            )
+            _observe_created_release_usage(disk_reservation, created_usage)
         _mark_stage("runtime_trees_provisioned")
         agent_pre_activation_drain = _drain_agent_execution_before_release_switch(
             expected_commit=source_commit
@@ -3196,17 +3434,19 @@ def deploy_control_plane_commit(
         # Last inside the held locks: the queue watcher only starts watching
         # once the restarted intake has proven the new commit, and no launch
         # can slip in between the watcher restart and the lock release.
-        automation_unit_state_receipts = _restore_installed_path_units(
-            installed_systemd_units,
-            before=automation_unit_states_before,
-            arm_path_units=arm_path_units,
-            always_arm_units=DEFAULT_ALWAYS_ARM_PATH_UNITS,
-            always_arm_authority_gated_units=(
-                DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS
-            ),
-            always_arm_timer_units=DEFAULT_ALWAYS_ARM_TIMER_UNITS,
-            preserve_configured_controls_state=preserve_configured_controls_state,
-        )
+        with _locked_door_holds(door_holds_dir) as (held_units, door_holds_warning):
+            automation_unit_state_receipts = _restore_installed_path_units(
+                installed_systemd_units,
+                before=automation_unit_states_before,
+                arm_path_units=arm_path_units,
+                always_arm_units=DEFAULT_ALWAYS_ARM_PATH_UNITS,
+                always_arm_authority_gated_units=(
+                    DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS
+                ),
+                always_arm_timer_units=DEFAULT_ALWAYS_ARM_TIMER_UNITS,
+                preserve_configured_controls_state=preserve_configured_controls_state,
+                held_units=held_units,
+            )
         # Last, with the new release proven live: retire the trees this deploy
         # superseded, so per-commit growth is bounded by keep_last instead of
         # by the number of deploys ever made.
@@ -3245,6 +3485,7 @@ def deploy_control_plane_commit(
         "stage_timings_seconds": stage_timings,
         "source_commit": commit,
         "disk_reservation": disk_reservation_receipt,
+        "disk_reservation_estimate": disk_reservation_estimate,
         "disk_reservation_runtime": disk_reservation_runtime,
         "surfaces": [
             {"name": name, "path": str(path), "head": observed[name]}
@@ -3330,6 +3571,8 @@ def deploy_control_plane_commit(
             "before."
         ),
     }
+    if door_holds_warning:
+        receipt.setdefault("alerts", []).append(door_holds_warning)
     # Last, once every surface has moved: host changes made outside the door
     # since the previous deploy are reported here, and never fail this one.
     if break_glass_notes_root is not None:

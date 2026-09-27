@@ -103,6 +103,44 @@ def test_capsule_url_is_private_and_redacted():
     assert url in _secret_values(env)
 
 
+def test_pretraining_reservation_measures_its_own_logical_root(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from blueprint_pipeline import control_plane_disk_budget as disk
+    logical = tmp_path / "logical"
+    monkeypatch.setattr(prep, "LOGICAL_ROOT", logical)
+    bundle = tmp_path / "bundle.zip"
+    with zipfile.ZipFile(bundle, "w") as zipped:
+        zipped.writestr("provider_runtime/input.bin", b"i" * 50_000)
+    receipt = {"bundle_path": str(bundle), "bundle_sha256": prep._sha(bundle), "source_commit": "a" * 40}
+    authority = {"authority_digest": "sha256:" + "a" * 64}
+    root = logical / canonical_digest({"bundle": receipt["bundle_sha256"],
+                                       "authority": authority["authority_digest"]})[7:]
+    calls = []
+    real_reserve, real_extract = disk.reserve_control_plane_disk, prep._extract
+
+    def recording(*args, **kwargs):
+        calls.append(kwargs)
+        return real_reserve(*args, **{**kwargs, "reservation_root": tmp_path / "reservations"},
+                            disk_usage=lambda _p: SimpleNamespace(total=100 * disk.GIB, used=0, free=90 * disk.GIB))
+
+    def extract_then_stop(archive, destination):
+        real_extract(archive, destination)
+        raise RuntimeError("stop after the first write")
+
+    monkeypatch.setattr(disk, "reserve_control_plane_disk", recording)
+    monkeypatch.setattr(prep, "_extract", extract_then_stop)
+    with pytest.raises(RuntimeError, match="stop after the first write"):
+        prep.prepare_semantics_before_gpu(bundle_receipt=receipt, authority=authority,
+                                          job_dir=tmp_path / "job", environment={})
+    # Admission reads the shared logical root; the sample measures only this job's tree.
+    assert calls[0]["target_root"] == logical
+    assert calls[0]["workspace"] == root
+    assert calls[0]["workload"] == "semantic_pretraining"
+    history = tmp_path / "reservations" / "history" / "semantic_pretraining.jsonl"
+    [sample] = [json.loads(line) for line in history.read_text().splitlines()]
+    assert sample["outcome"] == "failed" and sample["observed_bytes"] >= 50_000
+
+
 @pytest.mark.parametrize("fault", [None, "archive", "inventory", "binding"])
 def test_provider_restores_exact_prepared_data_without_api(tmp_path, monkeypatch, fault):
     logical = tmp_path / "logical"
