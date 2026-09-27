@@ -1433,14 +1433,12 @@ def _spawn_isolated_cell_process(
 
 def _emit_cell_progress(stage: str, index: int, *, progress_path: Path | None = None) -> None:
     """Expose completed worker milestones to the outer paid-run watchdog."""
-
     if stage not in _CELL_PROGRESS_STAGES or index < 0:
         raise ValueError("policy_canary_cell_progress_invalid")
     marker = f"BLUEPRINT_POLICY_CANARY_PROGRESS:cell={index}:stage={stage}\n"
     if progress_path is not None:
         with progress_path.open("a", encoding="ascii") as stream:
             stream.write(marker)
-            stream.flush()
     raw_fd = os.environ.get(_CELL_PROGRESS_FD_ENV)
     if raw_fd is None:
         return
@@ -1609,13 +1607,8 @@ def _run_selected_cell(
     bound_runtime = cell_runtime if cell_runtime is not None else isaac_cell_runtime()
     output_root.mkdir(parents=True, exist_ok=True)
     result_path = output_root / PROVIDER_RESULT_FILENAME
-
     def report_progress(stage: str) -> None:
-        _emit_cell_progress(
-            stage, selected_cell_index,
-            progress_path=output_root / "cell_progress.log",
-        )
-
+        _emit_cell_progress(stage, selected_cell_index, progress_path=output_root / "cell_progress.log")
     inputs = validate_runtime_input_manifest(
         _read(runtime / "runtime_inputs" / "policy_canary_runtime_inputs.json")
     )
