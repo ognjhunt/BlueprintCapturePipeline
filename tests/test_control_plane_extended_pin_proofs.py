@@ -802,6 +802,64 @@ def test_a_queue_row_naming_a_dependency_keeps_the_extended_candidate(tmp_path) 
     assert set(_states(args).values()) == {"live"}
 
 
+def test_an_unreadable_parked_queue_costs_only_the_extended_candidates(tmp_path, monkeypatch) -> None:
+    """Reading parked rows is the extended proofs' own addition: its failure keeps their candidates and nothing else."""
+
+    args = _args(tmp_path)
+    _sealed_cold_case(tmp_path, args)
+    _prepared(_preparation_queue(tmp_path, args), "prep-stale")
+    _pin(args, "preparation", "prep-stale", age=LAPSE + DAY)
+
+    def unreadable(_queue_roots):
+        raise PermissionError("parked rows cannot be listed")
+
+    monkeypatch.setattr(terminal_pins, "_parked_queue_text", unreadable)
+
+    for enabled in (False, True):
+        result = reconcile_terminal_cache_pins(**args, apply=True, extended_proofs_enabled=enabled)
+        assert [row for row in result["kept"] if row["owner_id"] == "prep-stale"] == [
+            {"kind": "preparation", "owner_id": "prep-stale", "reason": "proof_error", "error_type": "PermissionError"}]
+    assert _states(args) == {("preparation", "prep-stale"): "live", ("activation", "cold"): "released"}
+
+
+def test_a_failed_release_costs_only_its_own_pin(tmp_path, monkeypatch) -> None:
+    """An extended release that cannot take the pin lock is kept with its error; the tick and its report go on."""
+
+    from contextlib import contextmanager
+
+    args = _args(tmp_path)
+    _sealed_cold_case(tmp_path, args)
+    _prepared(_preparation_queue(tmp_path, args), "prep-stale")
+    _pin(args, "preparation", "prep-stale", age=LAPSE + DAY)
+
+    @contextmanager
+    def lock_unavailable(_pins_root, *, exclusive):
+        raise ValueError("release_reference_lock_root_unavailable")
+        yield
+
+    monkeypatch.setattr(terminal_pins, "storage_pin_guard", lock_unavailable)
+
+    result = reconcile_terminal_cache_pins(**args, apply=True, extended_proofs_enabled=True)
+
+    assert [row for row in result["kept"] if row["owner_id"] == "prep-stale"] == [
+        {"kind": "preparation", "owner_id": "prep-stale", "proof": result["candidates"][0]["proof"], "enabled": True,
+         "reason": "release_failed", "error_type": "ValueError"}]
+    assert [row["owner_id"] for row in result["released"]] == ["cold"]
+    assert _states(args) == {("preparation", "prep-stale"): "live", ("activation", "cold"): "released"}
+
+
+def test_a_pin_released_with_its_dependent_is_not_reported_as_kept(tmp_path) -> None:
+    """A preparation reads depended_on when it is visited, then goes with the activation that consumed it."""
+
+    args = _args(tmp_path)
+    _archived_case(tmp_path, args)
+
+    result = reconcile_terminal_cache_pins(**args, apply=True)
+
+    assert result["released_count_by_kind"] == {"activation": 1, "compilation": 1, "preparation": 1}
+    assert result["kept"] == [] and result["retained_counts"] == {}
+
+
 def test_prepared_statuses_are_exactly_those_the_activation_worker_writes() -> None:
     """The proof reads the worker's result, so its schema and prepared statuses must stay the worker's own."""
 

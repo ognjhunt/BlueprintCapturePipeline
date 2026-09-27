@@ -497,6 +497,15 @@ def _parked_queue_text(queue_roots):
     return "\n".join(chunks)
 
 
+def _parked_or_error(queue_roots):
+    """``(text, None)``, or ``(None, error type)`` when the parked rows cannot be read."""
+
+    try:
+        return _parked_queue_text(queue_roots), None
+    except Exception as exc:  # noqa: BLE001 - an unreadable parked row keeps the extended candidates, never the tick
+        return None, type(exc).__name__
+
+
 def _live_pins(pins_root, now):
     return {(p["kind"], p["owner_id"]): p for p in load_storage_pins(pins_root, now=lambda: now) if p["status"] == "live"}
 
@@ -553,8 +562,13 @@ def reconcile_terminal_cache_pins(*, pins_root, queue_roots, evidence_roots, now
     for root in evidence_roots:
         classifier(str(root), expected="evidence_cold", code="terminal_cache_pin_evidence_root_invalid")
     pins = _live_pins(pins_root, now)
+    # Parked rows before and after the pending and processing rows, so a row moving
+    # between them either way is seen; only the extended proofs read them.
+    parked_before = _parked_or_error(queue_roots)
     queue_text = _queue_reference_text(queue_roots)
-    live_queue_text = "\n".join((queue_text, _parked_queue_text(queue_roots)))
+    parked_after = _parked_or_error(queue_roots)
+    parked_error = parked_before[1] or parked_after[1]
+    live_queue_text = None if parked_error else "\n".join((parked_before[0], queue_text, parked_after[0]))
     context = {"classifier": classifier, "now": now, "evidence_roots": evidence_roots,
                "hot_window_seconds": hot_window_seconds, "activation_queue_root": activation_queue_root,
                "preparation_queue_root": preparation_queue_root, "running_commit": running_commit}
@@ -574,7 +588,9 @@ def reconcile_terminal_cache_pins(*, pins_root, queue_roots, evidence_roots, now
             reason = _closure_reason(identity, closure, pins, queue_text, reference_checker)
         else:
             proof, reason, error = _derive(pin, pins, context)
-            if proof is not None:
+            if proof is not None and parked_error is not None:
+                reason, error = "proof_error", parked_error
+            elif proof is not None:
                 try:
                     closure = _closure(identity, pins)
                     reason = _closure_reason(identity, closure, pins, live_queue_text, reference_checker)
@@ -602,15 +618,23 @@ def reconcile_terminal_cache_pins(*, pins_root, queue_roots, evidence_roots, now
             continue
         # An extended proof is re-derived under the lock producers hold to publish a pin,
         # reading queue rows before the ledger: the stale-pin proof rests on the ledger,
-        # and a consumer arriving meanwhile shows up in one or the other.
-        with storage_pin_guard(pins_root, exclusive=True):
-            fresh = "\n".join((_queue_reference_text(queue_roots), _parked_queue_text(queue_roots)))
-            if (proof != _derive(pin, _live_pins(pins_root, now), context)[0]
-                    or _referenced(closure, fresh, reference_checker)):
-                kept.append({**candidate, "reason": "reference_changed"})
-                continue
-            released.append(release_storage_pin(pins_root=pins_root, kind=pin["kind"],
-                                                 owner_id=pin["owner_id"], now=lambda: now))
+        # and a consumer arriving meanwhile shows up in one or the other. A failure here
+        # keeps this pin, with its error type, and costs no other.
+        try:
+            with storage_pin_guard(pins_root, exclusive=True):
+                fresh = "\n".join((_parked_queue_text(queue_roots), _queue_reference_text(queue_roots),
+                                   _parked_queue_text(queue_roots)))
+                if (proof != _derive(pin, _live_pins(pins_root, now), context)[0]
+                        or _referenced(closure, fresh, reference_checker)):
+                    kept.append({**candidate, "reason": "reference_changed"})
+                    continue
+                released.append(release_storage_pin(pins_root=pins_root, kind=pin["kind"],
+                                                     owner_id=pin["owner_id"], now=lambda: now))
+        except Exception as exc:  # noqa: BLE001 - one failed release never costs the tick or its report
+            kept.append({**candidate, "reason": "release_failed", "error_type": type(exc).__name__})
+    # A pin a later release took with it (a dependency no live pin needed any more) was released, not kept.
+    released_pins = {(row["kind"], row["owner_id"]) for receipt in released for row in receipt["released"]}
+    kept = [row for row in kept if (row["kind"], row["owner_id"]) not in released_pins]
     by_kind = Counter(row["kind"] for receipt in released for row in receipt["released"])
     return {"schema_version": "control_plane_terminal_cache_pin_reconciliation.v1",
         "status": "applied" if apply else "dry_run", "enabled": bool(extended_proofs_enabled),

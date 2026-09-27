@@ -621,7 +621,7 @@ so each manifest (and its receipt) also records `walked_file_count` and
   `active_reference`, `depended_on`, `reference_changed`, `pin_not_stale`,
   `path_class_invalid`, the run reasons (`registry_unsealed`, `registry_hot`,
   `run_not_sealed`, `run_hot`, `run_without_registry`, `run_pointer_present`,
-  `run_path_unsafe`, `evidence_root_unavailable`) and the activation result
+  `run_path_unsafe`, `evidence_root_unavailable`), the activation result
   reasons (`activation_queue_unconfigured`, `activation_queue_unavailable`,
   `activation_result_missing`, `activation_result_ambiguous`,
   `activation_result_invalid`, `activation_result_not_prepared`,
@@ -630,11 +630,13 @@ so each manifest (and its receipt) also records `walked_file_count` and
   preparation reasons (`preparation_queue_unconfigured`,
   `preparation_queue_unavailable`, `running_commit_unknown`,
   `preparation_envelope_missing`, `preparation_envelope_ambiguous`,
-  `preparation_envelope_invalid`, `preparation_release_current`). A pin
-  a proof could not read is
-  `proof_error` with its `error_type`. The report also counts candidates by
-  proof and released pins by kind, dependencies included. `candidates` and
-  `kept` list at most 200 rows each, with `omitted_candidates_count` and
+  `preparation_envelope_invalid`, `preparation_release_current`). A pin a
+  proof could not read is `proof_error`, and one whose release failed at the
+  mutation edge is `release_failed`, each with its `error_type`; neither costs
+  any other pin. A pin released along with a dependent is in that release
+  receipt, not in `kept`. The report also counts candidates by proof and
+  released pins by kind, dependencies included. `candidates` and `kept` list
+  at most 200 rows each, with `omitted_candidates_count` and
   `omitted_kept_count`; every count covers every pin.
 - Result-artifact offload: a retained run says why in `retained_reason` (`hot`
   or its protection reason). A run whose offload raised records `error_type`,
