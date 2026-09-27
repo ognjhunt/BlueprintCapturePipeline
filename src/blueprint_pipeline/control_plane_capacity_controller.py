@@ -214,9 +214,12 @@ def _reclaim_outlook(
 ) -> tuple[dict[str, Any], list[str], bool]:
     """Use only a fresh applying GC summary for reclaim bytes and page reasons."""
 
-    sources = {name: None for name in (
-        "scene_workspaces", "evidence_offload", "derived_directories", "content_store",
-    )}
+    reclaim_phases = (
+        "derived_directories", "content_store", "scratch_directories",
+        "workspace_bundles", "result_artifact_offload", "evidence_offload",
+        "replay_caches", "scene_workspaces",
+    )
+    sources = dict.fromkeys(reclaim_phases)
     outlook: dict[str, Any] = {
         "observed_at_epoch": None, "next_reclaim_epoch": None,
         "reclaimable_bytes": None, "sources": sources, "volume_growth": volume_growth,
@@ -234,10 +237,14 @@ def _reclaim_outlook(
     opt_in = summary.get("opt_in")
     if not isinstance(phases, Mapping) or not isinstance(opt_in, Mapping):
         return outlook, [], False
-    enabled = [name for name in ("derived_directories", "content_store") if name in phases]
+    enabled = [name for name in reclaim_phases[:4] if name in phases]
     if opt_in.get("evidence_offload") is True:
+        if "result_artifact_offload" in phases:
+            enabled.append("result_artifact_offload")
         if "evidence_offload" in phases:
             enabled.append("evidence_offload")
+    if opt_in.get("replay_cache_retention") is True and "replay_caches" in phases:
+        enabled.append("replay_caches")
     if opt_in.get("scene_workspace_retirement") is True:
         if "scene_workspaces" in phases:
             enabled.append("scene_workspaces")
@@ -247,7 +254,10 @@ def _reclaim_outlook(
     total_reclaimed = 0
     for name in enabled:
         phase = phases.get(name)
-        if not isinstance(phase, Mapping) or phase.get("status") != "applied":
+        if (
+            not isinstance(phase, Mapping)
+            or (name != "result_artifact_offload" and phase.get("status") != "applied")
+        ):
             return outlook, [], False
         candidate = phase.get("candidate_bytes")
         reclaimed = phase.get("removed_or_offloaded_bytes")

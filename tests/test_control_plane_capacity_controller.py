@@ -279,31 +279,27 @@ def test_capacity_eta_is_unknown_for_malformed_outlook(outlook) -> None:
 
 
 def test_critical_capacity_pages_when_gc_reclaims_nothing(tmp_path: Path) -> None:
+    from blueprint_pipeline.control_plane_storage_gc_reasons import build_storage_gc_summary
+
     gc_root = tmp_path / "storage-gc"
     gc_root.mkdir()
     gc_summary = gc_root / "summary.json"
-    gc_summary.write_text(json.dumps({
-        "schema_version": "control_plane_storage_gc_summary.v1",
+    gc_summary.write_text(json.dumps(build_storage_gc_summary({
         "observed_at_epoch": 900.0,
         "status": "applied",
         "opt_in": {"evidence_offload": True, "scene_workspace_retirement": False},
-        "phases": {
-            "derived_directories": {"status": "applied", "candidate_bytes": 0,
-                                    "removed_or_offloaded_bytes": 0},
-            "content_store": {"status": "applied", "candidate_bytes": 0,
-                              "removed_or_offloaded_bytes": 0},
-            "evidence_offload": {"status": "applied", "candidate_bytes": 0,
-                                 "removed_or_offloaded_bytes": 0},
-            "scene_workspaces": {"status": "dry_run", "candidate_bytes": 10 * GIB,
-                                 "removed_or_offloaded_bytes": 0},
-        },
-        "top_retained": [
-            {"phase": "evidence_offload", "reason": "protected_process", "bytes": 5 * GIB},
-            {"phase": "content_store", "reason": "young", "bytes": 4 * GIB},
-            {"phase": "derived_directories", "reason": "pinned", "bytes": 3 * GIB},
-            {"phase": "scene_workspaces", "reason": "not_enabled", "bytes": 2 * GIB},
-        ],
-    }), encoding="utf-8")
+        "derived_directories": {"status": "applied", "candidate_bytes": 0,
+                                "removed_bytes": 0,
+                                "retained_by_reason": {"pinned": {"count": 1, "bytes": 3 * GIB}}},
+        "content_store": {"status": "applied", "candidate_bytes": 0,
+                          "removed_bytes": 0,
+                          "retained_by_reason": {"young": {"count": 1, "bytes": 4 * GIB}}},
+        "evidence_offload": {"status": "applied", "candidate_bytes": 0,
+                             "offloaded_bytes": 0,
+                             "retained_by_reason": {"protected_process": {"count": 1, "bytes": 5 * GIB}}},
+        "scene_workspaces": {"status": "dry_run", "candidate_bytes": 10 * GIB,
+                             "retained_by_reason": {"not_enabled": {"count": 1, "bytes": 2 * GIB}}},
+    })), encoding="utf-8")
     common = dict(
         mounts=[str(tmp_path)], report_root=tmp_path / "capacity",
         reservation_root=tmp_path / "ledger", webhook_url="https://alerts.example/hook",
@@ -369,8 +365,8 @@ def test_reclaim_outlook_fails_closed_without_complete_applied_phase() -> None:
     )
     assert outlook["reclaimable_bytes"] is None
     assert reasons == [] and ineffective is False
-    # PR 10b's current applied content-store receipt omits the planned candidate
-    # count; zero bytes removed is not proof that zero bytes were candidates.
+    # An older or incomplete applied receipt with no candidate count remains
+    # unknown; the current producer records the count after PR #2393.
     summary["opt_in"]["evidence_offload"] = False
     summary["phases"]["content_store"]["candidate_bytes"] = None
     outlook, reasons, ineffective = cap._reclaim_outlook(
@@ -378,6 +374,32 @@ def test_reclaim_outlook_fails_closed_without_complete_applied_phase() -> None:
     )
     assert outlook["reclaimable_bytes"] is None
     assert reasons == [] and ineffective is False
+
+
+def test_reclaim_outlook_counts_other_applying_gc_phases() -> None:
+    summary = {
+        "schema_version": "control_plane_storage_gc_summary.v1",
+        "observed_at_epoch": 1000.0, "status": "applied",
+        "opt_in": {"evidence_offload": False, "scene_workspace_retirement": False,
+                   "replay_cache_retention": False},
+        "phases": {
+            "derived_directories": {"status": "applied", "candidate_bytes": 0,
+                                    "removed_or_offloaded_bytes": 0},
+            "content_store": {"status": "applied", "candidate_bytes": 0,
+                              "removed_or_offloaded_bytes": 0},
+            "scratch_directories": {"status": "applied", "candidate_bytes": 2 * GIB,
+                                    "removed_or_offloaded_bytes": 0},
+            "workspace_bundles": {"status": "applied", "candidate_bytes": GIB,
+                                  "removed_or_offloaded_bytes": 0},
+        },
+    }
+    outlook, _reasons, ineffective = cap._reclaim_outlook(
+        summary, now=1100.0, volume_growth="not_configured",
+    )
+    assert outlook["reclaimable_bytes"] == 3 * GIB
+    assert outlook["sources"]["scratch_directories"] == 2 * GIB
+    assert outlook["sources"]["workspace_bundles"] == GIB
+    assert ineffective is False
 
 
 def test_gc_summary_reader_accepts_producer_size_bound(tmp_path: Path) -> None:
