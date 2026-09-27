@@ -153,12 +153,10 @@ def agent_gate() -> str | None:
 
     Owner decision, 2026-09-27: an off-by-default agent left a labelled,
     identifiable product unresearched and the build was sized from a short
-    video estimate. This agent does not need the global
-    ``BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS`` opt-in: it is one bounded run
-    per identity (turns, fetches, bytes, wall clock, ``MAX_COST_USD``), fetches
-    only public HTTPS pages, approves none of its own figures, and every run is
-    still reserved and settled through the WebApp spend authority, which is
-    the real fail-closed gate on money.
+    video estimate. The shared harness still requires the host's global
+    ``BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS`` opt-in for every live run;
+    ``research_receipt`` checks it before reserving any spend, so a host
+    without it holds the research and spends nothing.
     """
     if os.getenv(ENABLE_ENV, "").strip().casefold() in {"0", "false", "no", "off"}:
         return "agent_disabled"
@@ -693,6 +691,33 @@ def _bounded_run(agent: Any, value: Any, **kwargs: Any) -> Any:
     return asyncio.run(asyncio.wait_for(Runner.run(agent, value, **kwargs), timeout=WALL_CLOCK_SECONDS))
 
 
+MAX_REFUSED_ATTEMPTS = 1  # Pre-provider refusals retried under a fresh allocation; each keeps its hold.
+
+
+def _provider_reserved(root: Path, run_id: str) -> bool:
+    """The harness writes a durable reservation before any provider request."""
+    for path in (root / "inference_reservations" / "reserved").glob("*.json"):
+        try:
+            if json.loads(path.read_text()).get("run_id") == run_id:
+                return True
+        except (OSError, ValueError):
+            return True  # An unreadable reservation is never proof of no request.
+    return False
+
+
+def _refused_attempts(root: Path, digest: str) -> list[Path]:
+    return sorted(root.glob(f"research-{digest[7:]}.refused-*.json"))
+
+
+def _retire_refused(*, path: Path, root: Path, digest: str, receipt: Mapping[str, Any], reason: str) -> None:
+    """A run with no reservation provably reached no provider; keep it as evidence and free the slot."""
+    attempt = len(_refused_attempts(root, digest))
+    write_json(root / f"research-{digest[7:]}.refused-{attempt}.json",
+               {**receipt, "status": "refused_before_provider", "reason": reason,
+                "proof": "no_inference_reservation_recorded_for_run"})
+    path.unlink()
+
+
 def _default_invoker():
     from .task_evaluation_supervisor.agents_sdk import OpenAIAgentsSDKConfig, OpenAIAgentsSDKInvoker
     return OpenAIAgentsSDKInvoker(OpenAIAgentsSDKConfig(
@@ -737,6 +762,10 @@ def research_receipt(*, identity: Mapping[str, Any], articulation_kind: str, cov
             raise ValueError("website_object_spec_agent_in_progress") from exc
         if path.is_file():
             receipt = json.loads(path.read_text())
+            if receipt.get("status") == "submitting" and not _provider_reserved(root, digest[7:23]):
+                _retire_refused(path=path, root=root, digest=digest, receipt=receipt,
+                                reason=str(receipt.get("failure") or "unrecorded_before_provider"))
+        if path.is_file():
             if receipt.get("status") != "completed":
                 # An uncertain research run is never bought again.
                 raise ValueError("website_object_spec_agent_requires_reconciliation")
@@ -746,15 +775,27 @@ def research_receipt(*, identity: Mapping[str, Any], articulation_kind: str, cov
                 raise ValueError("website_object_spec_agent_receipt_invalid")
         else:
             # Everything that can fail locally fails before the reservation.
+            attempt = len(_refused_attempts(root, digest))
+            if attempt > MAX_REFUSED_ATTEMPTS:
+                raise ValueError("website_object_spec_agent_refusals_exhausted")
+            if invoker is None:
+                from .agent_operator_runtime import LIVE_AGENTS_SDK_ENV, env_truthy
+                if not env_truthy(LIVE_AGENTS_SDK_ENV):
+                    raise ValueError(f"website_object_spec_agent_live_operator_env_missing:{LIVE_AGENTS_SDK_ENV}")
             input_value = _agent_input(identity, articulation_kind, frames)
             fetcher = PageFetcher(pages_root=root / "pages", transport=transport, resolver=resolver)
             spec = _agent_spec(digest, fetcher)
             selected = invoker if invoker is not None else _default_invoker()
+            # The WebApp grants one reservation per allocation digest; a retried
+            # refusal needs its own, and the refused one's hold is never reused.
+            allocation = digest if attempt == 0 else canonical_digest({"binding_digest": digest,
+                                                                       "refused_attempt": attempt})
             admission, _grant = reserve_website_preparation_spend(
-                task_context=task_context, binding_digest=digest, maximum_cost_usd=MAX_COST_USD, request_count=1,
-                resource_class="openai_api_candidate", provider="openai")
+                task_context=task_context, binding_digest=allocation, maximum_cost_usd=MAX_COST_USD,
+                request_count=1, resource_class="openai_api_candidate", provider="openai")
             with path.open("x") as stream:
                 json.dump({"status": "submitting", "binding_digest": digest, "binding": binding,
+                           "allocation_binding_digest": allocation, "attempt": attempt,
                            "admission": admission}, stream)
                 stream.flush()
                 os.fsync(stream.fileno())
@@ -762,7 +803,8 @@ def research_receipt(*, identity: Mapping[str, Any], articulation_kind: str, cov
                                  input_value=input_value, invoker=selected, fetcher=fetcher, spec=spec)
     settlement_path = root / f"research-{digest[7:]}.settlement.json"
     if not settlement_path.is_file():
-        command = {"task_context_digest": task_context["context_digest"], "allocation_binding_digest": digest,
+        command = {"task_context_digest": task_context["context_digest"],
+                   "allocation_binding_digest": receipt.get("allocation_binding_digest", digest),
                    "provider": "openai", "completed_request_count": 1,
                    "provider_charge_amount_usd": round(min(float(receipt["cost_usd"]), MAX_COST_USD), 6),
                    "usage_receipt_digest": canonical_digest({"usage": receipt["usage"]})}
@@ -792,17 +834,23 @@ def _run_agent(*, path: Path, root: Path, digest: str, binding: Mapping[str, Any
                input_value: list[dict[str, Any]], invoker: Any, fetcher: PageFetcher, spec: Any) -> dict[str, Any]:
     from .task_evaluation_supervisor.inference_reservations import InferenceReservationAudit
     fetcher.deadline = time.monotonic() + WALL_CLOCK_SECONDS
+    submitted = json.loads(path.read_text())
     audit = InferenceReservationAudit(run_root=root, run_id=digest[7:23])
     try:
         invoker.configure_reservation_audit(record_reservation=audit.record_reservation,
             record_completion=audit.record_completion, restored_reserved_cost_usd=0.0)
         invocation = invoker.invoke(spec, input_value)
-    except Exception as exc:  # noqa: BLE001 - the submitted receipt now requires reconciliation.
-        raise ValueError(f"website_object_spec_agent_failed:{type(exc).__name__}") from exc
-    finally:
+    except Exception as exc:  # noqa: BLE001 - reconciled below or held for reconciliation.
         audit.write_manifest()
+        reason = f"{type(exc).__name__}:{str(exc)[:200]}"
+        if not _provider_reserved(root, digest[7:23]):
+            _retire_refused(path=path, root=root, digest=digest, receipt=submitted, reason=reason)
+            raise ValueError(f"website_object_spec_agent_refused_before_provider:{reason}") from exc
+        raise ValueError(f"website_object_spec_agent_failed:{type(exc).__name__}") from exc
+    audit.write_manifest()
     findings = ObjectSpecFindings.model_validate(invocation.output).model_dump(mode="json")
     receipt = {"status": "completed", "binding_digest": digest, "binding": dict(binding), "admission": admission,
+               "allocation_binding_digest": submitted.get("allocation_binding_digest", digest),
                "findings": findings, "findings_digest": canonical_digest(findings), "fetch_log": fetcher.log,
                "fetch_log_digest": canonical_digest({"fetches": fetcher.log}), "model": invocation.model,
                "usage": invocation.usage, "cost_usd": float(invocation.cost_usd if invocation.cost_usd is not None

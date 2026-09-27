@@ -95,9 +95,15 @@ def website(monkeypatch):
     monkeypatch.setattr(control, "reserve_website_preparation_spend", reserve)
     monkeypatch.setattr(control, "website_webapp_request", webapp)
     monkeypatch.setenv(research.ENABLE_ENV, "1")
-    # Owner decision 2026-09-27: the bounded research agent needs no global live-operator opt-in.
     monkeypatch.delenv("BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS", raising=False)
     return calls
+
+
+def _reserve_provider_call(root, spec):
+    """What the harness writes durably before any provider request."""
+    reserved = root / "inference_reservations" / "reserved"
+    reserved.mkdir(parents=True, exist_ok=True)
+    (reserved / f"{spec.run_id}.json").write_text(json.dumps({"run_id": spec.run_id}))
 
 
 def _context(**answers):
@@ -317,6 +323,7 @@ def test_uncertain_receipt_is_held_for_reconciliation_and_never_rebought(tmp_pat
     _research(tmp_path, website, invoker)
     receipt = next((tmp_path / "spec" / "dishwasher-1").glob("research-*[0-9a-f].json"))
     receipt.write_text(json.dumps({"status": "submitting"}))
+    _reserve_provider_call(tmp_path / "spec" / "dishwasher-1", invoker.calls[0][0])
     record = _research(tmp_path, website, invoker)
     assert record["status"] == "held" and record["specs"] == {}
     assert record["research"]["reason"] == "website_object_spec_agent_requires_reconciliation"
@@ -324,15 +331,87 @@ def test_uncertain_receipt_is_held_for_reconciliation_and_never_rebought(tmp_pat
     assert len(invoker.calls) == len(website["reserve"]) == 1
 
 
-def test_failed_agent_run_leaves_an_uncertain_receipt(tmp_path, website):
-    class Failing(_Invoker):
-        def invoke(self, spec, input_value):
-            self.calls.append(spec)
-            raise TimeoutError("wall clock")
-    invoker = Failing(_findings())
-    assert _research(tmp_path, website, invoker)["research"]["reason"] == "website_object_spec_agent_failed:TimeoutError"
+def test_failed_agent_run_leaves_an_uncertain_receipt(tmp_path, website, monkeypatch):
+    monkeypatch.setenv("BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS", "1")
+    monkeypatch.delenv("OPENAI_API_KEY_FILE", raising=False)
+    calls = []
+
+    def timing_out(*args, **kwargs):
+        calls.append(args)
+        raise TimeoutError("wall clock")
+    invoker = research._default_invoker()
+    invoker._run_agent = timing_out  # The real harness reserves durably before this provider call.
+    reason = _research(tmp_path, website, invoker)["research"]["reason"]
+    assert reason.startswith("website_object_spec_agent_failed:")
     assert _research(tmp_path, website, invoker)["research"]["reason"] == "website_object_spec_agent_requires_reconciliation"
-    assert len(invoker.calls) == len(website["reserve"]) == 1 and website["settle"] == []
+    assert len(calls) == len(website["reserve"]) == 1 and website["settle"] == []
+    assert list((tmp_path / "spec" / "dishwasher-1").glob("research-*.refused-*.json")) == []
+
+
+class _RefusingThenWorking(_Invoker):
+    """Refuses before any provider reservation the first ``refusals`` times."""
+
+    def __init__(self, findings, refusals=1):
+        super().__init__(findings)
+        self.refusals = refusals
+
+    def invoke(self, spec, input_value):
+        if self.refusals:
+            self.refusals -= 1
+            self.calls.append((spec, input_value))
+            from blueprint_pipeline.task_evaluation_supervisor.agents_sdk import AgentsSDKInvocationBlocked
+            raise AgentsSDKInvocationBlocked("agents_sdk_multi_turn_context_growth_exceeds_declared_ceiling")
+        return super().invoke(spec, input_value)
+
+
+def test_refusal_before_any_provider_reservation_is_recorded_and_retried_under_a_fresh_allocation(tmp_path, website):
+    invoker = _RefusingThenWorking(_findings())
+    record = _research(tmp_path, website, invoker)
+    assert record["status"] == "held"
+    assert record["research"]["reason"] == ("website_object_spec_agent_refused_before_provider:AgentsSDKInvocationBlocked:"
+                                            "agents_sdk_multi_turn_context_growth_exceeds_declared_ceiling")
+    root = tmp_path / "spec" / "dishwasher-1"
+    (refused,) = root.glob("research-*.refused-0.json")
+    evidence = json.loads(refused.read_text())
+    assert evidence["status"] == "refused_before_provider" and evidence["attempt"] == 0
+    assert evidence["proof"] == "no_inference_reservation_recorded_for_run"
+    retried = _research(tmp_path, website, invoker)
+    assert retried["status"] == "researched"
+    first, second = (row["binding_digest"] for row in website["reserve"])
+    assert first == evidence["binding_digest"] != second  # The refused grant's hold is never reused.
+    (settlement,) = website["settle"]
+    assert settlement["allocation_binding_digest"] == second
+
+
+def test_refusals_before_the_provider_are_retried_at_most_once(tmp_path, website):
+    invoker = _RefusingThenWorking(_findings(), refusals=5)
+    reasons = [_research(tmp_path, website, invoker)["research"]["reason"] for _ in range(3)]
+    assert reasons[0].startswith("website_object_spec_agent_refused_before_provider:")
+    assert reasons[1].startswith("website_object_spec_agent_refused_before_provider:")
+    assert reasons[2] == "website_object_spec_agent_refusals_exhausted"
+    assert len(website["reserve"]) == 2 and website["settle"] == []
+
+
+def test_a_submitting_receipt_with_no_provider_reservation_is_retired_not_wedged(tmp_path, website):
+    """A worker that died between reserving spend and the harness's reservation left no provider call."""
+    invoker = _Invoker(_findings())
+    root = tmp_path / "spec" / "dishwasher-1"
+    _research(tmp_path, website, invoker)
+    receipt = next(root.glob("research-*[0-9a-f].json"))
+    receipt.write_text(json.dumps({"status": "submitting", "binding_digest": "retained"}))
+    (root / f"{receipt.name[:-5]}.settlement.json").unlink()
+    record = _research(tmp_path, website, invoker)
+    assert record["status"] == "researched" and len(invoker.calls) == 2
+    evidence = json.loads(next(root.glob("research-*.refused-0.json")).read_text())
+    assert evidence["reason"] == "unrecorded_before_provider" and evidence["binding_digest"] == "retained"
+
+
+def test_a_host_without_the_live_operator_opt_in_holds_research_before_reserving_spend(tmp_path, website):
+    record = _research(tmp_path, website, None)
+    assert record["status"] == "held"
+    assert record["research"]["reason"] == ("website_object_spec_agent_live_operator_env_missing:"
+                                            "BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS")
+    assert website["reserve"] == [] and list((tmp_path / "spec").rglob("research-*.json")) == []
 
 
 def test_unknown_model_pricing_fails_closed_before_any_reservation(tmp_path, website, monkeypatch):
