@@ -239,7 +239,7 @@ def _sealed_registry_run(directory, *, hot_window_seconds, now):
 
 
 def _expired_unlaunched(owner, activation_queue_root, *, now, standing_authorization_dir=None, launch_queue_root=None):
-    """A prepared activation whose windows have lapsed with positive evidence it was never launched.
+    """A prepared profile-authority activation whose windows have lapsed, with positive evidence it never launched.
 
     The caller found no run of it, but a launch id the WebApp or an operator chose
     names no directory a search could guess. So the proof also needs the
@@ -279,10 +279,14 @@ def _expired_unlaunched(owner, activation_queue_root, *, now, standing_authoriza
     status = value.get("status")
     if not isinstance(status, str) or status not in PREPARED_ACTIVATION_STATUSES:
         return None, "activation_result_not_prepared"
+    if status != "profile_authority_materialized_no_execution":
+        # A policy campaign publishes no standing authorization and dispatches through the
+        # policy canary queue on the scene execution window: this proof's premise does not
+        # hold, and the canary dispatcher releases its pin when the campaign completes.
+        return None, "policy_campaign_activation_out_of_scope"
     # A profile-authority activation publishes a profile, the one the WebApp launches.
     profile_id = value.get("profile_id")
-    if status == "profile_authority_materialized_no_execution" and (
-            not isinstance(profile_id, str) or _IDENTIFIER.fullmatch(profile_id) is None):
+    if not isinstance(profile_id, str) or _IDENTIFIER.fullmatch(profile_id) is None:
         return None, "activation_result_invalid"
     written = path.lstat().st_mtime
     if now - written < LAPSE_SECONDS:
@@ -292,16 +296,13 @@ def _expired_unlaunched(owner, activation_queue_root, *, now, standing_authoriza
         return None, reason
     if now - expires < LAPSE_GRACE_SECONDS:
         return None, "activation_authorization_not_lapsed"
-    if status == "profile_authority_materialized_no_execution":
-        reason = _authorization_consumption(profile_id, standing_authorization_dir)
-        if reason is not None:
-            return None, reason
-    reason = _launch_requested(launch_queue_root, (owner, profile_id) if profile_id else (owner,))
+    reason = _authorization_consumption(profile_id, standing_authorization_dir) or _launch_requested(
+        launch_queue_root, (owner, profile_id))
     if reason is not None:
         return None, reason
     return {"kind": "activation_expired_unlaunched", "result_name": path.name, "result_digest": value["result_digest"],
             "result_status": status, "result_mtime_epoch": written, "authorization_expires_epoch": expires,
-            **({"profile_id": profile_id} if profile_id else {})}, None
+            "profile_id": profile_id}, None
 
 
 def _authorization_consumption(profile_id, standing_authorization_dir):

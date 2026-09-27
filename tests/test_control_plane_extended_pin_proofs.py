@@ -508,10 +508,10 @@ def test_expired_unlaunched_activation_releases_its_pin(tmp_path) -> None:
     args = _args(tmp_path)
     queue = _activation_queue(tmp_path, args)
     _activation_result(queue, "act-profile")
-    _activation_result(queue, "act-policy", status="policy_campaign_queue_materialized_no_execution")
+    _activation_result(queue, "act-second")
     _pin(args, "preparation", "prep-u", age=LAPSE + 2 * DAY)
     _pin(args, "compilation", "prep-u", age=LAPSE + 2 * DAY, depends_on=[{"kind": "preparation", "owner_id": "prep-u"}])
-    for owner in ("act-policy", "act-profile"):
+    for owner in ("act-profile", "act-second"):
         _pin(args, "activation", owner, age=LAPSE + DAY, depends_on=[
             {"kind": "compilation", "owner_id": "prep-u"}, {"kind": "preparation", "owner_id": "prep-u"}])
 
@@ -519,8 +519,8 @@ def test_expired_unlaunched_activation_releases_its_pin(tmp_path) -> None:
 
     assert [(row["owner_id"], row["proof"]["kind"], row["proof"]["result_status"], row["enabled"])
             for row in listed["candidates"]] == [
-        ("act-policy", "activation_expired_unlaunched", "policy_campaign_queue_materialized_no_execution", False),
-        ("act-profile", "activation_expired_unlaunched", "profile_authority_materialized_no_execution", False)]
+        ("act-profile", "activation_expired_unlaunched", "profile_authority_materialized_no_execution", False),
+        ("act-second", "activation_expired_unlaunched", "profile_authority_materialized_no_execution", False)]
     assert set(_states(args).values()) == {"live"}
 
     applied = reconcile_terminal_cache_pins(**args, apply=True, extended_proofs_enabled=True)
@@ -528,10 +528,28 @@ def test_expired_unlaunched_activation_releases_its_pin(tmp_path) -> None:
     # The shared preparation and compilation go with the last activation that consumed them.
     assert applied["released_count_by_kind"] == {"activation": 2, "compilation": 1, "preparation": 1}
     assert set(_states(args).values()) == {"released"}
-    proof = applied["candidates"][1]["proof"]
+    proof = applied["candidates"][0]["proof"]
     assert proof["result_name"] == f"act-profile-{hashlib.sha256(b'act-profile').hexdigest()}.json"
     assert (proof["result_mtime_epoch"], proof["authorization_expires_epoch"]) == (NOW - LAPSE - DAY, NOW - LAPSE)
     assert not any("/" in str(value) for value in proof.values())
+
+
+def test_a_policy_campaign_activation_is_out_of_scope(tmp_path) -> None:
+    """Code review of 10c: a policy campaign publishes no standing authorization and dispatches through the
+    policy canary queue, gated on the scene execution window, so the unlaunched proof's premise does not hold.
+
+    Its pin is kept; the canary dispatcher releases it when the campaign completes.
+    """
+
+    args = _args(tmp_path)
+    queue = _activation_queue(tmp_path, args)
+    _activation_result(queue, "act-policy", status="policy_campaign_queue_materialized_no_execution")
+    _pin(args, "activation", "act-policy", age=LAPSE + DAY)
+
+    result = reconcile_terminal_cache_pins(**args, apply=True, extended_proofs_enabled=True)
+
+    assert _kept(result) == {("activation", "act-policy"): "policy_campaign_activation_out_of_scope"}
+    assert result["candidates"] == [] and _states(args)[("activation", "act-policy")] == "live"
 
 
 @pytest.mark.parametrize("reason", ["young", "launched", "archived", "referenced", "process"])

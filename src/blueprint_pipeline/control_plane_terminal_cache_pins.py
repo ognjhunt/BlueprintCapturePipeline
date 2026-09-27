@@ -17,11 +17,14 @@ candidates are listed with ``"enabled": false``:
   intact), idle past the hot window, with no whole-run pointer. Whole-run
   offload never archives a registry run, so neither original proof could
   release one.
-* ``activation_expired_unlaunched``: an activation pin with no run directory
-  and no pointer under any of its evidence names in any evidence root, whose
-  one sealed result in the activation queue says it was prepared more than a
-  week and a day ago, and whose standing authorization expired more than a
-  day ago. The mutation window (a week at most) has lapsed, and launch
+* ``activation_expired_unlaunched``: a profile-authority activation pin with no
+  run directory and no pointer under any of its evidence names in any evidence
+  root, whose one sealed result in the activation queue says it was prepared
+  more than a week and a day ago, and whose standing authorization expired more
+  than a day ago. A policy-campaign activation is out of scope
+  (``policy_campaign_activation_out_of_scope``): it publishes no standing
+  authorization and dispatches through the policy canary queue on the scene
+  execution window, and the canary dispatcher releases its pin on completion. The mutation window (a week at most) has lapsed, and launch
   admission checks that authorization, which the activation request dates
   with no maximum. A launch id the WebApp or an operator chooses names no
   directory a search could guess, so the proof also needs positive evidence:

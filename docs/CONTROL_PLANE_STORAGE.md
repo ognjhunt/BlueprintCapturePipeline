@@ -530,53 +530,12 @@ One tick runs nine phases in order:
 1. **Stranded queue rows**: pending rows bound to a release other than the
    running one move to `stranded/` beside a receipt, so they stop counting as
    live queue references. Nothing is deleted.
-2. **Terminal cache pins** whose run is proven closed are released. Two proofs
-   always apply to an activation pin: its run is archived behind a verified
-   pointer, or sealed by a terminal receipt without a result registry and idle
-   past the hot window. Three more list their candidates with
-   `"enabled": false` until `BLUEPRINT_CONTROL_PLANE_GC_EXTENDED_PIN_PROOFS=1` in
-   the operator environment file lets them release: `sealed_registry_run` (every
-   run under the activation's evidence names carries its terminal receipt and a
-   result registry the artifact store accepts as sealed, idle past the hot
-   window, with no whole-run pointer; without the receipt the canary dispatcher
-   can still recover a stranded delivery from the launch set),
-   `activation_expired_unlaunched` (no run directory or pointer under
-   any of its evidence names in any evidence root, the activation queue's one
-   sealed result for it is in a prepared status and older than 604,800 + 86,400
-   seconds, since a shared mutation window lives at most a week, the standing
-   authorization its prepared envelope dates expired more than a day ago, since
-   launch admission checks that authorization and its request sets it with no
-   maximum, and there is positive evidence it never launched: a launch id the
-   WebApp or an operator chooses names no directory a search could guess, so
-   no record may exist under
-   `<standing authorization dir>/consumed/<profile id>/` (the directory launch
-   admission records into, `BLUEPRINT_TASK_EVALUATION_STANDING_AUTHORIZATION_DIR`
-   in the unit) and no row of the launch queue `task-evaluation-launches`, in
-   any state, may name the activation or its profile; for a profile without
-   the one-use standing authorization requirement an operator's per-launch
-   handshake can still admit a launch after the authorization lapsed, and if
-   that happens after the pin was released the launch fails its input
-   verification rather than using missing inputs, which re-preparing recovers;
-   the proof accepts that risk only after both the window and the
-   authorization lapsed and neither record exists), and `unconsumed_stale_pin`
-   (a preparation or compilation
-   pin no live pin depends on, created more than eight days ago, naming only
-   `cache` paths, whose preparation no activation can take any more: its one
-   sealed envelope in the preparation queue sits in `materialized/` bound to a
-   release other than the running one, or in `blocked/`; the activation worker
-   verifies a preparation's materialized inputs and never re-fetches them, and
-   a materialized preparation waits for its activation intent with no age
-   limit; a rollback to that release would make it activatable again). An
-   activation's evidence names are its id, `<id>-launch`
-   (configured-controls activations such as `<run>-controls` launch that way
-   too) and the bounded launch id the launch paths derive for a long id, with
-   their own function, and every configured evidence root must exist as a
-   directory: a missing root cannot show that nothing launched into it. Every
-   proof keeps the six-hour minimum pin age, the
-   dependency closure's queue and process checks, and a re-derivation at the
-   mutation edge; the extended proofs also count a queue row parked in a state
-   that will still run (`LIVE_QUEUE_STATES`), such as a preparation awaiting
-   its source preparation. Only the pin ledger changes.
+2. **Terminal cache pins** whose run is proven closed are released: by the two
+   original proofs always, and by the extended proofs only with
+   `BLUEPRINT_CONTROL_PLANE_GC_EXTENDED_PIN_PROOFS=1` in the operator
+   environment file (until then they list candidates with `"enabled": false`).
+   Only the pin ledger changes. The proofs are described under
+   [Terminal cache pin proofs](#terminal-cache-pin-proofs).
 3. **Derived directories** under the configured `cache` roots are retired when
    no live pin names them, no pending or processing queue message mentions
    them, and they have been idle for an hour
@@ -607,6 +566,62 @@ One tick runs nine phases in order:
    reference, and remote-copy checks pass. This phase plans until
    `BLUEPRINT_CONTROL_PLANE_SCENE_WORKSPACE_RETIREMENT=1` enables it; its
    detailed contract is below.
+
+### Terminal cache pin proofs
+
+The original proofs release an activation pin when every run under its names
+(its id, and `<id>-launch` for a website `-activation-auto` activation) is
+archived behind a verified pointer (`archived_run`) or sealed by a terminal
+receipt without a result registry and idle past the hot window
+(`sealed_cold_run`). The extended proofs, in the read-only
+`control_plane_pin_proofs` module, apply only with the opt-in:
+
+- `sealed_registry_run`: every run under the activation's evidence names
+  carries its terminal receipt and a result registry the artifact store accepts
+  as sealed, idle past the hot window, with no whole-run pointer. Without the
+  receipt the canary dispatcher can still recover a stranded delivery from the
+  launch set.
+- `activation_expired_unlaunched`, for a profile-authority activation only. A
+  policy-campaign activation publishes no standing authorization and
+  dispatches through the policy canary queue on the scene execution window, so
+  its pin is kept as `policy_campaign_activation_out_of_scope` until the canary
+  dispatcher releases it. The proof needs no run directory or pointer under any
+  of the activation's evidence names; its one sealed result in the activation
+  queue in a prepared status and older than 604,800 + 86,400 seconds (a shared
+  mutation window lives at most a week); and the standing authorization its
+  prepared envelope dates expired more than a day ago (launch admission checks
+  that authorization, and the request sets it with no maximum). A launch id the
+  WebApp or an operator chooses names no directory a search could guess, so it
+  also needs positive evidence of no launch: no record under
+  `<standing authorization dir>/consumed/<profile id>/` (the directory launch
+  admission records into, `BLUEPRINT_TASK_EVALUATION_STANDING_AUTHORIZATION_DIR`
+  in the unit) and no row of the launch queue `task-evaluation-launches`, in any
+  state, naming the activation or its profile. For a profile without the
+  one-use standing authorization requirement, an operator's per-launch
+  handshake can still admit a launch after the authorization lapsed; if that
+  happens after the pin was released, the launch fails its input verification
+  rather than using missing inputs, which re-preparing recovers. The proof
+  accepts that risk only after both the window and the authorization lapsed and
+  neither record exists.
+- `unconsumed_stale_pin`: a preparation or compilation pin no live pin depends
+  on, created more than eight days ago, naming only `cache` paths, whose
+  preparation no activation can take any more: its one sealed envelope in the
+  preparation queue sits in `materialized/` bound to a release other than the
+  running one, or in `blocked/`. The activation worker verifies a preparation's
+  materialized inputs and never re-fetches them, and a materialized preparation
+  waits for its activation intent with no age limit. A rollback to that release
+  would make it activatable again.
+
+An activation's evidence names are its id, `<id>-launch` (configured-controls
+activations such as `<run>-controls` launch that way too) and the bounded
+launch id the launch paths derive for a long id, with their own function. A
+configured evidence root must exist as a directory: a missing root cannot show
+that nothing launched into it. Every proof keeps the six-hour minimum pin age,
+the dependency closure's queue and process checks, and a re-derivation at the
+mutation edge. The extended proofs read queues strictly: they also count a row
+parked in a state that will still run (`LIVE_QUEUE_STATES`, such as a
+preparation awaiting its source preparation), and a row they cannot read keeps
+their candidates as `queue_unreadable`.
 
 **Why a tick kept what it kept.** On 2026-09-27 an applied tick with offload
 enabled reclaimed nothing, and its report could not say why. The derived and
@@ -642,7 +657,8 @@ so each manifest (and its receipt) also records `walked_file_count` and
   `activation_envelope_invalid`, `activation_authorization_not_lapsed`,
   `activation_authorization_consumed`, `standing_authorization_unavailable`,
   `activation_launch_requested`, `launch_queue_unconfigured`,
-  `launch_queue_unavailable`) and the preparation reasons (`preparation_queue_unconfigured`,
+  `launch_queue_unavailable`, `policy_campaign_activation_out_of_scope`),
+  `queue_unreadable`, and the preparation reasons (`preparation_queue_unconfigured`,
   `preparation_queue_unavailable`, `running_commit_unknown`,
   `preparation_envelope_missing`, `preparation_envelope_ambiguous`,
   `preparation_envelope_invalid`, `preparation_release_current`). A pin a
