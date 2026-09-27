@@ -228,7 +228,8 @@ def test_storage_gc_writes_a_door_readable_summary(tmp_path, monkeypatch) -> Non
     assert (summary["status"], summary["observed_at_epoch"]) == ("applied", report["observed_at_epoch"])
     assert summary["source_report_digest"] == report["report_digest"]
     assert summary["opt_in"] == {
-        "evidence_offload": False, "scene_workspace_retirement": False, "replay_cache_retention": False}
+        "evidence_offload": False, "scene_workspace_retirement": False, "replay_cache_retention": False,
+        "extended_pin_proofs": False}
     assert (summary["phase_errors"], summary["skipped_roots"]) == ([], [str(absent_scratch)])
     sizes = {run.name: sum(p.stat().st_size for p in run.rglob("*") if p.is_file())
              for run in (queued, hot, registry_run)}
@@ -278,6 +279,33 @@ def test_storage_gc_writes_a_door_readable_summary(tmp_path, monkeypatch) -> Non
     assert "operator_door" in sys.modules
 
 
+def test_the_summary_counts_terminal_pin_candidates_releases_and_the_opt_in(tmp_path) -> None:
+    """The pin phase's summary named nothing but its status, with null retention. It now
+    counts the candidates and the pins released, says whether the extended proofs may
+    release, and counts why the rest were kept, naming no owner and no path."""
+
+    pins = tmp_path / "pins"
+    for owner, created in (("prep-secret-stale", NOW - 9 * 86400), ("prep-secret-young", NOW - 3600)):
+        write_storage_pin(pins_root=pins, kind="preparation", owner_id=owner, now=lambda created=created: created,
+                          paths=[f"/var/lib/blueprint/task-evaluation-inputs/prepared-references/{owner}"])
+    common = dict(content_store_roots=[], derived_roots=[], queue_roots=[], pins_root=pins, now=lambda: NOW,
+                  classifier=_noclass, apply=True, ack=RUN_ACK)
+
+    listed = reasons.build_storage_gc_summary(run_storage_gc(**common))
+    applied = reasons.build_storage_gc_summary(run_storage_gc(**common, extended_pin_proofs_enabled=True))
+
+    phase = {"status": "applied", "candidate_bytes": None, "removed_or_offloaded_bytes": None,
+             "retained_by_reason": {"pin_young": {"count": 1, "bytes": None}}, "candidate_count": 1}
+    assert listed["phases"]["terminal_cache_pins"] == {**phase, "released_count": 0, "enabled": False}
+    assert applied["phases"]["terminal_cache_pins"] == {**phase, "released_count": 1, "enabled": True}
+    assert (listed["opt_in"]["extended_pin_proofs"], applied["opt_in"]["extended_pin_proofs"]) == (False, True)
+    assert "secret" not in json.dumps(listed) + json.dumps(applied)
+    # A report from before the counts does not claim there were none.
+    older = reasons.build_storage_gc_summary({"status": "applied", "terminal_cache_pins": {
+        "status": "applied", "candidates": [], "released": [], "kept": []}})["phases"]["terminal_cache_pins"]
+    assert (older["candidate_count"], older["released_count"], older["enabled"]) == (None, None, None)
+
+
 def test_the_summary_stays_small_and_names_only_typed_reasons() -> None:
     """However many reasons a phase reports, the summary keeps the largest, bounded, and a
     reason that is not a typed string (a path, say) is never copied into it."""
@@ -309,7 +337,8 @@ def test_the_summary_stays_small_and_names_only_typed_reasons() -> None:
     assert "run-1" not in json.dumps(summary)
     # A report written before the tick recorded its opt-ins does not claim they were off.
     assert summary["opt_in"] == {
-        "evidence_offload": None, "scene_workspace_retirement": None, "replay_cache_retention": None}
+        "evidence_offload": None, "scene_workspace_retirement": None, "replay_cache_retention": None,
+        "extended_pin_proofs": None}
 
 
 def test_summary_ranks_global_reason_totals_before_phase_and_top_ten_caps() -> None:

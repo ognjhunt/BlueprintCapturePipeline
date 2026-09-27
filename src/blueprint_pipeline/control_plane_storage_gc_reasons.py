@@ -191,7 +191,7 @@ PHASES = (
     "replay_caches",
     "scene_workspaces",
 )
-OPT_INS = ("evidence_offload", "scene_workspace_retirement", "replay_cache_retention")
+OPT_INS = ("evidence_offload", "scene_workspace_retirement", "replay_cache_retention", "extended_pin_proofs")
 _REMOVED_KEYS = ("removed_bytes", "offloaded_bytes", "retired_bytes")
 _MAX_REASONS = 50
 _MAX_FAILURES = 20
@@ -265,6 +265,20 @@ def _phase_summary(entry: Mapping[str, Any]) -> dict[str, Any]:
     return summary
 
 
+def _terminal_pin_counts(entry: Mapping[str, Any]) -> dict[str, Any]:
+    """The pin phase's candidate and released pin counts, and whether its extended proofs may release.
+
+    Each is null when the report does not say, never zero.
+    """
+
+    enabled = entry.get("enabled")
+    return {
+        "candidate_count": _integer(entry.get("candidate_count")),
+        "released_count": _integer(entry.get("released_count")),
+        "enabled": enabled if isinstance(enabled, bool) else None,
+    }
+
+
 def _result_artifact_summary(rows: Sequence[Any]) -> dict[str, Any]:
     """One entry for every registry run's per-artifact offload.
 
@@ -335,7 +349,8 @@ def build_storage_gc_summary(report: Mapping[str, Any]) -> dict[str, Any]:
     ``source_report_digest``, the ``opt_in`` flags (null when the report predates
     them), ``alerts``, ``phase_errors``, ``skipped_roots`` (configured roots that
     were absent: the only paths it names), per phase ``candidate_bytes``,
-    ``removed_or_offloaded_bytes`` and ``retained_by_reason``, ``top_retained``
+    ``removed_or_offloaded_bytes`` and ``retained_by_reason`` (for the pin phase
+    also ``candidate_count``, ``released_count`` and ``enabled``), ``top_retained``
     phase rows, and ``top_retained_reasons`` aggregated before phase rows are
     capped. Every reason is
     a typed string; anything else becomes ``unrecognized_reason``.
@@ -349,6 +364,8 @@ def build_storage_gc_summary(report: Mapping[str, Any]) -> dict[str, Any]:
             phases[key] = _result_artifact_summary(entry)
         elif isinstance(entry, Mapping):
             phases[key] = _phase_summary(entry)
+            if key == "terminal_cache_pins":
+                phases[key].update(_terminal_pin_counts(entry))
             by_reason = entry.get("retained_by_reason")
             raw_reasons = by_reason if isinstance(by_reason, Mapping) else entry.get("retained_counts")
             if isinstance(raw_reasons, Mapping):
