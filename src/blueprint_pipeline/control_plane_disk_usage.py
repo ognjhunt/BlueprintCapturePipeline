@@ -27,15 +27,34 @@ from . import control_plane_storage_roots as storage_roots
 from .decision_evidence_contracts import canonical_digest
 
 SURVEY_SCHEMA_VERSION = "control_plane_disk_usage_survey.v1"
-# The work volume holds bulk roots that are bind-mounted back at the paths the
-# pipeline uses, so its bytes are attributed to those paths (longest prefix wins).
+# Only the roots bind-mounted back into the service tree are aliased. A loose
+# top-level folder on the work volume must remain visible as an unclassified
+# physical path rather than inherit /var/lib/blueprint's container class.
+_BOUND_VOLUME_ROOTS = (
+    "task-evaluation-inputs", "pubsub-handoffs", "production-gpu-artifacts",
+    "pipeline-control-plane/task-evaluation-launch-runs",
+    "pipeline-control-plane/task-evaluation-policy-canaries",
+    "pipeline-control-plane/capture-reconstruction-runs",
+    "pipeline-control-plane/capture-reconstruction-derived",
+    "pipeline-control-plane/episode-interpretation-backfills",
+    "pipeline-control-plane/policy-canary-preprovider-audits",
+    "pipeline-control-plane/scene-configuration-diagnostics",
+    "pipeline-control-plane/result-artifact-cache",
+    "pipeline-control-plane/profile-install-staging",
+    "pipeline-control-plane/policy-canary-presubmission",
+    "pipeline-control-plane/native-g1-team-campaign-work",
+    "pipeline-control-plane/engineering", "pipeline-control-plane/render-probes",
+    "pipeline-control-plane/diagnostic-checkouts", "pipeline-control-plane/release-builds",
+)
 DEFAULT_SURVEY_ALIASES: Mapping[str, str] = {
-    "/mnt/blueprint-work": "/var/lib/blueprint",
+    **{f"/mnt/blueprint-work/{root}": f"/var/lib/blueprint/{root}" for root in _BOUND_VOLUME_ROOTS},
     "/mnt/blueprint-work/workspace": "/workspace",
 }
 # Unknown children of these prefixes are Blueprint bytes the storage table does not
 # know yet ("unclassified"); everything outside them is the host's ("host").
-BLUEPRINT_PREFIXES: tuple[str, ...] = ("/var/lib/blueprint", "/opt/blueprint", "/workspace")
+BLUEPRINT_PREFIXES: tuple[str, ...] = (
+    "/var/lib/blueprint", "/opt/blueprint", "/workspace", "/mnt/blueprint-work",
+)
 DEFAULT_SURVEY_MAX_ENTRIES = 3_000_000
 DEFAULT_SURVEY_MAX_SECONDS = 240.0
 # The capacity unit has MemoryMax=512M. Bound every growing walk container;
@@ -303,6 +322,10 @@ def _owner(parts: tuple[str, ...], root: tuple[str, ...], storage_class: str, is
     at = _find(parts, _STORE_DIRECTORY)
     if at >= 0 and is_directory(at):
         return f"store:{root[-1]}"
+    if storage_class == "lane_scratch":
+        at = _find(parts, "lanes")
+        if at >= 0 and at + 1 <= last and is_directory(at + 1):
+            return f"lane:{parts[at + 1]}"
     for anchor, kind in _RUN_ANCHORS:
         at = _find(parts, anchor)
         if at >= 0 and at + 1 <= last and is_directory(at + 1):
@@ -566,7 +589,7 @@ def sanitize_public_survey(survey: Mapping[str, Any]) -> dict[str, Any]:
             # token prefix. Such names are rare and safe to hide wholesale.
             unsafe_syntax = any(character in value for character in '?=@"\r\n') or (
                 ":" in value and not (value.count(":") == 1 and value.startswith(
-                    ("sha256:", "scene:", "scene-intent:", "run:", "release:", "store:")
+                    ("sha256:", "scene:", "scene-intent:", "run:", "release:", "store:", "lane:")
                 ))
             )
             return "<redacted>" if unsafe_syntax or _CREDENTIAL_SHAPED_NAME.search(value) else value

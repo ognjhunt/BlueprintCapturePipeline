@@ -278,6 +278,35 @@ def test_default_table_classification_matches_classify_path(tmp_path):
     assert {"store:prepared-references", "scene:s", "run:run-1"} <= owners
 
 
+def test_work_volume_lane_and_orphan_paths_keep_their_physical_owner(tmp_path):
+    volume = tmp_path / "blueprint-work"
+    for relative in (
+        "lanes/agent-a/job-1/output.bin",
+        "g1-unregistered/cache.bin",
+        "task-evaluation-inputs/prepared-references/cache.bin",
+    ):
+        path = volume / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x" * 4096)
+    aliases = {
+        str(volume) + source[len("/mnt/blueprint-work"):]: target
+        for source, target in usage_module.DEFAULT_SURVEY_ALIASES.items()
+    }
+    aliases.setdefault(str(volume), "/mnt/blueprint-work")
+
+    survey = survey_usage([str(volume)], aliases=aliases, statvfs=_statvfs(),
+                          mountinfo=str(tmp_path / "no-mountinfo"))
+
+    assert any(row["storage_class"] == "lane_scratch" and row["owner"] == "lane:agent-a"
+               for row in survey["top_owners"])
+    assert any(row["root"] == "/mnt/blueprint-work/g1-unregistered"
+               for row in survey["unclassified_roots"])
+    assert all(row["root"] != "/mnt/blueprint-work/lanes"
+               for row in survey["unclassified_roots"])
+    assert any(row["root"] == "/var/lib/blueprint/task-evaluation-inputs/prepared-references"
+               and row["storage_class"] == "cache" for row in survey["top_roots"])
+
+
 def test_non_utf8_filename_is_escaped_in_the_report(tmp_path, monkeypatch):
     from contextlib import nullcontext
     from types import SimpleNamespace
