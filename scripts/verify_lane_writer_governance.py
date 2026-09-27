@@ -65,9 +65,6 @@ def _read_file(root: Path, relative: object) -> bytes:
 
 
 def _python_writer(source: str) -> bool:
-    # Avoid parsing the rest of the repository for this always-on sentinel.
-    if not any(token in source for token in ("lanes", *CONSTRUCTORS)):
-        return False
     tree = ast.parse(source)
     assignments: dict[str, ast.expr] = {}
     aliases: dict[str, str] = {}

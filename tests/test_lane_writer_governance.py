@@ -95,6 +95,7 @@ def test_manifest_refuses_symlink_files_and_ancestors(tmp_path, field, ancestor)
     "from pathlib import Path\nPath('/mnt/blueprint-work/lanes/g1/new').mkdir()\n",
     "from pathlib import Path\nROOT = Path('/var/lib/blueprint/task-evaluation-inputs')\nOUT = ROOT / 'lanes' / 'arena' / 'new'\nOUT.mkdir()\n",
     "from pathlib import Path as P\nROOT: str = '/mnt/blueprint-work'\nOUT = P(ROOT + '/lanes/g1/new')\nOUT.mkdir()\n",
+    "from pathlib import Path\nPath('/mnt/blueprint-work/' + 'lane' + 's/g1/new').mkdir()\n",
     "from pathlib import Path\nROOT = '/mnt/blueprint-work'\nPath(f'{ROOT}/lanes/g1/new').mkdir()\n",
     "from blueprint_pipeline.control_plane_lane_scratch import create_lane_scratch as make\nmake('g1','new')\n",
     "from .control_plane_lane_scratch import create_lane_scratch\nfactory = create_lane_scratch\nfactory('g1','new')\n",
