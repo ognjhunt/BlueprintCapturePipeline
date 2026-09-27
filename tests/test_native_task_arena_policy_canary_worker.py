@@ -45,16 +45,22 @@ def test_isolated_cell_progress_reaches_outer_log_without_child_console(
             os.close(write_fd)
 
 
-def test_cell_progress_only_emits_fixed_milestones(monkeypatch) -> None:
+def test_cell_progress_only_emits_fixed_milestones(tmp_path, monkeypatch) -> None:
     read_fd, write_fd = os.pipe()
     try:
         monkeypatch.setenv(worker._CELL_PROGRESS_FD_ENV, str(write_fd))
-        worker._emit_cell_progress("isaac_launch_completed", 2)
+        progress_path = tmp_path / "cell_progress.log"
+        worker._emit_cell_progress(
+            "isaac_launch_completed", 2, progress_path=progress_path,
+        )
         with pytest.raises(ValueError, match="policy_canary_cell_progress_invalid"):
             worker._emit_cell_progress("arbitrary_secret", 2)
         os.close(write_fd)
         write_fd = -1
         assert os.read(read_fd, 1024) == (
+            b"BLUEPRINT_POLICY_CANARY_PROGRESS:cell=2:stage=isaac_launch_completed\n"
+        )
+        assert progress_path.read_bytes() == (
             b"BLUEPRINT_POLICY_CANARY_PROGRESS:cell=2:stage=isaac_launch_completed\n"
         )
     finally:
