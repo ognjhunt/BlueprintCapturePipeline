@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import dataclasses
+import errno
 import fcntl
 import hashlib
 import json
@@ -2769,14 +2770,13 @@ def _verify_intake_runtime(
 def _report_break_glass_notes(
     receipt: dict[str, Any], *, root: str | Path, deploy_commit: str
 ) -> None:
-    """Report, once, every break-glass note no earlier deploy reported.
+    """Add unreported break-glass notes to a receipt without marking them.
 
     Operators and agents changed the host by hand over SSH and nothing
     recorded it; a note now does, and this puts every unreported note in the
-    receipt and marks it reported with this commit. It runs after every
-    surface moved and never fails the deploy, which has already happened: a
-    note that cannot be read or marked stays unreported for the next deploy,
-    and this receipt carries an alert instead.
+    receipt. The CLI marks them only after its receipt is safely written. It
+    runs after every surface moved and never fails the deploy, which has
+    already happened: an unreadable note stays unreported for the next deploy.
     """
 
     try:
@@ -2792,12 +2792,6 @@ def _report_break_glass_notes(
         return
     alerts = receipt.setdefault("alerts", [])
     alerts.append(f"break_glass_notes_reported:{len(notes)}")
-    try:
-        mark_break_glass_notes_reported(root, notes, deploy_commit=deploy_commit)
-    except Exception as exc:
-        code = break_glass_refusal_code(exc)
-        receipt["break_glass_notes_error"] = code
-        alerts.append(f"break_glass_notes_not_marked:{code}")
 
 
 def deploy_control_plane_commit(
@@ -3399,7 +3393,50 @@ def _write_receipt_and_return(receipt: dict[str, Any], path: str | None) -> dict
     if path:
         out = Path(path).expanduser().resolve()
         out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(receipt, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+        payload = (json.dumps(receipt, indent=1, sort_keys=True) + "\n").encode("utf-8")
+        descriptor, temporary = tempfile.mkstemp(prefix=f".{out.name}.", suffix=".tmp", dir=out.parent)
+        try:
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(payload)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, out)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(temporary)
+            raise
+    return receipt
+
+
+def _finalize_deploy_receipt(
+    receipt: dict[str, Any], *, path: str | None, notes_root: Path, commit: str
+) -> dict[str, Any]:
+    """Persist before marking notes, keeping the deployed receipt on write failure."""
+
+    notes = receipt.get("break_glass_notes")
+    if not path and isinstance(notes, list) and notes:
+        receipt.setdefault("alerts", []).append("break_glass_notes_not_marked:no_receipt_out")
+    try:
+        _write_receipt_and_return(receipt, path)
+    except OSError as exc:
+        code = errno.errorcode.get(exc.errno, type(exc).__name__)
+        receipt.setdefault("blockers", []).append(f"deploy_receipt_write_failed:{code}")
+        return receipt
+    if not path or not isinstance(notes, list) or not notes:
+        return receipt
+    rows = [{"name": row.get("name"), "note_digest": row.get("digest")}
+            for row in notes if isinstance(row, Mapping)]
+    try:
+        mark_break_glass_notes_reported(notes_root, rows, deploy_commit=commit)
+    except Exception as exc:  # noqa: BLE001 - marking never invalidates an applied deploy
+        code = break_glass_refusal_code(exc)
+        receipt["break_glass_notes_error"] = code
+        receipt.setdefault("alerts", []).append(f"break_glass_notes_not_marked:{code}")
+        try:
+            _write_receipt_and_return(receipt, path)
+        except OSError as rewrite_error:
+            rewrite_code = errno.errorcode.get(rewrite_error.errno, type(rewrite_error).__name__)
+            receipt.setdefault("blockers", []).append(f"deploy_receipt_rewrite_failed:{rewrite_code}")
     return receipt
 
 
@@ -3547,7 +3584,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         break_glass_note = _require_trusted_deploy_source(
             args.source_repo, args.break_glass_note
         )
-        receipt = _run_deploy_with_signal_cleanup(lambda: _write_receipt_and_return({
+        receipt = _run_deploy_with_signal_cleanup(lambda: _finalize_deploy_receipt({
             **deploy_control_plane_commit(
             source_repo=args.source_repo,
             source_commit=args.source_commit,
@@ -3587,7 +3624,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             break_glass_notes_root=DEFAULT_BREAK_GLASS_NOTES_ROOT,
             ),
             "break_glass_note": break_glass_note,
-        }, args.receipt_out))
+        }, path=args.receipt_out, notes_root=DEFAULT_BREAK_GLASS_NOTES_ROOT,
+           commit=args.source_commit))
     except (OSError, ValueError, ControlPlaneReleaseError) as exc:
         print(
             json.dumps(
@@ -3604,7 +3642,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
 
     print(json.dumps(receipt, indent=1, sort_keys=True))
-    return 0
+    return 2 if any(str(code).startswith("deploy_receipt_write_failed:") or
+                    str(code).startswith("deploy_receipt_rewrite_failed:")
+                    for code in receipt.get("blockers", [])) else 0
 
 
 if __name__ == "__main__":  # pragma: no cover
