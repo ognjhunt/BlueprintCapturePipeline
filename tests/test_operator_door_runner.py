@@ -5,8 +5,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Sequence
@@ -228,7 +230,8 @@ def test_retire_scene_workspace_launches_a_bounded_sandboxed_service(config: Doo
     runner = FakeRunner()
     process_spool(config, runner=runner)
 
-    unit = f"blueprint-operator-door-retire-{body['scene_id'][:24]}-{request_id[-8:]}.service"
+    label = hashlib.sha256(body["scene_id"].encode("utf-8")).hexdigest()[:12]
+    unit = f"blueprint-operator-door-retire-{label}-{request_id[-8:]}.service"
     results = str(Path(config.spool_root) / "results")
     env = {"DOOR_REQUEST_ID": request_id, "DOOR_RESULTS_DIR": results, "DOOR_VENV_PYTHON": DoorConfig().venv_python,
            "DOOR_SCENE_ID": body["scene_id"], **extra_env}
@@ -244,3 +247,14 @@ def test_retire_scene_workspace_launches_a_bounded_sandboxed_service(config: Doo
     assert _result(config, request_id) == {**_result(config, request_id), "status": "launched", "unit": unit}
     # A retirement is not a deploy: it neither waits for nor blocks one.
     assert not any(call[:2] == ["systemctl", "list-units"] for call in runner.calls)
+
+
+def test_a_retirement_unit_never_names_its_scene(config: DoorConfig) -> None:
+    """A scene id is caller text; in a unit name it could match `blueprint-*deploy*` and block deploys."""
+
+    request_id = _spooled(config, {"kind": "retire-scene-workspace", "scene_id": "site-deploy-1"})
+    process_spool(config, runner=FakeRunner())
+
+    unit = _result(config, request_id)["unit"]
+    assert "deploy" not in unit and "site" not in unit
+    assert re.fullmatch(r"blueprint-operator-door-retire-[0-9a-f]{12}-[0-9a-f]{8}\.service", unit)

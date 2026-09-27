@@ -13,6 +13,7 @@ spin; only ``pending/`` is writable by the door, everything after it is root's.
 from __future__ import annotations
 
 import datetime as _dt
+import hashlib
 import json
 import os
 import secrets
@@ -118,9 +119,11 @@ _LAUNCHES: dict[str, _LaunchSpec] = {
                           lambda request: request["commit"][:12], _deploy_environment),
     "door-upgrade": _LaunchSpec("blueprint-operator-door-upgrade", "door-upgrade.sh", "30min",
                                 lambda request: request["commit"][:12], _source_environment),
+    # Named by a hash of the scene id, never the id itself: caller text in a unit name could
+    # match `blueprint-*deploy*` and make every deploy wait on a retirement.
     "retire-scene-workspace": _LaunchSpec("blueprint-operator-door-retire", "door-retire-scene-workspace.sh", "2h",
-                                          lambda request: request["scene_id"][:24], _retire_environment,
-                                          _retire_properties),
+                                          lambda request: hashlib.sha256(request["scene_id"].encode("utf-8"))
+                                          .hexdigest()[:12], _retire_environment, _retire_properties),
 }
 
 

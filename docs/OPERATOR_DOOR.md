@@ -121,8 +121,9 @@ tokens that should be able to ship; `read` and `operate` never run code.
 
 Every script runs in a transient unit named
 `blueprint-operator-door-{deploy,upgrade}-<sha12>-<id8>.service` or
-`blueprint-operator-door-retire-<scene24>-<id8>.service`, so the request view
-shows its live state. Each unit's `RuntimeMaxSec` equals its start timeout,
+`blueprint-operator-door-retire-<sha256(scene_id)[:12]>-<id8>.service` (a hash, so
+a scene id can never match `blueprint-*deploy*`), and the request view shows its live
+state. Each unit's `RuntimeMaxSec` equals its start timeout,
 because `TimeoutStartSec` does not bound an `exec` unit once it has started:
 deploy 3 h, door upgrade 30 min, retirement 2 h. A retirement unit is further
 sandboxed (`ProtectSystem=strict`, `PrivateTmp`, `NoNewPrivileges`) and may write
