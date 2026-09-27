@@ -35,6 +35,7 @@ opened.
 This module is also a standalone maintenance entrypoint; it never allocates a
 provider or changes the scientific release used by a live run.
 """
+
 from __future__ import annotations
 
 import argparse

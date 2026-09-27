@@ -672,9 +672,9 @@ def test_scratch_inputs_release_refuses_a_tree_that_crosses_a_device(tmp_path: P
         inside = str(path) == str(mounted) or str(path).startswith(str(mounted) + os.sep)
         return _OnDevice(info, elsewhere) if inside else info
 
-    monkeypatch.setattr(os, "lstat", lstat)
-    released = replay._release_scratch_inputs(inputs)
-    monkeypatch.undo()
+    with monkeypatch.context() as patched:
+        patched.setattr(os, "lstat", lstat)
+        released = replay._release_scratch_inputs(inputs)
 
     assert released == {"files": 0, "inodes": 0, "bytes": 0, "refused": "replay_scratch_inputs_cross_device"}
     assert (inputs / "preparation" / "mounted" / "theirs.bin").exists() and (inputs / "preparation" / "ours.bin").exists()
