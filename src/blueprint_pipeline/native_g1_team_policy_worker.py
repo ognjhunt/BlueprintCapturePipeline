@@ -292,7 +292,7 @@ def run_g1_team_policy_worker(
     return result
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def _argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     for name in (
         "execution-packet", "scene-packet-root", "runtime-provisioning-receipt",
@@ -304,6 +304,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--sonic-decoder-sha256", required=True)
     parser.add_argument("--credential-file", type=Path)
     parser.add_argument("--max-steps", type=int, default=3000)
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = _argument_parser()
     args = parser.parse_args(argv)
     result = run_g1_team_policy_worker(
         execution_packet_path=args.execution_packet,

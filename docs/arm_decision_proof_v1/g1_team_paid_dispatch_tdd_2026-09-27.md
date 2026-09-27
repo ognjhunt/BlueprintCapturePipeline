@@ -139,3 +139,41 @@ review, not a new human rights approval or proof of live execution.
 Main integration on PR #2351: merged tokenizer fix `fe6061cc...` into the draft;
 27 focused worker/output/assembly/episode/tokenizer tests passed. The draft is
 still not an operational selected-policy launch and is not ready to merge.
+
+## Implementation checkpoint: supervised selected worker
+
+2026-09-27: the owner scope remains the **same existing Franka run
+configurator**, extended through embodiment → compatible policy/configuration
+→ actual episode → private results. A separate setup form or a selector-only
+integration is not an acceptable replacement. PR #737's G1 component is
+currently nested in `PolicyCanarySetup`; preserve that integration.
+
+Implemented a callable/CLI selected-worker supervisor. It runs one actual
+child, retains a private log and digest-bound exit receipt, enforces a maximum
+45-minute episode deadline, and terminates the child process group on timeout.
+A zero exit after native Isaac close can recover only the exact bound preclose
+and completed supervised episode. The paid-output verifier additionally
+requires the retained zero-exit receipt and every score/frame/video byte.
+Timeouts, failed exits, foreign preclose, missing exit evidence and missing
+media are not completed attempts. Provider teardown and billing stay unproven
+in these worker receipts.
+
+Test-first verification: new tests initially failed on the missing supervisor;
+14 selected-worker/output tests passed after implementation, including real
+subprocess exits and timeout, and the new runner's normal/native-close paths
+against retained shared-scene lifecycle evidence. Changed-file Ruff and CLI
+import/help pass. This is hermetic worker proof, not live team-policy inference.
+
+Final focused selected-worker/worker/output/episode/packet run: 23 passed;
+changed-file Ruff and whitespace checks pass. The shared canary import-closure
+run exposed an omission from PR #2404: `native_g1_policy_server_supervisor`
+imports `native_g1_pi_tokenizer_assets`, which was absent from the shared runtime
+module list. Added it; all six closure tests now pass, including sealed-bundle
+isolated imports. All 19 policy-canary lifecycle rehearsal cases passed in the
+combined run. The one-line closure repair is also submitted independently as
+PR #2406 so unfinished selected-policy wiring does not hold that repair back.
+
+Still required: exact selected provider bundle, current authority recheck after
+admission, canonical selected-profile allocator/queue/settlement, separate
+policy runtimes for OCI/artifact delivery, live delivery-mode qualification,
+private owner URL, coordinated merge/deploy and deployed workflow proof.

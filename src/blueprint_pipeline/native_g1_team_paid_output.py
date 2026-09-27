@@ -26,6 +26,7 @@ from .native_g1_team_policy_execution_packet import SCHEMA as PACKET_SCHEMA
 from .native_g1_team_runtime_session import CONFORMANCE_FILENAME, SESSION_SCHEMA
 from .native_g1_team_scored_scene_episode import RESULT_FILENAME as EPISODE_FILENAME
 from .native_g1_team_supervised_episode import FILENAME as SUPERVISED_FILENAME
+from .native_g1_team_worker_supervisor import valid_g1_team_worker_exit
 
 
 SCHEMA = "native_g1_team_paid_output_verification.v1"
@@ -85,7 +86,7 @@ def verify_g1_team_paid_output(
         or worker.get("provider_teardown_verified") is not False
         or worker.get("official_billing_reconciled") is not False
         or worker.get("public_redistribution_authorized") is not False
-        or worker.get("teardown") != {"environment": "closed", "simulator": "closed"}
+        or not valid_g1_team_worker_exit(output_dir=root, worker=worker, preclose=preclose)
         or preclose.get("schema_version") != PRECLOSE_SCHEMA
         or preclose.get("status") != "awaiting_simulator_close"
         or preclose.get("execution_packet_digest") != execution_packet["packet_digest"]
