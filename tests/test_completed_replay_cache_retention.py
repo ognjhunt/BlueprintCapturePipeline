@@ -950,3 +950,39 @@ def test_scratch_inputs_rule_is_opt_in_and_unit_unchanged(tmp_path, monkeypatch,
                                      "--report-root", str(reports), "--reclaim-scratch-inputs"])
     with pytest.raises(SystemExit):
         gc.main()
+
+
+def test_directories_the_scratch_inputs_leave_empty_are_removed_and_nothing_else(tmp_path, monkeypatch):
+    """Once a row's scratch inputs are gone, the directories left empty inside prepared-references
+    go too, deepest first, each opened O_NOFOLLOW from its parent's descriptor and removed
+    relative to it. prepared-references itself stays, as do a directory still holding a kept
+    file, a link to a directory (never entered) and every directory outside prepared-references.
+    A directory still holding something is simply kept; any other failure is a typed skip."""
+    root, child, data, proc = setup(tmp_path)
+    data.unlink()
+    inputs = child / "prepared-references"
+    deep = _scratch_input(child, "prep/a/b/c/input.bin", b"deep")
+    newer = _scratch_input(child, "prep/kept/newer.bin", b"written after the report", seconds_before_report=-5)
+    (inputs / "prep" / "empty" / "nested").mkdir(parents=True)
+    (inputs / "prep" / "stuck").mkdir()
+    outside = tmp_path / "outside"
+    (outside / "empty").mkdir(parents=True)
+    (inputs / "prep" / "link").symlink_to(outside, target_is_directory=True)
+    (child / "launch-preparations" / "pending").mkdir(parents=True)
+    p = plan(root, proc, **SCRATCH)
+    real_rmdir = os.rmdir
+
+    def rmdir(path, *args, **kwargs):
+        if path == "stuck":
+            raise PermissionError(errno.EACCES, "denied")
+        return real_rmdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "rmdir", rmdir)
+    result = apply(p, proc, **SCRATCH)
+    monkeypatch.setattr(os, "rmdir", real_rmdir)
+
+    assert result["removed_bytes"] == len(b"deep") and not deep.exists()
+    assert result["skipped"] == [{"path": str(inputs / "prep" / "stuck"), "reason": "rmdir_failed:PermissionError"}]
+    assert not (inputs / "prep" / "a").exists() and not (inputs / "prep" / "empty").exists()
+    assert newer.exists() and (inputs / "prep" / "stuck").is_dir() and (inputs / "prep" / "link").is_symlink()
+    assert inputs.is_dir() and (outside / "empty").is_dir() and (child / "launch-preparations" / "pending").is_dir()

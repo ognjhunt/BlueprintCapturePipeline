@@ -14,8 +14,9 @@ status. ``reclaim_scratch_inputs`` (storage GC's alone as well) goes further
 for a finished parent replay, which made ``prepared-references`` in its own
 temporary root: every regular file there whose links are all inside it and
 that is not newer than the report is scratch, digest-named or not, and goes
-with every name. It subsumes the store-copy rule for that replay, so no inode
-is counted twice. Without the opt-ins the rules are the ones this module
+with every name; the directories left empty inside the tree go after it, and
+the tree itself stays. It subsumes the store-copy rule for that replay, so no
+inode is counted twice. Without the opt-ins the rules are the ones this module
 always had.
 Apply rechecks and unlinks every name, and hashes what a rule's digest rests
 on, through directory descriptors held from the replay child down, never
@@ -28,6 +29,7 @@ provider or changes the scientific release used by a live run.
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import json
 import os
@@ -333,6 +335,46 @@ def _remove_scratch_input(held, group, names):
     """Recheck and unlink every name of a planned scratch input. Its bytes are never read:
     nothing that makes it scratch depends on them."""
     return _remove_group(held, group, names, changed="scratch_input_changed")
+
+
+# rmdir of a directory that still holds anything: POSIX allows either.
+_NOT_EMPTY = (errno.ENOTEMPTY, errno.EEXIST)
+
+
+def _remove_empty_directories(held, root):
+    """Remove the directories left empty inside the child's scratch inputs, deepest first; typed skips.
+
+    Each directory is opened O_NOFOLLOW from its parent's descriptor and removed by rmdir
+    relative to it, so a link is never entered or removed and nothing outside
+    ``prepared-references`` is reached; ``prepared-references`` itself stays. One descriptor
+    per level is open at a time. A directory that still holds anything is simply kept.
+    """
+    skipped = []
+
+    def failed(parts, exc):
+        skipped.append({"path": str(root.joinpath(_SCRATCH_INPUTS, *parts)),
+                        "reason": f"rmdir_failed:{type(exc).__name__}"})
+
+    def prune(directory, parts):
+        for name in sorted(os.listdir(directory)):
+            try:
+                if not stat.S_ISDIR(_leaf(directory, name).st_mode):
+                    continue
+                inner = os.open(name, _DIRECTORY_FLAGS, dir_fd=directory)
+                try:
+                    prune(inner, (*parts, name))
+                finally:
+                    os.close(inner)
+                os.rmdir(name, dir_fd=directory)
+            except OSError as exc:
+                if exc.errno not in _NOT_EMPTY:
+                    failed((*parts, name), exc)
+
+    try:
+        prune(held.directory((_SCRATCH_INPUTS,)), ())
+    except OSError as exc:
+        failed((), exc)
+    return skipped
 
 
 def _remove_group(held, group, names, *, changed, sha256=None):
@@ -680,6 +722,8 @@ def apply_replay_cache_retention(
                     # A store copy's digest was verified; a scratch input's bytes were never read.
                     verified = {"sha256": group["sha256"]} if remove is _remove_store_copy else {}
                     removed.append({"paths": paths, **verified, "size_bytes": group["size_bytes"]})
+            if row.get("scratch_inputs"):
+                skipped.extend(held.item(_remove_empty_directories, root))
         finally:
             held.close()
     return {
