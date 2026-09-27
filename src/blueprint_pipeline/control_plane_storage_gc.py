@@ -1103,6 +1103,7 @@ def retire_scene_workspaces(
         "status": "applied" if applying else "dry_run",
         "enabled": bool(enabled),
         "candidate_count": 0,
+        "candidate_bytes": 0,
         "attempted_count": 0,
         "retired_count": 0,
         "retired_bytes": 0,
@@ -1149,6 +1150,7 @@ def retire_scene_workspaces(
                     rows.append({**row, "status": "retained", "reasons": plan["reasons"][:5]})
                     continue
                 report["candidate_count"] += 1
+                report["candidate_bytes"] += int(plan["totals"]["workspace_allocated_bytes"])
                 if not applying or report["attempted_count"] >= max_retirements:
                     rows.append({**row, "status": "retirable",
                                  "workspace_allocated_bytes": plan["totals"]["workspace_allocated_bytes"],

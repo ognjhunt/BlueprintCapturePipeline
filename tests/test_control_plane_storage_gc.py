@@ -1214,6 +1214,9 @@ def test_gc_phase_retires_verified_terminal_workspace(tmp_path) -> None:
     receipt = scene.parent / "scene-1.retired.v1.json"
     assert (phase["status"], phase["enabled"]) == ("applied", True)
     assert (phase["candidate_count"], phase["retired_count"]) == (1, 1)
+    assert phase["candidate_bytes"] >= phase["retired_bytes"] > 0
+    from blueprint_pipeline.control_plane_storage_gc_reasons import build_storage_gc_summary
+    assert build_storage_gc_summary(report)["phases"]["scene_workspaces"]["candidate_bytes"] == phase["candidate_bytes"]
     assert phase["retired_bytes"] > 0 and phase["archive_bytes"] > 0 and phase["retained_counts"] == {}
     assert phase["results"] == [{"bucket": "capture-bucket", "scene_id": "scene-1", "status": "retired",
                                  "receipt": str(receipt), "removal_complete": True}]
@@ -1221,7 +1224,8 @@ def test_gc_phase_retires_verified_terminal_workspace(tmp_path) -> None:
     assert "phase_errors" not in report
 
     again = run_storage_gc(**common, apply=True, ack=RUN_ACK, scene_workspace_retirement_enabled=True)
-    assert again["scene_workspaces"]["candidate_count"] == 0 and receipt.is_file()
+    assert (again["scene_workspaces"]["candidate_count"], again["scene_workspaces"]["candidate_bytes"]) == (0, 0)
+    assert receipt.is_file()
 
 
 def test_gc_phase_only_plans_without_the_opt_in(tmp_path) -> None:
@@ -1400,6 +1404,7 @@ def test_the_tick_bounds_retirement_attempts_not_only_successes(tmp_path, monkey
 
     assert attempts == ["scene-0", "scene-1"]
     assert (report["attempted_count"], report["retired_count"], report["candidate_count"]) == (2, 0, 3)
+    assert report["candidate_bytes"] == 30
     assert [row["status"] for row in report["results"]] == ["skipped", "skipped", "retirable"]
 
 
