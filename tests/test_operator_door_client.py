@@ -160,6 +160,28 @@ def test_unit_and_upgrade_requests(door: dict[str, Any]) -> None:
     assert kinds == ["door-upgrade", "unit"]
 
 
+@pytest.mark.parametrize(("duration", "seconds"), [("2h", 7200), ("90m", 5400), ("3600s", 3600)])
+def test_hold_client_spools_owner_reason_and_duration(door: dict[str, Any], duration: str, seconds: int) -> None:
+    code, out = _run("hold", "blueprint-scene-progression.timer", "--owner", "alice",
+                     "--reason", "inspect capture", "--for", duration)
+    request_id = json.loads(out)["id"]
+    spooled = json.loads((door["state"] / "requests" / "pending" / f"{request_id}.json").read_text())
+    assert code == 0 and spooled["request"] == {"kind": "hold", "unit": "blueprint-scene-progression.timer",
+                                                "owner": "alice", "reason": "inspect capture",
+                                                "expires_in_seconds": seconds}
+    code, out = _run("release-hold", "blueprint-scene-progression.timer")
+    release = json.loads((door["state"] / "requests" / "pending" / f"{json.loads(out)['id']}.json").read_text())
+    assert code == 0 and release["request"] == {"kind": "release-hold", "unit": "blueprint-scene-progression.timer"}
+
+
+@pytest.mark.parametrize("duration", ["0s", "59s", "25h", "1d", "1.5h", "60m; echo bad"])
+def test_hold_client_rejects_invalid_duration(duration: str) -> None:
+    with pytest.raises(SystemExit) as caught:
+        client.build_parser().parse_args(["hold", "blueprint-scene-progression.timer", "--owner", "alice",
+                                          "--reason", "inspect", "--for", duration])
+    assert caught.value.code == 2
+
+
 def test_wait_returns_when_the_outcome_lands(door: dict[str, Any]) -> None:
     code, out = _run("deploy", SHA)
     request_id = json.loads(out)["id"]

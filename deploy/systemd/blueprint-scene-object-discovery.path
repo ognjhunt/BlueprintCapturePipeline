@@ -1,4 +1,7 @@
 [Unit]
+Wants=blueprint-operator-door-hold-sweep.service
+After=blueprint-operator-door-hold-sweep.service
+ConditionPathExists=!/var/lib/blueprint-operator-door/requests/holds/blueprint-scene-object-discovery.path.json
 Description=Watch the durable Blueprint scene-object discovery queue
 
 [Path]

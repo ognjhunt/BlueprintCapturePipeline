@@ -10,10 +10,13 @@ from __future__ import annotations
 import datetime as _dt
 import json
 import os
+import stat
+import time
 from pathlib import Path
 from typing import Any, Callable
 
 from . import VERSION
+from . import holds as hold_records
 from .config import DoorConfig
 from .hostinfo import HostInfo
 from .secrets_guard import scan_bytes
@@ -26,6 +29,7 @@ _CAPACITY_KEYS = (
     "volume_resize", "truncated",
 )
 _MAX_JSON_BYTES = 256 * 1024
+_MAX_BREAK_GLASS_LEDGER_BYTES = 16 * 1024 * 1024
 
 
 def _section(builder: Callable[[], Any], code: str) -> Any:
@@ -46,6 +50,59 @@ def _small_json(path: Path) -> Any:
     if scan_bytes(data) is not None:
         raise SecretContentRefused("secret_content")
     return json.loads(data)
+
+
+def _regular_bytes(path: Path, limit: int) -> bytes:
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
+            raise ValueError("unsafe_file")
+        data = os.read(fd, limit + 1)
+    finally:
+        os.close(fd)
+    if len(data) > limit:
+        raise ValueError("too_large")
+    return data
+
+
+def _break_glass(config: DoorConfig) -> dict[str, Any]:
+    root = Path(config.control_plane_state) / "cleanup-receipts"
+    if not root.exists() and not root.is_symlink():
+        return {"unreported": 0, "latest": None}
+    if root.is_symlink() or not root.is_dir():
+        raise ValueError("notes_root_unsafe")
+    reported: set[str] = set()
+    ledger = root / "reported.jsonl"
+    if ledger.exists() or ledger.is_symlink():
+        for line in _regular_bytes(ledger, _MAX_BREAK_GLASS_LEDGER_BYTES).splitlines():
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(row, dict) and isinstance(row.get("name"), str):
+                reported.add(row["name"])
+    notes = sorted(root.glob("*.json"))
+    if len(notes) > 10_000:
+        raise ValueError("too_many_notes")
+    unreported = [path for path in notes if path.name not in reported]
+    latest: tuple[int, dict[str, str]] | None = None
+    for path in unreported:
+        raw = _regular_bytes(path, _MAX_JSON_BYTES)
+        if scan_bytes(raw) is not None:
+            continue
+        try:
+            note = json.loads(raw)
+        except ValueError:
+            continue
+        if not isinstance(note, dict) or type(note.get("created_at_epoch")) is not int:
+            continue
+        if not all(isinstance(note.get(key), str) for key in ("created_at", "operator", "reason")):
+            continue
+        summary = {key: note[key] for key in ("created_at", "operator", "reason")}
+        if latest is None or note["created_at_epoch"] > latest[0]:
+            latest = (note["created_at_epoch"], summary)
+    return {"unreported": len(unreported), "latest": latest[1] if latest is not None else None}
 
 
 def _deployed(host: HostInfo) -> dict[str, Any]:
@@ -94,6 +151,15 @@ def _door_requests(config: DoorConfig) -> dict[str, int]:
     return {state: len(list((spool / state).glob("*.json"))) for state in ("pending", "processing")}
 
 
+def _holds(config: DoorConfig) -> list[dict[str, Any]]:
+    now = time.time()
+    records = hold_records.active(Path(config.spool_root) / "holds")
+    keys = ("unit", "owner", "reason", "requested_by", "request_id", "created_at", "expires_at")
+    return [{**{key: record[key] for key in keys},
+             "remaining_seconds": max(0, int(record["expires_at_epoch"] - now)),
+             "expired": record["expires_at_epoch"] <= now} for record in records]
+
+
 def build_status(config: DoorConfig, host: HostInfo, *, caller: dict[str, Any]) -> dict[str, Any]:
     state = Path(config.control_plane_state)
     return {
@@ -124,4 +190,6 @@ def build_status(config: DoorConfig, host: HostInfo, *, caller: dict[str, Any]) 
         "capacity": _section(lambda: _capacity(config), "capacity_unavailable"),
         "load": _section(host.load, "load_unavailable"),
         "door_requests": _section(lambda: _door_requests(config), "door_requests_unavailable"),
+        "holds": _section(lambda: _holds(config), "holds_unavailable"),
+        "break_glass": _section(lambda: _break_glass(config), "break_glass_unavailable"),
     }

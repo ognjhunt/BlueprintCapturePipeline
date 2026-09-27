@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -408,6 +409,13 @@ def test_run_cli_reads_roots_from_the_unit_environment(tmp_path, monkeypatch, ca
     assert written["schema_version"] == "control_plane_storage_gc_run.v1"
     assert written["status"] == "dry_run"
     assert json.loads(capsys.readouterr().out)["report_digest"] == written["report_digest"]
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "deploy" / "operator-door"))
+    from operator_door.config import DoorConfig
+    from operator_door.fsview import FileView
+
+    door = FileView(DoorConfig(read_roots=(str(tmp_path),), hidden_paths=()))
+    contents, _ = door.read_range(str(report))
+    assert json.loads(contents)["report_digest"] == written["report_digest"]
     monkeypatch.delenv("BLUEPRINT_CONTROL_PLANE_STORAGE_PINS_ROOT")
     with pytest.raises(ControlPlaneStorageGCError, match="pins_root_missing"):
         gc_main(["run"])
@@ -415,6 +423,71 @@ def test_run_cli_reads_roots_from_the_unit_environment(tmp_path, monkeypatch, ca
 
 RUNNING_COMMIT = "a" * 40
 STALE_COMMIT = "b" * 40
+
+
+def test_latest_gc_report_is_readable_by_the_operator_door_after_each_tick(tmp_path) -> None:
+    report_dir = tmp_path / "storage-gc"
+    report_dir.mkdir(mode=0o700)
+    path = report_dir / "latest.json"
+
+    for status in ("dry_run", "applied"):
+        gc_module._write_report(path, {"status": status})
+        assert report_dir.stat().st_mode & 0o777 == 0o755
+        assert path.stat().st_mode & 0o777 == 0o644
+        assert json.loads(path.read_text(encoding="utf-8")) == {"status": status}
+
+
+def test_report_reclaims_a_directory_owned_by_the_previous_service_user(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "storage-gc" / "latest.json"
+    path.parent.mkdir(mode=0o700)
+    original_fchmod = os.fchmod
+    calls: list[tuple[int, int]] = []
+
+    def previous_owner_blocks_chmod(fd: int, mode: int) -> None:
+        if not calls:
+            raise PermissionError("old service user owns report directory")
+        original_fchmod(fd, mode)
+
+    def change_owner(fd: int, uid: int, gid: int) -> None:
+        calls.append((uid, gid))
+
+    monkeypatch.setattr(os, "fchmod", previous_owner_blocks_chmod)
+    monkeypatch.setattr(os, "fchown", change_owner)
+    gc_module._write_report(path, {"status": "dry_run"})
+
+    assert calls == [(os.geteuid(), -1)]
+    assert path.parent.stat().st_mode & 0o777 == 0o755
+    assert path.stat().st_mode & 0o777 == 0o644
+
+
+def test_report_publication_stays_bound_to_checked_directory(tmp_path, monkeypatch) -> None:
+    report_dir = tmp_path / "storage-gc"
+    report_dir.mkdir()
+    moved_dir = tmp_path / "moved-storage-gc"
+    other_dir = tmp_path / "other"
+    other_dir.mkdir()
+    other_report = other_dir / "latest.json"
+    other_report.write_text('and keep this report', encoding="utf-8")
+    original_fchmod = os.fchmod
+    retargeted = False
+
+    def retarget_after_directory_check(fd: int, mode: int) -> None:
+        nonlocal retargeted
+        original_fchmod(fd, mode)
+        if stat.S_ISDIR(os.fstat(fd).st_mode) and not retargeted:
+            report_dir.rename(moved_dir)
+            report_dir.symlink_to(other_dir, target_is_directory=True)
+            retargeted = True
+
+    monkeypatch.setattr(os, "fchmod", retarget_after_directory_check)
+    with pytest.raises(ControlPlaneStorageGCError, match="storage_gc_report_directory_retargeted"):
+        gc_module._write_report(report_dir / "latest.json", {"status": "dry_run"})
+
+    assert retargeted
+    assert other_report.read_text(encoding="utf-8") == 'and keep this report'
+    assert json.loads((moved_dir / "latest.json").read_text(encoding="utf-8")) == {
+        "status": "dry_run"
+    }
 
 
 def _queue_row(root: Path, state: str, name: str, *, commit: str | None) -> Path:

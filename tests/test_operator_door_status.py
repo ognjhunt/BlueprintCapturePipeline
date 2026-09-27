@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Sequence
 
@@ -200,8 +201,45 @@ def test_status_assembles_every_section(host_tree: dict[str, Path]) -> None:
     assert status["spend_guard"] == {"live_resource_count": 0, "spend_usd": 1.2}
     assert status["failed_units"] == ["blueprint-a.service"]
     assert status["door_requests"] == {"pending": 1, "processing": 0}
+    assert status["holds"] == []
+    assert status["break_glass"] == {"unreported": 0, "latest": None}
     assert status["door"]["caller"] == {"name": "cloud"}
     assert set(status["disk"]) and "loadavg" in status["load"]
+
+
+def test_status_shows_active_and_overdue_holds_with_remaining_seconds(host_tree: dict[str, Path]) -> None:
+    root = host_tree["base"] / "door" / "requests" / "holds"
+    root.mkdir()
+    now = int(time.time())
+    for unit, expiry in (("blueprint-scene-progression.timer", now + 120),
+                         ("blueprint-pubsub-handoff-listener.timer", now - 1)):
+        (root / f"{unit}.json").write_text(json.dumps({
+            "schema": "blueprint_operator_door_hold.v1", "unit": unit, "owner": "alice",
+            "reason": "inspect", "requested_by": "cloud", "request_id": "20260926T120000Z-hold-0000abcd",
+            "created_at": "2026-09-26T12:00:00+00:00", "expires_at": "2026-09-26T13:00:00+00:00",
+            "expires_at_epoch": expiry, "status": "active"}), encoding="utf-8")
+    status = build_status(_config(host_tree), _host(host_tree, FakeRunner({})), caller={})
+    assert len(status["holds"]) == 2
+    hold = next(row for row in status["holds"] if row["unit"] == "blueprint-scene-progression.timer")
+    assert hold["unit"] == "blueprint-scene-progression.timer" and hold["owner"] == "alice"
+    assert 0 < hold["remaining_seconds"] <= 120
+    overdue = next(row for row in status["holds"] if row["unit"] == "blueprint-pubsub-handoff-listener.timer")
+    assert overdue["remaining_seconds"] == 0 and overdue["expired"] is True
+
+
+def test_status_counts_unreported_break_glass_notes(host_tree: dict[str, Path]) -> None:
+    root = host_tree["state"] / "cleanup-receipts"
+    root.mkdir()
+    old = "20260926T120000Z-0123456789ab.json"
+    new = "20260927T120000Z-abcdef012345.json"
+    for name, epoch, operator in ((old, 1790424000, "alice"), (new, 1790510400, "bob")):
+        (root / name).write_text(json.dumps({"created_at_epoch": epoch, "created_at": "2026-09-27T12:00:00Z",
+                                             "operator": operator, "reason": "door repair"}), encoding="utf-8")
+    (root / "reported.jsonl").write_text(json.dumps({"name": old}) + "\n", encoding="utf-8")
+    status = build_status(_config(host_tree), _host(host_tree, FakeRunner({})), caller={})
+    assert status["break_glass"] == {"unreported": 1,
+                                     "latest": {"created_at": "2026-09-27T12:00:00Z",
+                                                "operator": "bob", "reason": "door repair"}}
 
 
 def test_status_survives_a_failing_section(host_tree: dict[str, Path]) -> None:

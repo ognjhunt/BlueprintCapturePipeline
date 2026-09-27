@@ -1,4 +1,7 @@
 [Unit]
+Wants=blueprint-operator-door-hold-sweep.service
+After=blueprint-operator-door-hold-sweep.service
+ConditionPathExists=!/var/lib/blueprint-operator-door/requests/holds/blueprint-task-evaluation-episode-compilation.path.json
 Description=Watch the Blueprint Task Evaluation episode compilation queue
 
 [Path]

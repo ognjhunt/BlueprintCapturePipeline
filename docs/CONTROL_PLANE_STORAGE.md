@@ -520,8 +520,12 @@ are reported separately and never invalidate proven resource closure.
 `python -m blueprint_pipeline.control_plane_storage_gc run --apply --ack reclaim-control-plane-storage`
 hourly (`OnUnitInactiveSec=1h`: an hour after the previous tick finished) as
 `root`, confined by its unit to the roots it may write, and writes
-`/var/lib/blueprint/pipeline-control-plane/storage-gc/latest.json`. One tick runs
-nine phases in order:
+`/var/lib/blueprint/pipeline-control-plane/storage-gc/latest.json`. The report
+directory is traversable (0755) and the atomic report is readable (0644), so the
+owner can inspect it with `python3 scripts/operator_door.py cat
+/var/lib/blueprint/pipeline-control-plane/storage-gc/latest.json` before enabling
+scene-workspace retirement. The door still scans report content for secrets.
+One tick runs nine phases in order:
 
 1. **Stranded queue rows**: pending rows bound to a release other than the
    running one move to `stranded/` beside a receipt, so they stop counting as

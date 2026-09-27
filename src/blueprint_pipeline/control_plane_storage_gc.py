@@ -54,8 +54,8 @@ from pathlib import Path
 from typing import Any
 
 import os
+import secrets
 import shutil
-import tempfile
 
 from .control_plane_evidence_offload import (
     DEFAULT_HOT_WINDOW_SECONDS,
@@ -1529,12 +1529,43 @@ def _env_int(name: str, default: int | None) -> int | None:
 
 
 def _write_report(path: Path, report: Mapping[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
-    descriptor, temporary = tempfile.mkstemp(prefix=".gc-report-", dir=path.parent)
-    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-        json.dump(report, stream, indent=2, sort_keys=True)
-        stream.write("\n")
-    os.replace(temporary, path)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
+    # The door runs without root privileges. Repair directories created by older
+    # ticks under the service's 0077 umask before publishing the secret-free report.
+    parent_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        try:
+            os.fchmod(parent_fd, 0o755)
+        except PermissionError:
+            # Earlier GC units ran as blueprint. The current root unit has
+            # CAP_CHOWN but not CAP_FOWNER, so take ownership before chmod.
+            os.fchown(parent_fd, os.geteuid(), -1)
+            os.fchmod(parent_fd, 0o755)
+        temporary = f".gc-report-{secrets.token_hex(12)}"
+        descriptor = os.open(
+            temporary,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o600,
+            dir_fd=parent_fd,
+        )
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                json.dump(report, stream, indent=2, sort_keys=True)
+                stream.write("\n")
+                stream.flush()
+                os.fchmod(stream.fileno(), 0o644)
+            os.replace(temporary, path.name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+        finally:
+            try:
+                os.unlink(temporary, dir_fd=parent_fd)
+            except FileNotFoundError:
+                pass
+        published_parent = os.stat(path.parent, follow_symlinks=False)
+        bound_parent = os.fstat(parent_fd)
+        if (published_parent.st_dev, published_parent.st_ino) != (bound_parent.st_dev, bound_parent.st_ino):
+            raise ControlPlaneStorageGCError("storage_gc_report_directory_retargeted")
+    finally:
+        os.close(parent_fd)
 
 
 def _run_main(argv: list[str]) -> int:

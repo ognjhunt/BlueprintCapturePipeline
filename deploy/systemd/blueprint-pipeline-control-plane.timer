@@ -1,4 +1,7 @@
 [Unit]
+Wants=blueprint-operator-door-hold-sweep.service
+After=blueprint-operator-door-hold-sweep.service
+ConditionPathExists=!/var/lib/blueprint-operator-door/requests/holds/blueprint-pipeline-control-plane.timer.json
 Description=Run Blueprint live pipeline control-plane periodically
 
 [Timer]
