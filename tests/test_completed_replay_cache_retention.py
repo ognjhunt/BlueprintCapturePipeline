@@ -136,7 +136,14 @@ def _store_copy(child, payload, *, directory=("prepared-references", "content-ad
 
 
 def planned_paths(p):
-    return {f["relative_path"] for row in p["rows"] for f in row["files"]}
+    return {f["relative_path"] for row in p["rows"] for f in row["files"]} | {
+        name for row in p["rows"] for copy in row["store_copies"] for name in copy["relative_paths"]}
+
+
+def reseal(p, row):
+    forged = {**p, "rows": [row]}
+    forged["plan_digest"] = gc.digest({k: v for k, v in forged.items() if k != "plan_digest"})
+    return forged
 
 
 def test_content_addressed_scratch_copies_are_reclaimable(tmp_path):
@@ -150,7 +157,10 @@ def test_content_addressed_scratch_copies_are_reclaimable(tmp_path):
 
     assert planned_paths(p) == {"working.ply", str(copy.relative_to(child))}
     [row] = p["rows"]
-    assert {f["relative_path"]: f["sha256"] for f in row["files"]}[str(copy.relative_to(child))] == "sha256:" + copy.name
+    info = copy.stat()
+    assert row["store_copies"] == [{
+        "relative_paths": [str(copy.relative_to(child))], "inode": info.st_ino, "nlink": 1,
+        "size_bytes": info.st_size, "mtime_ns": info.st_mtime_ns, "sha256": "sha256:" + copy.name}]
     assert p["candidate_bytes"] == 100000 + len(b"a small read-only store blob")
     result = gc.apply_replay_cache_retention(p, ack=gc.ACK, process_root=proc)
     assert result["removed_bytes"] == p["candidate_bytes"]
@@ -160,28 +170,83 @@ def test_content_addressed_scratch_copies_are_reclaimable(tmp_path):
     assert plan(root, proc)["candidate_bytes"] == 0
 
 
-def test_hardlinked_or_mismatched_scratch_blobs_are_kept(tmp_path):
+def test_linked_scratch_pairs_inside_the_replay_are_reclaimed(tmp_path):
+    """The worker hard-links each blob a preparation references into prepared-references/
+    <preparation>/, so most copies have two names; the bytes are freed only when both go."""
     root, child, data, proc = setup(tmp_path)
     data.unlink()
-    projected = _store_copy(child, b"a copy the replayed preparation also projected")
-    os.link(projected, child / "prepared-references" / projected.name)
+    copy = _store_copy(child, b"a copy the replayed preparation materialized")
+    materialized = child / "prepared-references" / "preparation-1" / "construction-stage-configurations" / copy.name
+    materialized.parent.mkdir(parents=True)
+    os.link(copy, materialized)
+
+    p = plan(root, proc)
+
+    [row] = p["rows"]
+    [group] = row["store_copies"]
+    assert row["files"] == []
+    assert group["relative_paths"] == sorted([str(copy.relative_to(child)), str(materialized.relative_to(child))])
+    assert (group["nlink"], group["sha256"]) == (2, "sha256:" + copy.name)
+    assert p["candidate_bytes"] == len(b"a copy the replayed preparation materialized"), "counted once"
+    result = gc.apply_replay_cache_retention(p, ack=gc.ACK, process_root=proc)
+    assert result["removed_bytes"] == p["candidate_bytes"]
+    assert result["removed"] == [{"paths": [str(child / name) for name in group["relative_paths"]],
+                                  "sha256": group["sha256"], "size_bytes": group["size_bytes"]}]
+    assert not copy.exists() and not materialized.exists()
+    assert (child / "stage_replay_report.v1.json").exists()
+
+
+def test_scratch_inode_linked_outside_the_replay_is_kept(tmp_path):
+    """A copy sharing its inode with a name outside the replay's prepared-references (the
+    production store when linking worked, the scratch queue, anything else) is never planned:
+    removing the names inside would free nothing, and the other name is not the replay's."""
+    root, child, data, proc = setup(tmp_path)
+    data.unlink()
+    production = _store_copy(child, b"linked with the production store")
+    os.link(production, tmp_path / "production-name")
+    queued = _store_copy(child, b"linked from the replay's scratch queue")
+    (child / "launch-preparations").mkdir()
+    os.link(queued, child / "launch-preparations" / queued.name)
+
+    p = plan(root, proc)
+
+    assert (p["rows"], p["candidate_bytes"]) == ([], 0)
+    assert production.exists() and queued.exists()
+
+
+def test_mismatched_or_changed_scratch_copies_are_kept(tmp_path):
+    root, child, data, proc = setup(tmp_path)
+    data.unlink()
     mismatched = _store_copy(child, b"bytes that are not the named digest", name="0" * 64)
     misplaced = _store_copy(child, b"a store name outside the scratch store", directory=("content-addressed", "sha256"))
+    orphan = _store_copy(child, b"a materialized name with no store name", directory=("prepared-references", "prep"))
     newer = _store_copy(child, b"written after the report", seconds_before_report=-5)
-    reclaimable = _store_copy(child, b"a single-link copy")
+    reclaimable = _store_copy(child, b"a copy with a second name")
+    second = child / "prepared-references" / "prep" / reclaimable.name
+    os.link(reclaimable, second)
 
     before = plan(root, proc)
 
-    assert planned_paths(before) == {str(reclaimable.relative_to(child))}
+    assert planned_paths(before) == {str(reclaimable.relative_to(child)), str(second.relative_to(child))}
+    [row] = before["rows"]
+    [group] = row["store_copies"]
 
-    # A resealed plan cannot make a file whose bytes differ from its digest name a store copy.
-    forged = dict(before)
+    # A resealed plan cannot make a file whose bytes differ from its digest name a store copy,
     info = mismatched.stat()
-    forged["rows"] = [{**before["rows"][0], "files": [{
-        "relative_path": str(mismatched.relative_to(child)), "inode": info.st_ino, "mtime_ns": info.st_mtime_ns,
-        "size_bytes": info.st_size, "sha256": gc.file_sha(mismatched)}]}]
-    forged["plan_digest"] = gc.digest({k: v for k, v in forged.items() if k != "plan_digest"})
-    assert gc.apply_replay_cache_retention(forged, ack=gc.ACK, process_root=proc)["removed_bytes"] == 0
+    forged = {"relative_paths": [str(mismatched.relative_to(child))], "inode": info.st_ino, "nlink": 1,
+              "size_bytes": info.st_size, "mtime_ns": info.st_mtime_ns, "sha256": gc.file_sha(mismatched)}
+    assert gc.apply_replay_cache_retention(reseal(before, {**row, "store_copies": [forged]}),
+                                           ack=gc.ACK, process_root=proc)["removed_bytes"] == 0
+    # leave one of a copy's names behind,
+    partial = {**group, "relative_paths": [str(reclaimable.relative_to(child))], "nlink": 1}
+    assert gc.apply_replay_cache_retention(reseal(before, {**row, "store_copies": [partial]}),
+                                           ack=gc.ACK, process_root=proc)["removed_bytes"] == 0
+    # or reach outside the replay's prepared-references.
+    for names in ([group["relative_paths"][0]] * 2, ["stage_replay_report.v1.json"], ["../outside"]):
+        with pytest.raises(ValueError, match="replay_cache_member_unsafe"):
+            gc.apply_replay_cache_retention(
+                reseal(before, {**row, "store_copies": [{**group, "relative_paths": names}]}),
+                ack=gc.ACK, process_root=proc)
 
     # A reader that appears after the plan keeps the copy at apply; the next plan keeps its root.
     process = proc / "123"
@@ -194,13 +259,14 @@ def test_hardlinked_or_mismatched_scratch_blobs_are_kept(tmp_path):
     assert result["skipped"] == [{"root": str(child), "reason": "active_reference"}]
     assert plan(root, proc)["kept"] == [{"root": str(child), "reason": "active_reference"}]
 
-    # Linked after the plan: the copy no longer frees anything and apply rechecks its link count.
+    # Linked elsewhere after the plan: apply rechecks the link count and keeps every name.
     (process / "fd" / "3").unlink()
     os.link(reclaimable, tmp_path / "late-link")
     result = gc.apply_replay_cache_retention(before, ack=gc.ACK, process_root=proc)
     assert result["removed_bytes"] == 0
-    assert result["skipped"] == [{"path": str(reclaimable), "reason": "file_changed"}]
-    for path in (projected, mismatched, misplaced, newer, reclaimable):
+    assert result["skipped"] == [{"paths": [str(child / name) for name in group["relative_paths"]],
+                                  "reason": "copy_changed"}]
+    for path in (mismatched, misplaced, orphan, newer, reclaimable, second):
         assert path.exists(), path
 
 

@@ -141,21 +141,22 @@ def test_a_lookahead_now_keeps_its_report_and_queue_and_no_scratch_inputs(tmp_pa
     assert (tick["replay_caches"]["removed_bytes"], "phase_errors" in tick) == (0, False)
 
 
-def test_a_lookahead_the_replay_leaked_is_reclaimed_down_to_its_projections(tmp_path, monkeypatch) -> None:
-    """The 2026-09-27 backlog as the real replay wrote it, before it released its store: the
-    phase removes every copy nothing else links, keeps the parent report, and keeps each copy
-    the replayed preparation projected, since removing one of its two names frees nothing."""
+def test_a_lookahead_the_replay_leaked_is_reclaimed_with_its_linked_materializations(tmp_path, monkeypatch) -> None:
+    """The 2026-09-27 backlog as the real replay wrote it, before it released its inputs: the
+    phase removes every copy together with the names the worker linked to it, counts each copy
+    once, and keeps the parent report and the scratch queue."""
 
-    report, activations, other = _real_lookahead(tmp_path, monkeypatch, released=False)
-    copies = Path(report["report_path"]).parent / "prepared-references" / "content-addressed" / "sha256"
-    projected = {path.name for path in copies.iterdir() if path.stat().st_nlink > 1}
-    assert projected and len(projected) == len(list(copies.iterdir())) - 1
+    report, activations, _other = _real_lookahead(tmp_path, monkeypatch, released=False)
+    inputs = Path(report["report_path"]).parent / "prepared-references"
+    names = [path for path in inputs.rglob("*") if path.is_file() and not path.is_symlink()]
+    copies = {(path.stat().st_dev, path.stat().st_ino): path.stat().st_size for path in names}
+    assert len(names) > len(copies), "the worker linked materialized names to the copies"
 
     tick = _enabled_tick(tmp_path, activations, report)
 
-    assert tick["replay_caches"]["removed_bytes"] == len(other) and "phase_errors" not in tick
-    assert {path.name for path in copies.iterdir()} == projected
-    assert Path(report["report_path"]).is_file()
+    assert tick["replay_caches"]["removed_bytes"] == sum(copies.values()) and "phase_errors" not in tick
+    assert not [path for path in inputs.rglob("*") if path.is_file()]
+    assert Path(report["report_path"]).is_file() and any(Path(report["scratch_queue_root"]).rglob("*.json"))
 
 
 def test_replay_cache_phase_refuses_a_non_work_root(tmp_path) -> None:

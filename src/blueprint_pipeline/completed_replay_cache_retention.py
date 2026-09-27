@@ -3,9 +3,12 @@
 Reports, logs, source code, readonly files and shared inodes remain untouched.
 One kind of copy is recognised by its place and name instead of a suffix: a
 parent replay's copy of a content-store blob, at
-``prepared-references/content-addressed/sha256/<digest>``. It keeps the store's
-read-only mode and has no suffix, so it qualifies when its bytes match the
-digest it is named by; a shared inode still keeps it.
+``prepared-references/content-addressed/sha256/<digest>``, together with every
+other name it has in the replay's ``prepared-references`` (the worker's
+materialized references are hard links to it). It keeps the store's read-only
+mode and has no suffix, so the whole inode qualifies when all of its links are
+there and its bytes match the digest it is named by; a link anywhere else
+keeps it.
 This module is also a standalone maintenance entrypoint; it never allocates a
 provider or changes the scientific release used by a live run.
 """
@@ -23,7 +26,8 @@ from pathlib import Path
 
 SCHEMA = "completed_offline_replay_cache_retention.v1"
 ACK = "reclaim-completed-offline-replay-caches"
-_SCRATCH_STORE = ("prepared-references", "content-addressed", "sha256")
+_SCRATCH_INPUTS = "prepared-references"
+_SCRATCH_STORE = (_SCRATCH_INPUTS, "content-addressed", "sha256")
 _DIGEST_NAME = re.compile(r"[0-9a-f]{64}")
 BINARY_SUFFIXES = {
     ".png",
@@ -64,6 +68,101 @@ def scratch_store_copy(relative):
     """Whether ``relative`` (to a replay child) names a parent replay's copy of a store blob."""
     parts = Path(relative).parts
     return len(parts) == 4 and parts[:3] == _SCRATCH_STORE and bool(_DIGEST_NAME.fullmatch(parts[3]))
+
+
+def _no_linked_parent(path, child):
+    return not any(p.is_symlink() for p in path.parents if p != child.parent)
+
+
+def _store_copies(child, report_mtime_ns):
+    """Copies of store blobs in the child's scratch inputs, each with every name it has there.
+
+    Files under ``prepared-references`` are grouped by inode. A group is reclaimable only
+    when all of its links are in that subtree, one of its names is a store name, it is
+    not newer than the report, and its bytes hash to that name. Also returns every inode
+    that has a store name, so the single-file rules never plan one of its names.
+    """
+    subtree = child / _SCRATCH_INPUTS
+    groups = {}
+    if subtree.is_dir() and not subtree.is_symlink():
+        for directory, _directories, names in os.walk(subtree):
+            for name in names:
+                path = Path(directory) / name
+                info = path.lstat()
+                if stat.S_ISREG(info.st_mode) and _no_linked_parent(path, child):
+                    groups.setdefault((info.st_dev, info.st_ino), (info, []))[1].append(path.relative_to(child))
+    copies, store_inodes = [], set()
+    for key, (info, names) in groups.items():
+        store_names = [name for name in names if scratch_store_copy(name)]
+        if not store_names:
+            continue
+        store_inodes.add(key)
+        if len(names) != info.st_nlink or info.st_mtime_ns > report_mtime_ns:
+            continue
+        sha = file_sha(child / names[0])
+        if not any(sha == "sha256:" + name.name for name in store_names):
+            continue
+        copies.append({
+            "relative_paths": sorted(str(name) for name in names),
+            "inode": info.st_ino,
+            "nlink": info.st_nlink,
+            "size_bytes": info.st_size,
+            "mtime_ns": info.st_mtime_ns,
+            "sha256": sha,
+        })
+    return sorted(copies, key=lambda copy: copy["relative_paths"]), store_inodes
+
+
+def _single_files(child, report_mtime_ns, store_inodes):
+    files = []
+    for path in child.rglob("*"):
+        info = path.lstat()
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or (info.st_dev, info.st_ino) in store_inodes
+            or info.st_nlink != 1
+            or not info.st_mode & 0o222
+            or info.st_size < 64 * 1024
+            or info.st_mtime_ns > report_mtime_ns
+            or path.suffix.lower() not in BINARY_SUFFIXES
+            or not _no_linked_parent(path, child)
+        ):
+            continue
+        files.append(
+            {
+                "relative_path": str(path.relative_to(child)),
+                "inode": info.st_ino,
+                "mtime_ns": info.st_mtime_ns,
+                "size_bytes": info.st_size,
+                "sha256": file_sha(path),
+            }
+        )
+    return files
+
+
+def _copy_unchanged(copy, names, paths, root):
+    """Each name is still the planned inode, those names are all of its links, and its
+    bytes still match the store digest one of them carries."""
+    if len(names) != copy["nlink"] or not any(
+        scratch_store_copy(name) and copy["sha256"] == "sha256:" + name.name for name in names
+    ):
+        return False
+    try:
+        infos = [path.lstat() for path in paths]
+    except OSError:
+        return False
+    return (
+        all(
+            stat.S_ISREG(info.st_mode)
+            and (info.st_dev, info.st_ino) == (infos[0].st_dev, copy["inode"])
+            and info.st_nlink == copy["nlink"]
+            and info.st_size == copy["size_bytes"]
+            and info.st_mtime_ns == copy["mtime_ns"]
+            for info in infos
+        )
+        and all(_no_linked_parent(path, root) for path in paths)
+        and file_sha(paths[0]) == copy["sha256"]
+    )
 
 
 def completed_report(root):
@@ -159,42 +258,17 @@ def plan_replay_cache_retention(
         if active_reference(child, process_root=process_root):
             kept.append({"root": str(child), "reason": "active_reference"})
             continue
-        files = []
-        for path in child.rglob("*"):
-            info = path.lstat()
-            copy = scratch_store_copy(path.relative_to(child))
-            if (
-                not stat.S_ISREG(info.st_mode)
-                or info.st_nlink != 1
-                or info.st_mtime_ns > report.stat().st_mtime_ns
-                or any(p.is_symlink() for p in path.parents if p != child.parent)
-                # A store copy is read-only and has no suffix; its digest name stands in.
-                or (not copy and (
-                    not info.st_mode & 0o222
-                    or info.st_size < 64 * 1024
-                    or path.suffix.lower() not in BINARY_SUFFIXES
-                ))
-            ):
-                continue
-            sha = file_sha(path)
-            if copy and sha != "sha256:" + path.name:
-                continue
-            files.append(
-                {
-                    "relative_path": str(path.relative_to(child)),
-                    "inode": info.st_ino,
-                    "mtime_ns": info.st_mtime_ns,
-                    "size_bytes": info.st_size,
-                    "sha256": sha,
-                }
-            )
-        if files:
+        report_mtime_ns = report.stat().st_mtime_ns
+        copies, store_inodes = _store_copies(child, report_mtime_ns)
+        files = _single_files(child, report_mtime_ns, store_inodes)
+        if files or copies:
             rows.append(
                 {
                     "root": str(child),
                     "report_path": str(report),
                     "report_sha256": file_sha(report),
                     "files": files,
+                    "store_copies": copies,
                 }
             )
     plan = {
@@ -204,7 +278,9 @@ def plan_replay_cache_retention(
         "replay_root": str(root),
         "rows": rows,
         "kept": kept,
-        "candidate_bytes": sum(f["size_bytes"] for r in rows for f in r["files"]),
+        "candidate_bytes": sum(
+            entry["size_bytes"] for r in rows for entry in (*r["files"], *r["store_copies"])
+        ),
         "reports_and_original_evidence_removed": False,
     }
     plan["plan_digest"] = digest(plan)
@@ -239,17 +315,13 @@ def apply_replay_cache_retention(plan, *, ack, process_root=Path("/proc")):
                 raise ValueError("replay_cache_member_unsafe")
             path = root / relative
             info = path.lstat()
-            copy = scratch_store_copy(relative)
             if (
                 not stat.S_ISREG(info.st_mode)
-                or (not copy and (
-                    path.suffix.lower() not in BINARY_SUFFIXES
-                    or info.st_size < 64 * 1024
-                    or not info.st_mode & 0o222
-                ))
-                or (copy and item["sha256"] != "sha256:" + path.name)
+                or path.suffix.lower() not in BINARY_SUFFIXES
+                or info.st_size < 64 * 1024
                 or any(p.is_symlink() for p in path.parents if p != root.parent)
                 or info.st_nlink != 1
+                or not info.st_mode & 0o222
                 or info.st_ino != item["inode"]
                 or info.st_mtime_ns != item["mtime_ns"]
                 or info.st_size != item["size_bytes"]
@@ -260,6 +332,28 @@ def apply_replay_cache_retention(plan, *, ack, process_root=Path("/proc")):
             path.unlink()
             removed.append(
                 {"path": str(path), "sha256": item["sha256"], "size_bytes": item["size_bytes"]}
+            )
+        for copy in row.get("store_copies", []):
+            names = [Path(name) for name in copy["relative_paths"]]
+            if (
+                not names
+                or len(set(names)) != len(names)
+                or any(
+                    name.is_absolute() or ".." in name.parts or name.parts[:1] != (_SCRATCH_INPUTS,)
+                    for name in names
+                )
+            ):
+                raise ValueError("replay_cache_member_unsafe")
+            paths = [root / name for name in names]
+            # One name failing its recheck keeps every name: a partial removal frees nothing.
+            if not _copy_unchanged(copy, names, paths, root):
+                skipped.append({"paths": [str(path) for path in paths], "reason": "copy_changed"})
+                continue
+            for path in paths:
+                path.unlink()
+            removed.append(
+                {"paths": [str(path) for path in paths], "sha256": copy["sha256"],
+                 "size_bytes": copy["size_bytes"]}
             )
     return {
         "schema_version": SCHEMA,
