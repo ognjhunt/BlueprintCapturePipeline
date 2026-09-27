@@ -65,12 +65,19 @@ class SonicActionProvider:
         self._perf_decoder_ms = []
         self.skip_decoder = False
         self.body_target = 0.0
+        self.consume_reference = True
+        self.reference_history_valid = True
 
     def _apply_lerobot_semantic_action(self, _action):
-        self._smpl_data_valid = True
-        self._latest_consumed_new_this_step = True
+        # The pinned joint29 provider sets validity in _run_gear_sonic after
+        # inspecting its history, rather than during action application.
+        self._latest_consumed_new_this_step = self.consume_reference
 
     def _run_gear_sonic(self):
+        if self.reference_history_valid:
+            self._smpl_data_valid = True
+        if not self._smpl_data_valid:
+            return [0.0] * 29
         self._encoder.run(None, {})
         if not self.skip_decoder:
             self._decoder.run(None, {})
@@ -198,6 +205,33 @@ def test_exact_semantic_action_runs_both_onnx_sessions_and_maps_names(tmp_path, 
     assert targets["right_hand_index_0_joint"] == pytest.approx(0.2)
     assert (adapter.encoder.calls, adapter.decoder.calls) == (1, 1)
     assert adapter.provider.env._native_environment.step_count == 0
+
+
+def test_new_joint29_reference_is_validated_by_sonic_during_inference(tmp_path, monkeypatch):
+    provider = _provider(tmp_path)
+    assert provider._smpl_data_valid is False
+    adapter = _adapter(tmp_path, monkeypatch, provider)
+    adapter.targets_for_action(_action())
+    assert provider._smpl_data_valid is True
+    assert (adapter.encoder.calls, adapter.decoder.calls) == (1, 1)
+
+
+def test_missing_new_reference_refuses_inference(tmp_path, monkeypatch):
+    provider = _provider(tmp_path)
+    provider.consume_reference = False
+    adapter = _adapter(tmp_path, monkeypatch, provider)
+    with pytest.raises(RuntimeError, match="reference_not_consumed"):
+        adapter.targets_for_action(_action())
+    assert (adapter.encoder.calls, adapter.decoder.calls) == (0, 0)
+
+
+def test_invalid_joint29_history_cannot_be_counted_as_inference(tmp_path, monkeypatch):
+    provider = _provider(tmp_path)
+    provider.reference_history_valid = False
+    adapter = _adapter(tmp_path, monkeypatch, provider)
+    with pytest.raises(RuntimeError, match="reference_not_consumed"):
+        adapter.targets_for_action(_action())
+    assert (adapter.encoder.calls, adapter.decoder.calls) == (0, 0)
 
 
 def test_upstream_default_pose_fallback_cannot_count_as_controller_inference(tmp_path, monkeypatch):

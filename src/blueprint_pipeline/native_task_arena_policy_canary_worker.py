@@ -46,6 +46,11 @@ from blueprint_pipeline.native_task_arena_policy_canary_session import (
 # The independent allocation watchdog remains the total-session hard stop.
 ISOLATED_CELL_PROCESS_TIMEOUT_SECONDS = 2700
 DROID_PARITY_MINIMUM_APPROACH_M = 0.05
+_CELL_PROGRESS_FD_ENV = "BLUEPRINT_POLICY_CANARY_PROGRESS_FD"
+_CELL_PROGRESS_STAGES = frozenset({
+    "static_preflight_passed", "isaac_launch_started", "isaac_launch_completed",
+    "observation_gate_passed", "policy_loaded", "episode_completed",
+})
 # Preserve the existing helper import surface used by retained tooling.
 _write_indexed_telemetry = _write_policy_canary_telemetry
 
@@ -1401,16 +1406,52 @@ def _spawn_isolated_cell_process(
     environment["BLUEPRINT_POLICY_CANARY_CONTROLS_ONLY"] = "1" if controls_only else "0"
     environment["BLUEPRINT_ADP_ARENA_PARENT_OUTPUT_DIR"] = str(output_root)
     environment["BLUEPRINT_ADP_ARENA_OUTPUT_DIR"] = str(child_root)
-    with child_log.open("xb") as stream:
-        completed = subprocess.run(
-            [sys.executable, str(runtime_root / Path(__file__).name)],
-            env=environment,
-            stdout=stream,
-            stderr=subprocess.STDOUT,
-            timeout=ISOLATED_CELL_PROCESS_TIMEOUT_SECONDS,
-            check=False,
-        )
+    try:
+        progress_fd = os.dup(sys.stdout.fileno())
+    except (AttributeError, OSError, ValueError):
+        progress_fd = None
+    if progress_fd is not None:
+        environment[_CELL_PROGRESS_FD_ENV] = str(progress_fd)
+    else:
+        environment.pop(_CELL_PROGRESS_FD_ENV, None)
+    try:
+        with child_log.open("xb") as stream:
+            completed = subprocess.run(
+                [sys.executable, str(runtime_root / Path(__file__).name)],
+                env=environment,
+                stdout=stream,
+                stderr=subprocess.STDOUT,
+                timeout=ISOLATED_CELL_PROCESS_TIMEOUT_SECONDS,
+                check=False,
+                pass_fds=(progress_fd,) if progress_fd is not None else (),
+            )
+    finally:
+        if progress_fd is not None:
+            os.close(progress_fd)
     return int(completed.returncode)
+
+
+def _emit_cell_progress(stage: str, index: int, *, progress_path: Path | None = None) -> None:
+    """Expose completed worker milestones to the outer paid-run watchdog."""
+
+    if stage not in _CELL_PROGRESS_STAGES or index < 0:
+        raise ValueError("policy_canary_cell_progress_invalid")
+    marker = f"BLUEPRINT_POLICY_CANARY_PROGRESS:cell={index}:stage={stage}\n"
+    if progress_path is not None:
+        with progress_path.open("a", encoding="ascii") as stream:
+            stream.write(marker)
+            stream.flush()
+    raw_fd = os.environ.get(_CELL_PROGRESS_FD_ENV)
+    if raw_fd is None:
+        return
+    try:
+        fd = int(raw_fd)
+        if fd < 0:
+            return
+        os.write(fd, marker.encode("ascii"))
+    except (OSError, ValueError):
+        # A lost diagnostics channel must not change scientific execution.
+        return
 
 
 def _run_isolated_cell_processes(
@@ -1568,6 +1609,13 @@ def _run_selected_cell(
     bound_runtime = cell_runtime if cell_runtime is not None else isaac_cell_runtime()
     output_root.mkdir(parents=True, exist_ok=True)
     result_path = output_root / PROVIDER_RESULT_FILENAME
+
+    def report_progress(stage: str) -> None:
+        _emit_cell_progress(
+            stage, selected_cell_index,
+            progress_path=output_root / "cell_progress.log",
+        )
+
     inputs = validate_runtime_input_manifest(
         _read(runtime / "runtime_inputs" / "policy_canary_runtime_inputs.json")
     )
@@ -1632,13 +1680,16 @@ def _run_selected_cell(
     _seal_result(result_path=output_root / "policy_canary_static_startup_preflight.v1.json", result=static_preflight)
     if static_preflight["status"] != "passed":
         raise RuntimeError("policy_canary_static_startup_preflight_failed:" + ",".join(static_preflight["blockers"]))
+    report_progress("static_preflight_passed")
 
     def open_session(_inputs: Mapping[str, Any]) -> dict[str, Any]:
+        report_progress("isaac_launch_started")
         simulation_app, launch = bound_runtime.launch_isaac(
             provider_output_root / "native_task_runtime_source_provisioning.v1.json",
             device=bound_runtime.device,
             appearance_render_path=appearance_render_backend["launch_render_path"],
         )
+        report_progress("isaac_launch_completed")
         current_session["simulation_app"] = simulation_app
         if base_scene_plan.get("task_spec", {}).get("astra_asset_adoption") is not None:
             if bound_runtime.begin_native_asset_monitor is None:
@@ -1664,6 +1715,7 @@ def _run_selected_cell(
         client = bound_runtime.policy_client(
             spec, groot_worker_identity_receipt=groot_identity
         )
+        report_progress("policy_loaded")
         return {
             "candidate_id": candidate,
             "client": client,
@@ -2031,7 +2083,9 @@ def _run_selected_cell(
     ) -> dict[str, Any]:
         episode_progress: dict[str, Any] = {}
         try:
-            return _run_episode_impl(session, policy, context, episode_progress)
+            result = _run_episode_impl(session, policy, context, episode_progress)
+            report_progress("episode_completed")
+            return result
         except PolicyCanaryEpisodeFailure:
             raise
         except Exception as exc:
@@ -2148,12 +2202,16 @@ def _run_selected_cell(
                 raise RuntimeError("policy_canary_post_gate_renderer_guard_failed")
             current_session["policy_observation_runtime_gate"] = gate
             current_session["post_gate_rtx_streaming_guard"] = renderer_guard
+            report_progress("observation_gate_passed")
             return gate
-        return preload_observation_integrity_gate(
+        gate = preload_observation_integrity_gate(
             observation_integrity_authority,
             appearance_render_backend=dict(session["appearance_render_backend"]),
             authority_path=authority_path,
         )
+        if gate.get("status") == "passed":
+            report_progress("observation_gate_passed")
+        return gate
 
     execution_binding = {"run_id": authority.get("run_id"), "authority_digest": authority["authority_digest"],
                          "runtime_inputs_digest": inputs["runtime_inputs_digest"],
