@@ -20,6 +20,7 @@ from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
 from .native_g1_humanoidarena_policy_client import NativeG1HumanoidArenaPolicyClient
+from .native_g1_pi_tokenizer_assets import require_policy_tokenizer_reference
 from .native_g1_run_preflight import preflight_g1_shared_scene_run
 
 
@@ -238,6 +239,7 @@ def start_g1_policy_server(
         str(preflight["candidate_id"]),
         Path(preflight_inputs["checkpoint_root"]),
     )
+    require_policy_tokenizer_reference(policy_dir, str(preflight["candidate_id"]))
     python = python_executable.expanduser().resolve(strict=True)
     if not python.is_file():
         raise ValueError("g1_server_python_unavailable")
