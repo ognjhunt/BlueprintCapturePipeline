@@ -132,6 +132,62 @@ def test_gc_ignores_its_own_reference_but_retains_other_live_readers(tmp_path):
     assert gc.active_reference(child, process_root=proc)
 
 
+def _refuse_reading(monkeypatch, denied, error):
+    """Reading ``denied`` fails with ``error``, as /proc does for a process this user may not inspect."""
+    real_read, real_iterdir, real_readlink = Path.read_bytes, Path.iterdir, os.readlink
+
+    def refuse(path):
+        if Path(path) == denied:
+            raise error
+
+    monkeypatch.setattr(Path, "read_bytes", lambda self: refuse(self) or real_read(self))
+    monkeypatch.setattr(Path, "iterdir", lambda self: refuse(self) or real_iterdir(self))
+    monkeypatch.setattr(os, "readlink", lambda path, *args, **kwargs: refuse(path) or real_readlink(path, *args, **kwargs))
+
+
+@pytest.mark.parametrize("entry", ["cmdline", "environ", "fd", "cwd"])
+@pytest.mark.parametrize("error", [PermissionError(errno.EACCES, "Permission denied"), OSError(errno.EIO, "I/O error")])
+def test_an_unreadable_process_entry_protects_without_raising(tmp_path, monkeypatch, entry, error):
+    """2026-09-27: the storage GC's sweep raised PermissionError out of every check that met such an entry.
+
+    An entry that cannot be read proves nothing about the root, so it protects it, and
+    the detail says the inventory was unreadable rather than that a process holds it.
+    """
+    root, child, data, proc = setup(tmp_path)
+    process = proc / "4242"
+    (process / "fd").mkdir(parents=True)
+    (process / "cmdline").write_bytes(b"python")
+    (process / "environ").write_bytes(b"")
+    _refuse_reading(monkeypatch, process / entry, error)
+
+    assert gc.process_reference(child, process_root=proc) == gc.PROCESS_INVENTORY_UNREADABLE
+    assert gc.active_reference(child, process_root=proc) is True
+    unread = plan(root, proc)
+    assert unread["candidate_bytes"] == 0 and unread["rows"] == []
+    assert unread["kept"] == [{"root": str(child), "reason": "active_reference"}]
+    # A process seen holding the root is the stronger answer, wherever the sweep meets it.
+    holder = proc / "4243"
+    (holder / "fd").mkdir(parents=True)
+    (holder / "cmdline").write_bytes(b"python")
+    (holder / "environ").write_bytes(b"")
+    (holder / "fd" / "7").symlink_to(data)
+    assert gc.process_reference(child, process_root=proc) == gc.PROCESS_REFERENCED
+    assert data.exists()
+
+
+@pytest.mark.parametrize("error", [FileNotFoundError(errno.ENOENT, "gone"), ProcessLookupError(errno.ESRCH, "gone")])
+def test_a_process_that_exited_mid_sweep_is_not_unreadable(tmp_path, monkeypatch, error):
+    root, child, data, proc = setup(tmp_path)
+    process = proc / "4242"
+    (process / "fd").mkdir(parents=True)
+    (process / "cmdline").write_bytes(b"python")
+    (process / "environ").write_bytes(b"")
+    _refuse_reading(monkeypatch, process / "environ", error)
+
+    assert gc.process_reference(child, process_root=proc) is None
+    assert gc.active_reference(child, process_root=proc) is False
+
+
 def _store_copy(child, payload, *, directory=("prepared-references", "content-addressed", "sha256"),
                 name=None, seconds_before_report=1):
     """A parent replay's copy of a store blob: named by its digest, read-only, older than the report."""
