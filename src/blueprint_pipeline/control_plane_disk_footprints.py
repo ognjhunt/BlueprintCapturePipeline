@@ -13,6 +13,7 @@ import fcntl
 import json
 import math
 import os
+import re
 import stat
 import tempfile
 import time
@@ -240,8 +241,17 @@ def record_footprint_sample(
     return True
 
 
-def _completed_samples(reservation_root: str | Path, role: str) -> list[int]:
-    """Observed bytes of the newest MEASURED_WINDOW completed samples, oldest first."""
+def workload_name(*parts: object) -> str:
+    """A valid workload label from free-form parts (lowercase ``[a-z0-9_]``, 64 chars at most)."""
+
+    name = re.sub(r"[^a-z0-9_]+", "_", "_".join(str(part) for part in parts).lower()).strip("_")
+    if not name[:1].isalpha():
+        name = "workload_" + name
+    return name[:64].rstrip("_")
+
+
+def _completed_samples(reservation_root: str | Path, role: str) -> list[tuple[str | None, int]]:
+    """(workload, observed bytes) of the newest MEASURED_WINDOW completed samples, oldest first."""
 
     try:
         lines = _history_path(reservation_root, role).read_text(
@@ -249,7 +259,7 @@ def _completed_samples(reservation_root: str | Path, role: str) -> list[int]:
         ).splitlines()
     except (OSError, UnicodeError):
         return []
-    values: list[int] = []
+    values: list[tuple[str | None, int]] = []
     for line in lines:
         try:
             row = json.loads(line)
@@ -265,8 +275,14 @@ def _completed_samples(reservation_root: str | Path, role: str) -> list[int]:
             and type(observed) is int
             and observed >= 0
         ):
-            values.append(observed)
+            workload = row.get("workload")
+            values.append((workload if isinstance(workload, str) else None, observed))
     return values[-MEASURED_WINDOW:]
+
+
+def _nearest_rank_p95(values: list[int]) -> int:
+    ordered = sorted(values)
+    return ordered[math.ceil(0.95 * len(ordered)) - 1]
 
 
 def measured_footprint(
@@ -276,7 +292,9 @@ def measured_footprint(
 
     basis is "measured_p95" when at least MEASURED_MINIMUM_SAMPLES completed samples
     exist in the newest MEASURED_WINDOW, else "declared_default" (bytes == declared).
-    p95 is nearest-rank: sorted values s, k = ceil(0.95 * n) - 1, p95 = s[k].
+    p95 is nearest-rank (sorted values s, k = ceil(0.95 * n) - 1, p95 = s[k]), taken per
+    workload and maximised across workloads, so a rare large workload is never
+    averaged away by a frequent small one.
     bytes = max(MEASURED_FLOOR_BYTES, min(declared, ceil(p95 * MEASURED_HEADROOM))).
     declared = footprint_bytes(role) (env override honoured). Unreadable history -> declared.
     """
@@ -292,8 +310,10 @@ def measured_footprint(
             "declared_bytes": declared,
             "p95_bytes": None,
         }
-    ordered = sorted(samples)
-    p95 = ordered[math.ceil(0.95 * len(ordered)) - 1]
+    by_workload: dict[str | None, list[int]] = {}
+    for workload, observed in samples:
+        by_workload.setdefault(workload, []).append(observed)
+    p95 = max(_nearest_rank_p95(values) for values in by_workload.values())
     return {
         "role": role,
         "bytes": max(
@@ -345,4 +365,5 @@ __all__ = [
     "measured_footprint",
     "record_footprint_sample",
     "role_footprints",
+    "workload_name",
 ]

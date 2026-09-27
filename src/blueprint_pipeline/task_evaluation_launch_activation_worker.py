@@ -37,6 +37,7 @@ from .task_evaluation_configured_controls_autostart import (
     configured_controls_autostart_registry_name,
     validate_configured_controls_autostart_intent,
 )
+from .task_evaluation_launch_activation_disk import activation_reservation_terms
 from .task_evaluation_launch_activation_contract import (
     launch_activation_intent_digest,
     validate_launch_activation_request,
@@ -1666,11 +1667,7 @@ def process_launch_activation_queue(
                     "launch_activation",
                     target_root=activation_base,
                     reservation_root=disk_reservation_root,
-                    # Admission reads the shared parent; the footprint sample
-                    # measures only this activation's own tree.
-                    workspace=activation_base / request["activation_id"],
-                    workload="launch_activation",
-                )
+                    **activation_reservation_terms(request, activation_base))
             if request["expected_production_commit"] != observed_commit:
                 raise TaskEvaluationLaunchActivationWorkerError(
                     "launch_activation_worker_source_commit_mismatch"
@@ -1870,11 +1867,7 @@ def process_launch_activation_queue(
                 result, digest_field="result_digest"
             )
         if disk_reservation is not None:
-            # This role reserves its measured footprint, so an activation that
-            # raised must never be counted as a completed one.
-            disk_reservation.release(
-                outcome="completed" if terminal_state == "prepared" else "failed"
-            )
+            disk_reservation.release(outcome="completed" if terminal_state == "prepared" else "failed")
         if terminal_state == "prepared":
             storage_pins.pin_activation_best_effort(request, activation_base)
         result_path = results_root / source.name

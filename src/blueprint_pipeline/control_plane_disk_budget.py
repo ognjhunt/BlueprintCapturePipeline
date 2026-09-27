@@ -368,6 +368,7 @@ def reserve_control_plane_disk(
     workspace: str | Path | None = None,
     workload: str | None = None,
     fresh: bool | None = None,
+    minimum_bytes: int | None = None,
 ) -> DiskReservation:
     """Atomically reserve disk headroom or raise a typed refusal.
 
@@ -377,7 +378,9 @@ def reserve_control_plane_disk(
     reservation is released; ``target_root`` remains the tree whose filesystem
     admission is computed against.  Only a workspace that was fresh when bound
     (inferred from its baseline, or ``fresh`` from the caller) can record a
-    completed sample; a resumed pass records "resumed".
+    completed sample; a resumed pass records "resumed".  ``minimum_bytes`` is
+    what the job itself declares it will write: the measured footprint never
+    reserves less.
     """
 
     if not _ROLE_RE.fullmatch(role) or role not in ROLE_FOOTPRINT_BYTES:
@@ -392,11 +395,19 @@ def reserve_control_plane_disk(
         raise ControlPlaneDiskBudgetError(
             "control_plane_disk_budget_workload_invalid"
         )
+    if minimum_bytes is not None and (
+        not isinstance(minimum_bytes, int) or isinstance(minimum_bytes, bool) or minimum_bytes < 0
+    ):
+        raise ControlPlaneDiskBudgetError(
+            "control_plane_disk_budget_reservation_invalid"
+        )
     if expected_bytes is None:
         measured = measured_footprint(role, reservation_root=reservation_root)
         need = measured["bytes"]
         basis = str(measured["basis"])
         sample_count: int | None = int(measured["sample_count"])
+        if minimum_bytes is not None and minimum_bytes > need:
+            need, basis = minimum_bytes, "declared_minimum"
     else:
         need, basis, sample_count = expected_bytes, "caller_exact", None
     if (

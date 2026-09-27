@@ -456,3 +456,35 @@ def test_an_unreadable_subtree_makes_the_measurement_incomplete(tmp_path):
     # Bytes under the unreadable directory were not counted; the sample must not count either.
     assert row["outcome"] == "incomplete"
     assert disk_budget.measured_footprint("launch_activation", reservation_root=ledger)["sample_count"] == 0
+
+
+def test_the_footprint_is_the_largest_workload_p95_not_a_blend(tmp_path):
+    # Two scene attempts among 48 small preparations vanish in a blended p95,
+    # yet each needs its own 1.2 GiB.
+    ledger = tmp_path / "ledger"
+    for workload, value, count in (("prepared_references", 100 * MIB, 48),
+                                   ("scene_preparation_attempt", 1200 * MIB, 2)):
+        for _ in range(count):
+            assert disk_budget.record_footprint_sample(reservation_root=ledger, role="launch_preparation",
+                workload=workload, observed_bytes=value, reserved_bytes=2 * GIB)
+    measured = disk_budget.measured_footprint("launch_preparation", reservation_root=ledger)
+    assert (measured["basis"], measured["sample_count"]) == ("measured_p95", 50)
+    assert measured["p95_bytes"] == 1200 * MIB and measured["bytes"] == 1500 * MIB
+
+
+def test_a_job_that_declares_more_than_the_footprint_reserves_what_it_declares(tmp_path):
+    ledger = tmp_path / "ledger"
+    _samples(ledger, "launch_activation", [100 * MIB] * 10)  # measured: 125 MiB
+    declared = _roomy_reservation(tmp_path, ledger, minimum_bytes=900 * MIB)
+    assert declared.expected_bytes == 900 * MIB
+    assert declared.receipt()["footprint_basis"] == "declared_minimum"
+    measured = _roomy_reservation(tmp_path, ledger, minimum_bytes=10 * MIB)
+    assert measured.expected_bytes == 125 * MIB
+    assert measured.receipt()["footprint_basis"] == "measured_p95"
+
+
+def test_workload_names_are_always_valid_labels():
+    assert footprints.workload_name("activation", "native_task_arena_construction") == (
+        "activation_native_task_arena_construction")
+    odd = footprints.workload_name("activation", "Lane-With.Odd Chars/" + "x" * 80)
+    assert disk_budget._ROLE_RE.fullmatch(odd) and odd.startswith("activation_lane_with_odd_chars")
