@@ -81,7 +81,12 @@ def prepare_development_test(*, preparation, source_geometry, task_masks, output
     if not np.isfinite(dims).all() or not (dims > 0).all():
         raise ValueError("website_development_test_dimensions_invalid")
     # Generous test surface, without shrinking the source object to fit a gripper.
-    top = 0.75
+    # A whole-body articulated assembly (sized as a body, not as a part) stands on
+    # the fixture floor as it stood in the room; other objects keep a counter-height
+    # test surface.
+    articulated = value["intake_request"]["task"]["strategy"] == "articulated_open_close"
+    standing = articulated and "body_extent_m" in value["authoring_inputs"]["configuration"]
+    top = 0.0 if standing else 0.75
     width, depth = max(1.2, 6 * dims[0]), max(0.8, 4 * dims[1])
     lower = np.array([-width / 2, -depth / 2, top - 0.05])
     upper = np.array([width / 2, depth / 2, top])
@@ -110,7 +115,6 @@ def prepare_development_test(*, preparation, source_geometry, task_masks, output
     cube.AddScaleOp().Set(Gf.Vec3d(*(upper - lower)))
     cube.CreateDisplayColorAttr([(0.55, 0.55, 0.55)])
     stage.GetRootLayer().Save()
-    articulated = value["intake_request"]["task"]["strategy"] == "articulated_open_close"
     test = {"kind": DRAWER_KIND if articulated else KIND,
             "label": DRAWER_LABEL if articulated else LABEL, "claim_scope": "development_only",
             "source_task_context_digest": preparation["binding"]["task_context_digest"],
