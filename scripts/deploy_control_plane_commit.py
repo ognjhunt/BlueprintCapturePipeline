@@ -101,6 +101,7 @@ from blueprint_pipeline.production_cad_skill_sources import (  # noqa: E402
 )
 
 SCHEMA_VERSION = "control_plane_commit_deploy_receipt.v1"
+_DEPLOY_ACTIVE_TRANSITION = False
 
 #: The single-flight guard a lane holds for the whole life of a paid instance.
 #: `vast_provider_adapter` writes it before the launch API call and clears it on
@@ -2784,6 +2785,9 @@ def deploy_control_plane_commit(
 ) -> dict[str, Any]:
     """Move the mutable clone and the release link, then verify both."""
 
+    global _DEPLOY_ACTIVE_TRANSITION
+    _DEPLOY_ACTIVE_TRANSITION = False
+
     if preserve_configured_controls_state and arm_path_units:
         raise ControlPlaneDeployError("deploy_conflicting_configured_controls_intent")
     source = Path(source_repo).expanduser().resolve()
@@ -3006,6 +3010,9 @@ def deploy_control_plane_commit(
             expected_commit=source_commit
         )
         _move_source_checkout(source, source_commit)
+        # A termination here must not strand the new active link with old
+        # services. The CLI defers SIGTERM until the release is proven live.
+        _DEPLOY_ACTIVE_TRANSITION = True
         release = stage_task_evaluation_control_plane_release(
             source_repo=source,
             source_commit=source_commit,
@@ -3259,19 +3266,37 @@ def deploy_control_plane_commit(
 def _run_deploy_with_signal_cleanup(callback: Callable[[], dict[str, Any]]) -> dict[str, Any]:
     """Turn a transient unit stop into an exception so deploy rollback runs."""
 
+    global _DEPLOY_ACTIVE_TRANSITION
+    _DEPLOY_ACTIVE_TRANSITION = False
+    deferred: set[str] = set()
     previous = {number: signal.getsignal(number) for number in (signal.SIGTERM, signal.SIGINT)}
 
     def interrupted(number: int, _frame: Any) -> None:
+        if _DEPLOY_ACTIVE_TRANSITION:
+            deferred.add(signal.Signals(number).name)
+            return
         signal.signal(number, signal.SIG_IGN)
         raise ControlPlaneDeployError(f"deploy_interrupted:{signal.Signals(number).name}")
 
     try:
         for number in previous:
             signal.signal(number, interrupted)
-        return callback()
+        result = callback()
+        if deferred:
+            print("deploy_signal_deferred_after_activation:" + ",".join(sorted(deferred)), file=sys.stderr)
+        return result
     finally:
+        _DEPLOY_ACTIVE_TRANSITION = False
         for number, handler in previous.items():
             signal.signal(number, handler)
+
+
+def _write_receipt_and_return(receipt: dict[str, Any], path: str | None) -> dict[str, Any]:
+    if path:
+        out = Path(path).expanduser().resolve()
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(receipt, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+    return receipt
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -3401,7 +3426,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        receipt = _run_deploy_with_signal_cleanup(lambda: deploy_control_plane_commit(
+        receipt = _run_deploy_with_signal_cleanup(lambda: _write_receipt_and_return(deploy_control_plane_commit(
             source_repo=args.source_repo,
             source_commit=args.source_commit,
             release_root=args.release_root,
@@ -3437,7 +3462,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             disk_reservation_root=(
                 Path(args.state_root).expanduser() / "disk-reservations"
             ),
-        ))
+        ), args.receipt_out))
     except (OSError, ValueError, ControlPlaneReleaseError) as exc:
         print(
             json.dumps(
@@ -3453,10 +3478,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 2
 
-    if args.receipt_out:
-        out = Path(args.receipt_out).expanduser().resolve()
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(receipt, indent=1, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps(receipt, indent=1, sort_keys=True))
     return 0
 

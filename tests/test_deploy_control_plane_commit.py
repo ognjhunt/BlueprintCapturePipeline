@@ -943,6 +943,46 @@ def test_cli_sigterm_unwinds_deploy_and_restores_signal_handler(tmp_path, monkey
     assert signal.getsignal(signal.SIGTERM) is original
 
 
+def test_cli_defers_sigterm_during_active_release_transition(tmp_path, monkeypatch):
+    original = signal.getsignal(signal.SIGTERM)
+
+    def transition(**_kwargs):
+        deploy._DEPLOY_ACTIVE_TRANSITION = True
+        signal.raise_signal(signal.SIGTERM)
+        deploy._DEPLOY_ACTIVE_TRANSITION = False
+        return {"status": "deployed"}
+
+    monkeypatch.setattr(deploy, "deploy_control_plane_commit", transition)
+    assert deploy.main([
+        "--source-repo", str(tmp_path), "--source-commit", "a" * 40,
+        "--release-root", str(tmp_path / "releases"), "--state-root", str(tmp_path / "state"),
+        "--active-link", str(tmp_path / "active"),
+    ]) == 0
+    assert signal.getsignal(signal.SIGTERM) is original
+
+
+def test_cli_defers_sigterm_until_success_receipt_is_written(tmp_path, monkeypatch):
+    def transition(**_kwargs):
+        deploy._DEPLOY_ACTIVE_TRANSITION = True
+        return {"status": "deployed"}
+
+    monkeypatch.setattr(deploy, "deploy_control_plane_commit", transition)
+    real_write = deploy._write_receipt_and_return
+
+    def interrupted_write(receipt, path):
+        signal.raise_signal(signal.SIGTERM)
+        return real_write(receipt, path)
+
+    monkeypatch.setattr(deploy, "_write_receipt_and_return", interrupted_write)
+    output = tmp_path / "receipt.json"
+    assert deploy.main([
+        "--source-repo", str(tmp_path), "--source-commit", "a" * 40,
+        "--release-root", str(tmp_path / "releases"), "--state-root", str(tmp_path / "state"),
+        "--active-link", str(tmp_path / "active"), "--receipt-out", str(output),
+    ]) == 0
+    assert json.loads(output.read_text(encoding="utf-8"))["status"] == "deployed"
+
+
 def test_authority_gated_paid_dispatch_watcher_is_armed_by_default(
     monkeypatch,
 ) -> None:
