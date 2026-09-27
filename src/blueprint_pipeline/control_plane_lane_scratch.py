@@ -8,12 +8,14 @@ operation removes payload bytes.
 from __future__ import annotations
 
 import fcntl
+import ctypes
 import json
 import math
 import os
 import re
 import secrets
 import stat
+import sys
 import time
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
@@ -63,6 +65,38 @@ def _seal(value: Mapping[str, Any]) -> dict[str, Any]:
     lease = {**value, "lease_digest": ""}
     lease["lease_digest"] = canonical_digest(lease, digest_field="lease_digest")
     return lease
+
+
+def _lease_fields_valid(lease: Mapping[str, Any]) -> bool:
+    try:
+        for field in ("lane", "name", "owner"):
+            _id(lease.get(field), field)
+        if not isinstance(lease.get("reason"), str) or _REASON.fullmatch(lease["reason"]) is None:
+            return False
+        if lease.get("class_intent") not in ("cache", "evidence", "scratch"):
+            return False
+        if lease.get("cleanup") not in ("delete", "offload", "owner_review"):
+            return False
+        if ("run_ref" in lease) == ("scene_ref" in lease):
+            return False
+        _id(lease.get("run_ref", lease.get("scene_ref")), "reference")
+        budget = lease.get("size_budget_bytes")
+        if lease["class_intent"] == "cache" and (type(budget) is not int or budget <= 0):
+            return False
+        if budget is not None and (type(budget) is not int or budget <= 0):
+            return False
+        created = float(lease["created_at_epoch"])
+        renewed = float(lease.get("renewed_at_epoch", created))
+        expires = float(lease["expires_at_epoch"])
+        if (not all(math.isfinite(value) for value in (created, renewed, expires))
+                or created < 0 or renewed < created or not 0 < expires - renewed <= MAX_TTL_SECONDS):
+            return False
+        released = lease.get("released_at_epoch")
+        if released is not None and (not math.isfinite(float(released)) or float(released) < created):
+            return False
+    except (KeyError, TypeError, ValueError, OverflowError, LaneScratchError):
+        return False
+    return True
 
 
 @contextmanager
@@ -135,6 +169,26 @@ def _write_lease(directory_fd: int, lease: Mapping[str, Any], *, replace: bool) 
         raise LaneScratchError("lane_scratch_write_failed") from exc
 
 
+def _publish_no_replace(lane_fd: int, staging: str, name: str) -> None:
+    """Atomically publish a prepared directory, refusing an existing target."""
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    if sys.platform == "darwin":
+        function = libc.renameatx_np
+        flag = 0x00000004  # RENAME_EXCL from sys/stdio.h
+    elif sys.platform.startswith("linux"):
+        function = libc.renameat2
+        flag = 1  # RENAME_NOREPLACE from linux/fs.h
+    else:
+        raise LaneScratchError("lane_scratch_publish_unsupported")
+    function.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p,
+                         ctypes.c_uint)
+    function.restype = ctypes.c_int
+    if function(lane_fd, os.fsencode(staging), lane_fd, os.fsencode(name), flag) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), name)
+
+
 def _read_lease(directory_fd: int) -> dict[str, Any]:
     try:
         file_fd = os.open(LEASE_FILE, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
@@ -152,7 +206,8 @@ def _read_lease(directory_fd: int) -> dict[str, Any]:
     if (not isinstance(lease, dict) or lease.get("schema_version") != SCHEMA_VERSION
             or not isinstance(lease.get("lease_digest"), str)
             or _DIGEST.fullmatch(lease["lease_digest"]) is None
-            or lease["lease_digest"] != canonical_digest(lease, digest_field="lease_digest")):
+            or lease["lease_digest"] != canonical_digest(lease, digest_field="lease_digest")
+            or not _lease_fields_valid(lease)):
         raise LaneScratchError("lane_scratch_lease_invalid")
     return lease
 
@@ -221,7 +276,7 @@ def create_lane_scratch(
                 _write_lease(stage_fd, lease, replace=False)
             finally:
                 os.close(stage_fd)
-            os.rename(staging, name, src_dir_fd=lane_fd, dst_dir_fd=lane_fd)
+            _publish_no_replace(lane_fd, staging, name)
             os.fsync(lane_fd)
         except OSError as exc:
             raise LaneScratchError("lane_scratch_publish_failed") from exc

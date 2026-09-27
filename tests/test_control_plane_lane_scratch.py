@@ -91,10 +91,29 @@ def test_torn_publication_leaves_no_final_folder(tmp_path: Path, monkeypatch) ->
 
     root = tmp_path / "lanes"
     root.mkdir()
-    monkeypatch.setattr(scratch.os, "rename", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("rename failed")))
+    monkeypatch.setattr(scratch, "_publish_no_replace",
+                        lambda *_args: (_ for _ in ()).throw(OSError("rename failed")))
     with pytest.raises(scratch.LaneScratchError):
         _create(root)
     assert not (root / "agent-a" / "job-1").exists()
+
+
+def test_racing_empty_folder_is_not_replaced(tmp_path: Path, monkeypatch) -> None:
+    from blueprint_pipeline import control_plane_lane_scratch as scratch
+
+    root = tmp_path / "lanes"
+    root.mkdir()
+    publish = scratch._publish_no_replace
+
+    def race(lane_fd: int, staging: str, name: str) -> None:
+        scratch.os.mkdir(name, dir_fd=lane_fd)
+        publish(lane_fd, staging, name)
+
+    monkeypatch.setattr(scratch, "_publish_no_replace", race)
+    with pytest.raises(scratch.LaneScratchError):
+        _create(root)
+    assert (root / "agent-a" / "job-1").is_dir()
+    assert not (root / "agent-a" / "job-1" / scratch.LEASE_FILE).exists()
 
 
 def test_renew_and_release_reject_a_stale_digest_without_deleting_data(tmp_path: Path) -> None:
@@ -144,6 +163,25 @@ def test_tampered_or_symlinked_lease_cannot_be_renewed(tmp_path: Path) -> None:
         renew_lane_scratch(root=root, lane="agent-a", name="job-1", owner="owner-a",
                            expected_digest=lease["lease_digest"], ttl_seconds=3600)
     assert target.read_text() == json.dumps(lease)
+
+
+@pytest.mark.parametrize("changes", [
+    {"owner": None}, {"run_ref": None}, {"cleanup": "unknown"},
+    {"expires_at_epoch": 1000.0 + 15 * 86400},
+])
+def test_self_sealed_incomplete_lease_is_not_owned(tmp_path: Path, changes) -> None:
+    from blueprint_pipeline.control_plane_lane_scratch import LaneScratchError, read_lane_scratch_folder
+
+    root = tmp_path / "lanes"
+    root.mkdir()
+    folder = _create(root)
+    lease_path = folder / ".lane-scratch.v1.json"
+    lease = json.loads(lease_path.read_text())
+    lease.update(changes)
+    lease["lease_digest"] = canonical_digest(lease, digest_field="lease_digest")
+    lease_path.write_text(json.dumps(lease))
+    with pytest.raises(LaneScratchError):
+        read_lane_scratch_folder(folder, lane="agent-a", name="job-1")
 
 
 def test_list_lane_scratch_is_paginated_and_skips_unsafe_folders(tmp_path: Path) -> None:
