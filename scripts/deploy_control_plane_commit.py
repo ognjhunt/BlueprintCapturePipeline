@@ -3418,10 +3418,17 @@ def _write_receipt_and_return(receipt: dict[str, Any], path: str | None) -> dict
         descriptor, temporary = tempfile.mkstemp(prefix=f".{out.name}.", suffix=".tmp", dir=out.parent)
         try:
             with os.fdopen(descriptor, "wb") as stream:
+                # The operator door reads deploy receipts as the blueprint user.
+                os.fchmod(stream.fileno(), 0o644)
                 stream.write(payload)
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temporary, out)
+            directory = os.open(out.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
         except BaseException:
             with contextlib.suppress(OSError):
                 os.unlink(temporary)

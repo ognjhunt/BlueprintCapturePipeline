@@ -1329,6 +1329,32 @@ def test_receipt_replacement_keeps_prior_file_if_rename_fails(tmp_path, monkeypa
     assert list(tmp_path.glob(".receipt.json.*.tmp")) == []
 
 
+def test_atomic_deploy_receipt_is_readable_by_the_operator_door(tmp_path):
+    output = tmp_path / "receipt.json"
+    deploy._write_receipt_and_return({"status": "deployed"}, str(output))
+    assert output.stat().st_mode & 0o777 == 0o644
+
+
+def test_receipt_rename_is_synced_before_notes_can_be_marked(tmp_path, monkeypatch):
+    output = tmp_path / "receipt.json"
+    events = []
+    real_fsync = os.fsync
+    real_replace = os.replace
+
+    def fsync(fd):
+        events.append("directory_fsync" if stat.S_ISDIR(os.fstat(fd).st_mode) else "file_fsync")
+        real_fsync(fd)
+
+    def replace(source, target):
+        events.append("replace")
+        real_replace(source, target)
+
+    monkeypatch.setattr(deploy.os, "fsync", fsync)
+    monkeypatch.setattr(deploy.os, "replace", replace)
+    deploy._write_receipt_and_return({"status": "deployed"}, str(output))
+    assert events == ["file_fsync", "replace", "directory_fsync"]
+
+
 def test_failed_receipt_write_prints_deployed_receipt_and_keeps_notes_unreported(tmp_path, monkeypatch, capsys):
     notes, note = _stub_main_break_glass_notes(monkeypatch, tmp_path)
 
