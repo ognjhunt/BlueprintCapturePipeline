@@ -19,6 +19,7 @@ from .native_g1_team_campaign_intake import (
     _selected_binding,
     list_g1_team_campaign_setups,
 )
+from .native_task_runtime_source_packet import verify_native_task_runtime_source_packet
 from .task_evaluation_packet_planning_setup import make_packet_planning_setup
 
 
@@ -32,6 +33,7 @@ def build_g1_team_campaign_registry(bindings: Any) -> dict[str, Any]:
         "bindings": bindings,
         "registry_digest": "",
     }
+    verified_runtime_sources: set[str] = set()
     for row in bindings:
         if not isinstance(row, dict) or set(row) != BINDING_FIELDS:
             raise ValueError("g1_team_campaign_binding_invalid")
@@ -46,6 +48,15 @@ def build_g1_team_campaign_registry(bindings: Any) -> dict[str, Any]:
             "owner": owner,
             "source_packet_receipt_digest": row["source_packet_receipt_digest"],
         })
+        runtime_receipt_path = binding["runtime_source_receipt_path"]
+        if runtime_receipt_path not in verified_runtime_sources:
+            runtime_source = verify_native_task_runtime_source_packet(runtime_receipt_path)
+            if (
+                runtime_source.get("status") != "ready"
+                or runtime_source.get("runtime_profile") != "unitree_g1"
+            ):
+                raise ValueError("g1_team_campaign_runtime_source_profile_invalid")
+            verified_runtime_sources.add(runtime_receipt_path)
         setup = make_packet_planning_setup(
             source_packet_dir=Path(binding["source_packet_dir"])
         )
