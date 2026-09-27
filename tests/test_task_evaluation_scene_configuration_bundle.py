@@ -5308,6 +5308,34 @@ def test_ambient_retained_selection_for_other_frames_is_recorded_not_fatal(tmp_p
             retained_candidate_selection_path=selection, retained_candidate_selection_optional=True)
 
 
+def test_an_absent_ambient_selection_is_recorded_and_an_absent_explicit_one_still_fails(tmp_path: Path) -> None:
+    """2026-09-27 website dishwasher: the host default's selection.json was removed with its directory."""
+    commit = "a" * 40
+    source = tmp_path / "source"
+    source.mkdir()
+    envelope = _envelope(source, commit)
+    _toolchain(tmp_path / "toolchain", commit)
+    _repo(tmp_path / "repo")
+    missing = tmp_path / "gone" / "selection.json"
+    with pytest.raises(TaskEvaluationSceneConfigurationBundleError,
+                       match="scene_configuration_retained_candidate_selection_invalid"):
+        build_scene_configuration_provider_bundle(
+            construction_envelope_path=envelope, toolchain_root=tmp_path / "toolchain",
+            repository_root=tmp_path / "repo", output_root=tmp_path / "strict", expected_source_commit=commit,
+            retained_candidate_selection_path=missing)
+    receipt = build_scene_configuration_provider_bundle(
+        construction_envelope_path=envelope, toolchain_root=tmp_path / "toolchain",
+        repository_root=tmp_path / "repo", output_root=tmp_path / "ambient", expected_source_commit=commit,
+        retained_candidate_selection_path=missing, retained_candidate_selection_optional=True)
+    with zipfile.ZipFile(receipt["bundle_path"]) as archive:
+        member = next(n for n in archive.namelist() if n.endswith("portable_construction_envelope.v1.json"))
+        render = json.loads(archive.read(member))["render_inputs_result"]
+    assert "retained_semantic_candidates" not in render
+    assert render["retained_candidate_selection_rejected"] == {
+        "path": str(missing.resolve()), "sha256": None,
+        "blocker": "semantic_teacher_retained_selection_absent", "source": "environment_default"}
+
+
 
 def test_zip_tree_stores_already_compressed_members_and_deflates_the_rest(tmp_path):
     """Deflating a wheelhouse again cost the 2026-09-13 activation worker four minutes for nothing."""
