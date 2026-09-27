@@ -98,8 +98,27 @@ from blueprint_pipeline.production_cad_skill_sources import (  # noqa: E402
     ProductionCadSkillSourcesError,
     provision_production_cad_skill_sources,
 )
+from blueprint_pipeline.active_deployed_release_admission import (  # noqa: E402
+    trusted_deploy_source,
+)
+from blueprint_pipeline.control_plane_break_glass import (  # noqa: E402
+    DEPLOY_FROM_UNTRUSTED_SOURCE,
+    BreakGlassNoteError,
+    note_summary as break_glass_note_summary,
+    verify_note as verify_break_glass_note,
+)
 
 SCHEMA_VERSION = "control_plane_commit_deploy_receipt.v1"
+#: How long a break-glass note authorizes a deploy from an untrusted source.
+BREAK_GLASS_DEPLOY_NOTE_MAX_AGE_SECONDS = 24 * 3600
+UNTRUSTED_SOURCE_REFUSAL = (
+    "GPU admission would refuse the resulting release "
+    "(gpu_canary_deployed_release_receipt_unverified): it trusts only the "
+    "canonical source checkout or a root-owned clone directly under the "
+    "config-tools root. Deploy through the operator door, or record a "
+    "break-glass note naming " + DEPLOY_FROM_UNTRUSTED_SOURCE + " and pass it "
+    "with --break-glass-note within 24 hours."
+)
 
 #: The single-flight guard a lane holds for the whole life of a paid instance.
 #: `vast_provider_adapter` writes it before the launch API call and clears it on
@@ -3255,9 +3274,56 @@ def deploy_control_plane_commit(
     }
 
 
+def _require_trusted_deploy_source(
+    source_repo: str | Path, break_glass_note: str | Path | None
+) -> dict[str, Any] | None:
+    """Refuse a source GPU admission would not trust, unless a fresh note allows it.
+
+    On 2026-09-26 a deploy ran from a scratch checkout. It succeeded, and GPU
+    admission then refused every sponsored step for hours, because the receipt
+    named a source admission does not trust. The check is admission's own
+    predicate, asked of the path the receipt will record, so the two cannot
+    drift. It runs before anything on the host changes; a note must be sealed,
+    at most a day old and name deploy-from-untrusted-source. Returns what the
+    receipt records about that note, or None for a trusted source.
+    """
+
+    if trusted_deploy_source(Path(source_repo).expanduser().resolve()):
+        return None
+    reason = "break_glass_note_missing"
+    if break_glass_note is not None:
+        path = Path(break_glass_note).expanduser().resolve()
+        try:
+            note = verify_break_glass_note(
+                path, max_age_seconds=BREAK_GLASS_DEPLOY_NOTE_MAX_AGE_SECONDS
+            )
+        except BreakGlassNoteError as exc:
+            reason = str(exc)
+        else:
+            if DEPLOY_FROM_UNTRUSTED_SOURCE in note["actions"]:
+                summary = break_glass_note_summary({"name": path.name, **note})
+                return {**summary, "path": str(path), "actions": list(note["actions"])}
+            reason = "break_glass_note_action_missing"
+    raise ControlPlaneDeployError(
+        f"deploy_source_repo_untrusted:{reason}: {UNTRUSTED_SOURCE_REFUSAL}"
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-repo", required=True)
+    parser.add_argument(
+        "--break-glass-note",
+        default=None,
+        help=(
+            "A sealed break-glass note, at most 24 hours old, whose actions "
+            "include deploy-from-untrusted-source (record it with python -m "
+            "blueprint_pipeline.control_plane_break_glass record). Required "
+            "only when --source-repo is not a source GPU admission trusts: "
+            "the canonical checkout, or a root-owned clone directly under the "
+            "config-tools root."
+        ),
+    )
     parser.add_argument("--source-commit", required=True)
     parser.add_argument("--release-root", required=True)
     parser.add_argument("--state-root", required=True)
@@ -3382,6 +3448,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
+        # Before the deploy function, so a refused source reserves no disk,
+        # writes no provenance and moves nothing.
+        break_glass_note = _require_trusted_deploy_source(
+            args.source_repo, args.break_glass_note
+        )
         receipt = deploy_control_plane_commit(
             source_repo=args.source_repo,
             source_commit=args.source_commit,
@@ -3434,6 +3505,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 2
 
+    # The note that let an untrusted source through, or None when none was needed.
+    receipt["break_glass_note"] = break_glass_note
     if args.receipt_out:
         out = Path(args.receipt_out).expanduser().resolve()
         out.parent.mkdir(parents=True, exist_ok=True)

@@ -24,10 +24,14 @@ import os
 import stat
 import subprocess
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+from blueprint_pipeline import active_deployed_release_admission as admission
+from blueprint_pipeline import control_plane_break_glass as break_glass
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 _SPEC = importlib.util.spec_from_file_location(
@@ -916,6 +920,7 @@ def test_conflicting_controls_intent_refuses_before_any_host_action(tmp_path, mo
 
 def test_cli_forwards_explicit_controls_state_preservation(tmp_path, monkeypatch):
     calls = []
+    monkeypatch.setattr(deploy, "trusted_deploy_source", lambda path: True)
     monkeypatch.setattr(deploy, "deploy_control_plane_commit", lambda **kwargs: calls.append(kwargs) or {"status": "deployed"})
     assert deploy.main([
         "--source-repo", str(tmp_path), "--source-commit", "a" * 40,
@@ -924,6 +929,139 @@ def test_cli_forwards_explicit_controls_state_preservation(tmp_path, monkeypatch
     ]) == 0
     assert calls[0]["preserve_configured_controls_state"] is True
     assert calls[0]["arm_path_units"] is False
+
+
+def _cli_args(tmp_path: Path, source: Path, *extra: str) -> list[str]:
+    return [
+        "--source-repo", str(source), "--source-commit", "a" * 40,
+        "--release-root", str(tmp_path / "releases"), "--state-root", str(tmp_path / "state"),
+        "--active-link", str(tmp_path / "active"), "--iteration",
+        "--receipt-out", str(tmp_path / "receipt.json"), *extra,
+    ]
+
+
+def _deploy_note(
+    root: Path,
+    *,
+    age_seconds: int = 60,
+    actions: tuple[str, ...] = (break_glass.DEPLOY_FROM_UNTRUSTED_SOURCE,),
+) -> Path:
+    created = time.time() - age_seconds
+    return break_glass.record_note(
+        root=root,
+        operator="alice",
+        reason="the door is down; deploying the fix from a scratch checkout",
+        actions=list(actions),
+        now=lambda: created,
+        environ={},
+    )
+
+
+@pytest.mark.parametrize(
+    ("note", "code"),
+    [
+        (None, "break_glass_note_missing"),
+        ("stale", "break_glass_note_expired"),
+        ("other_action", "break_glass_note_action_missing"),
+        ("edited", "break_glass_note_digest_mismatch"),
+        ("absent", "break_glass_note_unreadable"),
+    ],
+)
+def test_main_refuses_an_untrusted_source_without_a_note(
+    tmp_path, monkeypatch, capsys, note, code
+):
+    """On 2026-09-26 a scratch-checkout deploy left GPU admission refusing for hours.
+
+    The deploy itself succeeded; the release it produced was one GPU admission
+    cannot verify, so every sponsored step refused until a later deploy
+    replaced it. The CLI now refuses such a source before anything moves.
+    """
+
+    source = tmp_path / "control-plane-deploy-sources" / "scratch"
+    source.mkdir(parents=True)
+    asked = []
+    monkeypatch.setattr(deploy, "trusted_deploy_source", lambda path: asked.append(path) or False)
+    monkeypatch.setattr(deploy, "deploy_control_plane_commit", lambda **_kwargs: pytest.fail("deploy ran"))
+    monkeypatch.setattr(deploy.subprocess, "run", lambda *_args, **_kwargs: pytest.fail("host action"))
+    notes = tmp_path / "cleanup-receipts"
+    extra: list[str] = []
+    if note == "stale":
+        extra = ["--break-glass-note", str(_deploy_note(notes, age_seconds=24 * 3600 + 60))]
+    elif note == "other_action":
+        extra = ["--break-glass-note", str(_deploy_note(notes, actions=("unit-restart",)))]
+    elif note == "edited":
+        path = _deploy_note(notes)
+        document = json.loads(path.read_text(encoding="utf-8"))
+        document["reason"] = "a reason nobody sealed"
+        path.write_text(json.dumps(document), encoding="utf-8")
+        extra = ["--break-glass-note", str(path)]
+    elif note == "absent":
+        extra = ["--break-glass-note", str(notes / "20260926T120000Z-0123456789ab.json")]
+
+    assert deploy.main(_cli_args(tmp_path, source, *extra)) == 2
+
+    blocked = json.loads(capsys.readouterr().out)
+    assert blocked["status"] == "blocked"
+    [blocker] = blocked["blockers"]
+    assert blocker.startswith(f"deploy_source_repo_untrusted:{code}:")
+    assert "GPU admission would refuse the resulting release" in blocker
+    assert "/" not in blocker, "a refusal names no host path"
+    # The question asked is the one admission asks of the receipt's source path.
+    assert asked == [source.resolve()]
+    assert not (tmp_path / "receipt.json").exists()
+
+
+def test_main_accepts_an_untrusted_source_with_a_fresh_deploy_note(tmp_path, monkeypatch, capsys):
+    source = tmp_path / "scratch"
+    source.mkdir()
+    note = _deploy_note(tmp_path / "cleanup-receipts")
+    calls = []
+    monkeypatch.setattr(deploy, "trusted_deploy_source", lambda path: False)
+    monkeypatch.setattr(
+        deploy, "deploy_control_plane_commit", lambda **kwargs: calls.append(kwargs) or {"status": "deployed"}
+    )
+
+    assert deploy.main(_cli_args(tmp_path, source, "--break-glass-note", str(note))) == 0
+
+    sealed = break_glass.verify_note(note)
+    expected = {
+        "name": note.name,
+        "path": str(note.resolve()),
+        "digest": sealed["note_digest"],
+        "operator": "alice",
+        "reason": "the door is down; deploying the fix from a scratch checkout",
+        "created_at": sealed["created_at"],
+        "actions": [break_glass.DEPLOY_FROM_UNTRUSTED_SOURCE],
+    }
+    assert json.loads((tmp_path / "receipt.json").read_text(encoding="utf-8"))["break_glass_note"] == expected
+    assert json.loads(capsys.readouterr().out)["break_glass_note"] == expected
+    assert calls[0]["source_repo"] == str(source)
+
+
+def test_main_needs_no_note_for_a_trusted_source(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(deploy, "trusted_deploy_source", lambda path: True)
+    monkeypatch.setattr(deploy, "deploy_control_plane_commit", lambda **_kwargs: {"status": "deployed"})
+
+    assert deploy.main(_cli_args(tmp_path, tmp_path)) == 0
+
+    assert json.loads(capsys.readouterr().out)["break_glass_note"] is None
+
+
+def test_door_and_iteration_wrappers_use_trusted_sources() -> None:
+    """Every supported deploy path passes a source GPU admission trusts."""
+
+    sys.path.insert(0, str(REPO_ROOT / "deploy" / "operator-door"))
+    from operator_door.config import DoorConfig
+
+    door = (REPO_ROOT / "deploy" / "operator-door" / "door-deploy.sh").read_text(encoding="utf-8")
+    assert door.count("--source-repo") == 1
+    assert '--source-repo "$DOOR_SOURCE_CLONE" ' in door
+    assert Path(DoorConfig().source_clone).parent == admission.CONFIG_TOOLS_ROOT
+    for wrapper in ("deploy_control_plane_iteration.sh", "deploy_control_plane_canary.sh"):
+        text = (REPO_ROOT / "scripts" / wrapper).read_text(encoding="utf-8")
+        assert f"\nCP={admission.SOURCE_CHECKOUT}\n" in text, wrapper
+        assert text.count("--source-repo") == 1, wrapper
+        assert "--source-repo $CP " in text, wrapper
 
 
 def test_authority_gated_paid_dispatch_watcher_is_armed_by_default(
