@@ -112,10 +112,11 @@ def _stage(storage: Path, cloud: FakeCloud, capture: str, *, status: str = "comp
                                      stage_control_plane=True, run_e2e_enabled=False)
     capture_root = storage / BUCKET / "scenes" / SCENE / "captures" / capture
     if ack:
-        assert listener._write_ack_receipt(
+        assert listener._write_ack_receipt(  # None once written
             capture_root=capture_root, subscription=SUBSCRIPTION, message_id=f"msg-{capture}",
             payload_digest=listener.payload_sha256(_payload(capture)), delivery_attempt=1,
-            disposition="terminal_authority_ended" if status == "terminal_authority_ended" else "terminal_success")
+            disposition="terminal_authority_ended" if status == "terminal_authority_ended" else "terminal_success",
+        ) is None
     # A local-only pipeline output: the website preparation writes these and uploads nothing.
     (capture_root / "pipeline").mkdir(exist_ok=True)
     (capture_root / "pipeline" / "preparation.json").write_text(json.dumps({"stage": "prepared"}), encoding="utf-8")
