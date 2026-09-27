@@ -319,7 +319,21 @@ def test_an_invalid_replay_cache_setting_only_plans_and_alerts(tmp_path) -> None
                  replay_cache_retention_alert=alert, scene_workspace_retirement_alert="scene_workspace_retirement_setting_invalid")
 
     assert tick["alerts"] == ["scene_workspace_retirement_setting_invalid", alert]
-    assert tick["replay_caches"]["status"] == "dry_run" and blob.exists()
+    # As the scene workspace phase does, the phase's own record carries its alert too.
+    assert (tick["replay_caches"]["status"], tick["replay_caches"]["alerts"]) == ("dry_run", [alert])
+    assert blob.exists()
+
+
+def test_both_opt_ins_share_one_parser() -> None:
+    opt_ins = (
+        (replay_gc.replay_cache_retention_setting, replay_gc.REPLAY_CACHE_RETENTION_ENV,
+         "replay_cache_retention_setting_invalid"),
+        (gc_module.scene_workspace_retirement_setting, gc_module.SCENE_WORKSPACE_RETIREMENT_ENV,
+         "scene_workspace_retirement_setting_invalid"),
+    )
+    for parse, name, invalid in opt_ins:
+        for value in ("1", "no", "", "later"):
+            assert parse({name: value}) == replay_gc._truthy_setting({name: value}, name, invalid)
 
 
 def test_the_command_line_reads_replay_roots_and_the_opt_in(tmp_path, monkeypatch, capsys) -> None:

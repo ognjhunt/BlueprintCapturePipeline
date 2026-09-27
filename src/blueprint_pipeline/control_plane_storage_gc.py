@@ -55,7 +55,7 @@ from .control_plane_evidence_offload import (
     build_evidence_offload_manifest,
 )
 from .control_plane_replay_cache_gc import (
-    REPLAY_PARENT_ROOTS_ENV, reclaim_replay_caches, replay_cache_retention_setting,
+    REPLAY_PARENT_ROOTS_ENV, _truthy_setting, reclaim_replay_caches, replay_cache_retention_setting,
 )
 from .control_plane_storage_pins import PINS_ROOT_ENV, live_pinned_paths
 from .control_plane_storage_roots import require_storage_class
@@ -132,8 +132,6 @@ SCENE_WORKSPACE_RETIREMENT_INVALID = "scene_workspace_retirement_setting_invalid
 REPORT_ROOT_ENV = "BLUEPRINT_CONTROL_PLANE_GC_REPORT_ROOT"
 DEFAULT_MAX_SCENE_RETIREMENTS = 20
 _MAX_SCENE_RESULTS = 50
-_TRUE = frozenset({"1", "true", "yes"})
-_FALSE = frozenset({"0", "false", "no"})
 _COMMIT = re.compile(r"[0-9a-f]{40}\Z")
 _ROW_COMMIT_KEYS = ("expected_production_commit", "source_commit")
 _DIGEST_NAME = re.compile(r"[0-9a-f]{64}\Z")
@@ -1079,12 +1077,7 @@ def scene_workspace_retirement_setting(environ: Mapping[str, str] = os.environ) 
     aborts the tick.
     """
 
-    raw = str(environ.get(SCENE_WORKSPACE_RETIREMENT_ENV) or "").strip().lower()
-    if raw in _TRUE:
-        return True, None
-    if not raw or raw in _FALSE:
-        return False, None
-    return False, SCENE_WORKSPACE_RETIREMENT_INVALID
+    return _truthy_setting(environ, SCENE_WORKSPACE_RETIREMENT_ENV, SCENE_WORKSPACE_RETIREMENT_INVALID)
 
 
 def retire_scene_workspaces(
@@ -1478,6 +1471,8 @@ def run_storage_gc(
         _isolated(report, "replay_caches", lambda: reclaim_replay_caches(
             parent_roots=replay_present, apply=apply, enabled=replay_cache_retention_enabled,
             now=clock, classifier=classifier))
+        if replay_cache_retention_alert and isinstance(report.get("replay_caches"), dict):
+            report["replay_caches"]["alerts"] = [replay_cache_retention_alert]
     scene_present, absent = _existing(scene_workspace_roots)
     report["skipped_roots"].extend(absent)
     if scene_present:

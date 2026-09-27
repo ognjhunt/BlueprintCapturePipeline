@@ -40,21 +40,30 @@ _TRUE = frozenset({"1", "true", "yes"})
 _FALSE = frozenset({"0", "false", "no"})
 
 
-def replay_cache_retention_setting(environ: Mapping[str, str] = os.environ) -> tuple[bool, str | None]:
-    """Whether the phase may remove copies, and an alert when its setting is invalid.
+def _truthy_setting(environ: Mapping[str, str], name: str, invalid_code: str) -> tuple[bool, str | None]:
+    """An owner's opt-in: whether it is on, and ``invalid_code`` as an alert when its value is not a setting.
 
-    Parsed exactly like the scene workspace retirement opt-in: only ``1``,
-    ``true`` or ``yes`` enables it; unset, ``0``, ``false`` or ``no`` only plans.
-    Any other value only plans and is reported as an alert; it never aborts the
-    tick and never follows another opt-in.
+    Only ``1``, ``true`` or ``yes`` turns it on; unset, ``0``, ``false`` or ``no`` leaves it
+    off. Any other value leaves it off and is reported; it never aborts a tick. Storage GC's
+    scene workspace retirement opt-in is read the same way.
     """
 
-    raw = str(environ.get(REPLAY_CACHE_RETENTION_ENV) or "").strip().lower()
+    raw = str(environ.get(name) or "").strip().lower()
     if raw in _TRUE:
         return True, None
     if not raw or raw in _FALSE:
         return False, None
-    return False, REPLAY_CACHE_RETENTION_INVALID
+    return False, invalid_code
+
+
+def replay_cache_retention_setting(environ: Mapping[str, str] = os.environ) -> tuple[bool, str | None]:
+    """Whether the phase may remove copies, and an alert when its setting is invalid.
+
+    Its own opt-in, parsed exactly like the scene workspace retirement opt-in: an invalid
+    value only plans and alerts, and it never follows another opt-in.
+    """
+
+    return _truthy_setting(environ, REPLAY_CACHE_RETENTION_ENV, REPLAY_CACHE_RETENTION_INVALID)
 
 
 def reclaim_replay_caches(
