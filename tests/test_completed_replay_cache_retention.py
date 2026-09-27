@@ -261,7 +261,7 @@ def test_content_addressed_scratch_copies_are_reclaimable(tmp_path):
     [row] = p["rows"]
     info = copy.stat()
     assert row["store_copies"] == [{
-        "relative_paths": [str(copy.relative_to(child))], "inode": info.st_ino, "nlink": 1,
+        "relative_paths": [str(copy.relative_to(child))], "inode": info.st_ino, "dev": info.st_dev, "nlink": 1,
         "size_bytes": info.st_size, "mtime_ns": info.st_mtime_ns, "sha256": "sha256:" + copy.name}]
     assert p["candidate_bytes"] == 100000 + len(b"a small read-only store blob")
     result = apply(p, proc, **STORE)
@@ -986,3 +986,76 @@ def test_directories_the_scratch_inputs_leave_empty_are_removed_and_nothing_else
     assert not (inputs / "prep" / "a").exists() and not (inputs / "prep" / "empty").exists()
     assert newer.exists() and (inputs / "prep" / "stuck").is_dir() and (inputs / "prep" / "link").is_symlink()
     assert inputs.is_dir() and (outside / "empty").is_dir() and (child / "launch-preparations" / "pending").is_dir()
+
+
+class _OnDevice:
+    """A stat result as the kernel reports one past a mount point: the same entry on another st_dev."""
+
+    def __init__(self, info, device):
+        self._info, self.st_dev = info, device
+
+    def __getattr__(self, name):
+        return getattr(self._info, name)
+
+
+def test_a_group_off_the_replay_childs_filesystem_is_refused_at_apply(tmp_path, monkeypatch):
+    """Review of PR 10a.1: a plan's dev was compared only with the device its own names showed at
+    apply, so a group on another filesystem (one mounted under prepared-references) whose plan
+    said so would have been unlinked, with no digest to stop it. Every group, and every name in
+    it, must now be on the held child's own device."""
+    root, child, data, proc = setup(tmp_path)
+    data.unlink()
+    target = _scratch_input(child, "prep/on-another-device.bin", b"bytes on a mounted filesystem")
+    p = plan(root, proc, **SCRATCH)
+    [row] = p["rows"]
+    [group] = row["scratch_inputs"]
+    elsewhere = group["dev"] + 1
+    real_leaf = gc._leaf
+
+    def leaf(directory, name):
+        info = real_leaf(directory, name)
+        return _OnDevice(info, elsewhere) if name == target.name else info
+
+    monkeypatch.setattr(gc, "_leaf", leaf)
+    forged = apply(reseal(p, {**row, "scratch_inputs": [{**group, "dev": elsewhere}]}), proc, **SCRATCH)
+    planned = apply(p, proc, **SCRATCH)
+
+    for result in (forged, planned):
+        assert result["skipped"] == [{"paths": [str(target)], "reason": "cross_device"}]
+        assert result["removed_bytes"] == 0
+    assert target.read_bytes() == b"bytes on a mounted filesystem"
+
+
+def test_a_directory_on_another_device_is_neither_planned_nor_pruned(tmp_path, monkeypatch):
+    """Review of PR 10a.1: the scratch walk and the prune crossed mount points, so a filesystem
+    mounted under a finished lookahead's prepared-references would have had its files planned
+    and unlinked (no digest) and its empty directories removed. Neither leaves the replay child's
+    device now; a directory whose st_dev differs is not entered."""
+    root, child, data, proc = setup(tmp_path)
+    data.unlink()
+    ours = _scratch_input(child, "prep/ours.bin", b"on the replay's own filesystem")
+    mounted = child / "prepared-references" / "prep" / "mounted"
+    theirs = _scratch_input(child, "prep/mounted/theirs.bin", b"on another filesystem")
+    (mounted / "empty").mkdir()
+    elsewhere = os.lstat(child).st_dev + 1
+    real_lstat, real_leaf = os.lstat, gc._leaf
+
+    def lstat(path, *args, **kwargs):
+        info = real_lstat(path, *args, **kwargs)
+        inside = str(path) == str(mounted) or str(path).startswith(str(mounted) + os.sep)
+        return _OnDevice(info, elsewhere) if inside else info
+
+    def leaf(directory, name):
+        info = real_leaf(directory, name)
+        return _OnDevice(info, elsewhere) if name == mounted.name else info
+
+    monkeypatch.setattr(os, "lstat", lstat)
+    monkeypatch.setattr(gc, "_leaf", leaf)
+    p = plan(root, proc, **SCRATCH)
+    estimate = gc.estimate_replay_cache_retention(replay_root=root, now=time.time() + 120, **SCRATCH)
+    result = apply(p, proc, **SCRATCH)
+
+    assert planned_paths(p) == {str(ours.relative_to(child))}
+    assert p["candidate_bytes"] == estimate["estimated_candidate_bytes"] == len(b"on the replay's own filesystem")
+    assert (result["removed_bytes"], result["skipped"]) == (p["candidate_bytes"], [])
+    assert theirs.exists() and (mounted / "empty").is_dir() and not ours.exists()

@@ -16,8 +16,11 @@ temporary root: every regular file there whose links are all inside it and
 that is not newer than the report is scratch, digest-named or not, and goes
 with every name; the directories left empty inside the tree go after it, and
 the tree itself stays. It subsumes the store-copy rule for that replay, so no
-inode is counted twice. Without the opt-ins the rules are the ones this module
-always had.
+inode is counted twice. Both rules stay on the replay child's own filesystem:
+nothing whose st_dev differs from the child's is planned, unlinked or pruned,
+though a bind mount of the same filesystem keeps its st_dev and cannot be told
+apart that way. Without the opt-ins the rules are the ones this module always
+had.
 Apply rechecks and unlinks every name, and hashes what a rule's digest rests
 on, through directory descriptors held from the replay child down, never
 through a path, and skips an item whose directory moved or became a link since
@@ -88,19 +91,49 @@ def _no_linked_parent(path, child):
     return not any(p.is_symlink() for p in path.parents if p != child.parent)
 
 
+def _directory_on(path, device):
+    """Whether ``path`` is a directory, not a link, on ``device``."""
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return False
+    return stat.S_ISDIR(info.st_mode) and info.st_dev == device
+
+
 def _inode_groups(child):
-    """Every regular file under the child's ``prepared-references`` with no linked parent, grouped by
-    inode, from names and metadata alone: ``{(dev, ino): (lstat, [names relative to the child])}``."""
+    """Every regular file under the child's ``prepared-references`` with no linked parent, on the
+    child's own filesystem, grouped by inode from names and metadata alone:
+    ``{(dev, ino): (lstat, [names relative to the child])}``.
+
+    The walk never leaves the child's device: a directory whose st_dev differs (a mount point)
+    is not entered, and a file whose st_dev differs is skipped. A bind mount of the same
+    filesystem keeps its st_dev, so it cannot be told apart this way.
+    """
     subtree = child / _SCRATCH_INPUTS
     groups = {}
-    if subtree.is_dir() and not subtree.is_symlink():
-        for directory, _directories, names in os.walk(subtree):
-            for name in names:
-                path = Path(directory) / name
-                info = path.lstat()
-                if stat.S_ISREG(info.st_mode) and _no_linked_parent(path, child):
-                    groups.setdefault((info.st_dev, info.st_ino), (info, []))[1].append(path.relative_to(child))
+    device = os.lstat(child).st_dev
+    if not _directory_on(subtree, device):
+        return groups
+    for directory, directories, names in os.walk(subtree):
+        directories[:] = [name for name in directories if _directory_on(Path(directory) / name, device)]
+        for name in names:
+            path = Path(directory) / name
+            info = os.lstat(path)
+            if stat.S_ISREG(info.st_mode) and info.st_dev == device and _no_linked_parent(path, child):
+                groups.setdefault((info.st_dev, info.st_ino), (info, []))[1].append(path.relative_to(child))
     return groups
+
+
+def _group(info, names):
+    """A plan's record of one inode and every name it has in the scratch inputs."""
+    return {
+        "relative_paths": sorted(str(name) for name in names),
+        "inode": info.st_ino,
+        "dev": info.st_dev,
+        "nlink": info.st_nlink,
+        "size_bytes": info.st_size,
+        "mtime_ns": info.st_mtime_ns,
+    }
 
 
 def _store_copies(child, report_mtime_ns):
@@ -119,13 +152,7 @@ def _store_copies(child, report_mtime_ns):
         store_inodes.add(key)
         if len(names) != info.st_nlink or info.st_mtime_ns > report_mtime_ns:
             continue
-        copies.append({
-            "relative_paths": sorted(str(name) for name in names),
-            "inode": info.st_ino,
-            "nlink": info.st_nlink,
-            "size_bytes": info.st_size,
-            "mtime_ns": info.st_mtime_ns,
-        })
+        copies.append(_group(info, names))
     return sorted(copies, key=lambda copy: copy["relative_paths"]), store_inodes
 
 
@@ -141,14 +168,7 @@ def _scratch_inputs(child, report_mtime_ns):
     """
     groups = _inode_groups(child)
     inputs = [
-        {
-            "relative_paths": sorted(str(name) for name in names),
-            "inode": info.st_ino,
-            "dev": info.st_dev,
-            "nlink": info.st_nlink,
-            "size_bytes": info.st_size,
-            "mtime_ns": info.st_mtime_ns,
-        }
+        _group(info, names)
         for info, names in groups.values()
         if len(names) == info.st_nlink and info.st_mtime_ns <= report_mtime_ns
     ]
@@ -207,16 +227,19 @@ class _HeldChild:
     swapped for a symlink while apply runs cannot redirect a removal outside the replay.
     Only the root and the child stay open for a whole row: ``item`` closes the directories
     below the child once each item is done, so a row across any number of directories holds
-    no more descriptors than one item needs.
+    no more descriptors than one item needs. ``device`` is the held child's own filesystem
+    (fstat of its descriptor); nothing on any other is unlinked or pruned.
     """
 
     def __init__(self, base, name):
         self._name = name
         self._base = os.open(os.fspath(base), _DIRECTORY_FLAGS)
+        self._held = {}
         try:
-            self._held = {(): os.open(name, _DIRECTORY_FLAGS, dir_fd=self._base)}
+            self._held[()] = os.open(name, _DIRECTORY_FLAGS, dir_fd=self._base)
+            self.device = os.fstat(self._held[()]).st_dev
         except OSError:
-            os.close(self._base)
+            self.close()
             raise
 
     def directory(self, parts):
@@ -268,7 +291,8 @@ class _HeldChild:
 
     def close(self):
         self._release()
-        os.close(self._held.pop(()))
+        if () in self._held:
+            os.close(self._held.pop(()))
         os.close(self._base)
 
 
@@ -346,8 +370,10 @@ def _remove_empty_directories(held, root):
 
     Each directory is opened O_NOFOLLOW from its parent's descriptor and removed by rmdir
     relative to it, so a link is never entered or removed and nothing outside
-    ``prepared-references`` is reached; ``prepared-references`` itself stays. One descriptor
-    per level is open at a time. A directory that still holds anything is simply kept.
+    ``prepared-references`` is reached; ``prepared-references`` itself stays. A directory
+    whose lstat shows another device than the held child's (a mount point) is not entered.
+    One descriptor per level is open at a time. A directory that still holds anything is
+    simply kept.
     """
     skipped = []
 
@@ -358,7 +384,8 @@ def _remove_empty_directories(held, root):
     def prune(directory, parts):
         for name in sorted(os.listdir(directory)):
             try:
-                if not stat.S_ISDIR(_leaf(directory, name).st_mode):
+                info = _leaf(directory, name)
+                if not stat.S_ISDIR(info.st_mode) or info.st_dev != held.device:
                     continue
                 inner = os.open(name, _DIRECTORY_FLAGS, dir_fd=directory)
                 try:
@@ -371,7 +398,9 @@ def _remove_empty_directories(held, root):
                     failed((*parts, name), exc)
 
     try:
-        prune(held.directory((_SCRATCH_INPUTS,)), ())
+        inputs = held.directory((_SCRATCH_INPUTS,))
+        if os.fstat(inputs).st_dev == held.device:
+            prune(inputs, ())
     except OSError as exc:
         failed((), exc)
     return skipped
@@ -380,12 +409,16 @@ def _remove_empty_directories(held, root):
 def _remove_group(held, group, names, *, changed, sha256=None):
     """Recheck every name of a planned inode group through held descriptors, then unlink every name.
 
-    Each name must still be the planned inode (on the planned device, when the plan names
-    one), those names all of its links, its size and mtime unchanged and, with ``sha256``,
-    its bytes that digest; otherwise the group is a ``changed`` skip. One failed check keeps
-    every name, and a store name goes last, so a removal cut short leaves a group the next
-    plan still recognises.
+    The group's planned device, and each of its names' devices now, must be the held
+    child's own; otherwise it is a ``cross_device`` skip, so nothing on a filesystem mounted
+    inside the replay is removed. Each name must still be the planned inode, those names all
+    of its links, its size and mtime unchanged and, with ``sha256``, its bytes that digest;
+    otherwise the group is a ``changed`` skip. One failed check keeps every name, and a
+    store name goes last, so a removal cut short leaves a group the next plan still
+    recognises.
     """
+    if group.get("dev") != held.device:
+        return "cross_device"
     if len(names) != group["nlink"]:
         return changed
     try:
@@ -393,8 +426,10 @@ def _remove_group(held, group, names, *, changed, sha256=None):
         for name in names:
             directory = held.directory(name.parts[:-1])
             entries.append((name, directory, _leaf(directory, name.name)))
+        if any(info.st_dev != held.device for _name, _directory, info in entries):
+            return "cross_device"
         first_name, first_directory, first = entries[0]
-        planned = (group.get("dev", first.st_dev), group["inode"])
+        planned = (group["dev"], group["inode"])
         if any(
             not stat.S_ISREG(info.st_mode)
             or (info.st_dev, info.st_ino) != planned
