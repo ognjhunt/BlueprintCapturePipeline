@@ -556,7 +556,17 @@ One tick runs nine phases in order:
    to the artifact store under kind `control-plane-evidence` with full readback,
    replaced by `<name>.offloaded.v1.json` (URI, digest, size, per-member digests),
    and only then removed. Bytes are migrated, never deleted; the spend guard and
-   every other `evidence_hot` root are outside the tool's reach.
+   every other `evidence_hot` root are outside the tool's reach. A run with a
+   result registry is never removed whole: its registered bulk artifacts go
+   first, one by one, and once none is left locally a canary run sealed by its
+   `dispatch_receipt.json` has its **residue** (every file the registry neither
+   records nor keeps: logs, intermediates, provider zips) packed, published with
+   the same readback and pointed to by `<name>.residue.v1.json` before any of it
+   is removed (`task_evaluation_result_residue_offload`). The registry, the
+   delivery, the receipts, every registered file, every path a live reader
+   reopens and every file a kept receipt names by path stay. This step only
+   plans until `BLUEPRINT_CONTROL_PLANE_GC_RESULT_RESIDUE_OFFLOAD=1` is set as
+   well.
 7. **Scratch directories** idle for three days
    (`BLUEPRINT_CONTROL_PLANE_GC_SCRATCH_MINIMUM_AGE_SECONDS=259200`) are reaped by
    age alone: nothing references them.
@@ -591,6 +601,23 @@ so each manifest (and its receipt) also records `walked_file_count` and
   `errno` (for an `OSError`) and `stage` (`registry`, `protection`, `publish` or
   `evict`), and so does a skipped artifact. Messages and file names are never
   recorded.
+- Result residue offload (`result_residue_offload`: `enabled`, its totals and
+  a row per registry run): a retained run says why in `retained_reason` (`hot`
+  or a protection reason, as its bulk offload kept it; `bulk_not_remote`,
+  `bulk_offload_failed`, `already_offloaded`, `registry_unsealed`,
+  `dispatch_receipt_missing` (an operator run, whose continuation and download
+  route keep reopening its files), `dispatch_receipt_invalid`,
+  `run_root_invalid`, `offload_locked`, `plan_failed` (for example a kept
+  document too large to search for the files it names), `publication_failed`,
+  `run_changed_or_active` or `pointer_failed`). Every file it left counts under
+  `member_skipped:<reason>` with its bytes: `reader_reopened` and
+  `receipt_referenced` (kept for the readers the module docstring surveys),
+  `symlink`, `special_file`, `cross_device`, `newer_than_registry`,
+  `linked_outside_residue`, `name_unsupported` or `unreadable_directory` when
+  the run is listed, and `member_changed`, `path_changed`, `cross_device`,
+  `recheck_failed` or `unlink_failed` for a packed member the pointer then
+  records as `kept` (the run row adds the exception type). The summary gives
+  the phase's `enabled` flag too.
 
 With `--report-out` the tick also writes `summary.json`
 (`control_plane_storage_gc_summary.v1`) beside `latest.json`, published the same
@@ -613,6 +640,13 @@ A missing summary means read `latest.json`.
 Restore an offloaded run with
 `python -c 'from blueprint_pipeline.control_plane_evidence_offload import restore_offloaded_evidence as r; r(pointer_path=..., destination=...)'`;
 every member digest is verified before the directory is exposed.
+
+Restore a run's offloaded residue with
+`python -c 'from blueprint_pipeline.task_evaluation_result_residue_offload import restore_result_residue as r; print(r(run_root=...))'`.
+It verifies the archive and every member's digest and size, never overwrites a
+different file (a `conflict`), leaves the members the pointer lists as `kept`
+alone, and writes `<name>.residue-restore.v1.json` beside the pointer. The
+pointer stays, so the next tick does not offload the restored files again.
 
 The manual single-root form
 `python -m blueprint_pipeline.control_plane_storage_gc --content-store-root <root>/sha256 [--apply --ack reap-unreferenced-content]`

@@ -1,6 +1,7 @@
 # Covers (for impacted-test selection):
 #   src/blueprint_pipeline/task_evaluation_result_residue_offload.py
 #   src/blueprint_pipeline/control_plane_storage_gc.py
+#   src/blueprint_pipeline/control_plane_storage_gc_reasons.py
 #   src/blueprint_pipeline/control_plane_evidence_offload.py
 """A sealed result run's residue moves to the artifact store behind a verified pointer, and comes back.
 
@@ -29,6 +30,7 @@ from blueprint_pipeline import task_evaluation_result_residue_offload as residue
 from blueprint_pipeline.control_plane_disk_budget import reserve_control_plane_disk
 from blueprint_pipeline.control_plane_replay_cache_gc import replay_cache_retention_setting
 from blueprint_pipeline.control_plane_storage_gc import RUN_ACK, run_storage_gc
+from blueprint_pipeline.control_plane_storage_gc_reasons import build_storage_gc_summary
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 from tests.test_task_evaluation_configured_scene_object_store import _ContentAddressedClient
 
@@ -681,3 +683,72 @@ def test_invalid_residue_setting_only_plans_and_alerts(tmp_path, monkeypatch, ca
     assert (phase["status"], phase["enabled"], phase["alerts"]) == ("dry_run", False, [residue.RESIDUE_OFFLOAD_INVALID])
     assert report["opt_in"]["result_residue_offload"] is False
     assert set(RESIDUE) <= set(_local_files(f.run)) and not f.pointer.exists()
+
+
+def test_summary_reports_residue_candidates_offloads_retained_reasons_and_opt_in(tmp_path) -> None:
+    evidence_root = tmp_path / "canaries"
+    client = _ContentAddressedClient()
+    ready = _sealed_run(evidence_root, "run-ready-secret", client=client)
+    (ready.run / "logs" / "link.log").symlink_to(ready.run / "logs" / "worker.log")
+    waiting = _sealed_run(evidence_root, "run-waiting-secret", bulk_remote=False, client=client)
+    hot = _sealed_run(evidence_root, "run-hot-secret", client=client)
+    os.utime(hot.run / "artifacts/result_delivery/artifact_registry.json", (NOW - 3600, NOW - 3600))
+    pins, queue = tmp_path / "pins", tmp_path / "queue"
+    (queue / "pending").mkdir(parents=True)
+    residue_bytes = sum(len(data) for data in RESIDUE.values())
+    link_bytes = (ready.run / "logs" / "link.log").lstat().st_size
+
+    def for_readers(*runs) -> dict:
+        return {f"member_skipped:{reason}": {key: sum(_reader_bytes(run.run, reason)[key] for run in runs)
+                                             for key in ("count", "bytes")}
+                for reason in sorted(BY_DESIGN)}
+
+    planned = _tick(ready, pins, queue, apply=False)
+    phase = build_storage_gc_summary(planned)["phases"]["result_residue_offload"]
+
+    assert phase == {
+        "status": "dry_run", "enabled": False, "candidate_bytes": residue_bytes, "removed_or_offloaded_bytes": 0,
+        "retained_by_reason": {
+            "member_skipped:symlink": {"count": 1, "bytes": link_bytes},
+            **for_readers(ready),
+            "bulk_not_remote": {"count": 1, "bytes": None},
+            "hot": {"count": 1, "bytes": None},
+        },
+    }
+
+    applied = _tick(ready, pins, queue, apply=True, ack=RUN_ACK, offload_enabled=True,
+                    result_residue_offload_enabled=True)
+    summary = build_storage_gc_summary(applied)
+    phase = summary["phases"]["result_residue_offload"]
+    # This tick offloaded the waiting run's bulk artifact first, so its residue followed in the same tick.
+    assert (phase["status"], phase["enabled"]) == ("applied", True)
+    assert phase["candidate_bytes"] == phase["removed_or_offloaded_bytes"] == 2 * residue_bytes
+    assert phase["retained_by_reason"] == {
+        "member_skipped:symlink": {"count": 1, "bytes": link_bytes}, **for_readers(ready, waiting),
+        "hot": {"count": 1, "bytes": None}}
+    text = json.dumps(summary)
+    assert "secret" not in text and str(tmp_path) not in text
+
+
+def test_summary_names_member_skips_by_their_typed_reason() -> None:
+    """A run row keeps the exception type (``recheck_failed:OSError``); the summary copies only
+    typed lower-case reasons, so the phase counts the member under ``recheck_failed``."""
+
+    row = {"status": "applied", "candidate_count": 3, "candidate_bytes": 30, "offloaded_count": 1,
+           "offloaded_bytes": 10, "skipped_by_reason": {
+               "member_changed": {"count": 1, "bytes": 10}, "recheck_failed:OSError": {"count": 1, "bytes": 10}}}
+    failed = {"status": "error", "run": "run-secret", "error_type": "PermissionError", "errno": 13, "stage": "residue"}
+
+    phase = build_storage_gc_summary({"result_residue_offload": residue.residue_phase(
+        [row, failed], enabled=True, applying=True)})["phases"]["result_residue_offload"]
+
+    assert phase == {
+        "status": "applied", "enabled": True, "removed_or_offloaded_bytes": 10,
+        # A run that raised leaves the planned bytes unknown.
+        "candidate_bytes": None,
+        "retained_by_reason": {
+            "member_skipped:member_changed": {"count": 1, "bytes": 10},
+            "member_skipped:recheck_failed": {"count": 1, "bytes": 10},
+            "residue_offload_failed": {"count": 1, "bytes": None},
+        },
+    }

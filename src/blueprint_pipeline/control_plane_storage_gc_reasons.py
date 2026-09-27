@@ -185,6 +185,7 @@ PHASES = (
     "planned_derived_directories",
     "content_store",
     "result_artifact_offload",
+    "result_residue_offload",
     "evidence_offload",
     "scratch_directories",
     "workspace_bundles",
@@ -260,6 +261,9 @@ def _phase_summary(entry: Mapping[str, Any]) -> dict[str, Any]:
     if "walk_seconds" in entry:
         seconds = entry["walk_seconds"]
         summary["walk_seconds"] = seconds if isinstance(seconds, (int, float)) and not isinstance(seconds, bool) else None
+    # Whether the phase's own owner opt-in let it apply, where the phase says.
+    if isinstance(entry.get("enabled"), bool):
+        summary["enabled"] = entry["enabled"]
     if entry.get("status") == "error":
         summary["error_type"] = _typed(entry.get("error"), "Exception", _TYPE_NAME)
     return summary
