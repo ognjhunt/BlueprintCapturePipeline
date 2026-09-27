@@ -310,6 +310,29 @@ def test_dispatcher_reserves_immutable_input_bytes_before_copying(tmp_path, monk
     assert kwargs["workspace"] == tmp_path / "state" / "launch-interiorgs-sage-001"
 
 
+def test_dispatcher_reserves_each_unique_directory_projection_copy(tmp_path, monkeypatch):
+    source_dir = tmp_path / "inputs"
+    nested = source_dir / "nested"
+    nested.mkdir(parents=True)
+    source = nested / "packet.json"
+    source.write_bytes(b'{"packet":"sealed"}\n')
+    profile = {"immutable_inputs": [{"name": "packet", "path": str(source), "digest": _path_digest(source)}]}
+    observed = []
+
+    def reserve(_role, **kwargs):
+        observed.append(kwargs["expected_bytes"])
+        return nullcontext()
+
+    monkeypatch.setattr(dispatcher_module, "reserve_control_plane_disk", reserve)
+    receipt, _argv = dispatcher_module._stage_profile_immutable_inputs(
+        profile=profile, run_root=tmp_path / "run",
+        allocator_argv=[str(source_dir), str(nested), str(source_dir)],
+    )
+
+    assert receipt["directory_projection_count"] == 2
+    assert observed == [3 * source.stat().st_size + 64 * 1024 * 1024]
+
+
 def test_dispatcher_disk_refusal_blocks_before_any_provider_call(tmp_path, monkeypatch):
     profile = _profile(tmp_path)
     profile_dir, request_path = _write_profile_and_request(tmp_path, profile)
