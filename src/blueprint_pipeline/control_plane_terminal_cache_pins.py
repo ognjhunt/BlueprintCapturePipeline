@@ -16,19 +16,28 @@ candidates are listed with ``"enabled": false``:
   blocked or cancelled, its closeout receipts intact), idle past the hot
   window, with no whole-run pointer. Whole-run offload never archives a
   registry run, so neither original proof could release one.
+* ``activation_expired_unlaunched``: an activation pin with no run directory
+  and no pointer under any of its evidence names in any evidence root, whose
+  one sealed result in the activation queue says it was prepared more than a
+  week and a day ago. Its mutation window has lapsed and launch re-validates
+  the window, so it can never start. Without an activation queue root this
+  proof is off.
 * ``unconsumed_stale_pin``: a preparation or compilation pin that no live pin
   depends on, created more than a week and a day ago, whose paths are all
   ``cache``. Its content is reproducible and re-fetched by digest.
 
 Every proof keeps the six-hour minimum pin age, the dependency closure (a pin
 is released only when no queue row or process references any pin in it), and
-a re-derivation at the mutation edge. The report lists every live pin once: as
-a candidate with its ``proof``, or in ``kept`` with a typed reason.
+a re-derivation at the mutation edge. The report names every live pin: as a
+candidate with its ``proof``, or in ``kept`` with a typed reason. A candidate
+whose references change at the mutation edge is kept too, as
+``reference_changed``.
 """
 from __future__ import annotations
 
 import json
 import os
+import re
 from collections import Counter
 from pathlib import Path
 
@@ -49,6 +58,16 @@ MINIMUM_PIN_AGE_SECONDS = 6 * 3600
 #: it, so a day past that nothing it released can still be consumed.
 MAXIMUM_MUTATION_WINDOW_SECONDS = 604_800
 LAPSE_SECONDS = MAXIMUM_MUTATION_WINDOW_SECONDS + 86_400
+#: The queue root whose ``results`` the activation worker seals; it is also a queue root.
+ACTIVATION_QUEUE_NAME = "task-evaluation-launch-activations"
+#: ``task_evaluation_launch_activation_queue.RESULT_SCHEMA_VERSION``, without importing its contracts.
+ACTIVATION_RESULT_SCHEMA_VERSION = "task_evaluation_launch_activation_result.v1"
+#: The statuses the activation worker writes, only ever for an activation it prepared,
+#: the one terminal state in which it pins the activation.
+PREPARED_ACTIVATION_STATUSES = frozenset({
+    "policy_campaign_queue_materialized_no_execution",
+    "profile_authority_materialized_no_execution",
+})
 
 
 def _read(path):
@@ -183,10 +202,56 @@ def _sealed_registry_run(directory, *, hot_window_seconds, now):
             "delivery_status": delivery["result_status"], "registry_mtime_epoch": idle_since}, None
 
 
-def _activation_proof(pin, live_pins, *, evidence_roots, hot_window_seconds, classifier, now, **_context):
-    """An activation whose every run, under any evidence name in any evidence root, is a sealed registry run.
+def activation_queue_root_of(queue_roots):
+    """The activation queue: the one configured queue root named ``task-evaluation-launch-activations``, else None."""
 
-    Any whole-run pointer keeps the pin: the archived-run proof already declined it.
+    roots = {Path(root).expanduser() for root in queue_roots}
+    matches = [root for root in roots if root.name == ACTIVATION_QUEUE_NAME]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _expired_unlaunched(owner, activation_queue_root, *, now):
+    """A prepared activation whose every mutation window has lapsed; the caller found no run of it.
+
+    The worker names a result for the activation's queue envelope,
+    ``<activation id>-<request digest>.json``, and an activation id has one request.
+    """
+
+    if activation_queue_root is None:
+        return None, "activation_queue_unconfigured"
+    results = Path(activation_queue_root) / "results"
+    pattern = re.compile(re.escape(owner) + r"-[0-9a-f]{64}\.json")
+    try:
+        if results.is_symlink() or not results.is_dir():
+            return None, "activation_queue_unavailable"
+        names = sorted(entry.name for entry in os.scandir(results) if pattern.fullmatch(entry.name))
+    except OSError:
+        return None, "activation_queue_unavailable"
+    if len(names) != 1:
+        return None, "activation_result_ambiguous" if names else "activation_result_missing"
+    path = results / names[0]
+    value = _read(path)
+    if (value is None or value.get("schema_version") != ACTIVATION_RESULT_SCHEMA_VERSION
+            or value.get("activation_id") != owner
+            or value.get("result_digest") != canonical_digest(value, digest_field="result_digest")):
+        return None, "activation_result_invalid"
+    status = value.get("status")
+    if not isinstance(status, str) or status not in PREPARED_ACTIVATION_STATUSES:
+        return None, "activation_result_not_prepared"
+    written = path.lstat().st_mtime
+    if now - written < LAPSE_SECONDS:
+        return None, "activation_result_not_stale"
+    return {"kind": "activation_expired_unlaunched", "result_name": path.name, "result_digest": value["result_digest"],
+            "result_status": status, "result_mtime_epoch": written}, None
+
+
+def _activation_proof(pin, live_pins, *, evidence_roots, activation_queue_root, hot_window_seconds, classifier, now,
+                      **_context):
+    """Every run under the activation's evidence names is a sealed registry run, or it never launched.
+
+    Any whole-run pointer keeps the pin: the archived-run proof already declined
+    it. A root that is linked, or where a name cannot be looked up, proves
+    nothing; a configured root that does not exist holds no run.
     """
 
     roots = [Path(root) for root in evidence_roots]
@@ -202,9 +267,11 @@ def _activation_proof(pin, live_pins, *, evidence_roots, hot_window_seconds, cla
                 return None, "run_pointer_present"
             if directory:
                 runs.append(root / name)
-    if not runs:
-        return None, "no_proof"
     proof = None
+    if not runs:
+        proof, reason = _expired_unlaunched(pin["owner_id"], activation_queue_root, now=now)
+        if proof is None:
+            return None, reason
     for run in runs:
         found, reason = _sealed_registry_run(run, hot_window_seconds=hot_window_seconds, now=now)
         if found is None:
@@ -278,10 +345,13 @@ def _closure_reason(identity, closure, pins, queue_text, reference_checker):
 
 def reconcile_terminal_cache_pins(*, pins_root, queue_roots, evidence_roots, now, apply=False,
                                   reference_checker=active_reference, classifier=require_storage_class,
-                                  hot_window_seconds=DEFAULT_HOT_WINDOW_SECONDS, extended_proofs_enabled=False):
+                                  hot_window_seconds=DEFAULT_HOT_WINDOW_SECONDS, extended_proofs_enabled=False,
+                                  activation_queue_root=None):
     """Plan, and with ``apply`` release, every live pin a proof closes.
 
     ``enabled`` is the extended proofs' opt-in; the original proofs always apply.
+    ``activation_queue_root`` is where the activation worker seals its results
+    (``activation_queue_root_of(queue_roots)``); without it an unlaunched activation is kept.
     Each candidate carries its ``proof`` and whether it is ``enabled``, each kept
     pin a typed ``reason`` (and ``error_type`` for ``proof_error``), and
     ``released_count_by_kind`` counts every pin a release receipt lists, its
@@ -295,7 +365,7 @@ def reconcile_terminal_cache_pins(*, pins_root, queue_roots, evidence_roots, now
     pins = _live_pins(pins_root, now)
     queue_text = _queue_reference_text(queue_roots)
     context = {"classifier": classifier, "now": now, "evidence_roots": evidence_roots,
-               "hot_window_seconds": hot_window_seconds}
+               "hot_window_seconds": hot_window_seconds, "activation_queue_root": activation_queue_root}
     candidates, kept, released = [], [], []
     for identity, pin in pins.items():
         row = {"kind": pin["kind"], "owner_id": pin["owner_id"]}
@@ -338,9 +408,9 @@ def reconcile_terminal_cache_pins(*, pins_root, queue_roots, evidence_roots, now
             released.append(release_storage_pin(pins_root=pins_root, kind=pin["kind"],
                                                  owner_id=pin["owner_id"], now=lambda: now))
             continue
-        # An extended proof also rests on the ledger (no live pin depends on the pin),
-        # so it is re-derived under the lock producers hold to publish a pin: queue rows
-        # first, then the ledger, so a new consumer shows up in one or the other.
+        # An extended proof is re-derived under the lock producers hold to publish a pin,
+        # reading queue rows before the ledger: the stale-pin proof rests on the ledger,
+        # and a consumer arriving meanwhile shows up in one or the other.
         with storage_pin_guard(pins_root, exclusive=True):
             fresh = _queue_reference_text(queue_roots)
             if (proof != _derive(pin, _live_pins(pins_root, now), context)[0]

@@ -12,6 +12,8 @@ launched, and a preparation or compilation nothing consumes all waited out the
 #   src/blueprint_pipeline/control_plane_terminal_cache_pins.py
 #   src/blueprint_pipeline/control_plane_storage_pins.py
 #   src/blueprint_pipeline/task_evaluation_result_artifact_store.py
+#   src/blueprint_pipeline/task_evaluation_launch_activation_worker.py
+#   src/blueprint_pipeline/task_evaluation_launch_activation_queue.py
 
 from __future__ import annotations
 
@@ -24,6 +26,7 @@ import pytest
 
 from blueprint_pipeline.control_plane_storage_pins import load_storage_pins, write_storage_pin
 from blueprint_pipeline.control_plane_storage_roots import require_storage_class
+from blueprint_pipeline import control_plane_terminal_cache_pins as terminal_pins
 from blueprint_pipeline.control_plane_terminal_cache_pins import reconcile_terminal_cache_pins
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 from blueprint_pipeline.task_evaluation_result_delivery import REGISTRY_SCHEMA_VERSION
@@ -298,3 +301,198 @@ def test_hot_or_invalid_registry_keeps_its_pin(tmp_path, reason) -> None:
         "hot": "registry_hot", "tampered": "registry_unsealed", "not_terminal": "registry_unsealed",
         "closeout_changed": "registry_unsealed", "pointer": "run_pointer_present", "linked": "run_path_unsafe"}[reason]
     assert result["candidates"] == [] and _states(args)[("activation", "act-x")] == "live"
+
+
+AUTO = "website-example-20260920t204229z-activation-auto"
+
+
+def _activation_queue(tmp_path: Path, args: dict) -> Path:
+    """The activation queue, configured as a queue root as it is on the host."""
+
+    root = tmp_path / "task-evaluation-launch-activations"
+    (root / "results").mkdir(parents=True, exist_ok=True)
+    args["queue_roots"] = [*args["queue_roots"], root]
+    args["activation_queue_root"] = root
+    return root
+
+
+def _activation_result(queue: Path, owner: str, *, status: str = "profile_authority_materialized_no_execution",
+                       age: float = LAPSE + DAY) -> Path:
+    """The result the activation worker seals beside its queue, named for the activation's queue envelope."""
+
+    value = {"schema_version": "task_evaluation_launch_activation_result.v1", "status": status,
+             "activation_id": owner, "blockers": [], "provider_mutation_performed": False, "result_digest": ""}
+    value["result_digest"] = canonical_digest(value, digest_field="result_digest")
+    path = queue / "results" / f"{owner}-{hashlib.sha256(owner.encode()).hexdigest()}.json"
+    path.write_text(json.dumps(value), encoding="utf-8")
+    os.utime(path, (NOW - age, NOW - age))
+    return path
+
+
+def test_expired_unlaunched_activation_releases_its_pin(tmp_path) -> None:
+    """A prepared activation that never launched, a day past the longest mutation window, needs nothing.
+
+    Such an activation has no run directory, so neither original proof ever
+    looked at it; launch re-validates the window, so it can no longer start.
+    """
+
+    args = _args(tmp_path)
+    queue = _activation_queue(tmp_path, args)
+    _activation_result(queue, "act-profile")
+    _activation_result(queue, "act-policy", status="policy_campaign_queue_materialized_no_execution")
+    _pin(args, "preparation", "prep-u", age=LAPSE + 2 * DAY)
+    _pin(args, "compilation", "prep-u", age=LAPSE + 2 * DAY, depends_on=[{"kind": "preparation", "owner_id": "prep-u"}])
+    for owner in ("act-policy", "act-profile"):
+        _pin(args, "activation", owner, age=LAPSE + DAY, depends_on=[
+            {"kind": "compilation", "owner_id": "prep-u"}, {"kind": "preparation", "owner_id": "prep-u"}])
+
+    listed = reconcile_terminal_cache_pins(**args, apply=True)
+
+    assert [(row["owner_id"], row["proof"]["kind"], row["proof"]["result_status"], row["enabled"])
+            for row in listed["candidates"]] == [
+        ("act-policy", "activation_expired_unlaunched", "policy_campaign_queue_materialized_no_execution", False),
+        ("act-profile", "activation_expired_unlaunched", "profile_authority_materialized_no_execution", False)]
+    assert set(_states(args).values()) == {"live"}
+
+    applied = reconcile_terminal_cache_pins(**args, apply=True, extended_proofs_enabled=True)
+
+    # The shared preparation and compilation go with the last activation that consumed them.
+    assert applied["released_count_by_kind"] == {"activation": 2, "compilation": 1, "preparation": 1}
+    assert set(_states(args).values()) == {"released"}
+    proof = applied["candidates"][1]["proof"]
+    assert proof["result_name"] == f"act-profile-{hashlib.sha256(b'act-profile').hexdigest()}.json"
+    assert proof["result_mtime_epoch"] == NOW - LAPSE - DAY
+    assert not any("/" in str(value) for value in proof.values())
+
+
+@pytest.mark.parametrize("reason", ["young", "launched", "archived", "referenced", "process"])
+def test_young_or_launched_or_referenced_unlaunched_activation_keeps_its_pin(tmp_path, reason) -> None:
+    second = tmp_path / "policy-canaries"
+    second.mkdir()
+    args = _args(tmp_path)
+    args["evidence_roots"] = [*args["evidence_roots"], second]
+    queue = _activation_queue(tmp_path, args)
+    _activation_result(queue, AUTO, age=LAPSE - DAY if reason == "young" else LAPSE + DAY)
+    _pin(args, "activation", AUTO, age=LAPSE + DAY)
+    if reason == "launched":
+        # Any evidence name in any evidence root is a launch: here the website launch run.
+        (second / f"{AUTO}-launch" / "allocator").mkdir(parents=True)
+    if reason == "archived":
+        (second / f"{AUTO}-launch.offloaded.v1.json").write_text("{}", encoding="utf-8")
+    if reason == "referenced":
+        dispatches = tmp_path / "task-evaluation-policy-canary-dispatches"
+        (dispatches / "processing").mkdir(parents=True)
+        (dispatches / "processing" / "row.json").write_text(json.dumps({"activation_id": AUTO}), encoding="utf-8")
+        args["queue_roots"] = [*args["queue_roots"], dispatches]
+    if reason == "process":
+        args["reference_checker"] = lambda path: path.name == AUTO
+
+    result = reconcile_terminal_cache_pins(**args, apply=True, extended_proofs_enabled=True)
+
+    assert _kept(result)[("activation", AUTO)] == {
+        "young": "activation_result_not_stale", "launched": "run_not_sealed", "archived": "run_pointer_present",
+        "referenced": "active_reference", "process": "active_reference"}[reason]
+    assert result["candidates"] == [] and _states(args)[("activation", AUTO)] == "live"
+
+
+@pytest.mark.parametrize("reason", [
+    "blocked", "tampered", "missing", "other_owner", "duplicate", "linked", "unconfigured", "root_linked"])
+def test_unprepared_or_unreadable_activation_result_keeps_its_pin(tmp_path, reason) -> None:
+    """Only one exact, sealed, prepared result is proof; anything less, or an unreadable root, keeps the pin."""
+
+    args = _args(tmp_path)
+    queue = _activation_queue(tmp_path, args)
+    if reason not in ("missing", "other_owner", "linked"):
+        result_path = _activation_result(queue, "act-u", status="blocked" if reason == "blocked" else
+                                         "profile_authority_materialized_no_execution")
+    if reason == "tampered":
+        value = json.loads(result_path.read_text(encoding="utf-8"))
+        value["status"] = "policy_campaign_queue_materialized_no_execution"
+        result_path.write_text(json.dumps(value), encoding="utf-8")
+        os.utime(result_path, (NOW - LAPSE - DAY, NOW - LAPSE - DAY))
+    if reason == "other_owner":
+        # A longer activation id that merely starts with this one is someone else's result.
+        _activation_result(queue, "act-u-retry")
+    if reason == "duplicate":
+        (queue / "results" / f"act-u-{'0' * 64}.json").write_bytes(result_path.read_bytes())
+    if reason == "linked":
+        elsewhere = _activation_result(_activation_queue(tmp_path / "elsewhere", {"queue_roots": []}), "act-u")
+        (queue / "results" / elsewhere.name).symlink_to(elsewhere)
+    if reason == "unconfigured":
+        args["activation_queue_root"] = None
+    if reason == "root_linked":
+        (tmp_path / "linked-evidence").symlink_to(args["evidence_roots"][0])
+        args["evidence_roots"] = [tmp_path / "linked-evidence"]
+    _pin(args, "activation", "act-u", age=LAPSE + DAY)
+
+    result = reconcile_terminal_cache_pins(**args, apply=True, extended_proofs_enabled=True)
+
+    assert _kept(result)[("activation", "act-u")] == {
+        "blocked": "activation_result_not_prepared", "tampered": "activation_result_invalid",
+        "missing": "activation_result_missing", "other_owner": "activation_result_missing",
+        "duplicate": "activation_result_ambiguous", "linked": "activation_result_invalid",
+        "unconfigured": "activation_queue_unconfigured", "root_linked": "evidence_root_unavailable"}[reason]
+    assert result["candidates"] == [] and _states(args)[("activation", "act-u")] == "live"
+
+
+def test_prepared_statuses_are_exactly_those_the_activation_worker_writes() -> None:
+    """The proof reads the worker's result, so its schema and prepared statuses must stay the worker's own."""
+
+    import ast
+    import inspect
+
+    from blueprint_pipeline import task_evaluation_launch_activation_queue as activation_queue
+    from blueprint_pipeline import task_evaluation_launch_activation_worker as worker
+
+    written = set()
+    for node in ast.walk(ast.parse(inspect.getsource(worker))):
+        if isinstance(node, ast.Dict):
+            fields = {key.value: value for key, value in zip(node.keys, node.values) if isinstance(key, ast.Constant)}
+            if (isinstance(fields.get("schema_version"), ast.Name) and fields["schema_version"].id == "RESULT_SCHEMA_VERSION"
+                    and isinstance(fields.get("status"), ast.Constant)):
+                written.add(fields["status"].value)
+
+    assert terminal_pins.ACTIVATION_RESULT_SCHEMA_VERSION == activation_queue.RESULT_SCHEMA_VERSION
+    assert written - {"blocked"} == terminal_pins.PREPARED_ACTIVATION_STATUSES
+    assert terminal_pins.activation_queue_root_of(["/q/task-evaluation-launches", "/q/task-evaluation-launch-activations/"]) == Path(
+        "/q/task-evaluation-launch-activations")
+    assert terminal_pins.activation_queue_root_of(["/q/task-evaluation-launches"]) is None
+    assert terminal_pins.activation_queue_root_of(["/a/task-evaluation-launch-activations",
+                                                "/b/task-evaluation-launch-activations"]) is None
+
+
+def test_extended_pin_proofs_only_list_candidates_until_enabled(tmp_path) -> None:
+    """Every extended proof lists its candidates on every tick; only the opt-in lets one release a pin."""
+
+    args = _args(tmp_path)
+    queue = _activation_queue(tmp_path, args)
+    _pin(args, "preparation", "prep-stale", age=LAPSE + DAY)
+    _registry_run(tmp_path / "evidence", "act-registry")
+    _pin(args, "activation", "act-registry", age=7 * DAY)
+    _activation_result(queue, "act-unlaunched")
+    _pin(args, "activation", "act-unlaunched", age=LAPSE + DAY)
+    _sealed_cold_case(tmp_path, args)
+    extended = {"preparation": "unconsumed_stale_pin", "act-registry": "sealed_registry_run",
+                "act-unlaunched": "activation_expired_unlaunched"}
+
+    listed = reconcile_terminal_cache_pins(**args, apply=True)
+
+    assert listed["enabled"] is False and listed["candidate_count"] == 4
+    assert {row["owner_id"]: (row["proof"]["kind"], row["enabled"]) for row in listed["candidates"]} == {
+        "prep-stale": (extended["preparation"], False), "act-registry": (extended["act-registry"], False),
+        "act-unlaunched": (extended["act-unlaunched"], False), "cold": ("sealed_cold_run", True)}
+    assert listed["candidate_count_by_proof"] == {
+        "activation_expired_unlaunched": 1, "sealed_cold_run": 1, "sealed_registry_run": 1, "unconsumed_stale_pin": 1}
+    # Only the original proof released anything, and the next tick lists the same three again.
+    assert _states(args) == {("preparation", "prep-stale"): "live", ("activation", "act-registry"): "live",
+                             ("activation", "act-unlaunched"): "live", ("activation", "cold"): "released"}
+    again = reconcile_terminal_cache_pins(**args, apply=True)
+    assert [(row["owner_id"], row["enabled"]) for row in again["candidates"]] == [
+        ("prep-stale", False), ("act-registry", False), ("act-unlaunched", False)]
+    assert again["released"] == []
+
+    applied = reconcile_terminal_cache_pins(**args, apply=True, extended_proofs_enabled=True)
+
+    assert applied["enabled"] is True and applied["released_count"] == 3
+    assert applied["released_count_by_kind"] == {"activation": 2, "preparation": 1}
+    assert set(_states(args).values()) == {"released"}
