@@ -4,6 +4,7 @@ import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -18,6 +19,25 @@ from blueprint_pipeline.task_evaluation_immutable_input_resolver import (
 
 
 COMMIT = "a" * 40
+
+
+@pytest.fixture(autouse=True)
+def _local_immutable_input_reservations(tmp_path, monkeypatch):
+    monkeypatch.setenv(
+        "BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT", str(tmp_path / "disk-reservations")
+    )
+    actual_reserve = dispatcher.reserve_control_plane_disk
+
+    def reserve_on_roomy_test_disk(role, **kwargs):
+        return actual_reserve(
+            role,
+            disk_usage=lambda _path: SimpleNamespace(
+                total=200 * 1024**3, used=100 * 1024**3, free=100 * 1024**3
+            ),
+            **kwargs,
+        )
+
+    monkeypatch.setattr(dispatcher, "reserve_control_plane_disk", reserve_on_roomy_test_disk)
 
 
 def _sha(path: Path) -> str:
