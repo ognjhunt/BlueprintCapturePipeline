@@ -252,11 +252,15 @@ class NativeG1OfficialSonicTargetBridge:
         before = (self.encoder.calls, self.decoder.calls)
         before_timings = (self.encoder_timings.appends, self.decoder_timings.appends)
         self.provider._apply_lerobot_semantic_action(np.asarray(action, dtype=np.float32))
-        if not (self.provider._smpl_data_valid and self.provider._latest_consumed_new_this_step):
+        # The pinned provider marks a newly consumed joint29 frame here, but
+        # determines whether its reference history is valid in _run_gear_sonic.
+        if not self.provider._latest_consumed_new_this_step:
             raise RuntimeError("g1_sonic_reference_not_consumed")
         self.provider._latest_decoder_target = np.full(29, np.nan, dtype=np.float32)
         self.provider._latest_decoder_raw_action = np.full(29, np.nan, dtype=np.float32)
         body = np.asarray(self.provider._run_gear_sonic(), dtype=np.float64)
+        if not self.provider._smpl_data_valid:
+            raise RuntimeError("g1_sonic_reference_not_consumed")
         measured_target = np.asarray(self.provider._latest_decoder_target, dtype=np.float64)
         measured_raw = np.asarray(self.provider._latest_decoder_raw_action, dtype=np.float64)
         if (
