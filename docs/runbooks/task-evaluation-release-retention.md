@@ -155,7 +155,11 @@ Blocking codes, each of which retires nothing until fixed:
 `release_protection_standing_authorization_invalid:<profile_id>`,
 `release_protection_standing_authorization_commit_unknown:<profile_id>` (the
 authorization can still launch, but no profile or profile id names its
-release), `release_protection_source_missing:<directory>` (the
+release), `release_protection_live_profile_unreadable:<profile_id>` (a live
+launch or authorization names a profile whose file cannot be read),
+`release_protection_ancestry_unreadable:<binding>` (a protected binding's
+adoption chain cannot be read to its root, so ancestors past the break cannot
+be kept), `release_protection_source_missing:<directory>` (the
 standing-authorization directory or binding root is missing while the
 control-plane root exists), `release_protection_binding_invalid:<binding>`,
 `release_protection_binding_changed:<binding>` (binding bytes no longer match
@@ -173,7 +177,9 @@ until it is reconciled, below), `release_protection_queue_root_missing:<queue>`,
 `release_protection_profile_commit_unpinned:<profile_id>` (a readable profile
 that pins no release runs from the active one),
 `release_protection_binding_ancestor_missing:<binding>`, and the lapse and
-renewal warnings above.
+renewal warnings above. The two-step tool refuses a missing binding root
+(`release_retention_evidence_binding_root_missing`) and any directory it cannot
+examine (`…_unreadable`) the same way.
 
 ### Renewing or ending a lease
 
@@ -199,16 +205,28 @@ activation and the SAM prefix binding writer (which also refuses, with
 gone). Retirement:
 
 1. deletes any `.retiring` leftovers of an interrupted retirement (they are
-   already unreachable);
+   already unreachable), once before the deploy reserves disk and again before
+   it takes the locks; neither needs a lock;
 2. takes each distinct lock root exclusively, waiting at most 300 seconds per
    root before giving up with `release_reference_lock_busy`;
-3. under the locks, creates the standing-authorization and binding roots if a
-   fresh host lacks them, collects protection with migration, plans (without
+3. under the locks, collects protection with migration, plans (without
    walking the trees), and renames each candidate into
    `<its root>/.retiring/<name>-<token>`, re-checking immediately before each
    commit that no live process runs from it (a busy commit is skipped as
-   `in_use_at_apply`);
-4. releases the locks, then deletes and measures what it moved aside.
+   `in_use_at_apply`). On a filesystem too full to create `.retiring` or rename
+   into it (ENOSPC, EDQUOT), that candidate is deleted directly instead and
+   listed under `direct_delete_fallback`;
+4. once the deploy has released its paid-launch gate and disk reservation (so
+   no launch waits on it), deletes and measures what it moved aside, then runs
+   `git worktree prune` on the source clone so a retired commit can be staged
+   again for a rollback (`worktree_prune` in the receipt).
+
+If the standing-authorization directory or the binding root is missing (the
+host installer creates only the former; nothing creates the binding root until
+a binding is published), the deploy creates it empty under the locks, raises
+`release_protection_root_created:<name>`, and retires nothing that time: an
+empty root that had to be created proves nothing about what used to be in it.
+The next deploy retires normally.
 
 It keeps the newest three releases, the active and current commits, anything a
 live process runs from (its cwd, executable, or an absolute or `--flag=/path`
@@ -217,8 +235,12 @@ every lease or configured runtime above.
 
 The receipt's `release_retirement` records `status` (`applied`, `skipped` with
 `blockers`, or `blocked`), `retired_commits`, `renamed` (each tree moved aside,
-even when apply stopped partway), `deleted` and `retired_bytes` (what was
-actually deleted), `swept` (leftovers deleted first), `deletion_failures`,
+even when apply stopped partway), `direct_delete_fallback`, `deleted`,
+`retired_bytes` (bytes actually freed: each inode counted once, and only for a
+file whose last link was deleted), `shared_bytes` (bytes of deleted hardlinked
+files, such as the model weights every scene-configuration runtime shares,
+which stay on disk through their other links), `startup_swept` and `swept`
+(leftovers deleted first), `deletion_failures`, `worktree_prune`,
 `created_protection_roots`, `skipped`,
 `protected_by_kind` (tree counts per kind: `active_release`, `current_deploy`,
 `keep_last`, `in_use_by_live_process`, `younger_than_minimum_age`, and the four
@@ -232,24 +254,51 @@ summary, with `generated_at_epoch` and `source_commit`, replaces
 - `release_retirement_lease_protected_trees:<n>` when more than 20 trees are held
   only by leases, which means leases are not lapsing and someone must look;
 - `release_retirement_blocked:<first blocker>` when retirement skipped or could
-  not run.
+  not run;
+- `release_protection_root_created:<name>` when a missing protection root was
+  created and retirement skipped;
+- `release_retirement_rename_failed:<n>` and
+  `release_retirement_deletion_failed:<n>` when trees could not be moved aside
+  or deleted.
 
 A `blocked` retirement carries `release_reference_lock_busy`,
 `release_reference_lock_root_unavailable` (or another `release_reference_lock_*`
 code), `deploy_release_lease_root_unsafe`,
 `deploy_release_protection_root_unsafe`, or
 `deploy_release_retirement_failed:<exception type>`. A retirement problem never
-fails a deploy whose surfaces already moved. A `.retiring` directory that could
-not be emptied stays until the next deploy sweeps it; until then the two-step
-tool refuses it as an unknown managed child.
+fails a deploy whose surfaces already moved.
+
+A `.retiring` directory that could not be emptied stays until the next deploy
+sweeps it; until then the two-step tool refuses it as an unknown managed child.
+Its contents are retired trees no reference can reach. To recover that space
+before the next deploy, delete them with the same code the deploy uses and
+forget their worktrees:
+
+```bash
+cd /opt/blueprint/task-evaluation-control-plane && PYTHONPATH=src python -c '
+from blueprint_pipeline.control_plane_release_retirement import delete_retiring_trees
+print(delete_retiring_trees([
+    "/opt/blueprint/task-evaluation-control-plane-releases",
+    "/var/lib/blueprint/task-evaluation-inputs/system-runtimes/splat-render",
+    "/var/lib/blueprint/task-evaluation-inputs/system-runtimes/scene-configuration",
+]))'
+git -c safe.directory=/opt/blueprint/BlueprintCapturePipeline \
+  -C /opt/blueprint/BlueprintCapturePipeline worktree prune
+```
 
 For an out-of-band look, `python -m blueprint_pipeline.control_plane_release_retirement`
 takes the same sources (`--control-plane-root`, `--profile-dir`,
 `--standing-authorization-dir`, `--binding-root`, `--lease-root`,
 `--config-file`, `--intent-root`, `--launch-run-root`) and the process table
-(`--proc-root`); pass `--no-migrate` for a dry run that writes no lease. With
-`--apply` it takes the same locks, keeps trees in use by live processes, and
-prints the plan, the receipt and the deletion.
+(`--proc-root`). With `--no-migrate` and without `--apply` it is a dry run
+that takes no lock, writes no lease and measures candidate sizes. Otherwise it
+takes, exclusively, the publisher lock roots its sources imply (the
+control-plane root and the parents of the standing-authorization and binding
+directories, each distinct directory once; unlike deploy it adds no state
+root), waiting at most 300 seconds each, and never sizes trees while holding
+them. With `--apply` it keeps trees in use by live processes, deletes what it
+moved aside after releasing the locks, and prints the plan, the receipt and
+the deletion.
 
 ## Two-step operation
 

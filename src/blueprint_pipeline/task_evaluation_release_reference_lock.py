@@ -2,8 +2,12 @@
 
 The common control-plane state directory is durable and is never atomically
 replaced, so its inode is the lock authority.  Reference publishers take a
-shared lock while making a new protected binding reachable; the release reaper
-takes the exclusive lock across its final rescan and every deletion.
+shared lock while making a new protected binding reachable.  Reapers take it
+exclusively while they decide what to remove: deploy retirement holds it
+across collecting protection, planning and renaming each retired tree aside,
+and deletes those trees only after releasing it; the operator's two-step
+retention tool holds it across its final rescan and every deletion.  A reaper
+may bound its wait (``timeout_seconds``) so that a stuck holder cannot hang it.
 """
 
 from __future__ import annotations

@@ -201,9 +201,15 @@ Every release-reference publisher (queue writers, the profile publisher, the
 standing-authorization materializer, release activation and the SAM prefix
 binding writer) locks the control-plane root shared. Retirement holds it
 exclusively, waiting at most 300 seconds for it, only while it collects
-protection, plans and renames each candidate into `<its root>/.retiring`; it
-deletes and measures the moved trees after releasing the lock, and sweeps
-`.retiring` leftovers of an interrupted run before taking it. Any protection
+protection, plans and renames each candidate into `<its root>/.retiring` (on a
+filesystem too full for that, it deletes the candidate directly). It deletes
+and measures the moved trees only after the deploy has released the lock, its
+paid-launch gate and its disk reservation, prunes the source clone's worktree
+registrations so a retired commit can be redeployed, and sweeps `.retiring`
+leftovers of an interrupted run before the deploy reserves disk.
+`retired_bytes` counts only bytes actually freed (each inode once, and only
+when its last link was deleted); hardlinked bytes are reported as
+`shared_bytes`. Any protection
 blocker (an unreadable or unsettled queue, a missing protection source, an
 unreadable configuration file, a live reference to a missing profile, a
 malformed standing authorization, an invalid or changed binding) retires
