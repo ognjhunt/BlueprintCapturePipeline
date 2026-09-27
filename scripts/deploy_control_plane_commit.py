@@ -2450,6 +2450,8 @@ def _restore_installed_path_units(
 @contextlib.contextmanager
 def _restore_path_unit_states_on_deploy_failure(
     installed_units: Sequence[Mapping[str, Any]],
+    *,
+    door_holds_dir: str | Path = DEFAULT_DOOR_HOLDS_DIR,
 ):
     """Quiesce watchers and restore their exact prior state on any failure.
 
@@ -2468,12 +2470,14 @@ def _restore_path_unit_states_on_deploy_failure(
         yield before, quiesced
     except BaseException as deployment_error:
         try:
-            _restore_installed_path_units(
-                installed_units,
-                before=before,
-                arm_path_units=False,
-                always_arm_units=(),
-            )
+            with _locked_door_holds(door_holds_dir) as (held_units, _warning):
+                _restore_installed_path_units(
+                    installed_units,
+                    before=before,
+                    arm_path_units=False,
+                    always_arm_units=(),
+                    held_units=held_units,
+                )
         except Exception as restore_error:
             raise ControlPlaneDeployError(
                 "deploy_failed_path_unit_restore_failed:"
@@ -3088,7 +3092,9 @@ def deploy_control_plane_commit(
     with (
         disk_reservation or contextlib.nullcontext(),
         _holding_paid_launch_gate(paid_launch_locks) as paid_runs_in_flight,
-        _restore_path_unit_states_on_deploy_failure(automation_unit_names) as (
+        _restore_path_unit_states_on_deploy_failure(
+            automation_unit_names, door_holds_dir=door_holds_dir,
+        ) as (
             automation_unit_states_before,
             quiesced_automation_units,
         ),

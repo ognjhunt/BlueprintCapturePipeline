@@ -932,6 +932,32 @@ def test_expired_door_hold_is_ignored_and_unreadable_holds_warn(tmp_path) -> Non
     assert deploy._active_door_holds(bad) == ({}, "door_holds_unreadable")
 
 
+def test_failed_deploy_rechecks_a_hold_created_after_unit_snapshot(tmp_path, monkeypatch) -> None:
+    unit = "blueprint-task-evaluation-scene-progression.timer"
+    holds = tmp_path / "holds"
+    holds.mkdir()
+    restored = []
+    monkeypatch.setattr(deploy, "_installed_path_unit_states", lambda _units: {
+        unit: {"enabled": "enabled", "state": "active"}
+    })
+    monkeypatch.setattr(deploy, "_quiesce_active_path_units", lambda _before: [])
+    monkeypatch.setattr(deploy, "_restore_installed_path_units", lambda _units, **kwargs: restored.append(kwargs))
+
+    with pytest.raises(ValueError, match="deploy_failed"):
+        with deploy._restore_path_unit_states_on_deploy_failure(
+            [{"unit": unit}], door_holds_dir=holds,
+        ):
+            (holds / f"{unit}.json").write_text(json.dumps({
+                "schema": "blueprint_operator_door_hold.v1", "unit": unit, "owner": "alice",
+                "reason": "inspect", "request_id": "20260927T000000Z-hold-0000abcd",
+                "status": "active", "expires_at": "2099-01-01T00:00:00+00:00",
+                "expires_at_epoch": 4070908800,
+            }), encoding="utf-8")
+            raise ValueError("deploy_failed")
+
+    assert restored[0]["held_units"][unit]["owner"] == "alice"
+
+
 @pytest.mark.parametrize("unit", deploy.CONFIGURED_CONTROLS_AUTOMATION_UNITS)
 @pytest.mark.parametrize("enabled", ["disabled", "enabled"])
 def test_explicit_controls_pause_survives_default_progression_arming(
@@ -2739,6 +2765,7 @@ def test_scene_runtime_failure_blocks_before_source_or_active_release_moves(
             "before": {watcher: {"enabled": "enabled", "state": "active"}},
             "arm_path_units": False,
             "always_arm_units": (),
+            "held_units": {},
         }
     ]
 

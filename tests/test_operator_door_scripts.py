@@ -443,6 +443,13 @@ def test_hold_expiry_script_releases_only_matching_active_expired_generation(tmp
 
     assert run(old_id) == 0
     assert not log.exists(), "an old expiry cannot release a renewed hold"
+    record["expires_at_epoch"] = 4070908800
+    path.write_text(json.dumps(record), encoding="utf-8")
+    assert run(new_id) == 0
+    assert not log.exists(), "a current hold cannot be released before its expiry"
+    assert json.loads(path.read_text())["status"] == "active"
+    record["expires_at_epoch"] = 1
+    path.write_text(json.dumps(record), encoding="utf-8")
     assert run(new_id) == 0
     assert log.read_text().splitlines() == [f"--no-block start -- {unit}"]
     assert json.loads(path.read_text())["status"] == "expired_released"
