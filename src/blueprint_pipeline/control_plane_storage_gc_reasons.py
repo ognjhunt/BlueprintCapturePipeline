@@ -268,6 +268,10 @@ def _result_artifact_summary(rows: Sequence[Any]) -> dict[str, Any]:
     stage, type and errno.
     """
 
+    # The store module brings in the result-delivery contracts, and only the
+    # summary needs its stage names, so it is imported here rather than at load.
+    from .task_evaluation_result_artifact_store import OFFLOAD_STAGES
+
     runs = [row for row in rows if isinstance(row, Mapping)]
     sized = [row for row in runs if row.get("status") in ("dry_run", "applied")]
     retained: dict[str, dict[str, Any]] = {}
@@ -278,7 +282,7 @@ def _result_artifact_summary(rows: Sequence[Any]) -> dict[str, Any]:
         row["count"] += 1
 
     def failed(scope: str, row: Mapping[str, Any]) -> str:
-        stage = _typed(row.get("stage"), "registry")
+        stage = row.get("stage") if row.get("stage") in OFFLOAD_STAGES else "unrecognized_stage"
         key = (scope, stage, _typed(row.get("error_type"), "Exception", _TYPE_NAME), _integer(row.get("errno")))
         failures[key] = failures.get(key, 0) + 1
         return stage

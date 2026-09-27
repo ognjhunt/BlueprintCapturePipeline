@@ -442,3 +442,32 @@ def test_the_reasons_read_references_without_reaching_into_the_gc() -> None:
     assert gc_module.settlement_reopens_beyond_retained_receipts is references.settlement_reopens_beyond_retained_receipts
     assert (gc_module._MAX_QUEUE_MESSAGE_BYTES, gc_module.QUEUE_STATES, gc_module.SETTLEMENT_RECORD_GLOBS) == (
         references.MAX_QUEUE_MESSAGE_BYTES, references.QUEUE_STATES, references.SETTLEMENT_RECORD_GLOBS)
+
+
+def test_the_summary_copies_only_the_offloads_own_stages() -> None:
+    """A failure's stage reaches the summary only if it is one of the result-artifact
+    offload's stages; any other string, however typed it looks, is unrecognized."""
+
+    from blueprint_pipeline.task_evaluation_result_artifact_store import OFFLOAD_STAGES
+
+    rows = [
+        {"status": "retained", "run_directory": "run-a", "reason": "PermissionError",
+         "error_type": "PermissionError", "errno": 1, "stage": "evict"},
+        {"status": "retained", "run_directory": "run-b", "reason": "OSError",
+         "error_type": "OSError", "errno": 5, "stage": "teleport"},
+        {"status": "applied", "candidate_bytes": 10, "offloaded_bytes": 0, "skipped": [
+            {"relative_path": "evidence/a.mp4", "reason": "OSError", "error_type": "OSError",
+             "errno": 28, "stage": "publish"}]},
+    ]
+
+    phase = reasons.build_storage_gc_summary(
+        {"status": "applied", "result_artifact_offload": rows})["phases"]["result_artifact_offload"]
+
+    assert OFFLOAD_STAGES == ("registry", "protection", "publish", "evict")
+    assert phase["retained_by_reason"] == {
+        "offload_failed:evict": {"count": 1, "bytes": None},
+        "offload_failed:unrecognized_stage": {"count": 1, "bytes": None},
+        "artifact_offload_failed:publish": {"count": 1, "bytes": None},
+    }
+    assert sorted((row["scope"], row["stage"]) for row in phase["failures"]) == [
+        ("artifact", "publish"), ("run", "evict"), ("run", "unrecognized_stage")]
