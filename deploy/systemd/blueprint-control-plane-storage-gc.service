@@ -40,7 +40,9 @@ ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/disk-reservations
 ReadWritePaths=/var/lib/blueprint/task-evaluation-inputs/semantic-pretraining
 # SAM31 preparation cache is inventoried only; no GC phase may remove it without a separate owner decision.
 ReadOnlyPaths=/var/lib/blueprint/task-evaluation-inputs/sam31-preparations
-# Store copies left in activation lookaheads are only planned until BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_RETENTION=1 is set.
+# Activation lookaheads are only planned until BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_RETENTION=1 is set. With it, every
+# scratch input under a finished lookahead's prepared-references goes, not only its store copies, and then the
+# directories left empty there.
 ReadWritePaths=-/var/lib/blueprint/pipeline-control-plane/task-evaluation-configured-controls/scene-configuration-activations
 # Finished website scene workspaces are retired here, and their receipts written beside them.
 ReadWritePaths=-/var/lib/blueprint/pubsub-handoffs

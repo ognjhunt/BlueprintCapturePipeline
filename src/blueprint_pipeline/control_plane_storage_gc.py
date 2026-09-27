@@ -33,7 +33,7 @@ plans before it mutates, and a tick applies nothing unless it runs with
   Storage or is archived to the artifact store behind a replayable receipt, and
   nothing can still need them. It only plans until its own explicit opt-in,
   ``BLUEPRINT_CONTROL_PLANE_SCENE_WORKSPACE_RETIREMENT=1``, enables it.
-* **Replay caches** (``work`` class: activation lookaheads): the store copies
+* **Replay caches** (``work`` class: activation lookaheads): the scratch inputs
   left in completed parent replays are removed by ``control_plane_replay_cache_gc``,
   which only plans until ``BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_RETENTION=1``.
 
