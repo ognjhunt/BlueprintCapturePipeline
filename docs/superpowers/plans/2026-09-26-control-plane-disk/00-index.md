@@ -25,14 +25,14 @@ artifact-store helpers), systemd units, bash (`deploy/host`), Terraform (`deploy
 
 - **Repository:** `BlueprintCapturePipeline`. Each PR gets its own worktree created by the
   controller (paths in the PR map). Never edit the primary checkout
-  `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline` (another lane's branch lives there).
+  `$WORKSPACE/BlueprintCapturePipeline` (another lane's branch lives there).
 - **Local disk is tight** (the Mac data volume had about 5 GiB free on 2026-09-26). Keep
   scratch inside pytest `tmp_path`; never copy large fixtures; do not create extra clones.
 - **Python / tests:** run from the PR worktree root:
-  `PYTHONPATH=src:. /Users/nijelhunt_1/workspace/BlueprintCapturePipeline/.venv/bin/python -m pytest -q -p no:cacheprovider <test files>`
+  `PYTHONPATH=src:. $WORKSPACE/BlueprintCapturePipeline/.venv/bin/python -m pytest -q -p no:cacheprovider <test files>`
   Add `-n 4` for more than ~200 tests. Timing tests in `tests/test_operator_door_secrets.py`
   can flake under load; rerun one flaky test in isolation before treating it as real.
-- **Lint:** `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline/.venv/bin/ruff check <changed .py files>`.
+- **Lint:** `$WORKSPACE/BlueprintCapturePipeline/.venv/bin/ruff check <changed .py files>`.
 - **Impacted-test convention:** a new test file starts with
   `# Covers (for impacted-test selection):` followed by one `#   <repo-relative path>` line per
   source file it covers (see `tests/test_operator_door_auth.py:3-4`).
@@ -111,7 +111,7 @@ keeps the doc's intent and is called out in the relevant PR description.
 | 8 | `08-door-only-operations.md` | 4 (holds, source guard, break-glass) | `claude/disk-4-door-only-operations` | integration of 1–7 | `…/BlueprintCapturePipeline-disk-4-20260926` |
 | 9 | `09-capacity-paging-and-queue-eta.md` | 4 (paging) + 3 (queue with ETA) | `claude/disk-9-capacity-paging` | integration of 1–8 | `…/BlueprintCapturePipeline-disk-9-20260926` |
 
-`…` is `/Users/nijelhunt_1/workspace`. Waves:
+`…` is `$WORKSPACE`, the local workspace directory the worktrees live in. Waves:
 1. PRs 1, 3, 5 and 7 are independent of each other and run in parallel.
 2. PRs 2 and 6 build on 1 (6 also on 3), and 4 builds on 3.
 3. 8 and then 9 land on the integrated stack.

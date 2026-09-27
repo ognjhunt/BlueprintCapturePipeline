@@ -11,7 +11,7 @@
   volume.
 
 **Branch / base / worktree:** `claude/disk-2-volume-admission` from the PR 1 + PR 3 integration
-branch (the controller creates it), `/Users/nijelhunt_1/workspace/BlueprintCapturePipeline-disk-2a-20260926`.
+branch (the controller creates it), `$WORKSPACE/BlueprintCapturePipeline-disk-2a-20260926`.
 
 ## Facts (verified)
 

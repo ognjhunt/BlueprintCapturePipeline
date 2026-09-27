@@ -7,7 +7,7 @@ storage class, per root and per owner, counted once per inode. It says how much 
 used bytes that attribution covers, and names any unclassified root.
 
 **Branch / base / worktree:** `claude/disk-1d-usage-reporting` from PR 1's branch,
-`/Users/nijelhunt_1/workspace/BlueprintCapturePipeline-disk-1d-20260926`.
+`$WORKSPACE/BlueprintCapturePipeline-disk-1d-20260926`.
 
 ## Facts
 

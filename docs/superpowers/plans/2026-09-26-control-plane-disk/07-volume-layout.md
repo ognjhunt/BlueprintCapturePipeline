@@ -9,7 +9,7 @@
 - `task-evaluation-inputs` is bound as **one tree**, so hardlinks between its stores keep working.
 
 **Branch / base / worktree:** `claude/disk-2-volume-layout` from `origin/main`,
-`/Users/nijelhunt_1/workspace/BlueprintCapturePipeline-disk-2b-20260926`.
+`$WORKSPACE/BlueprintCapturePipeline-disk-2b-20260926`.
 
 ## Facts (verified)
 

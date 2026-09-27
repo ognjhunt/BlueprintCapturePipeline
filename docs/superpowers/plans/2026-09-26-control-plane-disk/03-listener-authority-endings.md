@@ -10,7 +10,7 @@
   retirement relies on both records.
 
 **Branch / base / worktree:** `claude/disk-1c-listener-terminal-authority` from `origin/main`,
-`/Users/nijelhunt_1/workspace/BlueprintCapturePipeline-disk-1c1-20260926`.
+`$WORKSPACE/BlueprintCapturePipeline-disk-1c1-20260926`.
 
 ## Facts (verified; line numbers in `src/blueprint_pipeline/pubsub_handoff_listener.py`)
 
