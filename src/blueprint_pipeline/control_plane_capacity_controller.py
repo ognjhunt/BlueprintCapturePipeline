@@ -29,6 +29,7 @@ the volume's mount is critical.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -69,6 +70,30 @@ ALERT_REPEAT_SECONDS = 60 * 60
 RESIZE_ACK = "grow-control-plane-volume"
 DEFAULT_RESIZE_STEP_GIB = 50
 GIB = 1024**3
+PAGE_ALERT_CODES = frozenset({
+    "floor_within_three_days", "admission_refused", "critical_admission_refused",
+    "mount_unreadable", "volume_growth_blocked", "operator_alert_route_unconfigured",
+    "reclaim_ineffective",
+})
+
+
+def _severity(code: str) -> str:
+    return "page" if code in PAGE_ALERT_CODES else "warn"
+
+
+def _annotate_alerts(alerts: list[dict[str, Any]]) -> None:
+    for alert in alerts:
+        alert["severity"] = _severity(str(alert.get("code") or ""))
+
+
+def alert_fingerprint(report: Mapping[str, Any]) -> str:
+    """Stable identity of page-severity alert targets, independent of row order."""
+    rows = sorted({
+        (str(alert.get("code") or ""), str(alert.get("mount") or ""), "page")
+        for alert in report.get("alerts") or []
+        if isinstance(alert, Mapping) and alert.get("severity") == "page"
+    })
+    return "sha256:" + hashlib.sha256(json.dumps(rows, separators=(",", ":")).encode()).hexdigest()
 
 MOUNTS_ENV = "BLUEPRINT_CAPACITY_MOUNTS"
 REPORT_ROOT_ENV = "BLUEPRINT_CAPACITY_REPORT_ROOT"
@@ -374,6 +399,7 @@ def build_capacity_report(
         days = row["forecast"].get("days_until_floor")
         if isinstance(days, (int, float)) and days < 3:
             alerts.append({"mount": row["mount"], "code": "floor_within_three_days", "days_until_floor": days})
+    _annotate_alerts(alerts)
     report: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "observed_at_epoch": observed,
@@ -559,7 +585,7 @@ _SUMMARY_MOUNT_KEYS = (
 )
 _SUMMARY_ALERT_KEYS = (
     "code", "mount", "provider", "roles", "used_fraction", "days_until_floor", "root",
-    "allocated_bytes", "attributed_fraction",
+    "allocated_bytes", "attributed_fraction", "severity", "reason",
 )
 
 
@@ -653,6 +679,10 @@ def alert_due(previous: Mapping[str, Any] | None, report: Mapping[str, Any], *, 
     # delivery must not turn the following tick into a retry.
     if previous.get("alert_error") or not isinstance(previous.get("last_alert_epoch"), (int, float)):
         return True
+    has_page = any(row.get("severity") == "page" for row in report.get("alerts") or []
+                   if isinstance(row, Mapping))
+    if has_page and alert_fingerprint(report) != previous.get("last_alert_fingerprint", alert_fingerprint(previous)):
+        return True
 
     def actionable_alerts(value: Mapping[str, Any]) -> set[tuple[str, str, str, str, tuple[str, ...]]]:
         return {
@@ -668,13 +698,28 @@ def alert_due(previous: Mapping[str, Any] | None, report: Mapping[str, Any], *, 
     if actionable_alerts(report) - actionable_alerts(previous):
         return True
     last = previous.get("last_alert_epoch")
-    return level == "critical" and (not isinstance(last, (int, float)) or now - float(last) >= ALERT_REPEAT_SECONDS)
+    return (has_page or level == "critical") and (
+        not isinstance(last, (int, float)) or now - float(last) >= ALERT_REPEAT_SECONDS
+    )
 
 
 def post_alert(url: str, report: Mapping[str, Any], *, timeout_seconds: float = 10.0) -> None:
+    page_alerts = [a for a in report.get("alerts") or [] if a.get("severity") == "page"]
+    urgent = page_alerts or list(report.get("alerts") or [])
+    first = urgent[0] if urgent else {}
+    summary = f"{first.get('mount') or 'control plane'}: {first.get('code') or report.get('level')}"
+    if first.get("code") == "floor_within_three_days":
+        summary = f"{first.get('mount')}: floor in {float(first.get('days_until_floor') or 0):.1f} days"
+    elif first.get("code") == "volume_growth_blocked":
+        summary = f"{first.get('mount')}: volume growth blocked ({first.get('reason')})"
     payload = {
         "schema_version": "control_plane_capacity_alert.v1",
         "level": report.get("level"),
+        "severity": "page" if page_alerts else "warn",
+        "page": bool(page_alerts),
+        "fingerprint": alert_fingerprint(report),
+        "runbook": "docs/runbooks/control-plane-capacity.md",
+        "summary": summary[:200],
         "alerts": report.get("alerts"),
         "mounts": [
             {
@@ -878,16 +923,10 @@ def run_controller(
         report["alerts"].extend(warnings)
         if report["level"] == "ok":
             report["level"] = "warning"
-    report["alert_posted"] = False
-    if webhook_url and alert_due(previous, report, now=observed):
-        try:
-            poster(webhook_url, report)
-            report["alert_posted"] = True
-            report["last_alert_epoch"] = observed
-        except Exception as exc:  # noqa: BLE001 - alerting must never stop measurement
-            report["alert_error"] = f"{type(exc).__name__}: {exc}"[:200]
-    elif previous is not None and isinstance(previous.get("last_alert_epoch"), (int, float)):
-        report["last_alert_epoch"] = previous["last_alert_epoch"]
+    if not webhook_url:
+        report["alerts"].append({"code": "operator_alert_route_unconfigured"})
+        if report["level"] == "ok":
+            report["level"] = "warning"
     if volume:
         plan = plan_volume_resize(
             report,
@@ -908,6 +947,23 @@ def run_controller(
                     )
                 except ControlPlaneCapacityError as exc:
                     report["volume_resize"] = {**plan, "status": "blocked", "reason": str(exc)}
+        if report["volume_resize"].get("status") == "blocked":
+            report["alerts"].append({"code": "volume_growth_blocked",
+                                     "mount": str(volume.get("mount") or ""),
+                                     "reason": report["volume_resize"].get("reason")})
+    _annotate_alerts(report["alerts"])
+    report["alert_posted"] = False
+    if webhook_url and alert_due(previous, report, now=observed):
+        try:
+            poster(webhook_url, report)
+            report["alert_posted"] = True
+            report["last_alert_epoch"] = observed
+            report["last_alert_fingerprint"] = alert_fingerprint(report)
+        except Exception as exc:  # noqa: BLE001 - alerting must never stop measurement
+            report["alert_error"] = f"{type(exc).__name__}: {exc}"[:200]
+    elif previous is not None and isinstance(previous.get("last_alert_epoch"), (int, float)):
+        report["last_alert_epoch"] = previous["last_alert_epoch"]
+        report["last_alert_fingerprint"] = previous.get("last_alert_fingerprint", alert_fingerprint(previous))
     report["report_digest"] = ""
     report["report_digest"] = canonical_digest(report, digest_field="report_digest")
     write_report(report_root, report)

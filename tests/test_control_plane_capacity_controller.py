@@ -77,6 +77,77 @@ def test_forecast_uses_the_oldest_observation_inside_the_window() -> None:
     assert cap.forecast(history[:1], {**current, "free_bytes": 50 * GIB}, now=now)["status"] == "not_growing"
 
 
+def test_three_days_of_headroom_pages_and_unrouted_alerts_are_loud(tmp_path: Path) -> None:
+    now = 10 * 86400.0
+    history = [{"mount": str(tmp_path), "status": "measured", "observed_at_epoch": now - 86400,
+                "free_bytes": 23 * GIB, "floor_bytes": 8 * GIB}]
+    report = cap.build_capacity_report(mounts=[str(tmp_path)], reservation_root=tmp_path / "r",
+                                       history=history, disk_usage=_usage(18.0), now=now)
+    forecast = next(a for a in report["alerts"] if a["code"] == "floor_within_three_days")
+    assert forecast["severity"] == "page"
+    assert forecast["days_until_floor"] == pytest.approx(2.0)
+
+    unrouted = cap.run_controller(mounts=[str(tmp_path)], report_root=tmp_path / "capacity",
+                                  reservation_root=tmp_path / "r", webhook_url="", volume=None,
+                                  ack="", token="", survey=None, disk_usage=_usage(80.0), now=now)
+    assert unrouted["level"] in {"warning", "critical"}
+    assert {a["code"]: a["severity"] for a in unrouted["alerts"]}["operator_alert_route_unconfigured"] == "page"
+    assert "operator_alert_route_unconfigured" in {a["code"] for a in cap.capacity_summary(unrouted)["alerts"]}
+
+
+def test_blocked_volume_growth_pages(tmp_path: Path) -> None:
+    posted = []
+    report = cap.run_controller(mounts=[str(tmp_path)], report_root=tmp_path / "capacity",
+                                reservation_root=tmp_path / "r", webhook_url="https://alerts.example/hook",
+                                volume={"id": "vol-1", "mount": str(tmp_path), "current_size_gib": 100,
+                                        "max_gib": 100}, ack="", token="", survey=None,
+                                poster=lambda _url, value: posted.append(value),
+                                disk_usage=_usage(9.0), now=1000.0)
+    growth = next(a for a in report["alerts"] if a["code"] == "volume_growth_blocked")
+    assert growth["severity"] == "page" and growth["reason"] == "volume_at_maximum"
+    assert len(posted) == 1 and posted[0]["volume_resize"]["status"] == "blocked"
+
+
+def test_new_page_alert_posts_even_at_the_same_level() -> None:
+    first = {"level": "critical", "last_alert_epoch": 1000.0, "last_alert_fingerprint": "old",
+             "alerts": [{"code": "admission_refused", "mount": "/first", "severity": "page"}]}
+    second = {"level": "critical", "alerts": [
+        {"code": "admission_refused", "mount": "/first", "severity": "page"},
+        {"code": "volume_growth_blocked", "mount": "/first", "severity": "page"}],
+    }
+    assert cap.alert_due(first, second, now=1100.0)
+    assert cap.alert_fingerprint(first) != cap.alert_fingerprint(second)
+
+
+def test_page_webhook_has_route_fingerprint_runbook_and_short_summary(monkeypatch) -> None:
+    payloads = []
+
+    class Response:
+        status = 204
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    def urlopen(request, *, timeout):
+        assert timeout == 10.0
+        payloads.append(json.loads(request.data))
+        return Response()
+
+    monkeypatch.setattr(cap.urllib.request, "urlopen", urlopen)
+    report = {"level": "critical", "mounts": [], "alerts": [
+        {"code": "floor_within_three_days", "mount": "/var/lib/blueprint",
+         "days_until_floor": 2.0, "severity": "page"}]}
+    cap.post_alert("https://alerts.example/hook", report)
+    payload = payloads[0]
+    assert payload["page"] is True and payload["severity"] == "page"
+    assert payload["fingerprint"] == cap.alert_fingerprint(report)
+    assert payload["runbook"] == "docs/runbooks/control-plane-capacity.md"
+    assert "2.0 days" in payload["summary"] and len(payload["summary"]) <= 200
+
+
 def test_controller_writes_evidence_alerts_on_escalation_and_repeats_hourly_while_critical(
     tmp_path: Path,
 ) -> None:
@@ -378,7 +449,7 @@ def test_invalid_budget_configuration_waits_instead_of_crashing_the_gate(tmp_pat
     report = cap.build_capacity_report(mounts=[tmp_path], reservation_root=tmp_path / "ledger",
                                        disk_usage=_usage(80.0), now=1.0)
     assert report["level"] == "critical"
-    assert report["alerts"] == [{"mount": str(tmp_path), "code": "mount_configuration_invalid"}]
+    assert report["alerts"] == [{"mount": str(tmp_path), "code": "mount_configuration_invalid", "severity": "warn"}]
 
 
 def _survey_result(**overrides):
@@ -522,7 +593,8 @@ def test_a_failed_survey_keeps_the_last_one_and_never_stops_the_tick(tmp_path, m
         "usage_survey_failed:RuntimeError")
     unsurveyed = cap.run_controller(**{**common, "report_root": tmp_path / "fresh"}, now=1_000.0, survey=broken)
     assert unsurveyed["usage"] == {"status": "unavailable", "error": "usage_survey_failed:RuntimeError"}
-    assert unsurveyed["level"] == "ok"
+    assert unsurveyed["level"] == "warning"
+    assert any(a["code"] == "operator_alert_route_unconfigured" for a in unsurveyed["alerts"])
 
 
 def test_failed_survey_attempt_is_throttled_across_ticks(tmp_path, monkeypatch):
@@ -640,7 +712,8 @@ def test_low_attribution_warns_but_never_masks_critical(tmp_path, monkeypatch):
     common = dict(mounts=[str(tmp_path)], reservation_root=tmp_path / "ledger", webhook_url="", volume=None,
                   ack="", token="", survey=survey, now=1_000.0)
     warned = cap.run_controller(**common, report_root=tmp_path / "a", disk_usage=_usage(free_gib=100.0))
-    assert {"mount": "/", "code": "usage_attribution_low", "attributed_fraction": 0.5} in warned["alerts"]
+    assert {"mount": "/", "code": "usage_attribution_low", "attributed_fraction": 0.5,
+            "severity": "warn"} in warned["alerts"]
     assert warned["level"] == "warning"
     critical = cap.run_controller(**common, report_root=tmp_path / "b", disk_usage=_usage(free_gib=9.0))
     assert critical["level"] == "critical"
