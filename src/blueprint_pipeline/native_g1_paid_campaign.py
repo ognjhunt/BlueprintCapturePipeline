@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import json
 import os
+import fcntl
+import stat
 import zipfile
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -42,11 +45,47 @@ from .paid_resource_admission import (
 )
 from .paid_lane_guard import SPEND_ADMISSION_LOCK_PATH_ENV, _load_spend_admission_lock
 from .spend_admission_lock import validate_spend_admission_lock
+from .vast_launch_slots import vast_launch_gate_path
 
 
 PROBE_KIND = "native-g1-development-campaign"
 RESULT_SCHEMA = "native_g1_paid_campaign_result.v1"
 INSTANCE_LABEL_PREFIX = "blueprint-native-task-arena-g1-841757-"
+
+
+@dataclass
+class _PrestageLaunchGate:
+    fd: int | None
+
+    def release(self) -> None:
+        if self.fd is not None:
+            fd, self.fd = self.fd, None
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
+
+
+def _hold_pre_stage_launch_gate() -> tuple[_PrestageLaunchGate | None, str | None]:
+    """Keep a deploy from overtaking the paid run while checkpoints are staged."""
+
+    gate_path = vast_launch_gate_path()
+    fd = None
+    try:
+        fd = os.open(gate_path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            os.close(fd)
+            return None, "g1_paid_campaign_launch_gate_unusable"
+        try:
+            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError:
+            os.close(fd)
+            return None, "g1_paid_campaign_deploy_in_progress"
+    except OSError:
+        if fd is not None:
+            os.close(fd)
+        return None, "g1_paid_campaign_launch_gate_unusable"
+    return _PrestageLaunchGate(fd), None
 
 
 def _early_spend_lock_blockers() -> list[str]:
@@ -270,6 +309,42 @@ def dispatch_g1_paid_campaign(
             blockers.append("g1_paid_campaign_job_path_invalid")
         elif not blockers:
             job.mkdir(parents=True, exist_ok=True)
+    pre_stage_gate = None
+    if args.execute and not blockers:
+        pre_stage_gate, gate_blocker = _hold_pre_stage_launch_gate()
+        if gate_blocker is not None:
+            blockers.append(gate_blocker)
+    try:
+        return _dispatch_g1_paid_campaign_after_preflight(
+            args,
+            control_identity=control_identity,
+            control_recheck=control_recheck,
+            blockers=blockers,
+            commit=commit,
+            release_authority=release_authority,
+            rate=rate,
+            cap=cap,
+            ttl=ttl,
+            pre_stage_gate=pre_stage_gate,
+        )
+    finally:
+        if pre_stage_gate is not None:
+            pre_stage_gate.release()
+
+
+def _dispatch_g1_paid_campaign_after_preflight(
+    args: Any,
+    *,
+    control_identity: dict[str, Any],
+    control_recheck: Callable[[], tuple[list[str], dict[str, Any]]] | None,
+    blockers: list[str],
+    commit: str,
+    release_authority: dict[str, Any] | None,
+    rate: float,
+    cap: float,
+    ttl: int,
+    pre_stage_gate: _PrestageLaunchGate | None,
+) -> dict[str, Any]:
     bundle: dict[str, Any] | None = None
     if not blockers:
         try:
@@ -439,6 +514,8 @@ def dispatch_g1_paid_campaign(
                     "status": "blocked",
                     "blockers": ["g1_paid_campaign_attempt_already_consumed"],
                 }
+            if pre_stage_gate is not None:
+                pre_stage_gate.release()
             return consumption
         cache_closeout: dict[str, Any] | None = None
         try:
