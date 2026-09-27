@@ -147,7 +147,7 @@ def _store_copy(child, payload, *, directory=("prepared-references", "content-ad
 
 def planned_paths(p):
     return {f["relative_path"] for row in p["rows"] for f in row["files"]} | {
-        name for row in p["rows"] for copy in row["store_copies"] for name in copy["relative_paths"]}
+        name for row in p["rows"] for copy in row.get("store_copies", ()) for name in copy["relative_paths"]}
 
 
 def reseal(p, row):
@@ -216,27 +216,124 @@ def test_an_interrupted_copy_removal_is_finished_by_the_next_plan(tmp_path, monk
     for preparation in ("adp-preparation", "scene-preparation"):  # either side of content-addressed
         (child / "prepared-references" / preparation).mkdir()
         os.link(copy, child / "prepared-references" / preparation / copy.name)
-    real_unlink = Path.unlink
-    calls: list[Path] = []
+    real_unlink = os.unlink
+    calls: list[str] = []
 
-    def unlink(self, *args, **kwargs):
-        calls.append(self)
+    def unlink(path, *args, **kwargs):
+        calls.append(path)
         if len(calls) == 3:  # the last of the three names
             raise OSError(errno.EIO, "interrupted")
-        return real_unlink(self, *args, **kwargs)
+        return real_unlink(path, *args, **kwargs)
 
     first = plan(root, proc, **STORE)
-    monkeypatch.setattr(Path, "unlink", unlink)
-    with pytest.raises(OSError):
-        apply(first, proc, **STORE)
-    monkeypatch.setattr(Path, "unlink", real_unlink)
+    monkeypatch.setattr(os, "unlink", unlink)
+    interrupted = apply(first, proc, **STORE)
+    monkeypatch.setattr(os, "unlink", real_unlink)
 
+    assert (interrupted["removed_bytes"], [skip["reason"] for skip in interrupted["skipped"]]) == (
+        0, ["unlink_failed:OSError"])
     assert copy.exists() and copy.stat().st_nlink == 1
     again = plan(root, proc, **STORE)
     [group] = again["rows"][0]["store_copies"]
     assert (group["relative_paths"], group["nlink"]) == ([str(copy.relative_to(child))], 1)
     assert apply(again, proc, **STORE)["removed_bytes"] == size
     assert not copy.exists()
+
+
+def _victim(tmp_path, name):
+    """A file outside the replay with the same name as one the replay holds."""
+    victim_dir = tmp_path / "victim-dir"
+    victim_dir.mkdir(exist_ok=True)
+    (victim_dir / name).write_text("evidence that is not the replay's")
+    return victim_dir, victim_dir / name
+
+
+def _swap_while_hashing(monkeypatch, directory, target, *, leaf=None):
+    """Swap ``directory`` for a symlink to ``target`` while apply hashes, as the review's probe did."""
+    real = gc._held_sha
+    swapped = []
+
+    def racing(directory_fd, name, expected):
+        if not swapped and (leaf is None or name == leaf):
+            os.rename(directory, directory.with_name(directory.name + "-moved"))
+            directory.symlink_to(target, target_is_directory=True)
+            swapped.append(name)
+        return real(directory_fd, name, expected)
+
+    monkeypatch.setattr(gc, "_held_sha", racing)
+    return swapped
+
+
+def test_a_directory_swapped_while_hashing_never_redirects_a_store_copy_removal(tmp_path, monkeypatch):
+    """Code review, 2026-09-27: apply checked the parents, hashed, then unlinked each name by
+    path, so swapping prepared-references/prep for a symlink while it hashed made the root GC
+    delete a file outside the replay. Every recheck, hash and unlink now goes through
+    directory descriptors held from the replay child down, and a moved directory is a skip."""
+    root, child, data, proc = setup(tmp_path)
+    data.unlink()
+    copy = _store_copy(child, b"scratch copy bytes" * 100)
+    prep = child / "prepared-references" / "prep"
+    prep.mkdir()
+    os.link(copy, prep / "receipt.json")
+    victim_dir, victim = _victim(tmp_path, "receipt.json")
+    p = plan(root, proc, **STORE)
+    swapped = _swap_while_hashing(monkeypatch, prep, victim_dir)
+
+    result = apply(p, proc, **STORE)
+
+    assert swapped and victim.read_text() == "evidence that is not the replay's"
+    assert result["removed_bytes"] == 0
+    assert [skip["reason"] for skip in result["skipped"]] == ["path_changed"]
+    assert copy.exists() and (prep.with_name("prep-moved") / "receipt.json").exists()
+
+
+def test_a_directory_swapped_while_hashing_never_redirects_a_file_removal(tmp_path, monkeypatch):
+    root, child, data, proc = setup(tmp_path)
+    renders = child / "renders"
+    renders.mkdir()
+    frame = renders / "frame.ply"
+    frame.write_bytes(b"r" * 100000)
+    stamp = (child / "stage_replay_report.v1.json").stat().st_mtime_ns - 10**9
+    os.utime(frame, ns=(stamp, stamp))
+    victim_dir, victim = _victim(tmp_path, "frame.ply")
+    p = plan(root, proc)
+    assert planned_paths(p) == {"working.ply", "renders/frame.ply"}
+    swapped = _swap_while_hashing(monkeypatch, renders, victim_dir, leaf="frame.ply")
+
+    result = apply(p, proc)
+
+    assert swapped and victim.read_text() == "evidence that is not the replay's"
+    assert result["skipped"] == [{"path": str(frame), "reason": "path_changed"}]
+    assert result["removed_bytes"] == 100000 and not data.exists()
+    assert (renders.with_name("renders-moved") / "frame.ply").exists()
+
+
+def test_an_item_that_fails_is_recorded_and_apply_keeps_going(tmp_path, monkeypatch):
+    root, child, data, proc = setup(tmp_path)
+    stamp = (child / "stage_replay_report.v1.json").stat().st_mtime_ns - 10**9
+    for name in ("stuck.ply", "gone.ply"):
+        (child / name).write_bytes(b"s" * 100000)
+        os.utime(child / name, ns=(stamp, stamp))
+    copy = _store_copy(child, b"a store copy")
+    p = plan(root, proc, **STORE)
+    (child / "gone.ply").unlink()
+    real_unlink = os.unlink
+
+    def unlink(path, *args, **kwargs):
+        if path == "stuck.ply":
+            raise PermissionError(errno.EACCES, "denied")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "unlink", unlink)
+    result = apply(p, proc, **STORE)
+    monkeypatch.setattr(os, "unlink", real_unlink)
+
+    assert sorted(result["skipped"], key=lambda skip: skip["path"]) == [
+        {"path": str(child / "gone.ply"), "reason": "recheck_failed:FileNotFoundError"},
+        {"path": str(child / "stuck.ply"), "reason": "unlink_failed:PermissionError"},
+    ]
+    assert result["removed_bytes"] == 100000 + len(b"a store copy")
+    assert not data.exists() and not copy.exists() and (child / "stuck.ply").exists()
 
 
 def test_scratch_inode_linked_outside_the_replay_is_kept(tmp_path):

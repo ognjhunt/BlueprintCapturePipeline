@@ -11,6 +11,9 @@ mode and has no suffix, so the whole inode qualifies when all of its links are
 there and its bytes match the digest it is named by; a link anywhere else
 keeps it. Under the same opt-in any finished parent replay counts, whatever its
 status. Without it the rules are the ones this module always had.
+Apply rechecks, hashes and unlinks every name through directory descriptors
+held from the replay child down, never through a path, and skips an item whose
+directory moved or became a link since it was opened.
 This module is also a standalone maintenance entrypoint; it never allocates a
 provider or changes the scientific release used by a live run.
 """
@@ -143,29 +146,146 @@ def _single_files(child, report_mtime_ns, store_inodes, *, verify=True):
     return files
 
 
-def _copy_unchanged(copy, names, paths, root):
-    """Each name is still the planned inode, those names are all of its links, and its
-    bytes still match the store digest one of them carries."""
+_DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+_LEAF_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+
+
+class _HeldChild:
+    """Directory descriptors held from a replay child down to the directories its names are in.
+
+    Apply rechecks, hashes and unlinks through them and never through a path. Each one was
+    opened a single O_NOFOLLOW component at a time from the replay root, so a directory
+    swapped for a symlink while apply runs cannot redirect a removal outside the replay.
+    """
+
+    def __init__(self, base, name):
+        self._fds = []
+        self._name = name
+        try:
+            self._base = self._open(os.fspath(base), None)
+            self._held = {(): self._open(name, self._base)}
+        except OSError:
+            self.close()
+            raise
+
+    def _open(self, name, parent):
+        fd = os.open(name, _DIRECTORY_FLAGS, dir_fd=parent)
+        self._fds.append(fd)
+        return fd
+
+    def directory(self, parts):
+        if parts not in self._held:
+            self._held[parts] = self._open(parts[-1], self.directory(parts[:-1]))
+        return self._held[parts]
+
+    def in_place(self, parts):
+        """Whether each held directory from the child down to ``parts`` is still the entry
+        its parent names: a directory moved or swapped for a link since it was opened is not."""
+        chain = [(self._base, self._name, self._held[()])] + [
+            (self._held[parts[:index]], parts[index], self._held[parts[:index + 1]])
+            for index in range(len(parts))
+        ]
+        for parent, name, fd in chain:
+            entry, held = os.stat(name, dir_fd=parent, follow_symlinks=False), os.fstat(fd)
+            if not stat.S_ISDIR(entry.st_mode) or (entry.st_dev, entry.st_ino) != (held.st_dev, held.st_ino):
+                return False
+        return True
+
+    def close(self):
+        while self._fds:
+            os.close(self._fds.pop())
+
+
+def _leaf(directory, name):
+    return os.stat(name, dir_fd=directory, follow_symlinks=False)
+
+
+def _same_leaf(directory, name, expected):
+    entry = _leaf(directory, name)
+    return stat.S_ISREG(entry.st_mode) and (entry.st_dev, entry.st_ino) == (expected.st_dev, expected.st_ino)
+
+
+def _held_sha(directory, name, expected):
+    """Hash ``name`` opened O_NOFOLLOW in its held directory, or None if it is not ``expected``."""
+    fd = os.open(name, _LEAF_FLAGS, dir_fd=directory)
+    try:
+        opened = os.fstat(fd)
+        if (opened.st_dev, opened.st_ino) != (expected.st_dev, expected.st_ino):
+            return None
+        with open(fd, "rb", closefd=False) as stream:
+            return "sha256:" + hashlib.file_digest(stream, "sha256").hexdigest()
+    finally:
+        os.close(fd)
+
+
+def _remove_file(held, item):
+    """Recheck, hash and unlink one planned file through held descriptors; a skip reason or None."""
+    relative = Path(item["relative_path"])
+    try:
+        directory = held.directory(relative.parts[:-1])
+        info = _leaf(directory, relative.name)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or relative.suffix.lower() not in BINARY_SUFFIXES
+            or info.st_size < 64 * 1024
+            or info.st_nlink != 1
+            or not info.st_mode & 0o222
+            or info.st_ino != item["inode"]
+            or info.st_mtime_ns != item["mtime_ns"]
+            or info.st_size != item["size_bytes"]
+            or _held_sha(directory, relative.name, info) != item["sha256"]
+        ):
+            return "file_changed"
+        if not held.in_place(relative.parts[:-1]) or not _same_leaf(directory, relative.name, info):
+            return "path_changed"
+    except OSError as exc:
+        return f"recheck_failed:{type(exc).__name__}"
+    try:
+        os.unlink(relative.name, dir_fd=directory)
+    except OSError as exc:
+        return f"unlink_failed:{type(exc).__name__}"
+    return None
+
+
+def _remove_store_copy(held, copy, names):
+    """Recheck every name of a planned store copy, hash it once, then unlink every name.
+
+    Each name must still be the planned inode, those names all of its links, and its bytes
+    the store digest one of them carries. One failed check keeps every name, and the store
+    name goes last, so a removal cut short leaves a group the next plan still recognises.
+    """
     if len(names) != copy["nlink"] or not any(
         scratch_store_copy(name) and copy["sha256"] == "sha256:" + name.name for name in names
     ):
-        return False
+        return "copy_changed"
     try:
-        infos = [path.lstat() for path in paths]
-    except OSError:
-        return False
-    return (
-        all(
-            stat.S_ISREG(info.st_mode)
-            and (info.st_dev, info.st_ino) == (infos[0].st_dev, copy["inode"])
-            and info.st_nlink == copy["nlink"]
-            and info.st_size == copy["size_bytes"]
-            and info.st_mtime_ns == copy["mtime_ns"]
-            for info in infos
-        )
-        and all(_no_linked_parent(path, root) for path in paths)
-        and file_sha(paths[0]) == copy["sha256"]
-    )
+        entries = []
+        for name in names:
+            directory = held.directory(name.parts[:-1])
+            entries.append((name, directory, _leaf(directory, name.name)))
+        first_name, first_directory, first = entries[0]
+        if any(
+            not stat.S_ISREG(info.st_mode)
+            or (info.st_dev, info.st_ino) != (first.st_dev, copy["inode"])
+            or info.st_nlink != copy["nlink"]
+            or info.st_size != copy["size_bytes"]
+            or info.st_mtime_ns != copy["mtime_ns"]
+            for _name, _directory, info in entries
+        ) or _held_sha(first_directory, first_name.name, first) != copy["sha256"]:
+            return "copy_changed"
+        if not all(
+            held.in_place(name.parts[:-1]) and _same_leaf(directory, name.name, info)
+            for name, directory, info in entries
+        ):
+            return "path_changed"
+    except OSError as exc:
+        return f"recheck_failed:{type(exc).__name__}"
+    for name, directory, _info in sorted(entries, key=lambda entry: scratch_store_copy(entry[0])):
+        try:
+            os.unlink(name.name, dir_fd=directory)
+        except OSError as exc:
+            return f"unlink_failed:{type(exc).__name__}"
+    return None
 
 
 def completed_report(root, *, any_parent_status=False):
@@ -360,30 +480,12 @@ def apply_replay_cache_retention(
         if active_reference(root, process_root=process_root):
             skipped.append({"root": str(root), "reason": "active_reference"})
             continue
+        # Every member is checked before anything is opened or removed.
         for item in row["files"]:
             relative = Path(item["relative_path"])
-            if relative.is_absolute() or ".." in relative.parts:
+            if not relative.parts or relative.is_absolute() or ".." in relative.parts:
                 raise ValueError("replay_cache_member_unsafe")
-            path = root / relative
-            info = path.lstat()
-            if (
-                not stat.S_ISREG(info.st_mode)
-                or path.suffix.lower() not in BINARY_SUFFIXES
-                or info.st_size < 64 * 1024
-                or any(p.is_symlink() for p in path.parents if p != root.parent)
-                or info.st_nlink != 1
-                or not info.st_mode & 0o222
-                or info.st_ino != item["inode"]
-                or info.st_mtime_ns != item["mtime_ns"]
-                or info.st_size != item["size_bytes"]
-                or file_sha(path) != item["sha256"]
-            ):
-                skipped.append({"path": str(path), "reason": "file_changed"})
-                continue
-            path.unlink()
-            removed.append(
-                {"path": str(path), "sha256": item["sha256"], "size_bytes": item["size_bytes"]}
-            )
+        copies = []
         for copy in row.get("store_copies", []):
             names = [Path(name) for name in copy["relative_paths"]]
             if (
@@ -395,19 +497,29 @@ def apply_replay_cache_retention(
                 )
             ):
                 raise ValueError("replay_cache_member_unsafe")
-            paths = [root / name for name in names]
-            # One name failing its recheck keeps every name: a partial removal frees nothing.
-            if not _copy_unchanged(copy, names, paths, root):
-                skipped.append({"paths": [str(path) for path in paths], "reason": "copy_changed"})
-                continue
-            # The store name goes last: it is what makes a group a store copy, so a removal cut
-            # short leaves a group the next plan still recognises.
-            for path in sorted(paths, key=lambda path: scratch_store_copy(path.relative_to(root))):
-                path.unlink()
-            removed.append(
-                {"paths": [str(path) for path in paths], "sha256": copy["sha256"],
-                 "size_bytes": copy["size_bytes"]}
-            )
+            copies.append((copy, names))
+        try:
+            held = _HeldChild(base, root.name)
+        except OSError as exc:
+            skipped.append({"root": str(root), "reason": f"root_unavailable:{type(exc).__name__}"})
+            continue
+        try:
+            for item in row["files"]:
+                path = str(root / item["relative_path"])
+                reason = _remove_file(held, item)
+                if reason:
+                    skipped.append({"path": path, "reason": reason})
+                else:
+                    removed.append({"path": path, "sha256": item["sha256"], "size_bytes": item["size_bytes"]})
+            for copy, names in copies:
+                paths = [str(root / name) for name in names]
+                reason = _remove_store_copy(held, copy, names)
+                if reason:
+                    skipped.append({"paths": paths, "reason": reason})
+                else:
+                    removed.append({"paths": paths, "sha256": copy["sha256"], "size_bytes": copy["size_bytes"]})
+        finally:
+            held.close()
     return {
         "schema_version": SCHEMA,
         "status": "applied",
