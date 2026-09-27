@@ -231,10 +231,26 @@ def _act_hold(
             if state not in {"enabled", "disabled"}:
                 return {"status": "refused", "code": "hold_unit_enabled_state_unknown"}
             enabled_before = state == "enabled"
-        stopped = runner.run(["systemctl", "--no-block", "stop", "--", unit], timeout=30)
+
+        def restore_unheld() -> int:
+            if current is not None and current["status"] == "active":
+                return 0  # the previous hold still owns this trigger
+            if enabled_before:
+                restored_boot = runner.run(["systemctl", "enable", "--", unit], timeout=30)
+                if restored_boot.returncode != 0:
+                    return restored_boot.returncode
+            return runner.run(["systemctl", "--no-block", "start", "--", unit], timeout=30).returncode
+
+        stopped = runner.run(["systemctl", "stop", "--", unit], timeout=30)
         if stopped.returncode != 0:
+            rollback_returncode = restore_unheld()
             return {"status": "failed", "code": "hold_stop_failed", "returncode": stopped.returncode,
-                    "stderr_tail": stopped.stderr[-2000:]}
+                    "rollback_returncode": rollback_returncode, "stderr_tail": stopped.stderr[-2000:]}
+        state = runner.run(["systemctl", "is-active", "--", unit], timeout=30)
+        if state.stdout.strip() != "inactive":
+            rollback_returncode = restore_unheld()
+            return {"status": "failed", "code": "hold_stop_incomplete", "returncode": state.returncode,
+                    "rollback_returncode": rollback_returncode, "stderr_tail": state.stderr[-2000:]}
         now = int(time.time())
         expires_at_epoch = max(
             now + request["expires_in_seconds"],
@@ -255,14 +271,20 @@ def _act_hold(
             if holds.read(root, unit) is not None:
                 holds.begin_release(root, unit, record, released_by="runner", status="failed_released")
                 return holds.finish_release(root, unit, command=lambda argv: runner.run(argv, timeout=30))
-            if enabled_before:
-                restored_boot = runner.run(["systemctl", "enable", "--", unit], timeout=30)
-                if restored_boot.returncode != 0:
-                    return restored_boot.returncode
-            return runner.run(["systemctl", "--no-block", "start", "--", unit], timeout=30).returncode
+            return restore_unheld()
 
+        holds.write(root, unit, record)
         try:
-            holds.write(root, unit, record)
+            stopped = runner.run(["systemctl", "stop", "--", unit], timeout=30)
+            if stopped.returncode != 0:
+                rollback_returncode = rollback()
+                return {"status": "failed", "code": "hold_stop_failed", "returncode": stopped.returncode,
+                        "rollback_returncode": rollback_returncode, "stderr_tail": stopped.stderr[-2000:]}
+            state = runner.run(["systemctl", "is-active", "--", unit], timeout=30)
+            if state.stdout.strip() != "inactive":
+                rollback_returncode = rollback()
+                return {"status": "failed", "code": "hold_stop_incomplete", "returncode": state.returncode,
+                        "rollback_returncode": rollback_returncode, "stderr_tail": state.stderr[-2000:]}
             disabled = runner.run(["systemctl", "disable", "--", unit], timeout=30)
             if disabled.returncode != 0:
                 rollback_returncode = rollback()

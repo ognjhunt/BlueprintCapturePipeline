@@ -30,13 +30,16 @@ class FakeRunner:
 
     def __init__(self, active_deploy: str = "", systemd_run_rc: int = 0,
                  enabled_state: str = "enabled", guarded: bool = True,
-                 need_daemon_reload: str = "no") -> None:
+                 need_daemon_reload: str = "no", active_state: str = "inactive",
+                 stop_rc: int = 0) -> None:
         self.calls: list[list[str]] = []
         self.active_deploy = active_deploy
         self.systemd_run_rc = systemd_run_rc
         self.enabled_state = enabled_state
         self.guarded = guarded
         self.need_daemon_reload = need_daemon_reload
+        self.active_state = active_state
+        self.stop_rc = stop_rc
 
     def run(self, argv: Sequence[str], timeout: float) -> CommandResult:
         self.calls.append(list(argv))
@@ -45,12 +48,17 @@ class FakeRunner:
         if argv[:2] == ["systemctl", "is-enabled"]:
             return CommandResult(0 if self.enabled_state == "enabled" else 1,
                                  self.enabled_state + "\n", "")
+        if argv[:2] == ["systemctl", "is-active"]:
+            return CommandResult(0 if self.active_state == "active" else 3,
+                                 self.active_state + "\n", "")
         if argv[:2] == ["systemctl", "cat"]:
             unit = argv[-1]
             guard = f"ConditionPathExists=!{self.guard_root / f'{unit}.json'}"
             return CommandResult(0, f"[Unit]\n{guard}\n" if self.guarded else "[Unit]\n", "")
         if argv[:2] == ["systemctl", "show"]:
             return CommandResult(0, self.need_daemon_reload + "\n", "")
+        if argv[:2] == ["systemctl", "stop"]:
+            return CommandResult(self.stop_rc, "", "stop failed" if self.stop_rc else "")
         if argv[0] == "systemd-run":
             return CommandResult(self.systemd_run_rc, "", "Failed to start" if self.systemd_run_rc else "")
         return CommandResult(0, "", "")
@@ -137,11 +145,14 @@ def test_hold_stops_a_timer_records_owner_and_schedules_expiry(config: DoorConfi
         ["systemctl", "show", "--property=NeedDaemonReload", "--value", "--", unit],
         ["systemctl", "is-enabled", "--", unit],
     ]
-    assert runner.calls[3:5] == [
-        ["systemctl", "--no-block", "stop", "--", unit],
+    assert runner.calls[3:8] == [
+        ["systemctl", "stop", "--", unit],
+        ["systemctl", "is-active", "--", unit],
+        ["systemctl", "stop", "--", unit],
+        ["systemctl", "is-active", "--", unit],
         ["systemctl", "disable", "--", unit],
     ]
-    launch = runner.calls[5]
+    launch = runner.calls[8]
     assert launch[0] == "systemd-run"
     assert f"--unit=blueprint-operator-door-hold-expiry-{request_id[-8:]}" in launch
     assert "--on-active=3600s" in launch and "--collect" in launch
@@ -159,12 +170,20 @@ def test_hold_stops_a_timer_records_owner_and_schedules_expiry(config: DoorConfi
     assert _result(config, request_id)["status"] == "done"
 
 
-def test_hold_publishes_its_boot_guard_before_persistent_disable(config: DoorConfig) -> None:
+def test_hold_publishes_its_boot_guard_before_stopping_or_disabling(config: DoorConfig) -> None:
     unit = "blueprint-scene-progression.timer"
     record = Path(config.spool_root) / "holds" / f"{unit}.json"
 
     class ObserveDisable(FakeRunner):
+        stops = 0
+
         def run(self, argv: Sequence[str], timeout: float) -> CommandResult:
+            if argv[:2] == ["systemctl", "stop"]:
+                self.stops += 1
+                if self.stops == 1:
+                    assert not record.exists()
+                else:
+                    assert json.loads(record.read_text())["status"] == "active"
             if argv[:2] == ["systemctl", "disable"]:
                 assert json.loads(record.read_text())["status"] == "active"
             return super().run(argv, timeout)
@@ -173,6 +192,28 @@ def test_hold_publishes_its_boot_guard_before_persistent_disable(config: DoorCon
     process_spool(config, runner=ObserveDisable())
     assert _result(config, request_id)["status"] == "done"
     assert json.loads(record.read_text())["status"] == "active"
+
+
+def test_hold_does_not_succeed_while_the_trigger_is_still_active(config: DoorConfig) -> None:
+    request_id = _hold(config)
+    runner = FakeRunner(active_state="active")
+    process_spool(config, runner=runner)
+    assert _result(config, request_id)["code"] == "hold_stop_incomplete"
+    assert ["systemctl", "stop", "--", "blueprint-scene-progression.timer"] in runner.calls
+    assert ["systemctl", "is-active", "--", "blueprint-scene-progression.timer"] in runner.calls
+    assert not any(call[:2] == ["systemctl", "disable"] for call in runner.calls)
+    assert not (Path(config.spool_root) / "holds" / "blueprint-scene-progression.timer.json").exists()
+
+
+@pytest.mark.parametrize("runner", [FakeRunner(active_state="unknown"), FakeRunner(stop_rc=1)])
+def test_failed_first_stop_restores_an_unheld_trigger(config: DoorConfig, runner: FakeRunner) -> None:
+    request_id = _hold(config)
+    process_spool(config, runner=runner)
+    result = _result(config, request_id)
+    assert result["status"] == "failed" and result["rollback_returncode"] == 0
+    assert ["systemctl", "enable", "--", "blueprint-scene-progression.timer"] in runner.calls
+    assert ["systemctl", "--no-block", "start", "--", "blueprint-scene-progression.timer"] in runner.calls
+    assert not (Path(config.spool_root) / "holds" / "blueprint-scene-progression.timer.json").exists()
 
 
 def test_hold_refuses_a_host_unit_without_a_durable_guard(config: DoorConfig) -> None:
@@ -311,9 +352,12 @@ def test_failed_expiry_scheduling_restores_a_new_timer_but_preserves_an_existing
         ["systemctl", "cat", "--"],
         ["systemctl", "show", "--property=NeedDaemonReload"],
         ["systemctl", "is-enabled", "--"],
-        ["systemctl", "--no-block", "stop"],
+        ["systemctl", "stop", "--"],
+        ["systemctl", "is-active", "--"],
+        ["systemctl", "stop", "--"],
+        ["systemctl", "is-active", "--"],
         ["systemctl", "disable", "--"],
-        ["systemd-run", runner.calls[5][1], "--on-active=3600s"],
+        ["systemd-run", runner.calls[8][1], "--on-active=3600s"],
         ["systemctl", "enable", "--"],
         ["systemctl", "--no-block", "start"],
     ]
