@@ -16,6 +16,7 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from .control_plane_lane_scratch import create_lane_scratch
 from .decision_evidence_contracts import canonical_digest
 from .native_g1_development_worker import (
     PATH_FIELDS,
@@ -44,6 +45,10 @@ PAIR_ORDER = (
 # Leave a bounded close window while the independent provider watchdog and
 # campaign hard cap remain authoritative for paid spend.
 SUBPROCESS_EPISODE_TIMEOUT_SECONDS = 55 * 60
+LANE_SCRATCH_ROOTS = (
+    Path("/mnt/blueprint-work/lanes"),
+    Path("/var/lib/blueprint/task-evaluation-inputs/lanes"),
+)
 CANDIDATE_FIELDS = frozenset({
     "candidate_id", "rights_review", "request_digest",
 })
@@ -371,6 +376,9 @@ def run_g1_development_pair(
     policy_runtime_root: Path | None = None,
     worker_launcher: Path | None = None,
     local_runner: Callable[..., dict[str, Any]] = run_g1_development_worker,
+    scratch_owner: str | None = None,
+    scratch_run_ref: str | None = None,
+    scratch_ttl_seconds: int | None = None,
 ) -> dict[str, Any]:
     """Execute in catalog order; stop on an infrastructure block to limit spend."""
 
@@ -401,7 +409,23 @@ def run_g1_development_pair(
         or any(char in str(output) for char in ",\n\r")
     ):
         raise ValueError("g1_pair_output_directory_invalid")
-    output.mkdir(parents=True)
+    lane_root = next((root for root in LANE_SCRATCH_ROOTS if output.is_relative_to(root)), None)
+    scratch_metadata = (scratch_owner, scratch_run_ref, scratch_ttl_seconds)
+    if lane_root is not None:
+        relative = output.relative_to(lane_root)
+        if len(relative.parts) != 2 or relative.parts[0] != "g1":
+            raise ValueError("g1_pair_lane_scratch_output_invalid")
+        if any(value is None for value in scratch_metadata):
+            raise ValueError("g1_pair_lane_scratch_metadata_required")
+        create_lane_scratch(
+            "g1", relative.parts[1], root=lane_root, owner=scratch_owner,
+            run_ref=scratch_run_ref, ttl_seconds=scratch_ttl_seconds,
+            reason="g1_development_pair", class_intent="evidence", cleanup="owner_review",
+        )
+    elif any(value is not None for value in scratch_metadata):
+        raise ValueError("g1_pair_lane_scratch_output_invalid")
+    else:
+        output.mkdir(parents=True)
     diagnostics = output / "_worker_diagnostics"
     if mode == "subprocess":
         diagnostics.mkdir()
@@ -578,6 +602,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--source-packet", type=Path)
     parser.add_argument("--policy-runtime-root", type=Path)
     parser.add_argument("--execute", action="store_true")
+    parser.add_argument("--scratch-owner")
+    parser.add_argument("--scratch-run-ref")
+    parser.add_argument("--scratch-ttl-seconds", type=int)
     args = parser.parse_args(argv)
     if not args.execute:
         print(json.dumps(validate_g1_development_pair(args.request), indent=2, sort_keys=True))
@@ -591,6 +618,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         source_receipt_path=args.source_receipt,
         source_packet_path=args.source_packet,
         policy_runtime_root=args.policy_runtime_root,
+        scratch_owner=args.scratch_owner,
+        scratch_run_ref=args.scratch_run_ref,
+        scratch_ttl_seconds=args.scratch_ttl_seconds,
     )
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0 if result["status"] == "completed_development_only" else 1

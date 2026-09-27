@@ -182,6 +182,53 @@ def test_pair_runs_same_scene_in_catalog_order_and_preserves_two_scores(tmp_path
     assert json.loads((tmp_path / "comparison" / (pair.SCHEMA + ".json")).read_text()) == result
 
 
+def test_new_lane_output_needs_lease_before_worker_writes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, _ = _paired_requests(tmp_path)
+    lane_root = tmp_path / "lanes"
+    lane_root.mkdir()
+    monkeypatch.setattr(pair, "LANE_SCRATCH_ROOTS", (lane_root,))
+    output = lane_root / "g1" / "pair-run"
+
+    with pytest.raises(ValueError, match="g1_pair_lane_scratch_metadata_required"):
+        pair.run_g1_development_pair(request_paths=paths, output_dir=output,
+                                     local_runner=lambda **_kwargs: pytest.fail("worker ran"))
+    assert not output.exists()
+
+    def run(*, request: dict, output_dir: Path) -> dict:
+        lease = json.loads((output / ".lane-scratch.v1.json").read_text())
+        assert lease["owner"] == "operator-a"
+        assert lease["run_ref"] == "pair-run"
+        assert lease["class_intent"] == "evidence"
+        assert lease["cleanup"] == "owner_review"
+        return _fake_result(request, output_dir)
+
+    result = pair.run_g1_development_pair(
+        request_paths=paths, output_dir=output, local_runner=run,
+        scratch_owner="operator-a", scratch_run_ref="pair-run", scratch_ttl_seconds=86400,
+    )
+    assert result["status"] == "completed_development_only"
+    assert (output / (pair.SCHEMA + ".json")).is_file()
+
+
+def test_lane_output_rejects_nested_and_wrong_lane_before_creation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, _ = _paired_requests(tmp_path)
+    lane_root = tmp_path / "lanes"
+    lane_root.mkdir()
+    monkeypatch.setattr(pair, "LANE_SCRATCH_ROOTS", (lane_root,))
+    for output in (lane_root / "g1" / "nested" / "pair-run", lane_root / "arena" / "pair-run"):
+        with pytest.raises(ValueError, match="g1_pair_lane_scratch_output_invalid"):
+            pair.run_g1_development_pair(
+                request_paths=paths, output_dir=output,
+                scratch_owner="operator-a", scratch_run_ref="pair-run", scratch_ttl_seconds=86400,
+                local_runner=lambda **_kwargs: pytest.fail("worker ran"),
+            )
+        assert not output.exists()
+
+
 def test_pair_accepts_the_rigid_scorers_report_digest(tmp_path: Path) -> None:
     from blueprint_pipeline.adp_task_scoring import score_task_episode_from_spec
     from tests.test_adp_task_scoring import _rigid_v2_sample, _rigid_v2_spec
