@@ -4,9 +4,9 @@ The collector previously retained already-archived runs for the pin's full
 30-day TTL. This reconciliation changes only the cache ledger; the normal
 collector separately rechecks references and removes reproducible directories.
 
-Two proofs always apply to an activation pin: its run is archived behind a
-verified pointer (``archived_run``), or sealed cold without a result registry
-(``sealed_cold_run``). The extended proofs are evaluated on every tick but
+Two proofs always apply to an activation pin: every run it owns that exists is
+archived behind a verified pointer (``archived_run``), or sealed cold without a
+result registry (``sealed_cold_run``). The extended proofs are evaluated on every tick but
 release a pin only with the owner's opt-in,
 ``BLUEPRINT_CONTROL_PLANE_GC_EXTENDED_PIN_PROOFS=1``; until then their
 candidates are listed with ``"enabled": false``:
@@ -67,7 +67,9 @@ import os
 from collections import Counter
 from pathlib import Path
 
-from .control_plane_pin_proofs import MINIMUM_PIN_AGE_SECONDS, _evidence_names, _pin_path_allowed, _read, extended_proof
+from .control_plane_pin_proofs import (
+    MINIMUM_PIN_AGE_SECONDS, _evidence_names, _pin_path_allowed, _present, _read, extended_proof,
+)
 from .control_plane_storage_pins import depends_on, load_storage_pins, release_storage_pin, storage_pin_guard
 from .control_plane_storage_references import QueueReferenceUnreadable, queue_reference_text
 from .decision_evidence_contracts import canonical_digest
@@ -95,47 +97,66 @@ def extended_pin_proofs_setting(environ=os.environ):
 
 
 def _closed_proof(pin, evidence_roots, *, hot_window_seconds=DEFAULT_HOT_WINDOW_SECONDS, now=None):
-    """Proof that the run this activation pin protects no longer needs the pin.
+    """Proof that the runs this activation pin protects no longer need the pin.
 
-    Either the run has been archived behind a verified pointer, or the run
-    directory itself is sealed by a terminal receipt, idle past the hot window,
-    and carries no result registry. The second case exists because the
+    Every name the activation owns that exists, in every evidence root, must be
+    closed: archived behind a verified pointer, or its run directory sealed by a
+    terminal receipt, idle past the hot window, and carrying no result registry.
+    The proof is the first closed name's. The second case exists because the
     collector will not offload a pinned run and used to release the pin only
     after offload: a launch that ended blocked or cancelled without releasing
-    its own pin kept its evidence on disk indefinitely.
+    its own pin kept its evidence on disk indefinitely. Until 10c this stopped at
+    the first closed name, so a website activation's sealed own directory could
+    release the pin while its ``<id>-launch`` run was still going.
     """
 
     owner, kind = pin["owner_id"], pin["kind"]
     if kind != "activation":
         return None
+    proof = None
     for root in evidence_roots:
         root = Path(root)
         for evidence_name in _evidence_names(owner):
             directory = root / evidence_name
-            if (now is not None and directory.is_dir() and not directory.is_symlink()
-                    and not (root / (evidence_name + POINTER_SUFFIX)).exists()):
-                receipt = _terminal_receipt(directory)
-                if receipt is None or _has_result_registry(directory):
-                    continue
-                latest, size, count = _tree_snapshot(directory)
-                if now - latest < hot_window_seconds:
-                    continue
-                return {"kind": "sealed_cold_run", "path": str(directory), "terminal_receipt": receipt,
-                        "latest_mtime_epoch": latest, "size_bytes": size, "file_count": count}
-            path = root / (evidence_name + ".offloaded.v1.json")
-            value = _read(path)
-            if (value is None or directory.exists()
-                    or value.get("schema_version") != "control_plane_evidence_offload_pointer.v1"
-                    or value.get("pointer_digest") != canonical_digest(value, digest_field="pointer_digest")
-                    or value.get("status") != "offloaded" or value.get("directory") != evidence_name
-                    or value.get("evidence_deleted") is not False
-                    or not str(value.get("uri", "")).startswith("s3://blueprint-task-evaluation-artifacts-prod/")
-                    or value.get("terminal_receipt") not in {"dispatch_receipt.json", "launch_receipt.json", "abandoned_idle"}
-                    or type(value.get("size_bytes")) is not int or value["size_bytes"] <= 0):
+            pointer = root / (evidence_name + POINTER_SUFFIX)
+            present = (_present(directory), _present(pointer))
+            if present == (False, False):
                 continue
-            return {"kind": "archived_run", "path": str(path), "pointer_digest": value["pointer_digest"],
-                    "terminal_receipt": value["terminal_receipt"], "archive_digest": value["digest"]}
-    return None
+            found = None if None in present else (
+                _sealed_cold_run(directory, pointer, hot_window_seconds=hot_window_seconds, now=now)
+                or _archived_run(evidence_name, directory, pointer))
+            if found is None:
+                return None
+            proof = proof or found
+    return proof
+
+
+def _sealed_cold_run(directory, pointer, *, hot_window_seconds, now):
+    if now is None or not directory.is_dir() or directory.is_symlink() or pointer.exists():
+        return None
+    receipt = _terminal_receipt(directory)
+    if receipt is None or _has_result_registry(directory):
+        return None
+    latest, size, count = _tree_snapshot(directory)
+    if now - latest < hot_window_seconds:
+        return None
+    return {"kind": "sealed_cold_run", "path": str(directory), "terminal_receipt": receipt,
+            "latest_mtime_epoch": latest, "size_bytes": size, "file_count": count}
+
+
+def _archived_run(evidence_name, directory, pointer):
+    value = _read(pointer)
+    if (value is None or directory.exists()
+            or value.get("schema_version") != "control_plane_evidence_offload_pointer.v1"
+            or value.get("pointer_digest") != canonical_digest(value, digest_field="pointer_digest")
+            or value.get("status") != "offloaded" or value.get("directory") != evidence_name
+            or value.get("evidence_deleted") is not False
+            or not str(value.get("uri", "")).startswith("s3://blueprint-task-evaluation-artifacts-prod/")
+            or value.get("terminal_receipt") not in {"dispatch_receipt.json", "launch_receipt.json", "abandoned_idle"}
+            or type(value.get("size_bytes")) is not int or value["size_bytes"] <= 0):
+        return None
+    return {"kind": "archived_run", "path": str(pointer), "pointer_digest": value["pointer_digest"],
+            "terminal_receipt": value["terminal_receipt"], "archive_digest": value["digest"]}
 
 
 def _derive(pin, live_pins, context):

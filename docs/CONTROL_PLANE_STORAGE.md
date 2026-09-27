@@ -569,11 +569,13 @@ One tick runs nine phases in order:
 
 ### Terminal cache pin proofs
 
-The original proofs release an activation pin when every run under its names
-(its id, and `<id>-launch` for a website `-activation-auto` activation) is
-archived behind a verified pointer (`archived_run`) or sealed by a terminal
-receipt without a result registry and idle past the hot window
-(`sealed_cold_run`). The extended proofs, in the read-only
+The original proofs release an activation pin when every run that exists under
+its names (its id, and `<id>-launch` for a website `-activation-auto`
+activation) is archived behind a verified pointer (`archived_run`) or sealed by
+a terminal receipt without a result registry and idle past the hot window
+(`sealed_cold_run`). Until 10c they stopped at the first such name, so a
+website activation's sealed own directory could release the pin while its
+`<id>-launch` run was still going. The extended proofs, in the read-only
 `control_plane_pin_proofs` module, apply only with the opt-in:
 
 - `sealed_registry_run`: every run under the activation's evidence names

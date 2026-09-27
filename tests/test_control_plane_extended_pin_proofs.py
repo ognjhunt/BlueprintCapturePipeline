@@ -280,6 +280,47 @@ def _sealed_cold_case(tmp_path: Path, args: dict) -> Path:
     return run
 
 
+def _sealed_cold_run_at(run: Path) -> Path:
+    (run / "allocator").mkdir(parents=True)
+    (run / "launch_receipt.json").write_text(json.dumps({"status": "completed"}), encoding="utf-8")
+    for path in (run / "launch_receipt.json", run / "allocator", run):
+        os.utime(path, (NOW - 5 * DAY, NOW - 5 * DAY))
+    return run
+
+
+@pytest.mark.parametrize("launch", ["running", "archived"])
+def test_the_original_proofs_need_every_run_an_activation_owns_closed(tmp_path, launch) -> None:
+    """Code review of 10c found this bug on main: the original proofs stopped at the first sealed, cold name.
+
+    A website activation's own directory could be sealed and cold while its
+    ``<id>-launch`` run was still going, and the pin was released under the
+    running launch. Every name that exists must now be sealed and cold, or
+    archived; with the launch archived, the pin still goes.
+    """
+
+    args = _args(tmp_path)
+    evidence = tmp_path / "evidence"
+    _sealed_cold_run_at(evidence / AUTO)
+    if launch == "running":
+        (evidence / (AUTO + "-launch") / "allocator").mkdir(parents=True)
+    else:
+        pointer = {"schema_version": "control_plane_evidence_offload_pointer.v1", "status": "offloaded",
+                   "directory": AUTO + "-launch", "evidence_deleted": False,
+                   "terminal_receipt": "launch_receipt.json", "size_bytes": 1024, "digest": "sha256:" + "a" * 64,
+                   "uri": "s3://blueprint-task-evaluation-artifacts-prod/retained/evidence.tar"}
+        pointer["pointer_digest"] = canonical_digest(pointer, digest_field="pointer_digest")
+        (evidence / (AUTO + "-launch.offloaded.v1.json")).write_text(json.dumps(pointer), encoding="utf-8")
+    _pin(args, "activation", AUTO, age=7 * DAY)
+
+    result = reconcile_terminal_cache_pins(**args, apply=True)
+
+    if launch == "running":
+        assert result["candidates"] == [] and _states(args)[("activation", AUTO)] == "live"
+    else:
+        assert [row["proof"]["kind"] for row in result["candidates"]] == ["sealed_cold_run"]
+        assert _states(args)[("activation", AUTO)] == "released"
+
+
 @pytest.mark.parametrize("enabled", [False, True])
 def test_existing_proofs_unchanged_without_the_flag(tmp_path, enabled) -> None:
     """The archived-run and sealed-cold-run proofs release exactly what they did, with or without the opt-in."""
