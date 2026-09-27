@@ -67,8 +67,8 @@ def test_invalid_requests_are_refused(body: object, code: str) -> None:
 def test_unit_actions_are_limited_to_safe_shapes() -> None:
     assert validate_request({"kind": "unit", "unit": "blueprint-gpu-spend-guard.service", "action": "start"})
     assert validate_request(
-        {"kind": "unit", "unit": "blueprint-pubsub-handoff-listener.timer", "action": "stop"}
-    )["action"] == "stop"
+        {"kind": "unit", "unit": "blueprint-pubsub-handoff-listener.timer", "action": "restart"}
+    )["action"] == "restart"
     assert required_scope("unit") == "operate"
 
 
@@ -83,6 +83,13 @@ def test_unit_actions_are_limited_to_safe_shapes() -> None:
         ("blueprint-operator-door.service", "start", "unit_is_door"),
         ("blueprint-gpu-spend-guard.timer", "stop", "unit_safety_critical"),
         ("blueprint-existing-policy-canary-watchdog.timer", "restart", "unit_safety_critical"),
+        ("blueprint-pubsub-handoff-listener.timer", "stop", "unit_stop_requires_hold"),
+        ("blueprint-scene-progression.path", "stop", "unit_stop_requires_hold"),
+        ("blueprint-task-evaluation-terminal-resource-release.path", "restart", "unit_safety_critical"),
+        ("blueprint-control-plane-storage-gc.timer", "restart", "unit_safety_critical"),
+        ("blueprint-control-plane-capacity.timer", "restart", "unit_safety_critical"),
+        ("blueprint-completed-replay-cache-gc.timer", "restart", "unit_safety_critical"),
+        ("blueprint-task-evaluation-preflight.timer", "restart", "unit_safety_critical"),
         ("blueprint-gpu-spend-guard.timer\n", "start", "unit_name_invalid"),
     ],
 )

@@ -61,7 +61,10 @@ _REQUEST_ID = re.compile(
 _UNIT_ACTIONS = ("start", "reset-failed", "stop", "restart")
 _TRIGGER_ONLY_ACTIONS = ("stop", "restart")
 # Timers that protect money or cleanup are never paused through the door.
-_SAFETY_CRITICAL = re.compile(r"spend-guard|watchdog|teardown|reaper|provider-zero")
+_SAFETY_CRITICAL = re.compile(
+    r"spend-guard|watchdog|teardown|reaper|provider-zero|"
+    r"terminal-resource-release|storage-gc|capacity|replay-cache-gc|preflight"
+)
 _LOG_TAIL_LINES = 200
 
 
@@ -117,6 +120,8 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
                 raise RequestRefused("unit_action_not_allowed")
             if _SAFETY_CRITICAL.search(unit):
                 raise RequestRefused("unit_safety_critical")
+            if action == "stop":
+                raise RequestRefused("unit_stop_requires_hold")
         return {"kind": kind, "unit": unit, "action": action}
     if kind == "door-upgrade":
         _only(body, ("kind", "commit"))
