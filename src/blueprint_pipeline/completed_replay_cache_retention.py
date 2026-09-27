@@ -196,6 +196,23 @@ class _HeldChild:
         for parts in [parts for parts in self._held if parts]:
             os.close(self._held.pop(parts))
 
+    def named_by(self, path):
+        """Whether ``path``, through no link, still names the child held.
+
+        The root and child are opened by path after apply checks that path, so an ancestor
+        swapped for a link in between would re-root every descriptor held; one swapped back
+        since then leaves the path naming a different directory than the one held.
+        """
+        try:
+            entry, held = os.lstat(path), os.fstat(self._held[()])
+        except OSError:
+            return False
+        return (
+            stat.S_ISDIR(entry.st_mode)
+            and (entry.st_dev, entry.st_ino) == (held.st_dev, held.st_ino)
+            and not any(p.is_symlink() for p in (path, *path.parents))
+        )
+
     def in_place(self, parts):
         """Whether each held directory from the child down to ``parts`` is still the entry
         its parent names: a directory moved or swapped for a link since it was opened is not."""
@@ -562,6 +579,8 @@ def apply_replay_cache_retention(
             skipped.append({"root": str(root), "reason": f"root_unavailable:{type(exc).__name__}"})
             continue
         try:
+            if not held.named_by(root):
+                raise ValueError("replay_cache_root_changed")
             for item in row["files"]:
                 path = str(root / item["relative_path"])
                 reason = held.item(_remove_file, item)

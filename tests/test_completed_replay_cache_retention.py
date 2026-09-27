@@ -721,3 +721,35 @@ def test_a_row_across_many_directories_stays_within_the_descriptor_limit(tmp_pat
 
     assert (result["skipped"], result["removed_bytes"]) == ([], 100000 + 64 * 65536)
     assert not data.exists() and not any(frame.exists() for frame in frames)
+
+
+def test_a_child_opened_through_a_swapped_ancestor_is_refused(tmp_path, monkeypatch):
+    """Code review of PR 10a: apply checked the replay root's path for links and then opened it
+    by path, so an ancestor swapped for a link in between (and swapped back) re-rooted every
+    descriptor it held. The child it holds must still be the one the checked path names."""
+    outer = tmp_path / "outer"
+    root, child, data, _proc = setup(outer)
+    proc = tmp_path / "proc"
+    proc.mkdir()
+    p = plan(root, proc)
+    elsewhere = tmp_path / "elsewhere"
+    decoy = elsewhere / "replays" / child.name / data.name
+    decoy.parent.mkdir(parents=True)
+    decoy.write_bytes(data.read_bytes())
+    real = gc._HeldChild
+
+    class Rerooted(real):
+        def __init__(self, base, name):
+            outer.rename(tmp_path / "outer-real")
+            outer.symlink_to(elsewhere, target_is_directory=True)
+            try:
+                super().__init__(base, name)
+            finally:
+                outer.unlink()
+                (tmp_path / "outer-real").rename(outer)
+
+    monkeypatch.setattr(gc, "_HeldChild", Rerooted)
+    with pytest.raises(ValueError, match="^replay_cache_root_changed$"):
+        apply(p, proc)
+
+    assert data.exists() and decoy.exists()
