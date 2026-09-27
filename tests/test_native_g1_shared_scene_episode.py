@@ -6,6 +6,7 @@ import pytest
 from pathlib import Path
 
 from blueprint_pipeline.core.security_controls import BoundedHttpResponse
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.native_g1_shared_scene_episode import (
     run_g1_built_scene_policy_episode,
     run_g1_shared_scene_episode,
@@ -135,6 +136,10 @@ def test_candidates_use_same_scene_episode_and_retain_each_frame(
     assert trace["initial_task_sample"] == {"step_index": 0, "object_z_m": 0.0}
     assert trace["claim_ceiling"] == "simulator_only_unscored"
     assert [row["task_sample"]["object_z_m"] for row in trace["steps"]] == [1.0, 2.0, 3.0]
+    for row in trace["steps"]:
+        checkpoint = json.loads((tmp_path / row["checkpoint_relative_path"]).read_text())
+        assert checkpoint["checkpoint_digest"] == row["checkpoint_digest"]
+        assert checkpoint["robot_state"] == row["robot_state"]
     frames = [row["policy_input_frame"] for row in trace["queries"]]
     frames += [frame for row in trace["steps"] for frame in row["review_frames"].values()]
     frames += list(trace["terminal_observation"]["views"].values())
@@ -147,6 +152,111 @@ def test_candidates_use_same_scene_episode_and_retain_each_frame(
     assert all(
         (tmp_path / row["relative_path"]).is_file()
         for row in trace["visual_evidence"]["videos"].values()
+    )
+
+
+def test_controller_failure_keeps_the_actual_policy_response(tmp_path: Path) -> None:
+    scene, policy = _Scene(), _Policy()
+
+    class _FailingBridge:
+        def targets_for_action(self, action: list) -> dict:
+            raise ValueError("g1_sonic_controller_target_out_of_limits")
+
+    with pytest.raises(ValueError, match="target_out_of_limits"):
+        run_g1_shared_scene_episode(
+            environment=scene,
+            policy_client=policy,
+            sonic_bridge=_FailingBridge(),
+            candidate_id="humanoidarena_dp_g1_dex3_sonic",
+            task_prompt="pick the box",
+            max_steps=1,
+            output_dir=tmp_path,
+            read_task_sample=lambda: {"step_index": scene.step},
+        )
+    assert policy.queries == 1
+    assert scene.step == 0
+    checkpoint = json.loads(
+        (tmp_path / "query_checkpoints/query_0000.v1.json").read_text()
+    )
+    assert checkpoint["status"] == "policy_response_retained"
+    assert checkpoint["claim_ceiling"] == "development_only_unscored"
+    assert checkpoint["query"]["returned_action_count"] == 2
+    assert checkpoint["action_chunk"] == [[0.0] * 40, [0.0] * 40]
+    assert checkpoint["checkpoint_digest"] == canonical_digest(
+        checkpoint, digest_field="checkpoint_digest"
+    )
+    frame = checkpoint["query"]["policy_input_frame"]
+    assert (tmp_path / frame["relative_path"]).is_file()
+
+
+def test_later_controller_failure_keeps_completed_simulator_step(tmp_path: Path) -> None:
+    scene, policy = _Scene(), _Policy()
+
+    class _FailAfterOneStep:
+        def targets_for_action(self, action: list) -> dict:
+            if scene.step:
+                raise ValueError("g1_sonic_controller_target_out_of_limits")
+            return {"joint": 1.0}
+
+    with pytest.raises(ValueError, match="target_out_of_limits"):
+        run_g1_shared_scene_episode(
+            environment=scene,
+            policy_client=policy,
+            sonic_bridge=_FailAfterOneStep(),
+            candidate_id="humanoidarena_dp_g1_dex3_sonic",
+            task_prompt="pick the box",
+            max_steps=2,
+            output_dir=tmp_path,
+            read_task_sample=lambda: {"step_index": scene.step},
+        )
+    assert scene.step == 1
+    query = json.loads((tmp_path / "query_checkpoints/query_0000.v1.json").read_text())
+    step = json.loads((tmp_path / "step_checkpoints/step_0001.v1.json").read_text())
+    assert step["status"] == "simulator_step_retained"
+    assert step["claim_ceiling"] == "development_only_unscored"
+    assert step["query_checkpoint_digest"] == query["checkpoint_digest"]
+    assert step["semantic_action"] == [0.0] * 40
+    assert step["controller_targets_rad"] == {"joint": 1.0}
+    assert step["robot_state"] == {"step_index": 1}
+    assert step["checkpoint_digest"] == canonical_digest(step, digest_field="checkpoint_digest")
+
+
+def test_projected_target_is_bound_to_step_and_terminal_trace(tmp_path: Path) -> None:
+    scene, policy = _Scene(), _Policy()
+
+    class _ProjectingBridge(_Bridge):
+        def targets_for_action(self, action: list) -> dict:
+            targets = super().targets_for_action(action)
+            self.last_target_projection = [{
+                "joint_name": "joint",
+                "requested_target_rad": 2.0,
+                "applied_target_rad": targets["joint"],
+                "lower_rad": -1.0,
+                "upper_rad": 1.0,
+                "excess_rad": 1.0,
+                "raw_decoder_action": 2.0,
+            }]
+            return targets
+
+    trace = run_g1_shared_scene_episode(
+        environment=scene,
+        policy_client=policy,
+        sonic_bridge=_ProjectingBridge(),
+        candidate_id="humanoidarena_dp_g1_dex3_sonic",
+        task_prompt="pick the box",
+        max_steps=1,
+        output_dir=tmp_path,
+        read_task_sample=lambda: {"step_index": scene.step},
+    )
+    assert trace["controller_target_projection_count"] == 1
+    assert trace["controller_target_projected_step_count"] == 1
+    row = trace["steps"][0]
+    checkpoint = json.loads((tmp_path / row["checkpoint_relative_path"]).read_text())
+    assert row["controller_targets_rad"] == {"joint": 1.0}
+    assert row["target_projections"] == checkpoint["target_projections"]
+    assert row["target_projections"][0]["requested_target_rad"] == 2.0
+    assert checkpoint["checkpoint_digest"] == canonical_digest(
+        checkpoint, digest_field="checkpoint_digest"
     )
 
 

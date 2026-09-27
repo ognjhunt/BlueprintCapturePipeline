@@ -8,6 +8,7 @@ only orders their calls. It does not infer task success or attest model bytes.
 from __future__ import annotations
 
 import json
+import os
 import re
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -37,6 +38,15 @@ G1_NAVIGATION_CANDIDATES = frozenset(
     }
 )
 _PROFILE_DIGEST = re.compile(r"sha256:([0-9a-f]{64})\Z")
+
+
+def _write_checkpoint(path: Path, value: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("x", encoding="utf-8") as stream:
+        json.dump(value, stream, indent=2, sort_keys=True, allow_nan=False)
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
 
 
 def team_policy_candidate_id(profile_digest: str) -> str:
@@ -147,35 +157,85 @@ def run_g1_shared_scene_episode(
         )
         if not isinstance(chunk, list) or not chunk:
             raise ValueError("g1_shared_scene_policy_chunk_invalid")
-        queries.append(
-            {
-                "query_index": query_index,
-                "step_index": len(steps),
-                "policy_input_frame": policy_frame,
-                "sensor_freshness": inputs["sensor_freshness"],
-                "observation_state": inputs["observation_state"],
-                "returned_action_count": len(chunk),
-            }
+        query = {
+            "query_index": query_index,
+            "step_index": len(steps),
+            "policy_input_frame": policy_frame,
+            "sensor_freshness": inputs["sensor_freshness"],
+            "observation_state": inputs["observation_state"],
+            "returned_action_count": len(chunk),
+        }
+        # Seal the returned actions before invoking SONIC. A controller failure
+        # must not erase the only evidence that the policy answered a query.
+        checkpoint = {
+            "schema_version": "native_g1_policy_query_checkpoint.v1",
+            "status": "policy_response_retained",
+            "claim_ceiling": "development_only_unscored",
+            "candidate_id": candidate_id,
+            "scene_plan_digest": plan_digest,
+            "team_policy_profile_digest": team_policy_profile_digest,
+            "query": dict(query),
+            "action_chunk": chunk,
+        }
+        checkpoint["checkpoint_digest"] = canonical_digest(
+            checkpoint, digest_field="checkpoint_digest"
         )
+        checkpoint_path = output_dir / "query_checkpoints" / f"query_{query_index:04d}.v1.json"
+        _write_checkpoint(checkpoint_path, checkpoint)
+        query["checkpoint_digest"] = checkpoint["checkpoint_digest"]
+        query["checkpoint_relative_path"] = checkpoint_path.relative_to(output_dir).as_posix()
+        queries.append(query)
         for action_index, action in enumerate(chunk):
             if len(steps) >= max_steps:
                 break
             targets = sonic_bridge.targets_for_action(action)
+            target_projections = [
+                dict(item) for item in getattr(sonic_bridge, "last_target_projection", ())
+            ]
             state = environment.step_controller_targets(targets)
+            step_index = len(steps) + 1
+            # The terminal trace is written only after the complete episode.
+            # Persist the measured state now so a later action or camera error
+            # cannot erase already executed simulator steps.
+            step_checkpoint = {
+                "schema_version": "native_g1_scene_step_checkpoint.v1",
+                "status": "simulator_step_retained",
+                "claim_ceiling": "development_only_unscored",
+                "candidate_id": candidate_id,
+                "scene_plan_digest": plan_digest,
+                "team_policy_profile_digest": team_policy_profile_digest,
+                "query_checkpoint_digest": query["checkpoint_digest"],
+                "step_index": step_index,
+                "query_index": query_index,
+                "action_index": action_index,
+                "semantic_action": action,
+                "controller_targets_rad": targets,
+                "target_projections": target_projections,
+                "robot_state": state,
+            }
+            step_checkpoint["checkpoint_digest"] = canonical_digest(
+                step_checkpoint, digest_field="checkpoint_digest"
+            )
+            step_checkpoint_path = (
+                output_dir / "step_checkpoints" / f"step_{step_index:04d}.v1.json"
+            )
+            _write_checkpoint(step_checkpoint_path, step_checkpoint)
             review = environment.read_review_inputs()
             review_observation = retain_observation(
                 {"head": review["head_rgb"], "overview": review["overview_rgb"]},
                 kind="review-sample",
             )
             review_observations.append(review_observation)
-            step_index = len(steps) + 1
             row = {
                 "step_index": step_index,
                 "query_index": query_index,
                 "action_index": action_index,
                 "semantic_action": action,
                 "controller_targets_rad": targets,
+                "target_projections": target_projections,
                 "robot_state": state,
+                "checkpoint_digest": step_checkpoint["checkpoint_digest"],
+                "checkpoint_relative_path": step_checkpoint_path.relative_to(output_dir).as_posix(),
                 "task_sample": dict(read_task_sample()),
                 "review_frames": {
                     role: review_observation["views"][role] for role in ("head", "overview")
@@ -218,6 +278,12 @@ def run_g1_shared_scene_episode(
         "initial_task_sample": initial_task_sample,
         "policy_query_count": len(queries),
         "scene_step_count": len(steps),
+        "controller_target_projection_count": sum(
+            len(row["target_projections"]) for row in steps
+        ),
+        "controller_target_projected_step_count": sum(
+            bool(row["target_projections"]) for row in steps
+        ),
         "queries": queries,
         "steps": steps,
         "policy_input_observations": policy_observations,
