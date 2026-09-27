@@ -1028,19 +1028,52 @@ def test_gc_phase_counts_why_scenes_are_retained(tmp_path) -> None:
     assert scene.is_dir()
 
 
-@pytest.mark.parametrize(("retirement", "offload", "enabled"), [
-    (None, None, False), (None, "1", True), ("0", "1", False), ("yes", None, True), ("false", "true", False),
+@pytest.mark.parametrize(("retirement", "offload", "enabled", "alert"), [
+    (None, None, False, None),
+    (None, "1", False, None),  # the offload opt-in never enables retirement
+    ("1", None, True, None),
+    ("true", "0", True, None),
+    ("0", "1", False, None),
+    ("maybe", "1", False, "scene_workspace_retirement_setting_invalid"),
 ])
-def test_scene_retirement_follows_the_offload_opt_in_unless_set(monkeypatch, retirement, offload, enabled):
+def test_scene_retirement_needs_its_own_explicit_opt_in(monkeypatch, retirement, offload, enabled, alert):
     for name, value in ((gc_module.SCENE_WORKSPACE_RETIREMENT_ENV, retirement), (gc_module.EVIDENCE_OFFLOAD_ENV, offload)):
         if value is None:
             monkeypatch.delenv(name, raising=False)
         else:
             monkeypatch.setenv(name, value)
-    assert gc_module.scene_workspace_retirement_enabled() is enabled
-    monkeypatch.setenv(gc_module.SCENE_WORKSPACE_RETIREMENT_ENV, "maybe")
-    with pytest.raises(ControlPlaneStorageGCError, match="environment_bool_invalid"):
-        gc_module.scene_workspace_retirement_enabled()
+    assert gc_module.scene_workspace_retirement_setting() == (enabled, alert)
+
+
+def test_an_invalid_retirement_setting_only_plans_and_alerts_without_aborting(tmp_path) -> None:
+    scene, common = _scene_tick(tmp_path)
+    alert = "scene_workspace_retirement_setting_invalid"
+
+    report = run_storage_gc(**common, apply=True, ack=RUN_ACK, scene_workspace_retirement_enabled=False,
+                            scene_workspace_retirement_alert=alert)
+
+    assert report["alerts"] == [alert] and "phase_errors" not in report
+    phase = report["scene_workspaces"]
+    assert (phase["status"], phase["candidate_count"], phase["alerts"]) == ("dry_run", 1, [alert])
+    assert scene.is_dir()
+
+
+def test_the_command_line_reads_the_opt_in_from_the_environment(tmp_path, monkeypatch, capsys) -> None:
+    seen: list[dict] = []
+
+    def run(**kwargs):
+        seen.append(kwargs)
+        return {"schema_version": gc_module.RUN_SCHEMA_VERSION, "report_digest": "sha256:0"}
+
+    monkeypatch.setattr(gc_module, "run_storage_gc", run)
+    monkeypatch.setenv(gc_module.EVIDENCE_OFFLOAD_ENV, "1")
+    monkeypatch.setenv(gc_module.SCENE_WORKSPACE_RETIREMENT_ENV, "sometimes")
+
+    assert gc_main(["run", "--pins-root", str(tmp_path / "pins")]) == 0
+
+    assert (seen[0]["scene_workspace_retirement_enabled"], seen[0]["scene_workspace_retirement_alert"]) == (
+        False, "scene_workspace_retirement_setting_invalid")
+    assert "scene_workspace_retirement_setting_invalid" in capsys.readouterr().err
 
 
 def test_a_failing_phase_does_not_abort_the_tick(tmp_path, monkeypatch, capsys) -> None:

@@ -457,6 +457,10 @@ def test_storage_gc_timer_pair_is_deployed_armed_and_scoped_by_storage_class() -
         assert not any(
             row.startswith(f"Environment={opt_in}=") for row in service.splitlines()
         ), "offload and scene retirement stay operator opt-ins from the environment file"
+    # Retirement is its own owner decision: the example environment documents it but leaves it off.
+    example = text("deploy/systemd/pipeline-control-plane.env.example")
+    assert f"# {SCENE_WORKSPACE_RETIREMENT_ENV}=1" in example
+    assert not any(row.startswith(f"{SCENE_WORKSPACE_RETIREMENT_ENV}=") for row in example.splitlines())
     assert "Unit=blueprint-control-plane-storage-gc.service" in timer
     assert "OnUnitInactiveSec=" in timer and "Persistent=true" in timer
 

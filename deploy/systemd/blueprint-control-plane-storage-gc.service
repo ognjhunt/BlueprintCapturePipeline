@@ -78,9 +78,10 @@ Environment=BLUEPRINT_CONTROL_PLANE_GC_WORKSPACE_BUNDLE_ROOTS=/var/lib/blueprint
 Environment=BLUEPRINT_CONTROL_PLANE_GC_WORKSPACE_BUNDLE_MINIMUM_AGE_SECONDS=21600
 # Website scene working copies are retired once every file verifies in Firebase Storage or is
 # archived to the artifact store behind a replayable receipt, and no ledger lease, pin, queue,
-# live process or open scene intent can still read them. Like offload, retirement applies only
-# with BLUEPRINT_CONTROL_PLANE_SCENE_WORKSPACE_RETIREMENT=1 (or, unset, the offload opt-in) in the
-# operator environment file, which also supplies GOOGLE_APPLICATION_CREDENTIALS for the listing.
+# live process or open scene intent can still read them. Retirement is its own owner decision:
+# it applies only with BLUEPRINT_CONTROL_PLANE_SCENE_WORKSPACE_RETIREMENT=1 in the operator
+# environment file (never following the offload opt-in), and otherwise only plans. That file also
+# supplies GOOGLE_APPLICATION_CREDENTIALS for the Firebase Storage listing.
 Environment=BLUEPRINT_CONTROL_PLANE_GC_SCENE_WORKSPACE_ROOTS=/var/lib/blueprint/pubsub-handoffs
 Environment=BLUEPRINT_CONTROL_PLANE_GC_SCENE_INTENT_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-intents
 Environment=BLUEPRINT_CONTROL_PLANE_STORAGE_PINS_ROOT=/var/lib/blueprint/pipeline-control-plane/storage-pins

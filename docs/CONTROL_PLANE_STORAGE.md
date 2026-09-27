@@ -422,11 +422,13 @@ left for its next delivery (`capture_retired_retryable`).
 `BLUEPRINT_CONTROL_PLANE_GC_SCENE_INTENT_ROOT`; registrations from
 `BLUEPRINT_WEBSITE_SCENE_BINDING_ROOT`, else `<intent root parent>/website-source-bindings`)
 and reports them under `scene_workspaces` (candidates, retired count and bytes,
-`retained_counts` by reason). It retires at most 20 per tick, and only with
-`BLUEPRINT_CONTROL_PLANE_SCENE_WORKSPACE_RETIREMENT=1` in the operator environment
-file; when that variable is unset it follows `BLUEPRINT_CONTROL_PLANE_EVIDENCE_OFFLOAD`,
-since either opt-in makes the artifact store the system of record for bytes the host
-stops keeping. The unit sets neither. The operator door offers the same operation by
+`retained_counts` by reason). It attempts at most 20 retirements per tick (attempts,
+not successes, since each can publish a large archive), and only with its own explicit
+opt-in, `BLUEPRINT_CONTROL_PLANE_SCENE_WORKSPACE_RETIREMENT=1` in the operator
+environment file: unset, each tick only plans. It never follows
+`BLUEPRINT_CONTROL_PLANE_EVIDENCE_OFFLOAD`. Any other value disables it and puts
+`scene_workspace_retirement_setting_invalid` in the report's `alerts` without aborting
+the tick. Neither the unit nor the example environment enables it. The operator door offers the same operation by
 hand (`retire-scene-workspace`, see `docs/OPERATOR_DOOR.md`), plan first and
 `--apply` second. Every phase of the tick is isolated: a phase that raises is recorded
 as `{"status": "error", "error": "<type>"}` under its key, later phases still run, and

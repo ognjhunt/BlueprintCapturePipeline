@@ -19,7 +19,8 @@ acknowledgement:
 * **Scene workspaces** (``scene_workspace`` class) are retired by
   ``website_scene_workspace_retention`` once every file verifies in Firebase
   Storage or is archived to the artifact store behind a replayable receipt, and
-  nothing can still need them; like offload it stays a dry run until enabled.
+  nothing can still need them. It only plans until its own explicit opt-in,
+  ``BLUEPRINT_CONTROL_PLANE_SCENE_WORKSPACE_RETIREMENT=1``, enables it.
 
 Each phase runs isolated: an exception is recorded under its report key and the
 remaining phases still run. Evidence-hot roots, release worktrees, and runtime
@@ -120,6 +121,7 @@ SCENE_WORKSPACE_ROOTS_ENV = "BLUEPRINT_CONTROL_PLANE_GC_SCENE_WORKSPACE_ROOTS"
 SCENE_INTENT_ROOT_ENV = "BLUEPRINT_CONTROL_PLANE_GC_SCENE_INTENT_ROOT"
 SCENE_BINDING_ROOT_ENV = "BLUEPRINT_WEBSITE_SCENE_BINDING_ROOT"
 SCENE_WORKSPACE_RETIREMENT_ENV = "BLUEPRINT_CONTROL_PLANE_SCENE_WORKSPACE_RETIREMENT"
+SCENE_WORKSPACE_RETIREMENT_INVALID = "scene_workspace_retirement_setting_invalid"
 DEFAULT_MAX_SCENE_RETIREMENTS = 20
 _MAX_SCENE_RESULTS = 50
 _TRUE = frozenset({"1", "true", "yes"})
@@ -1059,23 +1061,22 @@ def apply_workspace_bundle_manifest(
     return result
 
 
-def scene_workspace_retirement_enabled(environ: Mapping[str, str] = os.environ) -> bool:
-    """The scene retirement opt-in; unset, it follows the evidence offload opt-in.
+def scene_workspace_retirement_setting(environ: Mapping[str, str] = os.environ) -> tuple[bool, str | None]:
+    """Whether scene workspace retirement applies, and an alert when its setting is invalid.
 
-    Either opt-in makes the artifact store the system of record for bytes the host
-    no longer keeps, so one decision covers both unless the operator splits them.
+    Retirement is its own owner decision: only
+    ``BLUEPRINT_CONTROL_PLANE_SCENE_WORKSPACE_RETIREMENT=1`` (or ``true``/``yes``)
+    enables it, and unset it only plans. It never follows the evidence offload
+    opt-in. Any other value disables it and is reported as an alert; it never
+    aborts the tick.
     """
 
     raw = str(environ.get(SCENE_WORKSPACE_RETIREMENT_ENV) or "").strip().lower()
     if raw in _TRUE:
-        return True
-    if raw in _FALSE:
-        return False
-    if raw:
-        raise ControlPlaneStorageGCError(
-            f"control_plane_storage_gc_environment_bool_invalid:{SCENE_WORKSPACE_RETIREMENT_ENV}"
-        )
-    return str(environ.get(EVIDENCE_OFFLOAD_ENV) or "").strip().lower() in _TRUE
+        return True, None
+    if not raw or raw in _FALSE:
+        return False, None
+    return False, SCENE_WORKSPACE_RETIREMENT_INVALID
 
 
 def retire_scene_workspaces(
@@ -1220,6 +1221,7 @@ def run_storage_gc(
     scene_intent_root: str | Path | None = None,
     scene_binding_root: str | Path | None = None,
     scene_workspace_retirement_enabled: bool = False,
+    scene_workspace_retirement_alert: str | None = None,
     scene_cloud_factory: Callable[[], Any] | None = None,
     scene_stream_publisher: Callable[..., Any] | None = None,
     scene_process_checker: Callable[[Path], bool] | None = None,
@@ -1244,6 +1246,8 @@ def run_storage_gc(
         "apply": apply,
         "skipped_roots": [],
     }
+    if scene_workspace_retirement_alert:
+        report["alerts"] = [scene_workspace_retirement_alert]
     queue_present, _absent_queue_roots = _existing(queue_roots)
     if queue_present:
         def stranded_phase() -> Any:
@@ -1430,6 +1434,8 @@ def run_storage_gc(
             )
 
         _isolated(report, "scene_workspaces", scene_phase)
+        if scene_workspace_retirement_alert and isinstance(report.get("scene_workspaces"), dict):
+            report["scene_workspaces"]["alerts"] = [scene_workspace_retirement_alert]
     report["report_digest"] = canonical_digest(report, digest_field="report_digest")
     return report
 
@@ -1507,6 +1513,9 @@ def _run_main(argv: list[str]) -> int:
     pins_root = args.pins_root
     if not pins_root:
         raise ControlPlaneStorageGCError("control_plane_storage_gc_pins_root_missing")
+    retirement_enabled, retirement_alert = scene_workspace_retirement_setting()
+    if retirement_alert:
+        print(f"storage_gc_alert:{retirement_alert}", file=sys.stderr)
     report = run_storage_gc(
         content_store_roots=args.content_store_root or _split_env(CONTENT_STORE_ROOTS_ENV),
         derived_roots=args.derived_root or _split_env(DERIVED_ROOTS_ENV),
@@ -1535,7 +1544,8 @@ def _run_main(argv: list[str]) -> int:
         scene_workspace_roots=args.scene_workspace_root or _split_env(SCENE_WORKSPACE_ROOTS_ENV),
         scene_intent_root=args.scene_intent_root,
         scene_binding_root=str(os.getenv(SCENE_BINDING_ROOT_ENV) or "").strip() or None,
-        scene_workspace_retirement_enabled=scene_workspace_retirement_enabled(),
+        scene_workspace_retirement_enabled=retirement_enabled,
+        scene_workspace_retirement_alert=retirement_alert,
         classifier=require_storage_class,
     )
     if args.report_out:
@@ -1586,7 +1596,7 @@ __all__ = [
     "main",
     "retire_scene_workspaces",
     "run_storage_gc",
-    "scene_workspace_retirement_enabled",
+    "scene_workspace_retirement_setting",
 ]
 
 
