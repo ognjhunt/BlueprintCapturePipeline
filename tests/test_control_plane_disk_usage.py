@@ -2,9 +2,12 @@
 #   src/blueprint_pipeline/control_plane_disk_usage.py
 from __future__ import annotations
 
+import fnmatch
 import os
+from pathlib import PurePosixPath
 
-from blueprint_pipeline.control_plane_disk_usage import tree_usage
+from blueprint_pipeline.control_plane_disk_usage import survey_usage, tree_usage
+from blueprint_pipeline.control_plane_storage_roots import classify_path
 
 
 def _allocated(path):
@@ -48,3 +51,227 @@ def test_unreadable_entries_are_counted_not_raised(tmp_path, monkeypatch):
 
     monkeypatch.setattr("blueprint_pipeline.control_plane_disk_usage.os.scandir", failing_scandir)
     assert tree_usage(root).unreadable == 1
+
+
+def _classifier(table):
+    def classify(path):
+        best = None
+        for root, cls in table.items():
+            if path == root or path.startswith(root + "/"):
+                if best is None or len(root) > len(best[0]):
+                    best = (root, cls)
+        return None if best is None else type("Root", (), {"path": best[0], "storage_class": best[1]})()
+    return classify
+
+
+def _statvfs(free_blocks=5 * 10**5):
+    return lambda _mount: os.statvfs_result((4096, 4096, 10**6, free_blocks, free_blocks, 0, 0, 0, 0, 255))
+
+
+def test_hardlinks_count_once_and_are_attributed_to_the_first_path(tmp_path):
+    base = tmp_path / "var/lib/blueprint"
+    store = base / "task-evaluation-inputs/prepared-references/content-addressed/sha256"
+    job = base / "task-evaluation-inputs/prepared-references/prep-1"
+    store.mkdir(parents=True)
+    job.mkdir(parents=True)
+    (store / ("a" * 64)).write_bytes(b"z" * 300_000)
+    os.link(store / ("a" * 64), job / "ref.bin")
+    survey = survey_usage([str(base)], aliases={}, prefixes=(str(base),),
+        classify=_classifier({str(base / "task-evaluation-inputs/prepared-references"): "cache"}),
+        statvfs=lambda _m: os.statvfs_result((4096, 4096, 10**6, 5 * 10**5, 5 * 10**5, 0, 0, 0, 0, 255)))
+    cache = next(row for row in survey["by_class"] if row["storage_class"] == "cache")
+    assert 300_000 <= cache["allocated_bytes"] < 400_000
+    assert survey["hardlinks"]["duplicate_names_skipped"] == 1
+    owners = {row["owner"] for row in survey["top_owners"]}
+    assert "store:prepared-references" in owners
+
+
+def test_unclassified_roots_are_reported(tmp_path):
+    base = tmp_path / "var/lib/blueprint"
+    (base / "mystery").mkdir(parents=True)
+    (base / "mystery" / "blob").write_bytes(b"m" * 200_000)
+    survey = survey_usage([str(base)], aliases={}, prefixes=(str(base),), classify=_classifier({}),
+        statvfs=lambda _m: os.statvfs_result((4096, 4096, 10**6, 5 * 10**5, 5 * 10**5, 0, 0, 0, 0, 255)))
+    assert survey["unclassified_roots"][0]["root"] == str(base / "mystery")
+
+
+def test_scene_workspaces_are_owned_by_their_scene(tmp_path):
+    base = tmp_path / "var/lib/blueprint"
+    scene = base / "pubsub-handoffs/bucket/scenes/site-capture-1/captures/c1/raw"
+    scene.mkdir(parents=True)
+    (scene / "video.mov").write_bytes(b"v" * 500_000)
+    survey = survey_usage([str(base)], aliases={}, prefixes=(str(base),),
+        classify=_classifier({str(base / "pubsub-handoffs"): "work"}),
+        statvfs=lambda _m: os.statvfs_result((4096, 4096, 10**6, 5 * 10**5, 5 * 10**5, 0, 0, 0, 0, 255)))
+    assert survey["top_owners"][0]["owner"] == "scene:site-capture-1"
+
+
+def test_volume_paths_are_attributed_through_aliases(tmp_path):
+    volume = tmp_path / "mnt/blueprint-work"
+    (volume / "task-evaluation-launch-runs/run-9").mkdir(parents=True)
+    (volume / "task-evaluation-launch-runs/run-9/episode.bin").write_bytes(b"e" * 100_000)
+    canonical = tmp_path / "var/lib/blueprint"
+    survey = survey_usage([str(volume)], aliases={str(volume): str(canonical)}, prefixes=(str(canonical),),
+        classify=_classifier({str(canonical / "task-evaluation-launch-runs"): "evidence_cold"}),
+        statvfs=lambda _m: os.statvfs_result((4096, 4096, 10**6, 5 * 10**5, 5 * 10**5, 0, 0, 0, 0, 255)))
+    assert survey["top_owners"][0]["owner"] == "run:run-9"
+    assert survey["top_owners"][0]["storage_class"] == "evidence_cold"
+
+
+def test_the_budget_truncates_instead_of_running_forever(tmp_path):
+    base = tmp_path / "var/lib/blueprint"
+    for index in range(50):
+        (base / f"d{index}").mkdir(parents=True)
+    survey = survey_usage([str(base)], aliases={}, prefixes=(str(base),), classify=_classifier({}),
+        max_entries=10, statvfs=lambda _m: os.statvfs_result((4096, 4096, 10**6, 5 * 10**5, 5 * 10**5, 0, 0, 0, 0, 255)))
+    assert survey["status"] == "truncated"
+
+
+def test_survey_attributes_every_byte_to_a_class_and_owner(tmp_path):
+    base = tmp_path / "var/lib/blueprint"
+    (base / "pubsub-handoffs/b/scenes/s/captures/c").mkdir(parents=True)
+    (base / "pubsub-handoffs/b/scenes/s/captures/c/f").write_bytes(b"x" * 100_000)
+    survey = survey_usage([str(base)], aliases={}, prefixes=(str(base),),
+        classify=_classifier({str(base / "pubsub-handoffs"): "work"}),
+        statvfs=lambda _m: os.statvfs_result((4096, 4096, 10**6, 10**6 - 30, 10**6 - 30, 0, 0, 0, 0, 255)))
+    total = sum(row["allocated_bytes"] for row in survey["by_class"])
+    assert total == survey["mounts"][0]["surveyed_bytes"]
+    assert all(row["owner"] for row in survey["top_owners"])
+
+
+def test_shared_bytes_go_to_the_smallest_name_whatever_the_traversal_order(tmp_path):
+    # ``a/g`` is visited before ``a/deep/f`` (a directory's files come before its
+    # subdirectories), yet ``a/deep/f`` is the smaller path, so the bytes move to it.
+    base = tmp_path / "var/lib/blueprint"
+    (base / "a/deep").mkdir(parents=True)
+    (base / "a/g").write_bytes(b"g" * 40_000)
+    os.link(base / "a/g", base / "a/deep/f")
+    survey = survey_usage([str(base)], aliases={}, prefixes=(str(base),),
+                          classify=_classifier({str(base / "a"): "cache"}), statvfs=_statvfs())
+    owners = {row["owner"]: row["allocated_bytes"] for row in survey["top_owners"]}
+    assert owners["a/deep"] >= 40_000 > owners["a"]
+    assert survey["hardlinks"] == {"shared_inodes": 1, "shared_bytes": owners["a/deep"] - _allocated(base / "a/deep"),
+                                   "duplicate_names_skipped": 1}
+
+
+def test_a_store_name_found_after_a_job_name_takes_the_shared_bytes(tmp_path):
+    base = tmp_path / "var/lib/blueprint"
+    references = base / "prepared-references"
+    (references / "a-job").mkdir(parents=True)
+    (references / "content-addressed/sha256").mkdir(parents=True)
+    (references / "a-job/ref.bin").write_bytes(b"r" * 40_000)
+    os.link(references / "a-job/ref.bin", references / "content-addressed/sha256" / ("b" * 64))
+    survey = survey_usage([str(base)], aliases={}, prefixes=(str(base),),
+                          classify=_classifier({str(references): "cache"}), statvfs=_statvfs())
+    owners = {row["owner"]: row["allocated_bytes"] for row in survey["top_owners"]}
+    assert owners["store:prepared-references"] >= 40_000 > owners["prepared-references/a-job"]
+
+
+def test_pattern_roots_resolve_to_the_concrete_scene_directory(tmp_path):
+    # Storage-root rows may carry ``*`` segments (one path component each); the
+    # survey reports the concrete directory the pattern matched, never the pattern.
+    base = tmp_path / "var/lib/blueprint"
+    pattern = f"{base}/pubsub-handoffs/*/scenes/*"
+    marker_pattern = f"{base}/pubsub-handoffs/*/scenes/*.retired.v1.json"
+    rows = {str(base / "pubsub-handoffs"): "work", pattern: "scene_workspace", marker_pattern: "evidence_hot"}
+
+    def classify(path):
+        candidate = PurePosixPath(path).parts
+        best = None
+        for root, cls in rows.items():
+            segments = PurePosixPath(root).parts
+            if len(segments) <= len(candidate) and all(
+                fnmatch.fnmatchcase(part, segment) for part, segment in zip(candidate, segments)
+            ):
+                rank = (len(segments), len(root.replace("*", "")))
+                if best is None or rank > best[0]:
+                    best = (rank, root, cls)
+        return None if best is None else type("Root", (), {"path": best[1], "storage_class": best[2]})()
+
+    scene = base / "pubsub-handoffs/bucket/scenes/site-capture-1"
+    (scene / "captures").mkdir(parents=True)
+    (scene / "captures/video.mov").write_bytes(b"v" * 60_000)
+    (base / "pubsub-handoffs/bucket/scenes/site-capture-0.retired.v1.json").write_bytes(b"{}")
+    survey = survey_usage([str(base)], aliases={}, prefixes=(str(base),), classify=classify, statvfs=_statvfs())
+
+    roots = {row["root"]: row["storage_class"] for row in survey["top_roots"]}
+    assert roots[str(scene)] == "scene_workspace"
+    assert roots[str(scene.parent / "site-capture-0.retired.v1.json")] == "evidence_hot"
+    assert not any("*" in row["root"] for row in survey["top_roots"] + survey["top_owners"])
+    top = survey["top_owners"][0]
+    assert (top["owner"], top["root"], top["storage_class"]) == ("scene:site-capture-1", str(scene), "scene_workspace")
+
+
+def test_mounts_nested_on_one_filesystem_are_walked_once(tmp_path):
+    base = tmp_path / "var/lib/blueprint"
+    (base / "sub").mkdir(parents=True)
+    (base / "sub/f").write_bytes(b"f" * 30_000)
+    common = dict(aliases={}, prefixes=(str(base),), classify=_classifier({}), statvfs=_statvfs())
+    alone = survey_usage([str(base)], **common)
+    nested = survey_usage([str(base / "sub"), str(base)], **common)
+    assert [row["mount"] for row in nested["mounts"]] == [str(base)]
+    assert nested["mounts"][0]["surveyed_bytes"] == alone["mounts"][0]["surveyed_bytes"]
+    assert nested["by_class"] == alone["by_class"]
+
+
+def test_mount_points_listed_in_mountinfo_are_skipped(tmp_path):
+    base = tmp_path / "var/lib/blueprint"
+    (base / "kept").mkdir(parents=True)
+    (base / "bound").mkdir()
+    (base / "kept/f").write_bytes(b"k" * 20_000)
+    (base / "bound/f").write_bytes(b"b" * 90_000)
+    mountinfo = tmp_path / "mountinfo"
+    escaped = str(base / "bound").replace(" ", "\\040")
+    mountinfo.write_text(f"36 35 98:0 /bound {escaped} rw,noatime shared:1 - ext4 /dev/vdb rw\n", encoding="utf-8")
+    survey = survey_usage([str(base)], aliases={}, prefixes=(str(base),), classify=_classifier({}),
+                          statvfs=_statvfs(), mountinfo=str(mountinfo))
+    roots = {row["root"] for row in survey["unclassified_roots"]}
+    assert str(base / "kept") in roots and str(base / "bound") not in roots
+    assert survey["mounts"][0]["surveyed_bytes"] < 90_000
+
+
+def test_unreadable_directories_are_counted_and_the_survey_completes(tmp_path, monkeypatch):
+    base = tmp_path / "var/lib/blueprint"
+    (base / "sub").mkdir(parents=True)
+    real_scandir = os.scandir
+
+    def failing_scandir(path):
+        if str(path).endswith("sub"):
+            raise PermissionError("denied")
+        return real_scandir(path)
+
+    monkeypatch.setattr("blueprint_pipeline.control_plane_disk_usage.os.scandir", failing_scandir)
+    survey = survey_usage([str(base)], aliases={}, prefixes=(str(base),), classify=_classifier({}),
+                          statvfs=_statvfs())
+    assert survey["status"] == "complete" and survey["unreadable"] == 1
+
+
+def test_default_table_classification_matches_classify_path(tmp_path):
+    # The production default prunes classification below directories no storage
+    # root can lie under; it must attribute exactly as classify_path does.
+    volume = tmp_path / "vol"
+    files = {
+        "task-evaluation-inputs/prepared-references/content-addressed/sha256/" + "c" * 64: 9_000,
+        "pipeline-control-plane/live_pipeline_control_plane_manifest.json": 3_000,
+        "pipeline-control-plane/new-thing/x.bin": 5_000,
+        "pipeline-control-plane/task-evaluation-launch-runs/run-1/receipt.json": 2_000,
+        "pubsub-handoffs/b/scenes/s/captures/v.mov": 7_000,
+        "mystery/blob": 4_000,
+    }
+    for relative, size in files.items():
+        (volume / relative).parent.mkdir(parents=True, exist_ok=True)
+        (volume / relative).write_bytes(b"d" * size)
+    (volume / "task-evaluation-inputs/prepared-references/prep-1").mkdir()
+    os.link(volume / next(iter(files)), volume / "task-evaluation-inputs/prepared-references/prep-1/ref.bin")
+    common = dict(aliases={str(volume): "/var/lib/blueprint"}, statvfs=_statvfs(),
+                  mountinfo=str(tmp_path / "no-mountinfo"))
+    pruned = survey_usage([str(volume)], **common)
+    exhaustive = survey_usage([str(volume)], classify=classify_path, **common)
+
+    for key in ("mounts", "by_class", "top_roots", "top_owners", "unclassified_roots", "hardlinks"):
+        assert pruned[key] == exhaustive[key], key
+    roots = {row["root"]: row["storage_class"] for row in pruned["top_roots"]}
+    assert roots["/var/lib/blueprint/pipeline-control-plane/live_pipeline_control_plane_manifest.json"] == "evidence_hot"
+    assert roots["/var/lib/blueprint/pipeline-control-plane/new-thing"] == "unclassified"
+    owners = {row["owner"] for row in pruned["top_owners"]}
+    assert {"store:prepared-references", "scene:s", "run:run-1"} <= owners
