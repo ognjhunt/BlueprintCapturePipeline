@@ -439,13 +439,29 @@ AUTO = "website-example-20260920t204229z-activation-auto"
 
 
 def _activation_queue(tmp_path: Path, args: dict) -> Path:
-    """The activation queue, configured as a queue root as it is on the host."""
+    """The activation queue, configured as a queue root as it is on the host.
+
+    With it, the launch queue (a queue root too) and the standing
+    authorization directory, both empty: nothing has been launched.
+    """
 
     root = tmp_path / "task-evaluation-launch-activations"
     (root / "results").mkdir(parents=True, exist_ok=True)
-    args["queue_roots"] = [*args["queue_roots"], root]
+    launches = tmp_path / "task-evaluation-launches"
+    for state in ("pending", "processing", "completed", "blocked"):
+        (launches / state).mkdir(parents=True, exist_ok=True)
+    (tmp_path / "standing-authorizations").mkdir(exist_ok=True)
+    args["queue_roots"] = [*args["queue_roots"], root, launches]
     args["activation_queue_root"] = root
+    args["launch_queue_root"] = launches
+    args["standing_authorization_dir"] = tmp_path / "standing-authorizations"
     return root
+
+
+def _profile_id(owner: str) -> str:
+    """The profile a profile-authority activation published, as its result names it."""
+
+    return "profile-" + hashlib.sha256(owner.encode()).hexdigest()[:16]
 
 
 def _activation_result(queue: Path, owner: str, *, status: str = "profile_authority_materialized_no_execution",
@@ -463,6 +479,8 @@ def _activation_result(queue: Path, owner: str, *, status: str = "profile_author
 
     value = {"schema_version": "task_evaluation_launch_activation_result.v1", "status": status,
              "activation_id": owner, "blockers": [], "provider_mutation_performed": False, "result_digest": ""}
+    if status == "profile_authority_materialized_no_execution":
+        value["profile_id"] = _profile_id(owner)
     value["result_digest"] = canonical_digest(value, digest_field="result_digest")
     request_digest = "sha256:" + hashlib.sha256(owner.encode()).hexdigest()
     path = queue / "results" / _queue_filename(activation_id=owner, request_digest=request_digest)
@@ -626,6 +644,149 @@ def test_a_standing_authorization_still_in_force_keeps_an_unlaunched_activation_
         "no_expiry": "activation_envelope_invalid", "envelope_missing": "activation_envelope_missing",
         "envelope_tampered": "activation_envelope_invalid", "other_activation": "activation_envelope_invalid"}[reason]
     assert result["candidates"] == [] and _states(args)[("activation", "act-u")] == "live"
+
+
+def _consumed(args: dict, profile_id: str, launch_id: str) -> Path:
+    """The record launch admission leaves when it consumes a standing authorization."""
+
+    record = Path(args["standing_authorization_dir"]) / "consumed" / profile_id / f"{launch_id}.json"
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.write_text(json.dumps({"schema_version": "task_evaluation_standing_launch_authorization.v1",
+                                  "profile_id": profile_id, "launch_id": launch_id, "max_spend_usd": 5.0}),
+                      encoding="utf-8")
+    return record
+
+
+def _launch_row(args: dict, state: str, launch_id: str, **fields) -> Path:
+    """A launch request row, as the launch queue names and keeps it, in ``state``."""
+
+    row = Path(args["launch_queue_root"]) / state / f"{launch_id}-{'0' * 16}.json"
+    row.parent.mkdir(parents=True, exist_ok=True)
+    row.write_text(json.dumps({"launch_id": launch_id, "run_id": launch_id, **fields}), encoding="utf-8")
+    return row
+
+
+@pytest.mark.parametrize("evidence", ["consumed", "completed_row"])
+def test_webapp_launched_activation_with_caller_chosen_id_is_kept(tmp_path, evidence) -> None:
+    """Spec re-review of 2026-09-27: a launch id the caller chooses is invisible to any name search.
+
+    The WebApp launches a published profile under its own launch id, and the run
+    lands at ``<launch state root>/<launch id>``. Only positive evidence of no
+    launch counts: here the consumed standing authorization, or the launch row.
+    """
+
+    args = _args(tmp_path)
+    queue = _activation_queue(tmp_path, args)
+    _activation_result(queue, "act-webapp")
+    _registry_run(tmp_path / "evidence", "launch-001", idle=DAY)
+    _pin(args, "activation", "act-webapp", age=LAPSE + DAY)
+    profile = _profile_id("act-webapp")
+    if evidence == "consumed":
+        _consumed(args, profile, "launch-001")
+    else:
+        _launch_row(args, "completed", "launch-001", launch_profile_id=profile)
+
+    result = reconcile_terminal_cache_pins(**args, apply=True, extended_proofs_enabled=True)
+
+    assert _kept(result)[("activation", "act-webapp")] == {
+        "consumed": "activation_authorization_consumed", "completed_row": "activation_launch_requested"}[evidence]
+    assert result["candidates"] == [] and _states(args)[("activation", "act-webapp")] == "live"
+
+
+@pytest.mark.parametrize("reason", ["unconfigured", "missing", "linked", "consumed_linked", "consumed_not_a_directory"])
+def test_unconfigured_or_unreadable_authorization_dir_keeps_the_pin(tmp_path, reason) -> None:
+    """Absence of a consumed record proves nothing unless the directory launch admission records into is read."""
+
+    args = _args(tmp_path)
+    queue = _activation_queue(tmp_path, args)
+    _activation_result(queue, "act-u")
+    _pin(args, "activation", "act-u", age=LAPSE + DAY)
+    authorizations = Path(args["standing_authorization_dir"])
+    consumed = authorizations / "consumed" / _profile_id("act-u")
+    if reason == "unconfigured":
+        args["standing_authorization_dir"] = None
+    if reason == "missing":
+        authorizations.rmdir()
+    if reason == "linked":
+        authorizations.rename(tmp_path / "moved-authorizations")
+        authorizations.symlink_to(tmp_path / "moved-authorizations")
+    if reason == "consumed_linked":
+        (tmp_path / "elsewhere").mkdir()
+        consumed.parent.mkdir()
+        consumed.symlink_to(tmp_path / "elsewhere")
+    if reason == "consumed_not_a_directory":
+        consumed.parent.mkdir()
+        consumed.write_text("{}", encoding="utf-8")
+
+    result = reconcile_terminal_cache_pins(**args, apply=True, extended_proofs_enabled=True)
+
+    assert _kept(result)[("activation", "act-u")] == "standing_authorization_unavailable"
+    assert result["candidates"] == [] and _states(args)[("activation", "act-u")] == "live"
+
+
+@pytest.mark.parametrize("state", ["pending", "processing", "completed", "blocked", "stranded", "failed", "results"])
+@pytest.mark.parametrize("names", ["activation", "profile"])
+def test_launch_queue_row_in_any_state_keeps_the_pin(tmp_path, state, names) -> None:
+    """A launch requested for the activation, in any state the launch queue keeps, is evidence that it launched."""
+
+    args = _args(tmp_path)
+    queue = _activation_queue(tmp_path, args)
+    _activation_result(queue, "act-u")
+    _pin(args, "activation", "act-u", age=LAPSE + DAY)
+    named = {"activation": {"activation_id": "act-u"}, "profile": {"launch_profile_id": _profile_id("act-u")}}[names]
+    _launch_row(args, state, "launch-7", **named)
+
+    result = reconcile_terminal_cache_pins(**args, apply=True, extended_proofs_enabled=True)
+
+    assert _kept(result)[("activation", "act-u")] == "activation_launch_requested"
+    assert result["candidates"] == [] and _states(args)[("activation", "act-u")] == "live"
+
+
+@pytest.mark.parametrize("reason", ["unconfigured", "linked_row", "linked_state", "oversized_row"])
+def test_an_unreadable_launch_queue_keeps_the_pin(tmp_path, monkeypatch, reason) -> None:
+    """Absence of a launch row proves nothing unless every row of the launch queue was read."""
+
+    from blueprint_pipeline import control_plane_storage_references as references
+
+    args = _args(tmp_path)
+    queue = _activation_queue(tmp_path, args)
+    _activation_result(queue, "act-u")
+    _pin(args, "activation", "act-u", age=LAPSE + DAY)
+    launches = Path(args["launch_queue_root"])
+    if reason == "unconfigured":
+        args["launch_queue_root"] = None
+    if reason == "linked_row":
+        (launches / "completed" / f"launch-7-{'0' * 16}.json").symlink_to(_launch_row(args, "blocked", "launch-8"))
+    if reason == "linked_state":
+        (tmp_path / "elsewhere").mkdir()
+        (launches / "archived").symlink_to(tmp_path / "elsewhere")
+    if reason == "oversized_row":
+        _launch_row(args, "completed", "launch-9", note="x" * 64)
+        monkeypatch.setattr(references, "MAX_QUEUE_MESSAGE_BYTES", 32)
+
+    result = reconcile_terminal_cache_pins(**args, apply=True, extended_proofs_enabled=True)
+
+    assert _kept(result)[("activation", "act-u")] == {
+        "unconfigured": "launch_queue_unconfigured"}.get(reason, "launch_queue_unavailable")
+    assert result["candidates"] == [] and _states(args)[("activation", "act-u")] == "live"
+
+
+def test_truly_unlaunched_activation_still_releases_when_enabled(tmp_path) -> None:
+    """No consumed record and no launch row naming it: the activation never launched, and its pin goes."""
+
+    args = _args(tmp_path)
+    queue = _activation_queue(tmp_path, args)
+    _activation_result(queue, "act-u")
+    _pin(args, "activation", "act-u", age=LAPSE + DAY)
+    # Other activations' launches and consumed authorizations say nothing about this one.
+    _consumed(args, _profile_id("act-other"), "launch-1")
+    _launch_row(args, "completed", "launch-1", launch_profile_id=_profile_id("act-other"), activation_id="act-other")
+
+    result = reconcile_terminal_cache_pins(**args, apply=True, extended_proofs_enabled=True)
+
+    assert [(row["owner_id"], row["proof"]["kind"], row["proof"]["profile_id"]) for row in result["candidates"]] == [
+        ("act-u", "activation_expired_unlaunched", _profile_id("act-u"))]
+    assert _states(args)[("activation", "act-u")] == "released"
 
 
 @pytest.mark.parametrize(("suffix", "run", "reason"), [
@@ -976,7 +1137,8 @@ def test_a_tick_passes_the_opt_in_and_the_activation_queue_to_the_pin_pass(tmp_p
     _pin(args, "preparation", "prep-stale", age=LAPSE + DAY)
     common = {"content_store_roots": [], "derived_roots": [], "queue_roots": args["queue_roots"],
               "pins_root": args["pins_root"], "evidence_roots": args["evidence_roots"], "now": lambda: NOW,
-              "classifier": _classifier, "apply": True, "ack": RUN_ACK, "running_commit": RUNNING}
+              "classifier": _classifier, "apply": True, "ack": RUN_ACK, "running_commit": RUNNING,
+              "standing_authorization_dir": args["standing_authorization_dir"]}
     alert = "extended_pin_proofs_setting_invalid"
 
     listed = run_storage_gc(**common, extended_pin_proofs_alert=alert)
@@ -996,6 +1158,15 @@ def test_a_tick_passes_the_opt_in_and_the_activation_queue_to_the_pin_pass(tmp_p
     assert set(_states(args).values()) == {"released"}
 
 
+def _without_env(name: str, call):
+    saved = os.environ.pop(name, None)
+    try:
+        return call()
+    finally:
+        if saved is not None:
+            os.environ[name] = saved
+
+
 def test_extended_pin_proofs_stay_an_operator_opt_in() -> None:
     deploy = Path(__file__).resolve().parents[1] / "deploy" / "systemd"
     unit = (deploy / "blueprint-control-plane-storage-gc.service").read_text(encoding="utf-8")
@@ -1012,3 +1183,22 @@ def test_extended_pin_proofs_stay_an_operator_opt_in() -> None:
         "/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-activations")
     assert terminal_pins.preparation_queue_root_of(queue_roots.split(":")) == Path(
         "/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-preparations")
+    assert terminal_pins.launch_queue_root_of(queue_roots.split(":")) == Path(
+        "/var/lib/blueprint/pipeline-control-plane/task-evaluation-launches")
+    # The standing authorization directory is the one launch admission resolves: the dispatcher's
+    # unit sets no directory, so it derives one beside its launch state root.
+    from blueprint_pipeline.task_evaluation_launch_dispatcher import standing_authorization_directory
+    from blueprint_pipeline.task_evaluation_standing_launch_authorization import STANDING_AUTHORIZATION_DIR_ENV
+
+    dispatcher = (deploy / "blueprint-task-evaluation-launch-dispatcher.service").read_text(encoding="utf-8")
+    assert f"Environment={STANDING_AUTHORIZATION_DIR_ENV}=" not in dispatcher
+    state_root = next(line.split("=", 2)[2] for line in dispatcher.splitlines()
+                      if line.startswith("Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_STATE_ROOT="))
+    configured = next(line.split("=", 2)[2] for line in unit.splitlines()
+                      if line.startswith(f"Environment={STANDING_AUTHORIZATION_DIR_ENV}="))
+    assert Path(configured).resolve() == Path(_without_env(STANDING_AUTHORIZATION_DIR_ENV,
+                                                           lambda: standing_authorization_directory(state_root)))
+    # The GC only reads it: nothing in the unit makes it writable or hides it.
+    assert not any(configured.startswith(path.lstrip("-")) for line in unit.splitlines()
+                   if line.startswith(("ReadWritePaths=", "InaccessiblePaths=", "TemporaryFileSystem="))
+                   for path in line.split("=", 1)[1].split())

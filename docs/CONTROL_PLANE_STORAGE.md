@@ -543,10 +543,23 @@ One tick runs nine phases in order:
    `activation_expired_unlaunched` (no run directory or pointer under
    any of its evidence names in any evidence root, the activation queue's one
    sealed result for it is in a prepared status and older than 604,800 + 86,400
-   seconds, since a shared mutation window lives at most a week, and the
-   standing authorization its prepared envelope dates expired more than a day
-   ago, since launch admission checks that authorization and its request sets
-   it with no maximum), and `unconsumed_stale_pin` (a preparation or compilation
+   seconds, since a shared mutation window lives at most a week, the standing
+   authorization its prepared envelope dates expired more than a day ago, since
+   launch admission checks that authorization and its request sets it with no
+   maximum, and there is positive evidence it never launched: a launch id the
+   WebApp or an operator chooses names no directory a search could guess, so
+   no record may exist under
+   `<standing authorization dir>/consumed/<profile id>/` (the directory launch
+   admission records into, `BLUEPRINT_TASK_EVALUATION_STANDING_AUTHORIZATION_DIR`
+   in the unit) and no row of the launch queue `task-evaluation-launches`, in
+   any state, may name the activation or its profile; for a profile without
+   the one-use standing authorization requirement an operator's per-launch
+   handshake can still admit a launch after the authorization lapsed, and if
+   that happens after the pin was released the launch fails its input
+   verification rather than using missing inputs, which re-preparing recovers;
+   the proof accepts that risk only after both the window and the
+   authorization lapsed and neither record exists), and `unconsumed_stale_pin`
+   (a preparation or compilation
    pin no live pin depends on, created more than eight days ago, naming only
    `cache` paths, whose preparation no activation can take any more: its one
    sealed envelope in the preparation queue sits in `materialized/` bound to a
@@ -626,8 +639,10 @@ so each manifest (and its receipt) also records `walked_file_count` and
   `activation_result_missing`, `activation_result_ambiguous`,
   `activation_result_invalid`, `activation_result_not_prepared`,
   `activation_result_not_stale`, `activation_envelope_missing`,
-  `activation_envelope_invalid`, `activation_authorization_not_lapsed`) and the
-  preparation reasons (`preparation_queue_unconfigured`,
+  `activation_envelope_invalid`, `activation_authorization_not_lapsed`,
+  `activation_authorization_consumed`, `standing_authorization_unavailable`,
+  `activation_launch_requested`, `launch_queue_unconfigured`,
+  `launch_queue_unavailable`) and the preparation reasons (`preparation_queue_unconfigured`,
   `preparation_queue_unavailable`, `running_commit_unknown`,
   `preparation_envelope_missing`, `preparation_envelope_ambiguous`,
   `preparation_envelope_invalid`, `preparation_release_current`). A pin a

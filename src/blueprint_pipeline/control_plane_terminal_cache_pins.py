@@ -23,8 +23,17 @@ candidates are listed with ``"enabled": false``:
   week and a day ago, and whose standing authorization expired more than a
   day ago. The mutation window (a week at most) has lapsed, and launch
   admission checks that authorization, which the activation request dates
-  with no maximum; past both, it can never start. Without an activation queue
-  root this proof is off.
+  with no maximum. A launch id the WebApp or an operator chooses names no
+  directory a search could guess, so the proof also needs positive evidence:
+  no record under ``<standing authorization dir>/consumed/<profile id>/`` and
+  no launch queue row, in any state, naming the activation or its profile.
+  Without the activation queue, the launch queue or the standing authorization
+  directory this proof is off. For a profile without the one-use standing
+  authorization requirement, an operator's per-launch handshake can still admit
+  a launch after the authorization lapsed; if that happens after the pin was
+  released, the launch fails its input verification rather than using missing
+  inputs, which re-preparing recovers. The proof accepts that risk only after
+  both the window and the authorization lapsed and neither record exists.
 * ``unconsumed_stale_pin``: a preparation or compilation pin that no live pin
   depends on, created more than a week and a day ago, whose paths are all
   ``cache``, and whose preparation no activation can take any more: its sealed
@@ -79,6 +88,10 @@ LAPSE_GRACE_SECONDS = 86_400
 LAPSE_SECONDS = MAXIMUM_MUTATION_WINDOW_SECONDS + LAPSE_GRACE_SECONDS
 #: The queue root whose ``results`` the activation worker seals; it is also a queue root.
 ACTIVATION_QUEUE_NAME = "task-evaluation-launch-activations"
+#: The queue root launch requests are staged in, whoever chose their launch ids.
+LAUNCH_QUEUE_NAME = "task-evaluation-launches"
+#: An identifier that is safe as one path component.
+_IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,191}")
 #: The queue root whose ``materialized/`` envelopes the activation worker takes preparations from.
 PREPARATION_QUEUE_NAME = "task-evaluation-launch-preparations"
 #: ``task_evaluation_launch_preparation_queue.ENVELOPE_SCHEMA_VERSION``.
@@ -327,14 +340,26 @@ def activation_queue_root_of(queue_roots):
     return _queue_root_named(queue_roots, ACTIVATION_QUEUE_NAME)
 
 
+def launch_queue_root_of(queue_roots):
+    """The launch queue: the one configured queue root named ``task-evaluation-launches``, else None."""
+
+    return _queue_root_named(queue_roots, LAUNCH_QUEUE_NAME)
+
+
 def preparation_queue_root_of(queue_roots):
     """The preparation queue: the one configured queue root named ``task-evaluation-launch-preparations``, else None."""
 
     return _queue_root_named(queue_roots, PREPARATION_QUEUE_NAME)
 
 
-def _expired_unlaunched(owner, activation_queue_root, *, now):
-    """A prepared activation whose every mutation window has lapsed; the caller found no run of it.
+def _expired_unlaunched(owner, activation_queue_root, *, now, standing_authorization_dir=None, launch_queue_root=None):
+    """A prepared activation whose windows have lapsed with positive evidence it was never launched.
+
+    The caller found no run of it, but a launch id the WebApp or an operator chose
+    names no directory a search could guess. So the proof also needs the
+    evidence launch leaves: no record that the activation's standing
+    authorization was consumed, and no launch queue row, in any state, naming
+    the activation or its profile.
 
     The worker names a result for the activation's queue envelope, as the queue's
     own ``_queue_filename`` names it: ``<activation id>-<request digest>.json``, or
@@ -368,6 +393,11 @@ def _expired_unlaunched(owner, activation_queue_root, *, now):
     status = value.get("status")
     if not isinstance(status, str) or status not in PREPARED_ACTIVATION_STATUSES:
         return None, "activation_result_not_prepared"
+    # A profile-authority activation publishes a profile, the one the WebApp launches.
+    profile_id = value.get("profile_id")
+    if status == "profile_authority_materialized_no_execution" and (
+            not isinstance(profile_id, str) or _IDENTIFIER.fullmatch(profile_id) is None):
+        return None, "activation_result_invalid"
     written = path.lstat().st_mtime
     if now - written < LAPSE_SECONDS:
         return None, "activation_result_not_stale"
@@ -376,8 +406,83 @@ def _expired_unlaunched(owner, activation_queue_root, *, now):
         return None, reason
     if now - expires < LAPSE_GRACE_SECONDS:
         return None, "activation_authorization_not_lapsed"
+    if status == "profile_authority_materialized_no_execution":
+        reason = _authorization_consumption(profile_id, standing_authorization_dir)
+        if reason is not None:
+            return None, reason
+    reason = _launch_requested(launch_queue_root, (owner, profile_id) if profile_id else (owner,))
+    if reason is not None:
+        return None, reason
     return {"kind": "activation_expired_unlaunched", "result_name": path.name, "result_digest": value["result_digest"],
-            "result_status": status, "result_mtime_epoch": written, "authorization_expires_epoch": expires}, None
+            "result_status": status, "result_mtime_epoch": written, "authorization_expires_epoch": expires,
+            **({"profile_id": profile_id} if profile_id else {})}, None
+
+
+def _authorization_consumption(profile_id, standing_authorization_dir):
+    """Why a consumed-authorization record for the profile proves a launch, or proves nothing; None when none exists.
+
+    Launch admission records each launch it admits under a standing authorization
+    at ``<dir>/consumed/<profile id>/<launch id>.json`` (the dispatcher resolves
+    ``<dir>`` from its environment or beside its launch state root). Any entry
+    there is a launch. A directory that is unconfigured, missing, linked or
+    unreadable proves nothing.
+    """
+
+    if not standing_authorization_dir:
+        return "standing_authorization_unavailable"
+    root = Path(standing_authorization_dir)
+    consumed = root / "consumed"
+    try:
+        if root.is_symlink() or not root.is_dir() or consumed.is_symlink():
+            return "standing_authorization_unavailable"
+        records = consumed / profile_id
+        present = _present(records)
+        if present is not True:
+            return None if present is False else "standing_authorization_unavailable"
+        if records.is_symlink() or not records.is_dir():
+            return "standing_authorization_unavailable"
+        if any(True for _entry in os.scandir(records)):
+            return "activation_authorization_consumed"
+    except OSError:
+        return "standing_authorization_unavailable"
+    return None
+
+
+def _launch_requested(launch_queue_root, names):
+    """Whether a launch queue row, in any state, names the activation or its profile; None when none does.
+
+    Every file under the launch queue is read, whatever state directory holds it,
+    bounded as ``queue_reference_text`` bounds a row. A linked file or directory,
+    a row over the bound, or one that cannot be read proves nothing.
+    """
+
+    from .control_plane_storage_references import MAX_QUEUE_MESSAGE_BYTES
+
+    if launch_queue_root is None:
+        return "launch_queue_unconfigured"
+    root = Path(launch_queue_root)
+    needles = [name.encode("utf-8") for name in names]
+    try:
+        if root.is_symlink() or not root.is_dir():
+            return "launch_queue_unavailable"
+        for directory, subdirectories, files in os.walk(root, onerror=_raise):
+            for name in (*subdirectories, *files):
+                if (Path(directory) / name).is_symlink():
+                    return "launch_queue_unavailable"
+            for name in files:
+                path = Path(directory) / name
+                if path.lstat().st_size > MAX_QUEUE_MESSAGE_BYTES:
+                    return "launch_queue_unavailable"
+                data = path.read_bytes()
+                if any(needle in data for needle in needles):
+                    return "activation_launch_requested"
+    except OSError:
+        return "launch_queue_unavailable"
+    return None
+
+
+def _raise(error):
+    raise error
 
 
 def _authorization_expiry(owner, envelope_path):
@@ -406,7 +511,7 @@ def _authorization_expiry(owner, envelope_path):
 
 
 def _activation_proof(pin, live_pins, *, evidence_roots, activation_queue_root, hot_window_seconds, classifier, now,
-                      **_context):
+                      standing_authorization_dir=None, launch_queue_root=None, **_context):
     """Every run under the activation's evidence names is a sealed registry run, or it never launched.
 
     Any whole-run pointer keeps the pin: the archived-run proof already declined
@@ -429,7 +534,9 @@ def _activation_proof(pin, live_pins, *, evidence_roots, activation_queue_root, 
                 runs.append(root / name)
     proof = None
     if not runs:
-        proof, reason = _expired_unlaunched(pin["owner_id"], activation_queue_root, now=now)
+        proof, reason = _expired_unlaunched(pin["owner_id"], activation_queue_root, now=now,
+                                            standing_authorization_dir=standing_authorization_dir,
+                                            launch_queue_root=launch_queue_root)
         if proof is None:
             return None, reason
     for run in runs:
@@ -542,7 +649,8 @@ def _closure_reason(identity, closure, pins, queue_text, reference_checker):
 def reconcile_terminal_cache_pins(*, pins_root, queue_roots, evidence_roots, now, apply=False,
                                   reference_checker=active_reference, classifier=require_storage_class,
                                   hot_window_seconds=DEFAULT_HOT_WINDOW_SECONDS, extended_proofs_enabled=False,
-                                  activation_queue_root=None, preparation_queue_root=None, running_commit=""):
+                                  activation_queue_root=None, preparation_queue_root=None, running_commit="",
+                                  launch_queue_root=None, standing_authorization_dir=None):
     """Plan, and with ``apply`` release, every live pin a proof closes.
 
     ``enabled`` is the extended proofs' opt-in; the original proofs always apply.
@@ -550,7 +658,10 @@ def reconcile_terminal_cache_pins(*, pins_root, queue_roots, evidence_roots, now
     (``activation_queue_root_of(queue_roots)``); without it an unlaunched activation is kept.
     ``preparation_queue_root`` (``preparation_queue_root_of(queue_roots)``) and the
     ``running_commit`` tell whether an activation can still take a preparation;
-    without them a stale preparation or compilation is kept.
+    without them a stale preparation or compilation is kept. ``launch_queue_root``
+    (``launch_queue_root_of(queue_roots)``) and ``standing_authorization_dir``, where
+    launch admission records consumed authorizations, hold the evidence of a launch
+    under any id; without them an unlaunched activation is kept.
     Each candidate carries its ``proof`` and whether it is ``enabled``, each kept
     pin a typed ``reason`` (and ``error_type`` for ``proof_error``), and
     ``released_count_by_kind`` counts every pin a release receipt lists, its
@@ -571,7 +682,8 @@ def reconcile_terminal_cache_pins(*, pins_root, queue_roots, evidence_roots, now
     live_queue_text = None if parked_error else "\n".join((parked_before[0], queue_text, parked_after[0]))
     context = {"classifier": classifier, "now": now, "evidence_roots": evidence_roots,
                "hot_window_seconds": hot_window_seconds, "activation_queue_root": activation_queue_root,
-               "preparation_queue_root": preparation_queue_root, "running_commit": running_commit}
+               "preparation_queue_root": preparation_queue_root, "running_commit": running_commit,
+               "launch_queue_root": launch_queue_root, "standing_authorization_dir": standing_authorization_dir}
     candidates, kept, released = [], [], []
     for identity, pin in pins.items():
         row = {"kind": pin["kind"], "owner_id": pin["owner_id"]}

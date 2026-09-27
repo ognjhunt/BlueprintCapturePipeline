@@ -93,10 +93,12 @@ from .control_plane_storage_references import (  # noqa: F401 - re-exported
 )
 from .control_plane_storage_roots import require_storage_class
 from .control_plane_terminal_cache_pins import (
-    activation_queue_root_of, extended_pin_proofs_setting, preparation_queue_root_of, reconcile_terminal_cache_pins,
+    activation_queue_root_of, extended_pin_proofs_setting, launch_queue_root_of, preparation_queue_root_of,
+    reconcile_terminal_cache_pins,
 )
 from .decision_evidence_contracts import canonical_digest
 from .task_evaluation_release_identity import running_release_commit
+from .task_evaluation_standing_launch_authorization import STANDING_AUTHORIZATION_DIR_ENV
 
 
 SCHEMA_VERSION = "control_plane_storage_gc.v1"
@@ -1262,6 +1264,7 @@ def run_storage_gc(
     replay_cache_retention_alert: str | None = None,
     extended_pin_proofs_enabled: bool = False,
     extended_pin_proofs_alert: str | None = None,
+    standing_authorization_dir: str | Path | None = None,
     now: Callable[[], float] = time.time,
     publisher: Callable[..., Any] | None = None,
     classifier: Callable[..., Any] = require_storage_class,
@@ -1320,7 +1323,8 @@ def run_storage_gc(
             now=observed_at, apply=apply, classifier=classifier, hot_window_seconds=hot_window_seconds,
             extended_proofs_enabled=extended_pin_proofs_enabled, running_commit=running_commit,
             activation_queue_root=activation_queue_root_of(queue_roots),
-            preparation_queue_root=preparation_queue_root_of(queue_roots))
+            preparation_queue_root=preparation_queue_root_of(queue_roots),
+            launch_queue_root=launch_queue_root_of(queue_roots), standing_authorization_dir=standing_authorization_dir)
 
     _isolated(report, "terminal_cache_pins", terminal_cache_pins_phase)
     if extended_pin_proofs_alert and isinstance(report.get("terminal_cache_pins"), dict):
@@ -1697,6 +1701,8 @@ def _run_main(argv: list[str]) -> int:
         replay_cache_retention_alert=replay_alert,
         extended_pin_proofs_enabled=extended_enabled,
         extended_pin_proofs_alert=extended_alert,
+        # Where launch admission records consumed standing authorizations; unset, no activation is unlaunched.
+        standing_authorization_dir=str(os.getenv(STANDING_AUTHORIZATION_DIR_ENV) or "").strip() or None,
         # Per-file digests, so an hourly plan re-reads only what changed.
         scene_inventory_cache_root=None,
         classifier=require_storage_class,
