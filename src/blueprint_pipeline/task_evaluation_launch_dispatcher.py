@@ -17,7 +17,6 @@ import os
 import re
 import subprocess
 import sys
-import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
@@ -32,6 +31,11 @@ from .adp_task_scoring import (
     TaskNeutralScoringError,
 )
 from .decision_evidence_contracts import cross_runtime_canonical_digest
+from .control_plane_disk_budget import (
+    ControlPlaneDiskBudgetError,
+    DEFAULT_RESERVATION_ROOT,
+    reserve_control_plane_disk,
+)
 from .episode_interpretation_batch_authority import (
     validate_episode_interpretation_batch_authority_shape,
 )
@@ -66,6 +70,11 @@ from .task_evaluation_policy_run_contract import (
     validate_policy_run_setup,
 )
 from .launch_profile_immutable_inputs import immutable_input_digest
+from .launch_immutable_input_writer import (
+    TaskEvaluationLaunchError,
+    stage_directory_projections,
+    write_exclusive_private_bytes as _write_exclusive_private_bytes,
+)
 from . import task_evaluation_policy_canary_setup as policy_canary_setup
 
 LAUNCH_REQUEST_SCHEMA_VERSION = "task_evaluation_launch_request.v1"
@@ -135,9 +144,6 @@ PUBLIC_PROFILE_DESCRIPTOR_OPTIONAL_FIELDS = (
     "policy_run_setup",
     "internal_policy_canary_setup",
 )
-
-class TaskEvaluationLaunchError(ValueError):
-    """Raised when a launch request or profile fails closed."""
 
 def standing_authorization_directory(state_root: str | Path) -> str:
     """Where this host keeps standing authorizations.
@@ -1072,42 +1078,72 @@ def verify_profile_immutable_inputs(profile: Mapping[str, Any]) -> list[str]:
     return sorted(set(blockers))
 
 
-def _write_exclusive_private_bytes(path: Path, payload: bytes) -> bool:
-    """Create one private file, allowing only byte-identical concurrent creation."""
-
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    path.parent.chmod(0o700)
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
-    )
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "wb") as stream:
-            os.fchmod(stream.fileno(), 0o600)
-            stream.write(payload)
-            stream.flush()
-            os.fsync(stream.fileno())
-        try:
-            os.link(temporary, path, follow_symlinks=False)
-        except FileExistsError:
-            if path.is_symlink() or not path.is_file() or path.read_bytes() != payload:
-                raise TaskEvaluationLaunchError(f"immutable_input_staging_conflict:{path.name}")
-            return False
-        directory_descriptor = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory_descriptor)
-        finally:
-            os.close(directory_descriptor)
-        return True
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
 def _stage_profile_immutable_inputs(
     *,
     profile: Mapping[str, Any],
     run_root: Path,
     allocator_argv: Sequence[str],
+) -> tuple[dict[str, Any], list[str]]:
+    """Reserve the copy footprint on the run volume before staging inputs."""
+
+    planned_sources = {
+        str(_mapping(item).get("path") or ""):
+        Path(str(_mapping(item).get("path") or "")).expanduser().resolve()
+        for item in profile.get("immutable_inputs") or []
+    }
+    sources = set(planned_sources.values())
+    projections, directory_bindings = _immutable_input_directory_projections(sources, allocator_argv)
+    expected_bytes = (
+        sum(source.stat().st_size for source in sources)
+        + sum(source.stat().st_size for contained in projections.values() for source in contained)
+        + 64 * 1024 * 1024
+    )
+    with reserve_control_plane_disk(
+        "launch_dispatch",
+        target_root=run_root.parent,
+        reservation_root=os.getenv("BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT",
+                                   str(DEFAULT_RESERVATION_ROOT)),
+        expected_bytes=expected_bytes,
+        workspace=run_root,
+        workload="launch_immutable_inputs",
+    ):
+        return _stage_profile_immutable_inputs_reserved(
+            profile=profile, run_root=run_root, allocator_argv=allocator_argv,
+            projections=projections, planned_sources=planned_sources,
+            directory_bindings=directory_bindings,
+        )
+
+
+def _immutable_input_directory_projections(
+    sources: set[Path], allocator_argv: Sequence[str]
+) -> tuple[dict[Path, set[Path]], dict[int, Path]]:
+    """Plan each directory copy once, including overlapping parent directories."""
+
+    projections: dict[Path, set[Path]] = {}
+    directory_bindings: dict[int, Path] = {}
+    for index, argument in enumerate(allocator_argv):
+        candidate = Path(argument).expanduser()
+        if not candidate.exists() or not candidate.is_dir():
+            continue
+        source_directory = candidate.resolve()
+        directory_bindings[index] = source_directory
+        contained = {source for source in sources if source.is_relative_to(source_directory)}
+        if not contained:
+            continue
+        if candidate.is_symlink():
+            raise TaskEvaluationLaunchError("immutable_input_allocator_directory_symlink")
+        projections[source_directory] = contained
+    return projections, directory_bindings
+
+
+def _stage_profile_immutable_inputs_reserved(
+    *,
+    profile: Mapping[str, Any],
+    run_root: Path,
+    allocator_argv: Sequence[str],
+    projections: Mapping[Path, set[Path]],
+    planned_sources: Mapping[str, Path],
+    directory_bindings: Mapping[int, Path],
 ) -> tuple[dict[str, Any], list[str]]:
     """Snapshot immutable inputs and redirect exact allocator path arguments."""
 
@@ -1131,6 +1167,8 @@ def _stage_profile_immutable_inputs(
         if source.is_symlink() or not source.is_file():
             raise TaskEvaluationLaunchError(f"immutable_input_staging_source_missing:{name}")
         source = source.resolve()
+        if source != planned_sources.get(declared_source):
+            raise TaskEvaluationLaunchError(f"immutable_input_staging_source_changed:{name}")
         payload = source.read_bytes()
         observed_digest = _DIGEST_PREFIX + hashlib.sha256(payload).hexdigest()
         if observed_digest != expected_digest:
@@ -1189,62 +1227,9 @@ def _stage_profile_immutable_inputs(
             }
         )
 
-    directory_replacements: dict[str, str] = {}
-    directory_rows: list[dict[str, Any]] = []
-    for argument in allocator_argv:
-        candidate = Path(argument).expanduser()
-        if not candidate.exists() or not candidate.is_dir():
-            continue
-        source_directory = candidate.resolve()
-        contained = {
-            source: staged
-            for source, staged in staged_sources.items()
-            if source.is_relative_to(source_directory)
-        }
-        if not contained:
-            continue
-        if candidate.is_symlink():
-            raise TaskEvaluationLaunchError("immutable_input_allocator_directory_symlink")
-        if str(source_directory) in directory_replacements:
-            continue
-        directory_key = hashlib.sha256(str(source_directory).encode("utf-8")).hexdigest()
-        projection = stage_root / "directories" / directory_key
-        projection.mkdir(mode=0o700, parents=True, exist_ok=True)
-        projection.chmod(0o700)
-        projected_inputs: list[dict[str, Any]] = []
-        for source, staged in sorted(contained.items(), key=lambda item: str(item[0])):
-            relative_path = source.relative_to(source_directory)
-            if relative_path.is_absolute() or ".." in relative_path.parts:
-                raise TaskEvaluationLaunchError("immutable_input_directory_projection_path_escape")
-            projected = projection / relative_path
-            payload = staged.read_bytes()
-            _write_exclusive_private_bytes(projected, payload)
-            projected.chmod(0o600)
-            readback = projected.read_bytes()
-            digest = _DIGEST_PREFIX + hashlib.sha256(readback).hexdigest()
-            expected_digest = _DIGEST_PREFIX + hashlib.sha256(payload).hexdigest()
-            if readback != payload or digest != expected_digest:
-                raise TaskEvaluationLaunchError(
-                    "immutable_input_directory_projection_readback_mismatch"
-                )
-            projected_inputs.append(
-                {
-                    "source_path": str(source),
-                    "relative_path": str(relative_path),
-                    "projected_path": str(projected),
-                    "digest": digest,
-                    "size_bytes": len(readback),
-                }
-            )
-        directory_replacements[str(source_directory)] = str(projection)
-        directory_rows.append(
-            {
-                "source_directory": str(source_directory),
-                "staged_directory": str(projection),
-                "inputs": projected_inputs,
-                "allocator_argv_indices": [],
-            }
-        )
+    directory_replacements, directory_rows = stage_directory_projections(
+        stage_root, projections, staged_sources, digest_prefix=_DIGEST_PREFIX,
+    )
 
     rewritten: list[str] = []
     rewrite_indices: dict[str, list[int]] = {path: [] for path in replacements}
@@ -1262,9 +1247,17 @@ def _stage_profile_immutable_inputs(
             rewrite_indices[canonical_source].append(index)
             continue
         directory_argument = Path(argument).expanduser()
+        planned_directory = directory_bindings.get(index)
         canonical_directory = None
-        if directory_argument.exists() and directory_argument.is_dir():
-            canonical_directory = str(directory_argument.resolve())
+        if planned_directory is not None:
+            if not directory_argument.is_dir() or directory_argument.resolve() != planned_directory:
+                raise TaskEvaluationLaunchError("immutable_input_allocator_directory_changed")
+            canonical_directory = str(planned_directory)
+        elif directory_argument.is_dir():
+            current_directory = directory_argument.resolve()
+            if any(source.is_relative_to(current_directory) for source in planned_sources.values()):
+                raise TaskEvaluationLaunchError("immutable_input_allocator_directory_changed")
+            canonical_directory = str(current_directory)
         if canonical_directory in directory_replacements:
             rewritten.append(directory_replacements[canonical_directory])
             next(row for row in directory_rows if row["source_directory"] == canonical_directory)[
@@ -1635,6 +1628,8 @@ def dispatch_launch_request(
                 run_root=run_root,
                 allocator_argv=rendered_allocator_argv,
             )
+        except ControlPlaneDiskBudgetError:
+            blockers.append("task_evaluation_launch_disk_budget_exceeded")
         except (OSError, TaskEvaluationLaunchError) as exc:
             blockers.append(f"immutable_input_staging_failed:{exc}")
     bound = {

@@ -980,3 +980,25 @@ def test_paid_units_enable_the_provider_credit_guard_and_the_controller_can_read
     assert "Environment=VAST_API_KEY_FILE=/etc/blueprint/provider-secrets/vast_api_key" in capacity
     assert "ReadOnlyPaths=/etc/blueprint/provider-secrets" in capacity
     assert "EnvironmentFile=-/etc/blueprint/task-evaluation-scene-progression.env" in capacity
+
+
+def test_volume_admission_units_map_bulk_roles_to_their_writers() -> None:
+    role_targets = (
+        "Environment=BLUEPRINT_CONTROL_PLANE_DISK_ROLE_TARGETS="
+        "launch_preparation=/var/lib/blueprint/task-evaluation-inputs/prepared-references,"
+        "episode_compilation=/var/lib/blueprint/task-evaluation-inputs/compiled-episodes,"
+        "launch_activation=/var/lib/blueprint/task-evaluation-inputs/launch-activations,"
+        "launch_dispatch=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs,"
+        "policy_canary_dispatch=/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries,"
+        "handoff_staging=/var/lib/blueprint/pubsub-handoffs"
+    )
+    for name in (
+        "blueprint-pipeline-intake.service",
+        "blueprint-task-evaluation-scene-progression.service",
+        "blueprint-control-plane-capacity.service",
+    ):
+        assert role_targets in (SYSTEMD_DIR / name).read_text(encoding="utf-8")
+    capacity = (SYSTEMD_DIR / "blueprint-control-plane-capacity.service").read_text(
+        encoding="utf-8"
+    )
+    assert "Environment=BLUEPRINT_CAPACITY_MOUNTS=/:/var/lib/blueprint:/mnt/blueprint-work" in capacity

@@ -6,6 +6,7 @@ and ask for the few privileged operations the door allows. It works from a
 laptop too. Standard library only.
 
     python3 scripts/operator_door.py status
+    python3 scripts/operator_door.py usage     # what uses the disk, from the capacity survey
     python3 scripts/operator_door.py ls  /var/lib/blueprint/pipeline-control-plane/deploy-receipts --sort mtime
     python3 scripts/operator_door.py cat /var/lib/blueprint/pipeline-control-plane/gpu_spend_guard/latest.json
     python3 scripts/operator_door.py pull <host path> <local path>    # file, or directory as an archive
@@ -21,9 +22,9 @@ nothing is configured in the VM and no header is sent. Elsewhere the token
 comes from BLUEPRINT_OPERATOR_DOOR_TOKEN, BLUEPRINT_OPERATOR_DOOR_TOKEN_FILE,
 or ~/.blueprint-secrets/operator_door_token. The token is never printed.
 
-Exit codes: 0 success; 1 a waited-for request did not succeed; 2 the door
-refused (the rule is printed on stderr); 3 unauthorized or missing scope;
-4 network error; 5 server error.
+Exit codes: 0 success; 1 a waited-for request did not succeed, or `usage` found
+no usage survey; 2 the door refused (the rule is printed on stderr); 3
+unauthorized or missing scope; 4 network error; 5 server error.
 """
 
 from __future__ import annotations
@@ -190,6 +191,71 @@ def _submit(body: dict[str, Any], args: argparse.Namespace) -> int:
     return _wait(accepted["id"], timeout=args.timeout, poll=args.poll)
 
 
+def _size(value: Any) -> str:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return "-"
+    amount = float(value)
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if abs(amount) < 1024:
+            return f"{amount:.0f} B" if unit == "B" else f"{amount:.1f} {unit}"
+        amount /= 1024
+    return f"{amount:.1f} TiB"
+
+
+def _percent(value: Any) -> str:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return "-"
+    return f"{value * 100:.1f}%"
+
+
+def _table(headers: list[str], rows: list[list[str]]) -> list[str]:
+    widths = [max(len(cell) for cell in column) for column in zip(headers, *rows)]
+    return ["  ".join(cell.ljust(width) for cell, width in zip(row, widths)).rstrip()
+            for row in (headers, *rows)]
+
+
+_USAGE_TABLES = (
+    ("mounts", ["mount", "used", "surveyed", "classified", "attributed"],
+     lambda row: [str(row.get("mount")), _size(row.get("used_bytes")), _size(row.get("surveyed_bytes")),
+                  _size(row.get("classified_bytes")), _percent(row.get("attributed_fraction"))]),
+    ("by_class", ["storage class", "allocated", "apparent", "files"],
+     lambda row: [str(row.get("storage_class")), _size(row.get("allocated_bytes")),
+                  _size(row.get("apparent_bytes")), str(row.get("files", "-"))]),
+    ("top_roots", ["root", "class", "allocated"],
+     lambda row: [str(row.get("root")), str(row.get("storage_class")), _size(row.get("allocated_bytes"))]),
+    ("top_owners", ["owner", "class", "allocated", "root"],
+     lambda row: [str(row.get("owner")), str(row.get("storage_class")), _size(row.get("allocated_bytes")),
+                  str(row.get("root"))]),
+    ("unclassified_roots", ["unclassified root", "allocated"],
+     lambda row: [str(row.get("root")), _size(row.get("allocated_bytes"))]),
+)
+
+
+def _print_usage(status: dict[str, Any]) -> int:
+    """Print ``capacity.usage`` from a status document as tables."""
+
+    capacity = status.get("capacity")
+    usage = capacity.get("usage") if isinstance(capacity, dict) else None
+    if not isinstance(usage, dict) or usage.get("status") in (None, "unavailable"):
+        reason = (capacity or {}).get("error") if isinstance(capacity, dict) else None
+        reason = reason or (usage or {}).get("error") or "usage_survey_unavailable"
+        print(f"no usage survey: {reason}", file=sys.stderr)
+        return 1
+    header = f"usage survey: {usage.get('status')}"
+    age = usage.get("age_seconds")
+    if isinstance(age, (int, float)) and not isinstance(age, bool):
+        header += f", {age:.0f} s old"
+    lines = [header]
+    if usage.get("error"):
+        lines.append(f"last survey attempt: {usage['error']}")
+    for key, headers, cells in _USAGE_TABLES:
+        rows = [cells(row) for row in usage.get(key) or [] if isinstance(row, dict)]
+        if rows:
+            lines += ["", *_table(headers, rows)]
+    print("\n".join(lines))
+    return 0
+
+
 def _add_wait(parser: argparse.ArgumentParser, timeout: float) -> None:
     parser.add_argument("--wait", action="store_true", help="poll until the request finishes")
     parser.add_argument("--timeout", type=float, default=timeout)
@@ -212,6 +278,7 @@ def build_parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("whoami")
     commands.add_parser("status")
+    commands.add_parser("usage", help="what uses the disk: the capacity survey from status, as tables")
     ls = commands.add_parser("ls")
     ls.add_argument("path")
     ls.add_argument("--sort", choices=("name", "mtime"), default="name")
@@ -274,6 +341,8 @@ def run(args: argparse.Namespace) -> int:
     command = args.command
     if command in ("whoami", "status", "requests"):
         _print(_json("GET", "/" + command))
+    elif command == "usage":
+        return _print_usage(_json("GET", "/status"))
     elif command == "ls":
         _print(_json("GET", "/fs/list", {"path": args.path, "sort": args.sort, "match": args.match}))
     elif command == "cat":

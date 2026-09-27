@@ -24,6 +24,10 @@ from .secrets_guard import scan_bytes
 SCHEMA = "blueprint_operator_door_status.v1"
 _VERSION_KEYS = ("source_commit", "commit_proven", "blockers", "disk_headroom", "claim_ceiling")
 _RECEIPT_KEYS = ("schema", "status", "source_commit", "commit", "mode", "finished_at", "completed_at")
+_CAPACITY_KEYS = (
+    "schema_version", "observed_at_epoch", "level", "report_digest", "alerts", "mounts", "usage",
+    "volume_resize", "truncated",
+)
 _MAX_JSON_BYTES = 256 * 1024
 _MAX_BREAK_GLASS_LEDGER_BYTES = 16 * 1024 * 1024
 
@@ -133,6 +137,15 @@ def _recent_receipts(config: DoorConfig, limit: int = 5) -> list[dict[str, Any]]
     return summaries
 
 
+def _capacity(config: DoorConfig) -> dict[str, Any]:
+    """The capacity controller's summary: levels, alerts and usage attribution."""
+
+    document = _small_json(Path(config.capacity_summary))
+    if not isinstance(document, dict):
+        raise ValueError("not_an_object")
+    return {key: document[key] for key in _CAPACITY_KEYS if key in document}
+
+
 def _door_requests(config: DoorConfig) -> dict[str, int]:
     spool = Path(config.spool_root)
     return {state: len(list((spool / state).glob("*.json"))) for state in ("pending", "processing")}
@@ -174,6 +187,7 @@ def build_status(config: DoorConfig, host: HostInfo, *, caller: dict[str, Any]) 
                                      "controller_units_unavailable"),
         "disk": _section(lambda: host.disk(("/", "/var/lib/blueprint", "/mnt/blueprint-work")),
                          "disk_unavailable"),
+        "capacity": _section(lambda: _capacity(config), "capacity_unavailable"),
         "load": _section(host.load, "load_unavailable"),
         "door_requests": _section(lambda: _door_requests(config), "door_requests_unavailable"),
         "holds": _section(lambda: _holds(config), "holds_unavailable"),
