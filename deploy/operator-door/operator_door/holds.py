@@ -82,6 +82,7 @@ def read(root: Path, unit: str) -> dict[str, Any] | None:
         or not isinstance(record.get("owner"), str)
         or type(record.get("expires_at_epoch")) is not int
         or ("enabled_before" in record and type(record["enabled_before"]) is not bool)
+        or ("restart_on_release" in record and type(record["restart_on_release"]) is not bool)
         or (record.get("status") == "releasing" and record.get("release_status")
             not in {"released", "expired_released", "failed_released"})
     ):
@@ -137,7 +138,7 @@ def active(root: Path) -> list[dict[str, Any]]:
 
 def begin_release(
     root: Path, unit: str, record: dict[str, Any], *, released_by: str,
-    status: str, now: float | None = None,
+    status: str, now: float | None = None, restart_on_release: bool = True,
 ) -> None:
     """Persist recovery intent, then remove the active systemd guard."""
 
@@ -149,7 +150,8 @@ def begin_release(
     if read(root / "releasing", unit) is not None:
         raise HoldError("hold_release_in_progress")
     pending = {**record, "status": "releasing", "release_status": status,
-               "released_by": released_by, "released_at": timestamp(now)}
+               "released_by": released_by, "released_at": timestamp(now),
+               "restart_on_release": restart_on_release}
     write(root / "releasing", unit, pending)
     (root / f"{unit}.json").unlink(missing_ok=True)
     directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
@@ -188,9 +190,10 @@ def finish_release(
         enabled = run(["systemctl", "enable", "--", unit])
         if enabled.returncode != 0:
             return enabled.returncode
-    started = run(["systemctl", "--no-block", "start", "--", unit])
-    if started.returncode != 0:
-        return started.returncode
+    if record.get("restart_on_release", True):
+        started = run(["systemctl", "--no-block", "start", "--", unit])
+        if started.returncode != 0:
+            return started.returncode
     record["status"] = record.pop("release_status")
     write(root / "history", f"{unit}.{record['request_id']}", record)
     (root / "releasing" / f"{unit}.json").unlink(missing_ok=True)

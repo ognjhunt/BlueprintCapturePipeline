@@ -125,3 +125,20 @@ def test_sweep_refuses_invalid_pending_unit_without_running_systemctl(tmp_path, 
 
     with pytest.raises(holds.HoldError, match="hold_record_invalid"):
         holds.sweep(root)
+
+
+def test_sweep_finishes_failed_hold_without_starting_previously_inactive_unit(tmp_path, monkeypatch) -> None:
+    root = tmp_path / "holds"
+    root.mkdir()
+    unit = "blueprint-scene-progression.timer"
+    path = _record(root, unit, expires_at_epoch=2000, enabled_before=False)
+    record = json.loads(path.read_text())
+    with holds.locked(root):
+        holds.begin_release(root, unit, record, released_by="runner", status="failed_released",
+                            restart_on_release=False)
+    monkeypatch.setattr(holds.subprocess, "run", lambda *_args, **_kwargs: pytest.fail("systemctl called"))
+
+    assert holds.sweep(root, now=1200) == 0
+    assert not path.exists()
+    archived = list((root / "history").glob("*.json"))
+    assert len(archived) == 1 and json.loads(archived[0].read_text())["status"] == "failed_released"

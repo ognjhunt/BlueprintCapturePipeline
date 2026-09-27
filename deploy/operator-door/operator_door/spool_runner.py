@@ -231,6 +231,10 @@ def _act_hold(
             if state not in {"enabled", "disabled"}:
                 return {"status": "refused", "code": "hold_unit_enabled_state_unknown"}
             enabled_before = state == "enabled"
+        activity = runner.run(["systemctl", "is-active", "--", unit], timeout=30)
+        if activity.stdout.strip() not in {"active", "inactive"}:
+            return {"status": "refused", "code": "hold_unit_active_state_unknown"}
+        active_before = activity.stdout.strip() == "active"
 
         def restore_unheld() -> int:
             if current is not None and current["status"] == "active":
@@ -239,7 +243,9 @@ def _act_hold(
                 restored_boot = runner.run(["systemctl", "enable", "--", unit], timeout=30)
                 if restored_boot.returncode != 0:
                     return restored_boot.returncode
-            return runner.run(["systemctl", "--no-block", "start", "--", unit], timeout=30).returncode
+            if active_before:
+                return runner.run(["systemctl", "--no-block", "start", "--", unit], timeout=30).returncode
+            return 0
 
         stopped = runner.run(["systemctl", "stop", "--", unit], timeout=30)
         if stopped.returncode != 0:
@@ -269,7 +275,8 @@ def _act_hold(
                 holds.write(root, unit, current)
                 return 0
             if holds.read(root, unit) is not None:
-                holds.begin_release(root, unit, record, released_by="runner", status="failed_released")
+                holds.begin_release(root, unit, record, released_by="runner", status="failed_released",
+                                    restart_on_release=active_before)
                 return holds.finish_release(root, unit, command=lambda argv: runner.run(argv, timeout=30))
             return restore_unheld()
 

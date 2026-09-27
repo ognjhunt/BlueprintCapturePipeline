@@ -31,7 +31,7 @@ class FakeRunner:
     def __init__(self, active_deploy: str = "", systemd_run_rc: int = 0,
                  enabled_state: str = "enabled", guarded: bool = True,
                  need_daemon_reload: str = "no", active_state: str = "inactive",
-                 stop_rc: int = 0) -> None:
+                 stop_rc: int = 0, initial_active_state: str = "active") -> None:
         self.calls: list[list[str]] = []
         self.active_deploy = active_deploy
         self.systemd_run_rc = systemd_run_rc
@@ -40,6 +40,8 @@ class FakeRunner:
         self.need_daemon_reload = need_daemon_reload
         self.active_state = active_state
         self.stop_rc = stop_rc
+        self.initial_active_state = initial_active_state
+        self.stop_count = 0
 
     def run(self, argv: Sequence[str], timeout: float) -> CommandResult:
         self.calls.append(list(argv))
@@ -49,8 +51,8 @@ class FakeRunner:
             return CommandResult(0 if self.enabled_state == "enabled" else 1,
                                  self.enabled_state + "\n", "")
         if argv[:2] == ["systemctl", "is-active"]:
-            return CommandResult(0 if self.active_state == "active" else 3,
-                                 self.active_state + "\n", "")
+            state = self.initial_active_state if self.stop_count == 0 else self.active_state
+            return CommandResult(0 if state == "active" else 3, state + "\n", "")
         if argv[:2] == ["systemctl", "cat"]:
             unit = argv[-1]
             guard = f"ConditionPathExists=!{self.guard_root / f'{unit}.json'}"
@@ -58,6 +60,7 @@ class FakeRunner:
         if argv[:2] == ["systemctl", "show"]:
             return CommandResult(0, self.need_daemon_reload + "\n", "")
         if argv[:2] == ["systemctl", "stop"]:
+            self.stop_count += 1
             return CommandResult(self.stop_rc, "", "stop failed" if self.stop_rc else "")
         if argv[0] == "systemd-run":
             return CommandResult(self.systemd_run_rc, "", "Failed to start" if self.systemd_run_rc else "")
@@ -145,14 +148,15 @@ def test_hold_stops_a_timer_records_owner_and_schedules_expiry(config: DoorConfi
         ["systemctl", "show", "--property=NeedDaemonReload", "--value", "--", unit],
         ["systemctl", "is-enabled", "--", unit],
     ]
-    assert runner.calls[3:8] == [
+    assert runner.calls[3:9] == [
+        ["systemctl", "is-active", "--", unit],
         ["systemctl", "stop", "--", unit],
         ["systemctl", "is-active", "--", unit],
         ["systemctl", "stop", "--", unit],
         ["systemctl", "is-active", "--", unit],
         ["systemctl", "disable", "--", unit],
     ]
-    launch = runner.calls[8]
+    launch = runner.calls[9]
     assert launch[0] == "systemd-run"
     assert f"--unit=blueprint-operator-door-hold-expiry-{request_id[-8:]}" in launch
     assert "--on-active=3600s" in launch and "--collect" in launch
@@ -213,6 +217,16 @@ def test_failed_first_stop_restores_an_unheld_trigger(config: DoorConfig, runner
     assert result["status"] == "failed" and result["rollback_returncode"] == 0
     assert ["systemctl", "enable", "--", "blueprint-scene-progression.timer"] in runner.calls
     assert ["systemctl", "--no-block", "start", "--", "blueprint-scene-progression.timer"] in runner.calls
+    assert not (Path(config.spool_root) / "holds" / "blueprint-scene-progression.timer.json").exists()
+
+
+def test_failed_hold_does_not_start_a_previously_inactive_disabled_trigger(config: DoorConfig) -> None:
+    request_id = _hold(config)
+    runner = FakeRunner(enabled_state="disabled", initial_active_state="inactive", systemd_run_rc=1)
+    process_spool(config, runner=runner)
+    assert _result(config, request_id)["code"] == "hold_expiry_schedule_failed"
+    assert not any(call[:3] == ["systemctl", "--no-block", "start"] for call in runner.calls)
+    assert not any(call[:2] == ["systemctl", "enable"] for call in runner.calls)
     assert not (Path(config.spool_root) / "holds" / "blueprint-scene-progression.timer.json").exists()
 
 
@@ -352,12 +366,13 @@ def test_failed_expiry_scheduling_restores_a_new_timer_but_preserves_an_existing
         ["systemctl", "cat", "--"],
         ["systemctl", "show", "--property=NeedDaemonReload"],
         ["systemctl", "is-enabled", "--"],
+        ["systemctl", "is-active", "--"],
         ["systemctl", "stop", "--"],
         ["systemctl", "is-active", "--"],
         ["systemctl", "stop", "--"],
         ["systemctl", "is-active", "--"],
         ["systemctl", "disable", "--"],
-        ["systemd-run", runner.calls[8][1], "--on-active=3600s"],
+        ["systemd-run", runner.calls[9][1], "--on-active=3600s"],
         ["systemctl", "enable", "--"],
         ["systemctl", "--no-block", "start"],
     ]
