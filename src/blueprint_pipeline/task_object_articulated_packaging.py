@@ -377,10 +377,10 @@ def _part_extent_estimates(configuration: Mapping[str, Any], parts: Sequence[Map
     Each names the frames that show the part (a subset of its own observed
     frames) and a per-axis uncertainty. Nothing is inferred here; a malformed,
     unobserved or uncaptured estimate is refused, never ignored. Website
-    coverage names the parts each frame shows but localizes none inside the
-    whole-object mask, so no depth point can be attributed to one part and
-    preparation emits no estimate: every template-placed part stays a labelled
-    prior until a per-part localization produces these boxes.
+    coverage boxes each visible part per frame and measures a fixed part's
+    extent from depth inside those boxes where two or more views agree
+    (``website_assembly_coverage.estimate_part_extents``); every other
+    template-placed part stays a labelled prior.
     """
     rows = configuration.get("part_extent_estimates", [])
     observed = {row["part_id"]: row for row in parts}
