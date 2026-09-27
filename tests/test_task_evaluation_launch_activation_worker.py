@@ -129,6 +129,145 @@ def test_activation_refuses_low_disk_before_loading_preparation(
     assert not (tmp_path / "activations" / request["activation_id"]).exists()
 
 
+def test_activation_reservation_measures_its_own_activation_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    request = activation_request()
+    queue = tmp_path / "activation-queue"
+    stage_launch_activation_request(
+        value=request, queue_root=queue, submitted_by="blueprint-webapp"
+    )
+    (tmp_path / "preparation-queue").mkdir()
+    (tmp_path / "preparation-inputs").mkdir()
+    calls: list[dict[str, object]] = []
+    real = worker.disk_budget.reserve_control_plane_disk
+
+    def roomy(_path):
+        return SimpleNamespace(total=100 * 1024**3, used=0, free=90 * 1024**3)
+
+    def recording(*args, **kwargs):
+        calls.append(kwargs)
+        return real(*args, **kwargs, disk_usage=roomy)
+
+    monkeypatch.setattr(worker.disk_budget, "reserve_control_plane_disk", recording)
+    process_launch_activation_queue(
+        queue_root=queue,
+        preparation_queue_root=tmp_path / "preparation-queue",
+        preparation_input_root=tmp_path / "preparation-inputs",
+        activation_root=tmp_path / "activations",
+        allowed_uri_prefixes=["s3://blueprint-production-inputs/"],
+        service_account=SERVICE_ACCOUNT,
+        service_group=SERVICE_ACCOUNT,
+        repository_root=tmp_path,
+        destination_prefix="s3://blueprint-production-inputs/activated",
+        release_window_prefix=(
+            "s3://blueprint-production-inputs/coordinator-release-windows/"
+        ),
+        profile_dir=tmp_path / "profiles",
+        webapp_catalog=tmp_path / "catalog.json",
+        standing_authorization_dir=tmp_path / "standing-authorizations",
+        source_commit=request["expected_production_commit"],
+        disk_reservation_root=tmp_path / "reservations",
+    )
+
+    activations = (tmp_path / "activations").resolve()
+    # Admission reads the shared parent; the sample measures only this job's tree.
+    assert calls[0]["target_root"] == activations
+    assert calls[0]["workspace"] == activations / request["activation_id"]
+    # Samples are labelled by lane, and the reservation never drops below the
+    # references the request declares.
+    assert calls[0]["workload"] == "activation_" + request["lane"]
+    assert calls[0]["minimum_bytes"] > 0
+    history = tmp_path / "reservations" / "history" / "launch_activation.jsonl"
+    [sample] = [json.loads(line) for line in history.read_text().splitlines()]
+    # The activation raised before loading its preparation: a failed sample.
+    assert sample["outcome"] == "failed" and sample["workload"] == "activation_" + request["lane"]
+
+
+def test_activation_terms_label_the_lane_and_floor_at_declared_references(tmp_path: Path) -> None:
+    from blueprint_pipeline.task_evaluation_activation_runtime_layers import collect_request_references
+    from blueprint_pipeline.task_evaluation_launch_activation_disk import (
+        ACTIVATION_RESERVATION_MARGIN_BYTES,
+        activation_reservation_terms,
+    )
+
+    request = activation_request(lane="native_task_arena_construction_after_destination")
+    unique = {(row["digest"], row["size_bytes"]) for row in collect_request_references(request)}
+    declared = sum(size for _digest, size in unique)
+    assert activation_reservation_terms(request, tmp_path) == {
+        "workspace": tmp_path / request["activation_id"],
+        "workload": "activation_native_task_arena_construction_after_destination",
+        "minimum_bytes": declared + ACTIVATION_RESERVATION_MARGIN_BYTES,
+    }
+
+
+def test_blocked_activations_never_pull_the_measured_footprint_down(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ten activations blocked before writing anything once recorded ten empty
+    "completed" samples, which set the activation footprint to the 64 MiB floor."""
+    from types import SimpleNamespace
+
+    disk_budget = worker.disk_budget
+    real = disk_budget.reserve_control_plane_disk
+
+    def roomy(*args, **kwargs):
+        return real(*args, **kwargs, disk_usage=lambda _path: SimpleNamespace(
+            total=100 * 1024**3, used=0, free=90 * 1024**3))
+
+    monkeypatch.setattr(disk_budget, "reserve_control_plane_disk", roomy)
+    queue = tmp_path / "activation-queue"
+    base = activation_request()
+    for index in range(10):
+        stage_launch_activation_request(
+            value={**base, "activation_id": f"{base['activation_id']}-{index}"},
+            queue_root=queue, submitted_by="blueprint-webapp",
+        )
+    (tmp_path / "preparation-queue").mkdir()
+    (tmp_path / "preparation-inputs").mkdir()
+    ledger = tmp_path / "reservations"
+    for max_messages in (8, 2):
+        process_launch_activation_queue(
+            queue_root=queue,
+            preparation_queue_root=tmp_path / "preparation-queue",
+            preparation_input_root=tmp_path / "preparation-inputs",
+            activation_root=tmp_path / "activations",
+            allowed_uri_prefixes=["s3://blueprint-production-inputs/"],
+            service_account=SERVICE_ACCOUNT,
+            service_group=SERVICE_ACCOUNT,
+            repository_root=tmp_path,
+            destination_prefix="s3://blueprint-production-inputs/activated",
+            release_window_prefix=(
+                "s3://blueprint-production-inputs/coordinator-release-windows/"
+            ),
+            profile_dir=tmp_path / "profiles",
+            webapp_catalog=tmp_path / "catalog.json",
+            standing_authorization_dir=tmp_path / "standing-authorizations",
+            source_commit=base["expected_production_commit"],
+            disk_reservation_root=ledger,
+            max_messages=max_messages,
+        )
+
+    rows = [json.loads(line) for line in (ledger / "history" / "launch_activation.jsonl").read_text().splitlines()]
+    assert [row["outcome"] for row in rows] == ["failed"] * 10
+    measured = disk_budget.measured_footprint("launch_activation", reservation_root=ledger)
+    assert (measured["basis"], measured["bytes"]) == ("declared_default", 2 * 1024**3)
+    # Only completed activations may move it.
+    for index in range(10):
+        workspace = tmp_path / "activations" / f"completed-{index}"
+        reservation = disk_budget.reserve_control_plane_disk(
+            "launch_activation", target_root=tmp_path / "activations", reservation_root=ledger,
+            workspace=workspace, workload="activation_" + base["lane"],
+        )
+        workspace.mkdir()
+        (workspace / "reference.bin").write_bytes(b"r" * 8192)
+        reservation.release()
+    measured = disk_budget.measured_footprint("launch_activation", reservation_root=ledger)
+    assert (measured["basis"], measured["bytes"]) == ("measured_p95", 64 * 1024**2)
+
+
 def test_control_search_requests_initial_warm_retention() -> None:
     authority = {
         "schema_version": "task_evaluation_control_search_authority.v1",

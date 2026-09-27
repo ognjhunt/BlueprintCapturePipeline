@@ -406,7 +406,7 @@ def test_preparation_fetches_runtime_source_layers_once_into_the_content_store(
     reservations: list[dict[str, object]] = []
 
     class _Reservation:
-        def release(self) -> None:
+        def release(self, **_kwargs: object) -> None:
             return None
 
     def recorded_reserve(role: str, **kwargs: object) -> _Reservation:

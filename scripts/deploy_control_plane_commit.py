@@ -35,6 +35,7 @@ import errno
 import fcntl
 import hashlib
 import json
+import math
 import os
 import re
 import signal
@@ -70,9 +71,14 @@ from blueprint_pipeline.task_evaluation_configured_controls_autostart import (  
     validate_configured_controls_autostart_intent,
 )
 from blueprint_pipeline.control_plane_disk_budget import (  # noqa: E402
+    DEFAULT_RESERVATION_ROOT,
+    FOOTPRINT_HISTORY_DIRNAME,
     ControlPlaneDiskBudgetError,
+    DiskReservation,
+    measured_footprint,
     reserve_control_plane_disk,
 )
+from blueprint_pipeline.control_plane_disk_usage import TreeUsage, tree_usage  # noqa: E402
 from blueprint_pipeline.control_plane_storage_pins import (  # noqa: E402
     DEFAULT_PINS_ROOT,
 )
@@ -807,8 +813,10 @@ def _install_disk_reservation_runtime_prerequisites(
     ownership, leaving the runtime unable to enter the directory or open the
     lock after an otherwise successful deploy.
 
-    Reconcile both inodes before any service restart and verify their installed
-    ownership and modes instead of trusting the privileged mutations.
+    Reconcile these inodes before any service restart and verify their installed
+    ownership and modes instead of trusting the privileged mutations.  The
+    footprint ``history`` directory gets the same treatment: root appends the
+    deploy's samples and the runtime account appends every worker's.
     """
 
     account_ids = _service_account_ids(account)
@@ -819,28 +827,41 @@ def _install_disk_reservation_runtime_prerequisites(
     _owner_uid, owner_gid = account_ids
     root = Path(reservation_root).expanduser()
     lock = root / ".lock"
+    history = root / FOOTPRINT_HISTORY_DIRNAME
     if not root.is_absolute():
         raise ControlPlaneDeployError(
             "deploy_disk_reservation_directory_not_absolute"
         )
-    if root.is_symlink() or lock.is_symlink():
-        raise ControlPlaneDeployError(
-            f"deploy_disk_reservation_runtime_symlink:{root}"
-        )
+    # A refusal is a typed code: it names the ledger item (directory, lock or
+    # history), never the host path it lives at.
+    items = (("directory", root, 0o2770), ("lock", lock, 0o660), ("history", history, 0o2770))
+    for item, path, _mode in items:
+        if path.is_symlink():
+            raise ControlPlaneDeployError(
+                f"deploy_disk_reservation_runtime_symlink:{item}"
+            )
 
     repaired: list[str] = []
+    item = "directory"
     try:
         root.mkdir(parents=True, exist_ok=True, mode=0o2770)
         if root.is_symlink() or not root.is_dir():
             raise ControlPlaneDeployError(
-                f"deploy_disk_reservation_directory_invalid:{root}"
+                "deploy_disk_reservation_directory_invalid"
             )
+        item = "lock"
         lock.touch(mode=0o660, exist_ok=True)
         if lock.is_symlink() or not lock.is_file():
             raise ControlPlaneDeployError(
-                f"deploy_disk_reservation_lock_invalid:{lock}"
+                "deploy_disk_reservation_lock_invalid"
             )
-        for path, wanted_mode in ((root, 0o2770), (lock, 0o660)):
+        item = "history"
+        history.mkdir(exist_ok=True, mode=0o2770)
+        if history.is_symlink() or not history.is_dir():
+            raise ControlPlaneDeployError(
+                "deploy_disk_reservation_history_directory_invalid"
+            )
+        for item, path, wanted_mode in items:
             metadata = stat_reader(path)
             changed = False
             if metadata.st_uid != root_uid or metadata.st_gid != owner_gid:
@@ -856,14 +877,11 @@ def _install_disk_reservation_runtime_prerequisites(
         raise
     except OSError as exc:
         raise ControlPlaneDeployError(
-            f"deploy_disk_reservation_runtime_install_failed:{root}"
+            f"deploy_disk_reservation_runtime_install_failed:{item}"
         ) from exc
 
     installed: list[dict[str, Any]] = []
-    for path, wanted_mode, kind in (
-        (root, 0o2770, "directory"),
-        (lock, 0o660, "lock"),
-    ):
+    for item, path, wanted_mode in items:
         metadata = stat_reader(path)
         if (
             metadata.st_uid != root_uid
@@ -871,8 +889,9 @@ def _install_disk_reservation_runtime_prerequisites(
             or stat.S_IMODE(metadata.st_mode) != wanted_mode
         ):
             raise ControlPlaneDeployError(
-                f"deploy_disk_reservation_runtime_readback_mismatch:{path}"
+                f"deploy_disk_reservation_runtime_readback_mismatch:{item}"
             )
+        kind = "history_directory" if item == "history" else item
         installed.append(
             {
                 "kind": kind,
@@ -2051,6 +2070,109 @@ def _git(repo: Path, *arguments: str) -> tuple[int, str]:
     return result.returncode, result.stdout.strip()
 
 
+RELEASE_ESTIMATE_HEADROOM = 1.25
+RELEASE_ESTIMATE_BLOCK_BYTES = 4096
+RELEASE_ESTIMATE_OVERHEAD_BYTES = 256 * 1024**2
+
+
+def _release_footprint_estimate(
+    source: Path,
+    commit: str,
+    *,
+    reservation_root: str | Path = DEFAULT_RESERVATION_ROOT,
+) -> dict[str, Any]:
+    """What staging ``commit`` costs on disk, read from its git tree.
+
+    The blob bytes plus a quarter for block rounding, one block per file, and
+    256 MiB for the checkout's index and the runtime trees provisioned beside
+    it.  When the tree cannot be listed, the deploy role's measured footprint
+    (or its declared ceiling while the history is short) stands in.
+    """
+
+    code, listing = _git(Path(source), "ls-tree", "-r", "-l", "--full-tree", commit)
+    tree_bytes = 0
+    file_count = 0
+    readable = code == 0
+    if readable:
+        for line in listing.splitlines():
+            # "<mode> <type> <object> <size>\t<path>"; a submodule's size is "-".
+            fields = line.split("\t", 1)[0].split()
+            if len(fields) != 4 or not (fields[3] == "-" or fields[3].isdigit()):
+                readable = False
+                break
+            file_count += 1
+            tree_bytes += 0 if fields[3] == "-" else int(fields[3])
+    if not readable:
+        measured = measured_footprint(
+            "control_plane_deploy", reservation_root=reservation_root
+        )
+        return {
+            "bytes": int(measured["bytes"]),
+            "basis": measured["basis"],
+            "sample_count": measured["sample_count"],
+            "tree_bytes": None,
+            "file_count": None,
+        }
+    return {
+        "bytes": math.ceil(tree_bytes * RELEASE_ESTIMATE_HEADROOM)
+        + RELEASE_ESTIMATE_BLOCK_BYTES * file_count
+        + RELEASE_ESTIMATE_OVERHEAD_BYTES,
+        "basis": "git_tree_estimate",
+        "tree_bytes": tree_bytes,
+        "file_count": file_count,
+    }
+
+
+def _release_runtime_trees(runtime_root: Path, commit: str) -> set[Path]:
+    """The per-release runtime trees, ``<runtime_root>/<component>/<commit>``, present now."""
+
+    try:
+        return {
+            path
+            for path in runtime_root.glob(f"*/{commit}")
+            if path.is_dir() and not path.is_symlink()
+        }
+    except OSError:
+        return set()
+
+
+def _created_release_usage(
+    *,
+    created_release_checkout: bool,
+    release_path: str | Path,
+    runtime_root: Path,
+    commit: str,
+    runtime_trees_before: set[Path],
+) -> TreeUsage | None:
+    """Allocated bytes and scan completeness, or None when nothing was created.
+
+    A redeploy that reuses an existing checkout and runtime trees costs nothing
+    to stage; recording it as a zero-byte sample would only drag the role's
+    measured footprint down, so it records no sample at all.
+    """
+
+    created_trees = _release_runtime_trees(runtime_root, commit) - runtime_trees_before
+    if not created_release_checkout and not created_trees:
+        return None
+    usages = ([tree_usage(release_path)] if created_release_checkout else []) + [
+        tree_usage(path) for path in sorted(created_trees)
+    ]
+    return TreeUsage(
+        allocated_bytes=sum(usage.allocated_bytes for usage in usages),
+        unreadable=sum(usage.unreadable for usage in usages),
+    )
+
+
+def _observe_created_release_usage(
+    reservation: DiskReservation, usage: TreeUsage | None,
+) -> None:
+    if usage is None:
+        return
+    reservation.observe(usage.allocated_bytes)
+    if usage.unreadable:
+        reservation.measurement_incomplete = True
+
+
 def _surface_commit(path: Path, *, name: str) -> str:
     """What commit does this surface *say* it is? Refuse if it cannot say."""
 
@@ -2962,15 +3084,23 @@ def deploy_control_plane_commit(
     startup_sweep = _sweep_retiring_trees(retiring_roots)
     disk_reservation = None
     disk_reservation_runtime = None
+    disk_reservation_estimate = None
     if disk_reservation_root is not None:
         disk_reservation_runtime = _install_disk_reservation_runtime_prerequisites(
             disk_reservation_root
         )
         try:
+            # Reserve what this release costs to stage, not a flat 2 GiB: on
+            # 2026-09-26 the flat figure refused a deploy the disk could hold.
+            disk_reservation_estimate = _release_footprint_estimate(
+                source, source_commit, reservation_root=disk_reservation_root
+            )
             disk_reservation = reserve_control_plane_disk(
                 "control_plane_deploy",
                 target_root=releases,
+                expected_bytes=disk_reservation_estimate["bytes"],
                 reservation_root=disk_reservation_root,
+                workload="control_plane_release",
             )
         except ControlPlaneDiskBudgetError as exc:
             raise ControlPlaneDeployError(
@@ -3024,6 +3154,12 @@ def deploy_control_plane_commit(
             allow_unmerged_remote_commit=canary,
         )
         _mark_stage("release_staged")
+        # Record what this deploy really stages (the release checkout it created
+        # and the runtime trees it provisions) as the deploy role's footprint.
+        runtime_trees_root = Path(scene_configuration_runtime_root).expanduser()
+        runtime_trees_before: set[Path] = set()
+        if disk_reservation is not None:
+            runtime_trees_before = _release_runtime_trees(runtime_trees_root, source_commit)
         # Every path the new units' sandboxes name must exist before the
         # release link moves, or the first worker to start after the switch
         # dies on mount setup and the deploy still reports success.
@@ -3074,6 +3210,15 @@ def deploy_control_plane_commit(
         else:
             scene_preparation_installation = {"status": "not_configured", "bootstrap_path": str(bootstrap),
                                               "provider_mutation_performed": False}
+        if disk_reservation is not None:
+            created_usage = _created_release_usage(
+                created_release_checkout=bool(staged_release.get("created_release_checkout")),
+                release_path=staged_release["release_path"],
+                runtime_root=runtime_trees_root,
+                commit=source_commit,
+                runtime_trees_before=runtime_trees_before,
+            )
+            _observe_created_release_usage(disk_reservation, created_usage)
         _mark_stage("runtime_trees_provisioned")
         agent_pre_activation_drain = _drain_agent_execution_before_release_switch(
             expected_commit=source_commit
@@ -3245,6 +3390,7 @@ def deploy_control_plane_commit(
         "stage_timings_seconds": stage_timings,
         "source_commit": commit,
         "disk_reservation": disk_reservation_receipt,
+        "disk_reservation_estimate": disk_reservation_estimate,
         "disk_reservation_runtime": disk_reservation_runtime,
         "surfaces": [
             {"name": name, "path": str(path), "head": observed[name]}

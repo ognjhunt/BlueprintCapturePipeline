@@ -27,6 +27,9 @@ def persisted_root(tmp_path, monkeypatch):
     root = tmp_path / "verdicts"
     monkeypatch.setenv(store.ROOT_ENV, str(root))
     monkeypatch.setattr(identity, "running_release_commit", lambda *args, **kwargs: COMMIT)
+    # Other test files may leave a service thread briefly alive. These cases
+    # exercise persistence in the single-threaded mode; refusal is tested below.
+    monkeypatch.setattr(store.threading, "active_count", lambda: 1)
     return root
 
 
@@ -68,6 +71,16 @@ def test_verdict_is_computed_once_per_operation_and_copied(tmp_path, persisted_r
     assert calls == [1]
     assert second == {"pin": "x", "files": [1, 2], "pair": [3, 4]}  # normalized, unaffected by the caller's mutation
     assert stats["verdicts_computed"] == 1 and stats["verdicts_reused"] == 0
+
+
+def test_concurrent_thread_refuses_verdict_persistence(tmp_path, monkeypatch):
+    root = tmp_path / "verdicts"
+    monkeypatch.setenv(store.ROOT_ENV, str(root))
+    monkeypatch.setattr(store.threading, "active_count", lambda: 2)
+    _big, _small, aside, documents = _inputs(tmp_path)
+    with file_digest_scope():
+        assert reuse_verdict("t", ("k",), documents, _validator(aside, []))["pin"] == "x"
+    assert not list(root.rglob("*.json"))
 
 
 def test_verdict_is_reused_across_operations_when_nothing_changed(tmp_path, persisted_root):

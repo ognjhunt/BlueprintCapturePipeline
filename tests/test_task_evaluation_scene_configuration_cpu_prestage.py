@@ -154,6 +154,61 @@ def test_prefix_runs_the_bundle_entrypoint_at_the_paid_paths_and_archives_only_c
     assert again == receipt
 
 
+def test_prestage_reservation_measures_the_work_dir_before_it_is_cleared(tmp_path, monkeypatch):
+    from blueprint_pipeline import control_plane_disk_budget as disk
+    calls = []
+    real = disk.reserve_control_plane_disk
+
+    def recording(*args, **kwargs):
+        calls.append(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(disk, "reserve_control_plane_disk", recording)
+    _prepare(tmp_path, _fake_entrypoint(["stage-1", "stage-2", "stage-3", "stage-4"]))
+    # Admission reads the work dir's filesystem; the workspace itself is bound
+    # after the initial clear (see the leftovers test below).
+    assert calls[0]["target_root"] == tmp_path / "workspace"
+    assert calls[0]["workload"] == "cpu_prestage"
+    history = tmp_path / "reservations" / "history" / "cpu_prestage.jsonl"
+    [sample] = [json.loads(line) for line in history.read_text().splitlines()]
+    assert sample["workload"] == "cpu_prestage" and sample["outcome"] == "completed"
+    # The scratch runtime is removed before the reservation is released, so the
+    # sample is the peak taken before that cleanup, not the empty work dir.
+    assert sorted(p.name for p in (tmp_path / "workspace").iterdir()) == [".cpu-prestage.lock"]
+    assert sample["observed_bytes"] > 0
+
+
+def test_prestage_measures_from_the_cleared_work_dir_not_from_crash_leftovers(tmp_path):
+    observed = {}
+    for name in ("clean", "leftovers"):
+        root = tmp_path / name
+        (root / "workspace").mkdir(parents=True)
+        if name == "leftovers":
+            # A crashed attempt's archive, larger than everything this prefix writes.
+            (root / "workspace" / (BUNDLE + ".zip")).write_bytes(b"l" * 512 * 1024)
+        _prepare(root, _fake_entrypoint(["stage-1", "stage-2", "stage-3", "stage-4"]))
+        history = root / "reservations" / "history" / "cpu_prestage.jsonl"
+        [sample] = [json.loads(line) for line in history.read_text().splitlines()]
+        observed[name] = sample["observed_bytes"]
+    # The baseline is the work dir after the initial clear, so leftovers neither
+    # shrink the sample nor hide it.
+    assert observed["clean"] > 0 and observed["leftovers"] == observed["clean"]
+
+
+def test_prestage_counts_as_completed_beside_unrelated_work_dir_content(tmp_path):
+    from blueprint_pipeline.control_plane_disk_footprints import FRESH_WORKSPACE_MAX_BYTES
+    work = tmp_path / "workspace"
+    work.mkdir()
+    # Content the prefix never owned (and its clear never removes) must not make
+    # the prefix look like a resumed pass.
+    (work / "unrelated-cache.bin").write_bytes(b"u" * (FRESH_WORKSPACE_MAX_BYTES + 64 * 1024))
+    _prepare(tmp_path, _fake_entrypoint(["stage-1", "stage-2", "stage-3", "stage-4"]))
+    history = tmp_path / "reservations" / "history" / "cpu_prestage.jsonl"
+    [sample] = [json.loads(line) for line in history.read_text().splitlines()]
+    assert (sample["outcome"], sample["fresh"]) == ("completed", True)
+    assert sample["observed_bytes"] > 0
+
+
 def test_prefix_drops_host_raw_credentials_and_preserves_scoped_secret_files(tmp_path):
     from blueprint_pipeline.task_evaluation_scene_configuration_builtin_producers import (
         _RAW_SECRET_ENVIRONMENT_NAMES,

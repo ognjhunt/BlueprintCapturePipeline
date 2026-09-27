@@ -141,6 +141,102 @@ def test_capacity_wait_does_not_start_factory_and_resumes_when_whole_chain_fits(
     assert engine.process_scene_intents(config_path=config) == resumed
 
 
+@pytest.mark.parametrize('status,outcome', [
+    ('publication_ready', 'completed'),
+    # A factory that stopped short measured a partial workspace.
+    ('blocked', 'blocked'), ('needs_input', 'blocked'), ('awaiting_source', 'blocked'),
+])
+def test_preparation_storage_measures_the_attempt_directory(tmp_path, monkeypatch, status, outcome):
+    from types import SimpleNamespace
+    from blueprint_pipeline import control_plane_disk_budget as disk
+    from blueprint_pipeline.task_evaluation_scene_preparation_attempts import (
+        preparation_storage, settle_preparation_storage,
+    )
+    calls = []
+    real = disk.reserve_control_plane_disk
+
+    def recording(*args, **kwargs):
+        calls.append(kwargs)
+        return real(*args, **kwargs, disk_usage=lambda _path: SimpleNamespace(
+            total=100 * disk.GIB, used=10 * disk.GIB, free=90 * disk.GIB))
+
+    monkeypatch.setattr(disk, 'reserve_control_plane_disk', recording)
+    output = tmp_path / 'factory' / 'intent-1' / 'attempt-1'
+    output.mkdir(parents=True)
+    config = {'preparation_worker': {'disk_reservation_root': str(tmp_path / 'ledger')}}
+    binding = {'references': {'primary': {'size_bytes': 1000}, 'collision': {'size_bytes': 10}}}
+    with preparation_storage(config, binding, output) as reservation:
+        (output / 'materialized').mkdir()
+        (output / 'materialized' / 'scene.bin').write_bytes(b's' * 20_000)
+        settle_preparation_storage(reservation, {'status': status})
+    assert calls[0]['target_root'] == output and calls[0]['workspace'] == output
+    assert calls[0]['workload'] == 'scene_preparation_attempt'
+    history = tmp_path / 'ledger' / 'history' / 'launch_preparation.jsonl'
+    [sample] = [json.loads(line) for line in history.read_text().splitlines()]
+    assert sample['workload'] == 'scene_preparation_attempt' and sample['outcome'] == outcome
+    assert sample['observed_bytes'] >= 20_000
+
+
+def test_preparation_storage_rerun_over_existing_factory_output_records_resumed(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from blueprint_pipeline import control_plane_disk_budget as disk
+    from blueprint_pipeline.task_evaluation_scene_preparation_attempts import (
+        preparation_storage, settle_preparation_storage,
+    )
+    real = disk.reserve_control_plane_disk
+    monkeypatch.setattr(disk, 'reserve_control_plane_disk', lambda *args, **kwargs: real(
+        *args, **kwargs, disk_usage=lambda _path: SimpleNamespace(
+            total=100 * disk.GIB, used=10 * disk.GIB, free=90 * disk.GIB)))
+    output = tmp_path / 'factory' / 'intent-1' / 'attempt-1'
+    (output / 'materialized').mkdir(parents=True)  # an earlier pass of this attempt's factory
+    (output / 'materialized' / 'scene.bin').write_bytes(b's' * 4096)
+    config = {'preparation_worker': {'disk_reservation_root': str(tmp_path / 'ledger')}}
+    with preparation_storage(config, {'references': {}}, output) as reservation:
+        settle_preparation_storage(reservation, {'status': 'publication_ready'})
+    history = tmp_path / 'ledger' / 'history' / 'launch_preparation.jsonl'
+    [sample] = [json.loads(line) for line in history.read_text().splitlines()]
+    assert (sample['outcome'], sample['fresh']) == ('resumed', False)
+
+
+def test_invalid_publication_ready_factory_records_failed_footprint(context, monkeypatch):
+    from types import SimpleNamespace
+    from blueprint_pipeline import control_plane_disk_budget as disk
+
+    config_path = configuration(context, monkeypatch)
+    config = json.loads(config_path.read_text())
+    ledger = config_path.parent / 'ledger'
+    config['preparation_worker'] = {'disk_reservation_root': str(ledger)}
+    write(config_path, config, 'config_digest')
+    real_reserve = disk.reserve_control_plane_disk
+    monkeypatch.setattr(disk, 'reserve_control_plane_disk', lambda *args, **kwargs: real_reserve(
+        *args, **kwargs, disk_usage=lambda _path: SimpleNamespace(
+            total=100 * disk.GIB, used=10 * disk.GIB, free=90 * disk.GIB)))
+    real_source = engine._source
+
+    def invalid_source(*args, **kwargs):
+        resolved = real_source(*args, **kwargs)
+        return engine.SourceResolution(
+            resolved.status, resolved.binding_path, resolved.machinery_path,
+            lambda **_kwargs: {'status': 'publication_ready'},
+        )
+
+    monkeypatch.setattr(engine, '_source', invalid_source)
+    result = engine.process_scene_intents(config_path=config_path)
+    assert result['results'][0]['blockers'] == ['scene_progression_factory_receipt_invalid']
+    history = ledger / 'history' / 'launch_preparation.jsonl'
+    [sample] = [json.loads(line) for line in history.read_text().splitlines()]
+    assert sample['outcome'] == 'failed'
+
+
+def test_hermetic_preparation_storage_has_nothing_to_settle():
+    from blueprint_pipeline.task_evaluation_scene_preparation_attempts import (
+        preparation_storage, settle_preparation_storage,
+    )
+    with preparation_storage({}, {}, None) as reservation:
+        assert reservation is None
+        settle_preparation_storage(reservation, {'status': 'blocked'})
+
+
 @pytest.mark.parametrize("installed", [False, True])
 def test_registered_terminal_adoption_does_not_restart_completed_scene_factory(context, monkeypatch, installed):
     from blueprint_pipeline import task_evaluation_controls_autoprovision as controls

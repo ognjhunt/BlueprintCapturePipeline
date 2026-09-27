@@ -36,6 +36,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from contextlib import ExitStack
+from contextvars import ContextVar
 from functools import wraps
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -163,6 +164,30 @@ def _write_report(run_root: Path, report: Mapping[str, Any]) -> str:
     return str(path)
 
 
+# The reservation of the replay in progress: its scratch root is only created
+# after admission, so the replay binds it here as soon as it exists.
+_ACTIVE_RESERVATION: ContextVar[Any] = ContextVar("stage_replay_disk_reservation", default=None)
+
+
+def _bind_replay_workspace(run_root: Path) -> None:
+    """Measure the scratch root this replay just made, not the shared replay root."""
+
+    bind = getattr(_ACTIVE_RESERVATION.get(), "bind_workspace", None)
+    if bind is not None:
+        bind(run_root)
+
+
+def _replay_completed(report: Mapping[str, Any]) -> bool:
+    """Only a replay that succeeded measured its whole footprint.
+
+    A child replay succeeds when its stage completed; a parent replay when the
+    worker queued the parent for production.  Waiting, refused, blocked or
+    row-less replays stopped before their work and are recorded as blocked.
+    """
+    status = str(report.get("status") or "")
+    return status == "completed" or status.startswith("queued_for_production_")
+
+
 def _reserved_replay(function):
     @wraps(function)
     def run(*, report_admission_refusal=False, **kwargs):
@@ -173,6 +198,7 @@ def _reserved_replay(function):
             try:
                 reservation = stack.enter_context(reserve_control_plane_disk(
                     "stage_replay", target_root=kwargs["replay_root"], reservation_root=DEFAULT_RESERVATION_ROOT,
+                    workload="stage_replay",
                 ))
             except ControlPlaneDiskBudgetError as exc:
                 if not report_admission_refusal:
@@ -186,7 +212,10 @@ def _reserved_replay(function):
                     "fired_predicates": [], "stage_handler_started": False,
                     "provider_mutation_performed": False, "proof_effect": "none"}
             stack.enter_context(file_digest_scope())
+            stack.callback(_ACTIVE_RESERVATION.reset, _ACTIVE_RESERVATION.set(reservation))
             report = function(**kwargs)
+            if not _replay_completed(report):
+                reservation.release(outcome="blocked")
             report["disk_reservation"] = reservation.receipt()
             if report.get("report_path"):
                 _write_report(Path(report["report_path"]).parent, report)
@@ -216,6 +245,7 @@ def replay_child(
     run_root = Path(
         tempfile.mkdtemp(prefix=f"{child_id[:20]}-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}-", dir=str(replay_root))
     )
+    _bind_replay_workspace(run_root)
     phase = str(job.get("phase") or "")
     report: dict[str, Any] = {
         "schema_version": SCHEMA,
@@ -421,6 +451,7 @@ def replay_parent(
     parent_digest = str(envelope.get("request_digest") or "")
     Path(replay_root).mkdir(parents=True, exist_ok=True)
     run_root = Path(tempfile.mkdtemp(prefix=f"parent-{located.stem[:24]}-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}-", dir=str(replay_root)))
+    _bind_replay_workspace(run_root)
     scratch_queue = run_root / "launch-preparations"
     scratch_child = run_root / "sam31-preparation-executions"
     scratch_inputs = run_root / "prepared-references"
