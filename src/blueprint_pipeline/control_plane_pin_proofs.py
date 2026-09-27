@@ -14,6 +14,7 @@ from pathlib import Path
 
 from .control_plane_evidence_offload import POINTER_SUFFIX, _has_result_registry, _terminal_receipt, _tree_snapshot
 from .control_plane_storage_pins import depends_on
+from .control_plane_storage_references import QueueReferenceUnreadable, queue_reference_text
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 
 # A pin may name the reproducible activation inputs (cache or work class) or the
@@ -336,38 +337,21 @@ def _authorization_consumption(profile_id, standing_authorization_dir):
 def _launch_requested(launch_queue_root, names):
     """Whether a launch queue row, in any state, names the activation or its profile; None when none does.
 
-    Every file under the launch queue is read, whatever state directory holds it,
-    bounded as ``queue_reference_text`` bounds a row. A linked file or directory,
-    a row over the bound, or one that cannot be read proves nothing.
+    Every row in every state directory of the launch queue is read with the
+    strict queue reader, twice, so a row renamed between states mid-read is
+    seen. A linked, oversized or unreadable row or state proves nothing.
     """
-
-    from .control_plane_storage_references import MAX_QUEUE_MESSAGE_BYTES
 
     if launch_queue_root is None:
         return "launch_queue_unconfigured"
     root = Path(launch_queue_root)
-    needles = [name.encode("utf-8") for name in names]
-    try:
-        if root.is_symlink() or not root.is_dir():
-            return "launch_queue_unavailable"
-        for directory, subdirectories, files in os.walk(root, onerror=_raise):
-            for name in (*subdirectories, *files):
-                if (Path(directory) / name).is_symlink():
-                    return "launch_queue_unavailable"
-            for name in files:
-                path = Path(directory) / name
-                if path.lstat().st_size > MAX_QUEUE_MESSAGE_BYTES:
-                    return "launch_queue_unavailable"
-                data = path.read_bytes()
-                if any(needle in data for needle in needles):
-                    return "activation_launch_requested"
-    except OSError:
+    if root.is_symlink() or not root.is_dir():
         return "launch_queue_unavailable"
-    return None
-
-
-def _raise(error):
-    raise error
+    try:
+        text = "\n".join(queue_reference_text([root], states=None, strict=True) for _read_pass in range(2))
+    except QueueReferenceUnreadable:
+        return "queue_unreadable"
+    return "activation_launch_requested" if any(name in text for name in names) else None
 
 
 def _authorization_expiry(owner, envelope_path):

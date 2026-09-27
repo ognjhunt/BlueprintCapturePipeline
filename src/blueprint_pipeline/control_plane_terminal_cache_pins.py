@@ -49,9 +49,11 @@ its id, ``<id>-launch``, and the bounded launch id the launch paths derive for a
 long id, with their own functions.
 Every proof keeps the six-hour minimum pin age, the dependency closure (a pin
 is released only when no queue row or process references any pin in it), and
-a re-derivation at the mutation edge. The extended proofs also count a row
-parked in a queue state that will still run, such as a preparation awaiting
-its source preparation. The report names every live pin: as a
+a re-derivation at the mutation edge. The extended proofs read queues
+strictly: they also count a row parked in a queue state that will still run,
+such as a preparation awaiting its source preparation, and a row they cannot
+read (linked, oversized, not UTF-8 or unreadable) keeps their candidates as
+``queue_unreadable``, where the original proofs skip it as they always did. The report names every live pin: as a
 candidate with its ``proof``, or in ``kept`` with a typed reason. A candidate
 whose references change at the mutation edge is kept too, as
 ``reference_changed``.
@@ -64,7 +66,7 @@ from pathlib import Path
 
 from .control_plane_pin_proofs import MINIMUM_PIN_AGE_SECONDS, _evidence_names, _pin_path_allowed, _read, extended_proof
 from .control_plane_storage_pins import depends_on, load_storage_pins, release_storage_pin, storage_pin_guard
-from .control_plane_storage_references import queue_reference_text
+from .control_plane_storage_references import QueueReferenceUnreadable, queue_reference_text
 from .decision_evidence_contracts import canonical_digest
 from .completed_replay_cache_retention import active_reference
 from .control_plane_evidence_offload import (
@@ -142,41 +144,23 @@ def _derive(pin, live_pins, context):
         return None, "proof_error", type(exc).__name__
 
 
-def _parked_queue_text(queue_roots):
-    """Rows parked in a queue state that will still run, beyond pending and processing.
+def _live_queue_text(queue_roots):
+    """Every queue row that will still run, read strictly: ``(text, None)``, or ``(None, "queue_unreadable")``.
 
-    ``LIVE_QUEUE_STATES`` names those states: a preparation that paused on its
-    source preparation or on capacity is pinned and still in flight, yet its row
-    sits in ``awaiting_source_preparation`` or ``awaiting_capacity``. The extended
-    proofs read these rows as references too; rows are read as
-    ``queue_reference_text`` reads them.
+    Pending and processing rows of every root, and the rows a queue parks in a
+    state that will still run (``LIVE_QUEUE_STATES``: a preparation awaiting its
+    source or capacity), each read twice so a row moving between states mid-read
+    is seen. Only the extended proofs read this way; a row that cannot be read
+    keeps their candidates and nothing else.
     """
 
     from .control_plane_release_leases import LIVE_QUEUE_STATES
-    from .control_plane_storage_references import MAX_QUEUE_MESSAGE_BYTES, QUEUE_STATES
-    chunks = []
-    for raw_root in queue_roots:
-        root = Path(raw_root).expanduser()
-        for state in LIVE_QUEUE_STATES.get(root.name, ()):
-            directory = root / state
-            if state in QUEUE_STATES or not directory.is_dir() or directory.is_symlink():
-                continue
-            for path in sorted(directory.glob("*.json")):
-                try:
-                    if not path.is_symlink() and path.stat().st_size <= MAX_QUEUE_MESSAGE_BYTES:
-                        chunks.append(path.read_text(encoding="utf-8"))
-                except (OSError, UnicodeDecodeError):
-                    continue
-    return "\n".join(chunks)
-
-
-def _parked_or_error(queue_roots):
-    """``(text, None)``, or ``(None, error type)`` when the parked rows cannot be read."""
 
     try:
-        return _parked_queue_text(queue_roots), None
-    except Exception as exc:  # noqa: BLE001 - an unreadable parked row keeps the extended candidates, never the tick
-        return None, type(exc).__name__
+        return "\n".join(queue_reference_text(queue_roots, states=LIVE_QUEUE_STATES, strict=True)
+                         for _read_pass in range(2)), None
+    except QueueReferenceUnreadable:
+        return None, "queue_unreadable"
 
 
 def _live_pins(pins_root, now):
@@ -237,13 +221,8 @@ def reconcile_terminal_cache_pins(*, pins_root, queue_roots, evidence_roots, now
     for root in evidence_roots:
         classifier(str(root), expected="evidence_cold", code="terminal_cache_pin_evidence_root_invalid")
     pins = _live_pins(pins_root, now)
-    # Parked rows before and after the pending and processing rows, so a row moving
-    # between them either way is seen; only the extended proofs read them.
-    parked_before = _parked_or_error(queue_roots)
     queue_text = queue_reference_text(queue_roots)
-    parked_after = _parked_or_error(queue_roots)
-    parked_error = parked_before[1] or parked_after[1]
-    live_queue_text = None if parked_error else "\n".join((parked_before[0], queue_text, parked_after[0]))
+    live_queue_text, queue_unreadable = _live_queue_text(queue_roots)
     context = {"classifier": classifier, "now": now, "evidence_roots": evidence_roots,
                "hot_window_seconds": hot_window_seconds, "activation_queue_root": activation_queue_root,
                "preparation_queue_root": preparation_queue_root, "running_commit": running_commit,
@@ -264,8 +243,8 @@ def reconcile_terminal_cache_pins(*, pins_root, queue_roots, evidence_roots, now
             reason = _closure_reason(identity, closure, pins, queue_text, reference_checker)
         else:
             proof, reason, error = _derive(pin, pins, context)
-            if proof is not None and parked_error is not None:
-                reason, error = "proof_error", parked_error
+            if proof is not None and queue_unreadable is not None:
+                reason = queue_unreadable
             elif proof is not None:
                 try:
                     closure = _closure(identity, pins)
@@ -298,8 +277,10 @@ def reconcile_terminal_cache_pins(*, pins_root, queue_roots, evidence_roots, now
         # keeps this pin, with its error type, and costs no other.
         try:
             with storage_pin_guard(pins_root, exclusive=True):
-                fresh = "\n".join((_parked_queue_text(queue_roots), queue_reference_text(queue_roots),
-                                   _parked_queue_text(queue_roots)))
+                fresh, fresh_unreadable = _live_queue_text(queue_roots)
+                if fresh_unreadable is not None:
+                    kept.append({**candidate, "reason": fresh_unreadable})
+                    continue
                 if (proof != _derive(pin, _live_pins(pins_root, now), context)[0]
                         or _referenced(closure, fresh, reference_checker)):
                     kept.append({**candidate, "reason": "reference_changed"})

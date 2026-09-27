@@ -744,7 +744,8 @@ def test_launch_queue_row_in_any_state_keeps_the_pin(tmp_path, state, names) -> 
     assert result["candidates"] == [] and _states(args)[("activation", "act-u")] == "live"
 
 
-@pytest.mark.parametrize("reason", ["unconfigured", "linked_row", "linked_state", "oversized_row"])
+@pytest.mark.parametrize("reason", [
+    "unconfigured", "root_linked", "linked_row", "linked_state", "oversized_row", "non_utf8_row", "unreadable_row"])
 def test_an_unreadable_launch_queue_keeps_the_pin(tmp_path, monkeypatch, reason) -> None:
     """Absence of a launch row proves nothing unless every row of the launch queue was read."""
 
@@ -765,11 +766,19 @@ def test_an_unreadable_launch_queue_keeps_the_pin(tmp_path, monkeypatch, reason)
     if reason == "oversized_row":
         _launch_row(args, "completed", "launch-9", note="x" * 64)
         monkeypatch.setattr(references, "MAX_QUEUE_MESSAGE_BYTES", 32)
+    if reason == "non_utf8_row":
+        (launches / "completed" / f"launch-9-{'0' * 16}.json").write_bytes(b"\xff\xfe")
+    if reason == "root_linked":
+        launches.rename(tmp_path / "moved-launches")
+        launches.symlink_to(tmp_path / "moved-launches")
+    if reason == "unreadable_row":
+        _unreadable(_launch_row(args, "completed", "launch-9"))
 
     result = reconcile_terminal_cache_pins(**args, apply=True, extended_proofs_enabled=True)
 
     assert _kept(result)[("activation", "act-u")] == {
-        "unconfigured": "launch_queue_unconfigured"}.get(reason, "launch_queue_unavailable")
+        "unconfigured": "launch_queue_unconfigured", "root_linked": "launch_queue_unavailable"}.get(
+            reason, "queue_unreadable")
     assert result["candidates"] == [] and _states(args)[("activation", "act-u")] == "live"
 
 
@@ -965,24 +974,101 @@ def test_a_queue_row_naming_a_dependency_keeps_the_extended_candidate(tmp_path) 
     assert set(_states(args).values()) == {"live"}
 
 
-def test_an_unreadable_parked_queue_costs_only_the_extended_candidates(tmp_path, monkeypatch) -> None:
-    """Reading parked rows is the extended proofs' own addition: its failure keeps their candidates and nothing else."""
+def test_an_unreadable_queue_costs_only_the_extended_candidates(tmp_path) -> None:
+    """The extended proofs read queues strictly; a row they cannot read keeps their candidates and nothing else.
+
+    The original proofs read pending and processing rows as they always did, and
+    skip a linked row.
+    """
 
     args = _args(tmp_path)
     _sealed_cold_case(tmp_path, args)
-    _prepared(_preparation_queue(tmp_path, args), "prep-stale")
+    preparations = _preparation_queue(tmp_path, args)
+    _prepared(preparations, "prep-stale")
     _pin(args, "preparation", "prep-stale", age=LAPSE + DAY)
-
-    def unreadable(_queue_roots):
-        raise PermissionError("parked rows cannot be listed")
-
-    monkeypatch.setattr(terminal_pins, "_parked_queue_text", unreadable)
+    elsewhere = tmp_path / "elsewhere-row.json"
+    elsewhere.write_text("{}", encoding="utf-8")
+    (preparations / "awaiting_source_preparation").mkdir()
+    (preparations / "awaiting_source_preparation" / "row.json").symlink_to(elsewhere)
 
     for enabled in (False, True):
         result = reconcile_terminal_cache_pins(**args, apply=True, extended_proofs_enabled=enabled)
         assert [row for row in result["kept"] if row["owner_id"] == "prep-stale"] == [
-            {"kind": "preparation", "owner_id": "prep-stale", "reason": "proof_error", "error_type": "PermissionError"}]
+            {"kind": "preparation", "owner_id": "prep-stale", "reason": "queue_unreadable"}]
     assert _states(args) == {("preparation", "prep-stale"): "live", ("activation", "cold"): "released"}
+
+
+def _unreadable(path: Path) -> Path:
+    """A row the tick's user cannot read, as a chmod leaves it; root reads anything, so such a test is skipped."""
+
+    if os.geteuid() == 0:
+        pytest.skip("root reads a chmod-000 file")
+    path.chmod(0)
+    return path
+
+
+@pytest.mark.parametrize("fault", [
+    "unreadable_pending", "unreadable_parked", "linked_pending", "linked_parked", "linked_state", "non_utf8",
+    "oversized"])
+def test_an_unreadable_or_linked_queue_row_keeps_the_stale_pin(tmp_path, monkeypatch, fault) -> None:
+    """Code review of 10c: a row the reader skips counted as naming nothing, so a chmod-000 or linked
+    pending or parked row let the stale-pin proof release a pin that row may name."""
+
+    from blueprint_pipeline import control_plane_storage_references as references
+
+    args = _args(tmp_path)
+    preparations = _preparation_queue(tmp_path, args)
+    _prepared(preparations, "prep-x")
+    _pin(args, "preparation", "prep-x", age=LAPSE + DAY)
+    pending = Path(args["queue_roots"][0]) / "pending"
+    parked = preparations / "awaiting_source_preparation"
+    for directory in (pending, parked):
+        directory.mkdir(parents=True)
+    row = json.dumps({"preparation_id": "prep-other"})
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "row.json").write_text(row, encoding="utf-8")
+    if fault == "unreadable_pending":
+        (pending / "row.json").write_text(row, encoding="utf-8")
+        _unreadable(pending / "row.json")
+    if fault == "unreadable_parked":
+        (parked / "row.json").write_text(row, encoding="utf-8")
+        _unreadable(parked / "row.json")
+    if fault == "linked_pending":
+        (pending / "row.json").symlink_to(elsewhere / "row.json")
+    if fault == "linked_parked":
+        (parked / "row.json").symlink_to(elsewhere / "row.json")
+    if fault == "linked_state":
+        (preparations / "awaiting_capacity").symlink_to(elsewhere)
+    if fault == "non_utf8":
+        (pending / "row.json").write_bytes(b"\xff\xfe")
+    if fault == "oversized":
+        (pending / "row.json").write_text(row, encoding="utf-8")
+        monkeypatch.setattr(references, "MAX_QUEUE_MESSAGE_BYTES", 8)
+
+    result = reconcile_terminal_cache_pins(**args, apply=True, extended_proofs_enabled=True)
+
+    assert _kept(result) == {("preparation", "prep-x"): "queue_unreadable"}
+    assert result["candidates"] == [] and _states(args)[("preparation", "prep-x")] == "live"
+
+
+def test_the_original_queue_reader_is_unchanged(tmp_path) -> None:
+    """Every original caller still skips a linked, oversized or unreadable row; only strict reads refuse one."""
+
+    from blueprint_pipeline import control_plane_storage_references as references
+
+    queue = tmp_path / "queue"
+    (queue / "pending").mkdir(parents=True)
+    (queue / "pending" / "a.json").write_text('{"name": "named-a"}', encoding="utf-8")
+    (queue / "pending" / "b.json").symlink_to(queue / "pending" / "a.json")
+    (queue / "pending" / "c.json").write_bytes(b"\xff")
+
+    assert references.queue_reference_text([queue]) == '{"name": "named-a"}'
+    with pytest.raises(references.QueueReferenceUnreadable):
+        references.queue_reference_text([queue], strict=True)
+    (queue / "pending" / "b.json").unlink()
+    (queue / "pending" / "c.json").unlink()
+    assert references.queue_reference_text([queue], strict=True) == '{"name": "named-a"}'
 
 
 def test_a_failed_release_costs_only_its_own_pin(tmp_path, monkeypatch) -> None:
