@@ -389,3 +389,52 @@ def test_an_unknown_outcome_never_counts_as_completed(tmp_path):
     reservation.release(outcome="finished")
     [row] = [json.loads(line) for line in (ledger / "history" / "launch_activation.jsonl").read_text().splitlines()]
     assert row["outcome"] == "failed"
+
+
+def _roomy_reservation(tmp_path, ledger, **kwargs):
+    return reserve_control_plane_disk("launch_activation", target_root=tmp_path, reservation_root=ledger,
+        disk_usage=lambda _p: Usage(100 * GIB, 0, 90 * GIB), now=lambda: 1.0, pid_alive=lambda _pid: True,
+        **kwargs)
+
+
+def _history_rows(ledger, role="launch_activation"):
+    return [json.loads(line) for line in (ledger / "history" / f"{role}.jsonl").read_text().splitlines()]
+
+
+def test_a_pass_over_an_already_full_workspace_records_resumed_not_completed(tmp_path):
+    # A resumed pass starts from a workspace that already holds the run, so its
+    # growth is near zero; counted as completed it would collapse the p95.
+    ledger, work = tmp_path / "ledger", tmp_path / "job"
+    work.mkdir()
+    (work / "run.bin").write_bytes(b"r" * (footprints.FRESH_WORKSPACE_MAX_BYTES + 64 * 1024))
+    reservation = _roomy_reservation(tmp_path, ledger, workspace=work)
+    (work / "resume.log").write_bytes(b"l" * 4096)
+    reservation.release()
+    [row] = _history_rows(ledger)
+    assert (row["outcome"], row["fresh"]) == ("resumed", False)
+    assert row["baseline_bytes"] > footprints.FRESH_WORKSPACE_MAX_BYTES
+    assert disk_budget.measured_footprint("launch_activation", reservation_root=ledger)["sample_count"] == 0
+
+
+def test_a_fresh_workspace_records_completed_with_its_baseline(tmp_path):
+    ledger = tmp_path / "ledger"
+    reservation = _roomy_reservation(tmp_path, ledger, workspace=tmp_path / "absent-until-run")
+    reservation.release()
+    [row] = _history_rows(ledger)
+    assert (row["outcome"], row["fresh"], row["baseline_bytes"]) == ("completed", True, 0)
+
+
+def test_callers_can_assert_or_deny_freshness(tmp_path):
+    ledger, work = tmp_path / "ledger", tmp_path / "job"
+    work.mkdir()
+    (work / "leftover.bin").write_bytes(b"x" * (footprints.FRESH_WORKSPACE_MAX_BYTES + 64 * 1024))
+    cleared = _roomy_reservation(tmp_path, ledger)
+    cleared.bind_workspace(work, fresh=True)  # e.g. measured right after the caller cleared it
+    cleared.release()
+    resumed = _roomy_reservation(tmp_path, ledger, workspace=tmp_path / "empty", fresh=False)
+    resumed.release()
+    assert [(row["outcome"], row["fresh"]) for row in _history_rows(ledger)] == [
+        ("completed", True), ("resumed", False)]
+    assert disk_budget.record_footprint_sample(reservation_root=ledger, role="launch_activation",
+        observed_bytes=1, reserved_bytes=GIB, fresh=False)
+    assert _history_rows(ledger)[-1]["outcome"] == "resumed"

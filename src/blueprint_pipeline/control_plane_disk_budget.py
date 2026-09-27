@@ -29,6 +29,7 @@ from .control_plane_disk_footprints import (
     FOOTPRINT_HISTORY_DIRNAME,
     FOOTPRINT_OUTCOMES,
     FOOTPRINT_SAMPLE_SCHEMA,
+    FRESH_WORKSPACE_MAX_BYTES,
     HISTORY_COMPACTION_BYTES,
     HISTORY_LOCK_WAIT_SECONDS,
     HISTORY_MAX_LINES,
@@ -206,14 +207,22 @@ class DiskReservation:
     # None until a workspace is bound or an observation arrives: only then is
     # there a measurement worth adding to the role's history.
     peak_delta_bytes: int | None = None
+    # Whether the workspace was fresh when bound (absent or nearly empty); a
+    # pass over an already-populated workspace resumes a job, it does not run one.
+    fresh: bool = True
     started_at_epoch: float = 0.0
     clock: Callable[[], float] = field(default=time.time, repr=False, compare=False)
 
-    def bind_workspace(self, path: str | Path) -> None:
-        """Measure growth of ``path`` from now on (a workspace created after admission)."""
+    def bind_workspace(self, path: str | Path, *, fresh: bool | None = None) -> None:
+        """Measure growth of ``path`` from now on (a workspace created after admission).
+
+        ``fresh`` is inferred from the baseline unless the caller knows better:
+        ``True`` right after it cleared the workspace, ``False`` when it resumes.
+        """
 
         self.workspace = Path(path)
         self.baseline_bytes = _workspace_allocated_bytes(self.workspace)
+        self.fresh = _is_fresh(self.baseline_bytes) if fresh is None else bool(fresh)
         if self.peak_delta_bytes is None:
             self.peak_delta_bytes = 0
 
@@ -270,6 +279,8 @@ class DiskReservation:
                 duration_seconds=max(0.0, float(self.clock()) - self.started_at_epoch),
                 device=self.device,
                 now=self.clock,
+                baseline_bytes=self.baseline_bytes if self.workspace is not None else None,
+                fresh=self.fresh,
             )
         except Exception:  # the reservation is released; a lost sample is harmless
             pass
@@ -294,6 +305,10 @@ class DiskReservation:
             "footprint_sample_count": self.footprint_sample_count,
             "workload": self.workload,
         }
+
+
+def _is_fresh(baseline_bytes: int) -> bool:
+    return baseline_bytes < FRESH_WORKSPACE_MAX_BYTES
 
 
 def _workspace_allocated_bytes(path: Path) -> int:
@@ -338,6 +353,7 @@ def reserve_control_plane_disk(
     evictor: Callable[[int], Any] | None = None,
     workspace: str | Path | None = None,
     workload: str | None = None,
+    fresh: bool | None = None,
 ) -> DiskReservation:
     """Atomically reserve disk headroom or raise a typed refusal.
 
@@ -345,7 +361,9 @@ def reserve_control_plane_disk(
     declared ceiling while the history is short).  ``workspace`` is the per-job
     directory whose growth is recorded as the role's footprint sample when the
     reservation is released; ``target_root`` remains the tree whose filesystem
-    admission is computed against.
+    admission is computed against.  Only a workspace that was fresh when bound
+    (inferred from its baseline, or ``fresh`` from the caller) can record a
+    completed sample; a resumed pass records "resumed".
     """
 
     if not _ROLE_RE.fullmatch(role) or role not in ROLE_FOOTPRINT_BYTES:
@@ -381,6 +399,9 @@ def reserve_control_plane_disk(
     # before the ledger lock every other worker's admission waits on.
     bound = None if workspace is None else Path(workspace).expanduser()
     baseline = 0 if bound is None else _workspace_allocated_bytes(bound)
+    # A caller resuming an earlier pass says so; otherwise a nearly empty
+    # workspace is fresh and one already holding bytes is not.
+    workspace_fresh = _is_fresh(baseline) if fresh is None else bool(fresh)
     ledger = _prepare_ledger_root(Path(reservation_root).expanduser())
     lock_path = ledger / ".lock"
     with lock_path.open("a+b") as lock:
@@ -467,6 +488,7 @@ def reserve_control_plane_disk(
         workspace=bound,
         baseline_bytes=baseline,
         peak_delta_bytes=None if bound is None else 0,
+        fresh=workspace_fresh,
         started_at_epoch=float(started),
         clock=now,
     )

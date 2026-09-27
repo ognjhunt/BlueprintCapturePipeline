@@ -1674,20 +1674,8 @@ def test_post_allocator_failure_is_not_labeled_preprovider_or_retried(
     assert (queue / "blocked" / pending.name).is_file()
 
 
-@pytest.mark.parametrize("status,outcome", [
-    ("awaiting_official_billing", "completed"),
-    # A run that returns blocked stopped before its work; it must not shape admission.
-    ("blocked_without_provider_allocation", "blocked"),
-])
-def test_canary_reservation_measures_its_own_dispatch_directory(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    status: str,
-    outcome: str,
-) -> None:
-    from types import SimpleNamespace
-
-    from blueprint_pipeline import task_evaluation_policy_canary_dispatcher as dispatcher
+def _pending_canary(tmp_path: Path) -> tuple[Path, Path]:
+    """A sealed canary envelope pending in the paid queue, with its execution setup."""
 
     activation_result, setup_path, _activation = _inputs(tmp_path)
     queue = tmp_path / "queue"
@@ -1715,6 +1703,25 @@ def test_canary_reservation_measures_its_own_dispatch_directory(
     setups = tmp_path / "setups"
     setups.mkdir()
     (setups / "activation-1.json").write_bytes(setup_path.read_bytes())
+    return queue, setups
+
+
+@pytest.mark.parametrize("status,outcome", [
+    ("awaiting_official_billing", "completed"),
+    # A run that returns blocked stopped before its work; it must not shape admission.
+    ("blocked_without_provider_allocation", "blocked"),
+])
+def test_canary_reservation_measures_its_own_dispatch_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    status: str,
+    outcome: str,
+) -> None:
+    from types import SimpleNamespace
+
+    from blueprint_pipeline import task_evaluation_policy_canary_dispatcher as dispatcher
+
+    queue, setups = _pending_canary(tmp_path)
     calls: list[dict[str, object]] = []
     real = dispatcher.reserve_control_plane_disk
 
@@ -1753,6 +1760,49 @@ def test_canary_reservation_measures_its_own_dispatch_directory(
     [sample] = [json.loads(line) for line in history.read_text().splitlines()]
     assert sample["workload"] == "policy_canary" and sample["outcome"] == outcome
     assert sample["observed_bytes"] >= 50_000
+
+
+def test_resumed_canary_passes_never_move_the_measured_footprint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A canary awaiting billing stays pending and is re-run by its path unit. Each
+    resume found its run already on disk, so it grew by nearly nothing; recorded as
+    completed, fifty of them pulled the next reservation down to the 64 MiB floor."""
+    from types import SimpleNamespace
+
+    from blueprint_pipeline import control_plane_disk_budget as disk_budget
+    from blueprint_pipeline import task_evaluation_policy_canary_dispatcher as dispatcher
+
+    queue, setups = _pending_canary(tmp_path)
+    ledger = tmp_path / "reservations"
+    for _ in range(10):
+        assert disk_budget.record_footprint_sample(
+            reservation_root=ledger, role="policy_canary_dispatch", workload="policy_canary",
+            observed_bytes=int(1.5 * 1024**3), reserved_bytes=2 * 1024**3)
+    before = disk_budget.measured_footprint("policy_canary_dispatch", reservation_root=ledger)
+    # The run already started on an earlier pass: its session authority is on disk.
+    run = tmp_path / "dispatches" / "activation-1"
+    run.mkdir(parents=True)
+    (run / "policy_canary_session_authority.json").write_text("{}")
+    real = dispatcher.reserve_control_plane_disk
+    monkeypatch.setattr(dispatcher, "reserve_control_plane_disk", lambda *args, **kwargs: real(
+        *args, **kwargs, disk_usage=lambda _path: SimpleNamespace(total=100 * 1024**3, used=0, free=90 * 1024**3)))
+    monkeypatch.setattr(dispatcher, "dispatch_policy_canary_activation",
+                        lambda **_kwargs: {"status": "awaiting_official_billing", "allocator_invoked": True})
+    for _ in range(50):
+        observed = process_policy_canary_dispatch_queue(
+            dispatch_queue_root=queue, execution_setup_root=setups, dispatch_root=tmp_path / "dispatches",
+            implementation_commit=COMMIT, execute=True,
+            blocked_sync_runner=lambda **_kwargs: pytest.fail("no preprovider block expected"),
+            provider_zero_collector=lambda: pytest.fail("no provider zero expected"),
+            disk_reservation_root=ledger,
+        )
+        assert observed["results"][0]["status"] == "awaiting_official_billing"
+
+    rows = [json.loads(line) for line in (ledger / "history" / "policy_canary_dispatch.jsonl").read_text().splitlines()]
+    assert [row["outcome"] for row in rows[10:]] == ["resumed"] * 50
+    after = disk_budget.measured_footprint("policy_canary_dispatch", reservation_root=ledger)
+    assert after == before and after["basis"] == "measured_p95" and after["sample_count"] == 10
 
 
 def test_paid_queue_waits_for_setup_without_invoking_dispatcher(tmp_path: Path) -> None:

@@ -31,9 +31,14 @@ from .control_plane_disk_ledger import (
 )
 
 # How a measured job ended.  Only a completed job measured its whole footprint,
-# so only "completed" samples shape admission; "failed" means the job raised and
-# "blocked" means it returned a blocked result before finishing its work.
-FOOTPRINT_OUTCOMES = frozenset({"completed", "failed", "blocked"})
+# so only "completed" samples shape admission; "failed" means the job raised,
+# "blocked" means it returned a blocked result before finishing its work, and
+# "resumed" means the pass started from a workspace that already held an earlier
+# pass's bytes, so its growth is not the job's footprint.
+FOOTPRINT_OUTCOMES = frozenset({"completed", "failed", "blocked", "resumed"})
+# A workspace is fresh when bound if it did not exist or held less than this;
+# only a fresh workspace's growth can be a completed job's whole footprint.
+FRESH_WORKSPACE_MAX_BYTES = 1024**2
 
 FOOTPRINT_HISTORY_DIRNAME = "history"
 FOOTPRINT_SAMPLE_SCHEMA = "control_plane_disk_footprint_sample.v1"
@@ -172,11 +177,14 @@ def record_footprint_sample(
     duration_seconds: float | None = None,
     device: int | None = None,
     now: Callable[[], float] = time.time,
+    baseline_bytes: int | None = None,
+    fresh: bool | None = None,
 ) -> bool:
     """Append one sample to <ledger>/history/<role>.jsonl. Never raises; returns False on failure.
 
     A lost sample is harmless: admission keeps the older samples, or the
-    declared ceiling while the history is short.
+    declared ceiling while the history is short.  A "completed" sample whose
+    workspace was not fresh is recorded as "resumed", so it never counts.
     """
 
     try:
@@ -193,8 +201,13 @@ def record_footprint_sample(
             or isinstance(reserved_bytes, bool)
             or (device is not None
                 and (not isinstance(device, int) or isinstance(device, bool)))
+            or (baseline_bytes is not None
+                and (not isinstance(baseline_bytes, int) or isinstance(baseline_bytes, bool)))
+            or (fresh is not None and not isinstance(fresh, bool))
         ):
             return False
+        if outcome == "completed" and fresh is False:
+            outcome = "resumed"
         duration = None
         if duration_seconds is not None:
             duration = round(max(0.0, float(duration_seconds)), 3)
@@ -210,6 +223,8 @@ def record_footprint_sample(
             "duration_seconds": duration,
             "device": device,
             "recorded_at_epoch": round(float(now()), 3),
+            "baseline_bytes": None if baseline_bytes is None else max(0, baseline_bytes),
+            "fresh": fresh,
         }
         line = (
             json.dumps(sample, sort_keys=True, separators=(",", ":"), allow_nan=False)
@@ -317,6 +332,7 @@ __all__ = [
     "FOOTPRINT_HISTORY_DIRNAME",
     "FOOTPRINT_OUTCOMES",
     "FOOTPRINT_SAMPLE_SCHEMA",
+    "FRESH_WORKSPACE_MAX_BYTES",
     "HISTORY_COMPACTION_BYTES",
     "HISTORY_LOCK_WAIT_SECONDS",
     "HISTORY_MAX_LINES",

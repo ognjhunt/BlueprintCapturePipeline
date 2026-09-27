@@ -358,8 +358,9 @@ def prepare_stage_prefix_before_gpu(
             # The exclusive lock proves no cooperating producer owns leftovers.
             _clear_work_products(work)
             # Measure from the cleared work dir, so a crashed attempt's leftovers
-            # neither shrink nor hide this prefix's footprint.
-            reservation.bind_workspace(work)
+            # neither shrink nor hide this prefix's footprint; the clear makes it
+            # fresh whatever unrelated content the work dir also holds.
+            reservation.bind_workspace(work, fresh=True)
             _extract(bundle, root)
             _require((root / ENTRYPOINT).is_file(), "entrypoint_missing")
             output.mkdir(mode=0o750)

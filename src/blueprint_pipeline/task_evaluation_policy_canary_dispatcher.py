@@ -2326,6 +2326,11 @@ def process_policy_canary_dispatch_queue(
             processed.append(waiting)
             continue
         output = outputs / activation_id
+        # A pass that finds the run's session authority or allocator start on disk
+        # resumes a run an earlier pass started (awaiting billing, provider zero or
+        # interpretation): its growth is not the run's footprint.
+        resumes_run = any((output / name).exists() for name in (
+            "policy_canary_session_authority.json", "allocator_invocation_started.json"))
         try:
             reservation = (
                 reserve_control_plane_disk(
@@ -2336,6 +2341,7 @@ def process_policy_canary_dispatch_queue(
                     # measures only this run's own tree.
                     workspace=output,
                     workload="policy_canary",
+                    fresh=False if resumes_run else None,
                 )
                 if disk_reservation_root is not None
                 else contextlib.nullcontext()
