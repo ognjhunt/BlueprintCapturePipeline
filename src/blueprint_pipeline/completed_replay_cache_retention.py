@@ -115,11 +115,15 @@ def _inode_groups(child):
 
     The walk never leaves the child's device: a directory whose st_dev differs (a mount point)
     is not entered, and a file whose st_dev differs is skipped. A bind mount of the same
-    filesystem keeps its st_dev, so it cannot be told apart this way.
+    filesystem keeps its st_dev, so it cannot be told apart this way. A child that is gone by
+    the time it is looked at has no groups.
     """
     subtree = child / _SCRATCH_INPUTS
     groups = {}
-    device = os.lstat(child).st_dev
+    try:
+        device = os.lstat(child).st_dev
+    except FileNotFoundError:
+        return groups
     if not _directory_on(subtree, device):
         return groups
     for directory, directories, names in os.walk(subtree):

@@ -1255,3 +1255,28 @@ def test_a_store_copy_opened_on_another_device_is_skipped_as_cross_device(tmp_pa
 
     assert (result["removed_bytes"], result["skipped"]) == (0, [{"paths": [str(copy)], "reason": "cross_device"}])
     assert copy.exists()
+
+
+def test_a_child_that_vanishes_mid_scan_yields_no_groups(tmp_path, monkeypatch):
+    """Re-review of PR 10a.1: the device bound made the group scan lstat the replay child, so a
+    child removed between its report being read and its scratch inputs being grouped raised out
+    of the plan, where the store-copy rule used to find nothing. It finds nothing again."""
+    root, child, data, proc = setup(tmp_path)
+    scratch = _scratch_input(child, "prep/input.bin", b"scratch")
+    real_lstat = os.lstat
+
+    def lstat(path, *args, **kwargs):
+        if str(path) == str(child):
+            raise FileNotFoundError(errno.ENOENT, "No such file or directory", str(path))
+        return real_lstat(path, *args, **kwargs)
+
+    with monkeypatch.context() as patched:
+        patched.setattr(os, "lstat", lstat)
+        groups = gc._inode_groups(child)
+        plans = [plan(root, proc, **options) for options in (STORE, SCRATCH)]
+        estimate = gc.estimate_replay_cache_retention(replay_root=root, now=time.time() + 120, **SCRATCH)
+
+    assert groups == {}
+    for p in plans:
+        assert planned_paths(p) == {"working.ply"}
+    assert estimate["estimated_candidate_bytes"] == data.stat().st_size and scratch.exists()
