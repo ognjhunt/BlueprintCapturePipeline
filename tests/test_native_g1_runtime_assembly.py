@@ -196,3 +196,37 @@ def test_supervised_episode_failure_still_closes_child_and_records_blocker(
     assert saved["status"] == "blocked"
     assert saved["blocker"] == "RuntimeError"
     assert saved["server_teardown"]["status"] == "child_exited"
+
+
+def test_supervised_episode_retains_measured_joint_limit_violation(
+    tmp_path: Path, monkeypatch
+) -> None:
+    lease = _Lease()
+    monkeypatch.setattr(assembly, "start_g1_policy_server", lambda **kwargs: lease)
+    monkeypatch.setattr(assembly, "build_pinned_g1_sonic_bridge", lambda **kwargs: object())
+    violation = {
+        "joint_name": "right_ankle_roll_joint",
+        "target_rad": 0.3,
+        "lower_rad": -0.26,
+        "upper_rad": 0.26,
+        "raw_decoder_action": 0.68,
+    }
+
+    def fail(**kwargs):
+        raise assembly.G1SonicTargetLimitError([violation])
+
+    monkeypatch.setattr(assembly, "run_g1_built_scene_policy_episode", fail)
+    output_dir = tmp_path / "target-limit-attempt"
+    with pytest.raises(assembly.G1SonicTargetLimitError):
+        assembly.run_g1_supervised_built_scene_episode(
+            built=_built(), candidate_id=CANDIDATE, preflight_inputs=_inputs(),
+            python_executable=Path("/python"), port=8443, device="cuda:0",
+            max_steps=1, output_dir=output_dir, to_tensor=lambda value: value,
+            make_action_tensor=lambda value: value,
+        )
+    saved = json.loads(
+        (output_dir / "native_g1_supervised_built_scene_episode.v1.json").read_text()
+    )
+    assert saved["controller_target_violations"] == [violation]
+    assert saved["status"] == "blocked"
+    assert lease.closed == 1
