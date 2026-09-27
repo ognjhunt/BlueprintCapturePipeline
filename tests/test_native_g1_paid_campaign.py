@@ -44,6 +44,9 @@ def _fake_private_checkpoint_cache(
     """Paid controller tests isolate cache transfer from the provider mock."""
 
     monkeypatch.setenv(lane.CACHE_ROOT_ENV, str(tmp_path / "checkpoint-cache"))
+    monkeypatch.setenv(lane.SPEND_ADMISSION_LOCK_PATH_ENV, str(tmp_path / "lock.json"))
+    monkeypatch.setattr(lane, "_load_spend_admission_lock", lambda _path: {})
+    monkeypatch.setattr(lane, "validate_spend_admission_lock", lambda *_args, **_kwargs: [])
     secret = tmp_path / "private-cache-urls.json"
     secret.write_text("private-test-url")
     monkeypatch.setattr(lane, "stage_g1_checkpoint_cache", lambda **_kwargs: {
@@ -178,6 +181,33 @@ def test_paid_g1_rejects_untrusted_guard_actor_before_checkpoint_staging(
     )
     assert result["status"] == "blocked"
     assert result["blockers"] == ["spend_admission_lock_owner_untrusted"]
+    assert result["provider_mutations_performed"] == 0
+
+
+def test_paid_g1_requires_spend_lock_path_before_bundle_or_cache_staging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commit = "a" * 40
+    monkeypatch.delenv(lane.SPEND_ADMISSION_LOCK_PATH_ENV)
+    monkeypatch.setattr(
+        lane, "load_verified_g1_provider_bundle",
+        lambda *_args, **_kwargs: pytest.fail("bundle read before spend-lock preflight"),
+    )
+    monkeypatch.setattr(
+        lane, "stage_g1_checkpoint_cache",
+        lambda **_kwargs: pytest.fail("checkpoint staging before spend-lock preflight"),
+    )
+    result = lane.dispatch_g1_paid_campaign(
+        _args(tmp_path, g1_campaign_bundle_receipt=str(tmp_path / "receipt.json")),
+        control_identity={
+            "orchestrator_source_commit": commit,
+            "origin_main_commit": commit,
+            "remote_main_commit": commit,
+        },
+        control_blockers=[],
+    )
+    assert result["status"] == "blocked"
+    assert result["blockers"] == ["g1_paid_campaign_spend_admission_lock_path_missing"]
     assert result["provider_mutations_performed"] == 0
 
 
