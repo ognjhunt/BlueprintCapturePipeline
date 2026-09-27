@@ -38,7 +38,6 @@ byte. Nothing is deleted that cannot be restored.
 from __future__ import annotations
 
 import argparse
-import base64
 import fcntl
 import hashlib
 import json
@@ -59,8 +58,8 @@ from typing import Any, Protocol
 from .completed_replay_cache_retention import active_reference
 from .control_plane_disk_budget import DEFAULT_RESERVATION_ROOT, reserve_control_plane_disk
 from .control_plane_evidence_offload import ControlPlaneEvidenceOffloadError, _HashingSink, _pack_stream
-from .control_plane_storage_gc import _pinned_workspace, _queue_reference_text
-from .control_plane_storage_pins import DEFAULT_PINS_ROOT, PINS_ROOT_ENV, live_pinned_paths
+from .control_plane_storage_gc import _pinned_workspace
+from .control_plane_storage_pins import DEFAULT_PINS_ROOT, PINS_ROOT_ENV, live_pinned_paths, storage_pin_guard
 from .core.security_controls import SecurityValidationError, strict_gcs_bucket, strict_identifier
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 from .task_evaluation_configured_scene_object_store import (
@@ -68,6 +67,14 @@ from .task_evaluation_configured_scene_object_store import (
     publish_configured_scene_stream,
 )
 from .website_capture_entry import is_website_capture_manifest
+from .website_scene_workspace_digests import (
+    Digests as _Digests,
+    HashBudget,
+    cached_digests as _cached_digests,
+    hash_file as _hash_file,
+    save_inventory_cache,
+)
+from .website_scene_workspace_queue import QueueInventoryUnavailable, queue_reference_text
 
 
 PLAN_SCHEMA = "website_scene_workspace_retirement_plan.v1"
@@ -80,6 +87,7 @@ RETIRED_SUFFIX = ".retired.v1.json"
 #: A retired workspace is renamed to ``.retiring-<scene_id>-<16 hex>`` beside it before removal.
 RETIRING_PREFIX = ".retiring-"
 _RETIRING_NAME = re.compile(r"\.retiring-(?P<scene>[A-Za-z0-9][A-Za-z0-9._-]{0,127})-(?P<token>[0-9a-f]{16})")
+_RECEIPT_TEMP = re.compile(r"\.[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.retired\.v1\.json\.[0-9]+\.[0-9a-f]{8}\.tmp")
 DEFAULT_MINIMUM_IDLE_SECONDS = 48 * 3600
 #: Pub/Sub message retention (deploy/terraform/main.tf): after it, a message can no longer be redelivered.
 DEFAULT_ACK_RETENTION_SECONDS = 7 * 24 * 3600
@@ -170,7 +178,7 @@ class CloudObject:
 class CloudInventory(Protocol):
     def list_objects(self, bucket: str, prefix: str) -> dict[str, CloudObject]: ...
 
-    def download(self, bucket: str, name: str, destination: Path) -> None: ...
+    def download(self, bucket: str, name: str, destination: Path, *, generation: str) -> None: ...
 
 
 class GcsCloudInventory:
@@ -206,8 +214,8 @@ class GcsCloudInventory:
             )
         return objects
 
-    def download(self, bucket: str, name: str, destination: Path) -> None:
-        self._storage().bucket(bucket).blob(name).download_to_filename(str(destination))
+    def download(self, bucket: str, name: str, destination: Path, *, generation: str) -> None:
+        self._storage().bucket(bucket).blob(name, generation=int(generation)).download_to_filename(str(destination))
 
 
 @dataclass(frozen=True)
@@ -223,21 +231,9 @@ class RetentionContext:
     expired_grace_seconds: int = DEFAULT_EXPIRED_GRACE_SECONDS
     #: <root>/<bucket>/<scene_id>.json per-file digests for plans; None re-hashes everything.
     inventory_cache_root: Path | None = None
-
-
-@dataclass
-class HashBudget:
-    """Uncached bytes the current tick may still hash, shared by every scene it plans."""
-
-    remaining_bytes: int
-    hashed_bytes: int = 0
-
-    def allows(self, size: int) -> bool:
-        return size <= self.remaining_bytes
-
-    def spend(self, size: int) -> None:
-        self.remaining_bytes -= size
-        self.hashed_bytes += size
+    # Authority-ended captures can contain revoked local derivatives. No production
+    # entrypoint enables their archival until an owner-approved deletion lifecycle exists.
+    allow_authority_ended_archive: bool = False
 
 
 @dataclass(frozen=True)
@@ -256,10 +252,6 @@ class ReferenceIndex:
 
 class _Unreadable(Exception):
     pass
-
-
-def _b64(digest: bytes) -> str:
-    return base64.b64encode(digest).decode("ascii")
 
 
 def _identity(bucket: Any, scene_id: Any) -> tuple[str, str]:
@@ -419,7 +411,8 @@ def _walk(scene: Path) -> _Walk:
 
 
 def _snapshot(files: Sequence[tuple[str, os.stat_result]]) -> list[list[Any]]:
-    return [[relative, info.st_size, info.st_mtime_ns, info.st_ino] for relative, info in files]
+    return [[relative, info.st_size, info.st_mtime_ns, info.st_ctime_ns, info.st_dev, info.st_ino]
+            for relative, info in files]
 
 
 def _workspace_path_safe(storage_root: Path, bucket: str, scene: Path) -> bool:
@@ -442,6 +435,37 @@ def _valid_receipt(path: Path, *, bucket: str, scene_id: str) -> bool:
         and receipt.get("bucket") == bucket
         and receipt.get("scene_id") == scene_id
     )
+
+
+def _receipt_matches_workspace(receipt: Mapping[str, Any], workspace: Path) -> bool:
+    """Prove that a renamed tree contains exactly the receipt's captures and files."""
+
+    try:
+        walk = _walk(workspace)
+        if walk.unsafe:
+            return False
+        capture_ids = sorted(row["capture_id"] for row in receipt["captures"])
+        if _capture_ids(workspace) != capture_ids:
+            return False
+        cloud_rows = receipt["cloud_verified"]
+        archive = receipt.get("archive")
+        archive_rows = archive["members"] if isinstance(archive, Mapping) else []
+        expected = [row["relative_path"] for row in cloud_rows] + [row["relative_path"] for row in archive_rows]
+        if sorted(expected) != [relative for relative, _ in walk.files] or len(set(expected)) != len(expected):
+            return False
+        for row in cloud_rows:
+            relative = _safe_relative(row["relative_path"])
+            remote = CloudObject(name=relative, size=row["size"], generation=row["generation"],
+                                 md5_hash=row["md5_hash"], crc32c=row["crc32c"])
+            if not _verifies(remote, _hash_file(workspace / relative)):
+                return False
+        for row in archive_rows:
+            relative = _safe_relative(row["relative_path"])
+            if _sha256_file(workspace / relative) != row["sha256"]:
+                return False
+    except (KeyError, TypeError, ValueError, OSError):
+        return False
+    return True
 
 
 def sweep_retiring_workspaces(storage_root: Path, *, apply: bool = True) -> dict[str, list[str]]:
@@ -475,13 +499,51 @@ def sweep_retiring_workspaces(storage_root: Path, *, apply: bool = True) -> dict
                     continue
             except OSError:
                 continue
-            if _valid_receipt(receipt_path(root, bucket, match["scene"]), bucket=bucket, scene_id=match["scene"]):
+            record_path = receipt_path(root, bucket, match["scene"])
+            state, receipt, _ = _load_json(record_path)
+            if (_valid_receipt(record_path, bucket=bucket, scene_id=match["scene"])
+                    and state == "ok" and receipt is not None
+                    and receipt.get("retiring_token") == match["token"]
+                    and _receipt_matches_workspace(receipt, path)):
                 if apply:
                     shutil.rmtree(path, ignore_errors=True)
                 removed.append(str(path))
             else:
                 kept.append(str(path))
     return {done_key: removed, "kept_without_receipt": kept}
+
+
+def sweep_retirement_temporaries(storage_root: Path, *, now: float) -> list[str]:
+    """Remove only old, unreferenced receipt temp files from interrupted writes."""
+
+    removed: list[str] = []
+    root = Path(storage_root)
+    try:
+        buckets = sorted(os.listdir(root))
+    except OSError:
+        return removed
+    for bucket in buckets:
+        scenes = root / bucket / "scenes"
+        if bucket.startswith(".") or not _workspace_path_safe(root, bucket, scenes):
+            continue
+        try:
+            names = sorted(os.listdir(scenes))
+        except OSError:
+            continue
+        for name in names:
+            if not _RECEIPT_TEMP.fullmatch(name):
+                continue
+            path = scenes / name
+            try:
+                info = os.lstat(path)
+                if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                        or now - info.st_mtime < 24 * 3600 or _process_in_use(path)):
+                    continue
+                path.unlink()
+            except (OSError, ValueError):
+                continue
+            removed.append(str(path))
+    return removed
 
 
 def scene_workspaces(storage_root: Path) -> list[tuple[str, str, Path]]:
@@ -841,6 +903,16 @@ def _capture(capture_root: Path, *, scene_id: str, capture_id: str, now: float,
     ):
         reasons.append(f"capture_not_terminal:{capture_id}")
         return row, reasons
+    if status == "completed":
+        stage_state, stage_ledger, _ = _load_json(capture_root / "pipeline" / "run_e2e_stage_ledger.json")
+        if stage_state == "unreadable":
+            reasons.append(f"capture_result_unreadable:{capture_id}")
+        elif stage_ledger is not None:
+            stages = stage_ledger.get("stages")
+            capture_result = stages.get("capture_pipeline") if isinstance(stages, Mapping) else None
+            snapshot = capture_result.get("result_snapshot") if isinstance(capture_result, Mapping) else None
+            if isinstance(snapshot, Mapping) and snapshot.get("status") == "completed_with_lane_failures":
+                reasons.append(f"capture_not_terminal:{capture_id}")
     acknowledgement = _acknowledgement(capture_root, status=status, ledger=ledger, now=now,
                                        ack_retention_seconds=ack_retention_seconds)
     row["acknowledgement"] = acknowledgement
@@ -895,6 +967,18 @@ def _evaluate(*, context: RetentionContext, bucket: str, scene_id: str, scene: P
 
     if not _workspace_path_safe(context.storage_root, bucket, scene):
         return _Evaluation(["workspace_path_unsafe"], [], [], [], None, 0)
+    # A pin or queue message already forbids deletion. Avoid walking and statting
+    # a multi-gigabyte tree on every GC tick while either cheap hold remains.
+    early: list[str] = []
+    if _pinned_workspace(scene, live_pinned_paths(context.pins_root, now=lambda: now)):
+        early.append("pinned")
+    try:
+        if scene_id in queue_reference_text(context.queue_roots):
+            early.append("queue_referenced")
+    except QueueInventoryUnavailable:
+        early.append("queue_inventory_unreadable")
+    if early:
+        return _Evaluation(sorted(early), [], [], _capture_ids(scene) or [], None, 0)
     walk = _walk(scene)
     reasons = [f"unsafe_entry:{relative}" for relative in walk.unsafe]
     captures: list[dict[str, Any]] = []
@@ -909,13 +993,12 @@ def _evaluate(*, context: RetentionContext, bucket: str, scene_id: str, scene: P
                                         now=now, ack_retention_seconds=context.ack_retention_seconds)
         captures.append(row)
         reasons.extend(capture_reasons)
+        if (row["ledger_status"] == TERMINAL_AUTHORITY_STATUS and not capture_reasons
+                and not context.allow_authority_ended_archive):
+            reasons.append("authority_ended_capture_kept_local")
     idle_seconds = now - walk.newest_mtime
     if idle_seconds < context.minimum_idle_seconds:
         reasons.append("recently_active")
-    if _pinned_workspace(scene, live_pinned_paths(context.pins_root, now=lambda: now)):
-        reasons.append("pinned")
-    if scene_id in _queue_reference_text(context.queue_roots):
-        reasons.append("queue_referenced")
     try:
         in_use = bool(process_checker(scene))
     except Exception:  # noqa: BLE001 - a process inventory we cannot read proves nothing is idle
@@ -929,38 +1012,6 @@ def _evaluate(*, context: RetentionContext, bucket: str, scene_id: str, scene: P
 
 
 # --- check 9: every file is recoverable -----------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class _Digests:
-    size: int
-    sha256: str  # hex
-    md5: str  # base64
-    crc32c: str | None  # base64; None when google_crc32c is unavailable
-
-
-def _hash_file(path: Path) -> _Digests:
-    """SHA-256, MD5 and CRC32C of a regular file in one read."""
-
-    try:
-        import google_crc32c
-
-        crc = google_crc32c.Checksum()
-    except ImportError:  # pragma: no cover - google-cloud-storage depends on it
-        crc = None
-    sha, md5, size = hashlib.sha256(), hashlib.md5(usedforsecurity=False), 0
-    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
-    with os.fdopen(descriptor, "rb") as stream:
-        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
-            raise OSError("not a regular file")
-        while chunk := stream.read(1 << 20):
-            sha.update(chunk)
-            md5.update(chunk)
-            if crc is not None:
-                crc.update(chunk)
-            size += len(chunk)
-    return _Digests(size=size, sha256=sha.hexdigest(), md5=_b64(md5.digest()),
-                    crc32c=_b64(crc.digest()) if crc is not None else None)
 
 
 def _verifies(cloud: CloudObject, local: _Digests) -> bool:
@@ -990,40 +1041,12 @@ def _load_inventory_cache(path: Path, *, bucket: str, scene_id: str) -> dict[str
     return files
 
 
-def _cached_digests(entry: Any, identity: list[int]) -> _Digests | None:
-    try:
-        if entry["identity"] != identity:
-            return None
-        digests = entry["digests"]
-        return _Digests(size=int(digests["size"]), sha256=str(digests["sha256"]), md5=str(digests["md5"]),
-                        crc32c=digests["crc32c"] if isinstance(digests["crc32c"], str) else None)
-    except (KeyError, TypeError, ValueError):
-        return None
-
-
-def _save_inventory_cache(path: Path, *, bucket: str, scene_id: str, files: Mapping[str, Any]) -> None:
-    """Replace the scene's digest cache atomically; readable by its owner (root) alone."""
-
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    document = {"schema_version": INVENTORY_CACHE_SCHEMA, "bucket": bucket, "scene_id": scene_id,
-                "files": dict(files)}
-    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            os.fchmod(stream.fileno(), 0o600)
-            json.dump(document, stream, sort_keys=True)
-        os.replace(temporary, path)
-    except BaseException:
-        Path(temporary).unlink(missing_ok=True)
-        raise
-
-
 def _inventory(*, scene: Path, bucket: str, scene_id: str, files: Sequence[tuple[str, os.stat_result]],
                cloud: CloudInventory, cache_path: Path | None = None,
                budget: HashBudget | None = None) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str], int]:
     """Match every file to its cloud object, hashing only files the cache does not already know.
 
-    A cached digest counts only for the same (size, mtime_ns, inode). A file the tick's
+    A cached digest counts only for the same (size, mtime_ns, ctime_ns, device, inode). A file the tick's
     budget cannot cover is deferred (``inventory_deferred``); what was hashed is cached, so
     the next tick carries on. Apply never trusts the cache: it re-hashes what it deletes.
     """
@@ -1040,7 +1063,7 @@ def _inventory(*, scene: Path, bucket: str, scene_id: str, files: Sequence[tuple
     reasons: list[str] = []
     hashed = 0
     for relative, info in files:
-        identity = [info.st_size, info.st_mtime_ns, info.st_ino]
+        identity = [info.st_size, info.st_mtime_ns, info.st_ctime_ns, info.st_dev, info.st_ino]
         digests = _cached_digests(cache.get(relative), identity)
         if digests is None:
             if budget is not None and not budget.allows(info.st_size):
@@ -1071,7 +1094,8 @@ def _inventory(*, scene: Path, bucket: str, scene_id: str, files: Sequence[tuple
             archive.append({"relative_path": relative, "size_bytes": digests.size,
                             "sha256": _SHA256 + digests.sha256})
     if cache_path is not None:
-        _save_inventory_cache(cache_path, bucket=bucket, scene_id=scene_id, files=fresh)
+        save_inventory_cache(cache_path, bucket=bucket, scene_id=scene_id, files=fresh,
+                             schema=INVENTORY_CACHE_SCHEMA)
     return verified, archive, reasons, hashed
 
 
@@ -1296,7 +1320,8 @@ def _fsync_directory(path: Path) -> None:
 
 
 def _receipt_document(*, bucket: str, scene_id: str, scene: Path, observed_at: float, plan: Mapping[str, Any],
-                      records: list[dict[str, Any]], archive: dict[str, Any] | None) -> dict[str, Any]:
+                      records: list[dict[str, Any]], archive: dict[str, Any] | None,
+                      retiring_token: str) -> dict[str, Any]:
     document: dict[str, Any] = {
         "schema_version": RETIRED_SCHEMA,
         "bucket": bucket,
@@ -1304,6 +1329,7 @@ def _receipt_document(*, bucket: str, scene_id: str, scene: Path, observed_at: f
         "workspace": str(scene),
         "retired_at_epoch": observed_at,
         "source_plan_digest": plan["plan_digest"],
+        "retiring_token": retiring_token,
         "captures": records,
         "cloud_verified": list(plan["cloud_verified"]),
         "archive": archive,
@@ -1360,6 +1386,15 @@ def _publish_receipt(path: Path, data: bytes) -> bool:
         temporary.unlink(missing_ok=True)
 
 
+def _quarantine_receipt(path: Path, token: str) -> Path:
+    """Preserve a receipt that no longer describes the live workspace."""
+
+    quarantine = path.with_name(f".{path.name}.{token}.recovery")
+    os.replace(path, quarantine)
+    _fsync_directory(path.parent)
+    return quarantine
+
+
 def apply_scene_workspace_retirement(
     plan: Mapping[str, Any],
     *,
@@ -1371,102 +1406,140 @@ def apply_scene_workspace_retirement(
     stream_publisher: Callable[..., Mapping[str, Any]] | None = None,
     process_checker: Callable[[Path], bool] | None = None,
 ) -> dict[str, Any]:
-    """Retire one planned workspace, or skip it with a typed reason and delete nothing.
-
-    Under the listener's ledger locks: re-prove checks 1-8 and the planned snapshot,
-    stream the local-only files to the artifact store with a full readback, re-verify
-    the cloud objects, write the receipt, and only then remove the workspace.
-    ``stream_publisher`` defaults to ``publish_configured_scene_stream`` (the private
-    artifact store) and ``index`` is re-read when not given.
-    """
+    """Retire one planned workspace, keeping listener locks out of the upload path."""
 
     bucket, scene_id, scene = _authorized_plan(plan, ack=ack, context=context)
     publisher = stream_publisher or publish_configured_scene_stream
     observed_at = float(now)
     receipt = receipt_path(context.storage_root, bucket, scene_id)
     base = {"bucket": bucket, "scene_id": scene_id, "source_plan_digest": plan["plan_digest"]}
+    archive: dict[str, Any] | None = None
 
     def skipped(reason: str) -> dict[str, Any]:
-        return {**base, "status": "skipped", "reason": reason}
+        result = {**base, "status": "skipped", "reason": reason}
+        if archive is not None:
+            result["published_archive"] = {key: archive[key] for key in ("uri", "digest", "size_bytes")}
+        return result
 
-    if os.path.lexists(receipt):
-        return {**skipped("already_retired"), "receipt": str(receipt)}
     planned_ids = [row["capture_id"] for row in plan["captures"]]
-    with _CaptureLocks(scene, planned_ids) as locks:
-        if locks.refusal is not None:
-            return skipped(locks.refusal)
-        checker = process_checker or _process_in_use
-        evaluation = _evaluate(context=context, bucket=bucket, scene_id=scene_id, scene=scene, now=observed_at,
-                               index=index, process_checker=checker)
-        if (
-            evaluation.reasons
-            or evaluation.capture_ids != planned_ids
-            or _snapshot(evaluation.files) != plan["snapshot"]
-        ):
-            return skipped("candidate_changed")
-        # The plan may have used cached digests; never delete on them. Re-read every file the
-        # cloud copy replaces (the archive's members are re-read as they are packed).
-        for row in plan["cloud_verified"]:
-            expected = CloudObject(name=row["relative_path"], size=row["size"], generation=row["generation"],
-                                   md5_hash=row["md5_hash"], crc32c=row["crc32c"])
-            try:
-                if not _verifies(expected, _hash_file(scene / row["relative_path"])):
-                    return skipped("candidate_changed")
-            except OSError:
-                return skipped("candidate_changed")
-        records = _capture_records(scene, evaluation.captures)
-        identity = {"bucket": bucket, "scene_id": scene_id, "scene": scene, "observed_at": observed_at,
-                    "plan": plan, "records": records}
-        # Size the receipt before publishing anything: one its readers cannot read back would
-        # leave the retired workspace unrestorable.
-        estimate = len(_receipt_bytes(_receipt_document(
-            **identity, archive=_largest_archive_record(plan["archive"]))))
-        if estimate > RECEIPT_MAX_BYTES:
-            return skipped("receipt_too_large")
-        reservation = None
-        if estimate > _RECEIPT_RESERVATION_THRESHOLD:
-            try:
-                reservation = reserve_control_plane_disk(
-                    "evidence_offload", target_root=receipt.parent, expected_bytes=2 * estimate,
-                    reservation_root=DEFAULT_RESERVATION_ROOT)
-            except Exception:  # noqa: BLE001 - no room for the receipt means no retirement
-                return skipped("disk_reservation_refused")
+    checker = process_checker or _process_in_use
+    if os.path.lexists(receipt):
+        state, previous, _ = _load_json(receipt)
+        if (state != "ok" or previous is None
+                or not _valid_receipt(receipt, bucket=bucket, scene_id=scene_id)):
+            return skipped("receipt_invalid")
+        token = previous.get("retiring_token")
+        if not isinstance(token, str) or re.fullmatch(r"[0-9a-f]{16}", token) is None:
+            return skipped("receipt_invalid")
+        if not _receipt_matches_workspace(previous, scene):
+            quarantine = _quarantine_receipt(receipt, token)
+            return {**skipped("receipt_workspace_mismatch"), "quarantined_receipt": str(quarantine)}
+        retiring = scene.parent / f"{RETIRING_PREFIX}{scene_id}-{token}"
+        with storage_pin_guard(context.pins_root, exclusive=True):
+            with _CaptureLocks(scene, planned_ids) as locks:
+                if locks.refusal is not None:
+                    return skipped(locks.refusal)
+                current = _evaluate(context=context, bucket=bucket, scene_id=scene_id, scene=scene,
+                                    now=observed_at, index=None, process_checker=checker)
+                if current.reasons or current.capture_ids != planned_ids:
+                    return skipped("receipt_workspace_active")
+                if not _receipt_matches_workspace(previous, scene):
+                    quarantine = _quarantine_receipt(receipt, token)
+                    return {**skipped("receipt_workspace_mismatch"), "quarantined_receipt": str(quarantine)}
+                try:
+                    os.rename(scene, retiring)
+                except OSError as exc:
+                    return {**skipped("receipt_beside_live_workspace"), "removal_error": type(exc).__name__}
+        if not _receipt_matches_workspace(previous, retiring):
+            quarantine = _quarantine_receipt(receipt, token)
+            if not os.path.lexists(scene):
+                try:
+                    os.rename(retiring, scene)
+                except OSError:
+                    pass
+            return {**skipped("candidate_changed_after_rename"), "quarantined_receipt": str(quarantine)}
+        shutil.rmtree(retiring, ignore_errors=True)
+        return {**base, "status": "retired", "receipt": str(receipt),
+                "removal_complete": not os.path.lexists(retiring) and not os.path.lexists(scene),
+                "freed_allocated_bytes": int(current.allocated_bytes),
+                "archive_bytes": int((previous.get("archive") or {}).get("size_bytes") or 0),
+                "archive_member_count": int((previous.get("archive") or {}).get("member_count") or 0),
+                "cloud_verified_count": len(previous["cloud_verified"]), "recovered_receipt": True}
+    # This first proof and all large reads happen without a listener ledger lock. A
+    # fresh proof under locks below decides whether the published archive is usable.
+    evaluation = _evaluate(context=context, bucket=bucket, scene_id=scene_id, scene=scene, now=observed_at,
+                           index=index, process_checker=checker)
+    if evaluation.reasons or evaluation.capture_ids != planned_ids or _snapshot(evaluation.files) != plan["snapshot"]:
+        return skipped("candidate_changed")
+    for row in plan["cloud_verified"]:
+        expected = CloudObject(name=row["relative_path"], size=row["size"], generation=row["generation"],
+                               md5_hash=row["md5_hash"], crc32c=row["crc32c"])
         try:
-            archive: dict[str, Any] | None = None
-            if plan["archive"]:
-                archive, refusal = _archive(scene, plan["archive"], publisher)
-                if refusal is not None:
-                    return skipped(refusal)
-            # The upload can take hours. Prove every check again, with a freshly read reference
-            # index (pins, queues, live processes, open intents), just before the receipt.
-            after = _evaluate(context=context, bucket=bucket, scene_id=scene_id, scene=scene, now=observed_at,
-                              index=None, process_checker=checker)
-            if after.reasons or after.capture_ids != planned_ids or _snapshot(after.files) != plan["snapshot"]:
-                return skipped("candidate_changed_during_archive")
-            refusal = _cloud_unchanged(cloud, bucket=bucket, scene_id=scene_id, rows=plan["cloud_verified"])
+            if not _verifies(expected, _hash_file(scene / row["relative_path"])):
+                return skipped("candidate_changed")
+        except OSError:
+            return skipped("candidate_changed")
+    token = secrets.token_hex(8)
+    identity = {"bucket": bucket, "scene_id": scene_id, "scene": scene, "observed_at": observed_at,
+                "plan": plan, "retiring_token": token}
+    records = _capture_records(scene, evaluation.captures)
+    estimate = len(_receipt_bytes(_receipt_document(
+        **identity, records=records, archive=_largest_archive_record(plan["archive"]))))
+    if estimate > RECEIPT_MAX_BYTES:
+        return skipped("receipt_too_large")
+    reservation = None
+    if estimate > _RECEIPT_RESERVATION_THRESHOLD:
+        try:
+            reservation = reserve_control_plane_disk(
+                "evidence_offload", target_root=receipt.parent, expected_bytes=2 * estimate,
+                reservation_root=DEFAULT_RESERVATION_ROOT)
+        except Exception:  # noqa: BLE001 - no room for the receipt means no retirement
+            return skipped("disk_reservation_refused")
+    try:
+        if plan["archive"]:
+            archive, refusal = _archive(scene, plan["archive"], publisher)
             if refusal is not None:
                 return skipped(refusal)
-            data = _receipt_bytes(_receipt_document(**identity, archive=archive))
-            if len(data) > RECEIPT_MAX_BYTES:
-                return skipped("receipt_too_large")
-            if not _publish_receipt(receipt, data):
-                return {**skipped("already_retired"), "receipt": str(receipt)}
-            # Take the workspace out of every reader's path in one step, then remove it. Removed in
-            # place, each capture's lock file would go before its directory, and a listener reaching
-            # for the capture in between would create a fresh, unlocked lock and carry on. After the
-            # rename every such reach fails, and the listener asks the receipt instead. Everything
-            # renamed is restorable from the receipt, so a partial removal loses nothing, and the
-            # next tick's sweep finishes it.
-            retiring = scene.parent / f"{RETIRING_PREFIX}{scene_id}-{secrets.token_hex(8)}"
-            try:
-                os.rename(scene, retiring)
-            except OSError as exc:
-                return {**base, "status": "retired", "receipt": str(receipt), "removal_complete": False,
-                        "removal_error": type(exc).__name__}
-            shutil.rmtree(retiring, ignore_errors=True)
-        finally:
-            if reservation is not None:
-                reservation.release()
+        refusal = _cloud_unchanged(cloud, bucket=bucket, scene_id=scene_id, rows=plan["cloud_verified"])
+        if refusal is not None:
+            return skipped(refusal)
+        retiring = scene.parent / f"{RETIRING_PREFIX}{scene_id}-{token}"
+        with storage_pin_guard(context.pins_root, exclusive=True):
+            with _CaptureLocks(scene, planned_ids) as locks:
+                if locks.refusal is not None:
+                    return skipped(locks.refusal)
+                after = _evaluate(context=context, bucket=bucket, scene_id=scene_id, scene=scene, now=observed_at,
+                                  index=None, process_checker=checker)
+                if after.reasons or after.capture_ids != planned_ids or _snapshot(after.files) != plan["snapshot"]:
+                    return skipped("candidate_changed_during_archive")
+                records = _capture_records(scene, after.captures)
+                data = _receipt_bytes(_receipt_document(**identity, records=records, archive=archive))
+                if len(data) > RECEIPT_MAX_BYTES:
+                    return skipped("receipt_too_large")
+                if not _publish_receipt(receipt, data):
+                    return {**skipped("receipt_beside_live_workspace"), "receipt": str(receipt)}
+                try:
+                    os.rename(scene, retiring)
+                except OSError as exc:
+                    return {**skipped("receipt_beside_live_workspace"), "receipt": str(receipt),
+                            "removal_error": type(exc).__name__}
+        state, document, _ = _load_json(receipt)
+        if (state != "ok" or document is None or not _receipt_matches_workspace(document, retiring)):
+            # A first delivery may create a new capture immediately before rename.
+            # Return its whole tree to the listener path and preserve the receipt
+            # separately for forensic recovery; never sweep an unproved copy.
+            quarantine = _quarantine_receipt(receipt, token)
+            if not os.path.lexists(scene):
+                try:
+                    os.rename(retiring, scene)
+                except OSError:
+                    pass
+            return {**skipped("candidate_changed_after_rename"), "retiring": str(retiring),
+                    "quarantined_receipt": str(quarantine)}
+        shutil.rmtree(retiring, ignore_errors=True)
+    finally:
+        if reservation is not None:
+            reservation.release()
     return {
         **base,
         "status": "retired",
@@ -1544,7 +1617,13 @@ def restore_scene_workspace(
         for row in verified:
             path = tree / row["relative_path"]
             path.parent.mkdir(parents=True, exist_ok=True)
-            cloud.download(bucket, prefix + row["relative_path"], path)
+            generation = row.get("generation")
+            if not isinstance(generation, str) or not generation.isdecimal():
+                raise invalid
+            try:
+                cloud.download(bucket, prefix + row["relative_path"], path, generation=generation)
+            except Exception as exc:  # noqa: BLE001 - a missing pinned object cannot be restored
+                raise WebsiteSceneWorkspaceRetentionError("website_scene_workspace_restore_generation_unavailable") from exc
             expected = CloudObject(name=prefix + row["relative_path"], size=row["size"],
                                    generation=row.get("generation"), md5_hash=row.get("md5_hash"),
                                    crc32c=row.get("crc32c"))
@@ -1602,6 +1681,11 @@ def restore_scene_workspace(
         for path in (tree, *tree.rglob("*")):
             os.chown(path, owner.st_uid, owner.st_gid, follow_symlinks=False)
         os.replace(tree, target)
+        restored_receipt = None
+        if target == Path(receipt["workspace"]):
+            # The restored working copy is live again. Keep its historical proof,
+            # but remove the sidecar name that makes the listener call it retired.
+            restored_receipt = _quarantine_receipt(Path(receipt_path), secrets.token_hex(8))
     finally:
         shutil.rmtree(staging, ignore_errors=True)
     return {
@@ -1614,6 +1698,7 @@ def restore_scene_workspace(
         "cloud_file_count": len(verified),
         "archive_member_count": len(members),
         "source_receipt_digest": receipt["receipt_digest"],
+        "historical_receipt": str(restored_receipt) if restored_receipt else str(receipt_path),
     }
 
 
@@ -1651,7 +1736,8 @@ def retired_capture_status(*, storage_root: Path, bucket: str, scene_id: str,
     would from the capture's own ledger: a completed capture answers every payload
     (``covers_every_payload``) from its output commit; an authority ending answers the
     payloads it ended (``payload_sha256s``), and any other payload is a new request. A
-    missing, invalid or foreign receipt means "not retired".
+    Only an absent receipt means "not retired". A present but invalid receipt
+    fails closed so the listener retries and alerts instead of re-staging.
     """
 
     try:
@@ -1662,6 +1748,8 @@ def retired_capture_status(*, storage_root: Path, bucket: str, scene_id: str,
         return None
     path = receipt_path(Path(storage_root), bucket, scene_id)
     state, receipt, _ = _load_json(path)
+    if state == "absent":
+        return None
     if (
         state != "ok"
         or receipt is None
@@ -1671,14 +1759,16 @@ def retired_capture_status(*, storage_root: Path, bucket: str, scene_id: str,
         or receipt.get("scene_id") != scene_id
         or not isinstance(receipt.get("captures"), list)
     ):
-        return None
+        raise WebsiteSceneWorkspaceRetentionError("retirement_receipt_invalid")
     record = next((row for row in receipt["captures"]
                    if isinstance(row, Mapping) and row.get("capture_id") == capture_id), None)
     ledger = record.get("ledger") if isinstance(record, Mapping) else None
     status = ledger.get("status") if isinstance(ledger, Mapping) else None
     disposition = TERMINAL_DISPOSITIONS.get(status) if isinstance(status, str) else None
     if disposition is None:
-        return None
+        if record is None:
+            return None  # A valid receipt for an earlier capture does not cover a new one.
+        raise WebsiteSceneWorkspaceRetentionError("retirement_receipt_invalid")
     digests: set[str] = set()
     ack = record.get("ack_receipt")
     if isinstance(ack, Mapping) and ack.get("disposition") == disposition and isinstance(ack.get("payload_sha256"), str):

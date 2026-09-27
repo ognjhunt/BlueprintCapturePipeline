@@ -1111,8 +1111,10 @@ def retire_scene_workspaces(
         HashBudget,
         apply_scene_workspace_retirement,
         build_reference_index,
+        inventory_cache_path,
         plan_scene_workspace_retirement,
         scene_workspaces,
+        sweep_retirement_temporaries,
         sweep_retiring_workspaces,
     )
 
@@ -1129,8 +1131,9 @@ def retire_scene_workspaces(
         "retired_bytes": 0,
         "archive_bytes": 0,
         "retained_counts": {},
-        "retiring_removed_count" if apply else "retiring_removable_count": 0,
+        "retiring_removed_count" if applying else "retiring_removable_count": 0,
         "retiring_kept_without_receipt": [],
+        "receipt_temporaries_removed_count": 0,
     }
     rows: list[dict[str, Any]] = []
     cloud = None
@@ -1143,8 +1146,11 @@ def retire_scene_workspaces(
         context = context_factory(Path(storage_root))
         # First finish any removal a crash interrupted: its retirement is already committed.
         swept = sweep_retiring_workspaces(context.storage_root, apply=applying)
-        report["retiring_removed_count" if apply else "retiring_removable_count"] += len(
-            swept["removed" if apply else "removable"])
+        if applying:
+            report["receipt_temporaries_removed_count"] += len(
+                sweep_retirement_temporaries(context.storage_root, now=observed_at))
+        report["retiring_removed_count" if applying else "retiring_removable_count"] += len(
+            swept["removed" if applying else "removable"])
         report["retiring_kept_without_receipt"].extend(swept["kept_without_receipt"])
         workspaces = scene_workspaces(context.storage_root)
         if not workspaces:
@@ -1184,7 +1190,11 @@ def retire_scene_workspaces(
                              "removal_complete": outcome["removal_complete"]})
             else:
                 retained([outcome["reason"]])
-                rows.append({**row, "status": "skipped", "reason": outcome["reason"]})
+                if outcome["reason"].startswith("candidate_changed") and context.inventory_cache_root is not None:
+                    inventory_cache_path(context.inventory_cache_root, bucket, scene_id).unlink(missing_ok=True)
+                rows.append({**row, "status": "skipped", "reason": outcome["reason"],
+                             **({"published_archive": outcome["published_archive"]}
+                                if "published_archive" in outcome else {})})
     # A cache is only worth keeping for a workspace that still exists. The
     # default cache follows each spool root onto the work volume.
     for storage_root in storage_roots:
@@ -1194,6 +1204,8 @@ def retire_scene_workspaces(
                 cache.unlink(missing_ok=True)
     report["hashed_bytes"] = budget.hashed_bytes
     report["result_count"] = len(rows)
+    report["error_count"] = sum(row["status"] == "error" for row in rows)
+    report["omitted_result_count"] = max(0, len(rows) - _MAX_SCENE_RESULTS)
     report["results"] = rows[:_MAX_SCENE_RESULTS]
     return report
 

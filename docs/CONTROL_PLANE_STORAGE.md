@@ -388,40 +388,40 @@ scene only when everything in it can come back and nothing can still need it.
    no MD5), or it is marked for the archive. Raw capture bytes are never archived:
    a raw file that does not verify keeps the scene
    (`raw_not_verified_in_cloud:<path>`). On the timer each file's digests are cached
-   by (path, size, mtime, inode) in
+   by (path, size, mtime, ctime, device, inode) in
    `pubsub-handoffs/.scene-workspace-inventory/<bucket>/<scene>.json` (root, `0600`), so an
-   hourly plan re-reads only what changed, and a tick hashes at most 20 GiB of
-   uncached bytes; a scene it cannot finish waits for the next tick
+   hourly plan re-reads only what changed. A tick normally hashes at most 20 GiB
+   or five minutes of uncached bytes; one file larger than 20 GiB can use a whole
+   tick so it does not wait forever. A scene it cannot finish waits for the next tick
    (`inventory_deferred`). Retirement never trusts the cache: it re-reads every file
    it is about to delete.
 
-**Retire** takes the listener's own per-capture ledger locks without waiting
-(`candidate_busy`), re-proves checks 1-8 and the planned file snapshot
-(`candidate_changed`), and re-reads every file the cloud copy replaces (the plan
-may have used cached digests). It sizes the receipt first: one larger than its
-readers' 16 MiB bound would be unreadable once the workspace is gone
-(`receipt_too_large`); a receipt at or under 16 MiB reserves no disk, since it is a
-small write whose ENOSPC fails before anything is removed. It then streams exactly
-the unverified files as `workspace.tar` (kind `website-scene-workspace`) to the
-private artifact store through the streaming offload with a full readback
-(`archive_readback_failed`). Because the upload can take hours, it then proves
-every check again with a freshly read reference index
-(`candidate_changed_during_archive`), re-lists the Firebase Storage prefix
-(`cloud_changed`), and writes `scenes/<scene_id>.retired.v1.json` (exclusive,
-`0640`, owned like `scenes/`, digest-bound: the cloud-verified objects with
-generation and hashes, the archive URI, digest and member hashes, and parsed copies
-of each capture's ledger, output commit or terminal receipt, ack receipt and
-staging manifest). Only then, still under the locks, is the workspace renamed to a
-hidden `.retiring-<scene>-<token>` sibling, taking it out of the listener's path in
-one step, and removed; each applying tick first finishes any such copy a crash
-left behind whose scene has a valid receipt. Every skip deletes nothing; an
-existing receipt is never replaced (`already_retired`).
+**Retire** re-proves checks 1-8 and the planned file snapshot, and re-reads
+every file the cloud copy replaces. It sizes the receipt before publishing;
+one above its readers' 16 MiB limit is refused (`receipt_too_large`). It streams
+unverified files as `workspace.tar` to the private artifact store with full
+readback. This upload holds no listener ledger lock. Before mutation it takes
+the per-capture locks without waiting (`candidate_busy`) and the storage-pin
+lock, then rechecks readers, file identity and Firebase Storage metadata. It
+writes a digest-bound receipt including the cloud generations, archive hashes,
+capture records and a rename token, then renames the workspace to
+`.retiring-<scene>-<token>`. After releasing the locks, it verifies the renamed
+tree's capture IDs and every file against the receipt before removal. A new
+capture appearing at the rename boundary is returned to the live path and its
+receipt is preserved under a recovery name. An enabled applying tick finishes
+a crash-left copy only if its receipt token and bytes match. A receipt beside a
+live workspace finishes the rename if the bytes match; a changed workspace moves
+the old receipt aside. Failed post-upload attempts record the published archive
+reference in the GC report for orphan review.
 
 **Restore** replays the receipt: `python -m blueprint_pipeline.website_scene_workspace_retention
-restore --receipt <receipt> --destination <dir>` downloads each verified object and
+restore --receipt <receipt> --destination <dir>` downloads each verified object's
+recorded GCS generation and
 re-checks it, materializes the archive, re-checks its digest and every member's
 SHA-256, requires exactly the retired file set, and only then moves the tree into
-place (owned like the destination's parent).
+place (owned like the destination's parent). An in-place restore moves the
+historical receipt aside. The door exposes this as `restore-scene-workspace
+<scene_id> --bucket <bucket> --wait`.
 
 **Redeliveries.** Before claiming a capture whose workspace is absent, the
 listener reads the receipt: a message the receipt proves terminal (the acknowledged
@@ -433,8 +433,9 @@ lock file it holds is still the capture's and that the capture still exists, and
 claim for a capture that existed when the message arrived never creates it again.
 Either way it asks the receipt again, and a payload the receipt does not cover is
 left for its next delivery (`capture_retired_retryable`). A retired completed capture
-covers every payload, as its ledger would. If the receipt lookup itself fails, the
-message also waits (`retirement_lookup_failed_retryable`) rather than restaging.
+covers every payload, as its ledger would. A present invalid or unreadable receipt
+raises an alert signal and leaves the message retryable
+(`retirement_lookup_failed_retryable`) rather than restaging.
 
 **Where it runs.** The reclaim timer plans every scene workspace in
 `BLUEPRINT_CONTROL_PLANE_GC_SCENE_WORKSPACE_ROOTS` (intents from
@@ -454,9 +455,9 @@ as `{"status": "error", "error": "<type>"}` under its key, later phases still ru
 the tick exits non-zero after writing the report.
 
 **Privacy.** Raw capture bytes stay only in Firebase Storage. Derived local-only
-files go to the existing private artifact store (B2), which already holds derived
-website-scene artifacts. Moving that archive to Firebase Storage instead is a
-publisher swap if the owner prefers it.
+files from ordinary completed captures go to the existing private artifact store
+(B2). Authority-ended captures stay local (`authority_ended_capture_kept_local`)
+until the owner approves a revocation and deletion lifecycle for those derivatives.
 
 ## Release retirement at deploy
 

@@ -2,6 +2,8 @@
 
 # Covers (for impacted-test selection):
 #   src/blueprint_pipeline/website_scene_workspace_retention.py
+#   src/blueprint_pipeline/website_scene_workspace_digests.py
+#   src/blueprint_pipeline/website_scene_workspace_queue.py
 #   src/blueprint_pipeline/control_plane_evidence_offload.py
 
 from __future__ import annotations
@@ -12,6 +14,7 @@ import functools
 import hashlib
 import json
 import os
+import shutil
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -71,8 +74,11 @@ class FakeCloud:
         return {name: meta for (b, name), (_, meta) in self.objects.items()
                 if b == bucket and name.startswith(prefix)}
 
-    def download(self, bucket: str, name: str, destination: Path) -> None:
-        destination.write_bytes(self.objects[(bucket, name)][0])
+    def download(self, bucket: str, name: str, destination: Path, *, generation: str) -> None:
+        data, metadata = self.objects[(bucket, name)]
+        if metadata.generation != generation:
+            raise FileNotFoundError("pinned generation is unavailable")
+        destination.write_bytes(data)
 
 
 def _payload(capture: str) -> bytes:
@@ -139,6 +145,12 @@ def _context(tmp_path: Path, **overrides) -> retention.RetentionContext:
         queue_roots=(tmp_path / "queue",), intent_root=tmp_path / "intents",
         binding_root=tmp_path / "bindings")
     return replace(context, **overrides)
+
+
+def _ended_archive_context(tmp_path: Path) -> retention.RetentionContext:
+    # Exercise receipt/restore compatibility without enabling revoked-data archival
+    # in any production entrypoint.
+    return _context(tmp_path, allow_authority_ended_archive=True)
 
 
 def _idle(_path: Path) -> bool:
@@ -262,8 +274,20 @@ def test_authority_ended_captures_are_terminal_too(tmp_path):
 
     plan = _plan(tmp_path, cloud)
 
-    assert plan["status"] == "retirable", plan["reasons"]
+    assert plan["status"] == "retained"
+    assert plan["reasons"] == ["authority_ended_capture_kept_local"]
     assert plan["captures"][0]["ledger_status"] == "terminal_authority_ended"
+
+
+def test_legacy_completed_with_lane_failures_keeps_reopening(tmp_path):
+    scene, cloud = _scene(tmp_path)
+    stages = scene / "captures" / CAPTURE / "pipeline" / "run_e2e_stage_ledger.json"
+    stages.write_text(json.dumps({"stages": {"capture_pipeline": {
+        "result_snapshot": {"status": "completed_with_lane_failures"}}}}), encoding="utf-8")
+
+    plan = _plan(tmp_path, cloud)
+
+    assert plan["status"] == "retained" and plan["reasons"] == [f"capture_not_terminal:{CAPTURE}"]
 
 
 def test_not_retired_while_any_capture_is_not_terminal(tmp_path):
@@ -409,6 +433,26 @@ def test_not_retired_while_queue_references_the_scene(tmp_path):
     (tmp_path / "queue" / "processing" / "job.json").write_text(json.dumps({"scene_id": SCENE}), encoding="utf-8")
 
     assert _plan(tmp_path, cloud)["reasons"] == ["queue_referenced"]
+
+
+def test_queue_hold_skips_the_expensive_workspace_walk(tmp_path, monkeypatch):
+    _, cloud = _scene(tmp_path)
+    (tmp_path / "queue" / "pending").mkdir(parents=True)
+    (tmp_path / "queue" / "pending" / "job.json").write_text(json.dumps({"scene_id": SCENE}))
+    monkeypatch.setattr(retention, "_walk", lambda _scene: pytest.fail("held scene must not be walked"))
+
+    assert _plan(tmp_path, cloud)["reasons"] == ["queue_referenced"]
+
+
+def test_unreadable_queue_entry_blocks_retirement(tmp_path):
+    scene, cloud = _scene(tmp_path)
+    queue = tmp_path / "queue" / "pending"
+    queue.mkdir(parents=True)
+    (queue / "hidden.json").symlink_to(scene / "captures" / CAPTURE / "pipeline_job_ledger.json")
+
+    plan = _plan(tmp_path, cloud)
+
+    assert plan["status"] == "retained" and "queue_inventory_unreadable" in plan["reasons"]
 
 
 def test_not_retired_while_a_process_uses_it(tmp_path):
@@ -875,7 +919,7 @@ def test_an_existing_receipt_is_never_replaced(tmp_path):
 
     result = _retire(tmp_path, cloud, plan)
 
-    assert result["status"] == "skipped" and result["reason"] == "already_retired"
+    assert result["status"] == "skipped" and result["reason"] == "receipt_invalid"
     assert receipt.read_text(encoding="utf-8") == "{}" and scene.is_dir()
 
 
@@ -896,7 +940,8 @@ def test_retire_receipt_replays_to_identical_bytes(tmp_path):
     scene, cloud = _scene(tmp_path, status="terminal_authority_ended")
     original = _digests(scene)
     client = MultipartClient()
-    result = _retire(tmp_path, cloud, _plan(tmp_path, cloud), client=client)
+    context = _ended_archive_context(tmp_path)
+    result = _retire(tmp_path, cloud, _plan(tmp_path, cloud, context=context), context=context, client=client)
     assert result["status"] == "retired" and not scene.exists()
     destination = tmp_path / "restored" / SCENE
 
@@ -909,6 +954,23 @@ def test_retire_receipt_replays_to_identical_bytes(tmp_path):
     assert restored["file_count"] == len(original)
     assert _digests(destination) == original
     assert not [path for path in destination.parent.iterdir() if path.name.startswith(".")]
+
+
+def test_restoring_to_the_live_workspace_moves_its_retirement_receipt_aside(tmp_path):
+    scene, cloud = _scene(tmp_path)
+    client = MultipartClient()
+    result = _retire(tmp_path, cloud, _plan(tmp_path, cloud), client=client)
+    receipt = Path(result["receipt"])
+
+    restored = retention.restore_scene_workspace(
+        receipt_path=receipt, destination=scene, cloud=cloud,
+        materializer=functools.partial(store.materialize_configured_scene_artifact, client=client,
+                                       bucket=ARTIFACT_BUCKET))
+
+    assert scene.is_dir() and not receipt.exists()
+    assert Path(restored["historical_receipt"]).is_file()
+    assert retention.retired_capture_status(storage_root=tmp_path / "pubsub-handoffs", bucket=BUCKET,
+                                            scene_id=SCENE, capture_id=CAPTURE) is None
 
 
 def test_restore_refuses_a_tampered_receipt_or_changed_cloud_bytes(tmp_path):
@@ -933,6 +995,22 @@ def test_restore_refuses_a_tampered_receipt_or_changed_cloud_bytes(tmp_path):
     with pytest.raises(retention.WebsiteSceneWorkspaceRetentionError, match="destination_exists"):
         retention.restore_scene_workspace(receipt_path=receipt_path, destination=tmp_path / "c", cloud=cloud,
                                           materializer=materializer)
+
+
+def test_restore_uses_the_receipts_exact_cloud_generation(tmp_path):
+    scene, cloud = _scene(tmp_path)
+    client = MultipartClient()
+    receipt_path = Path(_retire(tmp_path, cloud, _plan(tmp_path, cloud), client=client)["receipt"])
+    video = f"scenes/{SCENE}/captures/{CAPTURE}/raw/walkthrough.mov"
+    original = cloud.objects[(BUCKET, video)][0]
+    cloud.put(video, original, generation="2")
+
+    with pytest.raises(retention.WebsiteSceneWorkspaceRetentionError, match="generation_unavailable"):
+        retention.restore_scene_workspace(
+            receipt_path=receipt_path, destination=tmp_path / "restored", cloud=cloud,
+            materializer=functools.partial(store.materialize_configured_scene_artifact, client=client,
+                                           bucket=ARTIFACT_BUCKET))
+    assert not (tmp_path / "restored").exists()
 
 
 # --- the command line the operator door runs ------------------------------------------------------
@@ -1029,7 +1107,8 @@ def test_cli_defaults_protect_every_queue_the_reclaim_timer_protects():
 
 def test_a_retirement_receipt_answers_for_the_messages_it_proves_terminal(tmp_path):
     scene, cloud = _scene(tmp_path, status="terminal_authority_ended")
-    result = _retire(tmp_path, cloud, _plan(tmp_path, cloud))
+    context = _ended_archive_context(tmp_path)
+    result = _retire(tmp_path, cloud, _plan(tmp_path, cloud, context=context), context=context)
     storage = tmp_path / "pubsub-handoffs"
 
     status = retention.retired_capture_status(storage_root=storage, bucket=BUCKET, scene_id=SCENE,
@@ -1046,8 +1125,9 @@ def test_a_retirement_receipt_answers_for_the_messages_it_proves_terminal(tmp_pa
     document = json.loads(receipt.read_text(encoding="utf-8"))
     receipt.chmod(0o640)
     receipt.write_text(json.dumps({**document, "retired_at_epoch": 0}), encoding="utf-8")
-    assert retention.retired_capture_status(storage_root=storage, bucket=BUCKET, scene_id=SCENE,
-                                            capture_id=CAPTURE) is None
+    with pytest.raises(retention.WebsiteSceneWorkspaceRetentionError, match="retirement_receipt_invalid"):
+        retention.retired_capture_status(storage_root=storage, bucket=BUCKET, scene_id=SCENE,
+                                         capture_id=CAPTURE)
 
 
 # --- removal never races the listener ------------------------------------------------------------
@@ -1082,11 +1162,59 @@ def test_a_listener_reaching_for_a_capture_during_removal_finds_it_gone(tmp_path
     assert not scene.exists() and not list(scene.parent.glob(".retiring-*"))
 
 
+def test_a_new_capture_between_final_check_and_rename_is_preserved(tmp_path, monkeypatch):
+    scene, cloud = _scene(tmp_path)
+    plan = _plan(tmp_path, cloud)
+    real_rename = retention.os.rename
+
+    def rename_after_new_capture(source, destination):
+        if Path(source) == scene:
+            fresh = scene / "captures" / "capture-new"
+            fresh.mkdir()
+            (fresh / "new.bin").write_bytes(b"new capture")
+        return real_rename(source, destination)
+
+    monkeypatch.setattr(retention.os, "rename", rename_after_new_capture)
+    result = _retire(tmp_path, cloud, plan)
+
+    assert result["status"] == "skipped" and result["reason"] == "candidate_changed_after_rename"
+    assert (scene / "captures" / "capture-new" / "new.bin").read_bytes() == b"new capture"
+    assert not (scene.parent / f"{SCENE}{retention.RETIRED_SUFFIX}").exists()
+    assert Path(result["quarantined_receipt"]).is_file()
+
+
+def test_a_receipt_beside_its_live_workspace_finishes_retirement(tmp_path, monkeypatch):
+    scene, cloud = _scene(tmp_path)
+    plan = _plan(tmp_path, cloud)
+    real_rename = retention.os.rename
+    calls = 0
+
+    def fail_first_rename(source, destination):
+        nonlocal calls
+        if Path(source) == scene and calls == 0:
+            calls += 1
+            raise OSError("interrupted before rename")
+        return real_rename(source, destination)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(retention.os, "rename", fail_first_rename)
+        first = _retire(tmp_path, cloud, plan)
+    assert first["reason"] == "receipt_beside_live_workspace"
+    assert scene.is_dir() and Path(first["receipt"]).is_file()
+
+    second = _retire(tmp_path, cloud, plan)
+    assert second["status"] == "retired" and second["removal_complete"] is True
+    assert not scene.exists()
+
+
 def test_a_tick_finishes_removing_what_a_crash_left_behind(tmp_path):
     scene, cloud = _scene(tmp_path)
+    copy = tmp_path / "scene-before-retirement"
+    shutil.copytree(scene, copy)
     receipt = Path(_retire(tmp_path, cloud, _plan(tmp_path, cloud))["receipt"])
-    leftover = scene.parent / f".retiring-{SCENE}-{'0' * 16}"  # a crash between the rename and the removal
-    (leftover / "captures").mkdir(parents=True)
+    token = json.loads(receipt.read_text(encoding="utf-8"))["retiring_token"]
+    leftover = scene.parent / f".retiring-{SCENE}-{token}"  # a crash between the rename and the removal
+    os.rename(copy, leftover)
     unreceipted = scene.parent / f".retiring-scene-2-{'1' * 16}"  # never delete what no receipt restores
     (unreceipted / "captures").mkdir(parents=True)
 
@@ -1094,6 +1222,31 @@ def test_a_tick_finishes_removing_what_a_crash_left_behind(tmp_path):
 
     assert not leftover.exists() and unreceipted.is_dir() and receipt.is_file()
     assert swept == {"removed": [str(leftover)], "kept_without_receipt": [str(unreceipted)]}
+
+
+def test_old_receipt_temporary_is_swept_only_when_unreferenced(tmp_path, monkeypatch):
+    scene, _ = _scene(tmp_path)
+    temporary = scene.parent / f".{SCENE}.retired.v1.json.1234.abcdef12.tmp"
+    temporary.write_text("partial", encoding="utf-8")
+    now = time.time()
+    os.utime(temporary, (now - 2 * DAY, now - 2 * DAY))
+    monkeypatch.setattr(retention, "_process_in_use", lambda _path: False)
+
+    removed = retention.sweep_retirement_temporaries(tmp_path / "pubsub-handoffs", now=now)
+
+    assert removed == [str(temporary)] and not temporary.exists()
+
+
+def test_receipt_temporary_is_kept_when_process_inventory_fails(tmp_path, monkeypatch):
+    scene, _ = _scene(tmp_path)
+    temporary = scene.parent / f".{SCENE}.retired.v1.json.1234.abcdef12.tmp"
+    temporary.write_text("partial", encoding="utf-8")
+    now = time.time()
+    os.utime(temporary, (now - 2 * DAY, now - 2 * DAY))
+    monkeypatch.setattr(retention, "_process_in_use", lambda _path: (_ for _ in ()).throw(ValueError("unavailable")))
+
+    assert retention.sweep_retirement_temporaries(tmp_path / "pubsub-handoffs", now=now) == []
+    assert temporary.exists()
 
 
 @pytest.mark.parametrize("reader", ["pin", "queue", "intent"])
@@ -1120,6 +1273,25 @@ def test_apply_skips_when_a_reader_appears_while_the_archive_uploads(tmp_path, r
 
     assert result["status"] == "skipped" and result["reason"] == "candidate_changed_during_archive"
     assert scene.is_dir() and not (scene.parent / f"{SCENE}{retention.RETIRED_SUFFIX}").exists()
+
+
+def test_archive_upload_does_not_hold_the_listener_ledger_lock(tmp_path):
+    scene, cloud = _scene(tmp_path)
+    plan = _plan(tmp_path, cloud)
+    real_publish = _publisher(MultipartClient())
+    lock_path = scene / "captures" / CAPTURE / retention.LEDGER_LOCK
+
+    def publisher(**kwargs):
+        descriptor = os.open(lock_path, os.O_RDONLY)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(descriptor)
+        return real_publish(**kwargs)
+
+    result = _retire(tmp_path, cloud, plan, stream_publisher=publisher)
+    assert result["status"] == "retired"
 
 
 # --- the receipt stays readable, and cheap to write --------------------------------------------------
@@ -1190,7 +1362,8 @@ def test_a_retired_ending_answers_every_payload_it_ended(tmp_path):
     ledger["attempt_history"].insert(0, {"status": "terminal_authority_ended", "payload_sha256": earlier})
     ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
     assert retention.ended_payload_digests(ledger) == listener._ended_payload_digests(ledger)
-    _retire(tmp_path, cloud, _plan(tmp_path, cloud))
+    context = _ended_archive_context(tmp_path)
+    _retire(tmp_path, cloud, _plan(tmp_path, cloud, context=context), context=context)
 
     status = retention.retired_capture_status(storage_root=tmp_path / "pubsub-handoffs", bucket=BUCKET,
                                               scene_id=SCENE, capture_id=CAPTURE)
@@ -1239,6 +1412,23 @@ def test_a_second_plan_rehashes_only_what_changed(tmp_path):
     assert oct(cache.stat().st_mode & 0o777) == oct(0o600)
 
 
+def test_a_same_mtime_rewrite_invalidates_the_digest_cache(tmp_path):
+    scene, cloud = _scene(tmp_path)
+    context = _cached_context(tmp_path)
+    first = _plan(tmp_path, cloud, context=context)
+    video = scene / "captures" / CAPTURE / "raw" / "walkthrough.mov"
+    before = video.stat()
+    with video.open("r+b") as stream:
+        stream.write(b"X")
+    os.utime(video, ns=(before.st_atime_ns, before.st_mtime_ns))
+
+    second = _plan(tmp_path, cloud, context=context)
+
+    assert second["status"] == "retained"
+    assert any(reason.startswith("raw_not_verified_in_cloud:") for reason in second["reasons"])
+    assert second["snapshot"] != first["snapshot"]
+
+
 def test_a_tick_hashes_at_most_its_budget_and_defers_the_rest(tmp_path):
     scene, cloud = _scene(tmp_path)
     context = _cached_context(tmp_path)
@@ -1253,19 +1443,28 @@ def test_a_tick_hashes_at_most_its_budget_and_defers_the_rest(tmp_path):
     assert finished["totals"]["hashed_bytes"] < sum(p.stat().st_size for p in scene.rglob("*") if p.is_file())
 
 
+def test_one_oversized_file_can_progress_but_the_hashing_deadline_stops_more_work():
+    budget = retention.HashBudget(remaining_bytes=4, oversized_file_threshold=8)
+    assert budget.allows(9)
+    budget.spend(9)
+    assert not budget.allows(1)
+    expired = retention.HashBudget(remaining_bytes=100, deadline_monotonic=0)
+    assert not expired.allows(1)
+
+
 def test_apply_rehashes_what_it_deletes_even_when_the_plan_used_the_cache(tmp_path):
     scene, cloud = _scene(tmp_path)
     context = _cached_context(tmp_path)
-    _plan(tmp_path, cloud, context=context)
+    original = _plan(tmp_path, cloud, context=context)
     video = scene / "captures" / CAPTURE / "raw" / "walkthrough.mov"
     before = video.stat()
-    with video.open("r+b") as stream:  # same size, same inode, and the mtime put back: the cache cannot tell
+    with video.open("r+b") as stream:  # same size, same inode, and the mtime put back
         stream.write(b"X")
     os.utime(video, ns=(before.st_atime_ns, before.st_mtime_ns))
-    stale = _plan(tmp_path, cloud, context=context)
-    assert stale["status"] == "retirable" and stale["totals"]["hashed_bytes"] == 0
+    fresh = _plan(tmp_path, cloud, context=context)
+    assert fresh["status"] == "retained" and fresh["totals"]["hashed_bytes"] == video.stat().st_size
 
-    result = _retire(tmp_path, cloud, stale, context=context)
+    result = _retire(tmp_path, cloud, original, context=context)
 
     assert result["status"] == "skipped" and result["reason"] == "candidate_changed"
     assert video.is_file() and not (scene.parent / f"{SCENE}{retention.RETIRED_SUFFIX}").exists()

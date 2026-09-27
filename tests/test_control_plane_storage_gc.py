@@ -4,6 +4,7 @@ import functools
 import hashlib
 import json
 import os
+import shutil
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -1131,15 +1132,21 @@ def test_gc_unit_can_write_scene_workspace_roots() -> None:
 
 def test_each_tick_first_finishes_removals_a_crash_left_behind(tmp_path) -> None:
     scene, common = _scene_tick(tmp_path)
+    copy = tmp_path / "scene-before-retirement"
+    shutil.copytree(scene, copy)
     run_storage_gc(**common, apply=True, ack=RUN_ACK, scene_workspace_retirement_enabled=True)
-    leftover = scene.parent / f".retiring-scene-1-{'a' * 16}"
-    (leftover / "captures").mkdir(parents=True)
+    receipt = json.loads((scene.parent / "scene-1.retired.v1.json").read_text(encoding="utf-8"))
+    leftover = scene.parent / f".retiring-scene-1-{receipt['retiring_token']}"
+    os.rename(copy, leftover)
 
     dry = run_storage_gc(**common, scene_workspace_retirement_enabled=True)["scene_workspaces"]
     assert leftover.is_dir() and dry["retiring_removable_count"] == 1, "a dry-run tick deletes nothing"
 
-    # The retirement was already committed, so an applying tick finishes it even with the opt-in off.
-    phase = run_storage_gc(**common, apply=True, ack=RUN_ACK, scene_workspace_retirement_enabled=False)[
+    # The opt-in also governs the crash-left sweep.
+    off = run_storage_gc(**common, apply=True, ack=RUN_ACK, scene_workspace_retirement_enabled=False)[
+        "scene_workspaces"]
+    assert leftover.is_dir() and off["retiring_removable_count"] == 1
+    phase = run_storage_gc(**common, apply=True, ack=RUN_ACK, scene_workspace_retirement_enabled=True)[
         "scene_workspaces"]
 
     assert not leftover.exists()
@@ -1198,11 +1205,11 @@ def test_a_tick_defers_scenes_beyond_its_hashing_budget(tmp_path) -> None:
     assert phase["retained_counts"] == {"inventory_deferred": 1} and phase["hashed_bytes"] <= 16
 
 
-def test_the_command_line_caches_scene_digests_under_the_report_root(tmp_path, monkeypatch) -> None:
+def test_the_command_line_caches_scene_digests_with_the_spool(tmp_path, monkeypatch) -> None:
     seen: list[dict] = []
     monkeypatch.setattr(gc_module, "run_storage_gc", lambda **kwargs: seen.append(kwargs) or {"report_digest": ""})
     monkeypatch.setenv("BLUEPRINT_CONTROL_PLANE_GC_REPORT_ROOT", str(tmp_path / "storage-gc"))
 
     assert gc_main(["run", "--pins-root", str(tmp_path / "pins")]) == 0
 
-    assert seen[0]["scene_inventory_cache_root"] == tmp_path / "storage-gc" / "scene-workspace-inventory"
+    assert seen[0]["scene_inventory_cache_root"] is None  # context derives each spool's cache root
