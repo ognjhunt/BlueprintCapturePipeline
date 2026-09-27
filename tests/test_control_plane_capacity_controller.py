@@ -274,3 +274,15 @@ def test_an_unreadable_ledger_is_an_unreadable_mount_not_an_empty_one(tmp_path):
     assert row["status"] == "unreadable"
     assert row["blocker"] == "control_plane_disk_budget_ledger_unreadable"
     assert gate["status"] == "waiting_for_capacity"
+
+
+def test_capacity_history_rows_leave_the_footprints_to_the_latest_report(tmp_path):
+    common = dict(mounts=[str(tmp_path)], report_root=tmp_path / "capacity", reservation_root=tmp_path / "r",
+                  webhook_url="", volume=None, ack="", token="", poster=lambda *_args: None)
+    cap.run_controller(**common, disk_usage=_usage(80.0), now=1.0)
+    latest = json.loads((tmp_path / "capacity" / "latest.json").read_text(encoding="utf-8"))
+    [row] = [json.loads(line) for line in
+             (tmp_path / "capacity" / "history.jsonl").read_text(encoding="utf-8").splitlines()]
+    # The history is never pruned; it keeps the measurement, not a per-role map per tick.
+    assert "footprints" in latest["mounts"][0] and "footprints" not in row
+    assert row["free_bytes"] == latest["mounts"][0]["free_bytes"]
