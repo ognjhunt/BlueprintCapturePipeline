@@ -642,6 +642,24 @@ def test_world_that_does_not_follow_its_declared_anchor_is_a_typed_refusal(tmp_p
             collision_mesh_path=Path(base["collision_mesh_path"]), anchor=_anchor(base))
 
 
+def test_a_registration_refusal_keeps_the_scores_it_was_decided_on(tmp_path, monkeypatch):
+    """2026-09-27 website dishwasher: the conflict refusal recorded only its code."""
+    evidence = {"anchored": {"score_m": 0.2}, "conflicting_unconstrained": [{"score_m": 0.05}]}
+
+    def refuse(**_kwargs):
+        raise preparation.RegistrationRefusal("website_registration_conflicts_provider_anchor", evidence)
+    monkeypatch.setattr(preparation, "register_source_to_runtime", refuse)
+    base = {}
+    with pytest.raises(ValueError, match="website_registration_conflicts_provider_anchor"):
+        _compile(tmp_path, lambda geometry: {"base_scene": base.setdefault("scene", _anchored_base_scene(tmp_path, geometry))})
+    written = [json.loads(path.read_text()) for path in tmp_path.rglob("registration_refusal.json")]
+    assert len(written) == 1
+    assert written[0]["blocker"] == "website_registration_conflicts_provider_anchor"
+    assert written[0]["anchored"] == evidence["anchored"]
+    assert written[0]["collision_mesh_digest"] == base["scene"]["collision_mesh_digest"]
+    assert written[0]["anchor"]["frame_id"] == "frame-0"
+
+
 def test_anchored_world_compiles_with_the_declared_scale(tmp_path):
     value = _compile(tmp_path, lambda geometry: {"base_scene": _anchored_base_scene(tmp_path, geometry)})
     assert value["status"] == "intake_ready", value["blockers"]
