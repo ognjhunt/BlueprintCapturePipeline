@@ -242,6 +242,67 @@ def test_residue_excludes_registry_receipts_and_registered_files(tmp_path) -> No
     assert not (run / "evidence" / "review.mp4").exists()
 
 
+@pytest.mark.parametrize("case", [
+    "kept_link_to_residue", "directory_link", "jsonl_document", "text_document", "skipped_named_document",
+    "document_relative", "ancestor_relative", "evidence_root_relative", "link_to_run_root",
+])
+def test_what_a_reader_can_reach_from_a_kept_file_stays(tmp_path, case) -> None:
+    """Whatever a reader can reach from a kept file stays: a link's target inside the run, a file
+    any kept or named text document names (JSON or not, absolutely, relative to the run, the
+    evidence root or any directory above the document), and what that file names in turn."""
+
+    f = _sealed_run(tmp_path / "canaries")
+    run = f.run
+    reached, reason = {"logs/worker.log"}, "receipt_referenced"
+    interpretation = run / "episode_interpretation"
+    interpretation.mkdir()
+    if case == "kept_link_to_residue":
+        (interpretation / "state.npz").symlink_to(Path("..") / "work" / "stage" / "state.npz")
+        reached, reason = {"work/stage/state.npz"}, "symlink_target"
+    elif case == "directory_link":
+        (run / "latest").symlink_to(Path("work") / "stage", target_is_directory=True)
+        reached, reason = {"work/stage/state.npz"}, "symlink_target"
+    elif case == "link_to_run_root":
+        (run / "work" / "everything").symlink_to(run, target_is_directory=True)
+        reached, reason = set(RESIDUE), "symlink_target"
+    elif case == "jsonl_document":
+        (interpretation / "rows.jsonl").write_text(
+            json.dumps({"row": 1}) + "\n" + json.dumps({"log": str(run / "logs" / "worker.log")}) + "\n",
+            encoding="utf-8")
+    elif case == "text_document":
+        (interpretation / "notes.txt").write_text("see logs/worker.log for the stage output\n", encoding="utf-8")
+    elif case == "skipped_named_document":
+        # The named JSON is newer than the registry, so it stays, and it is searched anyway.
+        (interpretation / "index.json").write_text(json.dumps({"next": str(run / "work" / "late.json")}),
+                                                   encoding="utf-8")
+        (run / "work" / "late.json").write_text(json.dumps({"log": "logs/worker.log"}), encoding="utf-8")
+    elif case == "document_relative":
+        adapter = run / ADAPTER_RESULT
+        adapter.write_text(json.dumps({**json.loads(adapter.read_text()), "log": "provider.log"}), encoding="utf-8")
+        (adapter.parent / "provider.log").write_text("provider output\n", encoding="utf-8")
+        reached = {"attempts/attempt_001/vast_provider_run/provider.log"}
+    elif case == "ancestor_relative":
+        adapter = run / ADAPTER_RESULT
+        adapter.write_text(json.dumps({**json.loads(adapter.read_text()), "log": "vast_provider_run/provider.log"}),
+                           encoding="utf-8")
+        (adapter.parent / "provider.log").write_text("provider output\n", encoding="utf-8")
+        reached = {"attempts/attempt_001/vast_provider_run/provider.log"}
+    elif case == "evidence_root_relative":
+        (interpretation / "index.json").write_text(json.dumps({"log": f"{run.name}/logs/worker.log"}),
+                                                   encoding="utf-8")
+    _age(run)
+    if case == "skipped_named_document":
+        os.utime(run / "work" / "late.json", (OLD + DAY, OLD + DAY))
+    before = {relative: (run / relative).read_bytes() for relative in reached}
+
+    plan = residue.offload_result_residue(run_root=run, hot_window_seconds=2 * DAY, now=lambda: NOW)
+
+    reasons = {row["relative_path"]: row["reason"] for row in plan["skipped"]}
+    assert {relative: reasons.get(relative) for relative in reached} == dict.fromkeys(reached, reason)
+    assert _offload(f)["status"] == "applied"
+    assert {relative: (run / relative).read_bytes() for relative in reached} == before
+
+
 def test_a_kept_document_too_large_to_search_keeps_the_whole_run(tmp_path, monkeypatch) -> None:
     """What a kept receipt names must be known before anything moves: one too large to search
     keeps every file."""
@@ -886,8 +947,14 @@ def test_every_way_a_kept_document_names_a_run_file_keeps_it() -> None:
 
     name = "run-7"
     value = {"nested": f"/var/lib/canaries/{name}/work/{name}/state.npz",
-             "rooted": [f"{name}/logs/worker.log"], "relative": "provider/outputs.zip"}
+             "rooted": [f"{name}/logs/worker.log"], "relative": "provider/outputs.zip",
+             "beside": "notes.txt", "above": "stage/state.npz"}
 
-    named = set(residue._named_paths(value, name))
+    strings = residue._document_strings(json.dumps(value))
+    named = set(residue._named_paths(strings, "work/stage/index.json", name))
 
-    assert {f"work/{name}/state.npz", "logs/worker.log", "provider/outputs.zip"} <= named
+    assert {f"work/{name}/state.npz", "logs/worker.log", "provider/outputs.zip", "work/stage/notes.txt",
+            "work/stage/state.npz"} <= named
+    # Free text and JSON lines name files too.
+    assert "logs/worker.log" in residue._document_strings("see logs/worker.log, then retry\n")
+    assert f"/x/{name}/a.bin" in residue._document_strings('{"a": 1}\n{"b": "/x/' + name + '/a.bin"}\n')

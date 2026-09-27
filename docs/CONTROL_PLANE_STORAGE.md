@@ -564,7 +564,8 @@ One tick runs nine phases in order:
    the same readback and pointed to by `<name>.residue.v1.json` before any of it
    is removed (`task_evaluation_result_residue_offload`). The registry, the
    delivery, the receipts, every registered file, every path a live reader
-   reopens and every file a kept receipt names by path stay. This step only
+   reopens and anything a reader can reach from those (a link's target inside
+   the run, any file a kept text document names) stay. This step only
    plans until `BLUEPRINT_CONTROL_PLANE_GC_RESULT_RESIDUE_OFFLOAD=1` is set as
    well.
 7. **Scratch directories** idle for three days
@@ -607,13 +608,16 @@ so each manifest (and its receipt) also records `walked_file_count` and
   `bulk_offload_failed`, `already_offloaded`, `registry_unsealed`,
   `dispatch_receipt_missing` (an operator run, whose continuation and download
   route keep reopening its files), `dispatch_receipt_invalid`,
-  `run_root_invalid`, `offload_locked`, `plan_failed` (what the kept documents
-  name cannot be known: a directory that cannot be listed, a kept directory or
-  JSON document that is a link or on another filesystem, or one too large to
-  search), `publication_failed`, `run_changed_or_active` or `pointer_failed`).
-  Every file it left counts under `member_skipped:<reason>` with its bytes:
-  `reader_reopened` and `receipt_referenced` (kept for the readers the module
-  docstring surveys), `symlink`, `special_file`, `cross_device`,
+  `run_root_invalid`, `offload_locked`, `plan_failed` (what stays cannot be
+  searched for what a reader reaches from it: a directory that cannot be
+  listed, a kept link that leaves the run, a kept directory or file on another
+  filesystem, or a text document over 64 MiB), `publication_failed` (including
+  a member swapped while it was packed), `run_changed_or_active`,
+  `pointer_failed` or `nothing_evicted` (every member stayed, so the pointer was
+  withdrawn and the next tick tries again)). Every file it left counts under
+  `member_skipped:<reason>` with its bytes: `reader_reopened`,
+  `symlink_target` and `receipt_referenced` (what the readers the module
+  docstring surveys can reach), `symlink`, `special_file`, `cross_device`,
   `newer_than_registry`, `linked_outside_residue` or `name_unsupported` when
   the run is listed, and `member_changed`, `path_changed`, `cross_device`,
   `recheck_failed` or `unlink_failed` for a packed member the pointer then

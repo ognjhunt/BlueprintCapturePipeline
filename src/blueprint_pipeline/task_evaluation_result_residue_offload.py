@@ -27,15 +27,21 @@ remote references, locks); every path the registry records, bulk or not
 (receipts, manifests, scores, reports and the whole artifact inventory stay);
 any file named in ``TERMINAL_RECEIPT_NAMES`` or ``RETAINED_RECEIPTS``, at any
 depth; the ``READER_REOPENED_NAMES`` and everything under
-``READER_REOPENED_DIRECTORIES``, at any depth (``reader_reopened``); and every
-file that one of those kept JSON documents names by path, closed over the JSON
-documents it names in turn (``receipt_referenced``). A link, a special file, a
-file on another filesystem than the run root, one newer than the registry, one
-with a hard link outside the residue, or one whose name a tar member cannot
-carry is a typed skip and stays. When what the kept documents name cannot be
-known (a directory that cannot be listed, a kept directory or JSON document that
-is a link or on another filesystem, one too large to search) the whole run stays
-(``plan_failed``).
+``READER_REOPENED_DIRECTORIES``, at any depth (``reader_reopened``); and
+anything a reader can reach from what stays. That is the target of every link
+that stays inside the run, with everything under it (``symlink_target``), and
+every file that a kept or reached text document names by path, in any format
+(JSON, JSON lines or free text), absolutely, relative to the run, the evidence
+root or any directory above the document; each file so reached is searched in
+turn (``receipt_referenced``). A named directory keeps only what is named in
+it: the registry names every evidence root, the run root among them, and the
+surveyed readers reopen bound files, never a named directory's listing. A link,
+a special file, a file on another filesystem than the run root, one newer than
+the registry, one with a hard link outside the residue, or one whose name a tar
+member cannot carry is a typed skip and stays. When what stays cannot be
+searched (a directory that cannot be listed, a kept link that leaves the run, a
+kept directory or file on another filesystem, a text document over
+``MAX_REFERENCE_DOCUMENT_BYTES``) the whole run stays (``plan_failed``).
 
 **Reader survey** (2026-09-27): who reopens files inside a sealed run.
 
@@ -55,7 +61,11 @@ is a link or on another filesystem, one too large to search) the whole run stays
   ``website-operator-registration.json``.
 * The existing-run continuation and ``finalize_operator_policy_canary`` reopen
   an operator run's ``existing_run_continuation/`` and
-  ``operator_terminal_delivery/`` files and every file its intent records.
+  ``operator_terminal_delivery/`` files and every file its intent records,
+  through record chains (setup, specs, nested file records, relocations) that
+  can pass through documents outside the run. The reference closure below
+  reads only documents inside the run, so an operator run, which has no
+  dispatch receipt, stays whole.
 * After the seal the canary dispatcher reopens only ``dispatch_receipt.json``;
   its resume paths (allocator invocations, session authority, pending and
   progress records, ``status_events.jsonl``) run only before it exists.
@@ -64,9 +74,13 @@ is a link or on another filesystem, one too large to search) the whole run stays
   ``official_billing_reconciliation.json``; same-goal spend ledgers
   (``paid_attempt_authority.validate_same_goal_spend_reconciliation``) reopen
   and rehash every bound ``source_receipts`` path on each scene-progression
-  tick. Both bind files by absolute path from the terminal result and its
-  records, which is what ``receipt_referenced`` keeps. Scene-intent settlement
-  records protect the whole run (``protected_settlement``).
+  tick. The ledgers live outside the run, but every in-run file a canary entry
+  can bind (terminal result, teardown manifest, provider zero, official billing
+  response and source receipt, adapter result) is either kept by name or named
+  by absolute path in the run's own ``official_billing_reconciliation.json``
+  (``vast_official_billing_extractor`` records each one), which is searched, so
+  ``receipt_referenced`` keeps it. Scene-intent settlement records protect the
+  whole run (``protected_settlement``).
 * Rescoring, graded reports and interpretation closeout read
   ``policy_canary_terminal_result.json``, the registered artifact inventory,
   ``episode_interpretation_sources/`` and ``episode_interpretation/``.
@@ -99,11 +113,13 @@ receipt beside the pointer.
 
 from __future__ import annotations
 
+import bisect
 import fcntl
 import functools
 import hashlib
 import json
 import os
+import posixpath
 import re
 import secrets
 import shutil
@@ -164,7 +180,9 @@ _KEPT_NAMES = frozenset({*evidence.TERMINAL_RECEIPT_NAMES, *RETAINED_RECEIPTS})
 MAX_REFERENCE_DOCUMENT_BYTES = 64 * 1024 * 1024
 _MAX_LISTED = 50
 _MIB = 1024 * 1024
-_STRING_LITERAL = re.compile(r'"((?:[^"\\\n]|\\.){1,4096})"')
+# A run of characters a path in free text is written with.
+_PATH_TOKEN = re.compile(r"[A-Za-z0-9._\-+@%~/]+")
+_BINARY_SNIFF_BYTES = 64 * 1024
 
 
 class ResultResidueOffloadError(RuntimeError):
@@ -271,100 +289,159 @@ def _name_supported(relative: str) -> bool:
     return "\\" not in relative
 
 
-def _document_value(raw: bytes) -> Any:
-    """A kept document's JSON value; for one that does not parse, its string literals."""
+def _read_document(root: Path, relative: str) -> str | None:
+    """A kept or named file's text; None when it is gone or binary (a NUL in its first 64 KiB).
+
+    It must still be the regular file the walk listed: one that is not, or that is
+    larger than ``MAX_REFERENCE_DOCUMENT_BYTES``, raises, since what it names is unknown.
+    """
 
     try:
-        return json.loads(raw)
+        descriptor = os.open(root / relative, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    except FileNotFoundError:
+        return None  # gone since it was listed: it names nothing
+    except OSError as exc:
+        raise ResultResidueOffloadError("result_residue_reference_document_unreadable") from exc
+    with os.fdopen(descriptor, "rb") as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            raise ResultResidueOffloadError("result_residue_reference_document_changed")
+        raw = stream.read(_BINARY_SNIFF_BYTES)
+        if b"\x00" in raw:
+            return None
+        if len(raw) <= MAX_REFERENCE_DOCUMENT_BYTES:
+            raw += stream.read(MAX_REFERENCE_DOCUMENT_BYTES + 1 - len(raw))
+    if len(raw) > MAX_REFERENCE_DOCUMENT_BYTES:
+        raise ResultResidueOffloadError("result_residue_reference_document_too_large")
+    return raw.decode("utf-8", errors="replace")
+
+
+def _document_strings(text: str) -> set[str]:
+    """Every string a document can name a file with, whatever its format.
+
+    The strings and keys of its JSON value (of each line, for JSON lines), and
+    every run of path characters in its text.
+    """
+
+    try:
+        values = [json.loads(text)]
     except ValueError:
-        strings = []
-        for literal in _STRING_LITERAL.findall(raw.decode("utf-8", errors="replace")):
+        values = []
+        for line in text.splitlines():
             try:
-                strings.append(json.loads(f'"{literal}"'))
+                values.append(json.loads(line))
             except ValueError:
-                strings.append(literal)
-        return strings
+                continue
+    strings = set(_PATH_TOKEN.findall(text))
+    while values:
+        value = values.pop()
+        if isinstance(value, dict):
+            values.extend(value.keys())
+            values.extend(value.values())
+        elif isinstance(value, list):
+            values.extend(value)
+        elif isinstance(value, str):
+            strings.add(value)
+    return strings
 
 
-def _named_paths(value: Any, run_name: str):
-    """Every path a JSON value's strings may name inside the run.
+def _named_paths(strings, document: str, run_name: str):
+    """The run-relative paths a document's strings may name.
 
     That is what follows each ``/<run>/`` (the run's name may recur deeper in the
     path, so every occurrence counts), what follows a leading ``<run>/`` (a path
-    relative to the evidence root), and a relative string as written.
+    relative to the evidence root), and a relative string joined to every
+    directory from the document's own up to the run root.
     """
 
     marker = f"/{run_name}/"
-    stack = [value]
-    while stack:
-        item = stack.pop()
-        if isinstance(item, dict):
-            stack.extend(item.keys())
-            stack.extend(item.values())
-        elif isinstance(item, list):
-            stack.extend(item)
-        elif isinstance(item, str):
-            text = item if item.startswith("/") else "/" + item
-            start = text.find(marker)
-            while start != -1:
-                yield text[start + len(marker):]
-                start = text.find(marker, start + 1)
-            if not item.startswith("/"):
-                yield item
+    bases = [str(parent) for parent in PurePosixPath(document).parents]
+    for string in strings:
+        text = string if string.startswith("/") else "/" + string
+        start = text.find(marker)
+        while start != -1:
+            yield text[start + len(marker):]
+            start = text.find(marker, start + 1)
+        if not string.startswith("/"):
+            for base in bases:
+                yield string if base == "." else f"{base}/{string}"
 
 
-def _receipt_references(root: Path, documents: Sequence[str], candidates: Mapping[str, Any]) -> set[str]:
-    """The candidates a kept JSON document names, closed over the JSON documents those name in turn.
+def _receipt_references(root: Path, documents: Sequence[str], files: Mapping[str, Any]) -> set[str]:
+    """Every file of the run that a searched document names, closed over what those name in turn.
 
     Billing re-validation, spend ledgers and rescoring reopen the files a sealed
     receipt binds by path (the terminal result, and the adapter result and
-    manifests it names), so a file any kept document names is kept too. A document
-    that cannot be read, or is too large to search, raises: its references are unknown.
+    manifests it names), so a file any kept document names is kept too, and is
+    searched in turn whether or not it is residue. ``files`` is every regular file
+    the walk listed.
     """
 
-    referenced: set[str] = set()
-    queue, seen = list(documents), set()
+    named: set[str] = set()
+    queue, searched = list(documents), set()
     while queue:
-        relative = queue.pop()
-        if relative in seen:
+        document = queue.pop()
+        if document in searched:
             continue
-        seen.add(relative)
-        try:
-            descriptor = os.open(root / relative, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
-        except FileNotFoundError:
-            continue  # gone since it was listed: it names nothing
-        with os.fdopen(descriptor, "rb") as stream:
-            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
-                continue
-            raw = stream.read(MAX_REFERENCE_DOCUMENT_BYTES + 1)
-        if len(raw) > MAX_REFERENCE_DOCUMENT_BYTES:
-            raise ResultResidueOffloadError("result_residue_reference_document_too_large")
-        for named in _named_paths(_document_value(raw), root.name):
-            path = str(PurePosixPath(named))
-            if path in candidates and path not in referenced:
-                referenced.add(path)
-                if path.endswith(".json"):
-                    queue.append(path)
-    return referenced
+        searched.add(document)
+        text = _read_document(root, document)
+        if text is None:
+            continue
+        for name in _named_paths(_document_strings(text), document, root.name):
+            path = posixpath.normpath(name)
+            if path in files and path not in named:
+                named.add(path)
+                queue.append(path)
+    return named
+
+
+def _within(relative: str, paths: Sequence[str]) -> list[str]:
+    """``relative`` and everything under it, from sorted run-relative ``paths``."""
+
+    if relative == ".":
+        return list(paths)
+    index = bisect.bisect_left(paths, relative)
+    found = [relative] if index < len(paths) and paths[index] == relative else []
+    prefix = relative + "/"
+    for index in range(bisect.bisect_left(paths, prefix), len(paths)):
+        if not paths[index].startswith(prefix):
+            break
+        found.append(paths[index])
+    return found
+
+
+def _link_target(root: Path, relative: str) -> str | None:
+    """Where a link inside the run leads, relative to the run, or None when it leaves the run."""
+
+    target = Path(os.path.realpath(root / relative))
+    try:
+        return target.relative_to(root).as_posix()
+    except ValueError:
+        return None
 
 
 def _plan_members(root: Path, row: dict[str, Any], registered: set[str], registry_mtime_ns: int) -> list[dict]:
     """The run's residue as inode groups, each with every name it has; typed skips go on ``row``.
 
     The walk never follows a link and never enters another filesystem. Nothing
-    kept by design is residue, nor anything a kept JSON document names. A group is
-    a candidate only when all of its links are residue names, so removing them
-    frees its blocks and nothing that stays shares them. A directory that cannot be
-    listed, or a kept directory or JSON document that is a link or on another
-    filesystem, raises: what it names is unknown, so the whole run stays.
+    kept by design is residue; nor is anything a reader reaches from a kept file:
+    the target of any link that stays inside the run, with everything under it
+    (``symlink_target``), and every file a kept or reached text document names
+    (``receipt_referenced``). A group is a candidate only when all of its links
+    are residue names, so removing them frees its blocks and nothing that stays
+    shares them. A directory that cannot be listed, a kept link that leaves the
+    run, or a kept directory or file on another filesystem raises: what a reader
+    reaches through it is unknown, so the whole run stays.
     """
 
     device = os.lstat(root).st_dev
     delivery = _delivery_directories(root)
+    remote = _remote_path(root, "residue").parent.relative_to(root).as_posix()
     candidates: dict[str, os.stat_result] = {}
+    files: dict[str, os.stat_result] = {}
     documents: list[str] = []
+    links: list[tuple[str, bool]] = []
     unreadable: list[OSError] = []
-    for directory, directories, files in os.walk(root, onerror=unreadable.append):
+    for directory, directories, names in os.walk(root, onerror=unreadable.append):
         base = Path(directory)
         relative_directory = base.relative_to(root)
         entered = []
@@ -374,35 +451,45 @@ def _plan_members(root: Path, row: dict[str, Any], registered: set[str], registr
                 info = os.lstat(base / name)
             except FileNotFoundError:
                 continue
-            if stat.S_ISLNK(info.st_mode) or info.st_dev != device:
-                if _kept_directory(relative, delivery):
-                    # A reader follows it; the walk will not, so what it names is unknown.
+            kept = _kept_directory(relative, delivery)
+            if stat.S_ISLNK(info.st_mode):
+                links.append((relative, kept))
+                if not kept:
+                    _skip(row, relative, "symlink", info.st_size)
+                continue
+            if info.st_dev != device:
+                if kept:
                     raise ResultResidueOffloadError("result_residue_kept_directory_unsearchable")
-                # Never followed or entered.
-                _skip(row, relative, "symlink" if stat.S_ISLNK(info.st_mode) else "cross_device",
-                      info.st_size if stat.S_ISLNK(info.st_mode) else 0)
+                _skip(row, relative, "cross_device", 0)
                 continue
             entered.append(name)
         directories[:] = entered
-        for name in sorted(files):
+        for name in sorted(names):
             relative = (relative_directory / name).as_posix()
             try:
                 info = os.lstat(base / name)
             except FileNotFoundError:
                 continue
             by_design = _kept_by_design(relative, delivery, registered)
+            if stat.S_ISLNK(info.st_mode):
+                links.append((relative, by_design is not None))
+                if by_design != "kept":
+                    _skip(row, relative, by_design or "symlink", info.st_size)
+                continue
+            if stat.S_ISREG(info.st_mode) and info.st_dev == device:
+                files[relative] = info
             if by_design is not None:
-                if name.endswith(".json"):
-                    if not stat.S_ISREG(info.st_mode) or info.st_dev != device:
+                if stat.S_ISREG(info.st_mode):
+                    if info.st_dev != device:
                         raise ResultResidueOffloadError("result_residue_kept_document_unsearchable")
-                    documents.append(relative)
+                    # Remote references name only registered paths; everything else kept is searched.
+                    if not _under(relative, (remote,)):
+                        documents.append(relative)
                 if by_design == "reader_reopened":
                     _skip(row, relative, by_design, info.st_size)
                 continue
             reason = None
-            if stat.S_ISLNK(info.st_mode):
-                reason = "symlink"
-            elif not stat.S_ISREG(info.st_mode):
+            if not stat.S_ISREG(info.st_mode):
                 reason = "special_file"
             elif info.st_dev != device:
                 reason = "cross_device"
@@ -417,8 +504,21 @@ def _plan_members(root: Path, row: dict[str, Any], registered: set[str], registr
     if unreadable:
         # A directory that could not be listed may hold a kept document naming any candidate.
         raise ResultResidueOffloadError("result_residue_directory_unreadable")
-    for relative in sorted(_receipt_references(root, documents, candidates)):
-        _skip(row, relative, "receipt_referenced", candidates.pop(relative).st_size)
+    listed = sorted(files)
+    for link, kept in links:
+        target = _link_target(root, link)
+        if target is None:
+            if kept:
+                # A reader follows it out of the run, where nothing here can search what it names.
+                raise ResultResidueOffloadError("result_residue_kept_link_leaves_run")
+            continue
+        for path in _within(target, listed):
+            documents.append(path)
+            if path in candidates:
+                _skip(row, path, "symlink_target", candidates.pop(path).st_size)
+    for relative in sorted(_receipt_references(root, documents, files)):
+        if relative in candidates:
+            _skip(row, relative, "receipt_referenced", candidates.pop(relative).st_size)
     groups: dict[tuple[int, int], tuple[os.stat_result, list[str]]] = {}
     for relative, info in candidates.items():
         groups.setdefault((info.st_dev, info.st_ino), (info, []))[1].append(relative)
