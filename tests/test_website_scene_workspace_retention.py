@@ -1253,6 +1253,42 @@ def test_a_receipt_beside_its_live_workspace_finishes_retirement(tmp_path, monke
     assert not scene.exists()
 
 
+def test_receipt_corruption_after_rename_keeps_the_workspace(tmp_path, monkeypatch):
+    scene, cloud = _scene(tmp_path)
+    plan = _plan(tmp_path, cloud)
+    real_rename = retention.os.rename
+    receipt_path = scene.parent / f"{SCENE}{retention.RETIRED_SUFFIX}"
+
+    def corrupt_after_rename(source, destination):
+        result = real_rename(source, destination)
+        if Path(source) == scene:
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            receipt["archive"]["uri"] = "s3://different-archive"
+            receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(retention.os, "rename", corrupt_after_rename)
+    result = _retire(tmp_path, cloud, plan)
+
+    assert result["status"] == "skipped" and result["reason"] == "candidate_changed_after_rename"
+    assert scene.is_dir() and not receipt_path.exists()
+    assert Path(result["quarantined_receipt"]).is_file()
+
+
+def test_incomplete_removal_keeps_reclaimed_bytes_at_zero_and_retries_sweep(tmp_path, monkeypatch):
+    scene, cloud = _scene(tmp_path)
+    plan = _plan(tmp_path, cloud)
+    monkeypatch.setattr(retention.shutil, "rmtree", lambda _path, **_kwargs: None)
+
+    result = _retire(tmp_path, cloud, plan)
+    leftovers = list(scene.parent.glob(".retiring-*"))
+    swept = retention.sweep_retiring_workspaces(tmp_path / "pubsub-handoffs")
+
+    assert result["status"] == "retired" and result["removal_complete"] is False
+    assert result["freed_allocated_bytes"] == 0 and len(leftovers) == 1
+    assert swept["removed"] == [] and swept["cleanup_incomplete"] == [str(leftovers[0])]
+
+
 def test_a_tick_finishes_removing_what_a_crash_left_behind(tmp_path):
     scene, cloud = _scene(tmp_path)
     copy = tmp_path / "scene-before-retirement"
@@ -1267,7 +1303,8 @@ def test_a_tick_finishes_removing_what_a_crash_left_behind(tmp_path):
     swept = retention.sweep_retiring_workspaces(tmp_path / "pubsub-handoffs")
 
     assert not leftover.exists() and unreceipted.is_dir() and receipt.is_file()
-    assert swept == {"removed": [str(leftover)], "kept_without_receipt": [str(unreceipted)]}
+    assert swept == {"removed": [str(leftover)], "kept_without_receipt": [str(unreceipted)],
+                     "cleanup_incomplete": []}
 
 
 def test_old_receipt_temporary_is_swept_only_when_unreferenced(tmp_path, monkeypatch):

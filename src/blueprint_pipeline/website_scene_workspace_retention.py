@@ -479,11 +479,12 @@ def sweep_retiring_workspaces(storage_root: Path, *, apply: bool = True) -> dict
     root = Path(storage_root)
     removed: list[str] = []
     kept: list[str] = []
+    cleanup_incomplete: list[str] = []
     done_key = "removed" if apply else "removable"
     try:
         buckets = sorted(os.listdir(root))
     except OSError:
-        return {done_key: removed, "kept_without_receipt": kept}
+        return {done_key: removed, "kept_without_receipt": kept, "cleanup_incomplete": cleanup_incomplete}
     for bucket in buckets:
         scenes = root / bucket / "scenes"
         if bucket.startswith(".") or not _workspace_path_safe(root, bucket, scenes):
@@ -508,10 +509,13 @@ def sweep_retiring_workspaces(storage_root: Path, *, apply: bool = True) -> dict
                     and _receipt_matches_workspace(receipt, path)):
                 if apply:
                     shutil.rmtree(path, ignore_errors=True)
+                    if os.path.lexists(path):
+                        cleanup_incomplete.append(str(path))
+                        continue
                 removed.append(str(path))
             else:
                 kept.append(str(path))
-    return {done_key: removed, "kept_without_receipt": kept}
+    return {done_key: removed, "kept_without_receipt": kept, "cleanup_incomplete": cleanup_incomplete}
 
 
 def sweep_retirement_temporaries(storage_root: Path, *, now: float) -> list[str]:
@@ -1457,7 +1461,8 @@ def apply_scene_workspace_retirement(
                     os.rename(scene, retiring)
                 except OSError as exc:
                     return {**skipped("receipt_beside_live_workspace"), "removal_error": type(exc).__name__}
-        if not _receipt_matches_workspace(previous, retiring):
+        if (not _valid_receipt(receipt, bucket=bucket, scene_id=scene_id)
+                or not _receipt_matches_workspace(previous, retiring)):
             quarantine = _quarantine_receipt(receipt, token)
             if not os.path.lexists(scene):
                 try:
@@ -1466,9 +1471,10 @@ def apply_scene_workspace_retirement(
                     pass
             return {**skipped("candidate_changed_after_rename"), "quarantined_receipt": str(quarantine)}
         shutil.rmtree(retiring, ignore_errors=True)
+        removal_complete = not os.path.lexists(retiring) and not os.path.lexists(scene)
         return {**base, "status": "retired", "receipt": str(receipt),
-                "removal_complete": not os.path.lexists(retiring) and not os.path.lexists(scene),
-                "freed_allocated_bytes": int(current.allocated_bytes),
+                "removal_complete": removal_complete,
+                "freed_allocated_bytes": int(current.allocated_bytes) if removal_complete else 0,
                 "archive_bytes": int((previous.get("archive") or {}).get("size_bytes") or 0),
                 "archive_member_count": int((previous.get("archive") or {}).get("member_count") or 0),
                 "cloud_verified_count": len(previous["cloud_verified"]), "recovered_receipt": True}
@@ -1531,7 +1537,9 @@ def apply_scene_workspace_retirement(
                     return {**skipped("receipt_beside_live_workspace"), "receipt": str(receipt),
                             "removal_error": type(exc).__name__}
         state, document, _ = _load_json(receipt)
-        if (state != "ok" or document is None or not _receipt_matches_workspace(document, retiring)):
+        if (state != "ok" or document is None
+                or not _valid_receipt(receipt, bucket=bucket, scene_id=scene_id)
+                or not _receipt_matches_workspace(document, retiring)):
             # A first delivery may create a new capture immediately before rename.
             # Return its whole tree to the listener path and preserve the receipt
             # separately for forensic recovery; never sweep an unproved copy.
@@ -1552,7 +1560,8 @@ def apply_scene_workspace_retirement(
         "status": "retired",
         "receipt": str(receipt),
         "removal_complete": not os.path.lexists(scene) and not os.path.lexists(retiring),
-        "freed_allocated_bytes": evaluation.allocated_bytes,
+        "freed_allocated_bytes": evaluation.allocated_bytes if not os.path.lexists(retiring)
+                                 and not os.path.lexists(scene) else 0,
         "archive_bytes": archive["size_bytes"] if archive else 0,
         "archive_member_count": archive["member_count"] if archive else 0,
         "cloud_verified_count": len(plan["cloud_verified"]),

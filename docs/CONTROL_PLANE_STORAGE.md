@@ -408,7 +408,9 @@ lock, then rechecks readers, file identity and Firebase Storage metadata. It
 writes a digest-bound receipt including the cloud generations, archive hashes,
 capture records and a rename token, then renames the workspace to
 `.retiring-<scene>-<token>`. After releasing the locks, it verifies the renamed
-tree's capture IDs and every file against the receipt before removal. A new
+tree's capture IDs and every file against the receipt, and revalidates the
+receipt digest, before removal. An incomplete removal reports zero reclaimed
+bytes and its hidden tree remains available for the next enabled sweep. A new
 capture appearing at the rename boundary is returned to the live path and its
 receipt is preserved under a recovery name. An enabled applying tick finishes
 a crash-left copy only if its receipt token and bytes match. A receipt beside a

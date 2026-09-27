@@ -1133,6 +1133,7 @@ def retire_scene_workspaces(
         "retained_counts": {},
         "retiring_removed_count" if applying else "retiring_removable_count": 0,
         "retiring_kept_without_receipt": [],
+        "retiring_cleanup_incomplete": [],
         "receipt_temporaries_removed_count": 0,
         "published_archives": [],
     }
@@ -1153,6 +1154,7 @@ def retire_scene_workspaces(
         report["retiring_removed_count" if applying else "retiring_removable_count"] += len(
             swept["removed" if applying else "removable"])
         report["retiring_kept_without_receipt"].extend(swept["kept_without_receipt"])
+        report["retiring_cleanup_incomplete"].extend(swept.get("cleanup_incomplete", []))
         workspaces = scene_workspaces(context.storage_root)
         if not workspaces:
             continue
