@@ -92,10 +92,8 @@ from .control_plane_storage_references import (  # noqa: F401 - re-exported
     settlement_reopens_beyond_retained_receipts,
 )
 from .control_plane_storage_roots import require_storage_class
-from .control_plane_terminal_cache_pins import (
-    activation_queue_root_of, extended_pin_proofs_setting, launch_queue_root_of, preparation_queue_root_of,
-    reconcile_terminal_cache_pins,
-)
+from .control_plane_pin_proofs import activation_queue_root_of, launch_queue_root_of, preparation_queue_root_of
+from .control_plane_terminal_cache_pins import extended_pin_proofs_setting, reconcile_terminal_cache_pins
 from .decision_evidence_contracts import canonical_digest
 from .task_evaluation_release_identity import running_release_commit
 from .task_evaluation_standing_launch_authorization import STANDING_AUTHORIZATION_DIR_ENV

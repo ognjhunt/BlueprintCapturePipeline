@@ -10,6 +10,7 @@ launched, and a preparation or compilation nothing consumes all waited out the
 
 # Covers (for impacted-test selection):
 #   src/blueprint_pipeline/control_plane_terminal_cache_pins.py
+#   src/blueprint_pipeline/control_plane_pin_proofs.py
 #   src/blueprint_pipeline/control_plane_storage_pins.py
 #   src/blueprint_pipeline/task_evaluation_result_artifact_store.py
 #   src/blueprint_pipeline/task_evaluation_launch_activation_worker.py
@@ -30,6 +31,7 @@ import pytest
 from blueprint_pipeline import completed_replay_cache_retention as retention
 from blueprint_pipeline import control_plane_replay_cache_gc as replay_gc
 from blueprint_pipeline import control_plane_storage_gc as gc_module
+from blueprint_pipeline import control_plane_pin_proofs as pin_proofs
 from blueprint_pipeline import control_plane_terminal_cache_pins as terminal_pins
 from blueprint_pipeline.control_plane_storage_gc import RUN_ACK, run_storage_gc
 from blueprint_pipeline.control_plane_storage_pins import load_storage_pins, write_storage_pin
@@ -859,9 +861,9 @@ def test_a_run_under_the_shortened_launch_id_keeps_a_long_activation_pinned(tmp_
 def test_activation_auto_launch_names_are_unchanged(tmp_path) -> None:
     """A website activation's run is still found under ``<id>-launch``, and the original proofs read what they did."""
 
-    assert terminal_pins._evidence_names(AUTO) == (AUTO, AUTO + "-launch")
-    assert terminal_pins._evidence_names("run-x-controls") == ("run-x-controls",)
-    assert terminal_pins._launch_evidence_names(AUTO) == (AUTO, AUTO + "-launch")
+    assert pin_proofs._evidence_names(AUTO) == (AUTO, AUTO + "-launch")
+    assert pin_proofs._evidence_names("run-x-controls") == ("run-x-controls",)
+    assert pin_proofs._launch_evidence_names(AUTO) == (AUTO, AUTO + "-launch")
     args = _args(tmp_path)
     queue = _activation_queue(tmp_path, args)
     _activation_result(queue, AUTO)
@@ -1038,16 +1040,16 @@ def test_prepared_statuses_are_exactly_those_the_activation_worker_writes() -> N
                     and isinstance(fields.get("status"), ast.Constant)):
                 written.add(fields["status"].value)
 
-    assert terminal_pins.ACTIVATION_RESULT_SCHEMA_VERSION == activation_queue.RESULT_SCHEMA_VERSION
-    assert terminal_pins.ACTIVATION_ENVELOPE_SCHEMA_VERSION == activation_queue.ENVELOPE_SCHEMA_VERSION
+    assert pin_proofs.ACTIVATION_RESULT_SCHEMA_VERSION == activation_queue.RESULT_SCHEMA_VERSION
+    assert pin_proofs.ACTIVATION_ENVELOPE_SCHEMA_VERSION == activation_queue.ENVELOPE_SCHEMA_VERSION
     from blueprint_pipeline import task_evaluation_launch_preparation_queue as preparation_queue
 
-    assert terminal_pins.PREPARATION_ENVELOPE_SCHEMA_VERSION == preparation_queue.ENVELOPE_SCHEMA_VERSION
-    assert written - {"blocked"} == terminal_pins.PREPARED_ACTIVATION_STATUSES
-    assert terminal_pins.activation_queue_root_of(["/q/task-evaluation-launches", "/q/task-evaluation-launch-activations/"]) == Path(
+    assert pin_proofs.PREPARATION_ENVELOPE_SCHEMA_VERSION == preparation_queue.ENVELOPE_SCHEMA_VERSION
+    assert written - {"blocked"} == pin_proofs.PREPARED_ACTIVATION_STATUSES
+    assert pin_proofs.activation_queue_root_of(["/q/task-evaluation-launches", "/q/task-evaluation-launch-activations/"]) == Path(
         "/q/task-evaluation-launch-activations")
-    assert terminal_pins.activation_queue_root_of(["/q/task-evaluation-launches"]) is None
-    assert terminal_pins.activation_queue_root_of(["/a/task-evaluation-launch-activations",
+    assert pin_proofs.activation_queue_root_of(["/q/task-evaluation-launches"]) is None
+    assert pin_proofs.activation_queue_root_of(["/a/task-evaluation-launch-activations",
                                                 "/b/task-evaluation-launch-activations"]) is None
 
 
@@ -1179,11 +1181,11 @@ def test_extended_pin_proofs_stay_an_operator_opt_in() -> None:
     # The unit's queue roots name the activation queue, so the unlaunched proof finds its results.
     queue_roots = next(line.split("=", 2)[2] for line in unit.splitlines()
                        if line.startswith(f"Environment={gc_module.QUEUE_ROOTS_ENV}="))
-    assert terminal_pins.activation_queue_root_of(queue_roots.split(":")) == Path(
+    assert pin_proofs.activation_queue_root_of(queue_roots.split(":")) == Path(
         "/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-activations")
-    assert terminal_pins.preparation_queue_root_of(queue_roots.split(":")) == Path(
+    assert pin_proofs.preparation_queue_root_of(queue_roots.split(":")) == Path(
         "/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-preparations")
-    assert terminal_pins.launch_queue_root_of(queue_roots.split(":")) == Path(
+    assert pin_proofs.launch_queue_root_of(queue_roots.split(":")) == Path(
         "/var/lib/blueprint/pipeline-control-plane/task-evaluation-launches")
     # The standing authorization directory is the one launch admission resolves: the dispatcher's
     # unit sets no directory, so it derives one beside its launch state root.
