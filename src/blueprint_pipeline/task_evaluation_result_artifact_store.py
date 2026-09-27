@@ -15,6 +15,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -185,9 +186,16 @@ def acquire_artifact_read_lease(root: Path, *, exclusive: bool = False):
     descriptor = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o660)
     try:
         owner = registry_path.stat()
-        if os.geteuid() == 0:
+        # The storage GC is root with CAP_CHOWN but not CAP_FOWNER: once the lock
+        # belongs to the registry owner, only that owner may change its mode. So
+        # the mode is set only while this process owns the file, and the owner is
+        # changed last. A lock someone else owns keeps its mode; the open and the
+        # flock are the access check.
+        metadata = os.fstat(descriptor)
+        if stat.S_IMODE(metadata.st_mode) != 0o660 and metadata.st_uid == os.geteuid():
+            os.fchmod(descriptor, 0o660)
+        if os.geteuid() == 0 and (metadata.st_uid, metadata.st_gid) != (owner.st_uid, owner.st_gid):
             os.fchown(descriptor, owner.st_uid, owner.st_gid)
-        os.fchmod(descriptor, 0o660)
         fcntl.flock(descriptor, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
     except BaseException:
         os.close(descriptor)

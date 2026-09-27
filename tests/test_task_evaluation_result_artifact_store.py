@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import fcntl
 import hashlib
 import json
+import os
+import stat
 from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
@@ -441,6 +444,158 @@ def test_a_retained_run_says_why(setup, monkeypatch, tmp_path):
     assert (row["status"], row["retained_reason"]) == (
         "retained_hot_or_active", "protected_process_inventory_unreadable")
     assert f.path.read_bytes() == f.payload
+
+
+class _SimulatedOwnership:
+    """``os.geteuid``, ``fstat``, ``fchmod``, ``fchown`` and ``chown`` as an account without CAP_FOWNER sees them.
+
+    Owner, group and mode live in a table keyed by inode, and nothing real is chowned
+    or chmodded. A file first met here belongs to the simulated account, its mode
+    masked by the GC unit's ``UMask=0077``. ``fchmod`` needs ownership and fails
+    with EPERM otherwise; root (CAP_CHOWN) may chown anything, anyone else only
+    what it keeps.
+    """
+
+    def __init__(self, monkeypatch, *, euid: int, egid: int):
+        self.euid, self.egid = euid, egid
+        self.files: dict[tuple[int, int], dict[str, int]] = {}
+        self.calls: list[tuple] = []
+        self._fstat, self._stat = os.fstat, os.stat
+        monkeypatch.setattr(os, "geteuid", lambda: self.euid)
+        monkeypatch.setattr(os, "fstat", self.fstat)
+        monkeypatch.setattr(os, "fchmod", lambda fd, mode: self._chmod(self._fstat(fd), mode))
+        monkeypatch.setattr(os, "fchown", lambda fd, uid, gid: self._chown(self._fstat(fd), uid, gid))
+        monkeypatch.setattr(os, "chown", lambda path, uid, gid, **_: self._chown(self._stat(path), uid, gid))
+
+    def _entry(self, real) -> dict[str, int]:
+        return self.files.setdefault((real.st_dev, real.st_ino), {
+            "uid": self.euid, "gid": self.egid, "mode": stat.S_IMODE(real.st_mode) & ~0o077})
+
+    def own(self, path: Path, *, uid: int, gid: int, mode: int) -> None:
+        real = self._stat(path)
+        self.files[(real.st_dev, real.st_ino)] = {"uid": uid, "gid": gid, "mode": mode}
+
+    def of(self, path: Path) -> dict[str, int]:
+        return self._entry(self._stat(path))
+
+    def calls_on(self, path: Path) -> list[str]:
+        real = self._stat(path)
+        return [name for name, key in self.calls if key == (real.st_dev, real.st_ino)]
+
+    def fstat(self, fd):
+        real = self._fstat(fd)
+        entry = self._entry(real)
+        fields = {name: getattr(real, name) for name in dir(real) if name.startswith("st_")}
+        fields.update(st_mode=stat.S_IFMT(real.st_mode) | entry["mode"], st_uid=entry["uid"], st_gid=entry["gid"])
+        return SimpleNamespace(**fields)
+
+    def _chmod(self, real, mode: int) -> None:
+        self.calls.append(("fchmod", (real.st_dev, real.st_ino)))
+        entry = self._entry(real)
+        if entry["uid"] != self.euid:
+            raise PermissionError(errno.EPERM, "Operation not permitted")
+        entry["mode"] = mode
+
+    def _chown(self, real, uid: int, gid: int) -> None:
+        self.calls.append(("fchown", (real.st_dev, real.st_ino)))
+        entry = self._entry(real)
+        if self.euid != 0 and uid not in (-1, entry["uid"]):
+            raise PermissionError(errno.EPERM, "Operation not permitted")
+        entry["uid"] = entry["uid"] if uid == -1 else uid
+        entry["gid"] = entry["gid"] if gid == -1 else gid
+
+
+def _lease_lock(f) -> Path:
+    return f.registry_path.parent / ".artifact-readers.lock"
+
+
+def _flock_is_held(lock: Path) -> bool:
+    probe = os.open(lock, os.O_RDWR)
+    try:
+        fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return True
+    finally:
+        os.close(probe)
+    return False
+
+
+def test_root_eviction_lease_needs_no_fowner(setup, monkeypatch):
+    """2026-09-27: the GC unit is root with CAP_CHOWN and CAP_DAC_OVERRIDE but not CAP_FOWNER.
+    The lease gave its new lock to the registry owner and then chmodded it, which only
+    that owner may do, so every eviction failed with EPERM after the upload. The mode
+    is now set while root still owns the file, and the owner changed last."""
+
+    f = setup
+    registry = f.registry_path.stat()
+    ownership = _SimulatedOwnership(monkeypatch, euid=0, egid=0)
+
+    release = offload.acquire_artifact_read_lease(f.root, exclusive=True)
+    try:
+        assert ownership.of(_lease_lock(f)) == {"uid": registry.st_uid, "gid": registry.st_gid, "mode": 0o660}
+        assert ownership.calls_on(_lease_lock(f)) == ["fchmod", "fchown"]
+        assert _flock_is_held(_lease_lock(f))
+    finally:
+        release()
+    assert not _flock_is_held(_lease_lock(f))
+
+
+@pytest.mark.parametrize("mode", [0o660, 0o600], ids=["0660", "0600-left-by-a-failed-tick"])
+def test_existing_lock_owned_by_registry_owner_is_not_chmodded(setup, monkeypatch, mode):
+    """A lock the registry owner already holds is neither chmodded nor chowned by root: at
+    0660 it needs nothing, and at 0600 (left by a tick that failed its chmod) root may
+    not repair it; the open and the flock are the access check, and the owner's next
+    lease repairs the mode."""
+
+    f = setup
+    registry = f.registry_path.stat()
+    _lease_lock(f).touch()
+    ownership = _SimulatedOwnership(monkeypatch, euid=0, egid=0)
+    ownership.own(_lease_lock(f), uid=registry.st_uid, gid=registry.st_gid, mode=mode)
+
+    release = offload.acquire_artifact_read_lease(f.root)
+    try:
+        assert ownership.calls_on(_lease_lock(f)) == []
+        assert ownership.of(_lease_lock(f)) == {"uid": registry.st_uid, "gid": registry.st_gid, "mode": mode}
+        assert _flock_is_held(_lease_lock(f))
+    finally:
+        release()
+    assert not _flock_is_held(_lease_lock(f))
+
+
+def test_non_root_reader_lease_is_unchanged(setup, monkeypatch):
+    """The service account (the WebApp-facing resolver) creates the lock as its owner, sets its
+    mode, and never chowns it."""
+
+    f = setup
+    registry = f.registry_path.stat()
+    ownership = _SimulatedOwnership(monkeypatch, euid=registry.st_uid, egid=registry.st_gid)
+
+    release = offload.acquire_artifact_read_lease(f.root)
+    try:
+        assert ownership.calls_on(_lease_lock(f)) == ["fchmod"]
+        assert ownership.of(_lease_lock(f)) == {"uid": registry.st_uid, "gid": registry.st_gid, "mode": 0o660}
+        assert _flock_is_held(_lease_lock(f))
+    finally:
+        release()
+
+
+def test_root_gc_tick_evicts_without_fowner(setup, monkeypatch, tmp_path):
+    """The six production registry runs with eviction candidates published their bulk
+    artifacts on every hourly tick and were then retained with PermissionError at the
+    evict stage. Under the same privileges a tick now evicts them."""
+
+    f = setup
+    registry = f.registry_path.stat()
+    monkeypatch.setattr(
+        "blueprint_pipeline.completed_replay_cache_retention.process_reference", lambda _, **kw: None)
+    ownership = _SimulatedOwnership(monkeypatch, euid=0, egid=0)
+
+    [row] = _gc_tick(f, tmp_path)["result_artifact_offload"]
+
+    assert (row["status"], row["offloaded_count"], row["skipped"]) == ("applied", 1, [])
+    assert not f.path.exists() and f.objects.upload_count == 1
+    assert ownership.of(_lease_lock(f)) == {"uid": registry.st_uid, "gid": registry.st_gid, "mode": 0o660}
 
 
 def test_disk_reservation_refusal_does_not_upload_or_delete(setup, monkeypatch):
