@@ -108,6 +108,22 @@ def test_blocked_volume_growth_pages(tmp_path: Path) -> None:
     assert len(posted) == 1 and posted[0]["volume_resize"]["status"] == "blocked"
 
 
+def test_blocked_growth_page_keeps_provider_status_out_of_public_summary(tmp_path: Path) -> None:
+    def reject(_plan, **_kwargs):
+        raise cap.ControlPlaneCapacityError("control_plane_capacity_resize_rejected:private_provider_status")
+
+    report = cap.run_controller(mounts=[str(tmp_path)], report_root=tmp_path / "capacity",
+                                reservation_root=tmp_path / "r", webhook_url="https://alerts.example/hook",
+                                volume={"id": "vol-1", "mount": str(tmp_path), "current_size_gib": 100,
+                                        "max_gib": 200}, ack=cap.RESIZE_ACK, token="dummy", resizer=reject,
+                                survey=None, disk_usage=_usage(9.0), now=1000.0)
+    assert report["volume_resize"]["reason"] == "control_plane_capacity_resize_rejected"
+    summary = cap.capacity_summary(report)
+    assert "private_provider_status" not in json.dumps(summary)
+    assert next(a for a in summary["alerts"] if a["code"] == "volume_growth_blocked")["reason"] == (
+        "control_plane_capacity_resize_rejected")
+
+
 def test_new_page_alert_posts_even_at_the_same_level() -> None:
     first = {"level": "critical", "last_alert_epoch": 1000.0, "last_alert_fingerprint": "old",
              "alerts": [{"code": "admission_refused", "mount": "/first", "severity": "page"}]}

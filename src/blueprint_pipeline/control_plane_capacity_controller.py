@@ -1019,7 +1019,15 @@ def run_controller(
                         plan, ack=ack, token=token, device=str(volume.get("device") or ""), now=observed
                     )
                 except ControlPlaneCapacityError as exc:
-                    report["volume_resize"] = {**plan, "status": "blocked", "reason": str(exc)}
+                    code = str(exc).split(":", 1)[0]
+                    if code not in {
+                        "control_plane_capacity_resize_rejected",
+                        "control_plane_capacity_filesystem_resize_failed",
+                        "control_plane_capacity_resize_not_acknowledged",
+                        "control_plane_capacity_resize_plan_invalid",
+                    }:
+                        code = "control_plane_capacity_resize_failed"
+                    report["volume_resize"] = {**plan, "status": "blocked", "reason": code}
         if report["volume_resize"].get("status") == "blocked":
             report["alerts"].append({"code": "volume_growth_blocked",
                                      "mount": str(volume.get("mount") or ""),
