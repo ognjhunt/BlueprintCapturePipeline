@@ -961,7 +961,9 @@ def test_directories_the_scratch_inputs_leave_empty_are_removed_and_nothing_else
     go too, deepest first, each opened O_NOFOLLOW from its parent's descriptor and removed
     relative to it. prepared-references itself stays, as do a directory still holding a kept
     file, a link to a directory (never entered) and every directory outside prepared-references.
-    A directory still holding something is simply kept; any other failure is a typed skip."""
+    A directory still holding something is simply kept; any other failure is a typed skip.
+    The no-digest walk never plans a file a link reaches, directory or file: what is outside
+    stays, however old and whatever its name."""
     root, child, data, proc = setup(tmp_path)
     data.unlink()
     inputs = child / "prepared-references"
@@ -971,9 +973,17 @@ def test_directories_the_scratch_inputs_leave_empty_are_removed_and_nothing_else
     (inputs / "prep" / "stuck").mkdir()
     outside = tmp_path / "outside"
     (outside / "empty").mkdir(parents=True)
+    behind = outside / "behind-the-link.bin"
+    outside_file = tmp_path / "outside-file.bin"
+    for path, payload in ((behind, b"behind a linked directory"), (outside_file, b"behind a linked file")):
+        path.write_bytes(payload)
+        stamp = (child / "stage_replay_report.v1.json").stat().st_mtime_ns - 10**9
+        os.utime(path, ns=(stamp, stamp))
     (inputs / "prep" / "link").symlink_to(outside, target_is_directory=True)
+    (inputs / "prep" / "file-link.bin").symlink_to(outside_file)
     (child / "launch-preparations" / "pending").mkdir(parents=True)
     p = plan(root, proc, **SCRATCH)
+    assert planned_paths(p) == {str(deep.relative_to(child))}
     real_rmdir = os.rmdir
 
     def rmdir(path, *args, **kwargs):
@@ -990,6 +1000,8 @@ def test_directories_the_scratch_inputs_leave_empty_are_removed_and_nothing_else
     assert not (inputs / "prep" / "a").exists() and not (inputs / "prep" / "empty").exists()
     assert newer.exists() and (inputs / "prep" / "stuck").is_dir() and (inputs / "prep" / "link").is_symlink()
     assert inputs.is_dir() and (outside / "empty").is_dir() and (child / "launch-preparations" / "pending").is_dir()
+    assert behind.read_bytes() == b"behind a linked directory" and outside_file.read_bytes() == b"behind a linked file"
+    assert (inputs / "prep" / "file-link.bin").is_symlink()
 
 
 class _OnDevice:
@@ -1152,3 +1164,40 @@ def test_a_report_makes_scratch_only_of_the_root_its_replay_ran_in(tmp_path):
     result = apply(p, proc, **SCRATCH)
     assert (result["removed_bytes"], result["skipped"]) == (size, [])
     assert not copy.exists() and scratch.exists()
+
+
+@pytest.mark.parametrize("when", ["before_apply", "while_rechecking"])
+def test_a_directory_swapped_for_a_link_never_redirects_a_scratch_input_removal(tmp_path, monkeypatch, when):
+    """The scratch-input path never hashes, so the swap-while-hashing probes above never reach it.
+    A planned scratch input's directory swapped for a link to a directory holding a file of the
+    same name, after the plan or while apply rechecks the group, removes nothing: the file
+    outside survives, the planned file survives where it was moved, and the group is skipped."""
+    root, child, data, proc = setup(tmp_path)
+    data.unlink()
+    prep = child / "prepared-references" / "prep"
+    planned = _scratch_input(child, "prep/receipt.json", b"a scratch input")
+    victim_dir, victim = _victim(tmp_path, "receipt.json")
+    p = plan(root, proc, **SCRATCH)
+
+    def swap():
+        prep.rename(prep.with_name("prep-moved"))
+        prep.symlink_to(victim_dir, target_is_directory=True)
+
+    if when == "before_apply":
+        swap()
+    else:
+        real_leaf = gc._leaf
+
+        def leaf(directory, name):
+            if name == planned.name and not prep.is_symlink():
+                swap()
+            return real_leaf(directory, name)
+
+        monkeypatch.setattr(gc, "_leaf", leaf)
+    result = apply(p, proc, **SCRATCH)
+
+    [skip] = result["skipped"]
+    assert skip["paths"] == [str(planned)] and result["removed_bytes"] == 0
+    assert skip["reason"].startswith("recheck_failed:") if when == "before_apply" else skip["reason"] == "path_changed"
+    assert victim.read_text() == "evidence that is not the replay's"
+    assert (prep.with_name("prep-moved") / "receipt.json").read_bytes() == b"a scratch input"

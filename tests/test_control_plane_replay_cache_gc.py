@@ -83,6 +83,29 @@ def test_the_phase_leaves_every_file_outside_the_scratch_inputs(tmp_path) -> Non
     assert not blob.exists() and binary.exists()
 
 
+def test_the_phase_keeps_the_store_copy_rule_beside_the_scratch_rule(tmp_path) -> None:
+    """Spec review of PR 10a.1: the phase passes reclaim_store_copies with reclaim_scratch_inputs, so
+    a finished replay whose report does not bind its scratch inputs to its own root (no scratch
+    queue recorded) still loses its digest-verified store copies, and nothing else there."""
+
+    assert replay_gc._RULES == {"reclaim_store_copies": True, "reclaim_scratch_inputs": True, "single_files": False}
+    parent_root = tmp_path / "scene-configuration-activations"
+    blob, report, _lookahead_report = _activation(parent_root)
+    report.write_text(json.dumps({k: v for k, v in json.loads(report.read_text()).items() if k != "scratch_queue_root"}))
+    os.utime(report, (NOW - 7100, NOW - 7100))
+    derived = report.parent / "prepared-references" / "scene-841007-preparation" / "derived.json"
+    derived.parent.mkdir(parents=True)
+    derived.write_bytes(b"{}" * 500)
+    os.utime(derived, (NOW - 7200, NOW - 7200))
+    size = blob.stat().st_size
+
+    assert _tick(tmp_path, parent_root)["replay_caches"]["estimated_candidate_bytes"] == size
+    phase = _tick(tmp_path, parent_root, apply=True, ack=RUN_ACK, replay_cache_retention_enabled=True)["replay_caches"]
+
+    assert phase["candidate_bytes"] == phase["removed_bytes"] == size
+    assert not blob.exists() and derived.exists()
+
+
 def test_replay_cache_phase_plans_by_default_and_applies_only_when_enabled(tmp_path) -> None:
     parent_root = tmp_path / "scene-configuration-activations"
     blob, report, lookahead_report = _activation(parent_root)
