@@ -1,34 +1,40 @@
 """Reclaim disposable binary copies after an offline replay has completed.
 
-By default, reports, logs, source code, readonly files and shared inodes remain
-untouched. With ``reclaim_store_copies`` (storage GC's opt-in; the standalone
-unit never passes it) one more kind of copy is recognised, by its place and name
-instead of a suffix: a parent replay's copy of a content-store blob, at
-``prepared-references/content-addressed/sha256/<digest>``, together with every
-other name it has in the replay's ``prepared-references`` (the worker's
-materialized references are hard links to it). It keeps the store's read-only
-mode and has no suffix, so the whole inode qualifies when all of its links are
-there and its bytes match the digest it is named by; a link anywhere else
-keeps it. Under the same opt-in any finished parent replay counts, whatever its
-status. ``reclaim_scratch_inputs`` (storage GC's alone as well) goes further
-for a finished parent replay, which made ``prepared-references`` in its own
-temporary root: every regular file there whose links are all inside it and
-that is not newer than the report is scratch, digest-named or not, and goes
-with every name; the directories left empty inside the tree go after it, and
-the tree itself stays. It subsumes the store-copy rule for that replay, so no
-inode is counted twice. Both rules stay on the replay child's own filesystem:
-nothing whose st_dev differs from the child's is planned, unlinked or pruned,
-though a bind mount of the same filesystem keeps its st_dev and cannot be told
-apart that way. Without the opt-ins the rules are the ones this module always
-had.
-Apply rechecks and unlinks every name, and hashes what a rule's digest rests
-on, through directory descriptors held from the replay child down, never
-through a path, and skips an item whose directory moved or became a link since
-it was opened.
+By default only a finished replay's writable binary working copies go (a known
+binary suffix, at least 64 KiB, one link); reports, logs, source code, readonly
+files and shared inodes remain untouched.
+
+``reclaim_store_copies`` (storage GC's opt-in; the standalone unit never passes
+it) also recognises, by place and name instead of suffix, a parent replay's copy
+of a content-store blob at ``prepared-references/content-addressed/sha256/<digest>``,
+with every other name it has in the replay's ``prepared-references`` (the
+worker's materialized references are hard links to it). It keeps the store's
+read-only mode and has no suffix, so the whole inode qualifies when all of its
+links are there and its bytes match the digest it is named by; a link anywhere
+else keeps it. Under this opt-in any finished parent replay counts, whatever its
+status.
+
+``reclaim_scratch_inputs`` (storage GC's alone as well) goes further for a
+finished parent replay whose report says it ran in that root. The replay made
+``prepared-references`` in its own temporary root, so every regular file there
+whose links are all inside it and that is not newer than the report is scratch,
+digest-named or not, and goes with every name; the directories left empty inside
+the tree go after it, and the tree itself stays. It subsumes the store-copy rule
+for that replay, so no inode is counted twice.
+
+Both of those rules stay on the replay child's own filesystem: nothing whose
+st_dev differs from the child's is planned, unlinked or pruned. A bind mount of
+the same filesystem keeps its st_dev and cannot be told apart that way. Without
+the opt-ins the rules are the ones this module always had.
+
+Apply rechecks and unlinks every name, and hashes what a rule's digest rests on,
+through directory descriptors held from the replay child down, never through a
+path, and skips an item whose directory moved or became a link since it was
+opened.
+
 This module is also a standalone maintenance entrypoint; it never allocates a
 provider or changes the scientific release used by a live run.
 """
-
 from __future__ import annotations
 
 import argparse
@@ -605,17 +611,17 @@ def _scan(
         raise ValueError("replay_cache_age_invalid")
     clock = time.time() if now is None else now
     # Either opt-in counts any finished parent replay, whatever its status.
-    finished = reclaim_store_copies or reclaim_scratch_inputs
+    opted_in = reclaim_store_copies or reclaim_scratch_inputs
     rows, kept = [], []
     for child in sorted(root.iterdir()):
         if not child.is_dir() or child.is_symlink():
             continue
-        report, ran_here = _finished_report(child, any_parent_status=finished)
+        report, ran_here = _finished_report(child, any_parent_status=opted_in)
         if report is None or clock - report.stat().st_mtime < minimum_closed_seconds:
             continue
         # Without the opt-ins, the order this module always had: a live reader keeps the root
         # before anything in it is looked at.
-        if verify and not finished and active_reference(child, process_root=process_root):
+        if verify and not opted_in and active_reference(child, process_root=process_root):
             kept.append({"root": str(child), "reason": "active_reference"})
             continue
         report_mtime_ns = report.stat().st_mtime_ns
@@ -632,7 +638,7 @@ def _scan(
             rows.append({"files": files, "store_copies": copies, "scratch_inputs": inputs})
             continue
         # With them, only a root that has something to reclaim is worth a sweep of the process table.
-        if finished and active_reference(child, process_root=process_root):
+        if opted_in and active_reference(child, process_root=process_root):
             kept.append({"root": str(child), "reason": "active_reference"})
             continue
         files, copies = _verified(child, files, copies)
@@ -703,7 +709,7 @@ def estimate_replay_cache_retention(
     }
 
 
-def _scratch_names(group):
+def _group_names(group):
     """A planned group's names: distinct relative paths inside the child's scratch inputs."""
     names = [Path(name) for name in group["relative_paths"]]
     if (
@@ -730,13 +736,14 @@ def apply_replay_cache_retention(
         raise ValueError("replay_cache_scratch_inputs_not_admitted")
     if not single_files and any(row.get("files") for row in plan["rows"]):
         raise ValueError("replay_cache_single_files_not_admitted")
+    opted_in = reclaim_store_copies or reclaim_scratch_inputs
     removed, skipped = [], []
     base = Path(plan["replay_root"])
     for row in plan["rows"]:
         root = Path(row["root"])
         if root.parent != base or any(p.is_symlink() for p in (root, *root.parents)):
             raise ValueError("replay_cache_root_changed")
-        report, ran_here = _finished_report(root, any_parent_status=reclaim_store_copies or reclaim_scratch_inputs)
+        report, ran_here = _finished_report(root, any_parent_status=opted_in)
         if (
             report is None
             or str(report) != row["report_path"]
@@ -757,8 +764,8 @@ def apply_replay_cache_retention(
             relative = Path(item["relative_path"])
             if not relative.parts or relative.is_absolute() or ".." in relative.parts:
                 raise ValueError("replay_cache_member_unsafe")
-        groups = [(copy, _scratch_names(copy), _remove_store_copy) for copy in row.get("store_copies", [])] + [
-            (group, _scratch_names(group), _remove_scratch_input) for group in row.get("scratch_inputs", [])]
+        groups = [(copy, _group_names(copy), _remove_store_copy) for copy in row.get("store_copies", [])] + [
+            (group, _group_names(group), _remove_scratch_input) for group in row.get("scratch_inputs", [])]
         try:
             held = _HeldChild(base, root.name)
         except OSError as exc:
@@ -781,7 +788,7 @@ def apply_replay_cache_retention(
                     skipped.append({"paths": paths, "reason": reason})
                 else:
                     # A store copy's digest was verified; a scratch input's bytes were never read.
-                    verified = {"sha256": group["sha256"]} if remove is _remove_store_copy else {}
+                    verified = {"sha256": group["sha256"]} if "sha256" in group else {}
                     removed.append({"paths": paths, **verified, "size_bytes": group["size_bytes"]})
             if row.get("scratch_inputs"):
                 skipped.extend(held.item(_remove_empty_directories, root))
