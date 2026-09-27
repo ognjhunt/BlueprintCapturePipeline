@@ -108,6 +108,56 @@ def test_controller_rejects_invalid_server_address_before_import(url: str) -> No
         )
 
 
+def test_team_sonic_bridge_removes_unused_local_policy_client(monkeypatch) -> None:
+    client = object()
+    provider = SimpleNamespace(
+        _use_lerobot_vla=True,
+        _lerobot_server_url="http://127.0.0.1:1",
+        _lerobot_http_client=client,
+    )
+    bridge = SimpleNamespace(provider=provider)
+    seen = []
+
+    def build(**kwargs):
+        seen.append(kwargs)
+        return bridge
+
+    monkeypatch.setattr(assembly, "build_pinned_g1_sonic_bridge", build)
+    result = assembly.build_pinned_g1_team_sonic_bridge(
+        built=_built(),
+        source_path=Path("/staged/action_provider_sonic.py"),
+        encoder_path=Path("/staged/encoder.onnx"),
+        encoder_sha256="sha256:" + "b" * 64,
+        decoder_path=Path("/staged/decoder.onnx"),
+        decoder_sha256="sha256:" + "c" * 64,
+    )
+    assert result is bridge
+    assert seen[0]["server_url"] == "http://127.0.0.1:1"
+    assert provider._lerobot_http_client is None
+    assert provider._lerobot_server_url == ""
+
+
+def test_team_sonic_bridge_requires_pinned_external_action_mode(monkeypatch) -> None:
+    provider = SimpleNamespace(
+        _use_lerobot_vla=False,
+        _lerobot_server_url="http://127.0.0.1:1",
+        _lerobot_http_client=object(),
+    )
+    monkeypatch.setattr(
+        assembly, "build_pinned_g1_sonic_bridge",
+        lambda **_: SimpleNamespace(provider=provider),
+    )
+    with pytest.raises(ValueError, match="external_action_binding_invalid"):
+        assembly.build_pinned_g1_team_sonic_bridge(
+            built=_built(),
+            source_path=Path("/staged/action_provider_sonic.py"),
+            encoder_path=Path("/staged/encoder.onnx"),
+            encoder_sha256="sha256:" + "b" * 64,
+            decoder_path=Path("/staged/decoder.onnx"),
+            decoder_sha256="sha256:" + "c" * 64,
+        )
+
+
 class _Lease:
     def __init__(self):
         self.client = SimpleNamespace(base_url="http://127.0.0.1:8443")
