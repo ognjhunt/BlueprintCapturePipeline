@@ -95,6 +95,30 @@ def test_three_days_of_headroom_pages_and_unrouted_alerts_are_loud(tmp_path: Pat
     assert "operator_alert_route_unconfigured" in {a["code"] for a in cap.capacity_summary(unrouted)["alerts"]}
 
 
+def test_fast_growth_pages_even_while_current_utilization_is_ok(tmp_path: Path) -> None:
+    now = 10 * 86400.0
+    mount = str(tmp_path)
+    report_root = tmp_path / "capacity"
+    report_root.mkdir()
+    (report_root / "history.jsonl").write_text(json.dumps({
+        "mount": mount, "status": "measured", "observed_at_epoch": now - 86400,
+        "free_bytes": 120 * GIB, "floor_bytes": 8 * GIB,
+    }) + "\n")
+    posted = []
+    report = cap.run_controller(
+        mounts=[mount], report_root=report_root, reservation_root=tmp_path / "reservations",
+        webhook_url="https://alerts.example/hook", volume=None, ack="", token="",
+        survey=None, disk_usage=_usage(80.0), now=now,
+        poster=lambda _url, value: posted.append(value),
+        release_retirement_summary_path=tmp_path / "absent-retirement",
+        break_glass_notes_root=tmp_path / "absent-notes",
+    )
+    assert report["level"] == "ok"
+    assert any(a["code"] == "floor_within_three_days" and a["severity"] == "page"
+               for a in report["alerts"])
+    assert report["alert_posted"] is True and len(posted) == 1
+
+
 def test_blocked_volume_growth_pages(tmp_path: Path) -> None:
     posted = []
     report = cap.run_controller(mounts=[str(tmp_path)], report_root=tmp_path / "capacity",
@@ -194,6 +218,20 @@ def test_unreported_break_glass_note_warns_without_disclosing_note(tmp_path: Pat
     attention = next(a for a in report["alerts"] if a["code"] == "break_glass_notes_unreported")
     assert attention == {"code": "break_glass_notes_unreported", "count": 1, "severity": "warn"}
     assert "sensitive detail" not in json.dumps(cap.capacity_summary(report))
+
+
+def test_unsafe_break_glass_notes_root_warns_without_aborting_tick(tmp_path: Path) -> None:
+    notes = tmp_path / "notes"
+    notes.symlink_to(tmp_path / "missing-notes", target_is_directory=True)
+    report = cap.run_controller(
+        mounts=[str(tmp_path)], report_root=tmp_path / "capacity",
+        reservation_root=tmp_path / "ledger", webhook_url="https://alerts.example/hook",
+        volume=None, ack="", token="", survey=None,
+        release_retirement_summary_path=tmp_path / "absent-summary",
+        break_glass_notes_root=notes, disk_usage=_usage(80.0), now=1000.0,
+    )
+    assert report["level"] == "warning"
+    assert any(a["code"] == "break_glass_notes_unreadable" for a in report["alerts"])
 
 
 @pytest.mark.parametrize(("outlook", "expected"), [

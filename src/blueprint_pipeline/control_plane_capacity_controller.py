@@ -721,7 +721,9 @@ def alert_due(previous: Mapping[str, Any] | None, report: Mapping[str, Any], *, 
     """Alert on escalation or a new affected target, and retry failed delivery."""
 
     level = report.get("level")
-    if level == "ok":
+    has_page = any(row.get("severity") == "page" for row in report.get("alerts") or []
+                   if isinstance(row, Mapping))
+    if level == "ok" and not has_page:
         return False
     if previous is None or previous.get("level") != level:
         return True
@@ -729,8 +731,6 @@ def alert_due(previous: Mapping[str, Any] | None, report: Mapping[str, Any], *, 
     # delivery must not turn the following tick into a retry.
     if previous.get("alert_error") or not isinstance(previous.get("last_alert_epoch"), (int, float)):
         return True
-    has_page = any(row.get("severity") == "page" for row in report.get("alerts") or []
-                   if isinstance(row, Mapping))
     if has_page and alert_fingerprint(report) != previous.get("last_alert_fingerprint", alert_fingerprint(previous)):
         return True
 

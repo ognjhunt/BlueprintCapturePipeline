@@ -12,6 +12,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
+from .decision_evidence_contracts import cross_runtime_canonical_digest
 from .native_g1_team_campaign_intake import (
     QUEUE_ENV as G1_QUEUE_ENV,
     REGISTRY_ENV as G1_REGISTRY_ENV,
@@ -173,7 +174,10 @@ def register_scene_intake_routes(app: FastAPI, require_admission: Callable,
                 else 409 if code.endswith("idempotency_conflict") else 422),
                 content={"status": "rejected", "blockers": [code],
                          "provider_mutation_performed_inside_http_request": False})
-        return JSONResponse(status_code=202, content={**receipt, "capacity": capacity})
+        response_receipt = {**receipt, "capacity": capacity}
+        response_receipt["receipt_digest"] = cross_runtime_canonical_digest(
+            response_receipt, digest_field="receipt_digest")
+        return JSONResponse(status_code=202, content=response_receipt)
 
     @app.get("/api/live-pipeline/task-evaluation-scene-intents/{intent_id}",
              dependencies=[Depends(require_admission)])
