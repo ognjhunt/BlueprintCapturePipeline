@@ -2458,7 +2458,6 @@ def test_redelivery_for_a_retired_scene_is_acknowledged_without_staging(tmp_path
     assert results[0]["retirement_receipt"] == str(receipt)
     assert not scene.exists(), "neither the claim nor the ack receipt may bring a retired workspace back"
 
-    # A different payload is a new request for the capture (for example renewed consent): it stages again.
     renewed = json.dumps({**PAYLOAD, "pipeline_handoff_uri":
                           f"gs://capture-bucket/{_CAPTURE_PREFIX}/pipeline_handoff.json"}).encode("utf-8")
     runs: list[dict] = []
@@ -2466,7 +2465,13 @@ def test_redelivery_for_a_retired_scene_is_acknowledged_without_staging(tmp_path
     results = _install_fake_pubsub(monkeypatch, third, storage_client=FakeStorageClient(_website_bundle_blobs()),
                                    run_e2e=lambda **kwargs: runs.append(kwargs) or {"status": "completed"})
     assert _pull(tmp_path) == 1
-    assert results[0]["status"] == "processed" and len(runs) == 1 and scene.is_dir()
+    if ending == "completed":
+        # A completed capture answers any payload from its output commit, retired or not.
+        assert results[0]["status"] == "skipped_retired_terminal" and not runs and not scene.exists()
+        assert results[0]["queue_disposition"] == "terminal_success"
+    else:
+        # A different payload is a new request for an ended capture (for example renewed consent).
+        assert results[0]["status"] == "processed" and len(runs) == 1 and scene.is_dir()
 
 
 def test_an_unreadable_retirement_receipt_is_not_a_retirement(tmp_path, monkeypatch):
@@ -2497,16 +2502,17 @@ def _flock_that_retires_first(tmp_path: Path, retired: list[Path]):
                                  LOCK_NB=real_fcntl.LOCK_NB)
 
 
-@pytest.mark.parametrize(("payload", "status", "acknowledged"), [
-    (PAYLOAD_BYTES, "skipped_retired_terminal", ["a2"]),
-    (_RENEWED_PAYLOAD, "capture_retired_retryable", []),
-], ids=["receipt_covers_payload", "new_payload"])
+@pytest.mark.parametrize(("ending", "payload", "status", "acknowledged"), [
+    ("completed", PAYLOAD_BYTES, "skipped_retired_terminal", ["a2"]),
+    ("completed", _RENEWED_PAYLOAD, "skipped_retired_terminal", ["a2"]),
+    ("authority_ended", _RENEWED_PAYLOAD, "capture_retired_retryable", []),
+], ids=["receipt_covers_payload", "completed_covers_any_payload", "new_payload_for_an_ending"])
 def test_a_redelivery_waiting_on_the_ledger_lock_never_recreates_a_retired_scene(
-    tmp_path, monkeypatch, payload, status, acknowledged
+    tmp_path, monkeypatch, ending, payload, status, acknowledged
 ):
     first = FakeSubscriber([_received(ack_id="a1", data=PAYLOAD_BYTES)])
     _install_fake_pubsub(monkeypatch, first, storage_client=FakeStorageClient(_website_bundle_blobs()),
-                         run_e2e=lambda **_: {"status": "completed"})
+                         run_e2e=_expired if ending == "authority_ended" else (lambda **_: {"status": "completed"}))
     assert _pull(tmp_path) == 1
     scene = tmp_path / "capture-bucket" / "scenes" / "scene-1"
     retired: list[Path] = []
@@ -2521,7 +2527,7 @@ def test_a_redelivery_waiting_on_the_ledger_lock_never_recreates_a_retired_scene
     assert second.acknowledged == acknowledged
     assert not scene.exists(), "the claim must not bring the retired workspace back"
     if acknowledged:
-        assert results[0]["queue_disposition"] == "terminal_success"
+        assert results[0]["queue_disposition"] == "terminal_success"  # both acknowledged cases completed
     else:
         assert results[0]["queue_disposition"] == "retryable"
         assert results[0]["blockers"] == ["handoff_capture_retired_while_claiming"]

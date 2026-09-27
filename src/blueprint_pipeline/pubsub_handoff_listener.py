@@ -1689,7 +1689,8 @@ def process_handoff_payload(
         except Exception:  # noqa: BLE001 - an unanswerable lookup stages normally, as before
             logger.exception("pubsub_handoff.retirement_lookup_failed")
             return None
-        if retired is None or digest not in retired["payload_sha256s"]:
+        # Answered exactly as the capture's own ledger would: a completed capture, any payload.
+        if retired is None or not (retired.get("covers_every_payload") or digest in retired["payload_sha256s"]):
             return None
         logger.info("pubsub_handoff.skipped_retired_terminal",
                     extra={"scene_id": handoff.scene_id, "capture_id": handoff.capture_id})

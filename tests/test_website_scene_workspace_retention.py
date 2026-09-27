@@ -1165,3 +1165,34 @@ def test_a_receipt_over_the_threshold_still_reserves_disk_first(tmp_path, monkey
     result = _retire(tmp_path, cloud, plan, stream_publisher=lambda **_: pytest.fail("reserved before publishing"))
 
     assert result["reason"] == "disk_reservation_refused" and reserved and scene.is_dir()
+
+
+
+def test_a_retired_completed_capture_answers_every_payload(tmp_path):
+    """The listener answers any payload for a completed capture from its output commit."""
+
+    _, cloud = _scene(tmp_path)
+    _retire(tmp_path, cloud, _plan(tmp_path, cloud))
+
+    status = retention.retired_capture_status(storage_root=tmp_path / "pubsub-handoffs", bucket=BUCKET,
+                                              scene_id=SCENE, capture_id=CAPTURE)
+
+    assert (status["status"], status["queue_disposition"], status["covers_every_payload"]) == (
+        "completed", "terminal_success", True)
+
+
+def test_a_retired_ending_answers_every_payload_it_ended(tmp_path):
+    scene, cloud = _scene(tmp_path, status="terminal_authority_ended")
+    ledger_path = scene / "captures" / CAPTURE / "pipeline_job_ledger.json"
+    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    earlier = "e" * 64  # an earlier payload's ending, kept in the history after a reopen
+    ledger["attempt_history"].insert(0, {"status": "terminal_authority_ended", "payload_sha256": earlier})
+    ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
+    assert retention.ended_payload_digests(ledger) == listener._ended_payload_digests(ledger)
+    _retire(tmp_path, cloud, _plan(tmp_path, cloud))
+
+    status = retention.retired_capture_status(storage_root=tmp_path / "pubsub-handoffs", bucket=BUCKET,
+                                              scene_id=SCENE, capture_id=CAPTURE)
+
+    assert status["covers_every_payload"] is False
+    assert set(status["payload_sha256s"]) == {earlier, listener.payload_sha256(_payload(CAPTURE))}

@@ -1499,14 +1499,38 @@ def restore_scene_workspace(
 # --- what the listener asks about a retired capture -----------------------------------------------
 
 
+def ended_payload_digests(ledger: Mapping[str, Any]) -> set[str]:
+    """Every payload digest whose run a capture ended for lost authority.
+
+    The listener's own ``_ended_payload_digests``, copied so the reclaim timer does not
+    load the pipeline; a test pins the two together.
+    """
+
+    def text(value: Any) -> str:
+        return value.strip() if isinstance(value, str) else ""
+
+    digests = {text(ledger.get("terminal_payload_sha256"))}
+    history = ledger.get("attempt_history")
+    for row in history if isinstance(history, list) else ():
+        if not isinstance(row, Mapping):
+            continue
+        if row.get("status") == TERMINAL_AUTHORITY_STATUS:
+            digests.add(text(row.get("payload_sha256")))
+        elif row.get("status") == "reopened_after_terminal_authority":
+            digests.add(text(row.get("terminal_payload_sha256")))
+    digests.discard("")
+    return digests
+
+
 def retired_capture_status(*, storage_root: Path, bucket: str, scene_id: str,
                            capture_id: str) -> dict[str, Any] | None:
     """What a retired scene's receipt records about one capture, or None when it records nothing.
 
-    The listener asks only when the capture's workspace is absent. A missing, invalid or
-    foreign receipt means "not retired", so the handoff is staged again from Firebase
-    Storage rather than dropped. ``payload_sha256s`` are the message digests the receipt
-    proves terminal: the acknowledged one and, for an authority ending, the ending one.
+    The listener asks when the capture's workspace is absent, and answers exactly as it
+    would from the capture's own ledger: a completed capture answers every payload
+    (``covers_every_payload``) from its output commit; an authority ending answers the
+    payloads it ended (``payload_sha256s``), and any other payload is a new request. A
+    missing, invalid or foreign receipt means "not retired".
     """
 
     try:
@@ -1538,16 +1562,11 @@ def retired_capture_status(*, storage_root: Path, bucket: str, scene_id: str,
     ack = record.get("ack_receipt")
     if isinstance(ack, Mapping) and ack.get("disposition") == disposition and isinstance(ack.get("payload_sha256"), str):
         digests.add(ack["payload_sha256"])
-    terminal = record.get("terminal_receipt")
-    if (
-        status == TERMINAL_AUTHORITY_STATUS
-        and isinstance(terminal, Mapping)
-        and isinstance(terminal.get("payload_sha256"), str)
-        and terminal["payload_sha256"] == ledger.get("terminal_payload_sha256")
-    ):
-        digests.add(terminal["payload_sha256"])
-    return {"status": status, "queue_disposition": disposition, "payload_sha256s": sorted(digests),
-            "receipt": str(path), "retired_at_epoch": receipt.get("retired_at_epoch")}
+    if status == TERMINAL_AUTHORITY_STATUS:
+        digests |= ended_payload_digests(ledger)
+    return {"status": status, "queue_disposition": disposition, "covers_every_payload": status == "completed",
+            "payload_sha256s": sorted(digests), "receipt": str(path),
+            "retired_at_epoch": receipt.get("retired_at_epoch")}
 
 
 # --- command line ---------------------------------------------------------------------------------
@@ -1720,6 +1739,7 @@ __all__ = [
     "apply_scene_workspace_retirement",
     "binding_root_for",
     "build_reference_index",
+    "ended_payload_digests",
     "main",
     "plan_scene_workspace_retirement",
     "receipt_path",
