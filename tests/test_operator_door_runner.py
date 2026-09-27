@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "deploy" / "operato
 
 from operator_door.config import DoorConfig  # noqa: E402
 from operator_door.hostinfo import CommandResult  # noqa: E402
+from operator_door import holds  # noqa: E402
 from operator_door.requests import SCHEMA, enqueue, validate_request  # noqa: E402
 from operator_door.spool_runner import process_spool  # noqa: E402
 
@@ -227,6 +228,22 @@ def test_failed_hold_does_not_start_a_previously_inactive_disabled_trigger(confi
     assert _result(config, request_id)["code"] == "hold_expiry_schedule_failed"
     assert not any(call[:3] == ["systemctl", "--no-block", "start"] for call in runner.calls)
     assert not any(call[:2] == ["systemctl", "enable"] for call in runner.calls)
+    assert not (Path(config.spool_root) / "holds" / "blueprint-scene-progression.timer.json").exists()
+
+
+def test_failed_hold_record_write_restores_a_stopped_trigger(config: DoorConfig,
+                                                              monkeypatch: pytest.MonkeyPatch) -> None:
+    request_id = _hold(config)
+    runner = FakeRunner()
+
+    def no_space(*_args: object, **_kwargs: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(holds, "write", no_space)
+    process_spool(config, runner=runner)
+    assert _result(config, request_id)["status"] == "failed"
+    assert ["systemctl", "enable", "--", "blueprint-scene-progression.timer"] in runner.calls
+    assert ["systemctl", "--no-block", "start", "--", "blueprint-scene-progression.timer"] in runner.calls
     assert not (Path(config.spool_root) / "holds" / "blueprint-scene-progression.timer.json").exists()
 
 

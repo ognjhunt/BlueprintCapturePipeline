@@ -272,7 +272,9 @@ def _act_hold(
             if prior_active:
                 # The old expiry timer still exists. Restore its generation;
                 # starting here would silently undo the owner's prior hold.
-                holds.write(root, unit, current)
+                saved = holds.read(root, unit)
+                if saved is None or saved["request_id"] != current["request_id"]:
+                    holds.write(root, unit, current)
                 return 0
             if holds.read(root, unit) is not None:
                 holds.begin_release(root, unit, record, released_by="runner", status="failed_released",
@@ -280,8 +282,8 @@ def _act_hold(
                 return holds.finish_release(root, unit, command=lambda argv: runner.run(argv, timeout=30))
             return restore_unheld()
 
-        holds.write(root, unit, record)
         try:
+            holds.write(root, unit, record)
             stopped = runner.run(["systemctl", "stop", "--", unit], timeout=30)
             if stopped.returncode != 0:
                 rollback_returncode = rollback()
