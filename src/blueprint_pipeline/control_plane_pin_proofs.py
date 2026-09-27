@@ -1,9 +1,49 @@
 """The extended proofs that a storage pin protects nothing: read-only evidence, never a mutation.
 
-``control_plane_terminal_cache_pins`` evaluates these on every tick and releases
-a pin by one only with the owner's opt-in; see its docstring for the proofs.
-Each proof returns ``(proof, None)`` when it holds, or ``(None, reason)`` with a
-typed reason. Nothing here writes, locks or removes anything.
+``control_plane_terminal_cache_pins`` evaluates them on every tick and releases
+a pin by one only with the owner's opt-in. Each returns ``(proof, None)`` when
+it holds, or ``(None, reason)`` with a typed reason. Nothing here writes, locks
+or removes anything.
+
+* ``sealed_registry_run``: an activation pin whose every run carries its
+  terminal receipt and a result registry the artifact store accepts as sealed
+  (delivered completed_unqualified, blocked or cancelled, its closeout receipts
+  intact), idle past the hot window, with no whole-run pointer. Whole-run
+  offload never archives a registry run, so neither original proof could
+  release one. Without the receipt the canary dispatcher can still recover a
+  stranded delivery from the launch set.
+* ``activation_expired_unlaunched``: a profile-authority activation pin with no
+  run directory and no pointer under any of its evidence names in any evidence
+  root, whose one sealed result in the activation queue says it was prepared
+  more than a week and a day ago (a shared mutation window lives at most a
+  week), and whose standing authorization expired more than a day ago (launch
+  admission checks that authorization, and the request dates it with no
+  maximum). A launch id the WebApp or an operator chooses names no directory a
+  search could guess, so the proof also needs positive evidence: no record
+  under ``<standing authorization dir>/consumed/<profile id>/`` and no launch
+  queue row, in any state, naming the activation or its profile. Without the
+  activation queue, the launch queue or the standing authorization directory
+  this proof is off. For a profile without the one-use standing authorization
+  requirement, an operator's per-launch handshake can still admit a launch
+  after the authorization lapsed; if that happens after the pin was released,
+  the launch fails its input verification rather than using missing inputs,
+  which re-preparing recovers. The proof accepts that risk only after both the
+  window and the authorization lapsed and neither record exists. A
+  policy-campaign activation is out of scope
+  (``policy_campaign_activation_out_of_scope``): it publishes no standing
+  authorization and dispatches through the policy canary queue on the scene
+  execution window, and the canary dispatcher releases its pin on completion.
+* ``unconsumed_stale_pin``: a preparation or compilation pin that no live pin
+  depends on, created more than a week and a day ago, whose paths are all
+  ``cache``, and whose preparation no activation can take any more: its sealed
+  envelope sits in ``materialized/`` bound to a release other than the running
+  one, or in ``blocked/``. The activation worker verifies materialized inputs
+  and never re-fetches them, so age alone proves nothing: a materialized
+  preparation waits for its activation intent with no age limit.
+
+Both activation proofs look for a run under every name an activation can launch
+as (``_launch_evidence_names``): its id, ``<id>-launch``, and the bounded launch
+id the launch paths derive for a long id, with their own functions.
 """
 from __future__ import annotations
 

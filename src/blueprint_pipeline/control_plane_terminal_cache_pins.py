@@ -4,66 +4,33 @@ The collector previously retained already-archived runs for the pin's full
 30-day TTL. This reconciliation changes only the cache ledger; the normal
 collector separately rechecks references and removes reproducible directories.
 
-Two proofs always apply to an activation pin: every run it owns that exists is
-archived behind a verified pointer (``archived_run``), or sealed cold without a
-result registry (``sealed_cold_run``). The extended proofs are evaluated on every tick but
-release a pin only with the owner's opt-in,
+Two original proofs always apply to an activation pin: every run it owns that
+exists is archived behind a verified pointer (``archived_run``) or sealed cold
+without a result registry (``sealed_cold_run``). The extended proofs
+(``sealed_registry_run``, ``activation_expired_unlaunched`` for
+profile-authority activations, and ``unconsumed_stale_pin``) live in the
+read-only ``control_plane_pin_proofs``, which says what each requires. They are
+evaluated on every tick but release a pin only with the owner's opt-in,
 ``BLUEPRINT_CONTROL_PLANE_GC_EXTENDED_PIN_PROOFS=1``; until then their
-candidates are listed with ``"enabled": false``:
+candidates are listed with ``"enabled": false``.
 
-* ``sealed_registry_run``: an activation pin whose every run carries its
-  terminal receipt and a result registry the artifact store accepts as sealed
-  (delivered completed_unqualified, blocked or cancelled, its closeout receipts
-  intact), idle past the hot window, with no whole-run pointer. Whole-run
-  offload never archives a registry run, so neither original proof could
-  release one.
-* ``activation_expired_unlaunched``: a profile-authority activation pin with no
-  run directory and no pointer under any of its evidence names in any evidence
-  root, whose one sealed result in the activation queue says it was prepared
-  more than a week and a day ago, and whose standing authorization expired more
-  than a day ago. A policy-campaign activation is out of scope
-  (``policy_campaign_activation_out_of_scope``): it publishes no standing
-  authorization and dispatches through the policy canary queue on the scene
-  execution window, and the canary dispatcher releases its pin on completion. The mutation window (a week at most) has lapsed, and launch
-  admission checks that authorization, which the activation request dates
-  with no maximum. A launch id the WebApp or an operator chooses names no
-  directory a search could guess, so the proof also needs positive evidence:
-  no record under ``<standing authorization dir>/consumed/<profile id>/`` and
-  no launch queue row, in any state, naming the activation or its profile.
-  Without the activation queue, the launch queue or the standing authorization
-  directory this proof is off. For a profile without the one-use standing
-  authorization requirement, an operator's per-launch handshake can still admit
-  a launch after the authorization lapsed; if that happens after the pin was
-  released, the launch fails its input verification rather than using missing
-  inputs, which re-preparing recovers. The proof accepts that risk only after
-  both the window and the authorization lapsed and neither record exists.
-* ``unconsumed_stale_pin``: a preparation or compilation pin that no live pin
-  depends on, created more than a week and a day ago, whose paths are all
-  ``cache``, and whose preparation no activation can take any more: its sealed
-  envelope sits in ``materialized/`` bound to a release other than the running
-  one, or in ``blocked/``. The activation worker verifies materialized inputs
-  and never re-fetches them, so age alone proves nothing: a materialized
-  preparation waits for its activation intent with no age limit.
-
-The extended proofs live in ``control_plane_pin_proofs``, which only reads;
-this module decides and mutates the ledger. Both activation proofs look for a
-run under every name an activation can launch as (``_launch_evidence_names``):
-its id, ``<id>-launch``, and the bounded launch id the launch paths derive for a
-long id, with their own functions.
 Every proof keeps the six-hour minimum pin age, the dependency closure (a pin
 is released only when no queue row or process references any pin in it), and
 a re-derivation at the mutation edge. A dependency a release takes with it is
 covered by its parent's closure checks and by the ledger's ``_still_needed``
 (no other live pin depends on it), not by a proof of its own: the original
 proofs have always released an activation's preparation and compilation that
-way, and a preparation's lifecycle ends with the activation that consumed it. The extended proofs read queues
-strictly: they also count a row parked in a queue state that will still run,
-such as a preparation awaiting its source preparation, and a row they cannot
-read (linked, oversized, not UTF-8 or unreadable) keeps their candidates as
-``queue_unreadable``, where the original proofs skip it as they always did. The report names every live pin: as a
-candidate with its ``proof``, or in ``kept`` with a typed reason. A candidate
-whose references change at the mutation edge is kept too, as
-``reference_changed``.
+way, and a preparation's lifecycle ends with the activation that consumed it.
+
+The extended proofs read queues strictly: they also count a row parked in a
+queue state that will still run, and a row they cannot read keeps their
+candidates as ``queue_unreadable``, where the original proofs skip it as they
+always did. At their mutation edge the queues, the proof and the processes are
+read again outside the pin lock, which blocks every producer; under the lock
+only the ledger is re-read before the release.
+
+The report names every live pin: a candidate with its ``proof``, or a ``kept``
+row with a typed reason.
 """
 from __future__ import annotations
 
@@ -165,7 +132,7 @@ def _archived_run(evidence_name, directory, pointer):
 
 
 def _derive(pin, live_pins, context):
-    """``_extended_proof`` and the type of any error it raised: one unreadable pin never costs the tick."""
+    """``extended_proof`` and the type of any error it raised: one unreadable pin never costs the tick."""
 
     try:
         return (*extended_proof(pin, live_pins, **context), None)
