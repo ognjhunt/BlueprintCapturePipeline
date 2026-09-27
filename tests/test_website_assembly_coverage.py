@@ -192,7 +192,8 @@ def test_views_cover_every_part_and_state_within_the_cap_and_restart_is_free(tmp
     readings = record["label_readings"]
     assert readings and all(row["label_text"] == ["BOSCH", "800 Series"] and int(row["frame_id"][8:]) < 40
                             and Path(row["path"]).is_file() for row in readings)
-    assert "label_text" in calls[0]["prompt"] and record["classifier"]["revision"] == 2
+    assert "label_text" in calls[0]["prompt"] and record["classifier"]["revision"] == 3
+    assert "part_boxes" in calls[0]["prompt"] and "box_xywh_normalized" in calls[0]["prompt"]
     # Retained receipts: a restart buys nothing and reproduces the record.
     assert _run(tmp_path, target, geometry, registry=_registry(600)) == record
     assert len(calls) == math.ceil(len(ids) / coverage.CLASSIFY_BATCH)
@@ -277,6 +278,54 @@ def test_malformed_brand_read_never_holds_coverage_and_is_rebought_only_on_its_r
     assert not coverage.coverage_matches(record, target=target, source_geometry=geometry)
     bumped = _run(tmp_path, target, geometry)
     assert bumped["brand_read"]["status"] == "read" and len(state["brand_calls"]) == 2 and len(calls) == before
+
+
+def _boxed(binding):
+    """The same answer, each listed part boxed inside the subject box (cols 20-40, rows 12-30), one twice."""
+    answer = _answer(binding)
+    for row in answer["frames"]:
+        row["part_boxes"] = [{"part": part, "box_xywh_normalized": [0.35, 0.32 + 0.01 * index, 0.25, 0.1]}
+                             for index, part in enumerate(row["visible_parts"])]
+        row["part_boxes"].append({"part": row["visible_parts"][0], "box_xywh_normalized": [0.36, 0.4, 0.2, 0.1]})
+    return answer
+
+
+def test_classifier_revision_bump_buys_part_boxes_once_and_replays_the_brand_read(tmp_path, model, monkeypatch):
+    calls, state = model
+    geometry, track = _source_geometry(tmp_path / "geometry")
+    target = _target(track)
+    # Receipts retained before part boxes were asked for.
+    monkeypatch.setattr(coverage, "CLASSIFIER_REVISION", 2)
+    before = _run(tmp_path, target, geometry)
+    assert before["status"] == "complete" and len(state["brand_calls"]) == 1
+    assert before["part_localization"] and all(
+        row["part_boxes"] == {} and row["part_box_rejections"] == [{"part": None, "reason": "part_boxes_missing"}]
+        for row in before["part_localization"])
+    bought = len(calls)
+    monkeypatch.setattr(coverage, "CLASSIFIER_REVISION", 3)
+    state["answer"] = _boxed
+    assert not coverage.coverage_matches(before, target=target, source_geometry=geometry)
+    after = _run(tmp_path, target, geometry)
+    # Every classifier batch is bought once more; the focused brand read replays for free.
+    assert len(calls) == 2 * bought and len(state["brand_calls"]) == 1
+    assert after["brand_read"] == before["brand_read"] and after["label_readings"] == before["label_readings"]
+    assert all(binding["revision"] == 3 and "part_boxes" in binding["prompt"] for binding in calls[bought:])
+    assert {row["frame_id"] for row in after["part_localization"]} == {
+        image["frame_id"] for binding in calls[bought:] for image in binding["images"]}
+    for row in after["part_localization"]:
+        parts = sorted(_label(int(row["frame_id"][8:]))[2])
+        # The part given two boxes keeps neither; every other listed part keeps its own.
+        assert sorted(row["part_boxes"]) == parts[1:]
+        assert row["part_box_rejections"] == [{"part": parts[0], "reason": "part_boxed_twice"}]
+    # One geometry frame shows the interior: too thin to measure, so each fixed part stays a
+    # prior with its reason, and never holds the record.
+    assert after["status"] == "complete" and after["part_extents"]["estimates"] == []
+    assert {row["reason"] for row in after["part_extents"]["diagnostics"]} <= {
+        "part_boxed_in_fewer_than_two_depth_frames", "part_never_boxed"}
+    fixed = coverage.fixed_interior_parts({"frames": [{"visible_parts": parts} for parts in (FRONT_PARTS, OPEN_PARTS)],
+                                           "task_part_components": sorted(MOVING)}, articulation_kind="revolute")
+    assert fixed and {row["part_id"] for row in after["part_extents"]["diagnostics"]} == set(fixed)
+    assert _run(tmp_path, target, geometry) == after and len(calls) == 2 * bought
 
 
 def test_brand_read_uses_only_closed_front_and_oblique_views():

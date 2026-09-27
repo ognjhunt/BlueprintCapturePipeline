@@ -132,7 +132,20 @@ def fit_reference_frames(contract: Mapping[str, Any], *, provider: str, output_r
     if tokens > SOURCE_FRAME_TOKEN_BUDGET:
         raise FrameBudgetError("authoring_frames_token_budget_exceeded")
     ids = {row["frame_id"] for row in frames}
-    return {**contract, "reference_frames": frames,
+    extents = {}
+    if "part_extent_estimates" in contract:
+        # A measured part extent cites only frames the builder still receives; one left
+        # with none is withdrawn (the part stays a template prior) and says why.
+        estimates, diagnostics = [], [dict(row) for row in contract.get("part_extent_diagnostics") or []]
+        for row in contract["part_extent_estimates"]:
+            cited = [v for v in row["frame_ids"] if v in ids]
+            if cited:
+                estimates.append({**row, "frame_ids": cited})
+            else:
+                diagnostics.append({"part_id": row["part_id"], "reason": "measured_frames_dropped_by_frame_budget",
+                                    "frame_ids": list(row["frame_ids"])})
+        extents = {"part_extent_estimates": estimates, "part_extent_diagnostics": diagnostics}
+    return {**contract, **extents, "reference_frames": frames,
             "required_parts": [{**part, "observed_frame_ids": [v for v in part["observed_frame_ids"] if v in ids]}
                                for part in contract["required_parts"]],
             "body_depth": {**contract["body_depth"],
