@@ -108,6 +108,7 @@ _INLINE_LEASE_FIELDS = ("owner", "expires_at_epoch", "max_expires_at_epoch", "ru
 _QUEUE_SCAN_ATTEMPTS = 3
 # A completed SAM prefix adoption, and how a binding names the adoption it keeps.
 _SAM_PREFIX_ADOPTION_SCHEMA = "task_evaluation_sam31_completed_prefix_adoption.v1"
+_SAM_PREFIX_BINDING_PREFIX = "sam31-prefix-"
 _ADOPTION_DIGEST = re.compile(r"sha256:([0-9a-f]{64})\Z")
 _MAX_ADOPTION_CHAIN = 32
 # The blockers after which a standing authorization can never admit again.
@@ -875,6 +876,17 @@ def binding_commits(binding: Mapping[str, Any]) -> list[str] | None:
     return sorted(commits)
 
 
+def _unrecognized_binding_commits(binding: Mapping[str, Any]) -> set[str]:
+    """Every release a binding of unknown shape names: its commit fields and managed tree paths."""
+
+    commits = {_valid_commit(binding.get("source_commit"))}
+    retained = binding.get("retained_release")
+    if isinstance(retained, Mapping):
+        commits.add(_valid_commit(retained.get("source_commit")))
+    commits |= _managed_tree_commits(binding)
+    return {commit for commit in commits if commit is not None}
+
+
 def _run_ref_valid(value: Any) -> bool:
     return value is None or (isinstance(value, Mapping) and _identifier(value.get("kind")))
 
@@ -914,6 +926,13 @@ def _record_path(record: Any) -> Path:
 
 
 def binding_ancestry(binding: Mapping[str, Any]) -> tuple[list[tuple[str, list[str]]], bool]:
+    ancestors, readable, _absent_break = binding_ancestry_detail(binding)
+    return ancestors, readable
+
+
+def binding_ancestry_detail(
+    binding: Mapping[str, Any],
+) -> tuple[list[tuple[str, list[str]]], bool, bool]:
     """The earlier prefix adoptions a binding's adoption builds on, nearest first.
 
     A SAM prefix binding's evidence is its adoption record.  When the source
@@ -924,19 +943,24 @@ def binding_ancestry(binding: Mapping[str, Any]) -> tuple[list[tuple[str, list[s
     ``(ancestors, readable)``: each ancestor is ``(binding name, commits)``,
     and ``readable`` is false when the chain could not be followed to its end.
     Evidence that is not a prefix adoption has no ancestors.
+
+    ``binding_ancestry_detail`` also reports whether the chain stopped only
+    because a record in it no longer exists. No replay can walk past a
+    deleted record, so nothing beyond it is reachable; any other read failure
+    (permissions, a changed or malformed record) is not known to be permanent.
     """
 
     evidence = binding.get("evidence")
     path_text = evidence.get("path") if isinstance(evidence, Mapping) else None
     if not isinstance(path_text, str) or not path_text:
-        return [], True
+        return [], True, False
     ancestors: list[tuple[str, list[str]]] = []
     try:
         _payload, current, _info = _read_document(Path(path_text))
         if not isinstance(current, Mapping):
             raise ValueError("release_protection_adoption_record_invalid")
         if current.get("schema_version") != _SAM_PREFIX_ADOPTION_SCHEMA:
-            return [], True
+            return [], True, False
         seen: set[Path] = set()
         for _depth in range(_MAX_ADOPTION_CHAIN):
             _payload, profile, _info = _read_document(_record_path(current.get("source_profile")))
@@ -944,7 +968,7 @@ def binding_ancestry(binding: Mapping[str, Any]) -> tuple[list[tuple[str, list[s
                 raise ValueError("release_protection_adoption_profile_invalid")
             parent = profile.get("completed_prefix_adoption")
             if parent is None:
-                return ancestors, True
+                return ancestors, True, False
             parent_path = _record_path(parent)
             if parent_path in seen:
                 raise ValueError("release_protection_adoption_chain_cycle")
@@ -971,8 +995,10 @@ def binding_ancestry(binding: Mapping[str, Any]) -> tuple[list[tuple[str, list[s
                 raise ValueError("release_protection_adoption_record_invalid")
             ancestors.append((f"sam31-prefix-{match.group(1)}.json", commits))
         raise ValueError("release_protection_adoption_chain_too_long")
+    except FileNotFoundError:
+        return ancestors, False, True
     except (OSError, ValueError):
-        return ancestors, False
+        return ancestors, False, False
 
 
 def _scene_intent_run_ref(binding: Mapping[str, Any], intent_root: Path | None) -> dict | None:
@@ -1264,7 +1290,7 @@ def evaluate_binding_leases(
     ``blocked`` with ``release_protection_ancestry_unreadable``.
     """
 
-    chains = {name: binding_ancestry(binding) for name, _sha, binding in bindings}
+    chains = {name: binding_ancestry_detail(binding) for name, _sha, binding in bindings}
     outcomes: dict[str, dict[str, Any]] = {}
     for name, binding_sha256, binding in bindings:
         outcome = evaluate_binding_lease(
@@ -1299,11 +1325,25 @@ def evaluate_binding_leases(
                 ancestor["status"], ancestor["why"], ancestor["ancestor_of"] = "protected", None, name
     # A binding that protects but whose chain could not be followed to its
     # root cannot extend that protection to the ancestors past the break;
-    # letting those lapse silently would retire a release it may need.
+    # letting those lapse silently would retire a release it may need.  When
+    # the break is only a deleted record, no replay can reach past it, but an
+    # ancestor is always another prefix adoption: every prefix-adoption
+    # binding is kept for as long as the truncated one, and only then may
+    # unrelated releases retire.  Any other break still blocks retirement.
+    truncated: list[str] = []
     for name, outcome in outcomes.items():
         if outcome["status"] == "protected" and not chains[name][1]:
+            if chains[name][2]:
+                truncated.append(name)
+                outcome["warnings"].append(f"release_protection_ancestry_truncated:{_code_id(name)}")
+                continue
             outcome["status"] = "blocked"
             outcome["blocker"] = f"release_protection_ancestry_unreadable:{_code_id(name)}"
+    if truncated:
+        keeper = sorted(truncated)[0]
+        for name, outcome in outcomes.items():
+            if name.startswith(_SAM_PREFIX_BINDING_PREFIX) and outcome["status"] == "lapsed":
+                outcome["status"], outcome["why"], outcome["ancestor_of"] = "protected", None, keeper
     return outcomes
 
 
@@ -1342,7 +1382,21 @@ def _collect_bindings(
             collection.warnings.add(f"misplaced_retention_plan:{_code_id(name)}")
             continue
         if not isinstance(binding, Mapping) or binding_commits(binding) is None:
-            collection.blockers.add(f"release_protection_binding_invalid:{_code_id(name)}")
+            named = _unrecognized_binding_commits(binding) if isinstance(binding, Mapping) else set()
+            if not named:
+                collection.blockers.add(f"release_protection_binding_invalid:{_code_id(name)}")
+                continue
+            # A hand-written or older-shape binding still says which release it
+            # needs. Keep exactly those, report it, and let the rest retire.
+            collection.warnings.add(f"release_protection_binding_unrecognized_kept:{_code_id(name)}")
+            collection.protect(named, {
+                "kind": "retention_binding",
+                "owner": name,
+                "reason": "unrecognized_binding_kept",
+                "run_ref": None,
+                "expires_at_epoch": None,
+                "source": f"{root.name}/{name}",
+            })
             continue
         valid.append((name, "sha256:" + hashlib.sha256(payload).hexdigest(), binding))
     outcomes = evaluate_binding_leases(
@@ -1519,6 +1573,7 @@ __all__ = [
     "RETENTION_PLAN_SCHEMA",
     "RunStateResolver",
     "binding_ancestry",
+    "binding_ancestry_detail",
     "binding_commits",
     "collect_release_protections",
     "evaluate_binding_lease",
