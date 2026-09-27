@@ -22,7 +22,10 @@ mapfile -t _RUNS < <(ls -dt ${LR}/adp-arena-construction-840920-task-a-*-${PREV}
 RPREV=${_RUNS[0]}
 JOBPREV=$RPREV/allocator/arena-construction-job
 AVOIDLIST=$JOBPREV/adp_arena_vast_machine_avoidlist.json
-[ -f "$AVOIDLIST" ] || AVOIDLIST=$E/arena-launch-r5/machine_avoidlist.json
+if [ ! -f "$AVOIDLIST" ]; then
+  _FALLBACK_INPUT=$($RUN -m blueprint_pipeline.control_plane_arena_scratch resolve --tag r5)
+  AVOIDLIST=$_FALLBACK_INPUT/machine_avoidlist.json
+fi
 mapfile -t _AUDS < <(ls -dt /var/lib/blueprint/pipeline-control-plane/gpu_spend_guard/billing-audit/*/)
 AUD=${_AUDS[0]}
 COMMIT=$(git -C $CP rev-parse HEAD)

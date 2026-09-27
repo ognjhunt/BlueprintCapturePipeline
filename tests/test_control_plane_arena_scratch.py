@@ -56,7 +56,7 @@ def test_new_attempt_requires_operator_metadata_and_valid_tag(tmp_path: Path) ->
     assert not (lanes / "arena" / "arena-launch-r34").exists()
 
 
-def test_legacy_attempt_is_readable_and_retryable_only_with_prior_evidence(tmp_path: Path) -> None:
+def test_legacy_attempt_is_readable_but_needs_review_before_writing(tmp_path: Path) -> None:
     inputs, lanes = _roots(tmp_path)
     legacy = inputs / "arena-launch-r20"
     legacy.mkdir()
@@ -68,9 +68,22 @@ def test_legacy_attempt_is_readable_and_retryable_only_with_prior_evidence(tmp_p
     (legacy / "arena_packet").unlink()
     (legacy / "arena_packet").mkdir()
     assert resolve_arena_attempt("r20", inputs_root=inputs, lane_root=lanes) == legacy
-    assert prepare_arena_attempt("r20", inputs_root=inputs, lane_root=lanes) == legacy
+    with pytest.raises(ArenaScratchError, match="arena_scratch_legacy_write_requires_review"):
+        resolve_arena_attempt("r20", writable=True, inputs_root=inputs, lane_root=lanes)
+    with pytest.raises(ArenaScratchError, match="arena_scratch_legacy_write_requires_review"):
+        prepare_arena_attempt("r20", inputs_root=inputs, lane_root=lanes)
     assert not (legacy / ".lane-scratch.v1.json").exists()
     assert not (lanes / "arena" / "arena-launch-r20").exists()
+
+
+def test_new_tag_cannot_claim_legacy_path_by_adding_a_marker(tmp_path: Path) -> None:
+    inputs, lanes = _roots(tmp_path)
+    fake_legacy = inputs / "arena-launch-r33"
+    (fake_legacy / "arena_packet").mkdir(parents=True)
+    with pytest.raises(ArenaScratchError, match="arena_scratch_legacy_tag_unrecognized"):
+        resolve_arena_attempt("r33", inputs_root=inputs, lane_root=lanes)
+    with pytest.raises(ArenaScratchError, match="arena_scratch_legacy_tag_unrecognized"):
+        prepare_arena_attempt("r33", inputs_root=inputs, lane_root=lanes)
 
 
 def test_ambiguous_or_symlink_attempt_refuses(tmp_path: Path) -> None:

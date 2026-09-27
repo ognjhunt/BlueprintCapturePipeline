@@ -17,6 +17,9 @@ from .control_plane_lane_scratch import (
 INPUTS_ROOT = Path("/var/lib/blueprint/task-evaluation-inputs")
 LANE_ROOT = INPUTS_ROOT / "lanes"
 _TAG = re.compile(r"r[0-9]{1,6}\Z")
+# The checked-in fire script records refusals through r32. Later tags must
+# have a sealed lease; a marker in a loose folder cannot grant access.
+_LAST_RECORDED_LEGACY_TAG = 32
 _LEGACY_DIRS = ("arena_packet", "arena_construction_job")
 _LEGACY_FILES = (
     "prior_spend_reconciliation.v1.json",
@@ -86,8 +89,19 @@ def resolve_arena_attempt(
             raise ArenaScratchError("arena_scratch_inactive")
         return leased
     if legacy.exists():
+        number = int(tag[1:])
+        if not (1 <= number <= _LAST_RECORDED_LEGACY_TAG and tag == f"r{number}"):
+            raise ArenaScratchError("arena_scratch_legacy_tag_unrecognized")
         if not _legacy_proven(legacy):
             raise ArenaScratchError("arena_scratch_legacy_unproven")
+        # A marker establishes only that there may be historical data to read.
+        # It does not prove the folder existed before lease enforcement. Exact
+        # legacy write authorization needs an owner-reviewed migration.
+        if writable:
+            raise ArenaScratchError(
+                "arena_scratch_legacy_write_requires_review: inspect the exact folder "
+                "before starting a new leased attempt"
+            )
         return legacy
     raise ArenaScratchError("arena_scratch_missing")
 

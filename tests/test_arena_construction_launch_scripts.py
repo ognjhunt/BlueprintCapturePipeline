@@ -201,10 +201,14 @@ def test_chain_carries_the_predecessor_machine_avoidlist_forward() -> None:
 
     text = _text(LAUNCH)
     predecessor = "AVOIDLIST=$JOBPREV/adp_arena_vast_machine_avoidlist.json"
-    fallback = "AVOIDLIST=$E/arena-launch-r5/machine_avoidlist.json"
+    fallback_resolve = 'resolve --tag r5)'
+    fallback = 'AVOIDLIST=$_FALLBACK_INPUT/machine_avoidlist.json'
     profile_flag = "--machine-avoidlist $AVOIDLIST"
     assert predecessor in text
+    assert fallback_resolve in text
     assert fallback in text
+    assert 'if [ ! -f "$AVOIDLIST" ]; then\n  _FALLBACK_INPUT=' in text
+    assert text.find(fallback_resolve) < text.find(fallback)
     assert profile_flag in text
     assert text.find(predecessor) < text.find(profile_flag)
 
