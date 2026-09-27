@@ -2021,7 +2021,8 @@ def test_failed_heartbeat_stops_the_next_download_chunk(tmp_path, monkeypatch):
     monkeypatch.setattr(disk_admission, "keep_reservation_live", failing_heartbeat)
     video = ChunkedBlob(f"{_CAPTURE_PREFIX}/raw/walkthrough.mov", b"firstsecond", size=11)
     complete = FakeBlob(f"{_CAPTURE_PREFIX}/raw/capture_upload_complete.json", b"{}", size=2)
-    with pytest.raises(ControlPlaneDiskBudgetError, match="heartbeat_failed"):
+    with pytest.raises(disk_admission.HandoffStagingCapacityError,
+                       match="pubsub_handoff_staging_capacity_insufficient"):
         stage_handoff_capture(
             _staging_handoff(), storage_root=tmp_path,
             storage_client=FakeStorageClient([video, complete]),
@@ -2029,6 +2030,29 @@ def test_failed_heartbeat_stops_the_next_download_chunk(tmp_path, monkeypatch):
     capture_root = tmp_path / "capture-bucket" / _CAPTURE_PREFIX
     assert (capture_root / "raw/walkthrough.mov").read_bytes() == b"first"
     assert not (capture_root / "pipeline_staging_manifest.json").exists()
+
+
+def test_failed_heartbeat_defers_message_with_capacity_blocker_and_no_ack(tmp_path, monkeypatch):
+    subscriber = FakeSubscriber([_received(ack_id="a1", data=PAYLOAD_BYTES)])
+    results = _install_fake_pubsub(
+        monkeypatch, subscriber, storage_client=FakeStorageClient(_website_bundle_blobs()),
+        run_e2e=lambda **_: {"status": "completed"},
+    )
+
+    class FailedHealth:
+        def check(self):
+            raise ControlPlaneDiskBudgetError("control_plane_disk_budget_heartbeat_failed")
+
+    @contextmanager
+    def failing_heartbeat(_reservation):
+        yield FailedHealth()
+
+    monkeypatch.setattr(disk_admission, "keep_reservation_live", failing_heartbeat)
+    assert _pull(tmp_path) == 0
+    assert subscriber.acknowledged == []
+    assert results[0]["status"] == "retryable_blocked"
+    assert results[0]["blockers"] == ["pubsub_handoff_staging_capacity_insufficient"]
+    assert _read(_capture_root(tmp_path) / "pipeline_job_ledger.json")["status"] == "retryable_blocked"
 
 
 def test_staging_manifest_records_cloud_identity(tmp_path):

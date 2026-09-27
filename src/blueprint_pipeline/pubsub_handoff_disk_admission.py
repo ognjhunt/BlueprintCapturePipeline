@@ -78,13 +78,18 @@ def download_with_reservation(
         raise HandoffStagingCapacityError(
             "pubsub_handoff_staging_capacity_insufficient"
         ) from exc
-    with reservation, keep_reservation_live(reservation) as health:
-        for blob, destination in downloads:
-            health.check()
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            with destination.open("wb") as stream:
-                blob.download_to_file(_CheckedWriter(stream, health))
-            health.check()
+    try:
+        with reservation, keep_reservation_live(reservation) as health:
+            for blob, destination in downloads:
+                health.check()
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                with destination.open("wb") as stream:
+                    blob.download_to_file(_CheckedWriter(stream, health))
+                health.check()
+    except ControlPlaneDiskBudgetError as exc:
+        raise HandoffStagingCapacityError(
+            "pubsub_handoff_staging_capacity_insufficient"
+        ) from exc
 
 
 def finish_staging_capacity_blocked(
