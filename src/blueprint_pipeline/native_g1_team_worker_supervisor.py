@@ -79,6 +79,8 @@ def run_g1_team_worker_process(
         "schema_version": EXIT_SCHEMA,
         "status": "launch_failed",
         "returncode": None,
+        "child_pid": None,
+        "command_digest": canonical_digest({"argv": list(command)}),
         "timeout_seconds": timeout_seconds,
         "process_group_kill_requested": False,
         "error_type": None,
@@ -91,6 +93,7 @@ def run_g1_team_worker_process(
                 list(command), stdin=subprocess.DEVNULL, stdout=stream,
                 stderr=subprocess.STDOUT, start_new_session=True,
             )
+            result["child_pid"] = process.pid
             try:
                 result["returncode"] = process.wait(timeout=timeout_seconds)
                 result["status"] = "exited"
