@@ -521,7 +521,7 @@ are reported separately and never invalidate proven resource closure.
 hourly (`OnUnitInactiveSec=1h`: an hour after the previous tick finished) as
 `root`, confined by its unit to the roots it may write, and writes
 `/var/lib/blueprint/pipeline-control-plane/storage-gc/latest.json`. One tick runs
-eight phases in order:
+nine phases in order:
 
 1. **Stranded queue rows**: pending rows bound to a release other than the
    running one move to `stranded/` beside a receipt, so they stop counting as
@@ -532,10 +532,12 @@ eight phases in order:
    no live pin names them, no pending or processing queue message mentions
    them, and they have been idle for an hour
    (`BLUEPRINT_CONTROL_PLANE_GC_DERIVED_MINIMUM_AGE_SECONDS=3600`).
-4. **Content-store blobs** whose link count is one (nothing hardlinks them any
+4. **Planned derived directories** under configured plan-only roots, including
+   SAM31 preparation output, are inventoried but never removed by this phase.
+5. **Content-store blobs** whose link count is one (nothing hardlinks them any
    more), whose bytes still match their digest, and which are older than a day
    are removed. Retiring directories first is what frees blobs.
-5. **Evidence offload** lists run directories under the `evidence_cold` roots
+6. **Evidence offload** lists run directories under the `evidence_cold` roots
    that are sealed (terminal receipt present) and idle past the two-day hot
    window (`BLUEPRINT_CONTROL_PLANE_EVIDENCE_HOT_WINDOW_SECONDS=172800`), or that
    have no receipt and have not changed for three days (abandoned by a superseded
@@ -546,13 +548,13 @@ eight phases in order:
    replaced by `<name>.offloaded.v1.json` (URI, digest, size, per-member digests),
    and only then removed. Bytes are migrated, never deleted; the spend guard and
    every other `evidence_hot` root are outside the tool's reach.
-6. **Scratch directories** idle for three days
+7. **Scratch directories** idle for three days
    (`BLUEPRINT_CONTROL_PLANE_GC_SCRATCH_MINIMUM_AGE_SECONDS=259200`) are reaped by
    age alone: nothing references them.
-7. **Workspace bundles**: the reproducible `bundle/` copy inside a
+8. **Workspace bundles**: the reproducible `bundle/` copy inside a
    semantic-pretraining workspace that has been idle and unpinned for six hours
    is removed behind a sealed marker.
-8. **Scene workspaces** are retired only after terminal, acknowledgement,
+9. **Scene workspaces** are retired only after terminal, acknowledgement,
    reference, and remote-copy checks pass. This phase plans until
    `BLUEPRINT_CONTROL_PLANE_SCENE_WORKSPACE_RETIREMENT=1` enables it; its
    detailed contract is below.
