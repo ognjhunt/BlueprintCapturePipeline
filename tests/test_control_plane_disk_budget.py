@@ -666,3 +666,50 @@ def test_reservation_writer_refuses_an_unreadable_live_entry(tmp_path):
         assert entry.exists()
     finally:
         entry.chmod(0o640)
+
+
+def test_admission_preserves_a_live_reservation_on_another_device(tmp_path):
+    ledger = tmp_path / "ledger"
+    ledger.mkdir()
+    foreign_device = tmp_path.stat().st_dev + 1
+    foreign = ledger / "foreign.json"
+    foreign.write_text(json.dumps({
+        "device": foreign_device,
+        "pid": os.getpid(),
+        "expected_bytes": 2 * GIB,
+        "expires_at_epoch": 1e12,
+    }))
+    reservation = reserve_control_plane_disk(
+        "launch_activation", target_root=tmp_path, expected_bytes=GIB,
+        reservation_root=ledger,
+        disk_usage=lambda _path: Usage(100 * GIB, 60 * GIB, 40 * GIB),
+        now=lambda: 100.0, pid_alive=lambda _pid: True,
+    )
+    try:
+        assert foreign.exists()
+        assert disk_budget.live_reservations(
+            ledger, device=foreign_device, now=100.0, pid_alive=lambda _pid: True,
+        ) == (2 * GIB, 1)
+    finally:
+        reservation.release()
+
+
+def test_scan_budget_exhaustion_cannot_complete_a_footprint(tmp_path, monkeypatch):
+    from blueprint_pipeline import control_plane_disk_usage as usage_module
+
+    monkeypatch.setattr(usage_module, "MAX_TREE_SCAN_ENTRIES", 1)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    ledger = tmp_path / "ledger"
+    reservation = reserve_control_plane_disk(
+        "launch_activation", target_root=tmp_path, expected_bytes=GIB,
+        reservation_root=ledger, workspace=workspace,
+        disk_usage=lambda _path: Usage(100 * GIB, 60 * GIB, 40 * GIB),
+        now=lambda: 100.0, pid_alive=lambda _pid: True,
+    )
+    (workspace / "one.bin").write_bytes(b"x")
+    (workspace / "two.bin").write_bytes(b"x")
+    reservation.release(outcome="completed")
+    history = ledger / "history" / "launch_activation.jsonl"
+    [sample] = [json.loads(line) for line in history.read_text().splitlines()]
+    assert sample["outcome"] == "incomplete"

@@ -125,8 +125,8 @@ def _entry_liveness(
     observed_at: float,
     pid_alive: Callable[[int], bool],
     strict: bool = False,
-) -> tuple[bool, int]:
-    """(live, expected bytes) of one ledger entry: same device, unexpired, live pid.
+) -> tuple[bool, int, bool]:
+    """(live here, expected bytes, live elsewhere) for one ledger entry.
 
     ``strict`` refuses an entry it cannot read (typed ledger_unreadable) rather
     than treating it as stale: a projection must never under-count reservations.
@@ -135,26 +135,27 @@ def _entry_liveness(
     try:
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
-        return False, 0  # released between the listing and the read
+        return False, 0, False  # released between the listing and the read
     except OSError as exc:
         if strict:
             raise ControlPlaneDiskBudgetError("control_plane_disk_budget_ledger_unreadable") from exc
-        return False, 0
+        return False, 0, False
     try:
         value = json.loads(text)
         if not isinstance(value, dict):
-            return False, 0
-        live = (
-            int(value.get("device", -1)) == device
+            return False, 0, False
+        entry_device = int(value.get("device", -1))
+        active = (
+            entry_device >= 0
             and float(value.get("expires_at_epoch", 0)) > observed_at
             and pid_alive(int(value.get("pid", -1)))
         )
         amount = int(value.get("expected_bytes", -1))
     except (OSError, TypeError, ValueError, json.JSONDecodeError):
-        return False, 0
+        return False, 0, False
     if amount < 0:
-        return False, 0
-    return live, amount
+        return False, 0, False
+    return active and entry_device == device, amount, active and entry_device != device
 
 
 def _load_live_reservations(
@@ -174,13 +175,13 @@ def _load_live_reservations(
     except OSError as exc:
         raise ControlPlaneDiskBudgetError("control_plane_disk_budget_ledger_unreadable") from exc
     for name in names:
-        live, amount = _entry_liveness(
+        live, amount, foreign_live = _entry_liveness(
             root / name, device=device, observed_at=observed_at,
             pid_alive=pid_alive, strict=True,
         )
         if live:
             reserved += amount
-        else:
+        elif not foreign_live:
             stale.append(name)
     return reserved, stale
 
@@ -210,7 +211,7 @@ def live_reservations(
     reserved = 0
     count = 0
     for name in names:
-        live, amount = _entry_liveness(
+        live, amount, _foreign_live = _entry_liveness(
             root / name, device=device, observed_at=float(now), pid_alive=pid_alive, strict=True
         )
         if live:
