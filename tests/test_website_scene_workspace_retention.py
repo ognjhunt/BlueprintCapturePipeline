@@ -1119,3 +1119,49 @@ def test_apply_skips_when_a_reader_appears_while_the_archive_uploads(tmp_path, r
 
     assert result["status"] == "skipped" and result["reason"] == "candidate_changed_during_archive"
     assert scene.is_dir() and not (scene.parent / f"{SCENE}{retention.RETIRED_SUFFIX}").exists()
+
+
+# --- the receipt stays readable, and cheap to write --------------------------------------------------
+
+
+def test_a_receipt_its_readers_could_not_read_keeps_the_workspace(tmp_path, monkeypatch):
+    scene, cloud = _scene(tmp_path)
+    plan = _plan(tmp_path, cloud)
+    monkeypatch.setattr(retention, "RECEIPT_MAX_BYTES", 1024)
+
+    result = _retire(tmp_path, cloud, plan, stream_publisher=lambda **_: pytest.fail("sized before publishing"))
+
+    assert result["status"] == "skipped" and result["reason"] == "receipt_too_large"
+    assert scene.is_dir() and not (scene.parent / f"{SCENE}{retention.RETIRED_SUFFIX}").exists()
+
+
+def test_a_written_receipt_is_always_within_what_its_readers_accept():
+    assert retention.RECEIPT_MAX_BYTES <= retention._MAX_RECORD_BYTES
+
+
+def test_a_small_receipt_reserves_no_disk(tmp_path, monkeypatch):
+    """A few kilobytes that free gigabytes; ENOSPC on the receipt fails before anything is removed."""
+
+    scene, cloud = _scene(tmp_path)
+    plan = _plan(tmp_path, cloud)
+    monkeypatch.setattr(retention, "reserve_control_plane_disk",
+                        lambda *_a, **_k: pytest.fail("a small receipt reserves nothing"))
+
+    assert _retire(tmp_path, cloud, plan)["status"] == "retired" and not scene.exists()
+
+
+def test_a_receipt_over_the_threshold_still_reserves_disk_first(tmp_path, monkeypatch):
+    scene, cloud = _scene(tmp_path)
+    plan = _plan(tmp_path, cloud)
+    monkeypatch.setattr(retention, "_RECEIPT_RESERVATION_THRESHOLD", 1)
+    reserved: list[int] = []
+
+    def refuse(role, **kwargs):
+        reserved.append(kwargs["expected_bytes"])
+        raise RuntimeError("control_plane_disk_budget_exceeded")
+
+    monkeypatch.setattr(retention, "reserve_control_plane_disk", refuse)
+
+    result = _retire(tmp_path, cloud, plan, stream_publisher=lambda **_: pytest.fail("reserved before publishing"))
+
+    assert result["reason"] == "disk_reservation_refused" and reserved and scene.is_dir()

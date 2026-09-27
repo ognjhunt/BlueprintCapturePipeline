@@ -134,7 +134,13 @@ TERMINAL_DISPOSITIONS = {"completed": "terminal_success", TERMINAL_AUTHORITY_STA
 REGISTRATION_SCHEMA = "website_scene_source_registration.v1"
 #: Where website_scene_handoff records the source registration it wrote for a capture.
 WEBSITE_HANDOFF = ("pipeline", "website_scene_preparation", "handoff.json")
+#: The most a record reader here (``_load_json``: the listener's receipt lookup, restore) reads.
 _MAX_RECORD_BYTES = 16 * 1024 * 1024
+#: A receipt must stay readable once its workspace is gone, so it may never outgrow its readers.
+RECEIPT_MAX_BYTES = _MAX_RECORD_BYTES
+#: A receipt at or under this is a small write that frees gigabytes, and ENOSPC on it fails before
+#: anything is removed, so only a larger one reserves disk first.
+_RECEIPT_RESERVATION_THRESHOLD = 16 * 1024 * 1024
 _MAX_REASONS = 50
 _SHA256 = "sha256:"
 
@@ -1178,13 +1184,47 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
-def _publish_receipt(path: Path, document: Mapping[str, Any]) -> bool:
+def _receipt_document(*, bucket: str, scene_id: str, scene: Path, observed_at: float, plan: Mapping[str, Any],
+                      records: list[dict[str, Any]], archive: dict[str, Any] | None) -> dict[str, Any]:
+    document: dict[str, Any] = {
+        "schema_version": RETIRED_SCHEMA,
+        "bucket": bucket,
+        "scene_id": scene_id,
+        "workspace": str(scene),
+        "retired_at_epoch": observed_at,
+        "source_plan_digest": plan["plan_digest"],
+        "captures": records,
+        "cloud_verified": list(plan["cloud_verified"]),
+        "archive": archive,
+        "totals": dict(plan["totals"]),
+        "evidence_deleted": False,
+        "receipt_digest": "",
+    }
+    document["receipt_digest"] = canonical_digest(document, digest_field="receipt_digest")
+    return document
+
+
+def _receipt_bytes(document: Mapping[str, Any]) -> bytes:
+    return (json.dumps(document, indent=2, sort_keys=True) + "\n").encode("utf-8")
+
+
+def _largest_archive_record(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
+    """An archive record at least as large as publishing these rows can produce, to size the receipt."""
+
+    if not rows:
+        return None
+    return {"uri": "s3://" + "x" * 1024, "digest": _SHA256 + "0" * 64, "size_bytes": 2**63,
+            "member_count": len(rows),
+            "members": [{"relative_path": row["relative_path"], "size_bytes": row["size_bytes"],
+                         "sha256": row["sha256"]} for row in rows]}
+
+
+def _publish_receipt(path: Path, data: bytes) -> bool:
     """Create the receipt exclusively and completely, owned like the ``scenes/`` directory it lives in.
 
     Returns False, writing nothing, when a receipt already exists.
     """
 
-    data = (json.dumps(document, indent=2, sort_keys=True) + "\n").encode("utf-8")
     owner = os.lstat(path.parent)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
     descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o640)
@@ -1207,14 +1247,6 @@ def _publish_receipt(path: Path, document: Mapping[str, Any]) -> bool:
         return True
     finally:
         temporary.unlink(missing_ok=True)
-
-
-def _receipt_budget(plan: Mapping[str, Any], files: Sequence[tuple[str, os.stat_result]]) -> int:
-    records = set(LISTENER_FILES.values())
-    record_bytes = sum(info.st_size for relative, info in files
-                       if relative.startswith("captures/") and relative.rsplit("/", 1)[-1] in records)
-    estimate = len(json.dumps(plan).encode("utf-8")) + record_bytes + 65536
-    return max(1024 * 1024, 2 * estimate)
 
 
 def apply_scene_workspace_retirement(
@@ -1262,13 +1294,22 @@ def apply_scene_workspace_retirement(
         ):
             return skipped("candidate_changed")
         records = _capture_records(scene, evaluation.captures)
-        try:
-            reservation = reserve_control_plane_disk(
-                "evidence_offload", target_root=receipt.parent,
-                expected_bytes=_receipt_budget(plan, evaluation.files),
-                reservation_root=DEFAULT_RESERVATION_ROOT)
-        except Exception:  # noqa: BLE001 - no room for the receipt means no retirement
-            return skipped("disk_reservation_refused")
+        identity = {"bucket": bucket, "scene_id": scene_id, "scene": scene, "observed_at": observed_at,
+                    "plan": plan, "records": records}
+        # Size the receipt before publishing anything: one its readers cannot read back would
+        # leave the retired workspace unrestorable.
+        estimate = len(_receipt_bytes(_receipt_document(
+            **identity, archive=_largest_archive_record(plan["archive"]))))
+        if estimate > RECEIPT_MAX_BYTES:
+            return skipped("receipt_too_large")
+        reservation = None
+        if estimate > _RECEIPT_RESERVATION_THRESHOLD:
+            try:
+                reservation = reserve_control_plane_disk(
+                    "evidence_offload", target_root=receipt.parent, expected_bytes=2 * estimate,
+                    reservation_root=DEFAULT_RESERVATION_ROOT)
+            except Exception:  # noqa: BLE001 - no room for the receipt means no retirement
+                return skipped("disk_reservation_refused")
         try:
             archive: dict[str, Any] | None = None
             if plan["archive"]:
@@ -1284,22 +1325,10 @@ def apply_scene_workspace_retirement(
             refusal = _cloud_unchanged(cloud, bucket=bucket, scene_id=scene_id, rows=plan["cloud_verified"])
             if refusal is not None:
                 return skipped(refusal)
-            document: dict[str, Any] = {
-                "schema_version": RETIRED_SCHEMA,
-                "bucket": bucket,
-                "scene_id": scene_id,
-                "workspace": str(scene),
-                "retired_at_epoch": observed_at,
-                "source_plan_digest": plan["plan_digest"],
-                "captures": records,
-                "cloud_verified": list(plan["cloud_verified"]),
-                "archive": archive,
-                "totals": dict(plan["totals"]),
-                "evidence_deleted": False,
-                "receipt_digest": "",
-            }
-            document["receipt_digest"] = canonical_digest(document, digest_field="receipt_digest")
-            if not _publish_receipt(receipt, document):
+            data = _receipt_bytes(_receipt_document(**identity, archive=archive))
+            if len(data) > RECEIPT_MAX_BYTES:
+                return skipped("receipt_too_large")
+            if not _publish_receipt(receipt, data):
                 return {**skipped("already_retired"), "receipt": str(receipt)}
             # Take the workspace out of every reader's path in one step, then remove it. Removed in
             # place, each capture's lock file would go before its directory, and a listener reaching
@@ -1315,7 +1344,8 @@ def apply_scene_workspace_retirement(
                         "removal_error": type(exc).__name__}
             shutil.rmtree(retiring, ignore_errors=True)
         finally:
-            reservation.release()
+            if reservation is not None:
+                reservation.release()
     return {
         **base,
         "status": "retired",
