@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Sequence
 
@@ -173,8 +174,27 @@ def test_status_assembles_every_section(host_tree: dict[str, Path]) -> None:
     assert status["spend_guard"] == {"live_resource_count": 0, "spend_usd": 1.2}
     assert status["failed_units"] == ["blueprint-a.service"]
     assert status["door_requests"] == {"pending": 1, "processing": 0}
+    assert status["holds"] == []
     assert status["door"]["caller"] == {"name": "cloud"}
     assert set(status["disk"]) and "loadavg" in status["load"]
+
+
+def test_status_shows_only_active_holds_with_remaining_seconds(host_tree: dict[str, Path]) -> None:
+    root = host_tree["base"] / "door" / "requests" / "holds"
+    root.mkdir()
+    now = int(time.time())
+    for unit, expiry in (("blueprint-scene-progression.timer", now + 120),
+                         ("blueprint-pubsub-handoff-listener.timer", now - 1)):
+        (root / f"{unit}.json").write_text(json.dumps({
+            "schema": "blueprint_operator_door_hold.v1", "unit": unit, "owner": "alice",
+            "reason": "inspect", "requested_by": "cloud", "request_id": "20260926T120000Z-hold-0000abcd",
+            "created_at": "2026-09-26T12:00:00+00:00", "expires_at": "2026-09-26T13:00:00+00:00",
+            "expires_at_epoch": expiry, "status": "active"}), encoding="utf-8")
+    status = build_status(_config(host_tree), _host(host_tree, FakeRunner({})), caller={})
+    assert len(status["holds"]) == 1
+    hold = status["holds"][0]
+    assert hold["unit"] == "blueprint-scene-progression.timer" and hold["owner"] == "alice"
+    assert 0 < hold["remaining_seconds"] <= 120
 
 
 def test_status_survives_a_failing_section(host_tree: dict[str, Path]) -> None:

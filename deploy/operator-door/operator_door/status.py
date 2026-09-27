@@ -10,10 +10,12 @@ from __future__ import annotations
 import datetime as _dt
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any, Callable
 
 from . import VERSION
+from . import holds as hold_records
 from .config import DoorConfig
 from .hostinfo import HostInfo
 from .secrets_guard import scan_bytes
@@ -81,6 +83,14 @@ def _door_requests(config: DoorConfig) -> dict[str, int]:
     return {state: len(list((spool / state).glob("*.json"))) for state in ("pending", "processing")}
 
 
+def _holds(config: DoorConfig) -> list[dict[str, Any]]:
+    now = time.time()
+    records = hold_records.active(Path(config.spool_root) / "holds", now=now)
+    keys = ("unit", "owner", "reason", "requested_by", "request_id", "created_at", "expires_at")
+    return [{**{key: record[key] for key in keys},
+             "remaining_seconds": max(0, int(record["expires_at_epoch"] - now))} for record in records]
+
+
 def build_status(config: DoorConfig, host: HostInfo, *, caller: dict[str, Any]) -> dict[str, Any]:
     state = Path(config.control_plane_state)
     return {
@@ -110,4 +120,5 @@ def build_status(config: DoorConfig, host: HostInfo, *, caller: dict[str, Any]) 
                          "disk_unavailable"),
         "load": _section(host.load, "load_unavailable"),
         "door_requests": _section(lambda: _door_requests(config), "door_requests_unavailable"),
+        "holds": _section(lambda: _holds(config), "holds_unavailable"),
     }
