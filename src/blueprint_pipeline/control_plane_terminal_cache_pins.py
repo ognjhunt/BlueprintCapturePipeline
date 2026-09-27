@@ -31,7 +31,11 @@ launch as (``_launch_evidence_names``): its id, ``<id>-launch``, and the bounded
 launch id the launch paths derive for a long id, with their own functions.
 * ``unconsumed_stale_pin``: a preparation or compilation pin that no live pin
   depends on, created more than a week and a day ago, whose paths are all
-  ``cache``. Its content is reproducible and re-fetched by digest.
+  ``cache``, and whose preparation no activation can take any more: its sealed
+  envelope sits in ``materialized/`` bound to a release other than the running
+  one, or in ``blocked/``. The activation worker verifies materialized inputs
+  and never re-fetches them, so age alone proves nothing: a materialized
+  preparation waits for its activation intent with no age limit.
 
 Every proof keeps the six-hour minimum pin age, the dependency closure (a pin
 is released only when no queue row or process references any pin in it), and
@@ -75,6 +79,11 @@ LAPSE_GRACE_SECONDS = 86_400
 LAPSE_SECONDS = MAXIMUM_MUTATION_WINDOW_SECONDS + LAPSE_GRACE_SECONDS
 #: The queue root whose ``results`` the activation worker seals; it is also a queue root.
 ACTIVATION_QUEUE_NAME = "task-evaluation-launch-activations"
+#: The queue root whose ``materialized/`` envelopes the activation worker takes preparations from.
+PREPARATION_QUEUE_NAME = "task-evaluation-launch-preparations"
+#: ``task_evaluation_launch_preparation_queue.ENVELOPE_SCHEMA_VERSION``.
+PREPARATION_ENVELOPE_SCHEMA_VERSION = "task_evaluation_launch_preparation_envelope.v1"
+_COMMIT = re.compile(r"[0-9a-f]{40}")
 #: ``task_evaluation_launch_activation_queue.RESULT_SCHEMA_VERSION`` and ``ENVELOPE_SCHEMA_VERSION``.
 ACTIVATION_RESULT_SCHEMA_VERSION = "task_evaluation_launch_activation_result.v1"
 ACTIVATION_ENVELOPE_SCHEMA_VERSION = "task_evaluation_launch_activation_envelope.v1"
@@ -194,8 +203,12 @@ def _paths_classify(classifier, paths, classes):
     return True
 
 
-def _unconsumed_stale_pin(pin, live_pins, *, classifier, now, **_context):
-    """A preparation or compilation that nothing consumes and that has outlived every mutation window."""
+def _unconsumed_stale_pin(pin, live_pins, *, classifier, now, preparation_queue_root, running_commit, **_context):
+    """A preparation or compilation that nothing consumes, that has outlived every mutation window, and that
+    no activation can take any more.
+
+    A compilation is named for its preparation, so both read the preparation's envelope.
+    """
 
     identity = (pin["kind"], pin["owner_id"])
     if any((row.get("kind"), row.get("owner_id")) == identity
@@ -205,7 +218,56 @@ def _unconsumed_stale_pin(pin, live_pins, *, classifier, now, **_context):
         return None, "pin_not_stale"
     if not _paths_classify(classifier, pin["paths"], ("cache",)):
         return None, "path_class_invalid"
-    return {"kind": "unconsumed_stale_pin", "created_at_epoch": pin["created_at_epoch"]}, None
+    ended, reason = _unactivatable_preparation(pin["owner_id"], preparation_queue_root, running_commit)
+    if ended is None:
+        return None, reason
+    state, commit = ended
+    return {"kind": "unconsumed_stale_pin", "created_at_epoch": pin["created_at_epoch"],
+            "preparation_state": state, "preparation_commit": commit}, None
+
+
+def _unactivatable_preparation(preparation_id, preparation_queue_root, running_commit):
+    """``(state, commit)`` when no activation can take the preparation any more, else ``(None, reason)``.
+
+    The activation worker takes a preparation only from ``materialized/``, and only
+    when its sealed envelope names the release the worker runs; it verifies the
+    materialized inputs and never re-fetches them. So the preparation's one sealed
+    envelope must sit in ``materialized/`` bound to another release, or in
+    ``blocked/``. Anything else, including an envelope this queue does not hold, keeps
+    the pin. A rollback to that release would make it activatable again.
+    """
+
+    if preparation_queue_root is None:
+        return None, "preparation_queue_unconfigured"
+    if not isinstance(running_commit, str) or _COMMIT.fullmatch(running_commit) is None:
+        return None, "running_commit_unknown"
+    pattern = re.compile(re.escape(preparation_id) + r"-[0-9a-f]{64}\.json")
+    found = []
+    for state in ("materialized", "blocked"):
+        directory = Path(preparation_queue_root) / state
+        try:
+            if directory.is_symlink():
+                return None, "preparation_queue_unavailable"
+            if not directory.is_dir():
+                continue
+            found.extend((state, directory / entry.name) for entry in os.scandir(directory)
+                         if pattern.fullmatch(entry.name))
+        except OSError:
+            return None, "preparation_queue_unavailable"
+    if len(found) != 1:
+        return None, "preparation_envelope_ambiguous" if found else "preparation_envelope_missing"
+    state, path = found[0]
+    envelope = _read(path)
+    request = envelope.get("request") if envelope is not None else None
+    commit = request.get("expected_production_commit") if isinstance(request, dict) else None
+    if (not isinstance(commit, str) or _COMMIT.fullmatch(commit) is None
+            or envelope.get("schema_version") != PREPARATION_ENVELOPE_SCHEMA_VERSION
+            or envelope.get("envelope_digest") != canonical_digest(envelope, digest_field="envelope_digest")
+            or request.get("preparation_id") != preparation_id):
+        return None, "preparation_envelope_invalid"
+    if state == "materialized" and commit == running_commit:
+        return None, "preparation_release_current"
+    return (state, commit), None
 
 
 def _present(path):
@@ -253,12 +315,22 @@ def _sealed_registry_run(directory, *, hot_window_seconds, now):
             "registry_mtime_epoch": idle_since}, None
 
 
+def _queue_root_named(queue_roots, name):
+    roots = {Path(root).expanduser() for root in queue_roots}
+    matches = [root for root in roots if root.name == name]
+    return matches[0] if len(matches) == 1 else None
+
+
 def activation_queue_root_of(queue_roots):
     """The activation queue: the one configured queue root named ``task-evaluation-launch-activations``, else None."""
 
-    roots = {Path(root).expanduser() for root in queue_roots}
-    matches = [root for root in roots if root.name == ACTIVATION_QUEUE_NAME]
-    return matches[0] if len(matches) == 1 else None
+    return _queue_root_named(queue_roots, ACTIVATION_QUEUE_NAME)
+
+
+def preparation_queue_root_of(queue_roots):
+    """The preparation queue: the one configured queue root named ``task-evaluation-launch-preparations``, else None."""
+
+    return _queue_root_named(queue_roots, PREPARATION_QUEUE_NAME)
 
 
 def _expired_unlaunched(owner, activation_queue_root, *, now):
@@ -461,12 +533,15 @@ def _closure_reason(identity, closure, pins, queue_text, reference_checker):
 def reconcile_terminal_cache_pins(*, pins_root, queue_roots, evidence_roots, now, apply=False,
                                   reference_checker=active_reference, classifier=require_storage_class,
                                   hot_window_seconds=DEFAULT_HOT_WINDOW_SECONDS, extended_proofs_enabled=False,
-                                  activation_queue_root=None):
+                                  activation_queue_root=None, preparation_queue_root=None, running_commit=""):
     """Plan, and with ``apply`` release, every live pin a proof closes.
 
     ``enabled`` is the extended proofs' opt-in; the original proofs always apply.
     ``activation_queue_root`` is where the activation worker seals its results
     (``activation_queue_root_of(queue_roots)``); without it an unlaunched activation is kept.
+    ``preparation_queue_root`` (``preparation_queue_root_of(queue_roots)``) and the
+    ``running_commit`` tell whether an activation can still take a preparation;
+    without them a stale preparation or compilation is kept.
     Each candidate carries its ``proof`` and whether it is ``enabled``, each kept
     pin a typed ``reason`` (and ``error_type`` for ``proof_error``), and
     ``released_count_by_kind`` counts every pin a release receipt lists, its
@@ -481,7 +556,8 @@ def reconcile_terminal_cache_pins(*, pins_root, queue_roots, evidence_roots, now
     queue_text = _queue_reference_text(queue_roots)
     live_queue_text = "\n".join((queue_text, _parked_queue_text(queue_roots)))
     context = {"classifier": classifier, "now": now, "evidence_roots": evidence_roots,
-               "hot_window_seconds": hot_window_seconds, "activation_queue_root": activation_queue_root}
+               "hot_window_seconds": hot_window_seconds, "activation_queue_root": activation_queue_root,
+               "preparation_queue_root": preparation_queue_root, "running_commit": running_commit}
     candidates, kept, released = [], [], []
     for identity, pin in pins.items():
         row = {"kind": pin["kind"], "owner_id": pin["owner_id"]}

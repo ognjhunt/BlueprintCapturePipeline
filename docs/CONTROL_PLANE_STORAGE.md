@@ -548,7 +548,12 @@ One tick runs nine phases in order:
    ago, since launch admission checks that authorization and its request sets
    it with no maximum), and `unconsumed_stale_pin` (a preparation or compilation
    pin no live pin depends on, created more than eight days ago, naming only
-   `cache` paths). An activation's evidence names are its id, `<id>-launch`
+   `cache` paths, whose preparation no activation can take any more: its one
+   sealed envelope in the preparation queue sits in `materialized/` bound to a
+   release other than the running one, or in `blocked/`; the activation worker
+   verifies a preparation's materialized inputs and never re-fetches them, and
+   a materialized preparation waits for its activation intent with no age
+   limit). An activation's evidence names are its id, `<id>-launch`
    (configured-controls activations such as `<run>-controls` launch that way
    too) and the bounded launch id the launch paths derive for a long id, with
    their own function. Every proof keeps the six-hour minimum pin age, the
@@ -618,7 +623,11 @@ so each manifest (and its receipt) also records `walked_file_count` and
   `activation_result_missing`, `activation_result_ambiguous`,
   `activation_result_invalid`, `activation_result_not_prepared`,
   `activation_result_not_stale`, `activation_envelope_missing`,
-  `activation_envelope_invalid`, `activation_authorization_not_lapsed`). A pin
+  `activation_envelope_invalid`, `activation_authorization_not_lapsed`) and the
+  preparation reasons (`preparation_queue_unconfigured`,
+  `preparation_queue_unavailable`, `running_commit_unknown`,
+  `preparation_envelope_missing`, `preparation_envelope_ambiguous`,
+  `preparation_envelope_invalid`, `preparation_release_current`). A pin
   a proof could not read is
   `proof_error` with its `error_type`. The report also counts candidates by
   proof and released pins by kind, dependencies included. `candidates` and

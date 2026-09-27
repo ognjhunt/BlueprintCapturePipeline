@@ -93,7 +93,7 @@ from .control_plane_storage_references import (  # noqa: F401 - re-exported
 )
 from .control_plane_storage_roots import require_storage_class
 from .control_plane_terminal_cache_pins import (
-    activation_queue_root_of, extended_pin_proofs_setting, reconcile_terminal_cache_pins,
+    activation_queue_root_of, extended_pin_proofs_setting, preparation_queue_root_of, reconcile_terminal_cache_pins,
 )
 from .decision_evidence_contracts import canonical_digest
 from .task_evaluation_release_identity import running_release_commit
@@ -1318,8 +1318,9 @@ def run_storage_gc(
         return reconcile_terminal_cache_pins(
             pins_root=pins_root, queue_roots=queue_roots, evidence_roots=evidence_roots,
             now=observed_at, apply=apply, classifier=classifier, hot_window_seconds=hot_window_seconds,
-            extended_proofs_enabled=extended_pin_proofs_enabled,
-            activation_queue_root=activation_queue_root_of(queue_roots))
+            extended_proofs_enabled=extended_pin_proofs_enabled, running_commit=running_commit,
+            activation_queue_root=activation_queue_root_of(queue_roots),
+            preparation_queue_root=preparation_queue_root_of(queue_roots))
 
     _isolated(report, "terminal_cache_pins", terminal_cache_pins_phase)
     if extended_pin_proofs_alert and isinstance(report.get("terminal_cache_pins"), dict):

@@ -20,6 +20,7 @@ from blueprint_pipeline import control_plane_storage_gc_reasons as reasons
 from blueprint_pipeline import task_evaluation_configured_scene_object_store as store
 from blueprint_pipeline.control_plane_storage_gc import RUN_ACK, run_storage_gc
 from blueprint_pipeline.control_plane_storage_pins import live_pinned_paths, release_storage_pin, write_storage_pin
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from tests.test_completed_replay_cache_retention import _refuse_reading
 from tests.test_task_evaluation_configured_scene_object_store import _ContentAddressedClient
 
@@ -327,8 +328,16 @@ def test_the_summary_counts_terminal_pin_candidates_releases_and_the_opt_in(tmp_
     for owner, created in (("prep-secret-stale", NOW - 9 * 86400), ("prep-secret-young", NOW - 3600)):
         write_storage_pin(pins_root=pins, kind="preparation", owner_id=owner, now=lambda created=created: created,
                           paths=[f"/var/lib/blueprint/task-evaluation-inputs/prepared-references/{owner}"])
-    common = dict(content_store_roots=[], derived_roots=[], queue_roots=[], pins_root=pins, now=lambda: NOW,
-                  classifier=_noclass, apply=True, ack=RUN_ACK)
+    # The stale preparation's sealed envelope binds it to a release other than the running one.
+    preparations = tmp_path / "task-evaluation-launch-preparations"
+    envelope = {"schema_version": "task_evaluation_launch_preparation_envelope.v1", "request_digest": "sha256:" + "1" * 64,
+                "request": {"preparation_id": "prep-secret-stale", "expected_production_commit": "a" * 40},
+                "envelope_digest": ""}
+    envelope["envelope_digest"] = canonical_digest(envelope, digest_field="envelope_digest")
+    (preparations / "materialized").mkdir(parents=True)
+    (preparations / "materialized" / f"prep-secret-stale-{'1' * 64}.json").write_text(json.dumps(envelope), encoding="utf-8")
+    common = dict(content_store_roots=[], derived_roots=[], queue_roots=[preparations], pins_root=pins, now=lambda: NOW,
+                  classifier=_noclass, apply=True, ack=RUN_ACK, running_commit="b" * 40)
 
     listed = reasons.build_storage_gc_summary(run_storage_gc(**common))
     applied = reasons.build_storage_gc_summary(run_storage_gc(**common, extended_pin_proofs_enabled=True))

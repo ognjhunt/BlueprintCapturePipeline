@@ -79,6 +79,35 @@ def _kept(result: dict) -> dict:
     return {(row["kind"], row["owner_id"]): row["reason"] for row in result["kept"]}
 
 
+RUNNING = "b" * 40
+SUPERSEDED = "a" * 40
+
+
+def _preparation_queue(tmp_path: Path, args: dict) -> Path:
+    """The preparation queue, configured as a queue root as it is on the host, and the release the tick runs."""
+
+    root = tmp_path / "task-evaluation-launch-preparations"
+    root.mkdir(exist_ok=True)
+    args["queue_roots"] = [*args["queue_roots"], root]
+    args["preparation_queue_root"] = root
+    args["running_commit"] = RUNNING
+    return root
+
+
+def _prepared(queue: Path, preparation_id: str, *, commit: str = SUPERSEDED, state: str = "materialized") -> Path:
+    """The sealed envelope a preparation leaves in ``state``, bound to the release ``commit``."""
+
+    request_digest = "sha256:" + hashlib.sha256(preparation_id.encode()).hexdigest()
+    envelope = {"schema_version": "task_evaluation_launch_preparation_envelope.v1", "request_digest": request_digest,
+                "request": {"preparation_id": preparation_id, "expected_production_commit": commit},
+                "envelope_digest": ""}
+    envelope["envelope_digest"] = canonical_digest(envelope, digest_field="envelope_digest")
+    path = queue / state / f"{preparation_id}-{request_digest.removeprefix('sha256:')}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(envelope), encoding="utf-8")
+    return path
+
+
 def _queue_row(args: dict, text: str) -> None:
     pending = Path(args["queue_roots"][0]) / "pending"
     pending.mkdir(parents=True, exist_ok=True)
@@ -86,14 +115,21 @@ def _queue_row(args: dict, text: str) -> None:
 
 
 def test_unconsumed_stale_preparation_pin_is_released(tmp_path) -> None:
-    """A preparation or compilation no live pin depends on, eight days old, is released.
+    """A preparation or compilation no live pin depends on and no activation can take, eight days old, is released.
 
-    Its content is reproducible and re-fetched by digest, so releasing the pin
-    only lets the derived phase recheck the directory as it does any other.
+    The activation worker takes only a preparation whose envelope sits in
+    ``materialized/`` bound to the running release, and it verifies, never
+    re-fetches, the materialized inputs. A preparation bound to a superseded
+    release, or one that ended blocked, can never be activated.
     """
 
     args = _args(tmp_path)
+    queue = _preparation_queue(tmp_path, args)
+    _prepared(queue, "prep-orphan")
+    _prepared(queue, "prep-compiled")
+    _prepared(queue, "prep-blocked", commit=RUNNING, state="blocked")
     _pin(args, "preparation", "prep-orphan", age=LAPSE + DAY)
+    _pin(args, "preparation", "prep-blocked", age=LAPSE + DAY)
     _pin(args, "preparation", "prep-compiled", age=LAPSE + DAY)
     _pin(args, "compilation", "prep-compiled", age=LAPSE + DAY,
          depends_on=[{"kind": "preparation", "owner_id": "prep-compiled"}])
@@ -102,9 +138,12 @@ def test_unconsumed_stale_preparation_pin_is_released(tmp_path) -> None:
 
     assert planned["enabled"] is True and planned["status"] == "dry_run"
     assert [(row["kind"], row["owner_id"], row["proof"]["kind"], row["enabled"]) for row in planned["candidates"]] == [
+        ("preparation", "prep-blocked", "unconsumed_stale_pin", True),
         ("preparation", "prep-orphan", "unconsumed_stale_pin", True),
         ("compilation", "prep-compiled", "unconsumed_stale_pin", True),
     ]
+    assert [(row["proof"]["preparation_state"], row["proof"]["preparation_commit"]) for row in planned["candidates"]] == [
+        ("blocked", RUNNING), ("materialized", SUPERSEDED), ("materialized", SUPERSEDED)]
     # The compilation still consumes its preparation, which goes with it.
     assert _kept(planned) == {("preparation", "prep-compiled"): "depended_on"}
     assert planned["released"] == [] and planned["released_count"] == 0
@@ -113,9 +152,9 @@ def test_unconsumed_stale_preparation_pin_is_released(tmp_path) -> None:
     applied = reconcile_terminal_cache_pins(**args, apply=True, extended_proofs_enabled=True)
 
     assert applied["status"] == "applied"
-    assert applied["released_count_by_kind"] == {"compilation": 1, "preparation": 2}
-    assert applied["released_count"] == 3
-    assert applied["candidate_count_by_proof"] == {"unconsumed_stale_pin": 2}
+    assert applied["released_count_by_kind"] == {"compilation": 1, "preparation": 3}
+    assert applied["released_count"] == 4
+    assert applied["candidate_count_by_proof"] == {"unconsumed_stale_pin": 3}
     assert set(_states(args).values()) == {"released"}
     assert applied["cache_or_evidence_bytes_removed"] is False
 
@@ -123,6 +162,8 @@ def test_unconsumed_stale_preparation_pin_is_released(tmp_path) -> None:
 @pytest.mark.parametrize("reason", ["depended", "young", "recent", "queued", "parked", "process", "path_class"])
 def test_depended_or_young_or_queued_preparation_pin_is_kept(tmp_path, reason) -> None:
     args = _args(tmp_path)
+    preparations = _preparation_queue(tmp_path, args)
+    _prepared(preparations, "prep-x")
     age = {"young": LAPSE - DAY, "recent": 3600}.get(reason, LAPSE + DAY)
     paths = ["/var/lib/blueprint/pipeline-control-plane/task-evaluation-launches/prep-x"] if reason == "path_class" else None
     _pin(args, "preparation", "prep-x", age=age, paths=paths)
@@ -131,13 +172,11 @@ def test_depended_or_young_or_queued_preparation_pin_is_kept(tmp_path, reason) -
     if reason == "queued":
         _queue_row(args, json.dumps({"preparation_id": "prep-x"}))
     if reason == "parked":
-        # A preparation paused on its source preparation is pinned and still in flight,
-        # though its row sits in neither pending nor processing.
-        preparations = tmp_path / "task-evaluation-launch-preparations"
+        # A row parked in a state that will still run, here one naming prep-x, is
+        # still in flight, though it sits in neither pending nor processing.
         (preparations / "awaiting_source_preparation").mkdir(parents=True)
-        (preparations / "awaiting_source_preparation" / f"prep-x-{'0' * 64}.json").write_text(
-            json.dumps({"preparation_id": "prep-x"}), encoding="utf-8")
-        args["queue_roots"] = [*args["queue_roots"], preparations]
+        (preparations / "awaiting_source_preparation" / f"prep-child-{'0' * 64}.json").write_text(
+            json.dumps({"preparation_id": "prep-child", "parent_preparation_id": "prep-x"}), encoding="utf-8")
     if reason == "process":
         args["reference_checker"] = lambda path: path.name == "prep-x"
 
@@ -157,6 +196,7 @@ def test_a_consumer_pinned_before_the_mutation_edge_keeps_the_stale_pin(tmp_path
     """
 
     args = _args(tmp_path)
+    _prepared(_preparation_queue(tmp_path, args), "prep-x")
     _pin(args, "preparation", "prep-x", age=LAPSE + DAY)
     arrived: list[dict] = []
 
@@ -173,6 +213,42 @@ def test_a_consumer_pinned_before_the_mutation_edge_keeps_the_stale_pin(tmp_path
     assert [row["owner_id"] for row in result["candidates"]] == ["prep-x"] and arrived
     assert _kept(result) == {("preparation", "prep-x"): "reference_changed"}
     assert result["released"] == [] and _states(args)[("preparation", "prep-x")] == "live"
+
+
+@pytest.mark.parametrize("reason", ["current", "missing", "unknown_commit", "unconfigured", "tampered", "ambiguous"])
+def test_a_preparation_the_running_release_can_still_activate_keeps_its_pin(tmp_path, reason) -> None:
+    """Review of 2026-09-27: a materialized preparation waits for its activation intent with no age limit.
+
+    Its pin may be old (it is written when the preparation first parks on its
+    source), and the activation worker verifies the materialized inputs rather
+    than re-fetching them, so a stale pin alone proves nothing. Only positive
+    evidence that no activation can take the preparation releases it.
+    """
+
+    args = _args(tmp_path)
+    preparations = _preparation_queue(tmp_path, args)
+    if reason != "missing":
+        envelope = _prepared(preparations, "prep-x", commit=RUNNING if reason == "current" else SUPERSEDED)
+    if reason == "unknown_commit":
+        args["running_commit"] = ""
+    if reason == "unconfigured":
+        args["preparation_queue_root"] = None
+    if reason == "tampered":
+        value = json.loads(envelope.read_text(encoding="utf-8"))
+        value["request"]["expected_production_commit"] = "c" * 40
+        envelope.write_text(json.dumps(value), encoding="utf-8")
+    if reason == "ambiguous":
+        _prepared(preparations, "prep-x", state="blocked")
+    _pin(args, "preparation", "prep-x", age=LAPSE + DAY)
+    _pin(args, "compilation", "prep-x", age=LAPSE + DAY, depends_on=[{"kind": "preparation", "owner_id": "prep-x"}])
+
+    result = reconcile_terminal_cache_pins(**args, apply=True, extended_proofs_enabled=True)
+
+    expected = {"current": "preparation_release_current", "missing": "preparation_envelope_missing",
+                "unknown_commit": "running_commit_unknown", "unconfigured": "preparation_queue_unconfigured",
+                "tampered": "preparation_envelope_invalid", "ambiguous": "preparation_envelope_ambiguous"}[reason]
+    assert _kept(result) == {("preparation", "prep-x"): "depended_on", ("compilation", "prep-x"): expected}
+    assert result["candidates"] == [] and set(_states(args).values()) == {"live"}
 
 
 def _archived_case(tmp_path: Path, args: dict) -> None:
@@ -645,7 +721,9 @@ def test_the_pin_report_caps_its_rows_and_keeps_its_counts(tmp_path, monkeypatch
     assert terminal_pins._MAX_ROWS == 200
     monkeypatch.setattr(terminal_pins, "_MAX_ROWS", 2)
     args = _args(tmp_path)
+    preparations = _preparation_queue(tmp_path, args)
     for index in range(3):
+        _prepared(preparations, f"prep-stale-{index}")
         _pin(args, "preparation", f"prep-stale-{index}", age=LAPSE + DAY)
     for index in range(4):
         _pin(args, "preparation", f"prep-young-{index}", age=3600)
@@ -679,6 +757,9 @@ def test_prepared_statuses_are_exactly_those_the_activation_worker_writes() -> N
 
     assert terminal_pins.ACTIVATION_RESULT_SCHEMA_VERSION == activation_queue.RESULT_SCHEMA_VERSION
     assert terminal_pins.ACTIVATION_ENVELOPE_SCHEMA_VERSION == activation_queue.ENVELOPE_SCHEMA_VERSION
+    from blueprint_pipeline import task_evaluation_launch_preparation_queue as preparation_queue
+
+    assert terminal_pins.PREPARATION_ENVELOPE_SCHEMA_VERSION == preparation_queue.ENVELOPE_SCHEMA_VERSION
     assert written - {"blocked"} == terminal_pins.PREPARED_ACTIVATION_STATUSES
     assert terminal_pins.activation_queue_root_of(["/q/task-evaluation-launches", "/q/task-evaluation-launch-activations/"]) == Path(
         "/q/task-evaluation-launch-activations")
@@ -692,6 +773,7 @@ def test_extended_pin_proofs_only_list_candidates_until_enabled(tmp_path) -> Non
 
     args = _args(tmp_path)
     queue = _activation_queue(tmp_path, args)
+    _prepared(_preparation_queue(tmp_path, args), "prep-stale")
     _pin(args, "preparation", "prep-stale", age=LAPSE + DAY)
     _registry_run(tmp_path / "evidence", "act-registry")
     _pin(args, "activation", "act-registry", age=7 * DAY)
@@ -766,12 +848,13 @@ def test_a_tick_passes_the_opt_in_and_the_activation_queue_to_the_pin_pass(tmp_p
     monkeypatch.setattr(retention, "process_reference", lambda _root, **_kwargs: None)
     args = _args(tmp_path)
     queue = _activation_queue(tmp_path, args)
+    _prepared(_preparation_queue(tmp_path, args), "prep-stale")
     _activation_result(queue, "act-unlaunched")
     _pin(args, "activation", "act-unlaunched", age=LAPSE + DAY)
     _pin(args, "preparation", "prep-stale", age=LAPSE + DAY)
     common = {"content_store_roots": [], "derived_roots": [], "queue_roots": args["queue_roots"],
               "pins_root": args["pins_root"], "evidence_roots": args["evidence_roots"], "now": lambda: NOW,
-              "classifier": _classifier, "apply": True, "ack": RUN_ACK}
+              "classifier": _classifier, "apply": True, "ack": RUN_ACK, "running_commit": RUNNING}
     alert = "extended_pin_proofs_setting_invalid"
 
     listed = run_storage_gc(**common, extended_pin_proofs_alert=alert)
@@ -779,7 +862,8 @@ def test_a_tick_passes_the_opt_in_and_the_activation_queue_to_the_pin_pass(tmp_p
     assert (listed["opt_in"]["extended_pin_proofs"], listed["alerts"]) == (False, [alert])
     phase = listed["terminal_cache_pins"]
     assert (phase["enabled"], phase["alerts"], phase["released"]) == (False, [alert], [])
-    # The unlaunched activation is found only through the activation queue the tick derives from its queue roots.
+    # The unlaunched activation and the superseded preparation are found only through the queues the tick
+    # derives from its queue roots, and the stale pin only through the release the tick runs.
     assert {row["owner_id"]: row["proof"]["kind"] for row in phase["candidates"]} == {
         "prep-stale": "unconsumed_stale_pin", "act-unlaunched": "activation_expired_unlaunched"}
 
@@ -804,3 +888,5 @@ def test_extended_pin_proofs_stay_an_operator_opt_in() -> None:
                        if line.startswith(f"Environment={gc_module.QUEUE_ROOTS_ENV}="))
     assert terminal_pins.activation_queue_root_of(queue_roots.split(":")) == Path(
         "/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-activations")
+    assert terminal_pins.preparation_queue_root_of(queue_roots.split(":")) == Path(
+        "/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-preparations")
