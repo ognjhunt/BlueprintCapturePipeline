@@ -1103,6 +1103,7 @@ def retire_scene_workspaces(
         build_reference_index,
         plan_scene_workspace_retirement,
         scene_workspaces,
+        sweep_retiring_workspaces,
     )
 
     applying = bool(apply and enabled)
@@ -1115,6 +1116,8 @@ def retire_scene_workspaces(
         "retired_bytes": 0,
         "archive_bytes": 0,
         "retained_counts": {},
+        "retiring_removed_count" if apply else "retiring_removable_count": 0,
+        "retiring_kept_without_receipt": [],
     }
     rows: list[dict[str, Any]] = []
     cloud = None
@@ -1125,6 +1128,11 @@ def retire_scene_workspaces(
 
     for storage_root in storage_roots:
         context = context_factory(Path(storage_root))
+        # First finish any removal a crash interrupted: its retirement is already committed.
+        swept = sweep_retiring_workspaces(context.storage_root, apply=apply)
+        report["retiring_removed_count" if apply else "retiring_removable_count"] += len(
+            swept["removed" if apply else "removable"])
+        report["retiring_kept_without_receipt"].extend(swept["kept_without_receipt"])
         workspaces = scene_workspaces(context.storage_root)
         if not workspaces:
             continue

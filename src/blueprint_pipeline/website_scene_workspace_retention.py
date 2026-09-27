@@ -44,6 +44,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import secrets
 import shutil
 import stat
@@ -76,6 +77,9 @@ RETIRE_ACK = "retire-scene-workspace"
 ARTIFACT_KIND = "website-scene-workspace"
 ARCHIVE_FILENAME = "workspace.tar"
 RETIRED_SUFFIX = ".retired.v1.json"
+#: A retired workspace is renamed to ``.retiring-<scene_id>-<16 hex>`` beside it before removal.
+RETIRING_PREFIX = ".retiring-"
+_RETIRING_NAME = re.compile(r"\.retiring-(?P<scene>[A-Za-z0-9][A-Za-z0-9._-]{0,127})-(?P<token>[0-9a-f]{16})")
 DEFAULT_MINIMUM_IDLE_SECONDS = 48 * 3600
 #: Pub/Sub message retention (deploy/terraform/main.tf): after it, a message can no longer be redelivered.
 DEFAULT_ACK_RETENTION_SECONDS = 7 * 24 * 3600
@@ -394,6 +398,58 @@ def _workspace_path_safe(storage_root: Path, bucket: str, scene: Path) -> bool:
         except OSError:
             return False
     return True
+
+
+def _valid_receipt(path: Path, *, bucket: str, scene_id: str) -> bool:
+    state, receipt, _ = _load_json(path)
+    return (
+        state == "ok"
+        and receipt is not None
+        and receipt.get("schema_version") == RETIRED_SCHEMA
+        and receipt.get("receipt_digest") == canonical_digest(receipt, digest_field="receipt_digest")
+        and receipt.get("bucket") == bucket
+        and receipt.get("scene_id") == scene_id
+    )
+
+
+def sweep_retiring_workspaces(storage_root: Path, *, apply: bool = True) -> dict[str, list[str]]:
+    """Finish removing ``.retiring-*`` copies a crash left behind, when their receipt restores them.
+
+    A copy whose scene has no valid receipt is kept and reported: nothing proves it restorable.
+    Without ``apply`` nothing is removed and the copies that would be are listed as ``removable``.
+    """
+
+    root = Path(storage_root)
+    removed: list[str] = []
+    kept: list[str] = []
+    done_key = "removed" if apply else "removable"
+    try:
+        buckets = sorted(os.listdir(root))
+    except OSError:
+        return {done_key: removed, "kept_without_receipt": kept}
+    for bucket in buckets:
+        scenes = root / bucket / "scenes"
+        if bucket.startswith(".") or not _workspace_path_safe(root, bucket, scenes):
+            continue
+        try:
+            names = sorted(os.listdir(scenes))
+        except OSError:
+            continue
+        for name in names:
+            match = _RETIRING_NAME.fullmatch(name)
+            path = scenes / name
+            try:
+                if match is None or not stat.S_ISDIR(os.lstat(path).st_mode):
+                    continue
+            except OSError:
+                continue
+            if _valid_receipt(receipt_path(root, bucket, match["scene"]), bucket=bucket, scene_id=match["scene"]):
+                if apply:
+                    shutil.rmtree(path, ignore_errors=True)
+                removed.append(str(path))
+            else:
+                kept.append(str(path))
+    return {done_key: removed, "kept_without_receipt": kept}
 
 
 def scene_workspaces(storage_root: Path) -> list[tuple[str, str, Path]]:
@@ -1240,15 +1296,26 @@ def apply_scene_workspace_retirement(
             document["receipt_digest"] = canonical_digest(document, digest_field="receipt_digest")
             if not _publish_receipt(receipt, document):
                 return {**skipped("already_retired"), "receipt": str(receipt)}
-            # Everything below is restorable from the receipt, so a partial removal loses nothing.
-            shutil.rmtree(scene, ignore_errors=True)
+            # Take the workspace out of every reader's path in one step, then remove it. Removed in
+            # place, each capture's lock file would go before its directory, and a listener reaching
+            # for the capture in between would create a fresh, unlocked lock and carry on. After the
+            # rename every such reach fails, and the listener asks the receipt instead. Everything
+            # renamed is restorable from the receipt, so a partial removal loses nothing, and the
+            # next tick's sweep finishes it.
+            retiring = scene.parent / f"{RETIRING_PREFIX}{scene_id}-{secrets.token_hex(8)}"
+            try:
+                os.rename(scene, retiring)
+            except OSError as exc:
+                return {**base, "status": "retired", "receipt": str(receipt), "removal_complete": False,
+                        "removal_error": type(exc).__name__}
+            shutil.rmtree(retiring, ignore_errors=True)
         finally:
             reservation.release()
     return {
         **base,
         "status": "retired",
         "receipt": str(receipt),
-        "removal_complete": not os.path.lexists(scene),
+        "removal_complete": not os.path.lexists(scene) and not os.path.lexists(retiring),
         "freed_allocated_bytes": evaluation.allocated_bytes,
         "archive_bytes": archive["size_bytes"] if archive else 0,
         "archive_member_count": archive["member_count"] if archive else 0,
@@ -1626,6 +1693,7 @@ __all__ = [
     "scene_path",
     "scene_queue_roots",
     "scene_workspaces",
+    "sweep_retiring_workspaces",
 ]
 
 

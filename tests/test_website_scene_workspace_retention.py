@@ -1047,3 +1047,49 @@ def test_a_retirement_receipt_answers_for_the_messages_it_proves_terminal(tmp_pa
     receipt.write_text(json.dumps({**document, "retired_at_epoch": 0}), encoding="utf-8")
     assert retention.retired_capture_status(storage_root=storage, bucket=BUCKET, scene_id=SCENE,
                                             capture_id=CAPTURE) is None
+
+
+# --- removal never races the listener ------------------------------------------------------------
+
+
+def test_a_listener_reaching_for_a_capture_during_removal_finds_it_gone(tmp_path, monkeypatch):
+    """rmtree unlinks a capture's lock file before its directory; the workspace must leave first."""
+
+    scene, cloud = _scene(tmp_path)
+    plan = _plan(tmp_path, cloud)
+    capture_root = scene / "captures" / CAPTURE
+    claims: list[str] = []
+    real_rmtree = retention.shutil.rmtree
+
+    def rmtree_racing_a_listener(path, *args, **kwargs):
+        lock = Path(path) / "captures" / CAPTURE / ".pipeline_job_ledger.json.lock"
+        lock.unlink(missing_ok=True)  # what rmtree has already done when the listener arrives
+        try:  # the listener's claim for a capture that existed when its message arrived
+            listener._claim_job_lease(capture_root, scene_id=SCENE, capture_id=CAPTURE, owner="racer",
+                                      lease_seconds=60, create_capture_root=False)
+        except listener.HandoffCaptureRetired:
+            claims.append("retired")
+        else:
+            claims.append("claimed a fresh, unlocked lock")
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(retention.shutil, "rmtree", rmtree_racing_a_listener)
+    result = _retire(tmp_path, cloud, plan)
+
+    assert result["status"] == "retired" and result["removal_complete"] is True
+    assert claims == ["retired"]
+    assert not scene.exists() and not list(scene.parent.glob(".retiring-*"))
+
+
+def test_a_tick_finishes_removing_what_a_crash_left_behind(tmp_path):
+    scene, cloud = _scene(tmp_path)
+    receipt = Path(_retire(tmp_path, cloud, _plan(tmp_path, cloud))["receipt"])
+    leftover = scene.parent / f".retiring-{SCENE}-{'0' * 16}"  # a crash between the rename and the removal
+    (leftover / "captures").mkdir(parents=True)
+    unreceipted = scene.parent / f".retiring-scene-2-{'1' * 16}"  # never delete what no receipt restores
+    (unreceipted / "captures").mkdir(parents=True)
+
+    swept = retention.sweep_retiring_workspaces(tmp_path / "pubsub-handoffs")
+
+    assert not leftover.exists() and unreceipted.is_dir() and receipt.is_file()
+    assert swept == {"removed": [str(leftover)], "kept_without_receipt": [str(unreceipted)]}

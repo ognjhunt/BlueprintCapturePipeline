@@ -1094,3 +1094,20 @@ def test_gc_unit_can_write_scene_workspace_roots() -> None:
     assert f"Environment={gc_module.SCENE_INTENT_ROOT_ENV}=" in unit
     for opt_in in (gc_module.SCENE_WORKSPACE_RETIREMENT_ENV, gc_module.EVIDENCE_OFFLOAD_ENV):
         assert f"Environment={opt_in}=" not in unit, "retirement stays an operator opt-in"
+
+
+def test_each_tick_first_finishes_removals_a_crash_left_behind(tmp_path) -> None:
+    scene, common = _scene_tick(tmp_path)
+    run_storage_gc(**common, apply=True, ack=RUN_ACK, scene_workspace_retirement_enabled=True)
+    leftover = scene.parent / f".retiring-scene-1-{'a' * 16}"
+    (leftover / "captures").mkdir(parents=True)
+
+    dry = run_storage_gc(**common, scene_workspace_retirement_enabled=True)["scene_workspaces"]
+    assert leftover.is_dir() and dry["retiring_removable_count"] == 1, "a dry-run tick deletes nothing"
+
+    # The retirement was already committed, so an applying tick finishes it even with the opt-in off.
+    phase = run_storage_gc(**common, apply=True, ack=RUN_ACK, scene_workspace_retirement_enabled=False)[
+        "scene_workspaces"]
+
+    assert not leftover.exists()
+    assert phase["retiring_removed_count"] == 1 and phase["retiring_kept_without_receipt"] == []
