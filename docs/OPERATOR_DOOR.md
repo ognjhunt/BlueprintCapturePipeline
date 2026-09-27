@@ -177,7 +177,8 @@ python3 scripts/operator_door.py release-hold blueprint-task-evaluation-scene-pr
 
 The root runner keeps `requests/holds/<unit>.json` at mode 0644. It accepts a
 hold only when `systemctl cat` shows the matching `ConditionPathExists` guard
-in the unit. An unguarded host-installed unit is refused with
+in the unit and systemd reports `NeedDaemonReload=no`. An unguarded or stale
+host-installed unit is refused with
 `hold_unit_guard_missing`. The guard record is durable before the unit is
 disabled, so a crash during activation cannot let the trigger fire on reboot.
 A renewed hold gets a new request id without shortening the deadline; an older

@@ -29,12 +29,14 @@ class FakeRunner:
     guard_root = Path("/var/lib/blueprint-operator-door/requests/holds")
 
     def __init__(self, active_deploy: str = "", systemd_run_rc: int = 0,
-                 enabled_state: str = "enabled", guarded: bool = True) -> None:
+                 enabled_state: str = "enabled", guarded: bool = True,
+                 need_daemon_reload: str = "no") -> None:
         self.calls: list[list[str]] = []
         self.active_deploy = active_deploy
         self.systemd_run_rc = systemd_run_rc
         self.enabled_state = enabled_state
         self.guarded = guarded
+        self.need_daemon_reload = need_daemon_reload
 
     def run(self, argv: Sequence[str], timeout: float) -> CommandResult:
         self.calls.append(list(argv))
@@ -47,6 +49,8 @@ class FakeRunner:
             unit = argv[-1]
             guard = f"ConditionPathExists=!{self.guard_root / f'{unit}.json'}"
             return CommandResult(0, f"[Unit]\n{guard}\n" if self.guarded else "[Unit]\n", "")
+        if argv[:2] == ["systemctl", "show"]:
+            return CommandResult(0, self.need_daemon_reload + "\n", "")
         if argv[0] == "systemd-run":
             return CommandResult(self.systemd_run_rc, "", "Failed to start" if self.systemd_run_rc else "")
         return CommandResult(0, "", "")
@@ -130,11 +134,14 @@ def test_hold_stops_a_timer_records_owner_and_schedules_expiry(config: DoorConfi
     unit = "blueprint-scene-progression.timer"
     assert runner.calls[:3] == [
         ["systemctl", "cat", "--", unit],
+        ["systemctl", "show", "--property=NeedDaemonReload", "--value", "--", unit],
         ["systemctl", "is-enabled", "--", unit],
-        ["systemctl", "--no-block", "stop", "--", unit],
     ]
-    assert runner.calls[3] == ["systemctl", "disable", "--", unit]
-    launch = runner.calls[4]
+    assert runner.calls[3:5] == [
+        ["systemctl", "--no-block", "stop", "--", unit],
+        ["systemctl", "disable", "--", unit],
+    ]
+    launch = runner.calls[5]
     assert launch[0] == "systemd-run"
     assert f"--unit=blueprint-operator-door-hold-expiry-{request_id[-8:]}" in launch
     assert "--on-active=3600s" in launch and "--collect" in launch
@@ -185,6 +192,15 @@ def test_hold_refuses_a_guard_for_a_different_state_root(config: DoorConfig) -> 
     process_spool(config, runner=runner)
     assert _result(config, request_id)["code"] == "hold_unit_guard_missing"
     assert runner.calls == [["systemctl", "cat", "--", "blueprint-scene-progression.timer"]]
+
+
+@pytest.mark.parametrize("reload_state", ["yes", "unknown"])
+def test_hold_refuses_when_systemd_has_stale_loaded_unit(config: DoorConfig, reload_state: str) -> None:
+    request_id = _hold(config)
+    runner = FakeRunner(need_daemon_reload=reload_state)
+    process_spool(config, runner=runner)
+    assert _result(config, request_id)["code"] == "hold_unit_guard_missing"
+    assert [call[:2] for call in runner.calls] == [["systemctl", "cat"], ["systemctl", "show"]]
 
 
 def test_hold_refuses_a_unit_whose_drop_in_resets_its_guard(config: DoorConfig) -> None:
@@ -259,7 +275,10 @@ def test_release_hold_starts_the_timer_and_marks_the_record(config: DoorConfig) 
     assert len(archived) == 1
     hold = json.loads(archived[0].read_text())
     assert hold["status"] == "released" and hold["released_by"] == "cloud" and hold["released_at"]
-    assert _result(config, release)["status"] == "done"
+    result = _result(config, release)
+    assert result["status"] == "done"
+    assert result["hold"]["released_at"] == hold["released_at"]
+    assert result["hold"]["released_by"] == hold["released_by"]
     again = _spooled(config, {"kind": "release-hold", "unit": "blueprint-scene-progression.timer"})
     runner = FakeRunner()
     process_spool(config, runner=runner)
@@ -290,10 +309,11 @@ def test_failed_expiry_scheduling_restores_a_new_timer_but_preserves_an_existing
     assert _result(config, first)["code"] == "hold_expiry_schedule_failed"
     assert [call[:3] for call in runner.calls] == [
         ["systemctl", "cat", "--"],
+        ["systemctl", "show", "--property=NeedDaemonReload"],
         ["systemctl", "is-enabled", "--"],
         ["systemctl", "--no-block", "stop"],
         ["systemctl", "disable", "--"],
-        ["systemd-run", runner.calls[4][1], "--on-active=3600s"],
+        ["systemd-run", runner.calls[5][1], "--on-active=3600s"],
         ["systemctl", "enable", "--"],
         ["systemctl", "--no-block", "start"],
     ]

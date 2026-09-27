@@ -202,7 +202,10 @@ def _has_hold_guard(runner: CommandRunner, unit: str, root: Path) -> bool:
                 guarded = False  # a later drop-in can reset earlier conditions
             elif value == expected:
                 guarded = True
-    return guarded
+    if not guarded:
+        return False
+    loaded = runner.run(["systemctl", "show", "--property=NeedDaemonReload", "--value", "--", unit], timeout=30)
+    return loaded.returncode == 0 and loaded.stdout.strip() == "no"
 
 
 def _act_hold(
@@ -292,11 +295,14 @@ def _act_release_hold(
         if record is None or record["status"] != "active":
             return {"status": "refused", "code": "hold_not_active"}
         holds.begin_release(root, unit, record, released_by=requested_by, status="released")
+        pending = holds.read(root / "releasing", unit)
+        if pending is None:
+            raise holds.HoldError("hold_release_intent_missing")
         result = holds.finish_release(root, unit, command=lambda argv: runner.run(argv, timeout=30))
         if result != 0:
             return {"status": "failed", "code": "hold_release_start_failed", "returncode": result}
         return {"status": "done", "hold": {**record, "status": "released",
-                                           "released_by": requested_by}}
+                                           "released_by": requested_by, "released_at": pending["released_at"]}}
 
 
 def _act(config: DoorConfig, runner: CommandRunner, request_id: str, request: dict[str, Any],
