@@ -1020,7 +1020,8 @@ def test_cli_defaults_protect_every_queue_the_reclaim_timer_protects():
     assert set(map(Path, gc_roots)) <= set(defaults)
     control_plane = Path("/var/lib/blueprint/pipeline-control-plane")
     assert {control_plane / "sam31-preparation-executions",
-            control_plane / "task-evaluation-scene-configuration-activation-intents"} <= set(defaults)
+            control_plane / "task-evaluation-scene-configuration-activation-intents",
+            control_plane / "capture-reconstruction-queue"} <= set(defaults)
 
 
 # --- what the listener reads back ------------------------------------------------------------------
@@ -1196,3 +1197,18 @@ def test_a_retired_ending_answers_every_payload_it_ended(tmp_path):
 
     assert status["covers_every_payload"] is False
     assert set(status["payload_sha256s"]) == {earlier, listener.payload_sha256(_payload(CAPTURE))}
+
+
+
+@pytest.mark.parametrize("state", ["pending", "processing"])
+def test_pending_capture_reconstruction_work_keeps_the_scene(tmp_path, state):
+    _, cloud = _scene(tmp_path)
+    context = _context(tmp_path)
+    context = replace(context, queue_roots=retention.scene_queue_roots(context.queue_roots, context.intent_root))
+    job = tmp_path / "capture-reconstruction-queue" / state / "reconstruction.json"
+    job.parent.mkdir(parents=True)
+    job.write_text(json.dumps({"scene_id": SCENE, "capture_id": CAPTURE}), encoding="utf-8")
+
+    assert _plan(tmp_path, cloud, context=context)["reasons"] == ["queue_referenced"]
+    job.unlink()
+    assert _plan(tmp_path, cloud, context=context)["status"] == "retirable"

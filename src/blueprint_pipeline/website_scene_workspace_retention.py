@@ -103,9 +103,14 @@ DEFAULT_QUEUE_ROOTS = tuple(Path(f"{_CONTROL_PLANE}/{name}") for name in (
     "task-evaluation-policy-canary-dispatches",
     "task-evaluation-scene-constructions",
 ))
-#: Queues beside the scene intents that also carry scene ids: SAM preparation children and
-#: configured-scene activation intents.
-SCENE_QUEUE_CHILDREN = ("sam31-preparation-executions", "task-evaluation-scene-configuration-activation-intents")
+#: Queues beside the scene intents that also carry scene ids: SAM preparation children,
+#: configured-scene activation intents, and capture reconstruction jobs (which read the
+#: capture's staged raw bytes).
+SCENE_QUEUE_CHILDREN = (
+    "sam31-preparation-executions",
+    "task-evaluation-scene-configuration-activation-intents",
+    "capture-reconstruction-queue",
+)
 STORAGE_ROOT_ENV = "BLUEPRINT_PUBSUB_HANDOFF_STORAGE_ROOT"
 INTENT_ROOT_ENV = "BLUEPRINT_CONTROL_PLANE_GC_SCENE_INTENT_ROOT"
 INTAKE_ROOT_ENV = "BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT"
