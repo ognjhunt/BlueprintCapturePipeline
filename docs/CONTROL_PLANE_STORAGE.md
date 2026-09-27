@@ -177,7 +177,9 @@ default 3600, judged by the last attempted survey even when it failed or the
 process was killed); `--survey` forces one.
 
 **What it counts.** The survey walks the controller's mounts
-(`BLUEPRINT_CAPACITY_MOUNTS`) plus `/`, each within its own filesystem like
+(`BLUEPRINT_CAPACITY_MOUNTS`) plus `/` and `/mnt/blueprint-work` when that
+physical work volume is mounted. Before it is mounted, the survey skips it.
+Each root is walked within its own filesystem like
 `du -x`: a directory on another device or listed as a mount point in
 `/proc/self/mountinfo` is skipped, a listed mount nested inside another is walked
 once, and symlinks are never followed. Every inode counts once, in allocated
@@ -227,6 +229,10 @@ door, which runs as `blueprint`, can reach the public files):
 | `usage-latest.json` | `0644` | the last survey (`control_plane_disk_usage_survey.v1`), with every unclassified root |
 | `usage-attempt.json` | `0644` | the last survey attempt, including a failed or interrupted attempt's retry clock |
 | `summary.json` | `0644` | `control_plane_capacity_summary.v1`, written every tick: level, alerts, mounts, the usage projection and the resize status. It is projected by named keys, so it carries no spend, funding or URLs, and it stays under 128 KiB. |
+
+Credential-shaped filesystem names are redacted from the public survey and
+summary before publication. Their byte totals and storage classes remain in the
+report. Existing surveys are sanitized when the controller reads them.
 
 `latest.json` and `summary.json` carry the same `usage` projection: the survey's
 age and status, its filesystem rows, bytes per class, the top ten roots and

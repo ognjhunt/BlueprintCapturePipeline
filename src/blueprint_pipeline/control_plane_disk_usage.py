@@ -48,6 +48,26 @@ _STORE_DIRECTORY = "content-addressed"
 _COMMIT_NAME = re.compile(r"[0-9a-f]{40}(?![0-9a-f])")
 _MOUNTINFO_ESCAPE = re.compile(r"\\([0-7]{3})")
 _UNATTRIBUTED_CLASSES = frozenset({"unclassified", "host"})
+# File and directory names are untrusted input. The survey is mode 0644 and is
+# projected into the operator door, whose scanner refuses credential-shaped bytes.
+_CREDENTIAL_SHAPED_NAME = re.compile(
+    r"(?i)(?:\bsk-(?:proj-|live-|svcacct-)?[a-z0-9_-]{20,}"
+    r"|\b(?:sk|rk)_(?:live|test)_[a-z0-9]{16,}"
+    r"|\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"
+    r"|AIza[0-9a-z_-]{35}"
+    r"|\b(?:ya29\.[a-z0-9_-]{20,}|1//0[a-z0-9_-]{20,})"
+    r"|\b(?:gh[pousr]_[a-z0-9]{36,}|github_pat_[a-z0-9_]{22,})"
+    r"|\b(?:xox[abprs]-[a-z0-9-]{10,}|bpk_[a-z0-9_-]{32,})"
+    r"|\b(?:ntn|secret)_[a-z0-9]{40,}|\bhf_[a-z0-9]{30,}"
+    r"|\beyJ[a-z0-9_-]{10,}\.eyJ[a-z0-9_-]{10,}\.[a-z0-9_-]{10,}"
+    r"|https://hooks\.slack\.com/services/[a-z0-9/_-]{10,}"
+    r"|[a-z][a-z0-9+.-]{0,15}://[^\s/:@'\"]{0,64}:[^\s/@'\"]{3,256}@"
+    r"|[?&](?:access_token|refresh_token|id_token|token|api_key|secret|password)=[a-z0-9._~%+/=-]{16,}"
+    r"|(?:authorization[ \t]*[:=][ \t]*bearer[ \t]+)[a-z0-9._~+/=-]{20,}"
+    r"|(?:-----BEGIN [a-z0-9 ]{0,40}PRIVATE KEY(?: BLOCK)?-----)"
+    r"|(?:^|[/\\])[^/\\]*(?:secret|credential|password|passwd|api[-_]?key|private[-_]?key)[^/\\]*"
+    r"|\.(?:pem|key|p12|pfx|jks|keystore|kdbx|gpg|asc)(?:$|[/\\]))"
+)
 
 
 @dataclass(frozen=True)
@@ -516,6 +536,29 @@ def _report_safe(value: Any) -> Any:
     return value
 
 
+def sanitize_public_survey(survey: Mapping[str, Any]) -> dict[str, Any]:
+    """Remove credential-shaped names before publishing a survey or projection.
+
+    A whole label is redacted so its bytes cannot be recovered from a partial
+    path; the row's byte count and class remain intact. This also handles a
+    previously saved survey when a newer controller reads it.
+    """
+
+    def sanitize(value: Any) -> Any:
+        if isinstance(value, str):
+            return "<redacted>" if _CREDENTIAL_SHAPED_NAME.search(value) else value
+        if isinstance(value, list):
+            return [sanitize(item) for item in value]
+        if isinstance(value, dict):
+            return {key: sanitize(item) for key, item in value.items()}
+        return value
+
+    safe = sanitize(dict(survey))
+    if "survey_digest" in safe:
+        safe["survey_digest"] = canonical_digest(safe, digest_field="survey_digest")
+    return safe
+
+
 def survey_usage(
     mounts: Sequence[str | os.PathLike[str]],
     *,
@@ -639,7 +682,7 @@ def survey_usage(
         },
         "survey_digest": "",
     }
-    survey = _report_safe(survey)
+    survey = sanitize_public_survey(_report_safe(survey))
     survey["survey_digest"] = canonical_digest(survey, digest_field="survey_digest")
     return survey
 
@@ -651,5 +694,6 @@ __all__ = [
     "TreeUsage",
     "allocated_bytes",
     "survey_usage",
+    "sanitize_public_survey",
     "tree_usage",
 ]

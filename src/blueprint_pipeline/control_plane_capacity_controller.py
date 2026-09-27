@@ -42,7 +42,7 @@ from typing import Any
 
 from . import control_plane_disk_budget as disk_budget
 from .control_plane_disk_budget import DEFAULT_RESERVATION_ROOT
-from .control_plane_disk_usage import SURVEY_SCHEMA_VERSION, survey_usage
+from .control_plane_disk_usage import SURVEY_SCHEMA_VERSION, sanitize_public_survey, survey_usage
 from .decision_evidence_contracts import canonical_digest
 
 SCHEMA_VERSION = "control_plane_capacity_report.v1"
@@ -60,6 +60,8 @@ USAGE_PROJECTED_UNCLASSIFIED_ROOTS = 20
 RESIZE_RECEIPT_SCHEMA_VERSION = "control_plane_volume_resize_receipt.v1"
 DEFAULT_REPORT_ROOT = Path("/var/lib/blueprint/pipeline-control-plane/capacity")
 DEFAULT_MOUNTS: tuple[str, ...] = ("/var/lib/blueprint",)
+WORK_VOLUME_MOUNT = "/mnt/blueprint-work"
+_DEFAULT_SURVEY = object()
 WARNING_FRACTION = 0.70
 CRITICAL_FRACTION = 0.85
 FORECAST_WINDOW_SECONDS = 7 * 24 * 60 * 60
@@ -329,11 +331,14 @@ def build_capacity_report(
 
 
 def survey_mounts(mounts: Sequence[str | Path]) -> list[str]:
-    """The controller's mounts plus ``/``: the usage survey also answers for the root disk."""
+    """Survey controller mounts, the root disk, and the attached bulk volume."""
 
     listed = [str(mount) for mount in mounts]
     if "/" not in {os.path.normpath(mount) for mount in listed}:
         listed.append("/")
+    if (os.path.ismount(WORK_VOLUME_MOUNT)
+            and WORK_VOLUME_MOUNT not in {os.path.normpath(mount) for mount in listed}):
+        listed.append(WORK_VOLUME_MOUNT)
     return listed
 
 
@@ -368,6 +373,14 @@ def _refresh_usage(
     latest = _read_json(path)
     if latest is not None and latest.get("schema_version") != SURVEY_SCHEMA_VERSION:
         latest = None
+    if latest is not None:
+        safe_latest = sanitize_public_survey(latest)
+        if safe_latest != latest:
+            try:
+                _write_public_json(path, safe_latest)
+            except OSError:
+                pass  # keep names out of this tick's projection even if repair fails
+        latest = safe_latest
     if survey is None:
         return latest, None
     marker_path = report_root / USAGE_ATTEMPT_FILENAME
@@ -423,6 +436,7 @@ def _refresh_usage(
         except OSError:
             pass
         return latest, error
+    result = sanitize_public_survey(result)
     try:
         _write_public_json(path, result)
     except OSError as exc:
@@ -741,13 +755,12 @@ def run_controller(
     credit_collector: Callable[[], Mapping[str, Any]] | None = None,
     credit_warning_usd: float = 5.0,
     credit_reserve_usd: float = 1.0,
-    survey: Callable[..., Mapping[str, Any]] | None = None,
+    survey: Callable[..., Mapping[str, Any]] | None | object = _DEFAULT_SURVEY,
     survey_interval_seconds: float = DEFAULT_SURVEY_INTERVAL_SECONDS,
     force_survey: bool = False,
 ) -> dict[str, Any]:
-    """One tick. ``survey`` (``main`` passes ``survey_usage``) re-runs when the last
-    usage survey is older than ``survey_interval_seconds`` or ``force_survey`` is set;
-    without one the tick only embeds the survey already on disk."""
+    """One tick. By default, survey when stale or forced. Pass ``survey=None``
+    only to reuse an existing report without scanning."""
 
     observed = time.time() if now is None else float(now)
     previous = _read_json(report_root / "latest.json")
@@ -786,6 +799,8 @@ def run_controller(
             report["level"] = "critical"
             report["alerts"].extend({"provider": "vast", "code": code}
                                     for code in funding["blockers"])
+    if survey is _DEFAULT_SURVEY:
+        survey = survey_usage
     usage, usage_error = _refresh_usage(
         report_root, survey=survey, mounts=mounts, interval_seconds=survey_interval_seconds,
         force=force_survey, now=observed,

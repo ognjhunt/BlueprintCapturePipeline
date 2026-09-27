@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from collections import namedtuple
 from pathlib import Path
 
@@ -11,6 +12,10 @@ import pytest
 
 from blueprint_pipeline import control_plane_capacity_controller as cap
 from blueprint_pipeline import control_plane_disk_budget as disk_budget
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "deploy" / "operator-door"))
+from operator_door.secrets_guard import scan_bytes  # noqa: E402
+from operator_door.status import _small_json  # noqa: E402
 
 Usage = namedtuple("Usage", "total used free")
 GIB = 1024**3
@@ -89,6 +94,7 @@ def test_controller_writes_evidence_alerts_on_escalation_and_repeats_hourly_whil
         ack="",
         token="",
         poster=poster,
+        survey=None,
     )
     ok = cap.run_controller(**common, disk_usage=_usage(80.0), now=1_000.0)
     assert ok["level"] == "ok" and posted == []
@@ -180,6 +186,7 @@ def test_controller_blocks_resize_without_acknowledgement_and_records_the_plan(t
         webhook_url="",
         volume=volume,
         poster=lambda *_args: None,
+        survey=None,
     )
     blocked = cap.run_controller(**common, ack="", token="", disk_usage=_usage(9.0), now=1.0)
     assert blocked["volume_resize"]["status"] == "blocked"
@@ -329,6 +336,53 @@ def test_survey_runs_at_most_hourly(tmp_path, monkeypatch):
         reservation_root=tmp_path / "ledger", webhook_url="", volume=None, ack="", token="",
         disk_usage=_usage(free_gib=100.0), now=4_800.0, survey=survey, force_survey=True)
     assert len(calls) == 3 and forced["usage"]["age_seconds"] == 3_800.0
+
+
+def test_survey_mounts_include_the_attached_work_volume_only(tmp_path, monkeypatch):
+    service = Path("deploy/systemd/blueprint-control-plane-capacity.service").read_text()
+    assert "Environment=BLUEPRINT_CAPACITY_MOUNTS=/var/lib/blueprint" in service
+    monkeypatch.setattr(cap.os.path, "ismount", lambda path: path == "/mnt/blueprint-work")
+    assert cap.survey_mounts(["/var/lib/blueprint"]) == [
+        "/var/lib/blueprint", "/", "/mnt/blueprint-work"]
+    monkeypatch.setattr(cap.os.path, "ismount", lambda _path: False)
+    assert cap.survey_mounts(["/var/lib/blueprint"]) == ["/var/lib/blueprint", "/"]
+
+
+def test_direct_controller_call_surveys_by_default(tmp_path, monkeypatch):
+    _no_project_spend(monkeypatch)
+    calls = []
+
+    def survey(**kwargs):
+        calls.append(kwargs)
+        return _survey_result()
+
+    monkeypatch.setattr(cap, "survey_usage", survey)
+    report = cap.run_controller(
+        mounts=[str(tmp_path)], report_root=tmp_path / "capacity",
+        reservation_root=tmp_path / "ledger", webhook_url="", volume=None,
+        ack="", token="", disk_usage=_usage(free_gib=100.0), now=1_000.0,
+    )
+    assert calls == [{"mounts": [str(tmp_path), "/"]}]
+    assert report["usage"]["status"] == "complete"
+
+
+def test_credential_shaped_survey_names_are_redacted_before_publication(tmp_path, monkeypatch):
+    _no_project_spend(monkeypatch)
+    suspicious = "sk-" + "A" * 30
+    report = cap.run_controller(
+        mounts=[str(tmp_path)], report_root=tmp_path / "capacity",
+        reservation_root=tmp_path / "ledger", webhook_url="", volume=None,
+        ack="", token="", disk_usage=_usage(free_gib=100.0), now=1_000.0,
+        survey=lambda **_kwargs: _survey_result(unclassified_roots=[
+            {"root": f"/var/lib/blueprint/{suspicious}", "allocated_bytes": 2 * GIB}]),
+    )
+    summary = (tmp_path / "capacity" / "summary.json").read_text()
+    usage = (tmp_path / "capacity" / "usage-latest.json").read_text()
+    assert suspicious not in summary + usage
+    assert scan_bytes(summary.encode()) is None
+    assert scan_bytes(usage.encode()) is None
+    assert _small_json(tmp_path / "capacity" / "summary.json")["usage"]["status"] == "complete"
+    assert report["usage"]["unclassified_roots"][0]["allocated_bytes"] == 2 * GIB
 
 
 def test_a_failed_survey_keeps_the_last_one_and_never_stops_the_tick(tmp_path, monkeypatch):
