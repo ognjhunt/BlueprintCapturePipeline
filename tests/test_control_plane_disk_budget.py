@@ -570,3 +570,11 @@ def test_a_lock_owned_by_someone_else_with_a_wrong_mode_fails_closed(tmp_path, m
     with pytest.raises(ControlPlaneDiskBudgetError, match="control_plane_disk_budget_lock_mode_invalid:0640"):
         _roomy_reservation(tmp_path, ledger, expected_bytes=GIB)
     assert lock.stat().st_mode & 0o777 == 0o640
+
+
+def test_a_declared_ceiling_below_the_floor_is_never_exceeded(tmp_path, monkeypatch):
+    monkeypatch.setenv("BLUEPRINT_CONTROL_PLANE_DISK_FOOTPRINT_LAUNCH_ACTIVATION_BYTES", str(32 * MIB))
+    ledger = tmp_path / "ledger"
+    _samples(ledger, "launch_activation", [1] * 10)
+    measured = disk_budget.measured_footprint("launch_activation", reservation_root=ledger)
+    assert (measured["basis"], measured["bytes"]) == ("measured_p95", 32 * MIB)

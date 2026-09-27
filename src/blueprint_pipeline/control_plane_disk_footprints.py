@@ -313,7 +313,8 @@ def measured_footprint(
     p95 is nearest-rank (sorted values s, k = ceil(0.95 * n) - 1, p95 = s[k]), taken per
     workload and maximised across workloads, so a rare large workload is never
     averaged away by a frequent small one.
-    bytes = max(MEASURED_FLOOR_BYTES, min(declared, ceil(p95 * MEASURED_HEADROOM))).
+    bytes = min(declared, max(MEASURED_FLOOR_BYTES, ceil(p95 * MEASURED_HEADROOM))): the
+    declared ceiling always wins, even for a role declared below the floor.
     declared = footprint_bytes(role) (env override honoured). Unreadable history -> declared.
     """
 
@@ -334,9 +335,9 @@ def measured_footprint(
     p95 = max(_nearest_rank_p95(values) for values in by_workload.values())
     return {
         "role": role,
-        "bytes": max(
-            MEASURED_FLOOR_BYTES,
-            min(declared, math.ceil(p95 * MEASURED_HEADROOM)),
+        "bytes": min(
+            declared,
+            max(MEASURED_FLOOR_BYTES, math.ceil(p95 * MEASURED_HEADROOM)),
         ),
         "basis": "measured_p95",
         "sample_count": len(samples),
