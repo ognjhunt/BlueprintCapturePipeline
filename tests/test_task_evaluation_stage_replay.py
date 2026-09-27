@@ -650,6 +650,38 @@ def test_scratch_inputs_release_counts_each_inode_once_and_never_follows_a_link(
     assert replay._release_scratch_inputs(inputs) == {"files": 0, "inodes": 0, "bytes": 0}
 
 
+@pytest.mark.parametrize("mounted_at", ["prepared-references", "prepared-references/preparation/mounted"])
+def test_scratch_inputs_release_refuses_a_tree_that_crosses_a_device(tmp_path: Path, monkeypatch, mounted_at) -> None:
+    """Review of PR 10a.1: the release removes the scratch inputs with rmtree, which crosses mount
+    points. If the tree, or any directory the walk meets in it, shows another st_dev than the
+    replay's own root, the release is refused and nothing is removed. A bind mount of the same
+    filesystem keeps its st_dev and cannot be told apart this way."""
+    from tests.test_completed_replay_cache_retention import _OnDevice
+
+    run_root = tmp_path / "run"
+    inputs = run_root / "prepared-references"
+    (inputs / "preparation" / "mounted").mkdir(parents=True)
+    (inputs / "preparation" / "mounted" / "theirs.bin").write_bytes(b"on another filesystem")
+    (inputs / "preparation" / "ours.bin").write_bytes(b"scratch")
+    mounted = run_root / mounted_at
+    elsewhere = os.lstat(run_root).st_dev + 1
+    real_lstat = os.lstat
+
+    def lstat(path, *args, **kwargs):
+        info = real_lstat(path, *args, **kwargs)
+        inside = str(path) == str(mounted) or str(path).startswith(str(mounted) + os.sep)
+        return _OnDevice(info, elsewhere) if inside else info
+
+    monkeypatch.setattr(os, "lstat", lstat)
+    released = replay._release_scratch_inputs(inputs)
+    monkeypatch.undo()
+
+    assert released == {"files": 0, "inodes": 0, "bytes": 0, "refused": "replay_scratch_inputs_cross_device"}
+    assert (inputs / "preparation" / "mounted" / "theirs.bin").exists() and (inputs / "preparation" / "ours.bin").exists()
+    assert replay._release_scratch_inputs(inputs) == {"files": 2, "inodes": 2, "bytes": len(b"on another filesystem") + len(b"scratch")}
+    assert not inputs.exists()
+
+
 def _queued_preparation(tmp_path: Path) -> tuple[Path, Path]:
     """A parent staged by the real producer, materialized, with a queued result — as the host holds it."""
 
