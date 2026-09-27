@@ -167,6 +167,29 @@ def test_release_hold_starts_the_timer_and_marks_the_record(config: DoorConfig) 
     assert runner.calls == []
 
 
+def test_failed_expiry_scheduling_restores_a_new_timer_but_preserves_an_existing_hold(config: DoorConfig) -> None:
+    first = _hold(config)
+    runner = FakeRunner(systemd_run_rc=1)
+    process_spool(config, runner=runner)
+    assert _result(config, first)["code"] == "hold_expiry_schedule_failed"
+    assert [call[:3] for call in runner.calls] == [
+        ["systemctl", "--no-block", "stop"], ["systemd-run", runner.calls[1][1], "--on-active=3600s"],
+        ["systemctl", "--no-block", "start"],
+    ]
+    record = Path(config.spool_root) / "holds" / "blueprint-scene-progression.timer.json"
+    assert json.loads(record.read_text())["status"] == "failed_released"
+
+    existing = _hold(config)
+    process_spool(config, runner=FakeRunner())
+    renewed = _hold(config)
+    runner = FakeRunner(systemd_run_rc=1)
+    process_spool(config, runner=runner)
+    assert _result(config, renewed)["code"] == "hold_expiry_schedule_failed"
+    assert not any(call[:3] == ["systemctl", "--no-block", "start"] for call in runner.calls)
+    saved = json.loads(record.read_text())
+    assert saved["request_id"] == existing and saved["status"] == "active"
+
+
 def test_door_upgrade_launches_the_upgrade_script(config: DoorConfig) -> None:
     request_id = _spooled(config, {"kind": "door-upgrade", "commit": SHA})
     runner = FakeRunner()

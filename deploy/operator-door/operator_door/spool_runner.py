@@ -190,8 +190,9 @@ def _act_hold(
     unit = request["unit"]
     with holds.locked(root):
         current = holds.read(root, unit)
-        if (current is not None and current["status"] == "active"
-                and current["expires_at_epoch"] > time.time() and current["owner"] != request["owner"]):
+        prior_active = (current is not None and current["status"] == "active"
+                        and current["expires_at_epoch"] > time.time())
+        if prior_active and current["owner"] != request["owner"]:
             return {"status": "refused", "code": f"hold_active:{current['owner']}"}
         stopped = runner.run(["systemctl", "--no-block", "stop", "--", unit], timeout=30)
         if stopped.returncode != 0:
@@ -202,6 +203,19 @@ def _act_hold(
                   "reason": request["reason"], "requested_by": requested_by, "request_id": request_id,
                   "created_at": holds.timestamp(now), "expires_at": holds.timestamp(now + request["expires_in_seconds"]),
                   "expires_at_epoch": now + request["expires_in_seconds"], "status": "active"}
+
+        def rollback() -> int:
+            if prior_active:
+                # The old expiry timer still exists. Restore its generation;
+                # starting here would silently undo the owner's prior hold.
+                holds.write(root, unit, current)
+                return 0
+            restored = runner.run(["systemctl", "--no-block", "start", "--", unit], timeout=30)
+            if restored.returncode == 0:
+                record.update(status="failed_released", released_at=holds.timestamp(), released_by="runner")
+                holds.write(root, unit, record)
+            return restored.returncode
+
         try:
             holds.write(root, unit, record)
             launch = runner.run([
@@ -212,15 +226,12 @@ def _act_hold(
                 f"{config.install_root}/door-hold-expire.sh",
             ], timeout=60)
         except Exception:
-            runner.run(["systemctl", "--no-block", "start", "--", unit], timeout=30)
+            rollback()
             raise
         if launch.returncode != 0:
-            restored = runner.run(["systemctl", "--no-block", "start", "--", unit], timeout=30)
-            if restored.returncode == 0:
-                record.update(status="failed_released", released_at=holds.timestamp(), released_by="runner")
-                holds.write(root, unit, record)
+            rollback_returncode = rollback()
             return {"status": "failed", "code": "hold_expiry_schedule_failed", "returncode": launch.returncode,
-                    "rollback_returncode": restored.returncode, "stderr_tail": launch.stderr[-2000:]}
+                    "rollback_returncode": rollback_returncode, "stderr_tail": launch.stderr[-2000:]}
         return {"status": "done", "hold": record}
 
 
