@@ -32,6 +32,11 @@ from .adp_task_scoring import (
     TaskNeutralScoringError,
 )
 from .decision_evidence_contracts import cross_runtime_canonical_digest
+from .control_plane_disk_budget import (
+    ControlPlaneDiskBudgetError,
+    DEFAULT_RESERVATION_ROOT,
+    reserve_control_plane_disk,
+)
 from .episode_interpretation_batch_authority import (
     validate_episode_interpretation_batch_authority_shape,
 )
@@ -1109,6 +1114,35 @@ def _stage_profile_immutable_inputs(
     run_root: Path,
     allocator_argv: Sequence[str],
 ) -> tuple[dict[str, Any], list[str]]:
+    """Reserve the copy footprint on the run volume before staging inputs."""
+
+    sources = {
+        Path(str(_mapping(item).get("path") or "")).expanduser().resolve()
+        for item in profile.get("immutable_inputs") or []
+    }
+    expected_bytes = sum(source.stat().st_size for source in sources) + 64 * 1024 * 1024
+    with reserve_control_plane_disk(
+        "launch_dispatch",
+        target_root=run_root.parent,
+        reservation_root=os.getenv(
+            "BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT",
+            str(DEFAULT_RESERVATION_ROOT),
+        ),
+        expected_bytes=expected_bytes,
+        workspace=run_root,
+        workload="launch_immutable_inputs",
+    ):
+        return _stage_profile_immutable_inputs_reserved(
+            profile=profile, run_root=run_root, allocator_argv=allocator_argv
+        )
+
+
+def _stage_profile_immutable_inputs_reserved(
+    *,
+    profile: Mapping[str, Any],
+    run_root: Path,
+    allocator_argv: Sequence[str],
+) -> tuple[dict[str, Any], list[str]]:
     """Snapshot immutable inputs and redirect exact allocator path arguments."""
 
     stage_root = run_root / "immutable_inputs"
@@ -1635,6 +1669,8 @@ def dispatch_launch_request(
                 run_root=run_root,
                 allocator_argv=rendered_allocator_argv,
             )
+        except ControlPlaneDiskBudgetError:
+            blockers.append("task_evaluation_launch_disk_budget_exceeded")
         except (OSError, TaskEvaluationLaunchError) as exc:
             blockers.append(f"immutable_input_staging_failed:{exc}")
     bound = {

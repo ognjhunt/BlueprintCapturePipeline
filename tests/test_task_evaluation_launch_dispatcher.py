@@ -1,6 +1,8 @@
 import hashlib
 import json
 import threading
+import types
+from contextlib import nullcontext
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -8,6 +10,7 @@ from pathlib import Path
 import pytest
 
 import blueprint_pipeline.task_evaluation_launch_dispatcher as dispatcher_module
+from blueprint_pipeline.control_plane_disk_budget import ControlPlaneDiskBudgetError
 import blueprint_pipeline.task_evaluation_launch_webapp_sync as webapp_sync_module
 from blueprint_pipeline.decision_evidence_contracts import (
     cross_runtime_canonical_digest,
@@ -43,6 +46,27 @@ from blueprint_pipeline.task_evaluation_immutable_input_resolver import (
     resolve_immutable_input,
 )
 from scripts.publish_task_evaluation_launch_profiles import publish_profiles
+
+
+@pytest.fixture(autouse=True)
+def _local_disk_reservation_root(tmp_path, monkeypatch):
+    monkeypatch.setenv(
+        "BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT", str(tmp_path / "disk-reservations")
+    )
+    actual_reserve = getattr(dispatcher_module, "reserve_control_plane_disk", None)
+    if actual_reserve is None:
+        return
+
+    def reserve_on_roomy_test_disk(role, **kwargs):
+        return actual_reserve(
+            role,
+            disk_usage=lambda _path: types.SimpleNamespace(
+                total=200 * 1024**3, used=100 * 1024**3, free=100 * 1024**3
+            ),
+            **kwargs,
+        )
+
+    monkeypatch.setattr(dispatcher_module, "reserve_control_plane_disk", reserve_on_roomy_test_disk)
 
 
 def _reference(name: str) -> dict[str, str]:
@@ -258,6 +282,50 @@ def test_dispatcher_stages_exact_input_and_child_isolated_from_late_source_tampe
     assert Path(row["staged_path"]) == observed["staged"]
     assert row["staged_digest"] == row["expected_digest"]
     assert staging["source_paths_forwarded_to_allocator"] is False
+
+
+def test_dispatcher_reserves_immutable_input_bytes_before_copying(tmp_path, monkeypatch):
+    profile = _profile(tmp_path)
+    profile_dir, request_path = _write_profile_and_request(tmp_path, profile)
+    observed = []
+
+    def reserve(role, **kwargs):
+        assert not (tmp_path / "state" / "launch-interiorgs-sage-001" / "immutable_inputs").exists()
+        observed.append((role, kwargs))
+        return nullcontext()
+
+    monkeypatch.setattr(dispatcher_module, "reserve_control_plane_disk", reserve, raising=False)
+    receipt = dispatch_launch_request(
+        request_path=request_path, profile_dir=profile_dir, state_root=tmp_path / "state",
+        allocator_runner=lambda _argv: 0,
+    )
+    assert receipt["status"] == "dry_run_completed"
+    assert len(observed) == 1
+    role, kwargs = observed[0]
+    assert role == "launch_dispatch"
+    assert kwargs["expected_bytes"] == sum(
+        Path(item["path"]).stat().st_size for item in profile["immutable_inputs"]
+    ) + 64 * 1024 * 1024
+    assert kwargs["target_root"] == tmp_path / "state"
+    assert kwargs["workspace"] == tmp_path / "state" / "launch-interiorgs-sage-001"
+
+
+def test_dispatcher_disk_refusal_blocks_before_any_provider_call(tmp_path, monkeypatch):
+    profile = _profile(tmp_path)
+    profile_dir, request_path = _write_profile_and_request(tmp_path, profile)
+    calls = []
+
+    def refuse(*_args, **_kwargs):
+        raise ControlPlaneDiskBudgetError("control_plane_disk_budget_exceeded")
+
+    monkeypatch.setattr(dispatcher_module, "reserve_control_plane_disk", refuse, raising=False)
+    receipt = dispatch_launch_request(
+        request_path=request_path, profile_dir=profile_dir, state_root=tmp_path / "state",
+        allocator_runner=lambda argv: calls.append(argv) or 0,
+    )
+    assert receipt["status"] == "blocked"
+    assert "task_evaluation_launch_disk_budget_exceeded" in receipt["blockers"]
+    assert calls == []
 
 
 def test_child_resolver_fails_closed_for_missing_or_tampered_mapping(
