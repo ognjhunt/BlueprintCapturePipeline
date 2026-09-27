@@ -275,20 +275,15 @@ def _reclaim_outlook(
         "reclaimable_bytes": total_candidate,
     })
     reason_rows = summary.get("top_retained")
-    reasons: list[str] = []
+    reason_bytes: dict[str, int] = {}
     if isinstance(reason_rows, list):
-        ranked = sorted(
-            (row for row in reason_rows if isinstance(row, Mapping)
-             and type(row.get("bytes")) is int and row["bytes"] > 0
-             and isinstance(row.get("reason"), str)
-             and re.fullmatch(r"[a-z][a-z0-9_:+.-]{0,79}", row["reason"])),
-            key=lambda row: (-row["bytes"], str(row.get("phase") or ""), row["reason"]),
-        )
-        for row in ranked:
-            if row["reason"] not in reasons:
-                reasons.append(row["reason"])
-            if len(reasons) == 3:
-                break
+        for row in reason_rows:
+            if (isinstance(row, Mapping)
+                and type(row.get("bytes")) is int and row["bytes"] > 0
+                and isinstance(row.get("reason"), str)
+                and re.fullmatch(r"[a-z][a-z0-9_:+.-]{0,79}", row["reason"])):
+                reason_bytes[row["reason"]] = reason_bytes.get(row["reason"], 0) + row["bytes"]
+    reasons = sorted(reason_bytes, key=lambda reason: (-reason_bytes[reason], reason))[:3]
     return outlook, reasons, total_candidate == total_reclaimed == 0
 
 

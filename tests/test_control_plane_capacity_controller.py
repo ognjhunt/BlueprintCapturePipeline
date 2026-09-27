@@ -376,6 +376,32 @@ def test_reclaim_outlook_fails_closed_without_complete_applied_phase() -> None:
     assert reasons == [] and ineffective is False
 
 
+def test_reclaim_outlook_ranks_reasons_across_phases_by_total_bytes() -> None:
+    summary = {
+        "schema_version": "control_plane_storage_gc_summary.v1",
+        "observed_at_epoch": 1000.0, "status": "applied",
+        "opt_in": {"evidence_offload": False, "scene_workspace_retirement": False},
+        "phases": {
+            "derived_directories": {"status": "applied", "candidate_bytes": 0,
+                                    "removed_or_offloaded_bytes": 0},
+            "content_store": {"status": "applied", "candidate_bytes": 0,
+                              "removed_or_offloaded_bytes": 0},
+        },
+        "top_retained": [
+            {"phase": "derived_directories", "reason": "shared", "bytes": 4 * GIB},
+            {"phase": "content_store", "reason": "shared", "bytes": 4 * GIB},
+            {"phase": "derived_directories", "reason": "single", "bytes": 5 * GIB},
+            {"phase": "content_store", "reason": "third", "bytes": 3 * GIB},
+        ],
+    }
+
+    _outlook, reasons, ineffective = cap._reclaim_outlook(
+        summary, now=1100.0, volume_growth="blocked",
+    )
+    assert ineffective is True
+    assert reasons == ["shared", "single", "third"]
+
+
 def test_reclaim_outlook_counts_other_applying_gc_phases() -> None:
     summary = {
         "schema_version": "control_plane_storage_gc_summary.v1",
