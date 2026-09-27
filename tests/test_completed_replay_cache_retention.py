@@ -336,6 +336,31 @@ def test_an_item_that_fails_is_recorded_and_apply_keeps_going(tmp_path, monkeypa
     assert not data.exists() and not copy.exists() and (child / "stuck.ply").exists()
 
 
+def test_the_process_table_is_swept_only_for_a_root_with_something_to_reclaim(tmp_path, monkeypatch):
+    """A sweep of /proc per finished replay on every tick cost the most for the replays with
+    nothing left: with the opt-in, names, links and sizes come first and only a root with a
+    candidate is checked for live readers; an estimate checks none. The standalone unit's
+    order is unchanged."""
+    root, child, data, proc = setup(tmp_path)
+    data.unlink()
+    busy = root / "parent-busy"
+    busy.mkdir()
+    (busy / "stage_replay_report.v1.json").write_text((child / "stage_replay_report.v1.json").read_text())
+    _store_copy(busy, b"a copy left to reclaim")
+    real = gc.active_reference
+    calls: list[str] = []
+    monkeypatch.setattr(gc, "active_reference", lambda path, **kwargs: calls.append(path.name) or real(path, **kwargs))
+
+    assert plan(root, proc, **STORE)["candidate_bytes"] > 0
+    assert calls == ["parent-busy"]
+    calls.clear()
+    assert gc.estimate_replay_cache_retention(replay_root=root, now=time.time() + 120, **STORE)[
+        "estimated_candidate_bytes"] > 0
+    assert calls == []
+    plan(root, proc)
+    assert calls == ["parent-busy", "parent-finished"]
+
+
 def test_scratch_inode_linked_outside_the_replay_is_kept(tmp_path):
     """A copy sharing its inode with a name outside the replay's prepared-references (the
     production store when linking worked, the scratch queue, anything else) is never planned:
@@ -414,7 +439,7 @@ def test_an_estimate_reads_no_bytes_and_bounds_the_plan(tmp_path, monkeypatch):
     real_file_sha = gc.file_sha
     monkeypatch.setattr(gc, "file_sha", lambda path: pytest.fail(f"an estimate read {path}"))
 
-    estimate = gc.estimate_replay_cache_retention(replay_root=root, process_root=proc, now=time.time() + 120, **STORE)
+    estimate = gc.estimate_replay_cache_retention(replay_root=root, now=time.time() + 120, **STORE)
 
     monkeypatch.setattr(gc, "file_sha", real_file_sha)
     p = plan(root, proc, **STORE)

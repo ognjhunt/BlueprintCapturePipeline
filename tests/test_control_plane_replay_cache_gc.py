@@ -111,17 +111,19 @@ def test_replay_cache_phase_plans_by_default_and_applies_only_when_enabled(tmp_p
 
 def test_plan_only_ticks_never_hash(tmp_path, monkeypatch) -> None:
     """Until the owner opts in, an hourly tick must not read the backlog: hashing every
-    candidate copy each hour would reread about 13 GiB on the root disk for nothing."""
+    candidate copy each hour would reread about 13 GiB on the root disk for nothing. It
+    sweeps no process table either; a tick that applies rechecks everything."""
 
     parent_root = tmp_path / "scene-configuration-activations"
     blob, _report, _lookahead_report = _activation(parent_root)
     size = blob.stat().st_size
     real_file_sha = retention.file_sha
 
-    def refuse(path):
-        raise AssertionError(f"hashed {path} on a tick that only plans")
+    def refuse(*args, **_kwargs):
+        raise AssertionError(f"read {args[:2]} on a tick that only plans")
 
-    monkeypatch.setattr(retention, "file_sha", refuse)
+    for name in ("file_sha", "_held_sha", "active_reference"):
+        monkeypatch.setattr(retention, name, refuse)
     for apply, enabled in ((True, False), (False, True), (False, False)):
         tick = _tick(tmp_path, parent_root, apply=apply, ack=RUN_ACK if apply else "",
                      replay_cache_retention_enabled=enabled)
@@ -130,6 +132,8 @@ def test_plan_only_ticks_never_hash(tmp_path, monkeypatch) -> None:
         assert phase["estimated_candidate_bytes"] == size
 
     hashed: list[Path] = []
+    monkeypatch.undo()
+    monkeypatch.setattr(retention, "active_reference", lambda _root, **_kwargs: False)
     monkeypatch.setattr(retention, "file_sha", lambda path: hashed.append(path) or real_file_sha(path))
     tick = _tick(tmp_path, parent_root, apply=True, ack=RUN_ACK, replay_cache_retention_enabled=True)
     assert tick["replay_caches"]["removed_bytes"] == size and hashed, "a tick that applies verifies first"
@@ -274,13 +278,13 @@ def test_the_phase_report_is_bounded(tmp_path, monkeypatch) -> None:
     parent_root = tmp_path / "scene-configuration-activations"
     _activation(parent_root)
 
-    def estimate(**_kwargs):
-        return {"estimated_candidate_bytes": 0,
+    def plan(**_kwargs):
+        return {"rows": [], "candidate_bytes": 0,
                 "kept": [{"root": f"replay-{index}", "reason": "active_reference"} for index in range(53)]}
 
-    monkeypatch.setattr(retention, "estimate_replay_cache_retention", estimate)
+    monkeypatch.setattr(retention, "plan_replay_cache_retention", plan)
 
-    phase = replay_gc.reclaim_replay_caches(parent_roots=[parent_root], apply=False, enabled=False,
+    phase = replay_gc.reclaim_replay_caches(parent_roots=[parent_root], apply=True, enabled=True,
                                             now=lambda: NOW, classifier=_noclass)
 
     assert len(phase["kept"]) == 50 and phase["omitted_kept_count"] == 3

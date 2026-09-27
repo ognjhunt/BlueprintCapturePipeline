@@ -102,14 +102,13 @@ def reclaim_replay_caches(
                 continue
             report["replay_root_count"] += 1
             scope = {"replay_root": lookahead, "minimum_closed_seconds": minimum_closed_seconds,
-                     "now": now(), "process_root": process_root, **_RULES}
+                     "now": now(), **_RULES}
             try:
                 if not applying:
                     estimate = retention.estimate_replay_cache_retention(**scope)
                     report["estimated_candidate_bytes"] += estimate["estimated_candidate_bytes"]
-                    rows["kept"].extend(estimate["kept"])
                     continue
-                plan = retention.plan_replay_cache_retention(**scope)
+                plan = retention.plan_replay_cache_retention(**scope, process_root=process_root)
                 report["candidate_bytes"] += plan["candidate_bytes"]
                 rows["kept"].extend(plan["kept"])
                 if plan["rows"]:
