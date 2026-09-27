@@ -9,6 +9,7 @@ between a small floor and the declared ceiling.
 
 from __future__ import annotations
 
+import errno
 import fcntl
 import json
 import math
@@ -164,9 +165,15 @@ def _append_footprint_sample(ledger: Path, role: str, line: bytes) -> None:
             # Appenders share the lock so compaction never drops a sample that
             # lands between its read and its replace.
             _bounded_flock(lock, fcntl.LOCK_SH)
-            descriptor = _open_history_file(history, name, os.O_WRONLY | os.O_APPEND | os.O_CREAT)
+            descriptor = _open_history_file(history, name, os.O_RDWR | os.O_APPEND | os.O_CREAT)
             try:
-                os.write(descriptor, line)
+                size = os.fstat(descriptor).st_size
+                # A writer that died or wrote short left a fragment with no
+                # newline; start a fresh line so this sample never merges into it.
+                if size and os.pread(descriptor, 1, size - 1) != b"\n":
+                    line = b"\n" + line
+                if os.write(descriptor, line) != len(line):
+                    raise OSError(errno.EIO, "footprint history short write")
                 size = os.fstat(descriptor).st_size
             finally:
                 os.close(descriptor)

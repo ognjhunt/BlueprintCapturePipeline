@@ -583,3 +583,21 @@ def test_a_declared_ceiling_below_the_floor_is_never_exceeded(tmp_path, monkeypa
     _samples(ledger, "launch_activation", [1] * 10)
     measured = disk_budget.measured_footprint("launch_activation", reservation_root=ledger)
     assert (measured["basis"], measured["bytes"]) == ("measured_p95", 32 * MIB)
+
+
+def test_a_short_write_is_not_a_recorded_sample_and_never_swallows_the_next(tmp_path, monkeypatch):
+    ledger = tmp_path / "ledger"
+    real_write = footprints.os.write
+    monkeypatch.setattr(footprints.os, "write", lambda fd, data: real_write(fd, data[: len(data) // 2]))
+    assert disk_budget.record_footprint_sample(reservation_root=ledger, role="launch_activation",
+        observed_bytes=7, reserved_bytes=GIB) is False  # a torn line is not success
+    monkeypatch.setattr(footprints.os, "write", real_write)
+    assert disk_budget.record_footprint_sample(reservation_root=ledger, role="launch_activation",
+        observed_bytes=9, reserved_bytes=GIB) is True
+    parsed = []
+    for line in (ledger / "history" / "launch_activation.jsonl").read_text().splitlines():
+        try:
+            parsed.append(json.loads(line)["observed_bytes"])
+        except ValueError:
+            continue  # the torn fragment stays unreadable on its own line
+    assert parsed == [9]
