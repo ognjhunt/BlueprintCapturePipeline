@@ -372,3 +372,41 @@ def test_a_report_named_summary_json_is_not_overwritten_by_its_summary(tmp_path,
     assert written["schema_version"] == "control_plane_storage_gc_run.v1"
     assert written["report_digest"] == json.loads(capsys.readouterr().out)["report_digest"]
     assert sorted(path.name for path in report.parent.iterdir()) == ["summary.json"]
+
+
+def test_the_summary_tells_kept_nothing_from_not_reported() -> None:
+    """``{}`` means a phase kept nothing; ``None`` means it does not say what it kept. Applied
+    content-store, stranded-row, scratch and bundle receipts, a replay cache pass and the
+    terminal pin pass carry no retained counts, and the summary must not claim they kept
+    nothing. An artifact another pass already evicted is gone, not kept."""
+
+    report = {
+        "status": "applied", "observed_at_epoch": NOW, "report_digest": "sha256:" + "1" * 64, "skipped_roots": [],
+        "stranded_queue_rows": {"status": "applied", "stranded_bytes": 0, "stranded": [], "skipped": []},
+        "terminal_cache_pins": {"status": "applied", "candidates": [], "released": [], "kept": []},
+        "derived_directories": {"status": "applied", "candidate_bytes": 0, "removed_bytes": 0,
+                                "retained_by_reason": {}},
+        "planned_derived_directories": {"status": "dry_run", "candidate_bytes": 0,
+                                        "retained_counts": {"pinned": 0, "queue_referenced": 0, "young": 0}},
+        "content_store": {"status": "applied", "removed_bytes": 0, "removed": [], "skipped": []},
+        # A receipt whose manifest predates the reasons.
+        "evidence_offload": {"status": "applied", "offloaded_bytes": 0, "retained_by_reason": None},
+        "scratch_directories": {"status": "applied", "removed_bytes": 0, "removed": [], "skipped": []},
+        "workspace_bundles": {"status": "applied", "removed_bytes": 0, "removed": [], "skipped": []},
+        "replay_caches": {"status": "applied", "candidate_bytes": 0, "removed_bytes": 0, "kept": []},
+        "result_artifact_offload": [{"status": "applied", "candidate_bytes": 90_000, "offloaded_bytes": 0,
+                                     "skipped": [{"relative_path": "evidence/a.mp4", "reason": "already_evicted"}]}],
+    }
+
+    phases = reasons.build_storage_gc_summary(report)["phases"]
+
+    assert {name for name, phase in phases.items() if phase["retained_by_reason"] is None} == {
+        "stranded_queue_rows", "terminal_cache_pins", "content_store", "evidence_offload",
+        "scratch_directories", "workspace_bundles", "replay_caches"}
+    assert phases["derived_directories"]["retained_by_reason"] == {}
+    # Counts of zero kept nothing.
+    assert phases["planned_derived_directories"]["retained_by_reason"] == {}
+    assert phases["result_artifact_offload"]["retained_by_reason"] == {}
+    counted = reasons.build_storage_gc_summary({**report, "content_store": {
+        "status": "dry_run", "candidate_bytes": 0, "retained_counts": {"linked": 3, "young": 0}}})
+    assert counted["phases"]["content_store"]["retained_by_reason"] == {"linked": {"count": 3, "bytes": None}}

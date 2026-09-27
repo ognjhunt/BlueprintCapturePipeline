@@ -188,7 +188,8 @@ def _reason_rows(source: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
     """``{reason: {count, bytes}}`` for at most the ``_MAX_REASONS`` largest; ``bytes`` is null when unknown.
 
     A phase that counts its reasons without sizing them (``retained_counts``)
-    reports null bytes rather than zero.
+    reports null bytes rather than zero. A reason counted zero times kept
+    nothing and is left out, so ``{}`` means the phase kept nothing.
     """
 
     rows: dict[str, dict[str, Any]] = {}
@@ -200,7 +201,10 @@ def _reason_rows(source: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
         row["bytes"] = None if size is None or row["bytes"] is None else row["bytes"] + size
         if isinstance(detail.get("by_kind"), Mapping):
             row["by_kind"] = _reason_rows(detail["by_kind"])
-    ranked = sorted(rows.items(), key=lambda item: (-(item[1]["bytes"] or 0), -item[1]["count"], item[0]))
+    ranked = sorted(
+        (item for item in rows.items() if item[1]["count"] > 0),
+        key=lambda item: (-(item[1]["bytes"] or 0), -item[1]["count"], item[0]),
+    )
     return dict(ranked[:_MAX_REASONS])
 
 
@@ -211,7 +215,9 @@ def _phase_summary(entry: Mapping[str, Any]) -> dict[str, Any]:
         "status": _typed(entry.get("status"), "unrecognized_status"),
         "candidate_bytes": _integer(entry.get("candidate_bytes")),
         "removed_or_offloaded_bytes": next((_integer(entry[key]) for key in _REMOVED_KEYS if key in entry), None),
-        "retained_by_reason": _reason_rows(reasons) if isinstance(reasons, Mapping) else {},
+        # None when the phase does not say what it kept (an applied receipt that
+        # carries no counts); {} when it kept nothing.
+        "retained_by_reason": _reason_rows(reasons) if isinstance(reasons, Mapping) else None,
     }
     if "estimated_candidate_bytes" in entry:
         summary["estimated_candidate_bytes"] = _integer(entry["estimated_candidate_bytes"])
@@ -225,9 +231,10 @@ def _result_artifact_summary(rows: Sequence[Any]) -> dict[str, Any]:
 
     A retained run counts under its ``retained_reason``; a run whose offload
     raised counts under ``offload_failed:<stage>``, and a skipped artifact under
-    ``artifact_offload_failed:<stage>`` or ``artifact_skipped:<reason>``. None of
-    them is sized, so their bytes are null. ``failures`` groups the errors by
-    scope, stage, type and errno.
+    ``artifact_offload_failed:<stage>`` or ``artifact_skipped:<reason>``. An
+    artifact already evicted is gone, not kept, and is not counted. None of them
+    is sized, so their bytes are null. ``failures`` groups the errors by scope,
+    stage, type and errno.
     """
 
     runs = [row for row in rows if isinstance(row, Mapping)]
@@ -251,7 +258,7 @@ def _result_artifact_summary(rows: Sequence[Any]) -> dict[str, Any]:
         elif run.get("status") == "retained":
             keep(f"offload_failed:{failed('run', run)}")
         for skip in run.get("skipped") or ():
-            if not isinstance(skip, Mapping):
+            if not isinstance(skip, Mapping) or skip.get("reason") == "already_evicted":
                 continue
             if "stage" in skip:
                 keep(f"artifact_offload_failed:{failed('artifact', skip)}")
@@ -294,7 +301,7 @@ def build_storage_gc_summary(report: Mapping[str, Any]) -> dict[str, Any]:
         (
             {"phase": phase, "reason": reason, "count": row["count"], "bytes": row["bytes"]}
             for phase, entry in phases.items()
-            for reason, row in entry["retained_by_reason"].items()
+            for reason, row in (entry["retained_by_reason"] or {}).items()
             if row["bytes"]
         ),
         key=lambda row: (-row["bytes"], row["phase"], row["reason"]),

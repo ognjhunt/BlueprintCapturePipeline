@@ -591,7 +591,11 @@ way (0644 in the 0755 directory). It holds the tick's status and
 `source_report_digest`, the opt-in flags, alerts, `phase_errors` and
 `skipped_roots`. Per phase it gives `candidate_bytes`,
 `removed_or_offloaded_bytes` and `retained_by_reason`, with null bytes where a
-phase counts without sizing. `top_retained` lists the ten reasons that keep the
+phase counts without sizing. `retained_by_reason` is `{}` when a phase kept
+nothing and null when it does not say what it kept: an applied content-store,
+stranded-row, scratch or bundle receipt, a replay cache pass and the terminal
+pin pass carry no retained counts. An artifact already evicted is not counted as
+kept. `top_retained` lists the ten reasons that keep the
 most bytes. It names no run, file or host path except the configured roots in
 `skipped_roots`, and stays under 256 KiB. If it cannot be built or written, the
 previous tick's `summary.json` is removed, so a stale summary never sits beside
