@@ -167,6 +167,85 @@ offloaded: spend guard, deploy receipts, standing authorizations),
 requires every root a production unit names to be classified, and the reclaim
 tools refuse a configured root whose class is not the one they may touch.
 
+## Usage attribution
+
+The capacity controller (`blueprint-control-plane-capacity.service`, every ten
+minutes as `root`) also surveys disk usage with
+`control_plane_disk_usage.survey_usage`, so one door call answers "what uses the
+space?". It surveys at most hourly (`BLUEPRINT_CAPACITY_SURVEY_INTERVAL_SECONDS`,
+default 3600, judged by the last survey's `observed_at_epoch`); `--survey` forces
+one.
+
+**What it counts.** The survey walks the controller's mounts
+(`BLUEPRINT_CAPACITY_MOUNTS`) plus `/`, each within its own filesystem like
+`du -x`: a directory on another device or listed as a mount point in
+`/proc/self/mountinfo` is skipped, a listed mount nested inside another is walked
+once, and symlinks are never followed. Every inode counts once, in allocated
+bytes. On 2026-09-26 a per-name listing counted about 470 GB on the 165 GB disk,
+because the content stores and the trees built from them share bytes through
+hardlinks. Bytes on the work volume are attributed at the paths the pipeline uses
+(`/mnt/blueprint-work/workspace` → `/workspace`, any other
+`/mnt/blueprint-work/<rel>` → `/var/lib/blueprint/<rel>`). The walk stops after
+3,000,000 entries or 240 s with `status: "truncated"`, and unreadable entries are
+counted. Paths the unit's sandbox hides (`ProtectHome=`, `PrivateTmp=`) are not
+surveyed.
+
+**Class and root.** A path takes the storage class and root of its
+`control_plane_storage_roots` row; a row with `*` segments reports the concrete
+directory it matched. A path under a `container`, or under `/var/lib/blueprint`,
+`/opt/blueprint` or `/workspace`, that no row claims is `unclassified`, rooted at
+the child it lies in. Everything else is `host`, rooted at its first two
+components (`/var/log`, `/usr/lib`).
+
+**Owner.** The first matching rule wins:
+
+| Path | Owner |
+|---|---|
+| `…/pubsub-handoffs/<bucket>/scenes/<scene>/…` | `scene:<scene>` |
+| `…/system-runtimes/<component>/<sha>/…`, `…/task-evaluation-control-plane-releases/<sha>/…` | `release:<sha[:12]>` |
+| `…/content-addressed/…` | `store:<root basename>` |
+| `…/task-evaluation-launch-runs/<id>/…`, `…/task-evaluation-policy-canaries/<id>/…` | `run:<id>` |
+| `…/task-evaluation-scene-intents/<id>/…` | `scene-intent:<id>` |
+| any other classified path | `<root basename>/<first child>`, or `<root basename>` for a file directly under the root |
+| `unclassified` or `host` | the root |
+
+`<id>`, `<scene>` and `<sha>` are directories, and a `<sha>` starts with a 40-hex
+commit; a pointer or marker file beside them keeps the generic owner. An inode with several
+names belongs to the smallest of its names under a `content-addressed` directory,
+else to its smallest name, whatever order the walk met them in.
+
+**Files** in `/var/lib/blueprint/pipeline-control-plane/capacity` (`0755`, so the
+door, which runs as `blueprint`, can reach the public files):
+
+| File | Mode | Holds |
+|---|---|---|
+| `latest.json`, `history.jsonl` | `0600` | the full report, with project spend and provider funding, and its history |
+| `usage-latest.json` | `0644` | the last survey (`control_plane_disk_usage_survey.v1`), with every unclassified root |
+| `summary.json` | `0644` | `control_plane_capacity_summary.v1`, written every tick: level, alerts, mounts, the usage projection and the resize status. It is projected by named keys, so it carries no spend, funding or URLs, and it stays under 128 KiB. |
+
+`latest.json` and `summary.json` carry the same `usage` projection: the survey's
+age and status, its filesystem rows, bytes per class, the top ten roots and
+owners, and the 20 largest unclassified roots. The controller warns with
+`usage_unclassified_root` for each unclassified root over 1 GiB, and with
+`usage_attribution_low` when a filesystem's `attributed_fraction` (surveyed bytes
+over used bytes, capped at 1) is under 0.9. Either warning raises an `ok` report
+to `warning`. A failed survey keeps the last one and names the error
+(`usage_survey_failed:<type>`); it never stops the capacity tick.
+
+**Reading it.** `python3 scripts/operator_door.py usage` prints `capacity.usage`
+from door `status` as tables ([`OPERATOR_DOOR.md`](OPERATOR_DOOR.md)):
+
+- The mount table's `attributed` column is the fraction of the filesystem's used
+  bytes that the survey found. A low value means bytes it could not see: a
+  truncated walk, unreadable or sandbox-hidden paths, or deleted files still held
+  open by a process.
+- The owner table says what to retire. `scene:` workspaces, `run:` evidence
+  (offloadable by the reclaim timer), `release:` trees (retired by deploy) and
+  `store:` blobs (reaped once nothing hardlinks them) each have their own
+  retention rule.
+- An unclassified root is a tree the storage table does not know. Classify it in
+  `control_plane_storage_roots` before any tool may reclaim it.
+
 ## Pins
 
 Producers pin the derived directories they create under
@@ -198,23 +277,40 @@ are reported separately and never invalidate proven resource closure.
 
 `blueprint-control-plane-storage-gc.timer` runs
 `python -m blueprint_pipeline.control_plane_storage_gc run --apply --ack reclaim-control-plane-storage`
-every six hours as the `blueprint` service account and writes
-`/var/lib/blueprint/pipeline-control-plane/storage-gc/latest.json`. One tick:
+hourly (`OnUnitInactiveSec=1h`: an hour after the previous tick finished) as
+`root`, confined by its unit to the roots it may write, and writes
+`/var/lib/blueprint/pipeline-control-plane/storage-gc/latest.json`. One tick runs
+seven phases in order:
 
-1. **Derived directories** under the configured `cache` roots are retired when
+1. **Stranded queue rows**: pending rows bound to a release other than the
+   running one move to `stranded/` beside a receipt, so they stop counting as
+   live queue references. Nothing is deleted.
+2. **Terminal cache pins** whose run is proven closed by archived-run evidence
+   are released. Only the pin ledger changes.
+3. **Derived directories** under the configured `cache` roots are retired when
    no live pin names them, no pending or processing queue message mentions
-   them, and they have been idle for seven days.
-2. **Content-store blobs** whose link count is one (nothing hardlinks them any
+   them, and they have been idle for an hour
+   (`BLUEPRINT_CONTROL_PLANE_GC_DERIVED_MINIMUM_AGE_SECONDS=3600`).
+4. **Content-store blobs** whose link count is one (nothing hardlinks them any
    more), whose bytes still match their digest, and which are older than a day
    are removed. Retiring directories first is what frees blobs.
-3. **Evidence offload** lists sealed run directories (terminal receipt present,
-   idle past the 14-day hot window) under the `evidence_cold` roots. It applies
-   only when `BLUEPRINT_CONTROL_PLANE_EVIDENCE_OFFLOAD=1` is set in
+5. **Evidence offload** lists run directories under the `evidence_cold` roots
+   that are sealed (terminal receipt present) and idle past the two-day hot
+   window (`BLUEPRINT_CONTROL_PLANE_EVIDENCE_HOT_WINDOW_SECONDS=172800`), or that
+   have no receipt and have not changed for three days (abandoned by a superseded
+   or torn-down worker). It applies only when
+   `BLUEPRINT_CONTROL_PLANE_EVIDENCE_OFFLOAD=1` is set in
    `/etc/blueprint/pipeline-control-plane.env`: the directory is packed, published
    to the artifact store under kind `control-plane-evidence` with full readback,
    replaced by `<name>.offloaded.v1.json` (URI, digest, size, per-member digests),
    and only then removed. Bytes are migrated, never deleted; the spend guard and
    every other `evidence_hot` root are outside the tool's reach.
+6. **Scratch directories** idle for three days
+   (`BLUEPRINT_CONTROL_PLANE_GC_SCRATCH_MINIMUM_AGE_SECONDS=259200`) are reaped by
+   age alone: nothing references them.
+7. **Workspace bundles**: the reproducible `bundle/` copy inside a
+   semantic-pretraining workspace that has been idle and unpinned for six hours
+   is removed behind a sealed marker.
 
 Restore an offloaded run with
 `python -c 'from blueprint_pipeline.control_plane_evidence_offload import restore_offloaded_evidence as r; r(pointer_path=..., destination=...)'`;
