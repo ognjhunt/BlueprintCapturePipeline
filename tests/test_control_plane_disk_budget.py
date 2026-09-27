@@ -258,11 +258,16 @@ def test_unreadable_history_falls_back_to_declared(tmp_path):
     assert disk_budget.measured_footprint("launch_activation", reservation_root=ledger)["basis"] == "declared_default"
 
 
-def test_history_is_compacted(tmp_path):
+def test_history_is_compacted_to_its_newest_samples(tmp_path):
     ledger = tmp_path / "ledger"
-    _samples(ledger, "launch_activation", [MIB] * 400)
-    lines = (ledger / "history" / "launch_activation.jsonl").read_text().splitlines()
-    assert len(lines) <= 400 and len(lines) >= disk_budget.HISTORY_MAX_LINES
+    _samples(ledger, "launch_activation", [MIB + index for index in range(400)])
+    path = ledger / "history" / "launch_activation.jsonl"
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    # 400 samples outgrow the 64 KiB threshold, so compaction must have dropped
+    # the oldest and kept a contiguous window of the newest.
+    assert disk_budget.HISTORY_MAX_LINES <= len(rows) < 400
+    assert [row["observed_bytes"] for row in rows] == [MIB + index for index in range(400 - len(rows), 400)]
+    assert path.stat().st_size <= footprints.HISTORY_COMPACTION_BYTES + 1024
 
 
 def test_live_reservations_filter_device_and_dead_pids(tmp_path):
