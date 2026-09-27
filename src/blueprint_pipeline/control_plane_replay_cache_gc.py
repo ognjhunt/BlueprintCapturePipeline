@@ -14,8 +14,10 @@ replay, each with every name the worker linked to it there. It keeps every
 report, including the lookahead report the activation records by path, digest
 and size, and every other file. Until the
 owner sets ``BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_RETENTION=1`` a tick removes
-nothing and reads no byte: it estimates from names, link counts and sizes, and
-only a tick that applies hashes the copies it is about to remove.
+nothing, hashes nothing, reads no copy's bytes and sweeps no process table: it
+estimates from names, link counts and sizes, though it still parses each
+replay's report. Only a tick that applies hashes the copies it is about to
+remove.
 """
 
 from __future__ import annotations

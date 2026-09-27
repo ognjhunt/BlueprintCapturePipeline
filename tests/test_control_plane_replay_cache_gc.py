@@ -109,6 +109,24 @@ def test_replay_cache_phase_plans_by_default_and_applies_only_when_enabled(tmp_p
                  replay_cache_retention_enabled=True)["replay_caches"]["candidate_bytes"] == 0
 
 
+def test_the_phase_waits_an_hour_after_a_replay_closes(tmp_path) -> None:
+    """The phase passes its own one-hour closed gate, not the retention module's one-minute
+    default: a lookahead replay that finished half an hour ago is left alone."""
+
+    parent_root = tmp_path / "scene-configuration-activations"
+    blob, report, _lookahead_report = _activation(parent_root)
+    size = blob.stat().st_size
+    os.utime(report, (NOW - 1800, NOW - 1800))
+
+    assert _tick(tmp_path, parent_root)["replay_caches"]["estimated_candidate_bytes"] == 0
+    enabled = {"apply": True, "ack": RUN_ACK, "replay_cache_retention_enabled": True}
+    assert _tick(tmp_path, parent_root, **enabled)["replay_caches"]["removed_bytes"] == 0
+    assert blob.exists()
+
+    os.utime(report, (NOW - 3601, NOW - 3601))
+    assert _tick(tmp_path, parent_root, **enabled)["replay_caches"]["removed_bytes"] == size
+
+
 def test_plan_only_ticks_never_hash(tmp_path, monkeypatch) -> None:
     """Until the owner opts in, an hourly tick must not read the backlog: hashing every
     candidate copy each hour would reread about 13 GiB on the root disk for nothing. It
