@@ -10,7 +10,9 @@ import pytest
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_policy_canary_dispatcher import (
     _adapter_instance_ids,
+    _record,
     _sealed_provider_zero,
+    process_policy_canary_dispatch_queue,
 )
 from blueprint_pipeline.policy_canary_retained_billing import retained_sparse_billing_gap
 from blueprint_pipeline.vast_official_billing_extractor import (
@@ -109,8 +111,10 @@ def test_late_watchdog_refuses_broken_terminal_lineage(tmp_path: Path, defect: s
         _terminal_evidence(instance_id=52854484, terminal_result_path=result)
 
 
-def test_old_no_query_billing_gap_is_delivery_only(tmp_path: Path) -> None:
-    result, _watchdog = _case(tmp_path)
+def test_old_no_query_billing_gap_is_delivery_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from tests.test_task_evaluation_policy_canary_dispatcher import _inputs
+
+    result, _watchdog = _case(tmp_path / "dispatches" / "activation-1")
     root = result.parent
     for name in (
         "allocator_invocation_started.json", "allocator_invocation_finished.json",
@@ -145,6 +149,35 @@ def test_old_no_query_billing_gap_is_delivery_only(tmp_path: Path) -> None:
             sealed_provider_zero=_sealed_provider_zero,
         )
     assert gate() is True
+    activation_result, setup_path, _activation = _inputs(tmp_path / "inputs")
+    queue = tmp_path / "queue"
+    for name in ("pending", "processing", "completed", "blocked"):
+        (queue / name).mkdir(parents=True)
+    envelope = {
+        "schema_version": "task_evaluation_policy_canary_dispatch_envelope.v1",
+        "activation_id": root.name, "run_kind": "internal_policy_canary",
+        "claim_ceiling": "diagnostic_policy_execution", "source_commit": "a" * 40,
+        "activation_result": _record(activation_result), "maximum_provider_allocations": 1,
+        "retry_cap": 0, "automatic_retry_authorized": False,
+        "provider_mutation_performed": False, "paid_execution_requested": False,
+        "envelope_digest": "",
+    }
+    envelope["envelope_digest"] = canonical_digest(envelope, digest_field="envelope_digest")
+    _write(queue / "blocked" / "activation-1.json", envelope)
+    setup_dir = tmp_path / "setups"
+    _write(setup_dir / "activation-1.json", json.loads(setup_path.read_text()))
+    called = []
+    monkeypatch.setattr(
+        "blueprint_pipeline.task_evaluation_policy_canary_dispatcher.dispatch_policy_canary_activation",
+        lambda **kwargs: called.append(kwargs) or {"status": "awaiting_official_billing", "allocator_invoked": False},
+    )
+    selected = process_policy_canary_dispatch_queue(
+        dispatch_queue_root=queue, execution_setup_root=setup_dir,
+        dispatch_root=root.parent, implementation_commit="b" * 40, execute=True,
+    )
+    assert selected["processed_count"] == 1
+    assert len(called) == 1
+    assert called[0]["retained_delivery_only"] is True
     rows[0]["candidate_policy_queried"] = True
     joined["result_digest"] = canonical_digest(joined, digest_field="result_digest")
     _write(root / "policy_canary_terminal_result.json", joined)

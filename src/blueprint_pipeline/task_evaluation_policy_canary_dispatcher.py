@@ -2341,7 +2341,7 @@ def process_policy_canary_dispatch_queue(
                 if (row.get("source_commit") != implementation_commit
                         and not (output / "dispatch_receipt.json").exists()
                         and (_has_materialized_delivery(output)
-                             or _retained_sparse_terminal_gap(output))):
+                             or _retained_sparse_terminal_gap(output) or _retained_sparse_billing_gap(output, read_json=lambda p,c: _read(p, code=c), sealed_provider_zero=_sealed_provider_zero))):
                     sources.append(path)
             except (OSError, ValueError, TypeError):
                 continue
