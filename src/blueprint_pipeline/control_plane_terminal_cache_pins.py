@@ -11,11 +11,12 @@ release a pin only with the owner's opt-in,
 ``BLUEPRINT_CONTROL_PLANE_GC_EXTENDED_PIN_PROOFS=1``; until then their
 candidates are listed with ``"enabled": false``:
 
-* ``sealed_registry_run``: an activation pin whose every run carries a result
-  registry the artifact store accepts as sealed (delivered completed_unqualified,
-  blocked or cancelled, its closeout receipts intact), idle past the hot
-  window, with no whole-run pointer. Whole-run offload never archives a
-  registry run, so neither original proof could release one.
+* ``sealed_registry_run``: an activation pin whose every run carries its
+  terminal receipt and a result registry the artifact store accepts as sealed
+  (delivered completed_unqualified, blocked or cancelled, its closeout receipts
+  intact), idle past the hot window, with no whole-run pointer. Whole-run
+  offload never archives a registry run, so neither original proof could
+  release one.
 * ``activation_expired_unlaunched``: an activation pin with no run directory
   and no pointer under any of its evidence names in any evidence root, whose
   one sealed result in the activation queue says it was prepared more than a
@@ -216,14 +217,19 @@ def _present(path):
 
 
 def _sealed_registry_run(directory, *, hot_window_seconds, now):
-    """A run whose result registry the artifact store accepts as sealed, the registry idle past the hot window."""
+    """A run with its terminal receipt whose result registry the store accepts as sealed, idle past the hot window.
+
+    Without the receipt the canary dispatcher can still recover a stranded
+    delivery after a deploy, re-reading the activation's launch set.
+    """
 
     if directory.is_symlink() or not directory.is_dir():
         return None, "run_path_unsafe"
+    receipt = _terminal_receipt(directory)
+    if receipt is None:
+        return None, "run_not_sealed"
     if not _has_result_registry(directory):
         # Not this proof's run; the original sealed-cold-run proof reads only the original names.
-        if _terminal_receipt(directory) is None:
-            return None, "run_not_sealed"
         return None, "run_hot" if now - _tree_snapshot(directory)[0] < hot_window_seconds else "run_without_registry"
     from .task_evaluation_result_artifact_store import _sealed_registry
     try:
@@ -238,8 +244,9 @@ def _sealed_registry_run(directory, *, hot_window_seconds, now):
         return None, "registry_unsealed"
     if now - idle_since < hot_window_seconds:
         return None, "registry_hot"
-    return {"kind": "sealed_registry_run", "run_directory": directory.name, "registry_digest": registry["registry_digest"],
-            "delivery_status": delivery["result_status"], "registry_mtime_epoch": idle_since}, None
+    return {"kind": "sealed_registry_run", "run_directory": directory.name, "terminal_receipt": receipt,
+            "registry_digest": registry["registry_digest"], "delivery_status": delivery["result_status"],
+            "registry_mtime_epoch": idle_since}, None
 
 
 def activation_queue_root_of(queue_roots):

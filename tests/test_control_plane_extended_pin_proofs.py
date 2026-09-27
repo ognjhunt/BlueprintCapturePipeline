@@ -248,12 +248,18 @@ def test_existing_proofs_unchanged_without_the_flag(tmp_path, enabled) -> None:
         reconcile_terminal_cache_pins(**other, extended_proofs_enabled=enabled)
 
 
-def _registry_run(evidence: Path, name: str, *, status: str = "completed_unqualified", idle: float = 5 * DAY) -> Path:
-    """A run whose result registry the artifact store accepts as sealed, the registry idle ``idle`` seconds."""
+def _registry_run(evidence: Path, name: str, *, status: str = "completed_unqualified", idle: float = 5 * DAY,
+                  receipt: bool = True) -> Path:
+    """A run whose result registry the artifact store accepts as sealed, the registry idle ``idle`` seconds.
+
+    With ``receipt`` it also carries its terminal launch receipt.
+    """
 
     run = evidence / name
     closeout = run / "closeout"
     closeout.mkdir(parents=True)
+    if receipt:
+        (run / "launch_receipt.json").write_text(json.dumps({"status": status}), encoding="utf-8")
     records, reproducibility = [], {}
     for part in ("billing", "teardown", "provider_zero"):
         data = json.dumps({"part": part, "status": "closed"}).encode()
@@ -314,15 +320,24 @@ def test_sealed_registry_run_releases_its_activation_pin_when_enabled(tmp_path) 
     assert registry.read_bytes() == before and (run / "closeout" / "billing.json").is_file()
 
 
-@pytest.mark.parametrize("reason", ["hot", "tampered", "not_terminal", "closeout_changed", "pointer", "linked"])
+@pytest.mark.parametrize("reason", [
+    "hot", "tampered", "not_terminal", "closeout_changed", "pointer", "linked", "no_receipt"])
 def test_hot_or_invalid_registry_keeps_its_pin(tmp_path, reason) -> None:
+    """A registry run keeps its pin until it is sealed, closed out and cold, with no pointer.
+
+    Without its terminal receipt the canary dispatcher can still recover a
+    stranded delivery after a deploy, and that recovery re-reads the
+    activation's launch set, which the pin keeps.
+    """
+
     args = _args(tmp_path)
     evidence = tmp_path / "evidence"
     if reason == "linked":
         (evidence / "act-x").symlink_to(_registry_run(tmp_path / "elsewhere", "act-x"))
     else:
         run = _registry_run(evidence, "act-x", idle=DAY if reason == "hot" else 5 * DAY,
-                            status="running" if reason == "not_terminal" else "completed_unqualified")
+                            status="running" if reason == "not_terminal" else "completed_unqualified",
+                            receipt=reason != "no_receipt")
         registry = run / "artifacts" / "result_delivery" / "artifact_registry.json"
     if reason == "tampered":
         value = json.loads(registry.read_text(encoding="utf-8"))
@@ -339,7 +354,8 @@ def test_hot_or_invalid_registry_keeps_its_pin(tmp_path, reason) -> None:
 
     assert _kept(result)[("activation", "act-x")] == {
         "hot": "registry_hot", "tampered": "registry_unsealed", "not_terminal": "registry_unsealed",
-        "closeout_changed": "registry_unsealed", "pointer": "run_pointer_present", "linked": "run_path_unsafe"}[reason]
+        "closeout_changed": "registry_unsealed", "pointer": "run_pointer_present", "linked": "run_path_unsafe",
+        "no_receipt": "run_not_sealed"}[reason]
     assert result["candidates"] == [] and _states(args)[("activation", "act-x")] == "live"
 
 

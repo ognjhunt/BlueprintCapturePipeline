@@ -536,9 +536,11 @@ One tick runs nine phases in order:
    past the hot window. Three more list their candidates with
    `"enabled": false` until `BLUEPRINT_CONTROL_PLANE_GC_EXTENDED_PIN_PROOFS=1` in
    the operator environment file lets them release: `sealed_registry_run` (every
-   run under the activation's evidence names carries a result registry the
-   artifact store accepts as sealed, idle past the hot window, with no whole-run
-   pointer), `activation_expired_unlaunched` (no run directory or pointer under
+   run under the activation's evidence names carries its terminal receipt and a
+   result registry the artifact store accepts as sealed, idle past the hot
+   window, with no whole-run pointer; without the receipt the canary dispatcher
+   can still recover a stranded delivery from the launch set),
+   `activation_expired_unlaunched` (no run directory or pointer under
    any of its evidence names in any evidence root, and the activation queue's
    one sealed result for it is in a prepared status and older than 604,800 +
    86,400 seconds: a shared mutation window lives at most a week and launch
