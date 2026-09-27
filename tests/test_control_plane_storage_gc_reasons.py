@@ -40,6 +40,7 @@ def isolated_disk_ledger(tmp_path, monkeypatch):
                         tmp_path / "disk-reservations")
     # No process on this host references anything unless a test says so.
     monkeypatch.setattr(retention, "process_reference", lambda _root, **_kwargs: None)
+    monkeypatch.setattr(retention, "process_reference_index", lambda **_kwargs: lambda _root: False)
 
 
 def _noclass(*_args, **_kwargs) -> None:

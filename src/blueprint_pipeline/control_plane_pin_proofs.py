@@ -12,7 +12,7 @@ import os
 import re
 from pathlib import Path
 
-from .control_plane_evidence_offload import POINTER_SUFFIX, _has_result_registry, _terminal_receipt, _tree_snapshot
+from .control_plane_evidence_offload import POINTER_SUFFIX, _has_result_registry, _terminal_receipt
 from .control_plane_storage_pins import depends_on
 from .control_plane_storage_references import QueueReferenceUnreadable, queue_reference_text
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
@@ -237,8 +237,9 @@ def _sealed_registry_run(directory, *, hot_window_seconds, now):
     if receipt is None:
         return None, "run_not_sealed"
     if not _has_result_registry(directory):
-        # Not this proof's run; the original sealed-cold-run proof reads only the original names.
-        return None, "run_hot" if now - _tree_snapshot(directory)[0] < hot_window_seconds else "run_without_registry"
+        # Not this proof's run. Which keep reason fits is judged by the receipt's age, not a walk of the tree.
+        sealed_at = (directory / receipt).lstat().st_mtime
+        return None, "run_hot" if now - sealed_at < hot_window_seconds else "run_without_registry"
     from .task_evaluation_result_artifact_store import _sealed_registry
     try:
         registry, registry_path, _raw = _sealed_registry(directory.resolve())
@@ -257,7 +258,7 @@ def _sealed_registry_run(directory, *, hot_window_seconds, now):
             "registry_mtime_epoch": idle_since}, None
 
 
-def _expired_unlaunched(owner, activation_queue_root, *, now, standing_authorization_dir=None, launch_queue_root=None):
+def _expired_unlaunched(owner, activation_queue_root, *, now, standing_authorization_dir=None, launch_queue=None):
     """A prepared profile-authority activation whose windows have lapsed, with positive evidence it never launched.
 
     The caller found no run of it, but a launch id the WebApp or an operator chose
@@ -316,7 +317,7 @@ def _expired_unlaunched(owner, activation_queue_root, *, now, standing_authoriza
     if now - expires < LAPSE_GRACE_SECONDS:
         return None, "activation_authorization_not_lapsed"
     reason = _authorization_consumption(profile_id, standing_authorization_dir) or _launch_requested(
-        launch_queue_root, (owner, profile_id))
+        launch_queue, (owner, profile_id))
     if reason is not None:
         return None, reason
     return {"kind": "activation_expired_unlaunched", "result_name": path.name, "result_digest": value["result_digest"],
@@ -354,23 +355,42 @@ def _authorization_consumption(profile_id, standing_authorization_dir):
     return None
 
 
-def _launch_requested(launch_queue_root, names):
-    """Whether a launch queue row, in any state, names the activation or its profile; None when none does.
+def launch_queue_snapshot(launch_queue_root):
+    """The launch queue, read once however many activations ask: call it for ``(text, None)`` or ``(None, reason)``.
 
-    Every row in every state directory of the launch queue is read with the
-    strict queue reader, twice, so a row renamed between states mid-read is
-    seen. A linked, oversized or unreadable row or state proves nothing.
+    Every row in every state directory is read with the strict queue reader,
+    twice, so a row renamed between states mid-read is seen. A linked,
+    oversized or unreadable row or state proves nothing (``queue_unreadable``).
     """
 
+    taken = []
+
+    def snapshot():
+        if not taken:
+            taken.append(_read_launch_queue(launch_queue_root))
+        return taken[0]
+
+    return snapshot
+
+
+def _read_launch_queue(launch_queue_root):
     if launch_queue_root is None:
-        return "launch_queue_unconfigured"
+        return None, "launch_queue_unconfigured"
     root = Path(launch_queue_root)
     if root.is_symlink() or not root.is_dir():
-        return "launch_queue_unavailable"
+        return None, "launch_queue_unavailable"
     try:
-        text = "\n".join(queue_reference_text([root], states=None, strict=True) for _read_pass in range(2))
+        return "\n".join(queue_reference_text([root], states=None, strict=True) for _read_pass in range(2)), None
     except QueueReferenceUnreadable:
-        return "queue_unreadable"
+        return None, "queue_unreadable"
+
+
+def _launch_requested(launch_queue, names):
+    """Whether a launch queue row, in any state, names the activation or its profile; None when none does."""
+
+    text, reason = launch_queue()
+    if reason is not None:
+        return reason
     return "activation_launch_requested" if any(name in text for name in names) else None
 
 
@@ -400,7 +420,7 @@ def _authorization_expiry(owner, envelope_path):
 
 
 def _activation_proof(pin, live_pins, *, evidence_roots, activation_queue_root, hot_window_seconds, classifier, now,
-                      standing_authorization_dir=None, launch_queue_root=None, **_context):
+                      standing_authorization_dir=None, launch_queue_root=None, launch_queue=None, **_context):
     """Every run under the activation's evidence names is a sealed registry run, or it never launched.
 
     Any whole-run pointer keeps the pin: the archived-run proof already declined
@@ -434,7 +454,7 @@ def _activation_proof(pin, live_pins, *, evidence_roots, activation_queue_root, 
     if not runs:
         proof, reason = _expired_unlaunched(pin["owner_id"], activation_queue_root, now=now,
                                             standing_authorization_dir=standing_authorization_dir,
-                                            launch_queue_root=launch_queue_root)
+                                            launch_queue=launch_queue or launch_queue_snapshot(launch_queue_root))
         if proof is None:
             return None, reason
     for run in runs:
@@ -478,5 +498,6 @@ __all__ = [
     "activation_queue_root_of",
     "extended_proof",
     "launch_queue_root_of",
+    "launch_queue_snapshot",
     "preparation_queue_root_of",
 ]

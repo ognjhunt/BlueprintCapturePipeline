@@ -188,6 +188,33 @@ def test_a_process_that_exited_mid_sweep_is_not_unreadable(tmp_path, monkeypatch
     assert gc.active_reference(child, process_root=proc) is False
 
 
+def test_one_sweep_answers_for_many_roots_as_active_reference_does(tmp_path, monkeypatch):
+    """The terminal pin pass checks every path of every candidate's closure: one sweep of the
+    process table answers for all of them exactly as a sweep per path would."""
+    root, child, data, proc = setup(tmp_path)
+    others = [tmp_path / name for name in ("named-in-cmdline", "open-descriptor", "untouched")]
+    reader = proc / "301"
+    (reader / "fd").mkdir(parents=True)
+    (reader / "cmdline").write_bytes(str(others[0]).encode())
+    (reader / "environ").write_bytes(b"")
+    (reader / "fd" / "5").symlink_to(others[1] / "frame.bin")
+    sweeps = []
+    real_iterdir = Path.iterdir
+    monkeypatch.setattr(Path, "iterdir", lambda self: (sweeps.append(self) if self == proc else None) or real_iterdir(self))
+
+    index = gc.process_reference_index(process_root=proc)
+
+    assert [index(path) for path in (child, *others)] == [
+        gc.active_reference(path, process_root=proc) for path in (child, *others)] == [False, True, True, False]
+    assert len(sweeps) == 1 + 4, "the index swept once; each active_reference sweeps again"
+    # An entry the sweep cannot read protects every root, as active_reference does.
+    _refuse_reading(monkeypatch, reader / "environ", PermissionError(errno.EACCES, "Permission denied"))
+    unreadable = gc.process_reference_index(process_root=proc)
+    assert unreadable(others[2]) is True and gc.active_reference(others[2], process_root=proc) is True
+    with pytest.raises(ValueError, match="process_inventory_unavailable"):
+        gc.process_reference_index(process_root=tmp_path / "absent-proc")
+
+
 def test_an_unlistable_process_table_protects(tmp_path, monkeypatch):
     """A /proc that refuses its own listing proves nothing is unreferenced."""
     root, child, data, proc = setup(tmp_path)

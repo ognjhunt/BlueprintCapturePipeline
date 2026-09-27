@@ -69,11 +69,12 @@ from pathlib import Path
 
 from .control_plane_pin_proofs import (
     MINIMUM_PIN_AGE_SECONDS, _evidence_names, _pin_path_allowed, _present, _read, extended_proof,
+    launch_queue_snapshot,
 )
 from .control_plane_storage_pins import depends_on, load_storage_pins, release_storage_pin, storage_pin_guard
 from .control_plane_storage_references import QueueReferenceUnreadable, queue_reference_text
 from .decision_evidence_contracts import canonical_digest
-from .completed_replay_cache_retention import active_reference
+from . import completed_replay_cache_retention as retention
 from .control_plane_evidence_offload import (
     DEFAULT_HOT_WINDOW_SECONDS, POINTER_SUFFIX, _has_result_registry, _terminal_receipt, _tree_snapshot,
 )
@@ -204,6 +205,25 @@ def _closure(identity, pins):
     return closure
 
 
+def _process_checker(reference_checker):
+    """``reference_checker`` as given, or one sweep of the process table, taken when first asked and reused.
+
+    A pass checks every path of every candidate's closure; one sweep answers for
+    all of them as a sweep per path would (``process_reference_index``).
+    """
+
+    if reference_checker is not None:
+        return reference_checker
+    swept = []
+
+    def checker(path):
+        if not swept:
+            swept.append(retention.process_reference_index())
+        return swept[0](path)
+
+    return checker
+
+
 def _referenced(closure, queue_text, reference_checker):
     return any(p["owner_id"] in queue_text or any(reference_checker(Path(path)) for path in p["paths"])
                for p in closure.values())
@@ -220,7 +240,7 @@ def _closure_reason(identity, closure, pins, queue_text, reference_checker):
 
 
 def reconcile_terminal_cache_pins(*, pins_root, queue_roots, evidence_roots, now, apply=False,
-                                  reference_checker=active_reference, classifier=require_storage_class,
+                                  reference_checker=None, classifier=require_storage_class,
                                   hot_window_seconds=DEFAULT_HOT_WINDOW_SECONDS, extended_proofs_enabled=False,
                                   activation_queue_root=None, preparation_queue_root=None, running_commit="",
                                   launch_queue_root=None, standing_authorization_dir=None):
@@ -235,6 +255,9 @@ def reconcile_terminal_cache_pins(*, pins_root, queue_roots, evidence_roots, now
     (``launch_queue_root_of(queue_roots)``) and ``standing_authorization_dir``, where
     launch admission records consumed authorizations, hold the evidence of a launch
     under any id; without them an unlaunched activation is kept.
+    ``reference_checker`` answers whether a process still reads a path; by
+    default planning sweeps the process table once, and each release sweeps it
+    again. The launch queue is read once for planning and once for the releases.
     Each candidate carries its ``proof`` and whether it is ``enabled``, each kept
     pin a typed ``reason`` (and ``error_type`` for ``proof_error``), and
     ``released_count_by_kind`` counts every pin a release receipt lists, its
@@ -247,10 +270,14 @@ def reconcile_terminal_cache_pins(*, pins_root, queue_roots, evidence_roots, now
     pins = _live_pins(pins_root, now)
     queue_text = queue_reference_text(queue_roots)
     live_queue_text, queue_unreadable = _live_queue_text(queue_roots)
+    planning_checker = _process_checker(reference_checker)
     context = {"classifier": classifier, "now": now, "evidence_roots": evidence_roots,
                "hot_window_seconds": hot_window_seconds, "activation_queue_root": activation_queue_root,
                "preparation_queue_root": preparation_queue_root, "running_commit": running_commit,
-               "launch_queue_root": launch_queue_root, "standing_authorization_dir": standing_authorization_dir}
+               "launch_queue_root": launch_queue_root, "standing_authorization_dir": standing_authorization_dir,
+               "launch_queue": launch_queue_snapshot(launch_queue_root)}
+    # The releases re-derive their proofs against a launch queue read again, once, after planning.
+    edge_context = {**context, "launch_queue": launch_queue_snapshot(launch_queue_root)}
     candidates, kept, released = [], [], []
     for identity, pin in pins.items():
         row = {"kind": pin["kind"], "owner_id": pin["owner_id"]}
@@ -264,7 +291,7 @@ def reconcile_terminal_cache_pins(*, pins_root, queue_roots, evidence_roots, now
                 _pin_path_allowed(classifier, path)
             # Check the entire dependency closure before releasing a parent pin.
             closure = _closure(identity, pins)
-            reason = _closure_reason(identity, closure, pins, queue_text, reference_checker)
+            reason = _closure_reason(identity, closure, pins, queue_text, planning_checker)
         else:
             proof, reason, error = _derive(pin, pins, context)
             if proof is not None and queue_unreadable is not None:
@@ -272,7 +299,7 @@ def reconcile_terminal_cache_pins(*, pins_root, queue_roots, evidence_roots, now
             elif proof is not None:
                 try:
                     closure = _closure(identity, pins)
-                    reason = _closure_reason(identity, closure, pins, live_queue_text, reference_checker)
+                    reason = _closure_reason(identity, closure, pins, live_queue_text, planning_checker)
                 except Exception as exc:  # noqa: BLE001 - an extended candidate never costs the original proofs
                     reason, error = "proof_error", type(exc).__name__
             if error is not None:
@@ -289,25 +316,29 @@ def reconcile_terminal_cache_pins(*, pins_root, queue_roots, evidence_roots, now
             # Re-read live queue references and the proof at the mutation edge.
             fresh = queue_reference_text(queue_roots)
             if (proof != _closed_proof(pin, evidence_roots, hot_window_seconds=hot_window_seconds, now=now)
-                    or _referenced(closure, fresh, reference_checker)):
+                    or _referenced(closure, fresh, _process_checker(reference_checker))):
                 kept.append({**candidate, "reason": "reference_changed"})
                 continue
             released.append(release_storage_pin(pins_root=pins_root, kind=pin["kind"],
                                                  owner_id=pin["owner_id"], now=lambda: now))
             continue
-        # An extended proof is re-derived under the lock producers hold to publish a pin,
-        # reading queue rows before the ledger: the stale-pin proof rests on the ledger,
-        # and a consumer arriving meanwhile shows up in one or the other. A failure here
-        # keeps this pin, with its error type, and costs no other.
+        # An extended proof is re-derived before the release: queue rows first, then the
+        # ledger, the proof and a fresh sweep of the processes, all outside the pin lock, which
+        # blocks every producer. Under the lock only the ledger is re-read, so a pin a
+        # consumer published meanwhile shows up there if its queue row no longer did. A
+        # failure keeps this pin, with its error type, and costs no other.
         try:
+            fresh, fresh_unreadable = _live_queue_text(queue_roots)
+            if fresh_unreadable is not None:
+                kept.append({**candidate, "reason": fresh_unreadable})
+                continue
+            if (proof != _derive(pin, _live_pins(pins_root, now), edge_context)[0]
+                    or _referenced(closure, fresh, _process_checker(reference_checker))):
+                kept.append({**candidate, "reason": "reference_changed"})
+                continue
             with storage_pin_guard(pins_root, exclusive=True):
-                fresh, fresh_unreadable = _live_queue_text(queue_roots)
-                if fresh_unreadable is not None:
-                    kept.append({**candidate, "reason": fresh_unreadable})
-                    continue
-                if (proof != _derive(pin, _live_pins(pins_root, now), context)[0]
-                        or _referenced(closure, fresh, reference_checker)):
-                    kept.append({**candidate, "reason": "reference_changed"})
+                if any(depends_on(other, *identity) for other in _live_pins(pins_root, now).values()):
+                    kept.append({**candidate, "reason": "depended_on"})
                     continue
                 released.append(release_storage_pin(pins_root=pins_root, kind=pin["kind"],
                                                      owner_id=pin["owner_id"], now=lambda: now))

@@ -1200,6 +1200,101 @@ def test_a_pin_released_with_its_dependent_is_not_reported_as_kept(tmp_path) -> 
     assert result["kept"] == [] and result["retained_counts"] == {}
 
 
+def test_the_pin_lock_covers_only_the_ledger_recheck_and_the_release(tmp_path, monkeypatch) -> None:
+    """Code review of 10c: the exclusive pin lock, which blocks every producer, was held across queue reads,
+    the proof's re-derivation and /proc scans. Those now run first; the lock covers a quick re-read of the
+    ledger and the release."""
+
+    from contextlib import contextmanager
+
+    args = _args(tmp_path)
+    _prepared(_preparation_queue(tmp_path, args), "prep-x")
+    _pin(args, "preparation", "prep-x", age=LAPSE + DAY)
+    inside = {"lock": False}
+    seen: list[tuple[str, bool]] = []
+    real_guard, real_queue, real_proof, real_ledger = (
+        terminal_pins.storage_pin_guard, terminal_pins.queue_reference_text, terminal_pins.extended_proof,
+        terminal_pins._live_pins)
+
+    @contextmanager
+    def guard(pins_root, *, exclusive):
+        with real_guard(pins_root, exclusive=exclusive):
+            inside["lock"] = True
+            try:
+                yield
+            finally:
+                inside["lock"] = False
+
+    def recorded(name, call):
+        def wrapper(*args, **kwargs):
+            seen.append((name, inside["lock"]))
+            return call(*args, **kwargs)
+        return wrapper
+
+    monkeypatch.setattr(terminal_pins, "storage_pin_guard", guard)
+    monkeypatch.setattr(terminal_pins, "queue_reference_text", recorded("queue", real_queue))
+    monkeypatch.setattr(terminal_pins, "extended_proof", recorded("proof", real_proof))
+    monkeypatch.setattr(terminal_pins, "_live_pins", recorded("ledger", real_ledger))
+    args["reference_checker"] = recorded("process", lambda _path: False)
+
+    result = reconcile_terminal_cache_pins(**args, apply=True, extended_proofs_enabled=True)
+
+    assert result["released_count"] == 1
+    assert {name for name, locked in seen if locked} == {"ledger"}
+    assert {name for name, locked in seen if not locked} == {"queue", "proof", "process", "ledger"}
+
+
+def test_each_pass_reads_the_launch_queue_and_the_process_table_once(tmp_path, monkeypatch) -> None:
+    """Code review of 10c measured 11.2 s to read 3,000 launch rows, and the rows grow forever: each
+    unlaunched activation read them all again. Planning now reads one snapshot and the mutation edge
+    another; the process table is swept once for planning and once per release."""
+
+    from blueprint_pipeline import completed_replay_cache_retention as retention
+    from blueprint_pipeline import control_plane_storage_references as references
+
+    args = _args(tmp_path)
+    queue = _activation_queue(tmp_path, args)
+    owners = ("act-a", "act-b", "act-c")
+    for owner in owners:
+        _activation_result(queue, owner)
+        _pin(args, "activation", owner, age=LAPSE + DAY)
+    _launch_row(args, "completed", "launch-1", launch_profile_id="profile-other")
+    launch_reads, sweeps = [], []
+    real_reader = references.queue_reference_text
+    monkeypatch.setattr(pin_proofs, "queue_reference_text", lambda roots, states=references.QUEUE_STATES, **kwargs: (
+        launch_reads.append(tuple(roots)) or real_reader(roots, states, **kwargs)))
+    monkeypatch.setattr(retention, "process_reference_index", lambda **_kwargs: sweeps.append(1) or (lambda _p: False))
+    del args["reference_checker"]
+
+    result = reconcile_terminal_cache_pins(**args, apply=True, extended_proofs_enabled=True)
+
+    assert result["released_count_by_kind"] == {"activation": 3}
+    # Two snapshots, each read twice so a row moving between states mid-read is seen.
+    assert len(launch_reads) == 4
+    assert len(sweeps) == 1 + len(owners)
+
+
+@pytest.mark.parametrize("receipt_age", ["fresh", "old"])
+def test_a_run_without_registry_is_judged_by_its_receipt_not_its_tree(tmp_path, receipt_age) -> None:
+    """Choosing between two keep reasons walked the whole run tree; the receipt's age now decides it."""
+
+    args = _args(tmp_path)
+    run = tmp_path / "evidence" / "run-h-controls-launch"
+    (run / "episodes").mkdir(parents=True)
+    (run / "launch_receipt.json").write_text(json.dumps({"status": "completed"}), encoding="utf-8")
+    sealed = NOW - (3600 if receipt_age == "fresh" else 5 * DAY)
+    os.utime(run / "launch_receipt.json", (sealed, sealed))
+    # A file written after the receipt would have made the tree look hot.
+    (run / "episodes" / "late.bin").write_bytes(b"x")
+    os.utime(run / "episodes" / "late.bin", (NOW - 60, NOW - 60))
+    _pin(args, "activation", "run-h-controls", age=7 * DAY)
+
+    result = reconcile_terminal_cache_pins(**args, apply=True, extended_proofs_enabled=True)
+
+    assert _kept(result) == {("activation", "run-h-controls"): {
+        "fresh": "run_hot", "old": "run_without_registry"}[receipt_age]}
+
+
 def test_prepared_statuses_are_exactly_those_the_activation_worker_writes() -> None:
     """The proof reads the worker's result, so its schema and prepared statuses must stay the worker's own."""
 
@@ -1308,6 +1403,7 @@ def test_the_command_line_reads_the_extended_pin_proofs_opt_in(tmp_path, monkeyp
 def test_a_tick_passes_the_opt_in_and_the_activation_queue_to_the_pin_pass(tmp_path, monkeypatch) -> None:
     # No process on this host references anything.
     monkeypatch.setattr(retention, "process_reference", lambda _root, **_kwargs: None)
+    monkeypatch.setattr(retention, "process_reference_index", lambda **_kwargs: lambda _root: False)
     args = _args(tmp_path)
     queue = _activation_queue(tmp_path, args)
     _prepared(_preparation_queue(tmp_path, args), "prep-stale")
