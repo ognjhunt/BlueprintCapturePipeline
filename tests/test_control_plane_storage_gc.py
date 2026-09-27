@@ -449,6 +449,60 @@ def test_run_offloads_sealed_evidence_only_when_enabled(tmp_path, monkeypatch) -
     assert client.upload_count == 1
 
 
+def test_applied_receipts_carry_retained_reasons(tmp_path) -> None:
+    """2026-09-27: the applied tick's receipts dropped the manifests' retained counts, so a
+    tick that removed nothing reported nothing about what it kept."""
+
+    now, day = 40_000_000.0, 86400
+
+    def tree(path: Path, size: int, *, age: float, receipt: bool = False) -> Path:
+        path.mkdir(parents=True)
+        (path / "payload.bin").write_bytes(b"p" * size)
+        if receipt:
+            (path / "dispatch_receipt.json").write_text("{}", encoding="utf-8")
+        for item in (*path.iterdir(), path):
+            os.utime(item, (now - age, now - age))
+        return path
+
+    derived = tmp_path / "prepared-references"
+    tree(derived / "prep-idle", 100, age=10 * day)
+    pinned = tree(derived / "prep-pinned", 200, age=10 * day)
+    tree(derived / "prep-young", 300, age=60)
+    evidence = tmp_path / "launch-runs"
+    tree(evidence / "run-cold", 1000, age=30 * day, receipt=True)
+    tree(evidence / "run-hot", 2000, age=day, receipt=True)
+    tree(evidence / "run-queued", 3000, age=30 * day, receipt=True)
+    pins = tmp_path / "pins"
+    write_storage_pin(pins_root=pins, kind="preparation", owner_id="prep-pinned", paths=[pinned], now=lambda: now)
+    queue = tmp_path / "queue"
+    (queue / "pending").mkdir(parents=True)
+    (queue / "pending" / "row.json").write_text(json.dumps({"run": "run-queued"}), encoding="utf-8")
+    common = dict(content_store_roots=[], derived_roots=[derived], queue_roots=[queue], pins_root=pins,
+                  evidence_roots=[evidence], hot_window_seconds=2 * day, derived_minimum_age_seconds=day,
+                  now=lambda: now, classifier=_noclass)
+
+    planned = run_storage_gc(**common)
+    applied = run_storage_gc(**common, apply=True, ack=RUN_ACK, offload_enabled=True, publisher=functools.partial(
+        store.publish_configured_scene_artifact, client=_ContentAddressedClient(), bucket="blueprint-production-inputs"))
+
+    derived_receipt, evidence_receipt = applied["derived_directories"], applied["evidence_offload"]
+    assert (derived_receipt["status"], derived_receipt["removed_count"]) == ("applied", 1)
+    assert derived_receipt["retained_by_reason"] == planned["derived_directories"]["retained_by_reason"] == {
+        "pinned": {"count": 1, "bytes": 200, "by_kind": {"preparation": {"count": 1, "bytes": 200}}},
+        "young": {"count": 1, "bytes": 300},
+    }
+    assert (derived_receipt["candidate_count"], derived_receipt["candidate_bytes"]) == (1, 100)
+    assert (evidence_receipt["status"], evidence_receipt["offloaded_count"]) == ("applied", 1)
+    assert evidence_receipt["retained_by_reason"] == planned["evidence_offload"]["retained_by_reason"] == {
+        "hot": {"count": 1, "bytes": 2002},
+        "protected_queue": {"count": 1, "bytes": 3002},
+    }
+    assert (evidence_receipt["candidate_count"], evidence_receipt["candidate_bytes"]) == (1, 1002)
+    # The receipts stay digest-bound with the new fields inside.
+    for receipt in (derived_receipt, evidence_receipt):
+        assert receipt["result_digest"] == gc_module.canonical_digest(receipt, digest_field="result_digest")
+
+
 def test_run_cli_reads_roots_from_the_unit_environment(tmp_path, monkeypatch, capsys) -> None:
     root = tmp_path / "prepared-references"
     cas = root / "content-addressed" / "sha256"

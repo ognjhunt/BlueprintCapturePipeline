@@ -510,6 +510,11 @@ def apply_evidence_offload(
         "schema_version": RECEIPT_SCHEMA_VERSION,
         "status": "applied",
         "source_manifest_digest": manifest["manifest_digest"],
+        # What the verified manifest planned and why it kept the rest (None for a
+        # manifest built before it named its reasons).
+        "candidate_count": manifest.get("candidate_count"),
+        "candidate_bytes": manifest.get("candidate_bytes"),
+        "retained_by_reason": manifest.get("retained_by_reason"),
         "offloaded_count": len(offloaded),
         "offloaded_bytes": sum(row["size_bytes"] for row in offloaded),
         "offloaded": offloaded,

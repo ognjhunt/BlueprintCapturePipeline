@@ -131,6 +131,7 @@ def test_unreadable_process_inventory_protects_with_a_reason(tmp_path, monkeypat
         store.publish_configured_scene_artifact, client=_ContentAddressedClient(), bucket="blueprint-production-inputs"))
     assert "phase_errors" not in applied
     assert applied["evidence_offload"]["offloaded_count"] == 0
+    assert applied["evidence_offload"]["retained_by_reason"] == planned["evidence_offload"]["retained_by_reason"]
     assert run.is_dir() and (run / "frames.bin").stat().st_size == 5000
 
 
