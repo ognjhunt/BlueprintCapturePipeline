@@ -1090,11 +1090,13 @@ def retire_scene_workspaces(
     process_checker: Callable[[Path], bool] | None = None,
     max_retirements: int = DEFAULT_MAX_SCENE_RETIREMENTS,
 ) -> dict[str, Any]:
-    """Plan every scene workspace; apply at most ``max_retirements`` per tick when enabled.
+    """Plan every scene workspace; attempt at most ``max_retirements`` retirements per tick when enabled.
 
-    The reference index (registrations and intents) is read once per root for the
-    plans; each retirement re-reads it under the capture locks. One scene's
-    failure is recorded on its row and never stops the others.
+    The bound counts attempts, not successes: each one can publish a large archive,
+    so a failing publisher costs at most that many uploads per tick. The reference
+    index (registrations and intents) is read once per root for the plans; each
+    retirement re-reads it under the capture locks. One scene's failure is recorded
+    on its row and never stops the others.
     """
 
     from .website_scene_workspace_retention import (
@@ -1112,6 +1114,7 @@ def retire_scene_workspaces(
         "status": "applied" if applying else "dry_run",
         "enabled": bool(enabled),
         "candidate_count": 0,
+        "attempted_count": 0,
         "retired_count": 0,
         "retired_bytes": 0,
         "archive_bytes": 0,
@@ -1149,11 +1152,12 @@ def retire_scene_workspaces(
                     rows.append({**row, "status": "retained", "reasons": plan["reasons"][:5]})
                     continue
                 report["candidate_count"] += 1
-                if not applying or report["retired_count"] >= max_retirements:
+                if not applying or report["attempted_count"] >= max_retirements:
                     rows.append({**row, "status": "retirable",
                                  "workspace_allocated_bytes": plan["totals"]["workspace_allocated_bytes"],
                                  "archive_bytes": plan["totals"]["archive_bytes"]})
                     continue
+                report["attempted_count"] += 1
                 outcome = apply_scene_workspace_retirement(
                     plan, context=context, ack=RETIRE_ACK, cloud=cloud, now=observed_at,
                     stream_publisher=stream_publisher, process_checker=process_checker)

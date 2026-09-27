@@ -1111,3 +1111,33 @@ def test_each_tick_first_finishes_removals_a_crash_left_behind(tmp_path) -> None
 
     assert not leftover.exists()
     assert phase["retiring_removed_count"] == 1 and phase["retiring_kept_without_receipt"] == []
+
+
+def test_the_tick_bounds_retirement_attempts_not_only_successes(tmp_path, monkeypatch) -> None:
+    """Each attempt can publish a large archive, so a failing publisher must not be retried per scene."""
+
+    from blueprint_pipeline import website_scene_workspace_retention as retention
+
+    attempts: list[str] = []
+    monkeypatch.setattr(retention, "scene_workspaces",
+                        lambda root: [("bucket", f"scene-{index}", root / f"scene-{index}") for index in range(3)])
+    monkeypatch.setattr(retention, "sweep_retiring_workspaces",
+                        lambda root, apply=True: {"removed" if apply else "removable": [], "kept_without_receipt": []})
+    monkeypatch.setattr(retention, "build_reference_index", lambda context, now: None)
+    monkeypatch.setattr(retention, "plan_scene_workspace_retirement", lambda **kwargs: {
+        "status": "retirable", "reasons": [], "scene_id": kwargs["scene_id"],
+        "totals": {"workspace_allocated_bytes": 10, "archive_bytes": 5}})
+
+    def failing_apply(plan, **_kwargs):
+        attempts.append(plan["scene_id"])
+        return {"status": "skipped", "reason": "archive_readback_failed"}
+
+    monkeypatch.setattr(retention, "apply_scene_workspace_retirement", failing_apply)
+
+    report = gc_module.retire_scene_workspaces(
+        storage_roots=[tmp_path], context_factory=lambda root: SimpleNamespace(storage_root=root), apply=True,
+        enabled=True, now=1.0, cloud_factory=lambda: None, max_retirements=2)
+
+    assert attempts == ["scene-0", "scene-1"]
+    assert (report["attempted_count"], report["retired_count"], report["candidate_count"]) == (2, 0, 3)
+    assert [row["status"] for row in report["results"]] == ["skipped", "skipped", "retirable"]
