@@ -103,6 +103,10 @@ def _answer(binding, *, hinge="bottom"):
     return {"hinge_edge": hinge, "task_part_components": sorted(MOVING & visible), "frames": frames}
 
 
+def _no_brand(binding):
+    return {"frames": [{"frame_id": row["frame_id"], "label_text": []} for row in binding["images"]]}
+
+
 def _context():
     value = {"schema_version": "website_site_task_context.v1", "request_id": "req", "scene_id": "scene",
              "capture_id": "capture", "confirmed": True,
@@ -117,10 +121,14 @@ def model(monkeypatch):
     calls = []
     real = receipts.retained_gemini_call
     monkeypatch.setattr(receipts, "reserve_website_preparation_spend", lambda **_: ({"status": "admitted"}, object()))
-    state = {"answer": _answer}
+    # The focused brand read is its own retained call, counted apart from the classifier batches.
+    state = {"answer": _answer, "brand": _no_brand, "brand_calls": []}
 
     def retained(**kwargs):
         def invoke():
+            if kwargs["binding"]["kind"] == "website_assembly_brand_read":
+                state["brand_calls"].append(kwargs["binding"])
+                return {"brand_read": state["brand"](kwargs["binding"])}
             calls.append(kwargs["binding"])
             return {"classification": state["answer"](kwargs["binding"])}
         return real(**{**kwargs, "preflight": lambda: None, "invoke": invoke})
@@ -188,6 +196,101 @@ def test_views_cover_every_part_and_state_within_the_cap_and_restart_is_free(tmp
     # Retained receipts: a restart buys nothing and reproduces the record.
     assert _run(tmp_path, target, geometry, registry=_registry(600)) == record
     assert len(calls) == math.ceil(len(ids) / coverage.CLASSIFY_BATCH)
+
+
+def _unread(binding):
+    """The 2026-09-27 incident: the batch classifier reads no label text anywhere."""
+    return {**_answer(binding), "frames": [{**row, "label_text": []} for row in _answer(binding)["frames"]]}
+
+
+def test_focused_brand_read_recovers_a_wordmark_the_batch_classifier_missed(tmp_path, model):
+    from blueprint_pipeline.website_object_spec_research import identify_object
+    calls, state = model
+    state["answer"] = _unread
+    state["brand"] = lambda binding: {"frames": [
+        {"frame_id": row["frame_id"], "label_text": ["Whirlpool", "FAN DRYING TECHNOLOGY"]}
+        for row in binding["images"]]}
+    geometry, track = _source_geometry(tmp_path / "geometry")
+    target = _target(track)
+    record = _run(tmp_path, target, geometry)
+    assert record["status"] == "complete", record["blockers"]
+    # One bounded request on closed-state views of the face: every front view (the control strip
+    # shows) first, then the closed oblique; never an open or interior view.
+    (brand,) = state["brand_calls"]
+    ids = [row["frame_id"] for row in brand["images"]]
+    assert len(ids) == coverage.BRAND_READ_FRAMES and ids[:3] == [f"decoded-{i:09d}" for i in (0, 15, 30)]
+    assert 80 <= int(ids[3][8:]) < 100  # closed left_oblique
+    assert brand["model"] == coverage.CLASSIFIER_MODEL and brand["revision"] == coverage.BRAND_READ_REVISION
+    assert "serial number" in brand["prompt"] and "stylized" in brand["prompt"]
+    for row in brand["images"]:
+        # Full resolution crop of the subject box (cols 20-40, rows 12-30) with its margin.
+        left, top, right, bottom = row["crop_box_xyxy"]
+        assert left <= 20 and top <= 12 and right >= 40 and bottom >= 30 and right - left < WIDTH
+    readings = {row["frame_id"]: row for row in record["label_readings"]}
+    assert set(readings) == set(ids)
+    assert all(row["label_text"] == ["Whirlpool", "FAN DRYING TECHNOLOGY"]
+               and row["label_text_by_pass"] == {"focused_brand_read": ["Whirlpool", "FAN DRYING TECHNOLOGY"]}
+               and Path(row["path"]).is_file() for row in readings.values())
+    assert record["brand_read"]["status"] == "read" and record["brand_read"]["receipt"]["binding_digest"]
+    identity = identify_object(task_context=_context(), coverage=record, category="dishwasher")
+    assert identity["basis"] == "label_read" and identity["specificity"] == "brand_only"
+    assert {row["text"] for row in identity["label_reads"]} == {"Whirlpool", "FAN DRYING TECHNOLOGY"}
+    # Retained: a restart buys neither pass again.
+    before = len(calls)
+    assert _run(tmp_path, target, geometry) == record
+    assert len(state["brand_calls"]) == 1 and len(calls) == before
+
+
+def test_both_passes_merge_verbatim_with_their_provenance(tmp_path, model):
+    _, state = model
+    state["brand"] = lambda binding: {"frames": [{"frame_id": row["frame_id"], "label_text": ["Bosch", "BOSCH"]}
+                                                 for row in binding["images"]]}
+    geometry, track = _source_geometry(tmp_path / "geometry")
+    record = _run(tmp_path, _target(track), geometry)
+    focused = {row["frame_id"] for row in state["brand_calls"][0]["images"]}
+    rows = {row["frame_id"]: row for row in record["label_readings"]}
+    for frame_id, row in rows.items():
+        read = int(frame_id[8:]) < 40  # _answer reads the classifier text on front frames only.
+        expected = {**({"coverage_classification": ["BOSCH", "800 Series"]} if read else {}),
+                    **({"focused_brand_read": ["Bosch", "BOSCH"]} if frame_id in focused else {})}
+        assert row["label_text_by_pass"] == expected
+        # Verbatim union, classifier first: "BOSCH" is not repeated, "Bosch" is kept as printed.
+        assert row["label_text"] == list(dict.fromkeys(sum(expected.values(), [])))
+    assert focused <= set(rows) and rows["decoded-000000000"]["label_text"] == ["BOSCH", "800 Series", "Bosch"]
+
+
+def test_malformed_brand_read_never_holds_coverage_and_is_rebought_only_on_its_revision(tmp_path, model,
+                                                                                      monkeypatch):
+    calls, state = model
+    state["brand"] = lambda binding: {"frames": [{"frame_id": row["frame_id"], "label_text": ["SN 4F2A1-0093"],
+                                                  "serial": True} for row in binding["images"]]}
+    geometry, track = _source_geometry(tmp_path / "geometry")
+    target = _target(track)
+    record = _run(tmp_path, target, geometry)
+    assert record["status"] == "complete" and record["brand_read"]["status"] == "invalid"
+    assert all(set(row["label_text_by_pass"]) == {"coverage_classification"} for row in record["label_readings"])
+    assert _run(tmp_path, target, geometry) == record and len(state["brand_calls"]) == 1
+    # A revision bump re-buys the brand read alone; classifier receipts replay for free.
+    before = len(calls)
+    state["brand"] = _no_brand
+    monkeypatch.setattr(coverage, "BRAND_READ_REVISION", coverage.BRAND_READ_REVISION + 1)
+    assert not coverage.coverage_matches(record, target=target, source_geometry=geometry)
+    bumped = _run(tmp_path, target, geometry)
+    assert bumped["brand_read"]["status"] == "read" and len(state["brand_calls"]) == 2 and len(calls) == before
+
+
+def test_brand_read_uses_only_closed_front_and_oblique_views():
+    frames = [{"frame_id": f"f{i}", "timestamp_seconds": float(i), "mask_area_fraction": 0.1 + 0.01 * i,
+               "visible_parts": parts, "part_state": state, "view": view}
+              for i, (state, view, parts) in enumerate([
+                  ("open", "front", ["control_panel"]), ("closed", "interior", ["tub_interior"]),
+                  ("closed", "left_oblique", ["left_side"]), ("closed", "front", ["body_front"]),
+                  ("not_visible", "right_oblique", ["brand_label"]), ("partially_open", "front", ["door_outer"])])]
+    boxes = {row["frame_id"]: [0.1, 0.1, 0.5, 0.5] for row in frames}
+    chosen = coverage.brand_read_frames(frames, boxes=boxes)
+    assert [row["frame_id"] for row in chosen] == ["f3", "f4", "f2"]
+    assert chosen[0]["subject_box_xywh_normalized"] == [0.1, 0.1, 0.5, 0.5]
+    assert coverage.brand_read_frames(frames[:2], boxes=boxes) == []
 
 
 def test_selection_that_cannot_show_every_part_is_incomplete():

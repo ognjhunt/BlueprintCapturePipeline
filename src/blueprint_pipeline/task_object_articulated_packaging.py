@@ -342,10 +342,15 @@ def assembly_contract(configuration: Mapping[str, Any], family: str) -> dict[str
     depth = configuration.get("body_depth")
     body_depth = None
     if depth is not None or required:
-        basis = "interior_observed_open_state" if captured else "owner_or_catalog_specified"
+        # A captured body is sized by its observed interior, or (2026-09-27) by
+        # published product or category-standard figures; its interior frames stay cited.
+        bases = ({"interior_observed_open_state", "published_product_specification",
+                  "published_category_standard"} if captured
+                 else {"owner_or_catalog_specified"})
         ids = depth.get("frame_ids") if isinstance(depth, Mapping) else None
+        basis = depth.get("basis") if isinstance(depth, Mapping) else None
         if (not isinstance(depth, Mapping) or not _finite_number(depth.get("value_m")) or depth["value_m"] <= 0
-                or depth.get("basis") != basis or not isinstance(ids, list)
+                or basis not in bases or not isinstance(ids, list)
                 or any(v not in frame_ids for v in ids) or (captured and not ids)):
             raise AssetAuthoringError("articulated_body_depth_missing_or_invalid")
         body_depth = {"value_m": float(depth["value_m"]), "basis": basis, "frame_ids": list(ids)}
