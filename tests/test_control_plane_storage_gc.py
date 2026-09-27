@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 from blueprint_pipeline import control_plane_storage_gc as gc_module
+from blueprint_pipeline import website_scene_workspace_retention as retention_module
 from blueprint_pipeline import task_evaluation_configured_scene_object_store as store
 from blueprint_pipeline.control_plane_storage_gc import (
     ControlPlaneStorageGCError,
@@ -1181,6 +1182,33 @@ def test_the_tick_bounds_retirement_attempts_not_only_successes(tmp_path, monkey
     assert attempts == ["scene-0", "scene-1"]
     assert (report["attempted_count"], report["retired_count"], report["candidate_count"]) == (2, 0, 3)
     assert [row["status"] for row in report["results"]] == ["skipped", "skipped", "retirable"]
+
+
+def test_post_upload_archive_reference_survives_result_truncation(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(retention_module, "scene_workspaces", lambda root: [
+        ("bucket", f"scene-{index}", root / f"scene-{index}") for index in range(51)])
+    monkeypatch.setattr(retention_module, "sweep_retiring_workspaces", lambda root, apply=True: {
+        "removed" if apply else "removable": [], "kept_without_receipt": []})
+    monkeypatch.setattr(retention_module, "sweep_retirement_temporaries", lambda root, now: [])
+    monkeypatch.setattr(retention_module, "build_reference_index", lambda context, now: None)
+    monkeypatch.setattr(retention_module, "plan_scene_workspace_retirement", lambda **kwargs: {
+        "status": "retirable", "reasons": [], "scene_id": kwargs["scene_id"],
+        "totals": {"workspace_allocated_bytes": 10, "archive_bytes": 5}})
+
+    def skipped(plan, **_kwargs):
+        result = {"status": "skipped", "reason": "candidate_changed_during_archive"}
+        if plan["scene_id"] == "scene-50":
+            result["published_archive"] = {"uri": "s3://example/orphan", "digest": "sha256:abc", "size_bytes": 5}
+        return result
+
+    monkeypatch.setattr(retention_module, "apply_scene_workspace_retirement", skipped)
+    report = gc_module.retire_scene_workspaces(
+        storage_roots=[tmp_path], context_factory=lambda root: SimpleNamespace(storage_root=root, inventory_cache_root=None),
+        apply=True, enabled=True, now=1.0, cloud_factory=lambda: object(), max_retirements=51)
+
+    assert report["result_count"] == 51 and len(report["results"]) == 50
+    assert report["published_archives"] == [{"bucket": "bucket", "scene_id": "scene-50",
+                                              "uri": "s3://example/orphan", "digest": "sha256:abc", "size_bytes": 5}]
 
 
 def test_ticks_reuse_cached_digests_and_drop_them_once_a_scene_is_retired(tmp_path) -> None:

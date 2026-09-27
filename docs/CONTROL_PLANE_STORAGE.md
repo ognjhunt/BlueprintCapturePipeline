@@ -391,9 +391,11 @@ scene only when everything in it can come back and nothing can still need it.
    by (path, size, mtime, ctime, device, inode) in
    `pubsub-handoffs/.scene-workspace-inventory/<bucket>/<scene>.json` (root, `0600`), so an
    hourly plan re-reads only what changed. A tick normally hashes at most 20 GiB
-   or five minutes of uncached bytes; one file larger than 20 GiB can use a whole
-   tick so it does not wait forever. A scene it cannot finish waits for the next tick
-   (`inventory_deferred`). Retirement never trusts the cache: it re-reads every file
+   or five minutes of uncached bytes. One file larger than 20 GiB may use an
+   exceptional window sized for 8 MiB/s, capped at two hours below the GC unit's
+   three-hour timeout. An unfinished ordinary file waits for the next tick
+   (`inventory_deferred`); an exceptional file that exceeds its window stays local
+   with `oversized_hash_timeout`. Retirement never trusts the cache: it re-reads every file
    it is about to delete.
 
 **Retire** re-proves checks 1-8 and the planned file snapshot, and re-reads

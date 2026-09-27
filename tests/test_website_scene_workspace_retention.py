@@ -27,6 +27,8 @@ from blueprint_pipeline import pubsub_handoff_listener as listener
 from blueprint_pipeline import task_evaluation_configured_scene_object_store as store
 from blueprint_pipeline import task_evaluation_scene_intake as intake
 from blueprint_pipeline import website_scene_workspace_retention as retention
+from blueprint_pipeline import website_scene_workspace_digests as digest_module
+from blueprint_pipeline import website_scene_workspace_queue as queue_module
 from blueprint_pipeline.control_plane_storage_pins import write_storage_pin
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 from tests.test_control_plane_evidence_streaming import MultipartClient
@@ -455,6 +457,16 @@ def test_unreadable_queue_entry_blocks_retirement(tmp_path):
     assert plan["status"] == "retained" and "queue_inventory_unreadable" in plan["reasons"]
 
 
+def test_short_queue_reads_are_completed_before_the_queue_is_considered_inspected(tmp_path, monkeypatch):
+    pending = tmp_path / "queue" / "pending"
+    pending.mkdir(parents=True)
+    (pending / "job.json").write_text(json.dumps({"scene_id": SCENE}), encoding="utf-8")
+    real_read = queue_module.os.read
+    monkeypatch.setattr(queue_module.os, "read", lambda fd, count: real_read(fd, 1))
+
+    assert SCENE in queue_module.queue_reference_text((tmp_path / "queue",))
+
+
 def test_not_retired_while_a_process_uses_it(tmp_path):
     scene, cloud = _scene(tmp_path)
     seen: list[Path] = []
@@ -676,6 +688,29 @@ def test_raw_bytes_that_do_not_verify_in_the_cloud_block_retirement(tmp_path):
     del cloud.objects[(BUCKET, video)]
     assert _plan(tmp_path, cloud)["reasons"] == [
         f"raw_not_verified_in_cloud:captures/{CAPTURE}/raw/walkthrough.mov"]
+
+
+def test_cloud_object_without_pinned_generation_cannot_replace_raw_bytes(tmp_path):
+    _, cloud = _scene(tmp_path)
+    video = f"scenes/{SCENE}/captures/{CAPTURE}/raw/walkthrough.mov"
+    cloud.put(video, cloud.objects[(BUCKET, video)][0], generation="")
+
+    plan = _plan(tmp_path, cloud)
+
+    assert plan["status"] == "retained"
+    assert plan["reasons"] == [f"raw_not_verified_in_cloud:captures/{CAPTURE}/raw/walkthrough.mov"]
+
+
+def test_cloud_object_without_pinned_generation_archives_derived_bytes(tmp_path):
+    scene, cloud = _scene(tmp_path)
+    relative = f"captures/{CAPTURE}/pipeline/preparation.json"
+    cloud.put(f"scenes/{SCENE}/{relative}", (scene / relative).read_bytes(), generation="")
+
+    plan = _plan(tmp_path, cloud)
+
+    assert plan["status"] == "retirable"
+    assert relative in {row["relative_path"] for row in plan["archive"]}
+    assert relative not in {row["relative_path"] for row in plan["cloud_verified"]}
 
 
 def test_crc32c_verifies_an_object_without_md5_and_nothing_verifies_without_either(tmp_path):
@@ -1062,6 +1097,17 @@ def test_cli_plans_then_retires_with_the_ack(tmp_path, cli):
     assert code == 0 and again["status"] == "retired" and again["already_retired"] is True
 
 
+def test_cli_refuses_corrupt_receipt_for_absent_workspace(tmp_path, cli):
+    scene, cli.cloud = _scene(tmp_path)
+    _, retired = _cli(tmp_path, "retire", "--scene-id", SCENE, "--apply", "--ack", retention.RETIRE_ACK)
+    Path(retired["receipt"]).write_text("{broken", encoding="utf-8")
+
+    code, result = _cli(tmp_path, "retire", "--scene-id", SCENE, "--apply", "--ack", retention.RETIRE_ACK)
+
+    assert code == 1 and result == {"status": "failed", "code": "retirement_receipt_invalid"}
+    assert not scene.exists()
+
+
 def test_cli_reports_why_a_scene_is_retained(tmp_path, cli):
     scene, cli.cloud = _scene(tmp_path, ack=False)
 
@@ -1446,10 +1492,31 @@ def test_a_tick_hashes_at_most_its_budget_and_defers_the_rest(tmp_path):
 def test_one_oversized_file_can_progress_but_the_hashing_deadline_stops_more_work():
     budget = retention.HashBudget(remaining_bytes=4, oversized_file_threshold=8)
     assert budget.allows(9)
+    assert budget.deadline_for(9) > budget.deadline_monotonic
+    assert budget.deadline_for(9) - time.monotonic() <= 2 * HOUR
     budget.spend(9)
     assert not budget.allows(1)
     expired = retention.HashBudget(remaining_bytes=100, deadline_monotonic=0)
     assert not expired.allows(1)
+
+
+def test_single_file_hash_aborts_when_tick_deadline_expires(tmp_path, monkeypatch):
+    large = tmp_path / "large.bin"
+    large.write_bytes(b"x" * (2 << 20))
+    clock = iter((1.0, 2.0, 9.0))
+    monkeypatch.setattr(digest_module.time, "monotonic", lambda: next(clock))
+
+    with pytest.raises(digest_module.HashDeadlineExceeded):
+        digest_module.hash_file(large, deadline_monotonic=5.0)
+
+
+def test_oversized_hash_timeout_is_distinct_from_normal_tick_deferral(tmp_path, monkeypatch):
+    _, cloud = _scene(tmp_path)
+    budget = retention.HashBudget(remaining_bytes=1, oversized_file_threshold=0)
+    monkeypatch.setattr(retention, "_hash_file", lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        digest_module.HashDeadlineExceeded("timed out")))
+
+    assert "oversized_hash_timeout" in _plan(tmp_path, cloud, hash_budget=budget)["reasons"]
 
 
 def test_apply_rehashes_what_it_deletes_even_when_the_plan_used_the_cache(tmp_path):

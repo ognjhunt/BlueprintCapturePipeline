@@ -1134,6 +1134,7 @@ def retire_scene_workspaces(
         "retiring_removed_count" if applying else "retiring_removable_count": 0,
         "retiring_kept_without_receipt": [],
         "receipt_temporaries_removed_count": 0,
+        "published_archives": [],
     }
     rows: list[dict[str, Any]] = []
     cloud = None
@@ -1190,6 +1191,8 @@ def retire_scene_workspaces(
                              "removal_complete": outcome["removal_complete"]})
             else:
                 retained([outcome["reason"]])
+                if "published_archive" in outcome:
+                    report["published_archives"].append({**row, **outcome["published_archive"]})
                 if outcome["reason"].startswith("candidate_changed") and context.inventory_cache_root is not None:
                     inventory_cache_path(context.inventory_cache_root, bucket, scene_id).unlink(missing_ok=True)
                 rows.append({**row, "status": "skipped", "reason": outcome["reason"],

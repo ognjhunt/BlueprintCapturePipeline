@@ -70,6 +70,7 @@ from .website_capture_entry import is_website_capture_manifest
 from .website_scene_workspace_digests import (
     Digests as _Digests,
     HashBudget,
+    HashDeadlineExceeded,
     cached_digests as _cached_digests,
     hash_file as _hash_file,
     save_inventory_cache,
@@ -1070,7 +1071,12 @@ def _inventory(*, scene: Path, bucket: str, scene_id: str, files: Sequence[tuple
                 reasons.append("inventory_deferred")
                 continue
             try:
-                digests = _hash_file(scene / relative)
+                digests = _hash_file(scene / relative, deadline_monotonic=(
+                    budget.deadline_for(info.st_size) if budget is not None else None))
+            except HashDeadlineExceeded:
+                reasons.append("oversized_hash_timeout" if budget is not None
+                               and info.st_size > budget.oversized_file_threshold else "inventory_deferred")
+                continue
             except OSError:
                 reasons.append(f"unsafe_entry:{relative}")
                 continue
@@ -1083,7 +1089,8 @@ def _inventory(*, scene: Path, bucket: str, scene_id: str, files: Sequence[tuple
         fresh[relative] = {"identity": identity, "digests": {"size": digests.size, "sha256": digests.sha256,
                                                              "md5": digests.md5, "crc32c": digests.crc32c}}
         remote = listing.get(prefix + relative)
-        if remote is not None and _verifies(remote, digests):
+        if (remote is not None and isinstance(remote.generation, str)
+                and remote.generation.isdecimal() and _verifies(remote, digests)):
             verified.append({"relative_path": relative, "uri": f"gs://{bucket}/{prefix}{relative}",
                              "generation": remote.generation, "size": remote.size,
                              "md5_hash": remote.md5_hash, "crc32c": remote.crc32c})
@@ -1842,6 +1849,8 @@ def _retire_command(args: argparse.Namespace) -> dict[str, Any]:
     receipt = receipt_path(context.storage_root, bucket, scene_id)
     if not os.path.lexists(scene_path(context.storage_root, bucket, scene_id)):
         if os.path.lexists(receipt):
+            if not _valid_receipt(receipt, bucket=bucket, scene_id=scene_id):
+                raise WebsiteSceneWorkspaceRetentionError("retirement_receipt_invalid")
             return {"status": "retired", **identity, "already_retired": True, "receipt": str(receipt)}
         raise WebsiteSceneWorkspaceRetentionError("scene_workspace_not_found")
     now = _now()

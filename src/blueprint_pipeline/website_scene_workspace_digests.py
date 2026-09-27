@@ -27,8 +27,15 @@ class HashBudget:
         if time.monotonic() >= self.deadline_monotonic:
             return False
         # One file larger than the default budget may be hashed once per tick;
-        # otherwise it would remain deferred forever. The unit runtime bounds it.
+        # otherwise it would remain deferred forever.
         return size <= self.remaining_bytes or (self.hashed_bytes == 0 and size > self.oversized_file_threshold)
+
+    def deadline_for(self, size: int) -> float:
+        if size > self.oversized_file_threshold and size > self.remaining_bytes and self.hashed_bytes == 0:
+            # The GC unit has a 3h timeout. Give a single exceptional file a
+            # bounded window sized for 8 MiB/s, capped at 2h so cleanup can run.
+            return time.monotonic() + min(2 * 3600, 300 + max(1, size / (8 * 1024**2)))
+        return self.deadline_monotonic
 
     def spend(self, size: int) -> None:
         self.remaining_bytes -= size
@@ -43,7 +50,11 @@ class Digests:
     crc32c: str | None  # base64; None when google_crc32c is unavailable
 
 
-def hash_file(path: Path) -> Digests:
+class HashDeadlineExceeded(TimeoutError):
+    """The tick retained the file rather than extending its hashing budget."""
+
+
+def hash_file(path: Path, *, deadline_monotonic: float | None = None) -> Digests:
     """SHA-256, MD5 and CRC32C of a regular file in one read."""
 
     try:
@@ -57,7 +68,12 @@ def hash_file(path: Path) -> Digests:
     with os.fdopen(descriptor, "rb") as stream:
         if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
             raise OSError("not a regular file")
-        while chunk := stream.read(1 << 20):
+        while True:
+            if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
+                raise HashDeadlineExceeded("scene_workspace_hash_deadline_exceeded")
+            chunk = stream.read(1 << 20)
+            if not chunk:
+                break
             sha.update(chunk)
             md5.update(chunk)
             if crc is not None:
