@@ -202,3 +202,27 @@ def test_hardlinked_or_mismatched_scratch_blobs_are_kept(tmp_path):
     assert result["skipped"] == [{"path": str(reclaimable), "reason": "file_changed"}]
     for path in (projected, mismatched, misplaced, newer, reclaimable):
         assert path.exists(), path
+
+
+def test_refused_parent_replay_is_finished_for_retention(tmp_path):
+    """A parent replay whose worker pass raised has written its report and returned, and its
+    fetcher refuses every fetch by construction. Before the release, that path recorded no
+    nothing_fetched, so such a replay's copies were never reclaimed."""
+    root, child, data, proc = setup(tmp_path)
+    report = child / "stage_replay_report.v1.json"
+
+    def write(**fields):
+        report.write_text(json.dumps({"schema_version": "task_evaluation_parent_replay_report.v1", **fields}))
+
+    write(status="worker_refused", paid_execution_requested=False, provider_mutation_performed=False)
+    assert gc.completed_report(child) == report
+    assert plan(root, proc)["candidate_bytes"] == data.stat().st_size
+
+    for fields in (
+        {"status": "refused", "paid_execution_requested": False, "provider_mutation_performed": False},
+        {"status": "worker_refused", "paid_execution_requested": True, "provider_mutation_performed": False},
+        {"status": "worker_refused", "paid_execution_requested": False, "provider_mutation_performed": True},
+        {"status": "worker_refused", "provider_mutation_performed": False},
+    ):
+        write(**fields)
+        assert gc.completed_report(child) is None, fields

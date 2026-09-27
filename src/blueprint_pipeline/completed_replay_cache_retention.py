@@ -79,7 +79,8 @@ def completed_report(root):
             continue
         parent = (
             value.get("schema_version") == "task_evaluation_parent_replay_report.v1"
-            and value.get("nothing_fetched") is True
+            # A refused worker pass is finished too; the replay's fetcher refuses every fetch.
+            and (value.get("nothing_fetched") is True or value.get("status") == "worker_refused")
             and value.get("paid_execution_requested") is False
             and value.get("provider_mutation_performed") is False
         )
