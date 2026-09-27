@@ -181,6 +181,62 @@ def test_paid_g1_rejects_untrusted_guard_actor_before_checkpoint_staging(
     assert result["provider_mutations_performed"] == 0
 
 
+def test_paid_g1_checks_credit_before_checkpoint_staging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commit = "a" * 40
+    monkeypatch.setattr(lane, "_early_spend_lock_blockers", lambda: [])
+    monkeypatch.setattr(
+        lane, "_early_provider_credit_blockers",
+        lambda required_usd: ["provider_credit_insufficient"]
+        if required_usd == 4.0 else pytest.fail("wrong credit requirement"),
+    )
+    monkeypatch.setattr(
+        lane, "stage_g1_checkpoint_cache",
+        lambda **_kwargs: pytest.fail("checkpoint staging ran before credit preflight"),
+    )
+    result = lane.dispatch_g1_paid_campaign(
+        _args(tmp_path, g1_campaign_bundle_receipt=str(tmp_path / "receipt.json")),
+        control_identity={
+            "orchestrator_source_commit": commit,
+            "origin_main_commit": commit,
+            "remote_main_commit": commit,
+        },
+        control_blockers=[],
+    )
+    assert result["status"] == "blocked"
+    assert result["blockers"] == ["provider_credit_insufficient"]
+    assert result["provider_mutations_performed"] == 0
+
+
+def test_early_credit_guard_is_read_only_and_admits_only_funded_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from blueprint_pipeline import gpu_render_providers, provider_credit_admission
+
+    monkeypatch.delenv(provider_credit_admission.ENABLED_ENV, raising=False)
+    monkeypatch.setattr(
+        gpu_render_providers.VastRenderProvider,
+        "_key",
+        lambda _self: pytest.fail("disabled credit guard read credentials"),
+    )
+    assert lane._early_provider_credit_blockers(9.0) == []
+
+    monkeypatch.setenv(provider_credit_admission.ENABLED_ENV, "true")
+    monkeypatch.setattr(gpu_render_providers.VastRenderProvider, "_key", lambda _self: "fake-key")
+    observed = []
+
+    def credit_check(*, api_key: str, required_usd: float) -> dict:
+        observed.append((api_key, required_usd))
+        return {"status": "blocked", "blockers": ["provider_credit_insufficient"]}
+
+    monkeypatch.setattr(
+        provider_credit_admission, "configured_vast_credit_admission", credit_check
+    )
+    assert lane._early_provider_credit_blockers(9.0) == ["provider_credit_insufficient"]
+    assert observed == [("fake-key", 9.0)]
+
+
 def test_paid_g1_refuses_missing_private_checkpoint_cache_before_provider(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
