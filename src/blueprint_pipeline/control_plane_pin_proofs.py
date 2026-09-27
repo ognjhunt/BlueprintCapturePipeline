@@ -205,6 +205,25 @@ def _present(path):
     return True
 
 
+def _evidence_root_state(root):
+    """True for a real directory, False for a missing root its readable parent shows absent, else None."""
+
+    if root.is_symlink():
+        return None
+    if root.is_dir():
+        return True
+    if _present(root) is not False or any(path.is_symlink() for path in root.parents):
+        return None
+    try:
+        if root.parent.is_symlink() or not root.parent.is_dir():
+            return None
+        with os.scandir(root.parent):
+            pass
+    except OSError:
+        return None
+    return False
+
+
 def _sealed_registry_run(directory, *, hot_window_seconds, now):
     """A run with its terminal receipt whose result registry the store accepts as sealed, idle past the hot window.
 
@@ -385,12 +404,21 @@ def _activation_proof(pin, live_pins, *, evidence_roots, activation_queue_root, 
     """Every run under the activation's evidence names is a sealed registry run, or it never launched.
 
     Any whole-run pointer keeps the pin: the archived-run proof already declined
-    it. A root that is missing (unmounted or renamed, say), linked, or where a
-    name cannot be looked up proves nothing.
+    it. A root that is linked, unreadable or not a directory, or where a name
+    cannot be looked up, proves nothing; so does a missing root whose parent is
+    missing too (unmounted, say). A missing root whose parent is present and
+    readable, with no linked ancestor, holds no runs: the unit marks two roots
+    optional, and a host without them would otherwise never release.
     """
 
-    roots = [Path(root) for root in evidence_roots]
-    if not roots or any(root.is_symlink() or not root.is_dir() for root in roots):
+    roots = []
+    for root in (Path(root) for root in evidence_roots):
+        state = _evidence_root_state(root)
+        if state is None:
+            return None, "evidence_root_unavailable"
+        if state:
+            roots.append(root)
+    if not evidence_roots:
         return None, "evidence_root_unavailable"
     runs = []
     for root in roots:

@@ -575,6 +575,38 @@ def test_expired_unlaunched_activation_releases_its_pin(tmp_path) -> None:
     assert not any("/" in str(value) for value in proof.values())
 
 
+@pytest.mark.parametrize("root", ["optional_missing", "parent_missing", "ancestor_linked"])
+def test_a_missing_optional_evidence_root_holds_no_runs(tmp_path, root) -> None:
+    """The unit marks two evidence roots optional; a host without them would otherwise never release.
+
+    A missing root whose parent exists and is readable, with no linked ancestor,
+    holds no runs. A missing parent, or a linked ancestor, keeps the pin.
+    """
+
+    args = _args(tmp_path)
+    queue = _activation_queue(tmp_path, args)
+    _activation_result(queue, "act-u")
+    _pin(args, "activation", "act-u", age=LAPSE + DAY)
+    if root == "optional_missing":
+        missing = tmp_path / "policy-canary-preprovider-audits"
+    if root == "parent_missing":
+        missing = tmp_path / "unmounted" / "policy-canary-preprovider-audits"
+    if root == "ancestor_linked":
+        (tmp_path / "real-parent").mkdir()
+        (tmp_path / "linked-parent").symlink_to(tmp_path / "real-parent")
+        missing = tmp_path / "linked-parent" / "policy-canary-preprovider-audits"
+    args["evidence_roots"] = [*args["evidence_roots"], missing]
+
+    result = reconcile_terminal_cache_pins(**args, apply=True, extended_proofs_enabled=True)
+
+    if root == "optional_missing":
+        assert [row["proof"]["kind"] for row in result["candidates"]] == ["activation_expired_unlaunched"]
+        assert _states(args)[("activation", "act-u")] == "released"
+    else:
+        assert _kept(result) == {("activation", "act-u"): "evidence_root_unavailable"}
+        assert _states(args)[("activation", "act-u")] == "live"
+
+
 def test_a_policy_campaign_activation_is_out_of_scope(tmp_path) -> None:
     """Code review of 10c: a policy campaign publishes no standing authorization and dispatches through the
     policy canary queue, gated on the scene execution window, so the unlaunched proof's premise does not hold.
@@ -653,8 +685,8 @@ def test_unprepared_or_unreadable_activation_result_keeps_its_pin(tmp_path, reas
         (tmp_path / "linked-evidence").symlink_to(args["evidence_roots"][0])
         args["evidence_roots"] = [tmp_path / "linked-evidence"]
     if reason == "root_missing":
-        # An unmounted or renamed root cannot show that nothing launched into it.
-        args["evidence_roots"] = [*args["evidence_roots"], tmp_path / "unmounted-evidence"]
+        # A root whose parent is missing (unmounted, say) cannot show that nothing launched into it.
+        args["evidence_roots"] = [*args["evidence_roots"], tmp_path / "unmounted" / "evidence"]
     if reason in ("results_missing", "results_linked"):
         (queue / "results").rename(tmp_path / "moved-results")
         if reason == "results_linked":

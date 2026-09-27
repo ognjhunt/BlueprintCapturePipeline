@@ -616,9 +616,12 @@ website activation's sealed own directory could release the pin while its
 
 An activation's evidence names are its id, `<id>-launch` (configured-controls
 activations such as `<run>-controls` launch that way too) and the bounded
-launch id the launch paths derive for a long id, with their own function. A
-configured evidence root must exist as a directory: a missing root cannot show
-that nothing launched into it. Every proof keeps the six-hour minimum pin age,
+launch id the launch paths derive for a long id, with their own function. An
+evidence root that is linked or unreadable keeps the pin, and so does a missing
+root whose parent is missing too (unmounted, say). A missing root whose parent
+is present and readable, with no linked ancestor, holds no runs: the unit marks
+two roots optional, and a host without them would otherwise never release.
+Every proof keeps the six-hour minimum pin age,
 the dependency closure's queue and process checks, and a re-derivation at the
 mutation edge. The extended proofs read queues strictly: they also count a row
 parked in a state that will still run (`LIVE_QUEUE_STATES`, such as a
