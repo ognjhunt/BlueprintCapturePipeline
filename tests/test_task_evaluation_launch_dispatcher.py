@@ -333,6 +333,31 @@ def test_dispatcher_reserves_each_unique_directory_projection_copy(tmp_path, mon
     assert observed == [3 * source.stat().st_size + 64 * 1024 * 1024]
 
 
+def test_dispatcher_refuses_source_alias_changed_after_reservation(tmp_path, monkeypatch):
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    for directory in (first, second):
+        (directory / "packet.json").write_bytes(b'{"packet":"sealed"}\n')
+    alias = tmp_path / "alias"
+    alias.symlink_to(first, target_is_directory=True)
+    source = alias / "packet.json"
+    profile = {"immutable_inputs": [{"name": "packet", "path": str(source), "digest": _path_digest(source)}]}
+
+    def reserve(_role, **_kwargs):
+        alias.unlink()
+        alias.symlink_to(second, target_is_directory=True)
+        return nullcontext()
+
+    monkeypatch.setattr(dispatcher_module, "reserve_control_plane_disk", reserve)
+    with pytest.raises(TaskEvaluationLaunchError, match="immutable_input_staging_source_changed:packet"):
+        dispatcher_module._stage_profile_immutable_inputs(
+            profile=profile, run_root=tmp_path / "run", allocator_argv=[str(first)],
+        )
+    assert not list((tmp_path / "run").rglob("*.input"))
+
+
 def test_dispatcher_disk_refusal_blocks_before_any_provider_call(tmp_path, monkeypatch):
     profile = _profile(tmp_path)
     profile_dir, request_path = _write_profile_and_request(tmp_path, profile)

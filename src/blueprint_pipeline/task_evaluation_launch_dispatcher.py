@@ -1085,8 +1085,12 @@ def _stage_profile_immutable_inputs(
 ) -> tuple[dict[str, Any], list[str]]:
     """Reserve the copy footprint on the run volume before staging inputs."""
 
-    sources = {Path(str(_mapping(item).get("path") or "")).expanduser().resolve()
-               for item in profile.get("immutable_inputs") or []}
+    planned_sources = {
+        str(_mapping(item).get("path") or ""):
+        Path(str(_mapping(item).get("path") or "")).expanduser().resolve()
+        for item in profile.get("immutable_inputs") or []
+    }
+    sources = set(planned_sources.values())
     projections = _immutable_input_directory_projections(sources, allocator_argv)
     expected_bytes = (
         sum(source.stat().st_size for source in sources)
@@ -1104,7 +1108,7 @@ def _stage_profile_immutable_inputs(
     ):
         return _stage_profile_immutable_inputs_reserved(
             profile=profile, run_root=run_root, allocator_argv=allocator_argv,
-            projections=projections,
+            projections=projections, planned_sources=planned_sources,
         )
 
 
@@ -1134,6 +1138,7 @@ def _stage_profile_immutable_inputs_reserved(
     run_root: Path,
     allocator_argv: Sequence[str],
     projections: Mapping[Path, set[Path]],
+    planned_sources: Mapping[str, Path],
 ) -> tuple[dict[str, Any], list[str]]:
     """Snapshot immutable inputs and redirect exact allocator path arguments."""
 
@@ -1157,6 +1162,8 @@ def _stage_profile_immutable_inputs_reserved(
         if source.is_symlink() or not source.is_file():
             raise TaskEvaluationLaunchError(f"immutable_input_staging_source_missing:{name}")
         source = source.resolve()
+        if source != planned_sources.get(declared_source):
+            raise TaskEvaluationLaunchError(f"immutable_input_staging_source_changed:{name}")
         payload = source.read_bytes()
         observed_digest = _DIGEST_PREFIX + hashlib.sha256(payload).hexdigest()
         if observed_digest != expected_digest:
