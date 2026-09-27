@@ -32,6 +32,14 @@ from .website_assembly_coverage import assembly_constraints, assembly_contract, 
 from .website_task_masks import decode_track_mask, estimate_target_bounds
 from .website_support_geometry import ground_on_observed_floor, support_under
 
+
+class RegistrationRefusal(ValueError):
+    """A registration refusal that carries the scores it was decided on."""
+
+    def __init__(self, code: str, evidence: Mapping[str, Any]):
+        super().__init__(code)
+        self.evidence = dict(evidence)
+
 SCHEMA_VERSION = "website_scene_preparation.v1"
 CLAIM_CEILING = "development_only"
 _UP_INDEX = {"Y": 1, "-Y": 1, "Z": 2}
@@ -302,10 +310,25 @@ def register_source_to_runtime(*, source_geometry: Mapping[str, Any], collision_
         # Only poses at a scale the anchor admits are evidence: a generated
         # world that extends past the observed footage rewards inflated-scale
         # poses, which the declared scale already refuses.
-        if any(row[0] * 1.2 < best[0] and best[0] - row[0] > 0.005 * extent_norm
-               and ANCHOR_SCALE_RATIO_BOUNDS[0] <= row[1] * mpu <= ANCHOR_SCALE_RATIO_BOUNDS[1]
-               for row in better if not same_hypothesis(row)):
-            raise ValueError("website_registration_conflicts_provider_anchor")
+        conflicting = [row for row in better if not same_hypothesis(row)
+                       and row[0] * 1.2 < best[0] and best[0] - row[0] > 0.005 * extent_norm
+                       and ANCHOR_SCALE_RATIO_BOUNDS[0] <= row[1] * mpu <= ANCHOR_SCALE_RATIO_BOUNDS[1]]
+        if conflicting:
+            def summary(row):
+                return {"score_m": float(row[0] * mpu), "scale_ratio_to_declared": float(row[1] * mpu),
+                        "rotation_from_anchored_degrees": _rotation_degrees(row[2], best[2]),
+                        "translation_from_anchored_m": float(np.linalg.norm(row[3] - best[3]) * mpu)}
+            raise RegistrationRefusal("website_registration_conflicts_provider_anchor", {
+                "anchored": {"score_m": float(best[0] * mpu), "roll_degrees": roll,
+                             "scale_ratio_to_declared": float(best[1] * mpu),
+                             "hypothesis_axis": "camera_optical" if floor is None else "declared_up",
+                             "levelled_tilt_degrees": _rotation_degrees(level, np.eye(3)),
+                             "rotation_from_prior_degrees": _rotation_degrees(best[2], prior[1])},
+                "anchored_alternatives": [{"roll_degrees": row[1], "score_m": float(row[0][0] * mpu)}
+                                          for row in anchored[1:4]],
+                "conflicting_unconstrained": [summary(row) for row in conflicting[:5]],
+                "extent_m": extent_norm * mpu, "declared_meters_per_unit": mpu,
+                "source_point_count": int(len(source)), "target_point_count": int(len(target))})
         # The same pose reached from an unconstrained seed is the same
         # hypothesis; keep whichever solution of it converged better.
         same_pose = [row for row in better if same_hypothesis(row)]
@@ -573,6 +596,12 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
             collision_mesh_path=Path(base_scene["collision_mesh_path"]),
             anchor=anchor, focus_bounds=subject_target["estimated_visible_bounds"])
     except ValueError as exc:
+        if isinstance(exc, RegistrationRefusal):
+            # A refusal is decided on scores; keep them, or it cannot be reviewed.
+            write_json(output_root / "registration_refusal.json", {
+                "schema_version": "website_registration_refusal.v1", "blocker": str(exc),
+                "collision_mesh_digest": base_scene.get("collision_mesh_digest"),
+                "anchor": anchor, **exc.evidence})
         from .website_development_test import enabled
         from .website_object_local_frame import REGISTRATION_REFUSALS, estimated_object_frame
         if str(exc) not in REGISTRATION_REFUSALS or not enabled(task_context["context_digest"]):
