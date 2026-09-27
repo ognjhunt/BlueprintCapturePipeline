@@ -89,3 +89,10 @@ NATIVE_TASK_ARENA_DEPENDENCY_IMPORTS = (
     "onnxruntime",
     "google.protobuf",
 )
+
+# These imports arrived with the G1 embodiment and its ONNX policy runtime.
+# Retained Franka packets predate those wheels and do not use that embodiment.
+G1_ONLY_DEPENDENCY_IMPORTS = frozenset({
+    "isaaclab_arena_g1", "coloredlogs", "humanfriendly", "flatbuffers",
+    "onnxruntime", "google.protobuf",
+})

@@ -210,11 +210,16 @@ def test_dependency_matrix_is_declared_as_one_preflight() -> None:
     )
 
 
-def test_franka_dependency_preflight_does_not_require_g1_only_arena_package(
+def test_franka_dependency_preflight_does_not_require_g1_only_packages(
     monkeypatch,
 ) -> None:
+    g1_only = (
+        "isaaclab_arena_g1", "coloredlogs", "humanfriendly", "flatbuffers",
+        "onnxruntime", "google.protobuf",
+    )
+
     def import_module(name: str) -> object:
-        if name == "isaaclab_arena_g1":
+        if name in g1_only:
             raise ModuleNotFoundError(name)
         return SimpleNamespace(__version__="test")
 
@@ -223,7 +228,7 @@ def test_franka_dependency_preflight_does_not_require_g1_only_arena_package(
         lambda robot_id: {"robot_id": robot_id},
     )
     monkeypatch.setattr(
-        construction, "DEPENDENCY_IMPORTS", ("torch", "isaaclab_arena_g1")
+        construction, "DEPENDENCY_IMPORTS", ("torch", *g1_only)
     )
     monkeypatch.setattr(
         construction.importlib, "import_module", import_module
@@ -240,7 +245,9 @@ def test_franka_dependency_preflight_does_not_require_g1_only_arena_package(
     assert franka["all_required_available"] is True
     assert [row["module"] for row in franka["imports"]] == ["torch"]
     assert g1["all_required_available"] is False
-    assert g1["blockers"] == ["native_task_dependency_missing:isaaclab_arena_g1"]
+    assert g1["blockers"] == sorted(
+        f"native_task_dependency_missing:{name}" for name in g1_only
+    )
 
 
 def test_manifest_binding_rejects_tamper_before_isaac(tmp_path: Path) -> None:

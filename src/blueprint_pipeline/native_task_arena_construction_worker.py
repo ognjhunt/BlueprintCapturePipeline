@@ -28,6 +28,7 @@ from blueprint_pipeline.native_franka_grasp_geometry import (
     measure_live_robotiq_grasp_geometry,
 )
 from blueprint_pipeline.native_task_arena_dependency_contract import (
+    G1_ONLY_DEPENDENCY_IMPORTS,
     NATIVE_TASK_ARENA_DEPENDENCY_IMPORTS as DEPENDENCY_IMPORTS,
 )
 from blueprint_pipeline.native_task_arena_feedback_bootstrap_runtime import (
@@ -224,8 +225,7 @@ def _jsonable(value: Any) -> Any:
 
 def preflight_native_dependency_matrix(*, robot_id: str) -> dict[str, Any]:
     """Probe all worker imports and media tools in one retained receipt."""
-    imports = []
-    blockers = []
+    imports, blockers = [], []
     try:
         from blueprint_pipeline.native_task_arena_import_scope import (
             install_scoped_arena_embodiment,
@@ -241,7 +241,7 @@ def preflight_native_dependency_matrix(*, robot_id: str) -> dict[str, Any]:
         }
         blockers.append(f"native_task_arena_embodiment_scope_failed:{robot_id}")
     for name in DEPENDENCY_IMPORTS:
-        if name == "isaaclab_arena_g1" and robot_id != "unitree_g1":
+        if name in G1_ONLY_DEPENDENCY_IMPORTS and robot_id != "unitree_g1":
             continue
         try:
             module = importlib.import_module(name)
