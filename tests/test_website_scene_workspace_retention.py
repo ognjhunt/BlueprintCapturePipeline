@@ -1093,3 +1093,29 @@ def test_a_tick_finishes_removing_what_a_crash_left_behind(tmp_path):
 
     assert not leftover.exists() and unreceipted.is_dir() and receipt.is_file()
     assert swept == {"removed": [str(leftover)], "kept_without_receipt": [str(unreceipted)]}
+
+
+@pytest.mark.parametrize("reader", ["pin", "queue", "intent"])
+def test_apply_skips_when_a_reader_appears_while_the_archive_uploads(tmp_path, reader):
+    """An upload can take hours; pins, queues, processes and intents are proven again after it."""
+
+    scene, cloud = _scene(tmp_path)
+    plan = _plan(tmp_path, cloud)
+    publish = _publisher(MultipartClient())
+
+    def publisher_that_outlives_the_plan(**kwargs):
+        reference = publish(**kwargs)
+        if reader == "pin":
+            write_storage_pin(pins_root=tmp_path / "pins", kind="compilation", owner_id="late", paths=[str(scene)])
+        elif reader == "queue":
+            (tmp_path / "queue" / "pending" / "late.json").write_text(json.dumps({"scene_id": SCENE}))
+        else:
+            request = _request(plan["observed_at_epoch"] + DAY)
+            _register(tmp_path, scene, request)
+            _intent(tmp_path, request)
+        return reference
+
+    result = _retire(tmp_path, cloud, plan, stream_publisher=publisher_that_outlives_the_plan)
+
+    assert result["status"] == "skipped" and result["reason"] == "candidate_changed_during_archive"
+    assert scene.is_dir() and not (scene.parent / f"{SCENE}{retention.RETIRED_SUFFIX}").exists()

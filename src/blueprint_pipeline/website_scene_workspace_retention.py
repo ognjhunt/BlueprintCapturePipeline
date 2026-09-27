@@ -1252,8 +1252,9 @@ def apply_scene_workspace_retirement(
     with _CaptureLocks(scene, planned_ids) as locks:
         if locks.refusal is not None:
             return skipped(locks.refusal)
+        checker = process_checker or _process_in_use
         evaluation = _evaluate(context=context, bucket=bucket, scene_id=scene_id, scene=scene, now=observed_at,
-                               index=index, process_checker=process_checker or _process_in_use)
+                               index=index, process_checker=checker)
         if (
             evaluation.reasons
             or evaluation.capture_ids != planned_ids
@@ -1274,8 +1275,12 @@ def apply_scene_workspace_retirement(
                 archive, refusal = _archive(scene, plan["archive"], publisher)
                 if refusal is not None:
                     return skipped(refusal)
-            if _snapshot(_walk(scene).files) != plan["snapshot"]:
-                return skipped("candidate_changed")  # written to while it was archived
+            # The upload can take hours. Prove every check again, with a freshly read reference
+            # index (pins, queues, live processes, open intents), just before the receipt.
+            after = _evaluate(context=context, bucket=bucket, scene_id=scene_id, scene=scene, now=observed_at,
+                              index=None, process_checker=checker)
+            if after.reasons or after.capture_ids != planned_ids or _snapshot(after.files) != plan["snapshot"]:
+                return skipped("candidate_changed_during_archive")
             refusal = _cloud_unchanged(cloud, bucket=bucket, scene_id=scene_id, rows=plan["cloud_verified"])
             if refusal is not None:
                 return skipped(refusal)
