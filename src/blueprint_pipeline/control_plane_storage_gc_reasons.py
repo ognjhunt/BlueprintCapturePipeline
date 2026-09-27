@@ -236,16 +236,24 @@ def _reason_rows(source: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
 def _phase_summary(entry: Mapping[str, Any]) -> dict[str, Any]:
     by_reason = entry.get("retained_by_reason")
     reasons = by_reason if isinstance(by_reason, Mapping) else entry.get("retained_counts")
+    candidate_bytes = _integer(entry.get("candidate_bytes"))
+    # Some phases continue after one root fails. The measured zero from the
+    # successful roots cannot describe candidates in the failed root.
+    partial_scan = bool(entry.get("errors") or entry.get("omitted_errors_count"))
+    if partial_scan:
+        candidate_bytes = None
     summary: dict[str, Any] = {
         "status": _typed(entry.get("status"), "unrecognized_status"),
-        "candidate_bytes": _integer(entry.get("candidate_bytes")),
+        "candidate_bytes": candidate_bytes,
         "removed_or_offloaded_bytes": next((_integer(entry[key]) for key in _REMOVED_KEYS if key in entry), None),
         # None when the phase does not say what it kept (an applied receipt that
         # carries no counts); {} when it kept nothing.
         "retained_by_reason": _reason_rows(reasons) if isinstance(reasons, Mapping) else None,
     }
     if "estimated_candidate_bytes" in entry:
-        summary["estimated_candidate_bytes"] = _integer(entry["estimated_candidate_bytes"])
+        summary["estimated_candidate_bytes"] = (
+            None if partial_scan else _integer(entry["estimated_candidate_bytes"])
+        )
     # What sizing the phase's retained trees cost, where it measured it.
     if "walked_file_count" in entry:
         summary["walked_file_count"] = _integer(entry["walked_file_count"])
@@ -274,6 +282,13 @@ def _result_artifact_summary(rows: Sequence[Any]) -> dict[str, Any]:
 
     runs = [row for row in rows if isinstance(row, Mapping)]
     sized = [row for row in runs if row.get("status") in ("dry_run", "applied")]
+    complete = len(runs) == len(rows) and all(
+        row.get("status") == "retained_hot_or_active"
+        or (row.get("status") in ("dry_run", "applied")
+            and _integer(row.get("candidate_bytes")) is not None
+            and row["candidate_bytes"] >= 0)
+        for row in runs
+    )
     retained: dict[str, dict[str, Any]] = {}
     failures: dict[tuple[str, str, str, int | None], int] = {}
 
@@ -302,8 +317,8 @@ def _result_artifact_summary(rows: Sequence[Any]) -> dict[str, Any]:
     ranked = sorted(failures.items(), key=lambda item: (-item[1], item[0][:3], -1 if item[0][3] is None else item[0][3]))
     return {
         "run_count": len(runs),
-        # Unknown when every run stopped before it sized its candidates.
-        "candidate_bytes": sum(_integer(row.get("candidate_bytes")) or 0 for row in sized) if sized or not runs else None,
+        # One unsized run makes the total unknown, even if another run measured zero.
+        "candidate_bytes": sum(_integer(row["candidate_bytes"]) for row in sized) if complete else None,
         "removed_or_offloaded_bytes": sum(_integer(row.get("offloaded_bytes")) or 0 for row in sized),
         "retained_by_reason": _reason_rows(retained),
         "failures": [
