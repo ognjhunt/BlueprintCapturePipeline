@@ -180,6 +180,24 @@ def test_unreported_break_glass_note_warns_without_disclosing_note(tmp_path: Pat
     assert "sensitive detail" not in json.dumps(cap.capacity_summary(report))
 
 
+@pytest.mark.parametrize(("outlook", "expected"), [
+    ({"volume_growth": "planned", "reclaimable_bytes": 0}, (1600.0, "volume_growth")),
+    ({"volume_growth": "applied", "reclaimable_bytes": 0}, (1600.0, "volume_growth")),
+    ({"volume_growth": "blocked", "reclaimable_bytes": 50, "next_reclaim_epoch": 3600.0},
+     (3600.0, "reclaim_scheduled")),
+    ({"volume_growth": "blocked", "reclaimable_bytes": 5, "next_reclaim_epoch": 3600.0},
+     (None, "operator_action_required")),
+])
+def test_capacity_eta_bases(outlook, expected) -> None:
+    assert cap.capacity_eta(10, summary={"reclaim_outlook": outlook}, now=1000.0) == {
+        "eta_epoch": expected[0], "eta_basis": expected[1]}
+
+
+def test_capacity_eta_is_unknown_without_readable_summary() -> None:
+    assert cap.capacity_eta(10, summary=None, now=1000.0) == {
+        "eta_epoch": None, "eta_basis": "unknown"}
+
+
 def test_controller_writes_evidence_alerts_on_escalation_and_repeats_hourly_while_critical(
     tmp_path: Path,
 ) -> None:

@@ -100,6 +100,26 @@ def alert_fingerprint(report: Mapping[str, Any]) -> str:
     })
     return "sha256:" + hashlib.sha256(json.dumps(rows, separators=(",", ":")).encode()).hexdigest()
 
+
+def capacity_eta(shortfall_bytes: int, *, summary: Mapping[str, Any] | None, now: float) -> dict[str, Any]:
+    """Bound a capacity wait to a measured growth or reclaim plan when known."""
+    unknown = {"eta_epoch": None, "eta_basis": "unknown"}
+    if not isinstance(summary, Mapping):
+        return unknown
+    outlook = summary.get("reclaim_outlook")
+    if not isinstance(outlook, Mapping):
+        return unknown
+    if outlook.get("volume_growth") in {"planned", "applied"}:
+        return {"eta_epoch": float(now) + 600, "eta_basis": "volume_growth"}
+    reclaimable = outlook.get("reclaimable_bytes")
+    next_reclaim = outlook.get("next_reclaim_epoch")
+    if (isinstance(reclaimable, (int, float)) and not isinstance(reclaimable, bool)
+            and reclaimable >= max(0, shortfall_bytes)
+            and isinstance(next_reclaim, (int, float)) and not isinstance(next_reclaim, bool)
+            and next_reclaim > now):
+        return {"eta_epoch": float(next_reclaim), "eta_basis": "reclaim_scheduled"}
+    return {"eta_epoch": None, "eta_basis": "operator_action_required"}
+
 MOUNTS_ENV = "BLUEPRINT_CAPACITY_MOUNTS"
 REPORT_ROOT_ENV = "BLUEPRINT_CAPACITY_REPORT_ROOT"
 RESERVATION_ROOT_ENV = "BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT"
@@ -1093,6 +1113,7 @@ __all__ = [
     "ControlPlaneCapacityError",
     "alert_due",
     "build_capacity_report",
+    "capacity_eta",
     "capacity_summary",
     "chain_footprints",
     "footprint_basis",
