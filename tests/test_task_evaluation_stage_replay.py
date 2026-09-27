@@ -5,9 +5,11 @@ from __future__ import annotations
 from functools import partial
 from types import SimpleNamespace
 
+import errno
 import hashlib
 import json
 import os
+import shutil
 import textwrap
 from pathlib import Path
 
@@ -436,6 +438,216 @@ def test_parent_fetch_boundary_is_not_ready_for_progression(tmp_path: Path):
         replay_root=tmp_path / "replays", allowed_uri_prefixes=PREFIXES, service_account=SERVICE_ACCOUNT)
     assert report["sam31_ready"] is False
     assert report["reached_render_inputs_boundary"] is False
+
+
+def _materialized_parent(tmp_path: Path) -> tuple[dict, Path, Path, Path]:
+    """A parent whose inputs the real worker already materialized into the production store."""
+
+    request, payloads = _sam_request()
+    parent_queue, input_root, children = tmp_path / "parent", tmp_path / "prepared-references", tmp_path / "children"
+    stage_launch_preparation_request(value=request, queue_root=parent_queue, submitted_by="blueprint-webapp")
+    worker.process_launch_preparation_queue(
+        queue_root=parent_queue, input_root=input_root, allowed_uri_prefixes=PREFIXES,
+        service_account=SERVICE_ACCOUNT, source_commit=request["expected_production_commit"], fetcher=fetcher(payloads),
+        sam31_preparation_advancer=lambda context: {"status": "waiting_for_child", "evidence_refs": []},
+    )
+    return request, parent_queue, input_root, children
+
+
+def _replay_materialized_parent(tmp_path: Path, request: dict, parent_queue: Path, input_root: Path, children: Path) -> dict:
+    return replay.replay_parent(
+        parent_queue_root=parent_queue, preparation_id=request["preparation_id"], child_queue_root=children,
+        input_root=input_root, replay_root=tmp_path / "replays", allowed_uri_prefixes=PREFIXES,
+        service_account=SERVICE_ACCOUNT,
+        advancer=lambda context: {"status": "waiting_for_child", "evidence_refs": []},
+    )
+
+
+def _store_on_another_volume(monkeypatch, store: Path) -> None:
+    """The host's lookahead: activations on the root disk, the content store on the work volume.
+
+    Linking a store blob into the scratch fails with EXDEV, so the replay copies it; links
+    made inside the scratch (the worker's own projections) stay on one device and succeed.
+    """
+
+    real_link = os.link
+
+    def link(source, destination, *args, **kwargs):
+        if Path(source).parent == store:
+            raise OSError(errno.EXDEV, "Invalid cross-device link")
+        return real_link(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(replay.os, "link", link)
+
+
+def test_parent_replay_releases_its_scratch_inputs_including_linked_materializations(tmp_path: Path, monkeypatch) -> None:
+    """2026-09-27: every scene-configuration activation replays its parent under
+    ``<activation>/lookahead``. The activations live on the root disk and the content store on
+    the work volume, so each replay copied the whole store and nothing removed the copy: 107
+    activations held about 13 GiB. The worker also hard-links every blob the preparation
+    references into ``prepared-references/<preparation>/``, so the whole scratch input tree is
+    released, and each copy's bytes count once however many names it had."""
+
+    request, parent_queue, input_root, children = _materialized_parent(tmp_path)
+    store = input_root / "content-addressed" / "sha256"
+    # The production store also holds the inputs of every other live preparation.
+    other = b"another preparation's input" * 100
+    (store / hashlib.sha256(other).hexdigest()).write_bytes(other)
+    (store / hashlib.sha256(other).hexdigest()).chmod(0o440)
+    blobs = sorted(store.iterdir())
+    before = _tree_digest(input_root)
+    _store_on_another_volume(monkeypatch, store)
+    monkeypatch.setenv(replay.driver.CHILD_QUEUE_ENV, str(children))
+
+    report = _replay_materialized_parent(tmp_path, request, parent_queue, input_root, children)
+
+    run_root = Path(report["report_path"]).parent
+    released = report["scratch_inputs_released"]
+    assert report["status"] == "waiting_for_child"
+    assert report["content_blobs_linked"] == len(blobs)
+    assert not (run_root / "prepared-references").exists()
+    # Every store blob was copied once; the names the worker linked to a copy free nothing more.
+    assert (released["inodes"], released["bytes"]) == (len(blobs), sum(path.stat().st_size for path in blobs))
+    assert released["files"] > released["inodes"], "the worker's linked materializations went too"
+    saved = json.loads(Path(report["report_path"]).read_text(encoding="utf-8"))
+    assert saved["scratch_inputs_released"] == released
+    assert _tree_digest(input_root) == before
+    assert any(Path(report["scratch_queue_root"]).rglob("*.json"))
+
+
+def test_parent_replay_releases_scratch_when_the_worker_refuses(tmp_path: Path, monkeypatch) -> None:
+    request, parent_queue, input_root, children = _materialized_parent(tmp_path)
+    store = input_root / "content-addressed" / "sha256"
+    before = _tree_digest(input_root)
+    _store_on_another_volume(monkeypatch, store)
+    monkeypatch.setenv(replay.driver.CHILD_QUEUE_ENV, str(children))
+    seen: list[list[str]] = []
+
+    def refuse(**kwargs):
+        seen.append(sorted(path.name for path in (Path(kwargs["input_root"]) / "content-addressed" / "sha256").iterdir()))
+        raise RuntimeError("worker refused in fixture")
+
+    monkeypatch.setattr(worker, "process_launch_preparation_queue", refuse)
+
+    report = _replay_materialized_parent(tmp_path, request, parent_queue, input_root, children)
+
+    run_root = Path(report["report_path"]).parent
+    assert report["status"] == "worker_refused"
+    # Recorded as on the normal path, so storage GC can tell a finished refused replay.
+    assert (report["nothing_fetched"], report["fetch_attempts"]) == (True, [])
+    assert seen == [sorted(path.name for path in store.iterdir())], "the worker ran against the whole scratch copy"
+    assert not (run_root / "prepared-references").exists()
+    assert report["scratch_inputs_released"] == {
+        "files": len(seen[0]), "inodes": len(seen[0]), "bytes": sum(path.stat().st_size for path in store.iterdir()),
+    }
+    saved = json.loads(Path(report["report_path"]).read_text(encoding="utf-8"))
+    assert (saved["status"], saved["nothing_fetched"], saved["scratch_inputs_released"]) == (
+        "worker_refused", True, report["scratch_inputs_released"])
+    assert _tree_digest(input_root) == before
+
+
+def test_parent_replay_releases_a_partial_copy_when_the_scratch_disk_fills(tmp_path: Path, monkeypatch) -> None:
+    request, parent_queue, input_root, children = _materialized_parent(tmp_path)
+    store = input_root / "content-addressed" / "sha256"
+    before = _tree_digest(input_root)
+    _store_on_another_volume(monkeypatch, store)
+    monkeypatch.setenv(replay.driver.CHILD_QUEUE_ENV, str(children))
+    real_copy = shutil.copy2
+    copied: list[str] = []
+
+    def copy2(source, destination, *args, **kwargs):
+        if Path(source).parent == store and copied:
+            raise OSError(errno.ENOSPC, "No space left on device")
+        result = real_copy(source, destination, *args, **kwargs)
+        if Path(source).parent == store:
+            copied.append(Path(source).name)
+        return result
+
+    monkeypatch.setattr(replay.shutil, "copy2", copy2)
+
+    with pytest.raises(OSError) as raised:
+        _replay_materialized_parent(tmp_path, request, parent_queue, input_root, children)
+
+    assert raised.value.errno == errno.ENOSPC and len(copied) == 1
+    [run_root] = (tmp_path / "replays").iterdir()
+    assert not (run_root / "prepared-references").exists()
+    assert _tree_digest(input_root) == before
+
+
+def test_a_release_that_fails_is_recorded_and_the_report_still_written(tmp_path: Path, monkeypatch) -> None:
+    request, parent_queue, input_root, children = _materialized_parent(tmp_path)
+    _store_on_another_volume(monkeypatch, input_root / "content-addressed" / "sha256")
+    monkeypatch.setenv(replay.driver.CHILD_QUEUE_ENV, str(children))
+    real_rmtree = shutil.rmtree
+
+    def rmtree(path, *args, **kwargs):
+        if Path(path).name == "prepared-references":
+            raise PermissionError(errno.EACCES, "Permission denied")
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(replay.shutil, "rmtree", rmtree)
+
+    report = _replay_materialized_parent(tmp_path, request, parent_queue, input_root, children)
+
+    refusal = {"files": 0, "inodes": 0, "bytes": 0, "refused": "replay_scratch_inputs_release_failed:PermissionError"}
+    assert (report["status"], report["scratch_inputs_released"]) == ("waiting_for_child", refusal)
+    assert json.loads(Path(report["report_path"]).read_text(encoding="utf-8"))["scratch_inputs_released"] == refusal
+    assert (Path(report["report_path"]).parent / "prepared-references").is_dir(), "nothing is claimed for what stayed"
+
+
+def test_a_failing_release_never_masks_the_replays_own_error(tmp_path: Path, monkeypatch) -> None:
+    request, parent_queue, input_root, children = _materialized_parent(tmp_path)
+    store = input_root / "content-addressed" / "sha256"
+    _store_on_another_volume(monkeypatch, store)
+    monkeypatch.setenv(replay.driver.CHILD_QUEUE_ENV, str(children))
+    real_copy, real_is_symlink = shutil.copy2, Path.is_symlink
+
+    def copy2(source, destination, *args, **kwargs):
+        if Path(source).parent == store:
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real_copy(source, destination, *args, **kwargs)
+
+    def is_symlink(self):
+        if self.name == "prepared-references":
+            raise PermissionError(errno.EACCES, "Permission denied")
+        return real_is_symlink(self)
+
+    monkeypatch.setattr(replay.shutil, "copy2", copy2)
+    monkeypatch.setattr(Path, "is_symlink", is_symlink)
+
+    with pytest.raises(OSError) as raised:
+        _replay_materialized_parent(tmp_path, request, parent_queue, input_root, children)
+
+    assert raised.value.errno == errno.ENOSPC
+
+
+def test_scratch_inputs_release_counts_each_inode_once_and_never_follows_a_link(tmp_path: Path) -> None:
+    production = tmp_path / "production" / "sha256"
+    production.mkdir(parents=True)
+    blob = production / ("a" * 64)
+    blob.write_bytes(b"production bytes")
+    linked_inputs = tmp_path / "linked-run" / "prepared-references"
+    linked_inputs.parent.mkdir(parents=True)
+    linked_inputs.symlink_to(production.parent, target_is_directory=True)
+
+    assert replay._release_scratch_inputs(linked_inputs) == {
+        "files": 0, "inodes": 0, "bytes": 0, "refused": "replay_scratch_inputs_unsafe"}
+    assert linked_inputs.is_symlink() and blob.read_bytes() == b"production bytes"
+
+    inputs = tmp_path / "run" / "prepared-references"
+    store = inputs / "content-addressed" / "sha256"
+    store.mkdir(parents=True)
+    copy = store / ("b" * 64)
+    copy.write_bytes(b"a scratch copy")
+    (inputs / "preparation").mkdir()
+    os.link(copy, inputs / "preparation" / copy.name)  # a materialized name: the copy counts once
+    os.link(blob, store / blob.name)  # a link shared with the production store frees nothing
+    (store / ("c" * 64)).symlink_to(blob)
+    (inputs / "linked-directory").symlink_to(production, target_is_directory=True)
+
+    assert replay._release_scratch_inputs(inputs) == {"files": 3, "inodes": 1, "bytes": len(b"a scratch copy")}
+    assert not inputs.exists() and blob.read_bytes() == b"production bytes" and blob.stat().st_nlink == 1
+    assert replay._release_scratch_inputs(inputs) == {"files": 0, "inodes": 0, "bytes": 0}
 
 
 def _queued_preparation(tmp_path: Path) -> tuple[Path, Path]:

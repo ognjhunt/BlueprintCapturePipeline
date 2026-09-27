@@ -423,6 +423,10 @@ def test_storage_gc_timer_pair_is_deployed_armed_and_scoped_by_storage_class() -
         SCENE_WORKSPACE_RETIREMENT_ENV,
         SCENE_WORKSPACE_ROOTS_ENV,
     )
+    from blueprint_pipeline.control_plane_replay_cache_gc import (
+        REPLAY_CACHE_RETENTION_ENV,
+        REPLAY_PARENT_ROOTS_ENV,
+    )
     from blueprint_pipeline.control_plane_storage_pins import PINS_ROOT_ENV
     from blueprint_pipeline.control_plane_storage_roots import classify_path
 
@@ -448,6 +452,15 @@ def test_storage_gc_timer_pair_is_deployed_armed_and_scoped_by_storage_class() -
     ]
     assert not set(roots(PLAN_ONLY_DERIVED_ROOTS_ENV)) & set(roots(DERIVED_ROOTS_ENV))
     assert "ReadOnlyPaths=/var/lib/blueprint/task-evaluation-inputs/sam31-preparations" in service
+    # Activation lookaheads (configured-controls work state) keep their leaked store copies until the
+    # owner opts in; the root is optional so a host without activations still starts the unit.
+    activations = (
+        "/var/lib/blueprint/pipeline-control-plane/task-evaluation-configured-controls/"
+        "scene-configuration-activations"
+    )
+    assert roots(REPLAY_PARENT_ROOTS_ENV) == [activations]
+    assert classify_path(activations).storage_class == "work"
+    assert f"ReadWritePaths=-{activations}\n" in service
     for root in roots(CONTENT_STORE_ROOTS_ENV):
         assert root.endswith("/sha256") and classify_path(root).storage_class == "cache", root
     for root in roots(EVIDENCE_ROOTS_ENV):
@@ -464,14 +477,15 @@ def test_storage_gc_timer_pair_is_deployed_armed_and_scoped_by_storage_class() -
         "/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-intents"]
     assert classify_path(roots(SCENE_INTENT_ROOT_ENV)[0]).storage_class == "work"
     assert roots(PINS_ROOT_ENV) == ["/var/lib/blueprint/pipeline-control-plane/storage-pins"]
-    for opt_in in ("BLUEPRINT_CONTROL_PLANE_EVIDENCE_OFFLOAD", SCENE_WORKSPACE_RETIREMENT_ENV):
+    for opt_in in ("BLUEPRINT_CONTROL_PLANE_EVIDENCE_OFFLOAD", SCENE_WORKSPACE_RETIREMENT_ENV, REPLAY_CACHE_RETENTION_ENV):
         assert not any(
             row.startswith(f"Environment={opt_in}=") for row in service.splitlines()
-        ), "offload and scene retirement stay operator opt-ins from the environment file"
+        ), "offload, scene retirement and replay cache retention stay operator opt-ins from the environment file"
     # Retirement is its own owner decision: the example environment documents it but leaves it off.
     example = text("deploy/systemd/pipeline-control-plane.env.example")
-    assert f"# {SCENE_WORKSPACE_RETIREMENT_ENV}=1" in example
-    assert not any(row.startswith(f"{SCENE_WORKSPACE_RETIREMENT_ENV}=") for row in example.splitlines())
+    for opt_in in (SCENE_WORKSPACE_RETIREMENT_ENV, REPLAY_CACHE_RETENTION_ENV):
+        assert f"# {opt_in}=1" in example
+        assert not any(row.startswith(f"{opt_in}=") for row in example.splitlines())
     assert "Unit=blueprint-control-plane-storage-gc.service" in timer
     assert "OnUnitInactiveSec=" in timer and "Persistent=true" in timer
 
