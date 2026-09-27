@@ -89,10 +89,12 @@ def test_replay_cache_phase_plans_by_default_and_applies_only_when_enabled(tmp_p
                  replay_cache_retention_enabled=True)["replay_caches"]["candidate_bytes"] == 0
 
 
-def test_a_lookahead_the_replay_leaked_is_reclaimed_down_to_its_projections(tmp_path, monkeypatch) -> None:
-    """The 2026-09-27 backlog as the real replay wrote it, before it released its store: the
-    phase removes every copy nothing else links, keeps the parent report, and keeps each copy
-    the replayed preparation projected, since removing one of its two names frees nothing."""
+def _real_lookahead(tmp_path: Path, monkeypatch, *, released: bool) -> tuple[dict, Path, bytes]:
+    """The real parent replay run into an activation's lookahead, the store on another volume.
+
+    With ``released=False`` it leaves its scratch inputs behind, as every replay before the
+    release did: that is the 2026-09-27 backlog.
+    """
 
     from functools import partial
     from types import SimpleNamespace
@@ -106,7 +108,8 @@ def test_a_lookahead_the_replay_leaked_is_reclaimed_down_to_its_projections(tmp_
     monkeypatch.setattr(replay, "reserve_control_plane_disk", partial(
         replay.reserve_control_plane_disk,
         disk_usage=lambda _path: SimpleNamespace(total=512 * 2**30, used=128 * 2**30, free=384 * 2**30)))
-    monkeypatch.setattr(replay, "_release_scratch_store", lambda _path: {"files": 0, "bytes": 0})
+    if not released:
+        monkeypatch.setattr(replay, "_release_scratch_inputs", lambda _path: {"files": 0, "inodes": 0, "bytes": 0})
     request, parent_queue, input_root, children = _materialized_parent(tmp_path)
     store = input_root / "content-addressed" / "sha256"
     other = b"another preparation's input" * 100
@@ -119,14 +122,36 @@ def test_a_lookahead_the_replay_leaked_is_reclaimed_down_to_its_projections(tmp_
         input_root=input_root, replay_root=activations / request["preparation_id"] / "lookahead",
         allowed_uri_prefixes=PREFIXES, service_account=SERVICE_ACCOUNT,
         advancer=lambda context: {"status": "waiting_for_child", "evidence_refs": []})
+    return report, activations, other
+
+
+def _enabled_tick(tmp_path: Path, activations: Path, report: dict) -> dict:
+    return run_storage_gc(content_store_roots=[], derived_roots=[], queue_roots=[], pins_root=tmp_path / "pins",
+                          now=lambda: os.path.getmtime(report["report_path"]) + 7200, classifier=_noclass,
+                          replay_parent_roots=[activations], apply=True, ack=RUN_ACK,
+                          replay_cache_retention_enabled=True)
+
+
+def test_a_lookahead_now_keeps_its_report_and_queue_and_no_scratch_inputs(tmp_path, monkeypatch) -> None:
+    report, activations, _other = _real_lookahead(tmp_path, monkeypatch, released=True)
+
+    assert not (Path(report["report_path"]).parent / "prepared-references").exists()
+    assert Path(report["report_path"]).is_file() and any(Path(report["scratch_queue_root"]).rglob("*.json"))
+    tick = _enabled_tick(tmp_path, activations, report)
+    assert (tick["replay_caches"]["removed_bytes"], "phase_errors" in tick) == (0, False)
+
+
+def test_a_lookahead_the_replay_leaked_is_reclaimed_down_to_its_projections(tmp_path, monkeypatch) -> None:
+    """The 2026-09-27 backlog as the real replay wrote it, before it released its store: the
+    phase removes every copy nothing else links, keeps the parent report, and keeps each copy
+    the replayed preparation projected, since removing one of its two names frees nothing."""
+
+    report, activations, other = _real_lookahead(tmp_path, monkeypatch, released=False)
     copies = Path(report["report_path"]).parent / "prepared-references" / "content-addressed" / "sha256"
     projected = {path.name for path in copies.iterdir() if path.stat().st_nlink > 1}
     assert projected and len(projected) == len(list(copies.iterdir())) - 1
 
-    tick = run_storage_gc(content_store_roots=[], derived_roots=[], queue_roots=[], pins_root=tmp_path / "pins",
-                          now=lambda: os.path.getmtime(report["report_path"]) + 7200, classifier=_noclass,
-                          replay_parent_roots=[activations], apply=True, ack=RUN_ACK,
-                          replay_cache_retention_enabled=True)
+    tick = _enabled_tick(tmp_path, activations, report)
 
     assert tick["replay_caches"]["removed_bytes"] == len(other) and "phase_errors" not in tick
     assert {path.name for path in copies.iterdir()} == projected

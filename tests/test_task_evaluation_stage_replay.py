@@ -453,11 +453,13 @@ def _store_on_another_volume(monkeypatch, store: Path) -> None:
     monkeypatch.setattr(replay.os, "link", link)
 
 
-def test_parent_replay_releases_its_scratch_content_store(tmp_path: Path, monkeypatch) -> None:
+def test_parent_replay_releases_its_scratch_inputs_including_linked_materializations(tmp_path: Path, monkeypatch) -> None:
     """2026-09-27: every scene-configuration activation replays its parent under
     ``<activation>/lookahead``. The activations live on the root disk and the content store on
     the work volume, so each replay copied the whole store and nothing removed the copy: 107
-    activations held about 13 GiB. The replay now releases its scratch store when it is done."""
+    activations held about 13 GiB. The worker also hard-links every blob the preparation
+    references into ``prepared-references/<preparation>/``, so the whole scratch input tree is
+    released, and each copy's bytes count once however many names it had."""
 
     request, parent_queue, input_root, children = _materialized_parent(tmp_path)
     store = input_root / "content-addressed" / "sha256"
@@ -465,6 +467,7 @@ def test_parent_replay_releases_its_scratch_content_store(tmp_path: Path, monkey
     other = b"another preparation's input" * 100
     (store / hashlib.sha256(other).hexdigest()).write_bytes(other)
     (store / hashlib.sha256(other).hexdigest()).chmod(0o440)
+    blobs = sorted(store.iterdir())
     before = _tree_digest(input_root)
     _store_on_another_volume(monkeypatch, store)
     monkeypatch.setenv(replay.driver.CHILD_QUEUE_ENV, str(children))
@@ -472,14 +475,15 @@ def test_parent_replay_releases_its_scratch_content_store(tmp_path: Path, monkey
     report = _replay_materialized_parent(tmp_path, request, parent_queue, input_root, children)
 
     run_root = Path(report["report_path"]).parent
+    released = report["scratch_inputs_released"]
     assert report["status"] == "waiting_for_child"
-    assert report["content_blobs_linked"] == len(list(store.iterdir()))
-    assert not (run_root / "prepared-references" / "content-addressed").exists()
-    # Only single-link copies free bytes when released. Each blob this preparation references
-    # also has the worker's projection in the scratch, so its copy is still held there.
-    assert report["scratch_content_store_released"] == {"files": 1, "bytes": len(other)}
+    assert report["content_blobs_linked"] == len(blobs)
+    assert not (run_root / "prepared-references").exists()
+    # Every store blob was copied once; the names the worker linked to a copy free nothing more.
+    assert (released["inodes"], released["bytes"]) == (len(blobs), sum(path.stat().st_size for path in blobs))
+    assert released["files"] > released["inodes"], "the worker's linked materializations went too"
     saved = json.loads(Path(report["report_path"]).read_text(encoding="utf-8"))
-    assert saved["scratch_content_store_released"] == report["scratch_content_store_released"]
+    assert saved["scratch_inputs_released"] == released
     assert _tree_digest(input_root) == before
     assert any(Path(report["scratch_queue_root"]).rglob("*.json"))
 
@@ -502,13 +506,16 @@ def test_parent_replay_releases_scratch_when_the_worker_refuses(tmp_path: Path, 
 
     run_root = Path(report["report_path"]).parent
     assert report["status"] == "worker_refused"
+    # Recorded as on the normal path, so storage GC can tell a finished refused replay.
+    assert (report["nothing_fetched"], report["fetch_attempts"]) == (True, [])
     assert seen == [sorted(path.name for path in store.iterdir())], "the worker ran against the whole scratch copy"
-    assert not (run_root / "prepared-references" / "content-addressed").exists()
-    assert report["scratch_content_store_released"] == {
-        "files": len(seen[0]), "bytes": sum(path.stat().st_size for path in store.iterdir()),
+    assert not (run_root / "prepared-references").exists()
+    assert report["scratch_inputs_released"] == {
+        "files": len(seen[0]), "inodes": len(seen[0]), "bytes": sum(path.stat().st_size for path in store.iterdir()),
     }
     saved = json.loads(Path(report["report_path"]).read_text(encoding="utf-8"))
-    assert (saved["status"], saved["scratch_content_store_released"]) == ("worker_refused", report["scratch_content_store_released"])
+    assert (saved["status"], saved["nothing_fetched"], saved["scratch_inputs_released"]) == (
+        "worker_refused", True, report["scratch_inputs_released"])
     assert _tree_digest(input_root) == before
 
 
@@ -536,32 +543,37 @@ def test_parent_replay_releases_a_partial_copy_when_the_scratch_disk_fills(tmp_p
 
     assert raised.value.errno == errno.ENOSPC and len(copied) == 1
     [run_root] = (tmp_path / "replays").iterdir()
-    assert not (run_root / "prepared-references" / "content-addressed").exists()
+    assert not (run_root / "prepared-references").exists()
     assert _tree_digest(input_root) == before
 
 
-def test_scratch_store_release_never_follows_a_link(tmp_path: Path) -> None:
+def test_scratch_inputs_release_counts_each_inode_once_and_never_follows_a_link(tmp_path: Path) -> None:
     production = tmp_path / "production" / "sha256"
     production.mkdir(parents=True)
     blob = production / ("a" * 64)
     blob.write_bytes(b"production bytes")
-    linked_store = tmp_path / "linked-run" / "prepared-references" / "content-addressed"
-    linked_store.parent.mkdir(parents=True)
-    linked_store.symlink_to(production.parent, target_is_directory=True)
+    linked_inputs = tmp_path / "linked-run" / "prepared-references"
+    linked_inputs.parent.mkdir(parents=True)
+    linked_inputs.symlink_to(production.parent, target_is_directory=True)
 
-    assert replay._release_scratch_store(linked_store) == {
-        "files": 0, "bytes": 0, "refused": "replay_scratch_content_store_unsafe"}
-    assert linked_store.is_symlink() and blob.read_bytes() == b"production bytes"
+    assert replay._release_scratch_inputs(linked_inputs) == {
+        "files": 0, "inodes": 0, "bytes": 0, "refused": "replay_scratch_inputs_unsafe"}
+    assert linked_inputs.is_symlink() and blob.read_bytes() == b"production bytes"
 
-    store = tmp_path / "run" / "prepared-references" / "content-addressed"
-    (store / "sha256").mkdir(parents=True)
-    (store / "sha256" / ("b" * 64)).write_bytes(b"a scratch copy")
-    (store / "sha256" / ("c" * 64)).symlink_to(blob)
-    (store / "linked-directory").symlink_to(production, target_is_directory=True)
+    inputs = tmp_path / "run" / "prepared-references"
+    store = inputs / "content-addressed" / "sha256"
+    store.mkdir(parents=True)
+    copy = store / ("b" * 64)
+    copy.write_bytes(b"a scratch copy")
+    (inputs / "preparation").mkdir()
+    os.link(copy, inputs / "preparation" / copy.name)  # a materialized name: the copy counts once
+    os.link(blob, store / blob.name)  # a link shared with the production store frees nothing
+    (store / ("c" * 64)).symlink_to(blob)
+    (inputs / "linked-directory").symlink_to(production, target_is_directory=True)
 
-    assert replay._release_scratch_store(store) == {"files": 1, "bytes": len(b"a scratch copy")}
-    assert not store.exists() and blob.read_bytes() == b"production bytes"
-    assert replay._release_scratch_store(store) == {"files": 0, "bytes": 0}
+    assert replay._release_scratch_inputs(inputs) == {"files": 3, "inodes": 1, "bytes": len(b"a scratch copy")}
+    assert not inputs.exists() and blob.read_bytes() == b"production bytes" and blob.stat().st_nlink == 1
+    assert replay._release_scratch_inputs(inputs) == {"files": 0, "inodes": 0, "bytes": 0}
 
 
 def _queued_preparation(tmp_path: Path) -> tuple[Path, Path]:
