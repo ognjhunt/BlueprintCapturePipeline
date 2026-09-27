@@ -563,6 +563,39 @@ One tick runs nine phases in order:
    `BLUEPRINT_CONTROL_PLANE_SCENE_WORKSPACE_RETIREMENT=1` enables it; its
    detailed contract is below.
 
+**Why a tick kept what it kept.** On 2026-09-27 an applied tick with offload
+enabled reclaimed nothing, and its report could not say why. The derived and
+evidence manifests carry `retained_by_reason`, `{reason: {count, bytes}}` in
+logical bytes (a hardlinked file counts once per name), and their applied
+receipts copy it with the manifest's `candidate_count` and `candidate_bytes`.
+`retained_counts` is unchanged.
+
+- Derived directories: `pinned` (with `by_kind`, for example `activation` or
+  `activation+preparation`), `queue_referenced`, `young` and `unsafe`.
+- Evidence offload: `unsafe`, `result_registry`, `already_offloaded`,
+  `unsealed_no_window`, `unsealed_recent`, `hot`, or the first protection that
+  holds, checked in this order: `protected_unreadable_settlement`,
+  `protected_process`, `protected_process_inventory_unreadable`,
+  `protected_pin`, `protected_settlement`, `protected_queue`. A `/proc` entry
+  the tick cannot read protects the run (`protected_process_inventory_unreadable`)
+  instead of failing the check.
+- Result-artifact offload: a retained run says why in `retained_reason` (`hot`
+  or its protection reason). A run whose offload raised records `error_type`,
+  `errno` (for an `OSError`) and `stage` (`registry`, `protection`, `publish` or
+  `evict`), and so does a skipped artifact. Messages and file names are never
+  recorded.
+
+With `--report-out` the tick also writes `summary.json`
+(`control_plane_storage_gc_summary.v1`) beside `latest.json`, published the same
+way (0644 in the 0755 directory). It holds the tick's status and
+`source_report_digest`, the opt-in flags, alerts, `phase_errors` and
+`skipped_roots`. Per phase it gives `candidate_bytes`,
+`removed_or_offloaded_bytes` and `retained_by_reason`, with null bytes where a
+phase counts without sizing. `top_retained` lists the ten reasons that keep the
+most bytes. It names no run, file or host path except the configured roots in
+`skipped_roots`, and stays under 256 KiB. Read it first:
+`python3 scripts/operator_door.py cat /var/lib/blueprint/pipeline-control-plane/storage-gc/summary.json`.
+
 Restore an offloaded run with
 `python -c 'from blueprint_pipeline.control_plane_evidence_offload import restore_offloaded_evidence as r; r(pointer_path=..., destination=...)'`;
 every member digest is verified before the directory is exposed.

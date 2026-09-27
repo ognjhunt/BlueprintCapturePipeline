@@ -285,6 +285,7 @@ python3 scripts/operator_door.py whoami
 python3 scripts/operator_door.py status
 python3 scripts/operator_door.py usage
 python3 scripts/operator_door.py ls /var/lib/blueprint/pipeline-control-plane/deploy-receipts --sort mtime
+python3 scripts/operator_door.py cat /var/lib/blueprint/pipeline-control-plane/storage-gc/summary.json
 python3 scripts/operator_door.py cat /var/lib/blueprint/pipeline-control-plane/storage-gc/latest.json
 python3 scripts/operator_door.py cat /var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-intents/<intent>/progression.json
 python3 scripts/operator_door.py pull /var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs/<launch> ./launch
