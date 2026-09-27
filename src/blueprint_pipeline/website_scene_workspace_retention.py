@@ -1195,13 +1195,19 @@ def _authorized_plan(plan: Any, *, ack: str, context: RetentionContext) -> tuple
     try:
         bucket, scene_id = _identity(plan.get("bucket"), plan.get("scene_id"))
         scene = scene_path(context.storage_root, bucket, scene_id)
+        verified = [row["relative_path"] for row in plan["cloud_verified"]]
+        archived = [row["relative_path"] for row in plan["archive"]]
+        snapshot = [row[0] for row in plan["snapshot"]]
         well_formed = (
             plan.get("workspace") == str(scene)
             and all(isinstance(row["capture_id"], str) for row in plan["captures"])
-            and all(isinstance(row["relative_path"], str) for row in (*plan["cloud_verified"], *plan["archive"]))
-            and isinstance(plan["snapshot"], list)
+            and all(isinstance(path, str) for path in (*verified, *archived, *snapshot))
+            # Raw capture bytes are never archived, and every file is either verified or archived, once.
+            and not any(_is_raw(path) for path in archived)
+            and len(set(verified) | set(archived)) == len(verified) + len(archived)
+            and sorted(verified + archived) == sorted(snapshot)
         )
-    except (WebsiteSceneWorkspaceRetentionError, KeyError, TypeError) as exc:
+    except (WebsiteSceneWorkspaceRetentionError, KeyError, TypeError, IndexError) as exc:
         raise refused from exc
     if not well_formed:
         raise refused

@@ -1269,3 +1269,23 @@ def test_apply_rehashes_what_it_deletes_even_when_the_plan_used_the_cache(tmp_pa
 
     assert result["status"] == "skipped" and result["reason"] == "candidate_changed"
     assert video.is_file() and not (scene.parent / f"{SCENE}{retention.RETIRED_SUFFIX}").exists()
+
+
+@pytest.mark.parametrize("forgery", ["raw_in_archive", "file_missing_from_rows", "row_in_both"])
+def test_apply_refuses_a_plan_whose_rows_do_not_exactly_cover_its_snapshot(tmp_path, forgery):
+    scene, cloud = _scene(tmp_path)
+    forged = json.loads(json.dumps(_plan(tmp_path, cloud)))
+    if forgery == "raw_in_archive":  # raw capture bytes are never archived, whatever a plan says
+        raw = forged["cloud_verified"].pop()
+        forged["archive"].append({"relative_path": raw["relative_path"], "size_bytes": raw["size"],
+                                  "sha256": "sha256:" + "0" * 64})
+    elif forgery == "file_missing_from_rows":
+        forged["archive"].pop()
+    else:
+        forged["archive"].append({"relative_path": forged["cloud_verified"][0]["relative_path"], "size_bytes": 1,
+                                  "sha256": "sha256:" + "0" * 64})
+    forged["plan_digest"] = canonical_digest(forged, digest_field="plan_digest")
+
+    with pytest.raises(retention.WebsiteSceneWorkspaceRetentionError, match="apply_not_authorized"):
+        _retire(tmp_path, cloud, forged)
+    assert scene.is_dir()
