@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -452,6 +453,36 @@ def test_report_reclaims_a_directory_owned_by_the_previous_service_user(tmp_path
     assert calls == [(os.geteuid(), -1)]
     assert path.parent.stat().st_mode & 0o777 == 0o755
     assert path.stat().st_mode & 0o777 == 0o644
+
+
+def test_report_publication_stays_bound_to_checked_directory(tmp_path, monkeypatch) -> None:
+    report_dir = tmp_path / "storage-gc"
+    report_dir.mkdir()
+    moved_dir = tmp_path / "moved-storage-gc"
+    other_dir = tmp_path / "other"
+    other_dir.mkdir()
+    other_report = other_dir / "latest.json"
+    other_report.write_text('and keep this report', encoding="utf-8")
+    original_fchmod = os.fchmod
+    retargeted = False
+
+    def retarget_after_directory_check(fd: int, mode: int) -> None:
+        nonlocal retargeted
+        original_fchmod(fd, mode)
+        if stat.S_ISDIR(os.fstat(fd).st_mode) and not retargeted:
+            report_dir.rename(moved_dir)
+            report_dir.symlink_to(other_dir, target_is_directory=True)
+            retargeted = True
+
+    monkeypatch.setattr(os, "fchmod", retarget_after_directory_check)
+    with pytest.raises(ControlPlaneStorageGCError, match="storage_gc_report_directory_retargeted"):
+        gc_module._write_report(report_dir / "latest.json", {"status": "dry_run"})
+
+    assert retargeted
+    assert other_report.read_text(encoding="utf-8") == 'and keep this report'
+    assert json.loads((moved_dir / "latest.json").read_text(encoding="utf-8")) == {
+        "status": "dry_run"
+    }
 
 
 def _queue_row(root: Path, state: str, name: str, *, commit: str | None) -> Path:
