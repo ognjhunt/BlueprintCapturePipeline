@@ -1,4 +1,6 @@
 [Unit]
+Wants=blueprint-operator-door-hold-sweep.service
+After=blueprint-operator-door-hold-sweep.service
 Description=Reconcile completed G1 team campaign billing and private review
 
 [Timer]

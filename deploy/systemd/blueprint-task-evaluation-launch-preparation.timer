@@ -1,4 +1,6 @@
 [Unit]
+Wants=blueprint-operator-door-hold-sweep.service
+After=blueprint-operator-door-hold-sweep.service
 Description=Retry no-spend Task Evaluation preparations waiting for disk capacity
 
 [Timer]

@@ -1,4 +1,6 @@
 [Unit]
+Wants=blueprint-operator-door-hold-sweep.service
+After=blueprint-operator-door-hold-sweep.service
 Description=Watch bounded Blueprint SAM preparation child jobs
 
 [Path]

@@ -1,4 +1,6 @@
 [Unit]
+Wants=blueprint-operator-door-hold-sweep.service
+After=blueprint-operator-door-hold-sweep.service
 Description=Watch the durable Blueprint Task Evaluation launch queue
 
 [Path]

@@ -178,8 +178,9 @@ python3 scripts/operator_door.py release-hold blueprint-task-evaluation-scene-pr
 The root runner keeps `requests/holds/<unit>.json` at mode 0644. A renewed
 hold gets a new request id without shortening the deadline; an older expiry
 timer cannot release it. Holds disable the unit until release, then restore
-its earlier boot policy. The installed hold sweep runs before boot timer and
-path targets and every minute thereafter, so a reboot cannot restart a held
+its earlier boot policy. Holdable timer and path units start after the installed
+boot sweep, which waits for each stop to finish; a minute timer repeats the
+sweep thereafter, so a reboot cannot restart a held
 unit or permanently lose its expiry. Status
 shows `remaining_seconds` and flags an overdue record, so a failed expiry is
 visible for an operator to release. Safety-critical teardown, spend-guard,

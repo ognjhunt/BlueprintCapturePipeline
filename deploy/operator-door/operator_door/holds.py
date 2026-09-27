@@ -181,7 +181,7 @@ def sweep(root: Path, *, now: float | None = None) -> int:
             if record["expires_at_epoch"] <= moment:
                 continue  # the next sweep or the existing expiry job releases it
             disabled = subprocess.run(["systemctl", "disable", "--", unit], check=False)
-            stopped = subprocess.run(["systemctl", "--no-block", "stop", "--", unit], check=False)
+            stopped = subprocess.run(["systemctl", "stop", "--", unit], check=False)
             failed |= disabled.returncode != 0 or stopped.returncode != 0
     return 1 if failed else 0
 

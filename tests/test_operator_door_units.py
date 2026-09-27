@@ -11,6 +11,7 @@ SYSTEMD_DIR = REPO_ROOT / "deploy" / "systemd"
 sys.path.insert(0, str(REPO_ROOT / "deploy" / "operator-door"))
 
 from operator_door.config import DoorConfig  # noqa: E402
+from operator_door.requests import RequestRefused, validate_request  # noqa: E402
 
 DOOR = SYSTEMD_DIR / "blueprint-operator-door.service"
 RUNNER = SYSTEMD_DIR / "blueprint-operator-door-runner.service"
@@ -81,3 +82,20 @@ def test_hold_sweep_runs_before_boot_triggers_and_repeats_after_boot() -> None:
     installer = (REPO_ROOT / "deploy" / "operator-door" / "install.sh").read_text(encoding="utf-8")
     assert "blueprint-operator-door-hold-sweep.service" in installer
     assert "blueprint-operator-door-hold-sweep.timer" in installer
+
+
+def test_every_holdable_trigger_waits_for_boot_hold_reconciliation() -> None:
+    holdable = []
+    for path in sorted(SYSTEMD_DIR.iterdir()):
+        if path.suffix not in {".timer", ".path"}:
+            continue
+        try:
+            validate_request({"kind": "hold", "unit": path.name, "owner": "operator",
+                              "reason": "maintenance", "expires_in_seconds": 60})
+        except RequestRefused:
+            continue
+        holdable.append(path.name)
+        unit = _unit(path)["Unit"]
+        assert "blueprint-operator-door-hold-sweep.service" in unit["After"].split(), path.name
+        assert "blueprint-operator-door-hold-sweep.service" in unit["Wants"].split(), path.name
+    assert holdable

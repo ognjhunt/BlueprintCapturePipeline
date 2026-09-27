@@ -45,7 +45,7 @@ def test_sweep_keeps_live_hold_disabled_and_releases_expired_hold(tmp_path, monk
 
     assert holds.sweep(root, now=1200) == 0
     assert ["systemctl", "disable", "--", live] in calls
-    assert ["systemctl", "--no-block", "stop", "--", live] in calls
+    assert ["systemctl", "stop", "--", live] in calls
     assert ["systemctl", "enable", "--", expired] in calls
     assert ["systemctl", "--no-block", "start", "--", expired] in calls
     assert json.loads(live_path.read_text())["status"] == "active"
