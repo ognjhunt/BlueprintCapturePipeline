@@ -18,6 +18,7 @@ from tests.test_native_g1_shared_scene_episode import _Bridge
 from tests.test_native_g1_team_runtime_session import _action
 from tests.test_native_g1_team_policy_approval import _approval
 from tests.test_native_g1_team_scored_scene_episode import _inputs
+from tests.test_native_task_episode_environment import _RigidNativeReadback
 from tests.test_team_policy_delivery_profile import OWNER, _profile
 
 
@@ -57,9 +58,11 @@ def _run(tmp_path: Path, monkeypatch, *, reject_scene_inference: bool = False):
     monkeypatch.setattr(
         native_task_arena_readback,
         "NativeRigidTaskArenaReadback",
-        lambda built: type(
-            "Readback", (), {"read_task_sample": lambda self: {"object_z_m": float(scene.step)}}
-        )(),
+        lambda built: _RigidNativeReadback(
+            finger_separation_m=0.08,
+            grasp_frame_position_world_m=[1.1, 2.1, 0.9],
+            destination_scene_forbidden_contact_peak_force_n=0.0,
+        ),
     )
     monkeypatch.setattr(
         adp_task_scoring,
