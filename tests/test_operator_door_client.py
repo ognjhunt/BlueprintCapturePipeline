@@ -55,7 +55,8 @@ def door(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[dict[str, 
     add_token(tokens, name="viewer", sha256=hash_token(READ_ONLY), scopes=["read"])
     config = DoorConfig(read_roots=(str(data),), hidden_paths=(str(base / "hidden"),), state_root=str(state),
                         token_file=str(tokens), listen_port=0, max_read_bytes=4096,
-                        control_plane_state=str(base / "cp"), active_release_link=str(base / "none"))
+                        control_plane_state=str(base / "cp"), active_release_link=str(base / "none"),
+                        capacity_summary=str(base / "cp" / "capacity" / "summary.json"))
     host = HostInfo(config, runner=Runner(), proc_locks_path=str(base / "locks"),
                     fetch_json=lambda url: {"source_commit": SHA, "commit_proven": True, "blockers": []})
     server = make_server(config, host=host)
@@ -182,6 +183,39 @@ def test_scope_refusal_on_post_exits_3(door: dict[str, Any], monkeypatch: pytest
     monkeypatch.setenv("BLUEPRINT_OPERATOR_DOOR_TOKEN", READ_ONLY)
     assert _run("deploy", SHA)[0] == 3
 
+
+def test_usage_prints_the_capacity_usage_as_tables(door: dict[str, Any]) -> None:
+    summary = door["base"] / "cp" / "capacity" / "summary.json"
+    summary.parent.mkdir(parents=True)
+    summary.write_text(json.dumps({
+        "schema_version": "control_plane_capacity_summary.v1", "level": "warning", "alerts": [], "mounts": [],
+        "usage": {
+            "status": "complete", "observed_at_epoch": 900.0, "age_seconds": 1200.0,
+            "mounts": [{"mount": "/", "used_bytes": 150 * 1024**3, "surveyed_bytes": 145 * 1024**3,
+                        "classified_bytes": 130 * 1024**3, "attributed_fraction": 0.9667}],
+            "by_class": [{"storage_class": "work", "allocated_bytes": 60 * 1024**3,
+                          "apparent_bytes": 58 * 1024**3, "files": 1234}],
+            "top_roots": [{"root": "/var/lib/blueprint/pubsub-handoffs", "storage_class": "work",
+                           "allocated_bytes": 60 * 1024**3}],
+            "top_owners": [{"owner": "scene:site-capture-1", "root": "/var/lib/blueprint/pubsub-handoffs",
+                            "storage_class": "work", "allocated_bytes": 12 * 1024**3}],
+            "unclassified_roots": [{"root": "/var/lib/blueprint/something-new", "allocated_bytes": 2 * 1024**2}],
+        },
+    }), encoding="utf-8")
+    code, out = _run("usage")
+    assert code == 0
+    lines = out.splitlines()
+    assert lines[0] == "usage survey: complete, 1200 s old"
+    assert any(line.split() == ["/", "150.0", "GiB", "145.0", "GiB", "130.0", "GiB", "96.7%"] for line in lines)
+    assert any(line.split()[:3] == ["scene:site-capture-1", "work", "12.0"] for line in lines)
+    assert any(line.split() == ["/var/lib/blueprint/something-new", "2.0", "MiB"] for line in lines)
+    assert "{" not in out
+
+
+def test_usage_without_a_capacity_summary_exits_1(door: dict[str, Any], capsys: pytest.CaptureFixture[str]) -> None:
+    code, out = _run("usage")
+    assert code == 1 and out == ""
+    assert "capacity_unavailable:FileNotFoundError" in capsys.readouterr().err
 
 def test_retire_scene_workspace_spools_a_plan_or_an_apply(door: dict[str, Any]) -> None:
     code, out = _run("retire-scene-workspace", "site-capture-1")

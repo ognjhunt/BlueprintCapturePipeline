@@ -92,7 +92,7 @@ but `healthz` needs `Authorization: Bearer <token>`. Scopes are `read`,
 |---|---|---|
 | `GET /healthz` | none | `{"ok": true, "version": …}` |
 | `GET /whoami` | read | token name and scopes |
-| `GET /status` | read | deployed commit and blockers (loopback `/version`), active release, deploy units in flight and recent receipts, paid-launch lock holders from `/proc/locks`, spend guard, failed and controller units, disk, load, door queue |
+| `GET /status` | read | deployed commit and blockers (loopback `/version`), active release, deploy units in flight and recent receipts, paid-launch lock holders from `/proc/locks`, spend guard, failed and controller units, disk, `capacity` (the capacity controller's `summary.json`: level, alerts, per-mount admission and the usage survey by storage class, root and owner), load, door queue |
 | `GET /fs/list?path=&sort=name\|mtime&match=` | read | directory entries (capped) or a file's metadata |
 | `GET /fs/read?path=&offset=&length=` | read | bytes; `X-Door-Size`, `X-Door-Offset`, `X-Door-Eof` headers for paging |
 | `GET /fs/archive?path=` | read | tar.gz of a directory (512 MiB cap, two at a time) |
@@ -249,6 +249,7 @@ the deploy key from the repository's Settings → Deploy keys.
 ```bash
 python3 scripts/operator_door.py whoami
 python3 scripts/operator_door.py status
+python3 scripts/operator_door.py usage
 python3 scripts/operator_door.py ls /var/lib/blueprint/pipeline-control-plane/deploy-receipts --sort mtime
 python3 scripts/operator_door.py cat /var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-intents/<intent>/progression.json
 python3 scripts/operator_door.py pull /var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs/<launch> ./launch
@@ -272,6 +273,27 @@ cloud session with `--queue-root`, `--input-root`, `--replay-root` and
 `--approved-root` pointing at the pulled copy. It runs your branch's code with
 no host secrets and no paid calls, and nothing unreviewed runs on the host.
 
-Exit codes: 0 success; 1 a waited-for request did not succeed; 2 refused (rule
-on stderr); 3 unauthorized or missing scope; 4 network; 5 server error. The
-audit log is `/var/lib/blueprint-operator-door/audit/audit.jsonl`.
+`usage` answers "what uses the disk?" in one call. It prints `capacity.usage` from
+`status` as tables: each surveyed filesystem's used, surveyed and classified bytes
+and the attributed fraction, then bytes by storage class, the top roots, the top
+owners (`scene:`, `run:`, `release:`, `store:` or a root's child) and the 20
+largest unclassified roots (fewer if the bounded summary must shrink). Bytes
+are counted once per inode, so hardlinked stores are not double counted. The
+survey is at most hourly; the header gives its age. See
+[`CONTROL_PLANE_STORAGE.md`](CONTROL_PLANE_STORAGE.md#usage-attribution).
+
+```text
+usage survey: complete, 1200 s old
+
+mount                used       surveyed   classified  attributed
+/                    150.0 GiB  145.0 GiB  130.0 GiB   96.7%
+
+owner                        class  allocated  root
+store:prepared-references    cache  40.0 GiB   /var/lib/blueprint/task-evaluation-inputs/prepared-references
+scene:site-capture-ae539f2c  work   12.0 GiB   /var/lib/blueprint/pubsub-handoffs
+```
+
+Exit codes: 0 success; 1 a waited-for request did not succeed, or `usage` found
+no usage survey; 2 refused (rule on stderr); 3 unauthorized or missing scope; 4
+network; 5 server error. The audit log is
+`/var/lib/blueprint-operator-door/audit/audit.jsonl`.
