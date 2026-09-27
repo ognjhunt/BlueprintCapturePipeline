@@ -50,12 +50,15 @@ MEASURED_WINDOW = 50  # newest completed samples considered
 MEASURED_HEADROOM = 1.25
 MEASURED_FLOOR_BYTES = 64 * 1024**2
 HISTORY_MAX_LINES = 200  # compaction keeps the newest lines
-HISTORY_COMPACTION_BYTES = 64 * 1024
+# Every sample line is shorter than _SAMPLE_MAX_BYTES, so the newest
+# HISTORY_MAX_LINES always fit well under the threshold and a compaction leaves
+# room for many appends instead of rewriting the file on every one.
+HISTORY_COMPACTION_BYTES = 128 * 1024
 # Bookkeeping never waits indefinitely on the ledger lock: a caller that already
 # holds it (an evictor running under admission) would otherwise deadlock itself
 # and every worker queued behind it.  Giving up only loses one sample.
 HISTORY_LOCK_WAIT_SECONDS = 5.0
-_SAMPLE_MAX_BYTES = 1024
+_SAMPLE_MAX_BYTES = 512
 
 
 def _bounded_flock(descriptor: int, operation: int) -> None:

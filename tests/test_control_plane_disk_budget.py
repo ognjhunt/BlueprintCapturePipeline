@@ -260,14 +260,33 @@ def test_unreadable_history_falls_back_to_declared(tmp_path):
 
 def test_history_is_compacted_to_its_newest_samples(tmp_path):
     ledger = tmp_path / "ledger"
-    _samples(ledger, "launch_activation", [MIB + index for index in range(400)])
+    _samples(ledger, "launch_activation", [MIB + index for index in range(600)])
     path = ledger / "history" / "launch_activation.jsonl"
     rows = [json.loads(line) for line in path.read_text().splitlines()]
-    # 400 samples outgrow the 64 KiB threshold, so compaction must have dropped
+    # 600 samples outgrow the 128 KiB threshold, so compaction must have dropped
     # the oldest and kept a contiguous window of the newest.
-    assert disk_budget.HISTORY_MAX_LINES <= len(rows) < 400
-    assert [row["observed_bytes"] for row in rows] == [MIB + index for index in range(400 - len(rows), 400)]
+    assert disk_budget.HISTORY_MAX_LINES <= len(rows) < 600
+    assert [row["observed_bytes"] for row in rows] == [MIB + index for index in range(600 - len(rows), 600)]
     assert path.stat().st_size <= footprints.HISTORY_COMPACTION_BYTES + 1024
+
+
+def test_compaction_leaves_room_so_the_next_append_does_not_rewrite(tmp_path, monkeypatch):
+    # Every sample is shorter than the line cap, so the newest HISTORY_MAX_LINES
+    # always fit well under the threshold: compaction never repeats on each append.
+    assert footprints.HISTORY_MAX_LINES * footprints._SAMPLE_MAX_BYTES < footprints.HISTORY_COMPACTION_BYTES
+    ledger, compactions = tmp_path / "ledger", []
+    compact = footprints._compact_history
+    monkeypatch.setattr(footprints, "_compact_history", lambda *args: (compactions.append(1), compact(*args)))
+    while not compactions:  # the longest workload label makes the longest lines
+        assert disk_budget.record_footprint_sample(
+            reservation_root=ledger, role="stage_replay", observed_bytes=GIB, reserved_bytes=4 * GIB,
+            workload="w" * 64, baseline_bytes=GIB, fresh=True, device=2**40, duration_seconds=86_400.0)
+    rows = (ledger / "history" / "stage_replay.jsonl").read_text().splitlines()
+    assert len(rows) == footprints.HISTORY_MAX_LINES
+    assert disk_budget.record_footprint_sample(
+        reservation_root=ledger, role="stage_replay", observed_bytes=GIB, reserved_bytes=4 * GIB,
+        workload="w" * 64)
+    assert len(compactions) == 1
 
 
 def test_live_reservations_filter_device_and_dead_pids(tmp_path):
