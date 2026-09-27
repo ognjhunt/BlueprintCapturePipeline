@@ -503,6 +503,23 @@ def test_failed_warning_webhook_retries_on_the_next_tick(tmp_path):
     assert second["alert_posted"] is True and len(attempts) == 2
 
 
+def test_unchanged_warning_does_not_page_again_after_a_quiet_tick(tmp_path):
+    posted = []
+    common = dict(mounts=[str(tmp_path)], report_root=tmp_path / "capacity",
+                  reservation_root=tmp_path / "ledger", webhook_url="https://alerts.example/hook",
+                  volume=None, ack="", token="", poster=lambda _url, report: posted.append(report),
+                  survey=None, disk_usage=_usage(free_gib=40.0))
+
+    first = cap.run_controller(**common, now=1_000.0)
+    second = cap.run_controller(**common, now=1_600.0)
+    third = cap.run_controller(**common, now=2_200.0)
+
+    assert first["alert_posted"] is True
+    assert second["alert_posted"] is False
+    assert third["alert_posted"] is False
+    assert len(posted) == 1
+
+
 def test_low_attribution_warns_but_never_masks_critical(tmp_path, monkeypatch):
     _no_project_spend(monkeypatch)
     survey = lambda **_k: _survey_result(mounts=[  # noqa: E731

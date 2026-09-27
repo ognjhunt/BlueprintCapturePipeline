@@ -597,7 +597,9 @@ def alert_due(previous: Mapping[str, Any] | None, report: Mapping[str, Any], *, 
         return False
     if previous is None or previous.get("level") != level:
         return True
-    if previous.get("alert_posted") is False:
+    # alert_posted describes this tick, so a quiet tick after a successful
+    # delivery must not turn the following tick into a retry.
+    if previous.get("alert_error") or not isinstance(previous.get("last_alert_epoch"), (int, float)):
         return True
 
     def actionable_alerts(value: Mapping[str, Any]) -> set[tuple[str, str, str, str, tuple[str, ...]]]:
