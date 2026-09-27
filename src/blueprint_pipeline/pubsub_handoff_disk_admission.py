@@ -19,6 +19,21 @@ class HandoffStagingCapacityError(PipelineError):
     """Capture download waits for bulk disk headroom."""
 
 
+class _CheckedWriter:
+    """Refuse the next downloaded chunk after reservation renewal fails."""
+
+    def __init__(self, stream: Any, health: Any) -> None:
+        self._stream = stream
+        self._health = health
+
+    def write(self, payload: bytes) -> int:
+        self._health.check()
+        return self._stream.write(payload)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._stream, name)
+
+
 def staging_manifest_row(blob: Any, *, name: str, relative_path: str) -> dict[str, Any]:
     """The cloud identity and size of one listed object."""
 
@@ -63,10 +78,13 @@ def download_with_reservation(
         raise HandoffStagingCapacityError(
             "pubsub_handoff_staging_capacity_insufficient"
         ) from exc
-    with reservation, keep_reservation_live(reservation):
+    with reservation, keep_reservation_live(reservation) as health:
         for blob, destination in downloads:
+            health.check()
             destination.parent.mkdir(parents=True, exist_ok=True)
-            blob.download_to_filename(str(destination))
+            with destination.open("wb") as stream:
+                blob.download_to_file(_CheckedWriter(stream, health))
+            health.check()
 
 
 def finish_staging_capacity_blocked(
