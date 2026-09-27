@@ -38,7 +38,8 @@ MemoryMax=512M
 TimeoutStartSec=15min
 Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane
 Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python
-Environment=BLUEPRINT_CAPACITY_MOUNTS=/var/lib/blueprint
+Environment=BLUEPRINT_CAPACITY_MOUNTS=/:/var/lib/blueprint:/mnt/blueprint-work
+Environment=BLUEPRINT_CONTROL_PLANE_DISK_ROLE_TARGETS=launch_preparation=/var/lib/blueprint/task-evaluation-inputs/prepared-references,episode_compilation=/var/lib/blueprint/task-evaluation-inputs/compiled-episodes,launch_activation=/var/lib/blueprint/task-evaluation-inputs/launch-activations,launch_dispatch=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs,policy_canary_dispatch=/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries,handoff_staging=/var/lib/blueprint/pubsub-handoffs
 Environment=BLUEPRINT_CAPACITY_REPORT_ROOT=/var/lib/blueprint/pipeline-control-plane/capacity
 Environment=BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT=/var/lib/blueprint/pipeline-control-plane/disk-reservations
 Environment=DIGITALOCEAN_API_TOKEN_FILE=/etc/blueprint/provider-secrets/digitalocean_api_token

@@ -23,10 +23,15 @@ Three structural causes, each now closed by code rather than by cleanup:
 Every write-heavy control-plane role reserves its footprint in a shared ledger
 (`/var/lib/blueprint/pipeline-control-plane/disk-reservations`, `root:blueprint`
 `2770`) before it mutates anything. Admission is
-`free - floor - live reservations >= need`, where the floor is
+`free - floor - live reservations >= need`, where the bulk floor is
 `max(8 GiB, 5 % of the disk)` (`BLUEPRINT_CONTROL_PLANE_DISK_FLOOR_BYTES`) and a
 live reservation is a ledger entry on the same device, inside its TTL, whose
 pid is alive.
+`control_plane_deploy` may use the protected band below that bulk floor down to
+`max(1 GiB, 1 % of the disk)`
+(`BLUEPRINT_CONTROL_PLANE_DISK_CRITICAL_FLOOR_BYTES`). Other bulk writes stop at
+the bulk floor, leaving room for deploys, the listener's small state writes,
+teardown and provider-zero evidence.
 A refusal is the typed blocker
 `control_plane_disk_budget_exceeded:<role>:need_bytes=..:available_bytes=..:free_bytes=..:floor_bytes=..:reserved_bytes=..`
 and never a host path.
@@ -38,12 +43,14 @@ and never a host path.
 | `episode_compilation` | 2 GiB | exact bytes of runtime members the member store lacks, plus 256 MiB | compile worker, before the output directory exists |
 | `launch_activation` | 2 GiB | the measured footprint, never less than the reference bytes the request declares plus 256 MiB | activation worker |
 | `policy_canary_dispatch` | 2 GiB | the measured footprint | canary dispatcher queue boundary |
-
-`launch_dispatch` has no reservation call site yet (PR 6 adds one), so
-whole-chain admission counts it at its declared ceiling.
+| `handoff_staging` | 4 GiB | sizes of the capture blobs being downloaded plus 64 MiB | listener before downloading; refusal remains retryable and unacknowledged |
+| `launch_dispatch` | 2 GiB | unique immutable input file sizes plus 64 MiB | dispatcher before copying and before any allocator call |
 
 The intake version endpoint reports `disk_headroom` with `refused_roles` and each
-role's `footprints`; the launch-preparation, launch-activation, and
+role's `footprints` and `targets` (device, floor, reservations and available
+bytes). `BLUEPRINT_CONTROL_PLANE_DISK_ROLE_TARGETS` maps each bulk role to its
+absolute write root; unspecified roles use the default target. A malformed map
+fails closed for the whole chain. The launch-preparation, launch-activation, and
 task-evaluation-launch intakes refuse a submission (HTTP 503, typed blocker)
 while its role is refused.
 
@@ -106,13 +113,13 @@ Intake headroom, the capacity controller (`measure_mount`),
 live-reservation rule and footprints, so a projected refusal is the refusal the
 workers will make. A reservation ledger that cannot be read is never read as
 empty: the controller reports the mount as unreadable and the preflight reports
-a `disk_reservations_unreadable` blocker. `whole_chain_admission` sums the chain
-roles' footprints into `required_workspace_bytes` and reports
+a `disk_reservations_unreadable` blocker. `whole_chain_admission` groups chain
+roles by target device and admits only when each device has room for its roles
+together. It reports each device's required and available bytes and whether it
+passed. It also sums the chain roles' footprints into `required_workspace_bytes` and reports
 `required_workspace_basis`: `measured_p95` when every chain role is measured,
 `declared_default` when none is, `mixed` otherwise, with the per-role
-`footprints` beside it. Until PR 6 gives `launch_dispatch` a call site, its
-footprint stays declared, so `mixed` is the steady state once the other chain
-roles have history. The capacity controller reports these footprints, like its
+`footprints` beside it. The capacity controller reports these footprints, like its
 forecast, only in `latest.json`; its never-pruned `history.jsonl` keeps each
 tick's measurement alone.
 
@@ -245,9 +252,10 @@ floor, plus a reserved band that keeps deploys and the listener's own state
 writable when the volume is full. See
 [Admission gate](#admission-gate-blueprint_pipelinecontrol_plane_disk_budget)
 (design: [phase 2](CONTROL_PLANE_DISK_REDESIGN_2026-09-26.md#phase-2-volume-split-a-week)).
-The capacity controller must measure both disks. Set
-`BLUEPRINT_CAPACITY_MOUNTS=/:/var/lib/blueprint:/mnt/blueprint-work` in
-`/etc/blueprint/pipeline-control-plane.env`, which overrides the unit's default.
+The capacity unit measures `/`, `/var/lib/blueprint` and `/mnt/blueprint-work`.
+A configured mount that is not present is reported as absent; an existing
+unreadable mount remains critical. The intake, scene progression and capacity
+units share the same role-target map.
 
 ### Consolidating the September binds
 
