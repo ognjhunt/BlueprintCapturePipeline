@@ -366,9 +366,15 @@ def test_direct_controller_call_surveys_by_default(tmp_path, monkeypatch):
     assert report["usage"]["status"] == "complete"
 
 
-def test_credential_shaped_survey_names_are_redacted_before_publication(tmp_path, monkeypatch):
+@pytest.mark.parametrize("suspicious", [
+    "sk-" + "A" * 30,
+    "asset?key=" + "A" * 20,
+    "asset?signature=" + "a" * 40,
+    "asset?auth=" + "A" * 20,
+    "https://discord.com/api/webhooks/123/" + "A" * 20,
+])
+def test_credential_shaped_survey_names_are_redacted_before_publication(tmp_path, monkeypatch, suspicious):
     _no_project_spend(monkeypatch)
-    suspicious = "sk-" + "A" * 30
     report = cap.run_controller(
         mounts=[str(tmp_path)], report_root=tmp_path / "capacity",
         reservation_root=tmp_path / "ledger", webhook_url="", volume=None,

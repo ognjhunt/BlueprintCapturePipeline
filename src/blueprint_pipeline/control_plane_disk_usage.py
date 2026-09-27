@@ -546,7 +546,15 @@ def sanitize_public_survey(survey: Mapping[str, Any]) -> dict[str, Any]:
 
     def sanitize(value: Any) -> Any:
         if isinstance(value, str):
-            return "<redacted>" if _CREDENTIAL_SHAPED_NAME.search(value) else value
+            # Path names containing assignment, URL, or JSON syntax can carry
+            # many credential forms (including signed URLs) without a familiar
+            # token prefix. Such names are rare and safe to hide wholesale.
+            unsafe_syntax = any(character in value for character in '?=@"\r\n') or (
+                ":" in value and not (value.count(":") == 1 and value.startswith(
+                    ("sha256:", "scene:", "scene-intent:", "run:", "release:", "store:")
+                ))
+            )
+            return "<redacted>" if unsafe_syntax or _CREDENTIAL_SHAPED_NAME.search(value) else value
         if isinstance(value, list):
             return [sanitize(item) for item in value]
         if isinstance(value, dict):
