@@ -244,6 +244,9 @@ def test_new_unbound_work_volume_output_refuses_but_bound_run_output_still_works
     volume.mkdir()
     (volume / "pipeline-control-plane").mkdir()
     monkeypatch.setattr(pair, "WORK_VOLUME_ROOT", volume)
+    inputs = tmp_path / "task-evaluation-inputs"
+    inputs.mkdir()
+    monkeypatch.setattr(pair, "INPUTS_ROOT", inputs)
     for output in (volume / "g1-unowned", volume / "pipeline-control-plane" / "unowned"):
         with pytest.raises(ValueError, match="g1_pair_unbound_work_volume_output"):
             pair.run_g1_development_pair(
@@ -252,19 +255,57 @@ def test_new_unbound_work_volume_output_refuses_but_bound_run_output_still_works
             )
         assert not output.exists()
 
-    bound_output = volume / "task-evaluation-inputs" / "run-owned-pair"
+    unowned_input = volume / "task-evaluation-inputs" / "run-owned-pair"
+    with pytest.raises(ValueError, match="g1_pair_unbound_work_volume_output"):
+        pair.run_g1_development_pair(
+            request_paths=paths, output_dir=unowned_input,
+            local_runner=lambda **_kwargs: pytest.fail("worker ran"),
+        )
+    assert not unowned_input.exists()
+    direct_input = inputs / "unowned-pair"
+    with pytest.raises(ValueError, match="g1_pair_unbound_work_volume_output"):
+        pair.run_g1_development_pair(
+            request_paths=paths, output_dir=direct_input,
+            local_runner=lambda **_kwargs: pytest.fail("worker ran"),
+        )
+    assert not direct_input.exists()
+
+    classified_run = volume / "pipeline-control-plane" / "task-evaluation-launch-runs" / "run-a" / "pair"
     result = pair.run_g1_development_pair(
-        request_paths=paths, output_dir=bound_output,
+        request_paths=paths, output_dir=classified_run,
         local_runner=lambda *, request, output_dir: _fake_result(request, output_dir),
     )
     assert result["status"] == "completed_development_only"
-    assert not (bound_output / ".lane-scratch.v1.json").exists()
+    assert not (classified_run / ".lane-scratch.v1.json").exists()
 
     existing_run = volume / "existing-provider-run"
     existing_run.mkdir()
     nested_output = existing_run / "pair"
+    with pytest.raises(ValueError, match="g1_pair_unbound_work_volume_output"):
+        pair.run_g1_development_pair(
+            request_paths=paths, output_dir=nested_output,
+            local_runner=lambda **_kwargs: pytest.fail("worker ran"),
+        )
+    assert not nested_output.exists()
+
+    preflight = {"schema_version": "native_g1_runtime_import_preflight.v1", "status": "passed", "imports": []}
+    preflight["receipt_digest"] = canonical_digest(preflight, digest_field="receipt_digest")
+    preflight_path = existing_run / "native_g1_runtime_import_preflight.v1.json"
+    preflight_path.write_text(json.dumps({**preflight, "receipt_digest": "sha256:" + "0" * 64}))
+    with pytest.raises(ValueError, match="g1_pair_provider_run_proof_invalid"):
+        pair.run_g1_development_pair(
+            request_paths=paths, output_dir=nested_output, provider_run_root=existing_run,
+            local_runner=lambda **_kwargs: pytest.fail("worker ran"),
+        )
+    preflight_path.write_text(json.dumps(preflight))
+    with pytest.raises(ValueError, match="g1_pair_unbound_work_volume_output"):
+        pair.run_g1_development_pair(
+            request_paths=paths, output_dir=nested_output,
+            local_runner=lambda **_kwargs: pytest.fail("worker ran"),
+        )
     nested = pair.run_g1_development_pair(
         request_paths=paths, output_dir=nested_output,
+        provider_run_root=existing_run,
         local_runner=lambda *, request, output_dir: _fake_result(request, output_dir),
     )
     assert nested["status"] == "completed_development_only"

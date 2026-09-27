@@ -10,6 +10,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
+import stat
 import subprocess
 import sys
 from collections.abc import Callable, Mapping, Sequence
@@ -18,6 +20,7 @@ from typing import Any
 
 from .control_plane_disk_usage import DEFAULT_SURVEY_ALIASES
 from .control_plane_lane_scratch import create_lane_scratch
+from .control_plane_storage_roots import classify_path
 from .decision_evidence_contracts import canonical_digest
 from .native_g1_development_worker import (
     PATH_FIELDS,
@@ -51,13 +54,63 @@ LANE_SCRATCH_ROOTS = (
     Path("/var/lib/blueprint/task-evaluation-inputs/lanes"),
 )
 WORK_VOLUME_ROOT = Path("/mnt/blueprint-work")
-_BOUND_WORK_VOLUME_RELATIVE_ROOTS = tuple(
-    Path(path).relative_to(WORK_VOLUME_ROOT) for path in DEFAULT_SURVEY_ALIASES
+INPUTS_ROOT = Path("/var/lib/blueprint/task-evaluation-inputs")
+_BOUND_WORK_VOLUME_ALIASES = tuple(
+    (Path(path).relative_to(WORK_VOLUME_ROOT), Path(logical))
+    for path, logical in DEFAULT_SURVEY_ALIASES.items()
     if Path(path).is_relative_to(WORK_VOLUME_ROOT)
 )
+_PROVIDER_PREFLIGHT_FILE = "native_g1_runtime_import_preflight.v1.json"
 CANDIDATE_FIELDS = frozenset({
     "candidate_id", "rights_review", "request_digest",
 })
+
+
+def _classified_host_output(output: Path) -> bool:
+    if output.is_relative_to(INPUTS_ROOT):
+        logical = Path("/var/lib/blueprint/task-evaluation-inputs") / output.relative_to(INPUTS_ROOT)
+        classified = classify_path(str(logical))
+        return classified is not None and classified.storage_class not in {"container", "lane_scratch"}
+    for physical, logical in _BOUND_WORK_VOLUME_ALIASES:
+        root = WORK_VOLUME_ROOT / physical
+        if output.is_relative_to(root):
+            classified = classify_path(str(logical / output.relative_to(root)))
+            return classified is not None and classified.storage_class not in {
+                "container", "lane_scratch",
+            }
+    return False
+
+
+def _verified_provider_run_output(output: Path, provider_run_root: Path | None) -> bool:
+    """Accept a pair child only after its parent sealed the provider preflight."""
+
+    if provider_run_root is None:
+        return False
+    parent = Path(provider_run_root)
+    if (not parent.is_absolute() or parent != output.parent or parent.is_symlink()
+            or parent.resolve() != parent or not parent.is_dir()):
+        return False
+    path = parent / _PROVIDER_PREFLIGHT_FILE
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                return False
+            with os.fdopen(fd, "rb", closefd=False) as stream:
+                raw = stream.read(65537)
+        finally:
+            os.close(fd)
+        if len(raw) > 65536:
+            return False
+        receipt = json.loads(raw)
+        return (
+            isinstance(receipt, dict)
+            and receipt.get("schema_version") == "native_g1_runtime_import_preflight.v1"
+            and receipt.get("status") == "passed"
+            and receipt.get("receipt_digest") == canonical_digest(receipt, digest_field="receipt_digest")
+        )
+    except (OSError, ValueError, TypeError, OverflowError):
+        return False
 
 
 def _sealed_json(path: Path) -> dict[str, Any]:
@@ -385,6 +438,7 @@ def run_g1_development_pair(
     scratch_owner: str | None = None,
     scratch_run_ref: str | None = None,
     scratch_ttl_seconds: int | None = None,
+    provider_run_root: Path | None = None,
 ) -> dict[str, Any]:
     """Execute in catalog order; stop on an infrastructure block to limit spend."""
 
@@ -415,6 +469,9 @@ def run_g1_development_pair(
         or any(char in str(output) for char in ",\n\r")
     ):
         raise ValueError("g1_pair_output_directory_invalid")
+    provider_run_proved = _verified_provider_run_output(output, provider_run_root)
+    if provider_run_root is not None and not provider_run_proved:
+        raise ValueError("g1_pair_provider_run_proof_invalid")
     lane_root = next((root for root in LANE_SCRATCH_ROOTS if output.is_relative_to(root)), None)
     scratch_metadata = (scratch_owner, scratch_run_ref, scratch_ttl_seconds)
     if lane_root is not None:
@@ -431,20 +488,10 @@ def run_g1_development_pair(
     elif any(value is not None for value in scratch_metadata):
         raise ValueError("g1_pair_lane_scratch_output_invalid")
     else:
-        if output.is_relative_to(WORK_VOLUME_ROOT):
-            relative = output.relative_to(WORK_VOLUME_ROOT)
-            bound = any(output.is_relative_to(WORK_VOLUME_ROOT / root)
-                        for root in _BOUND_WORK_VOLUME_RELATIVE_ROOTS)
-            # The provider runtime writes its pair below an existing run root;
-            # this guard must not take ownership of that run's lifecycle.
-            existing_run_root = (
-                len(relative.parts) > 1
-                and (WORK_VOLUME_ROOT / relative.parts[0]).is_dir()
-                and not any(len(root.parts) > 1 and root.parts[0] == relative.parts[0]
-                            for root in _BOUND_WORK_VOLUME_RELATIVE_ROOTS)
-            )
-            if not bound and not existing_run_root:
-                raise ValueError("g1_pair_unbound_work_volume_output")
+        if (output.is_relative_to(WORK_VOLUME_ROOT) or output.is_relative_to(INPUTS_ROOT)) and not (
+            _classified_host_output(output) or provider_run_proved
+        ):
+            raise ValueError("g1_pair_unbound_work_volume_output")
         output.mkdir(parents=True)
     diagnostics = output / "_worker_diagnostics"
     if mode == "subprocess":
