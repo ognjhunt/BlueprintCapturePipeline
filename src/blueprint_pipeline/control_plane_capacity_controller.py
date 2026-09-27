@@ -33,6 +33,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -66,6 +67,10 @@ DEFAULT_RELEASE_RETIREMENT_SUMMARY = Path(
     "/var/lib/blueprint/pipeline-control-plane/release-retention/latest-deploy-retirement.json"
 )
 DEFAULT_BREAK_GLASS_NOTES_ROOT = Path("/var/lib/blueprint/pipeline-control-plane/cleanup-receipts")
+DEFAULT_STORAGE_GC_SUMMARY = Path(
+    "/var/lib/blueprint/pipeline-control-plane/storage-gc/summary.json"
+)
+GC_SUMMARY_INTERVAL_SECONDS = 3600
 DEFAULT_MOUNTS: tuple[str, ...] = ("/var/lib/blueprint",)
 WORK_VOLUME_MOUNT = "/mnt/blueprint-work"
 _DEFAULT_SURVEY = object()
@@ -128,6 +133,8 @@ def capacity_eta(shortfall_bytes: int, *, summary: Mapping[str, Any] | None, now
             return unknown
         if not finite:
             return unknown
+    if type(reclaimable) not in (int, float) or reclaimable < 0:
+        return unknown
     if (isinstance(reclaimable, (int, float)) and not isinstance(reclaimable, bool)
             and reclaimable >= max(0, shortfall_bytes)
             and isinstance(next_reclaim, (int, float)) and not isinstance(next_reclaim, bool)
@@ -193,6 +200,86 @@ def _read_attention_summary(path: Path) -> dict[str, Any] | None:
     except ValueError:
         return {"status": "unreadable"}
     return value if isinstance(value, dict) else {"status": "unreadable"}
+
+
+def _finite_number(value: int | float) -> bool:
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
+def _reclaim_outlook(
+    summary: Mapping[str, Any] | None, *, now: float, volume_growth: str
+) -> tuple[dict[str, Any], list[str], bool]:
+    """Use only a fresh applying GC summary for reclaim bytes and page reasons."""
+
+    sources = {name: None for name in (
+        "scene_workspaces", "evidence_offload", "derived_directories", "content_store",
+    )}
+    outlook: dict[str, Any] = {
+        "observed_at_epoch": None, "next_reclaim_epoch": None,
+        "reclaimable_bytes": None, "sources": sources, "volume_growth": volume_growth,
+    }
+    if not isinstance(summary, Mapping) or summary.get("schema_version") != "control_plane_storage_gc_summary.v1":
+        return outlook, [], False
+    observed = summary.get("observed_at_epoch")
+    if (
+        type(observed) not in (int, float) or not _finite_number(observed)
+        or not 0 <= now - observed <= 2 * GC_SUMMARY_INTERVAL_SECONDS
+        or summary.get("status") != "applied"
+    ):
+        return outlook, [], False
+    phases = summary.get("phases")
+    opt_in = summary.get("opt_in")
+    if not isinstance(phases, Mapping) or not isinstance(opt_in, Mapping):
+        return outlook, [], False
+    enabled = [name for name in ("derived_directories", "content_store") if name in phases]
+    if opt_in.get("evidence_offload") is True:
+        if "evidence_offload" in phases:
+            enabled.append("evidence_offload")
+    if opt_in.get("scene_workspace_retirement") is True:
+        if "scene_workspaces" in phases:
+            enabled.append("scene_workspaces")
+    if not enabled:
+        return outlook, [], False
+    total_candidate = 0
+    total_reclaimed = 0
+    for name in enabled:
+        phase = phases.get(name)
+        if not isinstance(phase, Mapping) or phase.get("status") != "applied":
+            return outlook, [], False
+        candidate = phase.get("candidate_bytes")
+        reclaimed = phase.get("removed_or_offloaded_bytes")
+        if (
+            type(candidate) is not int or candidate < 0
+            or type(reclaimed) is not int or reclaimed < 0
+        ):
+            return outlook, [], False
+        sources[name] = candidate
+        total_candidate += candidate
+        total_reclaimed += reclaimed
+    outlook.update({
+        "observed_at_epoch": observed,
+        "next_reclaim_epoch": observed + GC_SUMMARY_INTERVAL_SECONDS,
+        "reclaimable_bytes": total_candidate,
+    })
+    reason_rows = summary.get("top_retained")
+    reasons: list[str] = []
+    if isinstance(reason_rows, list):
+        ranked = sorted(
+            (row for row in reason_rows if isinstance(row, Mapping)
+             and type(row.get("bytes")) is int and row["bytes"] > 0
+             and isinstance(row.get("reason"), str)
+             and re.fullmatch(r"[a-z][a-z0-9_:+.-]{0,79}", row["reason"])),
+            key=lambda row: (-row["bytes"], str(row.get("phase") or ""), row["reason"]),
+        )
+        for row in ranked:
+            if row["reason"] not in reasons:
+                reasons.append(row["reason"])
+            if len(reasons) == 3:
+                break
+    return outlook, reasons, total_candidate == total_reclaimed == 0
 
 
 def live_reserved_bytes(
@@ -651,6 +738,7 @@ _SUMMARY_MOUNT_KEYS = (
 _SUMMARY_ALERT_KEYS = (
     "code", "mount", "provider", "roles", "used_fraction", "days_until_floor", "root",
     "allocated_bytes", "attributed_fraction", "severity", "reason", "status", "alert_count", "count",
+    "top_retained_reasons",
 )
 
 
@@ -685,6 +773,7 @@ def capacity_summary(report: Mapping[str, Any], *, max_bytes: int = SUMMARY_MAX_
             if isinstance(resize, Mapping)
             else None
         ),
+        "reclaim_outlook": report.get("reclaim_outlook"),
     }
 
     def size() -> int:
@@ -777,6 +866,11 @@ def post_alert(url: str, report: Mapping[str, Any], *, timeout_seconds: float = 
         summary = f"{first.get('mount')}: floor in {float(first.get('days_until_floor') or 0):.1f} days"
     elif first.get("code") == "volume_growth_blocked":
         summary = f"{first.get('mount')}: volume growth blocked ({first.get('reason')})"
+    ineffective = next(
+        (row for row in page_alerts if row.get("code") == "reclaim_ineffective"), None
+    )
+    if ineffective and ineffective.get("top_retained_reasons"):
+        summary += "; retained: " + ", ".join(ineffective["top_retained_reasons"])
     payload = {
         "schema_version": "control_plane_capacity_alert.v1",
         "level": report.get("level"),
@@ -937,6 +1031,7 @@ def run_controller(
     force_survey: bool = False,
     release_retirement_summary_path: Path = DEFAULT_RELEASE_RETIREMENT_SUMMARY,
     break_glass_notes_root: Path = DEFAULT_BREAK_GLASS_NOTES_ROOT,
+    storage_gc_summary_path: Path = DEFAULT_STORAGE_GC_SUMMARY,
 ) -> dict[str, Any]:
     """One tick. By default, survey when stale or forced. Pass ``survey=None``
     only to reuse an existing report without scanning."""
@@ -1047,6 +1142,17 @@ def run_controller(
             report["alerts"].append({"code": "volume_growth_blocked",
                                      "mount": str(volume.get("mount") or ""),
                                      "reason": report["volume_resize"].get("reason")})
+    gc_summary = _read_attention_summary(storage_gc_summary_path)
+    growth = (report.get("volume_resize") or {}).get("status", "not_configured")
+    outlook, retained_reasons, reclaim_ineffective = _reclaim_outlook(
+        gc_summary, now=observed, volume_growth=growth,
+    )
+    report["reclaim_outlook"] = outlook
+    if report["level"] == "critical" and reclaim_ineffective:
+        report["alerts"].append({
+            "code": "reclaim_ineffective",
+            "top_retained_reasons": retained_reasons,
+        })
     _annotate_alerts(report["alerts"])
     report["alert_posted"] = False
     if webhook_url and alert_due(previous, report, now=observed):

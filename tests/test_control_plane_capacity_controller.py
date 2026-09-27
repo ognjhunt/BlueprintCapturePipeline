@@ -186,6 +186,12 @@ def test_page_webhook_has_route_fingerprint_runbook_and_short_summary(monkeypatc
     assert payload["fingerprint"] == cap.alert_fingerprint(report)
     assert payload["runbook"] == "docs/runbooks/control-plane-capacity.md"
     assert "2.0 days" in payload["summary"] and len(payload["summary"]) <= 200
+    report["alerts"].append({
+        "code": "reclaim_ineffective", "severity": "page",
+        "top_retained_reasons": ["protected_process", "young", "pinned"],
+    })
+    cap.post_alert("https://alerts.example/hook", report)
+    assert "protected_process, young, pinned" in payloads[1]["summary"]
 
 
 def test_release_retirement_attention_appears_in_capacity_report(tmp_path: Path) -> None:
@@ -250,6 +256,10 @@ def test_capacity_eta_bases(outlook, expected) -> None:
 def test_capacity_eta_is_unknown_without_readable_summary() -> None:
     assert cap.capacity_eta(10, summary=None, now=1000.0) == {
         "eta_epoch": None, "eta_basis": "unknown"}
+    assert cap.capacity_eta(10, summary={"reclaim_outlook": {
+        "volume_growth": "not_configured", "reclaimable_bytes": None,
+        "next_reclaim_epoch": None,
+    }}, now=1000.0) == {"eta_epoch": None, "eta_basis": "unknown"}
 
 
 @pytest.mark.parametrize("outlook", [
@@ -266,6 +276,108 @@ def test_capacity_eta_is_unknown_for_malformed_outlook(outlook) -> None:
     parsed = json.loads(json.dumps({"reclaim_outlook": outlook}))
     assert cap.capacity_eta(10, summary=parsed, now=1000.0) == {
         "eta_epoch": None, "eta_basis": "unknown"}
+
+
+def test_critical_capacity_pages_when_gc_reclaims_nothing(tmp_path: Path) -> None:
+    gc_root = tmp_path / "storage-gc"
+    gc_root.mkdir()
+    gc_summary = gc_root / "summary.json"
+    gc_summary.write_text(json.dumps({
+        "schema_version": "control_plane_storage_gc_summary.v1",
+        "observed_at_epoch": 900.0,
+        "status": "applied",
+        "opt_in": {"evidence_offload": True, "scene_workspace_retirement": False},
+        "phases": {
+            "derived_directories": {"status": "applied", "candidate_bytes": 0,
+                                    "removed_or_offloaded_bytes": 0},
+            "content_store": {"status": "applied", "candidate_bytes": 0,
+                              "removed_or_offloaded_bytes": 0},
+            "evidence_offload": {"status": "applied", "candidate_bytes": 0,
+                                 "removed_or_offloaded_bytes": 0},
+            "scene_workspaces": {"status": "dry_run", "candidate_bytes": 10 * GIB,
+                                 "removed_or_offloaded_bytes": 0},
+        },
+        "top_retained": [
+            {"phase": "evidence_offload", "reason": "protected_process", "bytes": 5 * GIB},
+            {"phase": "content_store", "reason": "young", "bytes": 4 * GIB},
+            {"phase": "derived_directories", "reason": "pinned", "bytes": 3 * GIB},
+            {"phase": "scene_workspaces", "reason": "not_enabled", "bytes": 2 * GIB},
+        ],
+    }), encoding="utf-8")
+    common = dict(
+        mounts=[str(tmp_path)], report_root=tmp_path / "capacity",
+        reservation_root=tmp_path / "ledger", webhook_url="https://alerts.example/hook",
+        volume=None, ack="", token="", survey=None,
+        release_retirement_summary_path=tmp_path / "absent-retirement",
+        break_glass_notes_root=tmp_path / "notes", storage_gc_summary_path=gc_summary,
+        poster=lambda *_args: None, disk_usage=_usage(20.0),
+    )
+    report = cap.run_controller(**common, now=1000.0)
+    alert = next(row for row in report["alerts"] if row["code"] == "reclaim_ineffective")
+    assert alert["severity"] == "page"
+    assert alert["top_retained_reasons"] == [
+        "protected_process", "young", "pinned",
+    ]
+    assert report["reclaim_outlook"]["reclaimable_bytes"] == 0
+    assert cap.capacity_summary(report)["reclaim_outlook"] == report["reclaim_outlook"]
+
+    stale = cap.run_controller(**common, now=10_000.0)
+    assert not any(row["code"] == "reclaim_ineffective" for row in stale["alerts"])
+    assert stale["reclaim_outlook"]["reclaimable_bytes"] is None
+
+
+@pytest.mark.parametrize(("candidate", "reclaimed", "expected_ineffective"), [
+    (2 * GIB, 0, False), (0, GIB, False), (0, 0, True),
+])
+def test_reclaim_ineffective_requires_zero_candidates_and_zero_reclaimed(
+    candidate: int, reclaimed: int, expected_ineffective: bool,
+) -> None:
+    summary = {
+        "schema_version": "control_plane_storage_gc_summary.v1",
+        "observed_at_epoch": 1000.0, "status": "applied",
+        "opt_in": {"evidence_offload": False, "scene_workspace_retirement": False},
+        "phases": {
+            "derived_directories": {"status": "applied", "candidate_bytes": candidate,
+                                    "removed_or_offloaded_bytes": reclaimed},
+            "content_store": {"status": "applied", "candidate_bytes": 0,
+                              "removed_or_offloaded_bytes": 0},
+        },
+    }
+    outlook, _reasons, ineffective = cap._reclaim_outlook(
+        summary, now=1100.0, volume_growth="blocked",
+    )
+    assert outlook["reclaimable_bytes"] == candidate
+    assert ineffective is expected_ineffective
+
+
+def test_reclaim_outlook_fails_closed_without_complete_applied_phase() -> None:
+    summary = {
+        "schema_version": "control_plane_storage_gc_summary.v1",
+        "observed_at_epoch": 1000.0, "status": "applied",
+        "opt_in": {"evidence_offload": True},
+        "phases": {
+            "derived_directories": {"status": "applied", "candidate_bytes": 0,
+                                    "removed_or_offloaded_bytes": 0},
+            "content_store": {"status": "applied", "candidate_bytes": 0,
+                              "removed_or_offloaded_bytes": 0},
+            "evidence_offload": {"status": "error", "candidate_bytes": 0,
+                                 "removed_or_offloaded_bytes": 0},
+        },
+    }
+    outlook, reasons, ineffective = cap._reclaim_outlook(
+        summary, now=1100.0, volume_growth="not_configured",
+    )
+    assert outlook["reclaimable_bytes"] is None
+    assert reasons == [] and ineffective is False
+    # PR 10b's current applied content-store receipt omits the planned candidate
+    # count; zero bytes removed is not proof that zero bytes were candidates.
+    summary["opt_in"]["evidence_offload"] = False
+    summary["phases"]["content_store"]["candidate_bytes"] = None
+    outlook, reasons, ineffective = cap._reclaim_outlook(
+        summary, now=1100.0, volume_growth="not_configured",
+    )
+    assert outlook["reclaimable_bytes"] is None
+    assert reasons == [] and ineffective is False
 
 
 def test_controller_writes_evidence_alerts_on_escalation_and_repeats_hourly_while_critical(
