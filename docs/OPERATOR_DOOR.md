@@ -175,13 +175,19 @@ python3 scripts/operator_door.py hold blueprint-task-evaluation-scene-progressio
 python3 scripts/operator_door.py release-hold blueprint-task-evaluation-scene-progression.timer --wait
 ```
 
-The root runner keeps `requests/holds/<unit>.json` at mode 0644. A renewed
-hold gets a new request id without shortening the deadline; an older expiry
-timer cannot release it. Holds disable the unit until release, then restore
-its earlier boot policy. Holdable timer and path units start after the installed
+The root runner keeps `requests/holds/<unit>.json` at mode 0644. It accepts a
+hold only when `systemctl cat` shows the matching `ConditionPathExists` guard
+in the unit. An unguarded host-installed unit is refused with
+`hold_unit_guard_missing`. The guard record is durable before the unit is
+disabled, so a crash during activation cannot let the trigger fire on reboot.
+A renewed hold gets a new request id without shortening the deadline; an older
+expiry timer cannot release it. Holds disable the unit until release, then
+restore its earlier boot policy. Release writes a durable intent under
+`requests/holds/releasing/`, removes the guard, starts the unit, and archives
+the record under `requests/holds/history/`. The boot sweep completes any
+interrupted release. Holdable timer and path units start after the installed
 boot sweep, which waits for each stop to finish; a minute timer repeats the
-sweep thereafter, so a reboot cannot restart a held
-unit or permanently lose its expiry. Status
+sweep thereafter. Status
 shows `remaining_seconds` and flags an overdue record, so a failed expiry is
 visible for an operator to release. Safety-critical teardown, spend-guard,
 capacity, storage-GC, replay-cache-GC and preflight triggers cannot be held.

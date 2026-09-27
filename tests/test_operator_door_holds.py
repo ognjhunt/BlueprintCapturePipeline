@@ -10,6 +10,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "deploy" / "operator-door"))
 
 from operator_door import holds  # noqa: E402
@@ -49,7 +51,9 @@ def test_sweep_keeps_live_hold_disabled_and_releases_expired_hold(tmp_path, monk
     assert ["systemctl", "enable", "--", expired] in calls
     assert ["systemctl", "--no-block", "start", "--", expired] in calls
     assert json.loads(live_path.read_text())["status"] == "active"
-    assert json.loads(expired_path.read_text())["status"] == "expired_released"
+    assert not expired_path.exists()
+    archived = list((root / "history").glob("*.json"))
+    assert len(archived) == 1 and json.loads(archived[0].read_text())["status"] == "expired_released"
 
 
 def test_expiry_does_not_enable_a_previously_disabled_unit(tmp_path, monkeypatch) -> None:
@@ -67,3 +71,57 @@ def test_expiry_does_not_enable_a_previously_disabled_unit(tmp_path, monkeypatch
 
     assert holds.expire(root, unit, json.loads(path.read_text())["request_id"], now=1200) == 0
     assert calls == [["systemctl", "--no-block", "start", "--", unit]]
+    assert not path.exists()
+
+
+def test_sweep_finishes_release_after_crash_between_guard_removal_and_start(tmp_path, monkeypatch) -> None:
+    root = tmp_path / "holds"
+    root.mkdir()
+    unit = "blueprint-scene-progression.timer"
+    path = _record(root, unit, expires_at_epoch=2000, enabled_before=True)
+    record = json.loads(path.read_text())
+    with holds.locked(root):
+        holds.begin_release(root, unit, record, released_by="cloud", status="released")
+    calls = []
+
+    def systemctl(argv, **_kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(holds.subprocess, "run", systemctl)
+    assert holds.sweep(root, now=1200) == 0
+    assert not path.exists()
+    assert calls == [
+        ["systemctl", "enable", "--", unit],
+        ["systemctl", "--no-block", "start", "--", unit],
+    ]
+    assert not list((root / "releasing").glob("*.json"))
+    archived = list((root / "history").glob("*.json"))
+    assert len(archived) == 1 and json.loads(archived[0].read_text())["status"] == "released"
+
+
+def test_begin_release_rejects_stale_generation_without_a_pending_intent(tmp_path) -> None:
+    root = tmp_path / "holds"
+    root.mkdir()
+    unit = "blueprint-scene-progression.timer"
+    path = _record(root, unit, expires_at_epoch=2000, enabled_before=True)
+    stale = json.loads(path.read_text())
+    current = {**stale, "request_id": "20260927T000000Z-hold-0000abce"}
+    holds.write(root, unit, current)
+
+    with holds.locked(root), pytest.raises(holds.HoldError, match="generation_changed"):
+        holds.begin_release(root, unit, stale, released_by="cloud", status="released")
+
+    assert json.loads(path.read_text())["request_id"] == current["request_id"]
+    assert not (root / "releasing" / f"{unit}.json").exists()
+
+
+def test_sweep_refuses_invalid_pending_unit_without_running_systemctl(tmp_path, monkeypatch) -> None:
+    root = tmp_path / "holds"
+    pending = root / "releasing"
+    pending.mkdir(parents=True)
+    (pending / "blueprint-gpu-spend-guard.timer.json").write_text("{}")
+    monkeypatch.setattr(holds.subprocess, "run", lambda *_args, **_kwargs: pytest.fail("systemctl called"))
+
+    with pytest.raises(holds.HoldError, match="hold_record_invalid"):
+        holds.sweep(root)

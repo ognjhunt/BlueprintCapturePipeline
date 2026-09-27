@@ -183,17 +183,43 @@ def _active_deploy_unit(runner: CommandRunner) -> str | None:
     return None
 
 
+def _has_hold_guard(runner: CommandRunner, unit: str) -> bool:
+    """Only hold a loaded unit whose effective source includes our crash guard."""
+
+    result = runner.run(["systemctl", "cat", "--", unit], timeout=30)
+    if result.returncode != 0:
+        return False
+    expected = f"!/var/lib/blueprint-operator-door/requests/holds/{unit}.json"
+    section = ""
+    guarded = False
+    for raw in result.stdout.splitlines():
+        line = raw.strip()
+        if line.startswith("[") and line.endswith("]"):
+            section = line
+        elif section == "[Unit]" and line.startswith("ConditionPathExists="):
+            value = line.partition("=")[2].strip()
+            if not value:
+                guarded = False  # a later drop-in can reset earlier conditions
+            elif value == expected:
+                guarded = True
+    return guarded
+
+
 def _act_hold(
     config: DoorConfig, runner: CommandRunner, request_id: str, request: dict[str, Any], requested_by: str,
 ) -> dict[str, Any]:
     root = Path(config.spool_root) / "holds"
     unit = request["unit"]
     with holds.locked(root):
+        if holds.read(root / "releasing", unit) is not None:
+            return {"status": "refused", "code": "hold_release_in_progress"}
         current = holds.read(root, unit)
         prior_active = (current is not None and current["status"] == "active"
                         and current["expires_at_epoch"] > time.time())
         if prior_active and current["owner"] != request["owner"]:
             return {"status": "refused", "code": f"hold_active:{current['owner']}"}
+        if not _has_hold_guard(runner, unit):
+            return {"status": "refused", "code": "hold_unit_guard_missing"}
         if current is not None and current["status"] == "active" and isinstance(current.get("enabled_before"), bool):
             enabled_before = current["enabled_before"]
         else:
@@ -223,25 +249,22 @@ def _act_hold(
                 # starting here would silently undo the owner's prior hold.
                 holds.write(root, unit, current)
                 return 0
+            if holds.read(root, unit) is not None:
+                holds.begin_release(root, unit, record, released_by="runner", status="failed_released")
+                return holds.finish_release(root, unit, command=lambda argv: runner.run(argv, timeout=30))
             if enabled_before:
                 restored_boot = runner.run(["systemctl", "enable", "--", unit], timeout=30)
                 if restored_boot.returncode != 0:
                     return restored_boot.returncode
-            restored = runner.run(["systemctl", "--no-block", "start", "--", unit], timeout=30)
-            if restored.returncode == 0:
-                record.update(status="failed_released", released_at=holds.timestamp(), released_by="runner")
-                holds.write(root, unit, record)
-            elif enabled_before:
-                runner.run(["systemctl", "disable", "--", unit], timeout=30)
-            return restored.returncode
+            return runner.run(["systemctl", "--no-block", "start", "--", unit], timeout=30).returncode
 
         try:
+            holds.write(root, unit, record)
             disabled = runner.run(["systemctl", "disable", "--", unit], timeout=30)
             if disabled.returncode != 0:
                 rollback_returncode = rollback()
                 return {"status": "failed", "code": "hold_disable_failed", "returncode": disabled.returncode,
                         "rollback_returncode": rollback_returncode, "stderr_tail": disabled.stderr[-2000:]}
-            holds.write(root, unit, record)
             launch = runner.run([
                 "systemd-run", f"--unit=blueprint-operator-door-hold-expiry-{request_id[-8:]}",
                 f"--on-active={expires_at_epoch - now}s", "--collect",
@@ -268,20 +291,12 @@ def _act_release_hold(
         record = holds.read(root, unit)
         if record is None or record["status"] != "active":
             return {"status": "refused", "code": "hold_not_active"}
-        if record.get("enabled_before", True):
-            enabled = runner.run(["systemctl", "enable", "--", unit], timeout=30)
-            if enabled.returncode != 0:
-                return {"status": "failed", "code": "hold_release_enable_failed", "returncode": enabled.returncode,
-                        "stderr_tail": enabled.stderr[-2000:]}
-        started = runner.run(["systemctl", "--no-block", "start", "--", unit], timeout=30)
-        if started.returncode != 0:
-            if record.get("enabled_before", True):
-                runner.run(["systemctl", "disable", "--", unit], timeout=30)
-            return {"status": "failed", "code": "hold_release_start_failed", "returncode": started.returncode,
-                    "stderr_tail": started.stderr[-2000:]}
-        record.update(status="released", released_at=holds.timestamp(), released_by=requested_by)
-        holds.write(root, unit, record)
-        return {"status": "done", "hold": record}
+        holds.begin_release(root, unit, record, released_by=requested_by, status="released")
+        result = holds.finish_release(root, unit, command=lambda argv: runner.run(argv, timeout=30))
+        if result != 0:
+            return {"status": "failed", "code": "hold_release_start_failed", "returncode": result}
+        return {"status": "done", "hold": {**record, "status": "released",
+                                           "released_by": requested_by}}
 
 
 def _act(config: DoorConfig, runner: CommandRunner, request_id: str, request: dict[str, Any],

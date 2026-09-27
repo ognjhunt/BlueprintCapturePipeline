@@ -78,10 +78,12 @@ def read(root: Path, unit: str) -> dict[str, Any] | None:
         not isinstance(record, dict)
         or record.get("schema") != SCHEMA
         or record.get("unit") != unit
-        or record.get("status") not in {"active", "released", "expired_released", "failed_released"}
+        or record.get("status") not in {"active", "releasing", "released", "expired_released", "failed_released"}
         or not isinstance(record.get("owner"), str)
         or type(record.get("expires_at_epoch")) is not int
         or ("enabled_before" in record and type(record["enabled_before"]) is not bool)
+        or (record.get("status") == "releasing" and record.get("release_status")
+            not in {"released", "expired_released", "failed_released"})
     ):
         raise HoldError("hold_record_invalid")
     try:
@@ -133,6 +135,73 @@ def active(root: Path) -> list[dict[str, Any]]:
     return records
 
 
+def begin_release(
+    root: Path, unit: str, record: dict[str, Any], *, released_by: str,
+    status: str, now: float | None = None,
+) -> None:
+    """Persist recovery intent, then remove the active systemd guard."""
+
+    if status not in {"released", "expired_released", "failed_released"}:
+        raise HoldError("hold_release_status_invalid")
+    current = read(root, unit)
+    if current is None or current["request_id"] != record["request_id"] or current["status"] != "active":
+        raise HoldError("hold_release_generation_changed")
+    if read(root / "releasing", unit) is not None:
+        raise HoldError("hold_release_in_progress")
+    pending = {**record, "status": "releasing", "release_status": status,
+               "released_by": released_by, "released_at": timestamp(now)}
+    write(root / "releasing", unit, pending)
+    (root / f"{unit}.json").unlink(missing_ok=True)
+    directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
+def finish_release(
+    root: Path, unit: str, *, command: Any = None,
+) -> int:
+    """Idempotently finish a release begun before a crash or reboot."""
+
+    try:
+        validate_request({"kind": "release-hold", "unit": unit})
+    except RequestRefused as exc:
+        raise HoldError("hold_record_invalid") from exc
+    if (root / "releasing").exists():
+        _directory(root / "releasing", create=False)
+    record = read(root / "releasing", unit)
+    if record is None:
+        return 0
+    current = read(root, unit)
+    if current is not None:
+        if current["request_id"] != record["request_id"]:
+            return 1
+        (root / f"{unit}.json").unlink()
+        directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    run = command or (lambda argv: subprocess.run(argv, check=False))
+    if record.get("enabled_before", True):
+        enabled = run(["systemctl", "enable", "--", unit])
+        if enabled.returncode != 0:
+            return enabled.returncode
+    started = run(["systemctl", "--no-block", "start", "--", unit])
+    if started.returncode != 0:
+        return started.returncode
+    record["status"] = record.pop("release_status")
+    write(root / "history", f"{unit}.{record['request_id']}", record)
+    (root / "releasing" / f"{unit}.json").unlink(missing_ok=True)
+    directory = os.open(root / "releasing", os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+    return 0
+
+
 def expire(root: Path, unit: str, request_id: str, *, now: float | None = None) -> int:
     """Release only the matching expired generation; renewed holds are untouched."""
 
@@ -147,17 +216,8 @@ def expire(root: Path, unit: str, request_id: str, *, now: float | None = None) 
             return 0
         if record["expires_at_epoch"] > moment:
             return 0
-        if record.get("enabled_before", True):
-            enabled = subprocess.run(["systemctl", "enable", "--", unit], check=False)
-            if enabled.returncode != 0:
-                return enabled.returncode
-        result = subprocess.run(["systemctl", "--no-block", "start", "--", unit], check=False)
-        if result.returncode != 0:
-            if record.get("enabled_before", True):
-                subprocess.run(["systemctl", "disable", "--", unit], check=False)
-            return result.returncode
-        record.update(status="expired_released", released_at=timestamp(moment), released_by="expiry")
-        write(root, unit, record)
+        begin_release(root, unit, record, released_by="expiry", status="expired_released", now=moment)
+        return finish_release(root, unit)
     return 0
 
 
@@ -168,6 +228,11 @@ def sweep(root: Path, *, now: float | None = None) -> int:
         return 0
     moment = time.time() if now is None else now
     failed = False
+    pending = root / "releasing"
+    for path in sorted(pending.glob("*.json")) if pending.exists() else []:
+        unit = path.name.removesuffix(".json")
+        with locked(root):
+            failed |= finish_release(root, unit) != 0
     for snapshot in active(root):
         unit = snapshot["unit"]
         if snapshot["expires_at_epoch"] <= moment:
