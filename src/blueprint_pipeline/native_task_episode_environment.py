@@ -153,9 +153,14 @@ class NativeRigidScoringEnvironment:
         self._initial_support_closed = False
         return result
 
-    def read_object_sample(self) -> dict[str, Any]:
-        base = self._environment.read_object_sample()
-        native = self._task_readback.read_task_sample()
+    def read_object_sample(
+        self,
+        *,
+        base_sample: Mapping[str, Any] | None = None,
+        native_sample: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        base = base_sample if base_sample is not None else self._environment.read_object_sample()
+        native = native_sample if native_sample is not None else self._task_readback.read_task_sample()
         if not isinstance(base, Mapping) or not isinstance(native, Mapping):
             raise NativeTaskEpisodeEnvironmentError(
                 ["native_task_rigid_scoring_sample_invalid"]

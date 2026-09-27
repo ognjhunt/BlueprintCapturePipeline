@@ -8,6 +8,7 @@ only orders their calls. It does not infer task success or attest model bytes.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 from collections.abc import Callable, Mapping
@@ -38,6 +39,50 @@ G1_NAVIGATION_CANDIDATES = frozenset(
     }
 )
 _PROFILE_DIGEST = re.compile(r"sha256:([0-9a-f]{64})\Z")
+
+
+class NativeG1RigidTaskSampler:
+    """Join G1's measured finger and Arena readback with strict rigid scoring."""
+
+    def __init__(
+        self, *, environment: Any, task_readback: Any, task_spec: Mapping[str, Any]
+    ) -> None:
+        from .native_task_episode_environment import NativeRigidScoringEnvironment
+
+        self._environment = environment
+        self._task_readback = task_readback
+        self._scoring = NativeRigidScoringEnvironment(
+            environment=environment, task_readback=task_readback, task_spec=task_spec
+        )
+        self._begun = False
+
+    def begin_episode(self) -> None:
+        self._scoring.begin_episode()
+        self._begun = True
+
+    def read_task_sample(self) -> dict[str, Any]:
+        # The shared episode resets the simulator before requesting its first
+        # sample. Begin the event ledger at that first measured state so the
+        # initial reset never counts as a retry.
+        if not self._begun:
+            self.begin_episode()
+        native = self._task_readback.read_task_sample()
+        width = native.get("finger_separation_m")
+        if (
+            isinstance(width, bool)
+            or not isinstance(width, (int, float))
+            or not math.isfinite(width)
+            or width < 0.0
+        ):
+            raise ValueError("g1_rigid_measured_finger_separation_missing")
+        state = self._environment.read_state()
+        return self._scoring.read_object_sample(
+            base_sample={
+                "step_index": state["step_index"],
+                "gripper_width_m": float(width),
+            },
+            native_sample=native,
+        )
 
 
 def _write_checkpoint(path: Path, value: Mapping[str, Any]) -> None:
@@ -126,6 +171,18 @@ def run_g1_shared_scene_episode(
     initial_task_sample = dict(read_task_sample())
     if initial_task_sample.get("step_index") != 0:
         raise ValueError("g1_shared_scene_initial_task_sample_invalid")
+    initial_checkpoint = {
+        "schema_version": "native_g1_initial_task_sample_checkpoint.v1",
+        "status": "simulator_readback_retained",
+        "claim_ceiling": "development_only_unscored",
+        "candidate_id": candidate_id,
+        "scene_plan_digest": plan_digest,
+        "task_sample": initial_task_sample,
+    }
+    initial_checkpoint["checkpoint_digest"] = canonical_digest(
+        initial_checkpoint, digest_field="checkpoint_digest"
+    )
+    _write_checkpoint(output_dir / "initial_task_sample.v1.json", initial_checkpoint)
 
     def retain_observation(images: Mapping[str, Any], *, kind: str) -> dict[str, Any]:
         metadata = environment.read_observation_metadata(tuple(images))
@@ -194,6 +251,9 @@ def run_g1_shared_scene_episode(
             ]
             state = environment.step_controller_targets(targets)
             step_index = len(steps) + 1
+            task_sample = dict(read_task_sample())
+            if task_sample.get("step_index") != step_index:
+                raise ValueError("g1_shared_scene_task_sample_step_mismatch")
             # The terminal trace is written only after the complete episode.
             # Persist the measured state now so a later action or camera error
             # cannot erase already executed simulator steps.
@@ -212,6 +272,7 @@ def run_g1_shared_scene_episode(
                 "controller_targets_rad": targets,
                 "target_projections": target_projections,
                 "robot_state": state,
+                "task_sample": task_sample,
             }
             step_checkpoint["checkpoint_digest"] = canonical_digest(
                 step_checkpoint, digest_field="checkpoint_digest"
@@ -236,7 +297,7 @@ def run_g1_shared_scene_episode(
                 "robot_state": state,
                 "checkpoint_digest": step_checkpoint["checkpoint_digest"],
                 "checkpoint_relative_path": step_checkpoint_path.relative_to(output_dir).as_posix(),
-                "task_sample": dict(read_task_sample()),
+                "task_sample": task_sample,
                 "review_frames": {
                     role: review_observation["views"][role] for role in ("head", "overview")
                 },
@@ -361,12 +422,14 @@ def run_g1_built_scene_policy_episode(
         from .native_task_arena_readback import NativeRigidTaskArenaReadback
 
         readback = NativeRigidTaskArenaReadback(built)
+        sampler = NativeG1RigidTaskSampler(
+            environment=environment,
+            task_readback=readback,
+            task_spec=plan["task_spec"],
+        )
 
         def read_task_sample() -> dict[str, Any]:
-            return {
-                **readback.read_task_sample(),
-                "step_index": environment.read_state()["step_index"],
-            }
+            return sampler.read_task_sample()
 
         task_prompt = str(plan["task_spec"]["prompt"])
 
@@ -382,9 +445,7 @@ def run_g1_built_scene_policy_episode(
     )
     output_dir.mkdir(parents=True, exist_ok=True)
     trace_path = output_dir / "native_g1_shared_scene_episode_trace.v1.json"
-    with trace_path.open("x", encoding="utf-8") as stream:
-        json.dump(trace, stream, indent=2, sort_keys=True, allow_nan=False)
-        stream.write("\n")
+    _write_checkpoint(trace_path, trace)
     samples = [trace["initial_task_sample"]]
     samples.extend(row["task_sample"] for row in trace["steps"])
     if candidate_id in G1_NAVIGATION_CANDIDATES:
@@ -393,6 +454,30 @@ def run_g1_built_scene_policy_episode(
         from .adp_task_scoring import score_task_episode_from_spec
 
         score = score_task_episode_from_spec(task_spec=plan["task_spec"], samples=samples)
+    score_details = score if isinstance(score, Mapping) else {}
+    ledger = score_details.get("event_ledger")
+    score_attempt = {
+        "schema_version": "native_g1_score_attempt.v1",
+        "status": score_details.get("status", "invalid"),
+        "claim_ceiling": "development_only",
+        "candidate_id": candidate_id,
+        "scene_plan_digest": plan["plan_digest"],
+        "trace_digest": trace["trace_digest"],
+        "policy_query_count": trace["policy_query_count"],
+        "score_schema_version": score_details.get("schema_version"),
+        "score_report_digest": score_details.get("report_digest") or score_details.get("score_digest"),
+        "outcome": score_details.get("outcome"),
+        "failed_criteria": score_details.get("failed_criteria"),
+        "required_readback_gaps": (
+            ledger.get("required_readback_gaps") if isinstance(ledger, Mapping) else None
+        ),
+        "ranking_eligible": False,
+        "physical_outcome_claimed": False,
+    }
+    score_attempt["score_attempt_digest"] = canonical_digest(
+        score_attempt, digest_field="score_attempt_digest"
+    )
+    _write_checkpoint(output_dir / "native_g1_score_attempt.v1.json", score_attempt)
     if not isinstance(score, Mapping) or score.get("status") != "scored":
         raise ValueError("g1_built_scene_task_score_incomplete")
     result = {

@@ -39,7 +39,11 @@ PAIR_ORDER = (
     "humanoidarena_dp_g1_dex3_sonic_vision_navi",
     "humanoidarena_pi05_g1_dex3_sonic_vision_navi",
 )
-SUBPROCESS_EPISODE_TIMEOUT_SECONDS = 45 * 60
+# Scene 841757's first native G1 episode reached all 3,000 steps after about
+# 40 minutes, then timed out during final scoring/Isaac close at 45 minutes.
+# Leave a bounded close window while the independent provider watchdog and
+# campaign hard cap remain authoritative for paid spend.
+SUBPROCESS_EPISODE_TIMEOUT_SECONDS = 55 * 60
 CANDIDATE_FIELDS = frozenset({
     "candidate_id", "rights_review", "request_digest",
 })
@@ -217,6 +221,14 @@ def _score_from_episode(
 ) -> dict[str, Any]:
     episode = json.loads(path.read_text(encoding="utf-8"))
     score = episode.get("score")
+    score_schema = (
+        "native_g1_navigation_goal_score.v1"
+        if objective_id == "g1_navigation_goal"
+        else "adp_rigid_task_scoring.v2"
+    )
+    score_digest_field = (
+        "score_digest" if objective_id == "g1_navigation_goal" else "report_digest"
+    )
     if (
         episode.get("result_digest") != canonical_digest(episode, digest_field="result_digest")
         or episode.get("result_digest") != (worker.get("supervised_episode") or {}).get("episode_result_digest")
@@ -230,14 +242,17 @@ def _score_from_episode(
         or episode.get("physical_outcome_claimed") is not False
         or not isinstance(score, Mapping)
         or score.get("status") != "scored"
+        or score.get("schema_version") != score_schema
         or not isinstance(score.get("outcome"), str)
         or not score["outcome"]
-        or score.get("score_digest") != canonical_digest(score, digest_field="score_digest")
+        or score.get(score_digest_field) != canonical_digest(
+            score, digest_field=score_digest_field
+        )
     ):
         raise ValueError("g1_pair_episode_or_score_receipt_invalid")
     return {
         "episode_result_digest": episode["result_digest"],
-        "score_digest": score["score_digest"],
+        "score_digest": score[score_digest_field],
         "outcome": score.get("outcome"),
     }
 

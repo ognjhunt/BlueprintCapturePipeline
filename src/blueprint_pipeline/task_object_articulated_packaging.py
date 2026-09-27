@@ -76,6 +76,14 @@ RACK_HEIGHT_FRACTION_OF_TUB = 0.22
 LOWER_RACK_FLOOR_CLEARANCE_M = 0.06
 UPPER_RACK_FLOOR_FRACTION_OF_TUB = 0.55
 MINIMUM_APPLIANCE_DEPTH_TO_WIDTH = 0.4
+# Every family template places its fixed interior and feature parts from
+# construction priors. 2026-09-27 website capture: those priors must say so,
+# and an observed part box, when the evidence carries one, replaces the prior.
+TEMPLATE_PRIOR_BASIS = "template_prior"
+OBSERVED_ESTIMATE_BASIS = "observed_estimate_from_frames"
+TEMPLATE_PLACED_ROLES = frozenset({"fixed_interior", "body_feature", "door_feature"})
+PART_ESTIMATE_CAVITY_MARGIN_M = 0.005
+MINIMUM_ESTIMATED_PART_SIZE_M = 0.01
 PASSIVE_HINGE_DAMPING_N_M_S_PER_RAD = 0.5
 HINGE_RESET_TOLERANCE_RAD = 0.02
 # Cavity probes: rays start this far in front of the planned opening and must
@@ -358,7 +366,49 @@ def assembly_contract(configuration: Mapping[str, Any], family: str) -> dict[str
     if required and hinge not in HINGE_EDGES:
         raise AssetAuthoringError("articulated_hinge_edge_missing_or_invalid")
     return {"captured": captured, "reference_frames": [dict(row) for row in frames],
-            "required_parts": normalized, "body_depth": body_depth, "hinge_edge": hinge if required else None}
+            "required_parts": normalized, "body_depth": body_depth, "hinge_edge": hinge if required else None,
+            "part_extent_estimates": _part_extent_estimates(configuration, normalized, captured=captured)}
+
+
+def _part_extent_estimates(configuration: Mapping[str, Any], parts: Sequence[Mapping[str, Any]], *,
+                           captured: bool) -> list[dict[str, Any]]:
+    """Optional observed boxes of fixed interior parts, in the assembly frame (+X out of the front, Z up).
+
+    Each names the frames that show the part (a subset of its own observed
+    frames) and a per-axis uncertainty. Nothing is inferred here; a malformed,
+    unobserved or uncaptured estimate is refused, never ignored. Website
+    coverage boxes each visible part per frame and measures a fixed part's
+    extent from depth inside those boxes where two or more views agree
+    (``website_assembly_coverage.estimate_part_extents``); every other
+    template-placed part stays a labelled prior.
+    """
+    rows = configuration.get("part_extent_estimates", [])
+    observed = {row["part_id"]: row for row in parts}
+    if not isinstance(rows, list) or (rows and not captured):
+        raise AssetAuthoringError("articulated_part_extent_estimates_invalid")
+    estimates = []
+    for row in rows:
+        part = observed.get(row.get("part_id")) if isinstance(row, Mapping) else None
+        box = row.get("box_assembly_m") if isinstance(row, Mapping) else None
+        ids = row.get("frame_ids") if isinstance(row, Mapping) else None
+        uncertainty = row.get("uncertainty_m") if isinstance(row, Mapping) else None
+        corners = [box.get(key) for key in ("minimum", "maximum")] if isinstance(box, Mapping) else []
+        if (part is None or part["role"] != "fixed_interior" or row.get("basis") != OBSERVED_ESTIMATE_BASIS
+                or not isinstance(ids, list) or not ids or len(set(ids)) != len(ids)
+                or any(v not in part["observed_frame_ids"] for v in ids)
+                or len(corners) != 2 or any(not isinstance(v, list) or len(v) != 3 for v in corners)
+                or not all(_finite_number(v) for v in corners[0] + corners[1])
+                or any(corners[0][i] >= corners[1][i] for i in range(3))
+                or not isinstance(uncertainty, list) or len(uncertainty) != 3
+                or any(not _finite_number(v) or v < 0 for v in uncertainty)):
+            raise AssetAuthoringError("articulated_part_extent_estimates_invalid")
+        estimates.append({"part_id": part["part_id"], "basis": OBSERVED_ESTIMATE_BASIS, "frame_ids": list(ids),
+                          "box_assembly_m": {"minimum": [float(v) for v in corners[0]],
+                                             "maximum": [float(v) for v in corners[1]]},
+                          "uncertainty_m": [float(v) for v in uncertainty]})
+    if len({row["part_id"] for row in estimates}) != len(estimates):
+        raise AssetAuthoringError("articulated_part_extent_estimates_invalid")
+    return estimates
 
 
 def _projected_envelope(configuration: Mapping[str, Any]) -> dict[str, Any]:
@@ -729,7 +779,82 @@ def _plan_hinged_door_appliance(configuration: Mapping[str, Any], contract: Mapp
     }
 
 
-_CONTRACT_KEYS = ("required_parts", "reference_frames", "body_depth", "body_extent_m", "hinge_edge")
+def _cavity_boxes(plan: Mapping[str, Any]) -> list[tuple[str, list[float], list[float]]]:
+    """Each planned cavity as an assembly-frame box (its link's rest translation applied)."""
+    rest = {row["link_id"]: row["rest_translation_m"] for row in plan["links"]}
+    boxes = []
+    for cavity in plan.get("interior_cavities") or []:
+        cx, cy, cz = (float(v) + float(r) for v, r in zip(cavity["opening_center_link_m"], rest[cavity["link_id"]]))
+        depth, half_w, half_h = (float(cavity["inner_depth_m"]), float(cavity["opening_width_m"]) / 2,
+                                 float(cavity["opening_height_m"]) / 2)
+        boxes.append((cavity["cavity_id"], [cx - depth, cy - half_w, cz - half_h], [cx, cy + half_w, cz + half_h]))
+    return boxes
+
+
+def _apply_part_evidence(plan: dict[str, Any], contract: Mapping[str, Any]) -> None:
+    """Record where each template-placed part's size and placement came from; use observed boxes.
+
+    Family-agnostic: every required part whose role the family template
+    places (fixed interior parts and features) is a ``template_prior`` unless
+    the contract carries an observed box for it. An observed box is used only
+    for a fixed interior part planned as its own link, clamped inside the
+    planned cavity that holds its template placement (so it stays clear of the
+    closed moving part); the prior it replaced is recorded with it.
+    """
+    estimates = {row["part_id"]: row for row in contract["part_extent_estimates"]}
+    links = {row["link_id"]: row for row in plan["links"]}
+    cavities = _cavity_boxes(plan)
+    margin = PART_ESTIMATE_CAVITY_MARGIN_M
+    bases: dict[str, dict[str, Any]] = {}
+    for row in plan.get("required_parts") or []:
+        if row["role"] not in TEMPLATE_PLACED_ROLES:
+            continue
+        link = links[row["link_id"]]
+        spec = plan["parts"][link["part_id"]]
+        own = (row["role"] == "fixed_interior" and row["feature"] == "link" and link["part_id"] == row["part_id"]
+               and spec["link_role"] == "fixed_interior")
+        record = {"link_id": row["link_id"], "feature": row["feature"],
+                  "appearance_frame_ids": list(row["observed_frame_ids"])}
+        estimate = estimates.get(row["part_id"])
+        if estimate is None:
+            bases[row["part_id"]] = {**record, "basis": TEMPLATE_PRIOR_BASIS, "frame_ids": [],
+                                     "prior": plan["family"] + "_family_template"}
+            if own:
+                spec["description"] += (" This overall envelope and placement are a template prior of the "
+                                        "assembly family, not observed in any frame.")
+            continue
+        size, rest = [float(v) for v in spec["dimensions_m"]], [float(v) for v in link["rest_translation_m"]]
+        center = [rest[0], rest[1], rest[2] + size[2] / 2]
+        cavity = next((c for c in cavities if all(c[1][i] <= center[i] <= c[2][i] for i in range(3))), None)
+        if not own or cavity is None:
+            raise AssetAuthoringError("articulated_part_extent_estimate_unplaceable:" + row["part_id"])
+        observed_lo, observed_hi = estimate["box_assembly_m"]["minimum"], estimate["box_assembly_m"]["maximum"]
+        lo = [max(observed_lo[i], cavity[1][i] + margin) for i in range(3)]
+        hi = [min(observed_hi[i], cavity[2][i] - margin) for i in range(3)]
+        if any(hi[i] - lo[i] < MINIMUM_ESTIMATED_PART_SIZE_M for i in range(3)):
+            raise AssetAuthoringError("articulated_part_extent_estimate_outside_cavity:" + row["part_id"])
+        new_size = [round(hi[i] - lo[i], 5) for i in range(3)]
+        link["rest_translation_m"] = [round((lo[0] + hi[0]) / 2, 5), round((lo[1] + hi[1]) / 2, 5), round(lo[2], 5)]
+        spec["dimensions_m"] = new_size
+        spec["features"] = {**spec.get("features", {}), "link": _box([0.0, 0.0, new_size[2] / 2], new_size)}
+        clamped = [axis for i, axis in enumerate("xyz") if (lo[i], hi[i]) != (observed_lo[i], observed_hi[i])]
+        spec["description"] = (
+            f"{row['label']}: a fixed part held inside the {cavity[0]} cavity, not a task part, "
+            f"{new_size[0]} m deep x {new_size[1]} m wide x {new_size[2]} m tall overall, estimated from frames "
+            f"{', '.join(estimate['frame_ids'])} (uncertainty +/- {estimate['uncertainty_m']} m per axis)"
+            + (f", clamped inside the cavity on {', '.join(clamped)}" if clamped else "") + ".")
+        bases[row["part_id"]] = {**record, "basis": OBSERVED_ESTIMATE_BASIS, "frame_ids": list(estimate["frame_ids"]),
+                                 "uncertainty_m": list(estimate["uncertainty_m"]),
+                                 "observed_box_assembly_m": estimate["box_assembly_m"], "cavity_id": cavity[0],
+                                 "clamped_axes": clamped, "cavity_margin_m": margin,
+                                 "replaced_template_prior": {"dimensions_m": [round(v, 5) for v in size],
+                                                             "rest_translation_m": [round(v, 5) for v in rest]},
+                                 "physical_measurement_proven": False}
+    plan["part_dimension_bases"] = bases
+
+
+_CONTRACT_KEYS = ("required_parts", "reference_frames", "body_depth", "body_extent_m", "hinge_edge",
+                  "part_extent_estimates")
 
 
 def legacy_drawer_plan(plan: Mapping[str, Any]) -> bool:
@@ -753,6 +878,8 @@ def plan_articulated_assembly(configuration: Mapping[str, Any]) -> dict[str, Any
         raise AssetAuthoringError("articulated_assembly_family_undeclared")
     plan = (_plan_hinged_door_appliance(configuration, contract) if family == HINGED_FAMILY
             else _plan_stacked_drawer_cabinet(configuration, contract))
+    if not legacy_drawer_plan(plan):
+        _apply_part_evidence(plan, contract)
     # Joint damping resists velocity but does nothing at rest. Use the admitted
     # *joint* effort interval for a provisional breakaway model on every new
     # articulated task. This is an estimate, never a measured property of the
@@ -1485,6 +1612,7 @@ def package_astra_articulated_candidate(*, requests: Mapping[str, AuthoringReque
         "handle_prim_paths": [p for p in task_link["collision_prim_paths"] if p.endswith("/handle")],
         "handle_grasp_point_link_m": task_link["handle_grasp_point_link_m"],
         "required_parts_by_link": required_by_link,
+        **({"part_dimension_bases": plan["part_dimension_bases"]} if "part_dimension_bases" in plan else {}),
         "interior_cavity_check": ({"status": "not_planned_legacy_drawer_configuration"} if legacy else
                                   {"status": "hollow_open_front_verified_on_reviewed_mesh",
                                    "cavity_ids": [row["cavity_id"] for row in cavities],

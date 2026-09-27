@@ -22,7 +22,7 @@ from .paid_resource_admission import PaidResourceAdmissionGrant, require_paid_re
 MAX_GENERATION_COST_USD = 3100 / 1250
 
 #: A pre-generation 402 buys nothing and settles at $0, so each one admits one
-#: more attempt bound to the rejected one. On 2026-09-27 the website dishwasher's
+#: more attempt bound to the rejected one. On 2026-09-27 a website capture's
 #: only retry ran minutes before the owner added credits, and a single retry
 #: stranded the scene. Bounded, so an account that stays empty cannot loop.
 MAX_CREDIT_REJECTION_RETRIES = 3
