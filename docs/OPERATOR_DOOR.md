@@ -92,7 +92,7 @@ but `healthz` needs `Authorization: Bearer <token>`. Scopes are `read`,
 |---|---|---|
 | `GET /healthz` | none | `{"ok": true, "version": …}` |
 | `GET /whoami` | read | token name and scopes |
-| `GET /status` | read | deployed commit and blockers (loopback `/version`), active release, deploy units in flight and recent receipts, paid-launch lock holders from `/proc/locks`, spend guard, failed and controller units, disk, load, door queue |
+| `GET /status` | read | deployed commit and blockers (loopback `/version`), active release, deploy units in flight and recent receipts, paid-launch lock holders from `/proc/locks`, spend guard, failed and controller units, disk, load, door queue, owned timer holds (including overdue ones), and unreported break-glass note count/latest summary |
 | `GET /fs/list?path=&sort=name\|mtime&match=` | read | directory entries (capped) or a file's metadata |
 | `GET /fs/read?path=&offset=&length=` | read | bytes; `X-Door-Size`, `X-Door-Offset`, `X-Door-Eof` headers for paging |
 | `GET /fs/archive?path=` | read | tar.gz of a directory (512 MiB cap, two at a time) |
@@ -111,7 +111,9 @@ Request kinds:
 | Kind | Scope | Body | What the runner does |
 |---|---|---|---|
 | `deploy` | deploy | `commit` on `origin/main`, `wait_for_idle` | refuses while any `blueprint-*deploy*` unit is active; otherwise `door-deploy.sh` |
-| `unit` | operate | `unit` (`blueprint-*`), `action` `start`\|`reset-failed`\|`stop`\|`restart` | `systemctl --no-block <action> -- <unit>`; `stop`/`restart` only for `.timer`/`.path`, never the door's own units or a spend-guard, watchdog, teardown or reaper trigger |
+| `unit` | operate | `unit` (`blueprint-*`), `action` `start`\|`reset-failed`\|`stop`\|`restart` | `systemctl --no-block <action> -- <unit>`; bare `stop` of a `.timer`/`.path` refuses with `unit_stop_requires_hold`, and `restart` remains limited to safe triggers. The door's own and safety-critical triggers cannot be paused or restarted. |
+| `hold` | operate | `.timer`/`.path` `unit`, `owner`, printable `reason`, `expires_in_seconds` (60–86400) | stops the unit, writes a root-owned hold record, and schedules an expiry timer; a different owner cannot replace an active hold |
+| `release-hold` | operate | `.timer`/`.path` `unit` | starts the held unit and records who released it; refuses if no active hold exists |
 | `door-upgrade` | deploy | `commit` on `origin/main` | `door-upgrade.sh`: that commit's `install.sh --upgrade`, rolled back on a failed health check |
 | `retire-scene-workspace` | operate | `scene_id`, optional `bucket`, `apply` (default `false`) | `door-retire-scene-workspace.sh`: the active release's `website_scene_workspace_retention retire` for that scene; without `apply` it only plans. Outcome `planned`, `retained` (code = first reason), `retired` or `failed`; the module's full result is `results/<id>.retirement.json` |
 | `restore-scene-workspace` | operate | `scene_id`, required `bucket` | `door-restore-scene-workspace.sh`: replays the retired receipt to the canonical workspace path, checks every byte and moves the historical receipt aside. Outcome `restored` or `failed`; the module's full result is `results/<id>.restore.json` |
@@ -158,8 +160,26 @@ and archives to the same artifact store as the reclaim timer. See
 pause across the deploy; `deploy_control_plane_iteration.sh` and
 `deploy_control_plane_canary.sh` do not pass it, which is why the door does
 not call them. The deploy tool's own guards still apply (paid-launch locks,
-dirty or unpushed sources, surface agreement, disk budget). The signed hotfix
-overlay path of the iteration wrapper is not offered through the door.
+dirty or unpushed sources, surface agreement, disk budget). An active door hold
+also takes precedence over automatic timer/path arming: deploy leaves that
+unit stopped and records its owner, reason and expiry in the receipt. If the
+holds directory cannot be read, the receipt alerts `door_holds_unreadable`.
+The signed hotfix overlay path of the iteration wrapper is not offered through
+the door.
+
+Pause a safe trigger through the door with an owner and automatic expiry:
+
+```bash
+python3 scripts/operator_door.py hold blueprint-task-evaluation-scene-progression.timer \
+  --owner alice --reason "inspect capture" --for 2h --wait
+python3 scripts/operator_door.py release-hold blueprint-task-evaluation-scene-progression.timer --wait
+```
+
+The root runner keeps `requests/holds/<unit>.json` at mode 0644. A renewed
+hold gets a new request id; an older expiry timer cannot release it. Status
+shows `remaining_seconds` and flags an overdue record, so a failed expiry is
+visible for an operator to release. Safety-critical teardown, spend-guard,
+capacity, storage-GC, replay-cache-GC and preflight triggers cannot be held.
 
 Lanes that deploy by hand should keep naming their transient units
 `blueprint-<label>-deploy-<sha>` so the door's in-progress check and `status`

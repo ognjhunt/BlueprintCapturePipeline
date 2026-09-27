@@ -175,6 +175,7 @@ def test_status_assembles_every_section(host_tree: dict[str, Path]) -> None:
     assert status["failed_units"] == ["blueprint-a.service"]
     assert status["door_requests"] == {"pending": 1, "processing": 0}
     assert status["holds"] == []
+    assert status["break_glass"] == {"unreported": 0, "latest": None}
     assert status["door"]["caller"] == {"name": "cloud"}
     assert set(status["disk"]) and "loadavg" in status["load"]
 
@@ -197,6 +198,21 @@ def test_status_shows_active_and_overdue_holds_with_remaining_seconds(host_tree:
     assert 0 < hold["remaining_seconds"] <= 120
     overdue = next(row for row in status["holds"] if row["unit"] == "blueprint-pubsub-handoff-listener.timer")
     assert overdue["remaining_seconds"] == 0 and overdue["expired"] is True
+
+
+def test_status_counts_unreported_break_glass_notes(host_tree: dict[str, Path]) -> None:
+    root = host_tree["state"] / "cleanup-receipts"
+    root.mkdir()
+    old = "20260926T120000Z-0123456789ab.json"
+    new = "20260927T120000Z-abcdef012345.json"
+    for name, epoch, operator in ((old, 1790424000, "alice"), (new, 1790510400, "bob")):
+        (root / name).write_text(json.dumps({"created_at_epoch": epoch, "created_at": "2026-09-27T12:00:00Z",
+                                             "operator": operator, "reason": "door repair"}), encoding="utf-8")
+    (root / "reported.jsonl").write_text(json.dumps({"name": old}) + "\n", encoding="utf-8")
+    status = build_status(_config(host_tree), _host(host_tree, FakeRunner({})), caller={})
+    assert status["break_glass"] == {"unreported": 1,
+                                     "latest": {"created_at": "2026-09-27T12:00:00Z",
+                                                "operator": "bob", "reason": "door repair"}}
 
 
 def test_status_survives_a_failing_section(host_tree: dict[str, Path]) -> None:
