@@ -1503,14 +1503,21 @@ def _write_report(path: Path, report: Mapping[str, Any]) -> None:
     # ticks under the service's 0077 umask before publishing the secret-free report.
     parent_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
-        os.fchmod(parent_fd, 0o755)
+        try:
+            os.fchmod(parent_fd, 0o755)
+        except PermissionError:
+            # Earlier GC units ran as blueprint. The current root unit has
+            # CAP_CHOWN but not CAP_FOWNER, so take ownership before chmod.
+            os.fchown(parent_fd, os.geteuid(), -1)
+            os.fchmod(parent_fd, 0o755)
     finally:
         os.close(parent_fd)
     descriptor, temporary = tempfile.mkstemp(prefix=".gc-report-", dir=path.parent)
     with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
         json.dump(report, stream, indent=2, sort_keys=True)
         stream.write("\n")
-    os.chmod(temporary, 0o644)
+        stream.flush()
+        os.fchmod(stream.fileno(), 0o644)
     os.replace(temporary, path)
 
 

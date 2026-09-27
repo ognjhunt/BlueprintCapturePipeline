@@ -413,6 +413,29 @@ def test_latest_gc_report_is_readable_by_the_operator_door_after_each_tick(tmp_p
         assert json.loads(path.read_text(encoding="utf-8")) == {"status": status}
 
 
+def test_report_reclaims_a_directory_owned_by_the_previous_service_user(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "storage-gc" / "latest.json"
+    path.parent.mkdir(mode=0o700)
+    original_fchmod = os.fchmod
+    calls: list[tuple[int, int]] = []
+
+    def previous_owner_blocks_chmod(fd: int, mode: int) -> None:
+        if not calls:
+            raise PermissionError("old service user owns report directory")
+        original_fchmod(fd, mode)
+
+    def change_owner(fd: int, uid: int, gid: int) -> None:
+        calls.append((uid, gid))
+
+    monkeypatch.setattr(os, "fchmod", previous_owner_blocks_chmod)
+    monkeypatch.setattr(os, "fchown", change_owner)
+    gc_module._write_report(path, {"status": "dry_run"})
+
+    assert calls == [(os.geteuid(), -1)]
+    assert path.parent.stat().st_mode & 0o777 == 0o755
+    assert path.stat().st_mode & 0o777 == 0o644
+
+
 def _queue_row(root: Path, state: str, name: str, *, commit: str | None) -> Path:
     directory = root / state
     directory.mkdir(parents=True, exist_ok=True)
