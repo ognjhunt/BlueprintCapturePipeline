@@ -210,6 +210,30 @@ def test_release_retirement_attention_appears_in_capacity_report(tmp_path: Path)
     assert any(a["code"] == "release_retirement_attention" for a in cap.capacity_summary(report)["alerts"])
 
 
+@pytest.mark.parametrize("bad_status", [
+    pytest.param("/var/lib/blueprint/secrets/private-token", id="path"),
+    pytest.param("secret-text-" * 2000, id="long"),
+])
+def test_release_retirement_attention_redacts_malformed_status(tmp_path: Path, bad_status: str) -> None:
+    summary = tmp_path / "release-retention" / "latest-deploy-retirement.json"
+    summary.parent.mkdir()
+    summary.write_text(json.dumps({"status": bad_status, "alerts": ["failed"]}))
+
+    report = cap.run_controller(
+        mounts=[str(tmp_path)], report_root=tmp_path / "capacity",
+        reservation_root=tmp_path / "ledger", webhook_url="https://alerts.example/hook",
+        volume=None, ack="", token="", survey=None,
+        release_retirement_summary_path=summary,
+        break_glass_notes_root=tmp_path / "absent-notes",
+        disk_usage=_usage(80.0), now=1000.0,
+        poster=lambda *_args: None,
+    )
+
+    attention = next(a for a in report["alerts"] if a["code"] == "release_retirement_attention")
+    assert attention["status"] == "unreadable"
+    assert bad_status not in json.dumps(cap.capacity_summary(report))
+
+
 def test_unreported_break_glass_note_warns_without_disclosing_note(tmp_path: Path, monkeypatch) -> None:
     from blueprint_pipeline import control_plane_break_glass
 
@@ -332,6 +356,7 @@ def test_reclaim_ineffective_requires_zero_candidates_and_zero_reclaimed(
         "schema_version": "control_plane_storage_gc_summary.v1",
         "observed_at_epoch": 1000.0, "status": "applied",
         "top_retained_reasons": [],
+        "skipped_roots": [], "phase_errors": [],
         "opt_in": {"evidence_offload": False, "scene_workspace_retirement": False},
         "phases": {
             "derived_directories": {"status": "applied", "candidate_bytes": candidate,
@@ -351,6 +376,7 @@ def test_reclaim_outlook_fails_closed_without_complete_applied_phase() -> None:
     summary = {
         "schema_version": "control_plane_storage_gc_summary.v1",
         "observed_at_epoch": 1000.0, "status": "applied",
+        "skipped_roots": [], "phase_errors": [],
         "opt_in": {"evidence_offload": True},
         "phases": {
             "derived_directories": {"status": "applied", "candidate_bytes": 0,
@@ -381,6 +407,7 @@ def test_reclaim_outlook_does_not_claim_exact_top_reasons_from_legacy_capped_row
     summary = {
         "schema_version": "control_plane_storage_gc_summary.v1",
         "observed_at_epoch": 1000.0, "status": "applied",
+        "skipped_roots": [], "phase_errors": [],
         "opt_in": {"evidence_offload": False, "scene_workspace_retirement": False},
         "phases": {
             "derived_directories": {"status": "applied", "candidate_bytes": 0,
@@ -407,6 +434,7 @@ def test_reclaim_outlook_prefers_uncapped_global_reason_totals() -> None:
     summary = {
         "schema_version": "control_plane_storage_gc_summary.v1",
         "observed_at_epoch": 1000.0, "status": "applied",
+        "skipped_roots": [], "phase_errors": [],
         "opt_in": {"evidence_offload": False, "scene_workspace_retirement": False},
         "phases": {
             "derived_directories": {"status": "applied", "candidate_bytes": 0,
@@ -432,10 +460,35 @@ def test_reclaim_outlook_prefers_uncapped_global_reason_totals() -> None:
     assert reasons == ["shared", "single", "third"]
 
 
+@pytest.mark.parametrize("incomplete", [
+    {"skipped_roots": ["/var/lib/blueprint/task-evaluation-inputs"]},
+    {"phase_errors": ["replay_caches"]},
+])
+def test_reclaim_outlook_does_not_claim_zero_when_gc_skipped_work(incomplete) -> None:
+    from blueprint_pipeline.control_plane_storage_gc_reasons import build_storage_gc_summary
+
+    summary = build_storage_gc_summary({
+        "status": "applied", "observed_at_epoch": 1000.0,
+        "opt_in": {"evidence_offload": False, "scene_workspace_retirement": False},
+        "derived_directories": {"status": "applied", "candidate_bytes": 0,
+                                "removed_bytes": 0},
+        "content_store": {"status": "applied", "candidate_bytes": 0,
+                          "removed_bytes": 0},
+        **incomplete,
+    })
+
+    outlook, reasons, ineffective = cap._reclaim_outlook(
+        summary, now=1100.0, volume_growth="blocked",
+    )
+    assert outlook["reclaimable_bytes"] is None
+    assert reasons == [] and ineffective is False
+
+
 def test_reclaim_outlook_counts_other_applying_gc_phases() -> None:
     summary = {
         "schema_version": "control_plane_storage_gc_summary.v1",
         "observed_at_epoch": 1000.0, "status": "applied",
+        "skipped_roots": [], "phase_errors": [],
         "opt_in": {"evidence_offload": False, "scene_workspace_retirement": False,
                    "replay_cache_retention": False},
         "phases": {

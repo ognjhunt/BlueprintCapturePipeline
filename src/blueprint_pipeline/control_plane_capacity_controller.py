@@ -237,6 +237,11 @@ def _reclaim_outlook(
     opt_in = summary.get("opt_in")
     if not isinstance(phases, Mapping) or not isinstance(opt_in, Mapping):
         return outlook, [], False
+    skipped_roots = summary.get("skipped_roots")
+    phase_errors = summary.get("phase_errors")
+    if (not isinstance(skipped_roots, list) or not isinstance(phase_errors, list)
+            or skipped_roots or phase_errors):
+        return outlook, [], False
     enabled = [name for name in reclaim_phases[:4] if name in phases]
     if opt_in.get("evidence_offload") is True:
         if "result_artifact_offload" in phases:
@@ -1098,9 +1103,11 @@ def run_controller(
     if retirement is not None:
         retirement_alerts = retirement.get("alerts")
         alert_count = len(retirement_alerts) if isinstance(retirement_alerts, list) else 0
-        if retirement.get("status") != "applied" or alert_count:
+        raw_status = retirement.get("status")
+        retirement_status = raw_status if raw_status in ("applied", "blocked", "skipped") else "unreadable"
+        if retirement_status != "applied" or alert_count:
             report["alerts"].append({"code": "release_retirement_attention",
-                                     "status": str(retirement.get("status") or "unreadable"),
+                                     "status": retirement_status,
                                      "alert_count": alert_count})
             if report["level"] == "ok":
                 report["level"] = "warning"
