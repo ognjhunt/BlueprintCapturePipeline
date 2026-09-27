@@ -25,6 +25,21 @@ def test_launch_and_fire_scripts_are_committed_and_parse() -> None:
         subprocess.run(["bash", "-n", str(script)], check=True)
 
 
+def test_arena_scripts_lease_new_attempts_and_resolve_historical_ones() -> None:
+    launch = _text(LAUNCH)
+    fire = _text(FIRE)
+    assert "control_plane_arena_scratch prepare" in launch
+    assert launch.find("control_plane_arena_scratch prepare") < launch.find("== 0. predecessor provider zero")
+    assert "ARENA_SCRATCH_OWNER" in launch
+    assert "ARENA_SCRATCH_RUN_REF" in launch
+    assert "ARENA_SCRATCH_SCENE_REF" in launch
+    assert "ARENA_SCRATCH_TTL_SECONDS" in launch
+    assert "sudo -u blueprint mkdir -p $A\n" not in launch
+    assert launch.count("control_plane_arena_scratch resolve") >= 3  # predecessor, spend walk, writable check
+    assert "control_plane_arena_scratch resolve" in fire
+    assert fire.find("control_plane_arena_scratch resolve") < fire.find("PROFILE_JSON=$A/")
+
+
 def test_profile_build_passes_a_revision() -> None:
     """Without --revision a retry at the same commit cannot publish.
 

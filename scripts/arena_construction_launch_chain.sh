@@ -1,6 +1,7 @@
 #!/bin/bash
 # Parameterized arena construction launch.
-#   PREV=r10 CUR=r11 bash scripts/arena_construction_launch_chain.sh
+#   PREV=r10 CUR=r11 ARENA_SCRATCH_OWNER=<owner> ARENA_SCRATCH_RUN_REF=<run> \
+#     ARENA_SCRATCH_TTL_SECONDS=<seconds> bash scripts/arena_construction_launch_chain.sh
 # Every step is idempotent: single-write receipts are skipped when present, so
 # the script is safe to re-run after any failure.
 set -euo pipefail
@@ -10,8 +11,7 @@ CP=/opt/blueprint/task-evaluation-control-plane
 PY=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python
 RUN="sudo -u blueprint env PYTHONPATH=$CP/src $PY"
 E=/var/lib/blueprint/task-evaluation-inputs
-A=$E/arena-launch-$CUR
-P=$E/arena-launch-$PREV
+P=$($RUN -m blueprint_pipeline.control_plane_arena_scratch resolve --tag "$PREV")
 RUNTIME_SOURCE_PACKET_RECEIPT=${RUNTIME_SOURCE_PACKET_RECEIPT:-$E/native-task-runtime-source-c3e8b79a-dependency-complete-62ebe98e/native_task_runtime_source_packet.v1.json}
 LR=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs
 TASK=task_a_washer_door_open
@@ -31,10 +31,20 @@ echo "prev run: $RPREV"
 echo "commit:   $COMMIT"
 echo "audit:    $AUD"
 echo "avoidlist: $AVOIDLIST"
-sudo -u blueprint mkdir -p $A
+# A new attempt needs an operator-supplied owner, run or scene reference, and
+# expiry. Retrying a sealed attempt (or a proven historical folder) keeps its
+# original path and single-write receipts.
+ARENA_PREPARE_ARGS=()
+[ -z "${ARENA_SCRATCH_OWNER:-}" ] || ARENA_PREPARE_ARGS+=(--owner "$ARENA_SCRATCH_OWNER")
+[ -z "${ARENA_SCRATCH_RUN_REF:-}" ] || ARENA_PREPARE_ARGS+=(--run-ref "$ARENA_SCRATCH_RUN_REF")
+[ -z "${ARENA_SCRATCH_SCENE_REF:-}" ] || ARENA_PREPARE_ARGS+=(--scene-ref "$ARENA_SCRATCH_SCENE_REF")
+[ -z "${ARENA_SCRATCH_TTL_SECONDS:-}" ] || ARENA_PREPARE_ARGS+=(--ttl-seconds "$ARENA_SCRATCH_TTL_SECONDS")
+A=$($RUN -m blueprint_pipeline.control_plane_arena_scratch prepare --tag "$CUR" "${ARENA_PREPARE_ARGS[@]}")
 cd $CP
 
 echo "== 0. predecessor provider zero"
+[ -f "$P/construction_provider_zero.v1.json" ] || \
+  $RUN -m blueprint_pipeline.control_plane_arena_scratch resolve --tag "$PREV" --writable >/dev/null
 [ -f $P/construction_provider_zero.v1.json ] && echo '  exists, skipping' || \
   $RUN scripts/seal_native_task_arena_provider_zero.py \
     --authority $P/native_task_arena_paid_attempt_authority.v1.json \
@@ -66,9 +76,15 @@ print(ids[0] if ids else '')")
   if [ -z "$INST" ]; then echo "  skipping $_tag: allocated nothing"; continue; fi
   # terminal result, teardown, and provider zero must all describe the SAME
   # attempt, so take the zero from that attempt's own input directory.
-  _zero=$E/arena-launch-${_tag}/construction_provider_zero.v1.json
+  set +e
+  _input_dir=$($RUN -m blueprint_pipeline.control_plane_arena_scratch resolve --tag "$_tag")
+  _resolve_status=$?
+  set -e
+  if [ "$_resolve_status" -eq 2 ]; then echo "  skipping $_tag: no attempt inputs"; continue; fi
+  [ "$_resolve_status" -eq 0 ] || exit "$_resolve_status"
+  _zero=$_input_dir/construction_provider_zero.v1.json
   [ -f "$_zero" ] || { echo "  skipping $_tag: no sealed provider zero yet"; continue; }
-  JOBSPEND="$_job"; ZEROSPEND="$_zero"; PSPEND=$E/arena-launch-${_tag}; break
+  JOBSPEND="$_job"; ZEROSPEND="$_zero"; PSPEND=$_input_dir; break
 done
 [ -n "$JOBSPEND" ] || { echo "no predecessor run allocated an instance -- nothing to reconcile against"; exit 1; }
 echo "  predecessor instance: $INST (from $_tag)"
