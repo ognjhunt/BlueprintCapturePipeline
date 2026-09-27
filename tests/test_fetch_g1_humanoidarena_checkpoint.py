@@ -5,6 +5,8 @@ import importlib.util
 import io
 import json
 import tempfile
+import threading
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -106,7 +108,9 @@ def test_private_cache_fetch_uses_pinned_url_and_redacts_transport_error(
         raise OSError("sensitive URL was " + url)
 
     monkeypatch.setattr(fetch, "_open_https", fail_private)
-    with pytest.raises(ValueError, match="g1_checkpoint_private_cache_transfer_failed:OSError") as exc:
+    with pytest.raises(
+        ValueError, match="g1_checkpoint_private_cache_transfer_failed:config.json:OSError"
+    ) as exc:
         fetch.materialize_candidate(
             inventory_path=inventory, candidate_id="dp", output_dir=tmp_path / "second",
             cache_manifest_path=cache_manifest,
@@ -236,11 +240,90 @@ def test_large_checkpoint_rejects_wrong_range_response(
 
     monkeypatch.setattr(fetch, "_open_https", open_range)
     with tempfile.NamedTemporaryFile(dir=tmp_path) as stream:
-        with pytest.raises(ValueError, match="g1_checkpoint_range_response_invalid"):
+        with pytest.raises(ValueError, match="g1_checkpoint_range_http_status_200"):
             fetch._download_pinned_ranges(
                 "https://modelscope.cn/pinned", stream.fileno(), len(content),
                 chunk_size=8 * 1024, workers=2,
             )
+
+
+def test_private_cache_failure_retains_safe_file_and_reason_without_signed_url(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    content = b"pinned-checkpoint"
+    inventory = _inventory(tmp_path, content)
+    signed_url = "https://cache.example.org/checkpoint?X-Amz-Signature=private-secret"
+    manifest = tmp_path / "private-cache.json"
+    manifest.write_text(json.dumps({
+        "schema_version": "native_g1_private_checkpoint_transfer.v1",
+        "files": [{
+            "relative_path": "small/HOI_pp_box/model/config.json",
+            "url": signed_url,
+            "sha256": "sha256:" + hashlib.sha256(content).hexdigest(),
+            "size_bytes": len(content),
+        }],
+    }))
+    monkeypatch.setattr(fetch, "RANGED_DOWNLOAD_MIN_BYTES", 1)
+
+    def wrong_status(url: str, *, headers: dict[str, str]):
+        assert url == signed_url
+        assert headers["Range"] == f"bytes=0-{len(content) - 1}"
+        response = _Response(content, url)
+        response.status = 200
+        response.headers = {}
+        return response
+
+    monkeypatch.setattr(fetch, "_open_https", wrong_status)
+    output = tmp_path / "checkpoints"
+    with pytest.raises(ValueError) as caught:
+        fetch.materialize_candidate(
+            inventory_path=inventory, candidate_id="dp", output_dir=output,
+            cache_manifest_path=manifest,
+        )
+    assert str(caught.value) == (
+        "g1_checkpoint_private_cache_transfer_failed:"
+        "config.json:g1_checkpoint_range_http_status_200"
+    )
+    assert "private-secret" not in str(caught.value)
+    assert not list(output.rglob(".g1-checkpoint-*"))
+
+
+def test_private_cache_http_error_code_does_not_expose_signed_url() -> None:
+    error = urllib.error.HTTPError(
+        "https://cache.example.org/?X-Amz-Signature=private-secret",
+        503, "unavailable", {}, None,
+    )
+    assert fetch._private_transfer_failure_code(error) == "http_error_503"
+
+
+def test_peer_failure_cancels_ranged_download_and_removes_partial_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    content = b"checkpoint" * 1024
+    inventory = _inventory(tmp_path, content)
+    cancel = threading.Event()
+    monkeypatch.setattr(fetch, "RANGED_DOWNLOAD_MIN_BYTES", 1)
+
+    class CancelResponse(_Response):
+        def read(self, size: int = -1) -> bytes:
+            cancel.set()
+            return super().read(size)
+
+    def open_range(url: str, *, headers: dict[str, str]):
+        response = CancelResponse(content, url)
+        response.status = 206
+        response.headers = {"Content-Range": f"bytes 0-{len(content) - 1}/{len(content)}"}
+        return response
+
+    monkeypatch.setattr(fetch, "_open_https", open_range)
+    output = tmp_path / "checkpoints"
+    with pytest.raises(fetch._DownloadPeerCancelled):
+        fetch.materialize_candidate(
+            inventory_path=inventory, candidate_id="dp", output_dir=output,
+            cancel_event=cancel,
+        )
+    assert not (output / "small/HOI_pp_box/model/config.json").exists()
+    assert not list(output.rglob(".g1-checkpoint-*"))
 
 
 def test_large_checkpoint_deadline_cleans_partial_without_publication(
