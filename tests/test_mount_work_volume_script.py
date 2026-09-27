@@ -709,3 +709,19 @@ def test_a_failed_swap_rename_refuses_with_a_reason_and_keeps_the_bytes(
     assert f"refusing: {reason}" in applied.stderr
     assert (state / survivor).read_bytes() == b"x" * 4096
     assert "leaving the worker units stopped" in applied.stderr, "a half-done swap keeps writers away"
+
+
+def test_the_room_check_counts_the_old_binds_bytes_on_the_volume_once(tmp_path: Path) -> None:
+    state, volume, bound = _bound_state(tmp_path)
+    # A second old bind: du rounds each tree up to a whole MiB, so the two
+    # children (1 MiB each) outweigh the whole volume copy (1 MiB).
+    (state / "task-evaluation-inputs" / "compiled-episodes").mkdir()
+    (volume / "task-evaluation-inputs" / "compiled-episodes").mkdir()
+    (volume / "task-evaluation-inputs" / "compiled-episodes" / "payload.bin").write_bytes(b"c" * 4096)
+    with bound.open("a", encoding="utf-8") as handle:
+        handle.write("/var/lib/blueprint/task-evaluation-inputs/compiled-episodes\n")
+
+    applied = _run(*_hermetic(tmp_path, bound), "--assume-volume-free-mib", "2", "--apply", "--ack", ACK)
+
+    assert applied.returncode == 0, applied.stderr + applied.stdout
+    assert "volume room: 2 MiB free for 1 MiB plus 1 MiB (5 %)" in applied.stdout

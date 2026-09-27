@@ -626,6 +626,8 @@ require_volume_room() {
       child_mib="$(size_mib "${HOST_MOUNT}/${ROOT_VREL[i]}/${rel}")"
       have=$((have - child_mib))
     done
+    # du rounds each tree up, so the children can outweigh the whole copy.
+    if [ "${have}" -lt 0 ]; then have=0; fi
     if [ "${root_mib}" -gt "${have}" ]; then need=$((need + root_mib - have)); fi
   done
   margin=$(((need + 19) / 20))
