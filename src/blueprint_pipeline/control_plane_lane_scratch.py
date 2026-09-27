@@ -157,6 +157,23 @@ def _read_lease(directory_fd: int) -> dict[str, Any]:
     return lease
 
 
+def read_lane_scratch_folder(path: str | Path, *, lane: str, name: str) -> dict[str, Any]:
+    """Read an exact folder's sealed lease without creating a lock or following its symlink."""
+
+    lane, name = _id(lane, "lane"), _id(name, "name")
+    try:
+        folder_fd = os.open(path, _DIR_FLAGS)
+    except OSError as exc:
+        raise LaneScratchError("lane_scratch_folder_unsafe") from exc
+    try:
+        lease = _read_lease(folder_fd)
+    finally:
+        os.close(folder_fd)
+    if lease.get("lane") != lane or lease.get("name") != name:
+        raise LaneScratchError("lane_scratch_lease_mismatch")
+    return lease
+
+
 def create_lane_scratch(
     lane: str, name: str, *, owner: str, reason: str, class_intent: str,
     cleanup: str, ttl_seconds: int, run_ref: str | None = None,
@@ -323,4 +340,4 @@ def list_lane_scratch(
 
 
 __all__ = ["DEFAULT_ROOT", "LEASE_FILE", "LaneScratchError", "create_lane_scratch",
-           "renew_lane_scratch", "release_lane_scratch", "list_lane_scratch"]
+           "renew_lane_scratch", "release_lane_scratch", "list_lane_scratch", "read_lane_scratch_folder"]

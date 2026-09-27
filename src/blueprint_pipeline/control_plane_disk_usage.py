@@ -63,6 +63,21 @@ SURVEY_MAX_BUFFERED_ENTRIES = 20_000
 SURVEY_MAX_SHARED_INODES = 20_000
 MOUNTINFO_PATH = "/proc/self/mountinfo"
 SURVEY_TOP_ROWS = 10
+SURVEY_ORPHAN_ROOT_ROWS = 50
+_SCRATCH_PARENTS = frozenset({
+    "/mnt/blueprint-work", "/var/lib/blueprint/task-evaluation-inputs",
+})
+_LANE_ROOTS = frozenset(f"{parent}/lanes" for parent in _SCRATCH_PARENTS)
+
+
+def is_orphan_scratch_root(root: str) -> bool:
+    """Whether an unclassified survey root is a loose or unleased scratch folder."""
+
+    path = PurePosixPath(root)
+    return (path.is_absolute() and
+            (str(path.parent) in _SCRATCH_PARENTS or str(path.parent.parent) in _LANE_ROOTS))
+
+
 _STORE_DIRECTORY = "content-addressed"
 _COMMIT_NAME = re.compile(r"[0-9a-f]{40}(?![0-9a-f])")
 _MOUNTINFO_ESCAPE = re.compile(r"\\([0-7]{3})")
@@ -395,6 +410,7 @@ class _UsageWalk:
         self.walk_roots: frozenset[tuple[int, int]] = frozenset()
         # (storage class, root, owner) -> [allocated, apparent, files]
         self.totals: dict[tuple[str, str, str], list[int]] = {}
+        self.unclassified_mtime: dict[str, float] = {}
         # st_dev -> [surveyed bytes, classified bytes]
         self.devices: dict[int, list[int]] = {}
         # (st_dev, st_ino) -> [(not in a store, canonical name), attribution, allocated, apparent, st_dev]
@@ -422,6 +438,17 @@ class _UsageWalk:
         if aliased is not None:
             return self._directory(path, _parts(aliased))
         parts = parent.parts + (name,)
+        if _join(parent.parts[:-1]) in _LANE_ROOTS:
+            from .control_plane_lane_scratch import LaneScratchError, read_lane_scratch_folder
+
+            try:
+                read_lane_scratch_folder(path, lane=parent.parts[-1], name=name)
+            except LaneScratchError:
+                # A class row for ``lanes/<lane>`` must not hide an unleased
+                # child. The container classification roots it at this child.
+                unleased = storage_roots.StorageRoot(_join(parent.parts), "container", "blueprint",
+                                                     "unleased lane scratch")
+                return _Directory(path, parts, unleased, True)
         if parent.inherits:
             return _Directory(path, parts, parent.match, True)
         return self._directory(path, parts)
@@ -457,6 +484,13 @@ class _UsageWalk:
 
     def _record(self, metadata: os.stat_result, attribution: tuple[str, str, str], device: int,
                 parts: tuple[str, ...]) -> None:
+        if attribution[0] == "unclassified":
+            root = attribution[1]
+            if root in self.unclassified_mtime or len(self.unclassified_mtime) < self.buffer_limit:
+                self.unclassified_mtime[root] = max(
+                    self.unclassified_mtime.get(root, 0.0), float(metadata.st_mtime))
+            else:
+                self.truncated = True
         directory = stat.S_ISDIR(metadata.st_mode)
         if directory or metadata.st_nlink <= 1:
             self._add(attribution, allocated_bytes(metadata), int(metadata.st_size),
@@ -691,6 +725,10 @@ def survey_usage(
         totals[2] += files
         by_root[(root, storage_class)] = by_root.get((root, storage_class), 0) + allocated
     roots = sorted(by_root.items(), key=lambda item: (-item[1], item[0]))
+    unclassified = [(root, allocated) for (root, storage_class), allocated in roots
+                    if storage_class == "unclassified"]
+    orphan_scratch = [(root, allocated) for root, allocated in unclassified
+                      if is_orphan_scratch_root(root)]
     owners = sorted(walk.totals.items(),
                     key=lambda item: (-item[1][0], item[0][2], item[0][1], item[0][0]))
     survey: dict[str, Any] = {
@@ -717,9 +755,18 @@ def survey_usage(
             for (storage_class, root, owner), totals in owners[:SURVEY_TOP_ROWS]
         ],
         "unclassified_roots": [
-            {"root": root, "allocated_bytes": allocated}
-            for (root, storage_class), allocated in roots
-            if storage_class == "unclassified"
+            {"root": root, "allocated_bytes": allocated,
+             "newest_mtime_epoch": walk.unclassified_mtime.get(root)}
+            for root, allocated in unclassified[:SURVEY_ORPHAN_ROOT_ROWS]
+        ],
+        "unclassified_bytes": sum(allocated for _root, allocated in unclassified),
+        "orphan_scratch_bytes": sum(allocated for _root, allocated in orphan_scratch),
+        "orphan_scratch_count": len(orphan_scratch),
+        "orphan_scratch_largest_bytes": max((allocated for _root, allocated in orphan_scratch), default=0),
+        "orphan_scratch_roots": [
+            {"root": root, "allocated_bytes": allocated,
+             "newest_mtime_epoch": walk.unclassified_mtime.get(root)}
+            for root, allocated in orphan_scratch[:SURVEY_ORPHAN_ROOT_ROWS]
         ],
         "hardlinks": {
             "shared_inodes": len(walk.shared),
@@ -737,6 +784,7 @@ __all__ = [
     "BLUEPRINT_PREFIXES",
     "DEFAULT_SURVEY_ALIASES",
     "SURVEY_SCHEMA_VERSION",
+    "is_orphan_scratch_root",
     "TreeUsage",
     "allocated_bytes",
     "survey_usage",

@@ -242,6 +242,10 @@ def test_usage_prints_the_capacity_usage_as_tables(door: dict[str, Any]) -> None
             "top_owners": [{"owner": "scene:site-capture-1", "root": "/var/lib/blueprint/pubsub-handoffs",
                             "storage_class": "work", "allocated_bytes": 12 * 1024**3}],
             "unclassified_roots": [{"root": "/var/lib/blueprint/something-new", "allocated_bytes": 2 * 1024**2}],
+            "orphan_scratch_bytes": 6 * 1024**3, "orphan_scratch_count": 3,
+            "orphan_scratch_roots": [{"root": "/mnt/blueprint-work/loose-run",
+                                      "allocated_bytes": 4 * 1024**3,
+                                      "newest_mtime_epoch": 1_700_000_000}],
         },
     }), encoding="utf-8")
     code, out = _run("usage")
@@ -251,6 +255,9 @@ def test_usage_prints_the_capacity_usage_as_tables(door: dict[str, Any]) -> None
     assert any(line.split() == ["/", "150.0", "GiB", "145.0", "GiB", "130.0", "GiB", "96.7%"] for line in lines)
     assert any(line.split()[:3] == ["scene:site-capture-1", "work", "12.0"] for line in lines)
     assert any(line.split() == ["/var/lib/blueprint/something-new", "2.0", "MiB"] for line in lines)
+    assert "unowned scratch: 6.0 GiB in 3 folders" in out
+    assert "/mnt/blueprint-work/loose-run" in out
+    assert "2023-11-14T22:13:20Z" in out
     assert "{" not in out
 
 

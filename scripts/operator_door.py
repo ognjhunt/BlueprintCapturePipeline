@@ -30,6 +30,7 @@ unauthorized or missing scope; 4 network error; 5 server error.
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import os
 import re
@@ -208,6 +209,15 @@ def _percent(value: Any) -> str:
     return f"{value * 100:.1f}%"
 
 
+def _utc(value: Any) -> str:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return "-"
+    try:
+        return dt.datetime.fromtimestamp(value, dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except (OverflowError, OSError, ValueError):
+        return "-"
+
+
 def _table(headers: list[str], rows: list[list[str]]) -> list[str]:
     widths = [max(len(cell) for cell in column) for column in zip(headers, *rows)]
     return ["  ".join(cell.ljust(width) for cell, width in zip(row, widths)).rstrip()
@@ -228,6 +238,9 @@ _USAGE_TABLES = (
                   str(row.get("root"))]),
     ("unclassified_roots", ["unclassified root", "allocated"],
      lambda row: [str(row.get("root")), _size(row.get("allocated_bytes"))]),
+    ("orphan_scratch_roots", ["unowned scratch", "allocated", "newest change"],
+     lambda row: [str(row.get("root")), _size(row.get("allocated_bytes")),
+                  _utc(row.get("newest_mtime_epoch"))]),
 )
 
 
@@ -248,6 +261,9 @@ def _print_usage(status: dict[str, Any]) -> int:
     lines = [header]
     if usage.get("error"):
         lines.append(f"last survey attempt: {usage['error']}")
+    if isinstance(usage.get("orphan_scratch_bytes"), int) and isinstance(usage.get("orphan_scratch_count"), int):
+        lines.append(f"unowned scratch: {_size(usage['orphan_scratch_bytes'])} "
+                     f"in {usage['orphan_scratch_count']} folders")
     for key, headers, cells in _USAGE_TABLES:
         rows = [cells(row) for row in usage.get(key) or [] if isinstance(row, dict)]
         if rows:
