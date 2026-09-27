@@ -1473,6 +1473,63 @@ def test_instance_liveness_rejects_unrecognized_payload_as_exit(
     }
 
 
+def test_remote_progress_probe_is_only_bound_for_policy_canary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Other paid bundles must not call a policy canary SSH probe returning None."""
+
+    calls: list[tuple[object, Path]] = []
+
+    def fake_probe(connection: object, *, attempt_dir: Path) -> dict[str, object]:
+        calls.append((connection, attempt_dir))
+        return {"status": "observed", "milestones": []}
+
+    monkeypatch.setattr(vpa, "probe_policy_canary_remote_progress", fake_probe)
+    assert vpa._remote_progress_probe_for_bundle(
+        "native_g1_development_campaign", tmp_path
+    ) is None
+    assert vpa._remote_progress_probe_for_bundle("native_task_arena", tmp_path) is None
+    canary = vpa._remote_progress_probe_for_bundle(
+        "native_task_arena_policy_canary_session", tmp_path
+    )
+    assert canary is not None
+    assert canary({"status": "running"}) == {"status": "observed", "milestones": []}
+    assert calls == [
+        ({"status": "running"}, tmp_path / "policy_remote_progress_ssh")
+    ]
+
+
+def test_request_logs_tolerates_null_diagnostic_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _no_sleep: None,
+) -> None:
+    monkeypatch.setattr(
+        vpa, "_api_json",
+        lambda **_kwargs: (200, {"result_url": "https://example.invalid/log"}),
+    )
+    monkeypatch.setattr(
+        vpa, "_fetch_text", lambda *_args, **_kwargs: "BLUEPRINT_VAST_ONSTART_DONE"
+    )
+    monkeypatch.setattr(
+        vpa, "_instance_liveness",
+        lambda **_kwargs: {"observed": True, "status": "running", "exited": False},
+    )
+
+    result = vpa._request_logs_and_fetch(
+        instance_id=123,
+        api_key="secret",
+        output_log_path=tmp_path / "onstart.log",
+        secret_values=["secret"],
+        wait_seconds=0,
+        retry_interval_seconds=1,
+        max_wait_seconds=2,
+        success_markers=["BLUEPRINT_VAST_ONSTART_DONE"],
+        remote_progress_probe=lambda _connection: None,
+    )
+
+    assert result["break_reason"] == "success_marker_found"
+    assert result["remote_progress_status"] == "unavailable"
+
+
 def test_request_logs_dud_container_flicker_is_not_progress(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
