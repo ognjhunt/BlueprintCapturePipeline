@@ -607,13 +607,14 @@ so each manifest (and its receipt) also records `walked_file_count` and
   `bulk_offload_failed`, `already_offloaded`, `registry_unsealed`,
   `dispatch_receipt_missing` (an operator run, whose continuation and download
   route keep reopening its files), `dispatch_receipt_invalid`,
-  `run_root_invalid`, `offload_locked`, `plan_failed` (for example a kept
-  document too large to search for the files it names), `publication_failed`,
-  `run_changed_or_active` or `pointer_failed`). Every file it left counts under
-  `member_skipped:<reason>` with its bytes: `reader_reopened` and
-  `receipt_referenced` (kept for the readers the module docstring surveys),
-  `symlink`, `special_file`, `cross_device`, `newer_than_registry`,
-  `linked_outside_residue`, `name_unsupported` or `unreadable_directory` when
+  `run_root_invalid`, `offload_locked`, `plan_failed` (what the kept documents
+  name cannot be known: a directory that cannot be listed, a kept directory or
+  JSON document that is a link or on another filesystem, or one too large to
+  search), `publication_failed`, `run_changed_or_active` or `pointer_failed`).
+  Every file it left counts under `member_skipped:<reason>` with its bytes:
+  `reader_reopened` and `receipt_referenced` (kept for the readers the module
+  docstring surveys), `symlink`, `special_file`, `cross_device`,
+  `newer_than_registry`, `linked_outside_residue` or `name_unsupported` when
   the run is listed, and `member_changed`, `path_changed`, `cross_device`,
   `recheck_failed` or `unlink_failed` for a packed member the pointer then
   records as `kept` (the run row adds the exception type). The summary gives

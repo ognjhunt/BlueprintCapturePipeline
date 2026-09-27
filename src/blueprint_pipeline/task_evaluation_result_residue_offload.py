@@ -32,7 +32,10 @@ file that one of those kept JSON documents names by path, closed over the JSON
 documents it names in turn (``receipt_referenced``). A link, a special file, a
 file on another filesystem than the run root, one newer than the registry, one
 with a hard link outside the residue, or one whose name a tar member cannot
-carry is a typed skip and stays.
+carry is a typed skip and stays. When what the kept documents name cannot be
+known (a directory that cannot be listed, a kept directory or JSON document that
+is a link or on another filesystem, one too large to search) the whole run stays
+(``plan_failed``).
 
 **Reader survey** (2026-09-27): who reopens files inside a sealed run.
 
@@ -340,7 +343,9 @@ def _plan_members(root: Path, row: dict[str, Any], registered: set[str], registr
     The walk never follows a link and never enters another filesystem. Nothing
     kept by design is residue, nor anything a kept JSON document names. A group is
     a candidate only when all of its links are residue names, so removing them
-    frees its blocks and nothing that stays shares them.
+    frees its blocks and nothing that stays shares them. A directory that cannot be
+    listed, or a kept directory or JSON document that is a link or on another
+    filesystem, raises: what it names is unknown, so the whole run stays.
     """
 
     device = os.lstat(root).st_dev
@@ -359,10 +364,12 @@ def _plan_members(root: Path, row: dict[str, Any], registered: set[str], registr
             except FileNotFoundError:
                 continue
             if stat.S_ISLNK(info.st_mode) or info.st_dev != device:
-                # Never followed or entered; reported unless everything under it is kept anyway.
-                if not _kept_directory(relative, delivery):
-                    _skip(row, relative, "symlink" if stat.S_ISLNK(info.st_mode) else "cross_device",
-                          info.st_size if stat.S_ISLNK(info.st_mode) else 0)
+                if _kept_directory(relative, delivery):
+                    # A reader follows it; the walk will not, so what it names is unknown.
+                    raise ResultResidueOffloadError("result_residue_kept_directory_unsearchable")
+                # Never followed or entered.
+                _skip(row, relative, "symlink" if stat.S_ISLNK(info.st_mode) else "cross_device",
+                      info.st_size if stat.S_ISLNK(info.st_mode) else 0)
                 continue
             entered.append(name)
         directories[:] = entered
@@ -374,7 +381,9 @@ def _plan_members(root: Path, row: dict[str, Any], registered: set[str], registr
                 continue
             by_design = _kept_by_design(relative, delivery, registered)
             if by_design is not None:
-                if stat.S_ISREG(info.st_mode) and info.st_dev == device and name.endswith(".json"):
+                if name.endswith(".json"):
+                    if not stat.S_ISREG(info.st_mode) or info.st_dev != device:
+                        raise ResultResidueOffloadError("result_residue_kept_document_unsearchable")
                     documents.append(relative)
                 if by_design == "reader_reopened":
                     _skip(row, relative, by_design, info.st_size)
@@ -394,13 +403,9 @@ def _plan_members(root: Path, row: dict[str, Any], registered: set[str], registr
                 _skip(row, relative, reason, info.st_size if reason != "special_file" else 0)
                 continue
             candidates[relative] = info
-    for error in unreadable:
-        # What could not be listed stays; its files are simply not members.
-        try:
-            relative = Path(str(error.filename)).relative_to(root).as_posix()
-        except ValueError:
-            relative = ""
-        _skip(row, relative, "unreadable_directory", 0)
+    if unreadable:
+        # A directory that could not be listed may hold a kept document naming any candidate.
+        raise ResultResidueOffloadError("result_residue_directory_unreadable")
     for relative in sorted(_receipt_references(root, documents, candidates)):
         _skip(row, relative, "receipt_referenced", candidates.pop(relative).st_size)
     groups: dict[tuple[int, int], tuple[os.stat_result, list[str]]] = {}

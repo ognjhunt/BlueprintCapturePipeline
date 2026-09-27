@@ -258,6 +258,37 @@ def test_a_kept_document_too_large_to_search_keeps_the_whole_run(tmp_path, monke
     assert _local_files(f.run) == before and not f.pointer.exists() and f.client.upload_count == 1
 
 
+@pytest.mark.parametrize("case", ["linked_reader_directory", "linked_kept_document", "unlistable_directory"])
+def test_a_kept_directory_or_document_that_cannot_be_searched_keeps_the_whole_run(tmp_path, monkeypatch, case):
+    """A reader follows a link the walk will not: whatever the target names inside the run is
+    unknown, and so is what an unlistable directory holds. Nothing moves."""
+
+    f = _sealed_run(tmp_path / "canaries")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "notes.json").write_text(json.dumps({"cites": str(f.run / "logs" / "worker.log")}), encoding="utf-8")
+    if case == "linked_reader_directory":
+        (f.run / "episode_interpretation").symlink_to(elsewhere, target_is_directory=True)
+    elif case == "linked_kept_document":
+        (f.run / TERMINAL_RESULT).unlink()
+        (f.run / TERMINAL_RESULT).symlink_to(elsewhere / "notes.json")
+    else:
+        real_walk = os.walk
+
+        def failing_walk(top, onerror=None, **kwargs):
+            onerror(PermissionError(13, "unlistable", str(Path(top) / "logs")))
+            yield from real_walk(top, onerror=onerror, **kwargs)
+
+        monkeypatch.setattr(residue.os, "walk", failing_walk)
+    before = _local_files(f.run)
+
+    result = _offload(f)
+
+    assert (result["status"], result["retained_reason"]) == ("retained", "plan_failed")
+    assert result["failure"]["error_type"] == "ResultResidueOffloadError"
+    assert _local_files(f.run) == before and not f.pointer.exists()
+
+
 def test_a_hardlinked_member_moves_with_every_name_and_one_linked_elsewhere_stays(tmp_path) -> None:
     f = _sealed_run(tmp_path / "canaries")
     os.link(f.run / "logs" / "worker.log", f.run / "logs" / "worker-copy.log")
