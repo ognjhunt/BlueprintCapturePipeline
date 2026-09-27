@@ -191,6 +191,23 @@ def test_depended_or_young_or_queued_preparation_pin_is_kept(tmp_path, reason) -
     assert result["released"] == [] and _states(args)[("preparation", "prep-x")] == "live"
 
 
+def test_a_pin_without_a_creation_time_is_kept_as_invalid(tmp_path) -> None:
+    """A pin whose creation time is not a number cannot be aged, so no extended proof can hold."""
+
+    args = _args(tmp_path)
+    _prepared(_preparation_queue(tmp_path, args), "prep-x")
+    _pin(args, "preparation", "prep-x", age=LAPSE + DAY)
+    path = Path(args["pins_root"]) / "preparation" / "prep-x.json"
+    value = json.loads(path.read_text(encoding="utf-8"))
+    value["created_at_epoch"] = "last week"
+    path.write_text(json.dumps(value), encoding="utf-8")
+
+    result = reconcile_terminal_cache_pins(**args, apply=True, extended_proofs_enabled=True)
+
+    assert _kept(result) == {("preparation", "prep-x"): "pin_invalid"}
+    assert _states(args)[("preparation", "prep-x")] == "live"
+
+
 def test_a_consumer_pinned_before_the_mutation_edge_keeps_the_stale_pin(tmp_path) -> None:
     """The stale-pin proof rests on the ledger, so it is derived again, under the pin lock, before a release.
 
@@ -217,7 +234,8 @@ def test_a_consumer_pinned_before_the_mutation_edge_keeps_the_stale_pin(tmp_path
     assert result["released"] == [] and _states(args)[("preparation", "prep-x")] == "live"
 
 
-@pytest.mark.parametrize("reason", ["current", "missing", "unknown_commit", "unconfigured", "tampered", "ambiguous"])
+@pytest.mark.parametrize("reason", [
+    "current", "missing", "unknown_commit", "unconfigured", "tampered", "ambiguous", "state_linked"])
 def test_a_preparation_the_running_release_can_still_activate_keeps_its_pin(tmp_path, reason) -> None:
     """Review of 2026-09-27: a materialized preparation waits for its activation intent with no age limit.
 
@@ -241,6 +259,10 @@ def test_a_preparation_the_running_release_can_still_activate_keeps_its_pin(tmp_
         envelope.write_text(json.dumps(value), encoding="utf-8")
     if reason == "ambiguous":
         _prepared(preparations, "prep-x", state="blocked")
+    if reason == "state_linked":
+        # A queue state that is a link proves nothing about what it holds.
+        (preparations / "materialized").rename(tmp_path / "moved-materialized")
+        (preparations / "materialized").symlink_to(tmp_path / "moved-materialized")
     _pin(args, "preparation", "prep-x", age=LAPSE + DAY)
     _pin(args, "compilation", "prep-x", age=LAPSE + DAY, depends_on=[{"kind": "preparation", "owner_id": "prep-x"}])
 
@@ -248,7 +270,8 @@ def test_a_preparation_the_running_release_can_still_activate_keeps_its_pin(tmp_
 
     expected = {"current": "preparation_release_current", "missing": "preparation_envelope_missing",
                 "unknown_commit": "running_commit_unknown", "unconfigured": "preparation_queue_unconfigured",
-                "tampered": "preparation_envelope_invalid", "ambiguous": "preparation_envelope_ambiguous"}[reason]
+                "tampered": "preparation_envelope_invalid", "ambiguous": "preparation_envelope_ambiguous",
+                "state_linked": "preparation_queue_unavailable"}[reason]
     assert _kept(result) == {("preparation", "prep-x"): "depended_on", ("compilation", "prep-x"): expected}
     assert result["candidates"] == [] and set(_states(args).values()) == {"live"}
 
@@ -1486,16 +1509,7 @@ def test_a_tick_passes_the_opt_in_and_the_activation_queue_to_the_pin_pass(tmp_p
     assert set(_states(args).values()) == {"released"}
 
 
-def _without_env(name: str, call):
-    saved = os.environ.pop(name, None)
-    try:
-        return call()
-    finally:
-        if saved is not None:
-            os.environ[name] = saved
-
-
-def test_extended_pin_proofs_stay_an_operator_opt_in() -> None:
+def test_extended_pin_proofs_stay_an_operator_opt_in(monkeypatch) -> None:
     deploy = Path(__file__).resolve().parents[1] / "deploy" / "systemd"
     unit = (deploy / "blueprint-control-plane-storage-gc.service").read_text(encoding="utf-8")
     example = (deploy / "pipeline-control-plane.env.example").read_text(encoding="utf-8").splitlines()
@@ -1524,8 +1538,8 @@ def test_extended_pin_proofs_stay_an_operator_opt_in() -> None:
                       if line.startswith("Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_STATE_ROOT="))
     configured = next(line.split("=", 2)[2] for line in unit.splitlines()
                       if line.startswith(f"Environment={STANDING_AUTHORIZATION_DIR_ENV}="))
-    assert Path(configured).resolve() == Path(_without_env(STANDING_AUTHORIZATION_DIR_ENV,
-                                                           lambda: standing_authorization_directory(state_root)))
+    monkeypatch.delenv(STANDING_AUTHORIZATION_DIR_ENV, raising=False)
+    assert Path(configured).resolve() == Path(standing_authorization_directory(state_root))
     # The GC only reads it: nothing in the unit makes it writable or hides it.
     assert not any(configured.startswith(path.lstrip("-")) for line in unit.splitlines()
                    if line.startswith(("ReadWritePaths=", "InaccessiblePaths=", "TemporaryFileSystem="))

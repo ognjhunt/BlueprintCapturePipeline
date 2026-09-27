@@ -52,7 +52,11 @@ its id, ``<id>-launch``, and the bounded launch id the launch paths derive for a
 long id, with their own functions.
 Every proof keeps the six-hour minimum pin age, the dependency closure (a pin
 is released only when no queue row or process references any pin in it), and
-a re-derivation at the mutation edge. The extended proofs read queues
+a re-derivation at the mutation edge. A dependency a release takes with it is
+covered by its parent's closure checks and by the ledger's ``_still_needed``
+(no other live pin depends on it), not by a proof of its own: the original
+proofs have always released an activation's preparation and compilation that
+way, and a preparation's lifecycle ends with the activation that consumed it. The extended proofs read queues
 strictly: they also count a row parked in a queue state that will still run,
 such as a preparation awaiting its source preparation, and a row they cannot
 read (linked, oversized, not UTF-8 or unreadable) keeps their candidates as
