@@ -641,3 +641,28 @@ def test_an_unreadable_ledger_is_never_read_as_empty(tmp_path):
     finally:
         ledger.chmod(0o770)
     assert disk_budget.live_reservations(tmp_path / "absent", device=1, now=1.0) == (0, 0)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads mode-0000 entries anyway")
+def test_reservation_writer_refuses_an_unreadable_live_entry(tmp_path):
+    ledger = tmp_path / "ledger"
+    ledger.mkdir()
+    entry = ledger / "held.json"
+    entry.write_text(json.dumps({
+        "device": tmp_path.stat().st_dev,
+        "pid": os.getpid(),
+        "expected_bytes": GIB,
+        "expires_at_epoch": 1e12,
+    }))
+    entry.chmod(0)
+    try:
+        with pytest.raises(ControlPlaneDiskBudgetError, match="control_plane_disk_budget_ledger_unreadable"):
+            reserve_control_plane_disk(
+                "launch_activation", target_root=tmp_path, expected_bytes=GIB,
+                reservation_root=ledger,
+                disk_usage=lambda _path: Usage(100 * GIB, 60 * GIB, 40 * GIB),
+                now=lambda: 100.0, pid_alive=lambda _pid: True,
+            )
+        assert entry.exists()
+    finally:
+        entry.chmod(0o640)

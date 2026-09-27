@@ -168,14 +168,20 @@ def _load_live_reservations(
     # ``history`` directory and in-flight ``.reservation-*`` temporaries are not.
     reserved = 0
     stale: list[str] = []
-    for path in sorted(root.glob("*.json")):
+    try:
+        with os.scandir(root) as listing:
+            names = sorted(entry.name for entry in listing if entry.name.endswith(".json"))
+    except OSError as exc:
+        raise ControlPlaneDiskBudgetError("control_plane_disk_budget_ledger_unreadable") from exc
+    for name in names:
         live, amount = _entry_liveness(
-            path, device=device, observed_at=observed_at, pid_alive=pid_alive
+            root / name, device=device, observed_at=observed_at,
+            pid_alive=pid_alive, strict=True,
         )
         if live:
             reserved += amount
         else:
-            stale.append(path.name)
+            stale.append(name)
     return reserved, stale
 
 
