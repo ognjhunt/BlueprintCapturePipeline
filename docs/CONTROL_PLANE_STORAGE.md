@@ -553,10 +553,13 @@ One tick runs nine phases in order:
    release other than the running one, or in `blocked/`; the activation worker
    verifies a preparation's materialized inputs and never re-fetches them, and
    a materialized preparation waits for its activation intent with no age
-   limit). An activation's evidence names are its id, `<id>-launch`
+   limit; a rollback to that release would make it activatable again). An
+   activation's evidence names are its id, `<id>-launch`
    (configured-controls activations such as `<run>-controls` launch that way
    too) and the bounded launch id the launch paths derive for a long id, with
-   their own function. Every proof keeps the six-hour minimum pin age, the
+   their own function, and every configured evidence root must exist as a
+   directory: a missing root cannot show that nothing launched into it. Every
+   proof keeps the six-hour minimum pin age, the
    dependency closure's queue and process checks, and a re-derivation at the
    mutation edge; the extended proofs also count a queue row parked in a state
    that will still run (`LIVE_QUEUE_STATES`), such as a preparation awaiting

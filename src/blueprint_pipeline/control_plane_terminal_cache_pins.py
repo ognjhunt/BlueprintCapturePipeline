@@ -410,12 +410,12 @@ def _activation_proof(pin, live_pins, *, evidence_roots, activation_queue_root, 
     """Every run under the activation's evidence names is a sealed registry run, or it never launched.
 
     Any whole-run pointer keeps the pin: the archived-run proof already declined
-    it. A root that is linked, or where a name cannot be looked up, proves
-    nothing; a configured root that does not exist holds no run.
+    it. A root that is missing (unmounted or renamed, say), linked, or where a
+    name cannot be looked up proves nothing.
     """
 
     roots = [Path(root) for root in evidence_roots]
-    if not roots or any(root.is_symlink() for root in roots):
+    if not roots or any(root.is_symlink() or not root.is_dir() for root in roots):
         return None, "evidence_root_unavailable"
     runs = []
     for root in roots:

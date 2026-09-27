@@ -545,7 +545,8 @@ def test_young_or_launched_or_referenced_unlaunched_activation_keeps_its_pin(tmp
 
 
 @pytest.mark.parametrize("reason", [
-    "blocked", "tampered", "missing", "other_owner", "duplicate", "linked", "unconfigured", "root_linked"])
+    "blocked", "tampered", "missing", "other_owner", "duplicate", "linked", "unconfigured", "root_linked",
+    "root_missing", "results_missing", "results_linked"])
 def test_unprepared_or_unreadable_activation_result_keeps_its_pin(tmp_path, reason) -> None:
     """Only one exact, sealed, prepared result is proof; anything less, or an unreadable root, keeps the pin."""
 
@@ -572,6 +573,13 @@ def test_unprepared_or_unreadable_activation_result_keeps_its_pin(tmp_path, reas
     if reason == "root_linked":
         (tmp_path / "linked-evidence").symlink_to(args["evidence_roots"][0])
         args["evidence_roots"] = [tmp_path / "linked-evidence"]
+    if reason == "root_missing":
+        # An unmounted or renamed root cannot show that nothing launched into it.
+        args["evidence_roots"] = [*args["evidence_roots"], tmp_path / "unmounted-evidence"]
+    if reason in ("results_missing", "results_linked"):
+        (queue / "results").rename(tmp_path / "moved-results")
+        if reason == "results_linked":
+            (queue / "results").symlink_to(tmp_path / "moved-results")
     _pin(args, "activation", "act-u", age=LAPSE + DAY)
 
     result = reconcile_terminal_cache_pins(**args, apply=True, extended_proofs_enabled=True)
@@ -580,7 +588,9 @@ def test_unprepared_or_unreadable_activation_result_keeps_its_pin(tmp_path, reas
         "blocked": "activation_result_not_prepared", "tampered": "activation_result_invalid",
         "missing": "activation_result_missing", "other_owner": "activation_result_missing",
         "duplicate": "activation_result_ambiguous", "linked": "activation_result_invalid",
-        "unconfigured": "activation_queue_unconfigured", "root_linked": "evidence_root_unavailable"}[reason]
+        "unconfigured": "activation_queue_unconfigured", "root_linked": "evidence_root_unavailable",
+        "root_missing": "evidence_root_unavailable", "results_missing": "activation_queue_unavailable",
+        "results_linked": "activation_queue_unavailable"}[reason]
     assert result["candidates"] == [] and _states(args)[("activation", "act-u")] == "live"
 
 
@@ -736,6 +746,60 @@ def test_the_pin_report_caps_its_rows_and_keeps_its_counts(tmp_path, monkeypatch
     assert result["candidate_count_by_proof"] == {"unconsumed_stale_pin": 3}
     # The cap bounds the report, never the work: every stale pin was released.
     assert result["released_count_by_kind"] == {"preparation": 3}
+
+
+def test_every_run_an_activation_owns_must_be_sealed(tmp_path) -> None:
+    """A website activation owns ``<id>`` and ``<id>-launch``: one sealed registry run does not cover an unsealed other."""
+
+    args = _args(tmp_path)
+    _registry_run(tmp_path / "evidence", AUTO)
+    (tmp_path / "evidence" / (AUTO + "-launch") / "allocator").mkdir(parents=True)
+    _pin(args, "activation", AUTO, age=7 * DAY)
+
+    result = reconcile_terminal_cache_pins(**args, apply=True, extended_proofs_enabled=True)
+
+    assert _kept(result) == {("activation", AUTO): "run_not_sealed"}
+    assert result["candidates"] == [] and _states(args)[("activation", AUTO)] == "live"
+
+
+def test_a_launch_between_the_plan_and_the_mutation_edge_keeps_the_activation_pinned(tmp_path) -> None:
+    """Both activation proofs are derived again at the mutation edge: a run that appears after the plan keeps the pin."""
+
+    args = _args(tmp_path)
+    queue = _activation_queue(tmp_path, args)
+    _activation_result(queue, "run-z-controls")
+    _pin(args, "activation", "run-z-controls", age=LAPSE + DAY)
+    launched: list[Path] = []
+
+    def launch_starts(_path) -> bool:
+        if not launched:
+            launched.append(tmp_path / "evidence" / "run-z-controls-launch")
+            (launched[0] / "allocator").mkdir(parents=True)
+        return False
+
+    args["reference_checker"] = launch_starts
+
+    result = reconcile_terminal_cache_pins(**args, apply=True, extended_proofs_enabled=True)
+
+    assert [row["proof"]["kind"] for row in result["candidates"]] == ["activation_expired_unlaunched"] and launched
+    assert _kept(result) == {("activation", "run-z-controls"): "reference_changed"}
+    assert result["released"] == [] and _states(args)[("activation", "run-z-controls")] == "live"
+
+
+def test_a_queue_row_naming_a_dependency_keeps_the_extended_candidate(tmp_path) -> None:
+    """The closure is checked whole: a row naming the preparation an activation depends on keeps the activation."""
+
+    args = _args(tmp_path)
+    queue = _activation_queue(tmp_path, args)
+    _activation_result(queue, "act-u")
+    _pin(args, "preparation", "prep-shared", age=DAY)
+    _pin(args, "activation", "act-u", age=LAPSE + DAY, depends_on=[{"kind": "preparation", "owner_id": "prep-shared"}])
+    _queue_row(args, json.dumps({"preparation_id": "prep-shared"}))
+
+    result = reconcile_terminal_cache_pins(**args, apply=True, extended_proofs_enabled=True)
+
+    assert _kept(result)[("activation", "act-u")] == "active_reference"
+    assert set(_states(args).values()) == {"live"}
 
 
 def test_prepared_statuses_are_exactly_those_the_activation_worker_writes() -> None:
