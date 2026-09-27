@@ -1,11 +1,66 @@
 from __future__ import annotations
 
+import os
+from types import SimpleNamespace
+
 import pytest
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline import native_task_arena_policy_canary_worker as worker
 from blueprint_pipeline.native_task_arena_policy_canary_worker import (
     _construction_lineage_mode,
 )
+
+
+def test_isolated_cell_progress_reaches_outer_log_without_child_console(
+    tmp_path, monkeypatch
+) -> None:
+    read_fd, write_fd = os.pipe()
+    try:
+        monkeypatch.setattr(worker.sys, "stdout", SimpleNamespace(fileno=lambda: write_fd))
+
+        def fake_run(*args, **kwargs):
+            progress_fd = kwargs["pass_fds"][0]
+            assert kwargs["env"][worker._CELL_PROGRESS_FD_ENV] == str(progress_fd)
+            assert kwargs["stdout"].name.endswith("worker_console.log")
+            os.write(progress_fd, b"BLUEPRINT_POLICY_CANARY_PROGRESS:cell=0:stage=static_preflight_passed\n")
+            return SimpleNamespace(returncode=0)
+
+        monkeypatch.setattr(worker.subprocess, "run", fake_run)
+        child_root = tmp_path / "cell"
+        child_root.mkdir()
+        assert worker._spawn_isolated_cell_process(
+            index=0, runtime_root=tmp_path, output_root=tmp_path,
+            child_root=child_root,
+        ) == 0
+        os.close(write_fd)
+        write_fd = -1
+        assert os.read(read_fd, 1024) == (
+            b"BLUEPRINT_POLICY_CANARY_PROGRESS:cell=0:stage=static_preflight_passed\n"
+        )
+        assert (child_root / "worker_console.log").read_bytes() == b""
+    finally:
+        os.close(read_fd)
+        if write_fd >= 0:
+            os.close(write_fd)
+
+
+def test_cell_progress_only_emits_fixed_milestones(monkeypatch) -> None:
+    read_fd, write_fd = os.pipe()
+    try:
+        monkeypatch.setenv(worker._CELL_PROGRESS_FD_ENV, str(write_fd))
+        worker._emit_cell_progress("isaac_launch_completed", 2)
+        with pytest.raises(ValueError, match="policy_canary_cell_progress_invalid"):
+            worker._emit_cell_progress("arbitrary_secret", 2)
+        os.close(write_fd)
+        write_fd = -1
+        assert os.read(read_fd, 1024) == (
+            b"BLUEPRINT_POLICY_CANARY_PROGRESS:cell=2:stage=isaac_launch_completed\n"
+        )
+    finally:
+        os.close(read_fd)
+        if write_fd >= 0:
+            os.close(write_fd)
 
 
 def _scene_plan() -> dict[str, object]:
