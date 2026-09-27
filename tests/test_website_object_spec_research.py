@@ -16,6 +16,7 @@ from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
 SPEC = "https://www.bosch-home.com/us/specs/SHPM88Z75N"
 RETAIL = "https://retailer.example/p"
 SLIDE = "https://www.accuride-europe.com/example-slide"
+GUIDE = "https://www.bigretailer.example/guides/dishwasher-dimensions"
 SPEC_PAGE = (b"<html><head><title>Specs</title></head><body><script>var w='99 lb';</script><table>"
              b"<tr><th>Width</th><td>23 9/16 in (59.8 cm)</td></tr><tr><th>Height</th><td>33 7/8 in</td></tr>"
              b"<tr><th>Depth</th><td>22 1/2 in</td></tr><tr><th>Net weight</th><td>97 lbs</td></tr></table>"
@@ -25,12 +26,16 @@ PAGES = {SPEC: {"status": 200, "headers": {"Content-Type": "text/html; charset=u
                  "body": b"<h1>Drawer slide</h1><p>Opening Pull Force: 25 N +5 N / -5 N</p><p>Weight: 2.5 kg</p>"},
          RETAIL: {"status": 301, "headers": {"Location": "https://www.retailer.example/p2"}, "body": b""},
          "https://www.retailer.example/p2": {"status": 200, "headers": {"Content-Type": "text/html"},
-                                             "body": b"<div>Overall height: 34 1/2 in</div>"}}
+                                             "body": b"<div>Overall height: 34 1/2 in</div>"},
+         GUIDE: {"status": 200, "headers": {"Content-Type": "text/html"},
+                 "body": b"<h1>Dishwasher dimensions: a buying guide</h1><p>Standard dishwashers are 24 inches wide."
+                         b"</p><p>Height: 34 to 35 inches</p><p>Depth: 24 in</p><p>Cutout height: 34 in</p>"
+                         b"<p>Weight: 70 lbs</p>"}}
 BODY = {"width_m": 0.6, "height_m": 0.86, "depth_m": 0.55}
 
 
-def _figure(name, value, unit, url, quote):
-    return {"name": name, "value": value, "unit": unit, "source_url": url, "quote": quote}
+def _figure(name, value, unit, url, quote, basis="identified_product"):
+    return {"name": name, "value": value, "unit": unit, "source_url": url, "quote": quote, "basis": basis}
 
 
 FIGURES = [
@@ -90,7 +95,8 @@ def website(monkeypatch):
     monkeypatch.setattr(control, "reserve_website_preparation_spend", reserve)
     monkeypatch.setattr(control, "website_webapp_request", webapp)
     monkeypatch.setenv(research.ENABLE_ENV, "1")
-    monkeypatch.setenv("BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS", "1")
+    # Owner decision 2026-09-27: the bounded research agent needs no global live-operator opt-in.
+    monkeypatch.delenv("BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS", raising=False)
     return calls
 
 
@@ -130,7 +136,8 @@ def test_only_figures_the_fetched_page_states_are_kept(tmp_path, website):
     assert record["schema_version"] == "website_object_spec.v1" and record["status"] == "researched"
     assert record["digest"] == canonical_digest(record, digest_field="digest")
     specs = record["specs"]
-    assert specs["overall_width"] == {"value": 0.598, "unit": "m", "source_urls": [SPEC], "match": "exact_model"}
+    assert specs["overall_width"] == {"value": 0.598, "unit": "m", "source_urls": [SPEC], "match": "exact_model",
+                                      "quotes": [{"source_url": SPEC, "quote": "Width 23 9/16 in (59.8 cm)"}]}
     assert specs["overall_height"]["value"] == pytest.approx([33.875 * 0.0254, 0.8763])  # Sources disagree: range.
     assert specs["overall_height"]["source_urls"] == [RETAIL, SPEC]
     assert specs["overall_depth"]["value"] == pytest.approx(0.5715)
@@ -186,21 +193,85 @@ def test_brand_read_from_a_label_cannot_claim_an_exact_model(tmp_path, website):
     assert exact["product"]["match"] == "exact_model" and "match_downgraded_from" not in exact["product"]
 
 
-@pytest.mark.parametrize("env,context,labels,reason", [
-    ({}, OWNER, (), "agent_disabled"),
-    ({research.ENABLE_ENV: "1"}, OWNER, (), "live_agents_sdk_operators_not_allowed"),
+def test_the_identified_product_level_sizes_the_build_and_a_tight_range_sizes_at_its_midpoint(tmp_path, website):
+    # 2026-09-27 website dishwasher incident: these figures now size the body.
+    labelled = _coverage(tmp_path, labels=(("decoded-000000002", ["BOSCH", "SHPM88Z75N"]),))
+    exact = _research(tmp_path, website, _Invoker(_findings()), context=_context(), root="exact", coverage=labelled)
+    size = research.published_body_size(exact, max_relative_half_range=0.25)
+    assert size["dimension_match"] == "exact_model" and size["dimension_authority"] == "published_product_specification"
+    height = (33.875 * 0.0254 + 0.8763) / 2  # Two sources disagree: the midpoint, the range kept.
+    assert (size["depth_m"], size["width_m"], size["height_m"]) == pytest.approx((22.5 * 0.0254, 0.598, height))
+    assert size["axes"]["height"]["range_m"] == pytest.approx([33.875 * 0.0254, 0.8763])
+    assert size["axes"]["height"]["quotes"] == [{"source_url": RETAIL, "quote": "Overall height: 34 1/2 in"},
+                                                {"source_url": SPEC, "quote": "Height 33 7/8 in"}]
+    assert size["source_urls"] == [RETAIL, SPEC] and size["object_spec_digest"] == exact["digest"]
+    assert size["physical_measurement_proven"] is False
+    assert research.published_body_size(exact, max_relative_half_range=0.001) is None  # Wider than admitted.
+    family = _research(tmp_path, website, _Invoker(_findings()), context=_context(), root="family")
+    assert research.published_body_size(family, max_relative_half_range=0.25)["dimension_match"] == "model_family"
+    assert research.published_body_size({**exact, "status": "not_run"}, max_relative_half_range=0.25) is None
+    assert research.published_body_size(None, max_relative_half_range=0.25) is None
+
+
+def test_unknown_object_is_sized_from_a_verified_category_standard_and_never_weighed_by_it(tmp_path, website):
+    figures = [
+        _figure("overall_width", 24, "in", GUIDE, "Standard dishwashers are 24 inches wide", "category_standard"),
+        _figure("overall_height", [34, 35], "in", GUIDE, "Height: 34 to 35 inches", "category_standard"),
+        _figure("overall_depth", 24, "in", GUIDE, "Depth: 24 in", "category_standard"),
+        _figure("cutout_height", 34, "in", GUIDE, "Cutout height: 34 in", "category_standard"),
+        _figure("net_weight", 70, "lb", GUIDE, "Weight: 70 lbs", "category_standard"),
+        _figure("overall_width", 25, "in", SLIDE, "Drawer slide 25 in wide", "category_standard"),
+        _figure("overall_depth", 24, "in", GUIDE, "Depth: 24 in"),  # A product figure with no identity.
+    ]
+    findings = {"product": None, "figures": figures, "silent_on": []}
+    record = _research(tmp_path, website, _Invoker(findings, fetches=(GUIDE, SLIDE)), context=_context(),
+                       coverage=_coverage(tmp_path, labels=()))
+    assert record["identity"]["basis"] == "unknown" and record["specs"] == {}
+    category = record["category_specs"]
+    assert set(category) == {"overall_width", "overall_height", "overall_depth", "cutout_height"}
+    assert category["overall_width"] == {"value": 0.6096, "unit": "m", "source_urls": [GUIDE],
+                                         "match": "category_standard",
+                                         "quotes": [{"source_url": GUIDE,
+                                                     "quote": "Standard dishwashers are 24 inches wide"}]}
+    assert {row["reason"] for row in record["unsourced_dropped"]} == {
+        "category_figure_not_transferable", "category_standard_page_not_about_category",
+        "comparable_figure_not_transferable"}
+    size = research.published_body_size(record, max_relative_half_range=0.25)
+    assert size["dimension_authority"] == "published_category_standard"
+    assert size["dimension_match"] == "category_standard"
+    # A built-in fits its smallest published opening: the 34-35 in height sizes at the 34 in cutout.
+    assert (size["width_m"], size["height_m"], size["depth_m"]) == pytest.approx((0.6096, 0.8636, 0.6096))
+    assert size["axes"]["height"]["range_m"] == pytest.approx([0.8636, 0.889])
+    assert size["axes"]["height"]["cutout_clamped_to_m"] == pytest.approx(0.8636)
+    assert "category_standard" in research.CLAIM and "never measurements of this unit" in research.CLAIM
+
+
+@pytest.mark.parametrize("value,gate", [
+    (None, None), ("", None), ("1", None), ("true", None),
+    ("0", "agent_disabled"), ("false", "agent_disabled"), (" No ", "agent_disabled"), ("OFF", "agent_disabled"),
 ])
-def test_closed_gate_or_unknown_identity_is_not_run_and_spends_nothing(tmp_path, website, monkeypatch,
-                                                                     env, context, labels, reason):
-    for name in (research.ENABLE_ENV, "BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS"):
-        monkeypatch.delenv(name, raising=False)
-    for name, value in env.items():
-        monkeypatch.setenv(name, value)
+def test_research_is_on_unless_explicitly_switched_off(monkeypatch, value, gate):
+    # Owner decision 2026-09-27: on by default, and not behind the global live-operator opt-in.
+    monkeypatch.delenv("BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS", raising=False)
+    if value is None:
+        monkeypatch.delenv(research.ENABLE_ENV, raising=False)
+    else:
+        monkeypatch.setenv(research.ENABLE_ENV, value)
+    assert research.agent_gate() == gate
+
+
+def test_switched_off_research_is_not_run_and_spends_nothing(tmp_path, website, monkeypatch):
+    monkeypatch.setenv(research.ENABLE_ENV, "0")
     invoker = _Invoker(_findings())
-    record = _research(tmp_path, website, invoker, context=context, coverage=_coverage(tmp_path, labels=labels))
-    assert record["status"] == "not_run" and record["research"] == {"status": "not_run", "reason": reason}
+    record = _research(tmp_path, website, invoker, coverage=_coverage(tmp_path, labels=()))
+    assert record["status"] == "not_run" and record["research"] == {"status": "not_run", "reason": "agent_disabled"}
     assert record["specs"] == {} and record["blockers"] == []  # Not a blocker: estimates stay estimates.
     assert invoker.calls == website["reserve"] == website["fetch"] == []
+
+
+def test_tests_never_reach_the_research_agent_by_default():
+    # tests/conftest.py switches the production default off for every test.
+    assert research.agent_gate() == "agent_disabled"
 
 
 def test_unknown_object_research_keeps_only_cited_comparable_mechanism_force(tmp_path, website):
@@ -214,7 +285,8 @@ def test_unknown_object_research_keeps_only_cited_comparable_mechanism_force(tmp
     assert record["identity"]["basis"] == "unknown"
     assert record["product"]["match"] == "comparable_class"
     assert record["specs"] == {"opening_pull_force": {"value": 25.0, "unit": "n",
-                            "source_urls": [SLIDE], "match": "comparable_class"}}
+                            "source_urls": [SLIDE], "match": "comparable_class",
+                            "quotes": [{"source_url": SLIDE, "quote": "Opening Pull Force: 25 N +5 N / -5 N"}]}}
     assert {row["reason"] for row in record["unsourced_dropped"]} == {
         "comparable_figure_not_transferable", "quote_not_in_page"}
     assert record["physical_measurement_proven"] is False

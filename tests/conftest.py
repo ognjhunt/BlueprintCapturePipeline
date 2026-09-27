@@ -44,6 +44,14 @@ def _isolated_paid_provider_lane_lease_dir(tmp_path_factory, monkeypatch):
     return lease_dir
 
 
+@pytest.fixture(autouse=True)
+def _website_object_spec_agent_off(monkeypatch):
+    """The spec research agent is on by default in production (2026-09-27); never
+    let a test reach the web or the WebApp by default. A test that exercises
+    research sets ``BLUEPRINT_WEBSITE_OBJECT_SPEC_AGENT`` itself."""
+    monkeypatch.setenv("BLUEPRINT_WEBSITE_OBJECT_SPEC_AGENT", "0")
+
+
 @pytest.fixture
 def _materialize_generated_manifest_publication_fixture(
     monkeypatch, tmp_path_factory

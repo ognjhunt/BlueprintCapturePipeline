@@ -57,6 +57,12 @@ BACKEND = "astra_cad_blender_v1"
 ARTICULATED_AUTHORING_SCHEMA_VERSION = "articulated_replacement_authoring_configuration.v1"
 ARTICULATED_GRAPH_SCHEMA_VERSION = "task_evaluation_articulated_replacement_graph.v1"
 ARTICULATED_RECEIPT_SCHEMA_VERSION = "task_evaluation_articulated_replacement_authoring_result.v1"
+# A website assembly is sized by the video estimate or, since the 2026-09-27
+# website dishwasher incident, by verified published figures for its identified
+# product or its category's standard (website_object_spec_research.published_body_size).
+# Nothing else: never a measurement this footage cannot provide.
+WEBSITE_ARTICULATED_DIMENSION_AUTHORITIES = frozenset({"estimated", "published_product_specification",
+                                                       "published_category_standard"})
 BLENDER_ROOT_ENV = "BLUEPRINT_BLENDER_RUNTIME_ROOT"
 _CAD_PACKAGE_FILES = ("text_to_cad_skills_source.zip", "multi_agent_cad_source.zip",
                       "cad_skill_source_receipt.json", "multi_agent_cad_skill.md")
@@ -325,7 +331,7 @@ def build_articulated_authoring_requests(stage_input: Mapping[str, Any], source_
             or disclosure.get("provider_training") is not False
             or disclosure.get("public_redistribution") is not False):
         raise AstraStageError("astra_derived_disclosure_not_admitted")
-    if website_capture and configuration.get("dimension_authority") != "estimated":
+    if website_capture and configuration.get("dimension_authority") not in WEBSITE_ARTICULATED_DIMENSION_AUTHORITIES:
         raise AstraStageError("astra_website_dimensions_must_remain_estimated")
     envelope = _metric_envelope_spec(configuration)
     tolerance = float(envelope["maximum_dimension_relative_error"])
@@ -360,6 +366,11 @@ def build_articulated_authoring_requests(stage_input: Mapping[str, Any], source_
         uncertainty_note = ("Cabinet depth uses a development-only estimate with an explicit interval that disagrees "
                             "with the retained source AABB; other axes use source-envelope tolerance proxies. "
                             "No part dimension is physically measured.")
+    elif family != DRAWER_FAMILY and plan["body_depth"]["basis"].startswith("published_"):
+        uncertainty_note = (f"Body depth, width and height are {plan['body_depth']['basis']} figures, which describe "
+                            "the identified product or its category, not this unit; part dimensions add recorded "
+                            "construction priors. Envelope relative tolerance is an explicit uncertainty proxy. "
+                            "None is measured.")
     elif family != DRAWER_FAMILY:
         uncertainty_note = (f"Body depth basis {plan['body_depth']['basis']}; width and height from the closed front; "
                             "part dimensions add recorded construction priors. Envelope relative tolerance is an "
