@@ -78,6 +78,15 @@ from .control_plane_storage_gc_reasons import (
     live_pin_kinds, walked_bytes,
 )
 from .control_plane_storage_pins import PINS_ROOT_ENV, live_pinned_paths
+# Kept under their old names for every existing caller.
+from .control_plane_storage_references import (  # noqa: F401 - re-exported
+    MAX_QUEUE_MESSAGE_BYTES as _MAX_QUEUE_MESSAGE_BYTES,
+    QUEUE_STATES,
+    SETTLEMENT_RECORD_GLOBS,
+    queue_reference_text as _queue_reference_text,
+    settlement_reference_text as _settlement_reference_text,
+    settlement_reopens_beyond_retained_receipts,
+)
 from .control_plane_storage_roots import require_storage_class
 from .decision_evidence_contracts import canonical_digest
 from .task_evaluation_release_identity import running_release_commit
@@ -97,7 +106,6 @@ DEFAULT_MINIMUM_AGE_SECONDS = 24 * 60 * 60
 # unpinned, unqueued work before the next operating window.
 DEFAULT_DERIVED_MINIMUM_AGE_SECONDS = 6 * 60 * 60
 RESERVED_DERIVED_CHILDREN = frozenset({"content-addressed"})
-QUEUE_STATES = ("pending", "processing")
 CONTENT_STORE_ROOTS_ENV = "BLUEPRINT_CONTROL_PLANE_GC_CONTENT_STORE_ROOTS"
 DERIVED_ROOTS_ENV = "BLUEPRINT_CONTROL_PLANE_GC_DERIVED_ROOTS"
 PLAN_ONLY_DERIVED_ROOTS_ENV = "BLUEPRINT_CONTROL_PLANE_GC_PLAN_ONLY_DERIVED_ROOTS"
@@ -155,7 +163,6 @@ _MAX_SCENE_RESULTS = 50
 _COMMIT = re.compile(r"[0-9a-f]{40}\Z")
 _ROW_COMMIT_KEYS = ("expected_production_commit", "source_commit")
 _DIGEST_NAME = re.compile(r"[0-9a-f]{64}\Z")
-_MAX_QUEUE_MESSAGE_BYTES = 16 * 1024 * 1024
 
 
 class ControlPlaneStorageGCError(RuntimeError):
@@ -311,92 +318,6 @@ def apply_gc_manifest(
         result, digest_field="result_digest"
     )
     return result
-
-
-def _queue_reference_text(queue_roots: Sequence[str | Path]) -> str:
-    """Concatenate every pending or processing queue message; a name in it is live."""
-
-    chunks: list[str] = []
-    for raw_root in queue_roots:
-        root = Path(raw_root).expanduser()
-        for state in QUEUE_STATES:
-            directory = root / state
-            if not directory.is_dir() or directory.is_symlink():
-                continue
-            for path in sorted(directory.glob("*.json")):
-                try:
-                    if path.is_symlink() or path.stat().st_size > _MAX_QUEUE_MESSAGE_BYTES:
-                        continue
-                    chunks.append(path.read_text(encoding="utf-8"))
-                except (OSError, UnicodeDecodeError):
-                    continue
-    return "\n".join(chunks)
-
-
-# A settled scene attempt keeps reopening the local ``launch_receipt.json`` of the
-# launch it settled against.  Offloading that launch run leaves the accounting and
-# controls readers permanently unable to validate the attempt, which strands the
-# whole intent.  Retention therefore has to read the settlement records too, not
-# just the queues.
-SETTLEMENT_RECORD_GLOBS = (
-    "*/attempts/*.json",
-    "*/cancelled-unstarted-controls/*.json",
-    "*/preparations/*.json",
-)
-
-
-def settlement_reopens_beyond_retained_receipts(name: str, settlement_text: str) -> bool:
-    """Whether a settlement record reads something of ``name`` the pointer will not keep.
-
-    Offload retains the accounting receipts in ``RETAINED_RECEIPTS`` byte-for-byte
-    inside the pointer, and the settlement readers reopen them through
-    ``read_receipt_bytes``, which falls back to that copy. A record that names
-    the run only as an identifier, or reopens only retained receipts, therefore
-    keeps working after the bulk evidence is archived. Any other path under the
-    run is a reopen the archive would break, so the run stays.
-    """
-
-    from .control_plane_retained_receipt import RETAINED_RECEIPTS
-
-    for match in re.finditer(re.escape(name) + r"/([A-Za-z0-9_.\-]+(?:/[A-Za-z0-9_.\-]+)*)", settlement_text):
-        if match.group(1) not in RETAINED_RECEIPTS:
-            return True
-    return False
-
-
-def _settlement_reference_text(settlement_roots: Sequence[str | Path]) -> tuple[str, int]:
-    """Concatenate every settlement record; a directory named in it is still read.
-
-    The second element counts records that exist but could not be read.  A
-    configured root that cannot be enumerated must never be silently treated as
-    "nothing is referenced", so the caller protects all evidence for that tick.
-    """
-
-    chunks: list[str] = []
-    unreadable = 0
-    for raw_root in settlement_roots:
-        root = Path(raw_root).expanduser()
-        if root.is_symlink() or not root.is_dir():
-            unreadable += 1
-            continue
-        for pattern in SETTLEMENT_RECORD_GLOBS:
-            try:
-                paths = sorted(root.glob(pattern))
-            except OSError:
-                unreadable += 1
-                continue
-            for path in paths:
-                try:
-                    if path.is_symlink() or path.stat().st_size > _MAX_QUEUE_MESSAGE_BYTES:
-                        # A record we decline to read is a record whose references
-                        # we do not know.  Count it rather than skipping it, or a
-                        # symlinked or oversized record silently unprotects its run.
-                        unreadable += 1
-                        continue
-                    chunks.append(path.read_text(encoding="utf-8"))
-                except (OSError, UnicodeDecodeError):
-                    unreadable += 1
-    return "\n".join(chunks), unreadable
 
 
 def _tree_snapshot(directory: Path) -> tuple[float, int]:

@@ -23,6 +23,11 @@ from typing import Any
 
 from . import completed_replay_cache_retention as retention
 from .control_plane_storage_pins import live_pinned_paths, load_storage_pins
+from .control_plane_storage_references import (
+    queue_reference_text,
+    settlement_reference_text,
+    settlement_reopens_beyond_retained_receipts,
+)
 
 PROTECTED_UNREADABLE_SETTLEMENT = "protected_unreadable_settlement"
 PROTECTED_PROCESS = "protected_process"
@@ -71,13 +76,7 @@ def evidence_protection_reason(
     protect its launch run at that final check too.
     """
 
-    from .control_plane_storage_gc import (
-        _queue_reference_text,
-        _settlement_reference_text,
-        settlement_reopens_beyond_retained_receipts,
-    )
-
-    settlement_text, settlement_unreadable = _settlement_reference_text(settlement_roots)
+    settlement_text, settlement_unreadable = settlement_reference_text(settlement_roots)
     if settlement_unreadable:
         return PROTECTED_UNREADABLE_SETTLEMENT
     process = retention.process_reference(
@@ -92,7 +91,7 @@ def evidence_protection_reason(
         return PROTECTED_PIN
     if settlement_reopens_beyond_retained_receipts(directory.name, settlement_text):
         return PROTECTED_SETTLEMENT
-    if directory.name in _queue_reference_text(queue_roots):
+    if directory.name in queue_reference_text(queue_roots):
         return PROTECTED_QUEUE
     return None
 

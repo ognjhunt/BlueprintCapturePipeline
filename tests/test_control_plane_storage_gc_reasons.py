@@ -2,6 +2,7 @@
 
 # Covers (for impacted-test selection):
 #   src/blueprint_pipeline/control_plane_storage_gc_reasons.py
+#   src/blueprint_pipeline/control_plane_storage_references.py
 
 from __future__ import annotations
 
@@ -410,3 +411,28 @@ def test_the_summary_tells_kept_nothing_from_not_reported() -> None:
     counted = reasons.build_storage_gc_summary({**report, "content_store": {
         "status": "dry_run", "candidate_bytes": 0, "retained_counts": {"linked": 3, "young": 0}}})
     assert counted["phases"]["content_store"]["retained_by_reason"] == {"linked": {"count": 3, "bytes": None}}
+
+
+def test_the_reasons_read_references_without_reaching_into_the_gc() -> None:
+    """The GC imports the reasons module, so the reasons must not import the GC back. Both
+    read queue and settlement references from one leaf module, and the GC keeps its old
+    names for every existing caller."""
+
+    import ast
+    import inspect
+
+    from blueprint_pipeline import control_plane_storage_gc as gc_module
+    from blueprint_pipeline import control_plane_storage_references as references
+
+    def imported(module) -> set[str]:
+        return {node.module for node in ast.walk(ast.parse(inspect.getsource(module)))
+                if isinstance(node, ast.ImportFrom) and node.module}
+
+    assert "control_plane_storage_gc" not in imported(reasons)
+    assert not imported(references) & {
+        "control_plane_storage_gc", "control_plane_storage_gc_reasons", "control_plane_evidence_offload"}
+    assert gc_module._queue_reference_text is references.queue_reference_text
+    assert gc_module._settlement_reference_text is references.settlement_reference_text
+    assert gc_module.settlement_reopens_beyond_retained_receipts is references.settlement_reopens_beyond_retained_receipts
+    assert (gc_module._MAX_QUEUE_MESSAGE_BYTES, gc_module.QUEUE_STATES, gc_module.SETTLEMENT_RECORD_GLOBS) == (
+        references.MAX_QUEUE_MESSAGE_BYTES, references.QUEUE_STATES, references.SETTLEMENT_RECORD_GLOBS)
