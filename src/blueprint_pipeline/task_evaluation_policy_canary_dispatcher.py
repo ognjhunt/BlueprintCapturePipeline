@@ -1738,7 +1738,7 @@ def dispatch_policy_canary_activation(
     )
     if resumed is not None:
         return resumed
-    if delivery_only and not retained_sparse_gap:
+    if delivery_only and not (retained_sparse_gap or retained_billing_gap):
         raise TaskEvaluationPolicyCanaryDispatchError("policy_canary_retained_delivery_missing")
 
     provider_null = proven_provider_null_closeout(adapter, root=root, record_file=_record)
