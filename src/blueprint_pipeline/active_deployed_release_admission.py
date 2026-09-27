@@ -26,6 +26,28 @@ def _trusted(path: Path, *, directory: bool = False) -> bool:
         return False
 
 
+def trusted_deploy_source(path: Path) -> bool:
+    """True when admission trusts a deploy receipt whose source checkout is ``path``.
+
+    That is the canonical checkout, or a clean, root-owned clone that is a
+    direct child of the config-tools root (where the operator door keeps its
+    source clone): never an arbitrary caller path, and never a symlink out of
+    the approved root.  The deploy CLI asks the same question before it moves
+    anything, because a release deployed from any other source is one this
+    admission refuses (``gpu_canary_deployed_release_receipt_unverified``).
+    """
+    path = Path(path)
+    if path == SOURCE_CHECKOUT:
+        return True
+    try:
+        return (path.parent == CONFIG_TOOLS_ROOT
+                and _trusted(CONFIG_TOOLS_ROOT, directory=True)
+                and _trusted(path, directory=True)
+                and path.resolve(strict=True) == path)
+    except OSError:
+        return False
+
+
 def _read(path: Path) -> tuple[dict, str]:
     if not _trusted(path) or path.stat().st_size > 1024 * 1024:
         raise ValueError('untrusted_release_evidence')
@@ -116,11 +138,7 @@ def inspect_active_deployed_release(repo_root: Path, commit: str) -> dict[str, A
                 # Canonical deploys can use a clean, root-owned config-tools
                 # clone. Bind the receipt to that exact clone, not an arbitrary
                 # caller path or a symlink outside the approved tools root.
-                if source_path != SOURCE_CHECKOUT and not (
-                        source_path.parent == CONFIG_TOOLS_ROOT
-                        and _trusted(CONFIG_TOOLS_ROOT, directory=True)
-                        and _trusted(source_path, directory=True)
-                        and source_path.resolve(strict=True) == source_path):
+                if not trusted_deploy_source(source_path):
                     continue
                 if not (receipt.get('schema_version') == 'control_plane_commit_deploy_receipt.v1'
                         and receipt.get('status') == 'deployed' and receipt.get('release_path') == str(root)
