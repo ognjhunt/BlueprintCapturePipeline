@@ -1,3 +1,7 @@
+# Covers (for impacted-test selection):
+#   src/blueprint_pipeline/control_plane_disk_budget.py
+#   src/blueprint_pipeline/control_plane_disk_footprints.py
+#   src/blueprint_pipeline/control_plane_disk_ledger.py
 from __future__ import annotations
 
 import json
@@ -7,6 +11,7 @@ from collections import namedtuple
 import pytest
 
 from blueprint_pipeline import control_plane_disk_budget as disk_budget
+from blueprint_pipeline import control_plane_disk_footprints as footprints
 from blueprint_pipeline.control_plane_disk_budget import (
     ControlPlaneDiskBudgetError,
     disk_headroom,
@@ -349,7 +354,7 @@ def test_recording_never_waits_forever_on_a_held_ledger_lock(tmp_path, monkeypat
     reservation = reserve_control_plane_disk("launch_activation", target_root=tmp_path, reservation_root=ledger,
         workspace=work, disk_usage=lambda _p: Usage(100 * GIB, 0, 90 * GIB), now=lambda: 1.0,
         pid_alive=lambda _pid: True)
-    monkeypatch.setattr(disk_budget, "HISTORY_LOCK_WAIT_SECONDS", 0.2)
+    monkeypatch.setattr(footprints, "HISTORY_LOCK_WAIT_SECONDS", 0.2)
     with (ledger / ".lock").open("a+b") as held:
         fcntl.flock(held.fileno(), fcntl.LOCK_EX)
         assert disk_budget.record_footprint_sample(
