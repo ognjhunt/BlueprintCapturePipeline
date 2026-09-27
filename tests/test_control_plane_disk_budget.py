@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 from collections import namedtuple
 from pathlib import Path
 
@@ -14,6 +15,7 @@ import pytest
 
 from blueprint_pipeline import control_plane_disk_budget as disk_budget
 from blueprint_pipeline import control_plane_disk_footprints as footprints
+from blueprint_pipeline.control_plane_disk_reservation_heartbeat import keep_reservation_live
 from blueprint_pipeline.control_plane_disk_budget import (
     ControlPlaneDiskBudgetError,
     disk_headroom,
@@ -124,6 +126,67 @@ def test_reservation_accounts_for_live_concurrent_reservations(tmp_path) -> None
     assert not first.path.exists()
 
 
+def test_reservation_renewal_keeps_live_bytes_past_original_expiry(tmp_path) -> None:
+    ledger = tmp_path / "ledger"
+    clock = [100.0]
+    def usage(_path):
+        return Usage(100 * GIB, 60 * GIB, 40 * GIB)
+    reservation = reserve_control_plane_disk(
+        "handoff_staging", target_root=tmp_path, expected_bytes=20 * GIB,
+        reservation_root=ledger, disk_usage=usage, now=lambda: clock[0],
+        pid_alive=lambda _pid: True, ttl_seconds=120,
+    )
+    original_expiry = json.loads(reservation.path.read_text())["expires_at_epoch"]
+    clock[0] = 190.0
+    reservation.renew()
+    renewed_expiry = json.loads(reservation.path.read_text())["expires_at_epoch"]
+    assert renewed_expiry == 310.0 > original_expiry
+    clock[0] = 225.0
+    with pytest.raises(ControlPlaneDiskBudgetError, match="control_plane_disk_budget_exceeded"):
+        reserve_control_plane_disk(
+            "launch_dispatch", target_root=tmp_path, expected_bytes=20 * GIB,
+            reservation_root=ledger, disk_usage=usage, now=lambda: clock[0],
+            pid_alive=lambda _pid: True,
+        )
+    reservation.release()
+
+
+def test_expired_reservation_cannot_be_resurrected_by_renewal(tmp_path) -> None:
+    clock = [100.0]
+    reservation = reserve_control_plane_disk(
+        "handoff_staging", target_root=tmp_path, expected_bytes=GIB,
+        reservation_root=tmp_path / "ledger", ttl_seconds=120,
+        disk_usage=lambda _path: Usage(100 * GIB, 60 * GIB, 40 * GIB),
+        now=lambda: clock[0],
+    )
+    clock[0] = 221.0
+    with pytest.raises(ControlPlaneDiskBudgetError, match="reservation_expired"):
+        reservation.renew()
+    reservation.release()
+
+
+def test_heartbeat_renews_during_a_blocked_copy(tmp_path, monkeypatch) -> None:
+    clock = [100.0]
+    reservation = reserve_control_plane_disk(
+        "handoff_staging", target_root=tmp_path, expected_bytes=GIB,
+        reservation_root=tmp_path / "ledger", ttl_seconds=120,
+        disk_usage=lambda _path: Usage(100 * GIB, 60 * GIB, 40 * GIB),
+        now=lambda: clock[0],
+    )
+    renewed = threading.Event()
+    original = reservation.renew
+
+    def renew_and_signal():
+        original()
+        renewed.set()
+
+    monkeypatch.setattr(reservation, "renew", renew_and_signal)
+    with reservation, keep_reservation_live(reservation, interval_seconds=0.01):
+        clock[0] = 190.0
+        assert renewed.wait(timeout=1.0)
+        assert json.loads(reservation.path.read_text())["expires_at_epoch"] == 310.0
+
+
 def test_expired_or_dead_reservations_do_not_consume_headroom(tmp_path) -> None:
     ledger = tmp_path / "ledger"
     ledger.mkdir()
@@ -161,9 +224,9 @@ def test_headroom_projects_refused_roles_without_paths(tmp_path) -> None:
         now=lambda: 100.0,
         pid_alive=lambda _pid: True,
     )
-    assert report["status"] == "exhausted"
+    assert report["status"] == "low"
     assert set(report["refused_roles"]) == {
-        "control_plane_deploy",
+        "handoff_staging",
         "launch_preparation",
         "episode_compilation",
         "launch_activation",
@@ -175,6 +238,7 @@ def test_headroom_projects_refused_roles_without_paths(tmp_path) -> None:
         "semantic_pretraining",
         "cpu_prestage",
     }
+    assert next(row for row in report["targets"] if row["role"] == "control_plane_deploy")["refused"] is False
     assert str(tmp_path) not in json.dumps(report)
 
 
@@ -197,6 +261,90 @@ def test_environment_overrides_floor_and_role_footprint(
     assert reservation.floor_bytes == GIB
     assert reservation.expected_bytes == 3 * GIB
     reservation.release()
+
+
+def test_critical_roles_use_the_reserved_band(tmp_path) -> None:
+    def usage(_path):
+        return Usage(165 * GIB, 160 * GIB, 5 * GIB)
+    ledger = tmp_path / "ledger"
+    with pytest.raises(ControlPlaneDiskBudgetError, match="control_plane_disk_budget_exceeded"):
+        reserve_control_plane_disk(
+            "launch_activation", target_root=tmp_path, reservation_root=ledger,
+            expected_bytes=450 * 1024**2, disk_usage=usage,
+        )
+
+    reservation = reserve_control_plane_disk(
+        "control_plane_deploy", target_root=tmp_path, reservation_root=ledger,
+        expected_bytes=450 * 1024**2, disk_usage=usage,
+    )
+    assert reservation.floor_bytes == max(GIB, int(165 * GIB * 0.01))
+    reservation.release()
+
+
+def test_critical_floor_override(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("BLUEPRINT_CONTROL_PLANE_DISK_CRITICAL_FLOOR_BYTES", str(3 * GIB))
+    with pytest.raises(ControlPlaneDiskBudgetError, match="control_plane_disk_budget_exceeded"):
+        reserve_control_plane_disk(
+            "control_plane_deploy", target_root=tmp_path,
+            reservation_root=tmp_path / "ledger", expected_bytes=450 * 1024**2,
+            disk_usage=lambda _path: Usage(10 * GIB, 8 * GIB, 2 * GIB),
+        )
+    monkeypatch.setenv("BLUEPRINT_CONTROL_PLANE_DISK_CRITICAL_FLOOR_BYTES", str(512 * 1024**2))
+    reservation = reserve_control_plane_disk(
+        "control_plane_deploy", target_root=tmp_path,
+        reservation_root=tmp_path / "ledger", expected_bytes=450 * 1024**2,
+        disk_usage=lambda _path: Usage(10 * GIB, 8 * GIB, 2 * GIB),
+    )
+    assert reservation.floor_bytes == 512 * 1024**2
+    reservation.release()
+
+
+def test_headroom_is_computed_on_each_role_target_device(tmp_path) -> None:
+    system = tmp_path / "system"
+    scratch = tmp_path / "scratch"
+    system.mkdir()
+    scratch.mkdir()
+    ledger = tmp_path / "ledger"
+    ledger.mkdir()
+    (ledger / "scratch-running.json").write_text(json.dumps({
+        "device": 202, "pid": 17, "expected_bytes": GIB,
+        "expires_at_epoch": 1000,
+    }), encoding="utf-8")
+
+    def device_of(path):
+        return 202 if Path(path) == scratch else 101
+
+    def usage(path):
+        return (Usage(100 * GIB, 94 * GIB, 6 * GIB) if Path(path) == scratch
+                else Usage(100 * GIB, 70 * GIB, 30 * GIB))
+
+    report = disk_headroom(
+        target_root=system, role_targets={"launch_activation": scratch},
+        reservation_root=ledger, disk_usage=usage, device_of=device_of,
+        now=lambda: 100.0, pid_alive=lambda _pid: True,
+    )
+
+    targets = {row["role"]: row for row in report["targets"]}
+    assert report["free_bytes"] == 30 * GIB
+    assert report["reserved_bytes"] == 0
+    assert targets["launch_activation"]["device"] == 202
+    assert targets["launch_activation"]["reserved_bytes"] == GIB
+    assert targets["launch_activation"]["refused"] is True
+    assert "launch_activation" in report["refused_roles"]
+    assert targets["control_plane_deploy"]["device"] == 101
+    assert targets["control_plane_deploy"]["refused"] is False
+
+
+def test_role_targets_parse_and_refuse_garbage() -> None:
+    assert disk_budget.parse_role_targets(None) == {}
+    assert disk_budget.parse_role_targets("launch_activation=/mnt/scratch,control_plane_deploy=/var/lib/blueprint") == {
+        "launch_activation": Path("/mnt/scratch"),
+        "control_plane_deploy": Path("/var/lib/blueprint"),
+    }
+    for raw in ("unknown=/mnt/scratch", "launch_activation=relative", "launch_activation=",
+                "launch_activation=/mnt/a,launch_activation=/mnt/b", "launch_activation=/mnt/a,"):
+        with pytest.raises(ControlPlaneDiskBudgetError, match="control_plane_disk_budget_role_targets_invalid"):
+            disk_budget.parse_role_targets(raw)
 
 
 def test_invalid_environment_override_fails_closed(tmp_path, monkeypatch) -> None:
@@ -521,7 +669,8 @@ def test_workload_names_are_always_valid_labels():
 # reservation for at most its unit's start timeout, so the ledger entry's TTL
 # must outlive that timeout or a running job's reservation is deleted as stale.
 # control_plane_deploy is run by an operator (no unit), and
-# result_artifact_download by the long-running intake service (no start timeout).
+# result_artifact_download by the long-running intake service (no start timeout),
+# and handoff_staging by the long-running listener (no start timeout).
 ROLE_WORKER_UNITS = {
     "launch_preparation": ("blueprint-task-evaluation-launch-preparation.service",
                            "blueprint-task-evaluation-scene-progression.service"),
@@ -546,7 +695,7 @@ def _start_timeout_seconds(unit_text):
 
 def test_every_role_ttl_outlives_its_worker_units_start_timeout():
     units = Path(__file__).resolve().parents[1] / "deploy" / "systemd"
-    assert set(ROLE_WORKER_UNITS) | {"control_plane_deploy", "result_artifact_download"} == set(
+    assert set(ROLE_WORKER_UNITS) | {"control_plane_deploy", "result_artifact_download", "handoff_staging"} == set(
         disk_budget.ROLE_FOOTPRINT_BYTES)
     for role, names in ROLE_WORKER_UNITS.items():
         ttl = disk_budget.ROLE_TTL_SECONDS.get(role, disk_budget.DEFAULT_TTL_SECONDS)

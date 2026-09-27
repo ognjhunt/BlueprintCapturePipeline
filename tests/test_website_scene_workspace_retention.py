@@ -24,6 +24,7 @@ import google_crc32c
 import pytest
 
 from blueprint_pipeline import pubsub_handoff_listener as listener
+from blueprint_pipeline import pubsub_handoff_disk_admission as disk_admission
 from blueprint_pipeline import task_evaluation_configured_scene_object_store as store
 from blueprint_pipeline import task_evaluation_scene_intake as intake
 from blueprint_pipeline import website_scene_workspace_retention as retention
@@ -47,8 +48,17 @@ ARTIFACT_BUCKET = "blueprint-task-evaluation-artifacts-test"
 def isolated_disk_ledger(tmp_path, monkeypatch):
     from blueprint_pipeline.control_plane_disk_budget import reserve_control_plane_disk
 
+    monkeypatch.setenv(
+        "BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT", str(tmp_path / "disk-reservations")
+    )
+
+    def roomy_disk(_):
+        return SimpleNamespace(total=100 * 1024**3, free=80 * 1024**3)
+
     monkeypatch.setattr(retention, "reserve_control_plane_disk", functools.partial(
-        reserve_control_plane_disk, disk_usage=lambda _: SimpleNamespace(total=100 * 1024**3, free=80 * 1024**3)))
+        reserve_control_plane_disk, disk_usage=roomy_disk))
+    monkeypatch.setattr(disk_admission, "reserve_control_plane_disk", functools.partial(
+        reserve_control_plane_disk, disk_usage=roomy_disk))
     monkeypatch.setattr(retention, "DEFAULT_RESERVATION_ROOT", tmp_path / "disk-reservations")
 
 

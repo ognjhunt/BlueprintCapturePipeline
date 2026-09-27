@@ -16,6 +16,7 @@ import fcntl
 import json
 import os
 import shutil
+import stat
 import tempfile
 import time
 import uuid
@@ -57,6 +58,9 @@ from .control_plane_disk_usage import tree_usage
 
 DEFAULT_FLOOR_BYTES = 8 * GIB
 DEFAULT_FLOOR_FRACTION = 0.05
+CRITICAL_ROLES = frozenset({"control_plane_deploy"})
+DEFAULT_CRITICAL_FLOOR_BYTES = GIB
+DEFAULT_CRITICAL_FLOOR_FRACTION = 0.01
 DEFAULT_TTL_SECONDS = 2 * 60 * 60
 # Pid liveness is the primary liveness signal; the TTL is only the backstop for a
 # recycled pid.  A job holds its reservation for at most its unit's
@@ -75,15 +79,39 @@ ROLE_TTL_SECONDS: Mapping[str, int] = {
 }  # every other role keeps DEFAULT_TTL_SECONDS
 
 
-def floor_bytes(total_bytes: int) -> int:
-    """The admission floor, identical for the ledger, the controller and the preflight."""
+def floor_bytes(total_bytes: int, *, role: str | None = None) -> int:
+    """Keep the bulk band intact while critical work can use its protected portion."""
 
+    if role in CRITICAL_ROLES:
+        return max(
+            _environment_int(
+                "BLUEPRINT_CONTROL_PLANE_DISK_CRITICAL_FLOOR_BYTES",
+                DEFAULT_CRITICAL_FLOOR_BYTES,
+            ),
+            int(total_bytes * DEFAULT_CRITICAL_FLOOR_FRACTION),
+        )
     return max(
         _environment_int(
             "BLUEPRINT_CONTROL_PLANE_DISK_FLOOR_BYTES", DEFAULT_FLOOR_BYTES
         ),
         int(total_bytes * DEFAULT_FLOOR_FRACTION),
     )
+
+
+def parse_role_targets(raw: str | None) -> dict[str, Path]:
+    """Parse role-specific absolute roots from a comma-separated unit setting."""
+
+    if raw is None or raw == "":
+        return {}
+    targets: dict[str, Path] = {}
+    for item in raw.split(","):
+        role, separator, value = item.partition("=")
+        path = Path(value)
+        if (not separator or role not in ROLE_FOOTPRINT_BYTES or role in targets
+                or not value or not path.is_absolute()):
+            raise ControlPlaneDiskBudgetError("control_plane_disk_budget_role_targets_invalid")
+        targets[role] = path
+    return targets
 
 
 def _existing_ancestor(path: Path) -> Path:
@@ -248,7 +276,52 @@ class DiskReservation:
     # it were not counted, so the sample cannot stand for the job's footprint.
     measurement_incomplete: bool = False
     started_at_epoch: float = 0.0
+    ttl_seconds: int = DEFAULT_TTL_SECONDS
     clock: Callable[[], float] = field(default=time.time, repr=False, compare=False)
+
+    def renew(self) -> None:
+        """Extend a live reservation under the admission lock without changing its bytes."""
+
+        if self.released or self.reservation_root is None:
+            raise ControlPlaneDiskBudgetError("control_plane_disk_budget_reservation_released")
+        ledger = self.reservation_root
+        with os.fdopen(open_ledger_lock(ledger, require_mode=True), "a+b") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            try:
+                descriptor = os.open(self.path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                with os.fdopen(descriptor, "rb") as stream:
+                    if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                        raise ValueError("reservation is not a regular file")
+                    payload = json.loads(stream.read(16 * 1024 + 1))
+                if (
+                    not isinstance(payload, dict)
+                    or payload.get("token") != self.token
+                    or payload.get("role") != self.role
+                    or payload.get("pid") != os.getpid()
+                    or payload.get("device") != self.device
+                    or payload.get("expected_bytes") != self.expected_bytes
+                ):
+                    raise ValueError("reservation identity changed")
+            except (OSError, ValueError, TypeError) as exc:
+                raise ControlPlaneDiskBudgetError(
+                    "control_plane_disk_budget_reservation_renewal_invalid"
+                ) from exc
+            moment = self.clock()
+            if float(payload.get("expires_at_epoch", 0)) <= moment:
+                raise ControlPlaneDiskBudgetError("control_plane_disk_budget_reservation_expired")
+            payload["expires_at_epoch"] = moment + self.ttl_seconds
+            descriptor, temporary_name = tempfile.mkstemp(prefix=".reservation-", dir=ledger)
+            temporary = Path(temporary_name)
+            try:
+                with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                    json.dump(payload, stream, sort_keys=True, separators=(",", ":"))
+                    stream.write("\n")
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                temporary.chmod(0o640)
+                os.replace(temporary, self.path)
+            finally:
+                temporary.unlink(missing_ok=True)
 
     def bind_workspace(self, path: str | Path, *, fresh: bool | None = None) -> None:
         """Measure growth of ``path`` from now on (a workspace created after admission).
@@ -373,11 +446,12 @@ def _snapshot(
     disk_usage: Callable[[str | os.PathLike[str]], Any],
     now: Callable[[], float],
     pid_alive: Callable[[int], bool],
+    device_of: Callable[[Path], int] = target_device,
 ) -> tuple[Path, Any, int, int, list[str]]:
     target = _existing_ancestor(Path(target_root))
     usage = disk_usage(target)
     ledger = _prepare_ledger_root(Path(reservation_root).expanduser())
-    device = target.stat().st_dev
+    device = device_of(target)
     observed_at = now()
     reserved, stale = _load_live_reservations(
         ledger,
@@ -403,6 +477,7 @@ def reserve_control_plane_disk(
     workload: str | None = None,
     fresh: bool | None = None,
     minimum_bytes: int | None = None,
+    device_of: Callable[[Path], int] = target_device,
 ) -> DiskReservation:
     """Atomically reserve disk headroom or raise a typed refusal.
 
@@ -472,10 +547,11 @@ def reserve_control_plane_disk(
             disk_usage=disk_usage,
             now=now,
             pid_alive=pid_alive,
+            device_of=device_of,
         )
         for name in stale:
             (ledger / name).unlink(missing_ok=True)
-        floor = floor_bytes(int(usage.total))
+        floor = floor_bytes(int(usage.total), role=role)
         available = max(0, int(usage.free) - floor - reserved)
         if need > available and evictor is not None:
             evictor(need - available)
@@ -535,6 +611,7 @@ def reserve_control_plane_disk(
         fresh=workspace_fresh,
         measurement_incomplete=not baseline_complete,
         started_at_epoch=float(started),
+        ttl_seconds=ttl_seconds,
         clock=now,
     )
 
@@ -546,25 +623,54 @@ def disk_headroom(
     disk_usage: Callable[[str | os.PathLike[str]], Any] = shutil.disk_usage,
     now: Callable[[], float] = time.time,
     pid_alive: Callable[[int], bool] = _pid_alive,
+    role_targets: Mapping[str, str | Path] | None = None,
+    device_of: Callable[[Path], int] = target_device,
 ) -> dict[str, Any]:
     """Return a path-free admission projection suitable for an intake API."""
 
+    targets_by_role: dict[str, Path] = {}
+    for role, value in (role_targets or {}).items():
+        path = Path(value)
+        if role not in ROLE_FOOTPRINT_BYTES or not path.is_absolute():
+            raise ControlPlaneDiskBudgetError("control_plane_disk_budget_role_targets_invalid")
+        targets_by_role[role] = path
     ledger = _prepare_ledger_root(Path(reservation_root).expanduser())
     with os.fdopen(open_ledger_lock(ledger), "a+b") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_SH)
-        _ledger, usage, _device, reserved, _stale = _snapshot(
+        _ledger, usage, default_device, reserved, _stale = _snapshot(
             target_root=target_root,
             reservation_root=ledger,
             disk_usage=disk_usage,
             now=now,
             pid_alive=pid_alive,
+            device_of=device_of,
         )
+        devices = {default_device: (usage, reserved)}
+        role_devices = dict.fromkeys(ROLE_FOOTPRINT_BYTES, default_device)
+        for role, path in targets_by_role.items():
+            device = device_of(_existing_ancestor(path))
+            role_devices[role] = device
+            if device not in devices:
+                _ledger, target_usage, _device, target_reserved, _stale = _snapshot(
+                    target_root=path, reservation_root=ledger, disk_usage=disk_usage,
+                    now=now, pid_alive=pid_alive, device_of=device_of,
+                )
+                devices[device] = (target_usage, target_reserved)
     floor = floor_bytes(int(usage.total))
     available = max(0, int(usage.free) - floor - reserved)
     footprints = role_footprints(ROLE_FOOTPRINT_BYTES, reservation_root=ledger)
-    refused = sorted(
-        role for role, row in footprints.items() if row["bytes"] > available
-    )
+    targets = []
+    for role, footprint in sorted(footprints.items()):
+        device = role_devices[role]
+        target_usage, target_reserved = devices[device]
+        target_floor = floor_bytes(int(target_usage.total), role=role)
+        target_available = max(0, int(target_usage.free) - target_floor - target_reserved)
+        targets.append({
+            "role": role, "device": device, "free_bytes": int(target_usage.free),
+            "floor_bytes": target_floor, "reserved_bytes": target_reserved,
+            "available_bytes": target_available, "refused": footprint["bytes"] > target_available,
+        })
+    refused = sorted(row["role"] for row in targets if row["refused"])
     status = (
         "exhausted"
         if len(refused) == len(ROLE_FOOTPRINT_BYTES)
@@ -578,12 +684,16 @@ def disk_headroom(
         "reserved_bytes": reserved,
         "available_bytes": available,
         "refused_roles": refused,
+        "targets": targets,
         "footprints": footprints,
     }
 
 
 __all__ = [
+    "CRITICAL_ROLES",
     "ControlPlaneDiskBudgetError",
+    "DEFAULT_CRITICAL_FLOOR_BYTES",
+    "DEFAULT_CRITICAL_FLOOR_FRACTION",
     "DEFAULT_RESERVATION_ROOT",
     "DiskReservation",
     "FOOTPRINT_HISTORY_DIRNAME",
@@ -604,6 +714,7 @@ __all__ = [
     "footprint_bytes",
     "live_reservations",
     "measured_footprint",
+    "parse_role_targets",
     "record_footprint_sample",
     "reserve_control_plane_disk",
     "role_footprints",

@@ -1,3 +1,6 @@
+# Covers (for impacted-test selection):
+#   src/blueprint_pipeline/pubsub_handoff_disk_admission.py
+#   src/blueprint_pipeline/control_plane_disk_reservation_heartbeat.py
 import fcntl
 import json
 import logging
@@ -5,6 +8,7 @@ import os
 import shutil
 import threading
 import types
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from io import BytesIO
@@ -15,6 +19,9 @@ import pytest
 import google.cloud
 
 import blueprint_pipeline.pubsub_handoff_listener as listener_module
+import blueprint_pipeline.pubsub_handoff_disk_admission as disk_admission
+from blueprint_pipeline.control_plane_disk_budget import ControlPlaneDiskBudgetError
+from blueprint_pipeline.control_plane_disk_reservation_heartbeat import ReservationHealth
 import blueprint_pipeline.site_package_orchestrator as orchestrator
 from blueprint_pipeline.capture_orchestrator import run_capture_pipeline
 from blueprint_pipeline.common import PipelineError, StageError
@@ -36,6 +43,25 @@ from tests.test_qualification_coverage_edges import (
     _patch_pipeline_side_effects,
     _write_descriptor,
 )
+
+
+@pytest.fixture(autouse=True)
+def _local_disk_reservation_root(tmp_path, monkeypatch):
+    monkeypatch.setenv(
+        "BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT", str(tmp_path / "disk-reservations")
+    )
+    actual_reserve = disk_admission.reserve_control_plane_disk
+
+    def reserve_on_roomy_test_disk(role, **kwargs):
+        return actual_reserve(
+            role,
+            disk_usage=lambda _path: types.SimpleNamespace(
+                total=200 * 1024**3, used=100 * 1024**3, free=100 * 1024**3
+            ),
+            **kwargs,
+        )
+
+    monkeypatch.setattr(disk_admission, "reserve_control_plane_disk", reserve_on_roomy_test_disk)
 
 
 # Real iOS raw bundle namelist per CaptureRawContractV3Validator (no pipeline_handoff.json).
@@ -124,6 +150,10 @@ class FakeBlob:
     def download_to_filename(self, destination: str) -> None:
         self.download_count += 1
         Path(destination).write_bytes(self._data)
+
+    def download_to_file(self, destination) -> None:
+        self.download_count += 1
+        destination.write(self._data)
 
 
 class FakeStorageClient:
@@ -1918,6 +1948,111 @@ def _staging_handoff() -> HandoffMessage:
     return HandoffMessage(bucket="capture-bucket", scene_id="scene-1", capture_id="capture-1",
                           raw_prefix_uri=f"gs://capture-bucket/{_CAPTURE_PREFIX}/raw",
                           pipeline_handoff_uri=None)
+
+
+def test_staging_reserves_only_blobs_it_will_download(tmp_path, monkeypatch):
+    unchanged = FakeBlob(f"{_CAPTURE_PREFIX}/raw/capture_upload_complete.json", b"{}", size=2,
+                         generation=7)
+    changed = FakeBlob(f"{_CAPTURE_PREFIX}/raw/walkthrough.mov", b"video", size=5,
+                       generation=8)
+    client = FakeStorageClient([unchanged, changed])
+    reservations = []
+
+    def reserve(role, **kwargs):
+        reservations.append((role, kwargs))
+        return nullcontext()
+
+    monkeypatch.setattr(disk_admission, "reserve_control_plane_disk", reserve)
+    monkeypatch.setattr(
+        disk_admission, "keep_reservation_live",
+        lambda _reservation: nullcontext(ReservationHealth([])),
+    )
+    stage_handoff_capture(_staging_handoff(), storage_root=tmp_path, storage_client=client)
+    reservations.clear()
+    changed.generation = 9
+    stage_handoff_capture(_staging_handoff(), storage_root=tmp_path, storage_client=client)
+
+    assert unchanged.download_count == 1
+    assert changed.download_count == 2
+    assert len(reservations) == 1
+    role, kwargs = reservations[0]
+    assert role == "handoff_staging"
+    assert kwargs["expected_bytes"] == 5 + 64 * 1024 * 1024
+    assert kwargs["target_root"] == tmp_path
+    assert kwargs["workspace"] == tmp_path / "capture-bucket" / _CAPTURE_PREFIX
+
+
+def test_full_volume_defers_staging_without_acknowledging(tmp_path, monkeypatch):
+    subscriber = FakeSubscriber([_received(ack_id="a1", data=PAYLOAD_BYTES)])
+    results = _install_fake_pubsub(
+        monkeypatch, subscriber, storage_client=FakeStorageClient(_website_bundle_blobs()),
+        run_e2e=lambda **_: {"status": "completed"},
+    )
+
+    def refuse(*_args, **_kwargs):
+        raise ControlPlaneDiskBudgetError("control_plane_disk_budget_exceeded")
+
+    monkeypatch.setattr(disk_admission, "reserve_control_plane_disk", refuse)
+    assert _pull(tmp_path) == 0
+    assert subscriber.acknowledged == []
+    assert results[0]["status"] == "retryable_blocked"
+    assert results[0]["blockers"] == ["pubsub_handoff_staging_capacity_insufficient"]
+    assert _read(_capture_root(tmp_path) / "pipeline_job_ledger.json")["status"] == "retryable_blocked"
+
+
+def test_failed_heartbeat_stops_the_next_download_chunk(tmp_path, monkeypatch):
+    class ChunkedBlob(FakeBlob):
+        def download_to_file(self, destination) -> None:
+            destination.write(b"first")
+            destination.write(b"second")
+
+    class Health:
+        checks = 0
+
+        def check(self):
+            self.checks += 1
+            if self.checks == 3:
+                raise ControlPlaneDiskBudgetError("control_plane_disk_budget_heartbeat_failed")
+
+    @contextmanager
+    def failing_heartbeat(_reservation):
+        yield Health()
+
+    monkeypatch.setattr(disk_admission, "keep_reservation_live", failing_heartbeat)
+    video = ChunkedBlob(f"{_CAPTURE_PREFIX}/raw/walkthrough.mov", b"firstsecond", size=11)
+    complete = FakeBlob(f"{_CAPTURE_PREFIX}/raw/capture_upload_complete.json", b"{}", size=2)
+    with pytest.raises(disk_admission.HandoffStagingCapacityError,
+                       match="pubsub_handoff_staging_capacity_insufficient"):
+        stage_handoff_capture(
+            _staging_handoff(), storage_root=tmp_path,
+            storage_client=FakeStorageClient([video, complete]),
+        )
+    capture_root = tmp_path / "capture-bucket" / _CAPTURE_PREFIX
+    assert (capture_root / "raw/walkthrough.mov").read_bytes() == b"first"
+    assert not (capture_root / "pipeline_staging_manifest.json").exists()
+
+
+def test_failed_heartbeat_defers_message_with_capacity_blocker_and_no_ack(tmp_path, monkeypatch):
+    subscriber = FakeSubscriber([_received(ack_id="a1", data=PAYLOAD_BYTES)])
+    results = _install_fake_pubsub(
+        monkeypatch, subscriber, storage_client=FakeStorageClient(_website_bundle_blobs()),
+        run_e2e=lambda **_: {"status": "completed"},
+    )
+
+    class FailedHealth:
+        def check(self):
+            raise ControlPlaneDiskBudgetError("control_plane_disk_budget_heartbeat_failed")
+
+    @contextmanager
+    def failing_heartbeat(_reservation):
+        yield FailedHealth()
+
+    monkeypatch.setattr(disk_admission, "keep_reservation_live", failing_heartbeat)
+    assert _pull(tmp_path) == 0
+    assert subscriber.acknowledged == []
+    assert results[0]["status"] == "retryable_blocked"
+    assert results[0]["blockers"] == ["pubsub_handoff_staging_capacity_insufficient"]
+    assert _read(_capture_root(tmp_path) / "pipeline_job_ledger.json")["status"] == "retryable_blocked"
 
 
 def test_staging_manifest_records_cloud_identity(tmp_path):

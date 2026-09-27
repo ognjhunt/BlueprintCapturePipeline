@@ -221,6 +221,119 @@ def test_whole_chain_admission_rejects_space_that_fits_only_one_stage(tmp_path):
                                      disk_usage=_usage(20.0))["status"] == "waiting_for_capacity"
 
 
+def test_whole_chain_admission_groups_roles_by_device(tmp_path) -> None:
+    system = tmp_path / "system"
+    scratch = tmp_path / "scratch"
+    system.mkdir()
+    scratch.mkdir()
+
+    def usage(path):
+        free = 6 * GIB if Path(path) == scratch else 30 * GIB
+        return Usage(100 * GIB, 100 * GIB - free, free)
+
+    def device_of(path):
+        return 202 if Path(path) == scratch else 101
+
+    result = cap.whole_chain_admission(
+        system, reservation_root=tmp_path / "ledger", now=1000,
+        disk_usage=usage, device_of=device_of,
+        role_targets={"launch_dispatch": scratch, "policy_canary_dispatch": scratch},
+    )
+
+    assert result["status"] == "waiting_for_capacity"
+    devices = {row["device"]: row for row in result["devices"]}
+    assert devices[101]["required_bytes"] == 6 * GIB and devices[101]["passed"] is True
+    assert set(devices[101]["roles"]) == set(cap.CHAIN_ROLES) - {"launch_dispatch", "policy_canary_dispatch"}
+    assert devices[202]["required_bytes"] == 4 * GIB and devices[202]["passed"] is False
+    assert devices[202]["available_bytes"] == 0
+
+
+def test_full_scratch_volume_refuses_chain_but_admits_deploy_and_listener_state(tmp_path) -> None:
+    system = tmp_path / "system"
+    scratch = tmp_path / "scratch"
+    system.mkdir()
+    scratch.mkdir()
+    ledger = system / "reservations"
+
+    def usage(path):
+        free = 6 * GIB if Path(path) == scratch else 30 * GIB
+        return Usage(100 * GIB, 100 * GIB - free, free)
+
+    def device_of(path):
+        return 202 if Path(path) == scratch else 101
+
+    gate = cap.whole_chain_admission(
+        system, role_targets={"launch_dispatch": scratch}, device_of=device_of,
+        reservation_root=ledger, disk_usage=usage, now=1000,
+    )
+    assert gate["status"] == "waiting_for_capacity"
+    assert next(row for row in gate["devices"] if row["device"] == 202)["passed"] is False
+    deploy = disk_budget.reserve_control_plane_disk(
+        "control_plane_deploy", target_root=system, reservation_root=ledger,
+        expected_bytes=450 * MIB, disk_usage=usage, device_of=device_of,
+    )
+    assert deploy.floor_bytes == GIB
+    with pytest.raises(disk_budget.ControlPlaneDiskBudgetError, match="control_plane_disk_budget_exceeded"):
+        disk_budget.reserve_control_plane_disk(
+            "handoff_staging", target_root=scratch, reservation_root=ledger,
+            expected_bytes=64 * MIB, disk_usage=usage, device_of=device_of,
+        )
+    # The scratch disk is below its bulk floor, not literally at zero free.
+    # The protected bytes on that same volume still hold the listener's ledger.
+    listener_ledger = scratch / "pipeline_job_ledger.json"
+    listener_ledger.write_text('{"status":"retryable_blocked"}\n', encoding="utf-8")
+    assert listener_ledger.is_file()
+    deploy.release()
+
+
+def test_whole_chain_admission_fails_closed_for_absent_targets(tmp_path) -> None:
+    system = tmp_path / "system"
+    system.mkdir()
+    missing = tmp_path / "unmounted-scratch"
+
+    def roomy(_path):
+        return Usage(100 * GIB, 70 * GIB, 30 * GIB)
+
+    for mount, role_targets in (
+        (missing, {}),
+        (system, {"launch_dispatch": missing}),
+    ):
+        result = cap.whole_chain_admission(
+            mount, reservation_root=tmp_path / "ledger", now=1000,
+            disk_usage=roomy, role_targets=role_targets,
+            device_of=lambda _path: 101,
+        )
+        assert result["status"] == "waiting_for_capacity"
+
+
+def test_absent_configured_mount_is_not_critical(tmp_path) -> None:
+    missing = tmp_path / "not-mounted"
+
+    def unavailable(_path):
+        raise FileNotFoundError(2, "not mounted")
+
+    report = cap.build_capacity_report(
+        mounts=[missing], reservation_root=tmp_path / "ledger", disk_usage=unavailable, now=1000,
+    )
+    assert report["mounts"][0]["status"] == "absent"
+    assert report["level"] != "critical"
+
+
+def test_measure_mount_reports_critical_admission_band(tmp_path) -> None:
+    row = cap.measure_mount(
+        tmp_path, reservation_root=tmp_path / "ledger", now=1000,
+        disk_usage=lambda _path: Usage(100 * GIB, 99 * GIB, GIB),
+    )
+    assert row["critical_floor_bytes"] == GIB
+    assert row["critical_available_bytes"] == 0
+    assert "control_plane_deploy" in row["critical_roles_refused"]
+    report = cap.build_capacity_report(
+        mounts=[tmp_path], reservation_root=tmp_path / "ledger", now=1000,
+        disk_usage=lambda _path: Usage(100 * GIB, 99 * GIB, GIB),
+    )
+    assert "critical_admission_refused" in {alert["code"] for alert in report["alerts"]}
+
+
 def test_measured_p95_admits_a_chain_the_constants_refuse(tmp_path):
     ledger = tmp_path / "ledger"
     for role in cap.CHAIN_ROLES:
@@ -340,7 +453,7 @@ def test_survey_runs_at_most_hourly(tmp_path, monkeypatch):
 
 def test_survey_mounts_include_the_attached_work_volume_only(tmp_path, monkeypatch):
     service = Path("deploy/systemd/blueprint-control-plane-capacity.service").read_text()
-    assert "Environment=BLUEPRINT_CAPACITY_MOUNTS=/var/lib/blueprint" in service
+    assert "Environment=BLUEPRINT_CAPACITY_MOUNTS=/:/var/lib/blueprint:/mnt/blueprint-work" in service
     monkeypatch.setattr(cap.os.path, "ismount", lambda path: path == "/mnt/blueprint-work")
     assert cap.survey_mounts(["/var/lib/blueprint"]) == [
         "/var/lib/blueprint", "/", "/mnt/blueprint-work"]

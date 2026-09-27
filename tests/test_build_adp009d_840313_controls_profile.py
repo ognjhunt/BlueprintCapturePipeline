@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+import blueprint_pipeline.task_evaluation_launch_dispatcher as dispatcher
 from blueprint_pipeline.adp009d_physics_backend_comparison import (
     build_backend_profile,
     build_newton_canary_admission,
@@ -471,6 +473,21 @@ def test_newton_website_queue_dispatches_one_launch_exactly_once(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv(
+        "BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT", str(tmp_path / "disk-reservations")
+    )
+    actual_reserve = dispatcher.reserve_control_plane_disk
+
+    def reserve_on_roomy_test_disk(role, **kwargs):
+        return actual_reserve(
+            role,
+            disk_usage=lambda _path: SimpleNamespace(
+                total=200 * 1024**3, used=100 * 1024**3, free=100 * 1024**3
+            ),
+            **kwargs,
+        )
+
+    monkeypatch.setattr(dispatcher, "reserve_control_plane_disk", reserve_on_roomy_test_disk)
     env = _release(tmp_path, monkeypatch)
     admission_path = _newton_admission(env, tmp_path)
     receipt = builder.build_controls_profile_release(

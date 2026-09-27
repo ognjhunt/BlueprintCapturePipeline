@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import types
 import pwd
 import grp
 import zipfile
@@ -307,6 +308,13 @@ def _preparation_runner(tmp_path, monkeypatch, *, website=False):
 def _rehearse_dispatch(tmp_path, monkeypatch, profile):
     from blueprint_pipeline import task_evaluation_launch_dispatcher as dispatcher
     from tests.test_task_evaluation_launch_dispatcher import _request
+    monkeypatch.setenv("BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT", str(tmp_path / "disk-reservations"))
+    actual_reserve = dispatcher.reserve_control_plane_disk
+    monkeypatch.setattr(dispatcher, "reserve_control_plane_disk", lambda role, **kwargs: actual_reserve(
+        role, disk_usage=lambda _path: types.SimpleNamespace(
+            total=200 * 1024**3, used=100 * 1024**3, free=100 * 1024**3,
+        ), **kwargs,
+    ))
     request = _request(profile)
     request["authorization"]["spend"]["max_spend_usd"] = profile["allocator"]["max_spend_usd"]
     request["request_digest"] = canonical_digest(request, digest_field="request_digest")

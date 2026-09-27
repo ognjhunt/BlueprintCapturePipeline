@@ -105,7 +105,8 @@ def parse_role_targets(raw: str | None) -> dict[str, Path]:
   - Blobs with unknown size count as 0 plus the margin.
 - **Dispatcher.** Around the immutable-input copy (`task_evaluation_launch_dispatcher.py:1114-1164`):
   - Reserve `launch_dispatch` against the run root's parent, with
-    `expected_bytes = sum(stat sizes of the inputs to copy) + 64 MiB`, `workspace=run_root`,
+    `expected_bytes = sum(stat sizes of each unique input copy and each allocator directory
+    projection copy) + 64 MiB`, `workspace=run_root`,
     `workload="launch_immutable_inputs"`.
   - This happens **before** any provider call, and the existing blocked-receipt path reports the
     refusal as `task_evaluation_launch_disk_budget_exceeded`.
