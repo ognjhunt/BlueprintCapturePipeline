@@ -3357,7 +3357,8 @@ def _require_trusted_deploy_source(
         return None
     reason = "break_glass_note_missing"
     if break_glass_note is not None:
-        path = Path(break_glass_note).expanduser().resolve()
+        supplied_path = Path(break_glass_note).expanduser()
+        path = supplied_path.resolve()
         notes_root = Path(DEFAULT_BREAK_GLASS_NOTES_ROOT).expanduser()
         if notes_root.is_symlink():
             reason = "break_glass_notes_root_unsafe"
@@ -3366,7 +3367,7 @@ def _require_trusted_deploy_source(
         else:
             try:
                 note = verify_break_glass_note(
-                    path, max_age_seconds=BREAK_GLASS_DEPLOY_NOTE_MAX_AGE_SECONDS
+                    supplied_path, max_age_seconds=BREAK_GLASS_DEPLOY_NOTE_MAX_AGE_SECONDS
                 )
             except BreakGlassNoteError as exc:
                 reason = str(exc)

@@ -1029,6 +1029,7 @@ def _deploy_note(
         ("absent", "break_glass_note_unreadable"),
         ("outside", "break_glass_note_outside_notes_root"),
         ("outside_link", "break_glass_note_outside_notes_root"),
+        ("inside_link", "break_glass_note_unsafe"),
     ],
 )
 def test_main_refuses_an_untrusted_source_without_a_note(
@@ -1069,6 +1070,11 @@ def test_main_refuses_an_untrusted_source_without_a_note(
         notes.mkdir()
         linked = notes / original.name
         linked.symlink_to(original)
+        extra = ["--break-glass-note", str(linked)]
+    elif note == "inside_link":
+        original = _deploy_note(notes)
+        linked = notes / "alias.json"
+        linked.symlink_to(original.name)
         extra = ["--break-glass-note", str(linked)]
 
     assert deploy.main(_cli_args(tmp_path, source, *extra)) == 2
