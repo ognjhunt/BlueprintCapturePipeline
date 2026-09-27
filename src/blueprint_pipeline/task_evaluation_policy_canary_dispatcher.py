@@ -10,6 +10,9 @@ readback without ever invoking the allocator again.
 from __future__ import annotations
 
 from .policy_canary_billing_recovery import reconcile_posted_billing
+from .policy_canary_retained_billing import adapter_instance_ids as _retained_adapter_instance_ids
+from .policy_canary_retained_billing import retained_sparse_billing_gap as _retained_sparse_billing_gap
+from .policy_canary_provider_null_closeout import proven_provider_null_closeout
 from .policy_canary_partial_recovery import (
     recover_partial_policy_canary_result as _recover_partial_policy_canary_result,
 )
@@ -560,7 +563,6 @@ def _default_allocator_runner(argv: Sequence[str]) -> int:
 
 def collect_policy_canary_vast_provider_zero() -> dict[str, Any]:
     """Collect fresh authenticated global Vast inventory without other-provider coupling."""
-
     from .gpu_render_providers import VastRenderProvider
 
     inventory = dict(VastRenderProvider().billable_inventory(name_prefix=""))
@@ -600,28 +602,20 @@ def collect_policy_canary_vast_provider_zero() -> dict[str, Any]:
     return value
 
 
-def _adapter_instance_ids(adapter: Mapping[str, Any]) -> list[int]:
-    values = adapter.get("vast_instance_ids")
-    watchdog = adapter.get("independent_watchdog")
-    if values is None and isinstance(watchdog, Mapping) and (
-        watchdog.get("status") == "provider_terminal"
-        and watchdog.get("provider_absence_confirmed") is True
-    ):
-        values = watchdog.get("instance_ids")
-    if not isinstance(values, list) or any(
-        isinstance(value, bool) or not isinstance(value, int) or value <= 0
-        for value in values
-    ):
-        return []
-    return list(values)
+def _adapter_instance_ids(adapter: Mapping[str, Any], *, result_path: Path | None = None) -> list[int]:
+    return _retained_adapter_instance_ids(
+        adapter, result_path=result_path, read_json=lambda path, code: _read(path, code=code),
+        error_factory=TaskEvaluationPolicyCanaryDispatchError,
+    )
 
 
 def _join_session_closeout(
-    *, inner: Mapping[str, Any], adapter: Mapping[str, Any], provider_zero: Mapping[str, Any]
+    *, inner: Mapping[str, Any], adapter: Mapping[str, Any], provider_zero: Mapping[str, Any],
+    adapter_path: Path | None = None,
 ) -> dict[str, Any]:
     value = json.loads(json.dumps(dict(inner), allow_nan=False))
     episodes = value.get("episodes")
-    instance_ids = _adapter_instance_ids(adapter)
+    instance_ids = _adapter_instance_ids(adapter, result_path=adapter_path)
     closeout = adapter.get("provider_closeout")
     teardown_complete = (
         isinstance(closeout, Mapping)
@@ -678,6 +672,59 @@ def _partial_policy_canary_result(
         error_factory=TaskEvaluationPolicyCanaryDispatchError, candidate_ids=CANDIDATE_IDS,
         learned_rollout_count=LEARNED_ROLLOUT_COUNT, run_kind=RUN_KIND, claim_ceiling=CLAIM_CEILING,
     )
+
+
+def _sparse_preobservation_result(value: Mapping[str, Any]) -> bool:
+    """A signed provider failure before the first query has no episode rows yet."""
+
+    episodes = value.get("episodes")
+    return (
+        value.get("status") == "blocked"
+        and value.get("run_kind") == RUN_KIND
+        and value.get("claim_ceiling") == CLAIM_CEILING
+        and value.get("candidate_policy_queried") is False
+        and (episodes is None or episodes == [])
+        and value.get("result_digest")
+        == canonical_digest(value, digest_field="result_digest")
+    )
+
+
+def _retained_sparse_terminal_gap(root: Path) -> bool:
+    """Permit delivery replay of a closed paid attempt without another allocator."""
+
+    joined_path = root / "policy_canary_terminal_result.json"
+    adapter_path = root / "allocator_result.json"
+    zero_path = root / "post_teardown_global_provider_zero.json"
+    billing_path = root / "official_billing_reconciliation.json"
+    if not all(path.is_file() for path in (joined_path, adapter_path, zero_path, billing_path)):
+        return False
+    joined = _read(joined_path, code="policy_canary_terminal_result_invalid")
+    prior_path = root / "preprovider_evidence" / "prior_terminal_result.json"
+    source_path = root / "preprovider_evidence" / "source_provider_terminal_result.json"
+    sparse_path = (
+        prior_path if prior_path.is_file()
+        else source_path if source_path.is_file()
+        else joined_path
+    )
+    prior = (
+        _read(sparse_path, code="policy_canary_prior_terminal_result_invalid")
+        if sparse_path != joined_path else joined
+    )
+    if (
+        not _sparse_preobservation_result(prior)
+        or joined.get("status") != "blocked"
+        or joined.get("candidate_policy_queried") is not False
+        or joined.get("result_digest")
+        != canonical_digest(joined, digest_field="result_digest")
+    ):
+        return False
+    if _sealed_provider_zero(zero_path) is None:
+        return False
+    try:
+        validate_vast_official_same_goal_reconciliation(billing_path)
+    except Exception:  # a retained bill must pass the normal validator
+        return False
+    return True
 
 
 def _recovered_complete_policy_canary_result(
@@ -843,7 +890,9 @@ def _recovered_complete_policy_canary_result(
 
 
 def _materialize_official_billing_if_posted(**kwargs) -> bool:
-    return reconcile_posted_billing(**kwargs, instance_ids_from_adapter=_adapter_instance_ids,
+    return reconcile_posted_billing(**kwargs,
+        instance_ids_from_adapter=lambda adapter: _adapter_instance_ids(
+            adapter, result_path=kwargs["adapter_result_path"]),
         validate_reconciliation=validate_vast_official_same_goal_reconciliation,
         materialize_reconciliation=materialize_vast_official_same_goal_reconciliation,
         record_file=_record, write_json=write_json, dispatch_error=TaskEvaluationPolicyCanaryDispatchError)
@@ -915,7 +964,6 @@ def service_access_blockers(
     """
 
     blockers: list[str] = []
-
     def parent_untraversable(target: Path) -> bool:
         parent = _nearest_existing_ancestor(target.parent)
         return parent.is_dir() and not access(parent, os.X_OK)
@@ -1408,12 +1456,24 @@ def dispatch_policy_canary_activation(
     activation = _read(activation_path, code="policy_canary_activation_manifest_invalid")
     resource = runtime_inputs.get("resource_authority")
     root = Path(output_root).expanduser().resolve()
-    delivery_only = retained_delivery_only or setup["source_commit"] != implementation_commit
-    # A newer controller may publish sealed old-release results, never restart
-    # their provider work. All original authority/bundle/closure checks still run.
+    retained_provider_null = False
+    retained_adapter_path = root / "allocator_result.json"
+    if setup["source_commit"] != implementation_commit and retained_adapter_path.is_file():
+        retained_adapter = _read(retained_adapter_path, code="policy_canary_allocator_result_invalid")
+        retained_provider_null = proven_provider_null_closeout(
+            retained_adapter, root=root, record_file=_record
+        ) is not None
+    delivery_only = retained_delivery_only or (
+        setup["source_commit"] != implementation_commit and not retained_provider_null
+    )
+    # A newer controller may close a proven old-release provider refusal, never
+    # restart its allocator. Ordinary old-release work remains delivery-only.
     retained_delivery = execute and _has_materialized_delivery(root)
+    retained_sparse_gap = execute and _retained_sparse_terminal_gap(root)
+    retained_billing_gap = execute and _retained_sparse_billing_gap(root,
+        read_json=lambda path, code: _read(path, code=code), sealed_provider_zero=_sealed_provider_zero)
     if (
-        (delivery_only and not retained_delivery)
+        (delivery_only and not (retained_delivery or retained_sparse_gap or retained_billing_gap))
         or setup["activation_digest"] != activation["activation_digest"]
         or setup["scene_revision_digest"] != runtime_inputs.get("scene_revision_digest")
         or setup.get("task_success_contract")
@@ -1678,10 +1738,29 @@ def dispatch_policy_canary_activation(
     )
     if resumed is not None:
         return resumed
-    if delivery_only:
+    if delivery_only and not (retained_sparse_gap or retained_billing_gap):
         raise TaskEvaluationPolicyCanaryDispatchError("policy_canary_retained_delivery_missing")
 
-    if _proves_no_provider_allocation(adapter):
+    provider_null = proven_provider_null_closeout(adapter, root=root, record_file=_record)
+    provider_zero_path = root / "post_teardown_global_provider_zero.json"
+    if provider_null is not None:
+        provider_zero = _sealed_provider_zero(provider_zero_path)
+        if provider_zero is None:
+            provider_zero = dict(provider_zero_collector())
+            write_json(provider_zero_path, provider_zero)
+            provider_zero = _sealed_provider_zero(provider_zero_path)
+        if provider_zero is None or provider_zero.get("provider_zero_verified") is not True:
+            pending = {
+                "schema_version": SCHEMA_VERSION,
+                "status": "awaiting_authenticated_vast_provider_zero",
+                "run_id": activation["run_id"],
+                "allocator_invoked": allocator_invoked,
+                "automatic_retry_performed": False,
+                "blockers": ["policy_canary_global_provider_zero_unproven"],
+            }
+            write_json(root / "dispatch_pending.json", pending)
+            return pending
+    if provider_null is not None or _proves_no_provider_allocation(adapter):
         blockers = list(adapter.get("blockers") or ["policy_canary_provider_not_allocated"])
         try:
             terminal_sync = dict(
@@ -1709,28 +1788,38 @@ def dispatch_policy_canary_activation(
             "intake_id": setup["intake_id"],
             "request_digest": setup["request_digest"],
             "allocator_invoked": allocator_invoked,
-            "provider_call_reached": False,
+            "provider_call_reached": provider_null is not None,
             "provider_allocation_performed": False,
             "provider_mutation_performed": False,
-            "provider_zero_required": False,
-            "provider_zero_not_applicable": True,
-            "paid_execution_requested": False,
+            "provider_zero_required": provider_null is not None,
+            "provider_zero_not_applicable": provider_null is None,
+            "paid_execution_requested": provider_null is not None,
             "automatic_retry_authorized": False,
             "automatic_retry_performed": False,
             "retry_cap": 0,
-            "terminal_result_kind": "allocator_no_provider_allocation",
+            "terminal_result_kind": (
+                "definite_provider_create_refusal"
+                if provider_null is not None
+                else "allocator_no_provider_allocation"
+            ),
             "allocator_result": _record(adapter_path),
             "blockers": blockers,
             "terminal_sync": _terminal_sync_observation(terminal_sync),
             "receipt_digest": "",
         }
+        if provider_null is not None:
+            blocked["closeout_release_commit"] = implementation_commit
+            blocked["provider_null_evidence"] = {
+                **provider_null,
+                "provider_zero": _record(provider_zero_path),
+                "official_instance_billing": "not_applicable_no_instance_created",
+            }
         blocked["receipt_digest"] = canonical_digest(
             blocked, digest_field="receipt_digest"
         )
         write_json(root / "no_provider_allocation_blocked.json", blocked)
         return blocked
 
-    provider_zero_path = root / "post_teardown_global_provider_zero.json"
     provider_zero = _sealed_provider_zero(provider_zero_path)
     if provider_zero is None:
         provider_zero = dict(provider_zero_collector())
@@ -1756,6 +1845,7 @@ def dispatch_policy_canary_activation(
             authority=authority,
             runtime_inputs=runtime_inputs,
         )
+    sparse_provider_path: Path | None = None
     if native_path.is_file() or recovered is not None:
         if recovered is not None:
             inner, native_path = recovered
@@ -1769,14 +1859,56 @@ def dispatch_policy_canary_activation(
         )
         if partial is not None:
             inner, native_path = partial
-    else:
+        elif _sparse_preobservation_result(inner):
+            sparse_provider_path = native_path
+    if ((not native_path.is_file() and recovered is None)
+            or sparse_provider_path is not None):
         gap_root = root / "preprovider_evidence"
         gap_root.mkdir(parents=True, exist_ok=True)
+        source_artifacts = []
+        if sparse_provider_path is not None:
+            source_path = gap_root / "source_provider_terminal_result.json"
+            source_bytes = sparse_provider_path.read_bytes()
+            if source_path.exists() and source_path.read_bytes() != source_bytes:
+                raise TaskEvaluationPolicyCanaryDispatchError(
+                    "policy_canary_retained_provider_terminal_result_conflict"
+                )
+            if not source_path.exists():
+                source_path.write_bytes(source_bytes)
+            source_artifacts.append({
+                "role": "source_provider_terminal_result",
+                "relative_path": source_path.name,
+                "media_type": "application/json",
+                "size_bytes": source_path.stat().st_size,
+                "sha256": _sha256(source_path),
+            })
+        if retained_sparse_gap:
+            prior_path = gap_root / "prior_terminal_result.json"
+            if not prior_path.exists():
+                old_joined = root / "policy_canary_terminal_result.json"
+                old_joined_record = _read(
+                    old_joined, code="policy_canary_prior_terminal_result_invalid"
+                )
+                prior_path.write_bytes(
+                    (old_joined if _sparse_preobservation_result(old_joined_record)
+                     else source_path).read_bytes()
+                )
+            source_artifacts.append({
+                "role": "prior_terminal_result",
+                "relative_path": prior_path.name,
+                "media_type": "application/json",
+                "size_bytes": prior_path.stat().st_size,
+                "sha256": _sha256(prior_path),
+            })
         gap_path = gap_root / "typed_media_gap.json"
         gap_value = {
             "schema_version": "task_evaluation_policy_canary_media_gap.v1",
             "type": "before_first_observation",
-            "reason": (adapter.get("blockers") or ["provider_result_missing"])[0],
+            "reason": (
+                (inner.get("blockers") if sparse_provider_path is not None else None)
+                or adapter.get("blockers")
+                or ["provider_result_missing"]
+            )[0],
             "candidate_policy_queried": False,
         }
         write_json(gap_path, gap_value)
@@ -1789,6 +1921,7 @@ def dispatch_policy_canary_activation(
             "task_success_contract_digest": runtime_inputs[
                 "task_success_contract_digest"
             ],
+            "candidate_policy_queried": False,
             "episodes": [
                 {
                     "candidate_id": candidate,
@@ -1821,6 +1954,7 @@ def dispatch_policy_canary_activation(
                 for cell in runtime_inputs["cells"]
             ],
             "artifact_inventory": [
+                *source_artifacts,
                 {
                     "role": "typed_media_gap",
                     "relative_path": gap_path.name,
@@ -1829,18 +1963,23 @@ def dispatch_policy_canary_activation(
                     "sha256": _sha256(gap_path),
                 }
             ],
-            "blockers": list(adapter.get("blockers") or ["provider_result_missing"]),
+            "blockers": list(
+                (inner.get("blockers") if sparse_provider_path is not None else None)
+                or adapter.get("blockers")
+                or ["provider_result_missing"]
+            ),
             "result_digest": "",
         }
         inner["result_digest"] = canonical_digest(inner, digest_field="result_digest")
         native_path = gap_root / "policy_canary_provider_gap_result.json"
         write_json(native_path, inner)
-    joined = _join_session_closeout(inner=inner, adapter=adapter, provider_zero=provider_zero)
+    joined = _join_session_closeout(inner=inner, adapter=adapter,
+        provider_zero=provider_zero, adapter_path=adapter_path)
     joined["run_id"] = activation["run_id"]
     joined["configuration_digest"] = runtime_inputs["configuration_digest"]
     joined["scene_revision_digest"] = setup["scene_revision_digest"]
     joined["provider"] = "vast"
-    joined["provider_instance_ids"] = list(adapter.get("vast_instance_ids") or [])
+    joined["provider_instance_ids"] = _adapter_instance_ids(adapter, result_path=adapter_path)
     selected_container = str(adapter.get("selected_container_image") or "")
     container_match = re.search(r"sha256:[0-9a-f]{64}", selected_container)
     if container_match:
@@ -2201,7 +2340,8 @@ def process_policy_canary_dispatch_queue(
                 output = outputs / identifier
                 if (row.get("source_commit") != implementation_commit
                         and not (output / "dispatch_receipt.json").exists()
-                        and _has_materialized_delivery(output)):
+                        and (_has_materialized_delivery(output)
+                             or _retained_sparse_terminal_gap(output) or _retained_sparse_billing_gap(output, read_json=lambda p,c: _read(p, code=c), sealed_provider_zero=_sealed_provider_zero))):
                     sources.append(path)
             except (OSError, ValueError, TypeError):
                 continue

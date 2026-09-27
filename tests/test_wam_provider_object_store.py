@@ -94,11 +94,23 @@ def test_runtime_dependency_layer_uploads_once_then_hits_digest_cache(
         key_prefix="blueprint/arena",
         expiration_seconds=600,
     )
+    checkpoint = object_store.stage_cached_runtime_dependency_object_store(
+        job_dir=tmp_path / "g1-checkpoint",
+        dependency_path=dependency,
+        expected_sha256="sha256:" + digest,
+        key_prefix="blueprint/arena",
+        expiration_seconds=600,
+        artifact_kind="g1_checkpoint",
+    )
 
     assert first["status"] == second["status"] == "completed"
+    assert checkpoint["status"] == "completed"
+    assert checkpoint["artifact_kind"] == "g1_checkpoint"
     assert first["upload_performed"] is True
     assert second["cache_hit"] is True
-    assert client.upload_count == 1
+    assert client.upload_count == 2
+    assert any(key.endswith(f"/g1-checkpoints/sha256/{digest}.bin")
+               for _bucket, key in client.objects)
     closeout = object_store.close_cached_runtime_dependency_staging(
         tmp_path / "run2"
     )

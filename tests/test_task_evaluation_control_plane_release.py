@@ -222,3 +222,26 @@ def test_rejects_an_existing_release_path_with_the_wrong_identity(tmp_path: Path
         )
 
     assert _git(source, "rev-parse", "HEAD") == second
+
+
+def test_a_release_deleted_without_git_knowing_is_staged_again(tmp_path: Path) -> None:
+    """Retirement deletes worktrees behind Git's back; a rollback must still stage."""
+
+    import shutil
+
+    source, first, _second = _source_repo(tmp_path)
+    release_root = tmp_path / "releases"
+    staging = dict(
+        source_repo=source,
+        source_commit=first,
+        release_root=release_root,
+        state_root=tmp_path / "state",
+        active_link=tmp_path / "active-control-plane",
+    )
+    releases.stage_task_evaluation_control_plane_release(**staging)
+    shutil.rmtree(release_root / first)  # still registered as a worktree
+
+    restaged = releases.stage_task_evaluation_control_plane_release(**staging)
+
+    assert restaged["created_release_checkout"] is True
+    assert _git(release_root / first, "rev-parse", "HEAD") == first

@@ -25,6 +25,7 @@ from blueprint_pipeline.native_task_arena_feedback_bootstrap_runtime import (
 )
 from blueprint_pipeline.native_task_arena_import_scope import ROBOT_EMBODIMENT_MODULES
 from blueprint_pipeline.native_task_runtime_source_provision import TOP_LEVEL_PACKAGES
+from blueprint_pipeline import native_task_arena_construction_worker as construction
 
 
 def test_construction_warms_plain_nurec_before_camera_evidence() -> None:
@@ -206,6 +207,46 @@ def test_dependency_matrix_is_declared_as_one_preflight() -> None:
     )
     assert DEPENDENCY_IMPORTS.index("isaaclab_newton") < DEPENDENCY_IMPORTS.index(
         "isaaclab_arena.environments.arena_env_builder"
+    )
+
+
+def test_franka_dependency_preflight_does_not_require_g1_only_packages(
+    monkeypatch,
+) -> None:
+    g1_only = (
+        "isaaclab_arena_g1", "coloredlogs", "humanfriendly", "flatbuffers",
+        "onnxruntime", "google.protobuf",
+    )
+
+    def import_module(name: str) -> object:
+        if name in g1_only:
+            raise ModuleNotFoundError(name)
+        return SimpleNamespace(__version__="test")
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.native_task_arena_import_scope.install_scoped_arena_embodiment",
+        lambda robot_id: {"robot_id": robot_id},
+    )
+    monkeypatch.setattr(
+        construction, "DEPENDENCY_IMPORTS", ("torch", *g1_only)
+    )
+    monkeypatch.setattr(
+        construction.importlib, "import_module", import_module
+    )
+    monkeypatch.setattr(
+        construction.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="ok", stderr=""),
+    )
+
+    franka = construction.preflight_native_dependency_matrix(robot_id="franka_panda")
+    g1 = construction.preflight_native_dependency_matrix(robot_id="unitree_g1")
+
+    assert franka["all_required_available"] is True
+    assert [row["module"] for row in franka["imports"]] == ["torch"]
+    assert g1["all_required_available"] is False
+    assert g1["blockers"] == sorted(
+        f"native_task_dependency_missing:{name}" for name in g1_only
     )
 
 

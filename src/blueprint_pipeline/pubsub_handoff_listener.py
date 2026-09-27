@@ -7,6 +7,7 @@ import fcntl
 import json
 import logging
 import os
+import re
 import socket
 import tempfile
 import threading
@@ -22,6 +23,7 @@ import google.auth
 from google.cloud import storage
 
 from .common import PipelineError, utc_now_iso, write_json
+from .decision_evidence_contracts import canonical_digest
 from .run_e2e import run_end_to_end
 from .core.security_controls import (
     SecurityValidationError,
@@ -156,13 +158,20 @@ def stage_handoff_capture(
     )
     capture_root.mkdir(parents=True, exist_ok=True)
 
-    blobs = list(client.list_blobs(handoff.bucket, prefix=f"{handoff.capture_prefix}/"))
+    expected_prefix = f"{handoff.capture_prefix}/"
+    blobs = list(client.list_blobs(handoff.bucket, prefix=expected_prefix))
     if not blobs:
         raise PipelineError(f"No objects found for handoff prefix: {handoff.capture_prefix}/")
 
+    # Decide everything before writing anything: every name is validated, and
+    # an object whose generation and size match the previous staging (with the
+    # local copy intact) is not downloaded again.
+    prefix_depth = len(PurePosixPath(handoff.capture_prefix).parts)
+    previously_staged = _previous_staging_rows(capture_root, handoff=handoff)
+    manifest_rows: list[dict[str, Any]] = []
+    downloads: list[tuple[Any, Path]] = []
     for blob in blobs:
         blob_name = str(blob.name or "")
-        expected_prefix = f"{handoff.capture_prefix}/"
         if not blob_name.startswith(expected_prefix):
             raise PipelineError("Pub/Sub blob escaped the declared capture prefix")
         blob_path = PurePosixPath(blob_name)
@@ -188,8 +197,32 @@ def stage_handoff_capture(
             )
         except SecurityValidationError as exc:
             raise PipelineError(str(exc)) from exc
+        row = _staging_manifest_row(
+            blob,
+            name=blob_name,
+            relative_path=PurePosixPath(*blob_path.parts[prefix_depth:]).as_posix(),
+        )
+        # Every row is the listing's view of the object now; a skipped object
+        # only keeps its local bytes.
+        manifest_rows.append(row)
+        previous = previously_staged.get(blob_name)
+        if previous is not None and _staged_copy_is_current(previous, row, destination):
+            continue
+        downloads.append((blob, destination))
+
+    for blob, destination in downloads:
         destination.parent.mkdir(parents=True, exist_ok=True)
         blob.download_to_filename(str(destination))
+    write_json(
+        capture_root / STAGING_MANIFEST_FILENAME,
+        {
+            "schema_version": STAGING_MANIFEST_SCHEMA_VERSION,
+            "bucket": handoff.bucket,
+            "prefix": expected_prefix,
+            "staged_at": utc_now_iso(),
+            "objects": manifest_rows,
+        },
+    )
 
     if not (capture_root / "raw" / "capture_upload_complete.json").is_file():
         raise PipelineError(
@@ -203,6 +236,83 @@ def stage_handoff_capture(
         # capture_job_id / site_submission_id / buyer_request_id data contract stays intact.
         _synthesize_pipeline_handoff(handoff, capture_root=capture_root)
     return capture_root
+
+
+def _staging_manifest_row(blob: Any, *, name: str, relative_path: str) -> dict[str, Any]:
+    """The cloud identity of one staged object, as the listing reported it."""
+
+    size = getattr(blob, "size", None)
+    generation = getattr(blob, "generation", None)
+    md5_hash = getattr(blob, "md5_hash", None)
+    crc32c = getattr(blob, "crc32c", None)
+    return {
+        "name": name,
+        "relative_path": relative_path,
+        "size": size if isinstance(size, int) and not isinstance(size, bool) and size >= 0 else None,
+        "generation": str(generation) if generation is not None and str(generation).strip() else None,
+        "md5_hash": md5_hash if isinstance(md5_hash, str) and md5_hash else None,
+        "crc32c": crc32c if isinstance(crc32c, str) and crc32c else None,
+    }
+
+
+def _previous_staging_rows(capture_root: Path, *, handoff: HandoffMessage) -> dict[str, dict[str, Any]]:
+    """Rows of this capture's last staging manifest, keyed by object name.
+
+    A manifest for another bucket or prefix, or one that is unreadable, proves
+    nothing, so every object downloads again.
+    """
+
+    manifest = _read_optional_json_object(capture_root / STAGING_MANIFEST_FILENAME)
+    objects = manifest.get("objects")
+    if (
+        manifest.get("schema_version") != STAGING_MANIFEST_SCHEMA_VERSION
+        or manifest.get("bucket") != handoff.bucket
+        or manifest.get("prefix") != f"{handoff.capture_prefix}/"
+        or not isinstance(objects, list)
+    ):
+        return {}
+    return {
+        row["name"]: dict(row)
+        for row in objects
+        if isinstance(row, Mapping) and isinstance(row.get("name"), str)
+    }
+
+
+def _staged_copy_is_current(
+    previous: Mapping[str, Any],
+    current: Mapping[str, Any],
+    destination: Path,
+) -> bool:
+    """Whether the object is unchanged since it was staged and its local copy is intact.
+
+    Unchanged means the listing still reports the generation and size recorded
+    at the last successful staging. An object whose generation or size is
+    unknown is never assumed unchanged.
+
+    The local copy counts as intact when it is a regular file of that same
+    size; its bytes are not hashed. A local edit that keeps the size is
+    therefore not undone by restaging. Staging's consumers catch that case:
+    run_e2e always reruns materialization, which rebuilds the descriptor and
+    QA projections, and the raw verifier checks raw bytes against
+    raw/hashes.json.
+    """
+
+    generation = current.get("generation")
+    size = current.get("size")
+    if generation is None or size is None:
+        return False
+    previous_size = previous.get("size")
+    if (
+        previous.get("generation") != generation
+        or not isinstance(previous_size, int)
+        or isinstance(previous_size, bool)
+        or previous_size != size
+    ):
+        return False
+    try:
+        return destination.is_file() and destination.stat().st_size == size
+    except OSError:
+        return False
 
 
 def _preserve_local_website_derivatives(capture_root: Path, uploaded_names: set[str], prefix: str) -> None:
@@ -238,13 +348,35 @@ def _preserve_local_website_derivatives(capture_root: Path, uploaded_names: set[
 
 
 def _read_optional_json_object(path: Path) -> dict[str, Any]:
+    """The JSON object at path, or {} when it is missing or unreadable.
+
+    ValueError covers both invalid JSON and bytes that are not UTF-8.
+    """
+
     if not path.is_file():
         return {}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+    except (ValueError, OSError):
         return {}
     return data if isinstance(data, dict) else {}
+
+
+def _set_aside(path: Path, label: str) -> Path:
+    """Rename a record to <stem>.<label>-<UTC compact time><suffix>, keeping its bytes.
+
+    Never overwrites: an existing name gets a numeric suffix. Callers hold the
+    capture's ledger lock.
+    """
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    target = path.with_name(f"{path.stem}.{label}-{stamp}{path.suffix}")
+    counter = 1
+    while target.exists() or target.is_symlink():
+        target = path.with_name(f"{path.stem}.{label}-{stamp}-{counter}{path.suffix}")
+        counter += 1
+    path.rename(target)
+    return target
 
 
 def _first_non_empty(*sources: Mapping[str, Any], keys: Sequence[str]) -> str | None:
@@ -431,6 +563,15 @@ JOB_OUTPUT_COMMIT_FILENAME = "pipeline_job_output_commit.json"
 JOB_LEDGER_SCHEMA_VERSION = "pipeline_job_ledger.v1"
 JOB_OUTPUT_COMMIT_SCHEMA_VERSION = "pipeline_job_output_commit.v1"
 JOB_STATUS_SCHEMA_VERSION = "pipeline_job_status.v1"
+TERMINAL_AUTHORITY_STATUS = "terminal_authority_ended"
+JOB_TERMINAL_RECEIPT_FILENAME = "pipeline_job_terminal_receipt.json"
+JOB_TERMINAL_RECEIPT_SCHEMA_VERSION = "pipeline_job_terminal_receipt.v1"
+JOB_ACK_RECEIPT_FILENAME = "pipeline_job_ack_receipt.json"
+JOB_ACK_RECEIPT_SCHEMA_VERSION = "pubsub_handoff_ack_receipt.v1"
+# The only outcomes an ack receipt may record; retirement matches them to the ledger.
+_ACK_RECEIPT_DISPOSITIONS = frozenset({"terminal_success", TERMINAL_AUTHORITY_STATUS})
+STAGING_MANIFEST_FILENAME = "pipeline_staging_manifest.json"
+STAGING_MANIFEST_SCHEMA_VERSION = "pipeline_handoff_staging_manifest.v1"
 PROVIDER_OPS_STATUS_SCHEMA_VERSION = "provider_ops_status.v1"
 DEFAULT_JOB_LEASE_SECONDS = 900
 DEFAULT_ACK_DEADLINE_SECONDS = 600
@@ -477,6 +618,21 @@ _PROVIDER_STATUS_FIELD_NAMES = {
     "provider_runtime_output_zip_path",
     "provider_output_validation_status",
 }
+# The WebApp ends a website scene's authority with a typed 409 refusal, which
+# website_task_context raises as ValueError("website_control_<op>_http_409:<code>").
+# Retrying the same handoff cannot revive an expired consent or a revoked
+# source. Other 409 codes (task_brief_missing, idempotency_conflict, ...) can be
+# fixed by a person, so they stay retryable.
+AUTHORITY_ENDING_CODES = frozenset({"consent_expired", "source_revoked"})
+# The same token boundary on both sides: no identifier character or hyphen may
+# touch the typed refusal, so "...:source_revokedX" is not "source_revoked".
+# Group 1 is the refusing operation (e.g. scene-sponsorship), group 2 the code.
+_AUTHORITY_ENDING_RE = re.compile(
+    r"(?<![A-Za-z0-9_-])website_control_([a-z0-9-]+)_http_409:("
+    + "|".join(re.escape(code) for code in sorted(AUTHORITY_ENDING_CODES))
+    + r")(?![A-Za-z0-9_-])"
+)
+_AUTHORITY_ENDING_CHAIN_LIMIT = 16
 
 
 RECONSTRUCTION_POLICY_ROOT_ENV = "BLUEPRINT_CAPTURE_RECONSTRUCTION_POLICY_ROOT"
@@ -552,7 +708,7 @@ def _read_job_ledger(capture_root: Path) -> dict[str, Any]:
         return {}
     try:
         loaded = json.loads(ledger_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, ValueError) as exc:  # ValueError: invalid JSON or not UTF-8
         return {
             "schema_version": JOB_LEDGER_SCHEMA_VERSION,
             "status": "corrupt",
@@ -584,6 +740,41 @@ def _locked_job_ledger(capture_root: Path) -> Iterator[dict[str, Any]]:
             yield _read_job_ledger(capture_root)
         finally:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+@contextmanager
+def _existing_job_ledger_lock(capture_root: Path) -> Iterator[str]:
+    """Hold the ledger lock of a capture that already exists, creating nothing.
+
+    Yields "ledger_present" while the lock is held and the ledger exists,
+    otherwise "capture_absent" or "ledger_absent". A capture whose workspace was
+    retired (or never staged) must not be brought back by recording something
+    about it.
+
+    Contract: anything that deletes a capture root (scene workspace retirement)
+    must hold this same flock, on the capture's .pipeline_job_ledger.json.lock,
+    for the whole deletion. A writer here then either finishes before the
+    deletion starts or finds the ledger gone once it gets the lock.
+    """
+
+    def absence() -> str:
+        return "ledger_absent" if capture_root.is_dir() else "capture_absent"
+
+    try:
+        descriptor: int | None = os.open(capture_root / f".{JOB_LEDGER_FILENAME}.lock", os.O_RDONLY)
+    except (FileNotFoundError, NotADirectoryError):
+        descriptor = None
+    if descriptor is None:
+        yield absence()
+        return
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        try:
+            yield "ledger_present" if (capture_root / JOB_LEDGER_FILENAME).is_file() else absence()
+        finally:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+    finally:
+        os.close(descriptor)
 
 
 def _commit_job_ledger(
@@ -632,6 +823,7 @@ def _claim_job_lease(
     owner: str,
     lease_seconds: int,
     now: datetime | None = None,
+    payload_sha256: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
     current_time = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     with _locked_job_ledger(capture_root) as ledger:
@@ -639,6 +831,37 @@ def _claim_job_lease(
         status = _string(ledger.get("status"))
         if status == "corrupt":
             return "corrupt", dict(ledger)
+        history = _attempt_history(ledger)
+        # A payload whose run ended for lost authority never runs again, even
+        # while a later payload reopened the job and is running or retrying.
+        # Only a completed job answers a redelivery from its output commit.
+        if (
+            status != "completed"
+            and payload_sha256
+            and payload_sha256 in _ended_payload_digests(ledger)
+        ):
+            return "terminal", dict(ledger)
+        if status == TERMINAL_AUTHORITY_STATUS:
+            ended_by = _string(ledger.get("terminal_payload_sha256"))
+            # Without both digests nothing proves this is a new request, so the
+            # ending stands (a redelivery must not re-run an ended scene).
+            if not payload_sha256 or not ended_by:
+                return "terminal", dict(ledger)
+            # A different message is a new request for this capture, for example
+            # after the website renewed consent. Keep the ending in the history.
+            history.append({
+                "attempt_number": int(ledger.get("attempt_count") or 0) + 1,
+                "status": "reopened_after_terminal_authority",
+                "reopened_at": _iso_at(current_time),
+                "terminal_code": ledger.get("terminal_code"),
+                "terminal_payload_sha256": ended_by,
+                "payload_sha256": payload_sha256,
+            })
+            # The ended run's receipt is kept, but never under the live name,
+            # which only ever describes the ledger's current ending.
+            live_receipt = capture_root / JOB_TERMINAL_RECEIPT_FILENAME
+            if live_receipt.exists() or live_receipt.is_symlink():
+                _set_aside(live_receipt, "superseded")
         if status == "completed":
             retained = _read_optional_json_object(capture_root / "pipeline" / "run_e2e_stage_ledger.json")
             capture_result = _mapping(_mapping(_mapping(retained.get("stages")).get("capture_pipeline")).get("result_snapshot"))
@@ -672,7 +895,7 @@ def _claim_job_lease(
                 "started_at": started_at,
                 "updated_at": _iso_at(current_time),
                 "last_attempt_started_at": _iso_at(current_time),
-                "attempt_history": _attempt_history(ledger),
+                "attempt_history": history,
                 "lease_owner": owner,
                 "lease_token": token,
                 "lease_acquired_at": _iso_at(current_time),
@@ -727,7 +950,17 @@ def _finish_job_lease(
     owner: str,
     token: str,
     update: Mapping[str, Any],
+    after_commit: Callable[[dict[str, Any]], Any] | None = None,
 ) -> dict[str, Any]:
+    """Commit the lease's final ledger; after_commit runs under the same lock.
+
+    after_commit runs after the commit. If it raises, the commit stands (the
+    ledger is already durable) and the exception propagates to the caller.
+    The terminal path relies on this: a terminal receipt that failed to write
+    leaves the message unacknowledged, and the redelivery repairs the receipt
+    from the committed ledger.
+    """
+
     with _locked_job_ledger(capture_root) as ledger:
         if (
             ledger.get("status") != "processing"
@@ -736,7 +969,7 @@ def _finish_job_lease(
         ):
             raise PipelineError("Pub/Sub job ledger lease ownership was lost before commit.")
         revision = int(ledger.get("revision") or 0)
-        return _commit_job_ledger(
+        committed = _commit_job_ledger(
             capture_root,
             {
                 **ledger,
@@ -747,6 +980,9 @@ def _finish_job_lease(
             },
             previous_revision=revision,
         )
+        if after_commit is not None:
+            after_commit(committed)
+        return committed
 
 
 class _JobLeaseHeartbeat:
@@ -811,6 +1047,19 @@ def _attempt_history(ledger: Mapping[str, Any]) -> list[dict[str, Any]]:
     if not isinstance(history, list):
         return []
     return [dict(item) for item in history if isinstance(item, Mapping)]
+
+
+def _ended_payload_digests(ledger: Mapping[str, Any]) -> set[str]:
+    """Every payload digest whose run this capture ended for lost authority."""
+
+    digests = {_string(ledger.get("terminal_payload_sha256"))}
+    for row in _attempt_history(ledger):
+        if row.get("status") == TERMINAL_AUTHORITY_STATUS:
+            digests.add(_string(row.get("payload_sha256")))
+        elif row.get("status") == "reopened_after_terminal_authority":
+            digests.add(_string(row.get("terminal_payload_sha256")))
+    digests.discard("")
+    return digests
 
 
 def _output_commit(
@@ -1012,6 +1261,11 @@ def read_handoff_job_status(
         capture_root / "raw" / "capture_upload_complete.json"
     ).is_file()
     pipeline_handoff_present = (capture_root / "pipeline_handoff.json").is_file()
+    # Present means an intact receipt of the ledger's current ending, not just a file.
+    terminal_receipt_present = _terminal_receipt_current(
+        _read_optional_json_object(capture_root / JOB_TERMINAL_RECEIPT_FILENAME), ledger
+    )
+    ack_receipt = _read_optional_json_object(capture_root / JOB_ACK_RECEIPT_FILENAME) or None
     provider_ops_status = _provider_ops_status(capture_root)
     if ledger:
         status = str(ledger.get("status") or "unknown").strip() or "unknown"
@@ -1071,6 +1325,11 @@ def read_handoff_job_status(
         "last_failed_at": ledger.get("last_failed_at") if ledger else None,
         "last_error_type": ledger.get("last_error_type") if ledger else None,
         "last_error": ledger.get("last_error") if ledger else None,
+        "terminal_code": ledger.get("terminal_code") if ledger else None,
+        "terminal_operation": ledger.get("terminal_operation") if ledger else None,
+        "terminal_receipt_present": terminal_receipt_present,
+        "ack_receipt": ack_receipt,
+        # An authority ending is terminal: a redelivery is acknowledged, not retried.
         "retry_expected_on_redelivery": status in _JOB_RETRYABLE_STATUSES,
         "completed_redelivery_is_noop": status == "completed",
         "attempt_history": _attempt_history(ledger),
@@ -1148,6 +1407,228 @@ def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
 
 
+def authority_ending(exc: BaseException) -> tuple[str, str] | None:
+    """(refusing operation, code) of the WebApp refusal that ended this job, if any.
+
+    Walks the exception chain (__cause__, then __context__), at most 16 links, and
+    guards against cycles. Only exact typed WebApp 409 codes qualify. The token may
+    sit inside a longer message, because a StageError joins its blockers, but it
+    must be whole.
+    """
+
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    for _ in range(_AUTHORITY_ENDING_CHAIN_LIMIT):
+        if current is None or id(current) in seen:
+            return None
+        seen.add(id(current))
+        try:
+            text = str(current)
+        except Exception:  # noqa: BLE001 - an unprintable error carries no typed code
+            text = ""
+        match = _AUTHORITY_ENDING_RE.search(text)
+        if match:
+            return match.group(1), match.group(2)
+        current = current.__cause__ if current.__cause__ is not None else current.__context__
+    return None
+
+
+def authority_ending_code(exc: BaseException) -> str | None:
+    """The WebApp authority code that permanently ended this job, if any."""
+
+    ending = authority_ending(exc)
+    return ending[1] if ending else None
+
+
+def payload_sha256(payload: bytes | str | Mapping[str, Any]) -> str:
+    """Hex sha256 of the message bytes, as `_write_delivery_evidence` already records it.
+
+    str -> utf-8 bytes; Mapping -> json.dumps(sort_keys=True, separators=(",", ":")).
+    """
+
+    if isinstance(payload, bytes):
+        raw = payload
+    elif isinstance(payload, str):
+        raw = payload.encode("utf-8", errors="replace")
+    else:
+        raw = json.dumps(dict(payload), sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return sha256(raw).hexdigest()
+
+
+def _write_terminal_receipt(
+    capture_root: Path,
+    *,
+    handoff: HandoffMessage,
+    ledger: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Record, from the committed terminal ledger, why this job ended."""
+
+    receipt: dict[str, Any] = {
+        "schema_version": JOB_TERMINAL_RECEIPT_SCHEMA_VERSION,
+        "status": "authority_ended",
+        "code": ledger.get("terminal_code"),
+        "terminal_operation": ledger.get("terminal_operation"),
+        "bucket": handoff.bucket,
+        "scene_id": handoff.scene_id,
+        "capture_id": handoff.capture_id,
+        "attempt_count": int(ledger.get("attempt_count") or 0),
+        "payload_sha256": ledger.get("terminal_payload_sha256"),
+        "ended_at": ledger.get("terminal_at"),
+        "error": str(ledger.get("last_error") or "")[:500],
+    }
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    write_json(capture_root / JOB_TERMINAL_RECEIPT_FILENAME, receipt)
+    return receipt
+
+
+def _terminal_receipt_current(receipt: Mapping[str, Any], ledger: Mapping[str, Any]) -> bool:
+    """Whether receipt is an intact record of the ledger's current authority ending."""
+
+    ended_by = _string(ledger.get("terminal_payload_sha256"))
+    return bool(
+        _string(ledger.get("status")) == TERMINAL_AUTHORITY_STATUS
+        and ended_by
+        and receipt.get("schema_version") == JOB_TERMINAL_RECEIPT_SCHEMA_VERSION
+        and receipt.get("status") == "authority_ended"
+        and receipt.get("payload_sha256") == ended_by
+        and receipt.get("code") == ledger.get("terminal_code")
+        and receipt.get("receipt_digest") == canonical_digest(receipt, digest_field="receipt_digest")
+    )
+
+
+def _replace_terminal_receipt(
+    capture_root: Path,
+    *,
+    handoff: HandoffMessage,
+    ledger: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Write the ledger's receipt, first setting aside whatever held the live name.
+
+    Callers hold the capture's ledger lock.
+    """
+
+    live = capture_root / JOB_TERMINAL_RECEIPT_FILENAME
+    if live.exists() or live.is_symlink():
+        _set_aside(live, "superseded")
+    return _write_terminal_receipt(capture_root, handoff=handoff, ledger=ledger)
+
+
+def _repair_terminal_receipt(capture_root: Path, *, handoff: HandoffMessage) -> None:
+    """Under the ledger lock, make the live receipt describe the current ending.
+
+    Covers a process that died between the terminal ledger commit and its
+    receipt, and a receipt left behind by an earlier ending. Takes the lock
+    without creating anything, so a capture retired after the claim stays
+    retired.
+    """
+
+    with _existing_job_ledger_lock(capture_root) as state:
+        if state != "ledger_present":
+            return
+        ledger = _read_job_ledger(capture_root)
+        if (
+            _string(ledger.get("status")) != TERMINAL_AUTHORITY_STATUS
+            or not _string(ledger.get("terminal_code"))
+            or not _string(ledger.get("terminal_payload_sha256"))
+        ):
+            return
+        receipt = _read_optional_json_object(capture_root / JOB_TERMINAL_RECEIPT_FILENAME)
+        if not _terminal_receipt_current(receipt, ledger):
+            _replace_terminal_receipt(capture_root, handoff=handoff, ledger=ledger)
+
+
+def _terminal_authority_result(
+    handoff: HandoffMessage,
+    *,
+    capture_root: Path,
+    ledger: Mapping[str, Any],
+    status: str,
+) -> dict[str, Any]:
+    return {
+        "schema_version": "v1",
+        "status": status,
+        "queue_disposition": TERMINAL_AUTHORITY_STATUS,
+        "bucket": handoff.bucket,
+        "scene_id": handoff.scene_id,
+        "capture_id": handoff.capture_id,
+        "capture_root": str(capture_root),
+        "blockers": [_string(ledger.get("terminal_code")) or TERMINAL_AUTHORITY_STATUS],
+        "job_ledger": dict(ledger),
+    }
+
+
+def _finish_terminal_authority_ending(
+    capture_root: Path,
+    *,
+    handoff: HandoffMessage,
+    owner: str,
+    token: str,
+    operation: str,
+    code: str,
+    error: BaseException,
+    stage: str,
+    attempt_count: int,
+    attempt_started_at: str,
+    previous_history: Sequence[Mapping[str, Any]],
+    payload_digest: str,
+) -> dict[str, Any]:
+    """End the job for good: the website ended this scene's authority.
+
+    The ledger commits first and the receipt follows under the same lock. A
+    crash before the receipt is written leaves a terminal ledger, and the next
+    redelivery writes the receipt from it.
+    """
+
+    ended_at = utc_now_iso()
+    ledger = _finish_job_lease(
+        capture_root,
+        owner=owner,
+        token=token,
+        after_commit=lambda committed: _replace_terminal_receipt(
+            capture_root, handoff=handoff, ledger=committed
+        ),
+        update={
+            "status": TERMINAL_AUTHORITY_STATUS,
+            "terminal_code": code,
+            "terminal_operation": operation,
+            "terminal_at": ended_at,
+            "updated_at": ended_at,
+            "terminal_payload_sha256": payload_digest,
+            "last_error_type": type(error).__name__,
+            "last_error": str(error)[:500],
+            "queue_disposition": TERMINAL_AUTHORITY_STATUS,
+            "attempt_history": [
+                *previous_history,
+                {
+                    "attempt_number": attempt_count,
+                    "status": TERMINAL_AUTHORITY_STATUS,
+                    "stage": stage,
+                    "started_at": attempt_started_at,
+                    "ended_at": ended_at,
+                    "code": code,
+                    "operation": operation,
+                    "payload_sha256": payload_digest,
+                },
+            ],
+        },
+    )
+    logger.warning(
+        "pubsub_handoff.terminal_authority_ended",
+        extra={
+            "scene_id": handoff.scene_id,
+            "capture_id": handoff.capture_id,
+            "terminal_code": code,
+            "stage": stage,
+        },
+    )
+    return _terminal_authority_result(
+        handoff,
+        capture_root=capture_root,
+        ledger=ledger,
+        status=TERMINAL_AUTHORITY_STATUS,
+    )
+
+
 def process_handoff_payload(
     payload: bytes | str | Mapping[str, Any],
     *,
@@ -1164,8 +1645,10 @@ def process_handoff_payload(
     overwrite_control_plane_input: bool = False,
     lease_owner: str | None = None,
     lease_seconds: int = DEFAULT_JOB_LEASE_SECONDS,
+    payload_digest: str | None = None,
 ) -> dict[str, Any]:
     handoff = parse_handoff_payload(payload)
+    digest = payload_digest or payload_sha256(payload)
     capture_root = _handoff_capture_root(handoff, storage_root=storage_root)
     owner = lease_owner or _lease_owner()
     claim_status, ledger = _claim_job_lease(
@@ -1174,7 +1657,24 @@ def process_handoff_payload(
         capture_id=handoff.capture_id,
         owner=owner,
         lease_seconds=lease_seconds,
+        payload_sha256=digest,
     )
+    if claim_status == "terminal":
+        _repair_terminal_receipt(capture_root, handoff=handoff)
+        logger.info(
+            "pubsub_handoff.skipped_terminal_authority_ended",
+            extra={
+                "scene_id": handoff.scene_id,
+                "capture_id": handoff.capture_id,
+                "terminal_code": ledger.get("terminal_code"),
+            },
+        )
+        return _terminal_authority_result(
+            handoff,
+            capture_root=capture_root,
+            ledger=ledger,
+            status="skipped_terminal_authority_ended",
+        )
     if claim_status == "completed":
         commit = _output_commit(
             capture_root,
@@ -1371,6 +1871,25 @@ def process_handoff_payload(
                 }
             )
     except Exception as exc:
+        ending = authority_ending(exc)
+        if ending is not None:
+            # Retrying cannot revive an ended authority. Finish the job as
+            # terminal and return, so the message is acknowledged.
+            operation, code = ending
+            return _finish_terminal_authority_ending(
+                capture_root,
+                handoff=handoff,
+                owner=owner,
+                token=token,
+                operation=operation,
+                code=code,
+                error=exc,
+                stage=failure_stage,
+                attempt_count=attempt_count,
+                attempt_started_at=attempt_started_at,
+                previous_history=previous_history,
+                payload_digest=digest,
+            )
         failed_at = utc_now_iso()
         failure_record = {
             "attempt_number": attempt_count,
@@ -1594,6 +2113,48 @@ def _write_delivery_evidence(
     return record_path
 
 
+def _write_ack_receipt(
+    *,
+    capture_root: Path,
+    subscription: str,
+    message_id: str | None,
+    payload_digest: str,
+    delivery_attempt: int | None,
+    disposition: str,
+) -> str | None:
+    """Replace the capture's ack receipt; call only after acknowledge returned.
+
+    Returns None once written. Returns "capture_absent" or "ledger_absent",
+    writing nothing, when the capture has no ledger: a workspace retired after
+    its cloud copy was verified must stay retired.
+    """
+
+    with _existing_job_ledger_lock(capture_root) as state:
+        if state != "ledger_present":
+            return state
+        path = capture_root / JOB_ACK_RECEIPT_FILENAME
+        previous = _read_optional_json_object(path)
+        if not previous and path.is_file():
+            _set_aside(path, "unreadable")  # a receipt that cannot be read is kept, not overwritten
+        previous_count = previous.get("acknowledgement_count")
+        if not isinstance(previous_count, int) or isinstance(previous_count, bool) or previous_count < 0:
+            previous_count = 0
+        write_json(
+            path,
+            {
+                "schema_version": JOB_ACK_RECEIPT_SCHEMA_VERSION,
+                "subscription": subscription,
+                "message_id": message_id,
+                "payload_sha256": payload_digest,
+                "delivery_attempt": delivery_attempt,
+                "disposition": disposition,
+                "acknowledged_at": utc_now_iso(),
+                "acknowledgement_count": previous_count + 1,
+            },
+        )
+    return None
+
+
 def _canonical_subscription_resource(subscription: str) -> str:
     value = _string(subscription)
     parts = value.split("/")
@@ -1631,15 +2192,29 @@ def pull_and_process(
 
     subscriber = pubsub_v1.SubscriberClient()
     subscription_resource = _canonical_subscription_resource(subscription)
-    response = subscriber.pull(
-        request={
-            "subscription": subscription_resource,
-            "max_messages": max_messages,
-        },
-        timeout=30,
-    )
-    ack_ids: list[str] = []
-    for received in response.received_messages:
+    acknowledged = 0
+
+    def pulled_one_at_a_time() -> Iterator[Any]:
+        # A message's ack deadline runs from the moment it is pulled. Pulled in
+        # a batch, the later messages would wait out the earlier ones' runs and
+        # could reach their turn with expired ack IDs. So pull one message only
+        # when the previous one is finished, and stop at an empty pull.
+        for _ in range(max(1, max_messages)):
+            response = subscriber.pull(
+                request={"subscription": subscription_resource, "max_messages": 1},
+                timeout=30,
+            )
+            received_messages = list(response.received_messages)
+            if not received_messages:
+                return
+            yield from received_messages
+
+    def acknowledge(ack_id: str) -> None:
+        # One call per message, the moment it finishes, then its receipt: the
+        # receipt must never claim an acknowledgement Pub/Sub did not accept.
+        subscriber.acknowledge(request={"subscription": subscription_resource, "ack_ids": [ack_id]})
+
+    for received in pulled_one_at_a_time():
         message = received.message
         logger.info(
             "pubsub_handoff.received",
@@ -1649,8 +2224,9 @@ def pull_and_process(
             },
         )
         # Contract-invalid payloads are permanent and can be acknowledged after
-        # typed logging. Retryable work is explicitly nacked; the subscription's
-        # configured dead-letter policy owns exhausted delivery routing.
+        # typed logging. Retryable work is never acknowledged: defer_retry()
+        # extends its ack deadline so Pub/Sub redelivers it later, and the
+        # subscription's dead-letter policy owns exhausted delivery routing.
         try:
             parse_handoff_payload(message.data)
         except PipelineError as exc:
@@ -1671,8 +2247,10 @@ def pull_and_process(
                     "failure_evidence_path": str(evidence_path),
                 },
             )
-            ack_ids.append(received.ack_id)
+            acknowledge(received.ack_id)
+            acknowledged += 1
             continue
+        digest = payload_sha256(message.data)
         heartbeat = _AckDeadlineHeartbeat(
             subscriber=subscriber,
             subscription=subscription_resource,
@@ -1692,6 +2270,7 @@ def pull_and_process(
                     control_plane_work_dir=control_plane_work_dir,
                     control_plane_staged_inputs_path=control_plane_staged_inputs_path,
                     overwrite_control_plane_input=overwrite_control_plane_input,
+                    payload_digest=digest,
                 )
         except Exception:
             delivery_attempt = getattr(received, "delivery_attempt", None)
@@ -1741,11 +2320,63 @@ def pull_and_process(
             )
             heartbeat.defer_retry()
             continue
-        ack_ids.append(received.ack_id)
+        acknowledge(received.ack_id)
+        acknowledged += 1
+        _record_acknowledgement(
+            result,
+            subscription=subscription_resource,
+            message=message,
+            received=received,
+            payload_digest=digest,
+        )
+    return acknowledged
 
-    if ack_ids:
-        subscriber.acknowledge(request={"subscription": subscription_resource, "ack_ids": ack_ids})
-    return len(ack_ids)
+
+def _record_acknowledgement(
+    result: Mapping[str, Any],
+    *,
+    subscription: str,
+    message: Any,
+    received: Any,
+    payload_digest: str,
+) -> None:
+    """Write the capture's ack receipt; call only after acknowledge returned.
+
+    A receipt never claims an ack that Pub/Sub did not accept. The ack is
+    already final, so a receipt that cannot be written is logged, never raised.
+    A capture with no ledger (its workspace was retired) gets no receipt.
+    """
+
+    capture_root = _string(result.get("capture_root"))
+    if not capture_root:
+        return
+    message_id = _string(getattr(message, "message_id", None)) or None
+    disposition = _string(result.get("queue_disposition"))
+    if disposition not in _ACK_RECEIPT_DISPOSITIONS:
+        logger.warning(
+            "pubsub_handoff.ack_receipt_skipped_disposition_unrecognized",
+            extra={"message_id": message_id, "queue_disposition": disposition or None},
+        )
+        return
+    delivery_attempt = getattr(received, "delivery_attempt", None)
+    try:
+        skipped = _write_ack_receipt(
+            capture_root=Path(capture_root),
+            subscription=subscription,
+            message_id=message_id,
+            payload_digest=payload_digest,
+            delivery_attempt=delivery_attempt
+            if isinstance(delivery_attempt, int) and not isinstance(delivery_attempt, bool)
+            else None,
+            disposition=disposition,
+        )
+    except (OSError, ValueError):
+        logger.exception("pubsub_handoff.ack_receipt_write_failed", extra={"message_id": message_id})
+        return
+    if skipped == "capture_absent":
+        logger.warning("pubsub_handoff.ack_receipt_skipped_capture_absent", extra={"message_id": message_id})
+    elif skipped == "ledger_absent":
+        logger.warning("pubsub_handoff.ack_receipt_skipped_ledger_absent", extra={"message_id": message_id})
 
 
 def _required_string(data: Mapping[str, Any], key: str) -> str:
@@ -1944,7 +2575,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         json.dumps(
             {
                 "acknowledged": acknowledged,
-                "acknowledged_means_terminal_success_or_permanent_invalid": True,
+                "acknowledged_means_terminal_or_permanent_invalid": True,
                 "storage_root": str(storage_root),
             },
             sort_keys=True,

@@ -447,7 +447,9 @@ def test_driver_adopts_old_five_stage_chain_and_only_enqueues_new_review(prefix,
 def test_published_prefix_pin_is_recognized_by_canonical_retention(prefix, tmp_path):
     from blueprint_pipeline.task_evaluation_release_retention import _evidence_binding_protections
     value, _, _, _ = prefix
-    value["retained_release_pin"] = {"source_commit": OLD, "path": "/immutable/releases/" + OLD, "tree": "d" * 40}
+    release = tmp_path / "immutable-releases" / OLD
+    release.mkdir(parents=True)
+    value["retained_release_pin"] = {"source_commit": OLD, "path": str(release), "tree": "d" * 40}
     ref = write(tmp_path / "adoption.json", value, "adoption_digest")
     bindings = tmp_path / "release-retention-bindings"
     bindings.mkdir()
@@ -458,6 +460,48 @@ def test_published_prefix_pin_is_recognized_by_canonical_retention(prefix, tmp_p
     assert OLD in protected
     assert Path(pin["path"]).read_bytes() == before
     assert json.loads(before)["evidence"] == ref
+
+
+def _standalone_adoption(tmp_path, *, retained_path):
+    profile = write(tmp_path / "standalone-profile.json", {"schema_version": "fixture_profile"}, "profile_digest")
+    return write(tmp_path / "standalone-adoption.json", {
+        "schema_version": adoption.SCHEMA, "status": "verified_completed_prefix",
+        "original_execution_commit": OLD, "source_profile": profile,
+        "retained_release_pin": {"path": str(retained_path), "source_commit": OLD, "tree": "d" * 40}},
+        "adoption_digest")
+
+
+def test_binding_publication_waits_for_the_exclusive_release_lock(tmp_path):
+    """Deploy retirement holds this lock exclusively from collecting protection to moving trees."""
+    import threading
+    from blueprint_pipeline.task_evaluation_release_reference_lock import release_reference_lock
+    release = tmp_path / "release"
+    release.mkdir()
+    ref = _standalone_adoption(tmp_path, retained_path=release)
+    bindings = tmp_path / "bindings"
+    bindings.mkdir()
+    published = {}
+
+    def publish():
+        published["pin"] = adoption.publish_adoption_release_binding(ref["path"], binding_root=bindings)
+
+    with release_reference_lock(tmp_path, exclusive=True):
+        worker = threading.Thread(target=publish, daemon=True)
+        worker.start()
+        worker.join(timeout=0.3)
+        assert worker.is_alive() and list(bindings.iterdir()) == []
+    worker.join(timeout=10)
+    assert not worker.is_alive()
+    assert Path(published["pin"]["path"]).is_file()
+
+
+def test_binding_publication_refuses_a_release_that_is_already_gone(tmp_path):
+    ref = _standalone_adoption(tmp_path, retained_path=tmp_path / "retired-release")
+    bindings = tmp_path / "bindings"
+    bindings.mkdir()
+    with pytest.raises(ValueError, match="sam31_adoption_retained_release_missing"):
+        adoption.publish_adoption_release_binding(ref["path"], binding_root=bindings)
+    assert list(bindings.iterdir()) == []
 
 
 def test_producer_code_drift_is_tolerated_but_a_missing_file_still_refuses(tmp_path):

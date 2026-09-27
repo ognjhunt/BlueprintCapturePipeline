@@ -522,6 +522,9 @@ locals {
     environment = "production"
     managed-by  = "terraform"
   }
+
+  # Google-managed identity that moves exhausted handoffs to the dead-letter topic.
+  pubsub_service_agent = "serviceAccount:service-${data.google_project.current.number}@gcp-sa-pubsub.iam.gserviceaccount.com"
 }
 
 # =============================================================================
@@ -901,6 +904,26 @@ resource "google_pubsub_topic" "pipeline_dlq" {
   labels = local.common_labels
 }
 
+# Pub/Sub keeps a message only for the subscriptions its topic already has, so
+# without this one every dead-lettered handoff would be discarded. It keeps them
+# for seven days, never expires for inactivity, and is pulled only to replay
+# (docs/LIVE_PIPELINE_SETUP.md).
+resource "google_pubsub_subscription" "pipeline_dlq_retained" {
+  name  = "pipeline-trigger-dlq-retained"
+  topic = google_pubsub_topic.pipeline_dlq.id
+
+  # Long enough to republish a message before acknowledging it on replay.
+  ack_deadline_seconds       = 600
+  message_retention_duration = "604800s"
+  retain_acked_messages      = false
+
+  expiration_policy {
+    ttl = ""
+  }
+
+  labels = local.common_labels
+}
+
 resource "google_pubsub_subscription" "pipeline_handoff_listener" {
   name  = "blueprint-pipeline-handoff-listener"
   topic = google_pubsub_topic.capture_bridge_handoff.id
@@ -931,6 +954,26 @@ resource "google_storage_bucket_iam_member" "pipeline_handoff_listener_capture_r
   bucket = var.storage_bucket
   role   = "roles/storage.objectViewer"
   member = "serviceAccount:${google_service_account.pipeline_handoff_listener.email}"
+}
+
+# Pub/Sub dead-letters a message as its own service agent
+# (local.pubsub_service_agent). Without publisher on the dead-letter topic and
+# subscriber on the source subscription, the dead_letter_policy above never
+# moves an exhausted handoff off the listener.
+resource "google_pubsub_topic_iam_member" "pipeline_dlq_pubsub_agent_publisher" {
+  topic  = google_pubsub_topic.pipeline_dlq.name
+  role   = "roles/pubsub.publisher"
+  member = local.pubsub_service_agent
+
+  # Dead-lettering starts with this grant; the retained subscription must
+  # already exist so nothing is forwarded into a topic that keeps nothing.
+  depends_on = [google_pubsub_subscription.pipeline_dlq_retained]
+}
+
+resource "google_pubsub_subscription_iam_member" "pipeline_handoff_listener_pubsub_agent_subscriber" {
+  subscription = google_pubsub_subscription.pipeline_handoff_listener.name
+  role         = "roles/pubsub.subscriber"
+  member       = local.pubsub_service_agent
 }
 
 # =============================================================================

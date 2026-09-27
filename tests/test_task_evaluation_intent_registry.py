@@ -127,6 +127,35 @@ def test_interrupted_switch_can_resume_without_rewriting_archive(registry, monke
     assert archive.read_bytes() == _payload(A)
 
 
+def test_supersession_never_links_the_readonly_live_inode(registry, monkeypatch):
+    original_link = module.os.link
+    linked_sources = []
+
+    def safe_link(source, destination, **kwargs):
+        linked_sources.append(Path(source))
+        assert Path(source) != registry  # A root-owned live file cannot be linked by blueprint.
+        return original_link(source, destination, **kwargs)
+
+    monkeypatch.setattr(module.os, "link", safe_link)
+    old_inode = registry.stat().st_ino
+    _install(registry, B)
+    archive = registry.with_name(f"owner.superseded-{A}.json")
+    assert linked_sources
+    assert archive.read_bytes() == _payload(A)
+    assert archive.stat().st_ino != old_inode
+    assert archive.stat().st_mode & 0o777 == 0o440
+    assert not list(registry.parent.glob(".intent-archive-*"))
+
+
+def test_archive_publish_failure_keeps_live_intent_and_cleans_stage(registry, monkeypatch):
+    monkeypatch.setattr(module.os, "link", lambda *_args, **_kwargs: (_ for _ in ()).throw(PermissionError()))
+    with pytest.raises(PermissionError):
+        _install(registry, B)
+    assert registry.read_bytes() == _payload(A)
+    assert not registry.with_name(f"owner.superseded-{A}.json").exists()
+    assert not list(registry.parent.glob(".intent-archive-*"))
+
+
 @pytest.mark.parametrize("state", ["active", "activating", "reloading", "failed", "unknown"])
 def test_supersession_refuses_active_or_unproven_worker_state(monkeypatch, state):
     monkeypatch.setattr(module, "_verified_checkout_head", lambda: B)
@@ -149,6 +178,21 @@ def test_supersession_checks_actual_release_and_every_trigger(monkeypatch):
     assert [call[2].rsplit(".", 1)[-1] for call in calls] == ["service", "path", "timer"]
 
 
+def test_supersession_allows_only_the_running_progression_worker(monkeypatch):
+    monkeypatch.setattr(module, "_verified_checkout_head", lambda: B)
+    pid = str(module.os.getpid())
+    def unit_state(command, **kwargs):
+        suffix = command[2].rsplit(".", 1)[-1]
+        state = (f"ActiveState=activating\nMainPID={pid}\n" if suffix == "service"
+                 else "ActiveState=active\nMainPID=0\n")
+        return SimpleNamespace(stdout="LoadState=loaded\n" + state)
+    monkeypatch.setattr(module.subprocess, "run", unit_state)
+    module._supersession_authority(B)
+    monkeypatch.setattr(module.os, "getpid", lambda: int(pid) + 1)
+    with pytest.raises(module.IntentRegistryError, match="quiescence_unproven"):
+        module._supersession_authority(B)
+
+
 def test_symlink_lock_cannot_redirect_serialization(registry):
     lock = registry.parent / ".owner.json.registry.lock"
     lock.unlink()
@@ -156,3 +200,23 @@ def test_symlink_lock_cannot_redirect_serialization(registry):
     with pytest.raises(OSError):
         _install(registry, B)
     assert registry.read_bytes() == _payload(A)
+
+
+def test_new_lock_is_group_readable_under_restrictive_umask(tmp_path):
+    previous = module.os.umask(0o077)
+    try:
+        _install(tmp_path / "owner.json", A)
+    finally:
+        module.os.umask(previous)
+    lock = tmp_path / ".owner.json.registry.lock"
+    assert lock.stat().st_mode & 0o777 == 0o440
+
+
+def test_reused_group_readable_lock_keeps_its_owner(registry, monkeypatch):
+    lock = registry.parent / ".owner.json.registry.lock"
+    monkeypatch.setattr(module.grp, "getgrnam", lambda name:
+        SimpleNamespace(gr_gid=lock.stat().st_gid))
+    changes = []
+    monkeypatch.setattr(module.os, "fchown", lambda *args: changes.append(args))
+    _install(registry, A, service_group="blueprint")
+    assert len(changes) == 0

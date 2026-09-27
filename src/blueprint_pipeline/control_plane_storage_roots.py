@@ -102,6 +102,7 @@ STORAGE_ROOTS: tuple[StorageRoot, ...] = (
     StorageRoot(f"{_CONTROL_PLANE}/disk-reservations", "ledger", "blueprint", "disk admission ledger"),
     StorageRoot(f"{_CONTROL_PLANE}/storage-pins", "ledger", "blueprint", "derived-directory pins"),
     StorageRoot(f"{_CONTROL_PLANE}/provider-locks", "ledger", "blueprint", "paid launch lock slots"),
+    StorageRoot(f"{_CONTROL_PLANE}/release-leases", "ledger", "root", "release retention leases (sidecars for immutable bindings)"),
     # --- queues and scratch
     StorageRoot(f"{_CONTROL_PLANE}/task-evaluation-launches", "work", "blueprint", "launch queue"),
     StorageRoot(f"{_CONTROL_PLANE}/native-g1-team-campaigns", "work", "blueprint", "owner-scoped G1 campaign intent queue"),
@@ -148,6 +149,7 @@ STORAGE_ROOTS: tuple[StorageRoot, ...] = (
     StorageRoot(f"{_CONTROL_PLANE}/release-retention", "evidence_hot", "root", "release retirement plans and receipts"),
     StorageRoot(f"{_CONTROL_PLANE}/capacity", "evidence_hot", "root", "capacity controller reports"),
     StorageRoot(f"{_CONTROL_PLANE}/preflight", "evidence_hot", "root", "chain preflight reports"),
+    StorageRoot(f"{_CONTROL_PLANE}/cleanup-receipts", "evidence_hot", "root", "sealed break-glass notes for host changes made outside the door"),
     StorageRoot(f"{_CONTROL_PLANE}/launch-materialization", "evidence_hot", "blueprint", "spend reconciliations and materialized launch inputs"),
     StorageRoot(f"{_CONTROL_PLANE}/episode-interpretation-backfills", "evidence_cold", "root", "episode interpretation backfill runs"),
     StorageRoot(f"{_CONTROL_PLANE}/policy-canary-preprovider-audits", "evidence_cold", "root", "policy canary pre-provider audits"),

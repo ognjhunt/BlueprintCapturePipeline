@@ -1032,7 +1032,6 @@ def _destination_predecessor(
                 "configured_controls_worker_destination_profile_input_invalid"
             )
         return path
-
     references = {
         str(row.get("contract_path") or ""): Path(
             str(row.get("materialized_path") or "")
@@ -1189,7 +1188,6 @@ def advance_configured_controls_plan(
     webapp_endpoint: str = "https://tryblueprint.io/api/internal/task-evaluation-launch-submissions",
 ) -> dict[str, Any]:
     """Advance at most one transition for one immutable progression plan."""
-
     if release_window_publisher_factory is None:
         release_window_publisher_factory = (
             configured_controls_release_window_publisher
