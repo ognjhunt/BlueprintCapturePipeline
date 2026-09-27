@@ -615,7 +615,9 @@ so each manifest (and its receipt) also records `walked_file_count` and
   `activation_result_invalid`, `activation_result_not_prepared`,
   `activation_result_not_stale`). A pin a proof could not read is
   `proof_error` with its `error_type`. The report also counts candidates by
-  proof and released pins by kind, dependencies included.
+  proof and released pins by kind, dependencies included. `candidates` and
+  `kept` list at most 200 rows each, with `omitted_candidates_count` and
+  `omitted_kept_count`; every count covers every pin.
 - Result-artifact offload: a retained run says why in `retained_reason` (`hot`
   or its protection reason). A run whose offload raised records `error_type`,
   `errno` (for an `OSError`) and `stage` (`registry`, `protection`, `publish` or

@@ -575,6 +575,27 @@ def test_sealed_registry_run_finds_a_configured_controls_launch_run(tmp_path) ->
     assert _states(args)[("activation", "run-y-controls")] == "released"
 
 
+def test_the_pin_report_caps_its_rows_and_keeps_its_counts(tmp_path, monkeypatch) -> None:
+    """About 142 live pins in production: each row list stops at 200, and every count still covers every pin."""
+
+    assert terminal_pins._MAX_ROWS == 200
+    monkeypatch.setattr(terminal_pins, "_MAX_ROWS", 2)
+    args = _args(tmp_path)
+    for index in range(3):
+        _pin(args, "preparation", f"prep-stale-{index}", age=LAPSE + DAY)
+    for index in range(4):
+        _pin(args, "preparation", f"prep-young-{index}", age=3600)
+
+    result = reconcile_terminal_cache_pins(**args, apply=True, extended_proofs_enabled=True)
+
+    assert (len(result["candidates"]), result["omitted_candidates_count"], result["candidate_count"]) == (2, 1, 3)
+    assert (len(result["kept"]), result["omitted_kept_count"]) == (2, 2)
+    assert result["retained_counts"] == {"pin_young": 4}
+    assert result["candidate_count_by_proof"] == {"unconsumed_stale_pin": 3}
+    # The cap bounds the report, never the work: every stale pin was released.
+    assert result["released_count_by_kind"] == {"preparation": 3}
+
+
 def test_prepared_statuses_are_exactly_those_the_activation_worker_writes() -> None:
     """The proof reads the worker's result, so its schema and prepared statuses must stay the worker's own."""
 

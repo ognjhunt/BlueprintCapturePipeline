@@ -63,6 +63,8 @@ EXTENDED_PIN_PROOFS_INVALID = "extended_pin_proofs_setting_invalid"
 # bytes, so any of these is acceptable; hot evidence and state never are.
 _PIN_PATH_CLASSES = ("cache", "work", "evidence_cold")
 MINIMUM_PIN_AGE_SECONDS = 6 * 3600
+#: Report rows per list; production holds about 142 live pins. Counts always cover every pin.
+_MAX_ROWS = 200
 #: A shared mutation window is valid for at most a week and launch re-validates
 #: it, so a day past that nothing it released can still be consumed.
 MAXIMUM_MUTATION_WINDOW_SECONDS = 604_800
@@ -495,9 +497,11 @@ def reconcile_terminal_cache_pins(*, pins_root, queue_roots, evidence_roots, now
     by_kind = Counter(row["kind"] for receipt in released for row in receipt["released"])
     return {"schema_version": "control_plane_terminal_cache_pin_reconciliation.v1",
         "status": "applied" if apply else "dry_run", "enabled": bool(extended_proofs_enabled),
-        "candidates": candidates, "candidate_count": len(candidates),
+        "candidates": candidates[:_MAX_ROWS], "omitted_candidates_count": max(0, len(candidates) - _MAX_ROWS),
+        "candidate_count": len(candidates),
         "candidate_count_by_proof": dict(sorted(Counter(row["proof"]["kind"] for row in candidates).items())),
         "released": released, "released_count": sum(by_kind.values()),
         "released_count_by_kind": dict(sorted(by_kind.items())),
-        "kept": kept, "retained_counts": dict(sorted(Counter(row["reason"] for row in kept).items())),
+        "kept": kept[:_MAX_ROWS], "omitted_kept_count": max(0, len(kept) - _MAX_ROWS),
+        "retained_counts": dict(sorted(Counter(row["reason"] for row in kept).items())),
         "cache_or_evidence_bytes_removed": False}
