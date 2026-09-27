@@ -113,3 +113,13 @@ def test_capacity_summary_defaults_to_the_controller_report_and_must_be_absolute
     path.write_text(json.dumps({"capacity_summary": "capacity/summary.json"}), encoding="utf-8")
     with pytest.raises(DoorConfigError, match="door_config_path_not_absolute:capacity_summary"):
         load_config(path)
+
+
+def test_source_clone_override_stays_directly_under_trusted_config_tools_root(tmp_path: Path) -> None:
+    path = tmp_path / "door.json"
+    path.write_text(json.dumps({"source_clone": "/mnt/blueprint-work/scratch"}), encoding="utf-8")
+    with pytest.raises(DoorConfigError, match="door_config_source_clone_outside_trusted_root"):
+        load_config(path)
+    path.write_text(json.dumps({"source_clone": "/opt/blueprint/control-plane-config-tools/alternate"}),
+                    encoding="utf-8")
+    assert load_config(path).source_clone == "/opt/blueprint/control-plane-config-tools/alternate"

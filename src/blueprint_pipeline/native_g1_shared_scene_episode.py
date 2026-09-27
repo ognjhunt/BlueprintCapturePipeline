@@ -147,16 +147,38 @@ def run_g1_shared_scene_episode(
         )
         if not isinstance(chunk, list) or not chunk:
             raise ValueError("g1_shared_scene_policy_chunk_invalid")
-        queries.append(
-            {
-                "query_index": query_index,
-                "step_index": len(steps),
-                "policy_input_frame": policy_frame,
-                "sensor_freshness": inputs["sensor_freshness"],
-                "observation_state": inputs["observation_state"],
-                "returned_action_count": len(chunk),
-            }
+        query = {
+            "query_index": query_index,
+            "step_index": len(steps),
+            "policy_input_frame": policy_frame,
+            "sensor_freshness": inputs["sensor_freshness"],
+            "observation_state": inputs["observation_state"],
+            "returned_action_count": len(chunk),
+        }
+        # Seal the returned actions before invoking SONIC. A controller failure
+        # must not erase the only evidence that the policy answered a query.
+        checkpoint = {
+            "schema_version": "native_g1_policy_query_checkpoint.v1",
+            "status": "policy_response_retained",
+            "claim_ceiling": "development_only_unscored",
+            "candidate_id": candidate_id,
+            "scene_plan_digest": plan_digest,
+            "team_policy_profile_digest": team_policy_profile_digest,
+            "query": dict(query),
+            "action_chunk": chunk,
+        }
+        checkpoint["checkpoint_digest"] = canonical_digest(
+            checkpoint, digest_field="checkpoint_digest"
         )
+        checkpoint_dir = output_dir / "query_checkpoints"
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        checkpoint_path = checkpoint_dir / f"query_{query_index:04d}.v1.json"
+        with checkpoint_path.open("x", encoding="utf-8") as stream:
+            json.dump(checkpoint, stream, indent=2, sort_keys=True, allow_nan=False)
+            stream.write("\n")
+        query["checkpoint_digest"] = checkpoint["checkpoint_digest"]
+        query["checkpoint_relative_path"] = checkpoint_path.relative_to(output_dir).as_posix()
+        queries.append(query)
         for action_index, action in enumerate(chunk):
             if len(steps) >= max_steps:
                 break

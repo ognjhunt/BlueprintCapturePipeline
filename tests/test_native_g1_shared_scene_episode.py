@@ -6,6 +6,7 @@ import pytest
 from pathlib import Path
 
 from blueprint_pipeline.core.security_controls import BoundedHttpResponse
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.native_g1_shared_scene_episode import (
     run_g1_built_scene_policy_episode,
     run_g1_shared_scene_episode,
@@ -148,6 +149,40 @@ def test_candidates_use_same_scene_episode_and_retain_each_frame(
         (tmp_path / row["relative_path"]).is_file()
         for row in trace["visual_evidence"]["videos"].values()
     )
+
+
+def test_controller_failure_keeps_the_actual_policy_response(tmp_path: Path) -> None:
+    scene, policy = _Scene(), _Policy()
+
+    class _FailingBridge:
+        def targets_for_action(self, action: list) -> dict:
+            raise ValueError("g1_sonic_controller_target_out_of_limits")
+
+    with pytest.raises(ValueError, match="target_out_of_limits"):
+        run_g1_shared_scene_episode(
+            environment=scene,
+            policy_client=policy,
+            sonic_bridge=_FailingBridge(),
+            candidate_id="humanoidarena_dp_g1_dex3_sonic",
+            task_prompt="pick the box",
+            max_steps=1,
+            output_dir=tmp_path,
+            read_task_sample=lambda: {"step_index": scene.step},
+        )
+    assert policy.queries == 1
+    assert scene.step == 0
+    checkpoint = json.loads(
+        (tmp_path / "query_checkpoints/query_0000.v1.json").read_text()
+    )
+    assert checkpoint["status"] == "policy_response_retained"
+    assert checkpoint["claim_ceiling"] == "development_only_unscored"
+    assert checkpoint["query"]["returned_action_count"] == 2
+    assert checkpoint["action_chunk"] == [[0.0] * 40, [0.0] * 40]
+    assert checkpoint["checkpoint_digest"] == canonical_digest(
+        checkpoint, digest_field="checkpoint_digest"
+    )
+    frame = checkpoint["query"]["policy_input_frame"]
+    assert (tmp_path / frame["relative_path"]).is_file()
 
 
 def test_unknown_candidate_never_queries_policy(tmp_path: Path) -> None:

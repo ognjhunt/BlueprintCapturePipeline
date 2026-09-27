@@ -5,6 +5,7 @@ import pytest
 import torch
 
 from blueprint_pipeline.gear_sonic_joint_order_contract import PROTOCOL_V4_FULL_JOINT_ORDER
+from blueprint_pipeline.native_g1_humanoidarena_interface import CANONICAL_BODY_JOINT_NAMES_29
 from blueprint_pipeline import native_g1_official_sonic_target_bridge as bridge_module
 
 
@@ -246,8 +247,16 @@ def test_out_of_limit_target_is_rejected_not_clipped(tmp_path, monkeypatch):
     provider = _provider(tmp_path)
     provider.body_target = 2.0
     adapter = _adapter(tmp_path, monkeypatch, provider)
-    with pytest.raises(ValueError, match="target_out_of_limits"):
+    with pytest.raises(bridge_module.G1SonicTargetLimitError, match="target_out_of_limits") as raised:
         adapter.targets_for_action(_action())
+    assert raised.value.violations[0] == {
+        "joint_name": CANONICAL_BODY_JOINT_NAMES_29[0],
+        "target_rad": 2.0,
+        "lower_rad": -1.0,
+        "upper_rad": 1.0,
+        "raw_decoder_action": 2.0,
+    }
+    assert len(raised.value.violations) == 29
 
 
 def test_unpinned_source_is_rejected(tmp_path):
