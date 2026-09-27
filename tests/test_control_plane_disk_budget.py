@@ -161,9 +161,8 @@ def test_headroom_projects_refused_roles_without_paths(tmp_path) -> None:
         now=lambda: 100.0,
         pid_alive=lambda _pid: True,
     )
-    assert report["status"] == "exhausted"
+    assert report["status"] == "low"
     assert set(report["refused_roles"]) == {
-        "control_plane_deploy",
         "launch_preparation",
         "episode_compilation",
         "launch_activation",
@@ -175,6 +174,7 @@ def test_headroom_projects_refused_roles_without_paths(tmp_path) -> None:
         "semantic_pretraining",
         "cpu_prestage",
     }
+    assert next(row for row in report["targets"] if row["role"] == "control_plane_deploy")["refused"] is False
     assert str(tmp_path) not in json.dumps(report)
 
 
@@ -233,6 +233,54 @@ def test_critical_floor_override(tmp_path, monkeypatch) -> None:
     )
     assert reservation.floor_bytes == 512 * 1024**2
     reservation.release()
+
+
+def test_headroom_is_computed_on_each_role_target_device(tmp_path) -> None:
+    system = tmp_path / "system"
+    scratch = tmp_path / "scratch"
+    system.mkdir()
+    scratch.mkdir()
+    ledger = tmp_path / "ledger"
+    ledger.mkdir()
+    (ledger / "scratch-running.json").write_text(json.dumps({
+        "device": 202, "pid": 17, "expected_bytes": GIB,
+        "expires_at_epoch": 1000,
+    }), encoding="utf-8")
+
+    def device_of(path):
+        return 202 if Path(path) == scratch else 101
+
+    def usage(path):
+        return (Usage(100 * GIB, 94 * GIB, 6 * GIB) if Path(path) == scratch
+                else Usage(100 * GIB, 70 * GIB, 30 * GIB))
+
+    report = disk_headroom(
+        target_root=system, role_targets={"launch_activation": scratch},
+        reservation_root=ledger, disk_usage=usage, device_of=device_of,
+        now=lambda: 100.0, pid_alive=lambda _pid: True,
+    )
+
+    targets = {row["role"]: row for row in report["targets"]}
+    assert report["free_bytes"] == 30 * GIB
+    assert report["reserved_bytes"] == 0
+    assert targets["launch_activation"]["device"] == 202
+    assert targets["launch_activation"]["reserved_bytes"] == GIB
+    assert targets["launch_activation"]["refused"] is True
+    assert "launch_activation" in report["refused_roles"]
+    assert targets["control_plane_deploy"]["device"] == 101
+    assert targets["control_plane_deploy"]["refused"] is False
+
+
+def test_role_targets_parse_and_refuse_garbage() -> None:
+    assert disk_budget.parse_role_targets(None) == {}
+    assert disk_budget.parse_role_targets("launch_activation=/mnt/scratch,control_plane_deploy=/var/lib/blueprint") == {
+        "launch_activation": Path("/mnt/scratch"),
+        "control_plane_deploy": Path("/var/lib/blueprint"),
+    }
+    for raw in ("unknown=/mnt/scratch", "launch_activation=relative", "launch_activation=",
+                "launch_activation=/mnt/a,launch_activation=/mnt/b", "launch_activation=/mnt/a,"):
+        with pytest.raises(ControlPlaneDiskBudgetError, match="control_plane_disk_budget_role_targets_invalid"):
+            disk_budget.parse_role_targets(raw)
 
 
 def test_invalid_environment_override_fails_closed(tmp_path, monkeypatch) -> None:
