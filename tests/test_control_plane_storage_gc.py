@@ -385,6 +385,13 @@ def test_run_cli_reads_roots_from_the_unit_environment(tmp_path, monkeypatch, ca
     assert written["schema_version"] == "control_plane_storage_gc_run.v1"
     assert written["status"] == "dry_run"
     assert json.loads(capsys.readouterr().out)["report_digest"] == written["report_digest"]
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "deploy" / "operator-door"))
+    from operator_door.config import DoorConfig
+    from operator_door.fsview import FileView
+
+    door = FileView(DoorConfig(read_roots=(str(tmp_path),), hidden_paths=()))
+    contents, _ = door.read_range(str(report))
+    assert json.loads(contents)["report_digest"] == written["report_digest"]
     monkeypatch.delenv("BLUEPRINT_CONTROL_PLANE_STORAGE_PINS_ROOT")
     with pytest.raises(ControlPlaneStorageGCError, match="pins_root_missing"):
         gc_main(["run"])
@@ -392,6 +399,18 @@ def test_run_cli_reads_roots_from_the_unit_environment(tmp_path, monkeypatch, ca
 
 RUNNING_COMMIT = "a" * 40
 STALE_COMMIT = "b" * 40
+
+
+def test_latest_gc_report_is_readable_by_the_operator_door_after_each_tick(tmp_path) -> None:
+    report_dir = tmp_path / "storage-gc"
+    report_dir.mkdir(mode=0o700)
+    path = report_dir / "latest.json"
+
+    for status in ("dry_run", "applied"):
+        gc_module._write_report(path, {"status": status})
+        assert report_dir.stat().st_mode & 0o777 == 0o755
+        assert path.stat().st_mode & 0o777 == 0o644
+        assert json.loads(path.read_text(encoding="utf-8")) == {"status": status}
 
 
 def _queue_row(root: Path, state: str, name: str, *, commit: str | None) -> Path:

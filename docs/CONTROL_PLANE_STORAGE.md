@@ -325,8 +325,13 @@ are reported separately and never invalidate proven resource closure.
 
 `blueprint-control-plane-storage-gc.timer` runs
 `python -m blueprint_pipeline.control_plane_storage_gc run --apply --ack reclaim-control-plane-storage`
-every six hours as the `blueprint` service account and writes
-`/var/lib/blueprint/pipeline-control-plane/storage-gc/latest.json`. One tick:
+every six hours as root and writes
+`/var/lib/blueprint/pipeline-control-plane/storage-gc/latest.json`. The report
+directory is traversable (0755) and the atomic report is readable (0644), so the
+owner can inspect it with `python3 scripts/operator_door.py cat
+/var/lib/blueprint/pipeline-control-plane/storage-gc/latest.json` before enabling
+scene-workspace retirement. The door still scans report content for secrets.
+One tick:
 
 1. **Derived directories** under the configured `cache` roots are retired when
    no live pin names them, no pending or processing queue message mentions

@@ -1498,11 +1498,19 @@ def _env_int(name: str, default: int | None) -> int | None:
 
 
 def _write_report(path: Path, report: Mapping[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
+    # The door runs without root privileges. Repair directories created by older
+    # ticks under the service's 0077 umask before publishing the secret-free report.
+    parent_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fchmod(parent_fd, 0o755)
+    finally:
+        os.close(parent_fd)
     descriptor, temporary = tempfile.mkstemp(prefix=".gc-report-", dir=path.parent)
     with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
         json.dump(report, stream, indent=2, sort_keys=True)
         stream.write("\n")
+    os.chmod(temporary, 0o644)
     os.replace(temporary, path)
 
 
