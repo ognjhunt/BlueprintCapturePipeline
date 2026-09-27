@@ -1,19 +1,26 @@
 """Reclaim disposable binary copies after an offline replay has completed.
 
-Reports, logs, source code, readonly files and shared inodes remain untouched.
-With ``reclaim_store_copies`` (storage GC's opt-in; the standalone unit never
-passes it) one more kind of copy is recognised, by its place and name instead
-of a suffix: a parent replay's copy of a content-store blob, at
+By default, reports, logs, source code, readonly files and shared inodes remain
+untouched. With ``reclaim_store_copies`` (storage GC's opt-in; the standalone
+unit never passes it) one more kind of copy is recognised, by its place and name
+instead of a suffix: a parent replay's copy of a content-store blob, at
 ``prepared-references/content-addressed/sha256/<digest>``, together with every
 other name it has in the replay's ``prepared-references`` (the worker's
 materialized references are hard links to it). It keeps the store's read-only
 mode and has no suffix, so the whole inode qualifies when all of its links are
 there and its bytes match the digest it is named by; a link anywhere else
 keeps it. Under the same opt-in any finished parent replay counts, whatever its
-status. Without it the rules are the ones this module always had.
-Apply rechecks, hashes and unlinks every name through directory descriptors
-held from the replay child down, never through a path, and skips an item whose
-directory moved or became a link since it was opened.
+status. ``reclaim_scratch_inputs`` (storage GC's alone as well) goes further
+for a finished parent replay, which made ``prepared-references`` in its own
+temporary root: every regular file there whose links are all inside it and
+that is not newer than the report is scratch, digest-named or not, and goes
+with every name. It subsumes the store-copy rule for that replay, so no inode
+is counted twice. Without the opt-ins the rules are the ones this module
+always had.
+Apply rechecks and unlinks every name, and hashes what a rule's digest rests
+on, through directory descriptors held from the replay child down, never
+through a path, and skips an item whose directory moved or became a link since
+it was opened.
 This module is also a standalone maintenance entrypoint; it never allocates a
 provider or changes the scientific release used by a live run.
 """
@@ -79,15 +86,9 @@ def _no_linked_parent(path, child):
     return not any(p.is_symlink() for p in path.parents if p != child.parent)
 
 
-def _store_copies(child, report_mtime_ns):
-    """Candidate copies of store blobs in the child's scratch inputs, each with every name it has there.
-
-    Files under ``prepared-references`` are grouped by inode, from names and metadata
-    alone. A group is a candidate only when all of its links are in that subtree, one of
-    its names is a store name, and it is not newer than the report; ``_verified`` then
-    requires its bytes to hash to that name. Also returns every inode that has a store
-    name, so the single-file rules never plan one of its names.
-    """
+def _inode_groups(child):
+    """Every regular file under the child's ``prepared-references`` with no linked parent, grouped by
+    inode, from names and metadata alone: ``{(dev, ino): (lstat, [names relative to the child])}``."""
     subtree = child / _SCRATCH_INPUTS
     groups = {}
     if subtree.is_dir() and not subtree.is_symlink():
@@ -97,8 +98,19 @@ def _store_copies(child, report_mtime_ns):
                 info = path.lstat()
                 if stat.S_ISREG(info.st_mode) and _no_linked_parent(path, child):
                     groups.setdefault((info.st_dev, info.st_ino), (info, []))[1].append(path.relative_to(child))
+    return groups
+
+
+def _store_copies(child, report_mtime_ns):
+    """Candidate copies of store blobs in the child's scratch inputs, each with every name it has there.
+
+    A group of ``_inode_groups`` is a candidate only when all of its links are in that
+    subtree, one of its names is a store name, and it is not newer than the report;
+    ``_verified`` then requires its bytes to hash to that name. Also returns every inode
+    that has a store name, so the single-file rules never plan one of its names.
+    """
     copies, store_inodes = [], set()
-    for key, (info, names) in groups.items():
+    for key, (info, names) in _inode_groups(child).items():
         store_names = [name for name in names if scratch_store_copy(name)]
         if not store_names:
             continue
@@ -113,6 +125,32 @@ def _store_copies(child, report_mtime_ns):
             "mtime_ns": info.st_mtime_ns,
         })
     return sorted(copies, key=lambda copy: copy["relative_paths"]), store_inodes
+
+
+def _scratch_inputs(child, report_mtime_ns):
+    """Every group of names a finished parent replay left in its scratch inputs, and every inode there.
+
+    ``replay_parent`` made ``prepared-references`` inside its own temporary root and now
+    releases it when it returns, so what an older replay left there is scratch whatever its
+    name or bytes: a group of ``_inode_groups`` is a candidate when all of its links are in
+    that subtree and it is not newer than the report. No digest is needed and none is read.
+    A link anywhere else keeps the inode. Every inode seen there is returned too, so the
+    single-file rules never plan one of its names.
+    """
+    groups = _inode_groups(child)
+    inputs = [
+        {
+            "relative_paths": sorted(str(name) for name in names),
+            "inode": info.st_ino,
+            "dev": info.st_dev,
+            "nlink": info.st_nlink,
+            "size_bytes": info.st_size,
+            "mtime_ns": info.st_mtime_ns,
+        }
+        for info, names in groups.values()
+        if len(names) == info.st_nlink and info.st_mtime_ns <= report_mtime_ns
+    ]
+    return sorted(inputs, key=lambda group: group["relative_paths"]), set(groups)
 
 
 def _verified(child, files, copies):
@@ -284,31 +322,46 @@ def _remove_file(held, item):
 
 
 def _remove_store_copy(held, copy, names):
-    """Recheck every name of a planned store copy, hash it once, then unlink every name.
-
-    Each name must still be the planned inode, those names all of its links, and its bytes
-    the store digest one of them carries. One failed check keeps every name, and the store
-    name goes last, so a removal cut short leaves a group the next plan still recognises.
-    """
-    if len(names) != copy["nlink"] or not any(
-        scratch_store_copy(name) and copy["sha256"] == "sha256:" + name.name for name in names
-    ):
+    """Recheck every name of a planned store copy, hash it once, then unlink every name: its
+    bytes must still be the store digest one of its names carries."""
+    if not any(scratch_store_copy(name) and copy["sha256"] == "sha256:" + name.name for name in names):
         return "copy_changed"
+    return _remove_group(held, copy, names, changed="copy_changed", sha256=copy["sha256"])
+
+
+def _remove_scratch_input(held, group, names):
+    """Recheck and unlink every name of a planned scratch input. Its bytes are never read:
+    nothing that makes it scratch depends on them."""
+    return _remove_group(held, group, names, changed="scratch_input_changed")
+
+
+def _remove_group(held, group, names, *, changed, sha256=None):
+    """Recheck every name of a planned inode group through held descriptors, then unlink every name.
+
+    Each name must still be the planned inode (on the planned device, when the plan names
+    one), those names all of its links, its size and mtime unchanged and, with ``sha256``,
+    its bytes that digest; otherwise the group is a ``changed`` skip. One failed check keeps
+    every name, and a store name goes last, so a removal cut short leaves a group the next
+    plan still recognises.
+    """
+    if len(names) != group["nlink"]:
+        return changed
     try:
         entries = []
         for name in names:
             directory = held.directory(name.parts[:-1])
             entries.append((name, directory, _leaf(directory, name.name)))
         first_name, first_directory, first = entries[0]
+        planned = (group.get("dev", first.st_dev), group["inode"])
         if any(
             not stat.S_ISREG(info.st_mode)
-            or (info.st_dev, info.st_ino) != (first.st_dev, copy["inode"])
-            or info.st_nlink != copy["nlink"]
-            or info.st_size != copy["size_bytes"]
-            or info.st_mtime_ns != copy["mtime_ns"]
+            or (info.st_dev, info.st_ino) != planned
+            or info.st_nlink != group["nlink"]
+            or info.st_size != group["size_bytes"]
+            or info.st_mtime_ns != group["mtime_ns"]
             for _name, _directory, info in entries
-        ) or _held_sha(first_directory, first_name.name, first) != copy["sha256"]:
-            return "copy_changed"
+        ) or (sha256 is not None and _held_sha(first_directory, first_name.name, first) != sha256):
+            return changed
         if not all(
             held.in_place(name.parts[:-1]) and _same_leaf(directory, name.name, info)
             for name, directory, info in entries
@@ -331,6 +384,11 @@ def completed_report(root, *, any_parent_status=False):
     fetch, so with ``any_parent_status`` its report counts whatever its status or
     ``nothing_fetched``; without it (the standalone unit) only ``nothing_fetched`` does.
     """
+    return _finished_report(root, any_parent_status=any_parent_status)[0]
+
+
+def _finished_report(root, *, any_parent_status):
+    """``completed_report`` and whether a parent replay wrote it: ``(path, parent)`` or ``(None, False)``."""
     for name in ("stage_replay_report.v1.json", "replay_report.json", "replay.json", "report.json"):
         path = root / name
         if not path.is_file() or path.is_symlink() or path.stat().st_size > 4 * 1024**2:
@@ -369,8 +427,8 @@ def completed_report(root, *, any_parent_status=False):
             and value.get("appearance_qualified") is False
         )
         if parent or legacy:
-            return path
-    return None
+            return path, parent
+    return None, False
 
 
 PROCESS_REFERENCED = "referenced"
@@ -434,57 +492,72 @@ def active_reference(root, *, process_root=Path("/proc"), ignored_process_ids=()
     return process_reference(root, process_root=process_root, ignored_process_ids=ignored_process_ids) is not None
 
 
-def _scan(replay_root, minimum_closed_seconds, now, process_root, *, verify, reclaim_store_copies, single_files):
+def _scan(
+    replay_root, minimum_closed_seconds, now, process_root, *, verify, reclaim_store_copies, single_files,
+    reclaim_scratch_inputs,
+):
     root = Path(replay_root)
     if not root.is_absolute() or any(p.is_symlink() for p in (root, *root.parents)):
         raise ValueError("replay_cache_root_unsafe")
     if type(minimum_closed_seconds) is not int or minimum_closed_seconds < 0:
         raise ValueError("replay_cache_age_invalid")
     clock = time.time() if now is None else now
+    # Either opt-in counts any finished parent replay, whatever its status.
+    finished = reclaim_store_copies or reclaim_scratch_inputs
     rows, kept = [], []
     for child in sorted(root.iterdir()):
         if not child.is_dir() or child.is_symlink():
             continue
-        report = completed_report(child, any_parent_status=reclaim_store_copies)
+        report, parent = _finished_report(child, any_parent_status=finished)
         if report is None or clock - report.stat().st_mtime < minimum_closed_seconds:
             continue
-        # Without the opt-in, the order this module always had: a live reader keeps the root
+        # Without the opt-ins, the order this module always had: a live reader keeps the root
         # before anything in it is looked at.
-        if verify and not reclaim_store_copies and active_reference(child, process_root=process_root):
+        if verify and not finished and active_reference(child, process_root=process_root):
             kept.append({"root": str(child), "reason": "active_reference"})
             continue
         report_mtime_ns = report.stat().st_mtime_ns
-        copies, store_inodes = _store_copies(child, report_mtime_ns) if reclaim_store_copies else ([], set())
-        files = _single_files(child, report_mtime_ns, store_inodes) if single_files else []
-        if not files and not copies:
+        copies, inputs, seen = [], [], set()
+        if reclaim_scratch_inputs and parent:
+            # The whole subtree is scratch here, its store copies included: each inode is planned once.
+            inputs, seen = _scratch_inputs(child, report_mtime_ns)
+        elif reclaim_store_copies:
+            copies, seen = _store_copies(child, report_mtime_ns)
+        files = _single_files(child, report_mtime_ns, seen) if single_files else []
+        if not files and not copies and not inputs:
             continue
         if not verify:
-            rows.append({"files": files, "store_copies": copies})
+            rows.append({"files": files, "store_copies": copies, "scratch_inputs": inputs})
             continue
-        # With it, only a root that has something to reclaim is worth a sweep of the process table.
-        if reclaim_store_copies and active_reference(child, process_root=process_root):
+        # With them, only a root that has something to reclaim is worth a sweep of the process table.
+        if finished and active_reference(child, process_root=process_root):
             kept.append({"root": str(child), "reason": "active_reference"})
             continue
         files, copies = _verified(child, files, copies)
-        if files or copies:
-            # Without store copies a row is exactly the one this module always wrote.
+        if files or copies or inputs:
+            # Without the opt-ins a row is exactly the one this module always wrote.
             row = {"root": str(child), "report_path": str(report), "report_sha256": file_sha(report), "files": files}
             if reclaim_store_copies:
                 row["store_copies"] = copies
+            if reclaim_scratch_inputs:
+                row["scratch_inputs"] = inputs
             rows.append(row)
     candidate_bytes = sum(
-        entry["size_bytes"] for r in rows for entry in (*r["files"], *r.get("store_copies", ()))
+        entry["size_bytes"]
+        for r in rows
+        for entry in (*r["files"], *r.get("store_copies", ()), *r.get("scratch_inputs", ()))
     )
     return root, clock, rows, kept, candidate_bytes
 
 
 def plan_replay_cache_retention(
     *, replay_root, minimum_closed_seconds=60, now=None, process_root=Path("/proc"),
-    reclaim_store_copies=False, single_files=True,
+    reclaim_store_copies=False, single_files=True, reclaim_scratch_inputs=False,
 ):
     root, clock, rows, kept, candidate_bytes = _scan(
         replay_root, minimum_closed_seconds, now, process_root, verify=True,
         reclaim_store_copies=reclaim_store_copies, single_files=single_files,
+        reclaim_scratch_inputs=reclaim_scratch_inputs,
     )
     plan = {
         "schema_version": SCHEMA,
@@ -501,7 +574,8 @@ def plan_replay_cache_retention(
 
 
 def estimate_replay_cache_retention(
-    *, replay_root, minimum_closed_seconds=60, now=None, reclaim_store_copies=False, single_files=True
+    *, replay_root, minimum_closed_seconds=60, now=None, reclaim_store_copies=False, single_files=True,
+    reclaim_scratch_inputs=False,
 ):
     """What a plan could reclaim, from names, links, sizes and ages.
 
@@ -513,6 +587,7 @@ def estimate_replay_cache_retention(
     root, clock, _rows, _kept, candidate_bytes = _scan(
         replay_root, minimum_closed_seconds, now, None, verify=False,
         reclaim_store_copies=reclaim_store_copies, single_files=single_files,
+        reclaim_scratch_inputs=reclaim_scratch_inputs,
     )
     return {
         "schema_version": SCHEMA,
@@ -526,8 +601,21 @@ def estimate_replay_cache_retention(
     }
 
 
+def _scratch_names(group):
+    """A planned group's names: distinct relative paths inside the child's scratch inputs."""
+    names = [Path(name) for name in group["relative_paths"]]
+    if (
+        not names
+        or len(set(names)) != len(names)
+        or any(name.is_absolute() or ".." in name.parts or name.parts[:1] != (_SCRATCH_INPUTS,) for name in names)
+    ):
+        raise ValueError("replay_cache_member_unsafe")
+    return names
+
+
 def apply_replay_cache_retention(
-    plan, *, ack, process_root=Path("/proc"), reclaim_store_copies=False, single_files=True
+    plan, *, ack, process_root=Path("/proc"), reclaim_store_copies=False, single_files=True,
+    reclaim_scratch_inputs=False,
 ):
     if ack != ACK or plan.get("plan_digest") != digest(
         {k: v for k, v in plan.items() if k != "plan_digest"}
@@ -536,6 +624,8 @@ def apply_replay_cache_retention(
     # A plan is applied only under the options it could have been made with.
     if not reclaim_store_copies and any(row.get("store_copies") for row in plan["rows"]):
         raise ValueError("replay_cache_store_copies_not_admitted")
+    if not reclaim_scratch_inputs and any(row.get("scratch_inputs") for row in plan["rows"]):
+        raise ValueError("replay_cache_scratch_inputs_not_admitted")
     if not single_files and any(row.get("files") for row in plan["rows"]):
         raise ValueError("replay_cache_single_files_not_admitted")
     removed, skipped = [], []
@@ -544,13 +634,17 @@ def apply_replay_cache_retention(
         root = Path(row["root"])
         if root.parent != base or any(p.is_symlink() for p in (root, *root.parents)):
             raise ValueError("replay_cache_root_changed")
-        report = completed_report(root, any_parent_status=reclaim_store_copies)
+        report, parent = _finished_report(root, any_parent_status=reclaim_store_copies or reclaim_scratch_inputs)
         if (
             report is None
             or str(report) != row["report_path"]
             or file_sha(report) != row["report_sha256"]
         ):
             skipped.append({"root": str(root), "reason": "report_changed"})
+            continue
+        if row.get("scratch_inputs") and not parent:
+            # Only a parent replay made its scratch inputs; no plan makes another replay's files scratch.
+            skipped.append({"root": str(root), "reason": "report_not_parent_replay"})
             continue
         if active_reference(root, process_root=process_root):
             skipped.append({"root": str(root), "reason": "active_reference"})
@@ -560,19 +654,8 @@ def apply_replay_cache_retention(
             relative = Path(item["relative_path"])
             if not relative.parts or relative.is_absolute() or ".." in relative.parts:
                 raise ValueError("replay_cache_member_unsafe")
-        copies = []
-        for copy in row.get("store_copies", []):
-            names = [Path(name) for name in copy["relative_paths"]]
-            if (
-                not names
-                or len(set(names)) != len(names)
-                or any(
-                    name.is_absolute() or ".." in name.parts or name.parts[:1] != (_SCRATCH_INPUTS,)
-                    for name in names
-                )
-            ):
-                raise ValueError("replay_cache_member_unsafe")
-            copies.append((copy, names))
+        groups = [(copy, _scratch_names(copy), _remove_store_copy) for copy in row.get("store_copies", [])] + [
+            (group, _scratch_names(group), _remove_scratch_input) for group in row.get("scratch_inputs", [])]
         try:
             held = _HeldChild(base, root.name)
         except OSError as exc:
@@ -588,13 +671,15 @@ def apply_replay_cache_retention(
                     skipped.append({"path": path, "reason": reason})
                 else:
                     removed.append({"path": path, "sha256": item["sha256"], "size_bytes": item["size_bytes"]})
-            for copy, names in copies:
+            for group, names, remove in groups:
                 paths = [str(root / name) for name in names]
-                reason = held.item(_remove_store_copy, copy, names)
+                reason = held.item(remove, group, names)
                 if reason:
                     skipped.append({"paths": paths, "reason": reason})
                 else:
-                    removed.append({"paths": paths, "sha256": copy["sha256"], "size_bytes": copy["size_bytes"]})
+                    # A store copy's digest was verified; a scratch input's bytes were never read.
+                    verified = {"sha256": group["sha256"]} if remove is _remove_store_copy else {}
+                    removed.append({"paths": paths, **verified, "size_bytes": group["size_bytes"]})
         finally:
             held.close()
     return {

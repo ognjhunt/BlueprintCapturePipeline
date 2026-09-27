@@ -238,7 +238,8 @@ def _store_copy(child, payload, *, directory=("prepared-references", "content-ad
 
 def planned_paths(p):
     return {f["relative_path"] for row in p["rows"] for f in row["files"]} | {
-        name for row in p["rows"] for copy in row.get("store_copies", ()) for name in copy["relative_paths"]}
+        name for row in p["rows"] for key in ("store_copies", "scratch_inputs")
+        for group in row.get(key, ()) for name in group["relative_paths"]}
 
 
 def reseal(p, row):
@@ -753,3 +754,199 @@ def test_a_child_opened_through_a_swapped_ancestor_is_refused(tmp_path, monkeypa
         apply(p, proc)
 
     assert data.exists() and decoy.exists()
+
+
+# The storage GC phase's opt-ins since the lookahead backlog finding; the standalone unit passes neither.
+SCRATCH = {"reclaim_store_copies": True, "reclaim_scratch_inputs": True}
+
+
+def _scratch_input(child, relative, payload, *, seconds_before_report=1):
+    """A file a parent replay left in its scratch inputs: any name, any bytes, older than its report."""
+    path = child / "prepared-references" / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(payload)
+    report = child / "stage_replay_report.v1.json"
+    stamp = (report.stat().st_mtime_ns if report.exists() else time.time_ns()) - seconds_before_report * 10**9
+    os.utime(path, ns=(stamp, stamp))
+    return path
+
+
+def test_no_double_counting_when_store_and_scratch_rules_both_apply(tmp_path):
+    """2026-09-27, 18:30 UTC: the store-copy rule estimated 4.8 GB across 105 lookaheads that held
+    12.95 GiB, because most of a lookahead's prepared-references has no digest-matching store
+    name. A parent replay made that whole tree in its own temporary root, so under its own opt-in
+    all of it is scratch. Every store copy is a scratch input too: with both opt-ins the scratch
+    rule plans each inode once, with every name the worker linked to it, and no store_copies entry
+    repeats its bytes. An estimate, a plan and an apply agree."""
+    root, child, data, proc = setup(tmp_path)
+    data.unlink()
+    copy = _store_copy(child, b"a store copy the worker materialized")
+    materialized = child / "prepared-references" / "preparation-1" / copy.name
+    materialized.parent.mkdir(parents=True)
+    os.link(copy, materialized)
+    derived = _scratch_input(child, "preparation-1/derived/view.json", b"a copy with no store name")
+
+    store_only = plan(root, proc, **STORE)
+    both = plan(root, proc, **SCRATCH)
+
+    assert store_only["candidate_bytes"] == copy.stat().st_size
+    [row] = both["rows"]
+    info = copy.stat()
+    assert row["store_copies"] == []
+    assert row["scratch_inputs"][0] == {
+        "relative_paths": sorted([str(copy.relative_to(child)), str(materialized.relative_to(child))]),
+        "inode": info.st_ino, "dev": info.st_dev, "nlink": 2, "size_bytes": info.st_size,
+        "mtime_ns": info.st_mtime_ns}
+    assert [group["relative_paths"] for group in row["scratch_inputs"][1:]] == [[str(derived.relative_to(child))]]
+    size = info.st_size + derived.stat().st_size
+    assert both["candidate_bytes"] == size
+    assert gc.estimate_replay_cache_retention(
+        replay_root=root, now=time.time() + 120, **SCRATCH)["estimated_candidate_bytes"] == size
+    result = apply(both, proc, **SCRATCH)
+    assert (result["removed_bytes"], result["skipped"]) == (size, [])
+    assert sorted(path for entry in result["removed"] for path in entry["paths"]) == sorted(
+        str(path) for path in (copy, materialized, derived))
+    assert (child / "stage_replay_report.v1.json").exists()
+
+
+def test_scratch_input_linked_outside_is_kept(tmp_path):
+    """A scratch input sharing its inode with a name outside the replay's prepared-references (the
+    production store when linking worked, the replay's scratch queue, anything else) is kept:
+    removing the names inside would free nothing, and the other name is not the replay's. So is
+    one written after the report. A link made after the plan is found by apply's recheck, and a
+    plan cannot name anything outside the scratch inputs."""
+    root, child, data, proc = setup(tmp_path)
+    data.unlink()
+    production = _scratch_input(child, "preparation-1/linked-with-production.bin", b"production bytes")
+    os.link(production, tmp_path / "production-name")
+    queued = _scratch_input(child, "preparation-1/queued.json", b"queued bytes")
+    (child / "launch-preparations").mkdir()
+    os.link(queued, child / "launch-preparations" / "queued.json")
+    newer = _scratch_input(child, "preparation-1/newer.bin", b"written after the report", seconds_before_report=-5)
+    gone = _scratch_input(child, "preparation-2/gone.bin", b"reclaimable")
+    late = _scratch_input(child, "preparation-2/late.bin", b"linked outside after the plan")
+
+    p = plan(root, proc, **SCRATCH)
+
+    assert planned_paths(p) == {str(gone.relative_to(child)), str(late.relative_to(child))}
+    [row] = p["rows"]
+    group = row["scratch_inputs"][0]
+    for names in ([group["relative_paths"][0]] * 2, ["launch-preparations/queued.json"],
+                  ["stage_replay_report.v1.json"], ["../outside"]):
+        with pytest.raises(ValueError, match="replay_cache_member_unsafe"):
+            apply(reseal(p, {**row, "scratch_inputs": [{**group, "relative_paths": names}]}), proc, **SCRATCH)
+    os.link(late, tmp_path / "late-link")
+    result = apply(p, proc, **SCRATCH)
+
+    assert result["skipped"] == [{"paths": [str(late)], "reason": "scratch_input_changed"}]
+    assert result["removed_bytes"] == len(b"reclaimable") and not gone.exists()
+    for path in (production, queued, newer, late):
+        assert path.exists(), path
+
+
+def test_unfinished_or_referenced_lookahead_keeps_its_scratch(tmp_path):
+    """Only what a finished parent replay left is scratch: its report says no paid execution was
+    requested and no provider was mutated, it closed at least the window ago, and nothing live
+    reads it. A legacy replay's report is finished but not a parent replay's, so there only the
+    digest-verified store copies can go."""
+    root, child, data, proc = setup(tmp_path)
+    data.unlink()
+    finished = _scratch_input(child, "prep/input.bin", b"finished scratch")
+    parent = json.loads((child / "stage_replay_report.v1.json").read_text())
+    legacy = {"status": "repair_inputs_and_semantic_request_replay_passed", "model_inference_performed": False,
+              "network_fetch_performed": False, "provider_mutation_performed": False}
+    kept = []
+    for name, report in (
+        ("parent-no-report", None),
+        ("parent-paid", {**parent, "paid_execution_requested": True}),
+        ("parent-mutated", {**parent, "provider_mutation_performed": True}),
+        ("parent-unrecorded", {k: v for k, v in parent.items() if k != "paid_execution_requested"}),
+        ("parent-recent", parent),
+        ("parent-referenced", parent),
+        ("replay-legacy", legacy),
+    ):
+        other = root / name
+        other.mkdir()
+        if report is not None:
+            (other / "stage_replay_report.v1.json").write_text(json.dumps(report))
+        if name == "parent-recent":
+            soon = time.time() + 100  # plan() looks from 120 s ahead: closed only 20 s ago
+            os.utime(other / "stage_replay_report.v1.json", (soon, soon))
+        kept.append(_scratch_input(other, "prep/input.bin", b"scratch the rule leaves"))
+    legacy_copy = _store_copy(root / "replay-legacy", b"a digest-named copy in a legacy replay")
+    process = proc / "123"
+    (process / "fd").mkdir(parents=True)
+    (process / "cmdline").write_bytes(b"python")
+    (process / "environ").write_bytes(b"")
+    (process / "fd" / "3").symlink_to(root / "parent-referenced" / "prepared-references" / "prep" / "input.bin")
+
+    size = finished.stat().st_size + legacy_copy.stat().st_size
+
+    p = plan(root, proc, **SCRATCH)
+
+    assert p["kept"] == [{"root": str(root / "parent-referenced"), "reason": "active_reference"}]
+    assert [(row["root"], planned_paths({"rows": [row]})) for row in p["rows"]] == [
+        (str(child), {str(finished.relative_to(child))}),
+        (str(root / "replay-legacy"), {str(legacy_copy.relative_to(root / "replay-legacy"))}),
+    ]
+    # A resealed plan cannot make a legacy replay's files scratch either.
+    legacy_input, info = kept[-1], kept[-1].stat()
+    forged = {"relative_paths": [str(legacy_input.relative_to(root / "replay-legacy"))], "inode": info.st_ino,
+              "dev": info.st_dev, "nlink": 1, "size_bytes": info.st_size, "mtime_ns": info.st_mtime_ns}
+    assert apply(reseal(p, {**p["rows"][1], "scratch_inputs": [forged]}), proc, **SCRATCH)["skipped"] == [
+        {"root": str(root / "replay-legacy"), "reason": "report_not_parent_replay"}]
+    result = apply(p, proc, **SCRATCH)
+    assert (result["removed_bytes"], result["skipped"]) == (size, [])
+    assert not finished.exists() and not legacy_copy.exists()
+    for path in kept:
+        assert path.exists(), path
+
+
+def test_scratch_inputs_rule_is_opt_in_and_unit_unchanged(tmp_path, monkeypatch, capsys):
+    """Only storage GC passes reclaim_scratch_inputs. Without it a plan leaves a scratch input that
+    has no store name, a plan made with it cannot be applied without it, and the standalone
+    command, which has no flag for it, writes the very plan, result and summary line it wrote
+    before the rule existed."""
+    root, child, data, proc = setup(tmp_path)
+    report = child / "stage_replay_report.v1.json"
+    hour_ago = time.time() - 3600
+    os.utime(data, (hour_ago - 60, hour_ago - 60))
+    os.utime(report, (hour_ago, hour_ago))
+    copy = _store_copy(child, b"a store copy the unit leaves alone")
+    scratch = _scratch_input(child, "prep/derived.json", b"scratch with no store name")
+
+    assert planned_paths(plan(root, proc, **STORE)) == {"working.ply", str(copy.relative_to(child))}
+    assert "scratch_inputs" not in plan(root, proc, **STORE)["rows"][0]
+    with pytest.raises(ValueError, match="replay_cache_scratch_inputs_not_admitted"):
+        apply(plan(root, proc, **SCRATCH), proc, **STORE)
+
+    # blueprint-completed-replay-cache-gc's own command line, on a host whose /proc shows no reader.
+    monkeypatch.setattr(gc, "active_reference", lambda _root, **_kwargs: False)
+    reports = tmp_path / "reports"
+    monkeypatch.setattr("sys.argv", ["completed_replay_cache_retention", "--replay-root", str(root),
+                                     "--report-root", str(reports), "--apply", "--ack", gc.ACK])
+    info, data_sha = data.stat(), gc.file_sha(data)
+    gc.main()
+
+    [plan_file] = reports.glob("*-plan.json")
+    expected = {
+        "schema_version": gc.SCHEMA, "status": "dry_run",
+        "observed_at_epoch": json.loads(plan_file.read_text())["observed_at_epoch"], "replay_root": str(root),
+        "rows": [{"root": str(child), "report_path": str(report), "report_sha256": gc.file_sha(report),
+                  "files": [{"relative_path": "working.ply", "inode": info.st_ino, "mtime_ns": info.st_mtime_ns,
+                             "size_bytes": 100000, "sha256": data_sha}]}],
+        "kept": [], "candidate_bytes": 100000, "reports_and_original_evidence_removed": False}
+    expected["plan_digest"] = gc.digest(expected)
+    applied = {"schema_version": gc.SCHEMA, "status": "applied", "plan_digest": expected["plan_digest"],
+               "removed_bytes": 100000, "removed": [{"path": str(data), "sha256": data_sha, "size_bytes": 100000}],
+               "skipped": [], "reports_and_original_evidence_removed": False}
+    assert plan_file.name == expected["plan_digest"][7:] + "-plan.json"
+    assert plan_file.read_text() == json.dumps(expected, indent=2) + "\n"
+    assert (reports / (expected["plan_digest"][7:] + "-result.json")).read_text() == json.dumps(applied, indent=2) + "\n"
+    assert capsys.readouterr().out == json.dumps(
+        {"status": "applied", "removed_bytes": 100000, "reports_and_original_evidence_removed": False}) + "\n"
+    assert copy.exists() and scratch.exists() and not data.exists()
+    monkeypatch.setattr("sys.argv", ["completed_replay_cache_retention", "--replay-root", str(root),
+                                     "--report-root", str(reports), "--reclaim-scratch-inputs"])
+    with pytest.raises(SystemExit):
+        gc.main()
