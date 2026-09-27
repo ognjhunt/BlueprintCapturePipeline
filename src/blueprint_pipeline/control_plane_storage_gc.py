@@ -74,6 +74,7 @@ RESERVED_DERIVED_CHILDREN = frozenset({"content-addressed"})
 QUEUE_STATES = ("pending", "processing")
 CONTENT_STORE_ROOTS_ENV = "BLUEPRINT_CONTROL_PLANE_GC_CONTENT_STORE_ROOTS"
 DERIVED_ROOTS_ENV = "BLUEPRINT_CONTROL_PLANE_GC_DERIVED_ROOTS"
+PLAN_ONLY_DERIVED_ROOTS_ENV = "BLUEPRINT_CONTROL_PLANE_GC_PLAN_ONLY_DERIVED_ROOTS"
 QUEUE_ROOTS_ENV = "BLUEPRINT_CONTROL_PLANE_GC_QUEUE_ROOTS"
 EVIDENCE_ROOTS_ENV = "BLUEPRINT_CONTROL_PLANE_GC_EVIDENCE_ROOTS"
 SETTLEMENT_ROOTS_ENV = "BLUEPRINT_CONTROL_PLANE_GC_SETTLEMENT_ROOTS"
@@ -1237,6 +1238,7 @@ def run_storage_gc(
     *,
     content_store_roots: Sequence[str | Path],
     derived_roots: Sequence[str | Path],
+    plan_only_derived_roots: Sequence[str | Path] = (),
     queue_roots: Sequence[str | Path],
     pins_root: str | Path,
     evidence_roots: Sequence[str | Path] = (),
@@ -1275,6 +1277,12 @@ def run_storage_gc(
 
     if apply and ack != RUN_ACK:
         raise ControlPlaneStorageGCError("control_plane_storage_gc_apply_not_authorized")
+    if {
+        str(Path(root).expanduser()) for root in derived_roots
+    } & {
+        str(Path(root).expanduser()) for root in plan_only_derived_roots
+    }:
+        raise ControlPlaneStorageGCError("control_plane_storage_gc_plan_only_root_in_apply_roots")
     observed_at = float(now())
     clock = lambda: observed_at  # noqa: E731 - one observation per tick
     report: dict[str, Any] = {
@@ -1333,6 +1341,17 @@ def run_storage_gc(
             )
 
         _isolated(report, "derived_directories", derived_phase)
+    planned_present, absent = _existing(plan_only_derived_roots)
+    report["skipped_roots"].extend(absent)
+    if planned_present:
+        _isolated(report, "planned_derived_directories", lambda: build_derived_directory_manifest(
+            derived_roots=planned_present,
+            pins_root=pins_root,
+            queue_roots=queue_roots,
+            minimum_age_seconds=derived_minimum_age_seconds,
+            now=clock,
+            classifier=classifier,
+        ))
     content_present, absent = _existing(content_store_roots)
     report["skipped_roots"].extend(absent)
     if content_present:
@@ -1510,6 +1529,7 @@ def _run_main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="control_plane_storage_gc run")
     parser.add_argument("--content-store-root", action="append", default=None)
     parser.add_argument("--derived-root", action="append", default=None)
+    parser.add_argument("--plan-only-derived-root", action="append", default=None)
     parser.add_argument("--queue-root", action="append", default=None)
     parser.add_argument("--evidence-root", action="append", default=None)
     parser.add_argument("--settlement-root", action="append", default=None)
@@ -1563,6 +1583,7 @@ def _run_main(argv: list[str]) -> int:
     report = run_storage_gc(
         content_store_roots=args.content_store_root or _split_env(CONTENT_STORE_ROOTS_ENV),
         derived_roots=args.derived_root or _split_env(DERIVED_ROOTS_ENV),
+        plan_only_derived_roots=args.plan_only_derived_root or _split_env(PLAN_ONLY_DERIVED_ROOTS_ENV),
         queue_roots=args.queue_root or _split_env(QUEUE_ROOTS_ENV),
         pins_root=pins_root,
         evidence_roots=args.evidence_root or _split_env(EVIDENCE_ROOTS_ENV),
