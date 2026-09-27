@@ -1564,7 +1564,10 @@ def disk_admission_check(units: Mapping[str, dict[str, Any]]) -> list[dict[str, 
         footprints = chain_footprints(DISK_RESERVATION_ROOT)
     except disk_budget.ControlPlaneDiskBudgetError as exc:
         return [_finding("blocker", "disk_admission_configuration_invalid", blocker=str(exc))]
-    reserved, live = disk_budget.live_reservations(DISK_RESERVATION_ROOT, device=device, now=time.time())
+    try:
+        reserved, live = disk_budget.live_reservations(DISK_RESERVATION_ROOT, device=device, now=time.time())
+    except disk_budget.ControlPlaneDiskBudgetError as exc:
+        return [_finding("blocker", "disk_reservations_unreadable", blocker=str(exc))]
     available = max(0, int(usage.free) - floor - reserved)
     refused = sorted(role for role, row in footprints.items() if row["bytes"] > available)
     chain_need = sum(row["bytes"] for row in footprints.values())

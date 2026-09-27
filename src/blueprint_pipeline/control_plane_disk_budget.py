@@ -124,11 +124,24 @@ def _entry_liveness(
     device: int,
     observed_at: float,
     pid_alive: Callable[[int], bool],
+    strict: bool = False,
 ) -> tuple[bool, int]:
-    """(live, expected bytes) of one ledger entry: same device, unexpired, live pid."""
+    """(live, expected bytes) of one ledger entry: same device, unexpired, live pid.
+
+    ``strict`` refuses an entry it cannot read (typed ledger_unreadable) rather
+    than treating it as stale: a projection must never under-count reservations.
+    """
 
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return False, 0  # released between the listing and the read
+    except OSError as exc:
+        if strict:
+            raise ControlPlaneDiskBudgetError("control_plane_disk_budget_ledger_unreadable") from exc
+        return False, 0
+    try:
+        value = json.loads(text)
         if not isinstance(value, dict):
             return False, 0
         live = (
@@ -176,15 +189,23 @@ def live_reservations(
     """(bytes, count) of live reservations on ``device``; read-only (never deletes).
 
     Liveness is exactly the ledger's own: the entry's device, an unexpired TTL
-    and a live pid.  A missing ledger holds no reservations.
+    and a live pid.  A missing ledger holds no reservations; a ledger (or entry)
+    that cannot be read raises the typed ledger_unreadable, never reads as empty.
     """
 
     root = Path(reservation_root).expanduser()
+    try:
+        with os.scandir(root) as listing:
+            names = sorted(entry.name for entry in listing if entry.name.endswith(".json"))
+    except FileNotFoundError:
+        return 0, 0
+    except OSError as exc:
+        raise ControlPlaneDiskBudgetError("control_plane_disk_budget_ledger_unreadable") from exc
     reserved = 0
     count = 0
-    for path in sorted(root.glob("*.json")):
+    for name in names:
         live, amount = _entry_liveness(
-            path, device=device, observed_at=float(now), pid_alive=pid_alive
+            root / name, device=device, observed_at=float(now), pid_alive=pid_alive, strict=True
         )
         if live:
             reserved += amount

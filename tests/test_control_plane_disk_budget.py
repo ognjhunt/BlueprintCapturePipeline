@@ -601,3 +601,24 @@ def test_a_short_write_is_not_a_recorded_sample_and_never_swallows_the_next(tmp_
         except ValueError:
             continue  # the torn fragment stays unreadable on its own line
     assert parsed == [9]
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads mode-0000 entries anyway")
+def test_an_unreadable_ledger_is_never_read_as_empty(tmp_path):
+    ledger = tmp_path / "ledger"
+    ledger.mkdir()
+    entry = ledger / "held.json"
+    entry.write_text(json.dumps({"device": 1, "pid": os.getpid(), "expected_bytes": GIB, "expires_at_epoch": 1e12}))
+    entry.chmod(0)
+    try:
+        with pytest.raises(ControlPlaneDiskBudgetError, match="control_plane_disk_budget_ledger_unreadable"):
+            disk_budget.live_reservations(ledger, device=1, now=1.0)
+    finally:
+        entry.chmod(0o640)
+    ledger.chmod(0)
+    try:
+        with pytest.raises(ControlPlaneDiskBudgetError, match="control_plane_disk_budget_ledger_unreadable"):
+            disk_budget.live_reservations(ledger, device=1, now=1.0)
+    finally:
+        ledger.chmod(0o770)
+    assert disk_budget.live_reservations(tmp_path / "absent", device=1, now=1.0) == (0, 0)

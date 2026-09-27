@@ -259,3 +259,18 @@ def test_invalid_budget_configuration_waits_instead_of_crashing_the_gate(tmp_pat
                                        disk_usage=_usage(80.0), now=1.0)
     assert report["level"] == "critical"
     assert report["alerts"] == [{"mount": str(tmp_path), "code": "mount_configuration_invalid"}]
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads a mode-0000 ledger anyway")
+def test_an_unreadable_ledger_is_an_unreadable_mount_not_an_empty_one(tmp_path):
+    ledger = tmp_path / "ledger"
+    ledger.mkdir()
+    ledger.chmod(0)
+    try:
+        row = cap.measure_mount(tmp_path, reservation_root=ledger, disk_usage=_usage(80.0), now=1.0)
+        gate = cap.whole_chain_admission(tmp_path, reservation_root=ledger, now=1.0, disk_usage=_usage(80.0))
+    finally:
+        ledger.chmod(0o770)
+    assert row["status"] == "unreadable"
+    assert row["blocker"] == "control_plane_disk_budget_ledger_unreadable"
+    assert gate["status"] == "waiting_for_capacity"

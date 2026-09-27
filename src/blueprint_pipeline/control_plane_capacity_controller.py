@@ -142,9 +142,13 @@ def measure_mount(
     except disk_budget.ControlPlaneDiskBudgetError as exc:
         # The ledger refuses every reservation under this configuration too.
         return {"mount": str(path), "status": "configuration_invalid", "blocker": str(exc)}
-    reserved, live = disk_budget.live_reservations(
-        reservation_root, device=device, now=observed, pid_alive=pid_alive
-    )
+    try:
+        reserved, live = disk_budget.live_reservations(
+            reservation_root, device=device, now=observed, pid_alive=pid_alive
+        )
+    except disk_budget.ControlPlaneDiskBudgetError as exc:
+        # Reservations that cannot be read are not zero reservations.
+        return {"mount": str(path), "status": "unreadable", "blocker": str(exc)}
     available = max(0, int(usage.free) - floor - reserved)
     refused = sorted(role for role, row in footprints.items() if row["bytes"] > available)
     used_fraction = 0.0 if not usage.total else (usage.total - usage.free) / usage.total
