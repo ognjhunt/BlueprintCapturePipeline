@@ -105,6 +105,16 @@ def test_single_paths_must_be_absolute(tmp_path: Path, key: str) -> None:
         load_config(path)
 
 
+def test_capacity_summary_defaults_to_the_controller_report_and_must_be_absolute(tmp_path: Path) -> None:
+    assert DoorConfig().capacity_summary == "/var/lib/blueprint/pipeline-control-plane/capacity/summary.json"
+    path = tmp_path / "door.json"
+    path.write_text(json.dumps({"capacity_summary": str(tmp_path / "summary.json")}), encoding="utf-8")
+    assert load_config(path).capacity_summary == str(tmp_path / "summary.json")
+    path.write_text(json.dumps({"capacity_summary": "capacity/summary.json"}), encoding="utf-8")
+    with pytest.raises(DoorConfigError, match="door_config_path_not_absolute:capacity_summary"):
+        load_config(path)
+
+
 def test_source_clone_override_stays_directly_under_trusted_config_tools_root(tmp_path: Path) -> None:
     path = tmp_path / "door.json"
     path.write_text(json.dumps({"source_clone": "/mnt/blueprint-work/scratch"}), encoding="utf-8")

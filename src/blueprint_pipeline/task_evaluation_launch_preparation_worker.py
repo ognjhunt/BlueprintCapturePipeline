@@ -974,12 +974,18 @@ def _reserve_preparation_disk(
     input_root: str | Path,
     disk_reservation_root: str | Path,
     disk_reservations: list[DiskReservation],
+    preparation_id: str | None = None,
 ) -> None:
     # A just-finished provider inventory or other bounded controller job can
     # briefly occupy disk after the launch has been queued. Recheck only the
     # capacity refusal; every other ledger error remains an immediate failure.
     # The queue claim stays owned by this worker and no bytes are fetched until
     # the reservation succeeds.
+    # Admission reads the shared parent's filesystem; the footprint sample
+    # measures only this preparation's own directory.  A reservation nested in
+    # the same preparation (runtime-source layers) passes no id, because the
+    # preparation's own reservation already measures that tree.
+    workspace = None if preparation_id is None else Path(input_root) / str(preparation_id)
     for check in range(PREPARATION_DISK_RECHECKS + 1):
         try:
             disk_reservations.append(
@@ -988,6 +994,11 @@ def _reserve_preparation_disk(
                     target_root=input_root,
                     expected_bytes=max(1, int(expected_bytes)),
                     reservation_root=disk_reservation_root,
+                    workspace=workspace,
+                    workload="prepared_references",
+                    # An existing directory holds an earlier pass of this preparation
+                    # (one that paused on its SAM children, say): this pass resumes it.
+                    fresh=False if workspace is not None and workspace.exists() else None,
                 )
             )
             return
@@ -1179,6 +1190,7 @@ def process_launch_preparation_queue(
                     input_root=input_root,
                     disk_reservation_root=disk_reservation_root,
                     disk_reservations=disk_reservations,
+                    preparation_id=str(envelope["request"]["preparation_id"]),
                 )
             result = materialize_preparation_references(
                 request=envelope["request"],
@@ -1670,8 +1682,13 @@ def process_launch_preparation_queue(
                 result["result_digest"] = canonical_digest(
                     result, digest_field="result_digest"
                 )
+        # Only a materialized preparation measured its whole footprint: one that
+        # raised is "failed", one paused on its children or on capacity "blocked".
+        footprint_outcome = {"materialized": "completed", "blocked": "failed"}.get(
+            terminal_state, "blocked"
+        )
         for reservation in disk_reservations:
-            reservation.release()
+            reservation.release(outcome=footprint_outcome)
         if storage_pins_root is not None and terminal_state not in {"blocked", "awaiting_capacity"}:
             # Keep this preparation's directory alive for the storage reaper
             # until the activation that consumes it reaches a terminal receipt.

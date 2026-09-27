@@ -307,7 +307,8 @@ def prepare_semantics_before_gpu(*, bundle_receipt, authority, job_dir, environm
     # plus bounded frame/receipt overhead. Keep the shared disk floor intact.
     peak_bytes = 3 * source_unpacked_bytes + 512 * 1024**2
     with workspace_lock(root), reserve_control_plane_disk("semantic_pretraining", target_root=LOGICAL_ROOT,
-                                   expected_bytes=peak_bytes):
+                                   expected_bytes=peak_bytes, workspace=root,
+                                   workload="semantic_pretraining") as reservation:
         root.mkdir(parents=True, mode=0o700)
         extracted = root / "bundle"
         _extract(bundle, extracted)
@@ -405,6 +406,9 @@ def prepare_semantics_before_gpu(*, bundle_receipt, authority, job_dir, environm
         }
         result["receipt_digest"] = canonical_digest(result, digest_field="receipt_digest")
         receipt_path.write_text(canonical_json(result) + "\n")
+        # The footprint is the expanded cache at its peak, so measure it before
+        # the cleanup below removes it.
+        reservation.sample()
         # The complete immutable archive remains retained locally and is uploaded
         # before allocation. Release only this reconstructible expanded cache.
         for path in root.rglob("*"):

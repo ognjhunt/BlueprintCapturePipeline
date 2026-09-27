@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import types
 import zipfile
 
 import pytest
@@ -348,6 +349,13 @@ def test_campaign_rejects_ttl_projection_above_cap(
 def test_campaign_validator_reads_only_staged_receipts_and_bundles(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setenv("BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT", str(tmp_path / "disk-reservations"))
+    actual_reserve = dispatcher.reserve_control_plane_disk
+    monkeypatch.setattr(dispatcher, "reserve_control_plane_disk", lambda role, **kwargs: actual_reserve(
+        role, disk_usage=lambda _path: types.SimpleNamespace(
+            total=200 * 1024**3, used=100 * 1024**3, free=100 * 1024**3,
+        ), **kwargs,
+    ))
     campaign_path, campaign, bundles = _campaign(tmp_path, monkeypatch)
     declared = [campaign_path]
     for member in campaign["members"]:

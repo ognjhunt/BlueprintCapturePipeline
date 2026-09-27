@@ -15,6 +15,12 @@ resizable block volume is configured and acknowledged, grows it one step and
 resizes the filesystem online.  The report it writes is ``evidence_hot``: the
 capacity record of the host, never pruned.
 
+At most hourly it also surveys usage (``control_plane_disk_usage.survey_usage``):
+every byte on its mounts and the root disk, once per inode, by storage class, root
+and owner.  The survey is written to ``usage-latest.json``, a compact projection is
+embedded in the report, and every tick writes ``summary.json``: a secret-free view
+of the report that the operator door, which runs as the service account, can read.
+
 It spends nothing unless the resize acknowledgement is set, and even then it
 grows only the configured volume, only up to the configured maximum, only when
 the volume's mount is critical.
@@ -34,18 +40,28 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from .control_plane_disk_budget import (
-    DEFAULT_FLOOR_BYTES,
-    DEFAULT_FLOOR_FRACTION,
-    DEFAULT_RESERVATION_ROOT,
-    ROLE_FOOTPRINT_BYTES,
-)
+from . import control_plane_disk_budget as disk_budget
+from .control_plane_disk_budget import DEFAULT_RESERVATION_ROOT
+from .control_plane_disk_usage import SURVEY_SCHEMA_VERSION, sanitize_public_survey, survey_usage
 from .decision_evidence_contracts import canonical_digest
 
 SCHEMA_VERSION = "control_plane_capacity_report.v1"
+SUMMARY_SCHEMA_VERSION = "control_plane_capacity_summary.v1"
+USAGE_FILENAME = "usage-latest.json"
+USAGE_ATTEMPT_FILENAME = "usage-attempt.json"
+USAGE_ATTEMPT_SCHEMA_VERSION = "control_plane_usage_survey_attempt.v1"
+SUMMARY_FILENAME = "summary.json"
+# The door's status reader refuses files over 256 KiB; the summary keeps half that.
+SUMMARY_MAX_BYTES = 128 * 1024
+DEFAULT_SURVEY_INTERVAL_SECONDS = 60 * 60
+USAGE_UNCLASSIFIED_ALERT_BYTES = 1024**3
+USAGE_ATTRIBUTION_ALERT_FRACTION = 0.9
+USAGE_PROJECTED_UNCLASSIFIED_ROOTS = 20
 RESIZE_RECEIPT_SCHEMA_VERSION = "control_plane_volume_resize_receipt.v1"
 DEFAULT_REPORT_ROOT = Path("/var/lib/blueprint/pipeline-control-plane/capacity")
 DEFAULT_MOUNTS: tuple[str, ...] = ("/var/lib/blueprint",)
+WORK_VOLUME_MOUNT = "/mnt/blueprint-work"
+_DEFAULT_SURVEY = object()
 WARNING_FRACTION = 0.70
 CRITICAL_FRACTION = 0.85
 FORECAST_WINDOW_SECONDS = 7 * 24 * 60 * 60
@@ -64,6 +80,7 @@ VOLUME_DEVICE_ENV = "BLUEPRINT_CAPACITY_VOLUME_DEVICE"
 VOLUME_MAX_GIB_ENV = "BLUEPRINT_CAPACITY_VOLUME_MAX_GIB"
 VOLUME_STEP_GIB_ENV = "BLUEPRINT_CAPACITY_VOLUME_STEP_GIB"
 RESIZE_ACK_ENV = "BLUEPRINT_CAPACITY_AUTORESIZE_ACK"
+SURVEY_INTERVAL_ENV = "BLUEPRINT_CAPACITY_SURVEY_INTERVAL_SECONDS"
 DO_TOKEN_FILE_ENV = "DIGITALOCEAN_API_TOKEN_FILE"
 DO_VOLUME_ACTIONS_URL = "https://api.digitalocean.com/v2/volumes/{volume_id}/actions"
 
@@ -88,26 +105,34 @@ def _read_json(path: Path) -> dict[str, Any] | None:
     return loaded if isinstance(loaded, dict) else None
 
 
-def live_reserved_bytes(reservation_root: Path, *, now: float) -> tuple[int, int]:
-    """Sum the bytes of unexpired reservations exactly as admission counts them."""
+def live_reserved_bytes(
+    reservation_root: Path, *, now: float, mount: str | Path = DEFAULT_MOUNTS[0]
+) -> tuple[int, int]:
+    """Bytes and count of live reservations on ``mount``'s device, as admission counts them.
 
-    reserved = 0
-    count = 0
-    if not reservation_root.is_dir():
-        return 0, 0
-    for path in sorted(reservation_root.iterdir()):
-        if path.name.startswith(".") or not path.is_file() or path.is_symlink():
-            continue
-        document = _read_json(path) or {}
-        expires = document.get("expires_at_epoch")
-        if isinstance(expires, (int, float)) and not isinstance(expires, bool) and expires < now:
-            continue
-        try:
-            reserved += int(document.get("expected_bytes") or document.get("reserved_bytes") or 0)
-        except (TypeError, ValueError):
-            continue
-        count += 1
-    return reserved, count
+    Kept for compatibility; liveness is the ledger's own (device, TTL, live pid).
+    """
+
+    return disk_budget.live_reservations(
+        reservation_root, device=disk_budget.target_device(mount), now=now
+    )
+
+
+def chain_footprints(
+    reservation_root: str | Path = DEFAULT_RESERVATION_ROOT,
+) -> dict[str, dict[str, Any]]:
+    """Each chain role's footprint, computed exactly as its own reservation will."""
+
+    return disk_budget.role_footprints(CHAIN_ROLES, reservation_root=reservation_root)
+
+
+def footprint_basis(footprints: Mapping[str, Mapping[str, Any]]) -> str:
+    """measured_p95 if every role is measured, declared_default if none is, else mixed."""
+
+    measured = [row.get("basis") == "measured_p95" for row in footprints.values()]
+    if measured and all(measured):
+        return "measured_p95"
+    return "mixed" if any(measured) else "declared_default"
 
 
 def measure_mount(
@@ -116,21 +141,48 @@ def measure_mount(
     reservation_root: str | Path = DEFAULT_RESERVATION_ROOT,
     disk_usage: Callable[[str | os.PathLike[str]], Any] = shutil.disk_usage,
     now: float | None = None,
+    pid_alive: Callable[[int], bool] = disk_budget._pid_alive,
 ) -> dict[str, Any]:
-    """One mount's admission projection, computed the way intake computes it."""
+    """One mount's admission projection, computed with the ledger's own functions.
+
+    The floor, the live reservations on this mount's device and each chain
+    role's measured footprint are the values a reservation on this mount would
+    see, so a projected refusal is a refusal intake and the workers will make.
+    """
 
     observed = time.time() if now is None else float(now)
     path = Path(mount)
     try:
         usage = disk_usage(path)
+        device = disk_budget.target_device(path)
     except OSError as exc:
-        return {"mount": str(path), "status": "unreadable", "errno": exc.errno}
-    floor = max(DEFAULT_FLOOR_BYTES, int(usage.total * DEFAULT_FLOOR_FRACTION))
-    reserved, live = live_reserved_bytes(Path(reservation_root), now=observed)
+        status = "absent" if isinstance(exc, FileNotFoundError) and not path.exists() else "unreadable"
+        return {"mount": str(path), "status": status, "errno": exc.errno}
+    try:
+        floor = disk_budget.floor_bytes(int(usage.total))
+        footprints = chain_footprints(reservation_root)
+        critical_floor = disk_budget.floor_bytes(int(usage.total), role="control_plane_deploy")
+        critical_footprints = disk_budget.role_footprints(
+            disk_budget.CRITICAL_ROLES, reservation_root=reservation_root,
+        )
+    except disk_budget.ControlPlaneDiskBudgetError as exc:
+        # The ledger refuses every reservation under this configuration too.
+        return {"mount": str(path), "status": "configuration_invalid", "blocker": str(exc)}
+    try:
+        reserved, live = disk_budget.live_reservations(
+            reservation_root, device=device, now=observed, pid_alive=pid_alive
+        )
+    except disk_budget.ControlPlaneDiskBudgetError as exc:
+        # Reservations that cannot be read are not zero reservations.
+        return {"mount": str(path), "status": "unreadable", "blocker": str(exc)}
     available = max(0, int(usage.free) - floor - reserved)
-    refused = sorted(role for role in CHAIN_ROLES if ROLE_FOOTPRINT_BYTES[role] > available)
+    critical_available = max(0, int(usage.free) - critical_floor - reserved)
+    refused = sorted(role for role, row in footprints.items() if row["bytes"] > available)
+    critical_refused = sorted(
+        role for role, row in critical_footprints.items() if row["bytes"] > critical_available
+    )
     used_fraction = 0.0 if not usage.total else (usage.total - usage.free) / usage.total
-    if used_fraction >= CRITICAL_FRACTION or refused:
+    if used_fraction >= CRITICAL_FRACTION or refused or critical_refused:
         level = "critical"
     elif used_fraction >= WARNING_FRACTION:
         level = "warning"
@@ -143,31 +195,95 @@ def measure_mount(
         "free_bytes": int(usage.free),
         "used_fraction": round(used_fraction, 4),
         "floor_bytes": floor,
+        "critical_floor_bytes": critical_floor,
         "reserved_bytes": reserved,
         "live_reservations": live,
         "available_bytes": available,
+        "critical_available_bytes": critical_available,
         "refused_roles": refused,
-        "free_needed_for_one_role_bytes": floor + ROLE_FOOTPRINT_BYTES["launch_preparation"],
+        "critical_roles_refused": critical_refused,
+        "footprints": footprints,
+        "free_needed_for_one_role_bytes": floor + footprints["launch_preparation"]["bytes"],
         "free_needed_for_whole_chain_bytes": floor
-        + sum(ROLE_FOOTPRINT_BYTES[role] for role in CHAIN_ROLES),
+        + sum(row["bytes"] for row in footprints.values()),
         "level": level,
     }
 
 
-def whole_chain_admission(mount, *, reservation_root=DEFAULT_RESERVATION_ROOT, now=None):
-    """Check the complete declared workspace before a new scene attempt starts.
+def whole_chain_admission(
+    mount,
+    *,
+    reservation_root=DEFAULT_RESERVATION_ROOT,
+    now=None,
+    disk_usage: Callable[[str | os.PathLike[str]], Any] = shutil.disk_usage,
+    role_targets: Mapping[str, str | Path] | None = None,
+    device_of: Callable[[Path], int] = disk_budget.target_device,
+):
+    """Check the complete chain workspace before a new scene attempt starts.
 
-    Per-stage reservations remain authoritative during execution. This earlier
-    gate prevents starting a chain that already exceeds available headroom.
+    Each role counts at the footprint its own reservation will hold: the measured
+    p95 once the role has history, its declared ceiling until then.  Per-stage
+    reservations remain authoritative during execution. This earlier gate
+    prevents starting a chain that already exceeds available headroom.
     """
-    measured = measure_mount(mount, reservation_root=reservation_root, now=now)
-    required = sum(ROLE_FOOTPRINT_BYTES[role] for role in CHAIN_ROLES)
-    passed = measured.get('status') == 'measured' and measured['available_bytes'] >= required
+    measured = measure_mount(mount, reservation_root=reservation_root, disk_usage=disk_usage, now=now)
+    if not Path(mount).is_dir():
+        measured = {"mount": str(mount), "status": "absent"}
+    footprints = measured.get("footprints")
+    if not isinstance(footprints, Mapping):
+        try:
+            footprints = chain_footprints(reservation_root)
+        except disk_budget.ControlPlaneDiskBudgetError:
+            # The measurement already failed closed, so this chain cannot be
+            # admitted; report the declared ceilings and wait instead of raising
+            # out of the caller's progression pass.
+            footprints = {
+                role: {"bytes": int(disk_budget.ROLE_FOOTPRINT_BYTES[role]),
+                       "basis": "declared_default", "sample_count": None}
+                for role in CHAIN_ROLES
+            }
+    required = sum(int(row["bytes"]) for row in footprints.values())
+    devices: dict[int, dict[str, Any]] = {}
+    admission_error = measured.get("status") != "measured"
+    try:
+        configured = (disk_budget.parse_role_targets(os.getenv("BLUEPRINT_CONTROL_PLANE_DISK_ROLE_TARGETS"))
+                      if role_targets is None else {role: Path(path) for role, path in role_targets.items()})
+        if any(not path.is_dir() for path in configured.values()):
+            raise disk_budget.ControlPlaneDiskBudgetError(
+                "control_plane_disk_budget_role_target_unavailable"
+            )
+        projected = disk_budget.disk_headroom(
+            target_root=mount, role_targets=configured, reservation_root=reservation_root,
+            disk_usage=disk_usage, now=lambda: time.time() if now is None else float(now),
+            device_of=device_of,
+        )
+        for target in projected["targets"]:
+            role = target["role"]
+            if role not in CHAIN_ROLES:
+                continue
+            device = target["device"]
+            group = devices.setdefault(device, {
+                "device": device, "path": str(configured.get(role, mount)),
+                "roles": [], "required_bytes": 0,
+                "available_bytes": target["available_bytes"],
+            })
+            group["roles"].append(role)
+            group["required_bytes"] += int(footprints[role]["bytes"])
+    except (disk_budget.ControlPlaneDiskBudgetError, OSError, TypeError, ValueError) as exc:
+        admission_error = True
+        measured = {"mount": str(mount), "status": "configuration_invalid", "blocker": str(exc)}
+    for group in devices.values():
+        group["roles"].sort()
+        group["passed"] = group["available_bytes"] >= group["required_bytes"]
+    passed = not admission_error and bool(devices) and all(group["passed"] for group in devices.values())
     return {
         'schema_version': 'control_plane_whole_chain_admission.v1',
         'status': 'admitted' if passed else 'waiting_for_capacity',
         'required_workspace_bytes': required,
+        'required_workspace_basis': footprint_basis(footprints),
+        'footprints': footprints,
         'measurement': measured,
+        'devices': sorted(devices.values(), key=lambda row: row['device']),
         'provider_mutation_performed': False,
         'reservation_granted': False,
     }
@@ -238,17 +354,21 @@ def build_capacity_report(
     for row in measured:
         row["observed_at_epoch"] = observed
         row["forecast"] = forecast(history, row, now=observed)
-    levels = [row.get("level", "critical") for row in measured]
-    level = "critical" if "critical" in levels or any(r["status"] != "measured" for r in measured) else (
+    levels = [row.get("level", "ok") for row in measured]
+    level = "critical" if "critical" in levels or any(r["status"] not in {"measured", "absent"} for r in measured) else (
         "warning" if "warning" in levels else "ok"
     )
     alerts = []
     for row in measured:
         if row["status"] != "measured":
-            alerts.append({"mount": row["mount"], "code": "mount_unreadable"})
+            alerts.append({"mount": row["mount"], "code": "mount_unreadable"
+                           if row["status"] == "unreadable" else f"mount_{row['status']}"})
             continue
         if row["refused_roles"]:
             alerts.append({"mount": row["mount"], "code": "admission_refused", "roles": row["refused_roles"]})
+        if row["critical_roles_refused"]:
+            alerts.append({"mount": row["mount"], "code": "critical_admission_refused",
+                           "roles": row["critical_roles_refused"]})
         if row["level"] != "ok":
             alerts.append({"mount": row["mount"], "code": f"utilization_{row['level']}", "used_fraction": row["used_fraction"]})
         days = row["forecast"].get("days_until_floor")
@@ -266,25 +386,286 @@ def build_capacity_report(
     return report
 
 
+def survey_mounts(mounts: Sequence[str | Path]) -> list[str]:
+    """Survey controller mounts, the root disk, and the attached bulk volume."""
+
+    listed = [str(mount) for mount in mounts]
+    if "/" not in {os.path.normpath(mount) for mount in listed}:
+        listed.append("/")
+    if (os.path.ismount(WORK_VOLUME_MOUNT)
+            and WORK_VOLUME_MOUNT not in {os.path.normpath(mount) for mount in listed}):
+        listed.append(WORK_VOLUME_MOUNT)
+    return listed
+
+
+def _write_public_json(path: Path, document: Mapping[str, Any]) -> None:
+    """Replace ``path`` atomically with a world-readable (0644) JSON document.
+
+    The unit's ``UMask=0077`` makes new files root-only, so the mode is set before
+    the rename and the published file is never unreadable to the door.
+    """
+
+    temporary = path.with_name(f".{path.name}-{os.getpid()}.tmp")
+    try:
+        temporary.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        os.chmod(temporary, 0o644)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _refresh_usage(
+    report_root: Path,
+    *,
+    survey: Callable[..., Mapping[str, Any]] | None,
+    mounts: Sequence[str | Path],
+    interval_seconds: float,
+    force: bool,
+    now: float,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """The latest usage survey, paced by attempted walks even when one fails."""
+
+    path = report_root / USAGE_FILENAME
+    latest = _read_json(path)
+    if latest is not None and latest.get("schema_version") != SURVEY_SCHEMA_VERSION:
+        latest = None
+    if latest is not None:
+        safe_latest = sanitize_public_survey(latest)
+        if safe_latest != latest:
+            try:
+                _write_public_json(path, safe_latest)
+            except OSError:
+                pass  # keep names out of this tick's projection even if repair fails
+        latest = safe_latest
+    if survey is None:
+        return latest, None
+    marker_path = report_root / USAGE_ATTEMPT_FILENAME
+    marker = _read_json(marker_path)
+    if marker is not None and marker.get("schema_version") != USAGE_ATTEMPT_SCHEMA_VERSION:
+        marker = None
+    observed_at = (latest or {}).get("observed_at_epoch")
+    attempted_at = (marker or {}).get("attempted_at_epoch")
+    if isinstance(attempted_at, (int, float)) and not isinstance(attempted_at, bool):
+        if not isinstance(observed_at, (int, float)) or isinstance(observed_at, bool) or attempted_at > observed_at:
+            observed_at = attempted_at
+    fresh = (
+        isinstance(observed_at, (int, float))
+        and not isinstance(observed_at, bool)
+        and 0 <= now - float(observed_at) < interval_seconds
+    )
+    if fresh and not force:
+        error = None
+        if marker is not None and marker.get("attempted_at_epoch") == observed_at:
+            error = marker.get("error") if isinstance(marker.get("error"), str) else None
+            if marker.get("status") == "running":
+                error = "usage_survey_interrupted"
+        return latest, error
+
+    def record_attempt(status: str, error: str | None = None) -> None:
+        document: dict[str, Any] = {
+            "schema_version": USAGE_ATTEMPT_SCHEMA_VERSION,
+            "attempted_at_epoch": now,
+            "status": status,
+        }
+        if error:
+            document["error"] = error
+        _write_public_json(marker_path, document)
+
+    try:
+        report_root.mkdir(parents=True, exist_ok=True, mode=0o750)
+        record_attempt("running")
+    except OSError as exc:
+        return latest, f"usage_survey_attempt_unwritten:{type(exc).__name__}"
+    try:
+        result = survey(mounts=survey_mounts(mounts))
+    except Exception as exc:  # noqa: BLE001 - a failed survey must never stop the capacity tick
+        error = f"usage_survey_failed:{type(exc).__name__}"
+        try:
+            record_attempt("failed", error)
+        except OSError:
+            pass  # the pre-walk marker still prevents an immediate retry
+        return latest, error
+    if not isinstance(result, Mapping) or result.get("schema_version") != SURVEY_SCHEMA_VERSION:
+        error = "usage_survey_invalid"
+        try:
+            record_attempt("failed", error)
+        except OSError:
+            pass
+        return latest, error
+    result = sanitize_public_survey(result)
+    try:
+        _write_public_json(path, result)
+    except OSError as exc:
+        error = f"usage_survey_unwritten:{type(exc).__name__}"
+        try:
+            record_attempt("failed", error)
+        except OSError:
+            pass
+        return dict(result), error
+    try:
+        record_attempt("complete")
+    except OSError:
+        pass  # the saved survey itself supplies the cadence
+    return dict(result), None
+
+
+def usage_projection(
+    survey: Mapping[str, Any] | None, *, now: float, error: str | None = None
+) -> dict[str, Any]:
+    """The compact usage view embedded in the report and in the door-readable summary."""
+
+    if survey is None:
+        projection: dict[str, Any] = {"status": "unavailable"}
+    else:
+        observed_at = survey.get("observed_at_epoch")
+        timed = isinstance(observed_at, (int, float)) and not isinstance(observed_at, bool)
+        projection = {
+            "observed_at_epoch": observed_at if timed else None,
+            "age_seconds": round(max(0.0, now - float(observed_at)), 1) if timed else None,
+            "status": survey.get("status"),
+            "survey_digest": survey.get("survey_digest"),
+            **{key: list(survey.get(key) or []) for key in ("mounts", "by_class", "top_roots", "top_owners")},
+            "unclassified_roots": list(survey.get("unclassified_roots") or [])[
+                :USAGE_PROJECTED_UNCLASSIFIED_ROOTS
+            ],
+        }
+    if error:
+        projection["error"] = error
+    return projection
+
+
+def usage_alerts(survey: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Warnings from a survey: large unclassified roots and poorly attributed mounts."""
+
+    def number(value: Any) -> bool:
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+    alerts: list[dict[str, Any]] = []
+    for row in survey.get("unclassified_roots") or []:
+        size = row.get("allocated_bytes") if isinstance(row, Mapping) else None
+        if number(size) and size > USAGE_UNCLASSIFIED_ALERT_BYTES:
+            alerts.append({"code": "usage_unclassified_root", "root": row.get("root"), "allocated_bytes": size})
+    for row in survey.get("mounts") or []:
+        fraction = row.get("attributed_fraction") if isinstance(row, Mapping) else None
+        if number(fraction) and fraction < USAGE_ATTRIBUTION_ALERT_FRACTION:
+            alerts.append({"mount": row.get("mount"), "code": "usage_attribution_low",
+                           "attributed_fraction": fraction})
+    return alerts
+
+
+_SUMMARY_MOUNT_KEYS = (
+    "mount", "status", "total_bytes", "free_bytes", "used_fraction", "floor_bytes",
+    "reserved_bytes", "available_bytes", "refused_roles", "forecast", "level",
+)
+_SUMMARY_ALERT_KEYS = (
+    "code", "mount", "provider", "roles", "used_fraction", "days_until_floor", "root",
+    "allocated_bytes", "attributed_fraction",
+)
+
+
+def capacity_summary(report: Mapping[str, Any], *, max_bytes: int = SUMMARY_MAX_BYTES) -> dict[str, Any]:
+    """The secret-free projection of a report that the operator door reads.
+
+    Named keys only: no project spend, no provider funding, no alert error text and
+    no URLs. When the document would exceed ``max_bytes`` its longest list is halved
+    until it fits, and ``truncated`` says so.
+    """
+
+    usage = report.get("usage")
+    resize = report.get("volume_resize")
+    summary: dict[str, Any] = {
+        "schema_version": SUMMARY_SCHEMA_VERSION,
+        "observed_at_epoch": report.get("observed_at_epoch"),
+        "level": report.get("level"),
+        "report_digest": report.get("report_digest"),
+        "alerts": [
+            {key: alert[key] for key in _SUMMARY_ALERT_KEYS if key in alert}
+            for alert in report.get("alerts") or []
+            if isinstance(alert, Mapping)
+        ],
+        "mounts": [
+            {key: row[key] for key in _SUMMARY_MOUNT_KEYS if key in row}
+            for row in report.get("mounts") or []
+            if isinstance(row, Mapping)
+        ],
+        "usage": dict(usage) if isinstance(usage, Mapping) else {"status": "unavailable"},
+        "volume_resize": (
+            {key: resize[key] for key in ("status", "reason") if key in resize}
+            if isinstance(resize, Mapping)
+            else None
+        ),
+    }
+
+    def size() -> int:
+        return len(json.dumps(summary, indent=2, sort_keys=True)) + 1
+
+    if size() > max_bytes:
+        summary["truncated"] = True
+    while size() > max_bytes:
+        usage_lists = [(summary["usage"], key) for key in
+                       ("unclassified_roots", "top_owners", "top_roots", "by_class", "mounts")]
+        candidates = [
+            (len(json.dumps(holder[key])), holder, key)
+            for holder, key in [(summary, "alerts"), (summary, "mounts"), *usage_lists]
+            if isinstance(holder.get(key), list) and holder[key]
+        ]
+        if not candidates:
+            break
+        _size, holder, key = max(candidates, key=lambda candidate: candidate[0])
+        holder[key] = holder[key][: len(holder[key]) // 2]
+    return summary
+
+
 def write_report(report_root: Path, report: Mapping[str, Any]) -> Path:
     report_root.mkdir(parents=True, exist_ok=True, mode=0o750)
     latest = report_root / "latest.json"
     temporary = report_root / f".latest-{os.getpid()}.tmp"
     temporary.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     os.replace(temporary, latest)
+    # history.jsonl is never pruned: it keeps each tick's measurement, while the
+    # forecast and the per-role footprints stay in latest.json.
     with (report_root / "history.jsonl").open("a", encoding="utf-8") as stream:
         for row in report.get("mounts") or []:
-            stream.write(json.dumps({k: v for k, v in row.items() if k != "forecast"}, sort_keys=True) + "\n")
+            kept = {k: v for k, v in row.items() if k not in {"forecast", "footprints"}}
+            stream.write(json.dumps(kept, sort_keys=True) + "\n")
+    # latest.json and history.jsonl stay root-only; the door (the service account)
+    # reads the secret-free summary, so the directory itself becomes traversable.
+    _write_public_json(report_root / SUMMARY_FILENAME, capacity_summary(report))
+    try:
+        os.chmod(report_root, 0o755)
+    except PermissionError:
+        # Deploy creates a missing sandbox directory as the service account, and the
+        # unit holds no CAP_FOWNER. The door owns such a directory and reads the
+        # summary anyway; if it cannot, its status names the error.
+        pass
     return latest
 
 
 def alert_due(previous: Mapping[str, Any] | None, report: Mapping[str, Any], *, now: float) -> bool:
-    """Alert on every escalation, and re-alert hourly while critical."""
+    """Alert on escalation or a new affected target, and retry failed delivery."""
 
     level = report.get("level")
     if level == "ok":
         return False
     if previous is None or previous.get("level") != level:
+        return True
+    # alert_posted describes this tick, so a quiet tick after a successful
+    # delivery must not turn the following tick into a retry.
+    if previous.get("alert_error") or not isinstance(previous.get("last_alert_epoch"), (int, float)):
+        return True
+
+    def actionable_alerts(value: Mapping[str, Any]) -> set[tuple[str, str, str, str, tuple[str, ...]]]:
+        return {
+            (code, str(row.get("mount") or ""), str(row.get("provider") or ""),
+             str(row.get("root") or ""),
+             tuple(sorted(str(role) for role in row.get("roles") or [])))
+            for row in value.get("alerts") or []
+            if isinstance(row, Mapping)
+            and isinstance((code := row.get("code")), str)
+            and not code.startswith("usage_")
+        }
+
+    if actionable_alerts(report) - actionable_alerts(previous):
         return True
     last = previous.get("last_alert_epoch")
     return level == "critical" and (not isinstance(last, (int, float)) or now - float(last) >= ALERT_REPEAT_SECONDS)
@@ -441,7 +822,13 @@ def run_controller(
     credit_collector: Callable[[], Mapping[str, Any]] | None = None,
     credit_warning_usd: float = 5.0,
     credit_reserve_usd: float = 1.0,
+    survey: Callable[..., Mapping[str, Any]] | None | object = _DEFAULT_SURVEY,
+    survey_interval_seconds: float = DEFAULT_SURVEY_INTERVAL_SECONDS,
+    force_survey: bool = False,
 ) -> dict[str, Any]:
+    """One tick. By default, survey when stale or forced. Pass ``survey=None``
+    only to reuse an existing report without scanning."""
+
     observed = time.time() if now is None else float(now)
     previous = _read_json(report_root / "latest.json")
     report = build_capacity_report(
@@ -479,6 +866,18 @@ def run_controller(
             report["level"] = "critical"
             report["alerts"].extend({"provider": "vast", "code": code}
                                     for code in funding["blockers"])
+    if survey is _DEFAULT_SURVEY:
+        survey = survey_usage
+    usage, usage_error = _refresh_usage(
+        report_root, survey=survey, mounts=mounts, interval_seconds=survey_interval_seconds,
+        force=force_survey, now=observed,
+    )
+    if usage is not None or usage_error is not None:
+        report["usage"] = usage_projection(usage, now=observed, error=usage_error)
+    if usage is not None and (warnings := usage_alerts(usage)):
+        report["alerts"].extend(warnings)
+        if report["level"] == "ok":
+            report["level"] = "warning"
     report["alert_posted"] = False
     if webhook_url and alert_due(previous, report, now=observed):
         try:
@@ -548,6 +947,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--webhook-url", default=os.getenv(WEBHOOK_URL_ENV) or "")
     parser.add_argument("--print", action="store_true", dest="print_report")
+    parser.add_argument("--survey", action="store_true",
+                        help="survey disk usage now, whatever the age of the last survey")
     args = parser.parse_args(argv)
     mounts = args.mount or [item for item in str(os.getenv(MOUNTS_ENV) or "").split(":") if item] or list(DEFAULT_MOUNTS)
     report = run_controller(
@@ -562,6 +963,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                           not in {"false", "0", ""} else None),
         credit_warning_usd=float(os.getenv(WARNING_ENV, "5")),
         credit_reserve_usd=float(os.getenv(RESERVE_ENV, "1")),
+        survey=survey_usage,
+        survey_interval_seconds=_env_int(SURVEY_INTERVAL_ENV, DEFAULT_SURVEY_INTERVAL_SECONDS),
+        force_survey=args.survey,
     )
     if args.print_report:
         print(json.dumps(report, indent=2, sort_keys=True))
@@ -575,10 +979,14 @@ __all__ = [
     "CRITICAL_FRACTION",
     "RESIZE_ACK",
     "SCHEMA_VERSION",
+    "SUMMARY_SCHEMA_VERSION",
     "WARNING_FRACTION",
     "ControlPlaneCapacityError",
     "alert_due",
     "build_capacity_report",
+    "capacity_summary",
+    "chain_footprints",
+    "footprint_basis",
     "forecast",
     "live_reserved_bytes",
     "main",
@@ -586,6 +994,9 @@ __all__ = [
     "plan_volume_resize",
     "resize_volume",
     "run_controller",
+    "survey_mounts",
+    "usage_alerts",
+    "usage_projection",
     "write_report",
 ]
 

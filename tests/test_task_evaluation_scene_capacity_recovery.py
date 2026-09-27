@@ -84,7 +84,7 @@ def capacity_fixture(tmp_path, monkeypatch, retries=2):
     def usage(_path):
         return shutil._ntuple_diskusage(100*1024**3, 100*1024**3-free["value"], free["value"])
     monkeypatch.setattr(capacity.shutil, "disk_usage", usage)
-    monkeypatch.setattr(controller, "measure_mount", lambda *a, **k: measure(*a, **k, disk_usage=usage))
+    monkeypatch.setattr(controller, "measure_mount", lambda *a, **k: measure(*a, **{**k, "disk_usage": usage}))
     observation = capacity.observe_failure(attempt=first, link_path=Path(link_ref["path"]),
         preparation_path=Path(prep_ref["path"]), factory_path=Path(factory_ref["path"]), config=config)
     admission = capacity.capacity_admission(observation, config, 103)
