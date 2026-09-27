@@ -1,14 +1,16 @@
 """Reclaim disposable binary copies after an offline replay has completed.
 
 Reports, logs, source code, readonly files and shared inodes remain untouched.
-One kind of copy is recognised by its place and name instead of a suffix: a
-parent replay's copy of a content-store blob, at
+With ``reclaim_store_copies`` (storage GC's opt-in; the standalone unit never
+passes it) one more kind of copy is recognised, by its place and name instead
+of a suffix: a parent replay's copy of a content-store blob, at
 ``prepared-references/content-addressed/sha256/<digest>``, together with every
 other name it has in the replay's ``prepared-references`` (the worker's
 materialized references are hard links to it). It keeps the store's read-only
 mode and has no suffix, so the whole inode qualifies when all of its links are
 there and its bytes match the digest it is named by; a link anywhere else
-keeps it.
+keeps it. Under the same opt-in any finished parent replay counts, whatever its
+status. Without it the rules are the ones this module always had.
 This module is also a standalone maintenance entrypoint; it never allocates a
 provider or changes the scientific release used by a live run.
 """
@@ -166,7 +168,13 @@ def _copy_unchanged(copy, names, paths, root):
     )
 
 
-def completed_report(root):
+def completed_report(root, *, any_parent_status=False):
+    """The report of a finished offline replay under ``root``, or None.
+
+    A parent replay writes its report when it returns and its fetcher refuses every
+    fetch, so with ``any_parent_status`` its report counts whatever its status or
+    ``nothing_fetched``; without it (the standalone unit) only ``nothing_fetched`` does.
+    """
     for name in ("stage_replay_report.v1.json", "replay_report.json", "replay.json", "report.json"):
         path = root / name
         if not path.is_file() or path.is_symlink() or path.stat().st_size > 4 * 1024**2:
@@ -179,8 +187,7 @@ def completed_report(root):
             continue
         parent = (
             value.get("schema_version") == "task_evaluation_parent_replay_report.v1"
-            # A refused worker pass is finished too; the replay's fetcher refuses every fetch.
-            and (value.get("nothing_fetched") is True or value.get("status") == "worker_refused")
+            and (any_parent_status or value.get("nothing_fetched") is True)
             and value.get("paid_execution_requested") is False
             and value.get("provider_mutation_performed") is False
         )
@@ -240,7 +247,7 @@ def active_reference(root, *, process_root=Path("/proc"), ignored_process_ids=()
     return False
 
 
-def _scan(replay_root, minimum_closed_seconds, now, process_root, *, verify):
+def _scan(replay_root, minimum_closed_seconds, now, process_root, *, verify, reclaim_store_copies, single_files):
     root = Path(replay_root)
     if not root.is_absolute() or any(p.is_symlink() for p in (root, *root.parents)):
         raise ValueError("replay_cache_root_unsafe")
@@ -251,34 +258,39 @@ def _scan(replay_root, minimum_closed_seconds, now, process_root, *, verify):
     for child in sorted(root.iterdir()):
         if not child.is_dir() or child.is_symlink():
             continue
-        report = completed_report(child)
+        report = completed_report(child, any_parent_status=reclaim_store_copies)
         if report is None or clock - report.stat().st_mtime < minimum_closed_seconds:
             continue
         if active_reference(child, process_root=process_root):
             kept.append({"root": str(child), "reason": "active_reference"})
             continue
         report_mtime_ns = report.stat().st_mtime_ns
-        copies, store_inodes = _store_copies(child, report_mtime_ns, verify=verify)
-        files = _single_files(child, report_mtime_ns, store_inodes, verify=verify)
+        copies, store_inodes = (
+            _store_copies(child, report_mtime_ns, verify=verify) if reclaim_store_copies else ([], set())
+        )
+        files = _single_files(child, report_mtime_ns, store_inodes, verify=verify) if single_files else []
         if files or copies:
-            rows.append(
-                {
-                    "root": str(child),
-                    "report_path": str(report),
-                    **({"report_sha256": file_sha(report)} if verify else {}),
-                    "files": files,
-                    "store_copies": copies,
-                }
-            )
-    candidate_bytes = sum(entry["size_bytes"] for r in rows for entry in (*r["files"], *r["store_copies"]))
+            # Without store copies a row is exactly the one this module always wrote.
+            row = {"root": str(child), "report_path": str(report)}
+            if verify:
+                row["report_sha256"] = file_sha(report)
+            row["files"] = files
+            if reclaim_store_copies:
+                row["store_copies"] = copies
+            rows.append(row)
+    candidate_bytes = sum(
+        entry["size_bytes"] for r in rows for entry in (*r["files"], *r.get("store_copies", ()))
+    )
     return root, clock, rows, kept, candidate_bytes
 
 
 def plan_replay_cache_retention(
-    *, replay_root, minimum_closed_seconds=60, now=None, process_root=Path("/proc")
+    *, replay_root, minimum_closed_seconds=60, now=None, process_root=Path("/proc"),
+    reclaim_store_copies=False, single_files=True,
 ):
     root, clock, rows, kept, candidate_bytes = _scan(
-        replay_root, minimum_closed_seconds, now, process_root, verify=True
+        replay_root, minimum_closed_seconds, now, process_root, verify=True,
+        reclaim_store_copies=reclaim_store_copies, single_files=single_files,
     )
     plan = {
         "schema_version": SCHEMA,
@@ -295,7 +307,8 @@ def plan_replay_cache_retention(
 
 
 def estimate_replay_cache_retention(
-    *, replay_root, minimum_closed_seconds=60, now=None, process_root=Path("/proc")
+    *, replay_root, minimum_closed_seconds=60, now=None, process_root=Path("/proc"),
+    reclaim_store_copies=False, single_files=True,
 ):
     """What a plan would reclaim, judged from names, links, sizes and ages without reading a byte.
 
@@ -303,7 +316,8 @@ def estimate_replay_cache_retention(
     bound. It carries no rows and cannot be applied.
     """
     root, clock, _rows, kept, candidate_bytes = _scan(
-        replay_root, minimum_closed_seconds, now, process_root, verify=False
+        replay_root, minimum_closed_seconds, now, process_root, verify=False,
+        reclaim_store_copies=reclaim_store_copies, single_files=single_files,
     )
     return {
         "schema_version": SCHEMA,
@@ -317,18 +331,25 @@ def estimate_replay_cache_retention(
     }
 
 
-def apply_replay_cache_retention(plan, *, ack, process_root=Path("/proc")):
+def apply_replay_cache_retention(
+    plan, *, ack, process_root=Path("/proc"), reclaim_store_copies=False, single_files=True
+):
     if ack != ACK or plan.get("plan_digest") != digest(
         {k: v for k, v in plan.items() if k != "plan_digest"}
     ):
         raise ValueError("replay_cache_plan_invalid")
+    # A plan is applied only under the options it could have been made with.
+    if not reclaim_store_copies and any(row.get("store_copies") for row in plan["rows"]):
+        raise ValueError("replay_cache_store_copies_not_admitted")
+    if not single_files and any(row.get("files") for row in plan["rows"]):
+        raise ValueError("replay_cache_single_files_not_admitted")
     removed, skipped = [], []
     base = Path(plan["replay_root"])
     for row in plan["rows"]:
         root = Path(row["root"])
         if root.parent != base or any(p.is_symlink() for p in (root, *root.parents)):
             raise ValueError("replay_cache_root_changed")
-        report = completed_report(root)
+        report = completed_report(root, any_parent_status=reclaim_store_copies)
         if (
             report is None
             or str(report) != row["report_path"]
@@ -405,15 +426,18 @@ def main():
     parser.add_argument("--minimum-closed-seconds", type=int, default=60)
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--ack", default="")
+    parser.add_argument("--reclaim-store-copies", action="store_true",
+                        help="also reclaim parent replays' content-store copies (storage GC's opt-in)")
     args = parser.parse_args()
+    options = {"reclaim_store_copies": args.reclaim_store_copies}
     plan = plan_replay_cache_retention(
-        replay_root=args.replay_root, minimum_closed_seconds=args.minimum_closed_seconds
+        replay_root=args.replay_root, minimum_closed_seconds=args.minimum_closed_seconds, **options
     )
     output = Path(args.report_root)
     output.mkdir(parents=True, exist_ok=True)
     key = plan["plan_digest"][7:]
     (output / (key + "-plan.json")).write_text(json.dumps(plan, indent=2) + "\n")
-    result = apply_replay_cache_retention(plan, ack=args.ack) if args.apply else plan
+    result = apply_replay_cache_retention(plan, ack=args.ack, **options) if args.apply else plan
     (output / (key + "-result.json")).write_text(json.dumps(result, indent=2) + "\n")
     print(
         json.dumps(

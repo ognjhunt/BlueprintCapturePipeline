@@ -41,10 +41,18 @@ def setup(tmp_path):
     return root, child, data, proc
 
 
-def plan(root, proc):
+def plan(root, proc, **options):
     return gc.plan_replay_cache_retention(
-        replay_root=root, process_root=proc, now=time.time() + 120
+        replay_root=root, process_root=proc, now=time.time() + 120, **options
     )
+
+
+# The storage GC phase's opt-in; the standalone unit never passes it.
+STORE = {"reclaim_store_copies": True}
+
+
+def apply(p, proc, **options):
+    return gc.apply_replay_cache_retention(p, ack=gc.ACK, process_root=proc, **options)
 
 
 def test_reclaims_only_disposable_binary_copies_and_is_idempotent(tmp_path):
@@ -155,7 +163,7 @@ def test_content_addressed_scratch_copies_are_reclaimable(tmp_path):
     root, child, data, proc = setup(tmp_path)
     copy = _store_copy(child, b"a small read-only store blob")
 
-    p = plan(root, proc)
+    p = plan(root, proc, **STORE)
 
     assert planned_paths(p) == {"working.ply", str(copy.relative_to(child))}
     [row] = p["rows"]
@@ -164,12 +172,12 @@ def test_content_addressed_scratch_copies_are_reclaimable(tmp_path):
         "relative_paths": [str(copy.relative_to(child))], "inode": info.st_ino, "nlink": 1,
         "size_bytes": info.st_size, "mtime_ns": info.st_mtime_ns, "sha256": "sha256:" + copy.name}]
     assert p["candidate_bytes"] == 100000 + len(b"a small read-only store blob")
-    result = gc.apply_replay_cache_retention(p, ack=gc.ACK, process_root=proc)
+    result = apply(p, proc, **STORE)
     assert result["removed_bytes"] == p["candidate_bytes"]
     assert not copy.exists() and not data.exists()
     for name in ["readonly.ply", "shared.ply", "run.log", "stage_replay_report.v1.json"]:
         assert (child / name).exists()
-    assert plan(root, proc)["candidate_bytes"] == 0
+    assert plan(root, proc, **STORE)["candidate_bytes"] == 0
 
 
 def test_linked_scratch_pairs_inside_the_replay_are_reclaimed(tmp_path):
@@ -182,7 +190,7 @@ def test_linked_scratch_pairs_inside_the_replay_are_reclaimed(tmp_path):
     materialized.parent.mkdir(parents=True)
     os.link(copy, materialized)
 
-    p = plan(root, proc)
+    p = plan(root, proc, **STORE)
 
     [row] = p["rows"]
     [group] = row["store_copies"]
@@ -190,7 +198,7 @@ def test_linked_scratch_pairs_inside_the_replay_are_reclaimed(tmp_path):
     assert group["relative_paths"] == sorted([str(copy.relative_to(child)), str(materialized.relative_to(child))])
     assert (group["nlink"], group["sha256"]) == (2, "sha256:" + copy.name)
     assert p["candidate_bytes"] == len(b"a copy the replayed preparation materialized"), "counted once"
-    result = gc.apply_replay_cache_retention(p, ack=gc.ACK, process_root=proc)
+    result = apply(p, proc, **STORE)
     assert result["removed_bytes"] == p["candidate_bytes"]
     assert result["removed"] == [{"paths": [str(child / name) for name in group["relative_paths"]],
                                   "sha256": group["sha256"], "size_bytes": group["size_bytes"]}]
@@ -217,17 +225,17 @@ def test_an_interrupted_copy_removal_is_finished_by_the_next_plan(tmp_path, monk
             raise OSError(errno.EIO, "interrupted")
         return real_unlink(self, *args, **kwargs)
 
-    first = plan(root, proc)
+    first = plan(root, proc, **STORE)
     monkeypatch.setattr(Path, "unlink", unlink)
     with pytest.raises(OSError):
-        gc.apply_replay_cache_retention(first, ack=gc.ACK, process_root=proc)
+        apply(first, proc, **STORE)
     monkeypatch.setattr(Path, "unlink", real_unlink)
 
     assert copy.exists() and copy.stat().st_nlink == 1
-    again = plan(root, proc)
+    again = plan(root, proc, **STORE)
     [group] = again["rows"][0]["store_copies"]
     assert (group["relative_paths"], group["nlink"]) == ([str(copy.relative_to(child))], 1)
-    assert gc.apply_replay_cache_retention(again, ack=gc.ACK, process_root=proc)["removed_bytes"] == size
+    assert apply(again, proc, **STORE)["removed_bytes"] == size
     assert not copy.exists()
 
 
@@ -243,7 +251,7 @@ def test_scratch_inode_linked_outside_the_replay_is_kept(tmp_path):
     (child / "launch-preparations").mkdir()
     os.link(queued, child / "launch-preparations" / queued.name)
 
-    p = plan(root, proc)
+    p = plan(root, proc, **STORE)
 
     assert (p["rows"], p["candidate_bytes"]) == ([], 0)
     assert production.exists() and queued.exists()
@@ -260,7 +268,7 @@ def test_mismatched_or_changed_scratch_copies_are_kept(tmp_path):
     second = child / "prepared-references" / "prep" / reclaimable.name
     os.link(reclaimable, second)
 
-    before = plan(root, proc)
+    before = plan(root, proc, **STORE)
 
     assert planned_paths(before) == {str(reclaimable.relative_to(child)), str(second.relative_to(child))}
     [row] = before["rows"]
@@ -270,18 +278,14 @@ def test_mismatched_or_changed_scratch_copies_are_kept(tmp_path):
     info = mismatched.stat()
     forged = {"relative_paths": [str(mismatched.relative_to(child))], "inode": info.st_ino, "nlink": 1,
               "size_bytes": info.st_size, "mtime_ns": info.st_mtime_ns, "sha256": gc.file_sha(mismatched)}
-    assert gc.apply_replay_cache_retention(reseal(before, {**row, "store_copies": [forged]}),
-                                           ack=gc.ACK, process_root=proc)["removed_bytes"] == 0
+    assert apply(reseal(before, {**row, "store_copies": [forged]}), proc, **STORE)["removed_bytes"] == 0
     # leave one of a copy's names behind,
     partial = {**group, "relative_paths": [str(reclaimable.relative_to(child))], "nlink": 1}
-    assert gc.apply_replay_cache_retention(reseal(before, {**row, "store_copies": [partial]}),
-                                           ack=gc.ACK, process_root=proc)["removed_bytes"] == 0
+    assert apply(reseal(before, {**row, "store_copies": [partial]}), proc, **STORE)["removed_bytes"] == 0
     # or reach outside the replay's prepared-references.
     for names in ([group["relative_paths"][0]] * 2, ["stage_replay_report.v1.json"], ["../outside"]):
         with pytest.raises(ValueError, match="replay_cache_member_unsafe"):
-            gc.apply_replay_cache_retention(
-                reseal(before, {**row, "store_copies": [{**group, "relative_paths": names}]}),
-                ack=gc.ACK, process_root=proc)
+            apply(reseal(before, {**row, "store_copies": [{**group, "relative_paths": names}]}), proc, **STORE)
 
     # A reader that appears after the plan keeps the copy at apply; the next plan keeps its root.
     process = proc / "123"
@@ -289,15 +293,15 @@ def test_mismatched_or_changed_scratch_copies_are_kept(tmp_path):
     (process / "cmdline").write_bytes(b"python")
     (process / "environ").write_bytes(b"")
     (process / "fd" / "3").symlink_to(reclaimable)
-    result = gc.apply_replay_cache_retention(before, ack=gc.ACK, process_root=proc)
+    result = apply(before, proc, **STORE)
     assert result["removed_bytes"] == 0
     assert result["skipped"] == [{"root": str(child), "reason": "active_reference"}]
-    assert plan(root, proc)["kept"] == [{"root": str(child), "reason": "active_reference"}]
+    assert plan(root, proc, **STORE)["kept"] == [{"root": str(child), "reason": "active_reference"}]
 
     # Linked elsewhere after the plan: apply rechecks the link count and keeps every name.
     (process / "fd" / "3").unlink()
     os.link(reclaimable, tmp_path / "late-link")
-    result = gc.apply_replay_cache_retention(before, ack=gc.ACK, process_root=proc)
+    result = apply(before, proc, **STORE)
     assert result["removed_bytes"] == 0
     assert result["skipped"] == [{"paths": [str(child / name) for name in group["relative_paths"]],
                                   "reason": "copy_changed"}]
@@ -313,35 +317,111 @@ def test_an_estimate_reads_no_bytes_and_bounds_the_plan(tmp_path, monkeypatch):
     real_file_sha = gc.file_sha
     monkeypatch.setattr(gc, "file_sha", lambda path: pytest.fail(f"an estimate read {path}"))
 
-    estimate = gc.estimate_replay_cache_retention(replay_root=root, process_root=proc, now=time.time() + 120)
+    estimate = gc.estimate_replay_cache_retention(replay_root=root, process_root=proc, now=time.time() + 120, **STORE)
 
     monkeypatch.setattr(gc, "file_sha", real_file_sha)
-    p = plan(root, proc)
+    p = plan(root, proc, **STORE)
     assert "rows" not in estimate and estimate["digests_verified"] is False
     # Only a plan reads the bytes, so only a plan can tell that a copy is not what its name says.
     assert p["candidate_bytes"] == data.stat().st_size + copy.stat().st_size
     assert estimate["estimated_candidate_bytes"] == p["candidate_bytes"] + mismatched.stat().st_size
 
 
-def test_refused_parent_replay_is_finished_for_retention(tmp_path):
-    """A parent replay whose worker pass raised has written its report and returned, and its
-    fetcher refuses every fetch by construction. Before the release, that path recorded no
-    nothing_fetched, so such a replay's copies were never reclaimed."""
+def test_any_finished_parent_replay_counts_under_the_store_copy_opt_in(tmp_path):
+    """A parent replay writes its report when it returns, whatever its status, and its fetcher
+    refuses every fetch by construction, so nothing_fetched adds no safety there. Requiring it
+    kept the copies of every refused, blocked or rowless lookahead forever. Without the opt-in
+    the rule is unchanged: only nothing_fetched counts."""
     root, child, data, proc = setup(tmp_path)
     report = child / "stage_replay_report.v1.json"
+    clean = {"paid_execution_requested": False, "provider_mutation_performed": False}
 
     def write(**fields):
         report.write_text(json.dumps({"schema_version": "task_evaluation_parent_replay_report.v1", **fields}))
 
-    write(status="worker_refused", paid_execution_requested=False, provider_mutation_performed=False)
-    assert gc.completed_report(child) == report
-    assert plan(root, proc)["candidate_bytes"] == data.stat().st_size
+    for fields in ({"status": "worker_refused"}, {"status": "blocked", "nothing_fetched": False}, {"status": "no_row"}):
+        write(**fields, **clean)
+        assert gc.completed_report(child, any_parent_status=True) == report, fields
+        assert gc.completed_report(child) is None, fields
+    assert plan(root, proc, **STORE)["candidate_bytes"] == data.stat().st_size
+    assert plan(root, proc)["candidate_bytes"] == 0
 
     for fields in (
-        {"status": "refused", "paid_execution_requested": False, "provider_mutation_performed": False},
-        {"status": "worker_refused", "paid_execution_requested": True, "provider_mutation_performed": False},
-        {"status": "worker_refused", "paid_execution_requested": False, "provider_mutation_performed": True},
-        {"status": "worker_refused", "provider_mutation_performed": False},
+        {"status": "blocked", "paid_execution_requested": True, "provider_mutation_performed": False},
+        {"status": "blocked", "paid_execution_requested": False, "provider_mutation_performed": True},
+        {"status": "blocked", "provider_mutation_performed": False},
     ):
         write(**fields)
-        assert gc.completed_report(child) is None, fields
+        assert gc.completed_report(child, any_parent_status=True) is None, fields
+    write(nothing_fetched=True, **clean)
+    assert gc.completed_report(child) == gc.completed_report(child, any_parent_status=True) == report
+
+
+def test_without_the_opt_in_the_rules_are_the_ones_the_unit_always_had(tmp_path):
+    """blueprint-completed-replay-cache-gc runs main() as root every five minutes with --apply
+    over stage-replays. The store-copy rules reach it only through their own opt-in, so without
+    it the plan is exactly the one it made before them: no store copies, no refused or blocked
+    parent replays, and rows with the same keys in the same order."""
+    root, child, data, proc = setup(tmp_path)
+    copy = _store_copy(child, b"a store copy the unit leaves alone")
+    os.link(copy, child / "prepared-references" / copy.name)
+    for name, status in (("parent-refused", {"status": "worker_refused"}),
+                         ("parent-blocked", {"status": "blocked", "nothing_fetched": False})):
+        other = root / name
+        other.mkdir()
+        (other / "working.ply").write_bytes(b"w" * 100000)
+        (other / "stage_replay_report.v1.json").write_text(json.dumps({
+            "schema_version": "task_evaluation_parent_replay_report.v1",
+            "paid_execution_requested": False, "provider_mutation_performed": False, **status}))
+    report = child / "stage_replay_report.v1.json"
+    info = data.stat()
+
+    p = plan(root, proc)
+
+    assert list(p) == ["schema_version", "status", "observed_at_epoch", "replay_root", "rows", "kept",
+                       "candidate_bytes", "reports_and_original_evidence_removed", "plan_digest"]
+    assert [list(row) for row in p["rows"]] == [["root", "report_path", "report_sha256", "files"]]
+    assert p["rows"] == [{
+        "root": str(child), "report_path": str(report), "report_sha256": gc.file_sha(report),
+        "files": [{"relative_path": "working.ply", "inode": info.st_ino, "mtime_ns": info.st_mtime_ns,
+                   "size_bytes": 100000, "sha256": gc.file_sha(data)}]}]
+    # A plan made with the opt-in cannot be applied without it.
+    with pytest.raises(ValueError, match="replay_cache_store_copies_not_admitted"):
+        apply(plan(root, proc, **STORE), proc)
+    assert [row["path"] for row in apply(p, proc)["removed"]] == [str(data)]
+    assert copy.exists() and (root / "parent-refused" / "working.ply").exists()
+    assert (root / "parent-blocked" / "working.ply").exists()
+
+
+def test_single_files_can_be_left_to_their_own_rules(tmp_path):
+    """The storage GC phase removes only digest-verified store copies: its plans carry no single
+    files, and a plan that does is refused when applied without them."""
+    root, child, data, proc = setup(tmp_path)
+    copy = _store_copy(child, b"a store copy")
+
+    p = plan(root, proc, single_files=False, **STORE)
+
+    assert planned_paths(p) == {str(copy.relative_to(child))}
+    with pytest.raises(ValueError, match="replay_cache_single_files_not_admitted"):
+        apply(plan(root, proc, **STORE), proc, single_files=False, **STORE)
+    assert apply(p, proc, single_files=False, **STORE)["removed_bytes"] == len(b"a store copy")
+    assert data.exists() and not copy.exists()
+
+
+def test_the_standalone_command_takes_store_copies_only_when_asked(tmp_path, monkeypatch):
+    seen: list[tuple[str, dict]] = []
+    monkeypatch.setattr(gc, "plan_replay_cache_retention",
+                        lambda **options: seen.append(("plan", options)) or {"plan_digest": "sha256:" + "0" * 64})
+    monkeypatch.setattr(gc, "apply_replay_cache_retention",
+                        lambda plan, **options: seen.append(("apply", options)) or {"status": "applied"})
+    for extra in ([], ["--reclaim-store-copies"]):
+        monkeypatch.setattr("sys.argv", ["completed_replay_cache_retention", "--replay-root", str(tmp_path),
+                                         "--report-root", str(tmp_path / "reports"), "--apply", "--ack", gc.ACK,
+                                         *extra])
+        gc.main()
+
+    assert [(step, options["reclaim_store_copies"]) for step, options in seen] == [
+        ("plan", False), ("apply", False), ("plan", True), ("apply", True)]
+    unit = (Path(__file__).resolve().parents[1] / "deploy/systemd/blueprint-completed-replay-cache-gc.service").read_text(
+        encoding="utf-8")
+    assert "--apply" in unit and "--reclaim-store-copies" not in unit, "the store-copy rules stay out of the unit"

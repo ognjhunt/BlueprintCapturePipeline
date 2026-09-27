@@ -64,6 +64,24 @@ def _tick(tmp_path: Path, parent_root: Path, **kwargs):
                           now=lambda: NOW, replay_parent_roots=[parent_root], **{"classifier": _noclass, **kwargs})
 
 
+def test_the_phase_removes_only_digest_verified_store_copies(tmp_path) -> None:
+    """Other files in a replay (a writable binary the standalone unit's rules would take)
+    are not this phase's business: it opted into store copies and nothing else."""
+
+    parent_root = tmp_path / "scene-configuration-activations"
+    blob, report, _lookahead_report = _activation(parent_root)
+    binary = report.parent / "render.ply"
+    binary.write_bytes(b"b" * 100_000)
+    os.utime(binary, (NOW - 7200, NOW - 7200))
+    size = blob.stat().st_size
+
+    assert _tick(tmp_path, parent_root)["replay_caches"]["estimated_candidate_bytes"] == size
+    tick = _tick(tmp_path, parent_root, apply=True, ack=RUN_ACK, replay_cache_retention_enabled=True)
+
+    assert tick["replay_caches"]["removed_bytes"] == size
+    assert not blob.exists() and binary.exists()
+
+
 def test_replay_cache_phase_plans_by_default_and_applies_only_when_enabled(tmp_path) -> None:
     parent_root = tmp_path / "scene-configuration-activations"
     blob, report, lookahead_report = _activation(parent_root)

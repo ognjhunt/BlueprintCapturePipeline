@@ -7,10 +7,12 @@ there: the activations sit on the root disk and the store on the work volume,
 so linking failed with EXDEV. Nothing removed the copies; on 2026-09-27, 107
 activations held about 13 GiB of them.
 
-Each lookahead is handed to ``completed_replay_cache_retention``, which removes
-only digest-verified copies inside a completed offline parent replay, each with
-every name the worker linked to it there, and keeps every report, including the
-lookahead report the activation records by path, digest and size. Until the
+Each lookahead is handed to ``completed_replay_cache_retention`` with its
+store-copy opt-in and without its single-file rules, so this phase only ever
+removes digest-verified content-store copies inside a finished offline parent
+replay, each with every name the worker linked to it there. It keeps every
+report, including the lookahead report the activation records by path, digest
+and size, and every other file. Until the
 owner sets ``BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_RETENTION=1`` a tick removes
 nothing and reads no byte: it estimates from names, link counts and sizes, and
 only a tick that applies hashes the copies it is about to remove.
@@ -31,6 +33,8 @@ REPLAY_CACHE_RETENTION_ENV = "BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_RETENTION"
 REPLAY_CACHE_RETENTION_INVALID = "replay_cache_retention_setting_invalid"
 LOOKAHEAD_DIRECTORY = "lookahead"
 DEFAULT_MINIMUM_CLOSED_SECONDS = 60 * 60
+# Store copies only: the standalone unit's single-file rules are not this phase's business.
+_RULES = {"reclaim_store_copies": True, "single_files": False}
 _MAX_ROWS = 50
 _TRUE = frozenset({"1", "true", "yes"})
 _FALSE = frozenset({"0", "false", "no"})
@@ -98,7 +102,7 @@ def reclaim_replay_caches(
                 continue
             report["replay_root_count"] += 1
             scope = {"replay_root": lookahead, "minimum_closed_seconds": minimum_closed_seconds,
-                     "now": now(), "process_root": process_root}
+                     "now": now(), "process_root": process_root, **_RULES}
             try:
                 if not applying:
                     estimate = retention.estimate_replay_cache_retention(**scope)
@@ -110,7 +114,7 @@ def reclaim_replay_caches(
                 rows["kept"].extend(plan["kept"])
                 if plan["rows"]:
                     result = retention.apply_replay_cache_retention(
-                        plan, ack=retention.ACK, process_root=process_root)
+                        plan, ack=retention.ACK, process_root=process_root, **_RULES)
                     report["removed_bytes"] += result["removed_bytes"]
                     rows["skipped"].extend(result["skipped"])
             except Exception as exc:  # noqa: BLE001 - one lookahead never costs the others
