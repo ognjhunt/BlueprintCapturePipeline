@@ -102,6 +102,7 @@ STORAGE_ROOTS: tuple[StorageRoot, ...] = (
     StorageRoot(f"{_CONTROL_PLANE}/disk-reservations", "ledger", "blueprint", "disk admission ledger"),
     StorageRoot(f"{_CONTROL_PLANE}/storage-pins", "ledger", "blueprint", "derived-directory pins"),
     StorageRoot(f"{_CONTROL_PLANE}/provider-locks", "ledger", "blueprint", "paid launch lock slots"),
+    StorageRoot(f"{_CONTROL_PLANE}/release-leases", "ledger", "root", "release retention leases (sidecars for immutable bindings)"),
     # --- queues and scratch
     StorageRoot(f"{_CONTROL_PLANE}/task-evaluation-launches", "work", "blueprint", "launch queue"),
     StorageRoot(f"{_CONTROL_PLANE}/native-g1-team-campaigns", "work", "blueprint", "owner-scoped G1 campaign intent queue"),

@@ -429,11 +429,31 @@ def test_a_restart_never_takes_down_a_live_paid_controller(tmp_path: Path) -> No
 
 def test_releases_a_live_process_runs_from_are_found_by_cwd_or_argv(tmp_path: Path) -> None:
     releases = tmp_path / "releases"
+    runtimes = tmp_path / "system-runtimes"
     old, older = releases / ("a" * 40), releases / ("b" * 40)
+    renderer = runtimes / "splat-render" / ("c" * 40)
+    toolchain = runtimes / "scene-configuration" / ("d" * 40)
     (old / "src").mkdir(parents=True)
     older.mkdir(parents=True)
+    (renderer / "bin").mkdir(parents=True)
+    toolchain.mkdir(parents=True)
+    (releases / "scratch").mkdir()
     root = _proc(tmp_path, 7, cwd=old / "src")
     _proc(tmp_path, 8, argv=("python", str(older / "scripts/run.py")))
     _proc(tmp_path, 9, cwd=tmp_path, argv=("bash",))
+    # A renderer or toolchain process pins its runtime tree, not just its release.
+    _proc(tmp_path, 10, argv=(str(renderer / "bin" / "node"), "render.js"))
+    _proc(tmp_path, 11, cwd=toolchain)
+    # A path under a managed root that is not a commit tree is never reported.
+    _proc(tmp_path, 12, argv=("python", str(releases / "scratch" / "probe.py")))
+    # A path passed as --flag=/abs/path pins its tree too.
+    flagged = releases / ("e" * 40)
+    flagged.mkdir()
+    _proc(tmp_path, 13, argv=("python", "-m", "tool", f"--repo-root={flagged}/src"))
 
-    assert deploy._live_release_commits(releases, proc_root=root) == ["a" * 40, "b" * 40]
+    assert deploy._live_release_commits(releases, proc_root=root) == [
+        "a" * 40, "b" * 40, "e" * 40,
+    ]
+    assert deploy._live_release_commits(releases, runtime_root=runtimes, proc_root=root) == [
+        "a" * 40, "b" * 40, "c" * 40, "d" * 40, "e" * 40,
+    ]

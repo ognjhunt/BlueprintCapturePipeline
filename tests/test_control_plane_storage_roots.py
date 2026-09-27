@@ -109,6 +109,7 @@ def test_most_specific_root_wins_and_tools_refuse_wrong_classes() -> None:
     ("/var/lib/blueprint/pipeline-control-plane/result-artifact-cache", "cache", "blueprint"),
     ("/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-intents", "work", "blueprint"),
     ("/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-configuration-activation-intents", "work", "blueprint"),
+    ("/var/lib/blueprint/pipeline-control-plane/release-leases", "ledger", "root"),
 ])
 def test_owner_delivery_and_replay_roots_keep_their_retention_law(path, storage_class, owner):
     root = classify_path(path + "/retained-record.json")

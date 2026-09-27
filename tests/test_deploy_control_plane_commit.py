@@ -21,6 +21,7 @@ import importlib.util
 import io
 import json
 import os
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -1633,6 +1634,29 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
         ),
     )
 
+    # Retirement runs for real, but only against this test's own tree: never
+    # the host's protection sources, runtime root or process table.
+    monkeypatch.setattr(deploy, "_live_release_commits", lambda *args, **kwargs: [])
+    protection = _protection_sources(tmp_path / "protection")
+    # A previous deploy stopped between moving a tree aside and deleting it.
+    leftover = tmp_path / "releases" / ".retiring" / f"{'e' * 40}-0123456789ab"
+    leftover.mkdir(parents=True)
+    (leftover / "payload").write_bytes(b"x" * 32)
+    paid_gate_held_while_deleting: list[bool] = []
+    delete_retiring_trees = deploy.delete_retiring_trees
+
+    def observed_delete(roots):
+        with lock.open("r", encoding="utf-8") as probe:
+            try:
+                fcntl.flock(probe.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                paid_gate_held_while_deleting.append(True)
+            else:
+                fcntl.flock(probe.fileno(), fcntl.LOCK_UN)
+                paid_gate_held_while_deleting.append(False)
+        return delete_retiring_trees(roots)
+
+    monkeypatch.setattr(deploy, "delete_retiring_trees", observed_delete)
     receipt = deploy.deploy_control_plane_commit(
         source_repo=source,
         source_commit=commit,
@@ -1643,7 +1667,11 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
         paid_launch_locks=(str(lock),),
         intake_runtime_drop_in=tmp_path / "drop-in",
         scene_configuration_environment_file=tmp_path / "scene-runtime.env",
+        scene_configuration_runtime_root=tmp_path / "system-runtimes",
+        scene_preparation_bootstrap_file=tmp_path / "absent-bootstrap.json",
+        controls_autoprovision_bootstrap_file=tmp_path / "absent-controls-bootstrap.json",
         disk_reservation_root=tmp_path / "disk-reservations",
+        release_protection_sources=protection,
     )
 
     assert observed == [
@@ -1679,6 +1707,25 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
     ]
     assert receipt["release_provenance"]["git_sha"] == commit
     assert Path(receipt["release_provenance"]["path"]).stat().st_mode & 0o777 == 0o440
+    # The synthetic active link points outside the release root, so the plan
+    # cannot prove the active release: retirement is reported, never fatal,
+    # and its summary still lands under the state root.
+    retirement = receipt["release_retirement"]
+    assert retirement["status"] == "skipped"
+    assert retirement["blockers"] == ["release_retirement_active_target_outside_root"]
+    assert retirement["lock_roots"] == sorted(
+        str(path.resolve()) for path in (tmp_path / "state", protection.control_plane_root)
+    )
+    summary = tmp_path / "state" / "release-retention" / "latest-deploy-retirement.json"
+    assert json.loads(summary.read_text(encoding="utf-8"))["alerts"] == [
+        "release_retirement_blocked:release_retirement_active_target_outside_root"
+    ]
+    # Leftovers go before the disk reservation; this deploy's own deletion waits
+    # until the paid-launch gate is open again, so launches are not held out.
+    assert retirement["startup_swept"] == [
+        {"path": str(leftover.resolve()), "bytes": 32, "shared_bytes": 0}
+    ]
+    assert paid_gate_held_while_deleting == [False, True, False]
 
 
 def test_disk_reservation_runtime_repairs_root_owned_ledger_and_reports_receipt(
@@ -2379,6 +2426,43 @@ def test_installer_records_the_service_account_access_receipt(
 
 
 
+def _protection_sources(tmp_path: Path, **overrides: object):
+    """Typed protection sources laid out like the host, under ``tmp_path``."""
+
+    from blueprint_pipeline.control_plane_release_leases import LIVE_QUEUE_STATES
+
+    control_plane = tmp_path / "var/lib/blueprint/pipeline-control-plane"
+    for queue, states in LIVE_QUEUE_STATES.items():
+        for state in states:
+            (control_plane / queue / state).mkdir(parents=True, exist_ok=True)
+    for name in ("standing-authorizations", "task-evaluation-release-retention-bindings"):
+        (control_plane / name).mkdir(parents=True, exist_ok=True)
+    profiles = tmp_path / "etc/blueprint/task-evaluation-launch-profiles"
+    profiles.mkdir(parents=True, exist_ok=True)
+    values: dict[str, object] = {
+        "control_plane_root": control_plane,
+        "profile_dir": profiles,
+        "standing_authorization_dir": control_plane / "standing-authorizations",
+        "binding_root": control_plane / "task-evaluation-release-retention-bindings",
+        "lease_root": control_plane / "release-leases",
+        "config_files": (),
+        "intent_root": control_plane / "task-evaluation-scene-intents",
+        "launch_run_root": control_plane / "task-evaluation-launch-runs",
+    }
+    values.update(overrides)
+    return deploy.ProtectionSources(**values)
+
+
+def _release_trees(releases: Path, ages: dict[str, float], *, now: float) -> None:
+    for commit, age in ages.items():
+        directory = releases / commit
+        directory.mkdir(parents=True)
+        (directory / "renderer").write_bytes(b"retained renderer")
+        stamp = now - age
+        os.utime(directory / "renderer", (stamp, stamp))
+        os.utime(directory, (stamp, stamp))
+
+
 def test_release_retirement_is_skipped_without_protection_sources_and_applied_with_them(
     tmp_path: Path,
 ) -> None:
@@ -2388,52 +2472,52 @@ def test_release_retirement_is_skipped_without_protection_sources_and_applied_wi
 
     releases = tmp_path / "releases"
     runtimes = tmp_path / "runtimes"
-    now = _time.time()
-
-    def tree(commit: str, age: float) -> None:
-        directory = releases / commit
-        directory.mkdir(parents=True)
-        (directory / "f").write_text("x", encoding="utf-8")
-        stamp = now - age
-        os.utime(directory / "f", (stamp, stamp))
-        os.utime(directory, (stamp, stamp))
-
+    no_processes = tmp_path / "proc"
+    no_processes.mkdir()
     current, superseded = "a" * 40, "b" * 40
-    tree(current, 3_600)
-    tree(superseded, 10 * 86_400)
+    _release_trees(releases, {current: 3_600, superseded: 10 * 86_400}, now=_time.time())
     active = tmp_path / "active"
     active.symlink_to(releases / current, target_is_directory=True)
 
-    skipped = deploy._retire_superseded_release_trees(
-        release_root=releases,
-        runtime_root=runtimes,
-        active_link=active,
-        current_commit=current,
-        reference_roots=[str(tmp_path / "absent-profiles")],
-        keep_last=1,
+    def retire(sources):
+        return deploy._retire_superseded_release_trees(
+            release_root=releases,
+            runtime_root=runtimes,
+            active_link=active,
+            current_commit=current,
+            protection_sources=sources,
+            keep_last=1,
+            proc_root=no_processes,
+        )
+
+    # A live launch names a profile this host cannot read: nothing is provable.
+    unreadable = _protection_sources(tmp_path / "unreadable")
+    (unreadable.control_plane_root / "task-evaluation-launches/pending/launch.json").write_text(
+        json.dumps({"launch_profile_id": "never-published"}), encoding="utf-8"
     )
+    skipped = retire(unreadable)
     assert skipped["status"] == "skipped"
-    assert skipped["blockers"] == [
-        "release_retirement_protected_reference_root_missing:absent-profiles"
+    assert skipped["blockers"] == ["release_protection_profile_missing:never-published"]
+    assert skipped["alerts"] == [
+        "release_retirement_blocked:release_protection_profile_missing:never-published"
     ]
     assert (releases / superseded).is_dir()
 
-    profiles = tmp_path / "profiles"
-    profiles.mkdir()
-    applied = deploy._retire_superseded_release_trees(
-        release_root=releases,
-        runtime_root=runtimes,
-        active_link=active,
-        current_commit=current,
-        reference_roots=[str(profiles)],
-        keep_last=1,
+    # Without the publishers' lock root the deploy cannot exclude a publisher.
+    unlocked = retire(
+        _protection_sources(tmp_path / "unlocked", control_plane_root=tmp_path / "absent")
     )
+    assert unlocked["status"] == "blocked"
+    assert unlocked["blockers"] == ["release_reference_lock_root_unavailable"]
+    assert (releases / superseded).is_dir()
+
+    applied = retire(_protection_sources(tmp_path / "readable"))
     assert applied["status"] == "applied"
     assert applied["retired_commits"] == [superseded]
     assert applied["skipped"] == []
+    assert applied["alerts"] == []
     assert not (releases / superseded).exists()
     assert (releases / current).is_dir()
-    assert "release_retirement" in deploy.deploy_control_plane_commit.__code__.co_consts or True
     source = Path(deploy.__file__).read_text(encoding="utf-8")
     assert '"release_retirement": release_retirement,' in source
     assert source.index("release_retirement = _retire_superseded_release_trees(") > source.index(
@@ -2442,38 +2526,380 @@ def test_release_retirement_is_skipped_without_protection_sources_and_applied_wi
 
 
 def test_deploy_retirement_honors_required_historical_evidence_binding(tmp_path: Path) -> None:
-    """A terminal prefix still needs its old renderer after its queues empty."""
+    """A legacy binding gets a lease on the first deploy and protects until it lapses."""
     import time
 
     releases, runtimes = tmp_path / "releases", tmp_path / "runtimes"
+    no_processes = tmp_path / "proc"
+    no_processes.mkdir()
+    now = time.time()
     current, retained = "a" * 40, "b" * 40
-    for commit in (current, retained):
-        directory = releases / commit
-        directory.mkdir(parents=True)
-        (directory / "renderer").write_bytes(b"retained renderer")
-        old = time.time() - (3_600 if commit == current else 10 * 86_400)
-        os.utime(directory / "renderer", (old, old))
-        os.utime(directory, (old, old))
+    _release_trees(releases, {current: 3_600, retained: 10 * 86_400}, now=now)
     active = tmp_path / "active"
     active.symlink_to(releases / current, target_is_directory=True)
-    references = [tmp_path / path.lstrip("/") for path in deploy.DEFAULT_RELEASE_RETIREMENT_REFERENCE_ROOTS]
-    for root in references:
-        root.mkdir(parents=True, exist_ok=True)
-    bindings = tmp_path / "var/lib/blueprint/pipeline-control-plane/task-evaluation-release-retention-bindings"
-    bindings.mkdir(parents=True, exist_ok=True)
-    (bindings / "sam-prefix.json").write_text(json.dumps({
+    sources = _protection_sources(tmp_path)
+    binding = sources.binding_root / "sam-prefix.json"
+    binding.write_text(json.dumps({
         "schema_version": "task_evaluation_release_retention_binding.v1",
         "status": "required", "source_commit": retained,
         "reason": "Completed prefix replay reopens the original renderer release.",
     }))
+    before = binding.read_bytes()
+
+    def deploy_at(moment: float) -> dict:
+        return deploy._retire_superseded_release_trees(
+            release_root=releases, runtime_root=runtimes, active_link=active,
+            current_commit=current, protection_sources=sources, keep_last=1,
+            now=lambda: moment, proc_root=no_processes,
+        )
+
+    first = deploy_at(now)
+    assert first["status"] == "applied"
+    assert first["retired_commits"] == []
+    assert first["migrated_binding_count"] == 1
+    assert first["protected_by_kind"] == {
+        "active_release": 1, "current_deploy": 1, "keep_last": 1, "retention_binding": 1,
+    }
+    assert first["lease_protected_tree_count"] == 1
+    assert (releases / retained / "renderer").read_bytes() == b"retained renderer"
+    lease_root = sources.lease_root / "bindings"
+    assert (lease_root / "sam-prefix.json.lease.v1.json").is_file()
+    assert stat.S_IMODE(lease_root.stat().st_mode) == 0o750
+
+    later = deploy_at(now + 15 * 86_400)
+    assert later["status"] == "applied"
+    assert later["retired_commits"] == [retained]
+    assert later["lapsed_count"] == 1 and later["migrated_binding_count"] == 0
+    assert not (releases / retained).exists()
+    assert binding.read_bytes() == before
+
+
+def test_deploy_retirement_creates_missing_protection_roots_on_a_fresh_host(tmp_path: Path) -> None:
+    """A fresh host has no authorizations or bindings yet; that must not read as unreadable."""
+    import time
+
+    releases, runtimes = tmp_path / "releases", tmp_path / "runtimes"
+    no_processes = tmp_path / "proc"
+    no_processes.mkdir()
+    current, superseded = "a" * 40, "b" * 40
+    _release_trees(releases, {current: 3_600, superseded: 10 * 86_400}, now=time.time())
+    active = tmp_path / "active"
+    active.symlink_to(releases / current, target_is_directory=True)
+    sources = _protection_sources(tmp_path)
+    sources.standing_authorization_dir.rmdir()
+    sources.binding_root.rmdir()
+
+    def retire() -> dict:
+        return deploy._retire_superseded_release_trees(
+            release_root=releases, runtime_root=runtimes, active_link=active,
+            current_commit=current, protection_sources=sources, keep_last=1,
+            proc_root=no_processes,
+        )
+
+    # A root that had to be created proves nothing about what used to be in
+    # it, so the deploy that creates one retires nothing and says so.
+    created = retire()
+    assert created["status"] == "skipped" and created["reason"] == "protection_root_created"
+    assert created["alerts"] == [
+        "release_protection_root_created:standing-authorizations",
+        "release_protection_root_created:task-evaluation-release-retention-bindings",
+    ]
+    assert created["created_protection_roots"] == [
+        str(sources.standing_authorization_dir), str(sources.binding_root),
+    ]
+    assert (releases / superseded).is_dir()
+    for root in (sources.standing_authorization_dir, sources.binding_root):
+        assert root.is_dir() and list(root.iterdir()) == []
+        assert stat.S_IMODE(root.stat().st_mode) == 0o750
+
+    # The next deploy finds them present (and empty) and retires normally.
+    applied = retire()
+    assert applied["status"] == "applied" and applied["retired_commits"] == [superseded]
+    assert applied["created_protection_roots"] == []
+
+
+def test_deploy_retirement_holds_publisher_locks_and_writes_its_summary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Publishers take the reference lock shared; retirement takes every root exclusively."""
+    import contextlib
+    import time
+
+    releases, runtimes = tmp_path / "releases", tmp_path / "runtimes"
+    no_processes = tmp_path / "proc"
+    no_processes.mkdir()
+    now = time.time()
+    current, superseded = "a" * 40, "b" * 40
+    _release_trees(releases, {current: 3_600, superseded: 10 * 86_400}, now=now)
+    active = tmp_path / "active"
+    active.symlink_to(releases / current, target_is_directory=True)
+    sources = _protection_sources(tmp_path)
+    state = tmp_path / "deploy-state"
+    state.mkdir()
+    events: list[tuple] = []
+
+    @contextlib.contextmanager
+    def recorder(root, *, exclusive, **bounded):
+        assert bounded["timeout_seconds"] == deploy.DEFAULT_RELEASE_LOCK_TIMEOUT_SECONDS
+        events.append(("lock", Path(root), exclusive))
+        try:
+            yield
+        finally:
+            events.append(("unlock", Path(root)))
+
+    collect, apply = deploy.collect_release_protections, deploy.apply_release_retirement_plan
+    delete = deploy.delete_retiring_trees
+    monkeypatch.setattr(deploy, "release_reference_lock", recorder)
+    monkeypatch.setattr(
+        deploy, "delete_retiring_trees",
+        lambda roots: events.append(("delete",)) or delete(roots),
+    )
+    monkeypatch.setattr(
+        deploy, "collect_release_protections",
+        lambda *args, **kwargs: events.append(("collect", kwargs["migrate"])) or collect(*args, **kwargs),
+    )
+    monkeypatch.setattr(
+        deploy, "apply_release_retirement_plan",
+        lambda plan, **kwargs: events.append(("apply",)) or apply(plan, **kwargs),
+    )
+    summary_path = state / "release-retention" / "latest-deploy-retirement.json"
 
     result = deploy._retire_superseded_release_trees(
         release_root=releases, runtime_root=runtimes, active_link=active,
-        current_commit=current, reference_roots=[str(path) for path in references], keep_last=1,
+        current_commit=current, protection_sources=sources, keep_last=1, state_root=state,
+        now=lambda: now, proc_root=no_processes, summary_path=summary_path,
     )
+
+    roots = sorted([state.resolve(), sources.control_plane_root.resolve()])
+    # Leftovers are swept and this run's trees deleted only while no lock is held;
+    # under the lock the deploy only collects, plans and renames.
+    assert events == [
+        ("delete",),
+        ("lock", roots[0], True),
+        ("lock", roots[1], True),
+        ("collect", True),
+        ("apply",),
+        ("unlock", roots[1]),
+        ("unlock", roots[0]),
+        ("delete",),
+    ]
+    assert result["status"] == "applied" and result["retired_commits"] == [superseded]
+    assert result["lock_roots"] == [str(root) for root in roots]
+    assert result["summary"] == {"status": "written", "path": str(summary_path), "mode": "0644"}
+    assert stat.S_IMODE(summary_path.stat().st_mode) == 0o644
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert summary["schema_version"] == "control_plane_release_retirement_summary.v1"
+    assert summary["generated_at_epoch"] == now
+    assert summary["source_commit"] == current
+    assert summary["retired_commits"] == [superseded]
+    assert summary["alerts"] == [] and summary["lease_protected_tree_count"] == 0
+    # The deploy passes its own state root to both.
+    source = Path(deploy.__file__).read_text(encoding="utf-8")
+    assert "            state_root=state,\n" in source
+    assert 'summary_path=state / "release-retention" / RELEASE_RETIREMENT_SUMMARY_NAME' in source
+
+
+def test_deploy_retirement_reports_what_it_moved_deleted_and_swept(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Receipts list every rename and deletion, even when apply stops halfway."""
+    import time
+
+    releases, runtimes = tmp_path / "releases", tmp_path / "runtimes"
+    no_processes = tmp_path / "proc"
+    no_processes.mkdir()
+    now = time.time()
+    current, superseded, older = "a" * 40, "b" * 40, "c" * 40
+    _release_trees(releases, {current: 3_600, superseded: 10 * 86_400, older: 11 * 86_400}, now=now)
+    for component in ("splat-render", "scene-configuration"):
+        _release_trees(runtimes / component, {superseded: 10 * 86_400}, now=now)
+    active = tmp_path / "active"
+    active.symlink_to(releases / current, target_is_directory=True)
+    # A previous deploy stopped after moving a tree aside and before deleting it.
+    leftover = releases / ".retiring" / f"{'d' * 40}-0123456789ab"
+    leftover.mkdir(parents=True)
+    (leftover / "payload").write_bytes(b"x" * 64)
+    sources = _protection_sources(tmp_path)
+
+    import blueprint_pipeline.control_plane_release_retirement as retirement
+
+    stage = retirement._stage_aside
+    moved: list[Path] = []
+
+    def stop_after_two(path: Path, token: str) -> Path:
+        if len(moved) == 2:
+            raise RuntimeError("interrupted")
+        moved.append(stage(path, token))
+        return moved[-1]
+
+    monkeypatch.setattr(retirement, "_stage_aside", stop_after_two)
+    result = deploy._retire_superseded_release_trees(
+        release_root=releases, runtime_root=runtimes, active_link=active,
+        current_commit=current, protection_sources=sources, keep_last=1, proc_root=no_processes,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["blockers"] == ["deploy_release_retirement_failed:RuntimeError"]
+    assert result["swept"] == [{"path": str(leftover), "bytes": 64, "shared_bytes": 0}]
+    assert [row["staged_path"] for row in result["renamed"]] == [str(path) for path in moved]
+    assert sorted(row["path"] for row in result["deleted"]) == sorted(str(path) for path in moved)
+    assert result["retired_bytes"] == sum(row["bytes"] for row in result["deleted"]) > 0
+    for root in (releases, runtimes / "splat-render", runtimes / "scene-configuration"):
+        assert not (root / ".retiring").exists()
+    # What was not moved stays; the next deploy retires it normally.
+    monkeypatch.setattr(retirement, "_stage_aside", stage)
+    again = deploy._retire_superseded_release_trees(
+        release_root=releases, runtime_root=runtimes, active_link=active,
+        current_commit=current, protection_sources=sources, keep_last=1, proc_root=no_processes,
+    )
+    assert again["status"] == "applied" and again["swept"] == [] and again["deletion_failures"] == []
+    assert sorted(path.name for path in releases.iterdir()) == [current]
+
+
+def test_deploy_retirement_locks_the_control_plane_root_once_when_it_is_the_state_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On the host the deploy state root is the control-plane root; one descriptor only."""
+    import contextlib
+    import time
+
+    releases = tmp_path / "releases"
+    no_processes = tmp_path / "proc"
+    no_processes.mkdir()
+    current, superseded = "a" * 40, "b" * 40
+    _release_trees(releases, {current: 3_600, superseded: 10 * 86_400}, now=time.time())
+    active = tmp_path / "active"
+    active.symlink_to(releases / current, target_is_directory=True)
+    sources = _protection_sources(tmp_path)
+    locked: list[Path] = []
+
+    @contextlib.contextmanager
+    def recorder(root, *, exclusive, **_bounded):
+        locked.append(Path(root))
+        yield
+
+    monkeypatch.setattr(deploy, "release_reference_lock", recorder)
+    result = deploy._retire_superseded_release_trees(
+        release_root=releases, runtime_root=tmp_path / "runtimes", active_link=active,
+        current_commit=current, protection_sources=sources, keep_last=1,
+        state_root=sources.control_plane_root, proc_root=no_processes,
+    )
+
+    assert result["status"] == "applied" and result["retired_commits"] == [superseded]
+    assert locked == [sources.control_plane_root.resolve()]
+    assert result["lock_roots"] == [str(sources.control_plane_root.resolve())]
+
+
+def test_deploy_retirement_alerts_when_a_rename_or_a_deletion_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import errno
+    import time
+
+    import blueprint_pipeline.control_plane_release_retirement as retirement
+
+    releases, runtimes = tmp_path / "releases", tmp_path / "runtimes"
+    no_processes = tmp_path / "proc"
+    no_processes.mkdir()
+    now = time.time()
+    current, superseded = "a" * 40, "b" * 40
+    _release_trees(releases, {current: 3_600, superseded: 10 * 86_400}, now=now)
+    for component in ("splat-render", "scene-configuration"):
+        _release_trees(runtimes / component, {superseded: 10 * 86_400}, now=now)
+    active = tmp_path / "active"
+    active.symlink_to(releases / current, target_is_directory=True)
+    stage, remove_tree = retirement._stage_aside, retirement._remove_tree
+
+    def refuse_first_rename(path: Path, token: str) -> Path:
+        if path == releases / superseded:
+            raise OSError(errno.EACCES, "Permission denied")
+        return stage(path, token)
+
+    def refuse_splat_render_removal(path: Path) -> None:
+        if path.parent.parent.name == "splat-render":
+            raise OSError(errno.EBUSY, "Device or resource busy")
+        remove_tree(path)
+
+    monkeypatch.setattr(retirement, "_stage_aside", refuse_first_rename)
+    monkeypatch.setattr(retirement, "_remove_tree", refuse_splat_render_removal)
+    result = deploy._retire_superseded_release_trees(
+        release_root=releases, runtime_root=runtimes, active_link=active,
+        current_commit=current, protection_sources=_protection_sources(tmp_path), keep_last=1,
+        proc_root=no_processes,
+    )
+
     assert result["status"] == "applied"
-    assert result["retired_commits"] == []
-    assert (releases / retained / "renderer").read_bytes() == b"retained renderer"
+    assert result["skipped"] == [{"commit": superseded, "reason": "rename_failed:PermissionError"}]
+    assert [row["reason"] for row in result["deletion_failures"]] == ["removal_failed:OSError"]
+    assert result["alerts"] == [
+        "release_retirement_rename_failed:1",
+        "release_retirement_deletion_failed:1",
+    ]
+
+
+def test_a_retired_release_can_be_deployed_again_for_a_rollback(tmp_path: Path) -> None:
+    """Retirement deletes a real worktree; Git must forget it so the commit can return."""
+    import time
+
+    from tests.test_task_evaluation_control_plane_release import _git, _source_repo
+
+    repo, first, second = _source_repo(tmp_path)
+    releases, state, active = tmp_path / "releases", tmp_path / "state", tmp_path / "active"
+    for commit in (first, second):
+        deploy.stage_task_evaluation_control_plane_release(
+            source_repo=repo, source_commit=commit, release_root=releases, state_root=state,
+            active_link=active, activate=commit == second,
+        )
+    old = time.time() - 10 * 86_400
+    os.utime(releases / first, (old, old))
+    no_processes = tmp_path / "proc"
+    no_processes.mkdir()
+
+    result = deploy._retire_superseded_release_trees(
+        release_root=releases, runtime_root=tmp_path / "runtimes", active_link=active,
+        current_commit=second, protection_sources=_protection_sources(tmp_path), keep_last=1,
+        proc_root=no_processes, source_repo=repo,
+    )
+
+    assert result["status"] == "applied" and result["retired_commits"] == [first]
+    assert result["worktree_prune"] == {"status": "pruned"}
+    assert not (releases / first).exists()
+    assert str((releases / first).resolve()) not in _git(repo, "worktree", "list", "--porcelain")
+    # Rolling back to the retired commit stages and activates it again.
+    rollback = deploy.stage_task_evaluation_control_plane_release(
+        source_repo=repo, source_commit=first, release_root=releases, state_root=state,
+        active_link=active, activate=True,
+    )
+    assert rollback["created_release_checkout"] is True and rollback["activated"] is True
+    assert _git(releases / first, "rev-parse", "HEAD") == first
+
+
+def test_deploy_retirement_gives_up_when_a_publisher_holds_the_lock(tmp_path: Path) -> None:
+    """A stuck publisher costs this deploy its retirement, never the deploy itself."""
+    import time
+
+    from blueprint_pipeline.task_evaluation_release_reference_lock import release_reference_lock
+
+    releases = tmp_path / "releases"
+    no_processes = tmp_path / "proc"
+    no_processes.mkdir()
+    current, superseded = "a" * 40, "b" * 40
+    _release_trees(releases, {current: 3_600, superseded: 10 * 86_400}, now=time.time())
+    active = tmp_path / "active"
+    active.symlink_to(releases / current, target_is_directory=True)
+    sources = _protection_sources(tmp_path)
+
+    with release_reference_lock(sources.control_plane_root, exclusive=False):
+        result = deploy._retire_superseded_release_trees(
+            release_root=releases, runtime_root=tmp_path / "runtimes", active_link=active,
+            current_commit=current, protection_sources=sources, keep_last=1,
+            proc_root=no_processes, lock_timeout_seconds=0.2,
+        )
+
+    assert result["status"] == "blocked"
+    assert result["blockers"] == ["release_reference_lock_busy"]
+    assert result["alerts"] == ["release_retirement_blocked:release_reference_lock_busy"]
+    assert (releases / superseded).is_dir()
 
 
 def _stage_real_units(tmp_path: Path) -> Path:

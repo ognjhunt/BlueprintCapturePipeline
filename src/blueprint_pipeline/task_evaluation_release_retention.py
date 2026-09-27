@@ -53,6 +53,11 @@ from blueprint_pipeline.task_evaluation_standing_launch_authorization import (
 from blueprint_pipeline.task_evaluation_release_reference_lock import (
     release_reference_lock,
 )
+from blueprint_pipeline.control_plane_release_leases import (
+    DEFAULT_LEASE_ROOT,
+    RunStateResolver,
+    evaluate_binding_leases,
+)
 
 
 SCHEMA_VERSION = "task_evaluation_release_retention_plan.v1"
@@ -84,6 +89,8 @@ DEFAULT_RETENTION_PLAN_ROOT = Path(
     "/var/lib/blueprint/pipeline-control-plane/release-retention"
 )
 _QUEUE_BASE = Path("/var/lib/blueprint/pipeline-control-plane")
+DEFAULT_INTENT_ROOT = _QUEUE_BASE / "task-evaluation-scene-intents"
+DEFAULT_LAUNCH_RUN_ROOT = _QUEUE_BASE / "task-evaluation-launch-runs"
 _LIVE_QUEUE_NAMES = (
     "task-evaluation-launch-preparations",
     "task-evaluation-scene-constructions",
@@ -150,13 +157,24 @@ def _absolute_path(value: str | Path, *, field: str) -> Path:
     return path
 
 
-def _assert_directory(path: Path, *, blocker: str, allow_missing: bool = False) -> None:
-    if not os.path.lexists(path):
+def _assert_directory(path: Path, *, blocker: str, allow_missing: bool = False) -> bool:
+    """Whether ``path`` is a real directory; absence only when it truly is not there.
+
+    Only ENOENT reads as missing: any other failure to look (a permission
+    error) refuses as unreadable instead of passing for "empty".
+    """
+
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
         if allow_missing:
-            return
-        raise ReleaseRetentionError(blocker + "_missing")
+            return False
+        raise ReleaseRetentionError(blocker + "_missing") from None
+    except OSError as exc:
+        raise ReleaseRetentionError(blocker + "_unreadable") from exc
     if path.is_symlink() or not path.is_dir():
         raise ReleaseRetentionError(blocker + "_invalid")
+    return True
 
 
 def _tree_size(path: Path) -> int:
@@ -313,8 +331,7 @@ def _json_documents(
     blocker: str,
     allow_missing: bool = False,
 ) -> list[tuple[Path, Any, dict[str, Any]]]:
-    _assert_directory(root, blocker=blocker, allow_missing=allow_missing)
-    if not os.path.lexists(root):
+    if not _assert_directory(root, blocker=blocker, allow_missing=allow_missing):
         return []
     documents: list[tuple[Path, Any, dict[str, Any]]] = []
     for path in sorted(root.iterdir(), key=lambda item: item.name):
@@ -628,15 +645,41 @@ def _standing_authorization_protections(
     return protected, documents, terminal_orphans
 
 
-def _evidence_binding_protections(
+def _evidence_binding_leases(
     root: Path,
-) -> tuple[dict[str, set[str]], list[dict[str, Any]]]:
+    *,
+    lease_root: Path | None = None,
+    intent_root: Path | None = None,
+    launch_run_root: Path | None = None,
+    standing_authorization_dir: Path | None = None,
+    profiles: Mapping[str, Mapping[str, Any]] | None = None,
+    now: float | None = None,
+) -> tuple[dict[str, set[str]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Required-evidence bindings that still protect, their documents, and those that lapsed.
+
+    Validation stays strict: any unknown child or invalid binding blocks.  Each
+    valid binding is then evaluated against its lease exactly as deploy-time
+    retirement evaluates it, without migrating or renewing anything, so a
+    binding whose lease lapsed no longer pins its release.
+    """
+
+    moment = datetime.now(timezone.utc).timestamp() if now is None else now
+    resolver = RunStateResolver(
+        intent_root,
+        launch_run_root,
+        None,
+        moment,
+        standing_authorization_dir=standing_authorization_dir,
+        profile_documents=profiles,
+    )
     protected: dict[str, set[str]] = {}
     documents: list[dict[str, Any]] = []
+    lapsed: list[dict[str, Any]] = []
+    validated: list[tuple[Path, Mapping[str, Any], dict[str, Any]]] = []
+    # A missing binding root is a source that cannot be read, never "no bindings".
     for path, value, evidence in _json_documents(
         root,
         blocker="release_retention_evidence_binding_root",
-        allow_missing=True,
     ):
         if not isinstance(value, Mapping):
             raise ReleaseRetentionError(
@@ -653,8 +696,52 @@ def _evidence_binding_protections(
             raise ReleaseRetentionError(
                 f"release_retention_evidence_binding_invalid:{path.name}"
             )
-        protected.setdefault(commit, set()).add(f"required_evidence:{path.name}")
+        validated.append((path, value, evidence))
+    # Evaluated together so a binding a protected descendant builds on is kept.
+    outcomes = evaluate_binding_leases(
+        [(path.name, str(evidence["sha256"]), value) for path, value, evidence in validated],
+        lease_root=lease_root,
+        resolver=resolver,
+        now=moment,
+        migrate=False,
+    )
+    for path, value, evidence in validated:
+        outcome = outcomes[path.name]
+        if outcome["status"] == "blocked":
+            raise ReleaseRetentionError(str(outcome["blocker"]))
         documents.append(evidence)
+        if outcome["sidecar"] is not None:
+            documents.append(outcome["sidecar"])
+        lease = outcome["lease"]
+        if outcome["status"] == "lapsed":
+            lapsed.append(
+                {
+                    "binding": path.name,
+                    "source_commit": value["source_commit"],
+                    "commits": list(outcome["commits"]),
+                    "why": outcome["why"],
+                    "owner": lease["owner"],
+                    "run_ref": lease["run_ref"],
+                    "expires_at_epoch": lease["expires_at_epoch"],
+                    "lease_source": lease["lease_source"],
+                }
+            )
+            continue
+        # Every commit the binding keeps, including retained_release.source_commit.
+        for commit in outcome["commits"]:
+            protected.setdefault(commit, set()).add(f"required_evidence:{path.name}")
+        for inherited in outcome["inherited"]:
+            for commit in inherited["commits"]:
+                protected.setdefault(commit, set()).add(
+                    f"required_evidence_ancestor:{inherited['binding']}"
+                )
+    return protected, documents, lapsed
+
+
+def _evidence_binding_protections(
+    root: Path, **leases: Any
+) -> tuple[dict[str, set[str]], list[dict[str, Any]]]:
+    protected, documents, _lapsed = _evidence_binding_leases(root, **leases)
     return protected, documents
 
 
@@ -679,8 +766,16 @@ def build_release_retention_plan(
     keep_commits: Sequence[str] = (),
     minimum_age_seconds: int = DEFAULT_MINIMUM_AGE_SECONDS,
     now: datetime | None = None,
+    lease_root: str | Path | None = None,
+    intent_root: str | Path | None = None,
+    launch_run_root: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Return the canonical, non-mutating retention decision."""
+    """Return the canonical, non-mutating retention decision.
+
+    ``lease_root``, ``intent_root`` and ``launch_run_root`` let a binding's
+    lease lapse exactly as it does at deploy; without a lease root every
+    binding is evaluated as the lease its migration would write.
+    """
 
     if (
         not isinstance(minimum_age_seconds, int)
@@ -707,6 +802,14 @@ def build_release_retention_plan(
     evidence_root = _absolute_path(
         evidence_binding_root, field="evidence_binding_root"
     ).resolve()
+    lease_roots = {
+        field: None if value is None else _absolute_path(value, field=field)
+        for field, value in (
+            ("lease_root", lease_root),
+            ("intent_root", intent_root),
+            ("launch_run_root", launch_run_root),
+        )
+    }
     live_roots = tuple(
         _absolute_path(path, field="live_reference_root").resolve()
         for path in live_reference_roots
@@ -853,8 +956,14 @@ def build_release_retention_plan(
     _merge_reasons(protected, standing_protected)
     live_required_commits.update(standing_protected)
     documents.extend(standing_documents)
-    evidence_protected, evidence_documents = _evidence_binding_protections(
-        evidence_root
+    evidence_protected, evidence_documents, lapsed_bindings = _evidence_binding_leases(
+        evidence_root,
+        lease_root=lease_roots["lease_root"],
+        intent_root=lease_roots["intent_root"],
+        launch_run_root=lease_roots["launch_run_root"],
+        standing_authorization_dir=standing_root,
+        profiles=profiles,
+        now=moment.timestamp(),
     )
     _merge_reasons(protected, evidence_protected)
     live_required_commits.update(evidence_protected)
@@ -990,6 +1099,11 @@ def build_release_retention_plan(
         "standing_authorization_dir": str(standing_root),
         "live_reference_roots": sorted(str(path) for path in live_roots),
         "evidence_binding_root": str(evidence_root),
+        **{
+            field: None if value is None else str(value)
+            for field, value in lease_roots.items()
+        },
+        "lapsed_evidence_bindings": lapsed_bindings,
         "operator_keep_commits": sorted(set(keep_commits)),
         "minimum_age_seconds": minimum_age_seconds,
         "protected_commits": {
@@ -1491,6 +1605,9 @@ def _apply_release_retention_plan_locked(
         keep_commits=tuple(plan.get("operator_keep_commits") or ()),
         minimum_age_seconds=int(plan.get("minimum_age_seconds", -1)),
         now=planned_at,
+        lease_root=plan.get("lease_root"),
+        intent_root=plan.get("intent_root"),
+        launch_run_root=plan.get("launch_run_root"),
     )
     if current.get("plan_digest") != plan.get("plan_digest"):
         raise ReleaseRetentionError("release_retention_plan_changed_since_dry_run")
@@ -1612,6 +1729,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--retention-plan-root", default=str(DEFAULT_RETENTION_PLAN_ROOT)
     )
+    parser.add_argument("--lease-root", default=str(DEFAULT_LEASE_ROOT))
+    parser.add_argument("--intent-root", default=str(DEFAULT_INTENT_ROOT))
+    parser.add_argument("--launch-run-root", default=str(DEFAULT_LAUNCH_RUN_ROOT))
     parser.add_argument("--reconcile-misplaced-plan")
     parser.add_argument("--keep-commit", action="append", default=[])
     parser.add_argument(
@@ -1685,6 +1805,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 evidence_binding_root=args.evidence_binding_root,
                 keep_commits=tuple(args.keep_commit),
                 minimum_age_seconds=args.minimum_age_seconds,
+                lease_root=args.lease_root,
+                intent_root=args.intent_root,
+                launch_run_root=args.launch_run_root,
             )
             _assert_receipt_outside_managed_roots(
                 output_path, dict(result["managed_roots"])
