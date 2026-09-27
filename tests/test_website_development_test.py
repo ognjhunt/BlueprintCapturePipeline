@@ -150,6 +150,10 @@ def test_missing_marble_anchor_uses_separately_named_drawer_fixture(tmp_path, mo
     assert prepared['destination'] is None
     assert runtime['simulator_ready'] is False
     assert runtime['object_authoring']['configuration']['schema_version'] == 'articulated_replacement_authoring_configuration.v1'
+    # A whole-body assembly stands on the fixture floor, not on a counter-height surface.
+    assert 'body_extent_m' in runtime['object_authoring']['configuration']
+    assert prepared['subject']['aabb_min_xyz'][2] == pytest.approx(0.0, abs=1e-9)
+    assert prepared['intake_request']['task']['support']['aabb_max_xyz'][2] == pytest.approx(0.0)
 
 
 def test_terminal_marble_failure_uses_only_an_authored_seed_for_the_drawer_fixture(tmp_path, monkeypatch):
