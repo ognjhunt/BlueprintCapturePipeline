@@ -41,6 +41,15 @@ OFFICIAL_HAND_ORDER = (
 )
 
 
+class G1SonicTargetLimitError(ValueError):
+    """A measured SONIC target exceeded the sealed robot asset's joint limits."""
+
+    def __init__(self, violations: list[dict[str, float | str | None]]) -> None:
+        self.violations = violations
+        names = ",".join(str(row["joint_name"]) for row in violations)
+        super().__init__("g1_sonic_controller_target_out_of_limits:" + names)
+
+
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -289,6 +298,8 @@ class NativeG1OfficialSonicTargetBridge:
             if set(names) != set(expected):
                 raise AssertionError("g1_sonic_hand_joint_order_drift")
             targets.update(zip(names, values.tolist(), strict=True))
+        violations: list[dict[str, float | str | None]] = []
+        body_indices = {name: index for index, name in enumerate(CANONICAL_BODY_JOINT_NAMES_29)}
         for name in PROTOCOL_V4_FULL_JOINT_ORDER:
             value = targets[name]
             lower, upper = self.limits[name]
@@ -296,5 +307,17 @@ class NativeG1OfficialSonicTargetBridge:
                 not all(math.isfinite(float(item)) for item in (value, lower, upper))
                 or not lower <= value <= upper
             ):
-                raise ValueError("g1_sonic_controller_target_out_of_limits")
+                index = body_indices.get(name)
+                raw = float(measured_raw[index]) if index is not None else None
+                violations.append(
+                    {
+                        "joint_name": name,
+                        "target_rad": float(value) if math.isfinite(float(value)) else None,
+                        "lower_rad": float(lower) if math.isfinite(float(lower)) else None,
+                        "upper_rad": float(upper) if math.isfinite(float(upper)) else None,
+                        "raw_decoder_action": raw if raw is None or math.isfinite(raw) else None,
+                    }
+                )
+        if violations:
+            raise G1SonicTargetLimitError(violations)
         return targets
