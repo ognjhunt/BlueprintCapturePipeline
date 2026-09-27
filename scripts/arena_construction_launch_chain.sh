@@ -109,7 +109,7 @@ if [ -d $A/arena_packet/$TASK ]; then
 else
   # hardlink the predecessor's sealed packet: identical inodes are the strongest
   # possible statement that the staged bytes did not change, and it costs no disk
-  sudo -u blueprint mkdir -p $A/arena_packet
+  $RUN -m blueprint_pipeline.control_plane_arena_scratch mkdir-payload --tag "$CUR" --relative arena_packet "${ARENA_PREPARE_ARGS[@]}" >/dev/null
   sudo -u blueprint cp -al $P/arena_packet/$TASK $A/arena_packet/$TASK
   echo "  hardlinked from $PREV"
 fi

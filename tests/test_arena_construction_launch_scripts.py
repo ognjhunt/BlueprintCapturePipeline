@@ -35,6 +35,8 @@ def test_arena_scripts_lease_new_attempts_and_resolve_historical_ones() -> None:
     assert "ARENA_SCRATCH_SCENE_REF" in launch
     assert "ARENA_SCRATCH_TTL_SECONDS" in launch
     assert "sudo -u blueprint mkdir -p $A\n" not in launch
+    assert "sudo -u blueprint mkdir -p $A/arena_packet" not in launch
+    assert 'control_plane_arena_scratch mkdir-payload --tag "$CUR" --relative arena_packet' in launch
     assert launch.count("control_plane_arena_scratch resolve") >= 3  # predecessor, spend walk, writable check
     assert "control_plane_arena_scratch resolve" in fire
     assert fire.find("control_plane_arena_scratch resolve") < fire.find("PROFILE_JSON=$A/")

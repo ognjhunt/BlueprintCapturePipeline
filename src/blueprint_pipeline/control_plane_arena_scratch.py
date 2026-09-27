@@ -13,6 +13,7 @@ from pathlib import Path
 from .control_plane_lane_scratch import (
     LaneScratchError, create_lane_scratch, read_lane_scratch_folder,
 )
+from .control_plane_leased_scratch import LeasedScratchDirectory
 
 INPUTS_ROOT = Path("/var/lib/blueprint/task-evaluation-inputs")
 LANE_ROOT = INPUTS_ROOT / "lanes"
@@ -148,9 +149,48 @@ def prepare_arena_attempt(
         raise ArenaScratchError(str(exc)) from exc
 
 
+def mkdir_arena_payload(
+    tag: str, relative: str, *, owner: str | None = None, run_ref: str | None = None,
+    scene_ref: str | None = None, inputs_root: Path = INPUTS_ROOT,
+    lane_root: Path = LANE_ROOT, now: Callable[[], float] = time.time,
+) -> Path:
+    """Reopen an admitted lease for payload directories, never a legacy write.
+
+    A retry without supplied metadata binds to the exact saved lease identity;
+    supplied metadata must match. Neither route grants new ownership or a lease.
+    Returned paths and subsequent cp/file writes are outside the handle guarantee.
+    """
+
+    folder = resolve_arena_attempt(tag, writable=True, inputs_root=inputs_root,
+                                   lane_root=lane_root, now=now)
+    try:
+        lease = read_lane_scratch_folder(folder, lane="arena", name=folder.name)
+        if (lease.get("class_intent") != "evidence" or lease.get("cleanup") != "owner_review"
+                or lease.get("reason") != "arena_construction_launch"):
+            raise ArenaScratchError("arena_scratch_lease_mismatch")
+        reference_key = "run_ref" if "run_ref" in lease else "scene_ref"
+        if owner is not None or run_ref is not None or scene_ref is not None:
+            if owner is None or (run_ref is None) == (scene_ref is None):
+                raise ArenaScratchError("arena_scratch_metadata_required")
+            supplied_key = "run_ref" if run_ref is not None else "scene_ref"
+            supplied_value = run_ref if run_ref is not None else scene_ref
+            if (owner != lease["owner"] or supplied_key != reference_key
+                    or supplied_value != lease[reference_key]):
+                raise ArenaScratchError("arena_scratch_owner_mismatch")
+        with LeasedScratchDirectory.open(
+            root=lane_root, lane="arena", name=folder.name, owner=lease["owner"],
+            now=now, **{reference_key: lease[reference_key]},
+        ) as scratch:
+            if scratch.lease_digest != lease["lease_digest"]:
+                raise LaneScratchError("lane_scratch_lease_changed")
+            return scratch.mkdir(relative, parents=True, exist_ok=True)
+    except LaneScratchError as exc:
+        raise ArenaScratchError(str(exc)) from exc
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("prepare", "resolve"))
+    parser.add_argument("action", choices=("prepare", "resolve", "mkdir-payload"))
     parser.add_argument("--tag", required=True)
     parser.add_argument("--owner")
     reference = parser.add_mutually_exclusive_group()
@@ -158,12 +198,21 @@ def main(argv: list[str] | None = None) -> int:
     reference.add_argument("--scene-ref")
     parser.add_argument("--ttl-seconds", type=int)
     parser.add_argument("--writable", action="store_true")
+    parser.add_argument("--relative")
     args = parser.parse_args(argv)
+    if args.action == "mkdir-payload" and args.relative is None:
+        parser.error("mkdir-payload requires --relative")
     try:
-        path = (prepare_arena_attempt(
-            args.tag, owner=args.owner, run_ref=args.run_ref, scene_ref=args.scene_ref,
-            ttl_seconds=args.ttl_seconds,
-        ) if args.action == "prepare" else resolve_arena_attempt(args.tag, writable=args.writable))
+        if args.action == "prepare":
+            path = prepare_arena_attempt(
+                args.tag, owner=args.owner, run_ref=args.run_ref, scene_ref=args.scene_ref,
+                ttl_seconds=args.ttl_seconds,
+            )
+        elif args.action == "mkdir-payload":
+            path = mkdir_arena_payload(args.tag, args.relative, owner=args.owner,
+                                       run_ref=args.run_ref, scene_ref=args.scene_ref)
+        else:
+            path = resolve_arena_attempt(args.tag, writable=args.writable)
     except ArenaScratchError as exc:
         print(str(exc), file=sys.stderr)
         return 2 if str(exc) == "arena_scratch_missing" else 3
