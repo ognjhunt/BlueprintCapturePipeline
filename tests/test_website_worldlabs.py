@@ -178,6 +178,122 @@ def test_controller_recovers_only_recorded_credit_402_with_new_capped_binding(tm
     assert (root / "rejection_evidence.json").is_file()
 
 
+def _credit_retry_harness(tmp_path, monkeypatch, rejections):
+    """The controller path with ``rejections`` pre-generation 402s before a world is bought."""
+    from blueprint_pipeline import paid_resource_allocator as allocator
+    from blueprint_pipeline import website_task_context as control
+    descriptor = _descriptor(tmp_path)
+    descriptor["metadata"].pop("website_reconstruction_admission")
+    descriptor["metadata"]["site_task_context"].update({
+        "context_digest": "sha256:" + "b" * 64, "request_id": "request-one",
+        "scene_id": "site-test", "capture_id": "walkthrough-test"})
+    prep = descriptor["metadata"]["clean_plate"]["prepared_views"]
+    prep["task_context_sha256"] = sha256(json.dumps(descriptor["metadata"]["site_task_context"],
+        sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    prep["digest"] = canonical_digest(prep, digest_field="digest")
+    monkeypatch.setattr(allocator, "_current_checkout_source_state", lambda: ("1" * 40, True, True))
+    monkeypatch.setattr(allocator, "_source_checkout_blockers", lambda *_a, **_k: ([], "1" * 40))
+    monkeypatch.setattr(provider_preview, "_worldlabs_api_key", lambda: "test")
+    log = {"reservations": [], "requests": [], "settlements": []}
+
+    def reserve(**kwargs):
+        log["reservations"].append(kwargs)
+        admission = {"schema_version": "paid_lane_admission.v1", "status": "admitted", "blockers": [],
+                     "resource_class": kwargs["resource_class"], "external_disclosure_allowed": True,
+                     "maximum_cost_usd": kwargs["maximum_cost_usd"],
+                     "allocation_binding_digest": kwargs["binding_digest"],
+                     "task_context_digest": "sha256:" + "b" * 64}
+        return admission, _grant(admission)
+
+    def api(path, **kwargs):
+        log["requests"].append(path)
+        if path.endswith("prepare_upload"):
+            return {"media_asset": {"media_asset_id": "image"},
+                    "upload_info": {"upload_url": "https://example.com/upload"}}
+        if log["requests"].count("/marble/v1/worlds:generate") <= rejections:
+            raise RuntimeError('worldlabs_api_402:{"detail":"Insufficient API credits to start world generation with model marble-1.1-plus"}')
+        return {"operation_id": "paid-operation", "done": False}
+
+    def settle(**kwargs):
+        command = kwargs["payload"]["settlement"]
+        log["settlements"].append(command)
+        return {**command, "status": "settled", "actual_cost_usd": 0}
+
+    monkeypatch.setattr(control, "reserve_website_preparation_spend", reserve)
+    monkeypatch.setattr(control, "website_webapp_request", settle)
+    monkeypatch.setattr(provider_preview, "_worldlabs_api_request", api)
+    monkeypatch.setattr(provider_preview, "_presigned_upload", lambda *a, **k: None)
+
+    def run():
+        return allocator.submit_sponsored_website_reconstruction(descriptor=descriptor, capture_root=tmp_path)
+    return run, log
+
+
+def _record_rejection(tmp_path, error):
+    from blueprint_pipeline.common import write_json
+    write_json(tmp_path / "pipeline/provider_run_manifest.json", {"status": "failed",
+        "provider_run_id": "", "failure_reason": str(error.value)})
+
+
+def test_credits_added_after_a_rejected_retry_still_buy_one_world(tmp_path, monkeypatch):
+    """2026-09-27 website dishwasher: the only retry ran minutes before the owner added credits."""
+    run, log = _credit_retry_harness(tmp_path, monkeypatch, rejections=2)
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match="worldlabs_api_402") as error:
+            run()
+        _record_rejection(tmp_path, error)
+    result = run()
+    assert run()["provider_run_id"] == result["provider_run_id"] == "paid-operation"
+    root = tmp_path / "pipeline/website_reconstruction"
+    states = [json.loads((root / name).read_text())
+              for name in ("submission.json", "submission_retry_1.json", "submission_retry_2.json")]
+    assert [state["status"] for state in states] == [
+        "rejected_insufficient_credits", "rejected_insufficient_credits", "submitted"]
+    # Each retry is bound to the rejected attempt before it, and pays for its own reservation.
+    assert states[1]["binding"]["rejected_attempt_digest"] == canonical_digest(states[0])
+    assert states[2]["binding"]["rejected_attempt_digest"] == canonical_digest(states[1])
+    assert len({row["binding_digest"] for row in log["reservations"]}) == len(log["reservations"]) == 3
+    assert log["requests"].count("/marble/v1/worlds:generate") == 3
+    assert [row["allocation_binding_digest"] for row in log["settlements"]] == [
+        states[0]["request_digest"], states[1]["request_digest"]]
+    assert (root / "rejection_settlement_retry_1.json").is_file()
+    assert (root / "rejection_evidence_retry_1.json").is_file()
+    assert json.loads((root / "controller_admission_retry_2.json").read_text())[
+        "allocation_binding_digest"] == states[2]["request_digest"]
+
+
+def test_a_402_recorded_before_a_retry_never_settles_that_retry(tmp_path, monkeypatch):
+    import os
+    run, log = _credit_retry_harness(tmp_path, monkeypatch, rejections=2)
+    with pytest.raises(RuntimeError, match="worldlabs_api_402") as error:
+        run()
+    _record_rejection(tmp_path, error)
+    with pytest.raises(RuntimeError, match="worldlabs_api_402"):
+        run()
+    # The retry's outcome was never recorded; the manifest still holds the first 402.
+    root = tmp_path / "pipeline/website_reconstruction"
+    manifest = tmp_path / "pipeline/provider_run_manifest.json"
+    retry = root / "submission_retry_1.json"
+    os.utime(manifest, ns=(retry.stat().st_mtime_ns - 1_000_000, retry.stat().st_mtime_ns - 1_000_000))
+    with pytest.raises(ValueError, match="website_reconstruction_submission_requires_reconciliation"):
+        run()
+    assert json.loads(retry.read_text())["status"] == "submitting"
+    assert len(log["settlements"]) == 1 and log["requests"].count("/marble/v1/worlds:generate") == 2
+
+
+def test_credit_rejection_retries_are_bounded(tmp_path, monkeypatch):
+    from blueprint_pipeline.website_worldlabs import MAX_CREDIT_REJECTION_RETRIES
+    run, log = _credit_retry_harness(tmp_path, monkeypatch, rejections=99)
+    for _ in range(MAX_CREDIT_REJECTION_RETRIES + 1):
+        with pytest.raises(RuntimeError, match="worldlabs_api_402") as error:
+            run()
+        _record_rejection(tmp_path, error)
+    with pytest.raises(ValueError, match="website_reconstruction_credit_retry_limit_reached"):
+        run()
+    assert log["requests"].count("/marble/v1/worlds:generate") == MAX_CREDIT_REJECTION_RETRIES + 1
+    assert len(log["settlements"]) == MAX_CREDIT_REJECTION_RETRIES + 1
+
+
 @pytest.mark.parametrize("legacy_retry_path", [False, True])
 def test_retry_settlement_uses_its_own_admission_and_recovers_prior_path_error(tmp_path, monkeypatch, legacy_retry_path):
     from blueprint_pipeline import website_task_context as control
