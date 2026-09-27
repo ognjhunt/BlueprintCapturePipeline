@@ -571,6 +571,18 @@ def _thumbnail(track: Mapping[str, Any], frames_by_id: Mapping[str, Mapping[str,
             "crop_box_xyxy": [int(v) for v in box], "consent": "operator_listing_approval_required"}
 
 
+# Refusals of one measured part box that leave the rest of the plan valid: that part
+# can only be placed by its template prior (task_object_articulated_packaging).
+_PART_ESTIMATE_REFUSALS = ("articulated_part_extent_estimate_unplaceable:",
+                           "articulated_part_extent_estimate_outside_cavity:")
+
+
+def _unplaceable_part_estimate(code: str, configuration: Mapping[str, Any]) -> str | None:
+    part = next((code[len(prefix):] for prefix in _PART_ESTIMATE_REFUSALS if code.startswith(prefix)), None)
+    rows = configuration.get("part_extent_estimates") or []
+    return part if part is not None and any(row.get("part_id") == part for row in rows) else None
+
+
 def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_masks: Mapping[str, Any],
                                       removal_manifest: Mapping[str, Any], source_geometry: Mapping[str, Any],
                                       base_scene: Mapping[str, Any], output_root: Path, spend: Mapping[str, Any],
@@ -794,6 +806,14 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                 contract["body_extent_m"]["grounding"] = {
                     "basis": grounding["basis"], "extended_to_observed_floor_m": extension_m,
                     "reason": "lowest_band_unobserved_on_floor_standing_assembly", "physical_measurement": False}
+                # The bottom moved down to the floor while every observed part stayed put:
+                # measured part heights above that bottom grow by the same gap.
+                contract["part_extent_estimates"] = [
+                    {**row, "box_assembly_m": {axis: [*row["box_assembly_m"][axis][:2],
+                                                      round(row["box_assembly_m"][axis][2] + extension_m, 5)]
+                                               for axis in ("minimum", "maximum")},
+                     "body_scaling": {**row["body_scaling"], "raised_by_body_grounding_m": extension_m}}
+                    for row in contract.get("part_extent_estimates") or []]
             else:
                 contract["body_extent_m"]["grounding"] = {
                     "basis": grounding["basis"], "moved_down_to_observed_floor_m": extension_m,
@@ -948,10 +968,25 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         # Hold what the builder would refuse before anything is bought.
         from .task_object_articulated_packaging import plan_articulated_assembly
         from .task_object_astra_authoring import AssetAuthoringError
-        try:
-            plan_articulated_assembly(authoring_configuration)
-        except AssetAuthoringError as exc:
-            blockers.append("website_assembly_builder_refused:" + str(exc))
+        while True:
+            try:
+                plan_articulated_assembly(authoring_configuration)
+                break
+            except AssetAuthoringError as exc:
+                part = _unplaceable_part_estimate(str(exc), authoring_configuration)
+                if part is None:
+                    blockers.append("website_assembly_builder_refused:" + str(exc))
+                    break
+                # The builder still refuses this estimate; it is withdrawn, the part stays
+                # a template prior, and the refusal travels with it. Never a silent drop.
+                withdrawn = next(row for row in authoring_configuration["part_extent_estimates"]
+                                 if row["part_id"] == part)
+                authoring_configuration["part_extent_estimates"] = [
+                    row for row in authoring_configuration["part_extent_estimates"] if row is not withdrawn]
+                authoring_configuration["part_extent_diagnostics"] = [
+                    *(authoring_configuration.get("part_extent_diagnostics") or []),
+                    {"part_id": part, "reason": "builder_cannot_place_measured_extent", "builder_code": str(exc),
+                     "frame_ids": list(withdrawn["frame_ids"]), "withdrawn_box_assembly_m": withdrawn["box_assembly_m"]}]
     thumbnail = _thumbnail(track, frames_by_id, output_root / "thumbnail.png")
     # Capture consent permits scene preparation; it does not manufacture a
     # paid simulation authorization or accept provider terms on the owner's behalf.
