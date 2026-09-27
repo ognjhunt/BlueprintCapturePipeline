@@ -117,6 +117,48 @@ def test_request_ids_name_exactly_the_known_kinds() -> None:
             validate_request_id(bad)
 
 
+def test_hold_and_release_hold_have_operate_scope_and_strict_fields() -> None:
+    hold = {"kind": "hold", "unit": "blueprint-scene-progression.timer", "owner": "alice@example.org",
+            "reason": "pause for inspected capture", "expires_in_seconds": 3600}
+    assert validate_request(hold) == hold
+    assert required_scope("hold") == "operate"
+    release = {"kind": "release-hold", "unit": hold["unit"]}
+    assert validate_request(release) == release
+    assert required_scope("release-hold") == "operate"
+
+
+@pytest.mark.parametrize(("change", "code"), [
+    ({"owner": ""}, "hold_owner_invalid"),
+    ({"owner": "bad name"}, "hold_owner_invalid"),
+    ({"reason": ""}, "hold_reason_invalid"),
+    ({"reason": "x" * 201}, "hold_reason_invalid"),
+    ({"reason": "line\nbreak"}, "hold_reason_invalid"),
+    ({"expires_in_seconds": True}, "hold_expiry_invalid"),
+    ({"expires_in_seconds": 59}, "hold_expiry_invalid"),
+    ({"expires_in_seconds": 86401}, "hold_expiry_invalid"),
+    ({"unit": "blueprint-scene-progression.service"}, "hold_unit_invalid"),
+    ({"unit": "blueprint-control-plane-storage-gc.timer"}, "unit_safety_critical"),
+    ({"extra": "ignored"}, "request_key_unknown:extra"),
+])
+def test_hold_refuses_invalid_fields(change: dict, code: str) -> None:
+    body = {"kind": "hold", "unit": "blueprint-scene-progression.timer", "owner": "alice",
+            "reason": "pause", "expires_in_seconds": 60, **change}
+    with pytest.raises(RequestRefused) as caught:
+        validate_request(body)
+    assert caught.value.code == code
+
+
+@pytest.mark.parametrize(("unit", "code"), [
+    ("blueprint-scene-progression.service", "hold_unit_invalid"),
+    ("blueprint-gpu-spend-guard.timer", "unit_safety_critical"),
+    ("blueprint-operator-door-runner.path", "unit_is_door"),
+])
+def test_release_hold_refuses_unsafe_units(unit: str, code: str) -> None:
+    with pytest.raises(RequestRefused) as caught:
+        validate_request({"kind": "release-hold", "unit": unit})
+    assert caught.value.code == code
+
+
 def test_restore_requires_an_exact_scene_and_bucket() -> None:
     assert validate_request({"kind": "restore-scene-workspace", "scene_id": "scene-1",
                              "bucket": "blueprint-8c1ca.appspot.com"}) == {
