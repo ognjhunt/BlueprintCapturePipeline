@@ -6,6 +6,7 @@ import fnmatch
 import os
 from pathlib import PurePosixPath
 
+from blueprint_pipeline import control_plane_disk_usage as usage_module
 from blueprint_pipeline.control_plane_disk_usage import survey_usage, tree_usage
 from blueprint_pipeline.control_plane_storage_roots import classify_path
 
@@ -275,3 +276,74 @@ def test_default_table_classification_matches_classify_path(tmp_path):
     assert roots["/var/lib/blueprint/pipeline-control-plane/new-thing"] == "unclassified"
     owners = {row["owner"] for row in pruned["top_owners"]}
     assert {"store:prepared-references", "scene:s", "run:run-1"} <= owners
+
+
+def test_non_utf8_filename_is_escaped_in_the_report(tmp_path, monkeypatch):
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    base = tmp_path / "var/lib/blueprint"
+    base.mkdir(parents=True)
+    actual = base / "bad"
+    actual.write_bytes(b"x")
+    real_scandir = os.scandir
+
+    def scandir(path):
+        if str(path) == str(base):
+            return nullcontext([SimpleNamespace(name="bad-\udcff", path=str(actual),
+                                                stat=lambda **_kwargs: os.lstat(actual))])
+        return real_scandir(path)
+
+    monkeypatch.setattr(usage_module.os, "scandir", scandir)
+
+    report = survey_usage([str(base)], aliases={}, prefixes=(str(base),),
+                          classify=_classifier({}), statvfs=_statvfs())
+    assert report["status"] == "complete"
+    assert any("bad-\\xff" in row["root"] for row in report["unclassified_roots"])
+    assert report["survey_digest"].startswith("sha256:")
+
+
+def test_large_directory_is_truncated_before_its_entries_fill_memory(tmp_path, monkeypatch):
+    monkeypatch.setattr(usage_module, "SURVEY_MAX_BUFFERED_ENTRIES", 2)
+    base = tmp_path / "var/lib/blueprint"
+    base.mkdir(parents=True)
+    for index in range(3):
+        (base / f"f{index}").write_bytes(b"x")
+
+    report = survey_usage([str(base)], aliases={}, prefixes=(str(base),),
+                          classify=_classifier({}), statvfs=_statvfs())
+    assert report["status"] == "truncated"
+    assert report["entries_visited"] <= 3
+
+
+def test_shared_inode_map_is_bounded_and_reports_truncation(tmp_path, monkeypatch):
+    monkeypatch.setattr(usage_module, "SURVEY_MAX_SHARED_INODES", 2)
+    base = tmp_path / "var/lib/blueprint"
+    for directory in ("a", "b"):
+        (base / directory).mkdir(parents=True)
+        for index in range(2):
+            original = base / directory / f"f{index}"
+            original.write_bytes(b"x")
+            os.link(original, tmp_path / f"outside-{directory}-{index}")
+
+    report = survey_usage([str(base)], aliases={}, prefixes=(str(base),),
+                          classify=_classifier({str(base): "work"}), statvfs=_statvfs())
+    assert report["status"] == "truncated"
+    assert report["hardlinks"]["shared_inodes"] <= 2
+
+
+def test_owner_and_pending_directory_maps_are_bounded(tmp_path, monkeypatch):
+    monkeypatch.setattr(usage_module, "SURVEY_MAX_BUFFERED_ENTRIES", 2)
+    base = tmp_path / "var/lib/blueprint"
+    for relative in ("a/a1", "a/a2", "b"):
+        (base / relative).mkdir(parents=True)
+    common = dict(aliases={}, prefixes=(str(base),), classify=_classifier({}), statvfs=_statvfs())
+
+    owner_limited = survey_usage([str(base)], **common)
+    assert owner_limited["status"] == "truncated"
+    assert len(owner_limited["top_owners"]) <= 2
+
+    monkeypatch.setattr(usage_module, "_owner", lambda *_args: "same")
+    pending_limited = survey_usage([str(base)], **common)
+    assert pending_limited["status"] == "truncated"
+    assert pending_limited["entries_visited"] <= 5

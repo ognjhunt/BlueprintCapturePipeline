@@ -38,6 +38,10 @@ DEFAULT_SURVEY_ALIASES: Mapping[str, str] = {
 BLUEPRINT_PREFIXES: tuple[str, ...] = ("/var/lib/blueprint", "/opt/blueprint", "/workspace")
 DEFAULT_SURVEY_MAX_ENTRIES = 3_000_000
 DEFAULT_SURVEY_MAX_SECONDS = 240.0
+# The capacity unit has MemoryMax=512M. Bound every growing walk container;
+# crossing a bound produces an honest partial report instead of killing the tick.
+SURVEY_MAX_BUFFERED_ENTRIES = 20_000
+SURVEY_MAX_SHARED_INODES = 20_000
 MOUNTINFO_PATH = "/proc/self/mountinfo"
 SURVEY_TOP_ROWS = 10
 _STORE_DIRECTORY = "content-addressed"
@@ -326,6 +330,8 @@ class _UsageWalk:
         self.patterns = patterns
         self.mount_points = mount_points
         self.max_entries = max_entries
+        self.buffer_limit = min(max_entries, SURVEY_MAX_BUFFERED_ENTRIES)
+        self.shared_limit = min(max_entries, SURVEY_MAX_SHARED_INODES)
         self.deadline = deadline
         self.clock = clock
         self.walk_roots: frozenset[tuple[int, int]] = frozenset()
@@ -379,6 +385,9 @@ class _UsageWalk:
              device: int) -> None:
         row = self.totals.get(attribution)
         if row is None:
+            if len(self.totals) >= self.buffer_limit:
+                self.truncated = True
+                return
             row = self.totals[attribution] = [0, 0, 0]
         row[0] += allocated
         row[1] += apparent
@@ -402,6 +411,9 @@ class _UsageWalk:
         key = (metadata.st_dev, metadata.st_ino)
         held = self.shared.get(key)
         if held is None:
+            if len(self.shared) >= self.shared_limit:
+                self.truncated = True
+                return
             self.shared[key] = [rank, attribution, allocated_bytes(metadata),
                                 int(metadata.st_size), device]
             return
@@ -427,7 +439,14 @@ class _UsageWalk:
             directory = stack.pop()
             try:
                 with os.scandir(directory.path) as iterator:
-                    entries = sorted(iterator, key=lambda entry: entry.name)
+                    entries = []
+                    overflow = False
+                    for entry in iterator:
+                        if len(entries) >= self.buffer_limit:
+                            overflow = True
+                            break
+                        entries.append(entry)
+                    entries.sort(key=lambda entry: entry.name)
             except OSError:
                 self.unreadable += 1
                 continue
@@ -449,10 +468,18 @@ class _UsageWalk:
                     nested = self._child(directory, entry.name, entry.path)
                     self._record(child, self._attribute(nested.parts, nested.match, True), device,
                                  nested.parts)
+                    if len(stack) + len(subdirectories) >= self.buffer_limit:
+                        self.truncated = True
+                        return
                     subdirectories.append(nested)
                 else:
                     self._record(child, self._file(directory, entry.name), device,
                                  directory.parts + (entry.name,))
+            if self.truncated:
+                return
+            if overflow:
+                self.truncated = True
+                return
             stack.extend(reversed(subdirectories))
 
     def finish(self) -> None:
@@ -472,6 +499,21 @@ def _mount_row(mount: str, used: int | None, surveyed: int, classified: int) -> 
         "classified_bytes": classified,
         "attributed_fraction": fraction,
     }
+
+
+def _report_safe(value: Any) -> Any:
+    """Render surrogate-escaped filesystem bytes before canonical JSON encoding."""
+
+    if isinstance(value, str):
+        try:
+            return os.fsencode(value).decode("utf-8", "backslashreplace")
+        except UnicodeEncodeError:
+            return value.encode("utf-8", "backslashreplace").decode("utf-8")
+    if isinstance(value, list):
+        return [_report_safe(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _report_safe(item) for key, item in value.items()}
+    return value
 
 
 def survey_usage(
@@ -597,6 +639,7 @@ def survey_usage(
         },
         "survey_digest": "",
     }
+    survey = _report_safe(survey)
     survey["survey_digest"] = canonical_digest(survey, digest_field="survey_digest")
     return survey
 
