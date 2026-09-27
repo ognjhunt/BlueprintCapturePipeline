@@ -724,11 +724,16 @@ def build_scene_configuration_provider_bundle(
             # order. When its frames are simply not this scene's, record that and select
             # fresh candidates; a corrupt or tampered selection still fails closed, and
             # an explicit per-launch selection keeps its strict semantics.
+            # 2026-09-27: the default's file was removed with its engineering
+            # directory, and every website scene failed closed on a hint it never
+            # needed. An absent ambient selection has nothing to reuse either.
+            absent = isinstance(exc, FileNotFoundError) and not os.path.lexists(selection_path)
             other_frames = str(exc) in {"semantic_teacher_retained_selection_source_changed",
                                         "semantic_teacher_retained_selection_camera_invalid"}
-            if not (retained_candidate_selection_optional and other_frames):
+            if not (retained_candidate_selection_optional and (other_frames or absent)):
                 raise TaskEvaluationSceneConfigurationBundleError("scene_configuration_retained_candidate_selection_invalid") from exc
-            rejected = {"path": str(selection_path), "sha256": _sha256(selection_path), "blocker": str(exc),
+            rejected = {"path": str(selection_path), "sha256": None if absent else _sha256(selection_path),
+                        "blocker": "semantic_teacher_retained_selection_absent" if absent else str(exc),
                         "source": "environment_default"}
         if rejected is None:
             render_inputs = {**render_inputs, "retained_semantic_candidates": retained_candidates,

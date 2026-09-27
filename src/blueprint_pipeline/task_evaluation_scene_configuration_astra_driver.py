@@ -677,6 +677,10 @@ def _finish_articulated_component(*, plan, part_requests, authored, output, phys
 CAD_MAX_OUTPUT_TOKENS = 20000
 
 
+# The persistent authoring session's own per-request ceiling; one bound, not two.
+from .task_object_agent_model import AUTHORING_CONTEXT_CEILING  # noqa: E402
+
+
 class _StageInvoker:
     def __init__(self, invoker, run_id: str, maximum_calls: int, prior_calls: int = 0):
         self.invoker, self.run_id, self.maximum_calls, self.calls = invoker, run_id, maximum_calls, 0
@@ -686,7 +690,7 @@ class _StageInvoker:
         if (self.calls + self.prior_calls >= self.maximum_calls or spec.run_id != self.run_id or spec.model != "gpt-6-astra"
                 or spec.max_turns != 1 or spec.tool_bindings
                 or spec.max_output_tokens > CAD_MAX_OUTPUT_TOKENS
-                or spec.max_input_tokens is None or spec.max_input_tokens > 80000
+                or spec.max_input_tokens is None or spec.max_input_tokens > AUTHORING_CONTEXT_CEILING
                 or spec.reasoning_effort not in {"medium", "high"}):
             raise AstraStageError("astra_stage_inference_boundary_refused")
         self.calls += 1
