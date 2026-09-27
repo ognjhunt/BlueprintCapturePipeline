@@ -17,6 +17,7 @@ import base64
 import json
 import os
 import shutil
+import stat
 import tarfile
 import tempfile
 import time
@@ -267,22 +268,59 @@ def _listed_members(directory: Path, members: Sequence[str]) -> Iterator[tuple[P
         yield path, PurePosixPath(*parts).as_posix()
 
 
-def _pack_stream(directory: Path, stream, members: Sequence[str] | None = None) -> list[dict[str, Any]]:
-    """Pack ``directory`` as a tar stream: every regular file, or exactly ``members``."""
+def _identified_member(path: Path, identity: Sequence[int] | None):
+    """``path`` opened as the regular file ``identity`` (st_dev, st_ino) names, or a refusal.
+
+    It is opened without following a link or waiting for a writer, so a name
+    swapped for a link, a FIFO or another file after it was listed is refused
+    instead of being packed or blocking the packer.
+    """
+
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0))
+    except OSError as exc:
+        raise ControlPlaneEvidenceOffloadError("control_plane_evidence_offload_member_changed") from exc
+    metadata = os.fstat(descriptor)
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or identity is None
+        or (metadata.st_dev, metadata.st_ino) != tuple(identity)
+    ):
+        os.close(descriptor)
+        raise ControlPlaneEvidenceOffloadError("control_plane_evidence_offload_member_changed")
+    return os.fdopen(descriptor, "rb")
+
+
+def _pack_stream(
+    directory: Path, stream, members: Sequence[str] | None = None,
+    identities: Mapping[str, Sequence[int]] | None = None,
+) -> list[dict[str, Any]]:
+    """Pack ``directory`` as a tar stream: every regular file, or exactly ``members``.
+
+    With ``identities`` (each member's planned st_dev and st_ino), every member is
+    opened by ``_identified_member`` and its tar header and bytes both come from
+    that descriptor, so only the planned files can reach the archive.
+    """
 
     packed: list[dict[str, Any]] = []
     sources = _walked_members(directory) if members is None else _listed_members(directory, members)
     with tarfile.open(fileobj=stream, mode="w|") as archive:
         for path, relative in sources:
-            info = archive.gettarinfo(str(path), arcname=relative)
+            if identities is None:
+                info = archive.gettarinfo(str(path), arcname=relative)
+                # Tar stores later names of an inode as zero-byte hardlink
+                # headers. The evidence manifest describes the restored file,
+                # whose bytes and size are those of its target, not the header.
+                size = path.stat().st_size
+                opened = path.open("rb")
+            else:
+                opened = _identified_member(path, identities.get(relative))
+                info = archive.gettarinfo(str(path), arcname=relative, fileobj=opened)
+                size = os.fstat(opened.fileno()).st_size
             info.uid = info.gid = 0
             info.uname = info.gname = ""
             digest = hashlib.sha256()
-            # Tar stores later names of an inode as zero-byte hardlink
-            # headers. The evidence manifest describes the restored file,
-            # whose bytes and size are those of its target, not the header.
-            size = path.stat().st_size
-            with path.open("rb") as source:
+            with opened as source:
                 class HashingReader:
                     def read(self, size=-1):
                         chunk = source.read(size)

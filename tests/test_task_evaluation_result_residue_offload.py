@@ -179,7 +179,9 @@ def test_residue_excludes_registry_receipts_and_registered_files(tmp_path) -> No
     run = f.run
     (run / "work" / "nested").mkdir()
     (run / "work" / "nested" / "launch_receipt.json").write_text("{}", encoding="utf-8")
-    (run / "work" / "link.bin").symlink_to(run / "provider" / "outputs.zip")
+    # A link out of the run keeps nothing inside it; links that stay inside are tested below.
+    (tmp_path / "outside.bin").write_bytes(b"not in the run")
+    (run / "work" / "link.bin").symlink_to(tmp_path / "outside.bin")
     os.mkfifo(run / "work" / "pipe")
     (run / "logs" / "fresh.log").write_text("written after the seal", encoding="utf-8")
     # Readers reopen these whole directories and names; a kept document that does not even parse
@@ -523,6 +525,98 @@ def test_readback_failure_or_changed_member_keeps_files(tmp_path) -> None:
     assert not (f.run / "work/stage/state.npz").exists() and not (f.run / "provider/outputs.zip").exists()
 
 
+@pytest.mark.parametrize("swap", ["symlink", "fifo", "replaced"])
+def test_a_member_swapped_while_it_is_packed_fails_publication(tmp_path, monkeypatch, swap) -> None:
+    """The packer opens each member without following a link or blocking and requires the planned
+    regular file, so a name swapped after it was listed can neither put another object in the
+    archive (which restore would refuse) nor hang the tick on a FIFO."""
+
+    f = _sealed_run(tmp_path / "canaries")
+    (tmp_path / "secret.zip").write_bytes(b"outside the run")
+    target = f.run / "provider" / "outputs.zip"
+    real_listed = evidence._listed_members
+
+    def racing(directory, members):
+        for path, relative in real_listed(directory, members):
+            if relative == "provider/outputs.zip":
+                target.unlink()
+                if swap == "symlink":
+                    target.symlink_to(tmp_path / "secret.zip")
+                elif swap == "fifo":
+                    os.mkfifo(target)
+                else:
+                    target.write_bytes(RESIDUE["provider/outputs.zip"])
+            yield path, relative
+
+    monkeypatch.setattr(evidence, "_listed_members", racing)
+
+    result = _offload(f)
+
+    assert (result["status"], result["retained_reason"]) == ("retained", "publication_failed")
+    assert result["failure"] == {"error_type": "ControlPlaneEvidenceOffloadError", "errno": None, "stage": "publish"}
+    assert not f.pointer.exists() and f.client.upload_count == 1
+    assert {relative: (f.run / relative).read_bytes() for relative in ("logs/worker.log", "work/stage/state.npz")} == {
+        relative: RESIDUE[relative] for relative in ("logs/worker.log", "work/stage/state.npz")}
+    assert not [path for path in f.evidence.iterdir() if path.name.startswith(".")]
+
+
+def test_a_partly_unlinked_hardlink_group_is_restorable(tmp_path, monkeypatch) -> None:
+    """A group's names go one by one. When a later unlink fails, the names already gone are
+    offloaded (restore brings them back) and only the names still present are kept."""
+
+    f = _sealed_run(tmp_path / "canaries")
+    os.link(f.run / "logs" / "worker.log", f.run / "logs" / "worker-copy.log")
+    real_unlink = os.unlink
+
+    def sticky(path, *args, **kwargs):
+        # The second name of the group (sorted: worker-copy.log, then worker.log) cannot go.
+        if kwargs.get("dir_fd") is not None and os.fspath(path) == "worker.log":
+            raise PermissionError(1, "Operation not permitted")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "unlink", sticky)
+    result = _offload(f)
+    monkeypatch.setattr(os, "unlink", real_unlink)
+
+    assert result["status"] == "applied"
+    assert _changed(result["skipped"]) == [
+        {"relative_path": "logs/worker.log", "reason": "unlink_failed:PermissionError"}]
+    # Two whole groups and one name of the third went; the third's blocks are still held.
+    assert result["offloaded_count"] == len(RESIDUE)
+    assert result["offloaded_bytes"] == len(RESIDUE["work/stage/state.npz"]) + len(RESIDUE["provider/outputs.zip"])
+    pointer = json.loads(f.pointer.read_text(encoding="utf-8"))
+    assert pointer["kept"] == [{"relative_path": "logs/worker.log", "reason": "unlink_failed:PermissionError"}]
+    assert not (f.run / "logs" / "worker-copy.log").exists()
+
+    restored = residue.restore_result_residue(run_root=f.run, now=lambda: NOW, materializer=functools.partial(
+        store.materialize_configured_scene_artifact, client=f.client, bucket=BUCKET))
+
+    assert restored["restored_count"] == len(RESIDUE)
+    assert (f.run / "logs" / "worker-copy.log").read_bytes() == RESIDUE["logs/worker.log"]
+    assert (f.run / "logs" / "worker.log").read_bytes() == RESIDUE["logs/worker.log"]
+
+
+def test_a_run_whose_members_all_stay_is_planned_again(tmp_path, monkeypatch) -> None:
+    """If nothing could be removed, the pointer is withdrawn so the next tick tries again; a
+    pointer would otherwise mark the run offloaded forever."""
+
+    f = _sealed_run(tmp_path / "canaries")
+
+    def unavailable(*_args, **_kwargs):
+        raise PermissionError(13, "Permission denied")
+
+    with monkeypatch.context() as patched:
+        patched.setattr(residue.held_files, "_HeldChild", unavailable)
+        stuck = _offload(f)
+
+    assert (stuck["status"], stuck["retained_reason"]) == ("retained", "nothing_evicted")
+    assert {row["reason"] for row in _changed(stuck["skipped"])} == {"root_unavailable:PermissionError"}
+    assert not f.pointer.exists() and set(RESIDUE) <= set(_local_files(f.run))
+
+    again = _offload(f)
+    assert (again["status"], again["offloaded_count"]) == ("applied", len(RESIDUE))
+
+
 def test_residue_member_swapped_for_symlink_is_kept(tmp_path) -> None:
     f = _sealed_run(tmp_path / "canaries")
     outside = tmp_path / "outside"
@@ -720,7 +814,8 @@ def test_summary_reports_residue_candidates_offloads_retained_reasons_and_opt_in
     evidence_root = tmp_path / "canaries"
     client = _ContentAddressedClient()
     ready = _sealed_run(evidence_root, "run-ready-secret", client=client)
-    (ready.run / "logs" / "link.log").symlink_to(ready.run / "logs" / "worker.log")
+    (tmp_path / "elsewhere.log").write_text("outside the run", encoding="utf-8")
+    (ready.run / "logs" / "link.log").symlink_to(tmp_path / "elsewhere.log")
     waiting = _sealed_run(evidence_root, "run-waiting-secret", bulk_remote=False, client=client)
     hot = _sealed_run(evidence_root, "run-hot-secret", client=client)
     os.utime(hot.run / "artifacts/result_delivery/artifact_registry.json", (NOW - 3600, NOW - 3600))

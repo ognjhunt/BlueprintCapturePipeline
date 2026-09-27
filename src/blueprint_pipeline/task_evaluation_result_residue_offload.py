@@ -80,7 +80,9 @@ is a link or on another filesystem, one too large to search) the whole run stays
 (``artifacts/result_delivery/.offload.lock``) without waiting, reserves disk for
 the staging the way the offloads do, and packs exactly the members with
 ``_pack_stream`` through the same content-addressed publisher and full readback
-as ``apply_evidence_offload``. Only after a verified upload, with the registry
+as ``apply_evidence_offload``; the packer opens each member without following a
+link or blocking and requires the planned inode, so nothing else can reach the
+archive. Only after a verified upload, with the registry
 and the run unchanged and still unprotected, does it write the digest-bound
 pointer ``<run>.residue.v1.json`` beside the run (temporary file, fsync,
 ``os.replace``, directory fsync). Then it unlinks each member through directory
@@ -88,7 +90,9 @@ descriptors held from the run root (``completed_replay_cache_retention``'s
 ``_HeldChild`` and ``_remove_group``): device, inode, links, size and mtime are
 rechecked and its bytes hashed once, as the other offloads do, and a member that
 changed, moved or became a link is skipped and recorded in the pointer as
-``kept``. ``restore_result_residue`` streams the archive back, verifies every
+``kept``; of a hard-linked group cut short, only the names still there are kept.
+A pointer behind which nothing could be evicted is withdrawn (``nothing_evicted``)
+so the next tick tries again. ``restore_result_residue`` streams the archive back, verifies every
 member's digest and size, never overwrites a different file, and records a
 receipt beside the pointer.
 """
@@ -535,18 +539,20 @@ def _publish(root: Path, names: list[str], members: Sequence[Mapping[str, Any]],
     """
 
     reservation = archive = None
+    # Each member must still be the regular file the plan listed when it is packed.
+    identities = {name: (group["dev"], group["inode"]) for group in members for name in group["relative_paths"]}
     try:
         if publisher is None:
             # Hash the exact tar stream without an archive on disk; only the pointer needs headroom.
             sink = evidence._HashingSink()
-            packed = evidence._pack_stream(root, sink, members=names)
+            packed = evidence._pack_stream(root, sink, members=names, identities=identities)
             digest, size = "sha256:" + sink.digest.hexdigest(), sink.size
             pointer_bytes = len(json.dumps(packed, indent=2).encode()) + 65536
             reservation = evidence.reserve_control_plane_disk(
                 "evidence_offload", target_root=root.parent, expected_bytes=max(_MIB, 2 * pointer_bytes),
                 reservation_root=evidence.DEFAULT_RESERVATION_ROOT)
             reference = dict((stream_publisher or evidence.publish_configured_scene_stream)(
-                write_stream=lambda stream: evidence._pack_stream(root, stream, members=names),
+                write_stream=lambda stream: evidence._pack_stream(root, stream, members=names, identities=identities),
                 digest=digest, size_bytes=size, filename="residue.tar", artifact_kind=evidence.ARTIFACT_KIND))
         else:
             # Explicit file publishers stage the archive beside the run, sized per inode plus headers.
@@ -561,7 +567,7 @@ def _publish(root: Path, names: list[str], members: Sequence[Mapping[str, Any]],
             os.close(descriptor)
             archive = Path(archive_name)
             with archive.open("wb") as stream:
-                packed = evidence._pack_stream(root, stream, members=names)
+                packed = evidence._pack_stream(root, stream, members=names, identities=identities)
             digest, size = evidence._sha256(archive), archive.stat().st_size
             reference = dict(publisher(path=archive, artifact_kind=evidence.ARTIFACT_KIND))
         if (
@@ -581,13 +587,35 @@ def _publish(root: Path, names: list[str], members: Sequence[Mapping[str, Any]],
             archive.unlink(missing_ok=True)
 
 
+def _remove_members(held, group, names, *, sha256):
+    """Remove one planned group; the reason it stopped (or None) and the names that are gone.
+
+    ``_remove_group`` unlinks a group's names one by one, so a failure after the
+    first leaves some gone: those are offloaded (restore brings them back) and
+    only the names still there are kept.
+    """
+
+    reason = held_files._remove_group(held, group, names, changed="member_changed", sha256=sha256)
+    if reason is None:
+        return None, list(names)
+    gone = []
+    for name in names:
+        try:
+            os.stat(name.name, dir_fd=held.directory(name.parts[:-1]), follow_symlinks=False)
+        except FileNotFoundError:
+            gone.append(name)
+        except OSError:
+            continue  # cannot tell: it counts as still there
+    return reason, gone
+
+
 def _evict(root: Path, members: Sequence[Mapping[str, Any]], sha_by_name: Mapping[str, str], row) -> list[dict]:
     """Unlink every member group through held directory descriptors; the kept members, typed."""
 
     kept: list[dict[str, str]] = []
 
-    def keep(group, reason):
-        for relative in group["relative_paths"]:
+    def keep(group, reason, names=None):
+        for relative in names if names is not None else group["relative_paths"]:
             kept.append({"relative_path": relative, "reason": reason})
             _skip(row, relative, reason, group["size_bytes"])
 
@@ -603,18 +631,33 @@ def _evict(root: Path, members: Sequence[Mapping[str, Any]], sha_by_name: Mappin
                 keep(group, "path_changed")
             return kept
         for group in members:
-            names = [Path(name) for name in group["relative_paths"]]
-            remove = functools.partial(held_files._remove_group, changed="member_changed",
-                                       sha256=sha_by_name[group["relative_paths"][0]])
-            reason = held.item(remove, group, names)
-            if reason:
-                keep(group, reason)
+            digests = {sha_by_name[name] for name in group["relative_paths"]}
+            if len(digests) != 1:
+                # Its names were packed with different bytes: the archive holds no one version of it.
+                keep(group, "member_changed")
                 continue
-            row["offloaded_count"] += len(names)
-            row["offloaded_bytes"] += group["size_bytes"]
+            names = [Path(name) for name in group["relative_paths"]]
+            reason, gone = held.item(functools.partial(_remove_members, sha256=digests.pop()), group, names)
+            gone_names = {name.as_posix() for name in gone}
+            if reason:
+                keep(group, reason, [name for name in group["relative_paths"] if name not in gone_names])
+            row["offloaded_count"] += len(gone_names)
+            if len(gone_names) == len(names):
+                row["offloaded_bytes"] += group["size_bytes"]
     finally:
         held.close()
     return kept
+
+
+def _withdraw(path: Path) -> None:
+    """Remove a pointer nothing was evicted behind, so the next tick plans its run again."""
+
+    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        os.unlink(path.name, dir_fd=directory)
+        os.fsync(directory)
+    finally:
+        os.close(directory)
 
 
 def offload_result_residue(
@@ -721,6 +764,14 @@ def _apply(row, root, pointer, registry, registry_path, registry_bytes, members,
             return _retained(row, "pointer_failed", failure=offload_failure(exc, "pointer"))
         row["pointer"] = pointer.name
         kept = _evict(root, members, {member["relative_path"]: member["sha256"] for member in packed}, row)
+        if row["offloaded_count"] == 0:
+            try:
+                _withdraw(pointer)
+            except OSError as exc:
+                row["failure"] = offload_failure(exc, "pointer")
+            else:
+                del row["pointer"]
+                return _retained(row, "nothing_evicted")
         if kept:
             value["kept"] = kept
             value["pointer_digest"] = canonical_digest(value, digest_field="pointer_digest")
@@ -886,10 +937,11 @@ def restore_result_residue(
         with tarfile.open(archive_path, mode="r:") as archive:
             infos: dict[str, tarfile.TarInfo] = {}
             for info in archive.getmembers():
-                if info.name in infos or not (info.isreg() or info.islnk()):
+                if info.name in infos:
                     raise ResultResidueOffloadError("result_residue_restore_archive_invalid")
                 infos[info.name] = info
-            if set(infos) != {member["relative_path"] for member in pointer["members"]}:
+            if set(infos) != {member["relative_path"] for member in pointer["members"]} or any(
+                    not (infos[relative].isreg() or infos[relative].islnk()) for relative in expected):
                 raise ResultResidueOffloadError("result_residue_restore_archive_invalid")
             root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
             try:
