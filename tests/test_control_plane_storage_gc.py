@@ -1408,6 +1408,26 @@ def test_the_tick_bounds_retirement_attempts_not_only_successes(tmp_path, monkey
     assert [row["status"] for row in report["results"]] == ["skipped", "skipped", "retirable"]
 
 
+def test_scene_candidate_bytes_are_unknown_when_a_plan_fails(tmp_path, monkeypatch) -> None:
+    from blueprint_pipeline import website_scene_workspace_retention as retention
+    from blueprint_pipeline.control_plane_storage_gc_reasons import build_storage_gc_summary
+
+    monkeypatch.setattr(retention, "scene_workspaces", lambda root: [("bucket", "scene-1", root / "scene-1")])
+    monkeypatch.setattr(retention, "sweep_retiring_workspaces", lambda root, apply=True: {
+        "removed" if apply else "removable": [], "kept_without_receipt": []})
+    monkeypatch.setattr(retention, "build_reference_index", lambda context, now: None)
+    monkeypatch.setattr(retention, "plan_scene_workspace_retirement", lambda **kwargs: (_ for _ in ()).throw(
+        PermissionError("unreadable scene")))
+
+    report = gc_module.retire_scene_workspaces(
+        storage_roots=[tmp_path], context_factory=lambda root: SimpleNamespace(storage_root=root), apply=True,
+        enabled=True, now=1.0, cloud_factory=lambda: None)
+
+    assert report["error_count"] == 1
+    assert report["candidate_bytes"] is None
+    assert build_storage_gc_summary({"scene_workspaces": report})["phases"]["scene_workspaces"]["candidate_bytes"] is None
+
+
 def test_post_upload_archive_reference_survives_result_truncation(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(retention_module, "scene_workspaces", lambda root: [
         ("bucket", f"scene-{index}", root / f"scene-{index}") for index in range(51)])

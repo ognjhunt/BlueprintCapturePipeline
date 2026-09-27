@@ -558,7 +558,7 @@ def scene_workspaces(storage_root: Path) -> list[tuple[str, str, Path]]:
     rows: list[tuple[str, str, Path]] = []
     try:
         buckets = sorted(os.listdir(root))
-    except OSError:
+    except FileNotFoundError:
         return rows
     for bucket in buckets:
         scenes = root / bucket / "scenes"
@@ -567,7 +567,7 @@ def scene_workspaces(storage_root: Path) -> list[tuple[str, str, Path]]:
         try:
             strict_gcs_bucket(bucket)
             names = sorted(os.listdir(scenes))
-        except (SecurityValidationError, OSError):
+        except (SecurityValidationError, FileNotFoundError):
             continue
         for name in names:
             path = scenes / name
@@ -577,7 +577,7 @@ def scene_workspaces(storage_root: Path) -> list[tuple[str, str, Path]]:
                 if strict_identifier(name, field="scene_id") != name:
                     continue
                 mode = os.lstat(path).st_mode
-            except (SecurityValidationError, OSError):
+            except (SecurityValidationError, FileNotFoundError):
                 continue
             # A symlink is listed so its plan reports it; a stray regular file is not a workspace.
             if stat.S_ISDIR(mode) or stat.S_ISLNK(mode):

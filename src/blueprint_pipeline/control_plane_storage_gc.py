@@ -1117,6 +1117,7 @@ def retire_scene_workspaces(
     }
     rows: list[dict[str, Any]] = []
     cloud = None
+    candidate_bytes_complete = True
 
     def retained(reasons: Sequence[str]) -> None:
         for prefix in sorted({reason.split(":", 1)[0] for reason in reasons}):
@@ -1140,6 +1141,7 @@ def retire_scene_workspaces(
         cloud = cloud if cloud is not None else cloud_factory()
         for bucket, scene_id, _path in workspaces:
             row: dict[str, Any] = {"bucket": bucket, "scene_id": scene_id}
+            candidate_measured = False
             live_scenes.add((bucket, scene_id))
             try:
                 plan = plan_scene_workspace_retirement(
@@ -1151,6 +1153,7 @@ def retire_scene_workspaces(
                     continue
                 report["candidate_count"] += 1
                 report["candidate_bytes"] += int(plan["totals"]["workspace_allocated_bytes"])
+                candidate_measured = True
                 if not applying or report["attempted_count"] >= max_retirements:
                     rows.append({**row, "status": "retirable",
                                  "workspace_allocated_bytes": plan["totals"]["workspace_allocated_bytes"],
@@ -1161,6 +1164,8 @@ def retire_scene_workspaces(
                     plan, context=context, ack=RETIRE_ACK, cloud=cloud, now=observed_at,
                     stream_publisher=stream_publisher, process_checker=process_checker)
             except Exception as exc:  # noqa: BLE001 - one scene never costs the others
+                if not candidate_measured:
+                    candidate_bytes_complete = False
                 rows.append({**row, "status": "error", "error": type(exc).__name__})
                 continue
             if outcome["status"] == "retired":
@@ -1186,6 +1191,8 @@ def retire_scene_workspaces(
         for cache in sorted(root.glob("*/*.json")):
             if (cache.parent.name, cache.stem) not in live_scenes:
                 cache.unlink(missing_ok=True)
+    if not candidate_bytes_complete:
+        report["candidate_bytes"] = None
     report["hashed_bytes"] = budget.hashed_bytes
     report["result_count"] = len(rows)
     report["error_count"] = sum(row["status"] == "error" for row in rows)

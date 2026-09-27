@@ -780,6 +780,23 @@ def test_scene_workspaces_lists_every_scene_but_not_receipts(tmp_path):
     assert retention.scene_workspaces(tmp_path / "pubsub-handoffs") == [(BUCKET, SCENE, scene)]
 
 
+@pytest.mark.parametrize("unreadable_root", [False, True])
+def test_scene_workspaces_refuses_unreadable_scene_listing(tmp_path, monkeypatch, unreadable_root):
+    scene, _ = _scene(tmp_path)
+    listdir = os.listdir
+    root = tmp_path / "pubsub-handoffs"
+    blocked = root if unreadable_root else scene.parent
+
+    def unreadable(path):
+        if Path(path) == blocked:
+            raise PermissionError("unreadable scene directory")
+        return listdir(path)
+
+    monkeypatch.setattr(retention.os, "listdir", unreadable)
+    with pytest.raises(PermissionError):
+        retention.scene_workspaces(root)
+
+
 def test_listener_file_names_have_not_drifted(tmp_path):
     assert retention.LISTENER_FILES == {
         "ledger": listener.JOB_LEDGER_FILENAME, "output_commit": listener.JOB_OUTPUT_COMMIT_FILENAME,
