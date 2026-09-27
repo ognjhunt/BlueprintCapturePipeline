@@ -137,6 +137,95 @@ def test_manifest_lists_only_sealed_runs_past_the_hot_window(tmp_path: Path) -> 
         )
 
 
+def _bytes_under(directory: Path) -> int:
+    return sum(path.lstat().st_size for path in directory.rglob("*") if path.is_file() and not path.is_symlink())
+
+
+def test_evidence_manifest_names_each_retention_reason_with_bytes(tmp_path: Path, monkeypatch) -> None:
+    """2026-09-27: an applied tick with offload enabled reclaimed nothing, and its manifest
+    folded four different reasons into one ``active_or_unsealed`` counter. Each reason
+    is now counted on its own, with the bytes it keeps, and each tree is walked once."""
+    from blueprint_pipeline import control_plane_evidence_offload as offload
+
+    root = tmp_path / "launch-runs"
+    root.mkdir()
+    now, day = 5_000_000.0, 86400
+    runs: dict[str, Path] = {}
+
+    def run(name: str, size: int, *, receipt: str | None = "dispatch_receipt.json", age: float = 30 * day) -> Path:
+        directory = root / name
+        (directory / "episodes").mkdir(parents=True)
+        (directory / "episodes" / "frame.bin").write_bytes(b"x" * size)
+        if receipt:
+            (directory / receipt).write_text('{"status": "completed"}', encoding="utf-8")
+        for path in [directory, *directory.rglob("*")]:
+            os.utime(path, (now - age, now - age))
+        runs[name] = directory
+        return directory
+
+    registry = run("run-registry", 1000) / "artifacts" / "result_delivery"
+    registry.mkdir(parents=True)
+    (registry / "artifact_registry.json").write_text("{}", encoding="utf-8")
+    run("run-offloaded", 1100)
+    (root / f"run-offloaded{POINTER_SUFFIX}").write_text("{}", encoding="utf-8")
+    protection = {
+        "run-pin": "protected_pin",
+        "run-process": "protected_process",
+        "run-process-inventory": "protected_process_inventory_unreadable",
+        "run-queue": "protected_queue",
+        "run-settlement": "protected_settlement",
+        "run-settlement-unreadable": "protected_unreadable_settlement",
+    }
+    for offset, name in enumerate(protection):
+        run(name, 1200 + offset)
+    run("run-unsealed", 1300, receipt=None, age=day)
+    run("run-hot", 1400, age=day)
+    run("run-candidate", 1500)
+    (root / "run-link").symlink_to(runs["run-candidate"])
+    (root / "stray.txt").write_bytes(b"s" * 7)
+    walked: list[str] = []
+    real_snapshot = offload._tree_snapshot
+
+    def counted(directory: Path):
+        walked.append(directory.name)
+        return real_snapshot(directory)
+
+    monkeypatch.setattr(offload, "_tree_snapshot", counted)
+
+    manifest = build_evidence_offload_manifest(
+        evidence_roots=[root], hot_window_seconds=2 * day, abandoned_after_seconds=3 * day,
+        now=lambda: now, classifier=_unclassified, protection_reason=lambda directory: protection.get(directory.name),
+    )
+
+    bytes_of = {name: _bytes_under(directory) for name, directory in runs.items()}
+    assert manifest["retained_by_reason"] == {
+        "unsafe": {"count": 2, "bytes": os.lstat(root / "run-link").st_size + 7},
+        "result_registry": {"count": 1, "bytes": bytes_of["run-registry"]},
+        "already_offloaded": {"count": 1, "bytes": bytes_of["run-offloaded"]},
+        **{reason: {"count": 1, "bytes": bytes_of[name]} for name, reason in protection.items()},
+        "unsealed_recent": {"count": 1, "bytes": bytes_of["run-unsealed"]},
+        "hot": {"count": 1, "bytes": bytes_of["run-hot"]},
+    }
+    assert [row["name"] for row in manifest["candidates"]] == ["run-candidate"]
+    assert manifest["candidate_bytes"] == bytes_of["run-candidate"]
+    # The coarse counters every existing reader uses are unchanged.
+    assert manifest["retained_counts"] == {"active_or_unsealed": 8, "hot": 1, "already_offloaded": 1, "unsafe": 2}
+    # Every directory is walked exactly once, and a link or stray file never is.
+    assert sorted(walked) == sorted(runs)
+
+    # Without an abandonment window an unsealed run is kept for that reason, and a
+    # bare protection checker still protects, counted as ``protected``.
+    legacy = build_evidence_offload_manifest(
+        evidence_roots=[root], hot_window_seconds=2 * day, now=lambda: now, classifier=_unclassified,
+        protection_checker=lambda directory: directory.name in protection,
+    )
+    assert legacy["retained_by_reason"]["protected"] == {
+        "count": len(protection), "bytes": sum(bytes_of[name] for name in protection)}
+    assert legacy["retained_by_reason"]["unsealed_no_window"] == {"count": 1, "bytes": bytes_of["run-unsealed"]}
+    assert legacy["retained_counts"] == manifest["retained_counts"]
+    assert [row["name"] for row in legacy["candidates"]] == ["run-candidate"]
+
+
 def test_local_write_during_archive_publication_prevents_eviction(tmp_path):
     root = tmp_path / "runs"
     root.mkdir()

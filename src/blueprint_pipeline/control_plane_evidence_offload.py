@@ -26,6 +26,7 @@ from typing import Any
 
 from .control_plane_storage_roots import require_storage_class
 from .control_plane_disk_budget import DEFAULT_RESERVATION_ROOT, reserve_control_plane_disk
+from .control_plane_storage_gc_reasons import count_retained
 from .decision_evidence_contracts import canonical_digest
 from .control_plane_retained_receipt import MAX_RECEIPT_BYTES, RETAINED_RECEIPTS
 from .task_evaluation_configured_scene_object_store import (
@@ -82,6 +83,24 @@ def _tree_snapshot(directory: Path) -> tuple[float, int, int]:
     return latest, size, count
 
 
+def _retained_bytes(directory: Path) -> int:
+    """The bytes a kept directory holds; one that vanished since it was listed holds none."""
+
+    try:
+        return _tree_snapshot(directory)[1]
+    except OSError:
+        return 0
+
+
+def _entry_bytes(entry: Path) -> int:
+    """A link's or a stray file's own size: an unsafe entry is never followed."""
+
+    try:
+        return entry.lstat().st_size
+    except OSError:
+        return 0
+
+
 def _terminal_receipt(directory: Path) -> str | None:
     for name in TERMINAL_RECEIPT_NAMES:
         candidate = directory / name
@@ -107,11 +126,19 @@ def build_evidence_offload_manifest(
     now: Callable[[], float] = time.time,
     classifier: Callable[..., Any] = require_storage_class,
     protection_checker: Callable[[Path], bool] | None = None,
+    protection_reason: Callable[[Path], str | None] | None = None,
 ) -> dict[str, Any]:
     """List sealed run directories past their hot window, without mutating anything.
 
     With ``abandoned_after_seconds`` set, an unsealed directory idle for at
     least that long is treated as sealed under ``ABANDONED_TERMINAL_RECEIPT``.
+
+    ``retained_by_reason`` says why every other entry was kept, with its count
+    and bytes: ``unsafe`` (a link or a non-directory, sized by itself and never
+    followed), ``result_registry``, ``already_offloaded``, the reason
+    ``protection_reason`` names (``protected`` when only ``protection_checker``
+    protects it), ``unsealed_no_window``, ``unsealed_recent`` and ``hot``.
+    ``retained_counts`` keeps the four coarse counters it always had.
     """
 
     if (
@@ -123,6 +150,20 @@ def build_evidence_offload_manifest(
     observed_at = float(now())
     candidates: list[dict[str, Any]] = []
     retained = {"active_or_unsealed": 0, "hot": 0, "already_offloaded": 0, "unsafe": 0}
+    retained_by_reason: dict[str, dict[str, Any]] = {}
+
+    def retain(reason: str, counter: str, size: int) -> None:
+        retained[counter] += 1
+        count_retained(retained_by_reason, reason, size)
+
+    def protected_by(directory: Path) -> str | None:
+        reason = protection_reason(directory) if protection_reason is not None else None
+        if reason:
+            return reason if isinstance(reason, str) else "protected"
+        if protection_checker is not None and protection_checker(directory):
+            return "protected"
+        return None
+
     roots: list[str] = []
     for raw_root in evidence_roots:
         root = Path(raw_root).expanduser()
@@ -136,32 +177,33 @@ def build_evidence_offload_manifest(
             if child.name.startswith(".") or child.name.endswith(POINTER_SUFFIX):
                 continue
             if child.is_symlink() or not child.is_dir():
-                retained["unsafe"] += 1
+                retain("unsafe", "unsafe", _entry_bytes(child))
                 continue
             # Published downloads retain their registry and closure metadata.
             # Their bulk payloads use per-artifact offload, never whole-run removal.
             if _has_result_registry(child):
-                retained["active_or_unsealed"] += 1
+                retain("result_registry", "active_or_unsealed", _retained_bytes(child))
                 continue
             if (root / f"{child.name}{POINTER_SUFFIX}").exists():
-                retained["already_offloaded"] += 1
+                retain("already_offloaded", "already_offloaded", _retained_bytes(child))
                 continue
             receipt = _terminal_receipt(child)
-            if protection_checker is not None and protection_checker(child):
-                retained["active_or_unsealed"] += 1
+            protection = protected_by(child)
+            if protection is not None:
+                retain(protection, "active_or_unsealed", _retained_bytes(child))
                 continue
             if receipt is None and abandoned_after_seconds is None:
-                retained["active_or_unsealed"] += 1
+                retain("unsealed_no_window", "active_or_unsealed", _retained_bytes(child))
                 continue
             latest, size, count = _tree_snapshot(child)
             idle_seconds = observed_at - latest
             if receipt is None:
                 if idle_seconds < abandoned_after_seconds:
-                    retained["active_or_unsealed"] += 1
+                    retain("unsealed_recent", "active_or_unsealed", size)
                     continue
                 receipt = ABANDONED_TERMINAL_RECEIPT
             if idle_seconds < hot_window_seconds:
-                retained["hot"] += 1
+                retain("hot", "hot", size)
                 continue
             candidates.append(
                 {
@@ -183,6 +225,7 @@ def build_evidence_offload_manifest(
         "candidate_bytes": sum(row["size_bytes"] for row in candidates),
         "candidates": candidates,
         "retained_counts": retained,
+        "retained_by_reason": retained_by_reason,
         "evidence_hot_roots_scanned": False,
         "manifest_digest": "",
     }
