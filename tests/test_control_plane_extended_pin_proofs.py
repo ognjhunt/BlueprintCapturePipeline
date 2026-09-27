@@ -360,10 +360,13 @@ def _activation_result(queue: Path, owner: str, *, status: str = "profile_author
                        age: float = LAPSE + DAY) -> Path:
     """The result the activation worker seals beside its queue, named for the activation's queue envelope."""
 
+    from blueprint_pipeline.task_evaluation_launch_activation_queue import _queue_filename
+
     value = {"schema_version": "task_evaluation_launch_activation_result.v1", "status": status,
              "activation_id": owner, "blockers": [], "provider_mutation_performed": False, "result_digest": ""}
     value["result_digest"] = canonical_digest(value, digest_field="result_digest")
-    path = queue / "results" / f"{owner}-{hashlib.sha256(owner.encode()).hexdigest()}.json"
+    request_digest = "sha256:" + hashlib.sha256(owner.encode()).hexdigest()
+    path = queue / "results" / _queue_filename(activation_id=owner, request_digest=request_digest)
     path.write_text(json.dumps(value), encoding="utf-8")
     os.utime(path, (NOW - age, NOW - age))
     return path
@@ -473,6 +476,103 @@ def test_unprepared_or_unreadable_activation_result_keeps_its_pin(tmp_path, reas
         "duplicate": "activation_result_ambiguous", "linked": "activation_result_invalid",
         "unconfigured": "activation_queue_unconfigured", "root_linked": "evidence_root_unavailable"}[reason]
     assert result["candidates"] == [] and _states(args)[("activation", "act-u")] == "live"
+
+
+@pytest.mark.parametrize(("suffix", "run", "reason"), [
+    ("-controls", "registry_hot", "registry_hot"),
+    ("-destination", "registry_hot", "registry_hot"),
+    ("-construction", "registry_hot", "registry_hot"),
+    ("-controls", "cold_without_registry", "run_without_registry"),
+    ("-controls", "pointer", "run_pointer_present"),
+])
+def test_launched_configured_controls_activation_is_not_unlaunched(tmp_path, suffix, run, reason) -> None:
+    """2026-09-27 review: configured-controls activations launch as ``<id>-launch`` too.
+
+    With a prepared result nine days old and a sealed registry run under that
+    name touched a day ago, the pin was released as never launched, while the
+    -activation-auto equivalent was kept.
+    """
+
+    owner = "run-x" + suffix
+    args = _args(tmp_path)
+    queue = _activation_queue(tmp_path, args)
+    _activation_result(queue, owner)
+    _pin(args, "activation", owner, age=LAPSE + DAY)
+    evidence = tmp_path / "evidence"
+    if run == "registry_hot":
+        _registry_run(evidence, owner + "-launch", idle=DAY)
+    if run == "cold_without_registry":
+        cold = evidence / (owner + "-launch")
+        (cold / "allocator").mkdir(parents=True)
+        (cold / "launch_receipt.json").write_text(json.dumps({"status": "completed"}), encoding="utf-8")
+        for path in (cold / "launch_receipt.json", cold / "allocator", cold):
+            os.utime(path, (NOW - 5 * DAY, NOW - 5 * DAY))
+    if run == "pointer":
+        (evidence / f"{owner}-launch.offloaded.v1.json").write_text("{}", encoding="utf-8")
+
+    result = reconcile_terminal_cache_pins(**args, apply=True, extended_proofs_enabled=True)
+
+    assert _kept(result)[("activation", owner)] == reason
+    assert result["candidates"] == [] and _states(args)[("activation", owner)] == "live"
+
+
+def test_a_run_under_the_shortened_launch_id_keeps_a_long_activation_pinned(tmp_path) -> None:
+    """A long activation id launches under the bounded id its launch path derives, not ``<id>-launch``.
+
+    Its queue result is found under the queue's own long-id name, so without a
+    run the activation is proven unlaunched; a run under the bounded launch id
+    keeps it.
+    """
+
+    from blueprint_pipeline.task_evaluation_configured_controls_progression import _bounded_launch_id
+
+    owner = "scene-" + "x" * 176 + "-controls"
+    launch_id = _bounded_launch_id(owner)
+    assert launch_id != owner + "-launch" and launch_id.endswith("-launch")
+    args = _args(tmp_path)
+    queue = _activation_queue(tmp_path, args)
+    result_path = _activation_result(queue, owner)
+    assert result_path.name.startswith("activation-")
+    _pin(args, "activation", owner, age=LAPSE + DAY)
+
+    unlaunched = reconcile_terminal_cache_pins(**args)
+    (tmp_path / "evidence" / launch_id / "allocator").mkdir(parents=True)
+    launched = reconcile_terminal_cache_pins(**args, apply=True, extended_proofs_enabled=True)
+
+    assert [(row["owner_id"], row["proof"]["kind"]) for row in unlaunched["candidates"]] == [
+        (owner, "activation_expired_unlaunched")]
+    assert _kept(launched)[("activation", owner)] == "run_not_sealed"
+    assert launched["candidates"] == [] and _states(args)[("activation", owner)] == "live"
+
+
+def test_activation_auto_launch_names_are_unchanged(tmp_path) -> None:
+    """A website activation's run is still found under ``<id>-launch``, and the original proofs read what they did."""
+
+    assert terminal_pins._evidence_names(AUTO) == (AUTO, AUTO + "-launch")
+    assert terminal_pins._evidence_names("run-x-controls") == ("run-x-controls",)
+    assert terminal_pins._launch_evidence_names(AUTO) == (AUTO, AUTO + "-launch")
+    args = _args(tmp_path)
+    queue = _activation_queue(tmp_path, args)
+    _activation_result(queue, AUTO)
+    _registry_run(tmp_path / "evidence", AUTO + "-launch", idle=DAY)
+    _pin(args, "activation", AUTO, age=LAPSE + DAY)
+
+    result = reconcile_terminal_cache_pins(**args, apply=True, extended_proofs_enabled=True)
+
+    assert _kept(result)[("activation", AUTO)] == "registry_hot"
+    assert _states(args)[("activation", AUTO)] == "live"
+
+
+def test_sealed_registry_run_finds_a_configured_controls_launch_run(tmp_path) -> None:
+    args = _args(tmp_path)
+    _registry_run(tmp_path / "evidence", "run-y-controls-launch")
+    _pin(args, "activation", "run-y-controls", age=7 * DAY)
+
+    result = reconcile_terminal_cache_pins(**args, apply=True, extended_proofs_enabled=True)
+
+    assert [(row["owner_id"], row["proof"]["kind"], row["proof"]["run_directory"]) for row in result["candidates"]] == [
+        ("run-y-controls", "sealed_registry_run", "run-y-controls-launch")]
+    assert _states(args)[("activation", "run-y-controls")] == "released"
 
 
 def test_prepared_statuses_are_exactly_those_the_activation_worker_writes() -> None:

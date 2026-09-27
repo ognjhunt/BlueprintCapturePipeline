@@ -544,7 +544,10 @@ One tick runs nine phases in order:
    86,400 seconds: a shared mutation window lives at most a week and launch
    re-validates it), and `unconsumed_stale_pin` (a preparation or compilation
    pin no live pin depends on, created more than eight days ago, naming only
-   `cache` paths). Every proof keeps the six-hour minimum pin age, the
+   `cache` paths). An activation's evidence names are its id, `<id>-launch`
+   (configured-controls activations such as `<run>-controls` launch that way
+   too) and the bounded launch id the launch paths derive for a long id, with
+   their own function. Every proof keeps the six-hour minimum pin age, the
    dependency closure's queue and process checks, and a re-derivation at the
    mutation edge; the extended proofs also count a queue row parked in a state
    that will still run (`LIVE_QUEUE_STATES`), such as a preparation awaiting
@@ -602,16 +605,17 @@ so each manifest (and its receipt) also records `walked_file_count` and
   checked against the pin proofs.
 - Terminal cache pins: every live pin is a candidate, with its `proof` and
   whether it is `enabled`, or a `kept` row with a typed reason, counted in
-  `retained_counts`: `pin_young`, `active_reference`, `depended_on`,
-  `reference_changed`, `pin_not_stale`, `path_class_invalid`, the run reasons
-  (`registry_unsealed`, `registry_hot`, `run_not_sealed`, `run_hot`,
-  `run_pointer_present`, `run_path_unsafe`, `evidence_root_unavailable`) and the
-  activation result reasons (`activation_queue_unconfigured`,
-  `activation_queue_unavailable`, `activation_result_missing`,
-  `activation_result_ambiguous`, `activation_result_invalid`,
-  `activation_result_not_prepared`, `activation_result_not_stale`). A pin a
-  proof could not read is `proof_error` with its `error_type`. The report also
-  counts candidates by proof and released pins by kind, dependencies included.
+  `retained_counts`: `pin_young`, `pin_invalid` (no numeric creation time),
+  `active_reference`, `depended_on`, `reference_changed`, `pin_not_stale`,
+  `path_class_invalid`, the run reasons (`registry_unsealed`, `registry_hot`,
+  `run_not_sealed`, `run_hot`, `run_without_registry`, `run_pointer_present`,
+  `run_path_unsafe`, `evidence_root_unavailable`) and the activation result
+  reasons (`activation_queue_unconfigured`, `activation_queue_unavailable`,
+  `activation_result_missing`, `activation_result_ambiguous`,
+  `activation_result_invalid`, `activation_result_not_prepared`,
+  `activation_result_not_stale`). A pin a proof could not read is
+  `proof_error` with its `error_type`. The report also counts candidates by
+  proof and released pins by kind, dependencies included.
 - Result-artifact offload: a retained run says why in `retained_reason` (`hot`
   or its protection reason). A run whose offload raised records `error_type`,
   `errno` (for an `OSError`) and `stage` (`registry`, `protection`, `publish` or

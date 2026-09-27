@@ -11,7 +11,7 @@ release a pin only with the owner's opt-in,
 ``BLUEPRINT_CONTROL_PLANE_GC_EXTENDED_PIN_PROOFS=1``; until then their
 candidates are listed with ``"enabled": false``:
 
-* ``sealed_registry_run``: an activation pin whose run carries a result
+* ``sealed_registry_run``: an activation pin whose every run carries a result
   registry the artifact store accepts as sealed (delivered completed_unqualified,
   blocked or cancelled, its closeout receipts intact), idle past the hot
   window, with no whole-run pointer. Whole-run offload never archives a
@@ -22,6 +22,10 @@ candidates are listed with ``"enabled": false``:
   week and a day ago. Its mutation window has lapsed and launch re-validates
   the window, so it can never start. Without an activation queue root this
   proof is off.
+
+Both activation proofs look for a run under every name an activation can
+launch as (``_launch_evidence_names``): its id, ``<id>-launch``, and the bounded
+launch id the launch paths derive for a long id, with their own functions.
 * ``unconsumed_stale_pin``: a preparation or compilation pin that no live pin
   depends on, created more than a week and a day ago, whose paths are all
   ``cache``. Its content is reproducible and re-fetched by digest.
@@ -113,6 +117,23 @@ def _evidence_names(owner):
     return (owner, owner + "-launch") if owner.endswith("-activation-auto") else (owner,)
 
 
+def _launch_evidence_names(owner):
+    """Every run directory an activation may own, as the extended proofs look for it.
+
+    The original proofs' names, ``<id>-launch`` for every activation (configured
+    controls activations such as ``<run>-controls`` launch that way too), and the
+    bounded launch id each launch path derives for an id too long for that: from
+    the paths' own functions, so the two can never drift. A name this cannot
+    derive fails the proof rather than being skipped.
+    """
+
+    from .task_evaluation_configured_controls_progression import _bounded_launch_id as controls_launch_id
+    from .task_evaluation_scene_configuration_activation_automation import _bounded_launch_id as scene_launch_id
+
+    names = (*_evidence_names(owner), owner + "-launch", controls_launch_id(owner), scene_launch_id(owner))
+    return tuple(dict.fromkeys(names))
+
+
 def _closed_proof(pin, evidence_roots, *, hot_window_seconds=DEFAULT_HOT_WINDOW_SECONDS, now=None):
     """Proof that the run this activation pin protects no longer needs the pin.
 
@@ -198,8 +219,10 @@ def _sealed_registry_run(directory, *, hot_window_seconds, now):
     if directory.is_symlink() or not directory.is_dir():
         return None, "run_path_unsafe"
     if not _has_result_registry(directory):
-        # The sealed-cold-run proof already declined it: unsealed, or sealed and still hot.
-        return None, "run_not_sealed" if _terminal_receipt(directory) is None else "run_hot"
+        # Not this proof's run; the original sealed-cold-run proof reads only the original names.
+        if _terminal_receipt(directory) is None:
+            return None, "run_not_sealed"
+        return None, "run_hot" if now - _tree_snapshot(directory)[0] < hot_window_seconds else "run_without_registry"
     from .task_evaluation_result_artifact_store import _sealed_registry
     try:
         registry, registry_path, _raw = _sealed_registry(directory.resolve())
@@ -228,14 +251,21 @@ def activation_queue_root_of(queue_roots):
 def _expired_unlaunched(owner, activation_queue_root, *, now):
     """A prepared activation whose every mutation window has lapsed; the caller found no run of it.
 
-    The worker names a result for the activation's queue envelope,
-    ``<activation id>-<request digest>.json``, and an activation id has one request.
+    The worker names a result for the activation's queue envelope, as the queue's
+    own ``_queue_filename`` names it: ``<activation id>-<request digest>.json``, or
+    a hashed name for an id too long for that. An activation id has one request.
     """
+
+    from .task_evaluation_launch_activation_queue import _queue_filename
 
     if activation_queue_root is None:
         return None, "activation_queue_unconfigured"
     results = Path(activation_queue_root) / "results"
-    pattern = re.compile(re.escape(owner) + r"-[0-9a-f]{64}\.json")
+    digest_suffix = "-" + "0" * 64 + ".json"
+    stem = _queue_filename(activation_id=owner, request_digest="sha256:" + "0" * 64)
+    if not stem.endswith(digest_suffix):
+        raise ValueError("terminal_cache_pin_activation_result_name_unknown")
+    pattern = re.compile(re.escape(stem[: -len(digest_suffix)]) + r"-[0-9a-f]{64}\.json")
     try:
         if results.is_symlink() or not results.is_dir():
             return None, "activation_queue_unavailable"
@@ -274,7 +304,7 @@ def _activation_proof(pin, live_pins, *, evidence_roots, activation_queue_root, 
         return None, "evidence_root_unavailable"
     runs = []
     for root in roots:
-        for name in _evidence_names(pin["owner_id"]):
+        for name in _launch_evidence_names(pin["owner_id"]):
             directory, pointer = _present(root / name), _present(root / (name + POINTER_SUFFIX))
             if directory is None or pointer is None:
                 return None, "evidence_root_unavailable"
@@ -312,8 +342,7 @@ def _extended_proof(pin, live_pins, **context):
         return None, "pin_invalid"
     if context["now"] - created < MINIMUM_PIN_AGE_SECONDS:
         return None, "pin_young"
-    proof = _EXTENDED_PROOFS.get(pin["kind"])
-    return (None, "no_proof") if proof is None else proof(pin, live_pins, **context)
+    return _EXTENDED_PROOFS[pin["kind"]](pin, live_pins, **context)
 
 
 def _derive(pin, live_pins, context):
