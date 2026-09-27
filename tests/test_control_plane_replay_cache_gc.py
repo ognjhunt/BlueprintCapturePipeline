@@ -1,4 +1,4 @@
-"""Storage GC reclaims the store copies activation lookaheads leaked, only once the owner opts in."""
+"""Storage GC reclaims the scratch inputs activation lookaheads leaked, only once the owner opts in."""
 
 # Covers (for impacted-test selection):
 #   src/blueprint_pipeline/control_plane_replay_cache_gc.py
@@ -51,6 +51,7 @@ def _activation(parent_root: Path, name: str = "scene-841007-preparation") -> tu
     report.write_text(json.dumps({
         "schema_version": "task_evaluation_parent_replay_report.v1", "nothing_fetched": True,
         "paid_execution_requested": False, "provider_mutation_performed": False,
+        "scratch_queue_root": str(replay_child / "launch-preparations"),
     }))
     lookahead_report = lookahead / ("f" * 64 + ".json")
     lookahead_report.write_text(json.dumps({"schema_version": "task_evaluation_progression_replay.v1"}))
@@ -64,9 +65,9 @@ def _tick(tmp_path: Path, parent_root: Path, **kwargs):
                           now=lambda: NOW, replay_parent_roots=[parent_root], **{"classifier": _noclass, **kwargs})
 
 
-def test_the_phase_removes_only_digest_verified_store_copies(tmp_path) -> None:
+def test_the_phase_leaves_every_file_outside_the_scratch_inputs(tmp_path) -> None:
     """Other files in a replay (a writable binary the standalone unit's rules would take)
-    are not this phase's business: it opted into store copies and nothing else."""
+    are not this phase's business: it opted into a replay's scratch inputs and nothing else."""
 
     parent_root = tmp_path / "scene-configuration-activations"
     blob, report, _lookahead_report = _activation(parent_root)
@@ -80,6 +81,29 @@ def test_the_phase_removes_only_digest_verified_store_copies(tmp_path) -> None:
 
     assert tick["replay_caches"]["removed_bytes"] == size
     assert not blob.exists() and binary.exists()
+
+
+def test_the_phase_keeps_the_store_copy_rule_beside_the_scratch_rule(tmp_path) -> None:
+    """Spec review of PR 10a.1: the phase passes reclaim_store_copies with reclaim_scratch_inputs, so
+    a finished replay whose report does not bind its scratch inputs to its own root (no scratch
+    queue recorded) still loses its digest-verified store copies, and nothing else there."""
+
+    assert replay_gc._RULES == {"reclaim_store_copies": True, "reclaim_scratch_inputs": True, "single_files": False}
+    parent_root = tmp_path / "scene-configuration-activations"
+    blob, report, _lookahead_report = _activation(parent_root)
+    report.write_text(json.dumps({k: v for k, v in json.loads(report.read_text()).items() if k != "scratch_queue_root"}))
+    os.utime(report, (NOW - 7100, NOW - 7100))
+    derived = report.parent / "prepared-references" / "scene-841007-preparation" / "derived.json"
+    derived.parent.mkdir(parents=True)
+    derived.write_bytes(b"{}" * 500)
+    os.utime(derived, (NOW - 7200, NOW - 7200))
+    size = blob.stat().st_size
+
+    assert _tick(tmp_path, parent_root)["replay_caches"]["estimated_candidate_bytes"] == size
+    phase = _tick(tmp_path, parent_root, apply=True, ack=RUN_ACK, replay_cache_retention_enabled=True)["replay_caches"]
+
+    assert phase["candidate_bytes"] == phase["removed_bytes"] == size
+    assert not blob.exists() and derived.exists()
 
 
 def test_replay_cache_phase_plans_by_default_and_applies_only_when_enabled(tmp_path) -> None:
@@ -154,7 +178,7 @@ def test_plan_only_ticks_never_hash(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(retention, "active_reference", lambda _root, **_kwargs: False)
     monkeypatch.setattr(retention, "file_sha", lambda path: hashed.append(path) or real_file_sha(path))
     tick = _tick(tmp_path, parent_root, apply=True, ack=RUN_ACK, replay_cache_retention_enabled=True)
-    assert tick["replay_caches"]["removed_bytes"] == size and hashed, "a tick that applies verifies first"
+    assert tick["replay_caches"]["removed_bytes"] == size and hashed, "a tick that applies rechecks the report"
 
 
 def _real_lookahead(tmp_path: Path, monkeypatch, *, released: bool) -> tuple[dict, Path, bytes]:
@@ -193,10 +217,10 @@ def _real_lookahead(tmp_path: Path, monkeypatch, *, released: bool) -> tuple[dic
     return report, activations, other
 
 
-def _enabled_tick(tmp_path: Path, activations: Path, report: dict) -> dict:
+def _enabled_tick(tmp_path: Path, activations: Path, report: dict, *, apply: bool = True) -> dict:
     return run_storage_gc(content_store_roots=[], derived_roots=[], queue_roots=[], pins_root=tmp_path / "pins",
                           now=lambda: os.path.getmtime(report["report_path"]) + 7200, classifier=_noclass,
-                          replay_parent_roots=[activations], apply=True, ack=RUN_ACK,
+                          replay_parent_roots=[activations], apply=apply, ack=RUN_ACK if apply else "",
                           replay_cache_retention_enabled=True)
 
 
@@ -225,6 +249,82 @@ def test_a_lookahead_the_replay_leaked_is_reclaimed_with_its_linked_materializat
     assert tick["replay_caches"]["removed_bytes"] == sum(copies.values()) and "phase_errors" not in tick
     assert not [path for path in inputs.rglob("*") if path.is_file()]
     assert Path(report["report_path"]).is_file() and any(Path(report["scratch_queue_root"]).rglob("*.json"))
+
+
+def test_finished_lookahead_scratch_inputs_are_reclaimed_whole(tmp_path, monkeypatch) -> None:
+    """2026-09-27, 18:30 UTC: the phase estimated 4.8 GB across 105 lookaheads whose activations
+    held 12.95 GiB. Nearly all of a lookahead's bytes sat in parent-*/prepared-references, much of
+    it under no store name, which the store-copy rule cannot see. A finished replay made that whole
+    tree as scratch, so the phase now takes all of it: the store copies, the names the worker
+    linked to them, copies no store name covers, and the directories they leave empty. The parent
+    report and the scratch queue stay, and each inode is counted once."""
+
+    report, activations, _other = _real_lookahead(tmp_path, monkeypatch, released=False)
+    inputs = Path(report["report_path"]).parent / "prepared-references"
+    preparation = inputs / report["preparation_id"]
+    blob = next((inputs / "content-addressed" / "sha256").iterdir())
+    unlinked = preparation / "copied" / blob.name  # the blob's bytes, but its own inode and no store name
+    unlinked.parent.mkdir()
+    unlinked.write_bytes(blob.read_bytes())
+    derived = preparation / "derived" / "view-0.bin"
+    derived.parent.mkdir()
+    derived.write_bytes(b"derived from an input" * 100)
+    (preparation / "derived" / "empty").mkdir()
+    stamp = os.path.getmtime(report["report_path"]) - 60
+    for path in (unlinked, derived):
+        os.utime(path, (stamp, stamp))
+    names = [path for path in inputs.rglob("*") if path.is_file() and not path.is_symlink()]
+    inodes = {(path.stat().st_dev, path.stat().st_ino): path.stat().st_size for path in names}
+    assert len(names) > len(inodes), "the worker linked materialized names to the copies"
+
+    estimate = _enabled_tick(tmp_path, activations, report, apply=False)["replay_caches"]
+    tick = _enabled_tick(tmp_path, activations, report)
+
+    phase = tick["replay_caches"]
+    assert estimate["estimated_candidate_bytes"] == phase["candidate_bytes"] == phase["removed_bytes"] == sum(
+        inodes.values())
+    assert (phase["skipped"], phase["errors"], "phase_errors" in tick) == ([], [], False)
+    assert inputs.is_dir() and not any(inputs.iterdir()), "every file and every emptied directory went"
+    assert Path(report["report_path"]).is_file() and any(Path(report["scratch_queue_root"]).rglob("*.json"))
+
+
+def test_phase_estimate_counts_scratch_inputs_without_hashing(tmp_path, monkeypatch) -> None:
+    """A plan-only tick counts every scratch input a finished lookahead left, whatever its name,
+    each inode once however many names it has, still from names, links and sizes alone: it hashes
+    nothing, reads no file's bytes and sweeps no process table. A tick that applies removes what
+    was estimated and hashes only the replay's report: nothing about a scratch input rests on a
+    digest."""
+
+    parent_root = tmp_path / "scene-configuration-activations"
+    blob, report, _lookahead_report = _activation(parent_root)
+    preparation = report.parent / "prepared-references" / "scene-841007-preparation"
+    linked = preparation / blob.name
+    derived = preparation / "derived" / "frame.json"
+    derived.parent.mkdir(parents=True)
+    os.link(blob, linked)
+    derived.write_bytes(b"{}" * 500)
+    os.utime(derived, (NOW - 7200, NOW - 7200))
+    size = blob.stat().st_size + derived.stat().st_size
+
+    def refuse(*args, **_kwargs):
+        raise AssertionError(f"read {args[:2]} on a tick that only plans")
+
+    for name in ("file_sha", "_held_sha", "active_reference"):
+        monkeypatch.setattr(retention, name, refuse)
+    phase = _tick(tmp_path, parent_root)["replay_caches"]
+    assert (phase["estimated_candidate_bytes"], phase["errors"]) == (size, [])
+
+    monkeypatch.undo()
+    monkeypatch.setattr(retention, "active_reference", lambda _root, **_kwargs: False)
+    monkeypatch.setattr(retention, "_held_sha", refuse)
+    hashed: list[Path] = []
+    real_file_sha = retention.file_sha
+    monkeypatch.setattr(retention, "file_sha", lambda path: hashed.append(path) or real_file_sha(path))
+    phase = _tick(tmp_path, parent_root, apply=True, ack=RUN_ACK, replay_cache_retention_enabled=True)["replay_caches"]
+
+    assert phase["candidate_bytes"] == phase["removed_bytes"] == size
+    assert set(hashed) == {report}
+    assert not blob.exists() and not linked.exists() and not derived.exists() and report.is_file()
 
 
 def test_replay_cache_phase_refuses_a_non_work_root(tmp_path) -> None:

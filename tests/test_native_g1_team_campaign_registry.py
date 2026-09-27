@@ -10,6 +10,7 @@ import pytest
 from blueprint_pipeline.decision_evidence_contracts import cross_runtime_canonical_digest as digest
 from blueprint_pipeline.native_g1_team_campaign_intake import list_g1_team_campaign_setups
 from blueprint_pipeline.native_g1_team_campaign_registry import build_g1_team_campaign_registry
+from blueprint_pipeline.native_task_runtime_source_packet import NativeTaskRuntimeSourcePacketError
 from tests.test_native_g1_team_campaign_intake import _registry
 from tests.test_native_g1_team_campaign_request import OWNER, _request
 
@@ -24,6 +25,10 @@ def test_builds_catalog_readable_by_the_authenticated_owner(tmp_path, monkeypatc
     monkeypatch.setattr(
         "blueprint_pipeline.native_g1_team_campaign_intake.make_packet_planning_setup",
         lambda **_: setup,
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.native_g1_team_campaign_registry.verify_native_task_runtime_source_packet",
+        lambda _: {"status": "ready", "runtime_profile": "unitree_g1"},
     )
     registry = build_g1_team_campaign_registry([binding])
     assert registry["registry_digest"] == digest(registry, digest_field="registry_digest")
@@ -44,6 +49,10 @@ def test_rejects_unsafe_or_mismatched_registry(tmp_path, monkeypatch, change, er
         "blueprint_pipeline.native_g1_team_campaign_registry.make_packet_planning_setup",
         lambda **_: setup,
     )
+    monkeypatch.setattr(
+        "blueprint_pipeline.native_g1_team_campaign_registry.verify_native_task_runtime_source_packet",
+        lambda _: {"status": "ready", "runtime_profile": "unitree_g1"},
+    )
     binding = deepcopy(binding)
     if change == "owner":
         binding["owner"] = {"user_id": ""}
@@ -54,3 +63,38 @@ def test_rejects_unsafe_or_mismatched_registry(tmp_path, monkeypatch, change, er
     bindings = [binding, deepcopy(binding)] if change == "duplicate" else [binding]
     with pytest.raises(ValueError, match=error):
         build_g1_team_campaign_registry(bindings)
+
+
+def test_registry_refuses_a_runtime_receipt_whose_archive_is_gone(tmp_path, monkeypatch):
+    setup, request = _request(tmp_path, monkeypatch)
+    _, binding = _registry(tmp_path, request)
+    monkeypatch.setattr(
+        "blueprint_pipeline.native_g1_team_campaign_registry.make_packet_planning_setup",
+        lambda **_: setup,
+    )
+
+    def missing_archive(receipt_path):
+        assert str(receipt_path) == binding["runtime_source_receipt_path"]
+        raise NativeTaskRuntimeSourcePacketError(["native_task_runtime_source_packet_missing"])
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.native_g1_team_campaign_registry.verify_native_task_runtime_source_packet",
+        missing_archive,
+    )
+    with pytest.raises(ValueError, match="native_task_runtime_source_packet_missing"):
+        build_g1_team_campaign_registry([binding])
+
+
+def test_registry_requires_a_ready_g1_runtime_packet(tmp_path, monkeypatch):
+    setup, request = _request(tmp_path, monkeypatch)
+    _, binding = _registry(tmp_path, request)
+    monkeypatch.setattr(
+        "blueprint_pipeline.native_g1_team_campaign_registry.make_packet_planning_setup",
+        lambda **_: setup,
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.native_g1_team_campaign_registry.verify_native_task_runtime_source_packet",
+        lambda _: {"status": "ready", "runtime_profile": "base"},
+    )
+    with pytest.raises(ValueError, match="g1_team_campaign_runtime_source_profile_invalid"):
+        build_g1_team_campaign_registry([binding])

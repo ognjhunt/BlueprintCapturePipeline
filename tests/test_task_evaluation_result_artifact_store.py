@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import errno
+import fcntl
 import hashlib
 import json
+import os
+import stat
 from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
@@ -326,8 +330,8 @@ def test_existing_gc_tick_uses_per_artifact_offload(setup, monkeypatch, tmp_path
 
     f = setup
     monkeypatch.setattr(
-        "blueprint_pipeline.completed_replay_cache_retention.active_reference",
-        lambda _, **kw: False,
+        "blueprint_pipeline.completed_replay_cache_retention.process_reference",
+        lambda _, **kw: None,
     )
     report = run_storage_gc(
         content_store_roots=[],
@@ -348,6 +352,327 @@ def test_existing_gc_tick_uses_per_artifact_offload(setup, monkeypatch, tmp_path
     assert report["evidence_offload"]["offloaded_count"] == 0
     assert f.registry_path.exists() and not f.path.exists()
     assert _get(f.client, f.token, f.run_id, "gc-remote").content == f.payload
+
+
+def _gc_tick(f, tmp_path):
+    from blueprint_pipeline.control_plane_storage_gc import RUN_ACK, run_storage_gc
+
+    return run_storage_gc(
+        content_store_roots=[], derived_roots=[], queue_roots=[], pins_root=tmp_path / "pins",
+        evidence_roots=[f.root.parent], offload_enabled=True, apply=True, ack=RUN_ACK, hot_window_seconds=0,
+        classifier=lambda *a, **kw: None,
+        publisher=partial(store.publish_configured_scene_artifact, client=f.objects, bucket="private-bucket"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("stage", "error_type", "error_number"),
+    [
+        ("registry", "TaskEvaluationResultDeliveryError", None),
+        ("protection", "PermissionError", errno.EACCES),
+        ("publish", "ControlPlaneDiskBudgetError", None),
+        ("evict", "PermissionError", errno.EPERM),
+    ],
+)
+def test_result_artifact_offload_failure_records_stage_and_errno(
+    setup, monkeypatch, tmp_path, stage, error_type, error_number
+):
+    """2026-09-27: six registry runs failed result-artifact offload and the GC recorded only
+    ``PermissionError``: not the step that raised it, nor the errno that tells a refused
+    /proc read (EACCES) from a refused chmod (EPERM). Neither message nor path is kept."""
+    from blueprint_pipeline.control_plane_disk_budget import ControlPlaneDiskBudgetError
+
+    f = setup
+    host_path = str(tmp_path / "host-only-path")
+    process = "blueprint_pipeline.completed_replay_cache_retention.process_reference"
+    monkeypatch.setattr(process, lambda _, **kw: None)
+
+    def refuse(error):
+        def raising(*_args, **_kwargs):
+            raise error
+        return raising
+
+    if stage == "registry":
+        (f.registry_path.parent / "delivery.json").write_text("{}")
+    elif stage == "protection":
+        monkeypatch.setattr(process, refuse(PermissionError(errno.EACCES, "Permission denied", host_path)))
+    elif stage == "publish":
+        monkeypatch.setattr(offload, "reserve_control_plane_disk",
+                            refuse(ControlPlaneDiskBudgetError("control_plane_disk_budget_exceeded")))
+    else:
+        monkeypatch.setattr(offload, "acquire_artifact_read_lease",
+                            refuse(PermissionError(errno.EPERM, "Operation not permitted", host_path)))
+
+    report = _gc_tick(f, tmp_path)
+
+    assert report["result_artifact_offload"] == [{
+        "status": "retained", "run_directory": f.root.name, "reason": error_type,
+        "error_type": error_type, "errno": error_number, "stage": stage,
+    }]
+    assert f.path.read_bytes() == f.payload and f.registry_path.exists()
+    assert host_path not in json.dumps(report)
+
+
+def test_a_skipped_artifact_records_its_stage_and_errno(setup, monkeypatch, tmp_path):
+    f = setup
+    monkeypatch.setattr(
+        "blueprint_pipeline.completed_replay_cache_retention.process_reference", lambda _, **kw: None)
+
+    def full_disk(**_kwargs):
+        raise OSError(errno.ENOSPC, "No space left on device", str(tmp_path / "host-only-path"))
+
+    result = apply(f, publisher=full_disk)
+
+    assert result["offloaded_count"] == 0
+    assert result["skipped"] == [{
+        "relative_path": "evidence/external.mp4", "reason": "OSError",
+        "error_type": "OSError", "errno": errno.ENOSPC, "stage": "publish",
+    }]
+    assert "host-only-path" not in json.dumps(result)
+    assert f.path.read_bytes() == f.payload
+
+
+def test_a_retained_run_says_why(setup, monkeypatch, tmp_path):
+    f = setup
+    assert offload.offload_result_artifacts(run_root=f.root)["retained_reason"] == "hot"
+    assert apply(f, protection_checker=lambda _: True)["retained_reason"] == "protected"
+    assert apply(f, protection_checker=lambda _: "protected_pin")["retained_reason"] == "protected_pin"
+    # The GC passes its evidence protection reason through.
+    monkeypatch.setattr("blueprint_pipeline.completed_replay_cache_retention.process_reference",
+                        lambda _, **kw: "inventory_unreadable")
+    [row] = _gc_tick(f, tmp_path)["result_artifact_offload"]
+    assert (row["status"], row["retained_reason"]) == (
+        "retained_hot_or_active", "protected_process_inventory_unreadable")
+    assert f.path.read_bytes() == f.payload
+
+
+class _SimulatedOwnership:
+    """How an account without CAP_FOWNER sees ownership: ``os.geteuid``, ``open``, ``fstat``,
+    ``fchmod``, ``chmod`` (and ``Path.chmod``), ``fchown`` and ``chown``.
+
+    Owner, group and mode live in a table keyed by inode, and nothing real is chowned or
+    chmodded. A file the simulated account creates through ``os.open`` (as ``mkstemp``
+    and ``Path.touch`` do) is its own, its mode masked by the GC unit's ``UMask=0077``.
+    Every other file belongs to ``default_owner`` (the registry owner) with its real
+    mode until ``own()`` says otherwise. Changing a mode needs ownership and fails with
+    EPERM otherwise; root (CAP_CHOWN) may chown anything, anyone else only what it keeps.
+    """
+
+    def __init__(self, monkeypatch, *, euid: int, egid: int, default_owner: tuple[int, int]):
+        self.euid, self.egid, self.default_owner = euid, egid, default_owner
+        self.files: dict[tuple[int, int], dict[str, int]] = {}
+        self.calls: list[tuple[str, tuple[int, int]]] = []
+        self._fstat, self._stat, self._open = os.fstat, os.stat, os.open
+        monkeypatch.setattr(os, "geteuid", lambda: self.euid)
+        monkeypatch.setattr(os, "open", self.open)
+        monkeypatch.setattr(os, "fstat", self.fstat)
+        monkeypatch.setattr(os, "fchmod", lambda fd, mode: self._chmod("fchmod", self._fstat(fd), mode))
+        monkeypatch.setattr(os, "chmod", lambda path, mode, *, dir_fd=None, follow_symlinks=True: self._chmod(
+            "chmod", self._stat(path, dir_fd=dir_fd, follow_symlinks=follow_symlinks), mode))
+        monkeypatch.setattr(Path, "chmod", lambda path, mode, *, follow_symlinks=True: self._chmod(
+            "chmod", self._stat(path, follow_symlinks=follow_symlinks), mode))
+        monkeypatch.setattr(os, "fchown", lambda fd, uid, gid: self._chown("fchown", self._fstat(fd), uid, gid))
+        monkeypatch.setattr(os, "chown", lambda path, uid, gid, *, dir_fd=None, follow_symlinks=True: self._chown(
+            "chown", self._stat(path, dir_fd=dir_fd, follow_symlinks=follow_symlinks), uid, gid))
+
+    def open(self, path, flags, mode=0o777, *, dir_fd=None):
+        created = False
+        if flags & os.O_CREAT:
+            try:
+                self._stat(path, dir_fd=dir_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                created = True
+        descriptor = self._open(path, flags, mode, dir_fd=dir_fd)
+        if created:
+            real = self._fstat(descriptor)
+            self.files[(real.st_dev, real.st_ino)] = {"uid": self.euid, "gid": self.egid, "mode": mode & ~0o077}
+        return descriptor
+
+    def _entry(self, real) -> dict[str, int]:
+        uid, gid = self.default_owner
+        return self.files.setdefault((real.st_dev, real.st_ino),
+                                     {"uid": uid, "gid": gid, "mode": stat.S_IMODE(real.st_mode)})
+
+    def own(self, path: Path, *, uid: int, gid: int, mode: int) -> None:
+        real = self._stat(path)
+        self.files[(real.st_dev, real.st_ino)] = {"uid": uid, "gid": gid, "mode": mode}
+
+    def of(self, path: Path) -> dict[str, int]:
+        return self._entry(self._stat(path))
+
+    def calls_on(self, path: Path) -> list[str]:
+        real = self._stat(path)
+        return [name for name, key in self.calls if key == (real.st_dev, real.st_ino)]
+
+    def fstat(self, fd):
+        real = self._fstat(fd)
+        entry = self._entry(real)
+        fields = {name: getattr(real, name) for name in dir(real) if name.startswith("st_")}
+        fields.update(st_mode=stat.S_IFMT(real.st_mode) | entry["mode"], st_uid=entry["uid"], st_gid=entry["gid"])
+        return SimpleNamespace(**fields)
+
+    def _chmod(self, name: str, real, mode: int) -> None:
+        self.calls.append((name, (real.st_dev, real.st_ino)))
+        entry = self._entry(real)
+        if entry["uid"] != self.euid:
+            raise PermissionError(errno.EPERM, "Operation not permitted")
+        entry["mode"] = stat.S_IMODE(mode)
+
+    def _chown(self, name: str, real, uid: int, gid: int) -> None:
+        self.calls.append((name, (real.st_dev, real.st_ino)))
+        entry = self._entry(real)
+        if self.euid != 0 and uid not in (-1, entry["uid"]):
+            raise PermissionError(errno.EPERM, "Operation not permitted")
+        entry["uid"] = entry["uid"] if uid == -1 else uid
+        entry["gid"] = entry["gid"] if gid == -1 else gid
+
+
+def _lease_lock(f) -> Path:
+    return f.registry_path.parent / ".artifact-readers.lock"
+
+
+def _flock_is_held(lock: Path) -> bool:
+    probe = os.open(lock, os.O_RDWR)
+    try:
+        fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return True
+    finally:
+        os.close(probe)
+    return False
+
+
+def _owner(f) -> tuple[int, int]:
+    registry = f.registry_path.stat()
+    return registry.st_uid, registry.st_gid
+
+
+def _lease_with_existing_lock(f, monkeypatch, *, euid: int, egid: int, uid: int, gid: int, mode: int):
+    """Take a shared lease on a lock that already exists as ``uid:gid`` with ``mode``."""
+
+    _lease_lock(f).touch()
+    ownership = _SimulatedOwnership(monkeypatch, euid=euid, egid=egid, default_owner=_owner(f))
+    ownership.own(_lease_lock(f), uid=uid, gid=gid, mode=mode)
+    return ownership, offload.acquire_artifact_read_lease(f.root)
+
+
+def test_root_eviction_lease_needs_no_fowner(setup, monkeypatch):
+    """2026-09-27: the GC unit is root with CAP_CHOWN and CAP_DAC_OVERRIDE but not CAP_FOWNER.
+    The lease gave its new lock to the registry owner and then chmodded it, which only
+    that owner may do, so every eviction failed with EPERM after the upload. The mode
+    is now set while root still owns the file, and the owner changed last."""
+
+    f = setup
+    uid, gid = _owner(f)
+    ownership = _SimulatedOwnership(monkeypatch, euid=0, egid=0, default_owner=(uid, gid))
+
+    release = offload.acquire_artifact_read_lease(f.root, exclusive=True)
+    try:
+        assert ownership.of(_lease_lock(f)) == {"uid": uid, "gid": gid, "mode": 0o660}
+        assert ownership.calls_on(_lease_lock(f)) == ["fchmod", "fchown"]
+        assert _flock_is_held(_lease_lock(f))
+    finally:
+        release()
+    assert not _flock_is_held(_lease_lock(f))
+
+
+@pytest.mark.parametrize("mode", [0o660, 0o600], ids=["0660", "0600-left-by-a-failed-tick"])
+def test_existing_lock_owned_by_registry_owner_is_not_chmodded(setup, monkeypatch, mode):
+    """A lock the registry owner already holds is neither chmodded nor chowned by root: at
+    0660 it needs nothing, and at 0600 (left by a tick that failed its chmod) root may
+    not repair it; the open and the flock are the access check, and the owner's next
+    lease repairs the mode."""
+
+    f = setup
+    uid, gid = _owner(f)
+    ownership, release = _lease_with_existing_lock(f, monkeypatch, euid=0, egid=0, uid=uid, gid=gid, mode=mode)
+    try:
+        assert ownership.calls_on(_lease_lock(f)) == []
+        assert ownership.of(_lease_lock(f)) == {"uid": uid, "gid": gid, "mode": mode}
+        assert _flock_is_held(_lease_lock(f))
+    finally:
+        release()
+    assert not _flock_is_held(_lease_lock(f))
+
+
+def test_root_gives_a_third_users_lock_to_the_registry_owner_without_chmod(setup, monkeypatch):
+    """A lock some other account owns is chowned to the registry owner, which needs only
+    CAP_CHOWN, and keeps its mode: root may not chmod what it does not own."""
+
+    f = setup
+    uid, gid = _owner(f)
+    ownership, release = _lease_with_existing_lock(f, monkeypatch, euid=0, egid=0, uid=4242, gid=4242, mode=0o600)
+    try:
+        assert ownership.calls_on(_lease_lock(f)) == ["fchown"]
+        assert ownership.of(_lease_lock(f)) == {"uid": uid, "gid": gid, "mode": 0o600}
+        assert _flock_is_held(_lease_lock(f))
+    finally:
+        release()
+
+
+def test_non_root_reader_lease_is_unchanged(setup, monkeypatch):
+    """The service account (the WebApp-facing resolver) creates the lock as its owner, sets its
+    mode, and never chowns it."""
+
+    f = setup
+    uid, gid = _owner(f)
+    ownership = _SimulatedOwnership(monkeypatch, euid=uid, egid=gid, default_owner=(uid, gid))
+
+    release = offload.acquire_artifact_read_lease(f.root)
+    try:
+        assert ownership.calls_on(_lease_lock(f)) == ["fchmod"]
+        assert ownership.of(_lease_lock(f)) == {"uid": uid, "gid": gid, "mode": 0o660}
+        assert _flock_is_held(_lease_lock(f))
+    finally:
+        release()
+
+
+def test_non_root_reader_takes_the_flock_on_a_lock_someone_else_owns(setup, monkeypatch):
+    """The one intended change for a non-root reader. It used to chmod the lock whoever owned
+    it, so a group-writable lock another account owns failed with EPERM. It now leaves
+    that lock's mode alone and takes the flock; the open and the flock are the check."""
+
+    f = setup
+    uid, gid = _owner(f)
+    ownership, release = _lease_with_existing_lock(f, monkeypatch, euid=uid, egid=gid, uid=4242, gid=gid, mode=0o664)
+    try:
+        assert ownership.calls_on(_lease_lock(f)) == []
+        assert ownership.of(_lease_lock(f)) == {"uid": 4242, "gid": gid, "mode": 0o664}
+        assert _flock_is_held(_lease_lock(f))
+    finally:
+        release()
+
+
+def test_the_owners_next_lease_repairs_a_lock_a_failed_tick_left_0600(setup, monkeypatch):
+    f = setup
+    uid, gid = _owner(f)
+    ownership, release = _lease_with_existing_lock(f, monkeypatch, euid=uid, egid=gid, uid=uid, gid=gid, mode=0o600)
+    try:
+        assert ownership.calls_on(_lease_lock(f)) == ["fchmod"]
+        assert ownership.of(_lease_lock(f)) == {"uid": uid, "gid": gid, "mode": 0o660}
+    finally:
+        release()
+
+
+def test_root_gc_tick_evicts_without_fowner(setup, monkeypatch, tmp_path):
+    """The six production registry runs with eviction candidates published their bulk
+    artifacts on every hourly tick and were then retained with PermissionError at the
+    evict stage. Under the same privileges a tick now evicts them, and every mode or
+    owner change the tick makes is one those privileges allow."""
+
+    f = setup
+    uid, gid = _owner(f)
+    monkeypatch.setattr(
+        "blueprint_pipeline.completed_replay_cache_retention.process_reference", lambda _, **kw: None)
+    ownership = _SimulatedOwnership(monkeypatch, euid=0, egid=0, default_owner=(uid, gid))
+
+    [row] = _gc_tick(f, tmp_path)["result_artifact_offload"]
+
+    assert (row["status"], row["offloaded_count"], row["skipped"]) == ("applied", 1, [])
+    assert not f.path.exists() and f.objects.upload_count == 1
+    assert ownership.of(_lease_lock(f)) == {"uid": uid, "gid": gid, "mode": 0o660}
+    # The ledger, the reservation, the reference and the lease all went through the fake.
+    assert {name for name, _key in ownership.calls} == {"chmod", "fchmod", "fchown", "chown"}
 
 
 def test_disk_reservation_refusal_does_not_upload_or_delete(setup, monkeypatch):

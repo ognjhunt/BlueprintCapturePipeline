@@ -1,23 +1,32 @@
-"""Reclaim, from storage GC, the content-store copies activation lookaheads leaked.
+"""Reclaim, from storage GC, the scratch inputs activation lookaheads leaked.
 
 Every scene-configuration activation replays its parent preparation under
 ``<activation>/lookahead`` (``task_evaluation_progression_replay``). Until the
-replay released its scratch content store, each one copied the whole store
-there: the activations sit on the root disk and the store on the work volume,
-so linking failed with EXDEV. Nothing removed the copies; on 2026-09-27, 107
-activations held about 13 GiB of them.
+replay released its scratch inputs, each one left its whole
+``prepared-references`` tree there: a copy of the whole content store (the
+activations sit on the root disk and the store on the work volume, so linking
+failed with EXDEV), the worker's materialized references and whatever else it
+wrote. Nothing removed them. On 2026-09-27 the activations measured 12.95 GiB,
+of which the store-copy rule alone estimated 4.8 GB; a lookahead listed that
+day held essentially all of its bytes in that tree, much of it under no store
+name.
 
 Each lookahead is handed to ``completed_replay_cache_retention`` with its
-store-copy opt-in and without its single-file rules, so this phase only ever
-removes digest-verified content-store copies inside a finished offline parent
-replay, each with every name the worker linked to it there. It keeps every
-report, including the lookahead report the activation records by path, digest
-and size, and every other file. Until the
-owner sets ``BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_RETENTION=1`` a tick removes
-nothing, hashes nothing, reads no copy's bytes and sweeps no process table: it
-estimates from names, link counts and sizes, though it still parses each
-replay's report. Only a tick that applies hashes the copies it is about to
-remove.
+scratch-input and store-copy opt-ins and without its single-file rules, so this
+phase only ever removes files inside a finished offline replay's
+``prepared-references``. For a parent replay, which is what a lookahead runs,
+that is every regular file there whose links are all inside that tree and that
+is not newer than the replay's report, each inode with all of its names, and
+then the directories left empty inside the tree; for any other replay, only
+digest-verified store copies. A file with a link anywhere else is kept. It
+keeps every report, including the lookahead report the activation records by
+path, digest and size, the replay's scratch queue and every other file. Until
+the owner sets ``BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_RETENTION=1`` a tick
+removes nothing, hashes nothing, reads no file's bytes and sweeps no process
+table: it estimates from names, link counts and sizes, though it still parses
+each replay's report. A tick that applies reads no scratch input's bytes
+either, since nothing that makes one scratch rests on a digest; it rechecks
+each by inode, links, size and mtime.
 """
 
 from __future__ import annotations
@@ -35,8 +44,9 @@ REPLAY_CACHE_RETENTION_ENV = "BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_RETENTION"
 REPLAY_CACHE_RETENTION_INVALID = "replay_cache_retention_setting_invalid"
 LOOKAHEAD_DIRECTORY = "lookahead"
 DEFAULT_MINIMUM_CLOSED_SECONDS = 60 * 60
-# Store copies only: the standalone unit's single-file rules are not this phase's business.
-_RULES = {"reclaim_store_copies": True, "single_files": False}
+# A finished parent replay's whole scratch inputs, which subsume its store copies; the standalone
+# unit's single-file rules are not this phase's business.
+_RULES = {"reclaim_store_copies": True, "reclaim_scratch_inputs": True, "single_files": False}
 _MAX_ROWS = 50
 _TRUE = frozenset({"1", "true", "yes"})
 _FALSE = frozenset({"0", "false", "no"})

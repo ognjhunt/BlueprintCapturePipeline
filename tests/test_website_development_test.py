@@ -150,6 +150,10 @@ def test_missing_marble_anchor_uses_separately_named_drawer_fixture(tmp_path, mo
     assert prepared['destination'] is None
     assert runtime['simulator_ready'] is False
     assert runtime['object_authoring']['configuration']['schema_version'] == 'articulated_replacement_authoring_configuration.v1'
+    # A whole-body assembly stands on the fixture floor, not on a counter-height surface.
+    assert 'body_extent_m' in runtime['object_authoring']['configuration']
+    assert prepared['subject']['aabb_min_xyz'][2] == pytest.approx(0.0, abs=1e-9)
+    assert prepared['intake_request']['task']['support']['aabb_max_xyz'][2] == pytest.approx(0.0)
 
 
 def test_terminal_marble_failure_uses_only_an_authored_seed_for_the_drawer_fixture(tmp_path, monkeypatch):
@@ -208,3 +212,25 @@ def test_independent_object_frame_requires_estimated_metric_source(tmp_path, uni
     with pytest.raises(ValueError, match='website_object_frame_scale_invalid'):
         estimated_object_frame(track=args['task_masks']['targets'][0]['track'],
             source_geometry=source, registration_blocker='website_registration_conflicts_provider_anchor')
+
+
+def test_a_changed_fixture_surface_never_overwrites_a_finished_normalization(tmp_path, monkeypatch):
+    args, original = setup(tmp_path, monkeypatch)
+    root = tmp_path / 'component-test'
+    _, first = prepare_development_test(preparation=original, source_geometry=args['source_geometry'],
+        task_masks=args['task_masks'], output_root=root)
+    # The same fixture replays onto its retained normalization.
+    _, again = prepare_development_test(preparation=original, source_geometry=args['source_geometry'],
+        task_masks=args['task_masks'], output_root=root)
+    assert again['collision'] == first['collision']
+    # A different surface (here a later rule change) normalizes beside it instead of conflicting.
+    import trimesh
+    real_box = trimesh.creation.box
+
+    def wider(extents=None, **kwargs):
+        return real_box(extents=[extents[0] + 0.1, *extents[1:]], **kwargs)
+    monkeypatch.setattr(trimesh.creation, 'box', wider)
+    _, changed = prepare_development_test(preparation=original, source_geometry=args['source_geometry'],
+        task_masks=args['task_masks'], output_root=root)
+    assert changed['collision']['digest'] != first['collision']['digest']
+    assert (root / 'collision').is_dir() and len(list((root / 'collision').iterdir())) == 2

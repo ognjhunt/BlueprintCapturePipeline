@@ -1,5 +1,8 @@
 # Control-plane storage: budget, content stores, and reclaim
 
+For capacity pages, queue ETAs, and operator actions, use the
+[capacity response runbook](runbooks/control-plane-capacity.md).
+
 Status: operating contract for the production control plane (the single
 Task Evaluation host). Measured 2026-09-02 on a 154 GB root disk at 98 %.
 
@@ -52,7 +55,9 @@ bytes). `BLUEPRINT_CONTROL_PLANE_DISK_ROLE_TARGETS` maps each bulk role to its
 absolute write root; unspecified roles use the default target. A malformed map
 fails closed for the whole chain. The launch-preparation, launch-activation, and
 task-evaluation-launch intakes refuse a submission (HTTP 503, typed blocker)
-while its role is refused.
+while their roles are refused. The signed scene-intent intake accepts and queues
+the intent with `capacity.state=queued_for_capacity`; scene progression waits for
+whole-chain capacity before execution.
 The staging reservation is renewed while a blob download is in progress, so a
 long download does not release its bytes merely because the original lease
 period elapsed.
@@ -562,6 +567,48 @@ One tick runs nine phases in order:
    reference, and remote-copy checks pass. This phase plans until
    `BLUEPRINT_CONTROL_PLANE_SCENE_WORKSPACE_RETIREMENT=1` enables it; its
    detailed contract is below.
+
+**Why a tick kept what it kept.** On 2026-09-27 an applied tick with offload
+enabled reclaimed nothing, and its report could not say why. The derived and
+evidence manifests carry `retained_by_reason`, `{reason: {count, bytes}}` in
+logical bytes (a hardlinked file counts once per name), and their applied
+receipts copy it with the manifest's `candidate_count` and `candidate_bytes`.
+`retained_counts` is unchanged. Sizing every kept tree costs a metadata walk,
+so each manifest (and its receipt) also records `walked_file_count` and
+`walk_seconds`, and the summary carries them per phase. Nothing caps the walk.
+
+- Derived directories: `pinned` (with `by_kind`, for example `activation` or
+  `activation+preparation`), `queue_referenced`, `young` and `unsafe`.
+- Evidence offload: `unsafe`, `result_registry`, `already_offloaded`,
+  `unsealed_no_window`, `unsealed_recent`, `hot`, or the first protection that
+  holds, checked in this order: `protected_unreadable_settlement`,
+  `protected_process`, `protected_process_inventory_unreadable`,
+  `protected_pin`, `protected_settlement`, `protected_queue`. A `/proc` entry
+  the tick cannot read protects the run (`protected_process_inventory_unreadable`)
+  instead of failing the check.
+- Result-artifact offload: a retained run says why in `retained_reason` (`hot`
+  or its protection reason). A run whose offload raised records `error_type`,
+  `errno` (for an `OSError`) and `stage` (`registry`, `protection`, `publish` or
+  `evict`), and so does a skipped artifact. Messages and file names are never
+  recorded.
+
+With `--report-out` the tick also writes `summary.json`
+(`control_plane_storage_gc_summary.v1`) beside `latest.json`, published the same
+way (0644 in the 0755 directory). It holds the tick's status and
+`source_report_digest`, the opt-in flags, alerts, `phase_errors` and
+`skipped_roots`. Per phase it gives `candidate_bytes`,
+`removed_or_offloaded_bytes` and `retained_by_reason`, with null bytes where a
+phase counts without sizing. `retained_by_reason` is `{}` when a phase kept
+nothing and null when it does not say what it kept: an applied content-store,
+stranded-row, scratch or bundle receipt, a replay cache pass and the terminal
+pin pass carry no retained counts. An artifact already evicted is not counted as
+kept. `top_retained` lists the ten reasons that keep the
+most bytes. It names no run, file or host path except the configured roots in
+`skipped_roots`, and stays under 256 KiB. If it cannot be built or written, the
+previous tick's `summary.json` is removed, so a stale summary never sits beside
+a newer `latest.json`, and the unit fails. Read it first:
+`python3 scripts/operator_door.py cat /var/lib/blueprint/pipeline-control-plane/storage-gc/summary.json`.
+A missing summary means read `latest.json`.
 
 Restore an offloaded run with
 `python -c 'from blueprint_pipeline.control_plane_evidence_offload import restore_offloaded_evidence as r; r(pointer_path=..., destination=...)'`;

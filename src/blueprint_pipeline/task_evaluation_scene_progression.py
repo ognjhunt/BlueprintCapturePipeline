@@ -493,6 +493,41 @@ def _recover_configuration_capacity(*, directory, intent, state, attempt, link_p
     return {"status": "preparing", "phase": "capacity_recovery_reserved", "blockers": []}
 
 
+def _record_capacity_wait(state, admission, *, now):
+    from .control_plane_capacity_controller import _read_attention_summary, capacity_eta
+
+    devices = [
+        {key: row[key] for key in ("device", "required_bytes", "available_bytes", "passed") if key in row}
+        for row in admission.get("devices") or [] if isinstance(row, dict)
+    ]
+    required = int(admission.get("required_workspace_bytes") or 0)
+    if devices:
+        available = sum(int(row.get("available_bytes") or 0) for row in devices)
+        shortfall = sum(max(0, int(row.get("required_bytes") or 0) - int(row.get("available_bytes") or 0))
+                        for row in devices)
+    else:
+        available = int((admission.get("measurement") or {}).get("available_bytes") or 0)
+        shortfall = max(0, required - available)
+    summary_path = Path(os.getenv("BLUEPRINT_CAPACITY_SUMMARY_PATH",
+                                  "/var/lib/blueprint/pipeline-control-plane/capacity/summary.json"))
+    summary = _read_attention_summary(summary_path)
+    observed = summary.get("observed_at_epoch") if isinstance(summary, dict) else None
+    if not isinstance(observed, (int, float)) or now - observed > 7200 or observed > now + 300:
+        summary = None
+    eta = capacity_eta(shortfall, summary=summary, now=now)
+    prior = state.get("capacity_wait") or {}
+    state["capacity_wait"] = {
+        "since_epoch": prior.get("since_epoch", now),
+        "required_bytes": required,
+        "available_bytes": available,
+        "shortfall_bytes": shortfall,
+        "basis": admission.get("required_workspace_basis", "unknown"),
+        "devices": devices,
+        **eta,
+        "next_check_epoch": now + 600,
+    }
+
+
 def _advance_intent(directory, intent, config, release, *, resolver, publisher, submitter, status_reader,
                     activation_provisioner, now):
     progress = load_progression(directory, intent)
@@ -578,7 +613,9 @@ def _advance_intent(directory, intent, config, release, *, resolver, publisher, 
             now=now)
         state["capacity_admission"] = admission
         if admission["status"] != "admitted":
+            _record_capacity_wait(state, admission, now=now)
             return emit("awaiting_execution", "capacity", ["scene_whole_chain_capacity_insufficient"])
+        state.pop("capacity_wait", None)
     if (config.get("public_source_bootstrap_enabled") is True
             and intent["request"]["source"]["kind"] == "public_scene" and not state.get("source_analysis")):
         emit("preparing", "source_preparation")
@@ -596,7 +633,9 @@ def _advance_intent(directory, intent, config, release, *, resolver, publisher, 
                 "disk_reservation_root", "/var/lib/blueprint/pipeline-control-plane/disk-reservations"), now=now)
         state["capacity_admission"] = admission
         if admission["status"] != "admitted":
+            _record_capacity_wait(state, admission, now=now)
             return emit("awaiting_execution", "capacity", ["scene_whole_chain_capacity_insufficient"])
+        state.pop("capacity_wait", None)
     require(resolution.binding_path is not None and resolution.machinery_path is not None and callable(resolution.materializer),
             "source_resolution_incomplete")
     binding = read(resolution.binding_path, digest_field="binding_digest")

@@ -1,5 +1,8 @@
 # Control-plane capacity: from a floor to a plan
 
+Operators responding to a capacity page or queued scene should use the
+[capacity response runbook](runbooks/control-plane-capacity.md).
+
 Status: plan of record, 2026-09-05. Owner: control-plane storage.
 
 ## The problem, measured

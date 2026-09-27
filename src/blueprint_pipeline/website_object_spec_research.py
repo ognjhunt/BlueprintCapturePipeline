@@ -91,6 +91,7 @@ _KEYWORDS = re.compile(r"width|height|depth|dimension|weight|load|capacity|cut-?
 CLAIM = ("Published figures for the identified product or, where labelled category_standard, the published "
          "standard size of its category; never measurements of this unit. The searched record may be "
          "incomplete, and silence means no verified figure was found.")
+VERIFICATION_REVISION = 2  # 2: a value ties to the label written directly before it.
 VERIFICATION_RULE = ("A figure is kept only when its source_url was fetched in this run, its quote appears "
                      "verbatim in that page's text, and a number in the quote equals the figure after unit "
                      "normalization within 0.5%.")
@@ -453,6 +454,8 @@ _ATTRIBUTE_WORDS = {"width": {"width", "wide", "w"}, "height": {"height", "high"
                     "load": {"load", "capacity"}, "force": {"force", "pull", "effort"}}
 _PART_WORDS = {"door": {"door", "doors"}, "rack": {"rack", "racks"}, "drawer": {"drawer", "drawers"}}
 _CLAUSE = re.compile(r"[;\n|]|,(?!\d)|\.(?=\s|$)")
+# ``h: 34.5" w: 23.875" d: 24.5"``: each number follows its own label and separator.
+_LABEL = re.compile(r"\b([a-z]+)\s*[:=]\s*(?=\d)")
 
 
 def _quote_names_attribute(quote: str, name: str, span: Sequence[float], unit: str) -> bool:
@@ -460,6 +463,8 @@ def _quote_names_attribute(quote: str, name: str, span: Sequence[float], unit: s
 
     ``34 x 24 x 24 in (H x W x D)`` names three attributes in one clause and
     proves none; ``Net weight 40 kg; door 8 kg`` gives the door 8 kg, not 40.
+    A clause of ``label: value`` pairs (``h: 34.5" w: 23.875" d: 24.5"``) ties
+    each value to the label written directly before it.
     """
     tokens = set(name.split("_"))
     attributes = {key for key in _ATTRIBUTE_WORDS if key in tokens}
@@ -470,11 +475,21 @@ def _quote_names_attribute(quote: str, name: str, span: Sequence[float], unit: s
                                        for reading in readings) for bound in span):
             continue
         words = set(re.findall(r"[a-z]+", clause.lower()))
+        if {key for key, vocabulary in _PART_WORDS.items() if words & vocabulary} != parts:
+            continue
         named = {key for key, vocabulary in _ATTRIBUTE_WORDS.items() if words & vocabulary}
         # A mass unit already says "weight" when the clause names no other attribute.
-        if (not attributes or named == attributes or (not named and attributes == {"weight"})) and {
-                key for key, vocabulary in _PART_WORDS.items() if words & vocabulary} == parts:
+        if not attributes or named == attributes or (not named and attributes == {"weight"}):
             return True
+        lowered = clause.lower()
+        labels = list(_LABEL.finditer(lowered))
+        for index, label in enumerate(labels):
+            segment = lowered[label.end():labels[index + 1].start() if index + 1 < len(labels) else len(lowered)]
+            values = quoted_values(segment, default_unit=unit)
+            if ({key for key, vocabulary in _ATTRIBUTE_WORDS.items() if label[1] in vocabulary} == attributes
+                    and values and all(any(math.isclose(value, bound, rel_tol=QUOTE_VALUE_TOLERANCE)
+                                           for value in values) for bound in span)):
+                return True
     return False
 
 
@@ -870,7 +885,8 @@ def spec_binding(*, target_id: str, identity: Mapping[str, Any], coverage: Mappi
     return {"target_id": target_id, "identity_digest": canonical_digest(dict(identity)),
             "coverage_digest": (coverage or {}).get("digest"), "articulation_kind": articulation_kind,
             "model": MODEL, "revision": REVISION, "instructions_digest": canonical_digest({"text": INSTRUCTIONS}),
-            "agent_gate": gate, "dimension_conflict_tolerance": DIMENSION_CONFLICT_TOLERANCE}
+            "agent_gate": gate, "dimension_conflict_tolerance": DIMENSION_CONFLICT_TOLERANCE,
+            "verification_revision": VERIFICATION_REVISION}
 
 
 def research_object_spec(*, target_id: str, category: str, articulation_kind: str,

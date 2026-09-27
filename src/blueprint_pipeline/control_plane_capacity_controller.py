@@ -29,9 +29,13 @@ the volume's mount is critical.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import math
 import os
+import re
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -59,6 +63,14 @@ USAGE_ATTRIBUTION_ALERT_FRACTION = 0.9
 USAGE_PROJECTED_UNCLASSIFIED_ROOTS = 20
 RESIZE_RECEIPT_SCHEMA_VERSION = "control_plane_volume_resize_receipt.v1"
 DEFAULT_REPORT_ROOT = Path("/var/lib/blueprint/pipeline-control-plane/capacity")
+DEFAULT_RELEASE_RETIREMENT_SUMMARY = Path(
+    "/var/lib/blueprint/pipeline-control-plane/release-retention/latest-deploy-retirement.json"
+)
+DEFAULT_BREAK_GLASS_NOTES_ROOT = Path("/var/lib/blueprint/pipeline-control-plane/cleanup-receipts")
+DEFAULT_STORAGE_GC_SUMMARY = Path(
+    "/var/lib/blueprint/pipeline-control-plane/storage-gc/summary.json"
+)
+GC_SUMMARY_INTERVAL_SECONDS = 3600
 DEFAULT_MOUNTS: tuple[str, ...] = ("/var/lib/blueprint",)
 WORK_VOLUME_MOUNT = "/mnt/blueprint-work"
 _DEFAULT_SURVEY = object()
@@ -69,6 +81,66 @@ ALERT_REPEAT_SECONDS = 60 * 60
 RESIZE_ACK = "grow-control-plane-volume"
 DEFAULT_RESIZE_STEP_GIB = 50
 GIB = 1024**3
+PAGE_ALERT_CODES = frozenset({
+    "floor_within_three_days", "admission_refused", "critical_admission_refused",
+    "mount_unreadable", "volume_growth_blocked", "operator_alert_route_unconfigured",
+    "reclaim_ineffective",
+})
+
+
+def _severity(code: str) -> str:
+    return "page" if code in PAGE_ALERT_CODES else "warn"
+
+
+def _annotate_alerts(alerts: list[dict[str, Any]]) -> None:
+    for alert in alerts:
+        alert["severity"] = _severity(str(alert.get("code") or ""))
+
+
+def alert_fingerprint(report: Mapping[str, Any]) -> str:
+    """Stable identity of page-severity alert targets, independent of row order."""
+    rows = sorted({
+        (str(alert.get("code") or ""), str(alert.get("mount") or ""), "page")
+        for alert in report.get("alerts") or []
+        if isinstance(alert, Mapping) and alert.get("severity") == "page"
+    })
+    return "sha256:" + hashlib.sha256(json.dumps(rows, separators=(",", ":")).encode()).hexdigest()
+
+
+def capacity_eta(shortfall_bytes: int, *, summary: Mapping[str, Any] | None, now: float) -> dict[str, Any]:
+    """Bound a capacity wait to a measured growth or reclaim plan when known."""
+    unknown = {"eta_epoch": None, "eta_basis": "unknown"}
+    if not isinstance(summary, Mapping):
+        return unknown
+    outlook = summary.get("reclaim_outlook")
+    if not isinstance(outlook, Mapping):
+        return unknown
+    growth = outlook.get("volume_growth")
+    if not isinstance(growth, str):
+        return unknown
+    if growth in {"planned", "applied"}:
+        return {"eta_epoch": float(now) + 600, "eta_basis": "volume_growth"}
+    reclaimable = outlook.get("reclaimable_bytes")
+    next_reclaim = outlook.get("next_reclaim_epoch")
+    for value in (reclaimable, next_reclaim):
+        if value is None:
+            continue
+        if type(value) not in (int, float):
+            return unknown
+        try:
+            finite = math.isfinite(value)
+        except OverflowError:
+            return unknown
+        if not finite:
+            return unknown
+    if type(reclaimable) not in (int, float) or reclaimable < 0:
+        return unknown
+    if (isinstance(reclaimable, (int, float)) and not isinstance(reclaimable, bool)
+            and reclaimable >= max(0, shortfall_bytes)
+            and isinstance(next_reclaim, (int, float)) and not isinstance(next_reclaim, bool)
+            and next_reclaim > now):
+        return {"eta_epoch": float(next_reclaim), "eta_basis": "reclaim_scheduled"}
+    return {"eta_epoch": None, "eta_basis": "operator_action_required"}
 
 MOUNTS_ENV = "BLUEPRINT_CAPACITY_MOUNTS"
 REPORT_ROOT_ENV = "BLUEPRINT_CAPACITY_REPORT_ROOT"
@@ -103,6 +175,125 @@ def _read_json(path: Path) -> dict[str, Any] | None:
     except (OSError, ValueError):
         return None
     return loaded if isinstance(loaded, dict) else None
+
+
+def _read_attention_summary(path: Path, *, max_bytes: int = 128 * 1024) -> dict[str, Any] | None:
+    """Read a small local summary; distinguish absence from malformed evidence."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return {"status": "unreadable"}
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return {"status": "unreadable"}
+        raw = os.read(fd, max_bytes + 1)
+    except OSError:
+        return {"status": "unreadable"}
+    finally:
+        os.close(fd)
+    if len(raw) > max_bytes:
+        return {"status": "unreadable"}
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        return {"status": "unreadable"}
+    return value if isinstance(value, dict) else {"status": "unreadable"}
+
+
+def _finite_number(value: int | float) -> bool:
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
+def _reclaim_outlook(
+    summary: Mapping[str, Any] | None, *, now: float, volume_growth: str
+) -> tuple[dict[str, Any], list[str], bool]:
+    """Use only a fresh applying GC summary for reclaim bytes and page reasons."""
+
+    reclaim_phases = (
+        "derived_directories", "content_store", "scratch_directories",
+        "workspace_bundles", "result_artifact_offload", "evidence_offload",
+        "replay_caches", "scene_workspaces",
+    )
+    sources = dict.fromkeys(reclaim_phases)
+    outlook: dict[str, Any] = {
+        "observed_at_epoch": None, "next_reclaim_epoch": None,
+        "reclaimable_bytes": None, "sources": sources, "volume_growth": volume_growth,
+    }
+    if not isinstance(summary, Mapping) or summary.get("schema_version") != "control_plane_storage_gc_summary.v1":
+        return outlook, [], False
+    observed = summary.get("observed_at_epoch")
+    if (
+        type(observed) not in (int, float) or not _finite_number(observed)
+        or not 0 <= now - observed <= 2 * GC_SUMMARY_INTERVAL_SECONDS
+        or summary.get("status") != "applied"
+    ):
+        return outlook, [], False
+    phases = summary.get("phases")
+    opt_in = summary.get("opt_in")
+    if not isinstance(phases, Mapping) or not isinstance(opt_in, Mapping):
+        return outlook, [], False
+    skipped_roots = summary.get("skipped_roots")
+    phase_errors = summary.get("phase_errors")
+    if (not isinstance(skipped_roots, list) or not isinstance(phase_errors, list)
+            or skipped_roots or phase_errors):
+        return outlook, [], False
+    enabled = [name for name in reclaim_phases[:4] if name in phases]
+    if opt_in.get("evidence_offload") is True:
+        if "result_artifact_offload" in phases:
+            enabled.append("result_artifact_offload")
+        if "evidence_offload" in phases:
+            enabled.append("evidence_offload")
+    if opt_in.get("replay_cache_retention") is True and "replay_caches" in phases:
+        enabled.append("replay_caches")
+    if opt_in.get("scene_workspace_retirement") is True:
+        if "scene_workspaces" in phases:
+            enabled.append("scene_workspaces")
+    if not enabled:
+        return outlook, [], False
+    total_candidate = 0
+    total_reclaimed = 0
+    for name in enabled:
+        phase = phases.get(name)
+        if (
+            not isinstance(phase, Mapping)
+            or (name != "result_artifact_offload" and phase.get("status") != "applied")
+        ):
+            return outlook, [], False
+        candidate = phase.get("candidate_bytes")
+        reclaimed = phase.get("removed_or_offloaded_bytes")
+        if (
+            type(candidate) is not int or candidate < 0
+            or type(reclaimed) is not int or reclaimed < 0
+        ):
+            return outlook, [], False
+        sources[name] = candidate
+        total_candidate += candidate
+        total_reclaimed += reclaimed
+    outlook.update({
+        "observed_at_epoch": observed,
+        "next_reclaim_epoch": observed + GC_SUMMARY_INTERVAL_SECONDS,
+        "reclaimable_bytes": total_candidate,
+    })
+    # Older summaries have only capped phase rows, which cannot prove the
+    # largest reasons across phases. Wait for a complete producer summary.
+    reason_rows = summary.get("top_retained_reasons")
+    if not isinstance(reason_rows, list):
+        return outlook, [], False
+    reason_bytes: dict[str, int] = {}
+    for row in reason_rows:
+        if not (isinstance(row, Mapping)
+                and type(row.get("bytes")) is int and row["bytes"] > 0
+                and isinstance(row.get("reason"), str)
+                and re.fullmatch(r"[a-z][a-z0-9_:+.-]{0,79}", row["reason"])):
+            return outlook, [], False
+        reason_bytes[row["reason"]] = reason_bytes.get(row["reason"], 0) + row["bytes"]
+    reasons = sorted(reason_bytes, key=lambda reason: (-reason_bytes[reason], reason))[:3]
+    return outlook, reasons, total_candidate == total_reclaimed == 0
 
 
 def live_reserved_bytes(
@@ -374,6 +565,7 @@ def build_capacity_report(
         days = row["forecast"].get("days_until_floor")
         if isinstance(days, (int, float)) and days < 3:
             alerts.append({"mount": row["mount"], "code": "floor_within_three_days", "days_until_floor": days})
+    _annotate_alerts(alerts)
     report: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "observed_at_epoch": observed,
@@ -559,7 +751,8 @@ _SUMMARY_MOUNT_KEYS = (
 )
 _SUMMARY_ALERT_KEYS = (
     "code", "mount", "provider", "roles", "used_fraction", "days_until_floor", "root",
-    "allocated_bytes", "attributed_fraction",
+    "allocated_bytes", "attributed_fraction", "severity", "reason", "status", "alert_count", "count",
+    "top_retained_reasons",
 )
 
 
@@ -594,6 +787,7 @@ def capacity_summary(report: Mapping[str, Any], *, max_bytes: int = SUMMARY_MAX_
             if isinstance(resize, Mapping)
             else None
         ),
+        "reclaim_outlook": report.get("reclaim_outlook"),
     }
 
     def size() -> int:
@@ -645,13 +839,17 @@ def alert_due(previous: Mapping[str, Any] | None, report: Mapping[str, Any], *, 
     """Alert on escalation or a new affected target, and retry failed delivery."""
 
     level = report.get("level")
-    if level == "ok":
+    has_page = any(row.get("severity") == "page" for row in report.get("alerts") or []
+                   if isinstance(row, Mapping))
+    if level == "ok" and not has_page:
         return False
     if previous is None or previous.get("level") != level:
         return True
     # alert_posted describes this tick, so a quiet tick after a successful
     # delivery must not turn the following tick into a retry.
     if previous.get("alert_error") or not isinstance(previous.get("last_alert_epoch"), (int, float)):
+        return True
+    if has_page and alert_fingerprint(report) != previous.get("last_alert_fingerprint", alert_fingerprint(previous)):
         return True
 
     def actionable_alerts(value: Mapping[str, Any]) -> set[tuple[str, str, str, str, tuple[str, ...]]]:
@@ -668,13 +866,33 @@ def alert_due(previous: Mapping[str, Any] | None, report: Mapping[str, Any], *, 
     if actionable_alerts(report) - actionable_alerts(previous):
         return True
     last = previous.get("last_alert_epoch")
-    return level == "critical" and (not isinstance(last, (int, float)) or now - float(last) >= ALERT_REPEAT_SECONDS)
+    return (has_page or level == "critical") and (
+        not isinstance(last, (int, float)) or now - float(last) >= ALERT_REPEAT_SECONDS
+    )
 
 
 def post_alert(url: str, report: Mapping[str, Any], *, timeout_seconds: float = 10.0) -> None:
+    page_alerts = [a for a in report.get("alerts") or [] if a.get("severity") == "page"]
+    urgent = page_alerts or list(report.get("alerts") or [])
+    first = urgent[0] if urgent else {}
+    summary = f"{first.get('mount') or 'control plane'}: {first.get('code') or report.get('level')}"
+    if first.get("code") == "floor_within_three_days":
+        summary = f"{first.get('mount')}: floor in {float(first.get('days_until_floor') or 0):.1f} days"
+    elif first.get("code") == "volume_growth_blocked":
+        summary = f"{first.get('mount')}: volume growth blocked ({first.get('reason')})"
+    ineffective = next(
+        (row for row in page_alerts if row.get("code") == "reclaim_ineffective"), None
+    )
+    if ineffective and ineffective.get("top_retained_reasons"):
+        summary += "; retained: " + ", ".join(ineffective["top_retained_reasons"])
     payload = {
         "schema_version": "control_plane_capacity_alert.v1",
         "level": report.get("level"),
+        "severity": "page" if page_alerts else "warn",
+        "page": bool(page_alerts),
+        "fingerprint": alert_fingerprint(report),
+        "runbook": "docs/runbooks/control-plane-capacity.md",
+        "summary": summary[:200],
         "alerts": report.get("alerts"),
         "mounts": [
             {
@@ -825,6 +1043,9 @@ def run_controller(
     survey: Callable[..., Mapping[str, Any]] | None | object = _DEFAULT_SURVEY,
     survey_interval_seconds: float = DEFAULT_SURVEY_INTERVAL_SECONDS,
     force_survey: bool = False,
+    release_retirement_summary_path: Path = DEFAULT_RELEASE_RETIREMENT_SUMMARY,
+    break_glass_notes_root: Path = DEFAULT_BREAK_GLASS_NOTES_ROOT,
+    storage_gc_summary_path: Path = DEFAULT_STORAGE_GC_SUMMARY,
 ) -> dict[str, Any]:
     """One tick. By default, survey when stale or forced. Pass ``survey=None``
     only to reuse an existing report without scanning."""
@@ -878,16 +1099,33 @@ def run_controller(
         report["alerts"].extend(warnings)
         if report["level"] == "ok":
             report["level"] = "warning"
-    report["alert_posted"] = False
-    if webhook_url and alert_due(previous, report, now=observed):
-        try:
-            poster(webhook_url, report)
-            report["alert_posted"] = True
-            report["last_alert_epoch"] = observed
-        except Exception as exc:  # noqa: BLE001 - alerting must never stop measurement
-            report["alert_error"] = f"{type(exc).__name__}: {exc}"[:200]
-    elif previous is not None and isinstance(previous.get("last_alert_epoch"), (int, float)):
-        report["last_alert_epoch"] = previous["last_alert_epoch"]
+    retirement = _read_attention_summary(release_retirement_summary_path)
+    if retirement is not None:
+        retirement_alerts = retirement.get("alerts")
+        alert_count = len(retirement_alerts) if isinstance(retirement_alerts, list) else 0
+        raw_status = retirement.get("status")
+        retirement_status = raw_status if raw_status in ("applied", "blocked", "skipped") else "unreadable"
+        if retirement_status != "applied" or alert_count:
+            report["alerts"].append({"code": "release_retirement_attention",
+                                     "status": retirement_status,
+                                     "alert_count": alert_count})
+            if report["level"] == "ok":
+                report["level"] = "warning"
+    from .control_plane_break_glass import unreported_notes
+    try:
+        unreported_count = len(unreported_notes(break_glass_notes_root))
+    except (OSError, ValueError):
+        report["alerts"].append({"code": "break_glass_notes_unreadable"})
+        unreported_count = 0
+    if unreported_count:
+        report["alerts"].append({"code": "break_glass_notes_unreported", "count": unreported_count})
+    if unreported_count or any(a["code"] == "break_glass_notes_unreadable" for a in report["alerts"]):
+        if report["level"] == "ok":
+            report["level"] = "warning"
+    if not webhook_url:
+        report["alerts"].append({"code": "operator_alert_route_unconfigured"})
+        if report["level"] == "ok":
+            report["level"] = "warning"
     if volume:
         plan = plan_volume_resize(
             report,
@@ -907,7 +1145,43 @@ def run_controller(
                         plan, ack=ack, token=token, device=str(volume.get("device") or ""), now=observed
                     )
                 except ControlPlaneCapacityError as exc:
-                    report["volume_resize"] = {**plan, "status": "blocked", "reason": str(exc)}
+                    code = str(exc).split(":", 1)[0]
+                    if code not in {
+                        "control_plane_capacity_resize_rejected",
+                        "control_plane_capacity_filesystem_resize_failed",
+                        "control_plane_capacity_resize_not_acknowledged",
+                        "control_plane_capacity_resize_plan_invalid",
+                    }:
+                        code = "control_plane_capacity_resize_failed"
+                    report["volume_resize"] = {**plan, "status": "blocked", "reason": code}
+        if report["volume_resize"].get("status") == "blocked":
+            report["alerts"].append({"code": "volume_growth_blocked",
+                                     "mount": str(volume.get("mount") or ""),
+                                     "reason": report["volume_resize"].get("reason")})
+    gc_summary = _read_attention_summary(storage_gc_summary_path, max_bytes=256 * 1024)
+    growth = (report.get("volume_resize") or {}).get("status", "not_configured")
+    outlook, retained_reasons, reclaim_ineffective = _reclaim_outlook(
+        gc_summary, now=observed, volume_growth=growth,
+    )
+    report["reclaim_outlook"] = outlook
+    if report["level"] == "critical" and reclaim_ineffective:
+        report["alerts"].append({
+            "code": "reclaim_ineffective",
+            "top_retained_reasons": retained_reasons,
+        })
+    _annotate_alerts(report["alerts"])
+    report["alert_posted"] = False
+    if webhook_url and alert_due(previous, report, now=observed):
+        try:
+            poster(webhook_url, report)
+            report["alert_posted"] = True
+            report["last_alert_epoch"] = observed
+            report["last_alert_fingerprint"] = alert_fingerprint(report)
+        except Exception as exc:  # noqa: BLE001 - alerting must never stop measurement
+            report["alert_error"] = f"{type(exc).__name__}: {exc}"[:200]
+    elif previous is not None and isinstance(previous.get("last_alert_epoch"), (int, float)):
+        report["last_alert_epoch"] = previous["last_alert_epoch"]
+        report["last_alert_fingerprint"] = previous.get("last_alert_fingerprint", alert_fingerprint(previous))
     report["report_digest"] = ""
     report["report_digest"] = canonical_digest(report, digest_field="report_digest")
     write_report(report_root, report)
@@ -984,6 +1258,7 @@ __all__ = [
     "ControlPlaneCapacityError",
     "alert_due",
     "build_capacity_report",
+    "capacity_eta",
     "capacity_summary",
     "chain_footprints",
     "footprint_basis",
