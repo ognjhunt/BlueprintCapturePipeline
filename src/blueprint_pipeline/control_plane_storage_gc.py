@@ -1,8 +1,8 @@
 """Conservative reclamation for control-plane caches, on a timer.
 
-One tick (``run_storage_gc``) runs eight phases in this order.  Every phase
+One tick (``run_storage_gc``) runs nine phases in this order. Every phase
 plans before it mutates, and a tick applies nothing unless it runs with
-``--apply`` and its typed acknowledgement:
+``--apply`` and its typed acknowledgement. The plan-only phase never applies:
 
 * **Stranded queue rows**: pending rows bound to a release other than the
   running one are moved to ``stranded/`` beside a receipt, so they stop
@@ -13,6 +13,8 @@ plans before it mutates, and a tick applies nothing unless it runs with
   episodes, activation launch sets) are retired when no live storage pin names
   them, no pending or processing queue message mentions them, and they have
   been idle longer than the grace period.
+* **Planned derived directories** inventory configured roots such as SAM31
+  preparation output. They are reported but never applied by this phase.
 * **Content-store blobs**: only direct children of an explicitly supplied
   ``sha256`` directory are ever eligible.  A blob is reclaimable when its name
   is its SHA-256 digest, it is an ordinary non-symlink file, its link count is
