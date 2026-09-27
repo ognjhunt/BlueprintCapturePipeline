@@ -162,11 +162,43 @@ def _candidate(inventory: dict[str, Any], candidate_id: str) -> dict[str, Any]:
     return candidate
 
 
+def _private_cache_urls(path: Path | None) -> dict[str, dict[str, Any]] | None:
+    if path is None:
+        return None
+    if not path.is_absolute() or path.is_symlink() or not path.is_file():
+        raise ValueError("g1_checkpoint_private_cache_file_invalid")
+    value = json.loads(path.read_text(encoding="utf-8"))
+    rows = value.get("files") if isinstance(value, dict) else None
+    if (
+        not isinstance(value, dict)
+        or value.get("schema_version") != "native_g1_private_checkpoint_transfer.v1"
+        or not isinstance(rows, list) or not rows
+    ):
+        raise ValueError("g1_checkpoint_private_cache_manifest_invalid")
+    result: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("g1_checkpoint_private_cache_manifest_invalid")
+        relative = row.get("relative_path")
+        url = row.get("url")
+        parts = urllib.parse.urlsplit(url) if isinstance(url, str) else None
+        if (
+            not isinstance(relative, str) or relative in result
+            or parts is None or parts.scheme.lower() != "https"
+            or not parts.hostname or parts.username or parts.password
+        ):
+            raise ValueError("g1_checkpoint_private_cache_manifest_invalid")
+        result[relative] = row
+    return result
+
+
 def materialize_candidate(
-    *, inventory_path: Path, candidate_id: str, output_dir: Path, verify_only: bool = False
+    *, inventory_path: Path, candidate_id: str, output_dir: Path, verify_only: bool = False,
+    cache_manifest_path: Path | None = None,
 ) -> dict[str, Any]:
     inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
     candidate = _candidate(inventory, candidate_id)
+    private_cache = _private_cache_urls(cache_manifest_path)
     folder = PurePosixPath(candidate["subdirectory"])
     if output_dir.is_symlink():
         raise ValueError("g1_checkpoint_output_symlink_forbidden")
@@ -185,7 +217,17 @@ def materialize_candidate(
                 raise ValueError(f"g1_checkpoint_file_missing:{relative}")
             destination.parent.mkdir(parents=True, exist_ok=True)
             path = folder / relative
-            url = MODEL_BASE + urllib.parse.quote(path.as_posix(), safe="/")
+            if private_cache is not None:
+                cache_row = private_cache.get(path.as_posix())
+                if (
+                    cache_row is None
+                    or cache_row.get("sha256") != "sha256:" + expected[0]
+                    or cache_row.get("size_bytes") != expected[1]
+                ):
+                    raise ValueError("g1_checkpoint_private_cache_identity_mismatch")
+                url = cache_row["url"]
+            else:
+                url = MODEL_BASE + urllib.parse.quote(path.as_posix(), safe="/")
             temporary = None
             try:
                 with tempfile.NamedTemporaryFile(
@@ -212,6 +254,12 @@ def materialize_candidate(
                 raise _DownloadDeadlineExceeded(
                     f"g1_checkpoint_download_deadline_exceeded:{candidate_id}:{relative}"
                 ) from exc
+            except Exception as exc:
+                if private_cache is not None:
+                    raise ValueError(
+                        "g1_checkpoint_private_cache_transfer_failed:" + type(exc).__name__
+                    ) from None
+                raise
             finally:
                 if temporary is not None:
                     temporary.unlink(missing_ok=True)

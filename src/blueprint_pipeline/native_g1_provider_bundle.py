@@ -362,6 +362,7 @@ def build_g1_provider_bundle(
             name: packet[1]["receipt_digest"] for name, packet in packets.items()
         },
         "candidate_ids": list(PAIR_ORDER),
+        "private_checkpoint_cache_required": True,
         "contract_python_dependencies": [contract_dependency],
         "expected_output_filename": RESULT_FILENAME,
         "runtime_entrypoint": ENTRYPOINT,

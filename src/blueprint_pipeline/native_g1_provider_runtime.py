@@ -51,6 +51,7 @@ G1_RUNTIME_IMPORTS = (
     "isaaclab_arena_g1", "pinocchio", "pink", "scipy", "qpsolvers",
     "onnxruntime", "google.protobuf",
 )
+CACHE_FILE_ENV = "BLUEPRINT_G1_CHECKPOINT_CACHE_FILE"
 
 
 def _json(path: Path) -> dict[str, Any]:
@@ -195,7 +196,9 @@ class _Heartbeat:
         print("BLUEPRINT_G1_STAGE_" + state + ":" + self.stage, flush=True)
 
 
-def _stage_models(root: Path, output: Path) -> dict[str, Any]:
+def _stage_models(
+    root: Path, output: Path, *, cache_manifest_path: Path | None = None
+) -> dict[str, Any]:
     inventory = root.parent / "configs/g1_humanoidarena_checkpoint_inventory.v1.json"
     sonic_inventory = root.parent / "configs/g1_sonic_default_asset_inventory.v1.json"
     checkpoint_fetcher = _load_script(
@@ -227,6 +230,7 @@ def _stage_models(root: Path, output: Path) -> dict[str, Any]:
                     inventory_path=inventory,
                     candidate_id=candidate,
                     output_dir=checkpoints,
+                    **({"cache_manifest_path": cache_manifest_path} if cache_manifest_path else {}),
                 )
             if (
                 receipt.get("status") != "checkpoint_bytes_verified"
@@ -347,7 +351,10 @@ def run_g1_provider_campaign(runtime_root: Path, output_dir: Path) -> dict[str, 
         if build["status"] != "built_import_probe_passed_no_cuda_probe":
             raise ValueError("g1_provider_policy_runtime_build_blocked")
         stage = "model-staging"
-        models = _stage_models(root, output)
+        cache_file = os.environ.get(CACHE_FILE_ENV)
+        if not cache_file:
+            raise ValueError("g1_private_checkpoint_cache_required")
+        models = _stage_models(root, output, cache_manifest_path=Path(cache_file))
         source_handoff = _json(root / "inputs/book_handoff.json")
         supplied_movement_handoff = root / "inputs/movement_handoff.json"
         movement_handoff = (

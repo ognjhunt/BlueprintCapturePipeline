@@ -177,8 +177,9 @@ def stage_cached_runtime_dependency_object_store(
     key_prefix: str,
     expiration_seconds: int,
     generated_at: str | None = None,
+    artifact_kind: str = "runtime_dependency",
 ) -> dict[str, Any]:
-    """Publish one immutable runtime layer once and issue a run-local GET URL."""
+    """Publish one immutable dependency once and issue a run-local GET URL."""
 
     generated = generated_at or utc_now_iso()
     job = Path(job_dir).expanduser().resolve()
@@ -187,7 +188,12 @@ def stage_cached_runtime_dependency_object_store(
     digest = _sha256_file(dependency) if dependency.is_file() else ""
     expected = str(expected_sha256 or "").removeprefix("sha256:")
     safe_prefix = key_prefix.strip("/ ") or "blueprint/wam-provider"
-    key = f"{safe_prefix}/runtime-dependencies/sha256/{expected}.zip"
+    if artifact_kind == "runtime_dependency":
+        key = f"{safe_prefix}/runtime-dependencies/sha256/{expected}.zip"
+    elif artifact_kind == "g1_checkpoint":
+        key = f"{safe_prefix}/g1-checkpoints/sha256/{expected}.bin"
+    else:
+        raise ValueError("cached_dependency_artifact_kind_invalid")
     blockers: list[str] = []
     if not dependency.is_file() or not expected or digest != expected:
         blockers.append("runtime_dependency_local_identity_mismatch")
@@ -309,6 +315,7 @@ def stage_cached_runtime_dependency_object_store(
         "status": "completed" if url and not blockers else "blocked",
         "dependency_path": str(dependency),
         "dependency_sha256": f"sha256:{digest}" if digest else None,
+        "artifact_kind": artifact_kind,
         "dependency_size_bytes": dependency.stat().st_size
         if dependency.is_file()
         else 0,
