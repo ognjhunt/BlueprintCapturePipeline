@@ -185,9 +185,12 @@ status.
 ### Phase 4: process (continuous)
 
 - Every host mutation goes through the door: deploy, unit start/stop, workspace retirement, and
-  reclaim. `deploy_control_plane_commit.py` refuses sources outside the canonical checkout (see
-  the queued task on out-of-band deploys and GPU admission).
-- Break-glass SSH writes a signed note to `cleanup-receipts/` that the next deploy reports.
+  reclaim. `deploy_control_plane_commit.py` accepts the canonical checkout or a
+  root-owned, non-group/world-writable clone directly under the trusted
+  config-tools root; any other source needs a fresh break-glass note. GPU
+  admission still refuses a release deployed from an untrusted source.
+- Break-glass SSH writes a digest-sealed (not signed) note to `cleanup-receipts/`
+  that the next receipt-bearing deploy reports.
 - Capacity runbook: page at three days of headroom, and grow or reclaim by the procedure.
   Nobody hand-deletes evidence.
 - Timers that another lane pauses (listener, scene progression) are paused through a door
