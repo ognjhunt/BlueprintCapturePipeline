@@ -188,6 +188,38 @@ def test_a_process_that_exited_mid_sweep_is_not_unreadable(tmp_path, monkeypatch
     assert gc.active_reference(child, process_root=proc) is False
 
 
+def test_an_unlistable_process_table_protects(tmp_path, monkeypatch):
+    """A /proc that refuses its own listing proves nothing is unreferenced."""
+    root, child, data, proc = setup(tmp_path)
+    _refuse_reading(monkeypatch, proc, PermissionError(errno.EACCES, "Permission denied"))
+
+    assert gc.process_reference(child, process_root=proc) == gc.PROCESS_INVENTORY_UNREADABLE
+    assert gc.active_reference(child, process_root=proc) is True
+    assert plan(root, proc)["kept"] == [{"root": str(child), "reason": "active_reference"}]
+    assert data.exists()
+
+
+def test_one_unreadable_descriptor_protects_as_inventory_unreadable(tmp_path, monkeypatch):
+    """A single fd/N whose link cannot be read protects the root, and the evidence phase's
+    reason says the inventory was unreadable, not that a process holds the run."""
+    from blueprint_pipeline import control_plane_storage_gc_reasons as reasons
+
+    root, child, data, proc = setup(tmp_path)
+    process = proc / "4242"
+    (process / "fd").mkdir(parents=True)
+    (process / "cmdline").write_bytes(b"python")
+    (process / "environ").write_bytes(b"")
+    (process / "fd" / "3").symlink_to(tmp_path / "elsewhere")
+    (process / "fd" / "4").symlink_to(tmp_path / "unrelated")
+    _refuse_reading(monkeypatch, process / "fd" / "3", PermissionError(errno.EACCES, "Permission denied"))
+
+    assert gc.process_reference(child, process_root=proc) == gc.PROCESS_INVENTORY_UNREADABLE
+    assert gc.active_reference(child, process_root=proc) is True
+    assert reasons.evidence_protection_reason(
+        child, settlement_roots=(), pins_root=tmp_path / "pins", queue_roots=(), now=lambda: 0.0, process_root=proc,
+    ) == "protected_process_inventory_unreadable"
+
+
 def _store_copy(child, payload, *, directory=("prepared-references", "content-addressed", "sha256"),
                 name=None, seconds_before_report=1):
     """A parent replay's copy of a store blob: named by its digest, read-only, older than the report."""
