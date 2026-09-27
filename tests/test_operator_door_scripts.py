@@ -166,7 +166,7 @@ def test_deploy_refuses_a_malformed_request_id_before_touching_any_path(env: dic
     assert rc == 2 and not calls and not list(Path(env["DOOR_RESULTS_DIR"]).iterdir())
 
 
-@pytest.mark.parametrize("script", ["door-common.sh", "door-deploy.sh", "door-upgrade.sh",
+@pytest.mark.parametrize("script", ["door-common.sh", "door-deploy.sh", "door-upgrade.sh", "door-hold-expire.sh",
                                     "door-retire-scene-workspace.sh", "door-restore-scene-workspace.sh", "install.sh"])
 def test_scripts_parse(script: str) -> None:
     assert subprocess.run(["/bin/bash", "-n", str(DOOR / script)], check=False).returncode == 0
@@ -416,3 +416,35 @@ def test_installer_copies_every_door_script() -> None:
     copy = " ".join(lines[start:start + 2])  # the staging copy command and its continuation line
     for script in sorted(DOOR.glob("door-*.sh")):
         assert f'"$source_dir"/{script.name}' in copy, script.name
+
+
+def test_hold_expiry_script_releases_only_matching_active_expired_generation(tmp_path: Path) -> None:
+    holds = tmp_path / "holds"
+    holds.mkdir()
+    unit = "blueprint-scene-progression.timer"
+    old_id = "20260926T120000Z-hold-0000abcd"
+    new_id = "20260926T120001Z-hold-0000abce"
+    record = {"schema": "blueprint_operator_door_hold.v1", "unit": unit, "owner": "alice",
+              "reason": "inspect", "requested_by": "cloud", "request_id": new_id,
+              "created_at": "2026-09-26T12:00:01+00:00", "expires_at": "2026-09-26T12:01:01+00:00",
+              "expires_at_epoch": 1, "status": "active"}
+    path = holds / f"{unit}.json"
+    path.write_text(json.dumps(record), encoding="utf-8")
+    stubs = tmp_path / "stubs"
+    stubs.mkdir()
+    log = tmp_path / "systemctl.log"
+    _write_stub(stubs / "systemctl", '#!/bin/bash\necho "$*" >> "$STUB_LOG"\nexit 0\n')
+    values = {**os.environ, "PATH": f"{stubs}:{os.environ['PATH']}", "STUB_LOG": str(log),
+              "DOOR_HOLDS_DIR": str(holds), "DOOR_HOLD_UNIT": unit, "DOOR_HOLD_REQUEST_ID": old_id}
+
+    def run(request_id: str) -> int:
+        return subprocess.run(["/bin/bash", str(DOOR / "door-hold-expire.sh")],
+                              env={**values, "DOOR_HOLD_REQUEST_ID": request_id}, check=False).returncode
+
+    assert run(old_id) == 0
+    assert not log.exists(), "an old expiry cannot release a renewed hold"
+    assert run(new_id) == 0
+    assert log.read_text().splitlines() == [f"--no-block start -- {unit}"]
+    assert json.loads(path.read_text())["status"] == "expired_released"
+    assert run(new_id) == 0
+    assert log.read_text().splitlines() == [f"--no-block start -- {unit}"], "expiry is idempotent"

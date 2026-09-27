@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from . import holds
 from .config import DoorConfig
 from .hostinfo import CommandRunner, SubprocessRunner
 from .requests import (
@@ -182,13 +183,77 @@ def _active_deploy_unit(runner: CommandRunner) -> str | None:
     return None
 
 
-def _act(config: DoorConfig, runner: CommandRunner, request_id: str, request: dict[str, Any]) -> dict[str, Any]:
+def _act_hold(
+    config: DoorConfig, runner: CommandRunner, request_id: str, request: dict[str, Any], requested_by: str,
+) -> dict[str, Any]:
+    root = Path(config.spool_root) / "holds"
+    unit = request["unit"]
+    with holds.locked(root):
+        current = holds.read(root, unit)
+        if (current is not None and current["status"] == "active"
+                and current["expires_at_epoch"] > time.time() and current["owner"] != request["owner"]):
+            return {"status": "refused", "code": f"hold_active:{current['owner']}"}
+        stopped = runner.run(["systemctl", "--no-block", "stop", "--", unit], timeout=30)
+        if stopped.returncode != 0:
+            return {"status": "failed", "code": "hold_stop_failed", "returncode": stopped.returncode,
+                    "stderr_tail": stopped.stderr[-2000:]}
+        now = int(time.time())
+        record = {"schema": holds.SCHEMA, "unit": unit, "owner": request["owner"],
+                  "reason": request["reason"], "requested_by": requested_by, "request_id": request_id,
+                  "created_at": holds.timestamp(now), "expires_at": holds.timestamp(now + request["expires_in_seconds"]),
+                  "expires_at_epoch": now + request["expires_in_seconds"], "status": "active"}
+        try:
+            holds.write(root, unit, record)
+            launch = runner.run([
+                "systemd-run", f"--unit=blueprint-operator-door-hold-expiry-{request_id[-8:]}",
+                f"--on-active={request['expires_in_seconds']}s", "--collect",
+                f"--setenv=DOOR_HOLD_UNIT={unit}", f"--setenv=DOOR_HOLD_REQUEST_ID={request_id}",
+                f"--setenv=DOOR_HOLDS_DIR={root}", "--", "/bin/bash",
+                f"{config.install_root}/door-hold-expire.sh",
+            ], timeout=60)
+        except Exception:
+            runner.run(["systemctl", "--no-block", "start", "--", unit], timeout=30)
+            raise
+        if launch.returncode != 0:
+            restored = runner.run(["systemctl", "--no-block", "start", "--", unit], timeout=30)
+            if restored.returncode == 0:
+                record.update(status="failed_released", released_at=holds.timestamp(), released_by="runner")
+                holds.write(root, unit, record)
+            return {"status": "failed", "code": "hold_expiry_schedule_failed", "returncode": launch.returncode,
+                    "rollback_returncode": restored.returncode, "stderr_tail": launch.stderr[-2000:]}
+        return {"status": "done", "hold": record}
+
+
+def _act_release_hold(
+    config: DoorConfig, runner: CommandRunner, request: dict[str, Any], requested_by: str,
+) -> dict[str, Any]:
+    root = Path(config.spool_root) / "holds"
+    unit = request["unit"]
+    with holds.locked(root):
+        record = holds.read(root, unit)
+        if record is None or record["status"] != "active":
+            return {"status": "refused", "code": "hold_not_active"}
+        started = runner.run(["systemctl", "--no-block", "start", "--", unit], timeout=30)
+        if started.returncode != 0:
+            return {"status": "failed", "code": "hold_release_start_failed", "returncode": started.returncode,
+                    "stderr_tail": started.stderr[-2000:]}
+        record.update(status="released", released_at=holds.timestamp(), released_by=requested_by)
+        holds.write(root, unit, record)
+        return {"status": "done", "hold": record}
+
+
+def _act(config: DoorConfig, runner: CommandRunner, request_id: str, request: dict[str, Any],
+         requested_by: str = "") -> dict[str, Any]:
     if request["kind"] == "unit":
         result = runner.run(
             ["systemctl", "--no-block", request["action"], "--", request["unit"]], timeout=30
         )
         return {"status": "done" if result.returncode == 0 else "failed", "unit_action": request,
                 "returncode": result.returncode, "stderr_tail": result.stderr[-2000:]}
+    if request["kind"] == "hold":
+        return _act_hold(config, runner, request_id, request, requested_by)
+    if request["kind"] == "release-hold":
+        return _act_release_hold(config, runner, request, requested_by)
     if request["kind"] == "deploy":
         busy = _active_deploy_unit(runner)
         if busy is not None:
@@ -215,7 +280,7 @@ def _process_one(config: DoorConfig, runner: CommandRunner, claimed: Path, reque
     os.replace(claimed, spool / "completed" / claimed.name)
     _write_result(results, request_id, {"status": "accepted"})
     try:
-        outcome = _act(config, runner, request_id, request)
+        outcome = _act(config, runner, request_id, request, document["requested_by"])
     except Exception as error:  # noqa: BLE001 - record, never crash the oneshot
         outcome = {"status": "failed", "code": f"runner_error:{type(error).__name__}"}
     _write_result(results, request_id, outcome)

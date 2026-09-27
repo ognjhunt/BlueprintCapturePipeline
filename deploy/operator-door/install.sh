@@ -49,7 +49,7 @@ rm -rf "$stage"
 mkdir -p "$stage"
 cp -R "$source_dir/operator_door" "$stage/"
 cp "$source_dir"/door-common.sh "$source_dir"/door-deploy.sh "$source_dir"/door-upgrade.sh \
-  "$source_dir"/door-retire-scene-workspace.sh "$source_dir"/door-restore-scene-workspace.sh \
+  "$source_dir"/door-retire-scene-workspace.sh "$source_dir"/door-restore-scene-workspace.sh "$source_dir"/door-hold-expire.sh \
   "$source_dir"/install.sh "$stage/"
 git -C "$repo_root" rev-parse HEAD >"$stage/INSTALLED_COMMIT" 2>/dev/null || echo unknown >"$stage/INSTALLED_COMMIT"
 find "$stage" -name '__pycache__' -prune -exec rm -rf {} +
@@ -109,6 +109,7 @@ install -d -o root -g blueprint-door -m 2770 "$state_root/requests/pending"
 for sub in processing completed results; do
   install -d -o root -g root -m 0755 "$state_root/requests/$sub"
 done
+install -d -o root -g root -m 0755 "$state_root/requests/holds"
 install -d -o blueprint -g blueprint -m 0750 "$state_root/audit"
 install -d -o root -g blueprint -m 2750 "$config_dir"
 if [ ! -e "$config_dir/tokens.json" ]; then

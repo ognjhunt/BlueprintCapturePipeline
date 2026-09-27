@@ -104,6 +104,69 @@ def test_unit_actions_use_no_block_systemctl(config: DoorConfig) -> None:
     assert _result(config, request_id)["status"] == "done"
 
 
+def _hold(config: DoorConfig, owner: str = "alice") -> str:
+    return _spooled(config, {"kind": "hold", "unit": "blueprint-scene-progression.timer",
+                             "owner": owner, "reason": "inspect capture", "expires_in_seconds": 3600})
+
+
+def test_hold_stops_a_timer_records_owner_and_schedules_expiry(config: DoorConfig) -> None:
+    request_id = _hold(config)
+    runner = FakeRunner()
+    process_spool(config, runner=runner)
+    unit = "blueprint-scene-progression.timer"
+    assert runner.calls[0] == ["systemctl", "--no-block", "stop", "--", unit]
+    launch = runner.calls[1]
+    assert launch[0] == "systemd-run"
+    assert f"--unit=blueprint-operator-door-hold-expiry-{request_id[-8:]}" in launch
+    assert "--on-active=3600s" in launch and "--collect" in launch
+    assert f"--setenv=DOOR_HOLD_UNIT={unit}" in launch
+    assert f"--setenv=DOOR_HOLD_REQUEST_ID={request_id}" in launch
+    assert launch[-2:] == ["/bin/bash", "/opt/blueprint/operator-door/door-hold-expire.sh"]
+    record = Path(config.spool_root) / "holds" / f"{unit}.json"
+    hold = json.loads(record.read_text(encoding="utf-8"))
+    assert record.stat().st_mode & 0o777 == 0o644
+    assert {key: hold[key] for key in ("schema", "unit", "owner", "reason", "requested_by", "request_id", "status")} == {
+        "schema": "blueprint_operator_door_hold.v1", "unit": unit, "owner": "alice",
+        "reason": "inspect capture", "requested_by": "cloud", "request_id": request_id, "status": "active"}
+    assert hold["expires_at"] > hold["created_at"]
+    assert _result(config, request_id)["status"] == "done"
+
+
+def test_other_owner_cannot_replace_an_active_hold_but_same_owner_can_extend(config: DoorConfig) -> None:
+    first = _hold(config)
+    process_spool(config, runner=FakeRunner())
+    other = _hold(config, "bob")
+    refused_runner = FakeRunner()
+    process_spool(config, runner=refused_runner)
+    assert _result(config, other)["status"] == "refused"
+    assert _result(config, other)["code"] == "hold_active:alice"
+    assert refused_runner.calls == []
+    extended = _hold(config)
+    process_spool(config, runner=FakeRunner())
+    record = Path(config.spool_root) / "holds" / "blueprint-scene-progression.timer.json"
+    assert json.loads(record.read_text())["request_id"] == extended
+    assert _result(config, extended)["status"] == "done"
+    assert first != extended
+
+
+def test_release_hold_starts_the_timer_and_marks_the_record(config: DoorConfig) -> None:
+    _hold(config)
+    process_spool(config, runner=FakeRunner())
+    release = _spooled(config, {"kind": "release-hold", "unit": "blueprint-scene-progression.timer"})
+    runner = FakeRunner()
+    process_spool(config, runner=runner)
+    assert runner.calls == [["systemctl", "--no-block", "start", "--", "blueprint-scene-progression.timer"]]
+    record = Path(config.spool_root) / "holds" / "blueprint-scene-progression.timer.json"
+    hold = json.loads(record.read_text())
+    assert hold["status"] == "released" and hold["released_by"] == "cloud" and hold["released_at"]
+    assert _result(config, release)["status"] == "done"
+    again = _spooled(config, {"kind": "release-hold", "unit": "blueprint-scene-progression.timer"})
+    runner = FakeRunner()
+    process_spool(config, runner=runner)
+    assert _result(config, again)["code"] == "hold_not_active"
+    assert runner.calls == []
+
+
 def test_door_upgrade_launches_the_upgrade_script(config: DoorConfig) -> None:
     request_id = _spooled(config, {"kind": "door-upgrade", "commit": SHA})
     runner = FakeRunner()
