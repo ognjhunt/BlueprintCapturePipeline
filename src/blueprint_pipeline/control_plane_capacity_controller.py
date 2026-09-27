@@ -177,7 +177,7 @@ def _read_json(path: Path) -> dict[str, Any] | None:
     return loaded if isinstance(loaded, dict) else None
 
 
-def _read_attention_summary(path: Path) -> dict[str, Any] | None:
+def _read_attention_summary(path: Path, *, max_bytes: int = 128 * 1024) -> dict[str, Any] | None:
     """Read a small local summary; distinguish absence from malformed evidence."""
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
@@ -188,12 +188,12 @@ def _read_attention_summary(path: Path) -> dict[str, Any] | None:
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             return {"status": "unreadable"}
-        raw = os.read(fd, 128 * 1024 + 1)
+        raw = os.read(fd, max_bytes + 1)
     except OSError:
         return {"status": "unreadable"}
     finally:
         os.close(fd)
-    if len(raw) > 128 * 1024:
+    if len(raw) > max_bytes:
         return {"status": "unreadable"}
     try:
         value = json.loads(raw)
@@ -1142,7 +1142,7 @@ def run_controller(
             report["alerts"].append({"code": "volume_growth_blocked",
                                      "mount": str(volume.get("mount") or ""),
                                      "reason": report["volume_resize"].get("reason")})
-    gc_summary = _read_attention_summary(storage_gc_summary_path)
+    gc_summary = _read_attention_summary(storage_gc_summary_path, max_bytes=256 * 1024)
     growth = (report.get("volume_resize") or {}).get("status", "not_configured")
     outlook, retained_reasons, reclaim_ineffective = _reclaim_outlook(
         gc_summary, now=observed, volume_growth=growth,

@@ -380,6 +380,15 @@ def test_reclaim_outlook_fails_closed_without_complete_applied_phase() -> None:
     assert reasons == [] and ineffective is False
 
 
+def test_gc_summary_reader_accepts_producer_size_bound(tmp_path: Path) -> None:
+    path = tmp_path / "summary.json"
+    path.write_text(json.dumps({"schema_version": "control_plane_storage_gc_summary.v1",
+                                "padding": "x" * (129 * 1024)}), encoding="utf-8")
+    assert cap._read_attention_summary(path, max_bytes=256 * 1024)["schema_version"] == (
+        "control_plane_storage_gc_summary.v1")
+    assert cap._read_attention_summary(path) == {"status": "unreadable"}
+
+
 def test_controller_writes_evidence_alerts_on_escalation_and_repeats_hourly_while_critical(
     tmp_path: Path,
 ) -> None:
