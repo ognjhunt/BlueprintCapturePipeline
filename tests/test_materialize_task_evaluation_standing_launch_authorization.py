@@ -6,10 +6,12 @@ import os
 import stat
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 import scripts.materialize_task_evaluation_standing_launch_authorization as materializer
+import blueprint_pipeline.task_evaluation_launch_dispatcher as dispatcher
 from blueprint_pipeline.task_evaluation_launch_dispatcher import (
     CANONICAL_ALLOCATOR_ENTRYPOINT,
     EXECUTE_ENV,
@@ -268,6 +270,21 @@ def test_pre_submit_authorization_removes_the_launch_id_race(
 ) -> None:
     """The dispatcher may consume immediately after the website persists the ID."""
 
+    monkeypatch.setenv(
+        "BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT", str(tmp_path / "disk-reservations")
+    )
+    actual_reserve = dispatcher.reserve_control_plane_disk
+
+    def reserve_on_roomy_test_disk(role, **kwargs):
+        return actual_reserve(
+            role,
+            disk_usage=lambda _path: SimpleNamespace(
+                total=200 * 1024**3, used=100 * 1024**3, free=100 * 1024**3
+            ),
+            **kwargs,
+        )
+
+    monkeypatch.setattr(dispatcher, "reserve_control_plane_disk", reserve_on_roomy_test_disk)
     profile_path, profile = _profile(tmp_path)
     state_root = tmp_path / "control-plane" / "launch-runs"
     standing_dir = state_root.parent / "standing-authorizations"
