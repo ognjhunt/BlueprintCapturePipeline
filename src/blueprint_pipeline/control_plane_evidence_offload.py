@@ -26,6 +26,7 @@ from typing import Any
 
 from .control_plane_storage_roots import require_storage_class
 from .control_plane_disk_budget import DEFAULT_RESERVATION_ROOT, reserve_control_plane_disk
+from .control_plane_storage_gc_reasons import WalkMeter, count_retained, entry_bytes, walked_bytes
 from .decision_evidence_contracts import canonical_digest
 from .control_plane_retained_receipt import MAX_RECEIPT_BYTES, RETAINED_RECEIPTS
 from .task_evaluation_configured_scene_object_store import (
@@ -106,12 +107,20 @@ def build_evidence_offload_manifest(
     abandoned_after_seconds: int | None = None,
     now: Callable[[], float] = time.time,
     classifier: Callable[..., Any] = require_storage_class,
-    protection_checker: Callable[[Path], bool] | None = None,
+    protection_checker: Callable[[Path], bool | str | None] | None = None,
 ) -> dict[str, Any]:
     """List sealed run directories past their hot window, without mutating anything.
 
     With ``abandoned_after_seconds`` set, an unsealed directory idle for at
     least that long is treated as sealed under ``ABANDONED_TERMINAL_RECEIPT``.
+
+    ``retained_by_reason`` says why every other entry was kept, with its count
+    and bytes: ``unsafe`` (a link or a non-directory, sized by itself and never
+    followed), ``result_registry``, ``already_offloaded``, the reason
+    ``protection_checker`` returns (a string names it; ``True`` is
+    ``protected``), ``unsealed_no_window``, ``unsealed_recent`` and ``hot``.
+    ``retained_counts`` keeps the four coarse counters it always had, and
+    ``walked_file_count`` and ``walk_seconds`` what walking the trees cost.
     """
 
     if (
@@ -123,6 +132,19 @@ def build_evidence_offload_manifest(
     observed_at = float(now())
     candidates: list[dict[str, Any]] = []
     retained = {"active_or_unsealed": 0, "hot": 0, "already_offloaded": 0, "unsafe": 0}
+    retained_by_reason: dict[str, dict[str, Any]] = {}
+    walk = WalkMeter(_tree_snapshot)
+
+    def retain(reason: str, counter: str, size: int) -> None:
+        retained[counter] += 1
+        count_retained(retained_by_reason, reason, size)
+
+    def protected_by(directory: Path) -> str | None:
+        verdict = protection_checker(directory) if protection_checker is not None else None
+        if not verdict:
+            return None
+        return verdict if isinstance(verdict, str) else "protected"
+
     roots: list[str] = []
     for raw_root in evidence_roots:
         root = Path(raw_root).expanduser()
@@ -136,32 +158,33 @@ def build_evidence_offload_manifest(
             if child.name.startswith(".") or child.name.endswith(POINTER_SUFFIX):
                 continue
             if child.is_symlink() or not child.is_dir():
-                retained["unsafe"] += 1
+                retain("unsafe", "unsafe", entry_bytes(child))
                 continue
             # Published downloads retain their registry and closure metadata.
             # Their bulk payloads use per-artifact offload, never whole-run removal.
             if _has_result_registry(child):
-                retained["active_or_unsealed"] += 1
+                retain("result_registry", "active_or_unsealed", walked_bytes(walk, child))
                 continue
             if (root / f"{child.name}{POINTER_SUFFIX}").exists():
-                retained["already_offloaded"] += 1
+                retain("already_offloaded", "already_offloaded", walked_bytes(walk, child))
                 continue
             receipt = _terminal_receipt(child)
-            if protection_checker is not None and protection_checker(child):
-                retained["active_or_unsealed"] += 1
+            protection = protected_by(child)
+            if protection is not None:
+                retain(protection, "active_or_unsealed", walked_bytes(walk, child))
                 continue
             if receipt is None and abandoned_after_seconds is None:
-                retained["active_or_unsealed"] += 1
+                retain("unsealed_no_window", "active_or_unsealed", walked_bytes(walk, child))
                 continue
-            latest, size, count = _tree_snapshot(child)
+            latest, size, count = walk(child)
             idle_seconds = observed_at - latest
             if receipt is None:
                 if idle_seconds < abandoned_after_seconds:
-                    retained["active_or_unsealed"] += 1
+                    retain("unsealed_recent", "active_or_unsealed", size)
                     continue
                 receipt = ABANDONED_TERMINAL_RECEIPT
             if idle_seconds < hot_window_seconds:
-                retained["hot"] += 1
+                retain("hot", "hot", size)
                 continue
             candidates.append(
                 {
@@ -183,6 +206,8 @@ def build_evidence_offload_manifest(
         "candidate_bytes": sum(row["size_bytes"] for row in candidates),
         "candidates": candidates,
         "retained_counts": retained,
+        "retained_by_reason": retained_by_reason,
+        **walk.fields(),
         "evidence_hot_roots_scanned": False,
         "manifest_digest": "",
     }
@@ -358,9 +383,13 @@ def apply_evidence_offload(
     publisher: Callable[..., Mapping[str, Any]] | None = None,
     stream_publisher: Callable[..., Mapping[str, Any]] = publish_configured_scene_stream,
     now: Callable[[], float] = time.time,
-    protection_checker: Callable[[Path], bool] | None = None,
+    protection_checker: Callable[[Path], bool | str | None] | None = None,
 ) -> dict[str, Any]:
-    """Offload every manifest candidate whose state is unchanged; keep the rest."""
+    """Offload every manifest candidate whose state is unchanged; keep the rest.
+
+    ``protection_checker`` is the manifest's: any truthy answer (a reason or
+    ``True``) keeps the candidate.
+    """
 
     if (
         ack != EXECUTE_ACK
@@ -485,6 +514,13 @@ def apply_evidence_offload(
         "schema_version": RECEIPT_SCHEMA_VERSION,
         "status": "applied",
         "source_manifest_digest": manifest["manifest_digest"],
+        # What the verified manifest planned and why it kept the rest (None for a
+        # manifest built before it named its reasons).
+        "candidate_count": manifest.get("candidate_count"),
+        "candidate_bytes": manifest.get("candidate_bytes"),
+        "retained_by_reason": manifest.get("retained_by_reason"),
+        "walked_file_count": manifest.get("walked_file_count"),
+        "walk_seconds": manifest.get("walk_seconds"),
         "offloaded_count": len(offloaded),
         "offloaded_bytes": sum(row["size_bytes"] for row in offloaded),
         "offloaded": offloaded,

@@ -344,12 +344,31 @@ def completed_report(root, *, any_parent_status=False):
     return None
 
 
-def active_reference(root, *, process_root=Path("/proc"), ignored_process_ids=()):
-    """Read process references without ever returning or storing environment values."""
+PROCESS_REFERENCED = "referenced"
+PROCESS_INVENTORY_UNREADABLE = "inventory_unreadable"
+# The process exited between being listed and being read: it references nothing.
+_EXITED = (FileNotFoundError, ProcessLookupError)
+
+
+def process_reference(root, *, process_root=Path("/proc"), ignored_process_ids=()):
+    """Why a live process may still read ``root``: ``referenced``, ``inventory_unreadable`` or None.
+
+    Reads each process's command line, environment, working directory and open
+    descriptors without ever returning or storing their values. An entry that
+    cannot be read (``PermissionError``, or any ``OSError`` other than the process
+    having exited) proves nothing about ``root``, so the answer is then
+    ``inventory_unreadable`` unless another process is seen referencing it. A
+    missing process root still raises.
+    """
     if not process_root.is_dir():
         raise ValueError("replay_cache_process_inventory_unavailable")
     needle = str(root).encode()
-    for process in process_root.iterdir():
+    unreadable = False
+    try:
+        processes = list(process_root.iterdir())
+    except OSError:
+        return PROCESS_INVENTORY_UNREADABLE
+    for process in processes:
         if not process.name.isdigit():
             continue
         if int(process.name) in ignored_process_ids:
@@ -357,21 +376,33 @@ def active_reference(root, *, process_root=Path("/proc"), ignored_process_ids=()
         for name in ("cmdline", "environ"):
             try:
                 if needle in (process / name).read_bytes():
-                    return True
-            except (FileNotFoundError, ProcessLookupError):
+                    return PROCESS_REFERENCED
+            except _EXITED:
                 continue
+            except OSError:
+                unreadable = True
         try:
             descriptors = list((process / "fd").iterdir())
-        except (FileNotFoundError, ProcessLookupError):
+        except _EXITED:
             continue
+        except OSError:
+            unreadable, descriptors = True, []
         for descriptor in (process / "cwd", *descriptors):
             try:
                 target = os.readlink(descriptor)
-            except (FileNotFoundError, ProcessLookupError):
+            except _EXITED:
+                continue
+            except OSError:
+                unreadable = True
                 continue
             if target == str(root) or target.startswith(str(root) + "/"):
-                return True
-    return False
+                return PROCESS_REFERENCED
+    return PROCESS_INVENTORY_UNREADABLE if unreadable else None
+
+
+def active_reference(root, *, process_root=Path("/proc"), ignored_process_ids=()):
+    """Whether a live process may still read ``root``; an entry that cannot be read counts as one."""
+    return process_reference(root, process_root=process_root, ignored_process_ids=ignored_process_ids) is not None
 
 
 def _scan(replay_root, minimum_closed_seconds, now, process_root, *, verify, reclaim_store_copies, single_files):
