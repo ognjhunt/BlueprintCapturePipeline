@@ -13,6 +13,14 @@ class _Session:
         return [0]
 
 
+class _Beta2ProxyArray:
+    """Isaac Lab's Warp shape hides vec/state columns until .torch is read."""
+
+    def __init__(self, tensor):
+        self.shape = (tensor.shape[0],)
+        self.torch = tensor
+
+
 class _Scene:
     def __init__(self):
         self.robot = type("Robot", (), {})()
@@ -57,12 +65,19 @@ class SonicActionProvider:
         self._perf_decoder_ms = []
         self.skip_decoder = False
         self.body_target = 0.0
+        self.consume_reference = True
+        self.reference_history_valid = True
 
     def _apply_lerobot_semantic_action(self, _action):
-        self._smpl_data_valid = True
-        self._latest_consumed_new_this_step = True
+        # The pinned joint29 provider sets validity in _run_gear_sonic after
+        # inspecting its history, rather than during action application.
+        self._latest_consumed_new_this_step = self.consume_reference
 
     def _run_gear_sonic(self):
+        if self.reference_history_valid:
+            self._smpl_data_valid = True
+        if not self._smpl_data_valid:
+            return [0.0] * 29
         self._encoder.run(None, {})
         if not self.skip_decoder:
             self._decoder.run(None, {})
@@ -87,8 +102,10 @@ def _adapter(tmp_path: Path, monkeypatch, provider):
     return bridge_module.NativeG1OfficialSonicTargetBridge(
         provider=provider,
         source_path=source,
-        encoder_sha256="sha256:" + hashlib.sha256(Path(provider.encoder_path).read_bytes()).hexdigest(),
-        decoder_sha256="sha256:" + hashlib.sha256(Path(provider.decoder_path).read_bytes()).hexdigest(),
+        encoder_sha256="sha256:"
+        + hashlib.sha256(Path(provider.encoder_path).read_bytes()).hexdigest(),
+        decoder_sha256="sha256:"
+        + hashlib.sha256(Path(provider.decoder_path).read_bytes()).hexdigest(),
         joint_limits={name: [-1.0, 1.0] for name in PROTOCOL_V4_FULL_JOINT_ORDER},
     )
 
@@ -109,6 +126,40 @@ def test_native_xyzw_is_shown_as_wxyz_without_mutation():
     )
     assert native.scene["robot"].data.root_state_w[0, 3:7].tolist() == pytest.approx(
         [0.1, 0.2, 0.3, 0.9]
+    )
+
+
+def test_beta2_proxy_root_state_uses_expanded_torch_view_without_mutation():
+    native = _Environment()
+    data = native.scene.robot.data
+    measured = torch.tensor([[1.0, 2.0, 3.0, 0.1, 0.2, 0.3, 0.9, 4, 5, 6, 7, 8, 9]])
+    data.root_state_w = _Beta2ProxyArray(measured)
+    converted = bridge_module.SonicWxyzEnvironmentView(native).scene["robot"].data.root_state_w
+    assert converted.shape == (1, 13)
+    assert converted[0, :7].tolist() == pytest.approx([1, 2, 3, 0.9, 0.1, 0.2, 0.3])
+    assert measured[0, 3:7].tolist() == pytest.approx([0.1, 0.2, 0.3, 0.9])
+
+
+def test_beta2_proxy_root_refuses_nonfinite_measured_state():
+    native = _Environment()
+    native.scene.robot.data.root_state_w = _Beta2ProxyArray(
+        torch.tensor([[1.0, 2.0, 3.0, 0.1, 0.2, float("nan"), 0.9]])
+    )
+    with pytest.raises(ValueError, match="nonfinite_combined_state"):
+        _ = bridge_module.SonicWxyzEnvironmentView(native).scene["robot"].data.root_state_w
+
+
+def test_beta2_proxy_measured_pose_fallback_uses_expanded_torch_fields():
+    native = _Environment()
+    data = native.scene.robot.data
+    data.root_state_w = _Beta2ProxyArray(torch.empty((1, 0)))
+    data.root_pos_w = _Beta2ProxyArray(torch.tensor([[1.0, 2.0, 3.0]]))
+    data.root_quat_w = _Beta2ProxyArray(torch.tensor([[0.1, 0.2, 0.3, 0.9]]))
+    data.root_lin_vel_w = _Beta2ProxyArray(torch.tensor([[4.0, 5.0, 6.0]]))
+    data.root_ang_vel_w = _Beta2ProxyArray(torch.tensor([[7.0, 8.0, 9.0]]))
+    root = bridge_module.SonicWxyzEnvironmentView(native).scene["robot"].data.root_state_w
+    assert root[0].tolist() == pytest.approx(
+        [1.0, 2.0, 3.0, 0.9, 0.1, 0.2, 0.3, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]
     )
 
 
@@ -140,7 +191,9 @@ def test_incomplete_combined_root_rejects_unmeasured_pose():
     native = _Environment()
     native.scene.robot.data.root_state_w = torch.empty((1, 0))
     native.scene.robot.data.root_quat_w = torch.empty((1, 0))
-    with pytest.raises(ValueError, match=r"g1_sonic_native_root_state_invalid:.*quaternion_shape=\(1, 0\)"):
+    with pytest.raises(
+        ValueError, match=r"g1_sonic_native_root_state_invalid:.*quaternion_shape=\(1, 0\)"
+    ):
         _ = bridge_module.SonicWxyzEnvironmentView(native).scene["robot"].data.root_state_w
 
 
@@ -152,6 +205,33 @@ def test_exact_semantic_action_runs_both_onnx_sessions_and_maps_names(tmp_path, 
     assert targets["right_hand_index_0_joint"] == pytest.approx(0.2)
     assert (adapter.encoder.calls, adapter.decoder.calls) == (1, 1)
     assert adapter.provider.env._native_environment.step_count == 0
+
+
+def test_new_joint29_reference_is_validated_by_sonic_during_inference(tmp_path, monkeypatch):
+    provider = _provider(tmp_path)
+    assert provider._smpl_data_valid is False
+    adapter = _adapter(tmp_path, monkeypatch, provider)
+    adapter.targets_for_action(_action())
+    assert provider._smpl_data_valid is True
+    assert (adapter.encoder.calls, adapter.decoder.calls) == (1, 1)
+
+
+def test_missing_new_reference_refuses_inference(tmp_path, monkeypatch):
+    provider = _provider(tmp_path)
+    provider.consume_reference = False
+    adapter = _adapter(tmp_path, monkeypatch, provider)
+    with pytest.raises(RuntimeError, match="reference_not_consumed"):
+        adapter.targets_for_action(_action())
+    assert (adapter.encoder.calls, adapter.decoder.calls) == (0, 0)
+
+
+def test_invalid_joint29_history_cannot_be_counted_as_inference(tmp_path, monkeypatch):
+    provider = _provider(tmp_path)
+    provider.reference_history_valid = False
+    adapter = _adapter(tmp_path, monkeypatch, provider)
+    with pytest.raises(RuntimeError, match="reference_not_consumed"):
+        adapter.targets_for_action(_action())
+    assert (adapter.encoder.calls, adapter.decoder.calls) == (0, 0)
 
 
 def test_upstream_default_pose_fallback_cannot_count_as_controller_inference(tmp_path, monkeypatch):

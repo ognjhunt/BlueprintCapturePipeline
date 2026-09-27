@@ -1,3 +1,5 @@
+# Covers (for impacted-test selection):
+#   src/blueprint_pipeline/task_evaluation_policy_canary_disk.py
 from __future__ import annotations
 
 import functools
@@ -21,6 +23,10 @@ from blueprint_pipeline.task_evaluation_policy_canary_dispatcher import (
     TaskEvaluationPolicyCanaryDispatchError,
     dispatch_policy_canary_activation,
     process_policy_canary_dispatch_queue,
+)
+from blueprint_pipeline.task_evaluation_result_delivery import (
+    TaskEvaluationResultDeliveryError,
+    materialize_policy_canary_result_delivery,
 )
 from tests.test_task_evaluation_policy_canary_setup import _setup as public_setup
 
@@ -1065,6 +1071,8 @@ def _inputs(tmp_path: Path) -> tuple[Path, Path, Path]:
                             "task_success_contract_digest": (
                                 task_success_contract_digest
                             ),
+                            "checkpoint_digest": "sha256:" + "c" * 64,
+                            "runtime_identity_digest": "sha256:" + "d" * 64,
                         }
                         if name.endswith("execution_spec")
                         else {}
@@ -1312,6 +1320,156 @@ def test_allocator_invocation_marker_prevents_unrecorded_retry(
             execute=True,
             allocator_runner=lambda _argv: pytest.fail("allocator invoked twice"),
         )
+
+
+def test_sparse_provider_failure_gets_typed_gaps_and_delivery_only_replay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    activation_result, setup_path, _activation = _inputs(tmp_path)
+    output = tmp_path / "dispatches" / "activation-1"
+    allocator_calls = 0
+
+    def fake_bundle(**kwargs):
+        job = Path(kwargs["job_dir"])
+        job.mkdir(parents=True, exist_ok=True)
+        return _write(
+            job / "native_task_arena_policy_canary_session_bundle_receipt.v1.json",
+            {"bundle_sha256": "sha256:" + "b" * 64},
+        ) and {"bundle_sha256": "sha256:" + "b" * 64}
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.task_evaluation_policy_canary_dispatcher.build_policy_canary_session_bundle",
+        fake_bundle,
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.task_evaluation_policy_canary_dispatcher.validate_provider_bundle",
+        lambda value, **_kwargs: value,
+    )
+
+    def fake_allocator(argv):
+        nonlocal allocator_calls
+        allocator_calls += 1
+        attempt = output / "allocator" / "attempts" / "attempt-1"
+        evidence = attempt / "immutable_execution"
+        evidence.mkdir(parents=True)
+        sparse = {
+            "schema_version": "native_task_arena_policy_canary_session_result.v1",
+            "status": "blocked",
+            "run_kind": "internal_policy_canary",
+            "claim_ceiling": "diagnostic_policy_execution",
+            "candidate_policy_queried": False,
+            "blockers": ["policy_canary_runtime_source_provision_failed"],
+            "result_digest": "",
+        }
+        sparse["result_digest"] = canonical_digest(sparse, digest_field="result_digest")
+        native = _write(
+            evidence / "native_task_arena_policy_canary_session_result.v1.json", sparse,
+        )
+        teardown = _write(attempt / "vast_teardown_manifest.json", {"status": "completed"})
+        _write(Path(argv[argv.index("--adapter-output") + 1]), {
+            "status": "blocked", "vast_instance_ids": [52835359],
+            "native_control_result_path": str(native),
+            "teardown_manifest_path": str(teardown),
+            "continuing_spend_from_this_run": False,
+            "provider_closeout": {
+                "provider_zero_confirmed": True,
+                "warm_session_retained": False,
+                "all_staged_objects_absent": True,
+            },
+        })
+        return 0
+
+    zero = {
+        "schema_version": "task_evaluation_policy_canary_vast_provider_zero.v1",
+        "status": "provider_zero_confirmed", "api_confirmed": True,
+        "provider_zero_verified": True, "live_instance_count": 0,
+        "blockers": [], "receipt_digest": "",
+    }
+    zero["receipt_digest"] = canonical_digest(zero, digest_field="receipt_digest")
+    _write(output / "official_billing_reconciliation.json", {
+        "status": "reconciled_official_posted_charges", "official_total_usd": 0.114,
+    })
+    monkeypatch.setattr(
+        "blueprint_pipeline.task_evaluation_policy_canary_dispatcher.validate_vast_official_same_goal_reconciliation",
+        lambda _path: {},
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.task_evaluation_policy_canary_dispatcher.materialize_policy_canary_result_delivery",
+        lambda **_kwargs: (_ for _ in ()).throw(TaskEvaluationResultDeliveryError("sentinel_delivery")),
+    )
+    kwargs = dict(
+        activation_result_path=activation_result,
+        execution_setup_path=setup_path,
+        output_root=output,
+        implementation_commit=COMMIT,
+        execute=True,
+        provider_zero_collector=lambda: zero,
+        progress_sync_runner=lambda **_kwargs: {"status": "succeeded"},
+    )
+    with pytest.raises(TaskEvaluationPolicyCanaryDispatchError, match="sentinel_delivery"):
+        dispatch_policy_canary_activation(**kwargs, allocator_runner=fake_allocator)
+    first = json.loads((output / "policy_canary_terminal_result.json").read_text())
+    assert first["status"] == "blocked"
+    assert len(first["episodes"]) == 20
+    assert all(row["candidate_policy_queried"] is False for row in first["episodes"])
+    assert (output / "preprovider_evidence/source_provider_terminal_result.json").is_file()
+
+    with pytest.raises(TaskEvaluationPolicyCanaryDispatchError, match="sentinel_delivery"):
+        dispatch_policy_canary_activation(
+            **kwargs,
+            retained_delivery_only=True,
+            allocator_runner=lambda _argv: pytest.fail("retained delivery reallocated a GPU"),
+        )
+    assert allocator_calls == 1
+    assert (output / "preprovider_evidence/prior_terminal_result.json").is_file()
+
+    queue = tmp_path / "queue"
+    for name in ("pending", "processing", "completed", "blocked"):
+        (queue / name).mkdir(parents=True)
+    envelope = {
+        "schema_version": "task_evaluation_policy_canary_dispatch_envelope.v1",
+        "activation_id": "activation-1", "run_kind": "internal_policy_canary",
+        "claim_ceiling": "diagnostic_policy_execution", "source_commit": COMMIT,
+        "activation_result": _record(activation_result),
+        "capture_session_id": "capture-839873", "intake_id": "intake-839873",
+        "request_digest": "sha256:" + "7" * 64,
+        "maximum_provider_allocations": 1, "retry_cap": 0,
+        "automatic_retry_authorized": False, "provider_mutation_performed": False,
+        "paid_execution_requested": False, "envelope_digest": "",
+    }
+    envelope["envelope_digest"] = canonical_digest(envelope, digest_field="envelope_digest")
+    _write(queue / "blocked" / "activation-1.json", envelope)
+    setups = tmp_path / "setups"
+    setups.mkdir()
+    (setups / "activation-1.json").write_bytes(setup_path.read_bytes())
+    real_dispatch = dispatch_policy_canary_activation
+    monkeypatch.setattr(
+        "blueprint_pipeline.task_evaluation_policy_canary_dispatcher.dispatch_policy_canary_activation",
+        lambda **_kwargs: {"status": "selected", "allocator_invoked": False},
+    )
+    selected = process_policy_canary_dispatch_queue(
+        dispatch_queue_root=queue, execution_setup_root=setups,
+        dispatch_root=output.parent, implementation_commit="b" * 40, execute=True,
+    )
+    assert selected["processed_count"] == 1
+    monkeypatch.setattr(
+        "blueprint_pipeline.task_evaluation_policy_canary_dispatcher.dispatch_policy_canary_activation",
+        real_dispatch,
+    )
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.task_evaluation_policy_canary_dispatcher.materialize_policy_canary_result_delivery",
+        materialize_policy_canary_result_delivery,
+    )
+    pending = dispatch_policy_canary_activation(
+        **kwargs,
+        retained_delivery_only=True,
+        allocator_runner=lambda _argv: pytest.fail("retained delivery reallocated a GPU"),
+        sync_runner=lambda **_kwargs: {"status": "failed", "reason": "test_transport"},
+    )
+    assert pending["status"] == "awaiting_website_sync_or_notification"
+    assert (output / "artifacts/result_delivery/delivery.json").is_file()
+    assert allocator_calls == 1
 
 
 def test_live_shaped_result_waits_for_billing_and_never_launches_twice(
@@ -1596,6 +1754,113 @@ def test_proven_zero_allocation_terminalizes_without_billing_wait(
     assert not (output / "official_billing_reconciliation.json").exists()
 
 
+def test_definite_vast_create_refusal_terminalizes_without_instance_bill(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    activation_result, setup_path, _activation = _inputs(tmp_path)
+    output = tmp_path / "dispatch-refused-create"
+
+    def fake_bundle(**kwargs):
+        job = Path(kwargs["job_dir"])
+        job.mkdir(parents=True, exist_ok=True)
+        receipt = {"bundle_sha256": "sha256:" + "b" * 64}
+        _write(job / "native_task_arena_policy_canary_session_bundle_receipt.v1.json", receipt)
+        return receipt
+
+    monkeypatch.setattr(
+        "blueprint_pipeline.task_evaluation_policy_canary_dispatcher.build_policy_canary_session_bundle",
+        fake_bundle,
+    )
+    monkeypatch.setattr(
+        "blueprint_pipeline.task_evaluation_policy_canary_dispatcher.validate_provider_bundle",
+        lambda value, **_kwargs: value,
+    )
+
+    def record(path: Path) -> dict[str, object]:
+        data = path.read_bytes()
+        return {"path": str(path), "size_bytes": len(data), "sha256": "sha256:" + hashlib.sha256(data).hexdigest()}
+
+    def refused_create(argv):
+        adapter_path = Path(argv[argv.index("--adapter-output") + 1])
+        provider_path = adapter_path.parent / "refused_provider.json"
+        teardown_path = adapter_path.parent / "refused_teardown.json"
+        _write(provider_path, {
+            "status": "failed", "provider_create_attempted": True,
+            "vast_instance_ids": [], "vast_side_effects_may_have_occurred": False,
+            "continuing_spend_from_this_run": False,
+            "create_failure_diagnosis": {
+                "http_status_code": 410, "definite_create_refusal": True,
+                "create_inventory_verified": True, "create_inventory_http_status_code": 200,
+                "create_produced_no_instance": True, "matching_attempt_instance_ids": [],
+                "attempted_labels": ["test-policy"],
+            },
+            "provider_attempt_classification": {
+                "classification": "pre_execution_provider_null",
+                "scientific_attempt_consumed": False,
+            },
+        })
+        _write(teardown_path, {"status": "completed", "vast_instance_ids": [], "continuing_spend_from_this_run": False})
+        _write(adapter_path, {
+            "status": "blocked", "blockers": ["vast_api_http_error"],
+            "scientific_attempt_started": False, "candidate_policy_queried": False,
+            "continuing_spend_from_this_run": False, "all_staged_objects_absent": True,
+            "adapter_result_path": str(provider_path),
+            "teardown_manifest_path": str(teardown_path),
+            "provider_closeout": {
+                "provider_zero_confirmed": True,
+                "adapter_result": record(provider_path),
+                "teardown_manifest": record(teardown_path),
+            },
+            "independent_watchdog_close": {
+                "status": "retained_until_hard_ttl",
+                "reason": "provider_allocation_identity_ambiguous",
+                "watchdog_retention_liveness_confirmed": True,
+                "watchdog_armed_before_allocation": True,
+                "instance_ids": [],
+                "provider_mutations_performed": 0,
+            },
+        })
+        return 2
+
+    zero = {
+        "schema_version": "task_evaluation_policy_canary_vast_provider_zero.v1",
+        "status": "provider_zero_confirmed", "api_confirmed": True,
+        "provider_zero_verified": True, "live_instance_count": 0,
+        "blockers": [], "receipt_digest": "",
+    }
+    zero["receipt_digest"] = canonical_digest(zero, digest_field="receipt_digest")
+    result = dispatch_policy_canary_activation(
+        activation_result_path=activation_result,
+        execution_setup_path=setup_path,
+        output_root=output,
+        implementation_commit=COMMIT,
+        execute=True,
+        allocator_runner=refused_create,
+        provider_zero_collector=lambda: zero,
+        blocked_sync_runner=lambda **_kwargs: {"status": "succeeded"},
+    )
+    assert result["status"] == "blocked_without_provider_allocation"
+    assert result["terminal_result_kind"] == "definite_provider_create_refusal"
+    assert result["provider_call_reached"] is True
+    assert result["provider_allocation_performed"] is False
+    assert result["provider_null_evidence"]["official_instance_billing"] == "not_applicable_no_instance_created"
+    assert result["provider_null_evidence"]["watchdog_retained_until_hard_ttl"] is True
+    assert not (output / "official_billing_reconciliation.json").exists()
+    resumed = dispatch_policy_canary_activation(
+        activation_result_path=activation_result,
+        execution_setup_path=setup_path,
+        output_root=output,
+        implementation_commit="b" * 40,
+        execute=True,
+        allocator_runner=lambda _argv: pytest.fail("old-release allocator must not rerun"),
+        provider_zero_collector=lambda: pytest.fail("sealed provider zero must be reused"),
+        blocked_sync_runner=lambda **_kwargs: {"status": "succeeded"},
+    )
+    assert resumed["status"] == "blocked_without_provider_allocation"
+    assert resumed["closeout_release_commit"] == "b" * 40
+
+
 def test_post_allocator_failure_is_not_labeled_preprovider_or_retried(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1674,20 +1939,8 @@ def test_post_allocator_failure_is_not_labeled_preprovider_or_retried(
     assert (queue / "blocked" / pending.name).is_file()
 
 
-@pytest.mark.parametrize("status,outcome", [
-    ("awaiting_official_billing", "completed"),
-    # A run that returns blocked stopped before its work; it must not shape admission.
-    ("blocked_without_provider_allocation", "blocked"),
-])
-def test_canary_reservation_measures_its_own_dispatch_directory(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    status: str,
-    outcome: str,
-) -> None:
-    from types import SimpleNamespace
-
-    from blueprint_pipeline import task_evaluation_policy_canary_dispatcher as dispatcher
+def _pending_canary(tmp_path: Path) -> tuple[Path, Path]:
+    """A sealed canary envelope pending in the paid queue, with its execution setup."""
 
     activation_result, setup_path, _activation = _inputs(tmp_path)
     queue = tmp_path / "queue"
@@ -1715,8 +1968,28 @@ def test_canary_reservation_measures_its_own_dispatch_directory(
     setups = tmp_path / "setups"
     setups.mkdir()
     (setups / "activation-1.json").write_bytes(setup_path.read_bytes())
+    return queue, setups
+
+
+@pytest.mark.parametrize("status,outcome", [
+    ("awaiting_official_billing", "completed"),
+    # A run that returns blocked stopped before its work; it must not shape admission.
+    ("blocked_without_provider_allocation", "blocked"),
+])
+def test_canary_reservation_measures_its_own_dispatch_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    status: str,
+    outcome: str,
+) -> None:
+    from types import SimpleNamespace
+
+    from blueprint_pipeline import task_evaluation_policy_canary_disk as canary_disk
+    from blueprint_pipeline import task_evaluation_policy_canary_dispatcher as dispatcher
+
+    queue, setups = _pending_canary(tmp_path)
     calls: list[dict[str, object]] = []
-    real = dispatcher.reserve_control_plane_disk
+    real = canary_disk.reserve_control_plane_disk
 
     def roomy(_path):
         return SimpleNamespace(total=100 * 1024**3, used=0, free=90 * 1024**3)
@@ -1731,7 +2004,7 @@ def test_canary_reservation_measures_its_own_dispatch_directory(
         (output / "runtime.bin").write_bytes(b"r" * 50_000)
         return {"status": status, "allocator_invoked": False}
 
-    monkeypatch.setattr(dispatcher, "reserve_control_plane_disk", recording)
+    monkeypatch.setattr(canary_disk, "reserve_control_plane_disk", recording)
     monkeypatch.setattr(dispatcher, "dispatch_policy_canary_activation", writes_run_outputs)
     process_policy_canary_dispatch_queue(
         dispatch_queue_root=queue,
@@ -1753,6 +2026,51 @@ def test_canary_reservation_measures_its_own_dispatch_directory(
     [sample] = [json.loads(line) for line in history.read_text().splitlines()]
     assert sample["workload"] == "policy_canary" and sample["outcome"] == outcome
     assert sample["observed_bytes"] >= 50_000
+
+
+def test_resumed_canary_passes_never_move_the_measured_footprint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A canary awaiting billing stays pending and is re-run by its path unit. Each
+    resume found its run already on disk, so it grew by nearly nothing; recorded as
+    completed, fifty of them pulled the next reservation down to the 64 MiB floor."""
+    from types import SimpleNamespace
+
+    from blueprint_pipeline import control_plane_disk_budget as disk_budget
+    from blueprint_pipeline import task_evaluation_policy_canary_disk as canary_disk
+    from blueprint_pipeline import task_evaluation_policy_canary_dispatcher as dispatcher
+
+    queue, setups = _pending_canary(tmp_path)
+    ledger = tmp_path / "reservations"
+    for _ in range(10):
+        assert disk_budget.record_footprint_sample(
+            reservation_root=ledger, role="policy_canary_dispatch", workload="policy_canary",
+            observed_bytes=int(1.5 * 1024**3), reserved_bytes=2 * 1024**3)
+    before = disk_budget.measured_footprint("policy_canary_dispatch", reservation_root=ledger)
+    # The run already started on an earlier pass: its session authority is on disk.
+    run = tmp_path / "dispatches" / "activation-1"
+    run.mkdir(parents=True)
+    assert "policy_canary_session_authority.json" in canary_disk.RUN_START_MARKERS
+    (run / "policy_canary_session_authority.json").write_text("{}")
+    real = canary_disk.reserve_control_plane_disk
+    monkeypatch.setattr(canary_disk, "reserve_control_plane_disk", lambda *args, **kwargs: real(
+        *args, **kwargs, disk_usage=lambda _path: SimpleNamespace(total=100 * 1024**3, used=0, free=90 * 1024**3)))
+    monkeypatch.setattr(dispatcher, "dispatch_policy_canary_activation",
+                        lambda **_kwargs: {"status": "awaiting_official_billing", "allocator_invoked": True})
+    for _ in range(50):
+        observed = process_policy_canary_dispatch_queue(
+            dispatch_queue_root=queue, execution_setup_root=setups, dispatch_root=tmp_path / "dispatches",
+            implementation_commit=COMMIT, execute=True,
+            blocked_sync_runner=lambda **_kwargs: pytest.fail("no preprovider block expected"),
+            provider_zero_collector=lambda: pytest.fail("no provider zero expected"),
+            disk_reservation_root=ledger,
+        )
+        assert observed["results"][0]["status"] == "awaiting_official_billing"
+
+    rows = [json.loads(line) for line in (ledger / "history" / "policy_canary_dispatch.jsonl").read_text().splitlines()]
+    assert [row["outcome"] for row in rows[10:]] == ["resumed"] * 50
+    after = disk_budget.measured_footprint("policy_canary_dispatch", reservation_root=ledger)
+    assert after == before and after["basis"] == "measured_p95" and after["sample_count"] == 10
 
 
 def test_paid_queue_waits_for_setup_without_invoking_dispatcher(tmp_path: Path) -> None:

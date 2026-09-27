@@ -11,7 +11,7 @@
 - Every break-glass SSH action leaves a sealed note that the next deploy reports.
 
 **Branch / base / worktree:** `claude/disk-4-door-only-operations` from the integration branch,
-`/Users/nijelhunt_1/workspace/BlueprintCapturePipeline-disk-4-20260926`.
+`$WORKSPACE/BlueprintCapturePipeline-disk-4-20260926`.
 
 ## Facts (verified)
 

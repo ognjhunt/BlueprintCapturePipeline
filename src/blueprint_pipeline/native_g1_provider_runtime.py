@@ -16,7 +16,7 @@ import os
 import threading
 import traceback
 from collections.abc import Mapping, Sequence
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
@@ -51,6 +51,7 @@ G1_RUNTIME_IMPORTS = (
     "isaaclab_arena_g1", "pinocchio", "pink", "scipy", "qpsolvers",
     "onnxruntime", "google.protobuf",
 )
+CACHE_FILE_ENV = "BLUEPRINT_G1_CHECKPOINT_CACHE_FILE"
 
 
 def _json(path: Path) -> dict[str, Any]:
@@ -188,13 +189,16 @@ class _Heartbeat:
         self.thread.start()
         return self
 
-    def __exit__(self, *_: Any) -> None:
+    def __exit__(self, exc_type: Any, *_: Any) -> None:
         self.stop.set()
         self.thread.join(timeout=5)
-        print("BLUEPRINT_G1_STAGE_FINISHED:" + self.stage, flush=True)
+        state = "FAILED" if exc_type is not None else "FINISHED"
+        print("BLUEPRINT_G1_STAGE_" + state + ":" + self.stage, flush=True)
 
 
-def _stage_models(root: Path, output: Path) -> dict[str, Any]:
+def _stage_models(
+    root: Path, output: Path, *, cache_manifest_path: Path | None = None
+) -> dict[str, Any]:
     inventory = root.parent / "configs/g1_humanoidarena_checkpoint_inventory.v1.json"
     sonic_inventory = root.parent / "configs/g1_sonic_default_asset_inventory.v1.json"
     checkpoint_fetcher = _load_script(
@@ -219,22 +223,55 @@ def _stage_models(root: Path, output: Path) -> dict[str, Any]:
         json.dumps(sonic_cuda, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
 
+    cancel_event = threading.Event()
+
     def fetch_checkpoint(candidate: str) -> dict[str, Any]:
-        with _Heartbeat("checkpoint:" + candidate):
-            return checkpoint_fetcher.materialize_candidate(
-                inventory_path=inventory,
-                candidate_id=candidate,
-                output_dir=checkpoints,
+        try:
+            with _Heartbeat("checkpoint:" + candidate):
+                receipt = checkpoint_fetcher.materialize_candidate(
+                    inventory_path=inventory,
+                    candidate_id=candidate,
+                    output_dir=checkpoints,
+                    cancel_event=cancel_event,
+                    **({"cache_manifest_path": cache_manifest_path} if cache_manifest_path else {}),
+                )
+            if (
+                receipt.get("status") != "checkpoint_bytes_verified"
+                or receipt.get("candidate_id") != candidate
+            ):
+                raise ValueError("g1_checkpoint_receipt_invalid:" + candidate)
+            (models / (candidate + ".json")).write_text(
+                json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8"
             )
+            print("BLUEPRINT_G1_CHECKPOINT_VERIFIED:" + candidate, flush=True)
+            return receipt
+        except Exception as exc:
+            print(
+                "BLUEPRINT_G1_CHECKPOINT_BLOCKED:" + candidate + ":" + type(exc).__name__,
+                flush=True,
+            )
+            cancel_event.set()
+            raise
 
     # Candidate downloads use distinct pinned paths. Fetch them together so
     # large pi0.5 weights do not consume the whole bounded GPU lease serially.
+    receipts_by_candidate: dict[str, dict[str, Any]] = {}
+    failures: list[Exception] = []
     with ThreadPoolExecutor(max_workers=len(PAIR_ORDER)) as pool:
-        receipts = list(pool.map(fetch_checkpoint, PAIR_ORDER))
-    for candidate, receipt in zip(PAIR_ORDER, receipts, strict=True):
-        (models / (candidate + ".json")).write_text(
-            json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        futures = {pool.submit(fetch_checkpoint, candidate): candidate for candidate in PAIR_ORDER}
+        for completed in as_completed(futures):
+            try:
+                receipts_by_candidate[futures[completed]] = completed.result()
+            except Exception as exc:
+                cancel_event.set()
+                failures.append(exc)
+    if failures:
+        primary = next(
+            (exc for exc in failures if type(exc).__name__ != "_DownloadPeerCancelled"),
+            failures[0],
         )
+        raise primary
+    receipts = [receipts_by_candidate[candidate] for candidate in PAIR_ORDER]
     return {"checkpoints": receipts, "sonic": sonic,
             "sonic_cuda_preflight": sonic_cuda, "root": str(models)}
 
@@ -333,7 +370,10 @@ def run_g1_provider_campaign(runtime_root: Path, output_dir: Path) -> dict[str, 
         if build["status"] != "built_import_probe_passed_no_cuda_probe":
             raise ValueError("g1_provider_policy_runtime_build_blocked")
         stage = "model-staging"
-        models = _stage_models(root, output)
+        cache_file = os.environ.get(CACHE_FILE_ENV)
+        if not cache_file:
+            raise ValueError("g1_private_checkpoint_cache_required")
+        models = _stage_models(root, output, cache_manifest_path=Path(cache_file))
         source_handoff = _json(root / "inputs/book_handoff.json")
         supplied_movement_handoff = root / "inputs/movement_handoff.json"
         movement_handoff = (

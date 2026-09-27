@@ -195,6 +195,20 @@ def test_prestage_measures_from_the_cleared_work_dir_not_from_crash_leftovers(tm
     assert observed["clean"] > 0 and observed["leftovers"] == observed["clean"]
 
 
+def test_prestage_counts_as_completed_beside_unrelated_work_dir_content(tmp_path):
+    from blueprint_pipeline.control_plane_disk_footprints import FRESH_WORKSPACE_MAX_BYTES
+    work = tmp_path / "workspace"
+    work.mkdir()
+    # Content the prefix never owned (and its clear never removes) must not make
+    # the prefix look like a resumed pass.
+    (work / "unrelated-cache.bin").write_bytes(b"u" * (FRESH_WORKSPACE_MAX_BYTES + 64 * 1024))
+    _prepare(tmp_path, _fake_entrypoint(["stage-1", "stage-2", "stage-3", "stage-4"]))
+    history = tmp_path / "reservations" / "history" / "cpu_prestage.jsonl"
+    [sample] = [json.loads(line) for line in history.read_text().splitlines()]
+    assert (sample["outcome"], sample["fresh"]) == ("completed", True)
+    assert sample["observed_bytes"] > 0
+
+
 def test_prefix_drops_host_raw_credentials_and_preserves_scoped_secret_files(tmp_path):
     from blueprint_pipeline.task_evaluation_scene_configuration_builtin_producers import (
         _RAW_SECRET_ENVIRONMENT_NAMES,

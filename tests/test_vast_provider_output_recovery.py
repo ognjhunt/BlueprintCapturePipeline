@@ -11,6 +11,28 @@ import pytest
 from blueprint_pipeline import vast_provider_output_recovery as recovery
 
 
+def test_identity_defaults_to_scoped_provider_secret_file(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.delenv(recovery.VAST_SSH_IDENTITY_FILE_ENV, raising=False)
+    monkeypatch.setenv(recovery.PROVIDER_SECRETS_DIR_ENV, str(tmp_path))
+    identity = tmp_path / recovery.PROVIDER_VAST_SSH_IDENTITY_FILENAME
+    identity.write_text("private-test-key", encoding="utf-8")
+    identity.chmod(0o600)
+    assert recovery._identity_file() == identity.resolve()
+    identity.chmod(0o644)
+    assert recovery._identity_file() is None
+
+
+def test_explicit_ssh_identity_takes_precedence_over_provider_dir(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    explicit = tmp_path / "explicit"
+    explicit.write_text("private-test-key", encoding="utf-8")
+    explicit.chmod(0o600)
+    monkeypatch.setenv(recovery.VAST_SSH_IDENTITY_FILE_ENV, str(explicit))
+    monkeypatch.setenv(recovery.PROVIDER_SECRETS_DIR_ENV, str(tmp_path / "missing"))
+    assert recovery._identity_file() == explicit.resolve()
+
+
 def _install_identity(monkeypatch, tmp_path: Path) -> Path:
     identity = tmp_path / "id_ed25519"
     identity.write_text("private-test-key", encoding="utf-8")

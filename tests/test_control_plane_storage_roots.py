@@ -102,6 +102,35 @@ def test_most_specific_root_wins_and_tools_refuse_wrong_classes() -> None:
         roots_of_class("bogus")
 
 
+def test_scene_workspaces_and_their_receipts_are_classified():
+    base = "/var/lib/blueprint/pubsub-handoffs/blueprint-8c1ca.appspot.com/scenes"
+    assert classify_path(f"{base}/site-capture-1/captures/c/raw/v.mov").storage_class == "scene_workspace"
+    assert classify_path(f"{base}/site-capture-1").storage_class == "scene_workspace"
+    assert classify_path(f"{base}/site-capture-1.retired.v1.json").storage_class == "evidence_hot"
+    assert classify_path("/var/lib/blueprint/pubsub-handoffs/blueprint-8c1ca.appspot.com").storage_class == "work"
+    assert "/var/lib/blueprint/pubsub-handoffs/*/scenes/*" in roots_of_class("scene_workspace")
+
+
+def test_a_pattern_segment_matches_exactly_one_path_component():
+    base = "/var/lib/blueprint/pubsub-handoffs"
+    # The scenes/ directory itself holds workspaces and receipts; it is not a workspace.
+    assert classify_path(f"{base}/bucket/scenes").storage_class == "work"
+    # `*` never spans a separator, so a scene two levels down is not a bucket's scene.
+    assert classify_path(f"{base}/bucket/nested/scenes/s").storage_class == "work"
+    # The more specific literal wins over a pattern of the same depth.
+    assert classify_path(f"{base}/bucket/scenes/s.retired.v1.json").storage_class == "evidence_hot"
+    assert classify_path(f"{base}/bucket/scenes/s.retired.v1.json.tmp").storage_class == "scene_workspace"
+    website = classify_path("/var/lib/blueprint/pipeline-control-plane/website-source-bindings/x.json")
+    assert (website.path, website.storage_class) == (
+        "/var/lib/blueprint/pipeline-control-plane/website-source-bindings", "work")
+
+
+def test_chain_preflight_treats_scene_workspaces_as_written_storage():
+    from blueprint_pipeline.task_evaluation_production_chain_preflight import WRITTEN_STORAGE_CLASSES
+
+    assert "scene_workspace" in WRITTEN_STORAGE_CLASSES
+
+
 @pytest.mark.parametrize(("path", "storage_class", "owner"), [
     ("/var/lib/blueprint/pipeline-control-plane/completed-replay-cache-retention", "evidence_hot", "root"),
     ("/var/lib/blueprint/pipeline-control-plane/scene-project-spend", "evidence_hot", "blueprint"),
@@ -109,6 +138,8 @@ def test_most_specific_root_wins_and_tools_refuse_wrong_classes() -> None:
     ("/var/lib/blueprint/pipeline-control-plane/result-artifact-cache", "cache", "blueprint"),
     ("/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-intents", "work", "blueprint"),
     ("/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-configuration-activation-intents", "work", "blueprint"),
+    ("/var/lib/blueprint/pipeline-control-plane/release-leases", "ledger", "root"),
+    ("/var/lib/blueprint/pipeline-control-plane/cleanup-receipts", "evidence_hot", "root"),
 ])
 def test_owner_delivery_and_replay_roots_keep_their_retention_law(path, storage_class, owner):
     root = classify_path(path + "/retained-record.json")
@@ -117,3 +148,9 @@ def test_owner_delivery_and_replay_roots_keep_their_retention_law(path, storage_
     if storage_class == "evidence_hot":
         with pytest.raises(ValueError, match="cannot_evict:evidence_hot"):
             require_storage_class(path, expected="cache", code="cannot_evict")
+
+
+def test_the_scene_digest_cache_follows_the_handoff_spool_to_the_volume():
+    root = classify_path("/var/lib/blueprint/pubsub-handoffs/.scene-workspace-inventory/b/s.json")
+    assert (root.storage_class, root.owner) == ("cache", "root")
+    assert classify_path("/var/lib/blueprint/pipeline-control-plane/storage-gc/latest.json").storage_class == "evidence_hot"

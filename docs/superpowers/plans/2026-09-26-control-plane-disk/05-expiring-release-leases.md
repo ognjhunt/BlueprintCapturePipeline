@@ -9,7 +9,7 @@ three and the genuinely live releases. The receipt groups protection by kind and
 leases protect more than 20 trees.
 
 **Branch / base / worktree:** `claude/disk-1b-expiring-release-leases` from `origin/main`,
-`/Users/nijelhunt_1/workspace/BlueprintCapturePipeline-disk-1b-20260926`.
+`$WORKSPACE/BlueprintCapturePipeline-disk-1b-20260926`.
 
 ## Facts (verified)
 

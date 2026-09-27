@@ -37,6 +37,7 @@ from .vast_independent_watchdog_control import (
     arm_independent_vast_watchdog,
     close_independent_vast_watchdog,
 )
+from .vast_create_failure_diagnosis import definite_create_refusal_without_instance
 from .vast_provider_adapter import (
     DEFAULT_VAST_API_KEY_FILE,
     VAST_API_KEY_FILE_ENV,
@@ -430,6 +431,7 @@ def run_arena_native_control_vast(
     expected_provider_download_bytes: int = 0,
     expected_provider_upload_bytes: int = 0,
     provider_runtime_environment: Mapping[str, str] | None = None,
+    runtime_secret_file_paths: Mapping[str, str | Path] | None = None,
     paired_witness_binding: Mapping[str, Any] | None = None,
     allowed_geolocation_country_codes: Sequence[str] = (),
 ) -> dict[str, Any]:
@@ -619,6 +621,11 @@ def run_arena_native_control_vast(
     if paired_witness_binding is not None:
         from .native_task_arena_paired_witness_staging import paired_witness_secret_paths
         paired_secret_paths = paired_witness_secret_paths(staging_dir, staging, paired_witness_binding)
+    provider_secret_paths = dict(runtime_secret_file_paths or {})
+    if set(provider_secret_paths) & set(paired_secret_paths):
+        cleanup_staged_wam_provider_objects(staging_dir)
+        raise ValueError("adp_arena_runtime_secret_name_collision")
+    provider_secret_paths.update(paired_secret_paths)
 
     runtime_dependency_dir = attempt_root / "runtime_dependency_cache"
     runtime_source_value = bundle.get("runtime_source_packet")
@@ -773,7 +780,7 @@ def run_arena_native_control_vast(
                 retain_native_task_arena_warm_session=retain_warm_instance,
                 stale_offer_create_retry_limit=stale_offer_create_retry_limit,
                 provider_runtime_environment=provider_runtime_environment,
-                **({"runtime_secret_file_paths": paired_secret_paths} if paired_secret_paths else {}),
+                **({"runtime_secret_file_paths": provider_secret_paths} if provider_secret_paths else {}),
                 allowed_geolocation_country_codes=(
                     allowed_geolocation_country_codes
                 ),
@@ -808,6 +815,7 @@ def run_arena_native_control_vast(
                     ),
                     provider_allocation_impossible=(
                         adapter.get("provider_create_attempted") is False
+                        or definite_create_refusal_without_instance(adapter)
                     ),
                 )
         finally:

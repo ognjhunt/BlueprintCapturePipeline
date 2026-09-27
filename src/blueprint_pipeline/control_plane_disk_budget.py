@@ -5,115 +5,74 @@ copy at once.  Free-space sampling alone is therefore racy: each worker can
 observe the same bytes.  This module serializes admission through a small
 on-disk ledger and reserves the expected footprint before mutation begins.
 
-A role's declared footprint is a ceiling, not a guess to reserve forever.  Each
-reservation that measured its workspace appends what the job really wrote to
-``<ledger>/history/<role>.jsonl``; once a role has enough completed samples,
-admission reserves the p95 of recent samples times a headroom factor, clamped
-between a small floor and the declared ceiling.
+What each role reserves by default is its measured footprint
+(``control_plane_disk_footprints``); the ledger's shared primitives live in
+``control_plane_disk_ledger``.  Both are re-exported here for compatibility.
 """
 
 from __future__ import annotations
 
 import fcntl
 import json
-import math
 import os
-import re
 import shutil
-import stat
 import tempfile
 import time
 import uuid
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .control_plane_disk_footprints import (
+    FOOTPRINT_HISTORY_DIRNAME,
+    FOOTPRINT_OUTCOMES,
+    FOOTPRINT_SAMPLE_SCHEMA,
+    FRESH_WORKSPACE_MAX_BYTES,
+    HISTORY_COMPACTION_BYTES,
+    HISTORY_LOCK_WAIT_SECONDS,
+    HISTORY_MAX_LINES,
+    MEASURED_FLOOR_BYTES,
+    MEASURED_HEADROOM,
+    MEASURED_MINIMUM_SAMPLES,
+    MEASURED_WINDOW,
+    effective_footprint_bytes,
+    measured_footprint,
+    record_footprint_sample,
+    role_footprints,
+)
+from .control_plane_disk_ledger import (
+    DEFAULT_RESERVATION_ROOT,
+    GIB,
+    ROLE_FOOTPRINT_BYTES,
+    ROLE_NAME_RE as _ROLE_RE,
+    ControlPlaneDiskBudgetError,
+    environment_int as _environment_int,
+    footprint_bytes,
+    open_ledger_lock,
+    prepare_ledger_root as _prepare_ledger_root,
+)
 from .control_plane_disk_usage import tree_usage
 
 
-GIB = 1024**3
-DEFAULT_RESERVATION_ROOT = Path(
-    "/var/lib/blueprint/pipeline-control-plane/disk-reservations"
-)
 DEFAULT_FLOOR_BYTES = 8 * GIB
 DEFAULT_FLOOR_FRACTION = 0.05
 DEFAULT_TTL_SECONDS = 2 * 60 * 60
-# Admission floors per role.  Preparation and compilation reserve their exact
-# miss bytes at run time (references or runtime members the content stores do
-# not already hold); these values are the typical hit-path footprint the intake
-# checks before accepting a submission.
-ROLE_FOOTPRINT_BYTES: Mapping[str, int] = {
-    "control_plane_deploy": 2 * GIB,
-    "launch_preparation": 2 * GIB,
-    "episode_compilation": 2 * GIB,
-    "launch_activation": 2 * GIB,
-    "launch_dispatch": 2 * GIB,
-    "policy_canary_dispatch": 2 * GIB,
-    "evidence_offload": 2 * GIB,
-    "result_artifact_download": 256 * 1024 * 1024,
-    "stage_replay": 4 * GIB,
-    "semantic_pretraining": 3 * GIB,
-    "cpu_prestage": 6 * GIB,
-}
-_ROLE_RE = re.compile(r"[a-z][a-z0-9_]{1,63}\Z")
-# How a measured job ended.  Only a completed job measured its whole footprint,
-# so only "completed" samples shape admission; "failed" means the job raised and
-# "blocked" means it returned a blocked result before finishing its work.
-FOOTPRINT_OUTCOMES = frozenset({"completed", "failed", "blocked"})
-
-FOOTPRINT_HISTORY_DIRNAME = "history"
-FOOTPRINT_SAMPLE_SCHEMA = "control_plane_disk_footprint_sample.v1"
-MEASURED_MINIMUM_SAMPLES = 10
-MEASURED_WINDOW = 50  # newest completed samples considered
-MEASURED_HEADROOM = 1.25
-MEASURED_FLOOR_BYTES = 64 * 1024**2
-HISTORY_MAX_LINES = 200  # compaction keeps the newest lines
-HISTORY_COMPACTION_BYTES = 64 * 1024
-# Bookkeeping never waits indefinitely on the ledger lock: a caller that already
-# holds it (an evictor running under admission) would otherwise deadlock itself
-# and every worker queued behind it.  Giving up only loses one sample.
-HISTORY_LOCK_WAIT_SECONDS = 5.0
-_SAMPLE_MAX_BYTES = 1024
 # Pid liveness is the primary liveness signal; the TTL is only the backstop for a
-# recycled pid.  Long roles outlive the default, so their entries must too, or
-# the ledger deletes a running job's reservation as stale.
+# recycled pid.  A job holds its reservation for at most its unit's
+# TimeoutStartSec, so each role's entry must outlive that timeout (pinned by a
+# test against deploy/systemd), or the ledger deletes a running job's
+# reservation as stale.  The canary and launch dispatchers hold theirs through a
+# paid run under a 5 h start timeout.
 ROLE_TTL_SECONDS: Mapping[str, int] = {
     "cpu_prestage": 12 * 3600,
     "semantic_pretraining": 12 * 3600,
     "stage_replay": 6 * 3600,
+    "policy_canary_dispatch": 6 * 3600,
+    "launch_dispatch": 6 * 3600,
     "control_plane_deploy": 4 * 3600,
+    "evidence_offload": 4 * 3600,
 }  # every other role keeps DEFAULT_TTL_SECONDS
-
-
-class ControlPlaneDiskBudgetError(RuntimeError):
-    """A write-heavy operation was refused before it mutated its output."""
-
-
-def _environment_int(name: str, default: int) -> int:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    try:
-        value = int(raw)
-    except ValueError as exc:
-        raise ControlPlaneDiskBudgetError(
-            f"control_plane_disk_budget_configuration_invalid:{name}"
-        ) from exc
-    if value < 0:
-        raise ControlPlaneDiskBudgetError(
-            f"control_plane_disk_budget_configuration_invalid:{name}"
-        )
-    return value
-
-
-def footprint_bytes(role: str) -> int:
-    if role not in ROLE_FOOTPRINT_BYTES:
-        raise ControlPlaneDiskBudgetError(
-            f"control_plane_disk_budget_role_invalid:{role}"
-        )
-    name = f"BLUEPRINT_CONTROL_PLANE_DISK_FOOTPRINT_{role.upper()}_BYTES"
-    return _environment_int(name, ROLE_FOOTPRINT_BYTES[role])
 
 
 def floor_bytes(total_bytes: int) -> int:
@@ -159,39 +118,44 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
-def _prepare_ledger_root(root: Path) -> Path:
-    root.mkdir(parents=True, exist_ok=True, mode=0o2770)
-    try:
-        root.chmod(0o2770)
-    except PermissionError:
-        pass
-    return root.resolve(strict=True)
-
-
 def _entry_liveness(
     path: Path,
     *,
     device: int,
     observed_at: float,
     pid_alive: Callable[[int], bool],
-) -> tuple[bool, int]:
-    """(live, expected bytes) of one ledger entry: same device, unexpired, live pid."""
+    strict: bool = False,
+) -> tuple[bool, int, bool]:
+    """(live here, expected bytes, live elsewhere) for one ledger entry.
+
+    ``strict`` refuses an entry it cannot read (typed ledger_unreadable) rather
+    than treating it as stale: a projection must never under-count reservations.
+    """
 
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return False, 0, False  # released between the listing and the read
+    except OSError as exc:
+        if strict:
+            raise ControlPlaneDiskBudgetError("control_plane_disk_budget_ledger_unreadable") from exc
+        return False, 0, False
+    try:
+        value = json.loads(text)
         if not isinstance(value, dict):
-            return False, 0
-        live = (
-            int(value.get("device", -1)) == device
+            return False, 0, False
+        entry_device = int(value.get("device", -1))
+        active = (
+            entry_device >= 0
             and float(value.get("expires_at_epoch", 0)) > observed_at
             and pid_alive(int(value.get("pid", -1)))
         )
         amount = int(value.get("expected_bytes", -1))
     except (OSError, TypeError, ValueError, json.JSONDecodeError):
-        return False, 0
+        return False, 0, False
     if amount < 0:
-        return False, 0
-    return live, amount
+        return False, 0, False
+    return active and entry_device == device, amount, active and entry_device != device
 
 
 def _load_live_reservations(
@@ -205,14 +169,20 @@ def _load_live_reservations(
     # ``history`` directory and in-flight ``.reservation-*`` temporaries are not.
     reserved = 0
     stale: list[str] = []
-    for path in sorted(root.glob("*.json")):
-        live, amount = _entry_liveness(
-            path, device=device, observed_at=observed_at, pid_alive=pid_alive
+    try:
+        with os.scandir(root) as listing:
+            names = sorted(entry.name for entry in listing if entry.name.endswith(".json"))
+    except OSError as exc:
+        raise ControlPlaneDiskBudgetError("control_plane_disk_budget_ledger_unreadable") from exc
+    for name in names:
+        live, amount, foreign_live = _entry_liveness(
+            root / name, device=device, observed_at=observed_at,
+            pid_alive=pid_alive, strict=True,
         )
         if live:
             reserved += amount
-        else:
-            stale.append(path.name)
+        elif not foreign_live:
+            stale.append(name)
     return reserved, stale
 
 
@@ -226,293 +196,28 @@ def live_reservations(
     """(bytes, count) of live reservations on ``device``; read-only (never deletes).
 
     Liveness is exactly the ledger's own: the entry's device, an unexpired TTL
-    and a live pid.  A missing ledger holds no reservations.
+    and a live pid.  A missing ledger holds no reservations; a ledger (or entry)
+    that cannot be read raises the typed ledger_unreadable, never reads as empty.
     """
 
     root = Path(reservation_root).expanduser()
+    try:
+        with os.scandir(root) as listing:
+            names = sorted(entry.name for entry in listing if entry.name.endswith(".json"))
+    except FileNotFoundError:
+        return 0, 0
+    except OSError as exc:
+        raise ControlPlaneDiskBudgetError("control_plane_disk_budget_ledger_unreadable") from exc
     reserved = 0
     count = 0
-    for path in sorted(root.glob("*.json")):
-        live, amount = _entry_liveness(
-            path, device=device, observed_at=float(now), pid_alive=pid_alive
+    for name in names:
+        live, amount, _foreign_live = _entry_liveness(
+            root / name, device=device, observed_at=float(now), pid_alive=pid_alive, strict=True
         )
         if live:
             reserved += amount
             count += 1
     return reserved, count
-
-
-def _history_path(reservation_root: str | Path, role: str) -> Path:
-    return (
-        Path(reservation_root).expanduser()
-        / FOOTPRINT_HISTORY_DIRNAME
-        / f"{role}.jsonl"
-    )
-
-
-def _open_ledger_lock(ledger: Path) -> int:
-    descriptor = os.open(ledger / ".lock", os.O_RDWR | os.O_CREAT, 0o660)
-    try:
-        if stat.S_IMODE(os.fstat(descriptor).st_mode) != 0o660:
-            os.fchmod(descriptor, 0o660)
-    except OSError:
-        pass  # the installer owns the lock's mode; admission checks it strictly
-    return descriptor
-
-
-def _bounded_flock(descriptor: int, operation: int) -> None:
-    """Take ``operation`` on the ledger lock or raise BlockingIOError after the bound."""
-
-    deadline = time.monotonic() + HISTORY_LOCK_WAIT_SECONDS
-    while True:
-        try:
-            fcntl.flock(descriptor, operation | fcntl.LOCK_NB)
-            return
-        except BlockingIOError:
-            if time.monotonic() >= deadline:
-                raise
-            time.sleep(0.05)
-
-
-def _prepare_history_directory(ledger: Path) -> Path:
-    history = ledger / FOOTPRINT_HISTORY_DIRNAME
-    try:
-        history.mkdir(mode=0o2770)
-    except FileExistsError:
-        pass
-    else:
-        # Root (deploy) and the runtime account both append here, so the new
-        # directory takes the ledger's group and the ledger's setgid mode.
-        try:
-            group = ledger.stat().st_gid
-            if history.stat().st_gid != group:
-                os.chown(history, -1, group)
-            history.chmod(0o2770)
-        except OSError:
-            pass
-    if history.is_symlink() or not history.is_dir():
-        raise ControlPlaneDiskBudgetError(
-            "control_plane_disk_budget_history_directory_invalid"
-        )
-    return history
-
-
-def _compact_history(ledger: Path, path: Path) -> None:
-    """Keep the newest HISTORY_MAX_LINES samples, rewritten atomically under the lock."""
-
-    lock = _open_ledger_lock(ledger)
-    try:
-        _bounded_flock(lock, fcntl.LOCK_EX)
-        data = path.read_bytes()
-        if len(data) <= HISTORY_COMPACTION_BYTES:
-            return  # another writer compacted while this one waited
-        lines = data.splitlines(keepends=True)
-        if lines and not lines[-1].endswith(b"\n"):
-            lines.pop()  # a torn line from a writer that died mid-append
-        descriptor, temporary_name = tempfile.mkstemp(
-            prefix=".history-", dir=path.parent
-        )
-        temporary = Path(temporary_name)
-        try:
-            with os.fdopen(descriptor, "wb") as stream:
-                stream.writelines(lines[-HISTORY_MAX_LINES:])
-                stream.flush()
-                os.fsync(stream.fileno())
-            temporary.chmod(0o660)
-            os.replace(temporary, path)
-        finally:
-            temporary.unlink(missing_ok=True)
-    finally:
-        os.close(lock)
-
-
-def _append_footprint_sample(ledger: Path, role: str, line: bytes) -> None:
-    history = _prepare_history_directory(ledger)
-    path = history / f"{role}.jsonl"
-    lock = _open_ledger_lock(ledger)
-    try:
-        # Appenders share the lock so compaction never drops a sample that
-        # lands between its read and its replace.
-        _bounded_flock(lock, fcntl.LOCK_SH)
-        descriptor = os.open(
-            path,
-            os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
-            0o660,
-        )
-        try:
-            metadata = os.fstat(descriptor)
-            if not stat.S_ISREG(metadata.st_mode):
-                raise ControlPlaneDiskBudgetError(
-                    "control_plane_disk_budget_history_file_invalid"
-                )
-            if stat.S_IMODE(metadata.st_mode) != 0o660:
-                try:
-                    os.fchmod(descriptor, 0o660)
-                except OSError:
-                    pass
-            os.write(descriptor, line)
-            size = os.fstat(descriptor).st_size
-        finally:
-            os.close(descriptor)
-    finally:
-        os.close(lock)
-    if size > HISTORY_COMPACTION_BYTES:
-        try:
-            _compact_history(ledger, path)
-        except OSError:
-            pass  # the sample is recorded; the next append compacts
-
-
-def record_footprint_sample(
-    *,
-    reservation_root: str | Path,
-    role: str,
-    observed_bytes: int,
-    reserved_bytes: int,
-    workload: str | None = None,
-    outcome: str = "completed",
-    duration_seconds: float | None = None,
-    device: int | None = None,
-    now: Callable[[], float] = time.time,
-) -> bool:
-    """Append one sample to <ledger>/history/<role>.jsonl. Never raises; returns False on failure.
-
-    A lost sample is harmless: admission keeps the older samples, or the
-    declared ceiling while the history is short.
-    """
-
-    try:
-        if (
-            not isinstance(role, str)
-            or not _ROLE_RE.fullmatch(role)
-            or role not in ROLE_FOOTPRINT_BYTES
-            or outcome not in FOOTPRINT_OUTCOMES
-            or (workload is not None
-                and (not isinstance(workload, str) or not _ROLE_RE.fullmatch(workload)))
-            or not isinstance(observed_bytes, int)
-            or isinstance(observed_bytes, bool)
-            or not isinstance(reserved_bytes, int)
-            or isinstance(reserved_bytes, bool)
-            or (device is not None
-                and (not isinstance(device, int) or isinstance(device, bool)))
-        ):
-            return False
-        duration = None
-        if duration_seconds is not None:
-            duration = round(max(0.0, float(duration_seconds)), 3)
-            if not math.isfinite(duration):
-                return False
-        sample = {
-            "schema_version": FOOTPRINT_SAMPLE_SCHEMA,
-            "role": role,
-            "workload": workload,
-            "observed_bytes": max(0, observed_bytes),
-            "reserved_bytes": max(0, reserved_bytes),
-            "outcome": outcome,
-            "duration_seconds": duration,
-            "device": device,
-            "recorded_at_epoch": round(float(now()), 3),
-        }
-        line = (
-            json.dumps(sample, sort_keys=True, separators=(",", ":"), allow_nan=False)
-            + "\n"
-        ).encode("utf-8")
-        if len(line) >= _SAMPLE_MAX_BYTES:
-            return False
-        ledger = _prepare_ledger_root(Path(reservation_root).expanduser())
-        _append_footprint_sample(ledger, role, line)
-    except Exception:  # never let bookkeeping break the job that was measured
-        return False
-    return True
-
-
-def _completed_samples(reservation_root: str | Path, role: str) -> list[int]:
-    """Observed bytes of the newest MEASURED_WINDOW completed samples, oldest first."""
-
-    try:
-        lines = _history_path(reservation_root, role).read_text(
-            encoding="utf-8"
-        ).splitlines()
-    except (OSError, UnicodeError):
-        return []
-    values: list[int] = []
-    for line in lines:
-        try:
-            row = json.loads(line)
-        except ValueError:
-            continue
-        if not isinstance(row, dict):
-            continue
-        observed = row.get("observed_bytes")
-        if (
-            row.get("schema_version") == FOOTPRINT_SAMPLE_SCHEMA
-            and row.get("role") == role
-            and row.get("outcome") == "completed"
-            and type(observed) is int
-            and observed >= 0
-        ):
-            values.append(observed)
-    return values[-MEASURED_WINDOW:]
-
-
-def measured_footprint(
-    role: str, *, reservation_root: str | Path = DEFAULT_RESERVATION_ROOT
-) -> dict[str, Any]:
-    """{"role", "bytes", "basis", "sample_count", "declared_bytes", "p95_bytes"}.
-
-    basis is "measured_p95" when at least MEASURED_MINIMUM_SAMPLES completed samples
-    exist in the newest MEASURED_WINDOW, else "declared_default" (bytes == declared).
-    p95 is nearest-rank: sorted values s, k = ceil(0.95 * n) - 1, p95 = s[k].
-    bytes = max(MEASURED_FLOOR_BYTES, min(declared, ceil(p95 * MEASURED_HEADROOM))).
-    declared = footprint_bytes(role) (env override honoured). Unreadable history -> declared.
-    """
-
-    declared = footprint_bytes(role)
-    samples = _completed_samples(reservation_root, role)
-    if len(samples) < MEASURED_MINIMUM_SAMPLES:
-        return {
-            "role": role,
-            "bytes": declared,
-            "basis": "declared_default",
-            "sample_count": len(samples),
-            "declared_bytes": declared,
-            "p95_bytes": None,
-        }
-    ordered = sorted(samples)
-    p95 = ordered[math.ceil(0.95 * len(ordered)) - 1]
-    return {
-        "role": role,
-        "bytes": max(
-            MEASURED_FLOOR_BYTES,
-            min(declared, math.ceil(p95 * MEASURED_HEADROOM)),
-        ),
-        "basis": "measured_p95",
-        "sample_count": len(samples),
-        "declared_bytes": declared,
-        "p95_bytes": p95,
-    }
-
-
-def effective_footprint_bytes(
-    role: str, *, reservation_root: str | Path = DEFAULT_RESERVATION_ROOT
-) -> int:
-    return int(measured_footprint(role, reservation_root=reservation_root)["bytes"])
-
-
-def role_footprints(
-    roles: Iterable[str], *, reservation_root: str | Path = DEFAULT_RESERVATION_ROOT
-) -> dict[str, dict[str, Any]]:
-    """{role: {"bytes", "basis", "sample_count"}}: what each role's next reservation holds."""
-
-    rows: dict[str, dict[str, Any]] = {}
-    for role in roles:
-        measured = measured_footprint(role, reservation_root=reservation_root)
-        rows[role] = {
-            "bytes": int(measured["bytes"]),
-            "basis": measured["basis"],
-            "sample_count": measured["sample_count"],
-        }
-    return rows
 
 
 @dataclass
@@ -536,14 +241,26 @@ class DiskReservation:
     # None until a workspace is bound or an observation arrives: only then is
     # there a measurement worth adding to the role's history.
     peak_delta_bytes: int | None = None
+    # Whether the workspace was fresh when bound (absent or nearly empty); a
+    # pass over an already-populated workspace resumes a job, it does not run one.
+    fresh: bool = True
+    # Set when any walk of the workspace hit an unreadable entry: the bytes under
+    # it were not counted, so the sample cannot stand for the job's footprint.
+    measurement_incomplete: bool = False
     started_at_epoch: float = 0.0
     clock: Callable[[], float] = field(default=time.time, repr=False, compare=False)
 
-    def bind_workspace(self, path: str | Path) -> None:
-        """Measure growth of ``path`` from now on (a workspace created after admission)."""
+    def bind_workspace(self, path: str | Path, *, fresh: bool | None = None) -> None:
+        """Measure growth of ``path`` from now on (a workspace created after admission).
+
+        ``fresh`` is inferred from the baseline unless the caller knows better:
+        ``True`` right after it cleared the workspace, ``False`` when it resumes.
+        """
 
         self.workspace = Path(path)
-        self.baseline_bytes = _workspace_allocated_bytes(self.workspace)
+        self.baseline_bytes, complete = _measure_workspace(self.workspace)
+        self.measurement_incomplete = self.measurement_incomplete or not complete
+        self.fresh = _is_fresh(self.baseline_bytes) if fresh is None else bool(fresh)
         if self.peak_delta_bytes is None:
             self.peak_delta_bytes = 0
 
@@ -552,10 +269,11 @@ class DiskReservation:
 
         if self.workspace is None:
             return self.peak_delta_bytes
-        try:
-            current = tree_usage(self.workspace).allocated_bytes
-        except Exception:  # a measurement must never break the job it measures
-            return self.peak_delta_bytes
+        current, complete = _measure_workspace(self.workspace)
+        if not complete:
+            self.measurement_incomplete = True
+            if current == 0:
+                return self.peak_delta_bytes
         delta = max(0, current - self.baseline_bytes)
         self.peak_delta_bytes = max(self.peak_delta_bytes or 0, delta)
         return self.peak_delta_bytes
@@ -588,6 +306,8 @@ class DiskReservation:
         try:
             if self.workspace is not None:
                 self.sample()
+            if outcome == "completed" and self.measurement_incomplete:
+                outcome = "incomplete"
             if self.peak_delta_bytes is None or self.reservation_root is None:
                 return
             record_footprint_sample(
@@ -600,6 +320,8 @@ class DiskReservation:
                 duration_seconds=max(0.0, float(self.clock()) - self.started_at_epoch),
                 device=self.device,
                 now=self.clock,
+                baseline_bytes=self.baseline_bytes if self.workspace is not None else None,
+                fresh=self.fresh,
             )
         except Exception:  # the reservation is released; a lost sample is harmless
             pass
@@ -626,11 +348,22 @@ class DiskReservation:
         }
 
 
-def _workspace_allocated_bytes(path: Path) -> int:
+def _is_fresh(baseline_bytes: int) -> bool:
+    return baseline_bytes < FRESH_WORKSPACE_MAX_BYTES
+
+
+def _measure_workspace(path: Path) -> tuple[int, bool]:
+    """(allocated bytes, complete) of a workspace walk; never raises.
+
+    The walk is incomplete when any entry could not be read (its bytes were not
+    counted) or when the walk itself failed.
+    """
+
     try:
-        return tree_usage(path).allocated_bytes
-    except Exception:  # an unmeasurable baseline of zero over-counts; never under-counts
-        return 0
+        usage = tree_usage(path)
+    except Exception:  # a measurement must never break the job it measures
+        return 0, False
+    return usage.allocated_bytes, usage.unreadable == 0
 
 
 def _snapshot(
@@ -668,6 +401,8 @@ def reserve_control_plane_disk(
     evictor: Callable[[int], Any] | None = None,
     workspace: str | Path | None = None,
     workload: str | None = None,
+    fresh: bool | None = None,
+    minimum_bytes: int | None = None,
 ) -> DiskReservation:
     """Atomically reserve disk headroom or raise a typed refusal.
 
@@ -675,7 +410,11 @@ def reserve_control_plane_disk(
     declared ceiling while the history is short).  ``workspace`` is the per-job
     directory whose growth is recorded as the role's footprint sample when the
     reservation is released; ``target_root`` remains the tree whose filesystem
-    admission is computed against.
+    admission is computed against.  Only a workspace that was fresh when bound
+    (inferred from its baseline, or ``fresh`` from the caller) can record a
+    completed sample; a resumed pass records "resumed".  ``minimum_bytes`` is
+    what the job itself declares it will write: the measured footprint never
+    reserves less.
     """
 
     if not _ROLE_RE.fullmatch(role) or role not in ROLE_FOOTPRINT_BYTES:
@@ -690,11 +429,19 @@ def reserve_control_plane_disk(
         raise ControlPlaneDiskBudgetError(
             "control_plane_disk_budget_workload_invalid"
         )
+    if minimum_bytes is not None and (
+        not isinstance(minimum_bytes, int) or isinstance(minimum_bytes, bool) or minimum_bytes < 0
+    ):
+        raise ControlPlaneDiskBudgetError(
+            "control_plane_disk_budget_reservation_invalid"
+        )
     if expected_bytes is None:
         measured = measured_footprint(role, reservation_root=reservation_root)
         need = measured["bytes"]
         basis = str(measured["basis"])
         sample_count: int | None = int(measured["sample_count"])
+        if minimum_bytes is not None and minimum_bytes > need:
+            need, basis = minimum_bytes, "declared_minimum"
     else:
         need, basis, sample_count = expected_bytes, "caller_exact", None
     if (
@@ -710,26 +457,14 @@ def reserve_control_plane_disk(
     # The baseline walk can take a while on a large workspace, so it happens
     # before the ledger lock every other worker's admission waits on.
     bound = None if workspace is None else Path(workspace).expanduser()
-    baseline = 0 if bound is None else _workspace_allocated_bytes(bound)
+    baseline, baseline_complete = (0, True) if bound is None else _measure_workspace(bound)
+    # A caller resuming an earlier pass says so; otherwise a nearly empty
+    # workspace is fresh and one already holding bytes is not.
+    workspace_fresh = _is_fresh(baseline) if fresh is None else bool(fresh)
     ledger = _prepare_ledger_root(Path(reservation_root).expanduser())
-    lock_path = ledger / ".lock"
-    with lock_path.open("a+b") as lock:
-        lock_mode = stat.S_IMODE(os.fstat(lock.fileno()).st_mode)
-        if lock_mode != 0o660:
-            try:
-                os.chmod(  # nosec B103 - shared root/blueprint ledger lock
-                    lock_path, 0o660
-                )
-            except OSError as exc:
-                raise ControlPlaneDiskBudgetError(
-                    f"control_plane_disk_budget_lock_mode_invalid:{lock_mode:04o}"
-                ) from exc
-            installed_mode = stat.S_IMODE(os.fstat(lock.fileno()).st_mode)
-            if installed_mode != 0o660:
-                raise ControlPlaneDiskBudgetError(
-                    "control_plane_disk_budget_lock_mode_repair_failed:"
-                    f"{installed_mode:04o}"
-                )
+    # The lock is opened without following a symlink and must be a 0660 regular
+    # file; only its owner repairs the mode, through the descriptor.
+    with os.fdopen(open_ledger_lock(ledger, require_mode=True), "a+b") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         ledger, usage, device, reserved, stale = _snapshot(
             target_root=target_root,
@@ -797,6 +532,8 @@ def reserve_control_plane_disk(
         workspace=bound,
         baseline_bytes=baseline,
         peak_delta_bytes=None if bound is None else 0,
+        fresh=workspace_fresh,
+        measurement_incomplete=not baseline_complete,
         started_at_epoch=float(started),
         clock=now,
     )
@@ -813,7 +550,7 @@ def disk_headroom(
     """Return a path-free admission projection suitable for an intake API."""
 
     ledger = _prepare_ledger_root(Path(reservation_root).expanduser())
-    with (ledger / ".lock").open("a+b") as lock:
+    with os.fdopen(open_ledger_lock(ledger), "a+b") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_SH)
         _ledger, usage, _device, reserved, _stale = _snapshot(
             target_root=target_root,
@@ -852,6 +589,8 @@ __all__ = [
     "FOOTPRINT_HISTORY_DIRNAME",
     "FOOTPRINT_OUTCOMES",
     "FOOTPRINT_SAMPLE_SCHEMA",
+    "HISTORY_COMPACTION_BYTES",
+    "HISTORY_LOCK_WAIT_SECONDS",
     "HISTORY_MAX_LINES",
     "MEASURED_FLOOR_BYTES",
     "MEASURED_HEADROOM",

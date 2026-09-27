@@ -5,6 +5,8 @@ import importlib.util
 import io
 import json
 import tempfile
+import threading
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -70,6 +72,50 @@ def test_fetch_then_verify_exact_candidate_bytes(tmp_path: Path, monkeypatch) ->
     assert first["status"] == "checkpoint_bytes_verified"
     assert (output / "small/HOI_pp_box/model/config.json").read_bytes() == content
     assert len(calls) == 1
+
+
+def test_private_cache_fetch_uses_pinned_url_and_redacts_transport_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    content = b"cached-checkpoint"
+    inventory = _inventory(tmp_path, content)
+    private_url = "https://private.example/model?signature=secret"
+    cache_manifest = tmp_path / "private-cache.json"
+    cache_manifest.write_text(json.dumps({
+        "schema_version": "native_g1_private_checkpoint_transfer.v1",
+        "files": [{
+            "relative_path": "small/HOI_pp_box/model/config.json",
+            "sha256": "sha256:" + hashlib.sha256(content).hexdigest(),
+            "size_bytes": len(content), "url": private_url,
+        }],
+    }))
+    calls: list[str] = []
+
+    def open_private(url: str) -> _Response:
+        calls.append(url)
+        return _Response(content, url)
+
+    monkeypatch.setattr(fetch, "_open_https", open_private)
+    result = fetch.materialize_candidate(
+        inventory_path=inventory, candidate_id="dp", output_dir=tmp_path / "out",
+        cache_manifest_path=cache_manifest,
+    )
+    assert result["status"] == "checkpoint_bytes_verified"
+    assert calls == [private_url]
+    assert private_url not in json.dumps(result)
+
+    def fail_private(url: str) -> _Response:
+        raise OSError("sensitive URL was " + url)
+
+    monkeypatch.setattr(fetch, "_open_https", fail_private)
+    with pytest.raises(
+        ValueError, match="g1_checkpoint_private_cache_transfer_failed:config.json:OSError"
+    ) as exc:
+        fetch.materialize_candidate(
+            inventory_path=inventory, candidate_id="dp", output_dir=tmp_path / "second",
+            cache_manifest_path=cache_manifest,
+        )
+    assert private_url not in str(exc.value)
 
 
 def test_bad_download_never_publishes_checkpoint(tmp_path: Path, monkeypatch) -> None:
@@ -157,6 +203,85 @@ def test_large_checkpoint_ranges_are_complete_before_publication(
     assert len(calls) == 3
 
 
+def test_early_eof_resumes_exact_missing_suffix_of_pinned_range(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    content = b"resumable-checkpoint" * 600
+    calls: list[tuple[int, int]] = []
+
+    def partial_range(url: str, *, headers: dict[str, str]):
+        start, end = (int(part) for part in headers["Range"][6:].split("-"))
+        calls.append((start, end))
+        response = _Response(content[start : min(end + 1, start + 4096)], url)
+        response.status = 206
+        response.headers = {"Content-Range": f"bytes {start}-{end}/{len(content)}"}
+        return response
+
+    monkeypatch.setattr(fetch, "_open_https", partial_range)
+    with tempfile.NamedTemporaryFile(dir=tmp_path) as stream:
+        assert fetch._download_pinned_ranges(
+            "https://cache.example.org/pinned?signature=private", stream.fileno(),
+            len(content), chunk_size=len(content), workers=1,
+        ) == len(content)
+        assert Path(stream.name).read_bytes() == content
+    assert calls == [
+        (start, len(content) - 1) for start in range(0, len(content), 4096)
+    ]
+
+
+def test_repeated_zero_byte_range_closure_is_bounded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    content = b"pinned" * 1024
+    calls = []
+
+    def empty_range(url: str, *, headers: dict[str, str]):
+        calls.append(headers["Range"])
+        response = _Response(b"", url)
+        response.status = 206
+        response.headers = {"Content-Range": f"bytes 0-{len(content) - 1}/{len(content)}"}
+        return response
+
+    monkeypatch.setattr(fetch, "_open_https", empty_range)
+    with tempfile.NamedTemporaryFile(dir=tmp_path) as stream:
+        with pytest.raises(ValueError, match="g1_checkpoint_range_truncated"):
+            fetch._download_pinned_ranges(
+                "https://cache.example.org/pinned", stream.fileno(), len(content),
+                chunk_size=len(content), workers=1,
+            )
+    assert calls == [f"bytes=0-{len(content) - 1}"] * 3
+
+
+def test_resumed_range_rejects_wrong_content_range_without_publishing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    content = b"pinned-checkpoint" * 1024
+    inventory = _inventory(tmp_path, content)
+    monkeypatch.setattr(fetch, "RANGED_DOWNLOAD_MIN_BYTES", 1)
+    calls = 0
+
+    def bad_resume(url: str, *, headers: dict[str, str]):
+        nonlocal calls
+        calls += 1
+        start, end = (int(part) for part in headers["Range"][6:].split("-"))
+        response = _Response(content[start : min(end + 1, start + 4096)], url)
+        response.status = 206
+        response.headers = {
+            "Content-Range": f"bytes {0 if calls > 1 else start}-{end}/{len(content)}"
+        }
+        return response
+
+    monkeypatch.setattr(fetch, "_open_https", bad_resume)
+    output = tmp_path / "checkpoints"
+    with pytest.raises(ValueError, match="range_content_range_invalid"):
+        fetch.materialize_candidate(
+            inventory_path=inventory, candidate_id="dp", output_dir=output,
+        )
+    assert calls == 2
+    assert not (output / "small/HOI_pp_box/model/config.json").exists()
+    assert not list(output.rglob(".g1-checkpoint-*"))
+
+
 def test_candidate_materialization_owns_ranged_publish(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -194,11 +319,90 @@ def test_large_checkpoint_rejects_wrong_range_response(
 
     monkeypatch.setattr(fetch, "_open_https", open_range)
     with tempfile.NamedTemporaryFile(dir=tmp_path) as stream:
-        with pytest.raises(ValueError, match="g1_checkpoint_range_response_invalid"):
+        with pytest.raises(ValueError, match="g1_checkpoint_range_http_status_200"):
             fetch._download_pinned_ranges(
                 "https://modelscope.cn/pinned", stream.fileno(), len(content),
                 chunk_size=8 * 1024, workers=2,
             )
+
+
+def test_private_cache_failure_retains_safe_file_and_reason_without_signed_url(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    content = b"pinned-checkpoint"
+    inventory = _inventory(tmp_path, content)
+    signed_url = "https://cache.example.org/checkpoint?X-Amz-Signature=private-secret"
+    manifest = tmp_path / "private-cache.json"
+    manifest.write_text(json.dumps({
+        "schema_version": "native_g1_private_checkpoint_transfer.v1",
+        "files": [{
+            "relative_path": "small/HOI_pp_box/model/config.json",
+            "url": signed_url,
+            "sha256": "sha256:" + hashlib.sha256(content).hexdigest(),
+            "size_bytes": len(content),
+        }],
+    }))
+    monkeypatch.setattr(fetch, "RANGED_DOWNLOAD_MIN_BYTES", 1)
+
+    def wrong_status(url: str, *, headers: dict[str, str]):
+        assert url == signed_url
+        assert headers["Range"] == f"bytes=0-{len(content) - 1}"
+        response = _Response(content, url)
+        response.status = 200
+        response.headers = {}
+        return response
+
+    monkeypatch.setattr(fetch, "_open_https", wrong_status)
+    output = tmp_path / "checkpoints"
+    with pytest.raises(ValueError) as caught:
+        fetch.materialize_candidate(
+            inventory_path=inventory, candidate_id="dp", output_dir=output,
+            cache_manifest_path=manifest,
+        )
+    assert str(caught.value) == (
+        "g1_checkpoint_private_cache_transfer_failed:"
+        "config.json:g1_checkpoint_range_http_status_200"
+    )
+    assert "private-secret" not in str(caught.value)
+    assert not list(output.rglob(".g1-checkpoint-*"))
+
+
+def test_private_cache_http_error_code_does_not_expose_signed_url() -> None:
+    error = urllib.error.HTTPError(
+        "https://cache.example.org/?X-Amz-Signature=private-secret",
+        503, "unavailable", {}, None,
+    )
+    assert fetch._private_transfer_failure_code(error) == "http_error_503"
+
+
+def test_peer_failure_cancels_ranged_download_and_removes_partial_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    content = b"checkpoint" * 1024
+    inventory = _inventory(tmp_path, content)
+    cancel = threading.Event()
+    monkeypatch.setattr(fetch, "RANGED_DOWNLOAD_MIN_BYTES", 1)
+
+    class CancelResponse(_Response):
+        def read(self, size: int = -1) -> bytes:
+            cancel.set()
+            return super().read(size)
+
+    def open_range(url: str, *, headers: dict[str, str]):
+        response = CancelResponse(content, url)
+        response.status = 206
+        response.headers = {"Content-Range": f"bytes 0-{len(content) - 1}/{len(content)}"}
+        return response
+
+    monkeypatch.setattr(fetch, "_open_https", open_range)
+    output = tmp_path / "checkpoints"
+    with pytest.raises(fetch._DownloadPeerCancelled):
+        fetch.materialize_candidate(
+            inventory_path=inventory, candidate_id="dp", output_dir=output,
+            cancel_event=cancel,
+        )
+    assert not (output / "small/HOI_pp_box/model/config.json").exists()
+    assert not list(output.rglob(".g1-checkpoint-*"))
 
 
 def test_large_checkpoint_deadline_cleans_partial_without_publication(
@@ -219,6 +423,10 @@ def test_large_checkpoint_deadline_cleans_partial_without_publication(
         )
     assert not (output / "small/HOI_pp_box/model/config.json").exists()
     assert not list(output.rglob(".g1-checkpoint-*"))
+
+
+def test_large_checkpoint_deadline_is_bounded_to_thirty_minutes() -> None:
+    assert fetch.RANGED_DOWNLOAD_DEADLINE_SECONDS == 30 * 60
 
 
 def test_pinned_navigation_candidates_are_distinct_40_value_movement_policies() -> None:

@@ -396,10 +396,8 @@ def _activation_capacity_ready(queue_root: Path) -> bool:
     ledger = os.getenv("BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT")
     if not ledger:
         return True  # The activation worker always retains its own disk gate.
-    from .control_plane_disk_budget import disk_headroom, effective_footprint_bytes
-    # The footprint the activation's own reservation will hold, not the ceiling.
-    return disk_headroom(target_root=queue_root, reservation_root=ledger)["available_bytes"] >= (
-        effective_footprint_bytes("launch_activation", reservation_root=ledger))
+    from .control_plane_disk_budget import disk_headroom, effective_footprint_bytes as held  # the least activation reserves
+    return disk_headroom(target_root=queue_root, reservation_root=ledger)["available_bytes"] >= held("launch_activation", reservation_root=ledger)
 
 
 def _policy_canary_activation_id(run_id: str) -> str:
@@ -1034,7 +1032,6 @@ def _destination_predecessor(
                 "configured_controls_worker_destination_profile_input_invalid"
             )
         return path
-
     references = {
         str(row.get("contract_path") or ""): Path(
             str(row.get("materialized_path") or "")
@@ -1191,7 +1188,6 @@ def advance_configured_controls_plan(
     webapp_endpoint: str = "https://tryblueprint.io/api/internal/task-evaluation-launch-submissions",
 ) -> dict[str, Any]:
     """Advance at most one transition for one immutable progression plan."""
-
     if release_window_publisher_factory is None:
         release_window_publisher_factory = (
             configured_controls_release_window_publisher

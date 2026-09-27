@@ -35,9 +35,15 @@ PRECLOSE_SCHEMA = "native_g1_development_worker_preclose.v1"
 PRECLOSE_FILENAME = PRECLOSE_SCHEMA + ".json"
 RIGHTS_SCHEMA = "native_g1_development_rights_review.v1"
 PATH_FIELDS = (
-    "bundle_root", "inventory_path", "checkpoint_root", "policy_server_source",
-    "sonic_provider_source", "sonic_encoder", "sonic_decoder",
-    "python_executable", "runtime_provisioning_receipt_path",
+    "bundle_root",
+    "inventory_path",
+    "checkpoint_root",
+    "policy_server_source",
+    "sonic_provider_source",
+    "sonic_encoder",
+    "sonic_decoder",
+    "python_executable",
+    "runtime_provisioning_receipt_path",
 )
 
 
@@ -58,14 +64,18 @@ def _request(value: Mapping[str, Any]) -> dict[str, Any]:
         or isinstance(request.get("max_steps"), bool)
         or not isinstance(request.get("max_steps"), int)
         or not 1 <= request["max_steps"] <= 3000
-        or any(not isinstance(request.get(field), str) or not request[field].strip() for field in PATH_FIELDS)
+        or any(
+            not isinstance(request.get(field), str) or not request[field].strip()
+            for field in PATH_FIELDS
+        )
         or request.get("request_digest") != canonical_digest(request, digest_field="request_digest")
     ):
         raise ValueError("g1_worker_request_invalid")
     for field in ("sonic_encoder_sha256", "sonic_decoder_sha256"):
         digest = request.get(field)
         if (
-            not isinstance(digest, str) or len(digest) != 71
+            not isinstance(digest, str)
+            or len(digest) != 71
             or not digest.startswith("sha256:")
             or any(char not in "0123456789abcdef" for char in digest[7:])
         ):
@@ -125,8 +135,16 @@ def _rights_review(value: Any, *, preflight: Mapping[str, Any]) -> dict[str, Any
 
 
 def _to_tensor(value: Any) -> Any:
-    if hasattr(value, "detach"):
+    import torch
+
+    if isinstance(value, torch.Tensor):
         return value
+    # Isaac Lab 3.0 Beta2 returns a ProxyArray for root, joint and sensor
+    # fields. Its `.torch` view expands vector components that Warp `.shape`
+    # reports only as a single instance dimension.
+    proxy_tensor = getattr(value, "torch", None)
+    if isinstance(proxy_tensor, torch.Tensor):
+        return proxy_tensor
     module = type(value).__module__
     if module == "warp" or module.startswith("warp."):
         import warp as wp
@@ -149,7 +167,10 @@ def _launch_scene(
 
 
 def _build_scene(
-    *, plan: Mapping[str, Any], bundle_root: Path, device: str,
+    *,
+    plan: Mapping[str, Any],
+    bundle_root: Path,
+    device: str,
     dependency_receipt_path: Path,
 ) -> tuple[Any, dict[str, Any]]:
     from .native_task_arena_construction_worker import preflight_native_dependency_matrix
@@ -163,18 +184,26 @@ def _build_scene(
         encoding="utf-8",
     )
     if dependencies.get("all_required_available") is not True:
-        raise ValueError("g1_worker_dependency_preflight_failed:" + ",".join(dependencies.get("blockers") or []))
+        raise ValueError(
+            "g1_worker_dependency_preflight_failed:" + ",".join(dependencies.get("blockers") or [])
+        )
     preconstruction = prepare_native_task_arena_preconstruction(expected_device=device)
     if preconstruction.get("passed") is not True:
-        raise ValueError("g1_worker_preconstruction_failed:" + ",".join(preconstruction.get("blockers") or []))
+        raise ValueError(
+            "g1_worker_preconstruction_failed:" + ",".join(preconstruction.get("blockers") or [])
+        )
     built = build_native_task_arena_environment(
-        plan, device=device, bundle_root=bundle_root,
+        plan,
+        device=device,
+        bundle_root=bundle_root,
         preconstruction_receipt=preconstruction,
     )
     try:
         binding = read_native_task_arena_device_binding(built, expected_device=device)
         if binding.get("passed") is not True:
-            raise ValueError("g1_worker_device_binding_failed:" + ",".join(binding.get("blockers") or []))
+            raise ValueError(
+                "g1_worker_device_binding_failed:" + ",".join(binding.get("blockers") or [])
+            )
     except BaseException:
         try:
             built.env.close()
@@ -183,18 +212,15 @@ def _build_scene(
     return built, binding
 
 
-def run_g1_development_worker(
-    *, request: Mapping[str, Any], output_dir: Path
-) -> dict[str, Any]:
+def run_g1_development_worker(*, request: Mapping[str, Any], output_dir: Path) -> dict[str, Any]:
     """Run one attempt and retain its own terminal receipt on every failure."""
 
     sealed = _request(request)
     if (
         not isinstance(output_dir, Path)
-        or output_dir.exists() or output_dir.is_symlink()
-        or output_dir.resolve().is_relative_to(
-            Path(sealed["bundle_root"]).expanduser().resolve()
-        )
+        or output_dir.exists()
+        or output_dir.is_symlink()
+        or output_dir.resolve().is_relative_to(Path(sealed["bundle_root"]).expanduser().resolve())
     ):
         raise ValueError("g1_worker_output_directory_exists")
     output_dir.mkdir(parents=True)
@@ -225,10 +251,13 @@ def run_g1_development_worker(
             # starts Kit in the pinned container. Verify model/source bytes and
             # human rights before that launch; complete the USD scene check
             # immediately afterward and before any environment or policy work.
-            assets = verify_g1_host_asset_identities(**{
-                key: value for key, value in inputs.items()
-                if key not in {"scene_plan_path", "bundle_root"}
-            })
+            assets = verify_g1_host_asset_identities(
+                **{
+                    key: value
+                    for key, value in inputs.items()
+                    if key not in {"scene_plan_path", "bundle_root"}
+                }
+            )
             preflight = {
                 "status": "staged_inputs_verified",
                 "scene_plan_digest": packet_receipt["arena_scene_plan_digest"],
@@ -238,11 +267,14 @@ def run_g1_development_worker(
             runtime_pxr_preflight = True
         if (
             preflight.get("status") != "staged_inputs_verified"
-            or preflight.get("scene_plan_digest")
-            != packet_receipt.get("arena_scene_plan_digest")
+            or preflight.get("scene_plan_digest") != packet_receipt.get("arena_scene_plan_digest")
             or preflight.get("robot_id") != "unitree_g1"
             or preflight.get("policy_role")
-            != ("movement_navigation" if sealed["candidate_id"] in G1_NAVIGATION_CANDIDATES else "manipulation")
+            != (
+                "movement_navigation"
+                if sealed["candidate_id"] in G1_NAVIGATION_CANDIDATES
+                else "manipulation"
+            )
         ):
             raise ValueError("g1_worker_preflight_incomplete")
         phase = "rights_review"
@@ -268,18 +300,30 @@ def run_g1_development_worker(
             phase = "runtime_usd_preflight"
             print("BLUEPRINT_G1_WORKER_PHASE:runtime_usd_preflight", flush=True)
             verified = preflight_g1_shared_scene_run(**inputs)
-            if any(verified.get(key) != preflight.get(key) for key in (
-                "status", "scene_plan_digest", "robot_id", "candidate_id",
-                "policy_role", "inventory_file_sha256", "checkpoint_files",
-                "policy_server_source", "sonic_provider_source", "sonic_encoder",
-                "sonic_decoder",
-            )):
+            if any(
+                verified.get(key) != preflight.get(key)
+                for key in (
+                    "status",
+                    "scene_plan_digest",
+                    "robot_id",
+                    "candidate_id",
+                    "policy_role",
+                    "inventory_file_sha256",
+                    "checkpoint_files",
+                    "policy_server_source",
+                    "sonic_provider_source",
+                    "sonic_encoder",
+                    "sonic_decoder",
+                )
+            ):
                 raise ValueError("g1_worker_runtime_usd_preflight_changed")
             preflight = verified
         phase = "scene_build"
         print("BLUEPRINT_G1_WORKER_PHASE:scene_build", flush=True)
         built, device_binding = _build_scene(
-            plan=plan, bundle_root=inputs["bundle_root"], device=sealed["device"],
+            plan=plan,
+            bundle_root=inputs["bundle_root"],
+            device=sealed["device"],
             dependency_receipt_path=output_dir / "native_task_dependency_matrix.v1.json",
         )
         phase = "episode"
@@ -291,9 +335,12 @@ def run_g1_development_worker(
             candidate_id=sealed["candidate_id"],
             preflight_inputs=inputs,
             python_executable=Path(sealed["python_executable"]),
-            port=sealed["port"], device=sealed["device"],
-            max_steps=sealed["max_steps"], output_dir=output_dir / "episode",
-            to_tensor=_to_tensor, make_action_tensor=torch.tensor,
+            port=sealed["port"],
+            device=sealed["device"],
+            max_steps=sealed["max_steps"],
+            output_dir=output_dir / "episode",
+            to_tensor=_to_tensor,
+            make_action_tensor=torch.tensor,
         )
         if episode.get("status") != "completed_development_only":
             raise ValueError("g1_worker_supervised_episode_incomplete")
@@ -311,7 +358,9 @@ def run_g1_development_worker(
                     failure = exc
         supervised_path = output_dir / "episode/native_g1_supervised_built_scene_episode.v1.json"
         try:
-            supervised = json.loads(supervised_path.read_text()) if supervised_path.is_file() else episode
+            supervised = (
+                json.loads(supervised_path.read_text()) if supervised_path.is_file() else episode
+            )
         except (OSError, ValueError) as exc:
             supervised = None
             if failure is None:
@@ -320,7 +369,9 @@ def run_g1_development_worker(
             "schema_version": RESULT_SCHEMA,
             "phase_reached": phase,
             "request_digest": sealed["request_digest"],
-            "packet_receipt_digest": packet_receipt.get("receipt_digest") if packet_receipt else None,
+            "packet_receipt_digest": packet_receipt.get("receipt_digest")
+            if packet_receipt
+            else None,
             "scene_plan_digest": preflight.get("scene_plan_digest") if preflight else None,
             "candidate_id": sealed["candidate_id"],
             "preflight_receipt_digest": canonical_digest(preflight) if preflight else None,
@@ -331,8 +382,13 @@ def run_g1_development_worker(
             "isaaclab_launch": launch,
             "device_binding": device_binding,
             "native_dependency_matrix": (
-                json.loads((output_dir / "native_task_dependency_matrix.v1.json").read_text(encoding="utf-8"))
-                if (output_dir / "native_task_dependency_matrix.v1.json").is_file() else None
+                json.loads(
+                    (output_dir / "native_task_dependency_matrix.v1.json").read_text(
+                        encoding="utf-8"
+                    )
+                )
+                if (output_dir / "native_task_dependency_matrix.v1.json").is_file()
+                else None
             ),
             "supervised_episode": supervised,
             "ranking_eligible": False,
@@ -348,21 +404,21 @@ def run_g1_development_worker(
                 "status": "awaiting_simulator_close",
                 "teardown": {**teardown, "simulator": "close_requested"},
                 "blocker": (
-                    {"type": type(failure).__name__, "message": str(failure)}
-                    if failure else None
+                    {"type": type(failure).__name__, "message": str(failure)} if failure else None
                 ),
             }
-            preclose["preclose_digest"] = canonical_digest(
-                preclose, digest_field="preclose_digest"
-            )
+            preclose["preclose_digest"] = canonical_digest(preclose, digest_field="preclose_digest")
             (output_dir / PRECLOSE_FILENAME).write_text(
                 json.dumps(preclose, indent=2, sort_keys=True, allow_nan=False) + "\n",
                 encoding="utf-8",
             )
             if failure is not None:
                 print(
-                    "BLUEPRINT_G1_WORKER_BLOCKER:" + type(failure).__name__
-                    + ":" + str(failure)[:500], flush=True,
+                    "BLUEPRINT_G1_WORKER_BLOCKER:"
+                    + type(failure).__name__
+                    + ":"
+                    + str(failure)[:500],
+                    flush=True,
                 )
             try:
                 print("BLUEPRINT_G1_WORKER_PHASE:simulator_close", flush=True)
@@ -383,13 +439,16 @@ def run_g1_development_worker(
             **evidence,
             "status": (
                 "completed_development_only"
-                if failure is None and episode is not None
+                if failure is None
+                and episode is not None
                 and episode.get("status") == "completed_development_only"
                 and teardown == {"environment": "closed", "simulator": "closed"}
                 else "blocked"
             ),
             "teardown": teardown,
-            "blocker": {"type": type(failure).__name__, "message": str(failure)} if failure else None,
+            "blocker": {"type": type(failure).__name__, "message": str(failure)}
+            if failure
+            else None,
         }
         result["result_digest"] = canonical_digest(result, digest_field="result_digest")
         (output_dir / RESULT_FILENAME).write_text(

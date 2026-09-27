@@ -10,7 +10,7 @@
   answering 503. The capacity wait records its shortfall and an ETA when one can be known.
 
 **Branch / base / worktree:** `claude/disk-9-capacity-paging` from the integration branch,
-`/Users/nijelhunt_1/workspace/BlueprintCapturePipeline-disk-9-20260926`.
+`$WORKSPACE/BlueprintCapturePipeline-disk-9-20260926`.
 
 ## Facts (verified)
 

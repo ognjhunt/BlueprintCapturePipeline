@@ -9,20 +9,38 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import json
 import os
 import tempfile
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path, PurePosixPath
+from threading import Event
 from typing import Any
 
 
 MODEL_BASE = "https://modelscope.cn/models/Twang2026/HumanoidArena_models/resolve/master/"
 RANGED_DOWNLOAD_MIN_BYTES = 512 * 1024 * 1024
-RANGED_DOWNLOAD_DEADLINE_SECONDS = 15 * 60
+# Large pi0.5 weights are 9.35 GB each. The previous 15-minute deadline
+# exhausted on a healthy but slow source transfer before any policy query.
+# Both large candidates are fetched concurrently under the allocator's
+# independent four-hour paid-run TTL and dollar cap.
+RANGED_DOWNLOAD_DEADLINE_SECONDS = 30 * 60
+_SAFE_TRANSFER_VALUE_ERRORS = frozenset({
+    "g1_checkpoint_insecure_redirect",
+    "g1_checkpoint_insecure_source",
+    "g1_checkpoint_range_content_range_invalid",
+    "g1_checkpoint_range_truncated",
+    "g1_checkpoint_range_short_write",
+    "g1_checkpoint_range_extra_bytes",
+    "g1_checkpoint_range_size_mismatch",
+    "g1_checkpoint_download_exceeds_pinned_size",
+    "g1_checkpoint_download_identity_mismatch",
+})
 DEFAULT_INVENTORY = (
     Path(__file__).resolve().parents[1]
     / "configs/g1_humanoidarena_checkpoint_inventory.v1.json"
@@ -47,10 +65,15 @@ class _DownloadDeadlineExceeded(TimeoutError):
     pass
 
 
+class _DownloadPeerCancelled(RuntimeError):
+    pass
+
+
 def _download_pinned_ranges(
     url: str, descriptor: int, expected_size: int, *,
     chunk_size: int = 128 * 1024 * 1024, workers: int = 8,
     deadline_seconds: float = RANGED_DOWNLOAD_DEADLINE_SECONDS,
+    cancel_event: Event | None = None,
 ) -> int:
     """Fetch one large model into a private temporary file, then hash it whole."""
 
@@ -58,8 +81,11 @@ def _download_pinned_ranges(
             or deadline_seconds <= 0):
         raise ValueError("g1_checkpoint_range_bounds_invalid")
     deadline = time.monotonic() + deadline_seconds
+    local_cancel = Event()
 
     def check_deadline() -> None:
+        if local_cancel.is_set() or cancel_event is not None and cancel_event.is_set():
+            raise _DownloadPeerCancelled("g1_checkpoint_download_cancelled_after_peer_failure")
         if time.monotonic() >= deadline:
             raise _DownloadDeadlineExceeded("g1_checkpoint_download_deadline_exceeded")
 
@@ -68,40 +94,73 @@ def _download_pinned_ranges(
     os.ftruncate(descriptor, expected_size)
 
     def fetch(start: int, end: int) -> int:
-        for attempt in range(3):
+        # A 206 response can close early even with the expected Content-Range.
+        # Resume only the missing suffix; the final whole-file SHA still gates
+        # publication. Bound both no-progress retries and total requests.
+        target = end - start + 1
+        written = 0
+        requests = 0
+        stalls = 0
+        while written < target:
+            check_deadline()
+            if requests >= 16 or stalls >= 3:
+                raise ValueError("g1_checkpoint_range_truncated")
+            requests += 1
+            request_start = start + written
+            before = written
             try:
+                response = _open_https(
+                    url, headers={"Range": f"bytes={request_start}-{end}"}
+                )
+            except OSError:
+                stalls += 1
+                if stalls >= 3:
+                    raise
+                continue
+            with response:
                 check_deadline()
-                with _open_https(url, headers={"Range": f"bytes={start}-{end}"}) as response:
+                if response.status != 206:
+                    status = response.status
+                    raise ValueError(
+                        "g1_checkpoint_range_http_status_"
+                        + (str(status) if type(status) is int and 100 <= status <= 599 else "unknown")
+                    )
+                if response.headers.get("Content-Range") != f"bytes {request_start}-{end}/{expected_size}":
+                    raise ValueError("g1_checkpoint_range_content_range_invalid")
+                if urllib.parse.urlsplit(response.geturl()).scheme.lower() != "https":
+                    raise ValueError("g1_checkpoint_insecure_redirect")
+                while written < target:
+                    try:
+                        block = response.read(min(1024 * 1024, target - written))
+                    except http.client.IncompleteRead as exc:
+                        block = exc.partial
+                    except OSError:
+                        break
                     check_deadline()
-                    if (response.status != 206
-                            or response.headers.get("Content-Range") != f"bytes {start}-{end}/{expected_size}"
-                            or urllib.parse.urlsplit(response.geturl()).scheme.lower() != "https"):
-                        raise ValueError("g1_checkpoint_range_response_invalid")
-                    written = 0
-                    while written <= end - start:
-                        block = response.read(min(1024 * 1024, end - start + 1 - written))
-                        check_deadline()
-                        if not block:
-                            raise ValueError("g1_checkpoint_range_truncated")
-                        if os.pwrite(descriptor, block, start + written) != len(block):
-                            raise ValueError("g1_checkpoint_range_short_write")
-                        written += len(block)
+                    if not block:
+                        break
+                    if len(block) > target - written:
+                        raise ValueError("g1_checkpoint_range_extra_bytes")
+                    if os.pwrite(descriptor, block, start + written) != len(block):
+                        raise ValueError("g1_checkpoint_range_short_write")
+                    written += len(block)
+                if written == target:
+                    check_deadline()
                     if response.read(1):
                         raise ValueError("g1_checkpoint_range_extra_bytes")
-                    check_deadline()
                     return written
-            except _DownloadDeadlineExceeded:
-                raise
-            except (OSError, ValueError):
-                if attempt == 2:
-                    raise
+            stalls = 0 if written > before else stalls + 1
         raise ValueError("g1_checkpoint_range_unreachable")
 
     total = 0
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = [pool.submit(fetch, start, end) for start, end in intervals]
         for completed in as_completed(futures):
-            total += completed.result()
+            try:
+                total += completed.result()
+            except Exception:
+                local_cancel.set()
+                raise
     if total != expected_size:
         raise ValueError("g1_checkpoint_range_size_mismatch")
     os.fsync(descriptor)
@@ -116,6 +175,25 @@ def _sha256_and_size(path: Path) -> tuple[str, int]:
             size += len(block)
             digest.update(block)
     return digest.hexdigest(), size
+
+
+def _private_transfer_failure_code(exc: Exception) -> str:
+    """Retain a safe failure reason while never recording a signed cache URL."""
+
+    if isinstance(exc, urllib.error.HTTPError):
+        return (
+            f"http_error_{exc.code}"
+            if type(exc.code) is int and 100 <= exc.code <= 599 else "http_error_unknown"
+        )
+    if isinstance(exc, ValueError):
+        reason = str(exc)
+        if reason in _SAFE_TRANSFER_VALUE_ERRORS:
+            return reason
+        if reason.startswith("g1_checkpoint_range_http_status_"):
+            status = reason.removeprefix("g1_checkpoint_range_http_status_")
+            if status == "unknown" or len(status) == 3 and status.isdecimal():
+                return reason
+    return type(exc).__name__
 
 
 def _candidate(inventory: dict[str, Any], candidate_id: str) -> dict[str, Any]:
@@ -158,16 +236,51 @@ def _candidate(inventory: dict[str, Any], candidate_id: str) -> dict[str, Any]:
     return candidate
 
 
+def _private_cache_urls(path: Path | None) -> dict[str, dict[str, Any]] | None:
+    if path is None:
+        return None
+    if not path.is_absolute() or path.is_symlink() or not path.is_file():
+        raise ValueError("g1_checkpoint_private_cache_file_invalid")
+    value = json.loads(path.read_text(encoding="utf-8"))
+    rows = value.get("files") if isinstance(value, dict) else None
+    if (
+        not isinstance(value, dict)
+        or value.get("schema_version") != "native_g1_private_checkpoint_transfer.v1"
+        or not isinstance(rows, list) or not rows
+    ):
+        raise ValueError("g1_checkpoint_private_cache_manifest_invalid")
+    result: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("g1_checkpoint_private_cache_manifest_invalid")
+        relative = row.get("relative_path")
+        url = row.get("url")
+        parts = urllib.parse.urlsplit(url) if isinstance(url, str) else None
+        if (
+            not isinstance(relative, str) or relative in result
+            or parts is None or parts.scheme.lower() != "https"
+            or not parts.hostname or parts.username or parts.password
+        ):
+            raise ValueError("g1_checkpoint_private_cache_manifest_invalid")
+        result[relative] = row
+    return result
+
+
 def materialize_candidate(
-    *, inventory_path: Path, candidate_id: str, output_dir: Path, verify_only: bool = False
+    *, inventory_path: Path, candidate_id: str, output_dir: Path, verify_only: bool = False,
+    cache_manifest_path: Path | None = None,
+    cancel_event: Event | None = None,
 ) -> dict[str, Any]:
     inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
     candidate = _candidate(inventory, candidate_id)
+    private_cache = _private_cache_urls(cache_manifest_path)
     folder = PurePosixPath(candidate["subdirectory"])
     if output_dir.is_symlink():
         raise ValueError("g1_checkpoint_output_symlink_forbidden")
     verified = []
     for row in candidate["files"]:
+        if cancel_event is not None and cancel_event.is_set():
+            raise _DownloadPeerCancelled("g1_checkpoint_download_cancelled_after_peer_failure")
         relative = PurePosixPath(row["path"])
         destination = output_dir.joinpath(*folder.parts, *relative.parts)
         if any(parent.is_symlink() for parent in (destination, *destination.parents) if parent != Path("/")):
@@ -181,7 +294,17 @@ def materialize_candidate(
                 raise ValueError(f"g1_checkpoint_file_missing:{relative}")
             destination.parent.mkdir(parents=True, exist_ok=True)
             path = folder / relative
-            url = MODEL_BASE + urllib.parse.quote(path.as_posix(), safe="/")
+            if private_cache is not None:
+                cache_row = private_cache.get(path.as_posix())
+                if (
+                    cache_row is None
+                    or cache_row.get("sha256") != "sha256:" + expected[0]
+                    or cache_row.get("size_bytes") != expected[1]
+                ):
+                    raise ValueError("g1_checkpoint_private_cache_identity_mismatch")
+                url = cache_row["url"]
+            else:
+                url = MODEL_BASE + urllib.parse.quote(path.as_posix(), safe="/")
             temporary = None
             try:
                 with tempfile.NamedTemporaryFile(
@@ -189,21 +312,44 @@ def materialize_candidate(
                 ) as stream:
                     temporary = Path(stream.name)
                     if expected[1] >= RANGED_DOWNLOAD_MIN_BYTES:
-                        _download_pinned_ranges(url, stream.fileno(), expected[1])
+                        _download_pinned_ranges(
+                            url, stream.fileno(), expected[1], cancel_event=cancel_event,
+                        )
                     else:
                         with _open_https(url) as response:
                             if urllib.parse.urlparse(response.geturl()).scheme != "https":
                                 raise ValueError("g1_checkpoint_insecure_redirect")
                             size = 0
                             while block := response.read(1024 * 1024):
+                                if cancel_event is not None and cancel_event.is_set():
+                                    raise _DownloadPeerCancelled(
+                                        "g1_checkpoint_download_cancelled_after_peer_failure"
+                                    )
                                 size += len(block)
                                 if size > expected[1]:
                                     raise ValueError("g1_checkpoint_download_exceeds_pinned_size")
                                 stream.write(block)
                         stream.flush()
+                if cancel_event is not None and cancel_event.is_set():
+                    raise _DownloadPeerCancelled(
+                        "g1_checkpoint_download_cancelled_after_peer_failure"
+                    )
                 if _sha256_and_size(temporary) != expected:
                     raise ValueError("g1_checkpoint_download_identity_mismatch")
                 os.link(temporary, destination)
+            except _DownloadDeadlineExceeded as exc:
+                raise _DownloadDeadlineExceeded(
+                    f"g1_checkpoint_download_deadline_exceeded:{candidate_id}:{relative}"
+                ) from exc
+            except _DownloadPeerCancelled:
+                raise
+            except Exception as exc:
+                if private_cache is not None:
+                    raise ValueError(
+                        "g1_checkpoint_private_cache_transfer_failed:"
+                        + relative.as_posix() + ":" + _private_transfer_failure_code(exc)
+                    ) from None
+                raise
             finally:
                 if temporary is not None:
                     temporary.unlink(missing_ok=True)

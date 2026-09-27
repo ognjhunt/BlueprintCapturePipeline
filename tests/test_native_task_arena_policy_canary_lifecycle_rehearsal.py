@@ -1125,6 +1125,10 @@ def test_selected_cell_queries_both_real_clients_and_seals_before_isaac_close(
     assert result["appearance_render_backend"]["development_only"] is True
     assert result["preload_observation_gate"]["policy_observation_integrity_passed"] is True
     assert result["preload_observation_gate"]["candidate_policy_loaded"] is False
+    dependency_receipt = json.loads(
+        (child_root / "prepolicy_dependency_matrix.v1.json").read_text()
+    )
+    assert dependency_receipt["all_required_available"] is True
     assert isaac.builds == 1
     assert isaac.built_cell_ids == ["cell-3"]
     assert isaac.environment_closes == 1

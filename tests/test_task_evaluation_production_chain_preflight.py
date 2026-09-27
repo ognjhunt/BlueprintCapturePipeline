@@ -819,3 +819,19 @@ def test_spend_refresh_sandbox_must_allow_the_intake_reservation_lock(tmp_path, 
     unit_file = Path(__file__).resolve().parents[1] / "deploy/systemd/blueprint-scene-project-spend-refresh.service"
     declared = next(line for line in unit_file.read_text().splitlines() if line.startswith("ReadWritePaths=")).split("=", 1)[1].split()
     assert preflight.spend_refresh_sandbox_checks({unit: {"read_write_paths": declared}}) == []
+
+
+def test_disk_admission_projection_refuses_an_unreadable_reservation_ledger(tmp_path: Path, monkeypatch) -> None:
+    if os.geteuid() == 0:
+        return  # root reads a mode-0000 ledger anyway
+    ledger = tmp_path / "reservations"
+    ledger.mkdir()
+    monkeypatch.setattr(preflight, "DISK_TARGET_ROOT", tmp_path)
+    monkeypatch.setattr(preflight, "DISK_RESERVATION_ROOT", ledger)
+    monkeypatch.setattr(preflight.shutil, "disk_usage", lambda _p: Usage(154 * GIB, 0, 80 * GIB))
+    ledger.chmod(0)
+    try:
+        [finding] = preflight.disk_admission_check({})
+    finally:
+        ledger.chmod(0o770)
+    assert finding["severity"] == "blocker" and finding["code"] == "disk_reservations_unreadable"

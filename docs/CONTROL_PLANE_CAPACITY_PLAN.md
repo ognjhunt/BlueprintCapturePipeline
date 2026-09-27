@@ -46,10 +46,13 @@ history. Every deploy multiplied inputs because bindings were keyed by commit.
    `BLUEPRINT_CONTROL_PLANE_EVIDENCE_OFFLOAD=1` (done on the production host).
 3. Attach a block volume, then `deploy/host/mount_work_volume.sh --device
    /dev/disk/by-id/<volume> --plan`, review, and `--apply --ack move-work-roots-to-volume`.
-   All bulk roots move in one rsync (hardlinks preserved) and come back as bind mounts
-   recorded in `/etc/fstab`.
+   Bulk roots move in one rsync per base directory (hardlinks preserved) and come back
+   as bind mounts recorded in `/etc/fstab`. [Volume layout](CONTROL_PLANE_STORAGE.md#volume-layout)
+   covers what lives where, why `task-evaluation-inputs` is one bind, and how a host
+   that still has the September per-store binds is consolidated. It also says what
+   to do when a run stops.
 4. Point the capacity controller at the volume in the environment file:
-   `BLUEPRINT_CAPACITY_MOUNTS=/var/lib/blueprint:/mnt/blueprint-work`,
+   `BLUEPRINT_CAPACITY_MOUNTS=/:/var/lib/blueprint:/mnt/blueprint-work`,
    `BLUEPRINT_CAPACITY_VOLUME_ID`, `_MOUNT`, `_DEVICE`, `_MAX_GIB`, and
    `BLUEPRINT_CAPACITY_AUTORESIZE_ACK=grow-control-plane-volume` once growth is wanted.
 5. Set `BLUEPRINT_OPERATOR_ALERT_WEBHOOK_URL` so capacity alerts reach an operator.

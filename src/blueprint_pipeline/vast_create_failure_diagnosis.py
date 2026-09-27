@@ -112,4 +112,33 @@ def diagnose_empty_create_400(
     return diagnosis
 
 
-__all__ = ["diagnose_empty_create_400"]
+def definite_create_refusal_without_instance(adapter: Mapping[str, Any]) -> bool:
+    """Require an explicit provider refusal and authenticated absence for every attempted label."""
+
+    diagnosis = adapter.get("create_failure_diagnosis")
+    classification = adapter.get("provider_attempt_classification")
+    if not isinstance(diagnosis, Mapping) or not isinstance(classification, Mapping):
+        return False
+    code = diagnosis.get("http_status_code")
+    explicit_refusal = code in {404, 409, 410} or (
+        code == 400 and "no_such_ask" in str(diagnosis.get("error_preview") or "").lower()
+    )
+    return bool(
+        adapter.get("status") == "failed"
+        and adapter.get("provider_create_attempted") is True
+        and adapter.get("vast_instance_ids") == []
+        and adapter.get("vast_side_effects_may_have_occurred") is False
+        and adapter.get("continuing_spend_from_this_run") is False
+        and diagnosis.get("definite_create_refusal") is True
+        and explicit_refusal
+        and diagnosis.get("create_inventory_verified") is True
+        and diagnosis.get("create_inventory_http_status_code") == 200
+        and diagnosis.get("create_produced_no_instance") is True
+        and diagnosis.get("matching_attempt_instance_ids") == []
+        and bool(diagnosis.get("attempted_labels"))
+        and classification.get("classification") == "pre_execution_provider_null"
+        and classification.get("scientific_attempt_consumed") is False
+    )
+
+
+__all__ = ["diagnose_empty_create_400", "definite_create_refusal_without_instance"]

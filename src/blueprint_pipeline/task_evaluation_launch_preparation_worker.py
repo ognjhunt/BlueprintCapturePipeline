@@ -996,6 +996,9 @@ def _reserve_preparation_disk(
                     reservation_root=disk_reservation_root,
                     workspace=workspace,
                     workload="prepared_references",
+                    # An existing directory holds an earlier pass of this preparation
+                    # (one that paused on its SAM children, say): this pass resumes it.
+                    fresh=False if workspace is not None and workspace.exists() else None,
                 )
             )
             return

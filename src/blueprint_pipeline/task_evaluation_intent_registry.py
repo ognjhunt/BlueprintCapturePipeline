@@ -22,11 +22,14 @@ class IntentRegistryError(ValueError):
 def _supersession_authority(expected_commit: str) -> None:
     if _verified_checkout_head() != expected_commit:
         raise IntentRegistryError("intent_registry_execution_commit_mismatch")
-    # These triggers own both scene activation and controls progression. Merely
-    # checking MainPID leaves a timer race, so all triggers must be stopped too.
+    # A separate installer must see every trigger stopped. The progression
+    # service itself is serialized by systemd: a path/timer wake cannot start a
+    # second copy while its MainPID is publishing the successor. Admit only
+    # that exact process; an external writer still needs full quiescence.
     units = ["blueprint-task-evaluation-configured-controls-progression." + suffix
              for suffix in ("service", "path", "timer")]
-    for unit in units:
+    current_worker = False
+    for index, unit in enumerate(units):
         try:
             result = subprocess.run(  # nosec B603 B607 - fixed read-only systemctl invocation
                 ["systemctl", "show", unit, "-p", "LoadState", "-p", "ActiveState", "-p", "MainPID"],
@@ -34,8 +37,16 @@ def _supersession_authority(expected_commit: str) -> None:
             values = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
         except (OSError, subprocess.SubprocessError) as exc:
             raise IntentRegistryError("intent_registry_worker_quiescence_unproven") from exc
-        if (values.get("LoadState") != "loaded" or values.get("ActiveState") != "inactive"
-                or values.get("MainPID", "0") != "0"):
+        if values.get("LoadState") != "loaded":
+            raise IntentRegistryError("intent_registry_worker_quiescence_unproven")
+        if index == 0 and (values.get("ActiveState") in {"active", "activating"}
+                           and values.get("MainPID") == str(os.getpid())):
+            current_worker = True
+            continue
+        if (current_worker and index > 0 and values.get("ActiveState") in {"active", "inactive"}
+                and values.get("MainPID", "0") == "0"):
+            continue
+        if values.get("ActiveState") != "inactive" or values.get("MainPID", "0") != "0":
             raise IntentRegistryError("intent_registry_worker_quiescence_unproven")
 
 
@@ -52,6 +63,42 @@ def _sync_directory(path: Path) -> None:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+
+
+def _archive_bytes(*, archive: Path, payload: bytes, group_id: int | None) -> None:
+    """Atomically retain old bytes even when the live inode is root-owned.
+
+    Linux protected-hardlinks forbids the service account from linking a
+    root-owned, group-readable live intent. Stage an owned, read-only copy and
+    publish it with an exclusive hard link instead. A crash can leave only a
+    complete archive or an unpublished temporary file.
+    """
+
+    with tempfile.NamedTemporaryFile(
+        dir=archive.parent, prefix=".intent-archive-", delete=False
+    ) as stream:
+        staged = Path(stream.name)
+        try:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+            if group_id is not None:
+                os.fchown(stream.fileno(), os.geteuid(), group_id)
+            os.fchmod(stream.fileno(), 0o440)
+        except BaseException:
+            staged.unlink(missing_ok=True)
+            raise
+    try:
+        if _read(staged) != payload:
+            raise IntentRegistryError("intent_registry_archive_staging_mismatch")
+        try:
+            os.link(staged, archive, follow_symlinks=False)
+        except FileExistsError:
+            pass
+        if _read(archive) != payload:
+            raise IntentRegistryError("intent_registry_archive_conflict")
+    finally:
+        staged.unlink(missing_ok=True)
 
 
 def install_release_intent(*, destination: Path, payload: bytes, expected_commit: str,
@@ -73,10 +120,18 @@ def install_release_intent(*, destination: Path, payload: bytes, expected_commit
     # The lock inode is never renamed/unlinked. All registry writers use it.
     lock_fd = os.open(lock_path, os.O_RDONLY | os.O_CREAT | os.O_NOFOLLOW, 0o440)
     try:
-        if not stat.S_ISREG(os.fstat(lock_fd).st_mode):
+        lock_metadata = os.fstat(lock_fd)
+        if not stat.S_ISREG(lock_metadata.st_mode):
             raise IntentRegistryError("intent_registry_lock_invalid")
-        if group_id is not None:
-            os.fchown(lock_fd, os.geteuid(), group_id)
+        # A root-run offline install can leave this lock owned by root. The
+        # service only needs group read access, so preserve its owner on reuse.
+        if group_id is not None and lock_metadata.st_gid != group_id:
+            os.fchown(lock_fd, -1, group_id)
+        # O_CREAT's mode is filtered by umask (the host root umask is 0077).
+        # Repair only when needed; a service user cannot chmod a root-owned
+        # lock that already has the correct group-readable mode.
+        if stat.S_IMODE(lock_metadata.st_mode) != 0o440:
+            os.fchmod(lock_fd, 0o440)
         fcntl.flock(lock_fd, fcntl.LOCK_EX)
         retired_target = destination.with_name(
             f"{destination.stem}.superseded-{expected_commit}.json")
@@ -112,11 +167,7 @@ def install_release_intent(*, destination: Path, payload: bytes, expected_commit
                     raise IntentRegistryError("intent_registry_staging_readback_mismatch")
                 if previous is not None:
                     archive = destination.with_name(f"{destination.stem}.superseded-{previous}.json")
-                    try:
-                        os.link(destination, archive, follow_symlinks=False)
-                    except FileExistsError:
-                        if _read(archive) != current:
-                            raise IntentRegistryError("intent_registry_archive_conflict") from None
+                    _archive_bytes(archive=archive, payload=current, group_id=group_id)
                     if _read(archive) != current or _read(destination) != current:
                         raise IntentRegistryError("intent_registry_current_bytes_changed")
                     _sync_directory(destination.parent)

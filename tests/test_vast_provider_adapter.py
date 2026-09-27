@@ -1639,6 +1639,98 @@ def test_request_logs_ignores_timestamp_only_ssh_forwarding_noise(
     assert attempts[2]["progress_observed"] is True
 
 
+def test_request_logs_counts_only_new_pinned_remote_cell_milestones(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = {"now": 0.0}
+
+    def fake_monotonic() -> float:
+        clock["now"] += 1.0
+        return clock["now"]
+
+    monkeypatch.setattr(vpa.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(vpa.time, "sleep", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        vpa, "_api_json",
+        lambda **_kwargs: (200, {"result_url": "https://example.invalid/log.txt"}),
+    )
+    snapshots = iter(
+        ["BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_STARTED\n"] * 4
+        + ["BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED\n"]
+    )
+    monkeypatch.setattr(vpa, "_fetch_text", lambda *_args, **_kwargs: next(snapshots))
+    monkeypatch.setattr(
+        vpa, "_instance_liveness",
+        lambda **_kwargs: {
+            "observed": True, "status": "running", "exited": False,
+            "ssh_host": "ssh.vast.ai", "ssh_port": 1234,
+        },
+    )
+    remote_calls = {"count": 0}
+
+    def remote_probe(_connection):
+        remote_calls["count"] += 1
+        milestones = ["REMOTE_STAGE:runtime_source_receipt"]
+        if remote_calls["count"] >= 2:
+            milestones.append(
+                "BLUEPRINT_POLICY_CANARY_PROGRESS:cell=0:stage=static_preflight_passed"
+            )
+        return {"status": "observed", "milestones": milestones}
+
+    result = vpa._request_logs_and_fetch(
+        instance_id=123, api_key="secret",
+        output_log_path=tmp_path / "onstart.log", secret_values=["secret"],
+        wait_seconds=0, retry_interval_seconds=1, max_wait_seconds=999,
+        success_markers=["BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED"],
+        no_progress_seconds=999, remote_progress_probe=remote_probe,
+    )
+    attempts = result["log_poll_attempts"]
+    assert result["break_reason"] == "success_marker_found"
+    assert attempts[0]["remote_progress_observed"] is True
+    assert attempts[1]["remote_progress_observed"] is False
+    assert attempts[3]["remote_progress_observed"] is True
+    assert len(result["remote_progress_milestones"]) == 2
+
+
+def test_request_logs_repeated_remote_milestone_cannot_defeat_watchdog(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = {"now": 0.0}
+
+    def fake_monotonic() -> float:
+        clock["now"] += 1.0
+        return clock["now"]
+
+    monkeypatch.setattr(vpa.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(vpa.time, "sleep", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        vpa, "_api_json",
+        lambda **_kwargs: (200, {"result_url": "https://example.invalid/log.txt"}),
+    )
+    monkeypatch.setattr(
+        vpa, "_fetch_text",
+        lambda *_args, **_kwargs: "BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_STARTED\n",
+    )
+    monkeypatch.setattr(
+        vpa, "_instance_liveness",
+        lambda **_kwargs: {"observed": True, "status": "running", "exited": False},
+    )
+    result = vpa._request_logs_and_fetch(
+        instance_id=123, api_key="secret",
+        output_log_path=tmp_path / "onstart.log", secret_values=["secret"],
+        wait_seconds=0, retry_interval_seconds=1, max_wait_seconds=999,
+        success_markers=["never seen"], no_progress_seconds=15,
+        remote_progress_probe=lambda _connection: {
+            "status": "observed",
+            "milestones": ["REMOTE_STAGE:runtime_source_receipt"],
+        },
+    )
+    assert result["break_reason"] == "no_log_progress_timeout"
+    assert result["remote_progress_milestones"] == [
+        "REMOTE_STAGE:runtime_source_receipt"
+    ]
+
+
 def test_request_logs_persists_last_redacted_snapshot_before_interruption(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -1,12 +1,19 @@
+# Covers (for impacted-test selection):
+#   src/blueprint_pipeline/control_plane_disk_budget.py
+#   src/blueprint_pipeline/control_plane_disk_footprints.py
+#   src/blueprint_pipeline/control_plane_disk_ledger.py
 from __future__ import annotations
 
 import json
 import os
+import re
 from collections import namedtuple
+from pathlib import Path
 
 import pytest
 
 from blueprint_pipeline import control_plane_disk_budget as disk_budget
+from blueprint_pipeline import control_plane_disk_footprints as footprints
 from blueprint_pipeline.control_plane_disk_budget import (
     ControlPlaneDiskBudgetError,
     disk_headroom,
@@ -33,7 +40,11 @@ def test_preinstalled_group_writable_lock_is_not_rechmodded(
             raise PermissionError("root-owned correct lock must not be rechmodded")
         original_chmod(path, mode, **kwargs)
 
+    def reject_lock_fchmod(*_args, **_kwargs) -> None:
+        raise PermissionError("root-owned correct lock must not be rechmodded")
+
     monkeypatch.setattr(disk_budget.os, "chmod", reject_lock_chmod)
+    monkeypatch.setattr(disk_budget.os, "fchmod", reject_lock_fchmod)
 
     reservation = reserve_control_plane_disk(
         "launch_activation",
@@ -57,14 +68,11 @@ def test_unsafe_lock_mode_fails_closed_when_owner_rejects_repair(
     lock = ledger / ".lock"
     lock.touch(mode=0o640)
     lock.chmod(0o640)
-    original_chmod = disk_budget.os.chmod
 
-    def reject_lock_chmod(path, mode, **kwargs) -> None:
-        if path == lock:
-            raise PermissionError("runtime account cannot chmod root-owned lock")
-        original_chmod(path, mode, **kwargs)
+    def reject_lock_chmod(*_args, **_kwargs) -> None:
+        raise PermissionError("runtime account cannot chmod root-owned lock")
 
-    monkeypatch.setattr(disk_budget.os, "chmod", reject_lock_chmod)
+    monkeypatch.setattr(disk_budget.os, "fchmod", reject_lock_chmod)
 
     with pytest.raises(
         ControlPlaneDiskBudgetError,
@@ -250,11 +258,35 @@ def test_unreadable_history_falls_back_to_declared(tmp_path):
     assert disk_budget.measured_footprint("launch_activation", reservation_root=ledger)["basis"] == "declared_default"
 
 
-def test_history_is_compacted(tmp_path):
+def test_history_is_compacted_to_its_newest_samples(tmp_path):
     ledger = tmp_path / "ledger"
-    _samples(ledger, "launch_activation", [MIB] * 400)
-    lines = (ledger / "history" / "launch_activation.jsonl").read_text().splitlines()
-    assert len(lines) <= 400 and len(lines) >= disk_budget.HISTORY_MAX_LINES
+    _samples(ledger, "launch_activation", [MIB + index for index in range(600)])
+    path = ledger / "history" / "launch_activation.jsonl"
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    # 600 samples outgrow the 128 KiB threshold, so compaction must have dropped
+    # the oldest and kept a contiguous window of the newest.
+    assert disk_budget.HISTORY_MAX_LINES <= len(rows) < 600
+    assert [row["observed_bytes"] for row in rows] == [MIB + index for index in range(600 - len(rows), 600)]
+    assert path.stat().st_size <= footprints.HISTORY_COMPACTION_BYTES + 1024
+
+
+def test_compaction_leaves_room_so_the_next_append_does_not_rewrite(tmp_path, monkeypatch):
+    # Every sample is shorter than the line cap, so the newest HISTORY_MAX_LINES
+    # always fit well under the threshold: compaction never repeats on each append.
+    assert footprints.HISTORY_MAX_LINES * footprints._SAMPLE_MAX_BYTES < footprints.HISTORY_COMPACTION_BYTES
+    ledger, compactions = tmp_path / "ledger", []
+    compact = footprints._compact_history
+    monkeypatch.setattr(footprints, "_compact_history", lambda *args: (compactions.append(1), compact(*args)))
+    while not compactions:  # the longest workload label makes the longest lines
+        assert disk_budget.record_footprint_sample(
+            reservation_root=ledger, role="stage_replay", observed_bytes=GIB, reserved_bytes=4 * GIB,
+            workload="w" * 64, baseline_bytes=GIB, fresh=True, device=2**40, duration_seconds=86_400.0)
+    rows = (ledger / "history" / "stage_replay.jsonl").read_text().splitlines()
+    assert len(rows) == footprints.HISTORY_MAX_LINES
+    assert disk_budget.record_footprint_sample(
+        reservation_root=ledger, role="stage_replay", observed_bytes=GIB, reserved_bytes=4 * GIB,
+        workload="w" * 64)
+    assert len(compactions) == 1
 
 
 def test_live_reservations_filter_device_and_dead_pids(tmp_path):
@@ -349,7 +381,7 @@ def test_recording_never_waits_forever_on_a_held_ledger_lock(tmp_path, monkeypat
     reservation = reserve_control_plane_disk("launch_activation", target_root=tmp_path, reservation_root=ledger,
         workspace=work, disk_usage=lambda _p: Usage(100 * GIB, 0, 90 * GIB), now=lambda: 1.0,
         pid_alive=lambda _pid: True)
-    monkeypatch.setattr(disk_budget, "HISTORY_LOCK_WAIT_SECONDS", 0.2)
+    monkeypatch.setattr(footprints, "HISTORY_LOCK_WAIT_SECONDS", 0.2)
     with (ledger / ".lock").open("a+b") as held:
         fcntl.flock(held.fileno(), fcntl.LOCK_EX)
         assert disk_budget.record_footprint_sample(
@@ -384,3 +416,300 @@ def test_an_unknown_outcome_never_counts_as_completed(tmp_path):
     reservation.release(outcome="finished")
     [row] = [json.loads(line) for line in (ledger / "history" / "launch_activation.jsonl").read_text().splitlines()]
     assert row["outcome"] == "failed"
+
+
+def _roomy_reservation(tmp_path, ledger, **kwargs):
+    return reserve_control_plane_disk("launch_activation", target_root=tmp_path, reservation_root=ledger,
+        disk_usage=lambda _p: Usage(100 * GIB, 0, 90 * GIB), now=lambda: 1.0, pid_alive=lambda _pid: True,
+        **kwargs)
+
+
+def _history_rows(ledger, role="launch_activation"):
+    return [json.loads(line) for line in (ledger / "history" / f"{role}.jsonl").read_text().splitlines()]
+
+
+def test_a_pass_over_an_already_full_workspace_records_resumed_not_completed(tmp_path):
+    # A resumed pass starts from a workspace that already holds the run, so its
+    # growth is near zero; counted as completed it would collapse the p95.
+    ledger, work = tmp_path / "ledger", tmp_path / "job"
+    work.mkdir()
+    (work / "run.bin").write_bytes(b"r" * (footprints.FRESH_WORKSPACE_MAX_BYTES + 64 * 1024))
+    reservation = _roomy_reservation(tmp_path, ledger, workspace=work)
+    (work / "resume.log").write_bytes(b"l" * 4096)
+    reservation.release()
+    [row] = _history_rows(ledger)
+    assert (row["outcome"], row["fresh"]) == ("resumed", False)
+    assert row["baseline_bytes"] > footprints.FRESH_WORKSPACE_MAX_BYTES
+    assert disk_budget.measured_footprint("launch_activation", reservation_root=ledger)["sample_count"] == 0
+
+
+def test_a_fresh_workspace_records_completed_with_its_baseline(tmp_path):
+    ledger = tmp_path / "ledger"
+    reservation = _roomy_reservation(tmp_path, ledger, workspace=tmp_path / "absent-until-run")
+    reservation.release()
+    [row] = _history_rows(ledger)
+    assert (row["outcome"], row["fresh"], row["baseline_bytes"]) == ("completed", True, 0)
+
+
+def test_callers_can_assert_or_deny_freshness(tmp_path):
+    ledger, work = tmp_path / "ledger", tmp_path / "job"
+    work.mkdir()
+    (work / "leftover.bin").write_bytes(b"x" * (footprints.FRESH_WORKSPACE_MAX_BYTES + 64 * 1024))
+    cleared = _roomy_reservation(tmp_path, ledger)
+    cleared.bind_workspace(work, fresh=True)  # e.g. measured right after the caller cleared it
+    cleared.release()
+    resumed = _roomy_reservation(tmp_path, ledger, workspace=tmp_path / "empty", fresh=False)
+    resumed.release()
+    assert [(row["outcome"], row["fresh"]) for row in _history_rows(ledger)] == [
+        ("completed", True), ("resumed", False)]
+    assert disk_budget.record_footprint_sample(reservation_root=ledger, role="launch_activation",
+        observed_bytes=1, reserved_bytes=GIB, fresh=False)
+    assert _history_rows(ledger)[-1]["outcome"] == "resumed"
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads a mode-0000 directory anyway")
+def test_an_unreadable_subtree_makes_the_measurement_incomplete(tmp_path):
+    ledger, work = tmp_path / "ledger", tmp_path / "job"
+    reservation = _roomy_reservation(tmp_path, ledger, workspace=work)
+    hidden = work / "hidden"
+    hidden.mkdir(parents=True)
+    (hidden / "payload.bin").write_bytes(b"h" * 8192)
+    hidden.chmod(0)
+    try:
+        reservation.release()
+    finally:
+        hidden.chmod(0o700)
+    [row] = _history_rows(ledger)
+    # Bytes under the unreadable directory were not counted; the sample must not count either.
+    assert row["outcome"] == "incomplete"
+    assert disk_budget.measured_footprint("launch_activation", reservation_root=ledger)["sample_count"] == 0
+
+
+def test_the_footprint_is_the_largest_workload_p95_not_a_blend(tmp_path):
+    # Two scene attempts among 48 small preparations vanish in a blended p95,
+    # yet each needs its own 1.2 GiB.
+    ledger = tmp_path / "ledger"
+    for workload, value, count in (("prepared_references", 100 * MIB, 48),
+                                   ("scene_preparation_attempt", 1200 * MIB, 2)):
+        for _ in range(count):
+            assert disk_budget.record_footprint_sample(reservation_root=ledger, role="launch_preparation",
+                workload=workload, observed_bytes=value, reserved_bytes=2 * GIB)
+    measured = disk_budget.measured_footprint("launch_preparation", reservation_root=ledger)
+    assert (measured["basis"], measured["sample_count"]) == ("measured_p95", 50)
+    assert measured["p95_bytes"] == 1200 * MIB and measured["bytes"] == 1500 * MIB
+
+
+def test_a_job_that_declares_more_than_the_footprint_reserves_what_it_declares(tmp_path):
+    ledger = tmp_path / "ledger"
+    _samples(ledger, "launch_activation", [100 * MIB] * 10)  # measured: 125 MiB
+    declared = _roomy_reservation(tmp_path, ledger, minimum_bytes=900 * MIB)
+    assert declared.expected_bytes == 900 * MIB
+    assert declared.receipt()["footprint_basis"] == "declared_minimum"
+    measured = _roomy_reservation(tmp_path, ledger, minimum_bytes=10 * MIB)
+    assert measured.expected_bytes == 125 * MIB
+    assert measured.receipt()["footprint_basis"] == "measured_p95"
+
+
+def test_workload_names_are_always_valid_labels():
+    assert footprints.workload_name("activation", "native_task_arena_construction") == (
+        "activation_native_task_arena_construction")
+    odd = footprints.workload_name("activation", "Lane-With.Odd Chars/" + "x" * 80)
+    assert disk_budget._ROLE_RE.fullmatch(odd) and odd.startswith("activation_lane_with_odd_chars")
+
+
+# The systemd units whose jobs hold each role's reservations.  A job holds its
+# reservation for at most its unit's start timeout, so the ledger entry's TTL
+# must outlive that timeout or a running job's reservation is deleted as stale.
+# control_plane_deploy is run by an operator (no unit), and
+# result_artifact_download by the long-running intake service (no start timeout).
+ROLE_WORKER_UNITS = {
+    "launch_preparation": ("blueprint-task-evaluation-launch-preparation.service",
+                           "blueprint-task-evaluation-scene-progression.service"),
+    "episode_compilation": ("blueprint-task-evaluation-episode-compilation.service",),
+    "launch_activation": ("blueprint-task-evaluation-launch-activation.service",),
+    "launch_dispatch": ("blueprint-task-evaluation-launch-dispatcher.service",),
+    "policy_canary_dispatch": ("blueprint-task-evaluation-policy-canary-dispatcher.service",),
+    "evidence_offload": ("blueprint-control-plane-storage-gc.service",),
+    "stage_replay": ("blueprint-agent-stage-replay.service",),
+    "semantic_pretraining": ("blueprint-task-evaluation-launch-dispatcher.service",
+                             "blueprint-task-evaluation-launch-activation.service"),
+    "cpu_prestage": ("blueprint-task-evaluation-launch-dispatcher.service",),
+}
+
+
+def _start_timeout_seconds(unit_text):
+    [value] = re.findall(r"^TimeoutStartSec=(\S+)\s*$", unit_text, flags=re.MULTILINE)[-1:] or [None]
+    match = re.fullmatch(r"(\d+)(h|min|m|s)?", value or "")
+    assert match, f"unparseable TimeoutStartSec={value}"
+    return int(match[1]) * {"h": 3600, "min": 60, "m": 60, "s": 1}[match[2] or "s"]
+
+
+def test_every_role_ttl_outlives_its_worker_units_start_timeout():
+    units = Path(__file__).resolve().parents[1] / "deploy" / "systemd"
+    assert set(ROLE_WORKER_UNITS) | {"control_plane_deploy", "result_artifact_download"} == set(
+        disk_budget.ROLE_FOOTPRINT_BYTES)
+    for role, names in ROLE_WORKER_UNITS.items():
+        ttl = disk_budget.ROLE_TTL_SECONDS.get(role, disk_budget.DEFAULT_TTL_SECONDS)
+        for name in names:
+            timeout = _start_timeout_seconds((units / name).read_text(encoding="utf-8"))
+            assert ttl >= timeout, f"{role} TTL {ttl}s < {name} TimeoutStartSec {timeout}s"
+
+
+def test_a_symlinked_lock_is_refused_and_its_target_untouched(tmp_path):
+    # The ledger directory is group-writable, so a runtime account could plant a
+    # symlink there; root must never open, chmod or lock through it.
+    ledger = tmp_path / "ledger"
+    ledger.mkdir()
+    target = tmp_path / "root-owned-secret"
+    target.write_text("secret")
+    target.chmod(0o600)
+    (ledger / ".lock").symlink_to(target)
+    with pytest.raises(ControlPlaneDiskBudgetError, match="control_plane_disk_budget_lock_invalid"):
+        _roomy_reservation(tmp_path, ledger, expected_bytes=GIB)
+    with pytest.raises(ControlPlaneDiskBudgetError, match="control_plane_disk_budget_lock_invalid"):
+        disk_headroom(target_root=tmp_path, reservation_root=ledger,
+                      disk_usage=lambda _p: Usage(100 * GIB, 0, 90 * GIB), now=lambda: 1.0)
+    assert disk_budget.record_footprint_sample(reservation_root=ledger, role="launch_activation",
+        observed_bytes=1, reserved_bytes=GIB) is False
+    assert target.read_text() == "secret" and target.stat().st_mode & 0o777 == 0o600
+
+
+def test_a_symlinked_history_directory_receives_nothing(tmp_path):
+    ledger, elsewhere = tmp_path / "ledger", tmp_path / "elsewhere"
+    ledger.mkdir()
+    elsewhere.mkdir()
+    (ledger / "history").symlink_to(elsewhere, target_is_directory=True)
+    assert disk_budget.record_footprint_sample(reservation_root=ledger, role="launch_activation",
+        observed_bytes=1, reserved_bytes=GIB) is False
+    assert list(elsewhere.iterdir()) == []
+
+
+def test_a_lock_owned_by_someone_else_with_a_wrong_mode_fails_closed(tmp_path, monkeypatch):
+    ledger = tmp_path / "ledger"
+    ledger.mkdir()
+    lock = ledger / ".lock"
+    lock.touch()
+    lock.chmod(0o640)
+    monkeypatch.setattr(disk_budget.os, "geteuid", lambda: os.getuid() + 1)  # not the lock's owner
+    with pytest.raises(ControlPlaneDiskBudgetError, match="control_plane_disk_budget_lock_mode_invalid:0640"):
+        _roomy_reservation(tmp_path, ledger, expected_bytes=GIB)
+    assert lock.stat().st_mode & 0o777 == 0o640
+
+
+def test_a_declared_ceiling_below_the_floor_is_never_exceeded(tmp_path, monkeypatch):
+    monkeypatch.setenv("BLUEPRINT_CONTROL_PLANE_DISK_FOOTPRINT_LAUNCH_ACTIVATION_BYTES", str(32 * MIB))
+    ledger = tmp_path / "ledger"
+    _samples(ledger, "launch_activation", [1] * 10)
+    measured = disk_budget.measured_footprint("launch_activation", reservation_root=ledger)
+    assert (measured["basis"], measured["bytes"]) == ("measured_p95", 32 * MIB)
+
+
+def test_a_short_write_is_not_a_recorded_sample_and_never_swallows_the_next(tmp_path, monkeypatch):
+    ledger = tmp_path / "ledger"
+    real_write = footprints.os.write
+    monkeypatch.setattr(footprints.os, "write", lambda fd, data: real_write(fd, data[: len(data) // 2]))
+    assert disk_budget.record_footprint_sample(reservation_root=ledger, role="launch_activation",
+        observed_bytes=7, reserved_bytes=GIB) is False  # a torn line is not success
+    monkeypatch.setattr(footprints.os, "write", real_write)
+    assert disk_budget.record_footprint_sample(reservation_root=ledger, role="launch_activation",
+        observed_bytes=9, reserved_bytes=GIB) is True
+    parsed = []
+    for line in (ledger / "history" / "launch_activation.jsonl").read_text().splitlines():
+        try:
+            parsed.append(json.loads(line)["observed_bytes"])
+        except ValueError:
+            continue  # the torn fragment stays unreadable on its own line
+    assert parsed == [9]
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads mode-0000 entries anyway")
+def test_an_unreadable_ledger_is_never_read_as_empty(tmp_path):
+    ledger = tmp_path / "ledger"
+    ledger.mkdir()
+    entry = ledger / "held.json"
+    entry.write_text(json.dumps({"device": 1, "pid": os.getpid(), "expected_bytes": GIB, "expires_at_epoch": 1e12}))
+    entry.chmod(0)
+    try:
+        with pytest.raises(ControlPlaneDiskBudgetError, match="control_plane_disk_budget_ledger_unreadable"):
+            disk_budget.live_reservations(ledger, device=1, now=1.0)
+    finally:
+        entry.chmod(0o640)
+    ledger.chmod(0)
+    try:
+        with pytest.raises(ControlPlaneDiskBudgetError, match="control_plane_disk_budget_ledger_unreadable"):
+            disk_budget.live_reservations(ledger, device=1, now=1.0)
+    finally:
+        ledger.chmod(0o770)
+    assert disk_budget.live_reservations(tmp_path / "absent", device=1, now=1.0) == (0, 0)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads mode-0000 entries anyway")
+def test_reservation_writer_refuses_an_unreadable_live_entry(tmp_path):
+    ledger = tmp_path / "ledger"
+    ledger.mkdir()
+    entry = ledger / "held.json"
+    entry.write_text(json.dumps({
+        "device": tmp_path.stat().st_dev,
+        "pid": os.getpid(),
+        "expected_bytes": GIB,
+        "expires_at_epoch": 1e12,
+    }))
+    entry.chmod(0)
+    try:
+        with pytest.raises(ControlPlaneDiskBudgetError, match="control_plane_disk_budget_ledger_unreadable"):
+            reserve_control_plane_disk(
+                "launch_activation", target_root=tmp_path, expected_bytes=GIB,
+                reservation_root=ledger,
+                disk_usage=lambda _path: Usage(100 * GIB, 60 * GIB, 40 * GIB),
+                now=lambda: 100.0, pid_alive=lambda _pid: True,
+            )
+        assert entry.exists()
+    finally:
+        entry.chmod(0o640)
+
+
+def test_admission_preserves_a_live_reservation_on_another_device(tmp_path):
+    ledger = tmp_path / "ledger"
+    ledger.mkdir()
+    foreign_device = tmp_path.stat().st_dev + 1
+    foreign = ledger / "foreign.json"
+    foreign.write_text(json.dumps({
+        "device": foreign_device,
+        "pid": os.getpid(),
+        "expected_bytes": 2 * GIB,
+        "expires_at_epoch": 1e12,
+    }))
+    reservation = reserve_control_plane_disk(
+        "launch_activation", target_root=tmp_path, expected_bytes=GIB,
+        reservation_root=ledger,
+        disk_usage=lambda _path: Usage(100 * GIB, 60 * GIB, 40 * GIB),
+        now=lambda: 100.0, pid_alive=lambda _pid: True,
+    )
+    try:
+        assert foreign.exists()
+        assert disk_budget.live_reservations(
+            ledger, device=foreign_device, now=100.0, pid_alive=lambda _pid: True,
+        ) == (2 * GIB, 1)
+    finally:
+        reservation.release()
+
+
+def test_scan_budget_exhaustion_cannot_complete_a_footprint(tmp_path, monkeypatch):
+    from blueprint_pipeline import control_plane_disk_usage as usage_module
+
+    monkeypatch.setattr(usage_module, "MAX_TREE_SCAN_ENTRIES", 1)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    ledger = tmp_path / "ledger"
+    reservation = reserve_control_plane_disk(
+        "launch_activation", target_root=tmp_path, expected_bytes=GIB,
+        reservation_root=ledger, workspace=workspace,
+        disk_usage=lambda _path: Usage(100 * GIB, 60 * GIB, 40 * GIB),
+        now=lambda: 100.0, pid_alive=lambda _pid: True,
+    )
+    (workspace / "one.bin").write_bytes(b"x")
+    (workspace / "two.bin").write_bytes(b"x")
+    reservation.release(outcome="completed")
+    history = ledger / "history" / "launch_activation.jsonl"
+    [sample] = [json.loads(line) for line in history.read_text().splitlines()]
+    assert sample["outcome"] == "incomplete"

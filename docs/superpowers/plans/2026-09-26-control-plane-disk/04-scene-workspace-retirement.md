@@ -11,7 +11,7 @@ everything in it is recoverable from cloud storage and nothing can still need it
 - The door offers the same operation by hand: `retire-scene-workspace <scene_id>`, plan then apply.
 
 **Branch / base / worktree:** `claude/disk-1c-scene-workspace-retirement` from PR 3's branch,
-`/Users/nijelhunt_1/workspace/BlueprintCapturePipeline-disk-1c2-20260926`.
+`$WORKSPACE/BlueprintCapturePipeline-disk-1c2-20260926`.
 
 ## Facts (verified)
 

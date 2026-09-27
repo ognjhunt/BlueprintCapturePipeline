@@ -177,14 +177,15 @@ def _bind_replay_workspace(run_root: Path) -> None:
         bind(run_root)
 
 
-# Reports of a replay that stopped before its stage's work: its footprint sample
-# is recorded as blocked and never shapes admission.
-_BLOCKED_REPLAY_STATUSES = frozenset({"paid_stage_not_replayed", "job_refused", "refused", "worker_refused"})
+def _replay_completed(report: Mapping[str, Any]) -> bool:
+    """Only a replay that succeeded measured its whole footprint.
 
-
-def _replay_blocked(report: Mapping[str, Any]) -> bool:
+    A child replay succeeds when its stage completed; a parent replay when the
+    worker queued the parent for production.  Waiting, refused, blocked or
+    row-less replays stopped before their work and are recorded as blocked.
+    """
     status = str(report.get("status") or "")
-    return status in _BLOCKED_REPLAY_STATUSES or "blocked" in status
+    return status == "completed" or status.startswith("queued_for_production_")
 
 
 def _reserved_replay(function):
@@ -213,7 +214,7 @@ def _reserved_replay(function):
             stack.enter_context(file_digest_scope())
             stack.callback(_ACTIVE_RESERVATION.reset, _ACTIVE_RESERVATION.set(reservation))
             report = function(**kwargs)
-            if _replay_blocked(report):
+            if not _replay_completed(report):
                 reservation.release(outcome="blocked")
             report["disk_reservation"] = reservation.receipt()
             if report.get("report_path"):

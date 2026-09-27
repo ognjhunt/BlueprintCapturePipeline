@@ -26,9 +26,16 @@ plans before it mutates, and a tick applies nothing unless it runs with
   are reaped by age alone: nothing references them.
 * **Workspace bundles**: the reproducible ``bundle/`` copy inside an idle,
   unpinned semantic-pretraining workspace is removed behind a sealed marker.
+* **Scene workspaces** (``scene_workspace`` class) are retired by
+  ``website_scene_workspace_retention`` once every file verifies in Firebase
+  Storage or is archived to the artifact store behind a replayable receipt, and
+  nothing can still need them. It only plans until its own explicit opt-in,
+  ``BLUEPRINT_CONTROL_PLANE_SCENE_WORKSPACE_RETIREMENT=1``, enables it.
 
-Evidence-hot roots, release worktrees, and runtime trees are never candidates
-here; release trees are retired by the deploy that supersedes them.
+Each phase runs isolated: an exception is recorded under its report key and the
+remaining phases still run. Evidence-hot roots, release worktrees, and runtime
+trees are never candidates here; release trees are retired by the deploy that
+supersedes them.
 """
 
 from __future__ import annotations
@@ -39,6 +46,7 @@ import json
 import re
 import sys
 import time
+import traceback
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -117,6 +125,18 @@ WORKSPACE_BUNDLE_ACK = "reap-idle-workspace-bundles"
 WORKSPACE_BUNDLE_CHILD = "bundle"
 WORKSPACE_BUNDLE_MARKER = "bundle_reaped.json"
 DEFAULT_WORKSPACE_BUNDLE_MINIMUM_AGE_SECONDS = 6 * 60 * 60
+#: Scene workspaces: pubsub handoff spools whose finished website scene working copies are
+#: retired once cloud storage can restore them (website_scene_workspace_retention).
+SCENE_WORKSPACE_ROOTS_ENV = "BLUEPRINT_CONTROL_PLANE_GC_SCENE_WORKSPACE_ROOTS"
+SCENE_INTENT_ROOT_ENV = "BLUEPRINT_CONTROL_PLANE_GC_SCENE_INTENT_ROOT"
+SCENE_BINDING_ROOT_ENV = "BLUEPRINT_WEBSITE_SCENE_BINDING_ROOT"
+SCENE_WORKSPACE_RETIREMENT_ENV = "BLUEPRINT_CONTROL_PLANE_SCENE_WORKSPACE_RETIREMENT"
+SCENE_WORKSPACE_RETIREMENT_INVALID = "scene_workspace_retirement_setting_invalid"
+REPORT_ROOT_ENV = "BLUEPRINT_CONTROL_PLANE_GC_REPORT_ROOT"
+DEFAULT_MAX_SCENE_RETIREMENTS = 20
+_MAX_SCENE_RESULTS = 50
+_TRUE = frozenset({"1", "true", "yes"})
+_FALSE = frozenset({"0", "false", "no"})
 _COMMIT = re.compile(r"[0-9a-f]{40}\Z")
 _ROW_COMMIT_KEYS = ("expected_production_commit", "source_commit")
 _DIGEST_NAME = re.compile(r"[0-9a-f]{64}\Z")
@@ -1052,6 +1072,177 @@ def apply_workspace_bundle_manifest(
     return result
 
 
+def scene_workspace_retirement_setting(environ: Mapping[str, str] = os.environ) -> tuple[bool, str | None]:
+    """Whether scene workspace retirement applies, and an alert when its setting is invalid.
+
+    Retirement is its own owner decision: only
+    ``BLUEPRINT_CONTROL_PLANE_SCENE_WORKSPACE_RETIREMENT=1`` (or ``true``/``yes``)
+    enables it, and unset it only plans. It never follows the evidence offload
+    opt-in. Any other value disables it and is reported as an alert; it never
+    aborts the tick.
+    """
+
+    raw = str(environ.get(SCENE_WORKSPACE_RETIREMENT_ENV) or "").strip().lower()
+    if raw in _TRUE:
+        return True, None
+    if not raw or raw in _FALSE:
+        return False, None
+    return False, SCENE_WORKSPACE_RETIREMENT_INVALID
+
+
+def retire_scene_workspaces(
+    *,
+    storage_roots: Sequence[str | Path],
+    context_factory: Callable[[Path], Any],
+    apply: bool,
+    enabled: bool,
+    now: float,
+    cloud_factory: Callable[[], Any],
+    stream_publisher: Callable[..., Any] | None = None,
+    process_checker: Callable[[Path], bool] | None = None,
+    max_retirements: int = DEFAULT_MAX_SCENE_RETIREMENTS,
+    hash_budget_bytes: int | None = None,
+    inventory_cache_root: Path | None = None,
+) -> dict[str, Any]:
+    """Plan every scene workspace; attempt at most ``max_retirements`` retirements per tick when enabled.
+
+    The bound counts attempts, not successes: each one can publish a large archive,
+    so a failing publisher costs at most that many uploads per tick. The reference
+    index (registrations and intents) is read once per root for the plans; each
+    retirement re-reads it under the capture locks. Plans hash at most
+    ``hash_budget_bytes`` uncached bytes per tick (twenty GiB by default) and cache
+    file digests under ``inventory_cache_root``, dropping a scene's cache once it is
+    retired or gone. One scene's failure is recorded on its row and never stops the others.
+    """
+
+    from .website_scene_workspace_retention import (
+        DEFAULT_HASH_BUDGET_BYTES,
+        RETIRE_ACK,
+        HashBudget,
+        apply_scene_workspace_retirement,
+        build_reference_index,
+        inventory_cache_path,
+        plan_scene_workspace_retirement,
+        scene_workspaces,
+        sweep_retirement_temporaries,
+        sweep_retiring_workspaces,
+    )
+
+    applying = bool(apply and enabled)
+    observed_at = float(now)
+    budget = HashBudget(remaining_bytes=DEFAULT_HASH_BUDGET_BYTES if hash_budget_bytes is None else hash_budget_bytes)
+    live_scenes: set[tuple[str, str]] = set()
+    report: dict[str, Any] = {
+        "status": "applied" if applying else "dry_run",
+        "enabled": bool(enabled),
+        "candidate_count": 0,
+        "attempted_count": 0,
+        "retired_count": 0,
+        "retired_bytes": 0,
+        "archive_bytes": 0,
+        "retained_counts": {},
+        "retiring_removed_count" if applying else "retiring_removable_count": 0,
+        "retiring_kept_without_receipt": [],
+        "retiring_cleanup_incomplete": [],
+        "receipt_temporaries_removed_count": 0,
+        "published_archives": [],
+    }
+    rows: list[dict[str, Any]] = []
+    cloud = None
+
+    def retained(reasons: Sequence[str]) -> None:
+        for prefix in sorted({reason.split(":", 1)[0] for reason in reasons}):
+            report["retained_counts"][prefix] = report["retained_counts"].get(prefix, 0) + 1
+
+    for storage_root in storage_roots:
+        context = context_factory(Path(storage_root))
+        # First finish any removal a crash interrupted: its retirement is already committed.
+        swept = sweep_retiring_workspaces(context.storage_root, apply=applying)
+        if applying:
+            report["receipt_temporaries_removed_count"] += len(
+                sweep_retirement_temporaries(context.storage_root, now=observed_at))
+        report["retiring_removed_count" if applying else "retiring_removable_count"] += len(
+            swept["removed" if applying else "removable"])
+        report["retiring_kept_without_receipt"].extend(swept["kept_without_receipt"])
+        report["retiring_cleanup_incomplete"].extend(swept.get("cleanup_incomplete", []))
+        workspaces = scene_workspaces(context.storage_root)
+        if not workspaces:
+            continue
+        index = build_reference_index(context, now=observed_at)
+        cloud = cloud if cloud is not None else cloud_factory()
+        for bucket, scene_id, _path in workspaces:
+            row: dict[str, Any] = {"bucket": bucket, "scene_id": scene_id}
+            live_scenes.add((bucket, scene_id))
+            try:
+                plan = plan_scene_workspace_retirement(
+                    context=context, bucket=bucket, scene_id=scene_id, now=observed_at, cloud=cloud,
+                    index=index, process_checker=process_checker, hash_budget=budget)
+                if plan["status"] != "retirable":
+                    retained(plan["reasons"])
+                    rows.append({**row, "status": "retained", "reasons": plan["reasons"][:5]})
+                    continue
+                report["candidate_count"] += 1
+                if not applying or report["attempted_count"] >= max_retirements:
+                    rows.append({**row, "status": "retirable",
+                                 "workspace_allocated_bytes": plan["totals"]["workspace_allocated_bytes"],
+                                 "archive_bytes": plan["totals"]["archive_bytes"]})
+                    continue
+                report["attempted_count"] += 1
+                outcome = apply_scene_workspace_retirement(
+                    plan, context=context, ack=RETIRE_ACK, cloud=cloud, now=observed_at,
+                    stream_publisher=stream_publisher, process_checker=process_checker)
+            except Exception as exc:  # noqa: BLE001 - one scene never costs the others
+                rows.append({**row, "status": "error", "error": type(exc).__name__})
+                continue
+            if outcome["status"] == "retired":
+                live_scenes.discard((bucket, scene_id))
+                report["retired_count"] += 1
+                report["retired_bytes"] += int(outcome["freed_allocated_bytes"])
+                report["archive_bytes"] += int(outcome["archive_bytes"])
+                rows.append({**row, "status": "retired", "receipt": outcome["receipt"],
+                             "removal_complete": outcome["removal_complete"]})
+            else:
+                retained([outcome["reason"]])
+                if "published_archive" in outcome:
+                    report["published_archives"].append({**row, **outcome["published_archive"]})
+                if outcome["reason"].startswith("candidate_changed") and context.inventory_cache_root is not None:
+                    inventory_cache_path(context.inventory_cache_root, bucket, scene_id).unlink(missing_ok=True)
+                rows.append({**row, "status": "skipped", "reason": outcome["reason"],
+                             **({"published_archive": outcome["published_archive"]}
+                                if "published_archive" in outcome else {})})
+    # A cache is only worth keeping for a workspace that still exists. The
+    # default cache follows each spool root onto the work volume.
+    for storage_root in storage_roots:
+        root = Path(inventory_cache_root) if inventory_cache_root is not None else Path(storage_root) / ".scene-workspace-inventory"
+        for cache in sorted(root.glob("*/*.json")):
+            if (cache.parent.name, cache.stem) not in live_scenes:
+                cache.unlink(missing_ok=True)
+    report["hashed_bytes"] = budget.hashed_bytes
+    report["result_count"] = len(rows)
+    report["error_count"] = sum(row["status"] == "error" for row in rows)
+    report["omitted_result_count"] = max(0, len(rows) - _MAX_SCENE_RESULTS)
+    report["results"] = rows[:_MAX_SCENE_RESULTS]
+    return report
+
+
+def _isolated(report: dict[str, Any], key: str, phase: Callable[[], Any]) -> None:
+    """Run one reclaim phase so that its failure is recorded and later phases still run.
+
+    A phase returns the value to store under ``key``, or None when it wrote its own keys.
+    The report records only the exception type; the traceback goes to the journal.
+    """
+
+    try:
+        result = phase()
+    except Exception as exc:  # noqa: BLE001 - one phase never costs the tick
+        report[key] = {"status": "error", "error": type(exc).__name__}
+        report.setdefault("phase_errors", []).append(key)
+        traceback.print_exc(file=sys.stderr)
+        return
+    if result is not None:
+        report[key] = result
+
+
 def run_storage_gc(
     *,
     content_store_roots: Sequence[str | Path],
@@ -1072,14 +1263,24 @@ def run_storage_gc(
     scratch_minimum_age_seconds: int = DEFAULT_SCRATCH_MINIMUM_AGE_SECONDS,
     workspace_bundle_roots: Sequence[str | Path] = (),
     workspace_bundle_minimum_age_seconds: int = DEFAULT_WORKSPACE_BUNDLE_MINIMUM_AGE_SECONDS,
+    scene_workspace_roots: Sequence[str | Path] = (),
+    scene_intent_root: str | Path | None = None,
+    scene_binding_root: str | Path | None = None,
+    scene_workspace_retirement_enabled: bool = False,
+    scene_workspace_retirement_alert: str | None = None,
+    scene_cloud_factory: Callable[[], Any] | None = None,
+    scene_stream_publisher: Callable[..., Any] | None = None,
+    scene_process_checker: Callable[[Path], bool] | None = None,
+    scene_inventory_cache_root: str | Path | None = None,
+    scene_hash_budget_bytes: int | None = None,
     now: Callable[[], float] = time.time,
     publisher: Callable[..., Any] | None = None,
     classifier: Callable[..., Any] = require_storage_class,
 ) -> dict[str, Any]:
-    """One timer tick: stranded rows, derived directories, blobs, offload, scratch.
+    """One timer tick: stranded rows, derived directories, blobs, offload, scratch, scenes.
 
     Stranded rows go first so the derived-directory step in the same tick no
-    longer sees them as live queue references.
+    longer sees them as live queue references. Every phase is isolated.
     """
 
     if apply and ack != RUN_ACK:
@@ -1093,42 +1294,46 @@ def run_storage_gc(
         "apply": apply,
         "skipped_roots": [],
     }
+    if scene_workspace_retirement_alert:
+        report["alerts"] = [scene_workspace_retirement_alert]
     queue_present, _absent_queue_roots = _existing(queue_roots)
     if queue_present:
-        if running_commit:
+        def stranded_phase() -> Any:
+            if not running_commit:
+                return {"status": "skipped", "reason": "running_commit_unknown"}
             stranded = build_stranded_queue_manifest(
                 queue_roots=queue_present,
                 running_commit=running_commit,
                 now=clock,
                 classifier=classifier,
             )
-            report["stranded_queue_rows"] = (
-                apply_stranded_queue_manifest(stranded, ack=STRANDED_ACK, now=clock)
-                if apply
-                else stranded
-            )
-        else:
-            report["stranded_queue_rows"] = {
-                "status": "skipped",
-                "reason": "running_commit_unknown",
-            }
-    from .control_plane_terminal_cache_pins import reconcile_terminal_cache_pins
-    report["terminal_cache_pins"] = reconcile_terminal_cache_pins(
-        pins_root=pins_root, queue_roots=queue_roots, evidence_roots=evidence_roots,
-        now=observed_at, apply=apply, classifier=classifier, hot_window_seconds=hot_window_seconds)
+            return apply_stranded_queue_manifest(stranded, ack=STRANDED_ACK, now=clock) if apply else stranded
+
+        _isolated(report, "stranded_queue_rows", stranded_phase)
+
+    def terminal_cache_pins_phase() -> Any:
+        from .control_plane_terminal_cache_pins import reconcile_terminal_cache_pins
+
+        return reconcile_terminal_cache_pins(
+            pins_root=pins_root, queue_roots=queue_roots, evidence_roots=evidence_roots,
+            now=observed_at, apply=apply, classifier=classifier, hot_window_seconds=hot_window_seconds)
+
+    _isolated(report, "terminal_cache_pins", terminal_cache_pins_phase)
     derived_present, absent = _existing(derived_roots)
     report["skipped_roots"].extend(absent)
     if derived_present:
-        derived = build_derived_directory_manifest(
-            derived_roots=derived_present,
-            pins_root=pins_root,
-            queue_roots=queue_roots,
-            minimum_age_seconds=derived_minimum_age_seconds,
-            now=clock,
-            classifier=classifier,
-        )
-        report["derived_directories"] = (
-            apply_derived_directory_manifest(
+        def derived_phase() -> Any:
+            derived = build_derived_directory_manifest(
+                derived_roots=derived_present,
+                pins_root=pins_root,
+                queue_roots=queue_roots,
+                minimum_age_seconds=derived_minimum_age_seconds,
+                now=clock,
+                classifier=classifier,
+            )
+            if not apply:
+                return derived
+            return apply_derived_directory_manifest(
                 derived,
                 ack=DERIVED_ACK,
                 pins_root=pins_root,
@@ -1136,111 +1341,152 @@ def run_storage_gc(
                 now=clock,
                 classifier=classifier,
             )
-            if apply
-            else derived
-        )
+
+        _isolated(report, "derived_directories", derived_phase)
     content_present, absent = _existing(content_store_roots)
     report["skipped_roots"].extend(absent)
     if content_present:
-        blobs = build_gc_manifest(
-            content_store_roots=content_present,
-            minimum_age_seconds=content_minimum_age_seconds,
-            now=clock,
-        )
-        report["content_store"] = apply_gc_manifest(blobs, ack=EXECUTE_ACK) if apply else blobs
+        def content_phase() -> Any:
+            blobs = build_gc_manifest(
+                content_store_roots=content_present,
+                minimum_age_seconds=content_minimum_age_seconds,
+                now=clock,
+            )
+            return apply_gc_manifest(blobs, ack=EXECUTE_ACK) if apply else blobs
+
+        _isolated(report, "content_store", content_phase)
     evidence_present, absent = _existing(evidence_roots)
     report["skipped_roots"].extend(absent)
     if evidence_present:
-        observed_text, observed_unreadable = _settlement_reference_text(settlement_roots)
-        report["evidence_settlement_reference"] = {
-            "roots": [str(Path(root).expanduser()) for root in settlement_roots],
-            "unreadable_count": observed_unreadable,
-            "protect_all": bool(observed_unreadable),
-        }
-        del observed_text
+        def evidence_phase() -> None:
+            observed_text, observed_unreadable = _settlement_reference_text(settlement_roots)
+            report["evidence_settlement_reference"] = {
+                "roots": [str(Path(root).expanduser()) for root in settlement_roots],
+                "unreadable_count": observed_unreadable,
+                "protect_all": bool(observed_unreadable),
+            }
+            del observed_text
 
-        def evidence_protected(directory: Path) -> bool:
-            # Re-read the records on every check, exactly as the queue text is.
-            # ``apply_evidence_offload`` re-checks protection immediately before it
-            # evicts each candidate; a settlement written after the manifest was
-            # built must protect its launch run at that final check too.
-            settlement_text, settlement_unreadable = _settlement_reference_text(
-                settlement_roots
+            def evidence_protected(directory: Path) -> bool:
+                # Re-read the records on every check, exactly as the queue text is.
+                # ``apply_evidence_offload`` re-checks protection immediately before it
+                # evicts each candidate; a settlement written after the manifest was
+                # built must protect its launch run at that final check too.
+                settlement_text, settlement_unreadable = _settlement_reference_text(
+                    settlement_roots
+                )
+                # Fail closed: an unreadable settlement root proves nothing is unreferenced.
+                if settlement_unreadable:
+                    return True
+                from .completed_replay_cache_retention import active_reference
+                if active_reference(directory, ignored_process_ids=(os.getpid(),)):
+                    return True
+                pinned = live_pinned_paths(pins_root, now=clock)
+                if any(Path(p) == directory or directory in Path(p).parents or Path(p) in directory.parents for p in pinned):
+                    return True
+                if settlement_reopens_beyond_retained_receipts(directory.name, settlement_text):
+                    return True
+                return directory.name in _queue_reference_text(queue_roots)
+            # Keep authenticated downloads usable after cold evidence reclamation.
+            from .task_evaluation_result_artifact_store import (
+                APPLY_ACK as RESULT_ARTIFACT_ACK, offload_result_artifacts,
             )
-            # Fail closed: an unreadable settlement root proves nothing is unreferenced.
-            if settlement_unreadable:
-                return True
-            from .completed_replay_cache_retention import active_reference
-            if active_reference(directory, ignored_process_ids=(os.getpid(),)):
-                return True
-            pinned = live_pinned_paths(pins_root, now=clock)
-            if any(Path(p) == directory or directory in Path(p).parents or Path(p) in directory.parents for p in pinned):
-                return True
-            if settlement_reopens_beyond_retained_receipts(directory.name, settlement_text):
-                return True
-            return directory.name in _queue_reference_text(queue_roots)
-        # Keep authenticated downloads usable after cold evidence reclamation.
-        from .task_evaluation_result_artifact_store import (
-            APPLY_ACK as RESULT_ARTIFACT_ACK, offload_result_artifacts,
-        )
-        report["result_artifact_offload"] = []
-        for evidence_root in evidence_present:
-            classifier(str(evidence_root), expected="evidence_cold", code="result_artifact_offload_root_class")
-            for registry_path in sorted(Path(evidence_root).glob("*/artifacts/result_delivery/artifact_registry.json")):
-                try:
-                    result = offload_result_artifacts(
-                        run_root=registry_path.parents[2],
-                        apply=apply and offload_enabled,
-                        ack=RESULT_ARTIFACT_ACK if apply and offload_enabled else "",
-                        hot_window_seconds=hot_window_seconds,
-                        protection_checker=evidence_protected, now=clock,
-                        publisher=publisher,
-                    )
-                except Exception as exc:
-                    result = {"status": "retained", "run_directory": registry_path.parents[2].name,
-                              "reason": type(exc).__name__}
-                report["result_artifact_offload"].append(result)
-        offload = build_evidence_offload_manifest(
-            evidence_roots=evidence_present,
-            hot_window_seconds=hot_window_seconds,
-            abandoned_after_seconds=abandoned_after_seconds,
-            now=clock,
-            classifier=classifier,
-            protection_checker=evidence_protected,
-        )
-        if apply and offload_enabled:
-            extra = {"publisher": publisher} if publisher is not None else {}
-            report["evidence_offload"] = apply_evidence_offload(
-                offload, ack=OFFLOAD_ACK, now=clock, protection_checker=evidence_protected, **extra
+            report["result_artifact_offload"] = []
+            for evidence_root in evidence_present:
+                classifier(str(evidence_root), expected="evidence_cold", code="result_artifact_offload_root_class")
+                for registry_path in sorted(Path(evidence_root).glob("*/artifacts/result_delivery/artifact_registry.json")):
+                    try:
+                        result = offload_result_artifacts(
+                            run_root=registry_path.parents[2],
+                            apply=apply and offload_enabled,
+                            ack=RESULT_ARTIFACT_ACK if apply and offload_enabled else "",
+                            hot_window_seconds=hot_window_seconds,
+                            protection_checker=evidence_protected, now=clock,
+                            publisher=publisher,
+                        )
+                    except Exception as exc:
+                        result = {"status": "retained", "run_directory": registry_path.parents[2].name,
+                                  "reason": type(exc).__name__}
+                    report["result_artifact_offload"].append(result)
+            offload = build_evidence_offload_manifest(
+                evidence_roots=evidence_present,
+                hot_window_seconds=hot_window_seconds,
+                abandoned_after_seconds=abandoned_after_seconds,
+                now=clock,
+                classifier=classifier,
+                protection_checker=evidence_protected,
             )
-        else:
-            report["evidence_offload"] = offload
-        report["evidence_offload_enabled"] = bool(offload_enabled)
+            if apply and offload_enabled:
+                extra = {"publisher": publisher} if publisher is not None else {}
+                report["evidence_offload"] = apply_evidence_offload(
+                    offload, ack=OFFLOAD_ACK, now=clock, protection_checker=evidence_protected, **extra
+                )
+            else:
+                report["evidence_offload"] = offload
+            report["evidence_offload_enabled"] = bool(offload_enabled)
+
+        _isolated(report, "evidence_offload", evidence_phase)
     scratch_present, absent = _existing(scratch_roots)
     report["skipped_roots"].extend(absent)
     if scratch_present:
-        scratch = build_scratch_manifest(
-            scratch_roots=scratch_present,
-            minimum_age_seconds=scratch_minimum_age_seconds,
-            now=clock,
-            classifier=classifier,
-        )
-        report["scratch_directories"] = (
-            apply_scratch_manifest(scratch, ack=SCRATCH_ACK, now=clock) if apply else scratch
-        )
+        def scratch_phase() -> Any:
+            scratch = build_scratch_manifest(
+                scratch_roots=scratch_present,
+                minimum_age_seconds=scratch_minimum_age_seconds,
+                now=clock,
+                classifier=classifier,
+            )
+            return apply_scratch_manifest(scratch, ack=SCRATCH_ACK, now=clock) if apply else scratch
+
+        _isolated(report, "scratch_directories", scratch_phase)
     bundle_present, absent = _existing(workspace_bundle_roots)
     report["skipped_roots"].extend(absent)
     if bundle_present:
-        bundles = build_workspace_bundle_manifest(
-            workspace_roots=bundle_present, queue_roots=queue_roots,
-            minimum_age_seconds=workspace_bundle_minimum_age_seconds,
-            now=clock,
-            classifier=classifier,
-            pins_root=pins_root,
-        )
-        report["workspace_bundles"] = (
-            apply_workspace_bundle_manifest(bundles, ack=WORKSPACE_BUNDLE_ACK, now=clock) if apply else bundles
-        )
+        def bundle_phase() -> Any:
+            bundles = build_workspace_bundle_manifest(
+                workspace_roots=bundle_present, queue_roots=queue_roots,
+                minimum_age_seconds=workspace_bundle_minimum_age_seconds,
+                now=clock,
+                classifier=classifier,
+                pins_root=pins_root,
+            )
+            return apply_workspace_bundle_manifest(bundles, ack=WORKSPACE_BUNDLE_ACK, now=clock) if apply else bundles
+
+        _isolated(report, "workspace_bundles", bundle_phase)
+    scene_present, absent = _existing(scene_workspace_roots)
+    report["skipped_roots"].extend(absent)
+    if scene_present:
+        def scene_phase() -> Any:
+            from .website_scene_workspace_retention import GcsCloudInventory, RetentionContext, scene_queue_roots
+
+            for root in scene_present:
+                classifier(str(root), expected="work", code="control_plane_storage_gc_scene_workspace_root_class")
+            intent_root = Path(scene_intent_root) if scene_intent_root else None
+            if scene_binding_root:
+                binding_root: Path | None = Path(scene_binding_root)
+            else:
+                binding_root = None if intent_root is None else intent_root.parent / "website-source-bindings"
+            scene_queues = scene_queue_roots(queue_roots, intent_root)
+            cache_root = Path(scene_inventory_cache_root) if scene_inventory_cache_root else None
+
+            def context_factory(storage_root: Path) -> Any:
+                # Without an intent root the reference index is unreadable, so nothing retires.
+                return RetentionContext(storage_root=storage_root, pins_root=Path(pins_root),
+                                        queue_roots=scene_queues, intent_root=intent_root,
+                                        binding_root=binding_root,
+                                        inventory_cache_root=cache_root or storage_root / ".scene-workspace-inventory")
+
+            return retire_scene_workspaces(
+                storage_roots=scene_present, context_factory=context_factory, apply=apply,
+                enabled=scene_workspace_retirement_enabled, now=observed_at,
+                cloud_factory=scene_cloud_factory or GcsCloudInventory,
+                stream_publisher=scene_stream_publisher, process_checker=scene_process_checker,
+                hash_budget_bytes=scene_hash_budget_bytes, inventory_cache_root=cache_root,
+            )
+
+        _isolated(report, "scene_workspaces", scene_phase)
+        if scene_workspace_retirement_alert and isinstance(report.get("scene_workspaces"), dict):
+            report["scene_workspaces"]["alerts"] = [scene_workspace_retirement_alert]
     report["report_digest"] = canonical_digest(report, digest_field="report_digest")
     return report
 
@@ -1283,6 +1529,8 @@ def _run_main(argv: list[str]) -> int:
         default=_env_int(DERIVED_MINIMUM_AGE_ENV, DEFAULT_DERIVED_MINIMUM_AGE_SECONDS),
     )
     parser.add_argument("--pins-root", default=os.getenv(PINS_ROOT_ENV) or None)
+    parser.add_argument("--scene-workspace-root", action="append", default=None)
+    parser.add_argument("--scene-intent-root", default=os.getenv(SCENE_INTENT_ROOT_ENV) or None)
     parser.add_argument("--scratch-root", action="append", default=None)
     parser.add_argument("--workspace-bundle-root", action="append", default=None)
     parser.add_argument(
@@ -1316,6 +1564,12 @@ def _run_main(argv: list[str]) -> int:
     pins_root = args.pins_root
     if not pins_root:
         raise ControlPlaneStorageGCError("control_plane_storage_gc_pins_root_missing")
+    retirement_enabled, retirement_alert = scene_workspace_retirement_setting()
+    if retirement_alert:
+        print(f"storage_gc_alert:{retirement_alert}", file=sys.stderr)
+    report_root = str(os.getenv(REPORT_ROOT_ENV) or "").strip()
+    if not report_root and args.report_out:
+        report_root = str(Path(args.report_out).expanduser().parent)
     report = run_storage_gc(
         content_store_roots=args.content_store_root or _split_env(CONTENT_STORE_ROOTS_ENV),
         derived_roots=args.derived_root or _split_env(DERIVED_ROOTS_ENV),
@@ -1341,12 +1595,20 @@ def _run_main(argv: list[str]) -> int:
         # about eight pile up before the first becomes eligible. Disk starved and blocked
         # the run three separate times.
         derived_minimum_age_seconds=args.derived_minimum_age_seconds,
+        scene_workspace_roots=args.scene_workspace_root or _split_env(SCENE_WORKSPACE_ROOTS_ENV),
+        scene_intent_root=args.scene_intent_root,
+        scene_binding_root=str(os.getenv(SCENE_BINDING_ROOT_ENV) or "").strip() or None,
+        scene_workspace_retirement_enabled=retirement_enabled,
+        scene_workspace_retirement_alert=retirement_alert,
+        # Per-file digests, so an hourly plan re-reads only what changed.
+        scene_inventory_cache_root=None,
         classifier=require_storage_class,
     )
     if args.report_out:
         _write_report(Path(args.report_out).expanduser(), report)
     print(json.dumps(report, indent=2, sort_keys=True))
-    return 0
+    # The whole report is written first; a failed phase still fails the unit so it is seen.
+    return 1 if report.get("phase_errors") else 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1379,13 +1641,18 @@ __all__ = [
     "DERIVED_ACK",
     "EXECUTE_ACK",
     "RUN_ACK",
+    "SCENE_INTENT_ROOT_ENV",
+    "SCENE_WORKSPACE_RETIREMENT_ENV",
+    "SCENE_WORKSPACE_ROOTS_ENV",
     "SCHEMA_VERSION",
     "apply_derived_directory_manifest",
     "apply_gc_manifest",
     "build_derived_directory_manifest",
     "build_gc_manifest",
     "main",
+    "retire_scene_workspaces",
     "run_storage_gc",
+    "scene_workspace_retirement_setting",
 ]
 
 

@@ -160,18 +160,19 @@ def require_pre_spend_preflight(
         or configured_lock_path
         or spend_admission_lock is not None
     )
-    admission_blockers = (
-        validate_spend_admission_lock(
+    load_blocker = str(admission_evidence.get("_load_blocker") or "").strip()
+    # A failed trusted-file read has no lock fields to validate. Report the
+    # actual file/actor failure instead of a cascade of missing-field errors.
+    if not admission_required:
+        admission_blockers = []
+    elif load_blocker:
+        admission_blockers = [load_blocker]
+    else:
+        admission_blockers = validate_spend_admission_lock(
             admission_evidence,
             now=datetime.now(timezone.utc),
             required_provider=provider,
         )
-        if admission_required
-        else []
-    )
-    load_blocker = str(admission_evidence.get("_load_blocker") or "").strip()
-    if load_blocker:
-        admission_blockers = sorted({*admission_blockers, load_blocker})
     preflight["spend_admission_lock"] = {
         "required": admission_required,
         "configured_path_present": bool(configured_lock_path),

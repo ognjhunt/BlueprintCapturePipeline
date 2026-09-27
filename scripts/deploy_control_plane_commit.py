@@ -30,11 +30,14 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import dataclasses
 import fcntl
 import hashlib
 import json
 import math
 import os
+import re
+import signal
 import stat
 import subprocess  # nosec B404 - fixed git/systemctl argv over validated paths
 import tempfile
@@ -43,7 +46,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 import sys
 
@@ -70,26 +73,64 @@ from blueprint_pipeline.control_plane_disk_budget import (  # noqa: E402
     DEFAULT_RESERVATION_ROOT,
     FOOTPRINT_HISTORY_DIRNAME,
     ControlPlaneDiskBudgetError,
+    DiskReservation,
     measured_footprint,
     reserve_control_plane_disk,
 )
-from blueprint_pipeline.control_plane_disk_usage import tree_usage  # noqa: E402
+from blueprint_pipeline.control_plane_disk_usage import TreeUsage, tree_usage  # noqa: E402
 from blueprint_pipeline.control_plane_storage_pins import (  # noqa: E402
     DEFAULT_PINS_ROOT,
 )
+from blueprint_pipeline.control_plane_release_leases import (  # noqa: E402
+    DEFAULT_PROTECTION_SOURCES,
+    ProtectionSources,
+    collect_release_protections,
+)
 from blueprint_pipeline.control_plane_release_retirement import (  # noqa: E402
-    ControlPlaneReleaseRetirementError,
+    DEFAULT_LOCK_TIMEOUT_SECONDS as DEFAULT_RELEASE_LOCK_TIMEOUT_SECONDS,
     EXECUTE_ACK as RELEASE_RETIREMENT_ACK,
+    RUNTIME_COMPONENTS as RELEASE_RUNTIME_COMPONENTS,
     apply_release_retirement_plan,
     build_release_retirement_plan,
+    delete_retiring_trees,
+    live_release_commits as _live_release_commits,
+    publisher_lock_roots,
+)
+from blueprint_pipeline.task_evaluation_release_reference_lock import (  # noqa: E402
+    ReleaseReferenceLockError,
+    release_reference_lock,
 )
 from blueprint_pipeline.production_cad_skill_sources import (  # noqa: E402
     DEFAULT_ROOT as DEFAULT_CAD_SKILL_SOURCE_ROOT,
     ProductionCadSkillSourcesError,
     provision_production_cad_skill_sources,
 )
+from blueprint_pipeline.active_deployed_release_admission import (  # noqa: E402
+    trusted_deploy_source,
+)
+from blueprint_pipeline.control_plane_break_glass import (  # noqa: E402
+    DEFAULT_NOTES_ROOT as DEFAULT_BREAK_GLASS_NOTES_ROOT,
+    DEPLOY_FROM_UNTRUSTED_SOURCE,
+    BreakGlassNoteError,
+    mark_reported as mark_break_glass_notes_reported,
+    note_summary as break_glass_note_summary,
+    refusal_code as break_glass_refusal_code,
+    unreported_notes as unreported_break_glass_notes,
+    verify_note as verify_break_glass_note,
+)
 
 SCHEMA_VERSION = "control_plane_commit_deploy_receipt.v1"
+_DEPLOY_ACTIVE_TRANSITION = False
+#: How long a break-glass note authorizes a deploy from an untrusted source.
+BREAK_GLASS_DEPLOY_NOTE_MAX_AGE_SECONDS = 24 * 3600
+UNTRUSTED_SOURCE_REFUSAL = (
+    "GPU admission would refuse the resulting release "
+    "(gpu_canary_deployed_release_receipt_unverified): it trusts only the "
+    "canonical source checkout or a root-owned clone directly under the "
+    "config-tools root. Deploy through the operator door, or record a "
+    "break-glass note naming " + DEPLOY_FROM_UNTRUSTED_SOURCE + " and pass it "
+    "with --break-glass-note within 24 hours."
+)
 
 #: The single-flight guard a lane holds for the whole life of a paid instance.
 #: `vast_provider_adapter` writes it before the launch API call and clears it on
@@ -209,33 +250,14 @@ CONFIGURED_CONTROLS_AUTOMATION_UNITS = (
     "blueprint-task-evaluation-configured-controls-progression.timer",
     "blueprint-task-evaluation-configured-controls-progression.path",
 )
-#: JSON under these roots names the commits that a launch may still need; a
-#: commit named anywhere here is never retired by the deploy that supersedes it.
-DEFAULT_RELEASE_RETIREMENT_REFERENCE_ROOTS = (
-    "/etc/blueprint/task-evaluation-launch-profiles",
-    # Preparation can still use an older renderer after launch queues empty.
-    # Protect the configured dependency itself, before a new attempt exists.
-    "/etc/blueprint/task-evaluation-public-scene-machinery.json",
-    "/etc/blueprint/task-evaluation-scene-preparation-bootstrap.json",
-    # Terminal evidence can still require an older renderer after its queues empty.
-    "/var/lib/blueprint/pipeline-control-plane/task-evaluation-release-retention-bindings",
-    "/var/lib/blueprint/pipeline-control-plane/standing-authorizations",
-    "/var/lib/blueprint/pipeline-control-plane/task-evaluation-launches/pending",
-    "/var/lib/blueprint/pipeline-control-plane/task-evaluation-launches/processing",
-    "/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-preparations/pending",
-    "/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-preparations/processing",
-    "/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-preparations/awaiting_source_preparation",
-    "/var/lib/blueprint/pipeline-control-plane/sam31-preparation-executions/pending",
-    "/var/lib/blueprint/pipeline-control-plane/sam31-preparation-executions/processing",
-    "/var/lib/blueprint/pipeline-control-plane/sam31-preparation-executions/waiting_external",
-    "/var/lib/blueprint/pipeline-control-plane/sam31-preparation-executions/wake-pending",
-    "/var/lib/blueprint/pipeline-control-plane/task-evaluation-episode-compilations/pending",
-    "/var/lib/blueprint/pipeline-control-plane/task-evaluation-episode-compilations/processing",
-    "/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-activations/pending",
-    "/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-activations/processing",
-    "/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canary-dispatches/pending",
-    "/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canary-dispatches/processing",
-)
+#: Where typed release protection is read: live queue envelopes, standing
+#: authorizations, retention bindings (with their sidecar leases) and the
+#: configuration files that name runtime paths.  Nothing is grepped.
+DEFAULT_RELEASE_PROTECTION_SOURCES = DEFAULT_PROTECTION_SOURCES
+#: The latest deploy's retirement summary, written under ``<state_root>/release-retention``
+#: (0644) so capacity paging can read its alerts without root.
+RELEASE_RETIREMENT_SUMMARY_NAME = "latest-deploy-retirement.json"
+RELEASE_RETIREMENT_SUMMARY_SCHEMA = "control_plane_release_retirement_summary.v1"
 DEFAULT_RELEASE_RETIREMENT_KEEP_LAST = 3
 #: The only unit kinds a release may install.  Services and their queue-watching
 #: paths stay paired, while the one fixed progression timer (and its
@@ -875,61 +897,371 @@ def _install_disk_reservation_runtime_prerequisites(
     }
 
 
+def _install_release_lease_root(lease_root: str | Path) -> dict[str, Any]:
+    """Create the directory that holds the sidecar leases of immutable bindings.
+
+    Only the root deploy writes sidecars, so the tree is root:root 0750.  A
+    symlink or a file where the tree belongs is refused rather than repaired.
+    """
+
+    root = Path(lease_root)
+    installed = os.geteuid() == 0
+    for path in (root, root / "bindings"):
+        if path.is_symlink() or (path.exists() and not path.is_dir()):
+            raise ControlPlaneDeployError("deploy_release_lease_root_unsafe")
+        path.mkdir(mode=0o750, exist_ok=True)
+        if installed:
+            os.chown(path, 0, 0)
+        path.chmod(0o750)
+    return {"status": "ready", "path": str(root / "bindings"), "mode": "0750",
+            "owner": "root" if installed else "deploying_user"}
+
+
+class _ProtectionRootCreated(Exception):
+    """Retirement created a missing protection root and must stop this time."""
+
+    def __init__(self, codes: list[str], roots: list[str]) -> None:
+        super().__init__(",".join(codes))
+        self.codes = codes
+        self.roots = roots
+
+
+def _install_release_protection_roots(
+    sources: ProtectionSources, *, account: str = DEFAULT_SERVICE_ACCOUNT
+) -> list[str]:
+    """Create, empty, the authorization and binding roots a host lacks.
+
+    Retirement treats a missing root as a source it cannot read.  On a fresh
+    host they may simply not exist yet (the host installer creates the
+    standing-authorization directory, but nothing creates the binding root
+    until a binding is published), so deploy creates them with the service
+    account's ownership (0750).  An existing root is never touched, and a
+    symlink or file in its place refuses.  A deploy that had to create one
+    retires nothing: an empty root proves nothing about what used to be in it.
+    """
+
+    created: list[str] = []
+    for root in (Path(sources.standing_authorization_dir), Path(sources.binding_root)):
+        if root.is_symlink() or (root.exists() and not root.is_dir()):
+            raise ControlPlaneDeployError("deploy_release_protection_root_unsafe")
+        if root.exists():
+            continue
+        root.mkdir(mode=0o750)
+        ids = _service_account_ids(account) if os.geteuid() == 0 else None
+        if ids is not None:
+            os.chown(root, ids[0], ids[1])
+        root.chmod(0o750)
+        created.append(str(root))
+    return created
+
+
+def _write_release_retirement_summary(
+    path: Path, result: Mapping[str, Any], *, source_commit: str, generated_at: float
+) -> dict[str, Any]:
+    """Replace the latest retirement summary atomically; never fail the deploy."""
+
+    summary = {
+        "schema_version": RELEASE_RETIREMENT_SUMMARY_SCHEMA,
+        "generated_at_epoch": generated_at,
+        "source_commit": source_commit,
+        **{key: value for key, value in result.items() if key != "summary"},
+    }
+    payload = (json.dumps(summary, indent=1, sort_keys=True) + "\n").encode("utf-8")
+    directory = path.parent
+    try:
+        if directory.is_symlink() or (directory.exists() and not directory.is_dir()):
+            raise OSError("release retention directory unsafe")
+        directory.mkdir(mode=0o750, exist_ok=True)
+        descriptor, temporary = tempfile.mkstemp(
+            prefix=f".{path.name}.", suffix=".tmp", dir=directory
+        )
+        try:
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(payload)
+                stream.flush()
+                os.fchmod(stream.fileno(), 0o644)
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(temporary)
+            raise
+    except OSError as exc:
+        return {"status": "write_failed", "path": str(path), "error": type(exc).__name__}
+    return {"status": "written", "path": str(path), "mode": "0644"}
+
+
+def _retirement_protection_summary(
+    plan: Mapping[str, Any], protections: Mapping[str, Any]
+) -> dict[str, Any]:
+    return {
+        "protected_commit_count": len(plan["protected_commits"]),
+        "protected_by_kind": {
+            kind: len(commits) for kind, commits in plan["protected_by_kind"].items()
+        },
+        "protected_tree_count": plan["protected_tree_count"],
+        "lease_protected_tree_count": plan["lease_protected_tree_count"],
+        "lapsed_count": plan["lapsed_count"],
+        "migrated_binding_count": len(protections["migrated"]),
+        "renewed_lease_count": len(protections["renewed"]),
+        "warning_count": plan["warning_count"],
+        "alerts": list(plan["alerts"]),
+    }
+
+
 def _retire_superseded_release_trees(
     *,
     release_root: str | Path,
     runtime_root: str | Path,
     active_link: str | Path,
     current_commit: str,
-    reference_roots: Sequence[str],
+    protection_sources: ProtectionSources,
     keep_last: int,
-    in_use_commits: Sequence[str] = (),
+    state_root: str | Path | None = None,
+    extra_config_files: Sequence[str | Path] = (),
+    now: Callable[[], float] = time.time,
+    proc_root: str | Path = "/proc",
+    summary_path: str | Path | None = None,
+    lock_timeout_seconds: float = DEFAULT_RELEASE_LOCK_TIMEOUT_SECONDS,
+    source_repo: str | Path | None = None,
+    defer_deletion: bool = False,
 ) -> dict[str, Any]:
     """Retire release and runtime trees this deploy has superseded.
 
     Deploy is the only event that creates per-commit trees, so it is where
-    they are retired.  Anything the plan cannot prove safe is left in place and
-    reported; a retirement failure never fails a deploy whose surfaces already
-    moved.
+    they are retired.  Every release-reference publisher takes the reference
+    lock shared on its root: queue writers, the launch-profile publisher, the
+    standing-authorization materializer, release activation and the SAM
+    prefix binding writer.  Retirement holds each of those roots exclusively
+    only while it collects typed protection, plans, re-checks live processes
+    and renames each candidate into ``<root>/.retiring``, so no reference can
+    appear in between; walking and deleting the moved trees happens after
+    the locks are released (``_finish_release_retirement``; with
+    ``defer_deletion`` the caller runs it later, outside its own locks too),
+    and leftovers of an interrupted retirement are swept before they are
+    taken.  Anything the plan cannot prove safe is left in place and
+    reported; a retirement failure never fails a deploy whose surfaces
+    already moved.
     """
 
+    roots: list[Path] = []
+    staged_roots = _release_retiring_roots(release_root, runtime_root)
+    renamed: list[dict[str, Any]] = []
+    fallback: list[dict[str, Any]] = []
+    swept: dict[str, Any] = {"deleted": [], "failed": []}
+
+    def in_use() -> list[str]:
+        return _live_release_commits(release_root, runtime_root=runtime_root, proc_root=proc_root)
+
     try:
-        plan = build_release_retirement_plan(
-            release_root=release_root,
-            runtime_root=runtime_root,
-            active_link=active_link,
-            current_commit=current_commit,
-            protected_reference_roots=list(reference_roots),
-            keep_last=keep_last,
-            in_use_commits=list(in_use_commits),
+        sources = protection_sources
+        extra = [Path(path) for path in extra_config_files if Path(path) not in sources.config_files]
+        if extra:
+            # The bootstrap this deploy installed may name a non-default
+            # machinery file; retirement must read the same configuration.
+            sources = dataclasses.replace(sources, config_files=(*sources.config_files, *extra))
+        # A previous retirement that stopped after renaming left trees that no
+        # reference can reach any more; they go before any lock is taken.
+        swept = _sweep_retiring_trees(staged_roots)
+        # The same directories publishers lock shared, plus this deploy's own
+        # state root (release activation locks it), each exactly once.
+        roots.extend(
+            publisher_lock_roots(sources, *([] if state_root is None else [state_root]))
         )
-        if plan["status"] != "dry_run":
-            return {
-                "status": "skipped",
-                "blockers": list(plan["blockers"]),
-                "plan_digest": plan["plan_digest"],
-            }
-        receipt = apply_release_retirement_plan(
-            plan,
-            ack=RELEASE_RETIREMENT_ACK,
-            active_link=active_link,
-            release_root=release_root,
-        )
-    except (ControlPlaneReleaseRetirementError, OSError, ValueError) as exc:
-        return {
+        with contextlib.ExitStack() as held:
+            for root in roots:
+                held.enter_context(
+                    release_reference_lock(
+                        root, exclusive=True, timeout_seconds=lock_timeout_seconds
+                    )
+                )
+            created_roots = _install_release_protection_roots(sources)
+            if created_roots:
+                created = [
+                    f"release_protection_root_created:{Path(path).name}" for path in created_roots
+                ]
+                raise _ProtectionRootCreated(created, created_roots)
+            _install_release_lease_root(sources.lease_root)
+            protections = collect_release_protections(sources, now=float(now()), migrate=True)
+            plan = build_release_retirement_plan(
+                release_root=release_root,
+                runtime_root=runtime_root,
+                active_link=active_link,
+                current_commit=current_commit,
+                protections=protections,
+                keep_last=keep_last,
+                now=now,
+                in_use_commits=in_use(),
+                measure_sizes=False,
+            )
+            if plan["status"] != "dry_run":
+                result: dict[str, Any] = {
+                    "status": "skipped",
+                    "blockers": list(plan["blockers"]),
+                    "plan_digest": plan["plan_digest"],
+                    "created_protection_roots": created_roots,
+                    **_retirement_protection_summary(plan, protections),
+                }
+            else:
+                receipt = apply_release_retirement_plan(
+                    plan,
+                    ack=RELEASE_RETIREMENT_ACK,
+                    active_link=active_link,
+                    release_root=release_root,
+                    in_use_now=lambda: set(in_use()),
+                )
+                renamed = list(receipt["renamed"])
+                fallback = list(receipt["direct_delete_fallback"])
+                result = {
+                    "status": "applied",
+                    "plan_digest": plan["plan_digest"],
+                    "receipt_digest": receipt["result_digest"],
+                    "unmanaged_children": list(plan["unmanaged_children"]),
+                    "skipped": list(receipt["skipped"]),
+                    "created_protection_roots": created_roots,
+                    **_retirement_protection_summary(plan, protections),
+                }
+    except _ProtectionRootCreated as created:
+        # The roots now exist for the next deploy, which retires normally.
+        result = {
+            "status": "skipped",
+            "reason": "protection_root_created",
+            "blockers": list(created.codes),
+            "created_protection_roots": list(created.roots),
+            "alerts": list(created.codes),
+        }
+    except (ReleaseReferenceLockError, ControlPlaneDeployError) as exc:
+        # Both carry typed codes, never host paths.
+        result = {"status": "blocked", "blockers": [str(exc)]}
+    except Exception as exc:  # the surfaces already moved; report, never fail the deploy
+        partial = getattr(exc, "release_retirement_receipt", None)
+        if isinstance(partial, Mapping):
+            renamed = list(partial.get("renamed") or [])
+            fallback = list(partial.get("direct_delete_fallback") or [])
+        result = {
             "status": "blocked",
             "blockers": [f"deploy_release_retirement_failed:{type(exc).__name__}"],
         }
-    return {
-        "status": "applied",
-        "plan_digest": plan["plan_digest"],
-        "receipt_digest": receipt["result_digest"],
-        "retired_commits": sorted({row["commit"] for row in receipt["removed"]}),
-        "retired_bytes": plan["candidate_bytes"],
-        "protected_commit_count": len(plan["protected_commits"]),
-        "unmanaged_children": list(plan["unmanaged_children"]),
-        "skipped": list(receipt["skipped"]),
-    }
+    result["renamed"] = renamed
+    result["direct_delete_fallback"] = fallback
+    result["retired_commits"] = sorted({str(row["commit"]) for row in (*renamed, *fallback)})
+    result["swept"] = swept["deleted"]
+    result["deletion_failures"] = list(swept["failed"])
+    if result["status"] == "blocked":
+        result["alerts"] = [f"release_retirement_blocked:{result['blockers'][0]}"]
+    result["lock_roots"] = [str(root) for root in roots]
+    if defer_deletion:
+        return result
+    return _finish_release_retirement(
+        result,
+        retiring_roots=staged_roots,
+        source_repo=source_repo,
+        current_commit=current_commit,
+        summary_path=summary_path,
+        now=now,
+    )
+
+
+def _release_retiring_roots(release_root: str | Path, runtime_root: str | Path) -> list[Path]:
+    """Every managed root whose ``.retiring`` directory holds trees moved aside."""
+
+    return [
+        Path(release_root),
+        *(Path(runtime_root) / component for component in RELEASE_RUNTIME_COMPONENTS),
+    ]
+
+
+def _sweep_retiring_trees(roots: Sequence[Path]) -> dict[str, Any]:
+    """Delete what earlier retirements moved aside; never raises."""
+
+    try:
+        return delete_retiring_trees(roots)
+    except Exception as exc:
+        return {
+            "deleted": [],
+            "deleted_bytes": 0,
+            "shared_bytes": 0,
+            "failed": [{"path": "", "reason": f"deletion_failed:{type(exc).__name__}"}],
+        }
+
+
+def _prune_release_worktrees(source_repo: str | Path) -> dict[str, Any]:
+    """Make Git forget the release worktrees retirement deleted.  Never raises.
+
+    Release trees are worktrees of the source clone.  Retirement renames and
+    deletes them without ``git worktree remove``, so their registrations stay
+    behind and ``git worktree add`` later refuses the same path as "missing
+    but already registered", which would break a rollback to a retired
+    commit.  ``git worktree prune`` drops only registrations whose
+    directories are gone.
+    """
+
+    checkout = Path(source_repo).resolve()
+    argv = ["git", "-c", f"safe.directory={checkout}", "-C", str(checkout), "worktree", "prune"]
+    try:
+        completed = subprocess.run(  # nosec B603 B607 - fixed argv, no shell
+            argv, capture_output=True, text=True, check=False, timeout=120
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {"status": "failed", "error": type(exc).__name__}
+    if completed.returncode != 0:
+        return {"status": "failed", "returncode": completed.returncode}
+    return {"status": "pruned"}
+
+
+def _finish_release_retirement(
+    result: dict[str, Any],
+    *,
+    retiring_roots: Sequence[Path],
+    source_repo: str | Path | None,
+    current_commit: str,
+    summary_path: str | Path | None,
+    now: Callable[[], float] = time.time,
+    startup_sweep: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Outside every lock: delete and measure what retirement moved aside, then report.
+
+    Runs after the publishers' locks and, in a deploy, after the paid-launch
+    gate and disk reservation are released, so no launch or publisher waits
+    while about ninety trees are deleted.  Then prunes the source clone's
+    registrations of the deleted worktrees, adds the deletion, the prune and
+    the alerts to the receipt, and writes the retirement summary.  Never
+    raises.
+    """
+
+    deletion = _sweep_retiring_trees(retiring_roots)
+    fallback = list(result.get("direct_delete_fallback") or [])
+    result["deleted"] = deletion["deleted"]
+    result["retired_bytes"] = deletion["deleted_bytes"] + sum(row["bytes"] for row in fallback)
+    result["shared_bytes"] = deletion.get("shared_bytes", 0) + sum(
+        row["shared_bytes"] for row in fallback
+    )
+    failures = [*result.get("deletion_failures", []), *deletion["failed"]]
+    if startup_sweep is not None:
+        result["startup_swept"] = list(startup_sweep["deleted"])
+        failures = [*startup_sweep["failed"], *failures]
+    result["deletion_failures"] = failures
+    result["worktree_prune"] = (
+        _prune_release_worktrees(source_repo)
+        if source_repo is not None
+        else {"status": "not_requested"}
+    )
+    alerts = list(result.get("alerts") or [])
+    rename_failures = sum(
+        1
+        for row in result.get("skipped") or []
+        if str(row.get("reason", "")).startswith(("rename_failed:", "direct_delete_failed:"))
+    )
+    if rename_failures:
+        alerts.append(f"release_retirement_rename_failed:{rename_failures}")
+    if failures:
+        alerts.append(f"release_retirement_deletion_failed:{len(failures)}")
+    result["alerts"] = alerts
+    if summary_path is not None:
+        result["summary"] = _write_release_retirement_summary(
+            Path(summary_path), result, source_commit=current_commit, generated_at=float(now())
+        )
+    return result
 
 
 _SANDBOX_DIRECTIVES = ("ReadWritePaths=", "ReadOnlyPaths=")
@@ -1702,30 +2034,6 @@ def _require_in_flight_runs_outside_units(
                 )
 
 
-def _live_release_commits(release_root: str | Path, *, proc_root: str | Path = "/proc") -> list[str]:
-    """Release commits a live process runs from (cwd or argv); never retired."""
-
-    root = Path(release_root).expanduser().resolve()
-    commits: set[str] = set()
-    for entry in Path(proc_root).iterdir():
-        if not entry.name.isdigit():
-            continue
-        candidates: list[str] = []
-        with contextlib.suppress(OSError):
-            candidates.append(os.readlink(entry / "cwd"))
-        with contextlib.suppress(OSError):
-            candidates.extend(
-                part.decode("utf-8", "replace")
-                for part in (entry / "cmdline").read_bytes().split(b"\0")
-                if part
-            )
-        for candidate in candidates:
-            path = Path(candidate)
-            if path.is_absolute() and path.is_relative_to(root) and path != root:
-                commits.add(path.relative_to(root).parts[0])
-    return sorted(commits)
-
-
 def _holder_summary(holder: str) -> str:
     """Name the run that holds the lock, not the file that records it."""
 
@@ -1812,6 +2120,43 @@ def _release_runtime_trees(runtime_root: Path, commit: str) -> set[Path]:
         }
     except OSError:
         return set()
+
+
+def _created_release_usage(
+    *,
+    created_release_checkout: bool,
+    release_path: str | Path,
+    runtime_root: Path,
+    commit: str,
+    runtime_trees_before: set[Path],
+) -> TreeUsage | None:
+    """Allocated bytes and scan completeness, or None when nothing was created.
+
+    A redeploy that reuses an existing checkout and runtime trees costs nothing
+    to stage; recording it as a zero-byte sample would only drag the role's
+    measured footprint down, so it records no sample at all.
+    """
+
+    created_trees = _release_runtime_trees(runtime_root, commit) - runtime_trees_before
+    if not created_release_checkout and not created_trees:
+        return None
+    usages = ([tree_usage(release_path)] if created_release_checkout else []) + [
+        tree_usage(path) for path in sorted(created_trees)
+    ]
+    return TreeUsage(
+        allocated_bytes=sum(usage.allocated_bytes for usage in usages),
+        unreadable=sum(usage.unreadable for usage in usages),
+    )
+
+
+def _observe_created_release_usage(
+    reservation: DiskReservation, usage: TreeUsage | None,
+) -> None:
+    if usage is None:
+        return
+    reservation.observe(usage.allocated_bytes)
+    if usage.unreadable:
+        reservation.measurement_incomplete = True
 
 
 def _surface_commit(path: Path, *, name: str) -> str:
@@ -2299,7 +2644,19 @@ def _prepare_terminal_controls_adoptions(*, release_path: str | Path, commit: st
         '--config', str(config_path), '--expected-commit', commit]
     # Retained placement validation exceeded ten minutes on the 4-vCPU host.
     # Keep the deploy locks and quiescence while the existing worker finishes.
-    result = subprocess.run(argv, check=True, capture_output=True, text=True, timeout=1800)
+    try:
+        result = subprocess.run(argv, check=True, capture_output=True, text=True, timeout=1800)
+    except subprocess.CalledProcessError as exc:
+        # The helper's stdout/stderr are captured by systemd-run, not journald.
+        # Surface only a bounded typed error; never echo a child traceback or
+        # its environment into an operator-door deployment receipt.
+        output = (exc.stderr or "") + "\n" + (exc.stdout or "")
+        codes = re.findall(r"(?:[A-Za-z0-9_.]+(?:Error|Exception)):\s*([a-z][a-z0-9_]+)", output)
+        code = codes[-1] if codes else "unclassified"
+        digest = hashlib.sha256(output.encode("utf-8", errors="replace")).hexdigest()
+        raise ControlPlaneDeployError(
+            f"deploy_terminal_controls_adoptions_failed:{code}:exit_{exc.returncode}:stderr_sha256_{digest}"
+        ) from None
     try:
         report = json.loads(result.stdout)
     except ValueError as exc:
@@ -2531,6 +2888,40 @@ def _verify_intake_runtime(
     }
 
 
+def _report_break_glass_notes(
+    receipt: dict[str, Any], *, root: str | Path, deploy_commit: str
+) -> None:
+    """Report, once, every break-glass note no earlier deploy reported.
+
+    Operators and agents changed the host by hand over SSH and nothing
+    recorded it; a note now does, and this puts every unreported note in the
+    receipt and marks it reported with this commit. It runs after every
+    surface moved and never fails the deploy, which has already happened: a
+    note that cannot be read or marked stays unreported for the next deploy,
+    and this receipt carries an alert instead.
+    """
+
+    try:
+        notes = unreported_break_glass_notes(root)
+    except Exception as exc:
+        code = break_glass_refusal_code(exc)
+        receipt["break_glass_notes"] = None
+        receipt["break_glass_notes_error"] = code
+        receipt.setdefault("alerts", []).append(f"break_glass_notes_unreadable:{code}")
+        return
+    receipt["break_glass_notes"] = [break_glass_note_summary(note) for note in notes]
+    if not notes:
+        return
+    alerts = receipt.setdefault("alerts", [])
+    alerts.append(f"break_glass_notes_reported:{len(notes)}")
+    try:
+        mark_break_glass_notes_reported(root, notes, deploy_commit=deploy_commit)
+    except Exception as exc:
+        code = break_glass_refusal_code(exc)
+        receipt["break_glass_notes_error"] = code
+        alerts.append(f"break_glass_notes_not_marked:{code}")
+
+
 def deploy_control_plane_commit(
     *,
     source_repo: str | Path,
@@ -2568,12 +2959,18 @@ def deploy_control_plane_commit(
     arm_path_units: bool = False,
     preserve_configured_controls_state: bool = False,
     disk_reservation_root: str | Path | None = None,
-    release_retirement_reference_roots: Sequence[str] = (
-        DEFAULT_RELEASE_RETIREMENT_REFERENCE_ROOTS
-    ),
+    release_protection_sources: ProtectionSources = DEFAULT_RELEASE_PROTECTION_SOURCES,
     release_retirement_keep_last: int = DEFAULT_RELEASE_RETIREMENT_KEEP_LAST,
+    break_glass_notes_root: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Move the mutable clone and the release link, then verify both."""
+    """Move the mutable clone and the release link, then verify both.
+
+    With ``break_glass_notes_root`` (the CLI always passes it), the receipt
+    also reports every break-glass note no earlier deploy reported.
+    """
+
+    global _DEPLOY_ACTIVE_TRANSITION
+    _DEPLOY_ACTIVE_TRANSITION = False
 
     if preserve_configured_controls_state and arm_path_units:
         raise ControlPlaneDeployError("deploy_conflicting_configured_controls_intent")
@@ -2673,6 +3070,11 @@ def deploy_control_plane_commit(
         provenance_receipt = dict(provenance_receipt)
         provenance_receipt.setdefault("promotion_eligible", True)
 
+    # Trees an interrupted retirement moved aside are unreachable already;
+    # deleting them first gives this deploy's own disk reservation the space.
+    # No lock is needed for that.
+    retiring_roots = _release_retiring_roots(releases, scene_configuration_runtime_root)
+    startup_sweep = _sweep_retiring_trees(retiring_roots)
     disk_reservation = None
     disk_reservation_runtime = None
     disk_reservation_estimate = None
@@ -2748,11 +3150,8 @@ def deploy_control_plane_commit(
         # Record what this deploy really stages (the release checkout it created
         # and the runtime trees it provisions) as the deploy role's footprint.
         runtime_trees_root = Path(scene_configuration_runtime_root).expanduser()
-        staged_bytes = 0
         runtime_trees_before: set[Path] = set()
         if disk_reservation is not None:
-            if staged_release.get("created_release_checkout"):
-                staged_bytes = tree_usage(staged_release["release_path"]).allocated_bytes
             runtime_trees_before = _release_runtime_trees(runtime_trees_root, source_commit)
         # Every path the new units' sandboxes name must exist before the
         # release link moves, or the first worker to start after the switch
@@ -2805,18 +3204,22 @@ def deploy_control_plane_commit(
             scene_preparation_installation = {"status": "not_configured", "bootstrap_path": str(bootstrap),
                                               "provider_mutation_performed": False}
         if disk_reservation is not None:
-            created_runtime_trees = (
-                _release_runtime_trees(runtime_trees_root, source_commit) - runtime_trees_before
+            created_usage = _created_release_usage(
+                created_release_checkout=bool(staged_release.get("created_release_checkout")),
+                release_path=staged_release["release_path"],
+                runtime_root=runtime_trees_root,
+                commit=source_commit,
+                runtime_trees_before=runtime_trees_before,
             )
-            disk_reservation.observe(
-                staged_bytes
-                + sum(tree_usage(path).allocated_bytes for path in sorted(created_runtime_trees))
-            )
+            _observe_created_release_usage(disk_reservation, created_usage)
         _mark_stage("runtime_trees_provisioned")
         agent_pre_activation_drain = _drain_agent_execution_before_release_switch(
             expected_commit=source_commit
         )
         _move_source_checkout(source, source_commit)
+        # A termination here must not strand the new active link with old
+        # services. The CLI defers SIGTERM until the release is proven live.
+        _DEPLOY_ACTIVE_TRANSITION = True
         release = stage_task_evaluation_control_plane_release(
             source_repo=source,
             source_commit=source_commit,
@@ -2950,13 +3353,28 @@ def deploy_control_plane_commit(
             runtime_root=scene_configuration_runtime_root,
             active_link=active,
             current_commit=commit,
-            reference_roots=release_retirement_reference_roots,
+            protection_sources=release_protection_sources,
             keep_last=release_retirement_keep_last,
-            in_use_commits=_live_release_commits(releases),
+            state_root=state,
+            extra_config_files=(bootstrap,),
+            source_repo=source,
+            defer_deletion=True,
         )
         _mark_stage("release_retirement")
 
-    return {
+    # The paid-launch gate and the disk reservation are released: delete what
+    # retirement moved aside without holding new launches out meanwhile.
+    release_retirement = _finish_release_retirement(
+        release_retirement,
+        retiring_roots=retiring_roots,
+        source_repo=source,
+        current_commit=commit,
+        summary_path=state / "release-retention" / RELEASE_RETIREMENT_SUMMARY_NAME,
+        startup_sweep=startup_sweep,
+    )
+    _mark_stage("release_retirement_deletion")
+
+    receipt: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "status": "deployed",
         "preserve_configured_controls_state": preserve_configured_controls_state,
@@ -3051,11 +3469,101 @@ def deploy_control_plane_commit(
             "before."
         ),
     }
+    # Last, once every surface has moved: host changes made outside the door
+    # since the previous deploy are reported here, and never fail this one.
+    if break_glass_notes_root is not None:
+        _report_break_glass_notes(
+            receipt, root=break_glass_notes_root, deploy_commit=commit
+        )
+    return receipt
+
+
+def _require_trusted_deploy_source(
+    source_repo: str | Path, break_glass_note: str | Path | None
+) -> dict[str, Any] | None:
+    """Refuse a source GPU admission would not trust, unless a fresh note allows it.
+
+    On 2026-09-26 a deploy ran from a scratch checkout. It succeeded, and GPU
+    admission then refused every sponsored step for hours, because the receipt
+    named a source admission does not trust. The check is admission's own
+    predicate, asked of the path the receipt will record, so the two cannot
+    drift. It runs before anything on the host changes; a note must be sealed,
+    at most a day old and name deploy-from-untrusted-source. Returns what the
+    receipt records about that note, or None for a trusted source.
+    """
+
+    if trusted_deploy_source(Path(source_repo).expanduser().resolve()):
+        return None
+    reason = "break_glass_note_missing"
+    if break_glass_note is not None:
+        path = Path(break_glass_note).expanduser().resolve()
+        try:
+            note = verify_break_glass_note(
+                path, max_age_seconds=BREAK_GLASS_DEPLOY_NOTE_MAX_AGE_SECONDS
+            )
+        except BreakGlassNoteError as exc:
+            reason = str(exc)
+        else:
+            if DEPLOY_FROM_UNTRUSTED_SOURCE in note["actions"]:
+                summary = break_glass_note_summary({"name": path.name, **note})
+                return {**summary, "path": str(path), "actions": list(note["actions"])}
+            reason = "break_glass_note_action_missing"
+    raise ControlPlaneDeployError(
+        f"deploy_source_repo_untrusted:{reason}: {UNTRUSTED_SOURCE_REFUSAL}"
+    )
+
+
+def _run_deploy_with_signal_cleanup(callback: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+    """Turn a transient unit stop into an exception so deploy rollback runs."""
+
+    global _DEPLOY_ACTIVE_TRANSITION
+    _DEPLOY_ACTIVE_TRANSITION = False
+    deferred: set[str] = set()
+    previous = {number: signal.getsignal(number) for number in (signal.SIGTERM, signal.SIGINT)}
+
+    def interrupted(number: int, _frame: Any) -> None:
+        if _DEPLOY_ACTIVE_TRANSITION:
+            deferred.add(signal.Signals(number).name)
+            return
+        signal.signal(number, signal.SIG_IGN)
+        raise ControlPlaneDeployError(f"deploy_interrupted:{signal.Signals(number).name}")
+
+    try:
+        for number in previous:
+            signal.signal(number, interrupted)
+        result = callback()
+        if deferred:
+            print("deploy_signal_deferred_after_activation:" + ",".join(sorted(deferred)), file=sys.stderr)
+        return result
+    finally:
+        _DEPLOY_ACTIVE_TRANSITION = False
+        for number, handler in previous.items():
+            signal.signal(number, handler)
+
+
+def _write_receipt_and_return(receipt: dict[str, Any], path: str | None) -> dict[str, Any]:
+    if path:
+        out = Path(path).expanduser().resolve()
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(receipt, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+    return receipt
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-repo", required=True)
+    parser.add_argument(
+        "--break-glass-note",
+        default=None,
+        help=(
+            "A sealed break-glass note, at most 24 hours old, whose actions "
+            "include deploy-from-untrusted-source (record it with python -m "
+            "blueprint_pipeline.control_plane_break_glass record). Required "
+            "only when --source-repo is not a source GPU admission trusts: "
+            "the canonical checkout, or a root-owned clone directly under the "
+            "config-tools root."
+        ),
+    )
     parser.add_argument("--source-commit", required=True)
     parser.add_argument("--release-root", required=True)
     parser.add_argument("--state-root", required=True)
@@ -3180,7 +3688,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        receipt = deploy_control_plane_commit(
+        # Before the deploy function, so a refused source reserves no disk,
+        # writes no provenance and moves nothing.
+        break_glass_note = _require_trusted_deploy_source(
+            args.source_repo, args.break_glass_note
+        )
+        receipt = _run_deploy_with_signal_cleanup(lambda: _write_receipt_and_return({
+            **deploy_control_plane_commit(
             source_repo=args.source_repo,
             source_commit=args.source_commit,
             release_root=args.release_root,
@@ -3216,7 +3730,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             disk_reservation_root=(
                 Path(args.state_root).expanduser() / "disk-reservations"
             ),
-        )
+            break_glass_notes_root=DEFAULT_BREAK_GLASS_NOTES_ROOT,
+            ),
+            "break_glass_note": break_glass_note,
+        }, args.receipt_out))
     except (OSError, ValueError, ControlPlaneReleaseError) as exc:
         print(
             json.dumps(
@@ -3232,10 +3749,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 2
 
-    if args.receipt_out:
-        out = Path(args.receipt_out).expanduser().resolve()
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(receipt, indent=1, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps(receipt, indent=1, sort_keys=True))
     return 0
 

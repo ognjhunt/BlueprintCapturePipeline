@@ -206,11 +206,34 @@ def _assert_release_checkout(path: Path, source_commit: str) -> None:
         )
 
 
+def _prune_worktree_registrations(source_repo: Path) -> None:
+    """Forget worktrees whose directories are gone, such as retired releases.
+
+    Deploy retirement deletes release worktrees without asking Git, so their
+    registrations outlive them, and ``worktree add`` refuses a path that is
+    "missing but already registered": a rollback to a retired commit could
+    never be staged.  Pruning drops only registrations whose directories no
+    longer exist.  Best effort: if it fails, ``worktree add`` reports why.
+    """
+
+    try:
+        subprocess.run(  # nosec B603 - fixed Git executable and argv
+            _git_argv(source_repo, "worktree", "prune"),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return
+
+
 def _create_release_checkout(*, source_repo: Path, release_path: Path, source_commit: str) -> bool:
     if release_path.exists() or os.path.lexists(release_path):
         _assert_release_checkout(release_path, source_commit)
         return False
     release_path.parent.mkdir(parents=True, exist_ok=True)
+    _prune_worktree_registrations(source_repo)
     try:
         completed = subprocess.run(  # nosec B603 - fixed Git executable and argv
             _git_argv(

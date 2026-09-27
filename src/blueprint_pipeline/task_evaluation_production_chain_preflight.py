@@ -137,7 +137,9 @@ ROOT_LITERAL = re.compile(r'"(/(?:var/lib|var/log|etc|run|opt|srv)/blueprint[^"\
 ENV_NAME = re.compile(r'"((?:BLUEPRINT|VAST|PIPELINE|OPENAI|DOCKER|GOOGLE)_[A-Z0-9_]+)"')
 SHA_IN_PATH = re.compile(r"(?<![0-9a-f])([0-9a-f]{40})(?![0-9a-f])")
 SHA8_IN_INPUT = re.compile(r"-([0-9a-f]{8})-20[0-9]{6}")
-WRITTEN_STORAGE_CLASSES = frozenset({"work", "ledger", "cache", "evidence_hot", "evidence_cold", "staging"})
+WRITTEN_STORAGE_CLASSES = frozenset(
+    {"work", "ledger", "cache", "evidence_hot", "evidence_cold", "staging", "scene_workspace"}
+)
 
 
 def _now() -> str:
@@ -1564,7 +1566,10 @@ def disk_admission_check(units: Mapping[str, dict[str, Any]]) -> list[dict[str, 
         footprints = chain_footprints(DISK_RESERVATION_ROOT)
     except disk_budget.ControlPlaneDiskBudgetError as exc:
         return [_finding("blocker", "disk_admission_configuration_invalid", blocker=str(exc))]
-    reserved, live = disk_budget.live_reservations(DISK_RESERVATION_ROOT, device=device, now=time.time())
+    try:
+        reserved, live = disk_budget.live_reservations(DISK_RESERVATION_ROOT, device=device, now=time.time())
+    except disk_budget.ControlPlaneDiskBudgetError as exc:
+        return [_finding("blocker", "disk_reservations_unreadable", blocker=str(exc))]
     available = max(0, int(usage.free) - floor - reserved)
     refused = sorted(role for role, row in footprints.items() if row["bytes"] > available)
     chain_need = sum(row["bytes"] for row in footprints.values())

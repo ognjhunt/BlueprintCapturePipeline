@@ -71,6 +71,7 @@ def validate_manifest(archive: ZipFile) -> dict[str, Any]:
         or manifest.get("runtime_entrypoint")
         != "provider_runtime/run_adp_arena_provider_runtime.sh"
         or manifest.get("candidate_ids") != expected_candidates
+        or manifest.get("private_checkpoint_cache_required") is not True
         or manifest.get("campaign_plan_digest") != campaign.get("plan_digest")
         or manifest.get("publisher_source_receipt_digest") != source.get("receipt_digest")
         or (manifest.get("runtime_source_packet") or {}).get("packet_sha256")

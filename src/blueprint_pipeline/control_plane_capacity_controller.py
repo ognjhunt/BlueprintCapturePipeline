@@ -163,9 +163,13 @@ def measure_mount(
     except disk_budget.ControlPlaneDiskBudgetError as exc:
         # The ledger refuses every reservation under this configuration too.
         return {"mount": str(path), "status": "configuration_invalid", "blocker": str(exc)}
-    reserved, live = disk_budget.live_reservations(
-        reservation_root, device=device, now=observed, pid_alive=pid_alive
-    )
+    try:
+        reserved, live = disk_budget.live_reservations(
+            reservation_root, device=device, now=observed, pid_alive=pid_alive
+        )
+    except disk_budget.ControlPlaneDiskBudgetError as exc:
+        # Reservations that cannot be read are not zero reservations.
+        return {"mount": str(path), "status": "unreadable", "blocker": str(exc)}
     available = max(0, int(usage.free) - floor - reserved)
     refused = sorted(role for role, row in footprints.items() if row["bytes"] > available)
     used_fraction = 0.0 if not usage.total else (usage.total - usage.free) / usage.total
@@ -566,9 +570,12 @@ def write_report(report_root: Path, report: Mapping[str, Any]) -> Path:
     temporary = report_root / f".latest-{os.getpid()}.tmp"
     temporary.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     os.replace(temporary, latest)
+    # history.jsonl is never pruned: it keeps each tick's measurement, while the
+    # forecast and the per-role footprints stay in latest.json.
     with (report_root / "history.jsonl").open("a", encoding="utf-8") as stream:
         for row in report.get("mounts") or []:
-            stream.write(json.dumps({k: v for k, v in row.items() if k != "forecast"}, sort_keys=True) + "\n")
+            kept = {k: v for k, v in row.items() if k not in {"forecast", "footprints"}}
+            stream.write(json.dumps(kept, sort_keys=True) + "\n")
     # latest.json and history.jsonl stay root-only; the door (the service account)
     # reads the secret-free summary, so the directory itself becomes traversable.
     _write_public_json(report_root / SUMMARY_FILENAME, capacity_summary(report))

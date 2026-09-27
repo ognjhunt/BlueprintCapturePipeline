@@ -70,7 +70,11 @@ class NativeG1JointEpisodeEnvironment:
             raise ValueError("native_g1_episode_cadence_missing") from exc
         if not math.isfinite(frequency) or frequency <= 0:
             raise ValueError("native_g1_episode_cadence_invalid")
-        if not roles or len(set(roles)) != len(roles) or not set(roles).issubset({"head", "overview"}):
+        if (
+            not roles
+            or len(set(roles)) != len(roles)
+            or not set(roles).issubset({"head", "overview"})
+        ):
             raise ValueError("native_g1_episode_camera_roles_invalid")
         calibrations: dict[str, dict[str, Any]] = {}
         devices: dict[str, str] = {}
@@ -88,7 +92,8 @@ class NativeG1JointEpisodeEnvironment:
             except (AttributeError, KeyError, IndexError, TypeError, ValueError) as exc:
                 raise ValueError("native_g1_episode_camera_calibration_missing:" + role) from exc
             if (
-                frame.ndim != 4 or frame.shape[0] != 1
+                frame.ndim != 4
+                or frame.shape[0] != 1
                 or intrinsic.shape != (3, 3)
                 or position.shape != (3,)
                 or quaternion.shape != (4,)
@@ -100,10 +105,7 @@ class NativeG1JointEpisodeEnvironment:
             ):
                 raise ValueError("native_g1_episode_camera_calibration_invalid:" + role)
             rotation = rotation_row_major_from_quaternion_xyzw(quaternion)
-            matrix = [
-                [*rotation[row * 3:row * 3 + 3], float(position[row])]
-                for row in range(3)
-            ]
+            matrix = [[*rotation[row * 3 : row * 3 + 3], float(position[row])] for row in range(3)]
             matrix.append([0.0, 0.0, 0.0, 1.0])
             calibrations[role] = {
                 "camera_model": "pinhole",
@@ -154,6 +156,11 @@ class NativeG1JointEpisodeEnvironment:
 
     @staticmethod
     def _array(value: Any) -> np.ndarray:
+        # Beta2 camera and calibration fields may also be ProxyArray. Read the
+        # expanded Torch view before moving measured bytes to the host.
+        proxy_view = getattr(value, "torch", None)
+        if proxy_view is not None:
+            value = proxy_view
         if hasattr(value, "detach"):
             value = value.detach().cpu()
         return np.asarray(value)
@@ -228,9 +235,7 @@ class NativeG1JointEpisodeEnvironment:
             "step_index": self._step_index,
             "root_position_world_m": root_position,
             "root_orientation_xyzw": root_orientation,
-            "joint_position_rad": {
-                name: positions[index] for name, index in self._index.items()
-            },
+            "joint_position_rad": {name: positions[index] for name, index in self._index.items()},
             "joint_velocity_rad_s": {
                 name: velocities[index] for name, index in self._index.items()
             },
@@ -243,16 +248,20 @@ class NativeG1JointEpisodeEnvironment:
         return build_semantic_v3_state(
             initial_root_orientation_xyzw=self._initial_root_orientation_xyzw,
             current_root_orientation_xyzw=state["root_orientation_xyzw"],
-            body_joint_positions_rad={name: state["joint_position_rad"][name]
-                                      for name in CANONICAL_BODY_JOINT_NAMES_29},
-            body_joint_velocities_rad_s={name: state["joint_velocity_rad_s"][name]
-                                        for name in CANONICAL_BODY_JOINT_NAMES_29},
+            body_joint_positions_rad={
+                name: state["joint_position_rad"][name] for name in CANONICAL_BODY_JOINT_NAMES_29
+            },
+            body_joint_velocities_rad_s={
+                name: state["joint_velocity_rad_s"][name] for name in CANONICAL_BODY_JOINT_NAMES_29
+            },
         )
 
     def step_controller_targets(self, targets_by_name: Mapping[str, float]) -> dict[str, Any]:
         if self._initial_root_orientation_xyzw is None:
             raise ValueError("native_g1_episode_reset_required")
-        if not isinstance(targets_by_name, Mapping) or set(targets_by_name) != set(PROTOCOL_V4_FULL_JOINT_ORDER):
+        if not isinstance(targets_by_name, Mapping) or set(targets_by_name) != set(
+            PROTOCOL_V4_FULL_JOINT_ORDER
+        ):
             raise ValueError("native_g1_controller_joint_inventory_invalid")
         targets: list[float] = []
         for name in PROTOCOL_V4_FULL_JOINT_ORDER:
@@ -261,7 +270,10 @@ class NativeG1JointEpisodeEnvironment:
                 lower, upper = [float(item) for item in self._limits[name]]
             except (TypeError, ValueError, OverflowError) as exc:
                 raise ValueError("native_g1_controller_joint_target_invalid") from exc
-            if not all(math.isfinite(item) for item in (value, lower, upper)) or not lower <= value <= upper:
+            if (
+                not all(math.isfinite(item) for item in (value, lower, upper))
+                or not lower <= value <= upper
+            ):
                 raise ValueError("native_g1_controller_joint_target_invalid")
             targets.append(value)
         action = self._make_action_tensor([targets], device=self._env.unwrapped.device)

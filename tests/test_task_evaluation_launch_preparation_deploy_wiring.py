@@ -172,7 +172,12 @@ def test_every_disk_reservation_worker_has_exact_systemd_write_access() -> None:
         ),
     }
     for unit, module in workers.items():
-        assert "reserve_control_plane_disk(" in text(module)
+        reservation_module = module
+        if unit == "blueprint-task-evaluation-policy-canary-dispatcher.service":
+            reservation_module = "src/blueprint_pipeline/task_evaluation_policy_canary_disk.py"
+            assert "from .task_evaluation_policy_canary_disk import canary_disk_reservation" in text(module)
+            assert "canary_disk_reservation(" in text(module)
+        assert "reserve_control_plane_disk(" in text(reservation_module)
         service = text(f"deploy/systemd/{unit}")
         assert (
             f"Environment=BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT="
@@ -413,6 +418,9 @@ def test_storage_gc_timer_pair_is_deployed_armed_and_scoped_by_storage_class() -
         EVIDENCE_ROOTS_ENV,
         QUEUE_ROOTS_ENV,
         RUN_ACK,
+        SCENE_INTENT_ROOT_ENV,
+        SCENE_WORKSPACE_RETIREMENT_ENV,
+        SCENE_WORKSPACE_ROOTS_ENV,
     )
     from blueprint_pipeline.control_plane_storage_pins import PINS_ROOT_ENV
     from blueprint_pipeline.control_plane_storage_roots import classify_path
@@ -440,11 +448,24 @@ def test_storage_gc_timer_pair_is_deployed_armed_and_scoped_by_storage_class() -
         assert classify_path(root).storage_class == "evidence_cold", root
     for root in roots(QUEUE_ROOTS_ENV):
         assert classify_path(root).storage_class == "work", root
+    # Scene retirement walks the pubsub spool (work) for scene workspaces and reads the intents.
+    assert roots(SCENE_WORKSPACE_ROOTS_ENV) == ["/var/lib/blueprint/pubsub-handoffs"]
+    for root in roots(SCENE_WORKSPACE_ROOTS_ENV):
+        assert classify_path(root).storage_class == "work", root
+        scene = classify_path(root + "/bucket/scenes/scene-1")
+        assert scene.storage_class == "scene_workspace", root
+    assert roots(SCENE_INTENT_ROOT_ENV) == [
+        "/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-intents"]
+    assert classify_path(roots(SCENE_INTENT_ROOT_ENV)[0]).storage_class == "work"
     assert roots(PINS_ROOT_ENV) == ["/var/lib/blueprint/pipeline-control-plane/storage-pins"]
-    assert not any(
-        row.startswith("Environment=BLUEPRINT_CONTROL_PLANE_EVIDENCE_OFFLOAD=")
-        for row in service.splitlines()
-    ), "offload must stay an operator opt-in from the environment file"
+    for opt_in in ("BLUEPRINT_CONTROL_PLANE_EVIDENCE_OFFLOAD", SCENE_WORKSPACE_RETIREMENT_ENV):
+        assert not any(
+            row.startswith(f"Environment={opt_in}=") for row in service.splitlines()
+        ), "offload and scene retirement stay operator opt-ins from the environment file"
+    # Retirement is its own owner decision: the example environment documents it but leaves it off.
+    example = text("deploy/systemd/pipeline-control-plane.env.example")
+    assert f"# {SCENE_WORKSPACE_RETIREMENT_ENV}=1" in example
+    assert not any(row.startswith(f"{SCENE_WORKSPACE_RETIREMENT_ENV}=") for row in example.splitlines())
     assert "Unit=blueprint-control-plane-storage-gc.service" in timer
     assert "OnUnitInactiveSec=" in timer and "Persistent=true" in timer
 

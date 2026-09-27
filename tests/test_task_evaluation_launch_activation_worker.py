@@ -176,11 +176,31 @@ def test_activation_reservation_measures_its_own_activation_directory(
     # Admission reads the shared parent; the sample measures only this job's tree.
     assert calls[0]["target_root"] == activations
     assert calls[0]["workspace"] == activations / request["activation_id"]
-    assert calls[0]["workload"] == "launch_activation"
+    # Samples are labelled by lane, and the reservation never drops below the
+    # references the request declares.
+    assert calls[0]["workload"] == "activation_" + request["lane"]
+    assert calls[0]["minimum_bytes"] > 0
     history = tmp_path / "reservations" / "history" / "launch_activation.jsonl"
     [sample] = [json.loads(line) for line in history.read_text().splitlines()]
     # The activation raised before loading its preparation: a failed sample.
-    assert sample["outcome"] == "failed" and sample["workload"] == "launch_activation"
+    assert sample["outcome"] == "failed" and sample["workload"] == "activation_" + request["lane"]
+
+
+def test_activation_terms_label_the_lane_and_floor_at_declared_references(tmp_path: Path) -> None:
+    from blueprint_pipeline.task_evaluation_activation_runtime_layers import collect_request_references
+    from blueprint_pipeline.task_evaluation_launch_activation_disk import (
+        ACTIVATION_RESERVATION_MARGIN_BYTES,
+        activation_reservation_terms,
+    )
+
+    request = activation_request(lane="native_task_arena_construction_after_destination")
+    unique = {(row["digest"], row["size_bytes"]) for row in collect_request_references(request)}
+    declared = sum(size for _digest, size in unique)
+    assert activation_reservation_terms(request, tmp_path) == {
+        "workspace": tmp_path / request["activation_id"],
+        "workload": "activation_native_task_arena_construction_after_destination",
+        "minimum_bytes": declared + ACTIVATION_RESERVATION_MARGIN_BYTES,
+    }
 
 
 def test_blocked_activations_never_pull_the_measured_footprint_down(
@@ -239,7 +259,7 @@ def test_blocked_activations_never_pull_the_measured_footprint_down(
         workspace = tmp_path / "activations" / f"completed-{index}"
         reservation = disk_budget.reserve_control_plane_disk(
             "launch_activation", target_root=tmp_path / "activations", reservation_root=ledger,
-            workspace=workspace, workload="launch_activation",
+            workspace=workspace, workload="activation_" + base["lane"],
         )
         workspace.mkdir()
         (workspace / "reference.bin").write_bytes(b"r" * 8192)

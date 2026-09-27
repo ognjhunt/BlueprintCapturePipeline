@@ -8,7 +8,7 @@ capacity controller, intake headroom and the chain preflight compute admission w
 function the ledger uses.
 
 **Branch / base / worktree:** `claude/disk-1a-measured-reservations` from `origin/main`,
-`/Users/nijelhunt_1/workspace/BlueprintCapturePipeline-disk-1a-20260926`.
+`$WORKSPACE/BlueprintCapturePipeline-disk-1a-20260926`.
 
 ## Facts this PR is built on (verified in code)
 

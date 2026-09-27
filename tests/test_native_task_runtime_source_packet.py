@@ -26,8 +26,34 @@ from blueprint_pipeline.native_task_runtime_source_packet import (
     verify_native_task_runtime_source_packet,
 )
 from blueprint_pipeline.native_task_runtime_source_provision import (
+    _required_top_level_packages,
     provision_native_task_runtime_sources,
 )
+
+
+def test_package_probe_matches_sealed_runtime_profile_and_wheels() -> None:
+    legacy_base = {"runtime_profile": None, "runtime_dependency_wheels": []}
+    legacy_names = _required_top_level_packages(legacy_base)
+    assert "isaaclab_arena" in legacy_names
+    assert not {"isaaclab_arena_g1", "onnxruntime", "coloredlogs", "humanfriendly", "flatbuffers"}.intersection(legacy_names)
+
+    current_base = {
+        "runtime_profile": "base",
+        "runtime_dependency_wheels": [
+            {"package": name}
+            for name in ("onnxruntime", "coloredlogs", "humanfriendly", "flatbuffers")
+        ],
+    }
+    base_names = _required_top_level_packages(current_base)
+    assert {"onnxruntime", "coloredlogs", "humanfriendly", "flatbuffers"}.issubset(base_names)
+    assert "isaaclab_arena_g1" not in base_names
+
+    g1 = {
+        "runtime_profile": "unitree_g1",
+        "runtime_dependency_wheels": [{"package": "onnxruntime-gpu"}],
+    }
+    g1_names = _required_top_level_packages(g1)
+    assert {"isaaclab_arena_g1", "onnxruntime"}.issubset(g1_names)
 
 
 def _git(repo: Path, *args: str) -> str:

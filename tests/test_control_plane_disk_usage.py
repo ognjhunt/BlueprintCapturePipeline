@@ -347,3 +347,52 @@ def test_owner_and_pending_directory_maps_are_bounded(tmp_path, monkeypatch):
     pending_limited = survey_usage([str(base)], **common)
     assert pending_limited["status"] == "truncated"
     assert pending_limited["entries_visited"] <= 5
+
+def test_tree_walk_stops_at_entry_budget_without_materializing_directory(
+    tmp_path, monkeypatch,
+):
+    root = tmp_path / "work"
+    root.mkdir()
+    for index in range(30):
+        (root / f"{index}.bin").write_bytes(b"x")
+    monkeypatch.setattr(usage_module, "MAX_TREE_SCAN_ENTRIES", 3, raising=False)
+    real_scandir = os.scandir
+    seen = []
+
+    class CountingScandir:
+        def __init__(self, path):
+            self.iterator = real_scandir(path)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            self.iterator.close()
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            entry = next(self.iterator)
+            seen.append(entry.name)
+            return entry
+
+    monkeypatch.setattr(usage_module.os, "scandir", CountingScandir)
+    usage = tree_usage(root)
+    assert usage.unreadable == 1
+    assert len(seen) <= 4
+
+
+def test_many_distinct_hardlinks_mark_measurement_incomplete(tmp_path, monkeypatch):
+    root = tmp_path / "work"
+    root.mkdir()
+    other_links = tmp_path / "other-links"
+    other_links.mkdir()
+    for index in range(4):
+        path = root / f"{index}.bin"
+        path.write_bytes(b"x")
+        os.link(path, other_links / path.name)
+    monkeypatch.setattr(usage_module, "MAX_TRACKED_SHARED_INODES", 2, raising=False)
+    usage = tree_usage(root)
+    assert usage.unreadable == 1
+    assert usage.shared_inodes == 2

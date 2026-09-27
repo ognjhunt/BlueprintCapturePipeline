@@ -69,6 +69,9 @@ _CREDENTIAL_SHAPED_NAME = re.compile(
     r"|\.(?:pem|key|p12|pfx|jks|keystore|kdbx|gpg|asc)(?:$|[/\\]))"
 )
 
+MAX_TREE_SCAN_ENTRIES = 100_000
+MAX_TRACKED_SHARED_INODES = 50_000
+
 
 @dataclass(frozen=True)
 class TreeUsage:
@@ -118,43 +121,55 @@ def tree_usage(path: str | Path) -> TreeUsage:
         "unreadable": 0,
     }
 
-    def account(metadata: os.stat_result) -> None:
+    def account(metadata: os.stat_result) -> bool:
         if not stat.S_ISDIR(metadata.st_mode) and metadata.st_nlink > 1:
             key = (metadata.st_dev, metadata.st_ino)
             if key in seen:
-                return
+                return True
+            if len(seen) >= MAX_TRACKED_SHARED_INODES:
+                return False
             seen.add(key)
             totals["shared"] += 1
         totals["unique"] += 1
         totals["allocated"] += allocated_bytes(metadata)
         totals["apparent"] += int(metadata.st_size)
+        return True
 
-    account(top)
+    if not account(top):
+        return TreeUsage(unreadable=1)
     if not stat.S_ISDIR(top.st_mode):
         totals["files"] += 1
     else:
         totals["directories"] += 1
         pending = [root]
-        while pending:
+        scanned_entries = 0
+        truncated = False
+        while pending and not truncated:
             directory = pending.pop()
             try:
                 with os.scandir(directory) as iterator:
-                    entries = list(iterator)
+                    for entry in iterator:
+                        scanned_entries += 1
+                        if scanned_entries > MAX_TREE_SCAN_ENTRIES:
+                            totals["unreadable"] += 1
+                            truncated = True
+                            break
+                        try:
+                            metadata = entry.stat(follow_symlinks=False)
+                        except OSError:
+                            totals["unreadable"] += 1
+                            continue
+                        if not account(metadata):
+                            totals["unreadable"] += 1
+                            truncated = True
+                            break
+                        if stat.S_ISDIR(metadata.st_mode):
+                            totals["directories"] += 1
+                            pending.append(Path(entry.path))
+                        else:
+                            totals["files"] += 1
             except OSError:
                 totals["unreadable"] += 1
-                continue
-            for entry in entries:
-                try:
-                    metadata = entry.stat(follow_symlinks=False)
-                except OSError:
-                    totals["unreadable"] += 1
-                    continue
-                account(metadata)
-                if stat.S_ISDIR(metadata.st_mode):
-                    totals["directories"] += 1
-                    pending.append(Path(entry.path))
-                else:
-                    totals["files"] += 1
     return TreeUsage(
         allocated_bytes=totals["allocated"],
         apparent_bytes=totals["apparent"],
