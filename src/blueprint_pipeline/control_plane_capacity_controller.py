@@ -274,7 +274,9 @@ def _reclaim_outlook(
         "next_reclaim_epoch": observed + GC_SUMMARY_INTERVAL_SECONDS,
         "reclaimable_bytes": total_candidate,
     })
-    reason_rows = summary.get("top_retained")
+    # The GC producer ranks reason totals before capping its per-phase display
+    # rows. Older summaries have only the capped phase rows until the next tick.
+    reason_rows = summary.get("top_retained_reasons", summary.get("top_retained"))
     reason_bytes: dict[str, int] = {}
     if isinstance(reason_rows, list):
         for row in reason_rows:
