@@ -280,7 +280,8 @@ load_mount_table() {
     table=""
     if [ -n "${BOUND_ROOTS_FILE}" ]; then table="$(cat "${BOUND_ROOTS_FILE}")"; fi
   else
-    table="$(findmnt -rn -o TARGET,MAJ:MIN,FSROOT)"
+    # A failure leaves the table without "/", which refuses below with a reason.
+    table="$(findmnt -rn -o TARGET,MAJ:MIN,FSROOT)" || true
   fi
   while read -r target device fsroot; do
     [ -n "${target}" ] || continue
@@ -625,13 +626,16 @@ require_volume_room() {
       child_mib="$(size_mib "${HOST_MOUNT}/${ROOT_VREL[i]}/${rel}")"
       have=$((have - child_mib))
     done
+    # du rounds each tree up, so the children can outweigh the whole copy.
+    if [ "${have}" -lt 0 ]; then have=0; fi
     if [ "${root_mib}" -gt "${have}" ]; then need=$((need + root_mib - have)); fi
   done
   margin=$(((need + 19) / 20))
   if [ -n "${ASSUME_VOLUME_FREE_MIB}" ]; then
     free="${ASSUME_VOLUME_FREE_MIB}"
   else
-    free="$(df -Pk "${HOST_MOUNT}" | awk 'NR == 2 { print int($4 / 1024) }')"
+    # A failure leaves no number, which refuses below with a reason.
+    free="$(df -Pk "${HOST_MOUNT}" | awk 'NR == 2 { print int($4 / 1024) }')" || true
   fi
   case "${free}" in ''|*[!0-9]*) refuse 2 "could not read the free space of ${HOST_MOUNT}" ;; esac
   if [ "${free}" -lt $((need + margin)) ]; then
@@ -823,9 +827,10 @@ swap_root() {  # index
   fi
   # Two renames and a mount.  Intake stays up and may recreate a cache root it
   # writes; if it does so in between, the second rename fails instead of landing
-  # inside it.
-  rename_to "${root}" "${kept}"
-  rename_to "${STAGED}" "${root}"
+  # inside it.  Either failure leaves the swap half done, so SWAPPING stays set.
+  rename_to "${root}" "${kept}" || refuse 2 "could not move ${root} aside to ${kept}" "${root} itself is unchanged"
+  rename_to "${STAGED}" "${root}" ||
+    refuse 2 "could not put the new mount point in place at ${root}" "the original is at ${kept}, and the mount point at ${STAGED}"
   STAGED=""
   bind_at "${dest}" "${host}"
   fstab_install

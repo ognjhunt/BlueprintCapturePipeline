@@ -30,8 +30,13 @@ BULK_WORK_ROOTS = frozenset(
 )
 
 
-def _run(*args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(["bash", str(SCRIPT), *args], capture_output=True, text=True, check=False, timeout=120)
+def _run(*args: str, path_first: Path | None = None, **env: str) -> subprocess.CompletedProcess:
+    environment = {**os.environ, **env}
+    if path_first is not None:
+        environment["PATH"] = f"{path_first}:{os.environ['PATH']}"
+    return subprocess.run(
+        ["bash", str(SCRIPT), *args], capture_output=True, text=True, check=False, timeout=120, env=environment
+    )
 
 
 def _state(tmp_path: Path) -> Path:
@@ -616,3 +621,107 @@ def test_every_glob_in_the_declared_hot_evidence_is_quoted() -> None:
     assert _unquoted_globs(SCRIPT.read_text(encoding="utf-8"), "EVIDENCE_HOT_ON_VOLUME") == []
     example = "EVIDENCE_HOT_ON_VOLUME=(\n  'spool/*/quoted.json'\n  spool/*/bare.json\n)\n"
     assert _unquoted_globs(example, "EVIDENCE_HOT_ON_VOLUME") == ["spool/*/bare.json"]
+
+
+def test_apply_refuses_with_a_reason_when_df_cannot_answer(tmp_path: Path) -> None:
+    _state(tmp_path)
+    _stub(tmp_path, "df", 'echo "df: cannot read the volume" >&2\nexit 1\n')
+
+    refused = _run("--device", "/dev/null", "--root-prefix", str(tmp_path), "--apply", "--ack", ACK, path_first=tmp_path / "bin")
+
+    assert refused.returncode == 2, refused.stderr + refused.stdout
+    assert "could not read the free space" in refused.stderr
+    assert not (tmp_path / "mnt" / "blueprint-work" / "task-evaluation-inputs").exists(), "nothing was copied"
+
+
+def test_the_mount_table_refuses_with_a_reason_when_findmnt_cannot_answer(tmp_path: Path) -> None:
+    functions = ("refuse", "load_mount_table", "is_mount_point")
+    setup = (
+        'ROOT_PREFIX=""; BOUND_ROOTS_FILE=""; MOUNT=/mnt/blueprint-work\n'
+        'MT_TARGET=(); MT_DEVICE=(); MT_FSROOT=(); VOLUME_DEVICE=""; VOLUME_FSROOT=""\n'
+    )
+    check = 'load_mount_table; echo "volume=${VOLUME_DEVICE} ${VOLUME_FSROOT}"\n'
+
+    _stub(tmp_path, "findmnt", 'printf "/ 252:1 /\\n/mnt/blueprint-work 8:16 /\\n/var/lib/blueprint/pubsub-handoffs 8:16 /pubsub-handoffs\\n"\n')
+    read = _call(tmp_path, functions, setup + check)
+    _stub(tmp_path, "findmnt", 'echo "findmnt: cannot read the mount table" >&2\nexit 1\n')
+    failed = _call(tmp_path, functions, setup + check)
+
+    assert read.returncode == 0 and "volume=8:16 /" in read.stdout, read.stderr
+    assert failed.returncode == 2 and "could not read the mount table" in failed.stderr, failed.stderr
+
+
+def test_a_failed_unmount_binds_back_parents_before_the_binds_inside_them(tmp_path: Path) -> None:
+    state, volume, bound = _bound_state(tmp_path)
+    levels = [
+        "task-evaluation-inputs/prepared-references",  # the shallowest: will not unmount
+        "task-evaluation-inputs/prepared-references/content-addressed",
+        "task-evaluation-inputs/prepared-references/content-addressed/sha256",
+    ]
+    for rel in levels[1:]:
+        (state / rel).mkdir(parents=True)
+        (volume / rel).mkdir(parents=True)
+    lines = [f"/var/lib/blueprint/{levels[0]} busy", *(f"/var/lib/blueprint/{rel}" for rel in levels[1:])]
+    bound.write_text("".join(f"{line}\n" for line in lines), encoding="utf-8")
+
+    applied = _run(*_hermetic(tmp_path, bound), "--apply", "--ack", ACK)
+
+    assert applied.returncode == 2, applied.stderr + applied.stdout
+    assert f"could not unmount /var/lib/blueprint/{levels[0]}" in applied.stderr
+    out = applied.stdout.splitlines()
+    # Down deepest first, back up shallowest first: a bind inside a parent that is
+    # mounted later would be hidden under it.
+    assert [line.split()[1] for line in out if line.startswith("unbound")] == [str(state / levels[2]), str(state / levels[1])]
+    assert [line.split()[2] for line in out if line.startswith("bound back")] == [str(state / levels[1]), str(state / levels[2])]
+    assert sorted(bound.read_text(encoding="utf-8").splitlines()) == sorted(lines)
+
+
+# mv that refuses one rename of a swap (FAIL_RENAME=aside: the root to its kept
+# name; into-place: the new mount point to the root) and is the real mv otherwise.
+_MV = """src=; dst=
+for arg in "$@"; do src=$dst; dst=$arg; done
+case "$FAIL_RENAME:$src:$dst" in
+  aside:*:*.migrated-to-volume|into-place:*.new-mount-point:*) echo "mv: cannot rename $src" >&2; exit 1 ;;
+esac
+exec /bin/mv "$@"
+"""
+
+
+@pytest.mark.parametrize(
+    ("failing", "reason", "survivor"),
+    [
+        ("aside", "could not move", "task-evaluation-inputs/prepared-references/payload.bin"),
+        ("into-place", "could not put the new mount point in place", "task-evaluation-inputs.migrated-to-volume/prepared-references/payload.bin"),
+    ],
+)
+def test_a_failed_swap_rename_refuses_with_a_reason_and_keeps_the_bytes(
+    tmp_path: Path, failing: str, reason: str, survivor: str
+) -> None:
+    state = _state(tmp_path)
+    _stub(tmp_path, "mv", _MV)
+
+    applied = _run(
+        "--device", "/dev/null", "--root-prefix", str(tmp_path), "--apply", "--ack", ACK,
+        path_first=tmp_path / "bin", FAIL_RENAME=failing,
+    )
+
+    assert applied.returncode == 2, applied.stderr + applied.stdout
+    assert f"refusing: {reason}" in applied.stderr
+    assert (state / survivor).read_bytes() == b"x" * 4096
+    assert "leaving the worker units stopped" in applied.stderr, "a half-done swap keeps writers away"
+
+
+def test_the_room_check_counts_the_old_binds_bytes_on_the_volume_once(tmp_path: Path) -> None:
+    state, volume, bound = _bound_state(tmp_path)
+    # A second old bind: du rounds each tree up to a whole MiB, so the two
+    # children (1 MiB each) outweigh the whole volume copy (1 MiB).
+    (state / "task-evaluation-inputs" / "compiled-episodes").mkdir()
+    (volume / "task-evaluation-inputs" / "compiled-episodes").mkdir()
+    (volume / "task-evaluation-inputs" / "compiled-episodes" / "payload.bin").write_bytes(b"c" * 4096)
+    with bound.open("a", encoding="utf-8") as handle:
+        handle.write("/var/lib/blueprint/task-evaluation-inputs/compiled-episodes\n")
+
+    applied = _run(*_hermetic(tmp_path, bound), "--assume-volume-free-mib", "2", "--apply", "--ack", ACK)
+
+    assert applied.returncode == 0, applied.stderr + applied.stdout
+    assert "volume room: 2 MiB free for 1 MiB plus 1 MiB (5 %)" in applied.stdout
