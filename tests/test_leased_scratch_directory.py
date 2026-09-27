@@ -235,3 +235,27 @@ def test_create_capability_preserves_atomic_creation_and_no_overwrite(tmp_path):
         handle.mkdir("payload")
     with pytest.raises(leases.LaneScratchError, match="exists"):
         create_leased_lane_scratch("arena", "attempt", **options)
+
+
+@pytest.mark.parametrize("failed_flag", [leases.fcntl.LOCK_EX, leases.fcntl.LOCK_UN])
+def test_coordination_lock_descriptor_closes_when_flock_raises(tmp_path, monkeypatch, failed_flag):
+    root, _folder = _fixture(tmp_path)
+    opened, original_open, original_flock = [], os.open, leases.fcntl.flock
+
+    def tracked_open(*args, **kwargs):
+        fd = original_open(*args, **kwargs)
+        opened.append(fd)
+        return fd
+
+    def injected_flock(fd, flag):
+        if flag == failed_flag:
+            raise OSError("injected flock failure")
+        return original_flock(fd, flag)
+
+    monkeypatch.setattr(os, "open", tracked_open)
+    monkeypatch.setattr(leases.fcntl, "flock", injected_flock)
+    with pytest.raises(leases.LaneScratchError):
+        _open(root)
+    for fd in opened:
+        with pytest.raises(OSError):
+            os.fstat(fd)
