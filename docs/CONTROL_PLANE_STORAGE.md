@@ -593,8 +593,11 @@ way (0644 in the 0755 directory). It holds the tick's status and
 `removed_or_offloaded_bytes` and `retained_by_reason`, with null bytes where a
 phase counts without sizing. `top_retained` lists the ten reasons that keep the
 most bytes. It names no run, file or host path except the configured roots in
-`skipped_roots`, and stays under 256 KiB. Read it first:
+`skipped_roots`, and stays under 256 KiB. If it cannot be built or written, the
+previous tick's `summary.json` is removed, so a stale summary never sits beside
+a newer `latest.json`, and the unit fails. Read it first:
 `python3 scripts/operator_door.py cat /var/lib/blueprint/pipeline-control-plane/storage-gc/summary.json`.
+A missing summary means read `latest.json`.
 
 Restore an offloaded run with
 `python -c 'from blueprint_pipeline.control_plane_evidence_offload import restore_offloaded_evidence as r; r(pointer_path=..., destination=...)'`;

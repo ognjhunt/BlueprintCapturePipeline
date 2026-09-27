@@ -303,3 +303,72 @@ def test_the_summary_stays_small_and_names_only_typed_reasons() -> None:
     # A report written before the tick recorded its opt-ins does not claim they were off.
     assert summary["opt_in"] == {
         "evidence_offload": None, "scene_workspace_retirement": None, "replay_cache_retention": None}
+
+
+def _quiet_tick(monkeypatch) -> None:
+    """Every configured root empty: a tick that only reconciles an empty pin ledger."""
+
+    from blueprint_pipeline import control_plane_storage_gc as gc_module
+
+    for name in (gc_module.CONTENT_STORE_ROOTS_ENV, gc_module.DERIVED_ROOTS_ENV, gc_module.PLAN_ONLY_DERIVED_ROOTS_ENV,
+                 gc_module.QUEUE_ROOTS_ENV, gc_module.EVIDENCE_ROOTS_ENV, gc_module.SETTLEMENT_ROOTS_ENV,
+                 gc_module.SCRATCH_ROOTS_ENV, gc_module.WORKSPACE_BUNDLE_ROOTS_ENV, gc_module.SCENE_WORKSPACE_ROOTS_ENV,
+                 "BLUEPRINT_CONTROL_PLANE_GC_REPLAY_PARENT_ROOTS", gc_module.EVIDENCE_OFFLOAD_ENV,
+                 gc_module.SCENE_WORKSPACE_RETIREMENT_ENV, "BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_RETENTION"):
+        monkeypatch.setenv(name, "")
+    monkeypatch.setattr(gc_module, "require_storage_class", _noclass)
+
+
+@pytest.mark.parametrize("failure", ["build", "write"])
+def test_a_failed_summary_withdraws_the_previous_ticks(tmp_path, monkeypatch, capsys, failure) -> None:
+    """A summary that cannot be built or written must not leave the previous tick's
+    summary.json beside the new latest.json: the door reads the summary first, and a
+    plausible stale one is fabricated state. ENOSPC between the two writes is the likely
+    trigger, under the very disk pressure this GC exists for. latest.json stays, and the
+    unit fails so the failure is seen."""
+
+    from blueprint_pipeline import control_plane_storage_gc as gc_module
+
+    _quiet_tick(monkeypatch)
+    report_dir = tmp_path / "storage-gc"
+    report_dir.mkdir()
+    (report_dir / "summary.json").write_text(json.dumps(
+        {"schema_version": reasons.SUMMARY_SCHEMA_VERSION, "status": "applied", "top_retained": []}), encoding="utf-8")
+    if failure == "build":
+        def broken(_report):
+            raise RuntimeError("summary_projection_bug")
+
+        monkeypatch.setattr(gc_module, "build_storage_gc_summary", broken)
+    else:
+        real_dump = json.dump
+
+        def full_disk(value, stream, **kwargs):
+            if isinstance(value, dict) and value.get("schema_version") == reasons.SUMMARY_SCHEMA_VERSION:
+                raise OSError(errno.ENOSPC, "No space left on device")
+            return real_dump(value, stream, **kwargs)
+
+        monkeypatch.setattr(json, "dump", full_disk)
+
+    code = gc_module.main(["run", "--pins-root", str(tmp_path / "pins"),
+                           "--report-out", str(report_dir / "latest.json")])
+
+    assert code == 1
+    printed = json.loads(capsys.readouterr().out)
+    latest = json.loads((report_dir / "latest.json").read_text(encoding="utf-8"))
+    assert latest["schema_version"] == "control_plane_storage_gc_run.v1"
+    assert latest["report_digest"] == printed["report_digest"]
+    assert sorted(path.name for path in report_dir.iterdir()) == ["latest.json"]
+
+
+def test_a_report_named_summary_json_is_not_overwritten_by_its_summary(tmp_path, monkeypatch, capsys) -> None:
+    from blueprint_pipeline import control_plane_storage_gc as gc_module
+
+    _quiet_tick(monkeypatch)
+    report = tmp_path / "storage-gc" / "summary.json"
+
+    assert gc_module.main(["run", "--pins-root", str(tmp_path / "pins"), "--report-out", str(report)]) == 0
+
+    written = json.loads(report.read_text(encoding="utf-8"))
+    assert written["schema_version"] == "control_plane_storage_gc_run.v1"
+    assert written["report_digest"] == json.loads(capsys.readouterr().out)["report_digest"]
+    assert sorted(path.name for path in report.parent.iterdir()) == ["summary.json"]

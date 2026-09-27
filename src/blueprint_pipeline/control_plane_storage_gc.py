@@ -1603,8 +1603,10 @@ def _write_summary(report_path: Path, report: Mapping[str, Any]) -> bool:
     """Publish ``summary.json`` beside the report exactly as the report was published.
 
     It only projects a report already written, so a failure is traced to stderr
-    and fails the unit without costing the report. A report itself named
-    ``summary.json`` is never overwritten by its summary.
+    and fails the unit without costing the report, and the previous tick's
+    summary is withdrawn: a stale summary beside a newer report would be
+    fabricated state. A report itself named ``summary.json`` is never
+    overwritten by its summary.
     """
 
     if report_path.name == SUMMARY_FILENAME:
@@ -1613,8 +1615,29 @@ def _write_summary(report_path: Path, report: Mapping[str, Any]) -> bool:
         _write_report(report_path.with_name(SUMMARY_FILENAME), build_storage_gc_summary(report))
     except Exception:  # noqa: BLE001 - the full report is already written
         traceback.print_exc(file=sys.stderr)
+        _withdraw_summary(report_path.parent)
         return False
     return True
+
+
+def _withdraw_summary(directory: Path) -> None:
+    """Best effort: unlink ``summary.json`` by name through the report directory's descriptor."""
+
+    try:
+        directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return
+    except OSError:
+        traceback.print_exc(file=sys.stderr)
+        return
+    try:
+        os.unlink(SUMMARY_FILENAME, dir_fd=directory_fd)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        traceback.print_exc(file=sys.stderr)
+    finally:
+        os.close(directory_fd)
 
 
 def _run_main(argv: list[str]) -> int:
