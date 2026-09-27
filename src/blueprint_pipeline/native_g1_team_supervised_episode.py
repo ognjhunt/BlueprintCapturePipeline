@@ -16,6 +16,7 @@ from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
 from .native_g1_shared_scene_episode import team_policy_candidate_id
+from .native_g1_team_policy_approval import validate_g1_team_policy_approval
 from .native_g1_team_runtime_session import open_g1_team_runtime_session
 from .native_g1_team_scored_scene_episode import run_g1_team_scored_scene_episode
 from .task_evaluation_packet_planning_setup import validate_packet_planning_setup
@@ -32,7 +33,7 @@ def run_g1_team_supervised_episode(
     profile: Mapping[str, Any],
     trusted_setup: Mapping[str, Any],
     authenticated_owner: Mapping[str, str],
-    approved_binding: Mapping[str, Any],
+    operator_approval: Mapping[str, Any],
     sonic_bridge: Any,
     objective_id: str,
     max_steps: int,
@@ -52,6 +53,13 @@ def run_g1_team_supervised_episode(
     setup = validate_packet_planning_setup(trusted_setup)
     bound = validate_team_policy_delivery_profile(
         profile, trusted_setup=setup, authenticated_owner=authenticated_owner
+    )
+    approval = validate_g1_team_policy_approval(
+        operator_approval,
+        profile=bound,
+        trusted_setup=setup,
+        authenticated_owner=authenticated_owner,
+        objective_id=objective_id,
     )
     plan = getattr(built, "plan", None)
     if (
@@ -80,7 +88,7 @@ def run_g1_team_supervised_episode(
             profile=bound,
             trusted_setup=setup,
             authenticated_owner=authenticated_owner,
-            approved_binding=approved_binding,
+            approved_binding=approval["runtime_binding"],
             output_dir=output_dir / "runtime",
             credential=credential,
             fetcher=fetcher,
@@ -138,6 +146,7 @@ def run_g1_team_supervised_episode(
         "objective_id": objective_id,
         "delivery_mode": bound["delivery"]["mode"],
         "source_setup_digest": setup["setup_digest"],
+        "operator_approval_digest": approval["approval_digest"],
         "scene_plan_digest": plan["plan_digest"],
         "synthetic_conformance_digest": (
             session.conformance.get("receipt_digest") if session is not None else None

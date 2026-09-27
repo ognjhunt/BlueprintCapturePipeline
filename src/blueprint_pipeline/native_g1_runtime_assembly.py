@@ -33,6 +33,13 @@ from .native_g1_sonic_cuda_runtime import require_sonic_cuda_runtime
 from .native_g1_shared_scene_episode import run_g1_built_scene_policy_episode
 
 
+# The pinned upstream SONIC provider initializes its semantic-v3 path only
+# with input_source=vla and a LeRobot URL. The team policy is queried by
+# Blueprint's shared scene episode, so this loopback identity is never used
+# for inference and its client is removed immediately after construction.
+_TEAM_UNUSED_LOCAL_POLICY_URL = "http://127.0.0.1:1"
+
+
 def _prime_sonic_native_root(built: Any, env: Any, plan: Mapping[str, Any]) -> SonicWxyzEnvironmentView:
     """Read the real initialized articulation before starting an official provider."""
 
@@ -130,6 +137,44 @@ def build_pinned_g1_sonic_bridge(
         decoder_sha256=decoder_sha256,
         joint_limits=limits,
     )
+
+
+def build_pinned_g1_team_sonic_bridge(
+    *,
+    built: Any,
+    source_path: Path,
+    encoder_path: Path,
+    encoder_sha256: str,
+    decoder_path: Path,
+    decoder_sha256: str,
+) -> NativeG1OfficialSonicTargetBridge:
+    """Use pinned SONIC targets for direct team actions with no local VLA server.
+
+    The exact upstream source is hash checked by the base builder. At that
+    pinned revision, the URL only constructs a client; it does not issue a
+    request. The shared scene episode calls targets_for_action with the team
+    client's already returned semantic action, never upstream get_action.
+    """
+
+    bridge = build_pinned_g1_sonic_bridge(
+        built=built,
+        source_path=source_path,
+        encoder_path=encoder_path,
+        encoder_sha256=encoder_sha256,
+        decoder_path=decoder_path,
+        decoder_sha256=decoder_sha256,
+        server_url=_TEAM_UNUSED_LOCAL_POLICY_URL,
+    )
+    provider = bridge.provider
+    if (
+        getattr(provider, "_use_lerobot_vla", None) is not True
+        or getattr(provider, "_lerobot_server_url", None) != _TEAM_UNUSED_LOCAL_POLICY_URL
+        or getattr(provider, "_lerobot_http_client", None) is None
+    ):
+        raise ValueError("g1_team_sonic_external_action_binding_invalid")
+    provider._lerobot_http_client = None
+    provider._lerobot_server_url = ""
+    return bridge
 
 
 def run_g1_supervised_built_scene_episode(
