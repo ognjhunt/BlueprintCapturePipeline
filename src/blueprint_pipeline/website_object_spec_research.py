@@ -43,7 +43,7 @@ from .local_reconstruction_adapters import _sha256_file
 SCHEMA_VERSION = "website_object_spec.v1"
 ENABLE_ENV = "BLUEPRINT_WEBSITE_OBJECT_SPEC_AGENT"
 MODEL = "gpt-6-sol"  # Same family as the image repair agent.
-# 3: category-standard figures and kept quotes (2026-09-27 website dishwasher incident).
+# 3: category-standard figures and kept quotes (2026-09-27 website capture).
 REVISION = 3
 CAPABILITY = "website_object_spec_researcher"
 MAX_TURNS = 8
@@ -69,8 +69,8 @@ MAX_COST_USD = 2.0
 DIMENSION_CONFLICT_TOLERANCE = 0.30
 QUOTE_VALUE_TOLERANCE = 0.005
 MATCHES = ("exact_model", "model_family", "brand_category", "comparable_class")
-# A published standard or typical size for the object's CATEGORY (a US built-in
-# dishwasher is 24 in wide), not for any product: sizes only, never weights.
+# A published standard or typical size for the object's CATEGORY (for example a
+# standard cabinet cutout width), not for any product: sizes only, never weights.
 CATEGORY_STANDARD = "category_standard"
 LENGTH_UNITS = {"mm": 0.001, "cm": 0.01, "m": 1.0, "in": 0.0254}
 MASS_UNITS = {"g": 0.001, "kg": 1.0, "lb": 0.45359237}
@@ -111,7 +111,8 @@ INSTRUCTIONS = (
     "Give every figure about the identified product (or comparable) basis=identified_product. When no exact-model, "
     "model-family or brand figures give the overall width, height and depth, including when the make is unknown, "
     "also research the published standard or typical overall and cutout dimensions for the object's category "
-    "(for example a US built-in dishwasher) from authoritative sources: manufacturer installation guides, "
+    "(for example the standard size of a built-in appliance or fixture of that category in the "
+    "market the footage suggests) from authoritative sources: manufacturer installation guides, "
     "standards bodies, or major retailers' category buying guides. Give those basis=category_standard, only "
     "overall_* and cutout_* sizes, and a published range as [low, high]; they describe the category, never "
     "this unit. For each figure give the value and unit as printed, the "
@@ -150,9 +151,9 @@ class ObjectSpecFindings(BaseModel):
 def agent_gate() -> str | None:
     """None when the agent may run; ``agent_disabled`` only when explicitly switched off.
 
-    Owner decision, 2026-09-27 website dishwasher incident: an off-by-default
-    agent left a labelled Whirlpool unresearched and the build was sized from a
-    short video estimate. This agent does not need the global
+    Owner decision, 2026-09-27: an off-by-default agent left a labelled,
+    identifiable product unresearched and the build was sized from a short
+    video estimate. This agent does not need the global
     ``BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS`` opt-in: it is one bounded run
     per identity (turns, fetches, bytes, wall clock, ``MAX_COST_USD``), fetches
     only public HTTPS pages, approves none of its own figures, and every run is
@@ -633,7 +634,7 @@ def published_body_size(object_spec: Mapping[str, Any] | None, *,
                         max_relative_half_range: float) -> dict[str, Any] | None:
     """The best verified published overall size that may size the build; else None (keep the estimate).
 
-    2026-09-27 website dishwasher incident: a built-in dishwasher (about
+    2026-09-27 website capture: a standard built-in assembly (about
     0.61 x 0.60 x 0.86 m) was built 0.43 x 0.43 x 0.82 m from a video estimate.
     Precedence: exact_model > model_family > brand_category (the one verified
     level of the identified product's figures) > category_standard > the

@@ -88,8 +88,8 @@ PRISMATIC_PROMPT = "The task part slides; set hinge_edge to null. "
 RESPONSE_SHAPE = ('Return JSON only: {"hinge_edge": ..., "task_part_components": [...], "frames": '
                   '[{"frame_id": ..., "visible_parts": [...], "task_part_state": ..., "view": ..., '
                   '"label_text": [...]}]}. ')
-# 2026-09-27 website dishwasher incident: the stylized "Whirlpool" wordmark on
-# the closed door's control strip was plain in the footage, yet label_text came
+# 2026-09-27 website capture: a stylized brand wordmark on the closed task
+# part's front was plain in the footage, yet label_text came
 # back empty for every frame: one field of a 12-frame part batch at 2048 px.
 # One focused read of the likeliest closed front views, each cropped to the
 # subject at full resolution, asks for printed identity text and nothing else.

@@ -92,8 +92,8 @@ def support_under(mesh: Any, lower: Sequence[float], upper: Sequence[float], *,
             "basis": "reconstructed_triangle_footprint_contacts", "physical_measurement": False}
 
 
-#: The unobserved lowest band of a built-in, floor-standing assembly (a
-#: dishwasher's toe kick and lower door) is at most this tall.
+#: The unobserved lowest band of a built-in, floor-standing assembly (a toe
+#: kick and the bottom of a front panel) is at most this tall.
 FLOOR_GROUNDING_MAX_GAP_M = 0.35
 #: How far around the footprint the floor it stands on is looked for.
 FLOOR_SEARCH_MARGIN_M = 0.6
