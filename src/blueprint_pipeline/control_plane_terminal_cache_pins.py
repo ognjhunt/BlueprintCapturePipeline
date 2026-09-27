@@ -25,10 +25,6 @@ candidates are listed with ``"enabled": false``:
   admission checks that authorization, which the activation request dates
   with no maximum; past both, it can never start. Without an activation queue
   root this proof is off.
-
-Both activation proofs look for a run under every name an activation can
-launch as (``_launch_evidence_names``): its id, ``<id>-launch``, and the bounded
-launch id the launch paths derive for a long id, with their own functions.
 * ``unconsumed_stale_pin``: a preparation or compilation pin that no live pin
   depends on, created more than a week and a day ago, whose paths are all
   ``cache``, and whose preparation no activation can take any more: its sealed
@@ -37,6 +33,9 @@ launch id the launch paths derive for a long id, with their own functions.
   and never re-fetches them, so age alone proves nothing: a materialized
   preparation waits for its activation intent with no age limit.
 
+Both activation proofs look for a run under every name an activation can
+launch as (``_launch_evidence_names``): its id, ``<id>-launch``, and the bounded
+launch id the launch paths derive for a long id, with their own functions.
 Every proof keeps the six-hour minimum pin age, the dependency closure (a pin
 is released only when no queue row or process references any pin in it), and
 a re-derivation at the mutation edge. The extended proofs also count a row
@@ -72,8 +71,9 @@ _PIN_PATH_CLASSES = ("cache", "work", "evidence_cold")
 MINIMUM_PIN_AGE_SECONDS = 6 * 3600
 #: Report rows per list; production holds about 142 live pins. Counts always cover every pin.
 _MAX_ROWS = 200
-#: A shared mutation window is valid for at most a week and launch re-validates
-#: it, so a day past that nothing it released can still be consumed.
+#: A shared mutation window is valid for at most a week; the proofs wait a day
+#: past it, and past the activation's standing authorization, which launch
+#: admission checks.
 MAXIMUM_MUTATION_WINDOW_SECONDS = 604_800
 LAPSE_GRACE_SECONDS = 86_400
 LAPSE_SECONDS = MAXIMUM_MUTATION_WINDOW_SECONDS + LAPSE_GRACE_SECONDS
