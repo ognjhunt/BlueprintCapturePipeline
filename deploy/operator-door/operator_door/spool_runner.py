@@ -13,11 +13,14 @@ spin; only ``pending/`` is writable by the door, everything after it is root's.
 from __future__ import annotations
 
 import datetime as _dt
+import hashlib
 import json
 import os
 import secrets
 import tempfile
 import time
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -52,10 +55,10 @@ def _write_result(results: Path, request_id: str, payload: dict[str, Any]) -> No
         raise
 
 
-def _script_env(config: DoorConfig, request_id: str, request: dict[str, Any]) -> list[str]:
-    values = {
-        "DOOR_REQUEST_ID": request_id,
-        "DOOR_RESULTS_DIR": str(Path(config.spool_root) / "results"),
+def _source_environment(config: DoorConfig, request: dict[str, Any]) -> dict[str, str]:
+    """What a script that fetches and runs a commit on main needs."""
+
+    return {
         "DOOR_COMMIT": request["commit"],
         "DOOR_INSTALL_ROOT": config.install_root,
         "DOOR_SOURCE_CLONE": config.source_clone,
@@ -66,24 +69,98 @@ def _script_env(config: DoorConfig, request_id: str, request: dict[str, Any]) ->
         "DOOR_VENV_PYTHON": config.venv_python,
         "DOOR_STATE_ROOT": config.control_plane_state,
     }
-    if request["kind"] == "deploy":
-        values["DOOR_WAIT_FOR_IDLE"] = "1" if request["wait_for_idle"] else "0"
-        values["DOOR_IDLE_UNITS"] = ",".join(config.idle_wait_units)
-        values["DOOR_IDLE_WAIT_SECONDS"] = str(config.idle_wait_seconds)
+
+
+def _deploy_environment(config: DoorConfig, request: dict[str, Any]) -> dict[str, str]:
+    return {
+        **_source_environment(config, request),
+        "DOOR_WAIT_FOR_IDLE": "1" if request["wait_for_idle"] else "0",
+        "DOOR_IDLE_UNITS": ",".join(config.idle_wait_units),
+        "DOOR_IDLE_WAIT_SECONDS": str(config.idle_wait_seconds),
+    }
+
+
+_PUBSUB_HANDOFFS = "/var/lib/blueprint/pubsub-handoffs"
+
+
+def _retire_environment(config: DoorConfig, request: dict[str, Any]) -> dict[str, str]:
+    values = {"DOOR_VENV_PYTHON": config.venv_python, "DOOR_SCENE_ID": request["scene_id"]}
+    if request.get("bucket"):
+        values["DOOR_BUCKET"] = request["bucket"]
+    if request["apply"]:
+        values["DOOR_APPLY"] = "1"
+    return values
+
+
+def _restore_environment(config: DoorConfig, request: dict[str, Any]) -> dict[str, str]:
+    return {"DOOR_VENV_PYTHON": config.venv_python, "DOOR_SCENE_ID": request["scene_id"],
+            "DOOR_BUCKET": request["bucket"]}
+
+
+def _retire_properties(config: DoorConfig) -> tuple[str, ...]:
+    """Limit retirement to its spool, coordination locks, and result."""
+
+    results = str(Path(config.spool_root) / "results")
+    reservations = str(Path(config.control_plane_state) / "disk-reservations")
+    pins = str(Path(config.control_plane_state) / "storage-pins")
+    return ("ProtectSystem=strict", "PrivateTmp=yes", "NoNewPrivileges=yes", "PrivateDevices=yes",
+            "ProtectHome=yes", "ProtectKernelTunables=yes", "ProtectControlGroups=yes",
+            "CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_CHOWN CAP_SYS_PTRACE",
+            "AmbientCapabilities=CAP_DAC_OVERRIDE",
+            f"ReadWritePaths={_PUBSUB_HANDOFFS} {reservations} {pins} {results}")
+
+
+@dataclass(frozen=True)
+class _LaunchSpec:
+    """How one request kind becomes one transient ``.service`` unit running one installed script."""
+
+    unit_prefix: str
+    script: str
+    #: Bounds both the start and the whole run: ``TimeoutStartSec`` alone does not bound an exec unit.
+    runtime_max: str
+    label: Callable[[dict[str, Any]], str]
+    environment: Callable[[DoorConfig, dict[str, Any]], dict[str, str]]
+    properties: Callable[[DoorConfig], tuple[str, ...]] = lambda _config: ()
+
+
+_LAUNCHES: dict[str, _LaunchSpec] = {
+    "deploy": _LaunchSpec("blueprint-operator-door-deploy", "door-deploy.sh", "3h",
+                          lambda request: request["commit"][:12], _deploy_environment),
+    "door-upgrade": _LaunchSpec("blueprint-operator-door-upgrade", "door-upgrade.sh", "30min",
+                                lambda request: request["commit"][:12], _source_environment),
+    # Named by a hash of the scene id, never the id itself: caller text in a unit name could
+    # match `blueprint-*deploy*` and make every deploy wait on a retirement.
+    "retire-scene-workspace": _LaunchSpec("blueprint-operator-door-retire", "door-retire-scene-workspace.sh", "2h",
+                                          lambda request: hashlib.sha256(request["scene_id"].encode("utf-8"))
+                                          .hexdigest()[:12], _retire_environment, _retire_properties),
+    "restore-scene-workspace": _LaunchSpec("blueprint-operator-door-restore", "door-restore-scene-workspace.sh", "2h",
+                                           lambda request: hashlib.sha256(request["scene_id"].encode("utf-8"))
+                                           .hexdigest()[:12], _restore_environment, _retire_properties),
+}
+
+
+def _script_env(config: DoorConfig, request_id: str, request: dict[str, Any]) -> list[str]:
+    """Only the values the request's own kind defines, each already validated."""
+
+    values = {
+        "DOOR_REQUEST_ID": request_id,
+        "DOOR_RESULTS_DIR": str(Path(config.spool_root) / "results"),
+        **_LAUNCHES[request["kind"]].environment(config, request),
+    }
     return [f"--setenv={key}={value}" for key, value in values.items()]
 
 
 def _launch(config: DoorConfig, runner: CommandRunner, request_id: str, request: dict[str, Any]) -> dict[str, Any]:
-    short = request_id[-8:]
-    if request["kind"] == "deploy":
-        unit, script, timeout = f"blueprint-operator-door-deploy-{request['commit'][:12]}-{short}", "door-deploy.sh", "3h"
-    else:
-        unit, script, timeout = f"blueprint-operator-door-upgrade-{request['commit'][:12]}-{short}", "door-upgrade.sh", "30min"
+    spec = _LAUNCHES[request["kind"]]
+    # A .service name is what `unit_properties` accepts, so the request's live state can be shown.
+    unit = f"{spec.unit_prefix}-{spec.label(request)}-{request_id[-8:]}.service"
     argv = [
         "systemd-run", f"--unit={unit}", "--collect", "--service-type=exec",
-        f"--property=TimeoutStartSec={timeout}", "--setenv=PYTHONDONTWRITEBYTECODE=1",
+        f"--property=TimeoutStartSec={spec.runtime_max}", "--setenv=PYTHONDONTWRITEBYTECODE=1",
+        f"--property=RuntimeMaxSec={spec.runtime_max}",
+        *(f"--property={value}" for value in spec.properties(config)),
         *_script_env(config, request_id, request),
-        "--", "/bin/bash", f"{config.install_root}/{script}",
+        "--", "/bin/bash", f"{config.install_root}/{spec.script}",
     ]
     result = runner.run(argv, timeout=60)
     if result.returncode != 0:
@@ -116,6 +193,8 @@ def _act(config: DoorConfig, runner: CommandRunner, request_id: str, request: di
         busy = _active_deploy_unit(runner)
         if busy is not None:
             return {"status": "refused", "code": f"deploy_in_progress:{busy}"}
+    if request["kind"] not in _LAUNCHES:
+        return {"status": "refused", "code": "kind_unknown"}
     return _launch(config, runner, request_id, request)
 
 

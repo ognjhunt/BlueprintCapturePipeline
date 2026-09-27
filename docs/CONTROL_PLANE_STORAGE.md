@@ -109,9 +109,15 @@ production roots and their retention law: `evidence_hot` (never evicted or
 offloaded: spend guard, deploy receipts, standing authorizations),
 `evidence_cold` (sealed run directories; offloadable behind a pointer), `cache`
 (reproducible derived inputs; evictable when unpinned), `work` (queues),
-`release` (per-commit trees), `ledger`, `container`, `staging`. A governance test
-requires every root a production unit names to be classified, and the reclaim
-tools refuse a configured root whose class is not the one they may touch.
+`release` (per-commit trees), `ledger`, `container`, `staging`, `scratch`, and
+`scene_workspace` (one website scene's working copy under
+`pubsub-handoffs/<bucket>/scenes/<scene>`, retired as described below). A root may
+contain `*` segments that match exactly one path component; the most specific
+match wins (more segments, then more literal characters), so
+`pubsub-handoffs/*/scenes/*.retired.v1.json` receipts are `evidence_hot` while the
+workspaces beside them are `scene_workspace`. A governance test requires every root
+a production unit names to be classified, and the reclaim tools refuse a
+configured root whose class is not the one they may touch.
 
 ## Volume layout
 
@@ -140,9 +146,10 @@ links silently became a full copy. The runtime builder links
 (`scripts/build_task_evaluation_splat_render_runtime.py`). One bind for the
 whole tree keeps all of these links, whichever stores they join.
 
-The tree carries three small `evidence_hot` entries onto the volume:
+The inputs tree carries three small `evidence_hot` entries onto the volume:
 `sam31-profile-registry`, `task-evaluation-terminal-results` and
-`g1-team-campaign-registry.json`. This is deliberate. The volume is durable
+`g1-team-campaign-registry.json`. The handoff spool also carries
+`pubsub-handoffs/*/scenes/*.retired.v1.json` retirement receipts. This is deliberate. The volume is durable
 block storage, and splitting the tree would break the hardlinks that keep it
 small. `--plan` lists them under `evidence_hot on volume:`.
 
@@ -343,6 +350,138 @@ every member digest is verified before the directory is exposed.
 The manual single-root form
 `python -m blueprint_pipeline.control_plane_storage_gc --content-store-root <root>/sha256 [--apply --ack reap-unreferenced-content]`
 remains for operators.
+
+## Scene workspace retirement
+
+The Pub/Sub listener stages each website capture under
+`/var/lib/blueprint/pubsub-handoffs/<bucket>/scenes/<scene_id>/captures/<capture_id>`:
+raw capture downloaded from Firebase Storage plus the pipeline's outputs. Nothing
+reclaimed these working copies, and the website `pipeline/**` outputs exist nowhere
+else (their `gs://` names are local aliases; nothing uploads them), so they cannot
+simply be deleted. `blueprint_pipeline.website_scene_workspace_retention` retires a
+scene only when everything in it can come back and nothing can still need it.
+
+**Plan** (read-only; cheap checks first; any failure keeps the scene and says why):
+
+1. the scene path and its parents are real directories, nothing inside is a link or
+   special file (`workspace_path_unsafe`, `unsafe_entry:<path>`);
+2. every capture is a website capture, by the listener's own test
+   (`is_website_capture_manifest` on its `raw/manifest.json`); a device or mixed scene,
+   or a capture whose manifest cannot be read, is kept (`not_a_website_scene`). Every
+   capture is terminal with its own proof and holds no live lease: a `completed`
+   ledger with a committed output, or `terminal_authority_ended` with a terminal
+   receipt whose payload digest is the ledger's
+   (`capture_not_terminal:<c>`, `capture_lease_held:<c>`, `capture_ledger_unreadable:<c>`,
+   `capture_lock_missing:<c>`, `scene_has_no_captures`);
+3. its last terminal message was acknowledged: an ack receipt with the matching
+   disposition written after the terminal state, or a ledger idle past Pub/Sub's
+   7-day message retention, which can then no longer redeliver it
+   (`acknowledgement_unproven:<c>`);
+4. nothing in the tree changed for 48 hours (`recently_active`);
+5. no live storage pin names it, lies inside it or contains it (`pinned`);
+6. no pending or processing queue message names the scene, across the reclaim
+   timer's queues plus `sam31-preparation-executions`,
+   `task-evaluation-scene-configuration-activation-intents` and
+   `capture-reconstruction-queue` (`queue_referenced`);
+7. no live process holds it (`in_use`; an unreadable process table counts as in use);
+8. no scene intent that can still run resolves a website source registered inside
+   it (`open_scene_intent:<intent>`). An intent is finished once its progression
+   completed, it was revoked, or seven days have passed since its (possibly extended)
+   execution window elapsed: an owner may still extend an expired window, and
+   progression would then resolve the source again. A revoked or expired intent is
+   also held by any attempt row progression still treats as live (`attempts/*.json`
+   with no validated cancellation or settlement:
+   `open_scene_attempt:<intent>/<attempt>`), but only for seven days after it finished
+   (the revocation time recorded in `revoked.json`, else that file's time; for an
+   expired intent that period ends with its grace period). Every hold expires:
+   materialization copies the workspace inputs into the attempt's own staging, and no
+   factory pass runs for days. A completed intent's rows never hold it, since only
+   retired predecessors are ever settled and progression completes only after the
+   attempt's terminal result. A registration no intent has claimed protects the
+   scene for 72 hours
+   (`unclaimed_source_registration`); a registration or intent that cannot be read
+   protects every scene (`reference_index_unreadable`); a workspace whose website
+   handoff names a registration outside the indexed binding root is kept too
+   (`source_registration_unindexed:<c>`);
+9. every file is recoverable: it matches its Firebase Storage object
+   `gs://<bucket>/scenes/<scene>/<path>` by size and MD5 (CRC32C when the object has
+   no MD5), or it is marked for the archive. Raw capture bytes are never archived:
+   a raw file that does not verify keeps the scene
+   (`raw_not_verified_in_cloud:<path>`). On the timer each file's digests are cached
+   by (path, size, mtime, ctime, device, inode) in
+   `pubsub-handoffs/.scene-workspace-inventory/<bucket>/<scene>.json` (root, `0600`), so an
+   hourly plan re-reads only what changed. A tick normally hashes at most 20 GiB
+   or five minutes of uncached bytes. One file larger than 20 GiB may use an
+   exceptional window sized for 8 MiB/s, capped at two hours below the GC unit's
+   three-hour timeout. An unfinished ordinary file waits for the next tick
+   (`inventory_deferred`); an exceptional file that exceeds its window stays local
+   with `oversized_hash_timeout`. Retirement never trusts the cache: it re-reads every file
+   it is about to delete.
+
+**Retire** re-proves checks 1-8 and the planned file snapshot, and re-reads
+every file the cloud copy replaces. It sizes the receipt before publishing;
+one above its readers' 16 MiB limit is refused (`receipt_too_large`). It streams
+unverified files as `workspace.tar` to the private artifact store with full
+readback. This upload holds no listener ledger lock. Before mutation it takes
+the per-capture locks without waiting (`candidate_busy`) and the storage-pin
+lock, then rechecks readers, file identity and Firebase Storage metadata. It
+writes a digest-bound receipt including the cloud generations, archive hashes,
+capture records and a rename token, then renames the workspace to
+`.retiring-<scene>-<token>`. After releasing the locks, it verifies the renamed
+tree's capture IDs and every file against the receipt, and revalidates the
+receipt digest, before removal. An incomplete removal reports zero reclaimed
+bytes and its hidden tree remains available for the next enabled sweep. A new
+capture appearing at the rename boundary is returned to the live path and its
+receipt is preserved under a recovery name. An enabled applying tick finishes
+a crash-left copy only if its receipt token and bytes match. A receipt beside a
+live workspace finishes the rename if the bytes match; a changed workspace moves
+the old receipt aside. Failed post-upload attempts record the published archive
+reference in the GC report for orphan review.
+
+**Restore** replays the receipt: `python -m blueprint_pipeline.website_scene_workspace_retention
+restore --receipt <receipt> --destination <dir>` downloads each verified object's
+recorded GCS generation and
+re-checks it, materializes the archive, re-checks its digest and every member's
+SHA-256, requires exactly the retired file set, and only then moves the tree into
+place (owned like the destination's parent). An in-place restore moves the
+historical receipt aside. The door exposes this as `restore-scene-workspace
+<scene_id> --bucket <bucket> --wait`.
+
+**Redeliveries.** Before claiming a capture whose workspace is absent, the
+listener reads the receipt: a message the receipt proves terminal (the acknowledged
+payload, or the payload that ended the capture's authority) is acknowledged as
+`skipped_retired_terminal` without staging. A different payload is a new request
+and stages again from Firebase Storage. A redelivery that races a retirement never
+recreates the workspace: after taking the ledger lock the listener checks that the
+lock file it holds is still the capture's and that the capture still exists, and a
+claim for a capture that existed when the message arrived never creates it again.
+Either way it asks the receipt again, and a payload the receipt does not cover is
+left for its next delivery (`capture_retired_retryable`). A retired completed capture
+covers every payload, as its ledger would. A present invalid or unreadable receipt
+raises an alert signal and leaves the message retryable
+(`retirement_lookup_failed_retryable`) rather than restaging.
+
+**Where it runs.** The reclaim timer plans every scene workspace in
+`BLUEPRINT_CONTROL_PLANE_GC_SCENE_WORKSPACE_ROOTS` (intents from
+`BLUEPRINT_CONTROL_PLANE_GC_SCENE_INTENT_ROOT`; registrations from
+`BLUEPRINT_WEBSITE_SCENE_BINDING_ROOT`, else `<intent root parent>/website-source-bindings`)
+and reports them under `scene_workspaces` (candidates, retired count and bytes,
+`retained_counts` by reason). It attempts at most 20 retirements per tick (attempts,
+not successes, since each can publish a large archive), and only with its own explicit
+opt-in, `BLUEPRINT_CONTROL_PLANE_SCENE_WORKSPACE_RETIREMENT=1` in the operator
+environment file: unset, each tick only plans. It never follows
+`BLUEPRINT_CONTROL_PLANE_EVIDENCE_OFFLOAD`. Any other value disables it and puts
+`scene_workspace_retirement_setting_invalid` in the report's `alerts` without aborting
+the tick. Neither the unit nor the example environment enables it. The operator door offers the same operation by
+hand (`retire-scene-workspace`, see `docs/OPERATOR_DOOR.md`), plan first and
+`--apply` second. Every phase of the tick is isolated: a phase that raises is recorded
+as `{"status": "error", "error": "<type>"}` under its key, later phases still run, and
+the tick exits non-zero after writing the report.
+
+**Privacy.** Raw capture bytes stay only in Firebase Storage. Derived local-only
+files from ordinary completed captures go to the existing private artifact store
+(B2). Authority-ended captures stay local (`authority_ended_capture_kept_local`)
+until the owner approves a revocation and deletion lifecycle for those derivatives.
 
 ## Release retirement at deploy
 

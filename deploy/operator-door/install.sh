@@ -49,6 +49,7 @@ rm -rf "$stage"
 mkdir -p "$stage"
 cp -R "$source_dir/operator_door" "$stage/"
 cp "$source_dir"/door-common.sh "$source_dir"/door-deploy.sh "$source_dir"/door-upgrade.sh \
+  "$source_dir"/door-retire-scene-workspace.sh "$source_dir"/door-restore-scene-workspace.sh \
   "$source_dir"/install.sh "$stage/"
 git -C "$repo_root" rev-parse HEAD >"$stage/INSTALLED_COMMIT" 2>/dev/null || echo unknown >"$stage/INSTALLED_COMMIT"
 find "$stage" -name '__pycache__' -prune -exec rm -rf {} +
@@ -61,7 +62,7 @@ had_previous=0
 swapped=0
 
 rollback() {
-  trap - ERR
+  trap - ERR TERM INT
   echo "operator door install failed; rolling back" >&2
   if [ "$swapped" -eq 1 ]; then
     rm -rf "$install_root.failed"
@@ -83,6 +84,8 @@ rollback() {
   fi
 }
 trap 'rollback; exit 1' ERR
+trap 'rollback; exit 143' TERM
+trap 'rollback; exit 130' INT
 
 # 2. Back up the current units, then swap code, keeping the previous version.
 rm -rf "$units_backup"
@@ -154,7 +157,7 @@ done
 if [ "$healthy" -ne 1 ]; then echo "operator door does not answer $health_url" >&2; false; fi
 runuser -u blueprint -- env PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$install_root" \
   python3 -m operator_door self-test --allow-no-tokens
-trap - ERR
+trap - ERR TERM INT
 
 # 6. Caddy route, patched into the live file (the host's copy differs from the
 #    repository's). A failure here restores the Caddyfile; the door itself stays.
