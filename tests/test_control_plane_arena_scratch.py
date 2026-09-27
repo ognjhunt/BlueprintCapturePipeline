@@ -41,6 +41,9 @@ def test_new_attempt_has_sealed_evidence_lease_before_any_payload(tmp_path: Path
     with pytest.raises(ArenaScratchError, match="arena_scratch_owner_mismatch"):
         prepare_arena_attempt("r33", owner="operator-b", run_ref="run-33",
                               inputs_root=inputs, lane_root=lanes, now=lambda: 1001)
+    with pytest.raises(ArenaScratchError, match="arena_scratch_owner_mismatch"):
+        prepare_arena_attempt("r33", owner="operator-a", scene_ref="run-33",
+                              inputs_root=inputs, lane_root=lanes, now=lambda: 1001)
     with pytest.raises(ArenaScratchError, match="arena_scratch_inactive"):
         resolve_arena_attempt("r33", writable=True, inputs_root=inputs, lane_root=lanes,
                               now=lambda: 87401)

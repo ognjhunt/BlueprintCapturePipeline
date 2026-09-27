@@ -127,9 +127,10 @@ def prepare_arena_attempt(
             if owner is None or (run_ref is None) == (scene_ref is None):
                 raise ArenaScratchError("arena_scratch_metadata_required")
             lease = read_lane_scratch_folder(found, lane="arena", name=name)
-            if lease.get("owner") != owner or lease.get("run_ref", lease.get("scene_ref")) != (
-                run_ref if run_ref is not None else scene_ref
-            ):
+            reference_key = "run_ref" if run_ref is not None else "scene_ref"
+            reference_value = run_ref if run_ref is not None else scene_ref
+            if (lease.get("owner") != owner or reference_key not in lease
+                    or lease[reference_key] != reference_value):
                 raise ArenaScratchError("arena_scratch_owner_mismatch")
         return found
     if owner is None or ttl_seconds is None or (run_ref is None) == (scene_ref is None):
