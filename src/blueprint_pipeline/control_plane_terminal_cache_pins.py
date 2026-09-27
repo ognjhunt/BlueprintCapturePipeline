@@ -47,8 +47,11 @@ from .completed_replay_cache_retention import active_reference
 from .control_plane_evidence_offload import (
     DEFAULT_HOT_WINDOW_SECONDS, POINTER_SUFFIX, _has_result_registry, _terminal_receipt, _tree_snapshot,
 )
+from .control_plane_replay_cache_gc import _truthy_setting
 from .control_plane_storage_roots import require_storage_class
 
+EXTENDED_PIN_PROOFS_ENV = "BLUEPRINT_CONTROL_PLANE_GC_EXTENDED_PIN_PROOFS"
+EXTENDED_PIN_PROOFS_INVALID = "extended_pin_proofs_setting_invalid"
 # A pin may name the reproducible activation inputs (cache or work class) or the
 # retained run directory itself (evidence_cold). Releasing a pin removes no
 # bytes, so any of these is acceptable; hot evidence and state never are.
@@ -68,6 +71,16 @@ PREPARED_ACTIVATION_STATUSES = frozenset({
     "policy_campaign_queue_materialized_no_execution",
     "profile_authority_materialized_no_execution",
 })
+
+
+def extended_pin_proofs_setting(environ=os.environ):
+    """Whether the extended proofs may release pins, and an alert when the setting is invalid.
+
+    Its own opt-in, parsed exactly like the storage GC's others: an invalid value
+    only lists candidates and alerts, and it never follows another opt-in.
+    """
+
+    return _truthy_setting(environ, EXTENDED_PIN_PROOFS_ENV, EXTENDED_PIN_PROOFS_INVALID)
 
 
 def _read(path):

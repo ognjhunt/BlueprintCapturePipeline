@@ -14,6 +14,9 @@ launched, and a preparation or compilation nothing consumes all waited out the
 #   src/blueprint_pipeline/task_evaluation_result_artifact_store.py
 #   src/blueprint_pipeline/task_evaluation_launch_activation_worker.py
 #   src/blueprint_pipeline/task_evaluation_launch_activation_queue.py
+#   src/blueprint_pipeline/control_plane_storage_gc.py
+#   deploy/systemd/pipeline-control-plane.env.example
+#   deploy/systemd/blueprint-control-plane-storage-gc.service
 
 from __future__ import annotations
 
@@ -26,7 +29,11 @@ import pytest
 
 from blueprint_pipeline.control_plane_storage_pins import load_storage_pins, write_storage_pin
 from blueprint_pipeline.control_plane_storage_roots import require_storage_class
+from blueprint_pipeline import completed_replay_cache_retention as retention
+from blueprint_pipeline import control_plane_replay_cache_gc as replay_gc
+from blueprint_pipeline import control_plane_storage_gc as gc_module
 from blueprint_pipeline import control_plane_terminal_cache_pins as terminal_pins
+from blueprint_pipeline.control_plane_storage_gc import RUN_ACK, run_storage_gc
 from blueprint_pipeline.control_plane_terminal_cache_pins import reconcile_terminal_cache_pins
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 from blueprint_pipeline.task_evaluation_result_delivery import REGISTRY_SCHEMA_VERSION
@@ -496,3 +503,85 @@ def test_extended_pin_proofs_only_list_candidates_until_enabled(tmp_path) -> Non
     assert applied["enabled"] is True and applied["released_count"] == 3
     assert applied["released_count_by_kind"] == {"activation": 2, "preparation": 1}
     assert set(_states(args).values()) == {"released"}
+
+
+@pytest.mark.parametrize("value", [None, "", "1", "true", " YES ", "0", "false", "No", "sometimes", "2"])
+def test_extended_pin_proofs_setting_parses_like_the_other_opt_ins(value) -> None:
+    name = terminal_pins.EXTENDED_PIN_PROOFS_ENV
+    environ = {} if value is None else {name: value}
+    scene = {} if value is None else {gc_module.SCENE_WORKSPACE_RETIREMENT_ENV: value}
+
+    enabled, alert = terminal_pins.extended_pin_proofs_setting(environ)
+    scene_enabled, scene_alert = gc_module.scene_workspace_retirement_setting(scene)
+
+    assert enabled == scene_enabled
+    assert alert == (None if scene_alert is None else "extended_pin_proofs_setting_invalid")
+    assert (enabled, alert) == replay_gc._truthy_setting(environ, name, "extended_pin_proofs_setting_invalid")
+
+
+def test_the_command_line_reads_the_extended_pin_proofs_opt_in(tmp_path, monkeypatch, capsys) -> None:
+    seen: list[dict] = []
+
+    def run(**kwargs):
+        seen.append(kwargs)
+        return {"schema_version": gc_module.RUN_SCHEMA_VERSION, "report_digest": "sha256:0"}
+
+    monkeypatch.setattr(gc_module, "run_storage_gc", run)
+    # Every other opt-in on: none of them turns this one on.
+    for other in (gc_module.EVIDENCE_OFFLOAD_ENV, gc_module.SCENE_WORKSPACE_RETIREMENT_ENV,
+                  replay_gc.REPLAY_CACHE_RETENTION_ENV):
+        monkeypatch.setenv(other, "1")
+    monkeypatch.delenv(terminal_pins.EXTENDED_PIN_PROOFS_ENV, raising=False)
+    for value in (None, "sometimes", "1"):
+        if value is not None:
+            monkeypatch.setenv(terminal_pins.EXTENDED_PIN_PROOFS_ENV, value)
+        assert gc_module.main(["run", "--pins-root", str(tmp_path / "pins")]) == 0
+
+    assert [(call["extended_pin_proofs_enabled"], call["extended_pin_proofs_alert"]) for call in seen] == [
+        (False, None), (False, "extended_pin_proofs_setting_invalid"), (True, None)]
+    assert "storage_gc_alert:extended_pin_proofs_setting_invalid" in capsys.readouterr().err
+
+
+def test_a_tick_passes_the_opt_in_and_the_activation_queue_to_the_pin_pass(tmp_path, monkeypatch) -> None:
+    # No process on this host references anything.
+    monkeypatch.setattr(retention, "process_reference", lambda _root, **_kwargs: None)
+    args = _args(tmp_path)
+    queue = _activation_queue(tmp_path, args)
+    _activation_result(queue, "act-unlaunched")
+    _pin(args, "activation", "act-unlaunched", age=LAPSE + DAY)
+    _pin(args, "preparation", "prep-stale", age=LAPSE + DAY)
+    common = {"content_store_roots": [], "derived_roots": [], "queue_roots": args["queue_roots"],
+              "pins_root": args["pins_root"], "evidence_roots": args["evidence_roots"], "now": lambda: NOW,
+              "classifier": _classifier, "apply": True, "ack": RUN_ACK}
+    alert = "extended_pin_proofs_setting_invalid"
+
+    listed = run_storage_gc(**common, extended_pin_proofs_alert=alert)
+
+    assert (listed["opt_in"]["extended_pin_proofs"], listed["alerts"]) == (False, [alert])
+    phase = listed["terminal_cache_pins"]
+    assert (phase["enabled"], phase["alerts"], phase["released"]) == (False, [alert], [])
+    # The unlaunched activation is found only through the activation queue the tick derives from its queue roots.
+    assert {row["owner_id"]: row["proof"]["kind"] for row in phase["candidates"]} == {
+        "prep-stale": "unconsumed_stale_pin", "act-unlaunched": "activation_expired_unlaunched"}
+
+    applied = run_storage_gc(**common, extended_pin_proofs_enabled=True)
+
+    assert applied["opt_in"]["extended_pin_proofs"] is True and "alerts" not in applied
+    assert applied["terminal_cache_pins"]["released_count_by_kind"] == {"activation": 1, "preparation": 1}
+    assert set(_states(args).values()) == {"released"}
+
+
+def test_extended_pin_proofs_stay_an_operator_opt_in() -> None:
+    deploy = Path(__file__).resolve().parents[1] / "deploy" / "systemd"
+    unit = (deploy / "blueprint-control-plane-storage-gc.service").read_text(encoding="utf-8")
+    example = (deploy / "pipeline-control-plane.env.example").read_text(encoding="utf-8").splitlines()
+    name = terminal_pins.EXTENDED_PIN_PROOFS_ENV
+
+    assert f"Environment={name}=" not in unit
+    assert f"# {name}=1" in example
+    assert not any(line.startswith(f"{name}=") for line in example), "it stays plan-only by default"
+    # The unit's queue roots name the activation queue, so the unlaunched proof finds its results.
+    queue_roots = next(line.split("=", 2)[2] for line in unit.splitlines()
+                       if line.startswith(f"Environment={gc_module.QUEUE_ROOTS_ENV}="))
+    assert terminal_pins.activation_queue_root_of(queue_roots.split(":")) == Path(
+        "/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-activations")

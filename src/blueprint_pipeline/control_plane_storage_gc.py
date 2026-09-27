@@ -7,8 +7,12 @@ plans before it mutates, and a tick applies nothing unless it runs with
 * **Stranded queue rows**: pending rows bound to a release other than the
   running one are moved to ``stranded/`` beside a receipt, so they stop
   counting as live queue references.  Nothing is deleted.
-* **Terminal cache pins** whose run is proven closed by archived-run evidence
-  are released.  This changes only the pin ledger.
+* **Terminal cache pins** whose run is proven closed by archived-run or sealed
+  cold-run evidence are released. The extended proofs (a sealed registry run,
+  an activation whose mutation window lapsed unlaunched, a stale preparation or
+  compilation nothing consumes) only list their candidates until
+  ``BLUEPRINT_CONTROL_PLANE_GC_EXTENDED_PIN_PROOFS=1``. This changes only the
+  pin ledger.
 * **Derived directories** (``cache`` class: prepared references, compiled
   episodes, activation launch sets) are retired when no live storage pin names
   them, no pending or processing queue message mentions them, and they have
@@ -88,6 +92,9 @@ from .control_plane_storage_references import (  # noqa: F401 - re-exported
     settlement_reopens_beyond_retained_receipts,
 )
 from .control_plane_storage_roots import require_storage_class
+from .control_plane_terminal_cache_pins import (
+    activation_queue_root_of, extended_pin_proofs_setting, reconcile_terminal_cache_pins,
+)
 from .decision_evidence_contracts import canonical_digest
 from .task_evaluation_release_identity import running_release_commit
 
@@ -1253,6 +1260,8 @@ def run_storage_gc(
     replay_parent_roots: Sequence[str | Path] = (),
     replay_cache_retention_enabled: bool = False,
     replay_cache_retention_alert: str | None = None,
+    extended_pin_proofs_enabled: bool = False,
+    extended_pin_proofs_alert: str | None = None,
     now: Callable[[], float] = time.time,
     publisher: Callable[..., Any] | None = None,
     classifier: Callable[..., Any] = require_storage_class,
@@ -1282,10 +1291,12 @@ def run_storage_gc(
             "evidence_offload": bool(offload_enabled),
             "scene_workspace_retirement": bool(scene_workspace_retirement_enabled),
             "replay_cache_retention": bool(replay_cache_retention_enabled),
+            "extended_pin_proofs": bool(extended_pin_proofs_enabled),
         },
         "skipped_roots": [],
     }
-    alerts = [alert for alert in (scene_workspace_retirement_alert, replay_cache_retention_alert) if alert]
+    alerts = [alert for alert in (scene_workspace_retirement_alert, replay_cache_retention_alert,
+                                  extended_pin_proofs_alert) if alert]
     if alerts:
         report["alerts"] = alerts
     queue_present, _absent_queue_roots = _existing(queue_roots)
@@ -1304,13 +1315,15 @@ def run_storage_gc(
         _isolated(report, "stranded_queue_rows", stranded_phase)
 
     def terminal_cache_pins_phase() -> Any:
-        from .control_plane_terminal_cache_pins import reconcile_terminal_cache_pins
-
         return reconcile_terminal_cache_pins(
             pins_root=pins_root, queue_roots=queue_roots, evidence_roots=evidence_roots,
-            now=observed_at, apply=apply, classifier=classifier, hot_window_seconds=hot_window_seconds)
+            now=observed_at, apply=apply, classifier=classifier, hot_window_seconds=hot_window_seconds,
+            extended_proofs_enabled=extended_pin_proofs_enabled,
+            activation_queue_root=activation_queue_root_of(queue_roots))
 
     _isolated(report, "terminal_cache_pins", terminal_cache_pins_phase)
+    if extended_pin_proofs_alert and isinstance(report.get("terminal_cache_pins"), dict):
+        report["terminal_cache_pins"]["alerts"] = [extended_pin_proofs_alert]
     derived_present, absent = _existing(derived_roots)
     report["skipped_roots"].extend(absent)
     if derived_present:
@@ -1640,7 +1653,8 @@ def _run_main(argv: list[str]) -> int:
         raise ControlPlaneStorageGCError("control_plane_storage_gc_pins_root_missing")
     retirement_enabled, retirement_alert = scene_workspace_retirement_setting()
     replay_enabled, replay_alert = replay_cache_retention_setting()
-    for alert in (retirement_alert, replay_alert):
+    extended_enabled, extended_alert = extended_pin_proofs_setting()
+    for alert in (retirement_alert, replay_alert, extended_alert):
         if alert:
             print(f"storage_gc_alert:{alert}", file=sys.stderr)
     report_root = str(os.getenv(REPORT_ROOT_ENV) or "").strip()
@@ -1680,6 +1694,8 @@ def _run_main(argv: list[str]) -> int:
         replay_parent_roots=args.replay_parent_root or _split_env(REPLAY_PARENT_ROOTS_ENV),
         replay_cache_retention_enabled=replay_enabled,
         replay_cache_retention_alert=replay_alert,
+        extended_pin_proofs_enabled=extended_enabled,
+        extended_pin_proofs_alert=extended_alert,
         # Per-file digests, so an hourly plan re-reads only what changed.
         scene_inventory_cache_root=None,
         classifier=require_storage_class,
