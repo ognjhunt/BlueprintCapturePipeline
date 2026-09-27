@@ -2478,10 +2478,23 @@ def test_an_unreadable_retirement_receipt_is_not_a_retirement(tmp_path, monkeypa
     (tmp_path / "capture-bucket" / "scenes").mkdir(parents=True)
     (tmp_path / "capture-bucket" / "scenes" / "scene-1.retired.v1.json").write_text("{not json", encoding="utf-8")
     subscriber = FakeSubscriber([_received(ack_id="a1", data=PAYLOAD_BYTES)])
-    results = _install_fake_pubsub(monkeypatch, subscriber, storage_client=FakeStorageClient(_website_bundle_blobs()),
-                                   run_e2e=lambda **_: {"status": "completed"})
-    assert _pull(tmp_path) == 1
-    assert results[0]["status"] == "processed"
+    results = _install_fake_pubsub(monkeypatch, subscriber, storage_client=_ListingForbidden(),
+                                   run_e2e=lambda **_: pytest.fail("an invalid receipt must not restage"))
+    assert _pull(tmp_path) == 0 and subscriber.acknowledged == []
+    assert results[0]["status"] == "retirement_lookup_failed_retryable"
+    assert results[0]["blockers"] == ["retirement_lookup_failed"]
+    assert results[0]["alerts"] == ["retirement_lookup_failed"]
+
+
+def test_reopened_ledger_keeps_ended_payloads_from_the_retirement_receipt(tmp_path):
+    old_digest = "a" * 64
+    new_digest = "b" * 64
+    status, ledger = listener_module._claim_job_lease(
+        tmp_path / "capture", scene_id="scene-1", capture_id="capture-1", owner="test",
+        lease_seconds=60, payload_sha256=new_digest,
+        retired_ended_payload_sha256s=(old_digest,))
+
+    assert status == "claimed" and old_digest in listener_module._ended_payload_digests(ledger)
 
 
 _RENEWED_PAYLOAD = json.dumps({**PAYLOAD, "pipeline_handoff_uri":

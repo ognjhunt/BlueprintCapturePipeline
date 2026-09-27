@@ -851,6 +851,7 @@ def _claim_job_lease(
     now: datetime | None = None,
     payload_sha256: str | None = None,
     create_capture_root: bool = True,
+    retired_ended_payload_sha256s: Sequence[str] = (),
 ) -> tuple[str, dict[str, Any]]:
     current_time = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     with _locked_job_ledger(capture_root, create=create_capture_root) as ledger:
@@ -859,6 +860,11 @@ def _claim_job_lease(
         if status == "corrupt":
             return "corrupt", dict(ledger)
         history = _attempt_history(ledger)
+        if not ledger and retired_ended_payload_sha256s:
+            history.extend({"status": TERMINAL_AUTHORITY_STATUS, "payload_sha256": digest,
+                            "source": "scene_retirement_receipt"}
+                           for digest in sorted(set(retired_ended_payload_sha256s))
+                           if re.fullmatch(r"[0-9a-f]{64}", digest))
         # A payload whose run ended for lost authority never runs again, even
         # while a later payload reopened the job and is running or retrying.
         # Only a completed job answers a redelivery from its output commit.
@@ -1677,8 +1683,10 @@ def process_handoff_payload(
     handoff = parse_handoff_payload(payload)
     digest = payload_digest or payload_sha256(payload)
     capture_root = _handoff_capture_root(handoff, storage_root=storage_root)
+    prior_retired: dict[str, Any] | None = None
 
     def retired_terminal() -> dict[str, Any] | None:
+        nonlocal prior_retired
         # A retired scene answers the messages its retirement receipt proves terminal,
         # without staging the capture again (claiming would recreate the workspace).
         try:
@@ -1686,12 +1694,13 @@ def process_handoff_payload(
 
             retired = retired_capture_status(storage_root=storage_root, bucket=handoff.bucket,
                                              scene_id=handoff.scene_id, capture_id=handoff.capture_id)
+            prior_retired = retired
         except Exception:  # noqa: BLE001 - an unanswerable lookup waits for the next delivery
             logger.exception("pubsub_handoff.retirement_lookup_failed")
             return {"schema_version": "v1", "status": "retirement_lookup_failed_retryable",
                     "queue_disposition": "retryable", "bucket": handoff.bucket, "scene_id": handoff.scene_id,
                     "capture_id": handoff.capture_id, "capture_root": str(capture_root),
-                    "blockers": ["retirement_lookup_failed"]}
+                    "blockers": ["retirement_lookup_failed"], "alerts": ["retirement_lookup_failed"]}
         # Answered exactly as the capture's own ledger would: a completed capture, any payload.
         if retired is None or not (retired.get("covers_every_payload") or digest in retired["payload_sha256s"]):
             return None
@@ -1716,6 +1725,9 @@ def process_handoff_payload(
             payload_sha256=digest,
             # A capture that was here a moment ago and is gone now was retired: never recreate it.
             create_capture_root=not capture_present,
+            retired_ended_payload_sha256s=(prior_retired["payload_sha256s"]
+                                           if prior_retired is not None and
+                                           prior_retired["status"] == TERMINAL_AUTHORITY_STATUS else ()),
         )
     except HandoffCaptureRetired:
         # Retirement removed the workspace while this claim waited for its lock. Acknowledge
