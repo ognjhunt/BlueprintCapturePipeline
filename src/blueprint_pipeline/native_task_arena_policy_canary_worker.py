@@ -2076,6 +2076,9 @@ def _run_selected_cell(
             dependencies = bound_runtime.preflight_dependency_matrix(
                 robot_id=str(scene_plan["robot"]["robot_id"])
             )
+            (output_root / "prepolicy_dependency_matrix.v1.json").write_text(
+                json.dumps(dependencies, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            )
             if not dependencies["all_required_available"]:
                 raise RuntimeError("policy_canary_dependency_preflight_failed")
             preconstruction = bound_runtime.prepare_preconstruction(

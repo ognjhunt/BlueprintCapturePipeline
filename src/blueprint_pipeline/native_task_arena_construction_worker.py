@@ -224,14 +224,12 @@ def _jsonable(value: Any) -> Any:
 
 def preflight_native_dependency_matrix(*, robot_id: str) -> dict[str, Any]:
     """Probe all worker imports and media tools in one retained receipt."""
-
     imports = []
     blockers = []
     try:
         from blueprint_pipeline.native_task_arena_import_scope import (
             install_scoped_arena_embodiment,
         )
-
         embodiment_scope = install_scoped_arena_embodiment(robot_id)
     except Exception as exc:  # noqa: BLE001 - exact scope failure is evidence
         embodiment_scope = {
@@ -243,6 +241,8 @@ def preflight_native_dependency_matrix(*, robot_id: str) -> dict[str, Any]:
         }
         blockers.append(f"native_task_arena_embodiment_scope_failed:{robot_id}")
     for name in DEPENDENCY_IMPORTS:
+        if name == "isaaclab_arena_g1" and robot_id != "unitree_g1":
+            continue
         try:
             module = importlib.import_module(name)
             imports.append(
