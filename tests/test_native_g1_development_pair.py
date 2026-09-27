@@ -210,6 +210,13 @@ def test_new_lane_output_needs_lease_before_worker_writes(
     )
     assert result["status"] == "completed_development_only"
     assert (output / (pair.SCHEMA + ".json")).is_file()
+    original_lease = (output / ".lane-scratch.v1.json").read_bytes()
+    with pytest.raises(ValueError, match="g1_pair_output_directory_invalid"):
+        pair.run_g1_development_pair(
+            request_paths=paths, output_dir=output, local_runner=lambda **_kwargs: pytest.fail("worker ran"),
+            scratch_owner="operator-a", scratch_run_ref="pair-run", scratch_ttl_seconds=86400,
+        )
+    assert (output / ".lane-scratch.v1.json").read_bytes() == original_lease
 
 
 def test_lane_output_rejects_nested_and_wrong_lane_before_creation(
@@ -227,6 +234,40 @@ def test_lane_output_rejects_nested_and_wrong_lane_before_creation(
                 local_runner=lambda **_kwargs: pytest.fail("worker ran"),
             )
         assert not output.exists()
+
+
+def test_new_unbound_work_volume_output_refuses_but_bound_run_output_still_works(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, _ = _paired_requests(tmp_path)
+    volume = tmp_path / "work-volume"
+    volume.mkdir()
+    (volume / "pipeline-control-plane").mkdir()
+    monkeypatch.setattr(pair, "WORK_VOLUME_ROOT", volume)
+    for output in (volume / "g1-unowned", volume / "pipeline-control-plane" / "unowned"):
+        with pytest.raises(ValueError, match="g1_pair_unbound_work_volume_output"):
+            pair.run_g1_development_pair(
+                request_paths=paths, output_dir=output,
+                local_runner=lambda **_kwargs: pytest.fail("worker ran"),
+            )
+        assert not output.exists()
+
+    bound_output = volume / "task-evaluation-inputs" / "run-owned-pair"
+    result = pair.run_g1_development_pair(
+        request_paths=paths, output_dir=bound_output,
+        local_runner=lambda *, request, output_dir: _fake_result(request, output_dir),
+    )
+    assert result["status"] == "completed_development_only"
+    assert not (bound_output / ".lane-scratch.v1.json").exists()
+
+    existing_run = volume / "existing-provider-run"
+    existing_run.mkdir()
+    nested_output = existing_run / "pair"
+    nested = pair.run_g1_development_pair(
+        request_paths=paths, output_dir=nested_output,
+        local_runner=lambda *, request, output_dir: _fake_result(request, output_dir),
+    )
+    assert nested["status"] == "completed_development_only"
 
 
 def test_pair_accepts_the_rigid_scorers_report_digest(tmp_path: Path) -> None:

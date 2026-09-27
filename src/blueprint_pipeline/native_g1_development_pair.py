@@ -16,6 +16,7 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from .control_plane_disk_usage import DEFAULT_SURVEY_ALIASES
 from .control_plane_lane_scratch import create_lane_scratch
 from .decision_evidence_contracts import canonical_digest
 from .native_g1_development_worker import (
@@ -48,6 +49,11 @@ SUBPROCESS_EPISODE_TIMEOUT_SECONDS = 55 * 60
 LANE_SCRATCH_ROOTS = (
     Path("/mnt/blueprint-work/lanes"),
     Path("/var/lib/blueprint/task-evaluation-inputs/lanes"),
+)
+WORK_VOLUME_ROOT = Path("/mnt/blueprint-work")
+_BOUND_WORK_VOLUME_RELATIVE_ROOTS = tuple(
+    Path(path).relative_to(WORK_VOLUME_ROOT) for path in DEFAULT_SURVEY_ALIASES
+    if Path(path).is_relative_to(WORK_VOLUME_ROOT)
 )
 CANDIDATE_FIELDS = frozenset({
     "candidate_id", "rights_review", "request_digest",
@@ -425,6 +431,20 @@ def run_g1_development_pair(
     elif any(value is not None for value in scratch_metadata):
         raise ValueError("g1_pair_lane_scratch_output_invalid")
     else:
+        if output.is_relative_to(WORK_VOLUME_ROOT):
+            relative = output.relative_to(WORK_VOLUME_ROOT)
+            bound = any(output.is_relative_to(WORK_VOLUME_ROOT / root)
+                        for root in _BOUND_WORK_VOLUME_RELATIVE_ROOTS)
+            # The provider runtime writes its pair below an existing run root;
+            # this guard must not take ownership of that run's lifecycle.
+            existing_run_root = (
+                len(relative.parts) > 1
+                and (WORK_VOLUME_ROOT / relative.parts[0]).is_dir()
+                and not any(len(root.parts) > 1 and root.parts[0] == relative.parts[0]
+                            for root in _BOUND_WORK_VOLUME_RELATIVE_ROOTS)
+            )
+            if not bound and not existing_run_root:
+                raise ValueError("g1_pair_unbound_work_volume_output")
         output.mkdir(parents=True)
     diagnostics = output / "_worker_diagnostics"
     if mode == "subprocess":
