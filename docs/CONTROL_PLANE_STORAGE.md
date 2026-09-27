@@ -44,7 +44,7 @@ and never a host path.
 | `launch_activation` | 2 GiB | the measured footprint, never less than the reference bytes the request declares plus 256 MiB | activation worker |
 | `policy_canary_dispatch` | 2 GiB | the measured footprint | canary dispatcher queue boundary |
 | `handoff_staging` | 4 GiB | sizes of the capture blobs being downloaded plus 64 MiB | listener before downloading; refusal remains retryable and unacknowledged |
-| `launch_dispatch` | 2 GiB | unique immutable input file sizes plus 64 MiB | dispatcher before copying and before any allocator call |
+| `launch_dispatch` | 2 GiB | unique immutable input file sizes, each allocator directory projection copy, plus 64 MiB | dispatcher before copying and before any allocator call |
 
 The intake version endpoint reports `disk_headroom` with `refused_roles` and each
 role's `footprints` and `targets` (device, floor, reservations and available
