@@ -507,7 +507,7 @@ are reported separately and never invalidate proven resource closure.
 hourly (`OnUnitInactiveSec=1h`: an hour after the previous tick finished) as
 `root`, confined by its unit to the roots it may write, and writes
 `/var/lib/blueprint/pipeline-control-plane/storage-gc/latest.json`. One tick runs
-seven phases in order:
+eight phases in order:
 
 1. **Stranded queue rows**: pending rows bound to a release other than the
    running one move to `stranded/` beside a receipt, so they stop counting as
@@ -538,6 +538,10 @@ seven phases in order:
 7. **Workspace bundles**: the reproducible `bundle/` copy inside a
    semantic-pretraining workspace that has been idle and unpinned for six hours
    is removed behind a sealed marker.
+8. **Scene workspaces** are retired only after terminal, acknowledgement,
+   reference, and remote-copy checks pass. This phase plans until
+   `BLUEPRINT_CONTROL_PLANE_SCENE_WORKSPACE_RETIREMENT=1` enables it; its
+   detailed contract is below.
 
 Restore an offloaded run with
 `python -c 'from blueprint_pipeline.control_plane_evidence_offload import restore_offloaded_evidence as r; r(pointer_path=..., destination=...)'`;

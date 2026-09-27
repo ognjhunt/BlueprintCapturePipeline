@@ -1,6 +1,6 @@
 """Conservative reclamation for control-plane caches, on a timer.
 
-One tick (``run_storage_gc``) runs seven phases in this order.  Every phase
+One tick (``run_storage_gc``) runs eight phases in this order.  Every phase
 plans before it mutates, and a tick applies nothing unless it runs with
 ``--apply`` and its typed acknowledgement:
 
