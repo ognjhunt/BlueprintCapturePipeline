@@ -72,6 +72,7 @@ from .task_evaluation_policy_run_contract import (
 from .launch_profile_immutable_inputs import immutable_input_digest
 from .launch_immutable_input_writer import (
     TaskEvaluationLaunchError,
+    stage_directory_projections,
     write_exclusive_private_bytes as _write_exclusive_private_bytes,
 )
 from . import task_evaluation_policy_canary_setup as policy_canary_setup
@@ -1226,48 +1227,9 @@ def _stage_profile_immutable_inputs_reserved(
             }
         )
 
-    directory_replacements: dict[str, str] = {}
-    directory_rows: list[dict[str, Any]] = []
-    for source_directory, included in projections.items():
-        contained = {source: staged_sources[source] for source in included}
-        directory_key = hashlib.sha256(str(source_directory).encode("utf-8")).hexdigest()
-        projection = stage_root / "directories" / directory_key
-        projection.mkdir(mode=0o700, parents=True, exist_ok=True)
-        projection.chmod(0o700)
-        projected_inputs: list[dict[str, Any]] = []
-        for source, staged in sorted(contained.items(), key=lambda item: str(item[0])):
-            relative_path = source.relative_to(source_directory)
-            if relative_path.is_absolute() or ".." in relative_path.parts:
-                raise TaskEvaluationLaunchError("immutable_input_directory_projection_path_escape")
-            projected = projection / relative_path
-            payload = staged.read_bytes()
-            _write_exclusive_private_bytes(projected, payload)
-            projected.chmod(0o600)
-            readback = projected.read_bytes()
-            digest = _DIGEST_PREFIX + hashlib.sha256(readback).hexdigest()
-            expected_digest = _DIGEST_PREFIX + hashlib.sha256(payload).hexdigest()
-            if readback != payload or digest != expected_digest:
-                raise TaskEvaluationLaunchError(
-                    "immutable_input_directory_projection_readback_mismatch"
-                )
-            projected_inputs.append(
-                {
-                    "source_path": str(source),
-                    "relative_path": str(relative_path),
-                    "projected_path": str(projected),
-                    "digest": digest,
-                    "size_bytes": len(readback),
-                }
-            )
-        directory_replacements[str(source_directory)] = str(projection)
-        directory_rows.append(
-            {
-                "source_directory": str(source_directory),
-                "staged_directory": str(projection),
-                "inputs": projected_inputs,
-                "allocator_argv_indices": [],
-            }
-        )
+    directory_replacements, directory_rows = stage_directory_projections(
+        stage_root, projections, staged_sources, digest_prefix=_DIGEST_PREFIX,
+    )
 
     rewritten: list[str] = []
     rewrite_indices: dict[str, list[int]] = {path: [] for path in replacements}
