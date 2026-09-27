@@ -331,6 +331,7 @@ def test_reclaim_ineffective_requires_zero_candidates_and_zero_reclaimed(
     summary = {
         "schema_version": "control_plane_storage_gc_summary.v1",
         "observed_at_epoch": 1000.0, "status": "applied",
+        "top_retained_reasons": [],
         "opt_in": {"evidence_offload": False, "scene_workspace_retirement": False},
         "phases": {
             "derived_directories": {"status": "applied", "candidate_bytes": candidate,
@@ -376,7 +377,7 @@ def test_reclaim_outlook_fails_closed_without_complete_applied_phase() -> None:
     assert reasons == [] and ineffective is False
 
 
-def test_reclaim_outlook_ranks_reasons_across_phases_by_total_bytes() -> None:
+def test_reclaim_outlook_does_not_claim_exact_top_reasons_from_legacy_capped_rows() -> None:
     summary = {
         "schema_version": "control_plane_storage_gc_summary.v1",
         "observed_at_epoch": 1000.0, "status": "applied",
@@ -398,8 +399,8 @@ def test_reclaim_outlook_ranks_reasons_across_phases_by_total_bytes() -> None:
     _outlook, reasons, ineffective = cap._reclaim_outlook(
         summary, now=1100.0, volume_growth="blocked",
     )
-    assert ineffective is True
-    assert reasons == ["shared", "single", "third"]
+    assert ineffective is False
+    assert reasons == []
 
 
 def test_reclaim_outlook_prefers_uncapped_global_reason_totals() -> None:

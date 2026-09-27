@@ -274,17 +274,19 @@ def _reclaim_outlook(
         "next_reclaim_epoch": observed + GC_SUMMARY_INTERVAL_SECONDS,
         "reclaimable_bytes": total_candidate,
     })
-    # The GC producer ranks reason totals before capping its per-phase display
-    # rows. Older summaries have only the capped phase rows until the next tick.
-    reason_rows = summary.get("top_retained_reasons", summary.get("top_retained"))
+    # Older summaries have only capped phase rows, which cannot prove the
+    # largest reasons across phases. Wait for a complete producer summary.
+    reason_rows = summary.get("top_retained_reasons")
+    if not isinstance(reason_rows, list):
+        return outlook, [], False
     reason_bytes: dict[str, int] = {}
-    if isinstance(reason_rows, list):
-        for row in reason_rows:
-            if (isinstance(row, Mapping)
+    for row in reason_rows:
+        if not (isinstance(row, Mapping)
                 and type(row.get("bytes")) is int and row["bytes"] > 0
                 and isinstance(row.get("reason"), str)
                 and re.fullmatch(r"[a-z][a-z0-9_:+.-]{0,79}", row["reason"])):
-                reason_bytes[row["reason"]] = reason_bytes.get(row["reason"], 0) + row["bytes"]
+            return outlook, [], False
+        reason_bytes[row["reason"]] = reason_bytes.get(row["reason"], 0) + row["bytes"]
     reasons = sorted(reason_bytes, key=lambda reason: (-reason_bytes[reason], reason))[:3]
     return outlook, reasons, total_candidate == total_reclaimed == 0
 
