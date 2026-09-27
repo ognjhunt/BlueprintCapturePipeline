@@ -1,5 +1,6 @@
 # Covers (for impacted-test selection):
 #   src/blueprint_pipeline/task_evaluation_result_residue_offload.py
+#   src/blueprint_pipeline/control_plane_storage_gc.py
 #   src/blueprint_pipeline/control_plane_evidence_offload.py
 """A sealed result run's residue moves to the artifact store behind a verified pointer, and comes back.
 
@@ -21,10 +22,13 @@ from types import SimpleNamespace
 import pytest
 
 from blueprint_pipeline import control_plane_evidence_offload as evidence
+from blueprint_pipeline import control_plane_storage_gc as gc_module
 from blueprint_pipeline import task_evaluation_configured_scene_object_store as store
 from blueprint_pipeline import task_evaluation_result_artifact_store as artifacts
 from blueprint_pipeline import task_evaluation_result_residue_offload as residue
 from blueprint_pipeline.control_plane_disk_budget import reserve_control_plane_disk
+from blueprint_pipeline.control_plane_replay_cache_gc import replay_cache_retention_setting
+from blueprint_pipeline.control_plane_storage_gc import RUN_ACK, run_storage_gc
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 from tests.test_task_evaluation_configured_scene_object_store import _ContentAddressedClient
 
@@ -595,3 +599,85 @@ def test_residue_pointer_is_not_an_unsafe_evidence_entry(tmp_path) -> None:
         evidence_roots=[f.evidence], hot_window_seconds=0, now=lambda: NOW, classifier=lambda *a, **k: None)
 
     assert set(manifest["retained_by_reason"]) == {"result_registry"}
+
+
+def _tick(f, pins, queue, **kwargs):
+    options = {"content_store_roots": [], "derived_roots": [], "queue_roots": [queue], "pins_root": pins,
+               "evidence_roots": [f.evidence], "hot_window_seconds": 2 * DAY, "now": lambda: NOW,
+               "classifier": lambda *a, **k: None, "publisher": f.publisher, **kwargs}
+    return run_storage_gc(**options)
+
+
+def test_gc_residue_offload_is_plan_only_until_enabled(tmp_path) -> None:
+    f = _sealed_run(tmp_path / "canaries")
+    pins, queue = tmp_path / "pins", tmp_path / "queue"
+    (queue / "pending").mkdir(parents=True)
+    residue_bytes = sum(len(data) for data in RESIDUE.values())
+
+    for apply, offload, enabled in ((True, True, False), (False, True, True), (True, False, True)):
+        report = _tick(f, pins, queue, apply=apply, ack=RUN_ACK if apply else "", offload_enabled=offload,
+                       result_residue_offload_enabled=enabled)
+        phase = report["result_residue_offload"]
+        assert (phase["status"], phase["enabled"]) == ("dry_run", enabled)
+        assert (phase["candidate_bytes"], phase["offloaded_bytes"]) == (residue_bytes, 0)
+        assert [row["status"] for row in phase["runs"]] == ["dry_run"]
+        assert report["opt_in"]["result_residue_offload"] is enabled
+        assert set(RESIDUE) <= set(_local_files(f.run)) and not f.pointer.exists()
+    assert f.client.upload_count == 1
+    kept = _kept_after_offload(f.run)
+
+    applied = _tick(f, pins, queue, apply=True, ack=RUN_ACK, offload_enabled=True,
+                    result_residue_offload_enabled=True)
+    phase = applied["result_residue_offload"]
+    assert (phase["status"], phase["enabled"]) == ("applied", True)
+    assert (phase["candidate_bytes"], phase["offloaded_bytes"]) == (residue_bytes, residue_bytes)
+    assert f.pointer.is_file() and not set(RESIDUE) & set(_local_files(f.run))
+    assert kept == set(_local_files(f.run))
+    assert "phase_errors" not in applied
+
+    again = _tick(f, pins, queue, apply=True, ack=RUN_ACK, offload_enabled=True,
+                  result_residue_offload_enabled=True)
+    assert [row["retained_reason"] for row in again["result_residue_offload"]["runs"]] == ["already_offloaded"]
+    assert f.client.upload_count == 2
+
+
+@pytest.mark.parametrize("raw", ["1", "true", "YES", " yes ", "", "0", "false", "no", "maybe", "2", "on"])
+def test_residue_setting_parses_like_other_opt_ins(raw) -> None:
+    ours = residue.result_residue_offload_setting({residue.RESIDUE_OFFLOAD_ENV: raw})
+    theirs = replay_cache_retention_setting({"BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_RETENTION": raw})
+
+    assert ours[0] is theirs[0]
+    assert ours[1] == (None if theirs[1] is None else residue.RESIDUE_OFFLOAD_INVALID)
+    # It is its own decision: the evidence offload opt-in never enables it.
+    assert residue.result_residue_offload_setting({"BLUEPRINT_CONTROL_PLANE_EVIDENCE_OFFLOAD": "1"}) == (False, None)
+
+
+def test_invalid_residue_setting_only_plans_and_alerts(tmp_path, monkeypatch, capsys) -> None:
+    f = _sealed_run(tmp_path / "canaries")
+    queue = tmp_path / "queue"
+    (queue / "pending").mkdir(parents=True)
+    for name in (gc_module.CONTENT_STORE_ROOTS_ENV, gc_module.DERIVED_ROOTS_ENV, gc_module.PLAN_ONLY_DERIVED_ROOTS_ENV,
+                 gc_module.SETTLEMENT_ROOTS_ENV, gc_module.SCRATCH_ROOTS_ENV, gc_module.WORKSPACE_BUNDLE_ROOTS_ENV,
+                 gc_module.SCENE_WORKSPACE_ROOTS_ENV, "BLUEPRINT_CONTROL_PLANE_GC_REPLAY_PARENT_ROOTS",
+                 gc_module.SCENE_WORKSPACE_RETIREMENT_ENV, "BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_RETENTION",
+                 gc_module.EVIDENCE_ABANDONED_AFTER_ENV):
+        monkeypatch.setenv(name, "")
+    monkeypatch.setenv(gc_module.QUEUE_ROOTS_ENV, str(queue))
+    monkeypatch.setenv(gc_module.EVIDENCE_ROOTS_ENV, str(f.evidence))
+    monkeypatch.setenv(gc_module.EVIDENCE_OFFLOAD_ENV, "1")
+    monkeypatch.setenv(residue.RESIDUE_OFFLOAD_ENV, "maybe")
+    monkeypatch.setattr(gc_module, "require_storage_class", lambda *a, **k: None)
+    # The bulk offload runs as the unit would; its publisher is the fixture's fake store.
+    monkeypatch.setattr(artifacts, "_artifact_object_store_client", lambda: (f.client, BUCKET))
+
+    code = gc_module.main(["run", "--apply", "--ack", RUN_ACK, "--pins-root", str(tmp_path / "pins")])
+
+    captured = capsys.readouterr()
+    report = json.loads(captured.out)
+    assert code == 0
+    assert "storage_gc_alert:result_residue_offload_setting_invalid" in captured.err
+    assert residue.RESIDUE_OFFLOAD_INVALID in report["alerts"]
+    phase = report["result_residue_offload"]
+    assert (phase["status"], phase["enabled"], phase["alerts"]) == ("dry_run", False, [residue.RESIDUE_OFFLOAD_INVALID])
+    assert report["opt_in"]["result_residue_offload"] is False
+    assert set(RESIDUE) <= set(_local_files(f.run)) and not f.pointer.exists()

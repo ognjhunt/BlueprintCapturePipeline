@@ -111,6 +111,7 @@ from typing import Any
 
 from . import completed_replay_cache_retention as held_files
 from . import control_plane_evidence_offload as evidence
+from .control_plane_replay_cache_gc import _truthy_setting
 from .control_plane_retained_receipt import RETAINED_RECEIPTS
 from .decision_evidence_contracts import canonical_digest
 from .task_evaluation_result_artifact_store import (
@@ -122,11 +123,14 @@ from .task_evaluation_result_artifact_store import (
 )
 
 REPORT_SCHEMA_VERSION = "control_plane_result_residue_offload.v1"
+PHASE_SCHEMA_VERSION = "control_plane_result_residue_offload_phase.v1"
 POINTER_SCHEMA_VERSION = "control_plane_result_residue_pointer.v1"
 RESTORE_SCHEMA_VERSION = "control_plane_result_residue_restore_receipt.v1"
 POINTER_SUFFIX = evidence.RESIDUE_POINTER_SUFFIX
 RESTORE_RECEIPT_SUFFIX = evidence.RESIDUE_RESTORE_SUFFIX
 APPLY_ACK = "offload-sealed-result-residue"
+RESIDUE_OFFLOAD_ENV = "BLUEPRINT_CONTROL_PLANE_GC_RESULT_RESIDUE_OFFLOAD"
+RESIDUE_OFFLOAD_INVALID = "result_residue_offload_setting_invalid"
 DEFAULT_HOT_WINDOW_SECONDS = 172800
 RESULT_DELIVERY = "artifacts/result_delivery"
 DISPATCH_RECEIPT = "dispatch_receipt.json"
@@ -158,6 +162,17 @@ _STRING_LITERAL = re.compile(r'"((?:[^"\\\n]|\\.){1,4096})"')
 
 class ResultResidueOffloadError(RuntimeError):
     """A residue could not be offloaded or restored safely."""
+
+
+def result_residue_offload_setting(environ: Mapping[str, str] = os.environ) -> tuple[bool, str | None]:
+    """Whether residue offload may apply, and an alert when its setting is invalid.
+
+    Its own owner decision, parsed like every other storage GC opt-in: only
+    ``1``, ``true`` or ``yes`` enables it; any other value leaves it planning and
+    is reported. The evidence offload opt-in never enables it.
+    """
+
+    return _truthy_setting(environ, RESIDUE_OFFLOAD_ENV, RESIDUE_OFFLOAD_INVALID)
 
 
 def _new_row(name: str, *, apply: bool, now: Callable[[], float]) -> dict[str, Any]:
@@ -894,14 +909,108 @@ def restore_result_residue(
     return receipt
 
 
+def residue_row(
+    run_root: str | Path,
+    bulk_result: Mapping[str, Any],
+    *,
+    apply: bool,
+    hot_window_seconds: int,
+    protection_checker: Callable[[Path], bool | str | None] | None,
+    publisher: Callable[..., Mapping[str, Any]] | None,
+    now: Callable[[], float],
+) -> dict[str, Any]:
+    """The storage GC's residue row for one registry run, given its per-artifact offload result.
+
+    Only a run whose bulk offload shows nothing left to move is handed to
+    ``offload_result_residue``. A bulk run kept hot or protected keeps its
+    residue for the same reason; one whose bulk offload failed or still has
+    candidates is ``bulk_offload_failed`` or ``bulk_not_remote``. An exception is
+    an ``error`` row with its type, errno and stage only.
+    """
+
+    name = Path(run_root).name
+    status = bulk_result.get("status")
+    skipped = [skip for skip in bulk_result.get("skipped") or () if not (
+        isinstance(skip, Mapping) and skip.get("reason") == "already_evicted")]
+    if status == "retained_hot_or_active":
+        reason = bulk_result.get("retained_reason")
+        return _retained(_new_row(name, apply=apply, now=now), reason if isinstance(reason, str) else "protected")
+    if status not in ("dry_run", "applied"):
+        return _retained(_new_row(name, apply=apply, now=now), "bulk_offload_failed")
+    if skipped or (status == "dry_run" and bulk_result.get("candidate_count") != 0):
+        return _retained(_new_row(name, apply=apply, now=now), "bulk_not_remote")
+    try:
+        return offload_result_residue(
+            run_root=run_root, apply=apply, ack=APPLY_ACK if apply else "", hot_window_seconds=hot_window_seconds,
+            protection_checker=protection_checker, publisher=publisher, now=now)
+    except Exception as exc:  # noqa: BLE001 - one run never costs the others
+        return {"status": "error", "run": name, **offload_failure(exc, "residue")}
+
+
+def residue_phase(
+    rows: Sequence[Mapping[str, Any]], *, enabled: bool, applying: bool, alert: str | None = None,
+) -> dict[str, Any]:
+    """The storage GC phase entry: what the residue offload planned, moved and kept, and why.
+
+    ``retained_by_reason`` counts each retained run under its reason (bytes null
+    unless its members were listed) and each skipped member under
+    ``member_skipped:<reason>`` with its bytes, the reason without the exception
+    type a run row adds to it. A run that raised is listed under ``errors`` and
+    makes ``candidate_bytes`` unknown in the summary.
+    """
+
+    retained: dict[str, dict[str, Any]] = {}
+    errors: list[dict[str, Any]] = []
+
+    def keep(reason: str, count: int, size: int | None) -> None:
+        counted = retained.setdefault(reason, {"count": 0, "bytes": 0})
+        counted["count"] += count
+        counted["bytes"] = None if size is None or counted["bytes"] is None else counted["bytes"] + size
+
+    for row in rows:
+        if row.get("status") == "error":
+            errors.append({key: row.get(key) for key in ("run", "error_type", "errno", "stage")})
+            keep("residue_offload_failed", 1, None)
+            continue
+        if row.get("status") == "retained":
+            keep(str(row.get("retained_reason")), 1, row.get("candidate_bytes"))
+        for reason, counted in (row.get("skipped_by_reason") or {}).items():
+            # ``recheck_failed:OSError`` counts as ``recheck_failed``: the summary copies only
+            # typed lower-case reasons, and the run row keeps the exception type.
+            keep(f"member_skipped:{reason.split(':', 1)[0]}", int(counted["count"]), int(counted["bytes"]))
+    phase: dict[str, Any] = {
+        "schema_version": PHASE_SCHEMA_VERSION,
+        "enabled": bool(enabled),
+        "status": "applied" if applying else "dry_run",
+        "run_count": len(rows),
+        "candidate_count": sum(int(row.get("candidate_count") or 0) for row in rows),
+        "candidate_bytes": sum(int(row.get("candidate_bytes") or 0) for row in rows),
+        "offloaded_count": sum(int(row.get("offloaded_count") or 0) for row in rows),
+        "offloaded_bytes": sum(int(row.get("offloaded_bytes") or 0) for row in rows),
+        "retained_by_reason": retained,
+        "runs": list(rows[:_MAX_LISTED]),
+        "omitted_runs_count": max(0, len(rows) - _MAX_LISTED),
+        "errors": errors[:_MAX_LISTED],
+        "omitted_errors_count": max(0, len(errors) - _MAX_LISTED),
+    }
+    if alert:
+        phase["alerts"] = [alert]
+    return phase
+
+
 __all__ = [
     "APPLY_ACK",
     "POINTER_SCHEMA_VERSION",
     "POINTER_SUFFIX",
     "READER_REOPENED_DIRECTORIES",
     "READER_REOPENED_NAMES",
+    "RESIDUE_OFFLOAD_ENV",
+    "RESIDUE_OFFLOAD_INVALID",
     "RESTORE_RECEIPT_SUFFIX",
     "ResultResidueOffloadError",
     "offload_result_residue",
+    "residue_phase",
+    "residue_row",
     "restore_result_residue",
+    "result_residue_offload_setting",
 ]
