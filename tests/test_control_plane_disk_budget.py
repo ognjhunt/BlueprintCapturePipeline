@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 from collections import namedtuple
 from pathlib import Path
 
@@ -14,6 +15,7 @@ import pytest
 
 from blueprint_pipeline import control_plane_disk_budget as disk_budget
 from blueprint_pipeline import control_plane_disk_footprints as footprints
+from blueprint_pipeline.control_plane_disk_reservation_heartbeat import keep_reservation_live
 from blueprint_pipeline.control_plane_disk_budget import (
     ControlPlaneDiskBudgetError,
     disk_headroom,
@@ -122,6 +124,67 @@ def test_reservation_accounts_for_live_concurrent_reservations(tmp_path) -> None
         )
     first.release()
     assert not first.path.exists()
+
+
+def test_reservation_renewal_keeps_live_bytes_past_original_expiry(tmp_path) -> None:
+    ledger = tmp_path / "ledger"
+    clock = [100.0]
+    def usage(_path):
+        return Usage(100 * GIB, 60 * GIB, 40 * GIB)
+    reservation = reserve_control_plane_disk(
+        "handoff_staging", target_root=tmp_path, expected_bytes=20 * GIB,
+        reservation_root=ledger, disk_usage=usage, now=lambda: clock[0],
+        pid_alive=lambda _pid: True, ttl_seconds=120,
+    )
+    original_expiry = json.loads(reservation.path.read_text())["expires_at_epoch"]
+    clock[0] = 190.0
+    reservation.renew()
+    renewed_expiry = json.loads(reservation.path.read_text())["expires_at_epoch"]
+    assert renewed_expiry == 310.0 > original_expiry
+    clock[0] = 225.0
+    with pytest.raises(ControlPlaneDiskBudgetError, match="control_plane_disk_budget_exceeded"):
+        reserve_control_plane_disk(
+            "launch_dispatch", target_root=tmp_path, expected_bytes=20 * GIB,
+            reservation_root=ledger, disk_usage=usage, now=lambda: clock[0],
+            pid_alive=lambda _pid: True,
+        )
+    reservation.release()
+
+
+def test_expired_reservation_cannot_be_resurrected_by_renewal(tmp_path) -> None:
+    clock = [100.0]
+    reservation = reserve_control_plane_disk(
+        "handoff_staging", target_root=tmp_path, expected_bytes=GIB,
+        reservation_root=tmp_path / "ledger", ttl_seconds=120,
+        disk_usage=lambda _path: Usage(100 * GIB, 60 * GIB, 40 * GIB),
+        now=lambda: clock[0],
+    )
+    clock[0] = 221.0
+    with pytest.raises(ControlPlaneDiskBudgetError, match="reservation_expired"):
+        reservation.renew()
+    reservation.release()
+
+
+def test_heartbeat_renews_during_a_blocked_copy(tmp_path, monkeypatch) -> None:
+    clock = [100.0]
+    reservation = reserve_control_plane_disk(
+        "handoff_staging", target_root=tmp_path, expected_bytes=GIB,
+        reservation_root=tmp_path / "ledger", ttl_seconds=120,
+        disk_usage=lambda _path: Usage(100 * GIB, 60 * GIB, 40 * GIB),
+        now=lambda: clock[0],
+    )
+    renewed = threading.Event()
+    original = reservation.renew
+
+    def renew_and_signal():
+        original()
+        renewed.set()
+
+    monkeypatch.setattr(reservation, "renew", renew_and_signal)
+    with reservation, keep_reservation_live(reservation, interval_seconds=0.01):
+        clock[0] = 190.0
+        assert renewed.wait(timeout=1.0)
+        assert json.loads(reservation.path.read_text())["expires_at_epoch"] == 310.0
 
 
 def test_expired_or_dead_reservations_do_not_consume_headroom(tmp_path) -> None:

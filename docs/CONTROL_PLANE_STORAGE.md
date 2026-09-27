@@ -53,6 +53,9 @@ absolute write root; unspecified roles use the default target. A malformed map
 fails closed for the whole chain. The launch-preparation, launch-activation, and
 task-evaluation-launch intakes refuse a submission (HTTP 503, typed blocker)
 while its role is refused.
+The staging reservation is renewed while a blob download is in progress, so a
+long download does not release its bytes merely because the original lease
+period elapsed.
 
 Declared ceilings can be tuned with
 `BLUEPRINT_CONTROL_PLANE_DISK_FOOTPRINT_<ROLE>_BYTES`.

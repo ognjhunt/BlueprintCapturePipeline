@@ -16,6 +16,7 @@ import fcntl
 import json
 import os
 import shutil
+import stat
 import tempfile
 import time
 import uuid
@@ -275,7 +276,52 @@ class DiskReservation:
     # it were not counted, so the sample cannot stand for the job's footprint.
     measurement_incomplete: bool = False
     started_at_epoch: float = 0.0
+    ttl_seconds: int = DEFAULT_TTL_SECONDS
     clock: Callable[[], float] = field(default=time.time, repr=False, compare=False)
+
+    def renew(self) -> None:
+        """Extend a live reservation under the admission lock without changing its bytes."""
+
+        if self.released or self.reservation_root is None:
+            raise ControlPlaneDiskBudgetError("control_plane_disk_budget_reservation_released")
+        ledger = self.reservation_root
+        with os.fdopen(open_ledger_lock(ledger, require_mode=True), "a+b") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            try:
+                descriptor = os.open(self.path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                with os.fdopen(descriptor, "rb") as stream:
+                    if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                        raise ValueError("reservation is not a regular file")
+                    payload = json.loads(stream.read(16 * 1024 + 1))
+                if (
+                    not isinstance(payload, dict)
+                    or payload.get("token") != self.token
+                    or payload.get("role") != self.role
+                    or payload.get("pid") != os.getpid()
+                    or payload.get("device") != self.device
+                    or payload.get("expected_bytes") != self.expected_bytes
+                ):
+                    raise ValueError("reservation identity changed")
+            except (OSError, ValueError, TypeError) as exc:
+                raise ControlPlaneDiskBudgetError(
+                    "control_plane_disk_budget_reservation_renewal_invalid"
+                ) from exc
+            moment = self.clock()
+            if float(payload.get("expires_at_epoch", 0)) <= moment:
+                raise ControlPlaneDiskBudgetError("control_plane_disk_budget_reservation_expired")
+            payload["expires_at_epoch"] = moment + self.ttl_seconds
+            descriptor, temporary_name = tempfile.mkstemp(prefix=".reservation-", dir=ledger)
+            temporary = Path(temporary_name)
+            try:
+                with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                    json.dump(payload, stream, sort_keys=True, separators=(",", ":"))
+                    stream.write("\n")
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                temporary.chmod(0o640)
+                os.replace(temporary, self.path)
+            finally:
+                temporary.unlink(missing_ok=True)
 
     def bind_workspace(self, path: str | Path, *, fresh: bool | None = None) -> None:
         """Measure growth of ``path`` from now on (a workspace created after admission).
@@ -565,6 +611,7 @@ def reserve_control_plane_disk(
         fresh=workspace_fresh,
         measurement_incomplete=not baseline_complete,
         started_at_epoch=float(started),
+        ttl_seconds=ttl_seconds,
         clock=now,
     )
 

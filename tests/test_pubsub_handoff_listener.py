@@ -1,3 +1,6 @@
+# Covers (for impacted-test selection):
+#   src/blueprint_pipeline/pubsub_handoff_disk_admission.py
+#   src/blueprint_pipeline/control_plane_disk_reservation_heartbeat.py
 import fcntl
 import json
 import logging
@@ -16,6 +19,7 @@ import pytest
 import google.cloud
 
 import blueprint_pipeline.pubsub_handoff_listener as listener_module
+import blueprint_pipeline.pubsub_handoff_disk_admission as disk_admission
 from blueprint_pipeline.control_plane_disk_budget import ControlPlaneDiskBudgetError
 import blueprint_pipeline.site_package_orchestrator as orchestrator
 from blueprint_pipeline.capture_orchestrator import run_capture_pipeline
@@ -45,7 +49,7 @@ def _local_disk_reservation_root(tmp_path, monkeypatch):
     monkeypatch.setenv(
         "BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT", str(tmp_path / "disk-reservations")
     )
-    actual_reserve = listener_module.reserve_control_plane_disk
+    actual_reserve = disk_admission.reserve_control_plane_disk
 
     def reserve_on_roomy_test_disk(role, **kwargs):
         return actual_reserve(
@@ -56,7 +60,7 @@ def _local_disk_reservation_root(tmp_path, monkeypatch):
             **kwargs,
         )
 
-    monkeypatch.setattr(listener_module, "reserve_control_plane_disk", reserve_on_roomy_test_disk)
+    monkeypatch.setattr(disk_admission, "reserve_control_plane_disk", reserve_on_roomy_test_disk)
 
 
 # Real iOS raw bundle namelist per CaptureRawContractV3Validator (no pipeline_handoff.json).
@@ -1953,7 +1957,8 @@ def test_staging_reserves_only_blobs_it_will_download(tmp_path, monkeypatch):
         reservations.append((role, kwargs))
         return nullcontext()
 
-    monkeypatch.setattr(listener_module, "reserve_control_plane_disk", reserve, raising=False)
+    monkeypatch.setattr(disk_admission, "reserve_control_plane_disk", reserve)
+    monkeypatch.setattr(disk_admission, "keep_reservation_live", lambda _reservation: nullcontext())
     stage_handoff_capture(_staging_handoff(), storage_root=tmp_path, storage_client=client)
     reservations.clear()
     changed.generation = 9
@@ -1979,7 +1984,7 @@ def test_full_volume_defers_staging_without_acknowledging(tmp_path, monkeypatch)
     def refuse(*_args, **_kwargs):
         raise ControlPlaneDiskBudgetError("control_plane_disk_budget_exceeded")
 
-    monkeypatch.setattr(listener_module, "reserve_control_plane_disk", refuse, raising=False)
+    monkeypatch.setattr(disk_admission, "reserve_control_plane_disk", refuse)
     assert _pull(tmp_path) == 0
     assert subscriber.acknowledged == []
     assert results[0]["status"] == "retryable_blocked"
