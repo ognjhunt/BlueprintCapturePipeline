@@ -532,7 +532,8 @@ def _residue_summary(*, evidence_enabled=True, residue_enabled=True, phase_enabl
                                     "removed_or_offloaded_bytes": 0},
             "result_residue_offload": {"status": "applied", "enabled": phase_enabled,
                                        "candidate_bytes": 2 * GIB,
-                                       "removed_or_offloaded_bytes": 0},
+                                       "removed_or_offloaded_bytes": 0,
+                                       "retained_by_reason": {}},
         },
     }
 
@@ -604,6 +605,49 @@ def test_plan_only_replay_estimates_and_released_pin_counts_are_not_reclaim_byte
     assert outlook["reclaimable_bytes"] == 0
     assert outlook["sources"]["replay_caches"] is None
     assert ineffective is True
+
+
+@pytest.mark.parametrize(("reclaimed", "remaining"), [(2 * GIB, 0), (GIB, GIB)])
+def test_already_offloaded_residue_cannot_be_promised_again(reclaimed, remaining) -> None:
+    summary = _residue_summary()
+    summary["phases"]["result_residue_offload"]["removed_or_offloaded_bytes"] = reclaimed
+    outlook, _reasons, ineffective = cap._reclaim_outlook(
+        summary, now=1100.0, volume_growth="not_configured",
+    )
+    assert outlook["reclaimable_bytes"] == remaining
+    assert outlook["sources"]["result_residue_offload"] == remaining
+    assert ineffective is False  # Successful work is different from nothing eligible.
+    assert cap.capacity_eta(remaining + 1, summary={"reclaim_outlook": outlook}, now=1100.0) == {
+        "eta_epoch": None, "eta_basis": "operator_action_required",
+    }
+
+
+@pytest.mark.parametrize("reason", [
+    "publication_failed", "run_changed_or_active", "member_skipped:recheck_failed",
+])
+def test_retained_residue_does_not_supply_an_actionable_byte_forecast(reason) -> None:
+    summary = _residue_summary()
+    summary["phases"]["result_residue_offload"]["retained_by_reason"] = {
+        reason: {"count": 1, "bytes": GIB},
+    }
+    outlook, reasons, ineffective = cap._reclaim_outlook(
+        summary, now=1100.0, volume_growth="not_configured",
+    )
+    assert outlook["reclaimable_bytes"] is None
+    assert reasons == [] and ineffective is False
+    assert cap.capacity_eta(GIB, summary={"reclaim_outlook": outlook}, now=1100.0) == {
+        "eta_epoch": None, "eta_basis": "unknown",
+    }
+
+
+def test_residue_without_retained_reason_accounting_cannot_prove_actionable_bytes() -> None:
+    summary = _residue_summary()
+    del summary["phases"]["result_residue_offload"]["retained_by_reason"]
+    outlook, _reasons, ineffective = cap._reclaim_outlook(
+        summary, now=1100.0, volume_growth="not_configured",
+    )
+    assert outlook["reclaimable_bytes"] is None
+    assert ineffective is False
 
 
 def test_controller_writes_evidence_alerts_on_escalation_and_repeats_hourly_while_critical(

@@ -262,6 +262,12 @@ def _reclaim_outlook(
         if (opt_in.get("evidence_offload") is not True or residue_switch is not True
                 or not isinstance(residue, Mapping) or residue.get("enabled") is not True):
             return outlook, [], False
+        # The producer's candidate total may include rows retained after a
+        # publication or reference recheck. It does not partition those bytes
+        # from actionable rows, so a mixed or unsized result remains unknown.
+        retained = residue.get("retained_by_reason")
+        if not isinstance(retained, Mapping) or retained:
+            return outlook, [], False
         enabled.append("result_residue_offload")
     # Pin releases remove no bytes. Derived-directory candidates already
     # account for any reproducible files they make eligible in this tick.
@@ -269,6 +275,7 @@ def _reclaim_outlook(
         return outlook, [], False
     total_candidate = 0
     total_reclaimed = 0
+    total_remaining = 0
     for name in enabled:
         phase = phases.get(name)
         if (
@@ -283,13 +290,17 @@ def _reclaim_outlook(
             or type(reclaimed) is not int or reclaimed < 0
         ):
             return outlook, [], False
-        sources[name] = candidate
+        # Candidate totals describe the pre-apply plan. Completed reclamation
+        # cannot be promised again to a scene waiting after this observation.
+        remaining = max(0, candidate - reclaimed)
+        sources[name] = remaining
         total_candidate += candidate
         total_reclaimed += reclaimed
+        total_remaining += remaining
     outlook.update({
         "observed_at_epoch": observed,
         "next_reclaim_epoch": observed + GC_SUMMARY_INTERVAL_SECONDS,
-        "reclaimable_bytes": total_candidate,
+        "reclaimable_bytes": total_remaining,
     })
     # Older summaries have only capped phase rows, which cannot prove the
     # largest reasons across phases. Wait for a complete producer summary.
