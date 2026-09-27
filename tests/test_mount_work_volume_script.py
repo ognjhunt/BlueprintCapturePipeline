@@ -30,9 +30,13 @@ BULK_WORK_ROOTS = frozenset(
 )
 
 
-def _run(*args: str, path_first: Path | None = None) -> subprocess.CompletedProcess:
-    env = None if path_first is None else {**os.environ, "PATH": f"{path_first}:{os.environ['PATH']}"}
-    return subprocess.run(["bash", str(SCRIPT), *args], capture_output=True, text=True, check=False, timeout=120, env=env)
+def _run(*args: str, path_first: Path | None = None, **env: str) -> subprocess.CompletedProcess:
+    environment = {**os.environ, **env}
+    if path_first is not None:
+        environment["PATH"] = f"{path_first}:{os.environ['PATH']}"
+    return subprocess.run(
+        ["bash", str(SCRIPT), *args], capture_output=True, text=True, check=False, timeout=120, env=environment
+    )
 
 
 def _state(tmp_path: Path) -> Path:
@@ -670,3 +674,38 @@ def test_a_failed_unmount_binds_back_parents_before_the_binds_inside_them(tmp_pa
     assert [line.split()[1] for line in out if line.startswith("unbound")] == [str(state / levels[2]), str(state / levels[1])]
     assert [line.split()[2] for line in out if line.startswith("bound back")] == [str(state / levels[1]), str(state / levels[2])]
     assert sorted(bound.read_text(encoding="utf-8").splitlines()) == sorted(lines)
+
+
+# mv that refuses one rename of a swap (FAIL_RENAME=aside: the root to its kept
+# name; into-place: the new mount point to the root) and is the real mv otherwise.
+_MV = """src=; dst=
+for arg in "$@"; do src=$dst; dst=$arg; done
+case "$FAIL_RENAME:$src:$dst" in
+  aside:*:*.migrated-to-volume|into-place:*.new-mount-point:*) echo "mv: cannot rename $src" >&2; exit 1 ;;
+esac
+exec /bin/mv "$@"
+"""
+
+
+@pytest.mark.parametrize(
+    ("failing", "reason", "survivor"),
+    [
+        ("aside", "could not move", "task-evaluation-inputs/prepared-references/payload.bin"),
+        ("into-place", "could not put the new mount point in place", "task-evaluation-inputs.migrated-to-volume/prepared-references/payload.bin"),
+    ],
+)
+def test_a_failed_swap_rename_refuses_with_a_reason_and_keeps_the_bytes(
+    tmp_path: Path, failing: str, reason: str, survivor: str
+) -> None:
+    state = _state(tmp_path)
+    _stub(tmp_path, "mv", _MV)
+
+    applied = _run(
+        "--device", "/dev/null", "--root-prefix", str(tmp_path), "--apply", "--ack", ACK,
+        path_first=tmp_path / "bin", FAIL_RENAME=failing,
+    )
+
+    assert applied.returncode == 2, applied.stderr + applied.stdout
+    assert f"refusing: {reason}" in applied.stderr
+    assert (state / survivor).read_bytes() == b"x" * 4096
+    assert "leaving the worker units stopped" in applied.stderr, "a half-done swap keeps writers away"

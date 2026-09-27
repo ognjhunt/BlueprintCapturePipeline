@@ -825,9 +825,10 @@ swap_root() {  # index
   fi
   # Two renames and a mount.  Intake stays up and may recreate a cache root it
   # writes; if it does so in between, the second rename fails instead of landing
-  # inside it.
-  rename_to "${root}" "${kept}"
-  rename_to "${STAGED}" "${root}"
+  # inside it.  Either failure leaves the swap half done, so SWAPPING stays set.
+  rename_to "${root}" "${kept}" || refuse 2 "could not move ${root} aside to ${kept}" "${root} itself is unchanged"
+  rename_to "${STAGED}" "${root}" ||
+    refuse 2 "could not put the new mount point in place at ${root}" "the original is at ${kept}, and the mount point at ${STAGED}"
   STAGED=""
   bind_at "${dest}" "${host}"
   fstab_install
