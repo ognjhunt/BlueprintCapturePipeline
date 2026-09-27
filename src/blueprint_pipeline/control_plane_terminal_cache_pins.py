@@ -20,9 +20,11 @@ candidates are listed with ``"enabled": false``:
 * ``activation_expired_unlaunched``: an activation pin with no run directory
   and no pointer under any of its evidence names in any evidence root, whose
   one sealed result in the activation queue says it was prepared more than a
-  week and a day ago. Its mutation window has lapsed and launch re-validates
-  the window, so it can never start. Without an activation queue root this
-  proof is off.
+  week and a day ago, and whose standing authorization expired more than a
+  day ago. The mutation window (a week at most) has lapsed, and launch
+  admission checks that authorization, which the activation request dates
+  with no maximum; past both, it can never start. Without an activation queue
+  root this proof is off.
 
 Both activation proofs look for a run under every name an activation can
 launch as (``_launch_evidence_names``): its id, ``<id>-launch``, and the bounded
@@ -69,11 +71,13 @@ _MAX_ROWS = 200
 #: A shared mutation window is valid for at most a week and launch re-validates
 #: it, so a day past that nothing it released can still be consumed.
 MAXIMUM_MUTATION_WINDOW_SECONDS = 604_800
-LAPSE_SECONDS = MAXIMUM_MUTATION_WINDOW_SECONDS + 86_400
+LAPSE_GRACE_SECONDS = 86_400
+LAPSE_SECONDS = MAXIMUM_MUTATION_WINDOW_SECONDS + LAPSE_GRACE_SECONDS
 #: The queue root whose ``results`` the activation worker seals; it is also a queue root.
 ACTIVATION_QUEUE_NAME = "task-evaluation-launch-activations"
-#: ``task_evaluation_launch_activation_queue.RESULT_SCHEMA_VERSION``, without importing its contracts.
+#: ``task_evaluation_launch_activation_queue.RESULT_SCHEMA_VERSION`` and ``ENVELOPE_SCHEMA_VERSION``.
 ACTIVATION_RESULT_SCHEMA_VERSION = "task_evaluation_launch_activation_result.v1"
+ACTIVATION_ENVELOPE_SCHEMA_VERSION = "task_evaluation_launch_activation_envelope.v1"
 #: The statuses the activation worker writes, only ever for an activation it prepared,
 #: the one terminal state in which it pins the activation.
 PREPARED_ACTIVATION_STATUSES = frozenset({
@@ -295,8 +299,38 @@ def _expired_unlaunched(owner, activation_queue_root, *, now):
     written = path.lstat().st_mtime
     if now - written < LAPSE_SECONDS:
         return None, "activation_result_not_stale"
+    expires, reason = _authorization_expiry(owner, Path(activation_queue_root) / "prepared" / path.name)
+    if expires is None:
+        return None, reason
+    if now - expires < LAPSE_GRACE_SECONDS:
+        return None, "activation_authorization_not_lapsed"
     return {"kind": "activation_expired_unlaunched", "result_name": path.name, "result_digest": value["result_digest"],
-            "result_status": status, "result_mtime_epoch": written}, None
+            "result_status": status, "result_mtime_epoch": written, "authorization_expires_epoch": expires}, None
+
+
+def _authorization_expiry(owner, envelope_path):
+    """When the standing authorization the activation published expires, from its prepared envelope.
+
+    Launch admission checks that authorization, not the mutation window, and the
+    request sets its expiry with no maximum. It is parsed with the admission's
+    own parser; an envelope that is missing, unsealed, someone else's or without
+    an expiry proves nothing.
+    """
+
+    from .task_evaluation_standing_launch_authorization import _parse_timestamp
+
+    if not _present(envelope_path):
+        return None, "activation_envelope_missing"
+    envelope = _read(envelope_path)
+    request = envelope.get("request") if envelope is not None else None
+    authorization = request.get("authorization") if isinstance(request, dict) else None
+    expires = (_parse_timestamp(authorization.get("standing_authorization_expires_at"))
+               if isinstance(authorization, dict) else None)
+    if (expires is None or envelope.get("schema_version") != ACTIVATION_ENVELOPE_SCHEMA_VERSION
+            or envelope.get("envelope_digest") != canonical_digest(envelope, digest_field="envelope_digest")
+            or request.get("activation_id") != owner):
+        return None, "activation_envelope_invalid"
+    return expires.timestamp(), None
 
 
 def _activation_proof(pin, live_pins, *, evidence_roots, activation_queue_root, hot_window_seconds, classifier, now,

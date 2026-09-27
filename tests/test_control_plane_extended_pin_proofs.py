@@ -373,8 +373,15 @@ def _activation_queue(tmp_path: Path, args: dict) -> Path:
 
 
 def _activation_result(queue: Path, owner: str, *, status: str = "profile_authority_materialized_no_execution",
-                       age: float = LAPSE + DAY) -> Path:
-    """The result the activation worker seals beside its queue, named for the activation's queue envelope."""
+                       age: float = LAPSE + DAY, authorization_expires: float | None = NOW - LAPSE) -> Path:
+    """The result the activation worker seals beside its queue, named for the activation's queue envelope.
+
+    The envelope it prepared goes to ``prepared/`` under the same name, its
+    request carrying the standing authorization's expiry
+    (``authorization_expires``; None leaves the field out).
+    """
+
+    from datetime import datetime, timezone
 
     from blueprint_pipeline.task_evaluation_launch_activation_queue import _queue_filename
 
@@ -385,6 +392,13 @@ def _activation_result(queue: Path, owner: str, *, status: str = "profile_author
     path = queue / "results" / _queue_filename(activation_id=owner, request_digest=request_digest)
     path.write_text(json.dumps(value), encoding="utf-8")
     os.utime(path, (NOW - age, NOW - age))
+    authorization = {} if authorization_expires is None else {
+        "standing_authorization_expires_at": datetime.fromtimestamp(authorization_expires, tz=timezone.utc).isoformat()}
+    envelope = {"schema_version": "task_evaluation_launch_activation_envelope.v1", "request_digest": request_digest,
+                "request": {"activation_id": owner, "authorization": authorization}, "envelope_digest": ""}
+    envelope["envelope_digest"] = canonical_digest(envelope, digest_field="envelope_digest")
+    (queue / "prepared").mkdir(exist_ok=True)
+    (queue / "prepared" / path.name).write_text(json.dumps(envelope), encoding="utf-8")
     return path
 
 
@@ -420,7 +434,7 @@ def test_expired_unlaunched_activation_releases_its_pin(tmp_path) -> None:
     assert set(_states(args).values()) == {"released"}
     proof = applied["candidates"][1]["proof"]
     assert proof["result_name"] == f"act-profile-{hashlib.sha256(b'act-profile').hexdigest()}.json"
-    assert proof["result_mtime_epoch"] == NOW - LAPSE - DAY
+    assert (proof["result_mtime_epoch"], proof["authorization_expires_epoch"]) == (NOW - LAPSE - DAY, NOW - LAPSE)
     assert not any("/" in str(value) for value in proof.values())
 
 
@@ -491,6 +505,40 @@ def test_unprepared_or_unreadable_activation_result_keeps_its_pin(tmp_path, reas
         "missing": "activation_result_missing", "other_owner": "activation_result_missing",
         "duplicate": "activation_result_ambiguous", "linked": "activation_result_invalid",
         "unconfigured": "activation_queue_unconfigured", "root_linked": "evidence_root_unavailable"}[reason]
+    assert result["candidates"] == [] and _states(args)[("activation", "act-u")] == "live"
+
+
+@pytest.mark.parametrize("reason", [
+    "in_force", "lapsed_hours_ago", "no_expiry", "envelope_missing", "envelope_tampered", "other_activation"])
+def test_a_standing_authorization_still_in_force_keeps_an_unlaunched_activation_pinned(tmp_path, reason) -> None:
+    """Launch admission checks the standing authorization the activation published, not the mutation window.
+
+    Its expiry comes from the activation request, with no maximum, so an
+    activation can launch long after its window lapsed; the proof waits a day
+    past that expiry too, read from the sealed envelope the worker prepared.
+    """
+
+    args = _args(tmp_path)
+    queue = _activation_queue(tmp_path, args)
+    expires = {"in_force": NOW + DAY, "lapsed_hours_ago": NOW - 3600, "no_expiry": None}.get(reason, NOW - LAPSE)
+    result_path = _activation_result(queue, "act-u", authorization_expires=expires)
+    envelope = queue / "prepared" / result_path.name
+    if reason == "envelope_missing":
+        envelope.unlink()
+    if reason in ("envelope_tampered", "other_activation"):
+        value = json.loads(envelope.read_text(encoding="utf-8"))
+        value["request"]["activation_id"] = "act-other"
+        if reason == "other_activation":
+            value["envelope_digest"] = canonical_digest(value, digest_field="envelope_digest")
+        envelope.write_text(json.dumps(value), encoding="utf-8")
+    _pin(args, "activation", "act-u", age=LAPSE + DAY)
+
+    result = reconcile_terminal_cache_pins(**args, apply=True, extended_proofs_enabled=True)
+
+    assert _kept(result)[("activation", "act-u")] == {
+        "in_force": "activation_authorization_not_lapsed", "lapsed_hours_ago": "activation_authorization_not_lapsed",
+        "no_expiry": "activation_envelope_invalid", "envelope_missing": "activation_envelope_missing",
+        "envelope_tampered": "activation_envelope_invalid", "other_activation": "activation_envelope_invalid"}[reason]
     assert result["candidates"] == [] and _states(args)[("activation", "act-u")] == "live"
 
 
@@ -630,6 +678,7 @@ def test_prepared_statuses_are_exactly_those_the_activation_worker_writes() -> N
                 written.add(fields["status"].value)
 
     assert terminal_pins.ACTIVATION_RESULT_SCHEMA_VERSION == activation_queue.RESULT_SCHEMA_VERSION
+    assert terminal_pins.ACTIVATION_ENVELOPE_SCHEMA_VERSION == activation_queue.ENVELOPE_SCHEMA_VERSION
     assert written - {"blocked"} == terminal_pins.PREPARED_ACTIVATION_STATUSES
     assert terminal_pins.activation_queue_root_of(["/q/task-evaluation-launches", "/q/task-evaluation-launch-activations/"]) == Path(
         "/q/task-evaluation-launch-activations")

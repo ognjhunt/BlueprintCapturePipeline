@@ -541,10 +541,12 @@ One tick runs nine phases in order:
    window, with no whole-run pointer; without the receipt the canary dispatcher
    can still recover a stranded delivery from the launch set),
    `activation_expired_unlaunched` (no run directory or pointer under
-   any of its evidence names in any evidence root, and the activation queue's
-   one sealed result for it is in a prepared status and older than 604,800 +
-   86,400 seconds: a shared mutation window lives at most a week and launch
-   re-validates it), and `unconsumed_stale_pin` (a preparation or compilation
+   any of its evidence names in any evidence root, the activation queue's one
+   sealed result for it is in a prepared status and older than 604,800 + 86,400
+   seconds, since a shared mutation window lives at most a week, and the
+   standing authorization its prepared envelope dates expired more than a day
+   ago, since launch admission checks that authorization and its request sets
+   it with no maximum), and `unconsumed_stale_pin` (a preparation or compilation
    pin no live pin depends on, created more than eight days ago, naming only
    `cache` paths). An activation's evidence names are its id, `<id>-launch`
    (configured-controls activations such as `<run>-controls` launch that way
@@ -615,7 +617,9 @@ so each manifest (and its receipt) also records `walked_file_count` and
   reasons (`activation_queue_unconfigured`, `activation_queue_unavailable`,
   `activation_result_missing`, `activation_result_ambiguous`,
   `activation_result_invalid`, `activation_result_not_prepared`,
-  `activation_result_not_stale`). A pin a proof could not read is
+  `activation_result_not_stale`, `activation_envelope_missing`,
+  `activation_envelope_invalid`, `activation_authorization_not_lapsed`). A pin
+  a proof could not read is
   `proof_error` with its `error_type`. The report also counts candidates by
   proof and released pins by kind, dependencies included. `candidates` and
   `kept` list at most 200 rows each, with `omitted_candidates_count` and
