@@ -547,6 +547,53 @@ def test_parent_replay_releases_a_partial_copy_when_the_scratch_disk_fills(tmp_p
     assert _tree_digest(input_root) == before
 
 
+def test_a_release_that_fails_is_recorded_and_the_report_still_written(tmp_path: Path, monkeypatch) -> None:
+    request, parent_queue, input_root, children = _materialized_parent(tmp_path)
+    _store_on_another_volume(monkeypatch, input_root / "content-addressed" / "sha256")
+    monkeypatch.setenv(replay.driver.CHILD_QUEUE_ENV, str(children))
+    real_rmtree = shutil.rmtree
+
+    def rmtree(path, *args, **kwargs):
+        if Path(path).name == "prepared-references":
+            raise PermissionError(errno.EACCES, "Permission denied")
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(replay.shutil, "rmtree", rmtree)
+
+    report = _replay_materialized_parent(tmp_path, request, parent_queue, input_root, children)
+
+    refusal = {"files": 0, "inodes": 0, "bytes": 0, "refused": "replay_scratch_inputs_release_failed:PermissionError"}
+    assert (report["status"], report["scratch_inputs_released"]) == ("waiting_for_child", refusal)
+    assert json.loads(Path(report["report_path"]).read_text(encoding="utf-8"))["scratch_inputs_released"] == refusal
+    assert (Path(report["report_path"]).parent / "prepared-references").is_dir(), "nothing is claimed for what stayed"
+
+
+def test_a_failing_release_never_masks_the_replays_own_error(tmp_path: Path, monkeypatch) -> None:
+    request, parent_queue, input_root, children = _materialized_parent(tmp_path)
+    store = input_root / "content-addressed" / "sha256"
+    _store_on_another_volume(monkeypatch, store)
+    monkeypatch.setenv(replay.driver.CHILD_QUEUE_ENV, str(children))
+    real_copy, real_is_symlink = shutil.copy2, Path.is_symlink
+
+    def copy2(source, destination, *args, **kwargs):
+        if Path(source).parent == store:
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real_copy(source, destination, *args, **kwargs)
+
+    def is_symlink(self):
+        if self.name == "prepared-references":
+            raise PermissionError(errno.EACCES, "Permission denied")
+        return real_is_symlink(self)
+
+    monkeypatch.setattr(replay.shutil, "copy2", copy2)
+    monkeypatch.setattr(Path, "is_symlink", is_symlink)
+
+    with pytest.raises(OSError) as raised:
+        _replay_materialized_parent(tmp_path, request, parent_queue, input_root, children)
+
+    assert raised.value.errno == errno.ENOSPC
+
+
 def test_scratch_inputs_release_counts_each_inode_once_and_never_follows_a_link(tmp_path: Path) -> None:
     production = tmp_path / "production" / "sha256"
     production.mkdir(parents=True)

@@ -389,12 +389,14 @@ def _release_scratch_inputs(path: Path) -> dict[str, Any]:
     """
 
     released = {"files": 0, "inodes": 0, "bytes": 0}
-    if path.is_symlink() or path.parent.is_symlink():
-        return {**released, "refused": "replay_scratch_inputs_unsafe"}
-    if not path.is_dir():
-        return released
     links: dict[tuple[int, int], list[int]] = {}
     try:
+        # Inside the try: this runs in replay_parent's finally, where raising would replace
+        # the replay's own error.
+        if path.is_symlink() or path.parent.is_symlink():
+            return {**released, "refused": "replay_scratch_inputs_unsafe"}
+        if not path.is_dir():
+            return released
         for directory, _directories, names in os.walk(path):
             for name in names:
                 info = os.lstat(os.path.join(directory, name))
@@ -509,6 +511,7 @@ def replay_parent(
             "paid_execution_requested": False,
             "provider_mutation_performed": False,
         }
+        refused = False
         try:
             outcome = worker.process_launch_preparation_queue(
                 queue_root=scratch_queue, input_root=scratch_inputs, allowed_uri_prefixes=list(allowed_uri_prefixes),
@@ -524,48 +527,45 @@ def replay_parent(
         except Exception as exc:  # noqa: BLE001 - the refusal is the finding
             _explained(report, "worker_refused", exc)
             report.update(nothing_fetched=not fetch_calls, fetch_attempts=fetch_calls[:8])
-            report["scratch_inputs_released"] = _release_scratch_inputs(scratch_inputs)
-            report["report_path"] = _write_report(run_root, report)
-            return report
+            refused = True
         finally:
             if previous_child_env is None:
                 os.environ.pop(driver.CHILD_QUEUE_ENV, None)
             else:
                 os.environ[driver.CHILD_QUEUE_ENV] = previous_child_env
-        rows = outcome.get("results") or []
-        row = rows[0] if rows else {}
-        blockers = [str(item) for item in (row.get("blockers") or [])]
-        boundary = render_reached and not fetch_calls and any("ReplayBoundary" in item for item in blockers)
-        report.update(
-            status=str(row.get("status") or "no_row"),
-            row={key: row.get(key) for key in ("status", "blockers", "preparation_id", "observed_at_iso")},
-            advancement=row.get("advancement"),
-            fired_predicates=[item.split(":predicates=", 1)[1] for item in blockers if ":predicates=" in item],
-            nothing_fetched=not fetch_calls,
-            fetch_attempts=fetch_calls[:8],
-            reached_render_inputs_boundary=boundary,
-            sam31_ready=boundary,
-        )
-        result_path = scratch_queue / "results" / located.envelope_path.name
-        # Only a queued parent is read by the next consumers; a blocked or boundary row would just
-        # report the missing materialized envelope.
-        queued = str(row.get("status")) == "queued_for_production_scene_configuration"
-        admission = (
-            replay_next_consumers(result_path=result_path, queue_root=scratch_queue)
-            if queued and result_path.is_file() else []
-        )
-        report.update(
-            next_consumer_admission=admission,
-            next_consumers_admitted=bool(admission) and all(row["status"] == "accepted" for row in admission),
-        )
-        # After the next consumers: they reopen the scratch result's materialized references.
-        report["scratch_inputs_released"] = _release_scratch_inputs(scratch_inputs)
-        report["report_path"] = _write_report(run_root, report)
-        return report
+        if not refused:
+            rows = outcome.get("results") or []
+            row = rows[0] if rows else {}
+            blockers = [str(item) for item in (row.get("blockers") or [])]
+            boundary = render_reached and not fetch_calls and any("ReplayBoundary" in item for item in blockers)
+            report.update(
+                status=str(row.get("status") or "no_row"),
+                row={key: row.get(key) for key in ("status", "blockers", "preparation_id", "observed_at_iso")},
+                advancement=row.get("advancement"),
+                fired_predicates=[item.split(":predicates=", 1)[1] for item in blockers if ":predicates=" in item],
+                nothing_fetched=not fetch_calls,
+                fetch_attempts=fetch_calls[:8],
+                reached_render_inputs_boundary=boundary,
+                sam31_ready=boundary,
+            )
+            result_path = scratch_queue / "results" / located.envelope_path.name
+            # Only a queued parent is read by the next consumers; a blocked or boundary row would just
+            # report the missing materialized envelope.
+            queued = str(row.get("status")) == "queued_for_production_scene_configuration"
+            admission = (
+                replay_next_consumers(result_path=result_path, queue_root=scratch_queue)
+                if queued and result_path.is_file() else []
+            )
+            report.update(
+                next_consumer_admission=admission,
+                next_consumers_admitted=bool(admission) and all(row["status"] == "accepted" for row in admission),
+            )
     finally:
-        # Both returns release the inputs before writing their report. This covers an exception
-        # anywhere after the first copy: a copy that fills the disk, a consumer that raises.
-        _release_scratch_inputs(scratch_inputs)
+        # However the replay ends: a refused worker, a copy that fills the disk, a consumer that raises.
+        released = _release_scratch_inputs(scratch_inputs)
+    report["scratch_inputs_released"] = released
+    report["report_path"] = _write_report(run_root, report)
+    return report
 
 
 def replay_next_consumers(*, result_path: Path, queue_root: Path) -> list[dict[str, Any]]:
