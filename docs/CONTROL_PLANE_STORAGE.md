@@ -530,8 +530,23 @@ One tick runs nine phases in order:
 1. **Stranded queue rows**: pending rows bound to a release other than the
    running one move to `stranded/` beside a receipt, so they stop counting as
    live queue references. Nothing is deleted.
-2. **Terminal cache pins** whose run is proven closed by archived-run evidence
-   are released. Only the pin ledger changes.
+2. **Terminal cache pins** whose run is proven closed are released. Two proofs
+   always apply to an activation pin: its run is archived behind a verified
+   pointer, or sealed by a terminal receipt without a result registry and idle
+   past the hot window. Three more list their candidates with
+   `"enabled": false` until `BLUEPRINT_CONTROL_PLANE_GC_EXTENDED_PIN_PROOFS=1` in
+   the operator environment file lets them release: `sealed_registry_run` (every
+   run under the activation's evidence names carries a result registry the
+   artifact store accepts as sealed, idle past the hot window, with no whole-run
+   pointer), `activation_expired_unlaunched` (no run directory or pointer under
+   any of its evidence names in any evidence root, and the activation queue's
+   one sealed result for it is in a prepared status and older than 604,800 +
+   86,400 seconds: a shared mutation window lives at most a week and launch
+   re-validates it), and `unconsumed_stale_pin` (a preparation or compilation
+   pin no live pin depends on, created more than eight days ago, naming only
+   `cache` paths). Every proof keeps the six-hour minimum pin age, the
+   dependency closure's queue and process checks, and a re-derivation at the
+   mutation edge. Only the pin ledger changes.
 3. **Derived directories** under the configured `cache` roots are retired when
    no live pin names them, no pending or processing queue message mentions
    them, and they have been idle for an hour
@@ -580,7 +595,21 @@ so each manifest (and its receipt) also records `walked_file_count` and
   `protected_process`, `protected_process_inventory_unreadable`,
   `protected_pin`, `protected_settlement`, `protected_queue`. A `/proc` entry
   the tick cannot read protects the run (`protected_process_inventory_unreadable`)
-  instead of failing the check.
+  instead of failing the check. `protected_pin` carries `by_kind`: the kinds of
+  the live pins holding each run, and their `owner_count`, so the runs can be
+  checked against the pin proofs.
+- Terminal cache pins: every live pin is a candidate, with its `proof` and
+  whether it is `enabled`, or a `kept` row with a typed reason, counted in
+  `retained_counts`: `pin_young`, `active_reference`, `depended_on`,
+  `reference_changed`, `pin_not_stale`, `path_class_invalid`, the run reasons
+  (`registry_unsealed`, `registry_hot`, `run_not_sealed`, `run_hot`,
+  `run_pointer_present`, `run_path_unsafe`, `evidence_root_unavailable`) and the
+  activation result reasons (`activation_queue_unconfigured`,
+  `activation_queue_unavailable`, `activation_result_missing`,
+  `activation_result_ambiguous`, `activation_result_invalid`,
+  `activation_result_not_prepared`, `activation_result_not_stale`). A pin a
+  proof could not read is `proof_error` with its `error_type`. The report also
+  counts candidates by proof and released pins by kind, dependencies included.
 - Result-artifact offload: a retained run says why in `retained_reason` (`hot`
   or its protection reason). A run whose offload raised records `error_type`,
   `errno` (for an `OSError`) and `stage` (`registry`, `protection`, `publish` or
@@ -593,11 +622,12 @@ way (0644 in the 0755 directory). It holds the tick's status and
 `source_report_digest`, the opt-in flags, alerts, `phase_errors` and
 `skipped_roots`. Per phase it gives `candidate_bytes`,
 `removed_or_offloaded_bytes` and `retained_by_reason`, with null bytes where a
-phase counts without sizing. `retained_by_reason` is `{}` when a phase kept
-nothing and null when it does not say what it kept: an applied content-store,
-stranded-row, scratch or bundle receipt, a replay cache pass and the terminal
-pin pass carry no retained counts. An artifact already evicted is not counted as
-kept. `top_retained` lists the ten reasons that keep the
+phase counts without sizing, and the terminal pin phase also gives
+`candidate_count`, `released_count` and `enabled`. `retained_by_reason` is `{}`
+when a phase kept nothing and null when it does not say what it kept: an
+applied content-store, stranded-row, scratch or bundle receipt and a replay
+cache pass carry no retained counts. An artifact already evicted is not counted
+as kept. `top_retained` lists the ten reasons that keep the
 most bytes. It names no run, file or host path except the configured roots in
 `skipped_roots`, and stays under 256 KiB. If it cannot be built or written, the
 previous tick's `summary.json` is removed, so a stale summary never sits beside
