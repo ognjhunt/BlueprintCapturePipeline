@@ -217,7 +217,7 @@ def _reclaim_outlook(
     reclaim_phases = (
         "derived_directories", "content_store", "scratch_directories",
         "workspace_bundles", "result_artifact_offload", "evidence_offload",
-        "replay_caches", "scene_workspaces",
+        "replay_caches", "scene_workspaces", "result_residue_offload",
     )
     sources = dict.fromkeys(reclaim_phases)
     outlook: dict[str, Any] = {
@@ -253,6 +253,18 @@ def _reclaim_outlook(
     if opt_in.get("scene_workspace_retirement") is True:
         if "scene_workspaces" in phases:
             enabled.append("scene_workspaces")
+    # Residue offload needs both owner switches. Older summaries omitted its
+    # switch, so an enabled-looking phase is unknown until both are explicit.
+    residue_switch = opt_in.get("result_residue_offload")
+    if (opt_in.get("evidence_offload") is not False and residue_switch is not False
+            and ("result_residue_offload" in phases or residue_switch is True)):
+        residue = phases.get("result_residue_offload")
+        if (opt_in.get("evidence_offload") is not True or residue_switch is not True
+                or not isinstance(residue, Mapping) or residue.get("enabled") is not True):
+            return outlook, [], False
+        enabled.append("result_residue_offload")
+    # Pin releases remove no bytes. Derived-directory candidates already
+    # account for any reproducible files they make eligible in this tick.
     if not enabled:
         return outlook, [], False
     total_candidate = 0

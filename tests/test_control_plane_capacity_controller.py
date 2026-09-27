@@ -520,6 +520,92 @@ def test_gc_summary_reader_accepts_producer_size_bound(tmp_path: Path) -> None:
     assert cap._read_attention_summary(path) == {"status": "unreadable"}
 
 
+def _residue_summary(*, evidence_enabled=True, residue_enabled=True, phase_enabled=True):
+    return {
+        "schema_version": "control_plane_storage_gc_summary.v1",
+        "observed_at_epoch": 1000.0, "status": "applied",
+        "skipped_roots": [], "phase_errors": [], "top_retained_reasons": [],
+        "opt_in": {"evidence_offload": evidence_enabled,
+                   "result_residue_offload": residue_enabled},
+        "phases": {
+            "derived_directories": {"status": "applied", "candidate_bytes": 0,
+                                    "removed_or_offloaded_bytes": 0},
+            "result_residue_offload": {"status": "applied", "enabled": phase_enabled,
+                                       "candidate_bytes": 2 * GIB,
+                                       "removed_or_offloaded_bytes": 0},
+        },
+    }
+
+
+def test_residue_offload_candidates_prevent_false_ineffective_page_and_supply_eta() -> None:
+    outlook, _reasons, ineffective = cap._reclaim_outlook(
+        _residue_summary(), now=1100.0, volume_growth="not_configured",
+    )
+    assert outlook["sources"]["result_residue_offload"] == 2 * GIB
+    assert outlook["reclaimable_bytes"] == 2 * GIB
+    assert ineffective is False
+    assert cap.capacity_eta(GIB, summary={"reclaim_outlook": outlook}, now=1100.0) == {
+        "eta_epoch": 4600.0, "eta_basis": "reclaim_scheduled",
+    }
+
+
+@pytest.mark.parametrize(("evidence", "residue", "enabled"), [
+    (False, True, True), (True, False, False), (False, False, False),
+])
+def test_residue_bytes_do_not_supply_eta_without_both_owner_opt_ins(evidence, residue, enabled) -> None:
+    summary = _residue_summary(evidence_enabled=evidence, residue_enabled=residue,
+                               phase_enabled=enabled)
+    summary["phases"]["result_residue_offload"]["status"] = "dry_run"
+    outlook, _reasons, ineffective = cap._reclaim_outlook(
+        summary, now=1100.0, volume_growth="not_configured",
+    )
+    assert outlook["sources"]["result_residue_offload"] is None
+    assert outlook["reclaimable_bytes"] == 0
+    assert ineffective is True
+    assert cap.capacity_eta(GIB, summary={"reclaim_outlook": outlook}, now=1100.0) == {
+        "eta_epoch": None, "eta_basis": "operator_action_required",
+    }
+
+
+@pytest.mark.parametrize("incomplete", ["missing", "disabled", "unknown_opt_in", "unsized", "dry_run"])
+def test_applying_residue_with_incomplete_evidence_cannot_prove_zero(incomplete) -> None:
+    summary = _residue_summary()
+    phase = summary["phases"]["result_residue_offload"]
+    if incomplete == "missing":
+        del summary["phases"]["result_residue_offload"]
+    elif incomplete == "disabled":
+        phase["enabled"] = False
+    elif incomplete == "unknown_opt_in":
+        summary["opt_in"]["result_residue_offload"] = None
+    elif incomplete == "unsized":
+        phase["candidate_bytes"] = None
+    else:
+        phase["status"] = "dry_run"
+    outlook, reasons, ineffective = cap._reclaim_outlook(
+        summary, now=1100.0, volume_growth="not_configured",
+    )
+    assert outlook["reclaimable_bytes"] is None
+    assert reasons == [] and ineffective is False
+
+
+def test_plan_only_replay_estimates_and_released_pin_counts_are_not_reclaim_bytes() -> None:
+    summary = _residue_summary(residue_enabled=False, phase_enabled=False)
+    summary["opt_in"]["replay_cache_retention"] = False
+    summary["phases"]["replay_caches"] = {
+        "status": "dry_run", "estimated_candidate_bytes": 8 * GIB,
+        "candidate_bytes": None, "removed_or_offloaded_bytes": 0,
+    }
+    summary["phases"]["terminal_cache_pins"] = {
+        "status": "applied", "enabled": True, "candidate_count": 142, "released_count": 142,
+    }
+    outlook, _reasons, ineffective = cap._reclaim_outlook(
+        summary, now=1100.0, volume_growth="not_configured",
+    )
+    assert outlook["reclaimable_bytes"] == 0
+    assert outlook["sources"]["replay_caches"] is None
+    assert ineffective is True
+
+
 def test_controller_writes_evidence_alerts_on_escalation_and_repeats_hourly_while_critical(
     tmp_path: Path,
 ) -> None:
