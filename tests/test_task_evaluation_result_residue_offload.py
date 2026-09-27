@@ -1,0 +1,597 @@
+# Covers (for impacted-test selection):
+#   src/blueprint_pipeline/task_evaluation_result_residue_offload.py
+#   src/blueprint_pipeline/control_plane_evidence_offload.py
+"""A sealed result run's residue moves to the artifact store behind a verified pointer, and comes back.
+
+On 2026-09-27 evidence offload kept 27 result-registry runs (12.94 GB): whole-run
+offload skips every run with a result registry, and per-artifact offload moves only
+registered bulk payloads. Everything else in those runs stayed forever.
+"""
+
+from __future__ import annotations
+
+import functools
+import hashlib
+import json
+import os
+import stat
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from blueprint_pipeline import control_plane_evidence_offload as evidence
+from blueprint_pipeline import task_evaluation_configured_scene_object_store as store
+from blueprint_pipeline import task_evaluation_result_artifact_store as artifacts
+from blueprint_pipeline import task_evaluation_result_residue_offload as residue
+from blueprint_pipeline.control_plane_disk_budget import reserve_control_plane_disk
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
+from tests.test_task_evaluation_configured_scene_object_store import _ContentAddressedClient
+
+BUCKET = "blueprint-production-inputs"
+NOW = 50_000_000.0
+DAY = 86400
+OLD = NOW - 30 * DAY
+# Registered artifacts, relative to the run: a bulk payload the fixture offloads, a bulk-role
+# frame below the 64 KiB floor and a non-bulk score. Only the first ever leaves.
+REGISTERED = {
+    "evidence/review.mp4": ("review_video", b"v" * 100_000),
+    "evidence/frame.png": ("retained_lossless_frame", b"f" * 2_000),
+    "evidence/score.json": ("task_score", b'{"score": 1}'),
+}
+RESIDUE = {
+    "logs/worker.log": b"stage line\n" * 400,
+    "work/stage/state.npz": b"s" * 120_000,
+    "provider/outputs.zip": b"z" * 70_000,
+}
+# Unregistered files a live reader reopens after the seal. The dispatch receipt binds the terminal
+# result by path; billing re-validation and spend ledgers reopen what that result names in turn.
+TERMINAL_RESULT = "policy_canary_terminal_result.json"
+ADAPTER_RESULT = "attempts/attempt_001/vast_provider_run/vast_provider_adapter_result.json"
+ARTIFACT_MANIFEST = "attempts/attempt_001/artifact_manifest.json"
+INSTANCE_ID = "attempts/attempt_001/started_vast_instance_id.txt"
+KEPT_FOR_READERS = {TERMINAL_RESULT: "reader_reopened", ADAPTER_RESULT: "receipt_referenced",
+                    ARTIFACT_MANIFEST: "receipt_referenced", INSTANCE_ID: "receipt_referenced"}
+BY_DESIGN = frozenset(KEPT_FOR_READERS.values())
+
+
+@pytest.fixture(autouse=True)
+def hermetic_host(tmp_path, monkeypatch):
+    ledger = tmp_path / "disk-reservations"
+    roomy = functools.partial(
+        reserve_control_plane_disk,
+        disk_usage=lambda _: SimpleNamespace(total=100 * 1024**3, free=80 * 1024**3),
+    )
+    monkeypatch.setattr(evidence, "reserve_control_plane_disk", roomy)
+    monkeypatch.setattr(evidence, "DEFAULT_RESERVATION_ROOT", ledger)
+    monkeypatch.setattr(artifacts, "reserve_control_plane_disk", functools.partial(roomy, reservation_root=ledger))
+    # An empty process table: nothing holds any run.
+    monkeypatch.setattr("blueprint_pipeline.completed_replay_cache_retention.process_reference", lambda _, **kw: None)
+
+
+def _sha(data: bytes) -> str:
+    return "sha256:" + hashlib.sha256(data).hexdigest()
+
+
+def _age(root: Path, when: float = OLD) -> None:
+    for path in (root, *root.rglob("*")):
+        if not path.is_symlink():
+            os.utime(path, (when, when))
+
+
+def _sealed_run(evidence_root: Path, name: str = "run-1", *, residue_files=RESIDUE, bulk_remote: bool = True,
+                client=None) -> SimpleNamespace:
+    """A terminal, sealed result run: registry, delivery, closure receipts, registered files and residue."""
+
+    run = evidence_root / name
+    evidence_dir = run / "evidence"
+    evidence_dir.mkdir(parents=True)
+    records = []
+    for index, (relative, (role, data)) in enumerate(REGISTERED.items()):
+        (run / relative).write_bytes(data)
+        records.append({"artifact_id": f"artifact-{index}", "role": role,
+                        "relative_path": Path(relative).relative_to("evidence").as_posix(),
+                        "evidence_root": str(evidence_dir), "sha256": _sha(data), "size_bytes": len(data)})
+    closure = {}
+    for kind in ("billing", "teardown", "provider_zero"):
+        data = b'{"status":"closed"}'
+        path = run / "closure" / f"{kind}.json"
+        path.parent.mkdir(exist_ok=True)
+        path.write_bytes(data)
+        records.append({"artifact_id": kind, "role": f"closure_{kind}", "relative_path": f"closure/{kind}.json",
+                        "evidence_root": str(run), "sha256": _sha(data), "size_bytes": len(data)})
+        closure[f"{kind}_receipt"] = {"artifact_id": kind, "digest": _sha(data), "size_bytes": len(data)}
+    closure["provider_zero_receipt"]["provider_zero_verified"] = True
+    delivery = {"schema_version": "task_evaluation_result_delivery.v2", "run_id": f"{name}-id",
+                "result_status": "completed_unqualified", "reproducibility": closure, "delivery_digest": ""}
+    delivery["delivery_digest"] = cross_runtime_canonical_digest(delivery, digest_field="delivery_digest")
+    registry = {"schema_version": "task_evaluation_result_artifact_registry.v1", "run_id": f"{name}-id",
+                "delivery_digest": delivery["delivery_digest"], "artifacts": records, "registry_digest": ""}
+    registry["registry_digest"] = canonical_digest(registry, digest_field="registry_digest")
+    delivery_dir = run / "artifacts" / "result_delivery"
+    delivery_dir.mkdir(parents=True)
+    (delivery_dir / "artifact_registry.json").write_text(json.dumps(registry), encoding="utf-8")
+    (delivery_dir / "delivery.json").write_text(json.dumps(delivery), encoding="utf-8")
+    documents = {
+        # An absolute path names the adapter result; the adapter result names its instance id relatively.
+        TERMINAL_RESULT: {"adapter_result_path": str(run / ADAPTER_RESULT),
+                          "artifact_manifest_path": str(run / ARTIFACT_MANIFEST)},
+        ADAPTER_RESULT: {"started_instance_id_path": INSTANCE_ID, "vast_instance_ids": [7]},
+        ARTIFACT_MANIFEST: {"artifacts": []},
+    }
+    files = {relative: json.dumps(value).encode() for relative, value in documents.items()}
+    files[INSTANCE_ID] = b"7\n"
+    files["launch_receipt.json"] = b'{"launch": 1}'
+    for relative, data in {**files, **residue_files}.items():
+        (run / relative).parent.mkdir(parents=True, exist_ok=True)
+        (run / relative).write_bytes(data)
+    receipt = {"schema_version": "task_evaluation_policy_canary_dispatch.v1", "status": "completed",
+               "run_id": registry["run_id"], "terminal_result": {"path": str(run / TERMINAL_RESULT)},
+               "receipt_digest": ""}
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    (run / "dispatch_receipt.json").write_text(json.dumps(receipt), encoding="utf-8")
+    _age(run)
+    client = client or _ContentAddressedClient()
+    if bulk_remote:
+        result = artifacts.offload_result_artifacts(
+            run_root=run, apply=True, ack=artifacts.APPLY_ACK, hot_window_seconds=0, now=lambda: NOW,
+            publisher=functools.partial(store.publish_configured_scene_artifact, client=client, bucket=BUCKET))
+        assert (result["offloaded_count"], result["skipped"]) == (1, [])
+    return SimpleNamespace(run=run, evidence=evidence_root, client=client, registry=registry,
+                           pointer=evidence_root / f"{name}{residue.POINTER_SUFFIX}",
+                           publisher=functools.partial(store.publish_configured_scene_artifact,
+                                                       client=client, bucket=BUCKET))
+
+
+def _offload(f, **kwargs):
+    options = {"hot_window_seconds": 2 * DAY, "publisher": f.publisher, "now": lambda: NOW, **kwargs}
+    return residue.offload_result_residue(run_root=f.run, apply=True, ack=residue.APPLY_ACK, **options)
+
+
+def _local_files(run: Path) -> dict[str, bytes]:
+    return {path.relative_to(run).as_posix(): path.read_bytes()
+            for path in run.rglob("*") if path.is_file() and not path.is_symlink()}
+
+
+def _kept_after_offload(run: Path) -> set[str]:
+    """What must stay local however the residue goes: registry metadata, receipts and registered files."""
+    return {path for path in _local_files(run) if path not in RESIDUE}
+
+
+def _changed(rows) -> list[dict]:
+    """Skipped rows other than the files kept for their readers, which every fixture run has."""
+    return [row for row in rows if row["reason"] not in BY_DESIGN]
+
+
+def _reader_bytes(run: Path, reason: str) -> dict[str, int]:
+    kept = [relative for relative, why in KEPT_FOR_READERS.items() if why == reason]
+    return {"count": len(kept), "bytes": sum((run / relative).stat().st_size for relative in kept)}
+
+
+def test_residue_excludes_registry_receipts_and_registered_files(tmp_path) -> None:
+    f = _sealed_run(tmp_path / "canaries")
+    run = f.run
+    (run / "work" / "nested").mkdir()
+    (run / "work" / "nested" / "launch_receipt.json").write_text("{}", encoding="utf-8")
+    (run / "work" / "link.bin").symlink_to(run / "provider" / "outputs.zip")
+    os.mkfifo(run / "work" / "pipe")
+    (run / "logs" / "fresh.log").write_text("written after the seal", encoding="utf-8")
+    # Readers reopen these whole directories and names; a kept document that does not even parse
+    # still keeps the file it names.
+    (run / "episode_interpretation").mkdir()
+    (run / "episode_interpretation" / "notes.log").write_text("interpretation", encoding="utf-8")
+    (run / "episode_interpretation" / "broken.json").write_text(
+        '{"source": "' + str(run / "work" / "cited.bin") + '", ', encoding="utf-8")
+    (run / "work" / "cited.bin").write_bytes(b"cited by an interpretation")
+    _age(run / "work")
+    _age(run / "episode_interpretation")
+    os.utime(run / "logs" / "fresh.log", (OLD + DAY, OLD + DAY))
+
+    plan = residue.offload_result_residue(run_root=run, hot_window_seconds=2 * DAY, now=lambda: NOW)
+
+    assert plan["status"] == "dry_run" and plan["retained_reason"] is None
+    assert plan["candidate_count"] == len(RESIDUE)
+    assert plan["candidate_bytes"] == sum(len(data) for data in RESIDUE.values())
+    assert plan["registry_digest"] == f.registry["registry_digest"]
+    reader_bytes = _reader_bytes(run, "reader_reopened")
+    reader_bytes["count"] += 2
+    reader_bytes["bytes"] += sum((run / "episode_interpretation" / name).stat().st_size
+                                 for name in ("notes.log", "broken.json"))
+    referenced = _reader_bytes(run, "receipt_referenced")
+    referenced["count"] += 1
+    referenced["bytes"] += len(b"cited by an interpretation")
+    assert plan["skipped_by_reason"] == {
+        "symlink": {"count": 1, "bytes": (run / "work" / "link.bin").lstat().st_size},
+        "special_file": {"count": 1, "bytes": 0},
+        "newer_than_registry": {"count": 1, "bytes": len("written after the seal")},
+        "reader_reopened": reader_bytes,
+        "receipt_referenced": referenced,
+    }
+    assert {row["relative_path"]: row["reason"] for row in plan["skipped"]} == {
+        "work/link.bin": "symlink", "work/pipe": "special_file", "logs/fresh.log": "newer_than_registry",
+        "episode_interpretation/notes.log": "reader_reopened",
+        "episode_interpretation/broken.json": "reader_reopened", "work/cited.bin": "receipt_referenced",
+        **KEPT_FOR_READERS}
+    # A dry run changes nothing and publishes nothing.
+    assert not f.pointer.exists() and f.client.upload_count == 1
+
+    receipt = _offload(f)
+    assert (receipt["status"], receipt["offloaded_count"]) == ("applied", len(RESIDUE))
+    pointer = json.loads(f.pointer.read_text(encoding="utf-8"))
+    assert sorted(row["relative_path"] for row in pointer["members"]) == sorted(RESIDUE)
+    left = _local_files(run)
+    assert not set(RESIDUE) & set(left)
+    for relative in ("artifacts/result_delivery/artifact_registry.json", "artifacts/result_delivery/delivery.json",
+                     "evidence/frame.png", "evidence/score.json", "closure/billing.json", "closure/teardown.json",
+                     "closure/provider_zero.json", "dispatch_receipt.json", "launch_receipt.json",
+                     "work/nested/launch_receipt.json", "logs/fresh.log", "work/cited.bin",
+                     "episode_interpretation/notes.log", *KEPT_FOR_READERS):
+        assert relative in left, relative
+    remote = [path for path in left if path.startswith("artifacts/result_delivery/remote_artifacts/")]
+    assert len(remote) == 1
+    assert (run / "work" / "link.bin").is_symlink() and stat.S_ISFIFO((run / "work" / "pipe").lstat().st_mode)
+    # The bulk payload stayed remote, the registered small files stayed local.
+    assert not (run / "evidence" / "review.mp4").exists()
+
+
+def test_a_kept_document_too_large_to_search_keeps_the_whole_run(tmp_path, monkeypatch) -> None:
+    """What a kept receipt names must be known before anything moves: one too large to search
+    keeps every file."""
+
+    f = _sealed_run(tmp_path / "canaries")
+    (f.run / "episode_interpretation").mkdir()
+    (f.run / "episode_interpretation" / "rows.json").write_text(json.dumps({"rows": "r" * 8192}), encoding="utf-8")
+    _age(f.run)
+    monkeypatch.setattr(residue, "MAX_REFERENCE_DOCUMENT_BYTES", 8000)
+    before = _local_files(f.run)
+
+    result = _offload(f)
+
+    assert (result["status"], result["retained_reason"]) == ("retained", "plan_failed")
+    assert result["failure"] == {"error_type": "ResultResidueOffloadError", "errno": None, "stage": "plan"}
+    assert _local_files(f.run) == before and not f.pointer.exists() and f.client.upload_count == 1
+
+
+def test_a_hardlinked_member_moves_with_every_name_and_one_linked_elsewhere_stays(tmp_path) -> None:
+    f = _sealed_run(tmp_path / "canaries")
+    os.link(f.run / "logs" / "worker.log", f.run / "logs" / "worker-copy.log")
+    os.link(f.run / "evidence" / "score.json", f.run / "work" / "score-copy.json")
+
+    plan = residue.offload_result_residue(run_root=f.run, hot_window_seconds=2 * DAY, now=lambda: NOW)
+
+    assert plan["candidate_count"] == len(RESIDUE) + 1
+    # One inode, two names: its bytes count once.
+    assert plan["candidate_bytes"] == sum(len(data) for data in RESIDUE.values())
+    assert _changed(plan["skipped"]) == [{"relative_path": "work/score-copy.json", "reason": "linked_outside_residue"}]
+
+    result = _offload(f)
+    assert (result["offloaded_count"], result["offloaded_bytes"]) == (len(RESIDUE) + 1, plan["candidate_bytes"])
+    assert not (f.run / "logs" / "worker-copy.log").exists()
+    assert (f.run / "work" / "score-copy.json").read_bytes() == REGISTERED["evidence/score.json"][1]
+    restored = residue.restore_result_residue(run_root=f.run, now=lambda: NOW, materializer=functools.partial(
+        store.materialize_configured_scene_artifact, client=f.client, bucket=BUCKET))
+    assert restored["restored_count"] == len(RESIDUE) + 1
+    assert (f.run / "logs" / "worker-copy.log").read_bytes() == RESIDUE["logs/worker.log"]
+
+
+def test_residue_refuses_until_bulk_is_remote(tmp_path) -> None:
+    f = _sealed_run(tmp_path / "canaries", bulk_remote=False)
+
+    waiting = _offload(f)
+
+    assert (waiting["status"], waiting["retained_reason"]) == ("retained", "bulk_not_remote")
+    assert waiting["candidate_bytes"] is None and not f.pointer.exists()
+    assert set(RESIDUE) <= set(_local_files(f.run)) and f.client.upload_count == 0
+
+    artifacts.offload_result_artifacts(run_root=f.run, apply=True, ack=artifacts.APPLY_ACK, hot_window_seconds=0,
+                                       now=lambda: NOW, publisher=f.publisher)
+    ready = _offload(f)
+    assert (ready["status"], ready["offloaded_count"]) == ("applied", len(RESIDUE))
+
+
+@pytest.mark.parametrize("case", ["hot", "protected_reason", "protected_true", "pointed", "symlinked_root",
+                                  "unsealed", "not_authorized", "locked", "operator_run", "foreign_receipt"])
+def test_residue_refuses_hot_or_protected_or_already_pointed_runs(tmp_path, case) -> None:
+    import fcntl
+
+    f = _sealed_run(tmp_path / "canaries")
+    run_root = f.run
+    options: dict = {}
+    expected = case
+    if case == "locked":
+        # A per-artifact offload of the same run holds its exclusive lock.
+        holder = (f.run / "artifacts/result_delivery/.offload.lock").open("a+b")
+        fcntl.flock(holder, fcntl.LOCK_EX)
+        expected = "offload_locked"
+    if case == "hot":
+        os.utime(f.run / "artifacts/result_delivery/artifact_registry.json", (NOW - 3600, NOW - 3600))
+    elif case == "protected_reason":
+        options["protection_checker"] = lambda root: "protected_queue" if root == f.run.resolve() else None
+        expected = "protected_queue"
+    elif case == "protected_true":
+        options["protection_checker"] = lambda _root: True
+        expected = "protected"
+    elif case == "pointed":
+        f.pointer.write_text("{}", encoding="utf-8")
+        expected = "already_offloaded"
+    elif case == "symlinked_root":
+        run_root = tmp_path / "canaries" / "alias"
+        run_root.symlink_to(f.run)
+        expected = "run_root_invalid"
+    elif case == "unsealed":
+        delivery = f.run / "artifacts/result_delivery/delivery.json"
+        value = json.loads(delivery.read_text(encoding="utf-8"))
+        value["result_status"] = "running"
+        delivery.write_text(json.dumps(value), encoding="utf-8")
+        _age(f.run)
+        expected = "registry_unsealed"
+    elif case == "operator_run":
+        # An operator run has a sealed registry but no dispatch receipt; its continuation, terminal
+        # delivery and download route keep reopening its files.
+        (f.run / "dispatch_receipt.json").unlink()
+        expected = "dispatch_receipt_missing"
+    elif case == "foreign_receipt":
+        receipt = {"run_id": "another-run", "receipt_digest": ""}
+        receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+        (f.run / "dispatch_receipt.json").write_text(json.dumps(receipt), encoding="utf-8")
+        _age(f.run)
+        expected = "dispatch_receipt_invalid"
+    before = _local_files(f.run)
+
+    if case == "not_authorized":
+        with pytest.raises(residue.ResultResidueOffloadError, match="not_authorized"):
+            residue.offload_result_residue(run_root=run_root, apply=True, ack="wrong", now=lambda: NOW)
+    else:
+        result = residue.offload_result_residue(
+            run_root=run_root, apply=True, ack=residue.APPLY_ACK, hot_window_seconds=2 * DAY,
+            publisher=f.publisher, now=lambda: NOW, **options)
+        assert (result["status"], result["retained_reason"]) == ("retained", expected)
+        assert result["result_digest"] == canonical_digest(result, digest_field="result_digest")
+
+    assert _local_files(f.run) == before
+    assert f.client.upload_count == 1  # only the fixture's bulk artifact
+    if case != "pointed":
+        assert not f.pointer.exists()
+
+
+def test_residue_offload_writes_pointer_before_evicting(tmp_path, monkeypatch) -> None:
+    f = _sealed_run(tmp_path / "canaries")
+    events: list[tuple] = []
+    names = {Path(relative).name for relative in RESIDUE}
+
+    def publisher(**kwargs):
+        events.append(("publish", f.pointer.exists(), set(RESIDUE) <= set(_local_files(f.run))))
+        return f.publisher(**kwargs)
+
+    real_replace, real_unlink = os.replace, os.unlink
+
+    def replace(source, destination, *args, **kwargs):
+        outcome = real_replace(source, destination, *args, **kwargs)
+        if str(destination).endswith(residue.POINTER_SUFFIX):
+            events.append(("pointer", f.pointer.is_file()))
+        return outcome
+
+    def unlink(path, *args, **kwargs):
+        if kwargs.get("dir_fd") is not None and os.fspath(path) in names:
+            events.append(("unlink", f.pointer.is_file(), os.fspath(path)))
+        return real_unlink(path, *args, **kwargs)
+
+    modes = {relative: stat.S_IMODE((f.run / relative).stat().st_mode) for relative in RESIDUE}
+    monkeypatch.setattr(os, "replace", replace)
+    monkeypatch.setattr(os, "unlink", unlink)
+
+    result = _offload(f, publisher=publisher)
+
+    assert result["status"] == "applied" and result["offloaded_count"] == len(RESIDUE)
+    kinds = [event[0] for event in events]
+    assert kinds[0] == "publish" and events[0][1:] == (False, True)
+    assert kinds.index("pointer") < kinds.index("unlink")
+    assert kinds.count("pointer") == 1  # nothing was kept, so the pointer is written once
+    unlinks = [event for event in events if event[0] == "unlink"]
+    assert all(pointer_present for _kind, pointer_present, _name in unlinks)
+    assert sorted(name for *_rest, name in unlinks) == sorted(names)
+    pointer = json.loads(f.pointer.read_text(encoding="utf-8"))
+    assert pointer["schema_version"] == "control_plane_result_residue_pointer.v1"
+    assert pointer["pointer_digest"] == canonical_digest(pointer, digest_field="pointer_digest")
+    assert (pointer["run"], pointer["registry_digest"], pointer["kept"]) == (
+        f.run.name, f.registry["registry_digest"], [])
+    stored = f.client.objects[(BUCKET, pointer["archive"]["uri"].split(f"s3://{BUCKET}/", 1)[1])]
+    assert (_sha(stored), len(stored)) == (pointer["archive"]["sha256"], pointer["archive"]["size_bytes"])
+    assert sorted(pointer["members"], key=lambda row: row["relative_path"]) == [
+        {"relative_path": relative, "size_bytes": len(RESIDUE[relative]), "sha256": _sha(RESIDUE[relative]),
+         "mode": modes[relative]}
+        for relative in sorted(RESIDUE)
+    ]
+    assert stat.S_IMODE(f.pointer.stat().st_mode) == 0o440
+    assert not [path for path in f.evidence.iterdir() if path.name.startswith(".")]
+
+
+def test_residue_streams_without_a_local_archive(tmp_path, monkeypatch) -> None:
+    """The unit passes no file publisher: the tar is hashed, then streamed as a multipart upload
+    and read back, and only the pointer needs local headroom."""
+
+    from tests.test_control_plane_evidence_streaming import MultipartClient
+
+    f = _sealed_run(tmp_path / "canaries")
+    client = MultipartClient()
+    reserved: list[int] = []
+
+    def reserve(*args, **kwargs):
+        reserved.append(kwargs["expected_bytes"])
+        return reserve_control_plane_disk(*args, **{**kwargs, "disk_usage": lambda _: SimpleNamespace(
+            total=100 * 1024**3, free=80 * 1024**3)})
+
+    real_mkstemp = residue.tempfile.mkstemp
+
+    def no_archive(*args, **kwargs):
+        assert ".residue-" not in kwargs.get("prefix", ""), "the stream path must not stage a tar"
+        return real_mkstemp(*args, **kwargs)
+
+    monkeypatch.setattr(evidence, "reserve_control_plane_disk", reserve)
+    monkeypatch.setattr(residue.tempfile, "mkstemp", no_archive)
+
+    result = residue.offload_result_residue(
+        run_root=f.run, apply=True, ack=residue.APPLY_ACK, hot_window_seconds=2 * DAY, now=lambda: NOW,
+        stream_publisher=functools.partial(store.publish_configured_scene_stream, client=client, bucket=BUCKET))
+
+    assert (result["status"], result["offloaded_count"]) == ("applied", len(RESIDUE))
+    assert reserved and max(reserved) < 2 * 1024**2
+    pointer = json.loads(f.pointer.read_text(encoding="utf-8"))
+    key = pointer["archive"]["uri"].split(f"s3://{BUCKET}/", 1)[1]
+    assert key.endswith("/residue.tar") and client.upload_count == 1
+    assert _sha(client.objects[(BUCKET, key)]) == pointer["archive"]["sha256"]
+    restored = residue.restore_result_residue(run_root=f.run, now=lambda: NOW, materializer=functools.partial(
+        store.materialize_configured_scene_artifact, client=client, bucket=BUCKET))
+    assert restored["restored_count"] == len(RESIDUE)
+    assert {relative: (f.run / relative).read_bytes() for relative in RESIDUE} == RESIDUE
+
+
+def test_readback_failure_or_changed_member_keeps_files(tmp_path) -> None:
+    f = _sealed_run(tmp_path / "canaries")
+    before = _local_files(f.run)
+
+    f.client.corrupt_readback = True
+    corrupt = _offload(f)
+    f.client.corrupt_readback = False
+    assert (corrupt["status"], corrupt["retained_reason"]) == ("retained", "publication_failed")
+    assert corrupt["failure"] == {"error_type": "TaskEvaluationConfiguredSceneObjectStoreError", "errno": None,
+                                  "stage": "publish"}
+
+    def lying(*, path, artifact_kind):
+        return {"uri": f"s3://{BUCKET}/elsewhere", "digest": "sha256:" + "0" * 64,
+                "size_bytes": Path(path).stat().st_size, "full_byte_service_account_readback_passed": True}
+
+    lied = _offload(f, publisher=lying)
+    assert (lied["status"], lied["retained_reason"]) == ("retained", "publication_failed")
+    assert lied["failure"]["error_type"] == "ResultResidueOffloadError"
+    assert _local_files(f.run) == before and not f.pointer.exists()
+    assert not [path for path in f.evidence.iterdir() if path.name.startswith(".")]
+
+    changed = f.run / "logs" / "worker.log"
+
+    def touching(**kwargs):
+        reference = f.publisher(**kwargs)
+        changed.write_bytes(b"a line written after the archive was packed\n")
+        return reference
+
+    result = _offload(f, publisher=touching)
+
+    assert result["status"] == "applied"
+    assert result["offloaded_count"] == len(RESIDUE) - 1
+    assert _changed(result["skipped"]) == [{"relative_path": "logs/worker.log", "reason": "member_changed"}]
+    assert changed.read_bytes() == b"a line written after the archive was packed\n"
+    pointer = json.loads(f.pointer.read_text(encoding="utf-8"))
+    assert pointer["kept"] == [{"relative_path": "logs/worker.log", "reason": "member_changed"}]
+    assert pointer["pointer_digest"] == canonical_digest(pointer, digest_field="pointer_digest")
+    assert not (f.run / "work/stage/state.npz").exists() and not (f.run / "provider/outputs.zip").exists()
+
+
+def test_residue_member_swapped_for_symlink_is_kept(tmp_path) -> None:
+    f = _sealed_run(tmp_path / "canaries")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "outputs.zip").write_bytes(b"not evidence")
+    (outside / "state.npz").write_bytes(b"not evidence either")
+
+    def swapping(**kwargs):
+        reference = f.publisher(**kwargs)
+        # A file becomes a link out of the run, and a directory becomes a link to another tree.
+        (f.run / "provider" / "outputs.zip").unlink()
+        (f.run / "provider" / "outputs.zip").symlink_to(outside / "outputs.zip")
+        (f.run / "work" / "stage").rename(f.run / "work" / "stage.moved")
+        (f.run / "work" / "stage").symlink_to(outside, target_is_directory=True)
+        return reference
+
+    result = _offload(f, publisher=swapping)
+
+    assert result["status"] == "applied" and result["offloaded_count"] == 1
+    reasons = {row["relative_path"]: row["reason"] for row in result["skipped"]}
+    assert reasons["provider/outputs.zip"] == "member_changed"
+    assert reasons["work/stage/state.npz"].startswith("recheck_failed:")
+    assert (outside / "outputs.zip").read_bytes() == b"not evidence"
+    assert (outside / "state.npz").read_bytes() == b"not evidence either"
+    assert (f.run / "provider" / "outputs.zip").is_symlink() and (f.run / "work" / "stage").is_symlink()
+    assert (f.run / "work" / "stage.moved" / "state.npz").read_bytes() == RESIDUE["work/stage/state.npz"]
+    assert not (f.run / "logs" / "worker.log").exists()
+    pointer = json.loads(f.pointer.read_text(encoding="utf-8"))
+    assert {row["relative_path"] for row in pointer["kept"]} == {"provider/outputs.zip", "work/stage/state.npz"}
+
+
+def test_residue_restore_round_trips(tmp_path) -> None:
+    f = _sealed_run(tmp_path / "canaries")
+    os.chmod(f.run / "logs" / "worker.log", 0o600)
+    modes = {relative: stat.S_IMODE((f.run / relative).stat().st_mode) for relative in RESIDUE}
+    before = _local_files(f.run)
+    assert _offload(f)["offloaded_count"] == len(RESIDUE)
+    pointer_bytes = f.pointer.read_bytes()
+    materializer = functools.partial(store.materialize_configured_scene_artifact, client=f.client, bucket=BUCKET)
+
+    restored = residue.restore_result_residue(run_root=f.run, materializer=materializer, now=lambda: NOW)
+
+    assert (restored["status"], restored["restored_count"], restored["conflicts"]) == ("restored", len(RESIDUE), [])
+    assert restored["restored_bytes"] == sum(len(data) for data in RESIDUE.values())
+    assert _local_files(f.run) == before
+    assert {relative: stat.S_IMODE((f.run / relative).stat().st_mode) for relative in RESIDUE} == modes
+    assert (f.run / "logs/worker.log").stat().st_mtime == OLD
+    assert f.pointer.read_bytes() == pointer_bytes
+    receipt_path = f.evidence / f"{f.run.name}{residue.RESTORE_RECEIPT_SUFFIX}"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert receipt == {**restored} and receipt["receipt_digest"] == canonical_digest(
+        receipt, digest_field="receipt_digest")
+    assert not [path for path in f.evidence.iterdir() if path.name.startswith(".")]
+
+    # A second restore finds every member in place; a different local file is never overwritten.
+    (f.run / "logs" / "worker.log").chmod(0o644)
+    (f.run / "logs" / "worker.log").write_bytes(b"newer local truth\n")
+    again = residue.restore_result_residue(run_root=f.run, materializer=materializer, now=lambda: NOW)
+    assert (again["status"], again["restored_count"], again["already_present_count"]) == (
+        "restored_with_conflicts", 0, len(RESIDUE) - 1)
+    assert again["conflicts"] == [{"relative_path": "logs/worker.log", "reason": "existing_file_differs"}]
+    assert (f.run / "logs" / "worker.log").read_bytes() == b"newer local truth\n"
+
+    # A tampered pointer restores nothing.
+    tampered = json.loads(pointer_bytes)
+    tampered["members"][0]["size_bytes"] += 1
+    f.pointer.chmod(0o640)
+    f.pointer.write_text(json.dumps(tampered), encoding="utf-8")
+    with pytest.raises(residue.ResultResidueOffloadError, match="pointer_invalid"):
+        residue.restore_result_residue(run_root=f.run, materializer=materializer, now=lambda: NOW)
+
+
+def test_the_service_owner_is_given_each_file_last(tmp_path, monkeypatch) -> None:
+    """The GC is root with CAP_CHOWN but not CAP_FOWNER: once a file belongs to the service
+    user, root may no longer set its mode or times. So both happen first, the owner last."""
+
+    f = _sealed_run(tmp_path / "canaries")
+    calls: list[tuple] = []
+    stranger = SimpleNamespace(st_uid=os.getuid() + 1, st_gid=os.getgid() + 1)
+    descriptor = os.open(tmp_path / "probe", os.O_CREAT | os.O_WRONLY, 0o600)
+    try:
+        with monkeypatch.context() as patched:
+            patched.setattr(os, "fchmod", lambda fd, mode: calls.append(("chmod", mode)))
+            patched.setattr(os, "fchown", lambda fd, uid, gid: calls.append(("chown", uid, gid)))
+            residue._adopt_owner(descriptor, stranger, mode=0o440)
+    finally:
+        os.close(descriptor)
+    assert calls == [("chmod", 0o440), ("chown", stranger.st_uid, stranger.st_gid)]
+
+    _offload(f)
+    order: list[str] = []
+    real_utime, real_adopt = os.utime, residue._adopt_owner
+    monkeypatch.setattr(os, "utime", lambda *args, **kwargs: (order.append("utime"), real_utime(*args, **kwargs))[1])
+    monkeypatch.setattr(residue, "_adopt_owner", lambda *args, **kwargs: (
+        order.append("adopt"), real_adopt(*args, **kwargs))[1])
+    residue.restore_result_residue(run_root=f.run, now=lambda: NOW, materializer=functools.partial(
+        store.materialize_configured_scene_artifact, client=f.client, bucket=BUCKET))
+    # One (utime, adopt) pair per restored file, then the receipt's own adopt.
+    assert order == ["utime", "adopt"] * len(RESIDUE) + ["adopt"]
+
+
+def test_residue_pointer_is_not_an_unsafe_evidence_entry(tmp_path) -> None:
+    f = _sealed_run(tmp_path / "canaries")
+    _offload(f)
+
+    manifest = evidence.build_evidence_offload_manifest(
+        evidence_roots=[f.evidence], hot_window_seconds=0, now=lambda: NOW, classifier=lambda *a, **k: None)
+
+    assert set(manifest["retained_by_reason"]) == {"result_registry"}

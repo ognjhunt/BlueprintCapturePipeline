@@ -42,6 +42,11 @@ RESTORE_SCHEMA_VERSION = "control_plane_evidence_restore_receipt.v1"
 ARTIFACT_KIND = "control-plane-evidence"
 EXECUTE_ACK = "offload-sealed-evidence"
 POINTER_SUFFIX = ".offloaded.v1.json"
+# A result run's residue pointer and restore receipt (task_evaluation_result_residue_offload)
+# sit beside the run too. Like this module's own pointer they are files, never runs.
+RESIDUE_POINTER_SUFFIX = ".residue.v1.json"
+RESIDUE_RESTORE_SUFFIX = ".residue-restore.v1.json"
+_SIDECAR_SUFFIXES = (POINTER_SUFFIX, RESIDUE_POINTER_SUFFIX, RESIDUE_RESTORE_SUFFIX)
 TERMINAL_RECEIPT_NAMES = ("dispatch_receipt.json", "launch_receipt.json")
 DEFAULT_HOT_WINDOW_SECONDS = 14 * 24 * 60 * 60
 # A run directory that never received a terminal receipt and has not changed
@@ -155,7 +160,7 @@ def build_evidence_offload_manifest(
             raise ControlPlaneEvidenceOffloadError("control_plane_evidence_offload_root_unsafe")
         roots.append(str(root))
         for child in sorted(root.iterdir()):
-            if child.name.startswith(".") or child.name.endswith(POINTER_SUFFIX):
+            if child.name.startswith(".") or child.name.endswith(_SIDECAR_SUFFIXES):
                 continue
             if child.is_symlink() or not child.is_dir():
                 retain("unsafe", "unsafe", entry_bytes(child))
