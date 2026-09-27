@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import shutil
 import stat
@@ -109,10 +110,24 @@ def capacity_eta(shortfall_bytes: int, *, summary: Mapping[str, Any] | None, now
     outlook = summary.get("reclaim_outlook")
     if not isinstance(outlook, Mapping):
         return unknown
-    if outlook.get("volume_growth") in {"planned", "applied"}:
+    growth = outlook.get("volume_growth")
+    if not isinstance(growth, str):
+        return unknown
+    if growth in {"planned", "applied"}:
         return {"eta_epoch": float(now) + 600, "eta_basis": "volume_growth"}
     reclaimable = outlook.get("reclaimable_bytes")
     next_reclaim = outlook.get("next_reclaim_epoch")
+    for value in (reclaimable, next_reclaim):
+        if value is None:
+            continue
+        if type(value) not in (int, float):
+            return unknown
+        try:
+            finite = math.isfinite(value)
+        except OverflowError:
+            return unknown
+        if not finite:
+            return unknown
     if (isinstance(reclaimable, (int, float)) and not isinstance(reclaimable, bool)
             and reclaimable >= max(0, shortfall_bytes)
             and isinstance(next_reclaim, (int, float)) and not isinstance(next_reclaim, bool)

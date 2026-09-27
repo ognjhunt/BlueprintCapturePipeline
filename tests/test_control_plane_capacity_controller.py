@@ -252,6 +252,22 @@ def test_capacity_eta_is_unknown_without_readable_summary() -> None:
         "eta_epoch": None, "eta_basis": "unknown"}
 
 
+@pytest.mark.parametrize("outlook", [
+    {"volume_growth": []},
+    {"volume_growth": {}},
+    {"volume_growth": "blocked", "reclaimable_bytes": float("inf"),
+     "next_reclaim_epoch": float("inf")},
+    {"volume_growth": "blocked", "reclaimable_bytes": float("nan"),
+     "next_reclaim_epoch": 3600.0},
+    {"volume_growth": "blocked", "reclaimable_bytes": 10**400,
+     "next_reclaim_epoch": 3600.0},
+])
+def test_capacity_eta_is_unknown_for_malformed_outlook(outlook) -> None:
+    parsed = json.loads(json.dumps({"reclaim_outlook": outlook}))
+    assert cap.capacity_eta(10, summary=parsed, now=1000.0) == {
+        "eta_epoch": None, "eta_basis": "unknown"}
+
+
 def test_controller_writes_evidence_alerts_on_escalation_and_repeats_hourly_while_critical(
     tmp_path: Path,
 ) -> None:
