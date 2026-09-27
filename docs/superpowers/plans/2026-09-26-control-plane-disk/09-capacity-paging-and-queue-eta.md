@@ -1,6 +1,9 @@
 # PR 9 — Capacity pages a human, and intake queues with an ETA (design doc phases 4 and 3)
 
 > Read `00-index.md` first. Builds on the integrated stack (PRs 1–8).
+> The `reclaim_ineffective` alert and reclaim outlook consume the door-readable
+> `storage-gc/summary.json` contract from PR 10b. Verify that exact merged
+> contract before writing the consumer; never depend on root-only `latest.json`.
 
 **Goal:**
 - Capacity is an SLO with an action. A human is paged at three days of headroom, whenever admission
@@ -9,8 +12,8 @@
 - Scene intake accepts a request while capacity is short (`queued_for_capacity`) instead of
   answering 503. The capacity wait records its shortfall and an ETA when one can be known.
 
-**Branch / base / worktree:** `claude/disk-9-capacity-paging` from the integration branch,
-`$WORKSPACE/BlueprintCapturePipeline-disk-9-20260926`.
+**Branch / base / worktree:** `codex/disk-capacity-paging-20260927` from merged
+`main` after PR #2369, in `BlueprintCapturePipeline-disk-1a-20260927`.
 
 ## Facts (verified)
 
@@ -42,6 +45,9 @@
   - `volume_growth_blocked` (new; `reason` is the resize block reason)
   - `operator_alert_route_unconfigured` (new; emitted when the webhook URL is empty, and it makes
     the level at least `warning`)
+  - `reclaim_ineffective` (new; capacity is `critical`, and the fresh GC summary reports zero
+    candidate bytes and zero removed or offloaded bytes across applicable phases). Include the
+    three largest retained reasons by bytes, in stable order, in the alert and its page summary.
 - **`warn`:**
   - `utilization_warning`, `utilization_critical`
   - `usage_unclassified_root`, `usage_attribution_low` (PR 2)
@@ -66,8 +72,10 @@
 
 `text` is kept for existing receivers.
 
-**Reclaim outlook.** Added to `latest.json` and `summary.json`. The controller runs as root, so it
-can read the GC report:
+**Reclaim outlook.** Added to capacity `latest.json` and `summary.json`. Read the secret-free,
+door-readable `storage-gc/summary.json` from PR 10b, including its per-phase candidate bytes,
+removed or offloaded bytes, retained reasons, opt-in flags and observation time. A missing,
+unreadable or stale summary cannot be treated as evidence that reclaim is ineffective:
 
 ```json
 "reclaim_outlook": {"observed_at_epoch": 0, "next_reclaim_epoch": 0,
@@ -76,8 +84,9 @@ can read the GC report:
                     "volume_growth": "planned" | "applied" | "blocked" | "not_needed" | "not_configured"}
 ```
 
-- Sum the dry-run candidate bytes of the latest GC report, counting only phases that would actually
-  apply: offload and scene retirement only when enabled.
+- Sum candidate bytes from the GC summary, counting only phases that would actually apply:
+  offload and scene retirement only when enabled. Require a summary observed within two GC
+  intervals before emitting `reclaim_ineffective`; retain an unknown outlook when it is older.
 - `next_reclaim_epoch = gc_report.observed_at_epoch + 3600`.
 
 **ETA.**
@@ -132,7 +141,12 @@ its status, phase and blocker, so WebApp compatibility is unchanged. It adds
 
   Commit "Surface release-retirement and break-glass attention in the capacity report".
 - [ ] **9.3 Reclaim outlook and ETA.** Tests:
-  - the outlook sums only enabled phases;
+  - the outlook reads a PR-10b-shaped `storage-gc/summary.json`, sums only enabled phases, and
+    does not fall back to `storage-gc/latest.json`;
+  - `test_critical_capacity_pages_when_gc_reclaims_nothing`: fresh summary with zero candidates
+    and zero removed or offloaded bytes yields a `page` alert naming the top three retained
+    reasons by bytes; noncritical capacity, an actionable candidate, successful reclaim, or a
+    stale/unreadable summary does not claim reclaim is ineffective;
   - `capacity_eta` covers each basis.
 
   Commit "Forecast when a capacity wait ends".
@@ -163,3 +177,17 @@ its status, phase and blocker, so WebApp compatibility is unchanged. It adds
 - `tests/test_control_plane_capacity_controller.py`, `tests/test_task_evaluation_scene_progression.py`;
 - the scene intake HTTP tests (`grep -l task-evaluation-scene-intents tests`);
 - `tests/test_live_pipeline_intake_service.py`.
+
+## TDD plan review (2026-09-27)
+
+- The new alert's prerequisite is PR 10b's merged `storage-gc/summary.json`; its plan promises
+  per-phase candidate and removed/offloaded bytes, retained reasons, opt-in flags and observation
+  time. Before implementation, compare the actual merged schema with the fixture and name any
+  discrepancy in the PR. This prevents a guessed field from silently suppressing a page.
+- The failing-first cases distinguish **nothing eligible** from **nothing yet reclaimed** and
+  distinguish fresh zero evidence from stale or unreadable evidence. The top-three reason ordering
+  must be deterministic and use byte counts, with no raw host paths or secrets in the page payload.
+- The queue response keeps signature, idempotency and noncapacity refusal behavior. Its 2xx result
+  does not bypass progression's disk gate. Run both intake and progression tests before merging.
+- This is a plan review, not live paging proof. Production receipt, route delivery and ETA accuracy
+  require separate observation after an authorized deployment.
