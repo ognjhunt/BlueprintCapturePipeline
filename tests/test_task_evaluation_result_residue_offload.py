@@ -958,3 +958,45 @@ def test_every_way_a_kept_document_names_a_run_file_keeps_it() -> None:
     # Free text and JSON lines name files too.
     assert "logs/worker.log" in residue._document_strings("see logs/worker.log, then retry\n")
     assert f"/x/{name}/a.bin" in residue._document_strings('{"a": 1}\n{"b": "/x/' + name + '/a.bin"}\n')
+
+
+def test_scene_attempt_recovery_ownership_records_stay(tmp_path) -> None:
+    """Scene-attempt recovery scans every canary run for ``*.lease.json`` and
+    ``pending_teardowns/*.json`` (or ``pending-teardowns``) and counts an open record as a
+    blocker; evicting one would silently lift an ambiguous-create blocker."""
+
+    f = _sealed_run(tmp_path / "canaries")
+    ownership = {
+        "allocator/paid-lane.lease.json": b'{"schema_version": "lease"}',
+        "pending_teardowns/x.json": b'{"status": "open"}',
+        "attempts/attempt_001/pending-teardowns/y.json": b'{"status": "open"}',
+    }
+    for relative, data in ownership.items():
+        (f.run / relative).parent.mkdir(parents=True, exist_ok=True)
+        (f.run / relative).write_bytes(data)
+    # No recovery glob matches this one, so it is residue like any other file.
+    (f.run / "pending_teardowns" / "notes.txt").write_bytes(b"not an ownership record")
+    _age(f.run)
+
+    plan = residue.offload_result_residue(run_root=f.run, hot_window_seconds=2 * DAY, now=lambda: NOW)
+
+    reasons = {row["relative_path"]: row["reason"] for row in plan["skipped"]}
+    assert {relative: reasons.get(relative) for relative in ownership} == dict.fromkeys(ownership, "reader_reopened")
+    assert plan["candidate_count"] == len(RESIDUE) + 1
+    assert _offload(f)["status"] == "applied"
+    assert {relative: (f.run / relative).read_bytes() for relative in ownership} == ownership
+    assert not (f.run / "pending_teardowns" / "notes.txt").exists()
+
+
+def test_residue_mirrors_the_recovery_scan_globs() -> None:
+    """The recovery module inlines its globs; if they change, the residue rules must follow."""
+
+    import inspect
+
+    from blueprint_pipeline import task_evaluation_scene_progression_recovery as recovery
+
+    source = inspect.getsource(recovery.reconcile_ownership)
+    assert 'rglob("*' + residue.OWNERSHIP_RECORD_SUFFIX + '")' in source
+    for directory in residue.OWNERSHIP_RECORD_DIRECTORIES:
+        assert f'glob("**/{directory}/*.json")' in source
+    assert residue.OWNERSHIP_RECORD_DIRECTORIES == frozenset({"pending_teardowns", "pending-teardowns"})

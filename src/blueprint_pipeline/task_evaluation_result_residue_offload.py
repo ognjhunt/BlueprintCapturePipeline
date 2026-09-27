@@ -81,6 +81,10 @@ kept directory or file on another filesystem, a text document over
   (``vast_official_billing_extractor`` records each one), which is searched, so
   ``receipt_referenced`` keeps it. Scene-intent settlement records protect the
   whole run (``protected_settlement``).
+* Scene-attempt recovery (``task_evaluation_scene_progression_recovery``) scans
+  every canary run for ``*.lease.json`` and ``pending_teardowns/*.json`` (or
+  ``pending-teardowns``) and counts each open record as an ambiguous-create
+  blocker, so those stay wherever they sit (``OWNERSHIP_RECORD_*``).
 * Rescoring, graded reports and interpretation closeout read
   ``policy_canary_terminal_result.json``, the registered artifact inventory,
   ``episode_interpretation_sources/`` and ``episode_interpretation/``.
@@ -168,6 +172,11 @@ READER_REOPENED_NAMES = frozenset({
     "preprovider_blocked.json",
     "no_provider_allocation_blocked.json",
 })
+#: Scene-attempt recovery (``task_evaluation_scene_progression_recovery.reconcile_ownership``)
+#: scans every canary run with ``rglob("*.lease.json")`` and ``glob("**/pending_teardowns/*.json")``
+#: (or ``pending-teardowns``) and counts an open record as a blocker: these stay wherever they sit.
+OWNERSHIP_RECORD_SUFFIX = ".lease.json"
+OWNERSHIP_RECORD_DIRECTORIES = frozenset({"pending_teardowns", "pending-teardowns"})
 #: Directories a live reader reopens whole, wherever they sit in the run: nothing under one is residue.
 READER_REOPENED_DIRECTORIES = frozenset({
     "operator_terminal_delivery",
@@ -274,7 +283,12 @@ def _kept_by_design(relative: str, delivery: Sequence[str], registered: set[str]
     path = PurePosixPath(relative)
     if _under(relative, delivery) or relative in registered or path.name in _KEPT_NAMES:
         return "kept"
-    if path.name in READER_REOPENED_NAMES or _kept_directory(str(path.parent), ()):
+    if (
+        path.name in READER_REOPENED_NAMES
+        or path.name.endswith(OWNERSHIP_RECORD_SUFFIX)
+        or (path.parent.name in OWNERSHIP_RECORD_DIRECTORIES and path.name.endswith(".json"))
+        or _kept_directory(str(path.parent), ())
+    ):
         return "reader_reopened"
     return None
 
