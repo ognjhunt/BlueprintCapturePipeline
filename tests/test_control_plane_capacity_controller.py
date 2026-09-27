@@ -394,3 +394,21 @@ def test_cli_survey_flag_forces_a_survey(tmp_path, monkeypatch):
     assert seen["survey"] is cap.survey_usage
     assert cap.main(["--mount", str(tmp_path), "--report-root", str(tmp_path / "capacity")]) == 0
     assert seen["force_survey"] is False
+
+
+def test_a_report_directory_owned_by_the_service_account_keeps_its_reports(tmp_path, monkeypatch):
+    # Deploy provisions a missing sandbox directory as the service account, and the
+    # unit holds no CAP_FOWNER, so root cannot chmod it; the door owns it and reads
+    # the summary anyway. The tick must not fail over it.
+    real_chmod = os.chmod
+
+    def chmod(path, mode, *args, **kwargs):
+        if Path(path) == tmp_path / "capacity":
+            raise PermissionError("not the owner")
+        return real_chmod(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(cap.os, "chmod", chmod)
+    cap.write_report(tmp_path / "capacity", {"level": "ok", "mounts": [], "alerts": []})
+    summary = tmp_path / "capacity" / "summary.json"
+    assert json.loads(summary.read_text())["level"] == "ok"
+    assert oct(summary.stat().st_mode & 0o777) == "0o644"

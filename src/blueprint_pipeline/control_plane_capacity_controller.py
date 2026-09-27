@@ -509,7 +509,13 @@ def write_report(report_root: Path, report: Mapping[str, Any]) -> Path:
     # latest.json and history.jsonl stay root-only; the door (the service account)
     # reads the secret-free summary, so the directory itself becomes traversable.
     _write_public_json(report_root / SUMMARY_FILENAME, capacity_summary(report))
-    os.chmod(report_root, 0o755)
+    try:
+        os.chmod(report_root, 0o755)
+    except PermissionError:
+        # Deploy creates a missing sandbox directory as the service account, and the
+        # unit holds no CAP_FOWNER. The door owns such a directory and reads the
+        # summary anyway; if it cannot, its status names the error.
+        pass
     return latest
 
 
