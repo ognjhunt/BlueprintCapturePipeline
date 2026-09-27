@@ -23,6 +23,7 @@ from blueprint_pipeline.native_g1_provider_bundle import (
     SCHEMA,
     _contract_dependency,
     _runtime_code_files,
+    _verify_embedded_pi_tokenizer,
     _entrypoint,
     _review_g1_runtime_wheels,
     load_verified_g1_provider_bundle,
@@ -542,6 +543,15 @@ def test_bundle_receipt_rejects_mutated_bytes(tmp_path: Path) -> None:
         archive.writestr("extra.txt", "changed")
     with pytest.raises(ValueError, match="g1_provider_bundle_receipt_binding_invalid"):
         load_verified_g1_provider_bundle(path, expected_implementation_commit=commit)
+
+
+def test_g1_campaign_bundle_refuses_missing_pi_tokenizer_assets(tmp_path: Path) -> None:
+    archive_path = tmp_path / "bundle.zip"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr("placeholder", "x")
+    with zipfile.ZipFile(archive_path) as archive:
+        with pytest.raises(ValueError, match="pi_tokenizer_binding_invalid"):
+            _verify_embedded_pi_tokenizer(archive, {"candidate_ids": list(lane.PAIR_ORDER)})
 
 
 def test_bundle_code_closure_includes_shared_subpackages() -> None:

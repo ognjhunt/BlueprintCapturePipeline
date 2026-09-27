@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import stat
 import zipfile
@@ -22,6 +23,8 @@ from typing import Any
 from .decision_evidence_contracts import canonical_digest
 from .native_g1_development_campaign import plan_g1_development_campaign
 from .native_g1_development_pair import PAIR_ORDER
+from .native_g1_pi_tokenizer_assets import _inventory as pi_tokenizer_inventory
+from .native_g1_pi_tokenizer_assets import verify_tokenizer_assets
 from .native_g1_provider_runtime import RESULT_FILENAME
 from .native_task_g1_runtime_lock import G1_RUNTIME_DEPENDENCY_WHEELS
 from .native_g1_publisher_source_stage import verify_g1_publisher_source
@@ -35,6 +38,7 @@ PROVIDER_BUNDLE_KIND = "native_g1_development_campaign"
 MANIFEST = "provider_runtime/native_g1_provider_manifest.json"
 ENTRYPOINT = "provider_runtime/run_adp_arena_provider_runtime.sh"
 BUNDLE_NAME = "native_g1_provider_bundle.zip"
+PI_TOKENIZER_DIR_ENV = "BLUEPRINT_G1_PI_TOKENIZER_DIR"
 CONTRACT_DEPENDENCY_PATHS = (
     "rfc8785/__init__.py",
     "rfc8785/_impl.py",
@@ -49,6 +53,53 @@ def _sha256(path: Path) -> str:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     return "sha256:" + digest.hexdigest()
+
+
+def _verify_embedded_pi_tokenizer(
+    archive: zipfile.ZipFile, manifest: Mapping[str, Any],
+    *, inventory_path: Path | None = None,
+) -> None:
+    """Recheck the six private tokenizer files in the sealed paid bundle."""
+
+    inventory_path = inventory_path or (
+        Path(__file__).resolve().parents[2]
+        / "configs/g1_paligemma_tokenizer_inventory.v1.json"
+    )
+    inventory = pi_tokenizer_inventory(inventory_path)
+    assets = manifest.get("pi_tokenizer_assets")
+    expected_inventory_digest = _sha256(inventory_path)
+    if (
+        not isinstance(assets, dict)
+        or assets.get("status") != "tokenizer_bytes_verified"
+        or assets.get("source_revision") != inventory["source_revision"]
+        or assets.get("source_repository") != inventory["source_repository"]
+        or assets.get("inventory_sha256") != expected_inventory_digest
+        or not isinstance(assets.get("files"), list)
+    ):
+        raise ValueError("g1_provider_bundle_pi_tokenizer_binding_invalid")
+    try:
+        embedded_inventory = archive.read("configs/" + inventory_path.name)
+    except KeyError as exc:
+        raise ValueError("g1_provider_bundle_pi_tokenizer_inventory_missing") from exc
+    if "sha256:" + hashlib.sha256(embedded_inventory).hexdigest() != expected_inventory_digest:
+        raise ValueError("g1_provider_bundle_pi_tokenizer_inventory_changed")
+    rows = []
+    for file in inventory["files"]:
+        try:
+            content = archive.read("provider_runtime/inputs/pi_tokenizer/" + file["path"])
+        except KeyError as exc:
+            raise ValueError("g1_provider_bundle_pi_tokenizer_file_missing") from exc
+        if len(content) != file["size_bytes"]:
+            raise ValueError("g1_provider_bundle_pi_tokenizer_file_size_mismatch")
+        if "sha256" in file:
+            digest = hashlib.sha256(content).hexdigest()
+        else:
+            digest = hashlib.sha1(f"blob {len(content)}\0".encode("ascii") + content).hexdigest()
+        if digest != (file.get("sha256") or file.get("git_blob_sha1")):
+            raise ValueError("g1_provider_bundle_pi_tokenizer_file_digest_mismatch")
+        rows.append({"path": file["path"], "digest": digest, "size_bytes": len(content)})
+    if assets["files"] != rows:
+        raise ValueError("g1_provider_bundle_pi_tokenizer_receipt_mismatch")
 
 
 def _review_g1_runtime_wheels(
@@ -284,6 +335,7 @@ def build_g1_provider_bundle(
     repository = package.parents[1]
     inventory = repository / "configs/g1_humanoidarena_checkpoint_inventory.v1.json"
     sonic_inventory = repository / "configs/g1_sonic_default_asset_inventory.v1.json"
+    pi_tokenizer_inventory = repository / "configs/g1_paligemma_tokenizer_inventory.v1.json"
     lock = repository / "configs/g1_humanoidarena_lerobot_pi_py312_linux_x86_64.requirements.txt"
     source = Path(publisher_source)
     if set(rights_review_paths) != set(PAIR_ORDER):
@@ -319,6 +371,13 @@ def build_g1_provider_bundle(
         raise ValueError("g1_provider_bundle_runtime_profile_invalid")
     dependency_policy = repository / "docs/runtime_dependency_license_policy.json"
     dependency_review = _review_g1_runtime_wheels(runtime_source, dependency_policy)
+    tokenizer_dir_value = os.environ.get(PI_TOKENIZER_DIR_ENV)
+    if not tokenizer_dir_value:
+        raise ValueError("g1_provider_bundle_pi_tokenizer_directory_missing")
+    tokenizer_dir = Path(tokenizer_dir_value)
+    tokenizer_assets = verify_tokenizer_assets(
+        inventory_path=pi_tokenizer_inventory, asset_dir=tokenizer_dir,
+    )
     packets = {
         "manipulation": verify_native_task_arena_packet(manipulation_packet),
         "movement": verify_native_task_arena_packet(movement_packet),
@@ -335,7 +394,8 @@ def build_g1_provider_bundle(
         repository / "scripts/fetch_g1_humanoidarena_checkpoint.py",
         repository / "scripts/fetch_g1_sonic_assets.py",
     ]
-    for path in [inventory, sonic_inventory, lock, *fetchers, *rights_review_paths.values()]:
+    for path in [inventory, sonic_inventory, pi_tokenizer_inventory, lock,
+                 *fetchers, *rights_review_paths.values()]:
         if path.is_symlink() or not path.is_file():
             raise ValueError("g1_provider_bundle_input_file_invalid:" + str(path))
     manifest = {
@@ -363,6 +423,7 @@ def build_g1_provider_bundle(
         },
         "candidate_ids": list(PAIR_ORDER),
         "private_checkpoint_cache_required": True,
+        "pi_tokenizer_assets": tokenizer_assets,
         "contract_python_dependencies": [contract_dependency],
         "expected_output_filename": RESULT_FILENAME,
         "runtime_entrypoint": ENTRYPOINT,
@@ -415,8 +476,13 @@ def build_g1_provider_bundle(
             _write_zip_file(archive, source=path, archive_path="provider_runtime/" + relative)
         for path in fetchers:
             _write_zip_file(archive, source=path, archive_path="provider_runtime/scripts/" + path.name)
-        for path in (inventory, sonic_inventory, lock):
+        for path in (inventory, sonic_inventory, pi_tokenizer_inventory, lock):
             _write_zip_file(archive, source=path, archive_path="configs/" + path.name)
+        for row in tokenizer_assets["files"]:
+            _write_zip_file(
+                archive, source=tokenizer_dir / row["path"],
+                archive_path="provider_runtime/inputs/pi_tokenizer/" + row["path"],
+            )
         _write_zip_file(
             archive, source=dependency_policy,
             archive_path="provider_runtime/inputs/rights/runtime_dependency_license_policy.json",
@@ -494,6 +560,8 @@ def load_verified_g1_provider_bundle(
         embedded = json.loads(archive.read(MANIFEST))
         if embedded != manifest or archive.testzip() is not None:
             raise ValueError("g1_provider_bundle_manifest_binding_invalid")
+        if manifest.get("candidate_ids") == list(PAIR_ORDER):
+            _verify_embedded_pi_tokenizer(archive, manifest)
         dependencies = manifest.get("contract_python_dependencies") or []
         if (
             not isinstance(dependencies, list)

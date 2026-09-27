@@ -95,6 +95,27 @@ episode, complete storage, host, spend, and runtime preflight.
 
 ## Evidence
 
+- The first scored G1 run exposed a missing inherited π0.5 runtime asset: both
+  published `policy_preprocessor.json` files reference a publisher-local
+  `paligemma-3b-pt-224` tokenizer directory, but neither checkpoint contains
+  tokenizer files. The exact six tokenizer-only files are now pinned to Google
+  PaliGemma revision `35e4f46485b4d07967e7e9935bc3786aad50687c` in
+  `configs/g1_paligemma_tokenizer_inventory.v1.json`. The source is
+  [Google's gated PaliGemma repository](https://huggingface.co/google/paligemma-3b-pt-224/tree/35e4f46485b4d07967e7e9935bc3786aad50687c);
+  the Hugging Face account must separately accept Google's usage license to
+  access its files. The installed token returned HTTP 403 on 2026-09-27. This
+  is an access fact, not a withdrawal of the owner's development-use approval.
+- The no-spend G1 bundle build now requires `BLUEPRINT_G1_PI_TOKENIZER_DIR` to
+  name a private directory containing those six exact files. On the control
+  host, run `python -m blueprint_pipeline.native_g1_pi_tokenizer_assets
+  --access-check --token-file <protected-token-file>` and then
+  `python -m blueprint_pipeline.native_g1_pi_tokenizer_assets --asset-dir
+  <private-tokenizer-directory> --token-file <protected-token-file>` after the
+  account can access the model. The build verifies every file before sealing
+  the bundle; the provider verifies and stages the same bytes at the pinned
+  compatibility path before downloading any checkpoint or starting an episode.
+  The bundle remains private and `development_only`.
+
 - The [pinned HumanoidArena source license](https://github.com/William-wAng618/HumanoidArena/blob/68479287a784a69be9ce6ad739311d2f11f75ef9/LICENSE)
   is MIT (downloaded file SHA-256
   `be658ddc2a384d79c822a83f2b280feafcbaccd371e28094b9656cfc3b586ae0`).
