@@ -314,6 +314,24 @@ def test_run_retires_directories_before_reaping_the_blobs_they_linked(tmp_path) 
     }
 
 
+def test_plan_only_derived_root_is_never_evicted_by_apply(tmp_path) -> None:
+    root = tmp_path / "sam31-preparations"
+    root.mkdir()
+    candidate = _derived(root, "finished-preparation", age=7200, now=20_000_000)
+    common = dict(
+        content_store_roots=[], derived_roots=[], plan_only_derived_roots=[root],
+        queue_roots=[], pins_root=tmp_path / "pins", now=lambda: 20_000_000,
+        derived_minimum_age_seconds=3600, classifier=_noclass,
+    )
+    report = run_storage_gc(**common, apply=True, ack=RUN_ACK)
+    assert report["planned_derived_directories"]["status"] == "dry_run"
+    assert report["planned_derived_directories"]["candidate_count"] == 1
+    assert candidate.exists()
+    with pytest.raises(ControlPlaneStorageGCError, match="plan_only_root_in_apply_roots"):
+        run_storage_gc(**{**common, "derived_roots": [root]}, apply=True, ack=RUN_ACK)
+    assert candidate.exists()
+
+
 def test_run_offloads_sealed_evidence_only_when_enabled(tmp_path, monkeypatch) -> None:
     evidence = tmp_path / "launch-runs"
     run = evidence / "run-1"
