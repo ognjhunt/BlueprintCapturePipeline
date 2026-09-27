@@ -27,13 +27,13 @@ from pathlib import Path
 
 import pytest
 
-from blueprint_pipeline.control_plane_storage_pins import load_storage_pins, write_storage_pin
-from blueprint_pipeline.control_plane_storage_roots import require_storage_class
 from blueprint_pipeline import completed_replay_cache_retention as retention
 from blueprint_pipeline import control_plane_replay_cache_gc as replay_gc
 from blueprint_pipeline import control_plane_storage_gc as gc_module
 from blueprint_pipeline import control_plane_terminal_cache_pins as terminal_pins
 from blueprint_pipeline.control_plane_storage_gc import RUN_ACK, run_storage_gc
+from blueprint_pipeline.control_plane_storage_pins import load_storage_pins, write_storage_pin
+from blueprint_pipeline.control_plane_storage_roots import require_storage_class
 from blueprint_pipeline.control_plane_terminal_cache_pins import reconcile_terminal_cache_pins
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 from blueprint_pipeline.task_evaluation_result_delivery import REGISTRY_SCHEMA_VERSION
@@ -139,6 +139,31 @@ def test_depended_or_young_or_queued_preparation_pin_is_kept(tmp_path, reason) -
         "depended": "depended_on", "young": "pin_not_stale", "recent": "pin_young", "queued": "active_reference",
         "process": "active_reference", "path_class": "path_class_invalid"}[reason]
     assert not any(row["owner_id"] == "prep-x" for row in result["candidates"])
+    assert result["released"] == [] and _states(args)[("preparation", "prep-x")] == "live"
+
+
+def test_a_consumer_pinned_before_the_mutation_edge_keeps_the_stale_pin(tmp_path) -> None:
+    """The stale-pin proof rests on the ledger, so it is derived again, under the pin lock, before a release.
+
+    Here an activation pins the preparation after the tick planned to release it.
+    """
+
+    args = _args(tmp_path)
+    _pin(args, "preparation", "prep-x", age=LAPSE + DAY)
+    arrived: list[dict] = []
+
+    def consumer_arrives(_path) -> bool:
+        if not arrived:
+            arrived.append(_pin(args, "activation", "act-late", age=0,
+                                depends_on=[{"kind": "preparation", "owner_id": "prep-x"}]))
+        return False
+
+    args["reference_checker"] = consumer_arrives
+
+    result = reconcile_terminal_cache_pins(**args, apply=True, extended_proofs_enabled=True)
+
+    assert [row["owner_id"] for row in result["candidates"]] == ["prep-x"] and arrived
+    assert _kept(result) == {("preparation", "prep-x"): "reference_changed"}
     assert result["released"] == [] and _states(args)[("preparation", "prep-x")] == "live"
 
 
