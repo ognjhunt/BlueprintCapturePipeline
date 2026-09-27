@@ -81,7 +81,12 @@ def prepare_development_test(*, preparation, source_geometry, task_masks, output
     if not np.isfinite(dims).all() or not (dims > 0).all():
         raise ValueError("website_development_test_dimensions_invalid")
     # Generous test surface, without shrinking the source object to fit a gripper.
-    top = 0.75
+    # A whole-body articulated assembly (sized as a body, not as a part) stands on
+    # the fixture floor as it stood in the room; other objects keep a counter-height
+    # test surface.
+    articulated = value["intake_request"]["task"]["strategy"] == "articulated_open_close"
+    standing = articulated and "body_extent_m" in value["authoring_inputs"]["configuration"]
+    top = 0.0 if standing else 0.75
     width, depth = max(1.2, 6 * dims[0]), max(0.8, 4 * dims[1])
     lower = np.array([-width / 2, -depth / 2, top - 0.05])
     upper = np.array([width / 2, depth / 2, top])
@@ -93,9 +98,12 @@ def prepare_development_test(*, preparation, source_geometry, task_masks, output
     surface.apply_translation((upper + lower) / 2)
     mesh = output_root / "authored_surface.glb"
     mesh.write_bytes(surface.export(file_type="glb"))
+    # A finished normalization is never overwritten: a changed fixture surface
+    # gets its own root, keyed by the surface it normalizes.
+    collision_root = output_root / "collision" / _record(mesh)["digest"][7:23]
     normalized = normalize_completed_mesh(source=mesh, original_filename=mesh.name,
-        coordinate_frame={"up_axis": "Z", "meters_per_unit": 1.0}, output_root=output_root / "collision")
-    collision = output_root / "collision" / normalized["output"]["relative_path"]
+        coordinate_frame={"up_axis": "Z", "meters_per_unit": 1.0}, output_root=collision_root)
+    collision = collision_root / normalized["output"]["relative_path"]
     support = support_under(surface, new_low, new_high, up=2, meters_per_unit=1.0)
     if support is None:
         raise ValueError("website_development_test_surface_contact_invalid")
@@ -110,7 +118,6 @@ def prepare_development_test(*, preparation, source_geometry, task_masks, output
     cube.AddScaleOp().Set(Gf.Vec3d(*(upper - lower)))
     cube.CreateDisplayColorAttr([(0.55, 0.55, 0.55)])
     stage.GetRootLayer().Save()
-    articulated = value["intake_request"]["task"]["strategy"] == "articulated_open_close"
     test = {"kind": DRAWER_KIND if articulated else KIND,
             "label": DRAWER_LABEL if articulated else LABEL, "claim_scope": "development_only",
             "source_task_context_digest": preparation["binding"]["task_context_digest"],
@@ -176,7 +183,7 @@ def prepare_development_test(*, preparation, source_geometry, task_masks, output
     appearance["digest"] = canonical_digest(appearance, digest_field="digest")
     runtime = {"schema_version": "website_scene_runtime_inputs.v1", "status": "background_collision_prepared",
         "preparation_digest": value["digest"], "claim_ceiling": "development_only", "development_test": test,
-        "collision": {**_record(collision), "normalization_path": str(output_root / "collision/mesh_normalization.v1.json"),
+        "collision": {**_record(collision), "normalization_path": str(collision_root / "mesh_normalization.v1.json"),
             "normalization_digest": normalized["normalization_digest"], "object_mapping": normalized["object_mapping"]},
         "appearance": {**appearance["artifact"], "status": appearance["status"], "receipt": appearance,
                        "renderer_qualified": False},

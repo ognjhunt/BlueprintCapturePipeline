@@ -573,3 +573,25 @@ def test_embedded_private_addresses_are_not_public():
         assert research.public_address(address) is False, address
     for address in ("8.8.8.8", "2606:4700:4700::1111", "64:ff9b::808:808"):
         assert research.public_address(address) is True, address
+
+
+def test_a_labelled_value_ties_to_the_label_written_directly_before_it():
+    quote = 'Dimensions: h: 34.5" w: 23.875" d: 24.5"'
+    inch = 0.0254
+    assert research._quote_names_attribute(quote, "overall_height", [34.5 * inch] * 2, "in")
+    assert research._quote_names_attribute(quote, "overall_width", [23.875 * inch] * 2, "in")
+    assert research._quote_names_attribute(quote, "overall_depth", [24.5 * inch] * 2, "in")
+    # The right number under another attribute's label is still not evidence.
+    assert not research._quote_names_attribute(quote, "overall_width", [34.5 * inch] * 2, "in")
+    # Unlabelled dimension triples still prove no single attribute.
+    assert not research._quote_names_attribute("34 x 24 x 24 in (H x W x D)", "overall_width", [24 * inch] * 2, "in")
+    # A labelled part figure still needs its part named in the clause.
+    assert not research._quote_names_attribute("h: 86 cm w: 60 cm", "door_width", [0.6] * 2, "cm")
+
+
+def test_a_verification_change_rebuilds_the_record_from_the_retained_receipt():
+    binding = research.spec_binding(target_id="t", identity={}, coverage=None, articulation_kind="revolute", gate=None)
+    assert binding["verification_revision"] == research.VERIFICATION_REVISION
+    # The purchased research binding is unchanged, so no second run is bought.
+    assert "verification_revision" not in research.research_binding(
+        identity={}, articulation_kind="revolute", frames=[], task_context={"context_digest": "sha256:" + "a" * 64})

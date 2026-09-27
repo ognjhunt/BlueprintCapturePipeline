@@ -209,8 +209,8 @@ def _integer(value: Any) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
-def _reason_rows(source: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
-    """``{reason: {count, bytes}}`` for at most the ``_MAX_REASONS`` largest; ``bytes`` is null when unknown.
+def _reason_rows(source: Mapping[str, Any], *, max_rows: int | None = _MAX_REASONS) -> dict[str, dict[str, Any]]:
+    """``{reason: {count, bytes}}`` for the largest reasons; ``bytes`` is null when unknown.
 
     A phase that counts its reasons without sizing them (``retained_counts``)
     reports null bytes rather than zero. A reason counted zero times kept
@@ -230,22 +230,30 @@ def _reason_rows(source: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
         (item for item in rows.items() if item[1]["count"] > 0),
         key=lambda item: (-(item[1]["bytes"] or 0), -item[1]["count"], item[0]),
     )
-    return dict(ranked[:_MAX_REASONS])
+    return dict(ranked if max_rows is None else ranked[:max_rows])
 
 
 def _phase_summary(entry: Mapping[str, Any]) -> dict[str, Any]:
     by_reason = entry.get("retained_by_reason")
     reasons = by_reason if isinstance(by_reason, Mapping) else entry.get("retained_counts")
+    candidate_bytes = _integer(entry.get("candidate_bytes"))
+    # Some phases continue after one root fails. The measured zero from the
+    # successful roots cannot describe candidates in the failed root.
+    partial_scan = bool(entry.get("errors") or entry.get("omitted_errors_count"))
+    if partial_scan:
+        candidate_bytes = None
     summary: dict[str, Any] = {
         "status": _typed(entry.get("status"), "unrecognized_status"),
-        "candidate_bytes": _integer(entry.get("candidate_bytes")),
+        "candidate_bytes": candidate_bytes,
         "removed_or_offloaded_bytes": next((_integer(entry[key]) for key in _REMOVED_KEYS if key in entry), None),
         # None when the phase does not say what it kept (an applied receipt that
         # carries no counts); {} when it kept nothing.
         "retained_by_reason": _reason_rows(reasons) if isinstance(reasons, Mapping) else None,
     }
     if "estimated_candidate_bytes" in entry:
-        summary["estimated_candidate_bytes"] = _integer(entry["estimated_candidate_bytes"])
+        summary["estimated_candidate_bytes"] = (
+            None if partial_scan else _integer(entry["estimated_candidate_bytes"])
+        )
     # What sizing the phase's retained trees cost, where it measured it.
     if "walked_file_count" in entry:
         summary["walked_file_count"] = _integer(entry["walked_file_count"])
@@ -274,6 +282,13 @@ def _result_artifact_summary(rows: Sequence[Any]) -> dict[str, Any]:
 
     runs = [row for row in rows if isinstance(row, Mapping)]
     sized = [row for row in runs if row.get("status") in ("dry_run", "applied")]
+    complete = len(runs) == len(rows) and all(
+        row.get("status") == "retained_hot_or_active"
+        or (row.get("status") in ("dry_run", "applied")
+            and _integer(row.get("candidate_bytes")) is not None
+            and row["candidate_bytes"] >= 0)
+        for row in runs
+    )
     retained: dict[str, dict[str, Any]] = {}
     failures: dict[tuple[str, str, str, int | None], int] = {}
 
@@ -302,8 +317,8 @@ def _result_artifact_summary(rows: Sequence[Any]) -> dict[str, Any]:
     ranked = sorted(failures.items(), key=lambda item: (-item[1], item[0][:3], -1 if item[0][3] is None else item[0][3]))
     return {
         "run_count": len(runs),
-        # Unknown when every run stopped before it sized its candidates.
-        "candidate_bytes": sum(_integer(row.get("candidate_bytes")) or 0 for row in sized) if sized or not runs else None,
+        # One unsized run makes the total unknown, even if another run measured zero.
+        "candidate_bytes": sum(_integer(row["candidate_bytes"]) for row in sized) if complete else None,
         "removed_or_offloaded_bytes": sum(_integer(row.get("offloaded_bytes")) or 0 for row in sized),
         "retained_by_reason": _reason_rows(retained),
         "failures": [
@@ -320,18 +335,26 @@ def build_storage_gc_summary(report: Mapping[str, Any]) -> dict[str, Any]:
     ``source_report_digest``, the ``opt_in`` flags (null when the report predates
     them), ``alerts``, ``phase_errors``, ``skipped_roots`` (configured roots that
     were absent: the only paths it names), per phase ``candidate_bytes``,
-    ``removed_or_offloaded_bytes`` and ``retained_by_reason``, and ``top_retained``,
-    the ten reasons across phases that keep the most known bytes. Every reason is
+    ``removed_or_offloaded_bytes`` and ``retained_by_reason``, ``top_retained``
+    phase rows, and ``top_retained_reasons`` aggregated before phase rows are
+    capped. Every reason is
     a typed string; anything else becomes ``unrecognized_reason``.
     """
 
     phases: dict[str, dict[str, Any]] = {}
+    reason_totals: dict[str, int] = {}
     for key in PHASES:
         entry = report.get(key)
         if key == "result_artifact_offload" and isinstance(entry, list):
             phases[key] = _result_artifact_summary(entry)
         elif isinstance(entry, Mapping):
             phases[key] = _phase_summary(entry)
+            by_reason = entry.get("retained_by_reason")
+            raw_reasons = by_reason if isinstance(by_reason, Mapping) else entry.get("retained_counts")
+            if isinstance(raw_reasons, Mapping):
+                for reason, row in _reason_rows(raw_reasons, max_rows=None).items():
+                    if row["bytes"] and row["bytes"] > 0:
+                        reason_totals[reason] = reason_totals.get(reason, 0) + row["bytes"]
     ranked = sorted(
         (
             {"phase": phase, "reason": reason, "count": row["count"], "bytes": row["bytes"]}
@@ -354,6 +377,10 @@ def build_storage_gc_summary(report: Mapping[str, Any]) -> dict[str, Any]:
         "skipped_roots": [str(root) for root in report.get("skipped_roots") or ()][:_MAX_LISTED],
         "phases": phases,
         "top_retained": ranked[:TOP_RETAINED],
+        "top_retained_reasons": [
+            {"reason": reason, "bytes": reason_totals[reason]}
+            for reason in sorted(reason_totals, key=lambda name: (-reason_totals[name], name))[:3]
+        ],
     }
     if len(json.dumps(summary, indent=2, sort_keys=True).encode()) > MAX_SUMMARY_BYTES:
         raise ValueError("storage_gc_summary_too_large")

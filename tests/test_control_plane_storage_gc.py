@@ -105,6 +105,8 @@ def test_gc_apply_requires_ack_and_rechecks_link_count(tmp_path) -> None:
 
     os.link(candidate, tmp_path / "late-projection")
     changed = apply_gc_manifest(manifest, ack=EXECUTE_ACK)
+    assert changed["candidate_count"] == manifest["candidate_count"]
+    assert changed["candidate_bytes"] == manifest["candidate_bytes"]
     assert changed["removed_count"] == 0
     assert changed["skipped"] == [
         {"digest": "sha256:" + candidate.name, "reason": "candidate_changed"}
@@ -714,6 +716,8 @@ def test_scratch_is_reaped_by_idle_age_alone_and_touched_trees_survive(tmp_path)
     with pytest.raises(ControlPlaneStorageGCError, match="scratch_apply_not_authorized"):
         gc_module.apply_scratch_manifest(manifest, ack="wrong")
     receipt = gc_module.apply_scratch_manifest(manifest, ack=gc_module.SCRATCH_ACK, now=lambda: now)
+    assert receipt["candidate_count"] == manifest["candidate_count"]
+    assert receipt["candidate_bytes"] == manifest["candidate_bytes"]
     assert [row["name"] for row in receipt["removed"]] == ["old.log"]
     assert receipt["skipped"] == [{"name": "old-probe", "reason": "candidate_changed"}]
     assert idle.exists() and recent.exists() and not idle_file.exists()
@@ -803,6 +807,8 @@ def test_workspace_bundles_are_reaped_only_from_idle_workspaces_and_keep_outputs
     receipt = gc_module.apply_workspace_bundle_manifest(
         manifest, ack=gc_module.WORKSPACE_BUNDLE_ACK, now=lambda: now
     )
+    assert receipt["candidate_count"] == manifest["candidate_count"]
+    assert receipt["candidate_bytes"] == manifest["candidate_bytes"]
     assert [row["workspace"] for row in receipt["removed"]] == ["a" * 64]
     assert receipt["skipped"] == [{"workspace": "b" * 64, "reason": "candidate_changed"}]
     assert receipt["evidence_removed"] is False
@@ -1208,6 +1214,9 @@ def test_gc_phase_retires_verified_terminal_workspace(tmp_path) -> None:
     receipt = scene.parent / "scene-1.retired.v1.json"
     assert (phase["status"], phase["enabled"]) == ("applied", True)
     assert (phase["candidate_count"], phase["retired_count"]) == (1, 1)
+    assert phase["candidate_bytes"] >= phase["retired_bytes"] > 0
+    from blueprint_pipeline.control_plane_storage_gc_reasons import build_storage_gc_summary
+    assert build_storage_gc_summary(report)["phases"]["scene_workspaces"]["candidate_bytes"] == phase["candidate_bytes"]
     assert phase["retired_bytes"] > 0 and phase["archive_bytes"] > 0 and phase["retained_counts"] == {}
     assert phase["results"] == [{"bucket": "capture-bucket", "scene_id": "scene-1", "status": "retired",
                                  "receipt": str(receipt), "removal_complete": True}]
@@ -1215,7 +1224,8 @@ def test_gc_phase_retires_verified_terminal_workspace(tmp_path) -> None:
     assert "phase_errors" not in report
 
     again = run_storage_gc(**common, apply=True, ack=RUN_ACK, scene_workspace_retirement_enabled=True)
-    assert again["scene_workspaces"]["candidate_count"] == 0 and receipt.is_file()
+    assert (again["scene_workspaces"]["candidate_count"], again["scene_workspaces"]["candidate_bytes"]) == (0, 0)
+    assert receipt.is_file()
 
 
 def test_gc_phase_only_plans_without_the_opt_in(tmp_path) -> None:
@@ -1394,7 +1404,28 @@ def test_the_tick_bounds_retirement_attempts_not_only_successes(tmp_path, monkey
 
     assert attempts == ["scene-0", "scene-1"]
     assert (report["attempted_count"], report["retired_count"], report["candidate_count"]) == (2, 0, 3)
+    assert report["candidate_bytes"] == 30
     assert [row["status"] for row in report["results"]] == ["skipped", "skipped", "retirable"]
+
+
+def test_scene_candidate_bytes_are_unknown_when_a_plan_fails(tmp_path, monkeypatch) -> None:
+    from blueprint_pipeline import website_scene_workspace_retention as retention
+    from blueprint_pipeline.control_plane_storage_gc_reasons import build_storage_gc_summary
+
+    monkeypatch.setattr(retention, "scene_workspaces", lambda root: [("bucket", "scene-1", root / "scene-1")])
+    monkeypatch.setattr(retention, "sweep_retiring_workspaces", lambda root, apply=True: {
+        "removed" if apply else "removable": [], "kept_without_receipt": []})
+    monkeypatch.setattr(retention, "build_reference_index", lambda context, now: None)
+    monkeypatch.setattr(retention, "plan_scene_workspace_retirement", lambda **kwargs: (_ for _ in ()).throw(
+        PermissionError("unreadable scene")))
+
+    report = gc_module.retire_scene_workspaces(
+        storage_roots=[tmp_path], context_factory=lambda root: SimpleNamespace(storage_root=root), apply=True,
+        enabled=True, now=1.0, cloud_factory=lambda: None)
+
+    assert report["error_count"] == 1
+    assert report["candidate_bytes"] is None
+    assert build_storage_gc_summary({"scene_workspaces": report})["phases"]["scene_workspaces"]["candidate_bytes"] is None
 
 
 def test_post_upload_archive_reference_survives_result_truncation(tmp_path, monkeypatch) -> None:

@@ -91,6 +91,67 @@ def test_recovery_streams_stdout_to_partial_file_and_verifies_digest(
     assert calls[1][1].get("capture_output") is None
 
 
+def test_g1_recovery_uses_sealed_arena_archive_and_large_transfer_deadline(
+    monkeypatch, tmp_path: Path
+) -> None:
+    _install_identity(monkeypatch, tmp_path)
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("native_g1_provider_campaign_result.v1.json", b"{}")
+    payload = buffer.getvalue()
+    digest = hashlib.sha256(payload).hexdigest()
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        if kwargs.get("text"):
+            return SimpleNamespace(returncode=0, stdout=f"{len(payload)} {digest}\n")
+        kwargs["stdout"].write(payload)
+        return SimpleNamespace(returncode=0, stderr=b"")
+
+    monkeypatch.setattr(recovery.subprocess, "run", fake_run)
+    result = recovery.recover_provider_output_before_teardown(
+        connection={"ssh_host": "example.invalid", "ssh_port": 2222},
+        provider_bundle_kind="native_g1_development_campaign",
+        output_path=tmp_path / "g1.zip",
+        attempt_dir=tmp_path / "attempt",
+        expected_size_bytes=len(payload),
+        timeout_seconds=1800,
+    )
+
+    assert result["status"] == "completed"
+    assert zipfile.is_zipfile(tmp_path / "g1.zip")
+    assert "adp_arena_provider_runtime_output.zip" in calls[0][0][-1]
+    assert 900 < calls[1][1]["timeout"] <= 1800
+
+
+def test_g1_recovery_rejects_non_zip_bytes(monkeypatch, tmp_path: Path) -> None:
+    _install_identity(monkeypatch, tmp_path)
+    payload = b"not-a-sealed-g1-archive"
+    digest = hashlib.sha256(payload).hexdigest()
+
+    def fake_run(_command, **kwargs):
+        if kwargs.get("text"):
+            return SimpleNamespace(returncode=0, stdout=f"{len(payload)} {digest}\n")
+        kwargs["stdout"].write(payload)
+        return SimpleNamespace(returncode=0, stderr=b"")
+
+    monkeypatch.setattr(recovery.subprocess, "run", fake_run)
+    output = tmp_path / "g1.zip"
+    result = recovery.recover_provider_output_before_teardown(
+        connection={"ssh_host": "example.invalid", "ssh_port": 2222},
+        provider_bundle_kind="native_g1_development_campaign",
+        output_path=output,
+        attempt_dir=tmp_path / "attempt",
+        expected_size_bytes=len(payload),
+        timeout_seconds=1800,
+    )
+
+    assert result["status"] == "blocked"
+    assert result["blockers"] == ["provider_output_ssh_recovery_archive_invalid"]
+    assert not output.exists()
+
+
 def test_recovery_refuses_remote_size_mismatch(monkeypatch, tmp_path: Path) -> None:
     _install_identity(monkeypatch, tmp_path)
     monkeypatch.setattr(

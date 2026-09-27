@@ -312,6 +312,29 @@ def test_the_summary_stays_small_and_names_only_typed_reasons() -> None:
         "evidence_offload": None, "scene_workspace_retirement": None, "replay_cache_retention": None}
 
 
+def test_summary_ranks_global_reason_totals_before_phase_and_top_ten_caps() -> None:
+    one_byte_reasons = {
+        f"reason_{index:02d}": {"count": 1, "bytes": 1} for index in range(60)
+    }
+    one_byte_reasons["zz_shared"] = {"count": 1, "bytes": 1}
+    report = {
+        "status": "applied", "observed_at_epoch": NOW,
+        "derived_directories": {"status": "applied", "retained_by_reason": one_byte_reasons},
+        "content_store": {"status": "applied", "retained_by_reason": {
+            "zz_shared": {"count": 1, "bytes": 1},
+        }},
+    }
+
+    summary = reasons.build_storage_gc_summary(report)
+
+    assert "zz_shared" not in summary["phases"]["derived_directories"]["retained_by_reason"]
+    assert summary["top_retained_reasons"] == [
+        {"reason": "zz_shared", "bytes": 2},
+        {"reason": "reason_00", "bytes": 1},
+        {"reason": "reason_01", "bytes": 1},
+    ]
+
+
 def _quiet_tick(monkeypatch) -> None:
     """Every configured root empty: a tick that only reconciles an empty pin ledger."""
 
@@ -471,3 +494,40 @@ def test_the_summary_copies_only_the_offloads_own_stages() -> None:
     }
     assert sorted((row["scope"], row["stage"]) for row in phase["failures"]) == [
         ("artifact", "publish"), ("run", "evict"), ("run", "unrecognized_stage")]
+
+
+def test_replay_scan_error_leaves_candidate_bytes_unknown() -> None:
+    phase = reasons.build_storage_gc_summary({"status": "applied", "replay_caches": {
+        "status": "applied", "candidate_bytes": 0, "removed_bytes": 0,
+        "errors": [{"root": "/private/scene", "error": "PermissionError"}],
+        "omitted_errors_count": 0,
+    }})["phases"]["replay_caches"]
+
+    assert phase["candidate_bytes"] is None
+    assert "/private/scene" not in str(phase)
+    complete = reasons.build_storage_gc_summary({"status": "applied", "replay_caches": {
+        "status": "applied", "candidate_bytes": 0, "removed_bytes": 0,
+        "errors": [], "omitted_errors_count": 0,
+    }})["phases"]["replay_caches"]
+    assert complete["candidate_bytes"] == 0
+    dry_run = reasons.build_storage_gc_summary({"status": "dry_run", "replay_caches": {
+        "status": "dry_run", "candidate_bytes": 0, "estimated_candidate_bytes": 0,
+        "removed_bytes": 0, "errors": [{"error": "PermissionError"}],
+    }})["phases"]["replay_caches"]
+    assert dry_run["estimated_candidate_bytes"] is None
+
+
+def test_partial_result_artifact_scan_leaves_candidate_bytes_unknown() -> None:
+    rows = [
+        {"status": "applied", "candidate_bytes": 0, "offloaded_bytes": 0},
+        {"status": "retained", "stage": "registry", "error_type": "OSError"},
+    ]
+    phase = reasons.build_storage_gc_summary({
+        "status": "applied", "result_artifact_offload": rows,
+    })["phases"]["result_artifact_offload"]
+
+    assert phase["candidate_bytes"] is None
+    complete = reasons.build_storage_gc_summary({"status": "applied", "result_artifact_offload": [
+        {"status": "applied", "candidate_bytes": 0, "offloaded_bytes": 0},
+    ]})["phases"]["result_artifact_offload"]
+    assert complete["candidate_bytes"] == 0
