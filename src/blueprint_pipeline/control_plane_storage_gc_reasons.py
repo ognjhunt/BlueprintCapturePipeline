@@ -239,7 +239,8 @@ def _phase_summary(entry: Mapping[str, Any]) -> dict[str, Any]:
     candidate_bytes = _integer(entry.get("candidate_bytes"))
     # Some phases continue after one root fails. The measured zero from the
     # successful roots cannot describe candidates in the failed root.
-    if entry.get("errors") or entry.get("omitted_errors_count"):
+    partial_scan = bool(entry.get("errors") or entry.get("omitted_errors_count"))
+    if partial_scan:
         candidate_bytes = None
     summary: dict[str, Any] = {
         "status": _typed(entry.get("status"), "unrecognized_status"),
@@ -250,7 +251,9 @@ def _phase_summary(entry: Mapping[str, Any]) -> dict[str, Any]:
         "retained_by_reason": _reason_rows(reasons) if isinstance(reasons, Mapping) else None,
     }
     if "estimated_candidate_bytes" in entry:
-        summary["estimated_candidate_bytes"] = _integer(entry["estimated_candidate_bytes"])
+        summary["estimated_candidate_bytes"] = (
+            None if partial_scan else _integer(entry["estimated_candidate_bytes"])
+        )
     # What sizing the phase's retained trees cost, where it measured it.
     if "walked_file_count" in entry:
         summary["walked_file_count"] = _integer(entry["walked_file_count"])

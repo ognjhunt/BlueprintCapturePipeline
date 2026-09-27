@@ -487,6 +487,11 @@ def test_replay_scan_error_leaves_candidate_bytes_unknown() -> None:
         "errors": [], "omitted_errors_count": 0,
     }})["phases"]["replay_caches"]
     assert complete["candidate_bytes"] == 0
+    dry_run = reasons.build_storage_gc_summary({"status": "dry_run", "replay_caches": {
+        "status": "dry_run", "candidate_bytes": 0, "estimated_candidate_bytes": 0,
+        "removed_bytes": 0, "errors": [{"error": "PermissionError"}],
+    }})["phases"]["replay_caches"]
+    assert dry_run["estimated_candidate_bytes"] is None
 
 
 def test_partial_result_artifact_scan_leaves_candidate_bytes_unknown() -> None:
