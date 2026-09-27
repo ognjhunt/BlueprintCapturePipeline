@@ -59,13 +59,19 @@ DEFAULT_FLOOR_BYTES = 8 * GIB
 DEFAULT_FLOOR_FRACTION = 0.05
 DEFAULT_TTL_SECONDS = 2 * 60 * 60
 # Pid liveness is the primary liveness signal; the TTL is only the backstop for a
-# recycled pid.  Long roles outlive the default, so their entries must too, or
-# the ledger deletes a running job's reservation as stale.
+# recycled pid.  A job holds its reservation for at most its unit's
+# TimeoutStartSec, so each role's entry must outlive that timeout (pinned by a
+# test against deploy/systemd), or the ledger deletes a running job's
+# reservation as stale.  The canary and launch dispatchers hold theirs through a
+# paid run under a 5 h start timeout.
 ROLE_TTL_SECONDS: Mapping[str, int] = {
     "cpu_prestage": 12 * 3600,
     "semantic_pretraining": 12 * 3600,
     "stage_replay": 6 * 3600,
+    "policy_canary_dispatch": 6 * 3600,
+    "launch_dispatch": 6 * 3600,
     "control_plane_deploy": 4 * 3600,
+    "evidence_offload": 4 * 3600,
 }  # every other role keeps DEFAULT_TTL_SECONDS
 
 

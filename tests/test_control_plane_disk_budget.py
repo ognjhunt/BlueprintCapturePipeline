@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections import namedtuple
+from pathlib import Path
 
 import pytest
 
@@ -488,3 +490,41 @@ def test_workload_names_are_always_valid_labels():
         "activation_native_task_arena_construction")
     odd = footprints.workload_name("activation", "Lane-With.Odd Chars/" + "x" * 80)
     assert disk_budget._ROLE_RE.fullmatch(odd) and odd.startswith("activation_lane_with_odd_chars")
+
+
+# The systemd units whose jobs hold each role's reservations.  A job holds its
+# reservation for at most its unit's start timeout, so the ledger entry's TTL
+# must outlive that timeout or a running job's reservation is deleted as stale.
+# control_plane_deploy is run by an operator (no unit), and
+# result_artifact_download by the long-running intake service (no start timeout).
+ROLE_WORKER_UNITS = {
+    "launch_preparation": ("blueprint-task-evaluation-launch-preparation.service",
+                           "blueprint-task-evaluation-scene-progression.service"),
+    "episode_compilation": ("blueprint-task-evaluation-episode-compilation.service",),
+    "launch_activation": ("blueprint-task-evaluation-launch-activation.service",),
+    "launch_dispatch": ("blueprint-task-evaluation-launch-dispatcher.service",),
+    "policy_canary_dispatch": ("blueprint-task-evaluation-policy-canary-dispatcher.service",),
+    "evidence_offload": ("blueprint-control-plane-storage-gc.service",),
+    "stage_replay": ("blueprint-agent-stage-replay.service",),
+    "semantic_pretraining": ("blueprint-task-evaluation-launch-dispatcher.service",
+                             "blueprint-task-evaluation-launch-activation.service"),
+    "cpu_prestage": ("blueprint-task-evaluation-launch-dispatcher.service",),
+}
+
+
+def _start_timeout_seconds(unit_text):
+    [value] = re.findall(r"^TimeoutStartSec=(\S+)\s*$", unit_text, flags=re.MULTILINE)[-1:] or [None]
+    match = re.fullmatch(r"(\d+)(h|min|m|s)?", value or "")
+    assert match, f"unparseable TimeoutStartSec={value}"
+    return int(match[1]) * {"h": 3600, "min": 60, "m": 60, "s": 1}[match[2] or "s"]
+
+
+def test_every_role_ttl_outlives_its_worker_units_start_timeout():
+    units = Path(__file__).resolve().parents[1] / "deploy" / "systemd"
+    assert set(ROLE_WORKER_UNITS) | {"control_plane_deploy", "result_artifact_download"} == set(
+        disk_budget.ROLE_FOOTPRINT_BYTES)
+    for role, names in ROLE_WORKER_UNITS.items():
+        ttl = disk_budget.ROLE_TTL_SECONDS.get(role, disk_budget.DEFAULT_TTL_SECONDS)
+        for name in names:
+            timeout = _start_timeout_seconds((units / name).read_text(encoding="utf-8"))
+            assert ttl >= timeout, f"{role} TTL {ttl}s < {name} TimeoutStartSec {timeout}s"
