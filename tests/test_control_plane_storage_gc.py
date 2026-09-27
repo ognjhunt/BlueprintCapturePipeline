@@ -42,7 +42,8 @@ def isolated_disk_ledger(tmp_path, monkeypatch):
     monkeypatch.setattr("blueprint_pipeline.control_plane_evidence_offload.reserve_control_plane_disk",
                         functools.partial(reserve_control_plane_disk,
                             disk_usage=lambda _: SimpleNamespace(total=100 * 1024**3, free=80 * 1024**3)))
-    monkeypatch.setattr("blueprint_pipeline.completed_replay_cache_retention.active_reference", lambda _, **kwargs: False)
+    # An empty process table; active_reference answers from the same sweep.
+    monkeypatch.setattr("blueprint_pipeline.completed_replay_cache_retention.process_reference", lambda _, **kwargs: None)
     monkeypatch.setattr("blueprint_pipeline.control_plane_evidence_offload.DEFAULT_RESERVATION_ROOT",
                         tmp_path / "disk-reservations")
     monkeypatch.setattr("blueprint_pipeline.website_scene_workspace_retention.reserve_control_plane_disk",
@@ -229,6 +230,64 @@ def test_derived_directories_retire_only_when_unpinned_unqueued_and_idle(tmp_pat
         )
 
 
+def test_derived_manifest_names_each_retention_reason_with_bytes(tmp_path, monkeypatch) -> None:
+    """2026-09-27: the derived phase counted what it kept, but no count said how many bytes it
+    held, and a pinned count did not say what kind of pin held it."""
+
+    root = tmp_path / "launch-activations"
+    root.mkdir()
+    now, day = 12_000_000.0, 86400
+
+    def derived(name: str, size: int, *, age: float = 10 * day) -> Path:
+        directory = root / name
+        directory.mkdir()
+        (directory / "set.bin").write_bytes(b"d" * size)
+        for path in (directory / "set.bin", directory):
+            os.utime(path, (now - age, now - age))
+        return directory
+
+    derived("act-idle", 100)
+    by_activation = derived("act-pinned", 200)
+    by_two_kinds = derived("act-pinned-twice", 300)
+    derived("act-queued", 400)
+    derived("act-young", 500, age=3600)
+    (root / "act-link").symlink_to(root / "act-idle")
+    (root / "stray.bin").write_bytes(b"s" * 9)
+    pins = tmp_path / "pins"
+    for kind, owner, path in (("activation", "act-pinned", by_activation),
+                              ("activation", "act-pinned-twice", by_two_kinds),
+                              ("preparation", "prep-1", by_two_kinds)):
+        write_storage_pin(pins_root=pins, kind=kind, owner_id=owner, paths=[path], now=lambda: now)
+    queue = tmp_path / "queue"
+    (queue / "pending").mkdir(parents=True)
+    (queue / "pending" / "row.json").write_text(json.dumps({"activation_id": "act-queued"}), encoding="utf-8")
+    walked: list[str] = []
+    real_census = gc_module._tree_census
+    monkeypatch.setattr(gc_module, "_tree_census", lambda path: walked.append(path.name) or real_census(path))
+
+    manifest = build_derived_directory_manifest(
+        derived_roots=[root], pins_root=pins, queue_roots=[queue], minimum_age_seconds=day,
+        now=lambda: now, classifier=_noclass,
+    )
+
+    assert manifest["retained_by_reason"] == {
+        "pinned": {"count": 2, "bytes": 500, "by_kind": {
+            "activation": {"count": 1, "bytes": 200},
+            "activation+preparation": {"count": 1, "bytes": 300},
+        }},
+        "queue_referenced": {"count": 1, "bytes": 400},
+        "young": {"count": 1, "bytes": 500},
+        "unsafe": {"count": 2, "bytes": os.lstat(root / "act-link").st_size + 9},
+    }
+    assert manifest["retained_counts"] == {"pinned": 2, "queue_referenced": 1, "young": 1, "unsafe": 2}
+    assert [row["name"] for row in manifest["candidates"]] == ["act-idle"]
+    assert manifest["candidate_bytes"] == 100
+    # Each directory is walked once; a link or stray file never is.
+    assert sorted(walked) == ["act-idle", "act-pinned", "act-pinned-twice", "act-queued", "act-young"]
+    assert manifest["walked_file_count"] == 5
+    assert isinstance(manifest["walk_seconds"], float) and manifest["walk_seconds"] >= 0
+
+
 def test_apply_skips_a_directory_pinned_or_queued_after_the_dry_run(tmp_path) -> None:
     root = tmp_path / "compiled-episodes"
     root.mkdir()
@@ -366,11 +425,12 @@ def test_run_offloads_sealed_evidence_only_when_enabled(tmp_path, monkeypatch) -
     assert disabled["evidence_offload"]["candidate_count"] == 1
     assert disabled["evidence_offload_enabled"] is False
 
-    monkeypatch.setattr("blueprint_pipeline.completed_replay_cache_retention.active_reference", lambda _, **kwargs: True)
+    monkeypatch.setattr("blueprint_pipeline.completed_replay_cache_retention.process_reference",
+                        lambda _, **kwargs: "referenced")
     active = run_storage_gc(**common, apply=True, ack=RUN_ACK, offload_enabled=True)
     assert active["evidence_offload"]["offloaded_count"] == 0
     assert run.is_dir()
-    monkeypatch.setattr("blueprint_pipeline.completed_replay_cache_retention.active_reference", lambda _, **kwargs: False)
+    monkeypatch.setattr("blueprint_pipeline.completed_replay_cache_retention.process_reference", lambda _, **kwargs: None)
     assert run.is_dir()
 
     client = _ContentAddressedClient()
@@ -389,6 +449,63 @@ def test_run_offloads_sealed_evidence_only_when_enabled(tmp_path, monkeypatch) -
     assert not run.exists()
     assert (evidence / "run-1.offloaded.v1.json").is_file()
     assert client.upload_count == 1
+
+
+def test_applied_receipts_carry_retained_reasons(tmp_path) -> None:
+    """2026-09-27: the applied tick's receipts dropped the manifests' retained counts, so a
+    tick that removed nothing reported nothing about what it kept."""
+
+    now, day = 40_000_000.0, 86400
+
+    def tree(path: Path, size: int, *, age: float, receipt: bool = False) -> Path:
+        path.mkdir(parents=True)
+        (path / "payload.bin").write_bytes(b"p" * size)
+        if receipt:
+            (path / "dispatch_receipt.json").write_text("{}", encoding="utf-8")
+        for item in (*path.iterdir(), path):
+            os.utime(item, (now - age, now - age))
+        return path
+
+    derived = tmp_path / "prepared-references"
+    tree(derived / "prep-idle", 100, age=10 * day)
+    pinned = tree(derived / "prep-pinned", 200, age=10 * day)
+    tree(derived / "prep-young", 300, age=60)
+    evidence = tmp_path / "launch-runs"
+    tree(evidence / "run-cold", 1000, age=30 * day, receipt=True)
+    tree(evidence / "run-hot", 2000, age=day, receipt=True)
+    tree(evidence / "run-queued", 3000, age=30 * day, receipt=True)
+    pins = tmp_path / "pins"
+    write_storage_pin(pins_root=pins, kind="preparation", owner_id="prep-pinned", paths=[pinned], now=lambda: now)
+    queue = tmp_path / "queue"
+    (queue / "pending").mkdir(parents=True)
+    (queue / "pending" / "row.json").write_text(json.dumps({"run": "run-queued"}), encoding="utf-8")
+    common = dict(content_store_roots=[], derived_roots=[derived], queue_roots=[queue], pins_root=pins,
+                  evidence_roots=[evidence], hot_window_seconds=2 * day, derived_minimum_age_seconds=day,
+                  now=lambda: now, classifier=_noclass)
+
+    planned = run_storage_gc(**common)
+    applied = run_storage_gc(**common, apply=True, ack=RUN_ACK, offload_enabled=True, publisher=functools.partial(
+        store.publish_configured_scene_artifact, client=_ContentAddressedClient(), bucket="blueprint-production-inputs"))
+
+    derived_receipt, evidence_receipt = applied["derived_directories"], applied["evidence_offload"]
+    assert (derived_receipt["status"], derived_receipt["removed_count"]) == ("applied", 1)
+    assert derived_receipt["retained_by_reason"] == planned["derived_directories"]["retained_by_reason"] == {
+        "pinned": {"count": 1, "bytes": 200, "by_kind": {"preparation": {"count": 1, "bytes": 200}}},
+        "young": {"count": 1, "bytes": 300},
+    }
+    assert (derived_receipt["candidate_count"], derived_receipt["candidate_bytes"]) == (1, 100)
+    assert (evidence_receipt["status"], evidence_receipt["offloaded_count"]) == ("applied", 1)
+    assert evidence_receipt["retained_by_reason"] == planned["evidence_offload"]["retained_by_reason"] == {
+        "hot": {"count": 1, "bytes": 2002},
+        "protected_queue": {"count": 1, "bytes": 3002},
+    }
+    assert (evidence_receipt["candidate_count"], evidence_receipt["candidate_bytes"]) == (1, 1002)
+    assert derived_receipt["walked_file_count"] == planned["derived_directories"]["walked_file_count"] == 3
+    assert evidence_receipt["walked_file_count"] == planned["evidence_offload"]["walked_file_count"] == 6
+    assert all(isinstance(receipt["walk_seconds"], float) for receipt in (derived_receipt, evidence_receipt))
+    # The receipts stay digest-bound with the new fields inside.
+    for receipt in (derived_receipt, evidence_receipt):
+        assert receipt["result_digest"] == gc_module.canonical_digest(receipt, digest_field="result_digest")
 
 
 def test_run_cli_reads_roots_from_the_unit_environment(tmp_path, monkeypatch, capsys) -> None:

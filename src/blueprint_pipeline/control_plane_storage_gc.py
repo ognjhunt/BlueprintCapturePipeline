@@ -33,11 +33,18 @@ plans before it mutates, and a tick applies nothing unless it runs with
   Storage or is archived to the artifact store behind a replayable receipt, and
   nothing can still need them. It only plans until its own explicit opt-in,
   ``BLUEPRINT_CONTROL_PLANE_SCENE_WORKSPACE_RETIREMENT=1``, enables it.
+* **Replay caches** (``work`` class: activation lookaheads): the store copies
+  left in completed parent replays are removed by ``control_plane_replay_cache_gc``,
+  which only plans until ``BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_RETENTION=1``.
 
 Each phase runs isolated: an exception is recorded under its report key and the
 remaining phases still run. Evidence-hot roots, release worktrees, and runtime
 trees are never candidates here; release trees are retired by the deploy that
 supersedes them.
+
+The derived and evidence phases name why they kept each entry, with its bytes
+(``retained_by_reason``), and ``--report-out`` also publishes a small summary
+of the tick beside the report (``control_plane_storage_gc_reasons``).
 """
 
 from __future__ import annotations
@@ -63,7 +70,23 @@ from .control_plane_evidence_offload import (
     apply_evidence_offload,
     build_evidence_offload_manifest,
 )
+from .control_plane_replay_cache_gc import (
+    REPLAY_PARENT_ROOTS_ENV, _truthy_setting, reclaim_replay_caches, replay_cache_retention_setting,
+)
+from .control_plane_storage_gc_reasons import (
+    SUMMARY_FILENAME, WalkMeter, build_storage_gc_summary, count_retained, entry_bytes,
+    evidence_protection_reason, live_pin_kinds, walked_bytes,
+)
 from .control_plane_storage_pins import PINS_ROOT_ENV, live_pinned_paths
+# Kept under their old names for every existing caller.
+from .control_plane_storage_references import (  # noqa: F401 - re-exported
+    MAX_QUEUE_MESSAGE_BYTES as _MAX_QUEUE_MESSAGE_BYTES,
+    QUEUE_STATES,
+    SETTLEMENT_RECORD_GLOBS,
+    queue_reference_text as _queue_reference_text,
+    settlement_reference_text as _settlement_reference_text,
+    settlement_reopens_beyond_retained_receipts,
+)
 from .control_plane_storage_roots import require_storage_class
 from .decision_evidence_contracts import canonical_digest
 from .task_evaluation_release_identity import running_release_commit
@@ -83,7 +106,6 @@ DEFAULT_MINIMUM_AGE_SECONDS = 24 * 60 * 60
 # unpinned, unqueued work before the next operating window.
 DEFAULT_DERIVED_MINIMUM_AGE_SECONDS = 6 * 60 * 60
 RESERVED_DERIVED_CHILDREN = frozenset({"content-addressed"})
-QUEUE_STATES = ("pending", "processing")
 CONTENT_STORE_ROOTS_ENV = "BLUEPRINT_CONTROL_PLANE_GC_CONTENT_STORE_ROOTS"
 DERIVED_ROOTS_ENV = "BLUEPRINT_CONTROL_PLANE_GC_DERIVED_ROOTS"
 PLAN_ONLY_DERIVED_ROOTS_ENV = "BLUEPRINT_CONTROL_PLANE_GC_PLAN_ONLY_DERIVED_ROOTS"
@@ -138,12 +160,9 @@ SCENE_WORKSPACE_RETIREMENT_INVALID = "scene_workspace_retirement_setting_invalid
 REPORT_ROOT_ENV = "BLUEPRINT_CONTROL_PLANE_GC_REPORT_ROOT"
 DEFAULT_MAX_SCENE_RETIREMENTS = 20
 _MAX_SCENE_RESULTS = 50
-_TRUE = frozenset({"1", "true", "yes"})
-_FALSE = frozenset({"0", "false", "no"})
 _COMMIT = re.compile(r"[0-9a-f]{40}\Z")
 _ROW_COMMIT_KEYS = ("expected_production_commit", "source_commit")
 _DIGEST_NAME = re.compile(r"[0-9a-f]{64}\Z")
-_MAX_QUEUE_MESSAGE_BYTES = 16 * 1024 * 1024
 
 
 class ControlPlaneStorageGCError(RuntimeError):
@@ -301,95 +320,11 @@ def apply_gc_manifest(
     return result
 
 
-def _queue_reference_text(queue_roots: Sequence[str | Path]) -> str:
-    """Concatenate every pending or processing queue message; a name in it is live."""
+def _tree_census(directory: Path) -> tuple[float, int, int]:
+    """The newest mtime, the bytes and the number of files under ``directory``, never through a link."""
 
-    chunks: list[str] = []
-    for raw_root in queue_roots:
-        root = Path(raw_root).expanduser()
-        for state in QUEUE_STATES:
-            directory = root / state
-            if not directory.is_dir() or directory.is_symlink():
-                continue
-            for path in sorted(directory.glob("*.json")):
-                try:
-                    if path.is_symlink() or path.stat().st_size > _MAX_QUEUE_MESSAGE_BYTES:
-                        continue
-                    chunks.append(path.read_text(encoding="utf-8"))
-                except (OSError, UnicodeDecodeError):
-                    continue
-    return "\n".join(chunks)
-
-
-# A settled scene attempt keeps reopening the local ``launch_receipt.json`` of the
-# launch it settled against.  Offloading that launch run leaves the accounting and
-# controls readers permanently unable to validate the attempt, which strands the
-# whole intent.  Retention therefore has to read the settlement records too, not
-# just the queues.
-SETTLEMENT_RECORD_GLOBS = (
-    "*/attempts/*.json",
-    "*/cancelled-unstarted-controls/*.json",
-    "*/preparations/*.json",
-)
-
-
-def settlement_reopens_beyond_retained_receipts(name: str, settlement_text: str) -> bool:
-    """Whether a settlement record reads something of ``name`` the pointer will not keep.
-
-    Offload retains the accounting receipts in ``RETAINED_RECEIPTS`` byte-for-byte
-    inside the pointer, and the settlement readers reopen them through
-    ``read_receipt_bytes``, which falls back to that copy. A record that names
-    the run only as an identifier, or reopens only retained receipts, therefore
-    keeps working after the bulk evidence is archived. Any other path under the
-    run is a reopen the archive would break, so the run stays.
-    """
-
-    from .control_plane_retained_receipt import RETAINED_RECEIPTS
-
-    for match in re.finditer(re.escape(name) + r"/([A-Za-z0-9_.\-]+(?:/[A-Za-z0-9_.\-]+)*)", settlement_text):
-        if match.group(1) not in RETAINED_RECEIPTS:
-            return True
-    return False
-
-
-def _settlement_reference_text(settlement_roots: Sequence[str | Path]) -> tuple[str, int]:
-    """Concatenate every settlement record; a directory named in it is still read.
-
-    The second element counts records that exist but could not be read.  A
-    configured root that cannot be enumerated must never be silently treated as
-    "nothing is referenced", so the caller protects all evidence for that tick.
-    """
-
-    chunks: list[str] = []
-    unreadable = 0
-    for raw_root in settlement_roots:
-        root = Path(raw_root).expanduser()
-        if root.is_symlink() or not root.is_dir():
-            unreadable += 1
-            continue
-        for pattern in SETTLEMENT_RECORD_GLOBS:
-            try:
-                paths = sorted(root.glob(pattern))
-            except OSError:
-                unreadable += 1
-                continue
-            for path in paths:
-                try:
-                    if path.is_symlink() or path.stat().st_size > _MAX_QUEUE_MESSAGE_BYTES:
-                        # A record we decline to read is a record whose references
-                        # we do not know.  Count it rather than skipping it, or a
-                        # symlinked or oversized record silently unprotects its run.
-                        unreadable += 1
-                        continue
-                    chunks.append(path.read_text(encoding="utf-8"))
-                except (OSError, UnicodeDecodeError):
-                    unreadable += 1
-    return "\n".join(chunks), unreadable
-
-
-def _tree_snapshot(directory: Path) -> tuple[float, int]:
     latest = directory.lstat().st_mtime
-    size = 0
+    size = count = 0
     for root, directories, files in os.walk(directory):
         directories[:] = [name for name in directories if not (Path(root) / name).is_symlink()]
         for name in files:
@@ -399,6 +334,12 @@ def _tree_snapshot(directory: Path) -> tuple[float, int]:
                 continue
             latest = max(latest, metadata.st_mtime)
             size += metadata.st_size
+            count += 1
+    return latest, size, count
+
+
+def _tree_snapshot(directory: Path) -> tuple[float, int]:
+    latest, size, _files = _tree_census(directory)
     return latest, size
 
 
@@ -419,7 +360,12 @@ def build_derived_directory_manifest(
     now: Callable[[], float] = time.time,
     classifier: Callable[..., Any] = require_storage_class,
 ) -> dict[str, Any]:
-    """List derived directories no pin, queue message, or recent write still needs."""
+    """List derived directories no pin, queue message, or recent write still needs.
+
+    ``retained_by_reason`` gives the count and bytes behind each ``retained_counts``
+    reason, and for ``pinned`` the kinds of the pins that hold them (``by_kind``);
+    ``walked_file_count`` and ``walk_seconds`` say what walking the trees cost.
+    """
 
     if (
         not derived_roots
@@ -433,6 +379,9 @@ def build_derived_directory_manifest(
     queue_text = _queue_reference_text(queue_roots)
     candidates: list[dict[str, Any]] = []
     retained = {"pinned": 0, "queue_referenced": 0, "young": 0, "unsafe": 0}
+    by_reason: dict[str, dict[str, Any]] = {}
+    pin_kinds: dict[str, str] | None = None
+    walk = WalkMeter(_tree_census)
     roots: list[str] = []
     for raw_root in derived_roots:
         root = Path(raw_root).expanduser()
@@ -443,16 +392,22 @@ def build_derived_directory_manifest(
         for child in _derived_children(root):
             if child.is_symlink() or not child.is_dir():
                 retained["unsafe"] += 1
+                count_retained(by_reason, "unsafe", entry_bytes(child))
                 continue
             if str(child) in pinned or str(child.resolve()) in pinned:
                 retained["pinned"] += 1
+                pin_kinds = live_pin_kinds(pins_root, now=lambda: observed_at) if pin_kinds is None else pin_kinds
+                kind = pin_kinds.get(str(child)) or pin_kinds.get(str(child.resolve())) or "unknown"
+                count_retained(by_reason, "pinned", walked_bytes(walk, child), kind=kind)
                 continue
             if child.name in queue_text:
                 retained["queue_referenced"] += 1
+                count_retained(by_reason, "queue_referenced", walked_bytes(walk, child))
                 continue
-            latest, size = _tree_snapshot(child)
+            latest, size, _files = walk(child)
             if observed_at - latest < minimum_age_seconds:
                 retained["young"] += 1
+                count_retained(by_reason, "young", size)
                 continue
             candidates.append(
                 {
@@ -471,6 +426,8 @@ def build_derived_directory_manifest(
         "candidate_bytes": sum(row["size_bytes"] for row in candidates),
         "candidates": candidates,
         "retained_counts": retained,
+        "retained_by_reason": by_reason,
+        **walk.fields(),
         "evidence_roots_scanned": False,
         "manifest_digest": "",
     }
@@ -534,6 +491,12 @@ def apply_derived_directory_manifest(
         "schema_version": DERIVED_RECEIPT_SCHEMA_VERSION,
         "status": "applied",
         "source_manifest_digest": manifest["manifest_digest"],
+        # What the verified manifest planned, why it kept the rest, and what its walk cost.
+        "candidate_count": manifest.get("candidate_count"),
+        "candidate_bytes": manifest.get("candidate_bytes"),
+        "retained_by_reason": manifest.get("retained_by_reason"),
+        "walked_file_count": manifest.get("walked_file_count"),
+        "walk_seconds": manifest.get("walk_seconds"),
         "removed_count": len(removed),
         "removed_bytes": sum(row["size_bytes"] for row in removed),
         "removed": removed,
@@ -1085,12 +1048,7 @@ def scene_workspace_retirement_setting(environ: Mapping[str, str] = os.environ) 
     aborts the tick.
     """
 
-    raw = str(environ.get(SCENE_WORKSPACE_RETIREMENT_ENV) or "").strip().lower()
-    if raw in _TRUE:
-        return True, None
-    if not raw or raw in _FALSE:
-        return False, None
-    return False, SCENE_WORKSPACE_RETIREMENT_INVALID
+    return _truthy_setting(environ, SCENE_WORKSPACE_RETIREMENT_ENV, SCENE_WORKSPACE_RETIREMENT_INVALID)
 
 
 def retire_scene_workspaces(
@@ -1277,11 +1235,14 @@ def run_storage_gc(
     scene_process_checker: Callable[[Path], bool] | None = None,
     scene_inventory_cache_root: str | Path | None = None,
     scene_hash_budget_bytes: int | None = None,
+    replay_parent_roots: Sequence[str | Path] = (),
+    replay_cache_retention_enabled: bool = False,
+    replay_cache_retention_alert: str | None = None,
     now: Callable[[], float] = time.time,
     publisher: Callable[..., Any] | None = None,
     classifier: Callable[..., Any] = require_storage_class,
 ) -> dict[str, Any]:
-    """One timer tick: stranded rows, derived directories, blobs, offload, scratch, scenes.
+    """One timer tick: stranded rows, derived directories, blobs, offload, scratch, replay caches, scenes.
 
     Stranded rows go first so the derived-directory step in the same tick no
     longer sees them as live queue references. Every phase is isolated.
@@ -1302,10 +1263,16 @@ def run_storage_gc(
         "status": "applied" if apply else "dry_run",
         "observed_at_epoch": observed_at,
         "apply": apply,
+        "opt_in": {
+            "evidence_offload": bool(offload_enabled),
+            "scene_workspace_retirement": bool(scene_workspace_retirement_enabled),
+            "replay_cache_retention": bool(replay_cache_retention_enabled),
+        },
         "skipped_roots": [],
     }
-    if scene_workspace_retirement_alert:
-        report["alerts"] = [scene_workspace_retirement_alert]
+    alerts = [alert for alert in (scene_workspace_retirement_alert, replay_cache_retention_alert) if alert]
+    if alerts:
+        report["alerts"] = alerts
     queue_present, _absent_queue_roots = _existing(queue_roots)
     if queue_present:
         def stranded_phase() -> Any:
@@ -1388,29 +1355,17 @@ def run_storage_gc(
             }
             del observed_text
 
-            def evidence_protected(directory: Path) -> bool:
-                # Re-read the records on every check, exactly as the queue text is.
-                # ``apply_evidence_offload`` re-checks protection immediately before it
-                # evicts each candidate; a settlement written after the manifest was
-                # built must protect its launch run at that final check too.
-                settlement_text, settlement_unreadable = _settlement_reference_text(
-                    settlement_roots
-                )
-                # Fail closed: an unreadable settlement root proves nothing is unreferenced.
-                if settlement_unreadable:
-                    return True
-                from .completed_replay_cache_retention import active_reference
-                if active_reference(directory, ignored_process_ids=(os.getpid(),)):
-                    return True
-                pinned = live_pinned_paths(pins_root, now=clock)
-                if any(Path(p) == directory or directory in Path(p).parents or Path(p) in directory.parents for p in pinned):
-                    return True
-                if settlement_reopens_beyond_retained_receipts(directory.name, settlement_text):
-                    return True
-                return directory.name in _queue_reference_text(queue_roots)
+            def protection_reason(directory: Path) -> str | None:
+                # The one protection hook for the manifest, its apply and the per-artifact
+                # offload: a reason keeps the run and names why. Re-reads settlements and
+                # queues on every check; see evidence_protection_reason.
+                return evidence_protection_reason(
+                    directory, settlement_roots=settlement_roots, pins_root=pins_root,
+                    queue_roots=queue_roots, now=clock, ignored_process_ids=(os.getpid(),))
+
             # Keep authenticated downloads usable after cold evidence reclamation.
             from .task_evaluation_result_artifact_store import (
-                APPLY_ACK as RESULT_ARTIFACT_ACK, offload_result_artifacts,
+                APPLY_ACK as RESULT_ARTIFACT_ACK, offload_failure, offload_result_artifacts,
             )
             report["result_artifact_offload"] = []
             for evidence_root in evidence_present:
@@ -1422,12 +1377,13 @@ def run_storage_gc(
                             apply=apply and offload_enabled,
                             ack=RESULT_ARTIFACT_ACK if apply and offload_enabled else "",
                             hot_window_seconds=hot_window_seconds,
-                            protection_checker=evidence_protected, now=clock,
+                            protection_checker=protection_reason, now=clock,
                             publisher=publisher,
                         )
                     except Exception as exc:
+                        # Type, errno and stage only: a message can carry a host path.
                         result = {"status": "retained", "run_directory": registry_path.parents[2].name,
-                                  "reason": type(exc).__name__}
+                                  "reason": type(exc).__name__, **offload_failure(exc)}
                     report["result_artifact_offload"].append(result)
             offload = build_evidence_offload_manifest(
                 evidence_roots=evidence_present,
@@ -1435,12 +1391,12 @@ def run_storage_gc(
                 abandoned_after_seconds=abandoned_after_seconds,
                 now=clock,
                 classifier=classifier,
-                protection_checker=evidence_protected,
+                protection_checker=protection_reason,
             )
             if apply and offload_enabled:
                 extra = {"publisher": publisher} if publisher is not None else {}
                 report["evidence_offload"] = apply_evidence_offload(
-                    offload, ack=OFFLOAD_ACK, now=clock, protection_checker=evidence_protected, **extra
+                    offload, ack=OFFLOAD_ACK, now=clock, protection_checker=protection_reason, **extra
                 )
             else:
                 report["evidence_offload"] = offload
@@ -1474,6 +1430,14 @@ def run_storage_gc(
             return apply_workspace_bundle_manifest(bundles, ack=WORKSPACE_BUNDLE_ACK, now=clock) if apply else bundles
 
         _isolated(report, "workspace_bundles", bundle_phase)
+    replay_present, absent = _existing(replay_parent_roots)
+    report["skipped_roots"].extend(absent)
+    if replay_present:
+        _isolated(report, "replay_caches", lambda: reclaim_replay_caches(
+            parent_roots=replay_present, apply=apply, enabled=replay_cache_retention_enabled,
+            now=clock, classifier=classifier))
+        if replay_cache_retention_alert and isinstance(report.get("replay_caches"), dict):
+            report["replay_caches"]["alerts"] = [replay_cache_retention_alert]
     scene_present, absent = _existing(scene_workspace_roots)
     report["skipped_roots"].extend(absent)
     if scene_present:
@@ -1568,6 +1532,47 @@ def _write_report(path: Path, report: Mapping[str, Any]) -> None:
         os.close(parent_fd)
 
 
+def _write_summary(report_path: Path, report: Mapping[str, Any]) -> bool:
+    """Publish ``summary.json`` beside the report exactly as the report was published.
+
+    It only projects a report already written, so a failure is traced to stderr
+    and fails the unit without costing the report, and the previous tick's
+    summary is withdrawn: a stale summary beside a newer report would be
+    fabricated state. A report itself named ``summary.json`` is never
+    overwritten by its summary.
+    """
+
+    if report_path.name == SUMMARY_FILENAME:
+        return True
+    try:
+        _write_report(report_path.with_name(SUMMARY_FILENAME), build_storage_gc_summary(report))
+    except Exception:  # noqa: BLE001 - the full report is already written
+        traceback.print_exc(file=sys.stderr)
+        _withdraw_summary(report_path.parent)
+        return False
+    return True
+
+
+def _withdraw_summary(directory: Path) -> None:
+    """Best effort: unlink ``summary.json`` by name through the report directory's descriptor."""
+
+    try:
+        directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return
+    except OSError:
+        traceback.print_exc(file=sys.stderr)
+        return
+    try:
+        os.unlink(SUMMARY_FILENAME, dir_fd=directory_fd)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        traceback.print_exc(file=sys.stderr)
+    finally:
+        os.close(directory_fd)
+
+
 def _run_main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="control_plane_storage_gc run")
     parser.add_argument("--content-store-root", action="append", default=None)
@@ -1585,6 +1590,7 @@ def _run_main(argv: list[str]) -> int:
     parser.add_argument("--scene-workspace-root", action="append", default=None)
     parser.add_argument("--scene-intent-root", default=os.getenv(SCENE_INTENT_ROOT_ENV) or None)
     parser.add_argument("--scratch-root", action="append", default=None)
+    parser.add_argument("--replay-parent-root", action="append", default=None)
     parser.add_argument("--workspace-bundle-root", action="append", default=None)
     parser.add_argument(
         "--workspace-bundle-minimum-age-seconds",
@@ -1618,8 +1624,10 @@ def _run_main(argv: list[str]) -> int:
     if not pins_root:
         raise ControlPlaneStorageGCError("control_plane_storage_gc_pins_root_missing")
     retirement_enabled, retirement_alert = scene_workspace_retirement_setting()
-    if retirement_alert:
-        print(f"storage_gc_alert:{retirement_alert}", file=sys.stderr)
+    replay_enabled, replay_alert = replay_cache_retention_setting()
+    for alert in (retirement_alert, replay_alert):
+        if alert:
+            print(f"storage_gc_alert:{alert}", file=sys.stderr)
     report_root = str(os.getenv(REPORT_ROOT_ENV) or "").strip()
     if not report_root and args.report_out:
         report_root = str(Path(args.report_out).expanduser().parent)
@@ -1654,15 +1662,20 @@ def _run_main(argv: list[str]) -> int:
         scene_binding_root=str(os.getenv(SCENE_BINDING_ROOT_ENV) or "").strip() or None,
         scene_workspace_retirement_enabled=retirement_enabled,
         scene_workspace_retirement_alert=retirement_alert,
+        replay_parent_roots=args.replay_parent_root or _split_env(REPLAY_PARENT_ROOTS_ENV),
+        replay_cache_retention_enabled=replay_enabled,
+        replay_cache_retention_alert=replay_alert,
         # Per-file digests, so an hourly plan re-reads only what changed.
         scene_inventory_cache_root=None,
         classifier=require_storage_class,
     )
+    summary_written = True
     if args.report_out:
         _write_report(Path(args.report_out).expanduser(), report)
+        summary_written = _write_summary(Path(args.report_out).expanduser(), report)
     print(json.dumps(report, indent=2, sort_keys=True))
     # The whole report is written first; a failed phase still fails the unit so it is seen.
-    return 1 if report.get("phase_errors") else 0
+    return 1 if report.get("phase_errors") or not summary_written else 0
 
 
 def main(argv: list[str] | None = None) -> int:

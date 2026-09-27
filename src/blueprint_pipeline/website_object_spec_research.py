@@ -8,10 +8,12 @@ a figure only when its source page was fetched in this run, its verbatim quote
 appears in that page's text, and a number in the quote equals the figure after
 unit normalization. Everything else is listed as dropped, every requested spec
 with no kept figure is listed as one the searched record is silent on, and
-published figures describe the product, never this unit. Off unless
-``BLUEPRINT_WEBSITE_OBJECT_SPEC_AGENT`` and the live-operator gate are set; an
-unrun research is recorded as ``not_run`` and is not a blocker. A retained
-receipt is reused on restart; an uncertain one is never re-bought.
+published figures describe the product, never this unit. Where the product's
+own figures are silent, published standard sizes of its category may be kept,
+labelled ``category_standard``, for overall and cutout sizes only. On by default
+(owner decision, 2026-09-27); ``BLUEPRINT_WEBSITE_OBJECT_SPEC_AGENT=0`` turns it
+off, and an unrun research is recorded as ``not_run`` and is not a blocker. A
+retained receipt is reused on restart; an uncertain one is never re-bought.
 """
 from __future__ import annotations
 
@@ -41,7 +43,8 @@ from .local_reconstruction_adapters import _sha256_file
 SCHEMA_VERSION = "website_object_spec.v1"
 ENABLE_ENV = "BLUEPRINT_WEBSITE_OBJECT_SPEC_AGENT"
 MODEL = "gpt-6-sol"  # Same family as the image repair agent.
-REVISION = 2
+# 3: category-standard figures and kept quotes (2026-09-27 website capture).
+REVISION = 3
 CAPABILITY = "website_object_spec_researcher"
 MAX_TURNS = 8
 MAX_OUTPUT_TOKENS = 4000
@@ -66,6 +69,9 @@ MAX_COST_USD = 2.0
 DIMENSION_CONFLICT_TOLERANCE = 0.30
 QUOTE_VALUE_TOLERANCE = 0.005
 MATCHES = ("exact_model", "model_family", "brand_category", "comparable_class")
+# A published standard or typical size for the object's CATEGORY (for example a
+# standard cabinet cutout width), not for any product: sizes only, never weights.
+CATEGORY_STANDARD = "category_standard"
 LENGTH_UNITS = {"mm": 0.001, "cm": 0.01, "m": 1.0, "in": 0.0254}
 MASS_UNITS = {"g": 0.001, "kg": 1.0, "lb": 0.45359237}
 FORCE_UNITS = {"n": 1.0, "lbf": 4.4482216152605}
@@ -82,8 +88,9 @@ _QUOTE_UNITS = {"mm": "mm", "cm": "cm", "m": "m", "in": "in", "inch": "in", "inc
                 "n": "n", "newton": "n", "newtons": "n", "lbf": "lbf"}
 _KEYWORDS = re.compile(r"width|height|depth|dimension|weight|load|capacity|cut-?out|opening|pull|force|lbf|newtons?|lbs?\b|kg\b|inch|mm\b"
                        r"|cm\b|\bin\.|door|rack|drawer|net", re.I)
-CLAIM = ("Published figures for the identified product, not measurements of this unit; the searched "
-         "record may be incomplete, and silence means no verified figure was found.")
+CLAIM = ("Published figures for the identified product or, where labelled category_standard, the published "
+         "standard size of its category; never measurements of this unit. The searched record may be "
+         "incomplete, and silence means no verified figure was found.")
 VERIFICATION_RULE = ("A figure is kept only when its source_url was fetched in this run, its quote appears "
                      "verbatim in that page's text, and a number in the quote equals the figure after unit "
                      "normalization within 0.5%.")
@@ -101,7 +108,14 @@ INSTRUCTIONS = (
     "published part weight or load capacity named <part>_weight or <part>_max_load (for example "
     "door_weight, upper_rack_max_load), and opening_pull_force for a prismatic slide when published. "
     "Comparable-class figures are only context, never measurements or exact-object specifications. "
-    "For each figure give the value and unit as printed, the "
+    "Give every figure about the identified product (or comparable) basis=identified_product. When no exact-model, "
+    "model-family or brand figures give the overall width, height and depth, including when the make is unknown, "
+    "also research the published standard or typical overall and cutout dimensions for the object's category "
+    "(for example the standard size of a built-in appliance or fixture of that category in the "
+    "market the footage suggests) from authoritative sources: manufacturer installation guides, "
+    "standards bodies, or major retailers' category buying guides. Give those basis=category_standard, only "
+    "overall_* and cutout_* sizes, and a published range as [low, high]; they describe the category, never "
+    "this unit. For each figure give the value and unit as printed, the "
     "fetched source_url, and quote: the exact text from the fetch_page excerpt that states the "
     "number, copied character for character. Never estimate, convert, infer or fill in a figure no "
     "fetched page states; leave it out and list it in silent_on. Report each disagreeing source as "
@@ -124,6 +138,7 @@ class PublishedFigure(BaseModel):
     unit: Literal["mm", "cm", "m", "in", "kg", "g", "lb", "n", "lbf"]
     source_url: str = Field(min_length=1, max_length=2048)
     quote: str = Field(min_length=1, max_length=300)
+    basis: Literal["identified_product", "category_standard"]
 
 
 class ObjectSpecFindings(BaseModel):
@@ -133,17 +148,18 @@ class ObjectSpecFindings(BaseModel):
     silent_on: list[str] = Field(max_length=24)
 
 
-def _truthy(name: str) -> bool:
-    return os.getenv(name, "").strip().casefold() in {"1", "true", "yes", "on"}
-
-
 def agent_gate() -> str | None:
-    """None when the agent may run; otherwise the recorded not_run reason."""
-    from .agent_operator_runtime import LIVE_AGENTS_SDK_ENV
-    if not _truthy(ENABLE_ENV):
+    """None when the agent may run; ``agent_disabled`` only when explicitly switched off.
+
+    Owner decision, 2026-09-27: an off-by-default agent left a labelled,
+    identifiable product unresearched and the build was sized from a short
+    video estimate. The shared harness still requires the host's global
+    ``BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS`` opt-in for every live run;
+    ``research_receipt`` checks it before reserving any spend, so a host
+    without it holds the research and spends nothing.
+    """
+    if os.getenv(ENABLE_ENV, "").strip().casefold() in {"0", "false", "no", "off"}:
         return "agent_disabled"
-    if not _truthy(LIVE_AGENTS_SDK_ENV):
-        return "live_agents_sdk_operators_not_allowed"
     return None
 
 
@@ -464,7 +480,13 @@ def _quote_names_attribute(quote: str, name: str, span: Sequence[float], unit: s
 
 def verify_findings(findings: Mapping[str, Any], *, fetch_log: Sequence[Mapping[str, Any]],
                     identity: Mapping[str, Any], articulation_kind: str) -> dict[str, Any]:
-    """Deterministic: the agent's figures count only when the fetched page says them."""
+    """Deterministic: the agent's figures count only when the fetched page says them.
+
+    Identified-product figures carry the product's verified match in ``specs``.
+    Category-standard figures (overall and cutout sizes only, from a page about
+    the category) are kept apart in ``category_specs`` and never pass for the
+    product's own figures.
+    """
     pages: dict[str, str] = {}
     for row in fetch_log:
         if row.get("status") != "ok":
@@ -487,15 +509,25 @@ def verify_findings(findings: Mapping[str, Any], *, fetch_log: Sequence[Mapping[
             ceiling = claimed
         product = {**product, "match": ceiling,
                    **({"match_downgraded_from": claimed} if ceiling != claimed else {})}
-    kept: dict[str, list[dict[str, Any]]] = {}
+    kept: dict[tuple[str, str], list[dict[str, Any]]] = {}
     dropped = []
+    head = re.findall(r"[a-z]{3,}", str(identity.get("category") or "").casefold())[-1:]
     for figure in findings.get("figures") or []:
         span, unit, reason = _span(figure)
-        if ceiling == "comparable_class" and figure["name"] != "opening_pull_force":
+        page = pages.get(figure["source_url"])
+        category = figure.get("basis") == CATEGORY_STANDARD
+        if category:
+            # A category's typical size is kept for sizes only, from a page that is
+            # about that category; it says nothing of this product's weights or loads.
+            if figure["name"] not in LENGTH_SPECS:
+                reason = "category_figure_not_transferable"
+            elif reason is None and page is not None and not (
+                    head and re.search(r"\b" + re.escape(head[0]), page)):
+                reason = "category_standard_page_not_about_category"
+        elif ceiling == "comparable_class" and figure["name"] != "opening_pull_force":
             # A slide's weight or size is not evidence for an unidentified cabinet.
             reason = "comparable_figure_not_transferable"
-        page = pages.get(figure["source_url"])
-        if (reason is None and ceiling == "comparable_class"
+        if (reason is None and not category and ceiling == "comparable_class"
                 and (product is None or not product.get("brand") or not product.get("model")
                      or page is None or not re.search(r"\b(?:slide|drawer)\b", page))):
             reason = "comparable_slide_identity_or_class_unverified"
@@ -513,19 +545,26 @@ def verify_findings(findings: Mapping[str, Any], *, fetch_log: Sequence[Mapping[
                 # depth) is not evidence for this figure.
                 reason = "quote_attribute_mismatch"
         if reason:
-            dropped.append({**{key: figure[key] for key in ("name", "value", "unit", "source_url", "quote")},
-                            "reason": reason})
+            dropped.append({**{key: figure.get(key) for key in ("name", "value", "unit", "source_url", "quote",
+                                                                "basis")}, "reason": reason})
             continue
-        kept.setdefault(figure["name"], []).append({"span": span, "unit": unit, "url": figure["source_url"]})
-    specs = {}
-    for name, rows in sorted(kept.items()):
+        kept.setdefault((CATEGORY_STANDARD if category else "product", figure["name"]), []).append(
+            {"span": span, "unit": unit, "url": figure["source_url"], "quote": figure["quote"]})
+    specs: dict[str, dict[str, Any]] = {}
+    category_specs: dict[str, dict[str, Any]] = {}
+    for (level, name), rows in sorted(kept.items()):
         low = round(min(row["span"][0] for row in rows), 6)
         high = round(max(row["span"][1] for row in rows), 6)
-        specs[name] = {"value": low if low == high else [low, high], "unit": rows[0]["unit"],
-                       "source_urls": sorted({row["url"] for row in rows}), "match": ceiling}
+        (category_specs if level == CATEGORY_STANDARD else specs)[name] = {
+            "value": low if low == high else [low, high], "unit": rows[0]["unit"],
+            "source_urls": sorted({row["url"] for row in rows}),
+            "match": CATEGORY_STANDARD if level == CATEGORY_STANDARD else ceiling,
+            "quotes": sorted({(row["url"], row["quote"]) for row in rows})}
+    for row in (*specs.values(), *category_specs.values()):
+        row["quotes"] = [{"source_url": url, "quote": quote} for url, quote in row["quotes"]]
     requested = [*LENGTH_SPECS, "net_weight", *PART_SPECS.get(articulation_kind, ())]
-    return {"product": product, "specs": specs, "silent_on": [name for name in requested if name not in specs],
-            "unsourced_dropped": dropped}
+    return {"product": product, "specs": specs, "category_specs": category_specs,
+            "silent_on": [name for name in requested if name not in specs], "unsourced_dropped": dropped}
 
 
 def dimension_check(object_spec: Mapping[str, Any], body_bounds: Mapping[str, Any] | None, *,
@@ -553,6 +592,81 @@ def dimension_check(object_spec: Mapping[str, Any], body_bounds: Mapping[str, An
             "basis": "published_product_figures_vs_estimated_body_bounds"}
 
 
+PRODUCT_SIZE_AUTHORITY = "published_product_specification"
+CATEGORY_SIZE_AUTHORITY = "published_category_standard"
+PRODUCT_SIZE_MATCHES = ("exact_model", "model_family", "brand_category")
+
+
+def _sizing_axis(specs: Mapping[str, Any], axis: str) -> dict[str, Any] | None:
+    """One axis from its overall figure, else its cutout; a range sizes at its midpoint.
+
+    A built-in fits its opening, so width and height never exceed the smallest
+    published cutout. Depth is not clamped: a door stands proud of the cabinet face.
+    """
+    rows = {}
+    for kind in ("overall", "cutout"):
+        row = specs.get(f"{kind}_{axis}")
+        if row is None:
+            continue
+        value, sources = row.get("value"), row.get("source_urls")
+        span = value if isinstance(value, list) else [value, value]
+        if (row.get("unit") != "m" or len(span) != 2
+                or any(isinstance(v, bool) or not isinstance(v, int | float) for v in span)
+                or not 0 < span[0] <= span[1] <= MAX_LENGTH_M or not isinstance(sources, list) or not sources):
+            return None
+        rows[kind] = {**row, "span": [float(span[0]), float(span[1])]}
+    chosen = rows.get("overall") or rows.get("cutout")
+    if chosen is None:
+        return None
+    low, high = chosen["span"]
+    value, clamped = (low + high) / 2, None
+    if "cutout" in rows and axis != "depth" and value > rows["cutout"]["span"][0]:
+        value = clamped = rows["cutout"]["span"][0]
+    return {"value_m": value, "range_m": [low, high], "basis": "overall" if "overall" in rows else "cutout",
+            "cutout_clamped_to_m": clamped, "match": chosen.get("match"),
+            "source_urls": sorted({url for row in rows.values() for url in row["source_urls"]}),
+            "quotes": [quote for row in rows.values() for quote in row.get("quotes") or []]}
+
+
+def published_body_size(object_spec: Mapping[str, Any] | None, *,
+                        max_relative_half_range: float) -> dict[str, Any] | None:
+    """The best verified published overall size that may size the build; else None (keep the estimate).
+
+    2026-09-27 website capture: a standard built-in assembly (about
+    0.61 x 0.60 x 0.86 m) was built 0.43 x 0.43 x 0.82 m from a video estimate.
+    Precedence: exact_model > model_family > brand_category (the one verified
+    level of the identified product's figures) > category_standard > the
+    video estimate. A level sizes only when it gives every axis (overall, or
+    the cutout a built-in fills) and each range is no wider than
+    ``max_relative_half_range`` of its midpoint. None of these is a
+    measurement of this unit.
+    """
+    if (not isinstance(object_spec, Mapping) or object_spec.get("schema_version") != SCHEMA_VERSION
+            or object_spec.get("status") != "researched"
+            or object_spec.get("digest") != canonical_digest(object_spec, digest_field="digest")):
+        return None
+    identified = (object_spec.get("identity") or {}).get("basis") in {"owner_stated", "label_read"}
+    levels = (["specs"] if identified else []) + ["category_specs"]
+    for key in levels:
+        axes = {axis: _sizing_axis(object_spec.get(key) or {}, axis) for axis in ("depth", "width", "height")}
+        matches = {(row or {}).get("match") for row in axes.values()}
+        # Half the range over its midpoint: (high - low) / 2 > tolerance * (high + low) / 2.
+        if (any(row is None or row["range_m"][1] - row["range_m"][0]
+                > max_relative_half_range * (row["range_m"][0] + row["range_m"][1]) for row in axes.values())
+                or len(matches) != 1
+                or matches.pop() not in (PRODUCT_SIZE_MATCHES if key == "specs" else (CATEGORY_STANDARD,))):
+            continue
+        match = axes["depth"]["match"]
+        return {"depth_m": axes["depth"]["value_m"], "width_m": axes["width"]["value_m"],
+                "height_m": axes["height"]["value_m"],
+                "dimension_authority": CATEGORY_SIZE_AUTHORITY if match == CATEGORY_STANDARD else PRODUCT_SIZE_AUTHORITY,
+                "dimension_match": match, "axes": axes, "product": object_spec.get("product"),
+                "object_spec_digest": object_spec["digest"],
+                "source_urls": sorted({url for row in axes.values() for url in row["source_urls"]}),
+                "claim": CLAIM, "physical_measurement_proven": False}
+    return None
+
+
 # ---------------------------------------------------------------- agent
 
 
@@ -575,6 +689,33 @@ def _agent_input(identity: Mapping[str, Any], articulation_kind: str,
 def _bounded_run(agent: Any, value: Any, **kwargs: Any) -> Any:
     from agents import Runner
     return asyncio.run(asyncio.wait_for(Runner.run(agent, value, **kwargs), timeout=WALL_CLOCK_SECONDS))
+
+
+MAX_REFUSED_ATTEMPTS = 1  # Pre-provider refusals retried under a fresh allocation; each keeps its hold.
+
+
+def _provider_reserved(root: Path, run_id: str) -> bool:
+    """The harness writes a durable reservation before any provider request."""
+    for path in (root / "inference_reservations" / "reserved").glob("*.json"):
+        try:
+            if json.loads(path.read_text()).get("run_id") == run_id:
+                return True
+        except (OSError, ValueError):
+            return True  # An unreadable reservation is never proof of no request.
+    return False
+
+
+def _refused_attempts(root: Path, digest: str) -> list[Path]:
+    return sorted(root.glob(f"research-{digest[7:]}.refused-*.json"))
+
+
+def _retire_refused(*, path: Path, root: Path, digest: str, receipt: Mapping[str, Any], reason: str) -> None:
+    """A run with no reservation provably reached no provider; keep it as evidence and free the slot."""
+    attempt = len(_refused_attempts(root, digest))
+    write_json(root / f"research-{digest[7:]}.refused-{attempt}.json",
+               {**receipt, "status": "refused_before_provider", "reason": reason,
+                "proof": "no_inference_reservation_recorded_for_run"})
+    path.unlink()
 
 
 def _default_invoker():
@@ -621,6 +762,10 @@ def research_receipt(*, identity: Mapping[str, Any], articulation_kind: str, cov
             raise ValueError("website_object_spec_agent_in_progress") from exc
         if path.is_file():
             receipt = json.loads(path.read_text())
+            if receipt.get("status") == "submitting" and not _provider_reserved(root, digest[7:23]):
+                _retire_refused(path=path, root=root, digest=digest, receipt=receipt,
+                                reason=str(receipt.get("failure") or "unrecorded_before_provider"))
+        if path.is_file():
             if receipt.get("status") != "completed":
                 # An uncertain research run is never bought again.
                 raise ValueError("website_object_spec_agent_requires_reconciliation")
@@ -630,15 +775,27 @@ def research_receipt(*, identity: Mapping[str, Any], articulation_kind: str, cov
                 raise ValueError("website_object_spec_agent_receipt_invalid")
         else:
             # Everything that can fail locally fails before the reservation.
+            attempt = len(_refused_attempts(root, digest))
+            if attempt > MAX_REFUSED_ATTEMPTS:
+                raise ValueError("website_object_spec_agent_refusals_exhausted")
+            if invoker is None:
+                from .agent_operator_runtime import LIVE_AGENTS_SDK_ENV, env_truthy
+                if not env_truthy(LIVE_AGENTS_SDK_ENV):
+                    raise ValueError(f"website_object_spec_agent_live_operator_env_missing:{LIVE_AGENTS_SDK_ENV}")
             input_value = _agent_input(identity, articulation_kind, frames)
             fetcher = PageFetcher(pages_root=root / "pages", transport=transport, resolver=resolver)
             spec = _agent_spec(digest, fetcher)
             selected = invoker if invoker is not None else _default_invoker()
+            # The WebApp grants one reservation per allocation digest; a retried
+            # refusal needs its own, and the refused one's hold is never reused.
+            allocation = digest if attempt == 0 else canonical_digest({"binding_digest": digest,
+                                                                       "refused_attempt": attempt})
             admission, _grant = reserve_website_preparation_spend(
-                task_context=task_context, binding_digest=digest, maximum_cost_usd=MAX_COST_USD, request_count=1,
-                resource_class="openai_api_candidate", provider="openai")
+                task_context=task_context, binding_digest=allocation, maximum_cost_usd=MAX_COST_USD,
+                request_count=1, resource_class="openai_api_candidate", provider="openai")
             with path.open("x") as stream:
                 json.dump({"status": "submitting", "binding_digest": digest, "binding": binding,
+                           "allocation_binding_digest": allocation, "attempt": attempt,
                            "admission": admission}, stream)
                 stream.flush()
                 os.fsync(stream.fileno())
@@ -646,7 +803,8 @@ def research_receipt(*, identity: Mapping[str, Any], articulation_kind: str, cov
                                  input_value=input_value, invoker=selected, fetcher=fetcher, spec=spec)
     settlement_path = root / f"research-{digest[7:]}.settlement.json"
     if not settlement_path.is_file():
-        command = {"task_context_digest": task_context["context_digest"], "allocation_binding_digest": digest,
+        command = {"task_context_digest": task_context["context_digest"],
+                   "allocation_binding_digest": receipt.get("allocation_binding_digest", digest),
                    "provider": "openai", "completed_request_count": 1,
                    "provider_charge_amount_usd": round(min(float(receipt["cost_usd"]), MAX_COST_USD), 6),
                    "usage_receipt_digest": canonical_digest({"usage": receipt["usage"]})}
@@ -676,17 +834,23 @@ def _run_agent(*, path: Path, root: Path, digest: str, binding: Mapping[str, Any
                input_value: list[dict[str, Any]], invoker: Any, fetcher: PageFetcher, spec: Any) -> dict[str, Any]:
     from .task_evaluation_supervisor.inference_reservations import InferenceReservationAudit
     fetcher.deadline = time.monotonic() + WALL_CLOCK_SECONDS
+    submitted = json.loads(path.read_text())
     audit = InferenceReservationAudit(run_root=root, run_id=digest[7:23])
     try:
         invoker.configure_reservation_audit(record_reservation=audit.record_reservation,
             record_completion=audit.record_completion, restored_reserved_cost_usd=0.0)
         invocation = invoker.invoke(spec, input_value)
-    except Exception as exc:  # noqa: BLE001 - the submitted receipt now requires reconciliation.
-        raise ValueError(f"website_object_spec_agent_failed:{type(exc).__name__}") from exc
-    finally:
+    except Exception as exc:  # noqa: BLE001 - reconciled below or held for reconciliation.
         audit.write_manifest()
+        reason = f"{type(exc).__name__}:{str(exc)[:200]}"
+        if not _provider_reserved(root, digest[7:23]):
+            _retire_refused(path=path, root=root, digest=digest, receipt=submitted, reason=reason)
+            raise ValueError(f"website_object_spec_agent_refused_before_provider:{reason}") from exc
+        raise ValueError(f"website_object_spec_agent_failed:{type(exc).__name__}") from exc
+    audit.write_manifest()
     findings = ObjectSpecFindings.model_validate(invocation.output).model_dump(mode="json")
     receipt = {"status": "completed", "binding_digest": digest, "binding": dict(binding), "admission": admission,
+               "allocation_binding_digest": submitted.get("allocation_binding_digest", digest),
                "findings": findings, "findings_digest": canonical_digest(findings), "fetch_log": fetcher.log,
                "fetch_log_digest": canonical_digest({"fetches": fetcher.log}), "model": invocation.model,
                "usage": invocation.usage, "cost_usd": float(invocation.cost_usd if invocation.cost_usd is not None
@@ -713,13 +877,15 @@ def research_object_spec(*, target_id: str, category: str, articulation_kind: st
                          coverage: Mapping[str, Any] | None, task_context: Mapping[str, Any], output_root: Path,
                          invoker: Any = None, transport: Callable[..., dict[str, Any]] | None = None,
                          resolver: Callable[..., Any] | None = None) -> dict[str, Any]:
-    """The ``website_object_spec.v1`` record; unknown identity permits only comparable mechanism force."""
+    """The ``website_object_spec.v1`` record; unknown identity permits only comparable mechanism force
+    and category-standard sizes."""
     identity = identify_object(task_context=task_context, coverage=coverage, category=category)
     gate = agent_gate()
     value: dict[str, Any] = {"schema_version": SCHEMA_VERSION, "target_id": target_id,
         "binding": spec_binding(target_id=target_id, identity=identity, coverage=coverage,
                                 articulation_kind=articulation_kind, gate=gate),
-        "identity": identity, "product": None, "specs": {}, "silent_on": [], "unsourced_dropped": [],
+        "identity": identity, "product": None, "specs": {}, "category_specs": {}, "silent_on": [],
+        "unsourced_dropped": [],
         "dimension_check": None, "blockers": []}
     if gate is not None:
         value.update(status="not_run", research={"status": "not_run", "reason": gate})

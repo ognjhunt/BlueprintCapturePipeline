@@ -15,10 +15,11 @@ import json
 import os
 import re
 import shutil
+import stat
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from functools import partial
 from pathlib import Path
 from typing import Any, Callable
@@ -53,6 +54,35 @@ BULK_ROLES = frozenset(
         "retained_interrupted_cell_evidence",
     }
 )
+#: Where an offload failed: reading and verifying the run's registry, checking
+#: its protection, publishing to the artifact store, or evicting local copies.
+OFFLOAD_STAGES = ("registry", "protection", "publish", "evict")
+_STAGE_ATTRIBUTE = "result_artifact_offload_stage"
+
+
+@contextmanager
+def _offload_stage(stage: str):
+    """Mark an exception leaving this block with ``stage``, unless an inner block already did."""
+    try:
+        yield
+    except Exception as exc:
+        if not hasattr(exc, _STAGE_ATTRIBUTE):
+            with suppress(AttributeError):
+                setattr(exc, _STAGE_ATTRIBUTE, stage)
+        raise
+
+
+def offload_failure(exc: BaseException, stage: str | None = None) -> dict[str, Any]:
+    """A failed offload's typed record: its error type, errno for an ``OSError``, and stage.
+
+    Never the message or file name, which can carry a host path. An exception no
+    stage marked failed while the run's registry was read and verified.
+    """
+    return {
+        "error_type": type(exc).__name__,
+        "errno": exc.errno if isinstance(exc, OSError) else None,
+        "stage": stage or getattr(exc, _STAGE_ATTRIBUTE, "registry"),
+    }
 
 
 def _safe_path(root: Path, relative: str) -> Path:
@@ -156,9 +186,16 @@ def acquire_artifact_read_lease(root: Path, *, exclusive: bool = False):
     descriptor = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o660)
     try:
         owner = registry_path.stat()
-        if os.geteuid() == 0:
+        # The storage GC is root with CAP_CHOWN but not CAP_FOWNER: once the lock
+        # belongs to the registry owner, only that owner may change its mode. So
+        # the mode is set only while this process owns the file, and the owner is
+        # changed last. A lock someone else owns keeps its mode; the open and the
+        # flock are the access check.
+        metadata = os.fstat(descriptor)
+        if stat.S_IMODE(metadata.st_mode) != 0o660 and metadata.st_uid == os.geteuid():
+            os.fchmod(descriptor, 0o660)
+        if os.geteuid() == 0 and (metadata.st_uid, metadata.st_gid) != (owner.st_uid, owner.st_gid):
             os.fchown(descriptor, owner.st_uid, owner.st_gid)
-        os.fchmod(descriptor, 0o660)
         fcntl.flock(descriptor, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
     except BaseException:
         os.close(descriptor)
@@ -284,12 +321,18 @@ def offload_result_artifacts(
     ack: str = "",
     minimum_size_bytes: int = 64 * 1024,
     hot_window_seconds: int = 172800,
-    protection_checker: Callable[[Path], bool] | None = None,
+    protection_checker: Callable[[Path], bool | str | None] | None = None,
     publisher: Callable[..., dict] | None = None,
     now: Callable[[], float] = time.time,
     progress: Callable[[dict], None] | None = None,
 ) -> dict[str, Any]:
-    """Dry-run first; preserve every source whose publication or seal changes."""
+    """Dry-run first; preserve every source whose publication or seal changes.
+
+    A retained run says why (``retained_reason``): ``hot``, the reason string the
+    protection checker returned, or ``protected``. A skipped artifact records
+    ``offload_failure``'s fields, and an exception that escapes carries the stage
+    it failed in for ``offload_failure`` to read.
+    """
     unresolved = Path(run_root).expanduser()
     if unresolved.is_symlink() or not unresolved.is_dir():
         raise TaskEvaluationResultDeliveryError("result_artifact_run_root_invalid")
@@ -317,10 +360,14 @@ def offload_result_artifacts(
         report["result_digest"] = canonical_digest(report, digest_field="result_digest")
         return report
 
-    if now() - registry_path.stat().st_mtime < hot_window_seconds or (
-        protection_checker and protection_checker(root)
-    ):
+    hot = now() - registry_path.stat().st_mtime < hot_window_seconds
+    protected = None
+    if not hot and protection_checker is not None:
+        with _offload_stage("protection"):
+            protected = protection_checker(root)
+    if hot or protected:
         report["status"] = "retained_hot_or_active"
+        report["retained_reason"] = "hot" if hot else (protected if isinstance(protected, str) else "protected")
         return completed_report()
     groups: dict[str, list[dict]] = {}
     for record in registry["artifacts"]:
@@ -368,10 +415,14 @@ def offload_result_artifacts(
         return completed_report()
     # One client per run, shared by bounded S3 upload workers.
     if publisher is None:
-        client, bucket = _artifact_object_store_client()
+        with _offload_stage("publish"):
+            client, bucket = _artifact_object_store_client()
         publisher = partial(publish_configured_scene_artifact, client=client, bucket=bucket)
     lock_path = _safe_path(root, "artifacts/result_delivery/.offload.lock")
     with (
+        # Anything below that no inner stage marks is publication: the disk
+        # reservation, the offload lock and the upload workers.
+        _offload_stage("publish"),
         reserve_control_plane_disk(
             "evidence_offload",
             target_root=root,
@@ -388,7 +439,7 @@ def offload_result_artifacts(
                 relative, path, record = candidate
                 try:
                     if not path.exists():
-                        return candidate, None, "already_evicted"
+                        return candidate, None, {"reason": "already_evicted"}
                     before = path.stat()
                     reference = dict(publisher(path=path, artifact_kind=ARTIFACT_KIND))
                     value = {
@@ -405,18 +456,20 @@ def offload_result_artifacts(
                     _validate_remote(value, registry=registry, relative=relative, record=record)
                     return candidate, (value, before), None
                 except Exception as exc:
-                    return candidate, None, type(exc).__name__
+                    return candidate, None, {"reason": type(exc).__name__, **offload_failure(exc, "publish")}
 
             published = list(pool.map(publish, batch))
-            if registry_path.read_bytes() != registry_bytes or (
-                protection_checker and protection_checker(root)
-            ):
+            with _offload_stage("registry"):
+                changed = registry_path.read_bytes() != registry_bytes
+            with _offload_stage("protection"):
+                changed = changed or (protection_checker and protection_checker(root))
+            if changed:
                 report["skipped"].append({"reason": "run_changed_or_active"})
                 break
-            with _artifact_eviction_lease(root):
+            with _offload_stage("evict"), _artifact_eviction_lease(root):
                 for (relative, path, record), result, error in published:
                     if error:
-                        report["skipped"].append({"relative_path": relative, "reason": error})
+                        report["skipped"].append({"relative_path": relative, **error})
                         continue
                     value, before = result
                     try:
@@ -453,9 +506,11 @@ def offload_result_artifacts(
                         # Logical bytes; hardlinks can keep the same blocks allocated elsewhere.
                         report["offloaded_bytes"] += current.st_size
                     except Exception as exc:
-                        report["skipped"].append(
-                            {"relative_path": relative, "reason": type(exc).__name__}
-                        )
+                        report["skipped"].append({
+                            "relative_path": relative,
+                            "reason": type(exc).__name__,
+                            **offload_failure(exc, "evict"),
+                        })
             if progress:
                 progress(dict(report))
     return completed_report()
