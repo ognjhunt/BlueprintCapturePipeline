@@ -1686,9 +1686,12 @@ def process_handoff_payload(
 
             retired = retired_capture_status(storage_root=storage_root, bucket=handoff.bucket,
                                              scene_id=handoff.scene_id, capture_id=handoff.capture_id)
-        except Exception:  # noqa: BLE001 - an unanswerable lookup stages normally, as before
+        except Exception:  # noqa: BLE001 - an unanswerable lookup waits for the next delivery
             logger.exception("pubsub_handoff.retirement_lookup_failed")
-            return None
+            return {"schema_version": "v1", "status": "retirement_lookup_failed_retryable",
+                    "queue_disposition": "retryable", "bucket": handoff.bucket, "scene_id": handoff.scene_id,
+                    "capture_id": handoff.capture_id, "capture_root": str(capture_root),
+                    "blockers": ["retirement_lookup_failed"]}
         # Answered exactly as the capture's own ledger would: a completed capture, any payload.
         if retired is None or not (retired.get("covers_every_payload") or digest in retired["payload_sha256s"]):
             return None

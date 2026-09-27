@@ -421,7 +421,9 @@ recreates the workspace: after taking the ledger lock the listener checks that t
 lock file it holds is still the capture's and that the capture still exists, and a
 claim for a capture that existed when the message arrived never creates it again.
 Either way it asks the receipt again, and a payload the receipt does not cover is
-left for its next delivery (`capture_retired_retryable`).
+left for its next delivery (`capture_retired_retryable`). A retired completed capture
+covers every payload, as its ledger would. If the receipt lookup itself fails, the
+message also waits (`retirement_lookup_failed_retryable`) rather than restaging.
 
 **Where it runs.** The reclaim timer plans every scene workspace in
 `BLUEPRINT_CONTROL_PLANE_GC_SCENE_WORKSPACE_ROOTS` (intents from

@@ -2572,3 +2572,21 @@ def test_the_ledger_lock_refuses_a_file_that_no_longer_names_the_capture(tmp_pat
     assert not (tmp_path / "gone").exists()
     with listener_module._locked_job_ledger(root, create=False) as ledger:
         assert ledger == {}
+
+
+def test_a_failed_retirement_lookup_waits_rather_than_restaging(tmp_path, monkeypatch):
+    from blueprint_pipeline import website_scene_workspace_retention as retention
+
+    def broken(**_kwargs):
+        raise OSError("retirement receipt unreadable")
+
+    monkeypatch.setattr(retention, "retired_capture_status", broken)
+    subscriber = FakeSubscriber([_received(ack_id="a1", data=PAYLOAD_BYTES)])
+    results = _install_fake_pubsub(monkeypatch, subscriber, storage_client=_ListingForbidden(),
+                                   run_e2e=lambda **_: pytest.fail("an unproven retirement must not restage"))
+
+    assert _pull(tmp_path) == 0 and subscriber.acknowledged == []
+    assert (results[0]["status"], results[0]["queue_disposition"]) == ("retirement_lookup_failed_retryable",
+                                                                      "retryable")
+    assert results[0]["blockers"] == ["retirement_lookup_failed"]
+    assert not (tmp_path / "capture-bucket").exists()
