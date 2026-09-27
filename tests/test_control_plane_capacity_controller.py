@@ -476,6 +476,33 @@ def test_new_capacity_warning_pages_while_usage_warning_persists(tmp_path, monke
     assert capacity_warning["alert_posted"] is True and len(posted) == 2
 
 
+def test_a_second_mount_warning_pages_with_the_same_alert_code():
+    first = {"level": "warning", "alert_posted": True, "last_alert_epoch": 1_000.0,
+             "alerts": [{"code": "utilization_warning", "mount": "/first"}]}
+    second = {"level": "warning", "alerts": [
+        {"code": "utilization_warning", "mount": "/first"},
+        {"code": "utilization_warning", "mount": "/second"}]}
+    assert cap.alert_due(first, second, now=1_600.0)
+
+
+def test_failed_warning_webhook_retries_on_the_next_tick(tmp_path):
+    attempts = []
+
+    def poster(_url, _report):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise OSError("webhook temporarily unavailable")
+
+    common = dict(mounts=[str(tmp_path)], report_root=tmp_path / "capacity",
+                  reservation_root=tmp_path / "ledger", webhook_url="https://alerts.example/hook",
+                  volume=None, ack="", token="", poster=poster, survey=None,
+                  disk_usage=_usage(free_gib=40.0))
+    first = cap.run_controller(**common, now=1_000.0)
+    assert first["level"] == "warning" and first["alert_posted"] is False
+    second = cap.run_controller(**common, now=1_600.0)
+    assert second["alert_posted"] is True and len(attempts) == 2
+
+
 def test_low_attribution_warns_but_never_masks_critical(tmp_path, monkeypatch):
     _no_project_spend(monkeypatch)
     survey = lambda **_k: _survey_result(mounts=[  # noqa: E731

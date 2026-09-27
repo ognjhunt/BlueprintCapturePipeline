@@ -583,22 +583,28 @@ def write_report(report_root: Path, report: Mapping[str, Any]) -> Path:
 
 
 def alert_due(previous: Mapping[str, Any] | None, report: Mapping[str, Any], *, now: float) -> bool:
-    """Alert on every escalation, and re-alert hourly while critical."""
+    """Alert on escalation or a new affected target, and retry failed delivery."""
 
     level = report.get("level")
     if level == "ok":
         return False
     if previous is None or previous.get("level") != level:
         return True
-    def actionable_codes(value: Mapping[str, Any]) -> set[str]:
+    if previous.get("alert_posted") is False:
+        return True
+
+    def actionable_alerts(value: Mapping[str, Any]) -> set[tuple[str, str, str, str, tuple[str, ...]]]:
         return {
-            code for row in value.get("alerts") or []
+            (code, str(row.get("mount") or ""), str(row.get("provider") or ""),
+             str(row.get("root") or ""),
+             tuple(sorted(str(role) for role in row.get("roles") or [])))
+            for row in value.get("alerts") or []
             if isinstance(row, Mapping)
             and isinstance((code := row.get("code")), str)
             and not code.startswith("usage_")
         }
 
-    if actionable_codes(report) - actionable_codes(previous):
+    if actionable_alerts(report) - actionable_alerts(previous):
         return True
     last = previous.get("last_alert_epoch")
     return level == "critical" and (not isinstance(last, (int, float)) or now - float(last) >= ALERT_REPEAT_SECONDS)

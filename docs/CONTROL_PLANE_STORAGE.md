@@ -244,7 +244,8 @@ to `warning`. A survey exception keeps the last result and names the error
 (`usage_survey_failed:<type>`) without stopping the capacity tick. Failed and
 interrupted attempts do not retry on every ten-minute tick. A new non-usage
 warning still pages when a usage warning has already raised the report to
-`warning`.
+`warning`. A warning on another mount pages even when its code is already
+present, and a failed webhook post is retried on the next tick.
 
 **Reading it.** `python3 scripts/operator_door.py usage` prints `capacity.usage`
 from door `status` as tables ([`OPERATOR_DOOR.md`](OPERATOR_DOOR.md)):
