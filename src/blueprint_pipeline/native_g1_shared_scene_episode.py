@@ -189,6 +189,9 @@ def run_g1_shared_scene_episode(
             if len(steps) >= max_steps:
                 break
             targets = sonic_bridge.targets_for_action(action)
+            target_projections = [
+                dict(item) for item in getattr(sonic_bridge, "last_target_projection", ())
+            ]
             state = environment.step_controller_targets(targets)
             step_index = len(steps) + 1
             # The terminal trace is written only after the complete episode.
@@ -207,6 +210,7 @@ def run_g1_shared_scene_episode(
                 "action_index": action_index,
                 "semantic_action": action,
                 "controller_targets_rad": targets,
+                "target_projections": target_projections,
                 "robot_state": state,
             }
             step_checkpoint["checkpoint_digest"] = canonical_digest(
@@ -228,6 +232,7 @@ def run_g1_shared_scene_episode(
                 "action_index": action_index,
                 "semantic_action": action,
                 "controller_targets_rad": targets,
+                "target_projections": target_projections,
                 "robot_state": state,
                 "checkpoint_digest": step_checkpoint["checkpoint_digest"],
                 "checkpoint_relative_path": step_checkpoint_path.relative_to(output_dir).as_posix(),
@@ -273,6 +278,12 @@ def run_g1_shared_scene_episode(
         "initial_task_sample": initial_task_sample,
         "policy_query_count": len(queries),
         "scene_step_count": len(steps),
+        "controller_target_projection_count": sum(
+            len(row["target_projections"]) for row in steps
+        ),
+        "controller_target_projected_step_count": sum(
+            bool(row["target_projections"]) for row in steps
+        ),
         "queries": queries,
         "steps": steps,
         "policy_input_observations": policy_observations,
