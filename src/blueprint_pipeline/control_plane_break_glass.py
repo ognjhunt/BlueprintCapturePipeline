@@ -339,7 +339,9 @@ def verify_note(
 
     try:
         raw = _read_regular(path, limit=MAX_NOTE_BYTES, unsafe_code="break_glass_note_unsafe")
-    except OSError:
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise BreakGlassNoteError("break_glass_note_unsafe") from None
         raise BreakGlassNoteError("break_glass_note_unreadable") from None
     return _verified(raw, Path(path).name, max_age_seconds=max_age_seconds, now=now)
 

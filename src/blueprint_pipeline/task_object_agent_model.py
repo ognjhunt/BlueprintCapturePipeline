@@ -42,6 +42,15 @@ def context_ceiling(value):
     return len(text.encode()) + images + 4096
 
 
+# Text is charged byte-for-byte (a worst case), so the 2026-09-27 website
+# dishwasher door -- 12 reference frames, the authoring contract and one
+# observe_object turn -- charged over 80,000 while the SDK measured about 26,000
+# real input tokens per request. A first live turn has no user boundary to
+# compact at, so the ceiling itself must leave room for it. This matches the
+# supervisor's default request ceiling.
+AUTHORING_CONTEXT_CEILING = 120_000
+
+
 def bounded_authoring_input(envelope):
     """Choose the smallest safe view before reserving a paid model request."""
     from .task_object_agent_context import compact_authoring_history
@@ -51,7 +60,7 @@ def bounded_authoring_input(envelope):
         if mode is not None:
             envelope['input'] = compact_authoring_history(original, mode=mode)
         ceiling = context_ceiling(envelope)
-        if ceiling <= 80_000:
+        if ceiling <= AUTHORING_CONTEXT_CEILING:
             return envelope['input'], ceiling
     raise AssetAuthoringError('authoring_session_context_ceiling_exceeded')
 

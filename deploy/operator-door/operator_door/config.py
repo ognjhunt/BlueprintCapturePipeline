@@ -149,6 +149,10 @@ def _validated(config: DoorConfig) -> DoorConfig:
     for name in _PATH_SCALARS:
         if not os.path.isabs(getattr(config, name)):
             raise DoorConfigError(f"door_config_path_not_absolute:{name}")
+    trusted_parent = Path(DoorConfig().source_clone).parent
+    source_clone = Path(config.source_clone)
+    if source_clone.parent != trusted_parent or source_clone.is_symlink():
+        raise DoorConfigError("door_config_source_clone_outside_trusted_root")
     if config.listen_host not in _LOOPBACK:
         raise DoorConfigError("door_config_listener_not_loopback")
     return config

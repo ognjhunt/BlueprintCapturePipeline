@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import dataclasses
+import errno
 import fcntl
 import hashlib
 import json
@@ -124,12 +125,14 @@ _DEPLOY_ACTIVE_TRANSITION = False
 #: How long a break-glass note authorizes a deploy from an untrusted source.
 BREAK_GLASS_DEPLOY_NOTE_MAX_AGE_SECONDS = 24 * 3600
 UNTRUSTED_SOURCE_REFUSAL = (
-    "GPU admission would refuse the resulting release "
-    "(gpu_canary_deployed_release_receipt_unverified): it trusts only the "
-    "canonical source checkout or a root-owned clone directly under the "
-    "config-tools root. Deploy through the operator door, or record a "
-    "break-glass note naming " + DEPLOY_FROM_UNTRUSTED_SOURCE + " and pass it "
-    "with --break-glass-note within 24 hours."
+    "Merged commit: deploy through the operator door. Unmerged canary or "
+    "iteration: use deploy_control_plane_canary.sh or "
+    "deploy_control_plane_iteration.sh from the canonical checkout, or a "
+    "root-owned, non-group/world-writable clone directly under the config-tools "
+    "root. A break-glass note (python -m blueprint_pipeline.control_plane_break_glass "
+    "record --action deploy-from-untrusted-source --reason ...) lets this deploy "
+    "proceed, but GPU admission will still refuse the release until a trusted "
+    "deploy replaces it."
 )
 
 #: The single-flight guard a lane holds for the whole life of a paid instance.
@@ -339,6 +342,17 @@ SUPERSEDED_ITERATION_PROVENANCE_NAME = (
 
 class ControlPlaneDeployError(ValueError):
     """A surface did not reach the requested commit, or cannot say that it did."""
+
+
+class UntrustedDeploySourceError(ControlPlaneDeployError):
+    """A typed refusal with a separate remedy, never a host path in the code."""
+
+    def __init__(self, code: str, *, door_clone: bool = False) -> None:
+        super().__init__(f"deploy_source_repo_untrusted:{code}")
+        self.remedy = UNTRUSTED_SOURCE_REFUSAL + (
+            " Repair the door source clone to root:root 0755 before retrying."
+            if door_clone else ""
+        )
 
 
 def _provision_scene_configuration_from_release(*, repository_root, source_commit,
@@ -2891,14 +2905,13 @@ def _verify_intake_runtime(
 def _report_break_glass_notes(
     receipt: dict[str, Any], *, root: str | Path, deploy_commit: str
 ) -> None:
-    """Report, once, every break-glass note no earlier deploy reported.
+    """Add unreported break-glass notes to a receipt without marking them.
 
     Operators and agents changed the host by hand over SSH and nothing
     recorded it; a note now does, and this puts every unreported note in the
-    receipt and marks it reported with this commit. It runs after every
-    surface moved and never fails the deploy, which has already happened: a
-    note that cannot be read or marked stays unreported for the next deploy,
-    and this receipt carries an alert instead.
+    receipt. The CLI marks them only after its receipt is safely written. It
+    runs after every surface moved and never fails the deploy, which has
+    already happened: an unreadable note stays unreported for the next deploy.
     """
 
     try:
@@ -2914,12 +2927,6 @@ def _report_break_glass_notes(
         return
     alerts = receipt.setdefault("alerts", [])
     alerts.append(f"break_glass_notes_reported:{len(notes)}")
-    try:
-        mark_break_glass_notes_reported(root, notes, deploy_commit=deploy_commit)
-    except Exception as exc:
-        code = break_glass_refusal_code(exc)
-        receipt["break_glass_notes_error"] = code
-        alerts.append(f"break_glass_notes_not_marked:{code}")
 
 
 def deploy_control_plane_commit(
@@ -3496,21 +3503,29 @@ def _require_trusted_deploy_source(
         return None
     reason = "break_glass_note_missing"
     if break_glass_note is not None:
-        path = Path(break_glass_note).expanduser().resolve()
-        try:
-            note = verify_break_glass_note(
-                path, max_age_seconds=BREAK_GLASS_DEPLOY_NOTE_MAX_AGE_SECONDS
-            )
-        except BreakGlassNoteError as exc:
-            reason = str(exc)
+        supplied_path = Path(break_glass_note).expanduser()
+        path = supplied_path.resolve()
+        notes_root = Path(DEFAULT_BREAK_GLASS_NOTES_ROOT).expanduser()
+        if notes_root.is_symlink():
+            reason = "break_glass_notes_root_unsafe"
+        elif path.parent != notes_root.resolve():
+            reason = "break_glass_note_outside_notes_root"
         else:
-            if DEPLOY_FROM_UNTRUSTED_SOURCE in note["actions"]:
-                summary = break_glass_note_summary({"name": path.name, **note})
-                return {**summary, "path": str(path), "actions": list(note["actions"])}
-            reason = "break_glass_note_action_missing"
-    raise ControlPlaneDeployError(
-        f"deploy_source_repo_untrusted:{reason}: {UNTRUSTED_SOURCE_REFUSAL}"
+            try:
+                note = verify_break_glass_note(
+                    supplied_path, max_age_seconds=BREAK_GLASS_DEPLOY_NOTE_MAX_AGE_SECONDS
+                )
+            except BreakGlassNoteError as exc:
+                reason = str(exc)
+            else:
+                if DEPLOY_FROM_UNTRUSTED_SOURCE in note["actions"]:
+                    summary = break_glass_note_summary({"name": path.name, **note})
+                    return {**summary, "path": str(path), "actions": list(note["actions"])}
+                reason = "break_glass_note_action_missing"
+    door_clone = Path(source_repo).expanduser().resolve() == (
+        Path("/opt/blueprint/control-plane-config-tools") / "operator-door-source"
     )
+    raise UntrustedDeploySourceError(reason, door_clone=door_clone)
 
 
 def _run_deploy_with_signal_cleanup(callback: Callable[[], dict[str, Any]]) -> dict[str, Any]:
@@ -3545,7 +3560,62 @@ def _write_receipt_and_return(receipt: dict[str, Any], path: str | None) -> dict
     if path:
         out = Path(path).expanduser().resolve()
         out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(receipt, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+        payload = (json.dumps(receipt, indent=1, sort_keys=True) + "\n").encode("utf-8")
+        descriptor, temporary = tempfile.mkstemp(prefix=f".{out.name}.", suffix=".tmp", dir=out.parent)
+        try:
+            with os.fdopen(descriptor, "wb") as stream:
+                # The operator door reads deploy receipts as the blueprint user.
+                os.fchmod(stream.fileno(), 0o644)
+                stream.write(payload)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, out)
+            directory = os.open(out.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(temporary)
+            raise
+    return receipt
+
+
+def _finalize_deploy_receipt(
+    receipt: dict[str, Any], *, path: str | None, notes_root: Path, commit: str,
+    note_was_passed: bool = False,
+) -> dict[str, Any]:
+    """Persist before marking notes, keeping the deployed receipt on write failure."""
+
+    if receipt.get("break_glass_note") is not None:
+        receipt.setdefault("alerts", []).append("break_glass_deploy_from_untrusted_source")
+    elif note_was_passed:
+        receipt.setdefault("alerts", []).append("break_glass_note_ignored_trusted_source")
+    notes = receipt.get("break_glass_notes")
+    if not path and isinstance(notes, list) and notes:
+        receipt.setdefault("alerts", []).append("break_glass_notes_not_marked:no_receipt_out")
+    try:
+        _write_receipt_and_return(receipt, path)
+    except OSError as exc:
+        code = errno.errorcode.get(exc.errno, type(exc).__name__)
+        receipt.setdefault("blockers", []).append(f"deploy_receipt_write_failed:{code}")
+        return receipt
+    if not path or not isinstance(notes, list) or not notes:
+        return receipt
+    rows = [{"name": row.get("name"), "note_digest": row.get("digest")}
+            for row in notes if isinstance(row, Mapping)]
+    try:
+        mark_break_glass_notes_reported(notes_root, rows, deploy_commit=commit)
+    except Exception as exc:  # noqa: BLE001 - marking never invalidates an applied deploy
+        code = break_glass_refusal_code(exc)
+        receipt["break_glass_notes_error"] = code
+        receipt.setdefault("alerts", []).append(f"break_glass_notes_not_marked:{code}")
+        try:
+            _write_receipt_and_return(receipt, path)
+        except OSError as rewrite_error:
+            rewrite_code = errno.errorcode.get(rewrite_error.errno, type(rewrite_error).__name__)
+            receipt.setdefault("blockers", []).append(f"deploy_receipt_rewrite_failed:{rewrite_code}")
     return receipt
 
 
@@ -3693,7 +3763,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         break_glass_note = _require_trusted_deploy_source(
             args.source_repo, args.break_glass_note
         )
-        receipt = _run_deploy_with_signal_cleanup(lambda: _write_receipt_and_return({
+        receipt = _run_deploy_with_signal_cleanup(lambda: _finalize_deploy_receipt({
             **deploy_control_plane_commit(
             source_repo=args.source_repo,
             source_commit=args.source_commit,
@@ -3733,24 +3803,24 @@ def main(argv: Sequence[str] | None = None) -> int:
             break_glass_notes_root=DEFAULT_BREAK_GLASS_NOTES_ROOT,
             ),
             "break_glass_note": break_glass_note,
-        }, args.receipt_out))
+        }, path=args.receipt_out, notes_root=DEFAULT_BREAK_GLASS_NOTES_ROOT,
+           commit=args.source_commit, note_was_passed=args.break_glass_note is not None))
     except (OSError, ValueError, ControlPlaneReleaseError) as exc:
-        print(
-            json.dumps(
-                {
+        blocked = {
                     "schema_version": SCHEMA_VERSION,
                     "status": "blocked",
                     "blockers": [str(exc)],
                     "provider_mutation_performed": False,
-                },
-                indent=1,
-                sort_keys=True,
-            )
-        )
+                }
+        if isinstance(exc, UntrustedDeploySourceError):
+            blocked["remedy"] = exc.remedy
+        print(json.dumps(blocked, indent=1, sort_keys=True))
         return 2
 
     print(json.dumps(receipt, indent=1, sort_keys=True))
-    return 0
+    return 2 if any(str(code).startswith("deploy_receipt_write_failed:") or
+                    str(code).startswith("deploy_receipt_rewrite_failed:")
+                    for code in receipt.get("blockers", [])) else 0
 
 
 if __name__ == "__main__":  # pragma: no cover

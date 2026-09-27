@@ -6277,6 +6277,18 @@ def _provider_output_probe(get_url: str) -> Callable[[], bool] | None:
     return _probe
 
 
+def _remote_progress_probe_for_bundle(
+    provider_bundle_kind: str, job_dir: Path
+) -> Callable[[Mapping[str, Any]], Mapping[str, Any]] | None:
+    """Only the policy canary has an SSH milestone probe."""
+
+    if provider_bundle_kind != "native_task_arena_policy_canary_session":
+        return None
+    return lambda connection: probe_policy_canary_remote_progress(
+        connection, attempt_dir=job_dir / "policy_remote_progress_ssh"
+    )
+
+
 def _request_logs_and_fetch(
     *,
     instance_id: int,
@@ -6419,6 +6431,8 @@ def _request_logs_and_fetch(
             try:
                 remote_probe_result = remote_progress_probe(last_instance_liveness)
             except Exception:  # noqa: BLE001 - diagnostic transport cannot end a paid run
+                remote_probe_result = {"status": "unavailable", "milestones": []}
+            if not isinstance(remote_probe_result, Mapping):
                 remote_probe_result = {"status": "unavailable", "milestones": []}
             last_remote_probe_status = str(remote_probe_result.get("status") or "unavailable")
             remote_milestones = remote_probe_result.get("milestones")
@@ -8929,13 +8943,8 @@ def run_vast_provider_adapter(
             ),
             no_progress_seconds=resolved_heartbeat_no_progress_seconds,
             output_probe=_provider_output_probe(_string(provider_output_get_url)),
-            remote_progress_probe=(
-                lambda connection: probe_policy_canary_remote_progress(
-                    connection,
-                    attempt_dir=resolved_job_dir / "policy_remote_progress_ssh",
-                )
-                if provider_bundle_kind == "native_task_arena_policy_canary_session"
-                else None
+            remote_progress_probe=_remote_progress_probe_for_bundle(
+                provider_bundle_kind, resolved_job_dir
             ),
         )
         # Result and log transport are independent. Preserve an observed upload
