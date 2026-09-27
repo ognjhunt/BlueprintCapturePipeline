@@ -136,6 +136,45 @@ def test_unreadable_process_inventory_protects_with_a_reason(tmp_path, monkeypat
     assert run.is_dir() and (run / "frames.bin").stat().st_size == 5000
 
 
+def test_protected_pin_evidence_names_pin_kinds(tmp_path) -> None:
+    """2026-09-27: evidence offload kept 17 runs (7.6 GB) as protected_pin and could not say
+    which pins held them. Each is now counted under the kinds of the pins that hold it, with
+    how many pins those are, so the runs can be checked against the pin proofs. No owner or
+    path reaches the reasons."""
+
+    evidence = tmp_path / "launch-runs"
+    own = _cold_run(evidence, "run-secret-own", size=1000)
+    shared = _cold_run(evidence, "run-secret-shared", size=2000)
+    _cold_run(evidence, "run-secret-free", size=3000)
+    pins = tmp_path / "pins"
+    # Young pins: this tick's pin pass keeps all three, whatever their proofs.
+    write_storage_pin(pins_root=pins, kind="activation", owner_id="run-secret-own", paths=[own], now=lambda: NOW)
+    write_storage_pin(pins_root=pins, kind="activation", owner_id="act-secret-a", paths=[shared / "inputs"],
+                      now=lambda: NOW)
+    write_storage_pin(pins_root=pins, kind="preparation", owner_id="prep-secret-b", paths=[shared], now=lambda: NOW)
+
+    reason = reasons.evidence_protection_reason(
+        shared, settlement_roots=(), pins_root=pins, queue_roots=[], now=lambda: NOW)
+    report = run_storage_gc(content_store_roots=[], derived_roots=[], queue_roots=[], pins_root=pins,
+                            evidence_roots=[evidence], now=lambda: NOW, classifier=_noclass)
+
+    assert reason == reasons.PROTECTED_PIN and (reason.pin_kind, reason.owner_count) == ("activation+preparation", 2)
+    size = {run.name: sum(path.stat().st_size for path in run.rglob("*") if path.is_file()) for run in (own, shared)}
+    by_kind = {"activation": {"count": 1, "bytes": size[own.name], "owner_count": 1},
+               "activation+preparation": {"count": 1, "bytes": size[shared.name], "owner_count": 2}}
+    manifest = report["evidence_offload"]
+    assert manifest["retained_by_reason"] == {"protected_pin": {
+        "count": 2, "bytes": size[own.name] + size[shared.name], "by_kind": by_kind}}
+    assert [row["name"] for row in manifest["candidates"]] == ["run-secret-free"]
+    summary = reasons.build_storage_gc_summary(report)
+    assert summary["phases"]["evidence_offload"]["retained_by_reason"]["protected_pin"]["by_kind"] == by_kind
+    assert "secret" not in json.dumps(manifest["retained_by_reason"]) + json.dumps(summary)
+    # A plain reason string still counts as it always did.
+    plain: dict = {}
+    reasons.count_retained(plain, "protected_pin", 5)
+    assert plain == {"protected_pin": {"count": 1, "bytes": 5}}
+
+
 def test_pin_kinds_name_exactly_the_live_pinned_paths(tmp_path) -> None:
     """The kind map only labels what ``live_pinned_paths`` pins; it never decides."""
 
