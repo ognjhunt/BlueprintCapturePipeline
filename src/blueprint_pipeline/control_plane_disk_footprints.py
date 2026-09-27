@@ -32,10 +32,11 @@ from .control_plane_disk_ledger import (
 
 # How a measured job ended.  Only a completed job measured its whole footprint,
 # so only "completed" samples shape admission; "failed" means the job raised,
-# "blocked" means it returned a blocked result before finishing its work, and
+# "blocked" means it returned a blocked result before finishing its work,
 # "resumed" means the pass started from a workspace that already held an earlier
-# pass's bytes, so its growth is not the job's footprint.
-FOOTPRINT_OUTCOMES = frozenset({"completed", "failed", "blocked", "resumed"})
+# pass's bytes, so its growth is not the job's footprint, and "incomplete" means
+# part of the workspace could not be read, so the measurement under-counts.
+FOOTPRINT_OUTCOMES = frozenset({"completed", "failed", "blocked", "resumed", "incomplete"})
 # A workspace is fresh when bound if it did not exist or held less than this;
 # only a fresh workspace's growth can be a completed job's whole footprint.
 FRESH_WORKSPACE_MAX_BYTES = 1024**2

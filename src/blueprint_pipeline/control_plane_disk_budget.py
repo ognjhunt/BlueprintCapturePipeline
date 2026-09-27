@@ -210,6 +210,9 @@ class DiskReservation:
     # Whether the workspace was fresh when bound (absent or nearly empty); a
     # pass over an already-populated workspace resumes a job, it does not run one.
     fresh: bool = True
+    # Set when any walk of the workspace hit an unreadable entry: the bytes under
+    # it were not counted, so the sample cannot stand for the job's footprint.
+    measurement_incomplete: bool = False
     started_at_epoch: float = 0.0
     clock: Callable[[], float] = field(default=time.time, repr=False, compare=False)
 
@@ -221,7 +224,8 @@ class DiskReservation:
         """
 
         self.workspace = Path(path)
-        self.baseline_bytes = _workspace_allocated_bytes(self.workspace)
+        self.baseline_bytes, complete = _measure_workspace(self.workspace)
+        self.measurement_incomplete = self.measurement_incomplete or not complete
         self.fresh = _is_fresh(self.baseline_bytes) if fresh is None else bool(fresh)
         if self.peak_delta_bytes is None:
             self.peak_delta_bytes = 0
@@ -231,10 +235,11 @@ class DiskReservation:
 
         if self.workspace is None:
             return self.peak_delta_bytes
-        try:
-            current = tree_usage(self.workspace).allocated_bytes
-        except Exception:  # a measurement must never break the job it measures
-            return self.peak_delta_bytes
+        current, complete = _measure_workspace(self.workspace)
+        if not complete:
+            self.measurement_incomplete = True
+            if current == 0:
+                return self.peak_delta_bytes
         delta = max(0, current - self.baseline_bytes)
         self.peak_delta_bytes = max(self.peak_delta_bytes or 0, delta)
         return self.peak_delta_bytes
@@ -267,6 +272,8 @@ class DiskReservation:
         try:
             if self.workspace is not None:
                 self.sample()
+            if outcome == "completed" and self.measurement_incomplete:
+                outcome = "incomplete"
             if self.peak_delta_bytes is None or self.reservation_root is None:
                 return
             record_footprint_sample(
@@ -311,11 +318,18 @@ def _is_fresh(baseline_bytes: int) -> bool:
     return baseline_bytes < FRESH_WORKSPACE_MAX_BYTES
 
 
-def _workspace_allocated_bytes(path: Path) -> int:
+def _measure_workspace(path: Path) -> tuple[int, bool]:
+    """(allocated bytes, complete) of a workspace walk; never raises.
+
+    The walk is incomplete when any entry could not be read (its bytes were not
+    counted) or when the walk itself failed.
+    """
+
     try:
-        return tree_usage(path).allocated_bytes
-    except Exception:  # an unmeasurable baseline of zero over-counts; never under-counts
-        return 0
+        usage = tree_usage(path)
+    except Exception:  # a measurement must never break the job it measures
+        return 0, False
+    return usage.allocated_bytes, usage.unreadable == 0
 
 
 def _snapshot(
@@ -398,7 +412,7 @@ def reserve_control_plane_disk(
     # The baseline walk can take a while on a large workspace, so it happens
     # before the ledger lock every other worker's admission waits on.
     bound = None if workspace is None else Path(workspace).expanduser()
-    baseline = 0 if bound is None else _workspace_allocated_bytes(bound)
+    baseline, baseline_complete = (0, True) if bound is None else _measure_workspace(bound)
     # A caller resuming an earlier pass says so; otherwise a nearly empty
     # workspace is fresh and one already holding bytes is not.
     workspace_fresh = _is_fresh(baseline) if fresh is None else bool(fresh)
@@ -489,6 +503,7 @@ def reserve_control_plane_disk(
         baseline_bytes=baseline,
         peak_delta_bytes=None if bound is None else 0,
         fresh=workspace_fresh,
+        measurement_incomplete=not baseline_complete,
         started_at_epoch=float(started),
         clock=now,
     )

@@ -438,3 +438,21 @@ def test_callers_can_assert_or_deny_freshness(tmp_path):
     assert disk_budget.record_footprint_sample(reservation_root=ledger, role="launch_activation",
         observed_bytes=1, reserved_bytes=GIB, fresh=False)
     assert _history_rows(ledger)[-1]["outcome"] == "resumed"
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads a mode-0000 directory anyway")
+def test_an_unreadable_subtree_makes_the_measurement_incomplete(tmp_path):
+    ledger, work = tmp_path / "ledger", tmp_path / "job"
+    reservation = _roomy_reservation(tmp_path, ledger, workspace=work)
+    hidden = work / "hidden"
+    hidden.mkdir(parents=True)
+    (hidden / "payload.bin").write_bytes(b"h" * 8192)
+    hidden.chmod(0)
+    try:
+        reservation.release()
+    finally:
+        hidden.chmod(0o700)
+    [row] = _history_rows(ledger)
+    # Bytes under the unreadable directory were not counted; the sample must not count either.
+    assert row["outcome"] == "incomplete"
+    assert disk_budget.measured_footprint("launch_activation", reservation_root=ledger)["sample_count"] == 0
