@@ -57,6 +57,9 @@ from .control_plane_disk_usage import tree_usage
 
 DEFAULT_FLOOR_BYTES = 8 * GIB
 DEFAULT_FLOOR_FRACTION = 0.05
+CRITICAL_ROLES = frozenset({"control_plane_deploy"})
+DEFAULT_CRITICAL_FLOOR_BYTES = GIB
+DEFAULT_CRITICAL_FLOOR_FRACTION = 0.01
 DEFAULT_TTL_SECONDS = 2 * 60 * 60
 # Pid liveness is the primary liveness signal; the TTL is only the backstop for a
 # recycled pid.  A job holds its reservation for at most its unit's
@@ -75,9 +78,17 @@ ROLE_TTL_SECONDS: Mapping[str, int] = {
 }  # every other role keeps DEFAULT_TTL_SECONDS
 
 
-def floor_bytes(total_bytes: int) -> int:
-    """The admission floor, identical for the ledger, the controller and the preflight."""
+def floor_bytes(total_bytes: int, *, role: str | None = None) -> int:
+    """Keep the bulk band intact while critical work can use its protected portion."""
 
+    if role in CRITICAL_ROLES:
+        return max(
+            _environment_int(
+                "BLUEPRINT_CONTROL_PLANE_DISK_CRITICAL_FLOOR_BYTES",
+                DEFAULT_CRITICAL_FLOOR_BYTES,
+            ),
+            int(total_bytes * DEFAULT_CRITICAL_FLOOR_FRACTION),
+        )
     return max(
         _environment_int(
             "BLUEPRINT_CONTROL_PLANE_DISK_FLOOR_BYTES", DEFAULT_FLOOR_BYTES
@@ -475,7 +486,7 @@ def reserve_control_plane_disk(
         )
         for name in stale:
             (ledger / name).unlink(missing_ok=True)
-        floor = floor_bytes(int(usage.total))
+        floor = floor_bytes(int(usage.total), role=role)
         available = max(0, int(usage.free) - floor - reserved)
         if need > available and evictor is not None:
             evictor(need - available)
@@ -583,7 +594,10 @@ def disk_headroom(
 
 
 __all__ = [
+    "CRITICAL_ROLES",
     "ControlPlaneDiskBudgetError",
+    "DEFAULT_CRITICAL_FLOOR_BYTES",
+    "DEFAULT_CRITICAL_FLOOR_FRACTION",
     "DEFAULT_RESERVATION_ROOT",
     "DiskReservation",
     "FOOTPRINT_HISTORY_DIRNAME",

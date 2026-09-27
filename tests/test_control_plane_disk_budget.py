@@ -199,6 +199,42 @@ def test_environment_overrides_floor_and_role_footprint(
     reservation.release()
 
 
+def test_critical_roles_use_the_reserved_band(tmp_path) -> None:
+    def usage(_path):
+        return Usage(165 * GIB, 160 * GIB, 5 * GIB)
+    ledger = tmp_path / "ledger"
+    with pytest.raises(ControlPlaneDiskBudgetError, match="control_plane_disk_budget_exceeded"):
+        reserve_control_plane_disk(
+            "launch_activation", target_root=tmp_path, reservation_root=ledger,
+            expected_bytes=450 * 1024**2, disk_usage=usage,
+        )
+
+    reservation = reserve_control_plane_disk(
+        "control_plane_deploy", target_root=tmp_path, reservation_root=ledger,
+        expected_bytes=450 * 1024**2, disk_usage=usage,
+    )
+    assert reservation.floor_bytes == max(GIB, int(165 * GIB * 0.01))
+    reservation.release()
+
+
+def test_critical_floor_override(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("BLUEPRINT_CONTROL_PLANE_DISK_CRITICAL_FLOOR_BYTES", str(3 * GIB))
+    with pytest.raises(ControlPlaneDiskBudgetError, match="control_plane_disk_budget_exceeded"):
+        reserve_control_plane_disk(
+            "control_plane_deploy", target_root=tmp_path,
+            reservation_root=tmp_path / "ledger", expected_bytes=450 * 1024**2,
+            disk_usage=lambda _path: Usage(10 * GIB, 8 * GIB, 2 * GIB),
+        )
+    monkeypatch.setenv("BLUEPRINT_CONTROL_PLANE_DISK_CRITICAL_FLOOR_BYTES", str(512 * 1024**2))
+    reservation = reserve_control_plane_disk(
+        "control_plane_deploy", target_root=tmp_path,
+        reservation_root=tmp_path / "ledger", expected_bytes=450 * 1024**2,
+        disk_usage=lambda _path: Usage(10 * GIB, 8 * GIB, 2 * GIB),
+    )
+    assert reservation.floor_bytes == 512 * 1024**2
+    reservation.release()
+
+
 def test_invalid_environment_override_fails_closed(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("BLUEPRINT_CONTROL_PLANE_DISK_FLOOR_BYTES", "unknown")
     with pytest.raises(
