@@ -141,6 +141,44 @@ def test_capacity_wait_does_not_start_factory_and_resumes_when_whole_chain_fits(
     assert engine.process_scene_intents(config_path=config) == resumed
 
 
+def test_capacity_wait_records_shortfall_eta_and_clears_on_admission(context, monkeypatch):
+    from blueprint_pipeline import control_plane_capacity_controller as capacity
+    config = configuration(context, monkeypatch)
+    value = json.loads(config.read_text())
+    value['require_whole_chain_capacity'] = True
+    write(config, value, 'config_digest')
+    start = time.time()
+    summary = config.parent / 'capacity-summary.json'
+    summary.write_text(json.dumps({'observed_at_epoch': start,
+        'reclaim_outlook': {'volume_growth': 'blocked', 'reclaimable_bytes': 8 * 1024**3,
+                            'next_reclaim_epoch': start + 3600}}))
+    monkeypatch.setenv('BLUEPRINT_CAPACITY_SUMMARY_PATH', str(summary))
+    waiting_admission = {'status': 'waiting_for_capacity', 'required_workspace_bytes': 10 * 1024**3,
+        'required_workspace_basis': 'measured_p95',
+        'measurement': {'available_bytes': 4 * 1024**3},
+        'devices': [{'device': 7, 'required_bytes': 10 * 1024**3,
+                     'available_bytes': 4 * 1024**3, 'passed': False}]}
+    monkeypatch.setattr(capacity, 'whole_chain_admission', lambda *a, **kw: waiting_admission)
+    first = engine.process_scene_intents(config_path=config, now=start)['results'][0]
+    directory = context[0]['intent_path'].parent
+    intent = json.loads((directory / 'intent.json').read_text())
+    wait = state.load_progression(directory, intent)['state']['capacity_wait']
+    assert first['phase'] == 'capacity' and first['blockers'] == ['scene_whole_chain_capacity_insufficient']
+    assert wait['since_epoch'] == start
+    assert wait['required_bytes'] == 10 * 1024**3 and wait['available_bytes'] == 4 * 1024**3
+    assert wait['shortfall_bytes'] == 6 * 1024**3 and wait['basis'] == 'measured_p95'
+    assert wait['eta_epoch'] == start + 3600 and wait['eta_basis'] == 'reclaim_scheduled'
+    assert wait['next_check_epoch'] == start + 600
+    again = engine.process_scene_intents(config_path=config, now=start + 60)['results'][0]
+    assert again['phase'] == 'capacity'
+    assert state.load_progression(directory, intent)['state']['capacity_wait']['since_epoch'] == start
+    monkeypatch.setattr(capacity, 'whole_chain_admission', lambda *a, **kw:
+        {'status': 'admitted', 'required_workspace_bytes': 10 * 1024**3})
+    admitted = engine.process_scene_intents(config_path=config, now=start + 120)['results'][0]
+    assert admitted['phase'] == 'publication_ready'
+    assert 'capacity_wait' not in state.load_progression(directory, intent)['state']
+
+
 @pytest.mark.parametrize('status,outcome', [
     ('publication_ready', 'completed'),
     # A factory that stopped short measured a partial workspace.

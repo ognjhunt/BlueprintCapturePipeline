@@ -77,6 +77,449 @@ def test_forecast_uses_the_oldest_observation_inside_the_window() -> None:
     assert cap.forecast(history[:1], {**current, "free_bytes": 50 * GIB}, now=now)["status"] == "not_growing"
 
 
+def test_three_days_of_headroom_pages_and_unrouted_alerts_are_loud(tmp_path: Path) -> None:
+    now = 10 * 86400.0
+    history = [{"mount": str(tmp_path), "status": "measured", "observed_at_epoch": now - 86400,
+                "free_bytes": 23 * GIB, "floor_bytes": 8 * GIB}]
+    report = cap.build_capacity_report(mounts=[str(tmp_path)], reservation_root=tmp_path / "r",
+                                       history=history, disk_usage=_usage(18.0), now=now)
+    forecast = next(a for a in report["alerts"] if a["code"] == "floor_within_three_days")
+    assert forecast["severity"] == "page"
+    assert forecast["days_until_floor"] == pytest.approx(2.0)
+
+    unrouted = cap.run_controller(mounts=[str(tmp_path)], report_root=tmp_path / "capacity",
+                                  reservation_root=tmp_path / "r", webhook_url="", volume=None,
+                                  ack="", token="", survey=None, disk_usage=_usage(80.0), now=now)
+    assert unrouted["level"] in {"warning", "critical"}
+    assert {a["code"]: a["severity"] for a in unrouted["alerts"]}["operator_alert_route_unconfigured"] == "page"
+    assert "operator_alert_route_unconfigured" in {a["code"] for a in cap.capacity_summary(unrouted)["alerts"]}
+
+
+def test_fast_growth_pages_even_while_current_utilization_is_ok(tmp_path: Path) -> None:
+    now = 10 * 86400.0
+    mount = str(tmp_path)
+    report_root = tmp_path / "capacity"
+    report_root.mkdir()
+    (report_root / "history.jsonl").write_text(json.dumps({
+        "mount": mount, "status": "measured", "observed_at_epoch": now - 86400,
+        "free_bytes": 120 * GIB, "floor_bytes": 8 * GIB,
+    }) + "\n")
+    posted = []
+    report = cap.run_controller(
+        mounts=[mount], report_root=report_root, reservation_root=tmp_path / "reservations",
+        webhook_url="https://alerts.example/hook", volume=None, ack="", token="",
+        survey=None, disk_usage=_usage(80.0), now=now,
+        poster=lambda _url, value: posted.append(value),
+        release_retirement_summary_path=tmp_path / "absent-retirement",
+        break_glass_notes_root=tmp_path / "absent-notes",
+    )
+    assert report["level"] == "ok"
+    assert any(a["code"] == "floor_within_three_days" and a["severity"] == "page"
+               for a in report["alerts"])
+    assert report["alert_posted"] is True and len(posted) == 1
+
+
+def test_blocked_volume_growth_pages(tmp_path: Path) -> None:
+    posted = []
+    report = cap.run_controller(mounts=[str(tmp_path)], report_root=tmp_path / "capacity",
+                                reservation_root=tmp_path / "r", webhook_url="https://alerts.example/hook",
+                                volume={"id": "vol-1", "mount": str(tmp_path), "current_size_gib": 100,
+                                        "max_gib": 100}, ack="", token="", survey=None,
+                                poster=lambda _url, value: posted.append(value),
+                                disk_usage=_usage(9.0), now=1000.0)
+    growth = next(a for a in report["alerts"] if a["code"] == "volume_growth_blocked")
+    assert growth["severity"] == "page" and growth["reason"] == "volume_at_maximum"
+    assert len(posted) == 1 and posted[0]["volume_resize"]["status"] == "blocked"
+
+
+def test_blocked_growth_page_keeps_provider_status_out_of_public_summary(tmp_path: Path) -> None:
+    def reject(_plan, **_kwargs):
+        raise cap.ControlPlaneCapacityError("control_plane_capacity_resize_rejected:private_provider_status")
+
+    report = cap.run_controller(mounts=[str(tmp_path)], report_root=tmp_path / "capacity",
+                                reservation_root=tmp_path / "r", webhook_url="https://alerts.example/hook",
+                                volume={"id": "vol-1", "mount": str(tmp_path), "current_size_gib": 100,
+                                        "max_gib": 200}, ack=cap.RESIZE_ACK, token="dummy", resizer=reject,
+                                survey=None, disk_usage=_usage(9.0), now=1000.0)
+    assert report["volume_resize"]["reason"] == "control_plane_capacity_resize_rejected"
+    summary = cap.capacity_summary(report)
+    assert "private_provider_status" not in json.dumps(summary)
+    assert next(a for a in summary["alerts"] if a["code"] == "volume_growth_blocked")["reason"] == (
+        "control_plane_capacity_resize_rejected")
+
+
+def test_new_page_alert_posts_even_at_the_same_level() -> None:
+    first = {"level": "critical", "last_alert_epoch": 1000.0, "last_alert_fingerprint": "old",
+             "alerts": [{"code": "admission_refused", "mount": "/first", "severity": "page"}]}
+    second = {"level": "critical", "alerts": [
+        {"code": "admission_refused", "mount": "/first", "severity": "page"},
+        {"code": "volume_growth_blocked", "mount": "/first", "severity": "page"}],
+    }
+    assert cap.alert_due(first, second, now=1100.0)
+    assert cap.alert_fingerprint(first) != cap.alert_fingerprint(second)
+
+
+def test_page_webhook_has_route_fingerprint_runbook_and_short_summary(monkeypatch) -> None:
+    payloads = []
+
+    class Response:
+        status = 204
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    def urlopen(request, *, timeout):
+        assert timeout == 10.0
+        payloads.append(json.loads(request.data))
+        return Response()
+
+    monkeypatch.setattr(cap.urllib.request, "urlopen", urlopen)
+    report = {"level": "critical", "mounts": [], "alerts": [
+        {"code": "floor_within_three_days", "mount": "/var/lib/blueprint",
+         "days_until_floor": 2.0, "severity": "page"}]}
+    cap.post_alert("https://alerts.example/hook", report)
+    payload = payloads[0]
+    assert payload["page"] is True and payload["severity"] == "page"
+    assert payload["fingerprint"] == cap.alert_fingerprint(report)
+    assert payload["runbook"] == "docs/runbooks/control-plane-capacity.md"
+    assert "2.0 days" in payload["summary"] and len(payload["summary"]) <= 200
+    report["alerts"].append({
+        "code": "reclaim_ineffective", "severity": "page",
+        "top_retained_reasons": ["protected_process", "young", "pinned"],
+    })
+    cap.post_alert("https://alerts.example/hook", report)
+    assert "protected_process, young, pinned" in payloads[1]["summary"]
+
+
+def test_release_retirement_attention_appears_in_capacity_report(tmp_path: Path) -> None:
+    summary = tmp_path / "release-retention" / "latest-deploy-retirement.json"
+    summary.parent.mkdir()
+    summary.write_text(json.dumps({"status": "blocked", "alerts": ["lease_unreadable"]}))
+    report = cap.run_controller(mounts=[str(tmp_path)], report_root=tmp_path / "capacity",
+                                reservation_root=tmp_path / "ledger", webhook_url="https://alerts.example/hook",
+                                volume=None, ack="", token="", survey=None,
+                                release_retirement_summary_path=summary,
+                                break_glass_notes_root=tmp_path / "absent-notes",
+                                disk_usage=_usage(80.0), now=1000.0)
+    attention = next(a for a in report["alerts"] if a["code"] == "release_retirement_attention")
+    assert attention == {"code": "release_retirement_attention", "status": "blocked",
+                         "alert_count": 1, "severity": "warn"}
+    assert any(a["code"] == "release_retirement_attention" for a in cap.capacity_summary(report)["alerts"])
+
+
+@pytest.mark.parametrize("bad_status", [
+    pytest.param("/var/lib/blueprint/secrets/private-token", id="path"),
+    pytest.param("secret-text-" * 2000, id="long"),
+])
+def test_release_retirement_attention_redacts_malformed_status(tmp_path: Path, bad_status: str) -> None:
+    summary = tmp_path / "release-retention" / "latest-deploy-retirement.json"
+    summary.parent.mkdir()
+    summary.write_text(json.dumps({"status": bad_status, "alerts": ["failed"]}))
+
+    report = cap.run_controller(
+        mounts=[str(tmp_path)], report_root=tmp_path / "capacity",
+        reservation_root=tmp_path / "ledger", webhook_url="https://alerts.example/hook",
+        volume=None, ack="", token="", survey=None,
+        release_retirement_summary_path=summary,
+        break_glass_notes_root=tmp_path / "absent-notes",
+        disk_usage=_usage(80.0), now=1000.0,
+        poster=lambda *_args: None,
+    )
+
+    attention = next(a for a in report["alerts"] if a["code"] == "release_retirement_attention")
+    assert attention["status"] == "unreadable"
+    assert bad_status not in json.dumps(cap.capacity_summary(report))
+
+
+def test_unreported_break_glass_note_warns_without_disclosing_note(tmp_path: Path, monkeypatch) -> None:
+    from blueprint_pipeline import control_plane_break_glass
+
+    monkeypatch.setattr(control_plane_break_glass, "unreported_notes",
+                        lambda root: [{"name": "private-note.json", "reason": "sensitive detail"}])
+    report = cap.run_controller(mounts=[str(tmp_path)], report_root=tmp_path / "capacity",
+                                reservation_root=tmp_path / "ledger", webhook_url="https://alerts.example/hook",
+                                volume=None, ack="", token="", survey=None,
+                                release_retirement_summary_path=tmp_path / "absent-summary",
+                                break_glass_notes_root=tmp_path / "notes",
+                                disk_usage=_usage(80.0), now=1000.0)
+    attention = next(a for a in report["alerts"] if a["code"] == "break_glass_notes_unreported")
+    assert attention == {"code": "break_glass_notes_unreported", "count": 1, "severity": "warn"}
+    assert "sensitive detail" not in json.dumps(cap.capacity_summary(report))
+
+
+def test_unsafe_break_glass_notes_root_warns_without_aborting_tick(tmp_path: Path) -> None:
+    notes = tmp_path / "notes"
+    notes.symlink_to(tmp_path / "missing-notes", target_is_directory=True)
+    report = cap.run_controller(
+        mounts=[str(tmp_path)], report_root=tmp_path / "capacity",
+        reservation_root=tmp_path / "ledger", webhook_url="https://alerts.example/hook",
+        volume=None, ack="", token="", survey=None,
+        release_retirement_summary_path=tmp_path / "absent-summary",
+        break_glass_notes_root=notes, disk_usage=_usage(80.0), now=1000.0,
+    )
+    assert report["level"] == "warning"
+    assert any(a["code"] == "break_glass_notes_unreadable" for a in report["alerts"])
+
+
+@pytest.mark.parametrize(("outlook", "expected"), [
+    ({"volume_growth": "planned", "reclaimable_bytes": 0}, (1600.0, "volume_growth")),
+    ({"volume_growth": "applied", "reclaimable_bytes": 0}, (1600.0, "volume_growth")),
+    ({"volume_growth": "blocked", "reclaimable_bytes": 50, "next_reclaim_epoch": 3600.0},
+     (3600.0, "reclaim_scheduled")),
+    ({"volume_growth": "blocked", "reclaimable_bytes": 5, "next_reclaim_epoch": 3600.0},
+     (None, "operator_action_required")),
+])
+def test_capacity_eta_bases(outlook, expected) -> None:
+    assert cap.capacity_eta(10, summary={"reclaim_outlook": outlook}, now=1000.0) == {
+        "eta_epoch": expected[0], "eta_basis": expected[1]}
+
+
+def test_capacity_eta_is_unknown_without_readable_summary() -> None:
+    assert cap.capacity_eta(10, summary=None, now=1000.0) == {
+        "eta_epoch": None, "eta_basis": "unknown"}
+    assert cap.capacity_eta(10, summary={"reclaim_outlook": {
+        "volume_growth": "not_configured", "reclaimable_bytes": None,
+        "next_reclaim_epoch": None,
+    }}, now=1000.0) == {"eta_epoch": None, "eta_basis": "unknown"}
+
+
+@pytest.mark.parametrize("outlook", [
+    {"volume_growth": []},
+    {"volume_growth": {}},
+    {"volume_growth": "blocked", "reclaimable_bytes": float("inf"),
+     "next_reclaim_epoch": float("inf")},
+    {"volume_growth": "blocked", "reclaimable_bytes": float("nan"),
+     "next_reclaim_epoch": 3600.0},
+    {"volume_growth": "blocked", "reclaimable_bytes": 10**400,
+     "next_reclaim_epoch": 3600.0},
+])
+def test_capacity_eta_is_unknown_for_malformed_outlook(outlook) -> None:
+    parsed = json.loads(json.dumps({"reclaim_outlook": outlook}))
+    assert cap.capacity_eta(10, summary=parsed, now=1000.0) == {
+        "eta_epoch": None, "eta_basis": "unknown"}
+
+
+def test_critical_capacity_pages_when_gc_reclaims_nothing(tmp_path: Path) -> None:
+    from blueprint_pipeline.control_plane_storage_gc_reasons import build_storage_gc_summary
+
+    gc_root = tmp_path / "storage-gc"
+    gc_root.mkdir()
+    gc_summary = gc_root / "summary.json"
+    gc_summary.write_text(json.dumps(build_storage_gc_summary({
+        "observed_at_epoch": 900.0,
+        "status": "applied",
+        "opt_in": {"evidence_offload": True, "scene_workspace_retirement": False},
+        "derived_directories": {"status": "applied", "candidate_bytes": 0,
+                                "removed_bytes": 0,
+                                "retained_by_reason": {"pinned": {"count": 1, "bytes": 3 * GIB}}},
+        "content_store": {"status": "applied", "candidate_bytes": 0,
+                          "removed_bytes": 0,
+                          "retained_by_reason": {"young": {"count": 1, "bytes": 4 * GIB}}},
+        "evidence_offload": {"status": "applied", "candidate_bytes": 0,
+                             "offloaded_bytes": 0,
+                             "retained_by_reason": {"protected_process": {"count": 1, "bytes": 5 * GIB}}},
+        "scene_workspaces": {"status": "dry_run", "candidate_bytes": 10 * GIB,
+                             "retained_by_reason": {"not_enabled": {"count": 1, "bytes": 2 * GIB}}},
+    })), encoding="utf-8")
+    common = dict(
+        mounts=[str(tmp_path)], report_root=tmp_path / "capacity",
+        reservation_root=tmp_path / "ledger", webhook_url="https://alerts.example/hook",
+        volume=None, ack="", token="", survey=None,
+        release_retirement_summary_path=tmp_path / "absent-retirement",
+        break_glass_notes_root=tmp_path / "notes", storage_gc_summary_path=gc_summary,
+        poster=lambda *_args: None, disk_usage=_usage(20.0),
+    )
+    report = cap.run_controller(**common, now=1000.0)
+    alert = next(row for row in report["alerts"] if row["code"] == "reclaim_ineffective")
+    assert alert["severity"] == "page"
+    assert alert["top_retained_reasons"] == [
+        "protected_process", "young", "pinned",
+    ]
+    assert report["reclaim_outlook"]["reclaimable_bytes"] == 0
+    assert cap.capacity_summary(report)["reclaim_outlook"] == report["reclaim_outlook"]
+
+    stale = cap.run_controller(**common, now=10_000.0)
+    assert not any(row["code"] == "reclaim_ineffective" for row in stale["alerts"])
+    assert stale["reclaim_outlook"]["reclaimable_bytes"] is None
+
+
+@pytest.mark.parametrize(("candidate", "reclaimed", "expected_ineffective"), [
+    (2 * GIB, 0, False), (0, GIB, False), (0, 0, True),
+])
+def test_reclaim_ineffective_requires_zero_candidates_and_zero_reclaimed(
+    candidate: int, reclaimed: int, expected_ineffective: bool,
+) -> None:
+    summary = {
+        "schema_version": "control_plane_storage_gc_summary.v1",
+        "observed_at_epoch": 1000.0, "status": "applied",
+        "top_retained_reasons": [],
+        "skipped_roots": [], "phase_errors": [],
+        "opt_in": {"evidence_offload": False, "scene_workspace_retirement": False},
+        "phases": {
+            "derived_directories": {"status": "applied", "candidate_bytes": candidate,
+                                    "removed_or_offloaded_bytes": reclaimed},
+            "content_store": {"status": "applied", "candidate_bytes": 0,
+                              "removed_or_offloaded_bytes": 0},
+        },
+    }
+    outlook, _reasons, ineffective = cap._reclaim_outlook(
+        summary, now=1100.0, volume_growth="blocked",
+    )
+    assert outlook["reclaimable_bytes"] == candidate
+    assert ineffective is expected_ineffective
+
+
+def test_reclaim_outlook_fails_closed_without_complete_applied_phase() -> None:
+    summary = {
+        "schema_version": "control_plane_storage_gc_summary.v1",
+        "observed_at_epoch": 1000.0, "status": "applied",
+        "skipped_roots": [], "phase_errors": [],
+        "opt_in": {"evidence_offload": True},
+        "phases": {
+            "derived_directories": {"status": "applied", "candidate_bytes": 0,
+                                    "removed_or_offloaded_bytes": 0},
+            "content_store": {"status": "applied", "candidate_bytes": 0,
+                              "removed_or_offloaded_bytes": 0},
+            "evidence_offload": {"status": "error", "candidate_bytes": 0,
+                                 "removed_or_offloaded_bytes": 0},
+        },
+    }
+    outlook, reasons, ineffective = cap._reclaim_outlook(
+        summary, now=1100.0, volume_growth="not_configured",
+    )
+    assert outlook["reclaimable_bytes"] is None
+    assert reasons == [] and ineffective is False
+    # An older or incomplete applied receipt with no candidate count remains
+    # unknown; the current producer records the count after PR #2393.
+    summary["opt_in"]["evidence_offload"] = False
+    summary["phases"]["content_store"]["candidate_bytes"] = None
+    outlook, reasons, ineffective = cap._reclaim_outlook(
+        summary, now=1100.0, volume_growth="not_configured",
+    )
+    assert outlook["reclaimable_bytes"] is None
+    assert reasons == [] and ineffective is False
+
+
+def test_reclaim_outlook_does_not_claim_exact_top_reasons_from_legacy_capped_rows() -> None:
+    summary = {
+        "schema_version": "control_plane_storage_gc_summary.v1",
+        "observed_at_epoch": 1000.0, "status": "applied",
+        "skipped_roots": [], "phase_errors": [],
+        "opt_in": {"evidence_offload": False, "scene_workspace_retirement": False},
+        "phases": {
+            "derived_directories": {"status": "applied", "candidate_bytes": 0,
+                                    "removed_or_offloaded_bytes": 0},
+            "content_store": {"status": "applied", "candidate_bytes": 0,
+                              "removed_or_offloaded_bytes": 0},
+        },
+        "top_retained": [
+            {"phase": "derived_directories", "reason": "shared", "bytes": 4 * GIB},
+            {"phase": "content_store", "reason": "shared", "bytes": 4 * GIB},
+            {"phase": "derived_directories", "reason": "single", "bytes": 5 * GIB},
+            {"phase": "content_store", "reason": "third", "bytes": 3 * GIB},
+        ],
+    }
+
+    _outlook, reasons, ineffective = cap._reclaim_outlook(
+        summary, now=1100.0, volume_growth="blocked",
+    )
+    assert ineffective is False
+    assert reasons == []
+
+
+def test_reclaim_outlook_prefers_uncapped_global_reason_totals() -> None:
+    summary = {
+        "schema_version": "control_plane_storage_gc_summary.v1",
+        "observed_at_epoch": 1000.0, "status": "applied",
+        "skipped_roots": [], "phase_errors": [],
+        "opt_in": {"evidence_offload": False, "scene_workspace_retirement": False},
+        "phases": {
+            "derived_directories": {"status": "applied", "candidate_bytes": 0,
+                                    "removed_or_offloaded_bytes": 0},
+            "content_store": {"status": "applied", "candidate_bytes": 0,
+                              "removed_or_offloaded_bytes": 0},
+        },
+        "top_retained": [
+            {"phase": "derived_directories", "reason": "single", "bytes": 5 * GIB},
+            {"phase": "content_store", "reason": "third", "bytes": 3 * GIB},
+        ],
+        "top_retained_reasons": [
+            {"reason": "shared", "bytes": 8 * GIB},
+            {"reason": "single", "bytes": 5 * GIB},
+            {"reason": "third", "bytes": 3 * GIB},
+        ],
+    }
+
+    _outlook, reasons, ineffective = cap._reclaim_outlook(
+        summary, now=1100.0, volume_growth="blocked",
+    )
+    assert ineffective is True
+    assert reasons == ["shared", "single", "third"]
+
+
+@pytest.mark.parametrize("incomplete", [
+    {"skipped_roots": ["/var/lib/blueprint/task-evaluation-inputs"]},
+    {"phase_errors": ["replay_caches"]},
+])
+def test_reclaim_outlook_does_not_claim_zero_when_gc_skipped_work(incomplete) -> None:
+    from blueprint_pipeline.control_plane_storage_gc_reasons import build_storage_gc_summary
+
+    summary = build_storage_gc_summary({
+        "status": "applied", "observed_at_epoch": 1000.0,
+        "opt_in": {"evidence_offload": False, "scene_workspace_retirement": False},
+        "derived_directories": {"status": "applied", "candidate_bytes": 0,
+                                "removed_bytes": 0},
+        "content_store": {"status": "applied", "candidate_bytes": 0,
+                          "removed_bytes": 0},
+        **incomplete,
+    })
+
+    outlook, reasons, ineffective = cap._reclaim_outlook(
+        summary, now=1100.0, volume_growth="blocked",
+    )
+    assert outlook["reclaimable_bytes"] is None
+    assert reasons == [] and ineffective is False
+
+
+def test_reclaim_outlook_counts_other_applying_gc_phases() -> None:
+    summary = {
+        "schema_version": "control_plane_storage_gc_summary.v1",
+        "observed_at_epoch": 1000.0, "status": "applied",
+        "skipped_roots": [], "phase_errors": [],
+        "opt_in": {"evidence_offload": False, "scene_workspace_retirement": False,
+                   "replay_cache_retention": False},
+        "phases": {
+            "derived_directories": {"status": "applied", "candidate_bytes": 0,
+                                    "removed_or_offloaded_bytes": 0},
+            "content_store": {"status": "applied", "candidate_bytes": 0,
+                              "removed_or_offloaded_bytes": 0},
+            "scratch_directories": {"status": "applied", "candidate_bytes": 2 * GIB,
+                                    "removed_or_offloaded_bytes": 0},
+            "workspace_bundles": {"status": "applied", "candidate_bytes": GIB,
+                                  "removed_or_offloaded_bytes": 0},
+        },
+    }
+    outlook, _reasons, ineffective = cap._reclaim_outlook(
+        summary, now=1100.0, volume_growth="not_configured",
+    )
+    assert outlook["reclaimable_bytes"] == 3 * GIB
+    assert outlook["sources"]["scratch_directories"] == 2 * GIB
+    assert outlook["sources"]["workspace_bundles"] == GIB
+    assert ineffective is False
+
+
+def test_gc_summary_reader_accepts_producer_size_bound(tmp_path: Path) -> None:
+    path = tmp_path / "summary.json"
+    path.write_text(json.dumps({"schema_version": "control_plane_storage_gc_summary.v1",
+                                "padding": "x" * (129 * 1024)}), encoding="utf-8")
+    assert cap._read_attention_summary(path, max_bytes=256 * 1024)["schema_version"] == (
+        "control_plane_storage_gc_summary.v1")
+    assert cap._read_attention_summary(path) == {"status": "unreadable"}
+
+
 def test_controller_writes_evidence_alerts_on_escalation_and_repeats_hourly_while_critical(
     tmp_path: Path,
 ) -> None:
@@ -378,7 +821,7 @@ def test_invalid_budget_configuration_waits_instead_of_crashing_the_gate(tmp_pat
     report = cap.build_capacity_report(mounts=[tmp_path], reservation_root=tmp_path / "ledger",
                                        disk_usage=_usage(80.0), now=1.0)
     assert report["level"] == "critical"
-    assert report["alerts"] == [{"mount": str(tmp_path), "code": "mount_configuration_invalid"}]
+    assert report["alerts"] == [{"mount": str(tmp_path), "code": "mount_configuration_invalid", "severity": "warn"}]
 
 
 def _survey_result(**overrides):
@@ -522,7 +965,8 @@ def test_a_failed_survey_keeps_the_last_one_and_never_stops_the_tick(tmp_path, m
         "usage_survey_failed:RuntimeError")
     unsurveyed = cap.run_controller(**{**common, "report_root": tmp_path / "fresh"}, now=1_000.0, survey=broken)
     assert unsurveyed["usage"] == {"status": "unavailable", "error": "usage_survey_failed:RuntimeError"}
-    assert unsurveyed["level"] == "ok"
+    assert unsurveyed["level"] == "warning"
+    assert any(a["code"] == "operator_alert_route_unconfigured" for a in unsurveyed["alerts"])
 
 
 def test_failed_survey_attempt_is_throttled_across_ticks(tmp_path, monkeypatch):
@@ -640,7 +1084,8 @@ def test_low_attribution_warns_but_never_masks_critical(tmp_path, monkeypatch):
     common = dict(mounts=[str(tmp_path)], reservation_root=tmp_path / "ledger", webhook_url="", volume=None,
                   ack="", token="", survey=survey, now=1_000.0)
     warned = cap.run_controller(**common, report_root=tmp_path / "a", disk_usage=_usage(free_gib=100.0))
-    assert {"mount": "/", "code": "usage_attribution_low", "attributed_fraction": 0.5} in warned["alerts"]
+    assert {"mount": "/", "code": "usage_attribution_low", "attributed_fraction": 0.5,
+            "severity": "warn"} in warned["alerts"]
     assert warned["level"] == "warning"
     critical = cap.run_controller(**common, report_root=tmp_path / "b", disk_usage=_usage(free_gib=9.0))
     assert critical["level"] == "critical"
