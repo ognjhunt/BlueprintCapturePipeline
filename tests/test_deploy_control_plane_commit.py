@@ -17,6 +17,8 @@ API call and records the holding pid; the deploy just never looked.
 
 from __future__ import annotations
 
+import contextlib
+import errno
 import importlib.util
 import io
 import json
@@ -1036,6 +1038,8 @@ def test_main_accepts_an_untrusted_source_with_a_fresh_deploy_note(tmp_path, mon
     assert json.loads((tmp_path / "receipt.json").read_text(encoding="utf-8"))["break_glass_note"] == expected
     assert json.loads(capsys.readouterr().out)["break_glass_note"] == expected
     assert calls[0]["source_repo"] == str(source)
+    # Every CLI deploy reports the notes the last one did not, this one included.
+    assert calls[0]["break_glass_notes_root"] == break_glass.DEFAULT_NOTES_ROOT
 
 
 def test_main_needs_no_note_for_a_trusted_source(tmp_path, monkeypatch, capsys):
@@ -1062,6 +1066,146 @@ def test_door_and_iteration_wrappers_use_trusted_sources() -> None:
         assert f"\nCP={admission.SOURCE_CHECKOUT}\n" in text, wrapper
         assert text.count("--source-repo") == 1, wrapper
         assert "--source-repo $CP " in text, wrapper
+
+
+def _stub_host_deploy(monkeypatch, tmp_path: Path, commit: str) -> dict[str, object]:
+    """Replace every host-touching deploy step with a no-op; return deploy arguments."""
+
+    release = tmp_path / "release"
+    release.mkdir()
+    active = tmp_path / "active"
+    active.symlink_to(release, target_is_directory=True)
+    source = tmp_path / "source"
+    source.mkdir()
+    staged = {"source_commit": commit, "release_path": str(release), "created_release_checkout": True}
+    runtime_sources = {"sources": [
+        {"id": "text-to-cad", "path": "/runtime/text-to-cad"},
+        {"id": "multi-agent-cad", "path": "/runtime/Multi-Agent-CAD"},
+    ]}
+    entrypoints = dict.fromkeys(("node", "browser_root", "browser", "node_modules"), "/runtime")
+    stubs = {
+        "_holding_paid_launch_gate": lambda _locks: contextlib.nullcontext([]),
+        "_installed_path_unit_states": lambda _installed: {},
+        "_quiesce_active_path_units": lambda _before: [],
+        "stage_task_evaluation_control_plane_release": lambda **_kwargs: staged,
+        "_install_unit_sandbox_paths": lambda **_kwargs: [],
+        "provision_production_cad_skill_sources": lambda _root: runtime_sources,
+        "validate_splat_render_prerequisites": lambda **_kwargs: {"entrypoints": entrypoints},
+        "_provision_scene_configuration_from_release": lambda **_kwargs: {"environment": {}},
+        "_install_scene_configuration_environment": lambda *_args, **_kwargs: {},
+        "_drain_agent_execution_before_release_switch": lambda **_kwargs: {},
+        "_move_source_checkout": lambda *_args: None,
+        "_surface_commit": lambda *_args, **_kwargs: commit,
+        "_install_release_systemd_units": lambda **_kwargs: [],
+        "_install_scene_object_discovery_runtime_directories": lambda: [],
+        "_install_episode_compilation_runtime_directories": lambda: [],
+        "_install_storage_pins_runtime_root": lambda: {},
+        "_install_configured_controls_runtime_prerequisites": lambda: {},
+        "_install_configured_controls_autostart_registry": lambda **_kwargs: {},
+        "_install_intake_runtime_identity_drop_in": lambda *_args, **_kwargs: {},
+        "_service_account_ids": lambda _account: None,
+        "_restart_units": lambda _units: [],
+        "_verify_intake_runtime": lambda *_args, **_kwargs: {"commit_proven": True},
+        "_activate_agent_execution": lambda **_kwargs: {},
+        "_restore_installed_path_units": lambda _installed, **_kwargs: [],
+        "_retire_superseded_release_trees": lambda **_kwargs: {},
+        "_finish_release_retirement": lambda retirement, **_kwargs: retirement,
+    }
+    for name, stub in stubs.items():
+        monkeypatch.setattr(deploy, name, stub)
+    monkeypatch.setattr(deploy.subprocess, "run", lambda *_args, **_kwargs: pytest.fail("host command"))
+    return {
+        "source_repo": source,
+        "source_commit": commit,
+        "release_root": tmp_path / "releases",
+        "state_root": tmp_path / "state",
+        "active_link": active,
+        "release_provenance": _provenance(tmp_path, commit),
+        "paid_launch_locks": (str(tmp_path / "vast_paid_launch.lock"),),
+        "scene_configuration_runtime_root": tmp_path / "system-runtimes",
+        "scene_preparation_bootstrap_file": tmp_path / "absent-bootstrap.json",
+        "controls_autoprovision_bootstrap_file": tmp_path / "absent-controls-bootstrap.json",
+    }
+
+
+def test_deploy_reports_and_marks_break_glass_notes(tmp_path, monkeypatch) -> None:
+    """Every host change made outside the door appears in the next deploy's receipt, once."""
+
+    commit = "d" * 40
+    notes = tmp_path / "cleanup-receipts"
+    earlier = _deploy_note(notes, age_seconds=7200, actions=("unit-restart",))
+    break_glass.mark_reported(notes, break_glass.unreported_notes(notes), deploy_commit="e" * 40)
+    first = _deploy_note(notes, age_seconds=3600, actions=("unit-stop",))
+    second = _deploy_note(notes, age_seconds=60)
+    arguments = _stub_host_deploy(monkeypatch, tmp_path, commit)
+
+    receipt = deploy.deploy_control_plane_commit(**arguments, break_glass_notes_root=notes)
+
+    assert receipt["status"] == "deployed"
+    sealed = [break_glass.verify_note(path) for path in (first, second)]
+    assert receipt["break_glass_notes"] == [
+        {
+            "name": path.name,
+            "digest": note["note_digest"],
+            "operator": "alice",
+            "reason": note["reason"],
+            "created_at": note["created_at"],
+        }
+        for path, note in zip((first, second), sealed)
+    ]
+    assert receipt["alerts"] == ["break_glass_notes_reported:2"]
+    assert "break_glass_notes_error" not in receipt
+    ledger = (notes / break_glass.REPORTED_LEDGER).read_text(encoding="utf-8").splitlines()
+    assert [(row["name"], row["deploy_commit"]) for row in map(json.loads, ledger)] == [
+        (earlier.name, "e" * 40),
+        (first.name, commit),
+        (second.name, commit),
+    ]
+
+    # The next deploy has nothing left to report, and raises no alert.
+    again = deploy.deploy_control_plane_commit(**arguments, break_glass_notes_root=notes)
+    assert again["break_glass_notes"] == []
+    assert "alerts" not in again
+    # A direct caller that names no notes root reports nothing and reads nothing.
+    assert "break_glass_notes" not in deploy.deploy_control_plane_commit(**arguments)
+
+
+@pytest.mark.parametrize("failure", ["unreadable", "unmarked"])
+def test_break_glass_note_errors_never_fail_a_finished_deploy(tmp_path, monkeypatch, failure) -> None:
+    notes = tmp_path / "cleanup-receipts"
+    note = _deploy_note(notes)
+    receipt: dict[str, object] = {"status": "deployed", "alerts": ["earlier_alert"]}
+    if failure == "unreadable":
+        notes_root = tmp_path / "not-a-directory"
+        notes_root.write_text("", encoding="utf-8")
+    else:
+        notes_root = notes
+
+        def disk_full(*_args, **_kwargs):
+            raise OSError(errno.ENOSPC, "No space left on device", str(notes))
+
+        monkeypatch.setattr(deploy, "mark_break_glass_notes_reported", disk_full)
+
+    deploy._report_break_glass_notes(receipt, root=notes_root, deploy_commit="d" * 40)
+
+    if failure == "unreadable":
+        assert receipt["break_glass_notes"] is None
+        assert receipt["break_glass_notes_error"] == "break_glass_notes_root_unsafe"
+        assert receipt["alerts"] == [
+            "earlier_alert",
+            "break_glass_notes_unreadable:break_glass_notes_root_unsafe",
+        ]
+    else:
+        # Reported here, and reported again next time: an unmarked note is never lost.
+        assert [row["name"] for row in receipt["break_glass_notes"]] == [note.name]
+        assert receipt["break_glass_notes_error"] == "break_glass_io_error:ENOSPC"
+        assert receipt["alerts"] == [
+            "earlier_alert",
+            "break_glass_notes_reported:1",
+            "break_glass_notes_not_marked:break_glass_io_error:ENOSPC",
+        ]
+        assert [row["name"] for row in break_glass.unreported_notes(notes)] == [note.name]
+    assert str(tmp_path) not in json.dumps(receipt)
 
 
 def test_authority_gated_paid_dispatch_watcher_is_armed_by_default(
