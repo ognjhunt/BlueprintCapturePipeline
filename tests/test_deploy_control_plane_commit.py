@@ -1836,6 +1836,29 @@ def test_disk_ledger_refusals_name_the_item_never_its_host_path(
     )
 
 
+def test_a_redeploy_that_creates_nothing_records_no_release_footprint(tmp_path: Path) -> None:
+    commit = "a" * 40
+    runtime_root = tmp_path / "system-runtimes"
+    (runtime_root / "splat-render" / commit).mkdir(parents=True)  # an earlier deploy's tree
+    release = tmp_path / "release"
+    release.mkdir()
+    (release / "module.py").write_bytes(b"m" * 4096)
+    before = deploy._release_runtime_trees(runtime_root, commit)
+
+    def created(checkout: bool):
+        return deploy._created_release_bytes(
+            created_release_checkout=checkout, release_path=release, runtime_root=runtime_root,
+            commit=commit, runtime_trees_before=before)
+
+    # Nothing new on disk: no sample, rather than a zero that drags the p95 down.
+    assert created(False) is None
+    tree = runtime_root / "scene-configuration" / commit
+    tree.mkdir(parents=True)
+    (tree / "toolchain.bin").write_bytes(b"t" * 4096)
+    assert created(False) >= 4096
+    assert created(True) >= created(False) + 4096
+
+
 def _git_repo_with_commit(tmp_path: Path) -> Path:
     source = tmp_path / "estimate-source"
     (source / "nested").mkdir(parents=True)

@@ -1814,6 +1814,28 @@ def _release_runtime_trees(runtime_root: Path, commit: str) -> set[Path]:
         return set()
 
 
+def _created_release_bytes(
+    *,
+    created_release_checkout: bool,
+    release_path: str | Path,
+    runtime_root: Path,
+    commit: str,
+    runtime_trees_before: set[Path],
+) -> int | None:
+    """Allocated bytes of what this deploy created, or None when it created nothing.
+
+    A redeploy that reuses an existing checkout and runtime trees costs nothing
+    to stage; recording it as a zero-byte sample would only drag the role's
+    measured footprint down, so it records no sample at all.
+    """
+
+    created_trees = _release_runtime_trees(runtime_root, commit) - runtime_trees_before
+    if not created_release_checkout and not created_trees:
+        return None
+    total = tree_usage(release_path).allocated_bytes if created_release_checkout else 0
+    return total + sum(tree_usage(path).allocated_bytes for path in sorted(created_trees))
+
+
 def _surface_commit(path: Path, *, name: str) -> str:
     """What commit does this surface *say* it is? Refuse if it cannot say."""
 
@@ -2748,11 +2770,8 @@ def deploy_control_plane_commit(
         # Record what this deploy really stages (the release checkout it created
         # and the runtime trees it provisions) as the deploy role's footprint.
         runtime_trees_root = Path(scene_configuration_runtime_root).expanduser()
-        staged_bytes = 0
         runtime_trees_before: set[Path] = set()
         if disk_reservation is not None:
-            if staged_release.get("created_release_checkout"):
-                staged_bytes = tree_usage(staged_release["release_path"]).allocated_bytes
             runtime_trees_before = _release_runtime_trees(runtime_trees_root, source_commit)
         # Every path the new units' sandboxes name must exist before the
         # release link moves, or the first worker to start after the switch
@@ -2805,13 +2824,15 @@ def deploy_control_plane_commit(
             scene_preparation_installation = {"status": "not_configured", "bootstrap_path": str(bootstrap),
                                               "provider_mutation_performed": False}
         if disk_reservation is not None:
-            created_runtime_trees = (
-                _release_runtime_trees(runtime_trees_root, source_commit) - runtime_trees_before
+            created_bytes = _created_release_bytes(
+                created_release_checkout=bool(staged_release.get("created_release_checkout")),
+                release_path=staged_release["release_path"],
+                runtime_root=runtime_trees_root,
+                commit=source_commit,
+                runtime_trees_before=runtime_trees_before,
             )
-            disk_reservation.observe(
-                staged_bytes
-                + sum(tree_usage(path).allocated_bytes for path in sorted(created_runtime_trees))
-            )
+            if created_bytes is not None:
+                disk_reservation.observe(created_bytes)
         _mark_stage("runtime_trees_provisioned")
         agent_pre_activation_drain = _drain_agent_execution_before_release_switch(
             expected_commit=source_commit
