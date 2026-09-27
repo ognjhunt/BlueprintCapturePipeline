@@ -203,6 +203,85 @@ def test_large_checkpoint_ranges_are_complete_before_publication(
     assert len(calls) == 3
 
 
+def test_early_eof_resumes_exact_missing_suffix_of_pinned_range(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    content = b"resumable-checkpoint" * 600
+    calls: list[tuple[int, int]] = []
+
+    def partial_range(url: str, *, headers: dict[str, str]):
+        start, end = (int(part) for part in headers["Range"][6:].split("-"))
+        calls.append((start, end))
+        response = _Response(content[start : min(end + 1, start + 4096)], url)
+        response.status = 206
+        response.headers = {"Content-Range": f"bytes {start}-{end}/{len(content)}"}
+        return response
+
+    monkeypatch.setattr(fetch, "_open_https", partial_range)
+    with tempfile.NamedTemporaryFile(dir=tmp_path) as stream:
+        assert fetch._download_pinned_ranges(
+            "https://cache.example.org/pinned?signature=private", stream.fileno(),
+            len(content), chunk_size=len(content), workers=1,
+        ) == len(content)
+        assert Path(stream.name).read_bytes() == content
+    assert calls == [
+        (start, len(content) - 1) for start in range(0, len(content), 4096)
+    ]
+
+
+def test_repeated_zero_byte_range_closure_is_bounded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    content = b"pinned" * 1024
+    calls = []
+
+    def empty_range(url: str, *, headers: dict[str, str]):
+        calls.append(headers["Range"])
+        response = _Response(b"", url)
+        response.status = 206
+        response.headers = {"Content-Range": f"bytes 0-{len(content) - 1}/{len(content)}"}
+        return response
+
+    monkeypatch.setattr(fetch, "_open_https", empty_range)
+    with tempfile.NamedTemporaryFile(dir=tmp_path) as stream:
+        with pytest.raises(ValueError, match="g1_checkpoint_range_truncated"):
+            fetch._download_pinned_ranges(
+                "https://cache.example.org/pinned", stream.fileno(), len(content),
+                chunk_size=len(content), workers=1,
+            )
+    assert calls == [f"bytes=0-{len(content) - 1}"] * 3
+
+
+def test_resumed_range_rejects_wrong_content_range_without_publishing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    content = b"pinned-checkpoint" * 1024
+    inventory = _inventory(tmp_path, content)
+    monkeypatch.setattr(fetch, "RANGED_DOWNLOAD_MIN_BYTES", 1)
+    calls = 0
+
+    def bad_resume(url: str, *, headers: dict[str, str]):
+        nonlocal calls
+        calls += 1
+        start, end = (int(part) for part in headers["Range"][6:].split("-"))
+        response = _Response(content[start : min(end + 1, start + 4096)], url)
+        response.status = 206
+        response.headers = {
+            "Content-Range": f"bytes {0 if calls > 1 else start}-{end}/{len(content)}"
+        }
+        return response
+
+    monkeypatch.setattr(fetch, "_open_https", bad_resume)
+    output = tmp_path / "checkpoints"
+    with pytest.raises(ValueError, match="range_content_range_invalid"):
+        fetch.materialize_candidate(
+            inventory_path=inventory, candidate_id="dp", output_dir=output,
+        )
+    assert calls == 2
+    assert not (output / "small/HOI_pp_box/model/config.json").exists()
+    assert not list(output.rglob(".g1-checkpoint-*"))
+
+
 def test_candidate_materialization_owns_ranged_publish(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

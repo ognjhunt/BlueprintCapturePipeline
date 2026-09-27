@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import json
 import os
 import tempfile
@@ -93,40 +94,62 @@ def _download_pinned_ranges(
     os.ftruncate(descriptor, expected_size)
 
     def fetch(start: int, end: int) -> int:
-        for attempt in range(3):
+        # A 206 response can close early even with the expected Content-Range.
+        # Resume only the missing suffix; the final whole-file SHA still gates
+        # publication. Bound both no-progress retries and total requests.
+        target = end - start + 1
+        written = 0
+        requests = 0
+        stalls = 0
+        while written < target:
+            check_deadline()
+            if requests >= 16 or stalls >= 3:
+                raise ValueError("g1_checkpoint_range_truncated")
+            requests += 1
+            request_start = start + written
+            before = written
             try:
+                response = _open_https(
+                    url, headers={"Range": f"bytes={request_start}-{end}"}
+                )
+            except OSError:
+                stalls += 1
+                if stalls >= 3:
+                    raise
+                continue
+            with response:
                 check_deadline()
-                with _open_https(url, headers={"Range": f"bytes={start}-{end}"}) as response:
+                if response.status != 206:
+                    status = response.status
+                    raise ValueError(
+                        "g1_checkpoint_range_http_status_"
+                        + (str(status) if type(status) is int and 100 <= status <= 599 else "unknown")
+                    )
+                if response.headers.get("Content-Range") != f"bytes {request_start}-{end}/{expected_size}":
+                    raise ValueError("g1_checkpoint_range_content_range_invalid")
+                if urllib.parse.urlsplit(response.geturl()).scheme.lower() != "https":
+                    raise ValueError("g1_checkpoint_insecure_redirect")
+                while written < target:
+                    try:
+                        block = response.read(min(1024 * 1024, target - written))
+                    except http.client.IncompleteRead as exc:
+                        block = exc.partial
+                    except OSError:
+                        break
                     check_deadline()
-                    if response.status != 206:
-                        status = response.status
-                        raise ValueError(
-                            "g1_checkpoint_range_http_status_"
-                            + (str(status) if type(status) is int and 100 <= status <= 599 else "unknown")
-                        )
-                    if response.headers.get("Content-Range") != f"bytes {start}-{end}/{expected_size}":
-                        raise ValueError("g1_checkpoint_range_content_range_invalid")
-                    if urllib.parse.urlsplit(response.geturl()).scheme.lower() != "https":
-                        raise ValueError("g1_checkpoint_insecure_redirect")
-                    written = 0
-                    while written <= end - start:
-                        block = response.read(min(1024 * 1024, end - start + 1 - written))
-                        check_deadline()
-                        if not block:
-                            raise ValueError("g1_checkpoint_range_truncated")
-                        if os.pwrite(descriptor, block, start + written) != len(block):
-                            raise ValueError("g1_checkpoint_range_short_write")
-                        written += len(block)
+                    if not block:
+                        break
+                    if len(block) > target - written:
+                        raise ValueError("g1_checkpoint_range_extra_bytes")
+                    if os.pwrite(descriptor, block, start + written) != len(block):
+                        raise ValueError("g1_checkpoint_range_short_write")
+                    written += len(block)
+                if written == target:
                     check_deadline()
                     if response.read(1):
                         raise ValueError("g1_checkpoint_range_extra_bytes")
-                    check_deadline()
                     return written
-            except _DownloadDeadlineExceeded:
-                raise
-            except (OSError, ValueError):
-                if attempt == 2:
-                    raise
+            stalls = 0 if written > before else stalls + 1
         raise ValueError("g1_checkpoint_range_unreachable")
 
     total = 0
