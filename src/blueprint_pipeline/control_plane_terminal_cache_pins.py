@@ -205,6 +205,25 @@ def _closure(identity, pins):
     return closure
 
 
+def _partial_release(pins_root, now, identity, closure, error_type):
+    """What the ledger holds after a release raised: a partial release receipt when it recorded the pin, else {}.
+
+    ``release_storage_pin`` writes the pin's release and then walks its
+    dependencies, so it can fail having recorded the pin. The receipt lists
+    every pin of the closure the ledger now shows released.
+    """
+
+    try:
+        status = {(p["kind"], p["owner_id"]): p["status"] for p in load_storage_pins(pins_root, now=lambda: now)}
+    except Exception:  # noqa: BLE001 - a ledger that cannot be read is reported as the failure it is
+        return {}
+    if status.get(identity) != "released":
+        return {}
+    return {"schema_version": "control_plane_storage_pin_release.v1", "kind": identity[0], "owner_id": identity[1],
+            "status": "release_partial", "error_type": error_type,
+            "released": [{"kind": key[0], "owner_id": key[1]} for key in closure if status.get(key) == "released"]}
+
+
 def _process_checker(reference_checker):
     """``reference_checker`` as given, or one sweep of the process table, taken when first asked and reused.
 
@@ -327,23 +346,34 @@ def reconcile_terminal_cache_pins(*, pins_root, queue_roots, evidence_roots, now
         # blocks every producer. Under the lock only the ledger is re-read, so a pin a
         # consumer published meanwhile shows up there if its queue row no longer did. A
         # failure keeps this pin, with its error type, and costs no other.
+        stage = "proof_error"
         try:
             fresh, fresh_unreadable = _live_queue_text(queue_roots)
             if fresh_unreadable is not None:
                 kept.append({**candidate, "reason": fresh_unreadable})
                 continue
-            if (proof != _derive(pin, _live_pins(pins_root, now), edge_context)[0]
-                    or _referenced(closure, fresh, _process_checker(reference_checker))):
+            fresh_proof, fresh_reason, fresh_error = _derive(pin, _live_pins(pins_root, now), edge_context)
+            if fresh_proof is None:
+                # The fresh derivation says why the proof no longer holds.
+                kept.append({**candidate, "reason": fresh_reason,
+                             **({"error_type": fresh_error} if fresh_error else {})})
+                continue
+            if fresh_proof != proof or _referenced(closure, fresh, _process_checker(reference_checker)):
                 kept.append({**candidate, "reason": "reference_changed"})
                 continue
+            stage = "release_failed"
             with storage_pin_guard(pins_root, exclusive=True):
                 if any(depends_on(other, *identity) for other in _live_pins(pins_root, now).values()):
                     kept.append({**candidate, "reason": "depended_on"})
                     continue
                 released.append(release_storage_pin(pins_root=pins_root, kind=pin["kind"],
                                                      owner_id=pin["owner_id"], now=lambda: now))
-        except Exception as exc:  # noqa: BLE001 - one failed release never costs the tick or its report
-            kept.append({**candidate, "reason": "release_failed", "error_type": type(exc).__name__})
+        except Exception as exc:  # noqa: BLE001 - one failed check or release never costs the tick or its report
+            partial = _partial_release(pins_root, now, identity, closure, type(exc).__name__)
+            if partial:
+                released.append(partial)
+            else:
+                kept.append({**candidate, "reason": stage, "error_type": type(exc).__name__})
     # A pin a later release took with it (a dependency no live pin needed any more) was released, not kept.
     released_pins = {(row["kind"], row["owner_id"]) for receipt in released for row in receipt["released"]}
     kept = [row for row in kept if (row["kind"], row["owner_id"]) not in released_pins]

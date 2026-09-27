@@ -659,7 +659,8 @@ so each manifest (and its receipt) also records `walked_file_count` and
   `activation_result_missing`, `activation_result_ambiguous`,
   `activation_result_invalid`, `activation_result_not_prepared`,
   `activation_result_not_stale`, `activation_envelope_missing`,
-  `activation_envelope_invalid`, `activation_authorization_not_lapsed`,
+  `activation_envelope_unreadable`, `activation_envelope_invalid`,
+  `activation_authorization_not_lapsed`,
   `activation_authorization_consumed`, `standing_authorization_unavailable`,
   `activation_launch_requested`, `launch_queue_unconfigured`,
   `launch_queue_unavailable`, `policy_campaign_activation_out_of_scope`),
@@ -669,8 +670,12 @@ so each manifest (and its receipt) also records `walked_file_count` and
   `preparation_envelope_invalid`, `preparation_release_current`). A pin a
   proof could not read is `proof_error`, and one whose release failed at the
   mutation edge is `release_failed`, each with its `error_type`; neither costs
-  any other pin. A pin released along with a dependent is in that release
-  receipt, not in `kept`. The report also counts candidates by proof and
+  any other pin. A release that raised after the ledger recorded it is in
+  `released` with `status: release_partial`, listing what the ledger shows
+  released. At the mutation edge a proof that no longer holds keeps the pin
+  with the fresh derivation's own reason; one that holds differently, or a new
+  reference, is `reference_changed`. A pin released along with a dependent is
+  in that release receipt, not in `kept`. The report also counts candidates by proof and
   released pins by kind, dependencies included. `candidates` and `kept` list
   at most 200 rows each, with `omitted_candidates_count` and
   `omitted_kept_count`; every count covers every pin.

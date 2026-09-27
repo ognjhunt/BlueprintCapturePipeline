@@ -61,6 +61,24 @@ def _read(path):
     return value if isinstance(value, dict) else None
 
 
+def _record(path):
+    """``(record, None)``, or ``(None, "unreadable")`` for a file that cannot be read as it stands (linked, not a
+    regular file, oversized or refused), or ``(None, "invalid")`` for one that is not a JSON object."""
+
+    try:
+        if (any(part.is_symlink() for part in (path, *path.parents)) or not path.is_file()
+                or path.stat().st_size > 16 * 1024**2):
+            return None, "unreadable"
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None, "unreadable"
+    try:
+        value = json.loads(text)
+    except ValueError:
+        return None, "invalid"
+    return (value, None) if isinstance(value, dict) else (None, "invalid")
+
+
 def _pin_path_allowed(classifier, path, classes=_PIN_PATH_CLASSES):
     last = None
     for expected in classes:
@@ -405,14 +423,18 @@ def _authorization_expiry(owner, envelope_path):
 
     from .task_evaluation_standing_launch_authorization import _parse_timestamp
 
-    if not _present(envelope_path):
-        return None, "activation_envelope_missing"
-    envelope = _read(envelope_path)
-    request = envelope.get("request") if envelope is not None else None
+    present = _present(envelope_path)
+    if present is not True:
+        return None, "activation_envelope_missing" if present is False else "activation_envelope_unreadable"
+    envelope, reason = _record(envelope_path)
+    if reason is not None:
+        return None, f"activation_envelope_{reason}"
+    request = envelope.get("request")
     authorization = request.get("authorization") if isinstance(request, dict) else None
     expires = (_parse_timestamp(authorization.get("standing_authorization_expires_at"))
                if isinstance(authorization, dict) else None)
-    if (expires is None or envelope.get("schema_version") != ACTIVATION_ENVELOPE_SCHEMA_VERSION
+    if (expires is None or not isinstance(request, dict)
+            or envelope.get("schema_version") != ACTIVATION_ENVELOPE_SCHEMA_VERSION
             or envelope.get("envelope_digest") != canonical_digest(envelope, digest_field="envelope_digest")
             or request.get("activation_id") != owner):
         return None, "activation_envelope_invalid"

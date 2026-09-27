@@ -213,7 +213,7 @@ def test_a_consumer_pinned_before_the_mutation_edge_keeps_the_stale_pin(tmp_path
     result = reconcile_terminal_cache_pins(**args, apply=True, extended_proofs_enabled=True)
 
     assert [row["owner_id"] for row in result["candidates"]] == ["prep-x"] and arrived
-    assert _kept(result) == {("preparation", "prep-x"): "reference_changed"}
+    assert _kept(result) == {("preparation", "prep-x"): "depended_on"}
     assert result["released"] == [] and _states(args)[("preparation", "prep-x")] == "live"
 
 
@@ -1045,7 +1045,8 @@ def test_a_launch_between_the_plan_and_the_mutation_edge_keeps_the_activation_pi
     result = reconcile_terminal_cache_pins(**args, apply=True, extended_proofs_enabled=True)
 
     assert [row["proof"]["kind"] for row in result["candidates"]] == ["activation_expired_unlaunched"] and launched
-    assert _kept(result) == {("activation", "run-z-controls"): "reference_changed"}
+    # The fresh derivation says why: the run it now finds is not sealed.
+    assert _kept(result) == {("activation", "run-z-controls"): "run_not_sealed"}
     assert result["released"] == [] and _states(args)[("activation", "run-z-controls")] == "live"
 
 
@@ -1186,6 +1187,58 @@ def test_a_failed_release_costs_only_its_own_pin(tmp_path, monkeypatch) -> None:
          "reason": "release_failed", "error_type": "ValueError"}]
     assert [row["owner_id"] for row in result["released"]] == ["cold"]
     assert _states(args) == {("preparation", "prep-stale"): "live", ("activation", "cold"): "released"}
+
+
+@pytest.mark.parametrize("fails", ["after_writing", "before_writing"])
+def test_a_release_that_raises_reports_what_the_ledger_says(tmp_path, monkeypatch, fails) -> None:
+    """Code review of 10c: a release that raised was reported as failed even when the ledger had already
+    recorded it. The ledger is read again, and the report says what it holds."""
+
+    args = _args(tmp_path)
+    _prepared(_preparation_queue(tmp_path, args), "prep-x")
+    _pin(args, "preparation", "prep-x", age=LAPSE + DAY)
+    real_release = terminal_pins.release_storage_pin
+
+    def release(**kwargs):
+        if fails == "after_writing":
+            real_release(**kwargs)
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(terminal_pins, "release_storage_pin", release)
+
+    result = reconcile_terminal_cache_pins(**args, apply=True, extended_proofs_enabled=True)
+
+    if fails == "after_writing":
+        assert [(row["owner_id"], row["status"], row["error_type"], row["released"]) for row in result["released"]] == [
+            ("prep-x", "release_partial", "OSError", [{"kind": "preparation", "owner_id": "prep-x"}])]
+        assert result["kept"] == [] and _states(args)[("preparation", "prep-x")] == "released"
+    else:
+        assert result["released"] == [] and _states(args)[("preparation", "prep-x")] == "live"
+        assert [(row["reason"], row["error_type"]) for row in result["kept"]] == [("release_failed", "OSError")]
+
+
+@pytest.mark.parametrize("fault", ["prepared_not_a_directory", "linked_envelope", "invalid_json"])
+def test_an_unreadable_envelope_is_not_a_missing_one(tmp_path, fault) -> None:
+    args = _args(tmp_path)
+    queue = _activation_queue(tmp_path, args)
+    result_path = _activation_result(queue, "act-u")
+    envelope = queue / "prepared" / result_path.name
+    if fault == "prepared_not_a_directory":
+        envelope.unlink()
+        (queue / "prepared").rmdir()
+        (queue / "prepared").write_text("{}", encoding="utf-8")
+    if fault == "linked_envelope":
+        envelope.rename(tmp_path / "moved-envelope.json")
+        envelope.symlink_to(tmp_path / "moved-envelope.json")
+    if fault == "invalid_json":
+        envelope.write_text("{not json", encoding="utf-8")
+    _pin(args, "activation", "act-u", age=LAPSE + DAY)
+
+    result = reconcile_terminal_cache_pins(**args, apply=True, extended_proofs_enabled=True)
+
+    assert _kept(result) == {("activation", "act-u"): {
+        "prepared_not_a_directory": "activation_envelope_unreadable",
+        "linked_envelope": "activation_envelope_unreadable", "invalid_json": "activation_envelope_invalid"}[fault]}
 
 
 def test_a_pin_released_with_its_dependent_is_not_reported_as_kept(tmp_path) -> None:
