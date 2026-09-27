@@ -74,7 +74,8 @@ def test_replay_cache_phase_plans_by_default_and_applies_only_when_enabled(tmp_p
                      replay_cache_retention_enabled=enabled)
         phase = tick["replay_caches"]
         assert (phase["status"], phase["enabled"], phase["replay_root_count"]) == ("dry_run", enabled, 1)
-        assert (phase["candidate_bytes"], phase["removed_bytes"]) == (size, 0)
+        assert (phase["estimated_candidate_bytes"], phase["removed_bytes"]) == (size, 0)
+        assert "candidate_bytes" not in phase, "a tick that only plans verifies nothing"
         assert blob.exists() and "phase_errors" not in tick and "alerts" not in tick
 
     tick = _tick(tmp_path, parent_root, apply=True, ack=RUN_ACK, replay_cache_retention_enabled=True)
@@ -82,11 +83,38 @@ def test_replay_cache_phase_plans_by_default_and_applies_only_when_enabled(tmp_p
     phase = tick["replay_caches"]
     assert (phase["status"], phase["enabled"]) == ("applied", True)
     assert phase["candidate_bytes"] == phase["removed_bytes"] == size
+    assert "estimated_candidate_bytes" not in phase
     assert not blob.exists()
     assert report.is_file() and lookahead_report.is_file(), "the reports the activation records stay"
     assert tick["report_digest"] == gc_module.canonical_digest(tick, digest_field="report_digest")
     assert _tick(tmp_path, parent_root, apply=True, ack=RUN_ACK,
                  replay_cache_retention_enabled=True)["replay_caches"]["candidate_bytes"] == 0
+
+
+def test_plan_only_ticks_never_hash(tmp_path, monkeypatch) -> None:
+    """Until the owner opts in, an hourly tick must not read the backlog: hashing every
+    candidate copy each hour would reread about 13 GiB on the root disk for nothing."""
+
+    parent_root = tmp_path / "scene-configuration-activations"
+    blob, _report, _lookahead_report = _activation(parent_root)
+    size = blob.stat().st_size
+    real_file_sha = retention.file_sha
+
+    def refuse(path):
+        raise AssertionError(f"hashed {path} on a tick that only plans")
+
+    monkeypatch.setattr(retention, "file_sha", refuse)
+    for apply, enabled in ((True, False), (False, True), (False, False)):
+        tick = _tick(tmp_path, parent_root, apply=apply, ack=RUN_ACK if apply else "",
+                     replay_cache_retention_enabled=enabled)
+        phase = tick["replay_caches"]
+        assert ("phase_errors" in tick, phase["errors"]) == (False, [])
+        assert phase["estimated_candidate_bytes"] == size
+
+    hashed: list[Path] = []
+    monkeypatch.setattr(retention, "file_sha", lambda path: hashed.append(path) or real_file_sha(path))
+    tick = _tick(tmp_path, parent_root, apply=True, ack=RUN_ACK, replay_cache_retention_enabled=True)
+    assert tick["replay_caches"]["removed_bytes"] == size and hashed, "a tick that applies verifies first"
 
 
 def _real_lookahead(tmp_path: Path, monkeypatch, *, released: bool) -> tuple[dict, Path, bytes]:
@@ -228,11 +256,11 @@ def test_the_phase_report_is_bounded(tmp_path, monkeypatch) -> None:
     parent_root = tmp_path / "scene-configuration-activations"
     _activation(parent_root)
 
-    def plan(**_kwargs):
-        return {"rows": [], "candidate_bytes": 0,
+    def estimate(**_kwargs):
+        return {"estimated_candidate_bytes": 0,
                 "kept": [{"root": f"replay-{index}", "reason": "active_reference"} for index in range(53)]}
 
-    monkeypatch.setattr(retention, "plan_replay_cache_retention", plan)
+    monkeypatch.setattr(retention, "estimate_replay_cache_retention", estimate)
 
     phase = replay_gc.reclaim_replay_caches(parent_roots=[parent_root], apply=False, enabled=False,
                                             now=lambda: NOW, classifier=_noclass)

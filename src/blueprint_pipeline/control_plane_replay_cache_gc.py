@@ -8,10 +8,12 @@ so linking failed with EXDEV. Nothing removed the copies; on 2026-09-27, 107
 activations held about 13 GiB of them.
 
 Each lookahead is handed to ``completed_replay_cache_retention``, which removes
-only digest-verified single-link copies inside a completed offline parent
-replay and keeps every report, including the lookahead report the activation
-records by path, digest and size. The phase plans on every tick and removes
-nothing until the owner sets ``BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_RETENTION=1``.
+only digest-verified copies inside a completed offline parent replay, each with
+every name the worker linked to it there, and keeps every report, including the
+lookahead report the activation records by path, digest and size. Until the
+owner sets ``BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_RETENTION=1`` a tick removes
+nothing and reads no byte: it estimates from names, link counts and sizes, and
+only a tick that applies hashes the copies it is about to remove.
 """
 
 from __future__ import annotations
@@ -61,12 +63,14 @@ def reclaim_replay_caches(
     minimum_closed_seconds: int = DEFAULT_MINIMUM_CLOSED_SECONDS,
     process_root: Path = Path("/proc"),
 ) -> dict[str, Any]:
-    """Plan every activation's lookahead; remove its copies only when applying and enabled.
+    """Estimate every activation's lookahead; plan and remove its copies only when applying and enabled.
 
     Every parent root must classify as ``work`` and be a real directory before any
-    lookahead is read. A linked activation or lookahead is reported and never
-    followed. One lookahead's error is recorded by exception type and never stops
-    the others. Each row list is capped, with a count of the rows left out.
+    lookahead is read. A tick that will not apply reports ``estimated_candidate_bytes``
+    from names, links and sizes and hashes nothing; one that applies reports the
+    verified ``candidate_bytes`` of its plans. A linked activation or lookahead is
+    reported and never followed. One lookahead's error is recorded by exception type
+    and never stops the others. Each row list is capped, with a count of the rows left out.
     """
 
     roots = [Path(root).expanduser() for root in parent_roots]
@@ -80,7 +84,7 @@ def reclaim_replay_caches(
         "enabled": bool(enabled),
         "status": "applied" if applying else "dry_run",
         "replay_root_count": 0,
-        "candidate_bytes": 0,
+        "candidate_bytes" if applying else "estimated_candidate_bytes": 0,
         "removed_bytes": 0,
     }
     rows: dict[str, list[dict[str, Any]]] = {"kept": [], "skipped": [], "errors": []}
@@ -93,14 +97,18 @@ def reclaim_replay_caches(
             if not activation.is_dir() or not lookahead.is_dir():
                 continue
             report["replay_root_count"] += 1
+            scope = {"replay_root": lookahead, "minimum_closed_seconds": minimum_closed_seconds,
+                     "now": now(), "process_root": process_root}
             try:
-                plan = retention.plan_replay_cache_retention(
-                    replay_root=lookahead, minimum_closed_seconds=minimum_closed_seconds,
-                    now=now(), process_root=process_root,
-                )
+                if not applying:
+                    estimate = retention.estimate_replay_cache_retention(**scope)
+                    report["estimated_candidate_bytes"] += estimate["estimated_candidate_bytes"]
+                    rows["kept"].extend(estimate["kept"])
+                    continue
+                plan = retention.plan_replay_cache_retention(**scope)
                 report["candidate_bytes"] += plan["candidate_bytes"]
                 rows["kept"].extend(plan["kept"])
-                if applying and plan["rows"]:
+                if plan["rows"]:
                     result = retention.apply_replay_cache_retention(
                         plan, ack=retention.ACK, process_root=process_root)
                     report["removed_bytes"] += result["removed_bytes"]

@@ -270,6 +270,24 @@ def test_mismatched_or_changed_scratch_copies_are_kept(tmp_path):
         assert path.exists(), path
 
 
+def test_an_estimate_reads_no_bytes_and_bounds_the_plan(tmp_path, monkeypatch):
+    root, child, data, proc = setup(tmp_path)
+    copy = _store_copy(child, b"a faithful copy")
+    os.link(copy, child / "prepared-references" / copy.name)
+    mismatched = _store_copy(child, b"bytes that are not the named digest", name="0" * 64)
+    real_file_sha = gc.file_sha
+    monkeypatch.setattr(gc, "file_sha", lambda path: pytest.fail(f"an estimate read {path}"))
+
+    estimate = gc.estimate_replay_cache_retention(replay_root=root, process_root=proc, now=time.time() + 120)
+
+    monkeypatch.setattr(gc, "file_sha", real_file_sha)
+    p = plan(root, proc)
+    assert "rows" not in estimate and estimate["digests_verified"] is False
+    # Only a plan reads the bytes, so only a plan can tell that a copy is not what its name says.
+    assert p["candidate_bytes"] == data.stat().st_size + copy.stat().st_size
+    assert estimate["estimated_candidate_bytes"] == p["candidate_bytes"] + mismatched.stat().st_size
+
+
 def test_refused_parent_replay_is_finished_for_retention(tmp_path):
     """A parent replay whose worker pass raised has written its report and returned, and its
     fetcher refuses every fetch by construction. Before the release, that path recorded no

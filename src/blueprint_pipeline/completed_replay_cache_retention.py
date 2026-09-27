@@ -74,13 +74,14 @@ def _no_linked_parent(path, child):
     return not any(p.is_symlink() for p in path.parents if p != child.parent)
 
 
-def _store_copies(child, report_mtime_ns):
+def _store_copies(child, report_mtime_ns, *, verify=True):
     """Copies of store blobs in the child's scratch inputs, each with every name it has there.
 
     Files under ``prepared-references`` are grouped by inode. A group is reclaimable only
     when all of its links are in that subtree, one of its names is a store name, it is
-    not newer than the report, and its bytes hash to that name. Also returns every inode
-    that has a store name, so the single-file rules never plan one of its names.
+    not newer than the report, and its bytes hash to that name; without ``verify`` no
+    byte is read and that last rule is not applied. Also returns every inode that has a
+    store name, so the single-file rules never plan one of its names.
     """
     subtree = child / _SCRATCH_INPUTS
     groups = {}
@@ -99,8 +100,8 @@ def _store_copies(child, report_mtime_ns):
         store_inodes.add(key)
         if len(names) != info.st_nlink or info.st_mtime_ns > report_mtime_ns:
             continue
-        sha = file_sha(child / names[0])
-        if not any(sha == "sha256:" + name.name for name in store_names):
+        sha = file_sha(child / names[0]) if verify else None
+        if verify and not any(sha == "sha256:" + name.name for name in store_names):
             continue
         copies.append({
             "relative_paths": sorted(str(name) for name in names),
@@ -113,7 +114,7 @@ def _store_copies(child, report_mtime_ns):
     return sorted(copies, key=lambda copy: copy["relative_paths"]), store_inodes
 
 
-def _single_files(child, report_mtime_ns, store_inodes):
+def _single_files(child, report_mtime_ns, store_inodes, *, verify=True):
     files = []
     for path in child.rglob("*"):
         info = path.lstat()
@@ -134,7 +135,7 @@ def _single_files(child, report_mtime_ns, store_inodes):
                 "inode": info.st_ino,
                 "mtime_ns": info.st_mtime_ns,
                 "size_bytes": info.st_size,
-                "sha256": file_sha(path),
+                "sha256": file_sha(path) if verify else None,
             }
         )
     return files
@@ -239,9 +240,7 @@ def active_reference(root, *, process_root=Path("/proc"), ignored_process_ids=()
     return False
 
 
-def plan_replay_cache_retention(
-    *, replay_root, minimum_closed_seconds=60, now=None, process_root=Path("/proc")
-):
+def _scan(replay_root, minimum_closed_seconds, now, process_root, *, verify):
     root = Path(replay_root)
     if not root.is_absolute() or any(p.is_symlink() for p in (root, *root.parents)):
         raise ValueError("replay_cache_root_unsafe")
@@ -259,18 +258,28 @@ def plan_replay_cache_retention(
             kept.append({"root": str(child), "reason": "active_reference"})
             continue
         report_mtime_ns = report.stat().st_mtime_ns
-        copies, store_inodes = _store_copies(child, report_mtime_ns)
-        files = _single_files(child, report_mtime_ns, store_inodes)
+        copies, store_inodes = _store_copies(child, report_mtime_ns, verify=verify)
+        files = _single_files(child, report_mtime_ns, store_inodes, verify=verify)
         if files or copies:
             rows.append(
                 {
                     "root": str(child),
                     "report_path": str(report),
-                    "report_sha256": file_sha(report),
+                    **({"report_sha256": file_sha(report)} if verify else {}),
                     "files": files,
                     "store_copies": copies,
                 }
             )
+    candidate_bytes = sum(entry["size_bytes"] for r in rows for entry in (*r["files"], *r["store_copies"]))
+    return root, clock, rows, kept, candidate_bytes
+
+
+def plan_replay_cache_retention(
+    *, replay_root, minimum_closed_seconds=60, now=None, process_root=Path("/proc")
+):
+    root, clock, rows, kept, candidate_bytes = _scan(
+        replay_root, minimum_closed_seconds, now, process_root, verify=True
+    )
     plan = {
         "schema_version": SCHEMA,
         "status": "dry_run",
@@ -278,13 +287,34 @@ def plan_replay_cache_retention(
         "replay_root": str(root),
         "rows": rows,
         "kept": kept,
-        "candidate_bytes": sum(
-            entry["size_bytes"] for r in rows for entry in (*r["files"], *r["store_copies"])
-        ),
+        "candidate_bytes": candidate_bytes,
         "reports_and_original_evidence_removed": False,
     }
     plan["plan_digest"] = digest(plan)
     return plan
+
+
+def estimate_replay_cache_retention(
+    *, replay_root, minimum_closed_seconds=60, now=None, process_root=Path("/proc")
+):
+    """What a plan would reclaim, judged from names, links, sizes and ages without reading a byte.
+
+    A plan also requires every store copy's bytes to hash to its name, so this is an upper
+    bound. It carries no rows and cannot be applied.
+    """
+    root, clock, _rows, kept, candidate_bytes = _scan(
+        replay_root, minimum_closed_seconds, now, process_root, verify=False
+    )
+    return {
+        "schema_version": SCHEMA,
+        "status": "estimate",
+        "observed_at_epoch": clock,
+        "replay_root": str(root),
+        "kept": kept,
+        "estimated_candidate_bytes": candidate_bytes,
+        "digests_verified": False,
+        "reports_and_original_evidence_removed": False,
+    }
 
 
 def apply_replay_cache_retention(plan, *, ack, process_root=Path("/proc")):
