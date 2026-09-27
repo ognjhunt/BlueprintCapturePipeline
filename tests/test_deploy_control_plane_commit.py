@@ -17,6 +17,8 @@ API call and records the holding pid; the deploy just never looked.
 
 from __future__ import annotations
 
+import contextlib
+import errno
 import importlib.util
 import io
 import json
@@ -24,10 +26,14 @@ import os
 import stat
 import subprocess
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+from blueprint_pipeline import active_deployed_release_admission as admission
+from blueprint_pipeline import control_plane_break_glass as break_glass
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 _SPEC = importlib.util.spec_from_file_location(
@@ -916,6 +922,7 @@ def test_conflicting_controls_intent_refuses_before_any_host_action(tmp_path, mo
 
 def test_cli_forwards_explicit_controls_state_preservation(tmp_path, monkeypatch):
     calls = []
+    monkeypatch.setattr(deploy, "trusted_deploy_source", lambda path: True)
     monkeypatch.setattr(deploy, "deploy_control_plane_commit", lambda **kwargs: calls.append(kwargs) or {"status": "deployed"})
     assert deploy.main([
         "--source-repo", str(tmp_path), "--source-commit", "a" * 40,
@@ -924,6 +931,281 @@ def test_cli_forwards_explicit_controls_state_preservation(tmp_path, monkeypatch
     ]) == 0
     assert calls[0]["preserve_configured_controls_state"] is True
     assert calls[0]["arm_path_units"] is False
+
+
+def _cli_args(tmp_path: Path, source: Path, *extra: str) -> list[str]:
+    return [
+        "--source-repo", str(source), "--source-commit", "a" * 40,
+        "--release-root", str(tmp_path / "releases"), "--state-root", str(tmp_path / "state"),
+        "--active-link", str(tmp_path / "active"), "--iteration",
+        "--receipt-out", str(tmp_path / "receipt.json"), *extra,
+    ]
+
+
+def _deploy_note(
+    root: Path,
+    *,
+    age_seconds: int = 60,
+    actions: tuple[str, ...] = (break_glass.DEPLOY_FROM_UNTRUSTED_SOURCE,),
+) -> Path:
+    created = time.time() - age_seconds
+    return break_glass.record_note(
+        root=root,
+        operator="alice",
+        reason="the door is down; deploying the fix from a scratch checkout",
+        actions=list(actions),
+        now=lambda: created,
+        environ={},
+    )
+
+
+@pytest.mark.parametrize(
+    ("note", "code"),
+    [
+        (None, "break_glass_note_missing"),
+        ("stale", "break_glass_note_expired"),
+        ("other_action", "break_glass_note_action_missing"),
+        ("edited", "break_glass_note_digest_mismatch"),
+        ("absent", "break_glass_note_unreadable"),
+    ],
+)
+def test_main_refuses_an_untrusted_source_without_a_note(
+    tmp_path, monkeypatch, capsys, note, code
+):
+    """On 2026-09-26 a scratch-checkout deploy left GPU admission refusing for hours.
+
+    The deploy itself succeeded; the release it produced was one GPU admission
+    cannot verify, so every sponsored step refused until a later deploy
+    replaced it. The CLI now refuses such a source before anything moves.
+    """
+
+    source = tmp_path / "control-plane-deploy-sources" / "scratch"
+    source.mkdir(parents=True)
+    asked = []
+    monkeypatch.setattr(deploy, "trusted_deploy_source", lambda path: asked.append(path) or False)
+    monkeypatch.setattr(deploy, "deploy_control_plane_commit", lambda **_kwargs: pytest.fail("deploy ran"))
+    monkeypatch.setattr(deploy.subprocess, "run", lambda *_args, **_kwargs: pytest.fail("host action"))
+    notes = tmp_path / "cleanup-receipts"
+    extra: list[str] = []
+    if note == "stale":
+        extra = ["--break-glass-note", str(_deploy_note(notes, age_seconds=24 * 3600 + 60))]
+    elif note == "other_action":
+        extra = ["--break-glass-note", str(_deploy_note(notes, actions=("unit-restart",)))]
+    elif note == "edited":
+        path = _deploy_note(notes)
+        document = json.loads(path.read_text(encoding="utf-8"))
+        document["reason"] = "a reason nobody sealed"
+        path.write_text(json.dumps(document), encoding="utf-8")
+        extra = ["--break-glass-note", str(path)]
+    elif note == "absent":
+        extra = ["--break-glass-note", str(notes / "20260926T120000Z-0123456789ab.json")]
+
+    assert deploy.main(_cli_args(tmp_path, source, *extra)) == 2
+
+    blocked = json.loads(capsys.readouterr().out)
+    assert blocked["status"] == "blocked"
+    [blocker] = blocked["blockers"]
+    assert blocker.startswith(f"deploy_source_repo_untrusted:{code}:")
+    assert "GPU admission would refuse the resulting release" in blocker
+    assert "/" not in blocker, "a refusal names no host path"
+    # The question asked is the one admission asks of the receipt's source path.
+    assert asked == [source.resolve()]
+    assert not (tmp_path / "receipt.json").exists()
+
+
+def test_main_accepts_an_untrusted_source_with_a_fresh_deploy_note(tmp_path, monkeypatch, capsys):
+    source = tmp_path / "scratch"
+    source.mkdir()
+    note = _deploy_note(tmp_path / "cleanup-receipts")
+    calls = []
+    monkeypatch.setattr(deploy, "trusted_deploy_source", lambda path: False)
+    monkeypatch.setattr(
+        deploy, "deploy_control_plane_commit", lambda **kwargs: calls.append(kwargs) or {"status": "deployed"}
+    )
+
+    assert deploy.main(_cli_args(tmp_path, source, "--break-glass-note", str(note))) == 0
+
+    sealed = break_glass.verify_note(note)
+    expected = {
+        "name": note.name,
+        "path": str(note.resolve()),
+        "digest": sealed["note_digest"],
+        "operator": "alice",
+        "reason": "the door is down; deploying the fix from a scratch checkout",
+        "created_at": sealed["created_at"],
+        "actions": [break_glass.DEPLOY_FROM_UNTRUSTED_SOURCE],
+    }
+    assert json.loads((tmp_path / "receipt.json").read_text(encoding="utf-8"))["break_glass_note"] == expected
+    assert json.loads(capsys.readouterr().out)["break_glass_note"] == expected
+    assert calls[0]["source_repo"] == str(source)
+    # Every CLI deploy reports the notes the last one did not, this one included.
+    assert calls[0]["break_glass_notes_root"] == break_glass.DEFAULT_NOTES_ROOT
+
+
+def test_main_needs_no_note_for_a_trusted_source(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(deploy, "trusted_deploy_source", lambda path: True)
+    monkeypatch.setattr(deploy, "deploy_control_plane_commit", lambda **_kwargs: {"status": "deployed"})
+
+    assert deploy.main(_cli_args(tmp_path, tmp_path)) == 0
+
+    assert json.loads(capsys.readouterr().out)["break_glass_note"] is None
+
+
+def test_door_and_iteration_wrappers_use_trusted_sources() -> None:
+    """Every supported deploy path passes a source GPU admission trusts."""
+
+    sys.path.insert(0, str(REPO_ROOT / "deploy" / "operator-door"))
+    from operator_door.config import DoorConfig
+
+    door = (REPO_ROOT / "deploy" / "operator-door" / "door-deploy.sh").read_text(encoding="utf-8")
+    assert door.count("--source-repo") == 1
+    assert '--source-repo "$DOOR_SOURCE_CLONE" ' in door
+    assert Path(DoorConfig().source_clone).parent == admission.CONFIG_TOOLS_ROOT
+    for wrapper in ("deploy_control_plane_iteration.sh", "deploy_control_plane_canary.sh"):
+        text = (REPO_ROOT / "scripts" / wrapper).read_text(encoding="utf-8")
+        assert f"\nCP={admission.SOURCE_CHECKOUT}\n" in text, wrapper
+        assert text.count("--source-repo") == 1, wrapper
+        assert "--source-repo $CP " in text, wrapper
+
+
+def _stub_host_deploy(monkeypatch, tmp_path: Path, commit: str) -> dict[str, object]:
+    """Replace every host-touching deploy step with a no-op; return deploy arguments."""
+
+    release = tmp_path / "release"
+    release.mkdir()
+    active = tmp_path / "active"
+    active.symlink_to(release, target_is_directory=True)
+    source = tmp_path / "source"
+    source.mkdir()
+    staged = {"source_commit": commit, "release_path": str(release), "created_release_checkout": True}
+    runtime_sources = {"sources": [
+        {"id": "text-to-cad", "path": "/runtime/text-to-cad"},
+        {"id": "multi-agent-cad", "path": "/runtime/Multi-Agent-CAD"},
+    ]}
+    entrypoints = dict.fromkeys(("node", "browser_root", "browser", "node_modules"), "/runtime")
+    stubs = {
+        "_holding_paid_launch_gate": lambda _locks: contextlib.nullcontext([]),
+        "_installed_path_unit_states": lambda _installed: {},
+        "_quiesce_active_path_units": lambda _before: [],
+        "stage_task_evaluation_control_plane_release": lambda **_kwargs: staged,
+        "_install_unit_sandbox_paths": lambda **_kwargs: [],
+        "provision_production_cad_skill_sources": lambda _root: runtime_sources,
+        "validate_splat_render_prerequisites": lambda **_kwargs: {"entrypoints": entrypoints},
+        "_provision_scene_configuration_from_release": lambda **_kwargs: {"environment": {}},
+        "_install_scene_configuration_environment": lambda *_args, **_kwargs: {},
+        "_drain_agent_execution_before_release_switch": lambda **_kwargs: {},
+        "_move_source_checkout": lambda *_args: None,
+        "_surface_commit": lambda *_args, **_kwargs: commit,
+        "_install_release_systemd_units": lambda **_kwargs: [],
+        "_install_scene_object_discovery_runtime_directories": lambda: [],
+        "_install_episode_compilation_runtime_directories": lambda: [],
+        "_install_storage_pins_runtime_root": lambda: {},
+        "_install_configured_controls_runtime_prerequisites": lambda: {},
+        "_install_configured_controls_autostart_registry": lambda **_kwargs: {},
+        "_install_intake_runtime_identity_drop_in": lambda *_args, **_kwargs: {},
+        "_service_account_ids": lambda _account: None,
+        "_restart_units": lambda _units: [],
+        "_verify_intake_runtime": lambda *_args, **_kwargs: {"commit_proven": True},
+        "_activate_agent_execution": lambda **_kwargs: {},
+        "_restore_installed_path_units": lambda _installed, **_kwargs: [],
+        "_retire_superseded_release_trees": lambda **_kwargs: {},
+        "_finish_release_retirement": lambda retirement, **_kwargs: retirement,
+    }
+    for name, stub in stubs.items():
+        monkeypatch.setattr(deploy, name, stub)
+    monkeypatch.setattr(deploy.subprocess, "run", lambda *_args, **_kwargs: pytest.fail("host command"))
+    return {
+        "source_repo": source,
+        "source_commit": commit,
+        "release_root": tmp_path / "releases",
+        "state_root": tmp_path / "state",
+        "active_link": active,
+        "release_provenance": _provenance(tmp_path, commit),
+        "paid_launch_locks": (str(tmp_path / "vast_paid_launch.lock"),),
+        "scene_configuration_runtime_root": tmp_path / "system-runtimes",
+        "scene_preparation_bootstrap_file": tmp_path / "absent-bootstrap.json",
+        "controls_autoprovision_bootstrap_file": tmp_path / "absent-controls-bootstrap.json",
+    }
+
+
+def test_deploy_reports_and_marks_break_glass_notes(tmp_path, monkeypatch) -> None:
+    """Every host change made outside the door appears in the next deploy's receipt, once."""
+
+    commit = "d" * 40
+    notes = tmp_path / "cleanup-receipts"
+    earlier = _deploy_note(notes, age_seconds=7200, actions=("unit-restart",))
+    break_glass.mark_reported(notes, break_glass.unreported_notes(notes), deploy_commit="e" * 40)
+    first = _deploy_note(notes, age_seconds=3600, actions=("unit-stop",))
+    second = _deploy_note(notes, age_seconds=60)
+    arguments = _stub_host_deploy(monkeypatch, tmp_path, commit)
+
+    receipt = deploy.deploy_control_plane_commit(**arguments, break_glass_notes_root=notes)
+
+    assert receipt["status"] == "deployed"
+    sealed = [break_glass.verify_note(path) for path in (first, second)]
+    assert receipt["break_glass_notes"] == [
+        {
+            "name": path.name,
+            "digest": note["note_digest"],
+            "operator": "alice",
+            "reason": note["reason"],
+            "created_at": note["created_at"],
+        }
+        for path, note in zip((first, second), sealed)
+    ]
+    assert receipt["alerts"] == ["break_glass_notes_reported:2"]
+    assert "break_glass_notes_error" not in receipt
+    ledger = (notes / break_glass.REPORTED_LEDGER).read_text(encoding="utf-8").splitlines()
+    assert [(row["name"], row["deploy_commit"]) for row in map(json.loads, ledger)] == [
+        (earlier.name, "e" * 40),
+        (first.name, commit),
+        (second.name, commit),
+    ]
+
+    # The next deploy has nothing left to report, and raises no alert.
+    again = deploy.deploy_control_plane_commit(**arguments, break_glass_notes_root=notes)
+    assert again["break_glass_notes"] == []
+    assert "alerts" not in again
+    # A direct caller that names no notes root reports nothing and reads nothing.
+    assert "break_glass_notes" not in deploy.deploy_control_plane_commit(**arguments)
+
+
+@pytest.mark.parametrize("failure", ["unreadable", "unmarked"])
+def test_break_glass_note_errors_never_fail_a_finished_deploy(tmp_path, monkeypatch, failure) -> None:
+    notes = tmp_path / "cleanup-receipts"
+    note = _deploy_note(notes)
+    receipt: dict[str, object] = {"status": "deployed", "alerts": ["earlier_alert"]}
+    if failure == "unreadable":
+        notes_root = tmp_path / "not-a-directory"
+        notes_root.write_text("", encoding="utf-8")
+    else:
+        notes_root = notes
+
+        def disk_full(*_args, **_kwargs):
+            raise OSError(errno.ENOSPC, "No space left on device", str(notes))
+
+        monkeypatch.setattr(deploy, "mark_break_glass_notes_reported", disk_full)
+
+    deploy._report_break_glass_notes(receipt, root=notes_root, deploy_commit="d" * 40)
+
+    if failure == "unreadable":
+        assert receipt["break_glass_notes"] is None
+        assert receipt["break_glass_notes_error"] == "break_glass_notes_root_unsafe"
+        assert receipt["alerts"] == [
+            "earlier_alert",
+            "break_glass_notes_unreadable:break_glass_notes_root_unsafe",
+        ]
+    else:
+        # Reported here, and reported again next time: an unmarked note is never lost.
+        assert [row["name"] for row in receipt["break_glass_notes"]] == [note.name]
+        assert receipt["break_glass_notes_error"] == "break_glass_io_error:ENOSPC"
+        assert receipt["alerts"] == [
+            "earlier_alert",
+            "break_glass_notes_reported:1",
+            "break_glass_notes_not_marked:break_glass_io_error:ENOSPC",
+        ]
+        assert [row["name"] for row in break_glass.unreported_notes(notes)] == [note.name]
+    assert str(tmp_path) not in json.dumps(receipt)
 
 
 def test_authority_gated_paid_dispatch_watcher_is_armed_by_default(
