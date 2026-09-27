@@ -416,12 +416,18 @@ def _snapshot(files: Sequence[tuple[str, os.stat_result]]) -> list[list[Any]]:
             for relative, info in files]
 
 
-def _workspace_path_safe(storage_root: Path, bucket: str, scene: Path) -> bool:
+def _workspace_path_safe(
+    storage_root: Path, bucket: str, scene: Path, *, unreadable_raises: bool = False
+) -> bool:
     for path in (Path(storage_root), Path(storage_root) / bucket, Path(storage_root) / bucket / "scenes", scene):
         try:
             if not stat.S_ISDIR(os.lstat(path).st_mode):
                 return False
+        except FileNotFoundError:
+            return False
         except OSError:
+            if unreadable_raises:
+                raise
             return False
     return True
 
@@ -562,7 +568,7 @@ def scene_workspaces(storage_root: Path) -> list[tuple[str, str, Path]]:
         return rows
     for bucket in buckets:
         scenes = root / bucket / "scenes"
-        if bucket.startswith(".") or not _workspace_path_safe(root, bucket, scenes):
+        if bucket.startswith(".") or not _workspace_path_safe(root, bucket, scenes, unreadable_raises=True):
             continue
         try:
             strict_gcs_bucket(bucket)

@@ -797,6 +797,21 @@ def test_scene_workspaces_refuses_unreadable_scene_listing(tmp_path, monkeypatch
         retention.scene_workspaces(root)
 
 
+def test_scene_workspaces_refuses_unreadable_scene_path(tmp_path, monkeypatch):
+    scene, _ = _scene(tmp_path)
+    root = tmp_path / "pubsub-handoffs"
+    lstat = os.lstat
+
+    def unreadable(path, *args, **kwargs):
+        if Path(path) == scene.parent:
+            raise PermissionError("unreadable scene path")
+        return lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(retention.os, "lstat", unreadable)
+    with pytest.raises(PermissionError):
+        retention.scene_workspaces(root)
+
+
 def test_listener_file_names_have_not_drifted(tmp_path):
     assert retention.LISTENER_FILES == {
         "ledger": listener.JOB_LEDGER_FILENAME, "output_commit": listener.JOB_OUTPUT_COMMIT_FILENAME,
