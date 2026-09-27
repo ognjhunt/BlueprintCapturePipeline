@@ -431,7 +431,7 @@ def test_survey_runs_at_most_hourly(tmp_path, monkeypatch):
 
 def test_survey_mounts_include_the_attached_work_volume_only(tmp_path, monkeypatch):
     service = Path("deploy/systemd/blueprint-control-plane-capacity.service").read_text()
-    assert "Environment=BLUEPRINT_CAPACITY_MOUNTS=/var/lib/blueprint" in service
+    assert "Environment=BLUEPRINT_CAPACITY_MOUNTS=/:/var/lib/blueprint:/mnt/blueprint-work" in service
     monkeypatch.setattr(cap.os.path, "ismount", lambda path: path == "/mnt/blueprint-work")
     assert cap.survey_mounts(["/var/lib/blueprint"]) == [
         "/var/lib/blueprint", "/", "/mnt/blueprint-work"]
