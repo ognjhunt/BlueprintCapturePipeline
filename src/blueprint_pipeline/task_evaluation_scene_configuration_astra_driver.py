@@ -44,7 +44,8 @@ from .task_evaluation_scene_configuration_stage_tool import (
 from .task_object_articulated_packaging import (
     AUTHORING_RESULT_SCHEMA_VERSION as ARTICULATED_AUTHORING_RESULT_SCHEMA_VERSION,
     COMPLETION_SCHEMA_VERSION as ARTICULATED_COMPLETION_SCHEMA_VERSION,
-    DRAWER_FAMILY, HANDLE_PROTRUSION_M, articulation_graph_from_plan, assembly_contract, assembly_family,
+    DRAWER_FAMILY, HANDLE_PROTRUSION_M, OBSERVED_ESTIMATE_BASIS, TEMPLATE_PRIOR_BASIS,
+    articulation_graph_from_plan, assembly_contract, assembly_family,
     package_astra_articulated_candidate, plan_articulated_assembly,
 )
 from .task_object_astra_authoring import (
@@ -309,6 +310,48 @@ def articulated_frame_descriptions(configuration: Mapping[str, Any], references:
     return frames
 
 
+def part_frame_evidence(frames: list[dict[str, Any]], contract: Mapping[str, Any], carried: list[Mapping[str, Any]],
+                        bases: Mapping[str, Mapping[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    """One part's source frames: those whose coverage ``visible_parts`` show it first, then context.
+
+    2026-09-27 website capture: every part was briefed with the same
+    whole-object frames, so fixed parts came back as generic template shapes.
+    Family- and name-agnostic: a part is shown by a frame that lists any
+    required part its links carry. The frame set (and its request budget) is
+    unchanged; only order and captions are per part. A legacy configuration
+    without reference frames keeps its frames exactly.
+    """
+    if not contract["reference_frames"] or not carried:
+        return frames, None
+    rows = {row["sha256"]: row for row in contract["reference_frames"]}
+    labels = {row["part_id"]: row["label"] for row in carried}
+    showing, context = [], []
+    for frame in frames:
+        seen = [labels[part] for part in rows[frame["sha256"]]["visible_parts"] if part in labels]
+        if seen:
+            showing.append({**frame, "description": f"Shows this part ({', '.join(seen)}): reproduce its observed "
+                                                    "construction from this frame. " + frame["description"]})
+        else:
+            context.append({**frame, "description": "Whole-object context; this part is not visible here. "
+                                                    + frame["description"]})
+    shown = [rows[frame["sha256"]]["frame_id"] for frame in showing]
+    instruction = (f"Frames {', '.join(shown)} show this part. Reproduce this part's observed construction, pattern, "
+                   "spacing, colours and materials from those frames; generic wording in the part description and "
+                   "any template-prior envelope are priors that yield to what the frames show, within the stated "
+                   "nominal envelope. The other frames are whole-object context." if shown else
+                   "No retained frame shows this part; the frames are whole-object context and its construction is "
+                   "an explicit, labelled assumption.")
+    return showing + context, {
+        "frames_showing_this_part": shown,
+        "whole_object_context_frames": [rows[frame["sha256"]]["frame_id"] for frame in context],
+        "instruction": instruction,
+        # Link, feature and frames already travel in ``required_parts_on_this_part``.
+        **({"dimension_bases": {part: {key: value for key, value in bases[part].items()
+                                       if key not in {"link_id", "feature", "appearance_frame_ids"}}
+                                for part in labels if part in bases}}
+           if any(part in bases for part in labels) else {})}
+
+
 def build_articulated_authoring_requests(stage_input: Mapping[str, Any], source_record: Mapping[str, Any],
                                          references: list[Path], rights: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, AuthoringRequest]]:
     """One exact per-part brief per assembly part; the assembly plan binds their rest poses and the task joint."""
@@ -391,6 +434,7 @@ def build_articulated_authoring_requests(stage_input: Mapping[str, Any], source_
     if len({row["evidence_id"] for row in base_evidence}) != len(base_evidence):
         raise AstraStageError("astra_duplicate_physical_evidence")
     requests: dict[str, AuthoringRequest] = {}
+    rows_by_digest = {row["sha256"]: row for row in contract["reference_frames"]}
     for part_id, spec in plan["parts"].items():
         dimensions = [float(v) for v in spec["dimensions_m"]]
         uncertainty = [d * tolerance for d in dimensions]
@@ -401,6 +445,13 @@ def build_articulated_authoring_requests(stage_input: Mapping[str, Any], source_
         part_object_id = f"{identity['id']}__{part_id}"
         link_ids = {row["link_id"] for row in plan["links"] if row["part_id"] == part_id}
         carried = [row for row in plan.get("required_parts") or [] if row["link_id"] in link_ids]
+        part_frames, evidence = part_frame_evidence(frames, contract, carried, plan.get("part_dimension_bases") or {})
+        # A part planned as its own fixed link carries its own envelope basis.
+        own_basis = ((plan.get("part_dimension_bases") or {}).get(part_id)
+                     if spec["link_role"] == "fixed_interior" else None)
+        observed_basis = own_basis is not None and own_basis["basis"] == OBSERVED_ESTIMATE_BASIS
+        if observed_basis:
+            uncertainty = [float(v) for v in own_basis["uncertainty_m"]]
         if family == DRAWER_FAMILY and not contract["reference_frames"]:  # historical drawer brief
             material = (f"Infer material conservatively from the retained assembly description and reference views: {owner}. "
                         + ("Grey painted steel or laminate carcass." if part_id == "carcass" else
@@ -411,13 +462,25 @@ def build_articulated_authoring_requests(stage_input: Mapping[str, Any], source_
                         + (f" carrying {', '.join(row['label'] for row in carried)}" if carried else "")
                         + ". Use only finishes a reference view shows; do not assume any other.")
         physical = {
-            "object_id": part_object_id, "object_description": f"{spec['link_role']} of {owner}: {spec['description']}",
+            "object_id": part_object_id, "object_description": f"{spec['link_role']} of {owner}: {spec['description']}"
+                                                              + (" " + evidence["instruction"] if evidence else ""),
             "material_description": material, "appearance": configuration.get("appearance", "unknown"), "dimensions": {},
             "measured": dict.fromkeys(("mass_kg", "static_friction", "dynamic_friction", "restitution")),
             "proposed": None, "optical_material": {"name": material, "transmission": 0.0, "opacity": 1.0},
             "admitted_restitution": dict(zip(("lower", "upper"), bounds[part_id]["restitution"])),
             "evidence": [dict(row) for row in base_evidence],
         }
+        rationale, evidence_ids = ("Part envelope derived from the estimated assembly envelope and construction "
+                                   "assumptions."), ["retained_source_geometry"]
+        if observed_basis:
+            view_ids = {rows_by_digest[record["sha256"]]["frame_id"]: f"retained_source_view_{index}"
+                        for index, record in enumerate(frames)}
+            rationale = (f"{OBSERVED_ESTIMATE_BASIS}: frames {', '.join(own_basis['frame_ids'])}, clamped inside the "
+                         f"{own_basis['cavity_id']} cavity; the uncertainty is the estimate's own.")
+            evidence_ids = [*evidence_ids, *(view_ids[v] for v in own_basis["frame_ids"])]
+        elif own_basis is not None:
+            rationale = (f"{TEMPLATE_PRIOR_BASIS}: the assembly family template's envelope and placement for this "
+                         "part, not observed in any frame.")
         for index, axis in enumerate(("x_m", "y_m", "z_m")):
             interval = ({"lower": float(hypothesis["depth_interval_m"][0]),
                          "upper": float(hypothesis["depth_interval_m"][1])}
@@ -427,9 +490,8 @@ def build_articulated_authoring_requests(stage_input: Mapping[str, Any], source_
             physical["dimensions"][axis] = {"value": dimensions[index], "basis": "estimated",
                 "interval": interval,
                 "rationale": ("Development-only cabinet-depth hypothesis; retained source depth disagreement recorded in assembly plan."
-                              if hypothesis is not None and index == 0 else
-                              "Part envelope derived from the estimated assembly envelope and construction assumptions."),
-                "uncertainty": uncertainty_note, "evidence_ids": ["retained_source_geometry"]}
+                              if hypothesis is not None and index == 0 else rationale),
+                "uncertainty": uncertainty_note, "evidence_ids": list(evidence_ids)}
         family_constraints = ({"bay_count": plan["bay_count"], "task_bay_index": plan["task_bay_index"]}
                               if family == DRAWER_FAMILY else
                               {"assembly_family": family, "hinge_edge": plan["hinge_edge"],
@@ -443,6 +505,7 @@ def build_articulated_authoring_requests(stage_input: Mapping[str, Any], source_
             **({"required_parts_on_this_part": [{key: row[key] for key in ("part_id", "label", "feature",
                                                                           "observed_frame_ids")} for row in carried]}
                if carried else {}),
+            **({"part_evidence": evidence} if evidence else {}),
             **({"part_features_part_frame_m": {k: v for k, v in spec["features"].items() if isinstance(v, Mapping)}}
                if family != DRAWER_FAMILY else {}),
             **({"interior_cavities_must_stay_hollow_and_open_front": cavities} if cavities else {}),
@@ -464,7 +527,7 @@ def build_articulated_authoring_requests(stage_input: Mapping[str, Any], source_
             "dimension_source_digest": source_record["digest"],
             "dimension_uncertainty_m": uncertainty, "coordinate_frame": "object_center_xy_bottom_z_z_up_meters",
             "maximum_export_error_m": configuration.get("maximum_export_error_m", 0.00001),
-            "source_frames": frames, "physical_review_input": physical,
+            "source_frames": part_frames, "physical_review_input": physical,
             "construction_constraints": canonical_json(constraints),
             "private_provider_processing_allowed": True, "provider_training_allowed": False,
             "public_redistribution_allowed": False, "expected_production_commit": stage_input["source_commit"],

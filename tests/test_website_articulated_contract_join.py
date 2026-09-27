@@ -155,13 +155,17 @@ def test_dishwasher_coverage_compiles_plans_and_briefs_end_to_end(tmp_path, monk
     assert set(requests) == {"body", "door", "upper_rack", "lower_rack"}
     rows = {row["sha256"]: row for row in configuration["reference_frames"]}
     frames = requests["door"].source_frames
-    assert [frame.sha256 for frame in frames] == [_sha256_file(path) for path in references]
+    # The same frames, those showing a door part first (per-part evidence), then whole-object context.
+    assert sorted(frame.sha256 for frame in frames) == sorted(_sha256_file(path) for path in references)
     assert len(frames) == len(configuration["reference_frames"]) == len(DISHWASHER_VIEWS)
+    door_parts = {row["part_id"] for row in plan["required_parts"] if row["link_id"] == "door"}
+    showing = [bool(door_parts & set(rows[frame.sha256]["visible_parts"])) for frame in frames]
+    assert showing == sorted(showing, reverse=True) and showing[0]
     for frame in frames:
         row = rows[frame.sha256]
         assert f"Original capture frame {row['frame_id']}" in frame.description
         assert row["reason"] in frame.description and row["transmission"]["source_sha256"] != frame.sha256
-    assert "the dishwasher door is open" in frames[1].description
+    assert any("the dishwasher door is open" in frame.description for frame in frames)
     brief = json.dumps([request.model_dump(mode="json") for request in requests.values()]).lower()
     assert "wood-grain" not in brief and "silver bar handles" not in brief
     bounds = driver._articulated_physics_bounds(configuration, plan)
