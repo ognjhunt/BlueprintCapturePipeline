@@ -160,32 +160,41 @@ _LEAF_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEX
 
 
 class _HeldChild:
-    """Directory descriptors held from a replay child down to the directories its names are in.
+    """Directory descriptors held from a replay child down to the directories an item's names are in.
 
     Apply rechecks, hashes and unlinks through them and never through a path. Each one was
     opened a single O_NOFOLLOW component at a time from the replay root, so a directory
     swapped for a symlink while apply runs cannot redirect a removal outside the replay.
+    Only the root and the child stay open for a whole row: ``item`` closes the directories
+    below the child once each item is done, so a row across any number of directories holds
+    no more descriptors than one item needs.
     """
 
     def __init__(self, base, name):
-        self._fds = []
         self._name = name
+        self._base = os.open(os.fspath(base), _DIRECTORY_FLAGS)
         try:
-            self._base = self._open(os.fspath(base), None)
-            self._held = {(): self._open(name, self._base)}
+            self._held = {(): os.open(name, _DIRECTORY_FLAGS, dir_fd=self._base)}
         except OSError:
-            self.close()
+            os.close(self._base)
             raise
-
-    def _open(self, name, parent):
-        fd = os.open(name, _DIRECTORY_FLAGS, dir_fd=parent)
-        self._fds.append(fd)
-        return fd
 
     def directory(self, parts):
         if parts not in self._held:
-            self._held[parts] = self._open(parts[-1], self.directory(parts[:-1]))
+            parent = self.directory(parts[:-1])
+            self._held[parts] = os.open(parts[-1], _DIRECTORY_FLAGS, dir_fd=parent)
         return self._held[parts]
+
+    def item(self, remove, *args):
+        """``remove(self, *args)`` for one item, then close every directory it opened below the child."""
+        try:
+            return remove(self, *args)
+        finally:
+            self._release()
+
+    def _release(self):
+        for parts in [parts for parts in self._held if parts]:
+            os.close(self._held.pop(parts))
 
     def in_place(self, parts):
         """Whether each held directory from the child down to ``parts`` is still the entry
@@ -201,8 +210,9 @@ class _HeldChild:
         return True
 
     def close(self):
-        while self._fds:
-            os.close(self._fds.pop())
+        self._release()
+        os.close(self._held.pop(()))
+        os.close(self._base)
 
 
 def _leaf(directory, name):
@@ -554,14 +564,14 @@ def apply_replay_cache_retention(
         try:
             for item in row["files"]:
                 path = str(root / item["relative_path"])
-                reason = _remove_file(held, item)
+                reason = held.item(_remove_file, item)
                 if reason:
                     skipped.append({"path": path, "reason": reason})
                 else:
                     removed.append({"path": path, "sha256": item["sha256"], "size_bytes": item["size_bytes"]})
             for copy, names in copies:
                 paths = [str(root / name) for name in names]
-                reason = _remove_store_copy(held, copy, names)
+                reason = held.item(_remove_store_copy, copy, names)
                 if reason:
                     skipped.append({"paths": paths, "reason": reason})
                 else:

@@ -680,3 +680,44 @@ def test_a_fifo_swapped_in_after_the_recheck_cannot_stall_apply(tmp_path, monkey
 
     assert (result["removed_bytes"], result["skipped"]) == (0, [{"path": str(data), "reason": "file_changed"}])
     assert stat.S_ISFIFO(data.lstat().st_mode) and moved.read_bytes() == b"x" * 100000
+
+
+@contextlib.contextmanager
+def _descriptor_limit(free):
+    """Lower this process's RLIMIT_NOFILE so that only ``free`` more descriptors can be opened."""
+    import resource
+
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    in_use = {int(name) for name in os.listdir("/dev/fd")}
+    limit = 0
+    while limit - sum(1 for fd in in_use if fd < limit) < free:
+        limit += 1
+    resource.setrlimit(resource.RLIMIT_NOFILE, (limit, hard))
+    try:
+        yield
+    finally:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
+
+
+def test_a_row_across_many_directories_stays_within_the_descriptor_limit(tmp_path):
+    """Code review of PR 10a: apply held every directory a row's names were in until the row
+    ended, so one wide row could run out of descriptors (EMFILE) and skip everything after.
+    Each item's directories are closed once it is done: with room for only 16 more descriptors,
+    a row across 65 directories is removed whole."""
+    root, child, data, proc = setup(tmp_path)
+    stamp = (child / "stage_replay_report.v1.json").stat().st_mtime_ns - 10**9
+    frames = []
+    for index in range(64):
+        frame = child / "renders" / f"view-{index:02d}" / "frame.ply"
+        frame.parent.mkdir(parents=True)
+        frame.write_bytes(b"r" * 65536)
+        os.utime(frame, ns=(stamp, stamp))
+        frames.append(frame)
+    p = plan(root, proc)
+    assert len(p["rows"][0]["files"]) == 65
+
+    with _descriptor_limit(free=16):
+        result = apply(p, proc)
+
+    assert (result["skipped"], result["removed_bytes"]) == ([], 100000 + 64 * 65536)
+    assert not data.exists() and not any(frame.exists() for frame in frames)
