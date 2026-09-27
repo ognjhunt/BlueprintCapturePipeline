@@ -185,7 +185,7 @@ def _integer(value: Any) -> int | None:
 
 
 def _reason_rows(source: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
-    """``{reason: {count, bytes}}``, largest first and bounded; ``bytes`` is null when unknown.
+    """``{reason: {count, bytes}}`` for at most the ``_MAX_REASONS`` largest; ``bytes`` is null when unknown.
 
     A phase that counts its reasons without sizing them (``retained_counts``)
     reports null bytes rather than zero.
