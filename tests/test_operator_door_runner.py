@@ -26,6 +26,8 @@ SHA = "0123456789abcdef0123456789abcdef01234567"
 
 
 class FakeRunner:
+    guard_root = Path("/var/lib/blueprint-operator-door/requests/holds")
+
     def __init__(self, active_deploy: str = "", systemd_run_rc: int = 0,
                  enabled_state: str = "enabled", guarded: bool = True) -> None:
         self.calls: list[list[str]] = []
@@ -43,7 +45,7 @@ class FakeRunner:
                                  self.enabled_state + "\n", "")
         if argv[:2] == ["systemctl", "cat"]:
             unit = argv[-1]
-            guard = f"ConditionPathExists=!/var/lib/blueprint-operator-door/requests/holds/{unit}.json"
+            guard = f"ConditionPathExists=!{self.guard_root / f'{unit}.json'}"
             return CommandResult(0, f"[Unit]\n{guard}\n" if self.guarded else "[Unit]\n", "")
         if argv[0] == "systemd-run":
             return CommandResult(self.systemd_run_rc, "", "Failed to start" if self.systemd_run_rc else "")
@@ -51,10 +53,12 @@ class FakeRunner:
 
 
 @pytest.fixture()
-def config(tmp_path: Path) -> DoorConfig:
+def config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> DoorConfig:
     for state in ("pending", "processing", "completed", "results"):
         (tmp_path / "requests" / state).mkdir(parents=True)
-    return DoorConfig(state_root=str(tmp_path), install_root="/opt/blueprint/operator-door")
+    config = DoorConfig(state_root=str(tmp_path), install_root="/opt/blueprint/operator-door")
+    monkeypatch.setattr(FakeRunner, "guard_root", Path(config.spool_root) / "holds")
+    return config
 
 
 def _result(config: DoorConfig, request_id: str) -> dict:
@@ -172,6 +176,15 @@ def test_hold_refuses_a_host_unit_without_a_durable_guard(config: DoorConfig) ->
     assert _result(config, request_id)["code"] == "hold_unit_guard_missing"
     assert runner.calls == [["systemctl", "cat", "--", "blueprint-extra-job.timer"]]
     assert not (Path(config.spool_root) / "holds" / "blueprint-extra-job.timer.json").exists()
+
+
+def test_hold_refuses_a_guard_for_a_different_state_root(config: DoorConfig) -> None:
+    request_id = _hold(config)
+    runner = FakeRunner()
+    runner.guard_root = Path("/var/lib/blueprint-operator-door/requests/holds")
+    process_spool(config, runner=runner)
+    assert _result(config, request_id)["code"] == "hold_unit_guard_missing"
+    assert runner.calls == [["systemctl", "cat", "--", "blueprint-scene-progression.timer"]]
 
 
 def test_hold_refuses_a_unit_whose_drop_in_resets_its_guard(config: DoorConfig) -> None:

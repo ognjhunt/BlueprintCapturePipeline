@@ -183,13 +183,13 @@ def _active_deploy_unit(runner: CommandRunner) -> str | None:
     return None
 
 
-def _has_hold_guard(runner: CommandRunner, unit: str) -> bool:
+def _has_hold_guard(runner: CommandRunner, unit: str, root: Path) -> bool:
     """Only hold a loaded unit whose effective source includes our crash guard."""
 
     result = runner.run(["systemctl", "cat", "--", unit], timeout=30)
     if result.returncode != 0:
         return False
-    expected = f"!/var/lib/blueprint-operator-door/requests/holds/{unit}.json"
+    expected = f"!{root / f'{unit}.json'}"
     section = ""
     guarded = False
     for raw in result.stdout.splitlines():
@@ -218,7 +218,7 @@ def _act_hold(
                         and current["expires_at_epoch"] > time.time())
         if prior_active and current["owner"] != request["owner"]:
             return {"status": "refused", "code": f"hold_active:{current['owner']}"}
-        if not _has_hold_guard(runner, unit):
+        if not _has_hold_guard(runner, unit, root):
             return {"status": "refused", "code": "hold_unit_guard_missing"}
         if current is not None and current["status"] == "active" and isinstance(current.get("enabled_before"), bool):
             enabled_before = current["enabled_before"]
