@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import contextlib
 import errno
 import hashlib
 import json
 import os
+import signal
+import stat
 import time
 from pathlib import Path
 
@@ -635,3 +638,45 @@ def test_the_standalone_command_takes_store_copies_only_when_asked(tmp_path, mon
     unit = (Path(__file__).resolve().parents[1] / "deploy/systemd/blueprint-completed-replay-cache-gc.service").read_text(
         encoding="utf-8")
     assert "--apply" in unit and "--reclaim-store-copies" not in unit, "the store-copy rules stay out of the unit"
+
+
+class _Stalled(Exception):
+    """Not an OSError, so apply cannot record it as a recheck failure and carry on."""
+
+
+@contextlib.contextmanager
+def _fails_instead_of_blocking(seconds):
+    """Turn an apply that blocks into a failure after ``seconds``, instead of a hung test."""
+
+    def alarm(_signum, _frame):
+        raise _Stalled(f"apply blocked for {seconds}s")
+
+    previous = signal.signal(signal.SIGALRM, alarm)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+
+
+def test_a_fifo_swapped_in_after_the_recheck_cannot_stall_apply(tmp_path, monkeypatch):
+    """Code review of PR 10a: a leaf was opened to be hashed without O_NONBLOCK, so a FIFO put in
+    a planned file's place after its S_ISREG recheck held the tick in open() until a writer came.
+    The open no longer waits, and the identity check refuses what it opened."""
+    root, child, data, proc = setup(tmp_path)
+    p = plan(root, proc)
+    moved = data.with_name("working-moved.ply")
+    real = gc._held_sha
+
+    def racing(directory, name, expected):
+        os.rename(data, moved)
+        os.mkfifo(data)
+        return real(directory, name, expected)
+
+    monkeypatch.setattr(gc, "_held_sha", racing)
+    with _fails_instead_of_blocking(5):
+        result = apply(p, proc)
+
+    assert (result["removed_bytes"], result["skipped"]) == (0, [{"path": str(data), "reason": "file_changed"}])
+    assert stat.S_ISFIFO(data.lstat().st_mode) and moved.read_bytes() == b"x" * 100000

@@ -154,7 +154,9 @@ def _single_files(child, report_mtime_ns, store_inodes):
 
 
 _DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
-_LEAF_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+# O_NONBLOCK: a FIFO swapped in after a leaf's recheck opens without waiting for a writer, and
+# the identity check then refuses it. It changes nothing for a regular file.
+_LEAF_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
 
 
 class _HeldChild:
@@ -217,7 +219,7 @@ def _held_sha(directory, name, expected):
     fd = os.open(name, _LEAF_FLAGS, dir_fd=directory)
     try:
         opened = os.fstat(fd)
-        if (opened.st_dev, opened.st_ino) != (expected.st_dev, expected.st_ino):
+        if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (expected.st_dev, expected.st_ino):
             return None
         with open(fd, "rb", closefd=False) as stream:
             return "sha256:" + hashlib.file_digest(stream, "sha256").hexdigest()
