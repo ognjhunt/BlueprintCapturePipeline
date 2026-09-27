@@ -1000,3 +1000,85 @@ def test_residue_mirrors_the_recovery_scan_globs() -> None:
     for directory in residue.OWNERSHIP_RECORD_DIRECTORIES:
         assert f'glob("**/{directory}/*.json")' in source
     assert residue.OWNERSHIP_RECORD_DIRECTORIES == frozenset({"pending_teardowns", "pending-teardowns"})
+
+
+def _dispatch_queue(root: Path) -> Path:
+    for state in ("pending", "processing", "completed", "blocked"):
+        (root / state).mkdir(parents=True, exist_ok=True)
+    return root
+
+
+@pytest.mark.parametrize("state", ["pending", "processing"])
+def test_a_run_a_live_dispatch_row_names_stays_whole(tmp_path, state) -> None:
+    """In queue mode the dispatcher runs a pending or processing envelope whether or not its run
+    is sealed, and so reopens that run's authority, bundle and allocator records. A run such a
+    row names stays whole until the row completes."""
+
+    f = _sealed_run(tmp_path / "canaries")
+    queue = _dispatch_queue(tmp_path / "dispatches")
+    row = queue / state / "envelope-1.json"
+    row.write_text(json.dumps({"activation_id": f.run.name}), encoding="utf-8")
+    before = _local_files(f.run)
+
+    kept = _offload(f, queue_roots=[queue])
+
+    assert (kept["status"], kept["retained_reason"]) == ("retained", "dispatch_row_pending")
+    assert _local_files(f.run) == before and not f.pointer.exists() and f.client.upload_count == 1
+    os.replace(row, queue / "completed" / row.name)
+    assert _offload(f, queue_roots=[queue])["status"] == "applied"
+
+
+@pytest.mark.parametrize("damage", ["linked_row", "oversized_row", "linked_state"])
+def test_a_dispatch_row_that_cannot_be_read_keeps_every_run(tmp_path, monkeypatch, damage) -> None:
+    """A row that cannot be read might name any run, so none moves."""
+
+    f = _sealed_run(tmp_path / "canaries")
+    queue = _dispatch_queue(tmp_path / "dispatches")
+    (tmp_path / "elsewhere").mkdir()
+    (tmp_path / "elsewhere" / "row.json").write_text("{}", encoding="utf-8")
+    if damage == "linked_row":
+        (queue / "pending" / "linked.json").symlink_to(tmp_path / "elsewhere" / "row.json")
+    elif damage == "oversized_row":
+        monkeypatch.setattr(residue, "MAX_QUEUE_MESSAGE_BYTES", 16)
+        (queue / "processing" / "large.json").write_text(json.dumps({"activation_id": "another-run"}), encoding="utf-8")
+    else:
+        (queue / "processing").rmdir()
+        (queue / "processing").symlink_to(tmp_path / "elsewhere", target_is_directory=True)
+    before = _local_files(f.run)
+
+    result = _offload(f, queue_roots=[queue])
+
+    assert (result["status"], result["retained_reason"]) == ("retained", "dispatch_queue_unreadable")
+    assert _local_files(f.run) == before and not f.pointer.exists()
+
+
+def test_a_dispatch_row_written_during_publication_keeps_the_run(tmp_path) -> None:
+    f = _sealed_run(tmp_path / "canaries")
+    queue = _dispatch_queue(tmp_path / "dispatches")
+
+    def enqueuing(**kwargs):
+        reference = f.publisher(**kwargs)
+        (queue / "pending" / "late.json").write_text(json.dumps({"activation_id": f.run.name}), encoding="utf-8")
+        return reference
+
+    result = _offload(f, publisher=enqueuing, queue_roots=[queue])
+
+    assert (result["status"], result["retained_reason"]) == ("retained", "dispatch_row_pending")
+    assert not f.pointer.exists() and set(RESIDUE) <= set(_local_files(f.run))
+
+
+def test_the_gc_reads_its_queues_for_rows_that_name_a_run(tmp_path) -> None:
+    """The tick hands the residue its queue roots. A linked row is invisible to the queue
+    protection, which skips what it cannot read; the residue's strict read keeps the run."""
+
+    f = _sealed_run(tmp_path / "canaries")
+    queue = _dispatch_queue(tmp_path / "dispatches")
+    (tmp_path / "elsewhere.json").write_text("{}", encoding="utf-8")
+    (queue / "pending" / "linked.json").symlink_to(tmp_path / "elsewhere.json")
+
+    report = _tick(f, tmp_path / "pins", queue, apply=True, ack=RUN_ACK, offload_enabled=True,
+                   result_residue_offload_enabled=True)
+
+    assert [row["retained_reason"] for row in report["result_residue_offload"]["runs"]] == [
+        "dispatch_queue_unreadable"]
+    assert not f.pointer.exists() and set(RESIDUE) <= set(_local_files(f.run))

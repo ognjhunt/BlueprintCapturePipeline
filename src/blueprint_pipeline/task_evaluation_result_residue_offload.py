@@ -15,7 +15,8 @@ no failures), what remains of those runs is this residue.
 **When.** ``offload_result_residue`` acts only on a run that is sealed
 (``_sealed_registry``: completed_unqualified, blocked or cancelled, with sealed
 closure receipts) by the canary dispatcher (a digest-bound ``dispatch_receipt.json``
-for the registry's run), whose registry is older than the hot window, whose bulk
+for the registry's run) that no pending or processing queue row names, whose
+registry is older than the hot window, whose bulk
 artifacts are all remote (a dry run of ``offload_result_artifacts`` has no
 candidates), that nothing protects, that has no residue pointer yet, and whose
 root is a real directory. Anything else is a retained row with a typed
@@ -66,9 +67,16 @@ kept directory or file on another filesystem, a text document over
   can pass through documents outside the run. The reference closure below
   reads only documents inside the run, so an operator run, which has no
   dispatch receipt, stays whole.
-* After the seal the canary dispatcher reopens only ``dispatch_receipt.json``;
-  its resume paths (allocator invocations, session authority, pending and
-  progress records, ``status_events.jsonl``) run only before it exists.
+* The canary dispatcher reopens ``dispatch_receipt.json`` after the seal, and
+  its blocked/stranded rescan and resume paths (allocator invocations, session
+  authority, pending and progress records, ``status_events.jsonl``) run only
+  while the receipt is missing. In queue mode, though, it runs a pending or
+  processing envelope whether or not the run is sealed: it reopens the run's
+  authority and records and rebuilds the bundle when its receipt is missing
+  (``allocator_result.json``, kept by name, stops any new spend). So a run that
+  a pending or processing row of a configured queue names stays whole
+  (``dispatch_row_pending``), and a row that cannot be read keeps every run
+  (``dispatch_queue_unreadable``).
 * Official-billing re-validation reopens ``allocator_result.json`` (or
   ``allocator-result.json``) and every ``terminal_execution_evidence`` path of
   ``official_billing_reconciliation.json``; same-goal spend ledgers
@@ -140,6 +148,7 @@ from . import completed_replay_cache_retention as held_files
 from . import control_plane_evidence_offload as evidence
 from .control_plane_replay_cache_gc import _truthy_setting
 from .control_plane_retained_receipt import RETAINED_RECEIPTS
+from .control_plane_storage_references import MAX_QUEUE_MESSAGE_BYTES, QUEUE_STATES
 from .decision_evidence_contracts import canonical_digest
 from .task_evaluation_result_artifact_store import (
     _remote_path,
@@ -576,6 +585,47 @@ def _dispatch_receipt_reason(root: Path, registry: Mapping[str, Any]) -> str | N
     return None
 
 
+def _queue_row_reason(run_name: str, queue_roots: Sequence[str | Path]) -> str | None:
+    """``dispatch_row_pending`` when a pending or processing queue row names the run, else None.
+
+    In queue mode the canary dispatcher runs a pending or processing envelope
+    whether or not its run is sealed, reopening the run's authority, bundle and
+    allocator records, so such a row keeps the whole run. The read is strict: a
+    row or state directory that is a link, not a regular file or directory, too
+    large or unreadable might name any run (``dispatch_queue_unreadable``).
+    """
+
+    needle = run_name.encode("utf-8")
+    for raw_root in queue_roots:
+        root = Path(raw_root).expanduser()
+        for state in QUEUE_STATES:
+            directory = root / state
+            if directory.is_symlink() or (directory.exists() and not directory.is_dir()):
+                return "dispatch_queue_unreadable"
+            if not directory.is_dir():
+                continue
+            try:
+                names = sorted(entry.name for entry in os.scandir(directory) if entry.name.endswith(".json"))
+            except OSError:
+                return "dispatch_queue_unreadable"
+            for name in names:
+                try:
+                    descriptor = os.open(directory / name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+                except FileNotFoundError:
+                    continue  # consumed since it was listed
+                except OSError:
+                    return "dispatch_queue_unreadable"
+                with os.fdopen(descriptor, "rb") as stream:
+                    if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                        return "dispatch_queue_unreadable"
+                    raw = stream.read(MAX_QUEUE_MESSAGE_BYTES + 1)
+                if len(raw) > MAX_QUEUE_MESSAGE_BYTES:
+                    return "dispatch_queue_unreadable"
+                if needle in raw:
+                    return "dispatch_row_pending"
+    return None
+
+
 def _bulk_pending(root: Path, now: Callable[[], float]) -> tuple[str | None, Mapping[str, Any] | None]:
     """Why the run's registered bulk artifacts are not all remote yet, or None when they are."""
 
@@ -783,6 +833,7 @@ def offload_result_residue(
     protection_checker: Callable[[Path], bool | str | None] | None = None,
     publisher: Callable[..., Mapping[str, Any]] | None = None,
     stream_publisher: Callable[..., Mapping[str, Any]] | None = None,
+    queue_roots: Sequence[str | Path] = (),
     now: Callable[[], float] = time.time,
 ) -> dict[str, Any]:
     """Plan, and with ``apply`` offload, one sealed result run's residue; see the module docstring.
@@ -811,7 +862,7 @@ def offload_result_residue(
     except Exception as exc:  # noqa: BLE001 - an unsealed or unreadable run keeps its residue
         return _retained(row, "registry_unsealed", failure=offload_failure(exc, "registry"))
     row["registry_digest"] = registry["registry_digest"]
-    receipt_reason = _dispatch_receipt_reason(root, registry)
+    receipt_reason = _dispatch_receipt_reason(root, registry) or _queue_row_reason(root.name, queue_roots)
     if receipt_reason:
         return _retained(row, receipt_reason)
     with ExitStack() as stack:
@@ -835,11 +886,11 @@ def offload_result_residue(
         if not apply or not members:
             return _finished(row)
         return _apply(row, root, pointer, registry, registry_path, registry_bytes, members,
-                      protection_checker, publisher, stream_publisher, now)
+                      protection_checker, publisher, stream_publisher, now, queue_roots)
 
 
 def _apply(row, root, pointer, registry, registry_path, registry_bytes, members, protection_checker,
-           publisher, stream_publisher, now) -> dict[str, Any]:
+           publisher, stream_publisher, now, queue_roots) -> dict[str, Any]:
     identity = os.lstat(root)
     names = [name for group in members for name in group["relative_paths"]]
     modes = {name: group["mode"] for group in members for name in group["relative_paths"]}
@@ -849,6 +900,9 @@ def _apply(row, root, pointer, registry, registry_path, registry_bytes, members,
         return _retained(row, "publication_failed", failure=offload_failure(exc, "publish"))
     try:
         row["archive"] = {"uri": reference["uri"], "sha256": digest, "size_bytes": size}
+        queued = _queue_row_reason(root.name, queue_roots)
+        if queued:
+            return _retained(row, queued)
         current = os.lstat(root)
         if (
             registry_path.read_bytes() != registry_bytes
@@ -1096,6 +1150,7 @@ def residue_row(
     protection_checker: Callable[[Path], bool | str | None] | None,
     publisher: Callable[..., Mapping[str, Any]] | None,
     now: Callable[[], float],
+    queue_roots: Sequence[str | Path] = (),
 ) -> dict[str, Any]:
     """The storage GC's residue row for one registry run, given its per-artifact offload result.
 
@@ -1120,7 +1175,7 @@ def residue_row(
     try:
         return offload_result_residue(
             run_root=run_root, apply=apply, ack=APPLY_ACK if apply else "", hot_window_seconds=hot_window_seconds,
-            protection_checker=protection_checker, publisher=publisher, now=now)
+            protection_checker=protection_checker, publisher=publisher, now=now, queue_roots=queue_roots)
     except Exception as exc:  # noqa: BLE001 - one run never costs the others
         return {"status": "error", "run": name, **offload_failure(exc, "residue")}
 

@@ -1412,7 +1412,8 @@ def run_storage_gc(
                     report["result_artifact_offload"].append(result)
                     residue_rows.append(residue_row(
                         registry_path.parents[2], result, apply=residue_applies, hot_window_seconds=hot_window_seconds,
-                        protection_checker=protection_reason, publisher=publisher, now=clock))
+                        protection_checker=protection_reason, publisher=publisher, now=clock,
+                        queue_roots=queue_roots))
             report["result_residue_offload"] = residue_phase(
                 residue_rows, enabled=result_residue_offload_enabled, applying=residue_applies,
                 alert=result_residue_offload_alert)
