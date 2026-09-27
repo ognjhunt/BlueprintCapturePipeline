@@ -232,10 +232,14 @@ def test_storage_gc_writes_a_door_readable_summary(tmp_path, monkeypatch) -> Non
     assert (summary["phase_errors"], summary["skipped_roots"]) == ([], [str(absent_scratch)])
     sizes = {run.name: sum(p.stat().st_size for p in run.rglob("*") if p.is_file())
              for run in (queued, hot, registry_run)}
+    walk_seconds = {phase: summary["phases"][phase].pop("walk_seconds")
+                    for phase in ("derived_directories", "evidence_offload")}
+    assert all(isinstance(seconds, float) and seconds >= 0 for seconds in walk_seconds.values())
     assert summary["phases"]["derived_directories"] == {
         "status": "applied", "candidate_bytes": 100, "removed_or_offloaded_bytes": 100,
         "retained_by_reason": {"pinned": {"count": 1, "bytes": 300, "by_kind": {
             "activation": {"count": 1, "bytes": 300}}}},
+        "walked_file_count": 2,
     }
     assert summary["phases"]["evidence_offload"] == {
         "status": "dry_run", "candidate_bytes": 1002, "removed_or_offloaded_bytes": None,
@@ -244,6 +248,8 @@ def test_storage_gc_writes_a_door_readable_summary(tmp_path, monkeypatch) -> Non
             "hot": {"count": 1, "bytes": sizes[hot.name]},
             "result_registry": {"count": 1, "bytes": sizes[registry_run.name]},
         },
+        # receipt and frames in each run, and the registry in the registry run
+        "walked_file_count": 9,
     }
     assert summary["phases"]["result_artifact_offload"] == {
         "run_count": 1, "candidate_bytes": None, "removed_or_offloaded_bytes": 0,
@@ -268,7 +274,7 @@ def test_storage_gc_writes_a_door_readable_summary(tmp_path, monkeypatch) -> Non
 
     assert scan_bytes(published.read_bytes()) is None
     contents, _ = FileView(DoorConfig(read_roots=(str(tmp_path),), hidden_paths=())).read_range(str(published))
-    assert json.loads(contents) == summary
+    assert json.loads(contents) == json.loads(published.read_text(encoding="utf-8"))
     assert "operator_door" in sys.modules
 
 

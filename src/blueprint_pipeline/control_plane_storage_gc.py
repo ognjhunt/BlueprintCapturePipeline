@@ -74,8 +74,8 @@ from .control_plane_replay_cache_gc import (
     REPLAY_PARENT_ROOTS_ENV, _truthy_setting, reclaim_replay_caches, replay_cache_retention_setting,
 )
 from .control_plane_storage_gc_reasons import (
-    SUMMARY_FILENAME, build_storage_gc_summary, count_retained, entry_bytes, evidence_protection_reason,
-    live_pin_kinds, walked_bytes,
+    SUMMARY_FILENAME, WalkMeter, build_storage_gc_summary, count_retained, entry_bytes,
+    evidence_protection_reason, live_pin_kinds, walked_bytes,
 )
 from .control_plane_storage_pins import PINS_ROOT_ENV, live_pinned_paths
 # Kept under their old names for every existing caller.
@@ -320,9 +320,11 @@ def apply_gc_manifest(
     return result
 
 
-def _tree_snapshot(directory: Path) -> tuple[float, int]:
+def _tree_census(directory: Path) -> tuple[float, int, int]:
+    """The newest mtime, the bytes and the number of files under ``directory``, never through a link."""
+
     latest = directory.lstat().st_mtime
-    size = 0
+    size = count = 0
     for root, directories, files in os.walk(directory):
         directories[:] = [name for name in directories if not (Path(root) / name).is_symlink()]
         for name in files:
@@ -332,6 +334,12 @@ def _tree_snapshot(directory: Path) -> tuple[float, int]:
                 continue
             latest = max(latest, metadata.st_mtime)
             size += metadata.st_size
+            count += 1
+    return latest, size, count
+
+
+def _tree_snapshot(directory: Path) -> tuple[float, int]:
+    latest, size, _files = _tree_census(directory)
     return latest, size
 
 
@@ -355,7 +363,8 @@ def build_derived_directory_manifest(
     """List derived directories no pin, queue message, or recent write still needs.
 
     ``retained_by_reason`` gives the count and bytes behind each ``retained_counts``
-    reason, and for ``pinned`` the kinds of the pins that hold them (``by_kind``).
+    reason, and for ``pinned`` the kinds of the pins that hold them (``by_kind``);
+    ``walked_file_count`` and ``walk_seconds`` say what walking the trees cost.
     """
 
     if (
@@ -372,6 +381,7 @@ def build_derived_directory_manifest(
     retained = {"pinned": 0, "queue_referenced": 0, "young": 0, "unsafe": 0}
     by_reason: dict[str, dict[str, Any]] = {}
     pin_kinds: dict[str, str] | None = None
+    walk = WalkMeter(_tree_census)
     roots: list[str] = []
     for raw_root in derived_roots:
         root = Path(raw_root).expanduser()
@@ -388,13 +398,13 @@ def build_derived_directory_manifest(
                 retained["pinned"] += 1
                 pin_kinds = live_pin_kinds(pins_root, now=lambda: observed_at) if pin_kinds is None else pin_kinds
                 kind = pin_kinds.get(str(child)) or pin_kinds.get(str(child.resolve())) or "unknown"
-                count_retained(by_reason, "pinned", walked_bytes(_tree_snapshot, child), kind=kind)
+                count_retained(by_reason, "pinned", walked_bytes(walk, child), kind=kind)
                 continue
             if child.name in queue_text:
                 retained["queue_referenced"] += 1
-                count_retained(by_reason, "queue_referenced", walked_bytes(_tree_snapshot, child))
+                count_retained(by_reason, "queue_referenced", walked_bytes(walk, child))
                 continue
-            latest, size = _tree_snapshot(child)
+            latest, size, _files = walk(child)
             if observed_at - latest < minimum_age_seconds:
                 retained["young"] += 1
                 count_retained(by_reason, "young", size)
@@ -417,6 +427,7 @@ def build_derived_directory_manifest(
         "candidates": candidates,
         "retained_counts": retained,
         "retained_by_reason": by_reason,
+        **walk.fields(),
         "evidence_roots_scanned": False,
         "manifest_digest": "",
     }
@@ -480,10 +491,12 @@ def apply_derived_directory_manifest(
         "schema_version": DERIVED_RECEIPT_SCHEMA_VERSION,
         "status": "applied",
         "source_manifest_digest": manifest["manifest_digest"],
-        # What the verified manifest planned and why it kept the rest.
+        # What the verified manifest planned, why it kept the rest, and what its walk cost.
         "candidate_count": manifest.get("candidate_count"),
         "candidate_bytes": manifest.get("candidate_bytes"),
         "retained_by_reason": manifest.get("retained_by_reason"),
+        "walked_file_count": manifest.get("walked_file_count"),
+        "walk_seconds": manifest.get("walk_seconds"),
         "removed_count": len(removed),
         "removed_bytes": sum(row["size_bytes"] for row in removed),
         "removed": removed,

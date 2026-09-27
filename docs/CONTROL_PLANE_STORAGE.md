@@ -568,7 +568,9 @@ enabled reclaimed nothing, and its report could not say why. The derived and
 evidence manifests carry `retained_by_reason`, `{reason: {count, bytes}}` in
 logical bytes (a hardlinked file counts once per name), and their applied
 receipts copy it with the manifest's `candidate_count` and `candidate_bytes`.
-`retained_counts` is unchanged.
+`retained_counts` is unchanged. Sizing every kept tree costs a metadata walk,
+so each manifest (and its receipt) also records `walked_file_count` and
+`walk_seconds`, and the summary carries them per phase. Nothing caps the walk.
 
 - Derived directories: `pinned` (with `by_kind`, for example `activation` or
   `activation+preparation`), `queue_referenced`, `young` and `unsafe`.

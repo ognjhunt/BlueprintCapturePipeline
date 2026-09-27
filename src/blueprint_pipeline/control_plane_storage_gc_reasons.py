@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from collections.abc import Callable, Mapping, MutableMapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -108,6 +109,31 @@ def count_retained(
         detail = row.setdefault("by_kind", {}).setdefault(kind, {"count": 0, "bytes": 0})
         detail["count"] += 1
         detail["bytes"] += int(size_bytes)
+
+
+class WalkMeter:
+    """A manifest's tree walk, timed and counted, so the cost of sizing what it keeps is on the record.
+
+    It wraps a walk shaped like ``_tree_snapshot`` that returns ``(latest, bytes,
+    files)``; ``fields()`` is ``walked_file_count`` and ``walk_seconds``.
+    """
+
+    def __init__(self, walk: Callable[[Path], tuple[float, int, int]]):
+        self._walk = walk
+        self.files = 0
+        self.seconds = 0.0
+
+    def __call__(self, directory: Path) -> tuple[float, int, int]:
+        started = time.monotonic()
+        try:
+            result = self._walk(directory)
+        finally:
+            self.seconds += time.monotonic() - started
+        self.files += int(result[2])
+        return result
+
+    def fields(self) -> dict[str, Any]:
+        return {"walked_file_count": self.files, "walk_seconds": round(self.seconds, 3)}
 
 
 def walked_bytes(walk: Callable[[Path], tuple[Any, ...]], directory: Path) -> int:
@@ -220,6 +246,12 @@ def _phase_summary(entry: Mapping[str, Any]) -> dict[str, Any]:
     }
     if "estimated_candidate_bytes" in entry:
         summary["estimated_candidate_bytes"] = _integer(entry["estimated_candidate_bytes"])
+    # What sizing the phase's retained trees cost, where it measured it.
+    if "walked_file_count" in entry:
+        summary["walked_file_count"] = _integer(entry["walked_file_count"])
+    if "walk_seconds" in entry:
+        seconds = entry["walk_seconds"]
+        summary["walk_seconds"] = seconds if isinstance(seconds, (int, float)) and not isinstance(seconds, bool) else None
     if entry.get("status") == "error":
         summary["error_type"] = _typed(entry.get("error"), "Exception", _TYPE_NAME)
     return summary
@@ -342,5 +374,6 @@ __all__ = [
     "entry_bytes",
     "evidence_protection_reason",
     "live_pin_kinds",
+    "WalkMeter",
     "walked_bytes",
 ]

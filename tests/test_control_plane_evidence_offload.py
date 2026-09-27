@@ -213,6 +213,10 @@ def test_evidence_manifest_names_each_retention_reason_with_bytes(tmp_path: Path
     assert manifest["retained_counts"] == {"active_or_unsealed": 8, "hot": 1, "already_offloaded": 1, "unsafe": 2}
     # Every directory is walked exactly once, and a link or stray file never is.
     assert sorted(walked) == sorted(runs)
+    # What that sizing cost is on the record.
+    assert manifest["walked_file_count"] == sum(
+        1 for directory in runs.values() for path in directory.rglob("*") if path.is_file())
+    assert isinstance(manifest["walk_seconds"], float) and manifest["walk_seconds"] >= 0
 
     # Without an abandonment window an unsealed run is kept for that reason, and a
     # checker that returns True still protects, counted as ``protected``.

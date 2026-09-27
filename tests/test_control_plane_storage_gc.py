@@ -262,8 +262,8 @@ def test_derived_manifest_names_each_retention_reason_with_bytes(tmp_path, monke
     (queue / "pending").mkdir(parents=True)
     (queue / "pending" / "row.json").write_text(json.dumps({"activation_id": "act-queued"}), encoding="utf-8")
     walked: list[str] = []
-    real_snapshot = gc_module._tree_snapshot
-    monkeypatch.setattr(gc_module, "_tree_snapshot", lambda path: walked.append(path.name) or real_snapshot(path))
+    real_census = gc_module._tree_census
+    monkeypatch.setattr(gc_module, "_tree_census", lambda path: walked.append(path.name) or real_census(path))
 
     manifest = build_derived_directory_manifest(
         derived_roots=[root], pins_root=pins, queue_roots=[queue], minimum_age_seconds=day,
@@ -284,6 +284,8 @@ def test_derived_manifest_names_each_retention_reason_with_bytes(tmp_path, monke
     assert manifest["candidate_bytes"] == 100
     # Each directory is walked once; a link or stray file never is.
     assert sorted(walked) == ["act-idle", "act-pinned", "act-pinned-twice", "act-queued", "act-young"]
+    assert manifest["walked_file_count"] == 5
+    assert isinstance(manifest["walk_seconds"], float) and manifest["walk_seconds"] >= 0
 
 
 def test_apply_skips_a_directory_pinned_or_queued_after_the_dry_run(tmp_path) -> None:
@@ -498,6 +500,9 @@ def test_applied_receipts_carry_retained_reasons(tmp_path) -> None:
         "protected_queue": {"count": 1, "bytes": 3002},
     }
     assert (evidence_receipt["candidate_count"], evidence_receipt["candidate_bytes"]) == (1, 1002)
+    assert derived_receipt["walked_file_count"] == planned["derived_directories"]["walked_file_count"] == 3
+    assert evidence_receipt["walked_file_count"] == planned["evidence_offload"]["walked_file_count"] == 6
+    assert all(isinstance(receipt["walk_seconds"], float) for receipt in (derived_receipt, evidence_receipt))
     # The receipts stay digest-bound with the new fields inside.
     for receipt in (derived_receipt, evidence_receipt):
         assert receipt["result_digest"] == gc_module.canonical_digest(receipt, digest_field="result_digest")
