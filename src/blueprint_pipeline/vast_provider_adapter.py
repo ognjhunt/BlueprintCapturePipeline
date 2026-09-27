@@ -176,7 +176,11 @@ from .vast_scene_configuration_warm_readiness import (
     scene_configuration_warm_validation_fields,
 )
 from .vast_provider_transfer_upload import provider_output_upload_shell_fragment
-from .vast_provider_output_recovery import MAX_RECOVERY_SECONDS, recover_provider_output_before_teardown
+from .vast_provider_output_recovery import (
+    MAX_G1_RECOVERY_SECONDS,
+    MAX_RECOVERY_SECONDS,
+    recover_provider_output_before_teardown,
+)
 from .vast_policy_canary_remote_progress import probe_policy_canary_remote_progress
 from .vast_args_payload_transport import args_mode_command, onstart_mode_script
 from .vast_provider_bundle_digest_guard import provider_bundle_digest_guard
@@ -9452,6 +9456,11 @@ def run_vast_provider_adapter(
                             "stage_checkpoint": prefer_checkpoint}
                            if recover_unmarked_scene_output else {}),
                         minimum_free_bytes=provider_output_minimum_free_bytes,
+                        timeout_seconds=(
+                            MAX_G1_RECOVERY_SECONDS
+                            if provider_bundle_kind == "native_g1_development_campaign"
+                            else MAX_RECOVERY_SECONDS
+                        ),
                     )
                     remaining_recovery = MAX_RECOVERY_SECONDS - (time.monotonic() - recovery_started)
                     if (recovery.get("status") != "completed" and recover_unmarked_scene_output
