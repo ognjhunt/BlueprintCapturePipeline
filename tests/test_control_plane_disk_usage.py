@@ -112,7 +112,10 @@ def test_orphan_scratch_summary_counts_unique_bytes_and_newest_mtime(tmp_path):
                           statvfs=_statvfs(), mountinfo=str(tmp_path / "no-mountinfo"))
     [row] = survey["orphan_scratch_roots"]
     assert row["root"] == "/mnt/blueprint-work/loose-run"
-    assert row["allocated_bytes"] < 9000
+    assert row["allocated_bytes"] == sum(
+        _allocated(path) for path in (orphan, data, orphan / "outside-link")
+    )
+    assert survey["hardlinks"]["duplicate_names_skipped"] == 1
     assert row["newest_mtime_epoch"] >= 1234
     assert survey["orphan_scratch_bytes"] == row["allocated_bytes"]
     assert survey["orphan_scratch_count"] == 1
