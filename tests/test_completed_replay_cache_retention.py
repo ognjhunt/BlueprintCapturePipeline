@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
 import time
+from pathlib import Path
 
 import pytest
 
@@ -194,6 +196,39 @@ def test_linked_scratch_pairs_inside_the_replay_are_reclaimed(tmp_path):
                                   "sha256": group["sha256"], "size_bytes": group["size_bytes"]}]
     assert not copy.exists() and not materialized.exists()
     assert (child / "stage_replay_report.v1.json").exists()
+
+
+def test_an_interrupted_copy_removal_is_finished_by_the_next_plan(tmp_path, monkeypatch):
+    """The store name is what makes a group a store copy, so it goes last: a removal cut
+    short leaves a group the next plan still recognises, never an unclaimable orphan."""
+    root, child, data, proc = setup(tmp_path)
+    data.unlink()
+    copy = _store_copy(child, b"a copy with two materialized names")
+    size = copy.stat().st_size
+    for preparation in ("adp-preparation", "scene-preparation"):  # either side of content-addressed
+        (child / "prepared-references" / preparation).mkdir()
+        os.link(copy, child / "prepared-references" / preparation / copy.name)
+    real_unlink = Path.unlink
+    calls: list[Path] = []
+
+    def unlink(self, *args, **kwargs):
+        calls.append(self)
+        if len(calls) == 3:  # the last of the three names
+            raise OSError(errno.EIO, "interrupted")
+        return real_unlink(self, *args, **kwargs)
+
+    first = plan(root, proc)
+    monkeypatch.setattr(Path, "unlink", unlink)
+    with pytest.raises(OSError):
+        gc.apply_replay_cache_retention(first, ack=gc.ACK, process_root=proc)
+    monkeypatch.setattr(Path, "unlink", real_unlink)
+
+    assert copy.exists() and copy.stat().st_nlink == 1
+    again = plan(root, proc)
+    [group] = again["rows"][0]["store_copies"]
+    assert (group["relative_paths"], group["nlink"]) == ([str(copy.relative_to(child))], 1)
+    assert gc.apply_replay_cache_retention(again, ack=gc.ACK, process_root=proc)["removed_bytes"] == size
+    assert not copy.exists()
 
 
 def test_scratch_inode_linked_outside_the_replay_is_kept(tmp_path):

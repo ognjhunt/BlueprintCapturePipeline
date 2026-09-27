@@ -379,7 +379,9 @@ def apply_replay_cache_retention(plan, *, ack, process_root=Path("/proc")):
             if not _copy_unchanged(copy, names, paths, root):
                 skipped.append({"paths": [str(path) for path in paths], "reason": "copy_changed"})
                 continue
-            for path in paths:
+            # The store name goes last: it is what makes a group a store copy, so a removal cut
+            # short leaves a group the next plan still recognises.
+            for path in sorted(paths, key=lambda path: scratch_store_copy(path.relative_to(root))):
                 path.unlink()
             removed.append(
                 {"paths": [str(path) for path in paths], "sha256": copy["sha256"],
