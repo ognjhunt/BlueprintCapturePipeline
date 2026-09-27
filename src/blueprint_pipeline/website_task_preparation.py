@@ -661,7 +661,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     body = coverage["body_bounds"] if coverage_bound and coverage["status"] == "complete" else None
     # Source-estimate units to simulator metres.
     scale = abs(float(np.linalg.det(runtime_to_sim[:3, :3] @ matrix[:3, :3]))) ** (1 / 3)
-    # 2026-09-27 website dishwasher incident: published figures only checked
+    # 2026-09-27 website capture: published figures only checked
     # a short video estimate. The best verified published size (exact model >
     # model family > brand category > category standard) now sizes the body;
     # only when none gives every axis within tolerance does the estimate.
@@ -682,7 +682,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     collider = None if independent_object else trimesh.load(base_scene["collision_mesh_path"], force="mesh", process=False)
     support = (None if independent_object else
                support_under(collider, subject_min, subject_max, up=up, meters_per_unit=mpu, up_sign=up_sign))
-    # A rebuilt, floor-standing assembly (dishwasher, oven) rarely shows its
+    # A rebuilt, floor-standing assembly rarely shows its
     # lowest band, and a generated world often leaves the empty bay without a
     # floor: its body reaches down to the floor the footage observed.
     grounding = None

@@ -42,8 +42,8 @@ def context_ceiling(value):
     return len(text.encode()) + images + 4096
 
 
-# Text is charged byte-for-byte (a worst case), so the 2026-09-27 website
-# dishwasher door -- 12 reference frames, the authoring contract and one
+# Text is charged byte-for-byte (a worst case), so a 2026-09-27 website
+# capture's second part -- 12 reference frames, the authoring contract and one
 # observe_object turn -- charged over 80,000 while the SDK measured about 26,000
 # real input tokens per request. A first live turn has no user boundary to
 # compact at, so the ceiling itself must leave room for it. This matches the

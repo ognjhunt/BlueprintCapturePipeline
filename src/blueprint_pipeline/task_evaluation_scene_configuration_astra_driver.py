@@ -57,8 +57,8 @@ BACKEND = "astra_cad_blender_v1"
 ARTICULATED_AUTHORING_SCHEMA_VERSION = "articulated_replacement_authoring_configuration.v1"
 ARTICULATED_GRAPH_SCHEMA_VERSION = "task_evaluation_articulated_replacement_graph.v1"
 ARTICULATED_RECEIPT_SCHEMA_VERSION = "task_evaluation_articulated_replacement_authoring_result.v1"
-# A website assembly is sized by the video estimate or, since the 2026-09-27
-# website dishwasher incident, by verified published figures for its identified
+# A website assembly is sized by the video estimate or, since 2026-09-27, by
+# verified published figures for its identified
 # product or its category's standard (website_object_spec_research.published_body_size).
 # Nothing else: never a measurement this footage cannot provide.
 WEBSITE_ARTICULATED_DIMENSION_AUTHORITIES = frozenset({"estimated", "published_product_specification",
@@ -527,9 +527,9 @@ def _author_articulated_parts(*, plan, part_requests, authored_root, runtime, pr
     """Author each part in its own bounded session; completed parts are checkpoints for a retry.
 
     A part the author refuses no longer stops the parts after it. On
-    2026-09-27 the website dishwasher's door hit the context ceiling after the
-    body was built, and the racks and basket queued behind it were never
-    authored or reviewed. Every planned part is now attempted; the assembly
+    2026-09-27 a website capture's second part hit the context ceiling after
+    the first was built, and every part queued behind it was never authored
+    or reviewed. Every planned part is now attempted; the assembly
     still fails closed when any part failed, so nothing partial is packaged.
     """
     parts: dict[str, Any] = {}
