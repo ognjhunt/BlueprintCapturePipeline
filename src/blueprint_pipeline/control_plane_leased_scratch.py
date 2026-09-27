@@ -16,8 +16,8 @@ from pathlib import Path
 from typing import Any
 
 from .control_plane_lane_scratch import (
-    DEFAULT_ROOT, LaneScratchError, _DIR_FLAGS, _id, _locked_root_descriptor,
-    _now, _read_lease, create_lane_scratch,
+    DEFAULT_ROOT, LaneScratchError, _DIR_FLAGS, _creation_lease, _id, _locked_root_descriptor,
+    _now, _publish_scratch_folder, _read_lease,
 )
 
 
@@ -166,9 +166,29 @@ def create_leased_lane_scratch(
     run_ref: str | None = None, scene_ref: str | None = None,
     now: Callable[[], float] = time.time, **lease_options: Any,
 ) -> LeasedScratchDirectory:
-    """Publish using the existing atomic constructor, then open its exact lease."""
+    """Validate the full root before mutation and publish through its retained fd."""
 
-    create_lane_scratch(lane, name, root=root, owner=owner, run_ref=run_ref,
-                        scene_ref=scene_ref, now=now, **lease_options)
-    return LeasedScratchDirectory.open(root=root, lane=lane, name=name, owner=owner,
-                                       run_ref=run_ref, scene_ref=scene_ref, now=now)
+    lease = _creation_lease(lane, name, owner=owner, run_ref=run_ref,
+                            scene_ref=scene_ref, now=now, **lease_options)
+    root = Path(root)
+    with ExitStack() as retained:
+        try:
+            root_fd = _absolute_directory(retained, root)
+
+            def verify_root(lane_fd: int | None = None) -> None:
+                with ExitStack() as current:
+                    current_root = _absolute_directory(current, root)
+                    if not _same(root_fd, current_root):
+                        raise LaneScratchError("lane_scratch_capability_path_changed")
+                    if lane_fd is not None:
+                        current_lane = _directory(current, lane, parent=current_root)
+                        if not _same(lane_fd, current_lane):
+                            raise LaneScratchError("lane_scratch_capability_path_changed")
+
+            with _locked_root_descriptor(root_fd):
+                verify_root()
+                _publish_scratch_folder(root_fd, lease, verify_location=verify_root)
+            return LeasedScratchDirectory.open(root=root, lane=lane, name=name, owner=owner,
+                                               run_ref=run_ref, scene_ref=scene_ref, now=now)
+        except OSError as exc:
+            raise LaneScratchError("lane_scratch_capability_path_unsafe") from exc

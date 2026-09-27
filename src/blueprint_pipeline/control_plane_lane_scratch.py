@@ -245,13 +245,13 @@ def read_lane_scratch_folder(path: str | Path, *, lane: str, name: str) -> dict[
     return lease
 
 
-def create_lane_scratch(
+def _creation_lease(
     lane: str, name: str, *, owner: str, reason: str, class_intent: str,
     cleanup: str, ttl_seconds: int, run_ref: str | None = None,
     scene_ref: str | None = None, size_budget_bytes: int | None = None,
-    root: str | Path = DEFAULT_ROOT, now: Callable[[], float] = time.time,
-) -> Path:
-    """Create a new scratch folder with a sealed lease in one publication."""
+    now: Callable[[], float] = time.time,
+) -> dict[str, Any]:
+    """Validate creation metadata before a constructor can mutate a directory."""
 
     lane, name, owner = _id(lane, "lane"), _id(name, "name"), _id(owner, "owner")
     if not isinstance(reason, str) or _REASON.fullmatch(reason) is None:
@@ -269,7 +269,7 @@ def create_lane_scratch(
         raise LaneScratchError("lane_scratch_budget_invalid")
     ttl = _ttl(ttl_seconds)
     observed = _now(now)
-    lease = _seal({
+    return _seal({
         "schema_version": SCHEMA_VERSION, "lane": lane, "name": name,
         "owner": owner, "reason": reason, "class_intent": class_intent,
         "cleanup": cleanup, "created_at_epoch": observed,
@@ -277,7 +277,16 @@ def create_lane_scratch(
         "size_budget_bytes": size_budget_bytes,
         "run_ref" if run_ref is not None else "scene_ref": reference,
     })
-    with _locked_root(root) as root_fd, _lane_fd(root_fd, lane, create=True) as lane_fd:
+
+
+def _publish_scratch_folder(
+    root_fd: int, lease: Mapping[str, Any], *,
+    verify_location: Callable[[int], None] | None = None,
+) -> None:
+    """Publish an already validated lease beneath a coordinated root descriptor."""
+
+    lane, name = lease["lane"], lease["name"]
+    with _lane_fd(root_fd, lane, create=True) as lane_fd:
         try:
             os.stat(name, dir_fd=lane_fd, follow_symlinks=False)
         except FileNotFoundError:
@@ -292,6 +301,8 @@ def create_lane_scratch(
                 _write_lease(stage_fd, lease, replace=False)
             finally:
                 os.close(stage_fd)
+            if verify_location is not None:
+                verify_location(lane_fd)
             _publish_no_replace(lane_fd, staging, name)
             os.fsync(lane_fd)
         except OSError as exc:
@@ -309,6 +320,21 @@ def create_lane_scratch(
                 finally:
                     os.close(stage_fd)
                 os.rmdir(staging, dir_fd=lane_fd)
+
+
+def create_lane_scratch(
+    lane: str, name: str, *, owner: str, reason: str, class_intent: str,
+    cleanup: str, ttl_seconds: int, run_ref: str | None = None,
+    scene_ref: str | None = None, size_budget_bytes: int | None = None,
+    root: str | Path = DEFAULT_ROOT, now: Callable[[], float] = time.time,
+) -> Path:
+    """Create a new scratch folder with a sealed lease in one publication."""
+
+    lease = _creation_lease(lane, name, owner=owner, reason=reason, class_intent=class_intent,
+                            cleanup=cleanup, ttl_seconds=ttl_seconds, run_ref=run_ref,
+                            scene_ref=scene_ref, size_budget_bytes=size_budget_bytes, now=now)
+    with _locked_root(root) as root_fd:
+        _publish_scratch_folder(root_fd, lease)
     return Path(root) / lane / name
 
 

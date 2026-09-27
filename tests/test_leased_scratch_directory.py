@@ -259,3 +259,44 @@ def test_coordination_lock_descriptor_closes_when_flock_raises(tmp_path, monkeyp
     for fd in opened:
         with pytest.raises(OSError):
             os.fstat(fd)
+
+
+def test_create_capability_refuses_ancestor_symlink_before_any_mutation(tmp_path):
+    from blueprint_pipeline.control_plane_leased_scratch import create_leased_lane_scratch
+
+    actual = tmp_path / "actual"
+    root = actual / "lanes"
+    root.mkdir(parents=True)
+    link = tmp_path / "link"
+    link.symlink_to(actual, target_is_directory=True)
+    with pytest.raises(leases.LaneScratchError):
+        create_leased_lane_scratch(
+            "arena", "attempt", root=link / "lanes", owner="owner-a", run_ref="run-a",
+            ttl_seconds=100, reason="diagnostic", class_intent="evidence", cleanup="owner_review",
+            now=lambda: 1000,
+        )
+    assert list(root.iterdir()) == []
+
+
+def test_create_capability_refuses_replaced_root_before_publication(tmp_path, monkeypatch):
+    from blueprint_pipeline.control_plane_leased_scratch import create_leased_lane_scratch
+
+    root, moved = tmp_path / "lanes", tmp_path / "old-lanes"
+    root.mkdir()
+    write = leases._write_lease
+
+    def replace_root(*args, **kwargs):
+        write(*args, **kwargs)
+        root.rename(moved)
+        root.mkdir()
+
+    monkeypatch.setattr(leases, "_write_lease", replace_root)
+    with pytest.raises(leases.LaneScratchError):
+        create_leased_lane_scratch(
+            "arena", "attempt", root=root, owner="owner-a", run_ref="run-a",
+            ttl_seconds=100, reason="diagnostic", class_intent="evidence", cleanup="owner_review",
+            now=lambda: 1000,
+        )
+    assert list(root.iterdir()) == []
+    assert not (moved / "arena/attempt").exists()
+    assert list((moved / "arena").iterdir()) == []
