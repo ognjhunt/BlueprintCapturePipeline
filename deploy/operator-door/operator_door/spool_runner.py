@@ -92,13 +92,22 @@ def _retire_environment(config: DoorConfig, request: dict[str, Any]) -> dict[str
     return values
 
 
+def _restore_environment(config: DoorConfig, request: dict[str, Any]) -> dict[str, str]:
+    return {"DOOR_VENV_PYTHON": config.venv_python, "DOOR_SCENE_ID": request["scene_id"],
+            "DOOR_BUCKET": request["bucket"]}
+
+
 def _retire_properties(config: DoorConfig) -> tuple[str, ...]:
-    """A retirement writes only the spool, the disk reservation ledger and its own result."""
+    """Limit retirement to its spool, coordination locks, and result."""
 
     results = str(Path(config.spool_root) / "results")
     reservations = str(Path(config.control_plane_state) / "disk-reservations")
-    return ("ProtectSystem=strict", "PrivateTmp=yes", "NoNewPrivileges=yes",
-            f"ReadWritePaths={_PUBSUB_HANDOFFS} {reservations} {results}")
+    pins = str(Path(config.control_plane_state) / "storage-pins")
+    return ("ProtectSystem=strict", "PrivateTmp=yes", "NoNewPrivileges=yes", "PrivateDevices=yes",
+            "ProtectHome=yes", "ProtectKernelTunables=yes", "ProtectControlGroups=yes",
+            "CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_CHOWN CAP_SYS_PTRACE",
+            "AmbientCapabilities=CAP_DAC_OVERRIDE",
+            f"ReadWritePaths={_PUBSUB_HANDOFFS} {reservations} {pins} {results}")
 
 
 @dataclass(frozen=True)
@@ -124,6 +133,9 @@ _LAUNCHES: dict[str, _LaunchSpec] = {
     "retire-scene-workspace": _LaunchSpec("blueprint-operator-door-retire", "door-retire-scene-workspace.sh", "2h",
                                           lambda request: hashlib.sha256(request["scene_id"].encode("utf-8"))
                                           .hexdigest()[:12], _retire_environment, _retire_properties),
+    "restore-scene-workspace": _LaunchSpec("blueprint-operator-door-restore", "door-restore-scene-workspace.sh", "2h",
+                                           lambda request: hashlib.sha256(request["scene_id"].encode("utf-8"))
+                                           .hexdigest()[:12], _restore_environment, _retire_properties),
 }
 
 

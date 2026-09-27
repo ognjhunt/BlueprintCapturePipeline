@@ -110,6 +110,18 @@ def test_request_ids_name_exactly_the_known_kinds() -> None:
             validate_request_id(bad)
 
 
+def test_restore_requires_an_exact_scene_and_bucket() -> None:
+    assert validate_request({"kind": "restore-scene-workspace", "scene_id": "scene-1",
+                             "bucket": "blueprint-8c1ca.appspot.com"}) == {
+        "kind": "restore-scene-workspace", "scene_id": "scene-1", "bucket": "blueprint-8c1ca.appspot.com"}
+    assert required_scope("restore-scene-workspace") == "operate"
+    for body in ({"kind": "restore-scene-workspace", "scene_id": "scene-1"},
+                 {"kind": "restore-scene-workspace", "scene_id": "../bad", "bucket": "valid.example"},
+                 {"kind": "restore-scene-workspace", "scene_id": "scene-1", "bucket": "a/unsafe"}):
+        with pytest.raises(RequestRefused):
+            validate_request(body)
+
+
 def test_door_upgrade_needs_a_commit() -> None:
     assert validate_request({"kind": "door-upgrade", "commit": SHA}) == {"kind": "door-upgrade", "commit": SHA}
     assert required_scope("door-upgrade") == "deploy"

@@ -49,6 +49,7 @@ _SCOPES = {
     # Plans or retires one website scene workspace with the active release's own module; it
     # runs no new code, and the module deletes nothing it cannot restore.
     "retire-scene-workspace": "operate",
+    "restore-scene-workspace": "operate",
 }
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 # The grammar the Pub/Sub listener accepts for a scene id and a GCS bucket.
@@ -135,6 +136,14 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
                 raise RequestRefused("bucket_invalid")
             normalized["bucket"] = bucket
         return normalized
+    if kind == "restore-scene-workspace":
+        _only(body, ("kind", "scene_id", "bucket"))
+        scene_id, bucket = body.get("scene_id"), body.get("bucket")
+        if not isinstance(scene_id, str) or not _SCENE_ID.fullmatch(scene_id) or scene_id in {".", ".."}:
+            raise RequestRefused("scene_id_invalid")
+        if not isinstance(bucket, str) or not _BUCKET.fullmatch(bucket) or ".." in bucket:
+            raise RequestRefused("bucket_invalid")
+        return {"kind": kind, "scene_id": scene_id, "bucket": bucket}
     # Anything else, however it is shaped, is not a request the door knows.
     raise RequestRefused("kind_unknown")
 

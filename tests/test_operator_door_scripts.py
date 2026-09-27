@@ -5,6 +5,7 @@
 #   deploy/operator-door/door-deploy.sh
 #   deploy/operator-door/door-upgrade.sh
 #   deploy/operator-door/door-retire-scene-workspace.sh
+#   deploy/operator-door/door-restore-scene-workspace.sh
 #   deploy/operator-door/install.sh
 
 from __future__ import annotations
@@ -166,7 +167,7 @@ def test_deploy_refuses_a_malformed_request_id_before_touching_any_path(env: dic
 
 
 @pytest.mark.parametrize("script", ["door-common.sh", "door-deploy.sh", "door-upgrade.sh",
-                                    "door-retire-scene-workspace.sh", "install.sh"])
+                                    "door-retire-scene-workspace.sh", "door-restore-scene-workspace.sh", "install.sh"])
 def test_scripts_parse(script: str) -> None:
     assert subprocess.run(["/bin/bash", "-n", str(DOOR / script)], check=False).returncode == 0
 
@@ -199,6 +200,10 @@ def test_installer_keeps_root_writes_out_of_service_account_reach() -> None:
 def test_installer_rolls_back_code_and_units_and_checks_as_the_service_account() -> None:
     text = (DOOR / "install.sh").read_text(encoding="utf-8")
     assert "trap 'rollback; exit 1' ERR" in text and "set -eEuo pipefail" in text
+    assert "trap 'rollback; exit 143' TERM" in text
+    assert "trap 'rollback; exit 130' INT" in text
+    assert text.index("trap 'rollback; exit 143' TERM") < text.index('mv "$stage" "$install_root"')
+    assert text.rindex("trap - ERR TERM INT") > text.index("self-test --allow-no-tokens")
     assert '"$units_backup/$unit"' in text and 'mv "$install_root.previous" "$install_root"' in text
     assert "runuser -u blueprint --" in text and "self-test --allow-no-tokens" in text
 
@@ -306,6 +311,21 @@ def test_retirement_outcome_follows_the_module_status(retire_env: dict[str, str]
     assert outcome["scene_id"] == "site-capture-1"
     assert outcome["result"] == f"{retire_env['DOOR_RESULTS_DIR']}/{RETIRE_ID}.retirement.json"
     assert not any(call.startswith(("git ", "systemctl ")) for call in calls)
+
+
+def test_restore_runs_the_active_release_and_requires_a_restored_result(retire_env: dict[str, str]) -> None:
+    request_id = "20260926T120000Z-restore-scene-workspace-0000abcd"
+    values = {**retire_env, "DOOR_BUCKET": "blueprint-8c1ca.appspot.com",
+              "BLUEPRINT_PUBSUB_HANDOFF_STORAGE_ROOT": "/var/lib/blueprint/pubsub-handoffs"}
+    rc, outcome, calls = _run("door-restore-scene-workspace.sh", values, DOOR_REQUEST_ID=request_id,
+                              FAKE_RETIREMENT=json.dumps({"status": "restored"}))
+    assert rc == 0 and outcome["status"] == "restored"
+    assert any("restore --receipt /var/lib/blueprint/pubsub-handoffs/blueprint-8c1ca.appspot.com/scenes/"
+               "site-capture-1.retired.v1.json --destination /var/lib/blueprint/pubsub-handoffs/"
+               "blueprint-8c1ca.appspot.com/scenes/site-capture-1" in call for call in calls)
+    rc, outcome, _ = _run("door-restore-scene-workspace.sh", values, DOOR_REQUEST_ID=request_id,
+                          FAKE_RETIREMENT=json.dumps({"status": "failed"}))
+    assert rc == 1 and outcome["status"] == "failed"
 
 
 def test_retirement_runs_the_active_release_module_with_the_control_plane_environment(

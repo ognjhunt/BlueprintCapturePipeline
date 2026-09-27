@@ -36,6 +36,7 @@ import hashlib
 import json
 import os
 import re
+import signal
 import stat
 import subprocess  # nosec B404 - fixed git/systemctl argv over validated paths
 import tempfile
@@ -3255,6 +3256,24 @@ def deploy_control_plane_commit(
     }
 
 
+def _run_deploy_with_signal_cleanup(callback: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+    """Turn a transient unit stop into an exception so deploy rollback runs."""
+
+    previous = {number: signal.getsignal(number) for number in (signal.SIGTERM, signal.SIGINT)}
+
+    def interrupted(number: int, _frame: Any) -> None:
+        signal.signal(number, signal.SIG_IGN)
+        raise ControlPlaneDeployError(f"deploy_interrupted:{signal.Signals(number).name}")
+
+    try:
+        for number in previous:
+            signal.signal(number, interrupted)
+        return callback()
+    finally:
+        for number, handler in previous.items():
+            signal.signal(number, handler)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-repo", required=True)
@@ -3382,7 +3401,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        receipt = deploy_control_plane_commit(
+        receipt = _run_deploy_with_signal_cleanup(lambda: deploy_control_plane_commit(
             source_repo=args.source_repo,
             source_commit=args.source_commit,
             release_root=args.release_root,
@@ -3418,7 +3437,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             disk_reservation_root=(
                 Path(args.state_root).expanduser() / "disk-reservations"
             ),
-        )
+        ))
     except (OSError, ValueError, ControlPlaneReleaseError) as exc:
         print(
             json.dumps(

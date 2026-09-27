@@ -21,6 +21,7 @@ import importlib.util
 import io
 import json
 import os
+import signal
 import stat
 import subprocess
 import sys
@@ -924,6 +925,22 @@ def test_cli_forwards_explicit_controls_state_preservation(tmp_path, monkeypatch
     ]) == 0
     assert calls[0]["preserve_configured_controls_state"] is True
     assert calls[0]["arm_path_units"] is False
+
+
+def test_cli_sigterm_unwinds_deploy_and_restores_signal_handler(tmp_path, monkeypatch, capsys):
+    original = signal.getsignal(signal.SIGTERM)
+
+    def interrupted(**_kwargs):
+        signal.raise_signal(signal.SIGTERM)
+
+    monkeypatch.setattr(deploy, "deploy_control_plane_commit", interrupted)
+    assert deploy.main([
+        "--source-repo", str(tmp_path), "--source-commit", "a" * 40,
+        "--release-root", str(tmp_path / "releases"), "--state-root", str(tmp_path / "state"),
+        "--active-link", str(tmp_path / "active"),
+    ]) == 2
+    assert "deploy_interrupted:SIGTERM" in capsys.readouterr().out
+    assert signal.getsignal(signal.SIGTERM) is original
 
 
 def test_authority_gated_paid_dispatch_watcher_is_armed_by_default(

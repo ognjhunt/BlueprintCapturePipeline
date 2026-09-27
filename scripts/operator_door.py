@@ -44,7 +44,7 @@ DEFAULT_URL = "https://paperclip.tryblueprint.io/api/live-pipeline/operator/v1"
 DEFAULT_TOKEN_FILE = "~/.blueprint-secrets/operator_door_token"
 # A retirement that planned or retired succeeded; "retained" (the scene did not qualify) exits 1
 # and the printed outcome carries the first reason.
-_TERMINAL_OK = {"deployed", "upgraded", "planned", "retired"}
+_TERMINAL_OK = {"deployed", "upgraded", "planned", "retired", "restored"}
 
 
 class DoorError(Exception):
@@ -237,6 +237,10 @@ def build_parser() -> argparse.ArgumentParser:
     retire.add_argument("--bucket")
     retire.add_argument("--apply", action="store_true")
     _add_wait(retire, 2 * 3600 + 600)
+    restore = commands.add_parser("restore-scene-workspace", help="restore a retired scene at its canonical path")
+    restore.add_argument("scene_id")
+    restore.add_argument("--bucket", required=True)
+    _add_wait(restore, 2 * 3600 + 600)
     request = commands.add_parser("request")
     request.add_argument("id")
     _add_wait(request, 3 * 3600)
@@ -282,6 +286,9 @@ def run(args: argparse.Namespace) -> int:
         if args.bucket:
             body["bucket"] = args.bucket
         return _submit(body, args)
+    elif command == "restore-scene-workspace":
+        return _submit({"kind": "restore-scene-workspace", "scene_id": args.scene_id,
+                        "bucket": args.bucket}, args)
     elif command == "request":
         if args.wait:
             return _wait(args.id, timeout=args.timeout, poll=args.poll)

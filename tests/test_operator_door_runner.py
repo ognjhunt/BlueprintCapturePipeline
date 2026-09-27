@@ -239,8 +239,13 @@ def test_retire_scene_workspace_launches_a_bounded_sandboxed_service(config: Doo
         "systemd-run", f"--unit={unit}", "--collect", "--service-type=exec",
         "--property=TimeoutStartSec=2h", "--setenv=PYTHONDONTWRITEBYTECODE=1", "--property=RuntimeMaxSec=2h",
         "--property=ProtectSystem=strict", "--property=PrivateTmp=yes", "--property=NoNewPrivileges=yes",
+        "--property=PrivateDevices=yes", "--property=ProtectHome=yes",
+        "--property=ProtectKernelTunables=yes", "--property=ProtectControlGroups=yes",
+        "--property=CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_CHOWN CAP_SYS_PTRACE",
+        "--property=AmbientCapabilities=CAP_DAC_OVERRIDE",
         "--property=ReadWritePaths=/var/lib/blueprint/pubsub-handoffs "
-        f"/var/lib/blueprint/pipeline-control-plane/disk-reservations {results}",
+        "/var/lib/blueprint/pipeline-control-plane/disk-reservations "
+        f"/var/lib/blueprint/pipeline-control-plane/storage-pins {results}",
         *(f"--setenv={key}={value}" for key, value in env.items()),
         "--", "/bin/bash", "/opt/blueprint/operator-door/door-retire-scene-workspace.sh",
     ]]
@@ -258,3 +263,17 @@ def test_a_retirement_unit_never_names_its_scene(config: DoorConfig) -> None:
     unit = _result(config, request_id)["unit"]
     assert "deploy" not in unit and "site" not in unit
     assert re.fullmatch(r"blueprint-operator-door-retire-[0-9a-f]{12}-[0-9a-f]{8}\.service", unit)
+
+
+def test_restore_launches_the_active_release_in_a_bounded_sandbox(config: DoorConfig) -> None:
+    request_id = _spooled(config, {"kind": "restore-scene-workspace", "scene_id": "scene-1",
+                                   "bucket": "blueprint-8c1ca.appspot.com"})
+    runner = FakeRunner()
+    process_spool(config, runner=runner)
+    [call] = [row for row in runner.calls if row[0] == "systemd-run"]
+    assert call[1].startswith("--unit=blueprint-operator-door-restore-")
+    assert "--property=RuntimeMaxSec=2h" in call
+    assert "--property=ProtectHome=yes" in call
+    assert "--setenv=DOOR_BUCKET=blueprint-8c1ca.appspot.com" in call
+    assert call[-1] == "/opt/blueprint/operator-door/door-restore-scene-workspace.sh"
+    assert _result(config, request_id)["status"] == "launched"

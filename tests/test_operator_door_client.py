@@ -208,6 +208,14 @@ def test_waiting_on_a_retirement_exits_by_its_outcome(door: dict[str, Any], stat
     assert code == exit_code and json.loads(out)["outcome"] == outcome  # a retained scene says why
 
 
+def test_client_submits_a_canonical_scene_restore(door: dict[str, Any]) -> None:
+    code, out = _run("restore-scene-workspace", "scene-1", "--bucket", "blueprint-8c1ca.appspot.com")
+    request_id = json.loads(out)["id"]
+    spooled = json.loads((door["state"] / "requests" / "pending" / f"{request_id}.json").read_text())
+    assert code == 0 and spooled["request"] == {"kind": "restore-scene-workspace", "scene_id": "scene-1",
+                                                "bucket": "blueprint-8c1ca.appspot.com"}
+
+
 def test_a_retirement_needs_the_operate_scope(door: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("BLUEPRINT_OPERATOR_DOOR_TOKEN", READ_ONLY)
     assert _run("retire-scene-workspace", "site-capture-1")[0] == 3
