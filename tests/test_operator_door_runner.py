@@ -142,6 +142,22 @@ def test_hold_stops_a_timer_records_owner_and_schedules_expiry(config: DoorConfi
     assert _result(config, request_id)["status"] == "done"
 
 
+def test_hold_is_persistently_disabled_before_its_active_record_is_published(config: DoorConfig) -> None:
+    unit = "blueprint-scene-progression.timer"
+    record = Path(config.spool_root) / "holds" / f"{unit}.json"
+
+    class ObserveDisable(FakeRunner):
+        def run(self, argv: Sequence[str], timeout: float) -> CommandResult:
+            if argv[:2] == ["systemctl", "disable"]:
+                assert not record.exists(), "an active record must not precede persistent disable"
+            return super().run(argv, timeout)
+
+    request_id = _hold(config)
+    process_spool(config, runner=ObserveDisable())
+    assert _result(config, request_id)["status"] == "done"
+    assert json.loads(record.read_text())["status"] == "active"
+
+
 def test_other_owner_cannot_replace_an_active_hold_but_same_owner_can_extend(config: DoorConfig) -> None:
     first = _hold(config)
     process_spool(config, runner=FakeRunner())

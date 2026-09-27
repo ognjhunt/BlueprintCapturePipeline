@@ -236,12 +236,12 @@ def _act_hold(
             return restored.returncode
 
         try:
-            holds.write(root, unit, record)
             disabled = runner.run(["systemctl", "disable", "--", unit], timeout=30)
             if disabled.returncode != 0:
                 rollback_returncode = rollback()
                 return {"status": "failed", "code": "hold_disable_failed", "returncode": disabled.returncode,
                         "rollback_returncode": rollback_returncode, "stderr_tail": disabled.stderr[-2000:]}
+            holds.write(root, unit, record)
             launch = runner.run([
                 "systemd-run", f"--unit=blueprint-operator-door-hold-expiry-{request_id[-8:]}",
                 f"--on-active={expires_at_epoch - now}s", "--collect",
