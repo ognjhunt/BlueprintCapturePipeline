@@ -41,6 +41,10 @@ Each phase runs isolated: an exception is recorded under its report key and the
 remaining phases still run. Evidence-hot roots, release worktrees, and runtime
 trees are never candidates here; release trees are retired by the deploy that
 supersedes them.
+
+The derived and evidence phases name why they kept each entry, with its bytes
+(``retained_by_reason``), and ``--report-out`` also publishes a small summary
+of the tick beside the report (``control_plane_storage_gc_reasons``).
 """
 
 from __future__ import annotations
@@ -70,7 +74,8 @@ from .control_plane_replay_cache_gc import (
     REPLAY_PARENT_ROOTS_ENV, _truthy_setting, reclaim_replay_caches, replay_cache_retention_setting,
 )
 from .control_plane_storage_gc_reasons import (
-    count_retained, entry_bytes, evidence_protection_reason, live_pin_kinds, walked_bytes,
+    SUMMARY_FILENAME, build_storage_gc_summary, count_retained, entry_bytes, evidence_protection_reason,
+    live_pin_kinds, walked_bytes,
 )
 from .control_plane_storage_pins import PINS_ROOT_ENV, live_pinned_paths
 from .control_plane_storage_roots import require_storage_class
@@ -1324,6 +1329,11 @@ def run_storage_gc(
         "status": "applied" if apply else "dry_run",
         "observed_at_epoch": observed_at,
         "apply": apply,
+        "opt_in": {
+            "evidence_offload": bool(offload_enabled),
+            "scene_workspace_retirement": bool(scene_workspace_retirement_enabled),
+            "replay_cache_retention": bool(replay_cache_retention_enabled),
+        },
         "skipped_roots": [],
     }
     alerts = [alert for alert in (scene_workspace_retirement_alert, replay_cache_retention_alert) if alert]
@@ -1589,6 +1599,24 @@ def _write_report(path: Path, report: Mapping[str, Any]) -> None:
         os.close(parent_fd)
 
 
+def _write_summary(report_path: Path, report: Mapping[str, Any]) -> bool:
+    """Publish ``summary.json`` beside the report exactly as the report was published.
+
+    It only projects a report already written, so a failure is traced to stderr
+    and fails the unit without costing the report. A report itself named
+    ``summary.json`` is never overwritten by its summary.
+    """
+
+    if report_path.name == SUMMARY_FILENAME:
+        return True
+    try:
+        _write_report(report_path.with_name(SUMMARY_FILENAME), build_storage_gc_summary(report))
+    except Exception:  # noqa: BLE001 - the full report is already written
+        traceback.print_exc(file=sys.stderr)
+        return False
+    return True
+
+
 def _run_main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="control_plane_storage_gc run")
     parser.add_argument("--content-store-root", action="append", default=None)
@@ -1685,11 +1713,13 @@ def _run_main(argv: list[str]) -> int:
         scene_inventory_cache_root=None,
         classifier=require_storage_class,
     )
+    summary_written = True
     if args.report_out:
         _write_report(Path(args.report_out).expanduser(), report)
+        summary_written = _write_summary(Path(args.report_out).expanduser(), report)
     print(json.dumps(report, indent=2, sort_keys=True))
     # The whole report is written first; a failed phase still fails the unit so it is seen.
-    return 1 if report.get("phase_errors") else 0
+    return 1 if report.get("phase_errors") or not summary_written else 0
 
 
 def main(argv: list[str] | None = None) -> int:

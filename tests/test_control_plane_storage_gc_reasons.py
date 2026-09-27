@@ -149,3 +149,157 @@ def test_pin_kinds_name_exactly_the_live_pinned_paths(tmp_path) -> None:
 
     assert kinds == {str(first): "activation", str(shared): "activation+preparation"}
     assert set(kinds) == live_pinned_paths(pins, now=lambda: NOW + 10)
+
+
+def _strings(value):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            yield key
+            yield from _strings(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _strings(item)
+
+
+def test_storage_gc_writes_a_door_readable_summary(tmp_path, monkeypatch) -> None:
+    """2026-09-27: the door can read storage-gc/latest.json, but that report is large and
+    scatters its reasons across phases. summary.json beside it says, per phase, what was
+    planned, reclaimed and kept and why, is published exactly as latest.json is (0644 in
+    a 0755 directory), and carries no run names, host paths or secrets."""
+
+    import stat
+    import sys
+    import time
+
+    from blueprint_pipeline import control_plane_storage_gc as gc_module
+
+    now = time.time()
+    evidence = tmp_path / "launch-runs"
+    queued = _cold_run(evidence, "run-secret-name-queued", size=7000)
+    hot = _cold_run(evidence, "run-secret-name-hot", size=5000)
+    for path in (*hot.iterdir(), hot):
+        os.utime(path, (now - 3600, now - 3600))
+    registry_run = _cold_run(evidence, "run-secret-name-registry", size=3000)
+    (registry_run / "artifacts" / "result_delivery").mkdir(parents=True)
+    (registry_run / "artifacts" / "result_delivery" / "artifact_registry.json").write_text("{}", encoding="utf-8")
+    _cold_run(evidence, "run-secret-name-cold", size=1000)
+    derived = tmp_path / "prepared-references"
+    for name, size in (("prep-secret-idle", 100), ("prep-secret-pinned", 300)):
+        (derived / name).mkdir(parents=True)
+        (derived / name / "blob.bin").write_bytes(b"b" * size)
+        for path in (derived / name / "blob.bin", derived / name):
+            os.utime(path, (NOW, NOW))
+    pins = tmp_path / "pins"
+    write_storage_pin(pins_root=pins, kind="activation", owner_id="act-1", paths=[derived / "prep-secret-pinned"])
+    queue = tmp_path / "queue"
+    (queue / "pending").mkdir(parents=True)
+    (queue / "pending" / "row.json").write_text(json.dumps({"run": queued.name}), encoding="utf-8")
+    absent_scratch = tmp_path / "engineering-scratch"
+    environment = {
+        gc_module.CONTENT_STORE_ROOTS_ENV: "", gc_module.PLAN_ONLY_DERIVED_ROOTS_ENV: "",
+        gc_module.SETTLEMENT_ROOTS_ENV: "", gc_module.WORKSPACE_BUNDLE_ROOTS_ENV: "",
+        gc_module.SCENE_WORKSPACE_ROOTS_ENV: "", "BLUEPRINT_CONTROL_PLANE_GC_REPLAY_PARENT_ROOTS": "",
+        gc_module.EVIDENCE_OFFLOAD_ENV: "", gc_module.SCENE_WORKSPACE_RETIREMENT_ENV: "",
+        "BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_RETENTION": "", gc_module.EVIDENCE_ABANDONED_AFTER_ENV: "",
+        gc_module.DERIVED_ROOTS_ENV: str(derived), gc_module.QUEUE_ROOTS_ENV: str(queue),
+        gc_module.EVIDENCE_ROOTS_ENV: str(evidence), gc_module.SCRATCH_ROOTS_ENV: str(absent_scratch),
+        gc_module.EVIDENCE_HOT_WINDOW_ENV: "172800", gc_module.DERIVED_MINIMUM_AGE_ENV: "3600",
+    }
+    for name, value in environment.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(gc_module, "require_storage_class", _noclass)
+    report_dir = tmp_path / "storage-gc"
+    report_dir.mkdir(mode=0o700)  # as an older tick left it
+
+    assert gc_module.main(["run", "--apply", "--ack", RUN_ACK, "--pins-root", str(pins),
+                           "--report-out", str(report_dir / "latest.json")]) == 0
+
+    latest, published = report_dir / "latest.json", report_dir / "summary.json"
+    assert stat.S_IMODE(report_dir.stat().st_mode) == 0o755
+    assert stat.S_IMODE(latest.stat().st_mode) == 0o644
+    assert stat.S_IMODE(published.stat().st_mode) == 0o644
+    report = json.loads(latest.read_text(encoding="utf-8"))
+    summary = json.loads(published.read_text(encoding="utf-8"))
+    assert published.stat().st_size < reasons.MAX_SUMMARY_BYTES
+    assert summary["schema_version"] == "control_plane_storage_gc_summary.v1"
+    assert (summary["status"], summary["observed_at_epoch"]) == ("applied", report["observed_at_epoch"])
+    assert summary["source_report_digest"] == report["report_digest"]
+    assert summary["opt_in"] == {
+        "evidence_offload": False, "scene_workspace_retirement": False, "replay_cache_retention": False}
+    assert (summary["phase_errors"], summary["skipped_roots"]) == ([], [str(absent_scratch)])
+    sizes = {run.name: sum(p.stat().st_size for p in run.rglob("*") if p.is_file())
+             for run in (queued, hot, registry_run)}
+    assert summary["phases"]["derived_directories"] == {
+        "status": "applied", "candidate_bytes": 100, "removed_or_offloaded_bytes": 100,
+        "retained_by_reason": {"pinned": {"count": 1, "bytes": 300, "by_kind": {
+            "activation": {"count": 1, "bytes": 300}}}},
+    }
+    assert summary["phases"]["evidence_offload"] == {
+        "status": "dry_run", "candidate_bytes": 1002, "removed_or_offloaded_bytes": None,
+        "retained_by_reason": {
+            "protected_queue": {"count": 1, "bytes": sizes[queued.name]},
+            "hot": {"count": 1, "bytes": sizes[hot.name]},
+            "result_registry": {"count": 1, "bytes": sizes[registry_run.name]},
+        },
+    }
+    assert summary["phases"]["result_artifact_offload"] == {
+        "run_count": 1, "candidate_bytes": None, "removed_or_offloaded_bytes": 0,
+        "retained_by_reason": {"offload_failed:registry": {"count": 1, "bytes": None}},
+        "failures": [{"scope": "run", "stage": "registry", "error_type": "TaskEvaluationResultDeliveryError",
+                      "errno": None, "count": 1}],
+    }
+    assert summary["top_retained"] == [
+        {"phase": "evidence_offload", "reason": "protected_queue", "count": 1, "bytes": sizes[queued.name]},
+        {"phase": "evidence_offload", "reason": "hot", "count": 1, "bytes": sizes[hot.name]},
+        {"phase": "evidence_offload", "reason": "result_registry", "count": 1, "bytes": sizes[registry_run.name]},
+        {"phase": "derived_directories", "reason": "pinned", "count": 1, "bytes": 300},
+    ]
+    # Nothing but the configured roots names a host path, and no run or directory is named.
+    text = published.read_text(encoding="utf-8")
+    assert "secret-name" not in text and "prep-secret" not in text
+    assert [value for value in _strings(summary) if "/" in value] == [str(absent_scratch)]
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "deploy" / "operator-door"))
+    from operator_door.config import DoorConfig
+    from operator_door.fsview import FileView
+    from operator_door.secrets_guard import scan_bytes
+
+    assert scan_bytes(published.read_bytes()) is None
+    contents, _ = FileView(DoorConfig(read_roots=(str(tmp_path),), hidden_paths=())).read_range(str(published))
+    assert json.loads(contents) == summary
+    assert "operator_door" in sys.modules
+
+
+def test_the_summary_stays_small_and_names_only_typed_reasons() -> None:
+    """However many reasons a phase reports, the summary keeps the largest, bounded, and a
+    reason that is not a typed string (a path, say) is never copied into it."""
+
+    by_reason = {f"reason_{index:04d}": {"count": 1, "bytes": index} for index in range(2000)}
+    by_reason["/var/lib/blueprint/leaked/path"] = {"count": 1, "bytes": 10**9}
+    failures = [{"status": "retained", "run_directory": f"run-{index}", "reason": "OSError",
+                 "error_type": f"Error{index}", "errno": index, "stage": "evict"} for index in range(500)]
+    report = {
+        "schema_version": "control_plane_storage_gc_run.v1", "status": "dry_run", "observed_at_epoch": NOW,
+        "skipped_roots": [], "report_digest": "sha256:" + "0" * 64,
+        "derived_directories": {"status": "dry_run", "candidate_bytes": 0, "retained_by_reason": by_reason},
+        "evidence_offload": {"status": "error", "error": "PermissionError"},
+        "phase_errors": ["evidence_offload"],
+        "result_artifact_offload": failures,
+    }
+
+    summary = reasons.build_storage_gc_summary(report)
+
+    assert len(json.dumps(summary, indent=2, sort_keys=True).encode()) < reasons.MAX_SUMMARY_BYTES
+    derived = summary["phases"]["derived_directories"]["retained_by_reason"]
+    assert len(derived) == 50 and "unrecognized_reason" in derived and "/var" not in json.dumps(summary)
+    assert summary["top_retained"][0] == {
+        "phase": "derived_directories", "reason": "unrecognized_reason", "count": 1, "bytes": 10**9}
+    assert len(summary["top_retained"]) == 10
+    assert summary["phases"]["evidence_offload"]["error_type"] == "PermissionError"
+    assert summary["phase_errors"] == ["evidence_offload"]
+    assert len(summary["phases"]["result_artifact_offload"]["failures"]) == 20
+    assert "run-1" not in json.dumps(summary)
+    # A report written before the tick recorded its opt-ins does not claim they were off.
+    assert summary["opt_in"] == {
+        "evidence_offload": None, "scene_workspace_retirement": None, "replay_cache_retention": None}
