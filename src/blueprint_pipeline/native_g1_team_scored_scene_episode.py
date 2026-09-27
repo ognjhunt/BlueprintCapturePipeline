@@ -15,6 +15,8 @@ from typing import Any
 from .decision_evidence_contracts import canonical_digest
 from .native_g1_navigation_goal import score_g1_navigation_episode, validate_g1_navigation_goal
 from .native_g1_shared_scene_episode import (
+    NativeG1RigidTaskSampler,
+    _write_checkpoint,
     run_g1_shared_scene_episode,
     team_policy_candidate_id,
 )
@@ -94,12 +96,12 @@ def run_g1_team_scored_scene_episode(
         from .native_task_arena_readback import NativeRigidTaskArenaReadback
 
         readback = NativeRigidTaskArenaReadback(built)
+        sampler = NativeG1RigidTaskSampler(
+            environment=environment, task_readback=readback, task_spec=task
+        )
 
         def read_task_sample() -> dict[str, Any]:
-            return {
-                **readback.read_task_sample(),
-                "step_index": environment.read_state()["step_index"],
-            }
+            return sampler.read_task_sample()
 
         task_prompt = str(task["prompt"])
 
@@ -117,9 +119,7 @@ def run_g1_team_scored_scene_episode(
     )
     output_dir.mkdir(parents=True, exist_ok=True)
     trace_path = output_dir / TRACE_FILENAME
-    with trace_path.open("x", encoding="utf-8") as stream:
-        json.dump(trace, stream, indent=2, sort_keys=True, allow_nan=False)
-        stream.write("\n")
+    _write_checkpoint(trace_path, trace)
     samples = [trace["initial_task_sample"]]
     samples.extend(row["task_sample"] for row in trace["steps"])
     if objective_id == "g1_navigation_goal":

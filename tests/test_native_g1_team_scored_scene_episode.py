@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,8 @@ from blueprint_pipeline.native_g1_team_scored_scene_episode import (
 )
 from tests.test_native_g1_shared_scene_episode import _Bridge, _Scene
 from tests.test_native_g1_development_campaign import _book_handoff
+from tests.test_native_rigid_episode_telemetry import _spec
+from tests.test_native_task_episode_environment import _RigidNativeReadback
 from tests.test_team_policy_delivery_profile import OWNER, _profile
 
 
@@ -31,6 +34,7 @@ def _inputs(tmp_path, monkeypatch, *, movement: bool = False):
     )
     scene = _Scene()
     task = {
+        **_spec(),
         "task_kind": "rigid_pick_place",
         "prompt": "pick the box",
         "task_success_contract_digest": setup["task_success_contract_digest"],
@@ -106,9 +110,11 @@ def _run(setup, profile, scene, policy, output_dir, monkeypatch, *, objective_id
     monkeypatch.setattr(
         native_task_arena_readback,
         "NativeRigidTaskArenaReadback",
-        lambda built: type(
-            "Readback", (), {"read_task_sample": lambda self: {"object_z_m": float(scene.step)}}
-        )(),
+        lambda built: _RigidNativeReadback(
+            finger_separation_m=0.08,
+            grasp_frame_position_world_m=[1.1, 2.1, 0.9],
+            destination_scene_forbidden_contact_peak_force_n=0.0,
+        ),
     )
     return run_g1_team_scored_scene_episode(
         built=type("Built", (), {"plan": scene.plan})(),
@@ -142,6 +148,9 @@ def test_team_manipulation_runs_and_scores_with_lossless_media(tmp_path: Path, m
     result = _run(setup, profile, scene, policy, tmp_path, monkeypatch, objective_id="task_success")
     assert policy.queries == result["policy_query_count"] == 2
     assert result["score"] == {"status": "scored", "outcome": "failure", "samples": 3}
+    trace = json.loads((tmp_path / "episode" / TRACE_FILENAME).read_text())
+    assert all(row["task_sample"]["workspace_excursion"] is False for row in trace["steps"])
+    assert all(row["task_sample"]["retry_count"] == 0 for row in trace["steps"])
     assert result["profile_digest"] == profile["profile_digest"]
     assert result["owner"] == OWNER
     assert result["source_packet_receipt_digest"] == setup["source_packet_receipt_digest"]
