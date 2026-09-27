@@ -645,3 +645,28 @@ def test_the_mount_table_refuses_with_a_reason_when_findmnt_cannot_answer(tmp_pa
 
     assert read.returncode == 0 and "volume=8:16 /" in read.stdout, read.stderr
     assert failed.returncode == 2 and "could not read the mount table" in failed.stderr, failed.stderr
+
+
+def test_a_failed_unmount_binds_back_parents_before_the_binds_inside_them(tmp_path: Path) -> None:
+    state, volume, bound = _bound_state(tmp_path)
+    levels = [
+        "task-evaluation-inputs/prepared-references",  # the shallowest: will not unmount
+        "task-evaluation-inputs/prepared-references/content-addressed",
+        "task-evaluation-inputs/prepared-references/content-addressed/sha256",
+    ]
+    for rel in levels[1:]:
+        (state / rel).mkdir(parents=True)
+        (volume / rel).mkdir(parents=True)
+    lines = [f"/var/lib/blueprint/{levels[0]} busy", *(f"/var/lib/blueprint/{rel}" for rel in levels[1:])]
+    bound.write_text("".join(f"{line}\n" for line in lines), encoding="utf-8")
+
+    applied = _run(*_hermetic(tmp_path, bound), "--apply", "--ack", ACK)
+
+    assert applied.returncode == 2, applied.stderr + applied.stdout
+    assert f"could not unmount /var/lib/blueprint/{levels[0]}" in applied.stderr
+    out = applied.stdout.splitlines()
+    # Down deepest first, back up shallowest first: a bind inside a parent that is
+    # mounted later would be hidden under it.
+    assert [line.split()[1] for line in out if line.startswith("unbound")] == [str(state / levels[2]), str(state / levels[1])]
+    assert [line.split()[2] for line in out if line.startswith("bound back")] == [str(state / levels[1]), str(state / levels[2])]
+    assert sorted(bound.read_text(encoding="utf-8").splitlines()) == sorted(lines)
