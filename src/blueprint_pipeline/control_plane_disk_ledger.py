@@ -26,6 +26,7 @@ DEFAULT_RESERVATION_ROOT = Path(
 # can never exceed.
 ROLE_FOOTPRINT_BYTES: Mapping[str, int] = {
     "control_plane_deploy": 2 * GIB,
+    "handoff_staging": 4 * GIB,
     "launch_preparation": 2 * GIB,
     "episode_compilation": 2 * GIB,
     "launch_activation": 2 * GIB,

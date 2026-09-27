@@ -163,6 +163,7 @@ def test_headroom_projects_refused_roles_without_paths(tmp_path) -> None:
     )
     assert report["status"] == "low"
     assert set(report["refused_roles"]) == {
+        "handoff_staging",
         "launch_preparation",
         "episode_compilation",
         "launch_activation",
@@ -605,7 +606,8 @@ def test_workload_names_are_always_valid_labels():
 # reservation for at most its unit's start timeout, so the ledger entry's TTL
 # must outlive that timeout or a running job's reservation is deleted as stale.
 # control_plane_deploy is run by an operator (no unit), and
-# result_artifact_download by the long-running intake service (no start timeout).
+# result_artifact_download by the long-running intake service (no start timeout),
+# and handoff_staging by the long-running listener (no start timeout).
 ROLE_WORKER_UNITS = {
     "launch_preparation": ("blueprint-task-evaluation-launch-preparation.service",
                            "blueprint-task-evaluation-scene-progression.service"),
@@ -630,7 +632,7 @@ def _start_timeout_seconds(unit_text):
 
 def test_every_role_ttl_outlives_its_worker_units_start_timeout():
     units = Path(__file__).resolve().parents[1] / "deploy" / "systemd"
-    assert set(ROLE_WORKER_UNITS) | {"control_plane_deploy", "result_artifact_download"} == set(
+    assert set(ROLE_WORKER_UNITS) | {"control_plane_deploy", "result_artifact_download", "handoff_staging"} == set(
         disk_budget.ROLE_FOOTPRINT_BYTES)
     for role, names in ROLE_WORKER_UNITS.items():
         ttl = disk_budget.ROLE_TTL_SECONDS.get(role, disk_budget.DEFAULT_TTL_SECONDS)

@@ -156,10 +156,15 @@ def measure_mount(
         usage = disk_usage(path)
         device = disk_budget.target_device(path)
     except OSError as exc:
-        return {"mount": str(path), "status": "unreadable", "errno": exc.errno}
+        status = "absent" if isinstance(exc, FileNotFoundError) and not path.exists() else "unreadable"
+        return {"mount": str(path), "status": status, "errno": exc.errno}
     try:
         floor = disk_budget.floor_bytes(int(usage.total))
         footprints = chain_footprints(reservation_root)
+        critical_floor = disk_budget.floor_bytes(int(usage.total), role="control_plane_deploy")
+        critical_footprints = disk_budget.role_footprints(
+            disk_budget.CRITICAL_ROLES, reservation_root=reservation_root,
+        )
     except disk_budget.ControlPlaneDiskBudgetError as exc:
         # The ledger refuses every reservation under this configuration too.
         return {"mount": str(path), "status": "configuration_invalid", "blocker": str(exc)}
@@ -171,9 +176,13 @@ def measure_mount(
         # Reservations that cannot be read are not zero reservations.
         return {"mount": str(path), "status": "unreadable", "blocker": str(exc)}
     available = max(0, int(usage.free) - floor - reserved)
+    critical_available = max(0, int(usage.free) - critical_floor - reserved)
     refused = sorted(role for role, row in footprints.items() if row["bytes"] > available)
+    critical_refused = sorted(
+        role for role, row in critical_footprints.items() if row["bytes"] > critical_available
+    )
     used_fraction = 0.0 if not usage.total else (usage.total - usage.free) / usage.total
-    if used_fraction >= CRITICAL_FRACTION or refused:
+    if used_fraction >= CRITICAL_FRACTION or refused or critical_refused:
         level = "critical"
     elif used_fraction >= WARNING_FRACTION:
         level = "warning"
@@ -186,10 +195,13 @@ def measure_mount(
         "free_bytes": int(usage.free),
         "used_fraction": round(used_fraction, 4),
         "floor_bytes": floor,
+        "critical_floor_bytes": critical_floor,
         "reserved_bytes": reserved,
         "live_reservations": live,
         "available_bytes": available,
+        "critical_available_bytes": critical_available,
         "refused_roles": refused,
+        "critical_roles_refused": critical_refused,
         "footprints": footprints,
         "free_needed_for_one_role_bytes": floor + footprints["launch_preparation"]["bytes"],
         "free_needed_for_whole_chain_bytes": floor
@@ -204,6 +216,8 @@ def whole_chain_admission(
     reservation_root=DEFAULT_RESERVATION_ROOT,
     now=None,
     disk_usage: Callable[[str | os.PathLike[str]], Any] = shutil.disk_usage,
+    role_targets: Mapping[str, str | Path] | None = None,
+    device_of: Callable[[Path], int] = disk_budget.target_device,
 ):
     """Check the complete chain workspace before a new scene attempt starts.
 
@@ -227,7 +241,35 @@ def whole_chain_admission(
                 for role in CHAIN_ROLES
             }
     required = sum(int(row["bytes"]) for row in footprints.values())
-    passed = measured.get('status') == 'measured' and measured['available_bytes'] >= required
+    devices: dict[int, dict[str, Any]] = {}
+    admission_error = False
+    try:
+        configured = (disk_budget.parse_role_targets(os.getenv("BLUEPRINT_CONTROL_PLANE_DISK_ROLE_TARGETS"))
+                      if role_targets is None else {role: Path(path) for role, path in role_targets.items()})
+        projected = disk_budget.disk_headroom(
+            target_root=mount, role_targets=configured, reservation_root=reservation_root,
+            disk_usage=disk_usage, now=lambda: time.time() if now is None else float(now),
+            device_of=device_of,
+        )
+        for target in projected["targets"]:
+            role = target["role"]
+            if role not in CHAIN_ROLES:
+                continue
+            device = target["device"]
+            group = devices.setdefault(device, {
+                "device": device, "path": str(configured.get(role, mount)),
+                "roles": [], "required_bytes": 0,
+                "available_bytes": target["available_bytes"],
+            })
+            group["roles"].append(role)
+            group["required_bytes"] += int(footprints[role]["bytes"])
+    except (disk_budget.ControlPlaneDiskBudgetError, OSError, TypeError, ValueError) as exc:
+        admission_error = True
+        measured = {"mount": str(mount), "status": "configuration_invalid", "blocker": str(exc)}
+    for group in devices.values():
+        group["roles"].sort()
+        group["passed"] = group["available_bytes"] >= group["required_bytes"]
+    passed = not admission_error and bool(devices) and all(group["passed"] for group in devices.values())
     return {
         'schema_version': 'control_plane_whole_chain_admission.v1',
         'status': 'admitted' if passed else 'waiting_for_capacity',
@@ -235,6 +277,7 @@ def whole_chain_admission(
         'required_workspace_basis': footprint_basis(footprints),
         'footprints': footprints,
         'measurement': measured,
+        'devices': sorted(devices.values(), key=lambda row: row['device']),
         'provider_mutation_performed': False,
         'reservation_granted': False,
     }
@@ -305,8 +348,8 @@ def build_capacity_report(
     for row in measured:
         row["observed_at_epoch"] = observed
         row["forecast"] = forecast(history, row, now=observed)
-    levels = [row.get("level", "critical") for row in measured]
-    level = "critical" if "critical" in levels or any(r["status"] != "measured" for r in measured) else (
+    levels = [row.get("level", "ok") for row in measured]
+    level = "critical" if "critical" in levels or any(r["status"] not in {"measured", "absent"} for r in measured) else (
         "warning" if "warning" in levels else "ok"
     )
     alerts = []
@@ -317,6 +360,9 @@ def build_capacity_report(
             continue
         if row["refused_roles"]:
             alerts.append({"mount": row["mount"], "code": "admission_refused", "roles": row["refused_roles"]})
+        if row["critical_roles_refused"]:
+            alerts.append({"mount": row["mount"], "code": "critical_admission_refused",
+                           "roles": row["critical_roles_refused"]})
         if row["level"] != "ok":
             alerts.append({"mount": row["mount"], "code": f"utilization_{row['level']}", "used_fraction": row["used_fraction"]})
         days = row["forecast"].get("days_until_floor")
