@@ -154,6 +154,33 @@ def test_exact_main_and_sealed_receipt_required_before_paid_mutation(
     assert json.loads((tmp_path / "admission.json").read_text())["status"] == "blocked"
 
 
+def test_paid_g1_rejects_untrusted_guard_actor_before_checkpoint_staging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commit = "a" * 40
+    monkeypatch.setenv(lane.SPEND_ADMISSION_LOCK_PATH_ENV, str(tmp_path / "lock.json"))
+    monkeypatch.setattr(
+        lane, "_load_spend_admission_lock",
+        lambda _path: {"_load_blocker": "spend_admission_lock_owner_untrusted"},
+    )
+    monkeypatch.setattr(
+        lane, "stage_g1_checkpoint_cache",
+        lambda **_kwargs: pytest.fail("checkpoint staging ran before actor preflight"),
+    )
+    result = lane.dispatch_g1_paid_campaign(
+        _args(tmp_path, g1_campaign_bundle_receipt=str(tmp_path / "receipt.json")),
+        control_identity={
+            "orchestrator_source_commit": commit,
+            "origin_main_commit": commit,
+            "remote_main_commit": commit,
+        },
+        control_blockers=[],
+    )
+    assert result["status"] == "blocked"
+    assert result["blockers"] == ["spend_admission_lock_owner_untrusted"]
+    assert result["provider_mutations_performed"] == 0
+
+
 def test_paid_g1_refuses_missing_private_checkpoint_cache_before_provider(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
