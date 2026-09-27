@@ -1201,3 +1201,57 @@ def test_a_directory_swapped_for_a_link_never_redirects_a_scratch_input_removal(
     assert skip["reason"].startswith("recheck_failed:") if when == "before_apply" else skip["reason"] == "path_changed"
     assert victim.read_text() == "evidence that is not the replay's"
     assert (prep.with_name("prep-moved") / "receipt.json").read_bytes() == b"a scratch input"
+
+
+@pytest.mark.parametrize("reported_by", ["lstat_and_fstat", "fstat_only"])
+def test_a_single_file_on_another_device_is_skipped_as_cross_device(tmp_path, monkeypatch, reported_by):
+    """Re-review of PR 10a.1: _remove_file never compared devices, so under the standalone unit's
+    default rules a planned binary whose leaf lstat and opened fstat both reported another device
+    was removed, and _HeldChild's docstring (nothing on another device is unlinked) was untrue.
+    The recheck now requires the held child's device of both the leaf and what is opened to hash
+    it: a cross_device skip, and the file stays."""
+    root, child, data, proc = setup(tmp_path)
+    p = plan(root, proc)
+    assert planned_paths(p) == {"working.ply"}
+    target, elsewhere = data.lstat().st_ino, data.lstat().st_dev + 1
+    real_leaf, real_fstat = gc._leaf, os.fstat
+
+    def leaf(directory, name):
+        info = real_leaf(directory, name)
+        return _OnDevice(info, elsewhere) if name == data.name else info
+
+    def fstat(fd):
+        info = real_fstat(fd)
+        return _OnDevice(info, elsewhere) if info.st_ino == target else info
+
+    with monkeypatch.context() as patched:
+        if reported_by == "lstat_and_fstat":
+            patched.setattr(gc, "_leaf", leaf)
+        patched.setattr(os, "fstat", fstat)
+        result = apply(p, proc)
+
+    assert (result["removed_bytes"], result["skipped"]) == (0, [{"path": str(data), "reason": "cross_device"}])
+    assert data.read_bytes() == b"x" * 100000
+
+
+def test_a_store_copy_opened_on_another_device_is_skipped_as_cross_device(tmp_path, monkeypatch):
+    """The store-copy recheck hashes through the same open as a single file: what it opens must be
+    on the held child's device too, and is otherwise a cross_device skip, never an error out of
+    apply."""
+    root, child, data, proc = setup(tmp_path)
+    data.unlink()
+    copy = _store_copy(child, b"a store copy")
+    p = plan(root, proc, **STORE)
+    target, elsewhere = copy.lstat().st_ino, copy.lstat().st_dev + 1
+    real_fstat = os.fstat
+
+    def fstat(fd):
+        info = real_fstat(fd)
+        return _OnDevice(info, elsewhere) if info.st_ino == target else info
+
+    with monkeypatch.context() as patched:
+        patched.setattr(os, "fstat", fstat)
+        result = apply(p, proc, **STORE)
+
+    assert (result["removed_bytes"], result["skipped"]) == (0, [{"paths": [str(copy)], "reason": "cross_device"}])
+    assert copy.exists()

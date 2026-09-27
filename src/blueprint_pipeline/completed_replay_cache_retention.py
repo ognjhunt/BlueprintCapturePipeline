@@ -29,8 +29,9 @@ the opt-ins the rules are the ones this module always had.
 
 Apply rechecks and unlinks every name, and hashes what a rule's digest rests on,
 through directory descriptors held from the replay child down, never through a
-path, and skips an item whose directory moved or became a link since it was
-opened.
+path. Under every rule it skips an item whose directory moved or became a link
+since it was opened, and one on another device than the child (cross_device),
+whether its directory lists it there or it is opened there.
 
 This module is also a standalone maintenance entrypoint; it never allocates a
 provider or changes the scientific release used by a live run.
@@ -312,12 +313,23 @@ def _same_leaf(directory, name, expected):
     return stat.S_ISREG(entry.st_mode) and (entry.st_dev, entry.st_ino) == (expected.st_dev, expected.st_ino)
 
 
+class _CrossDevice(Exception):
+    """What apply opened is on another filesystem than the held replay child: a ``cross_device`` skip."""
+
+
 def _held_sha(directory, name, expected):
-    """Hash ``name`` opened O_NOFOLLOW in its held directory, or None if it is not ``expected``."""
+    """Hash ``name`` opened O_NOFOLLOW in its held directory, or None if it is not ``expected``.
+
+    Every caller has already required ``expected`` (the leaf's lstat) to be on the held
+    child's device, so an opened file on any other device than ``expected``'s raises
+    ``_CrossDevice``: something from another filesystem took the leaf's place.
+    """
     fd = os.open(name, _LEAF_FLAGS, dir_fd=directory)
     try:
         opened = os.fstat(fd)
-        if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (expected.st_dev, expected.st_ino):
+        if opened.st_dev != expected.st_dev:
+            raise _CrossDevice(name)
+        if not stat.S_ISREG(opened.st_mode) or opened.st_ino != expected.st_ino:
             return None
         with open(fd, "rb", closefd=False) as stream:
             return "sha256:" + hashlib.file_digest(stream, "sha256").hexdigest()
@@ -326,11 +338,17 @@ def _held_sha(directory, name, expected):
 
 
 def _remove_file(held, item):
-    """Recheck, hash and unlink one planned file through held descriptors; a skip reason or None."""
+    """Recheck, hash and unlink one planned file through held descriptors; a skip reason or None.
+
+    The file must be on the held child's own device, both as its directory lists it and as
+    it is opened to be hashed; otherwise it is a ``cross_device`` skip.
+    """
     relative = Path(item["relative_path"])
     try:
         directory = held.directory(relative.parts[:-1])
         info = _leaf(directory, relative.name)
+        if info.st_dev != held.device:
+            return "cross_device"
         if (
             not stat.S_ISREG(info.st_mode)
             or relative.suffix.lower() not in BINARY_SUFFIXES
@@ -345,6 +363,8 @@ def _remove_file(held, item):
             return "file_changed"
         if not held.in_place(relative.parts[:-1]) or not _same_leaf(directory, relative.name, info):
             return "path_changed"
+    except _CrossDevice:
+        return "cross_device"
     except OSError as exc:
         return f"recheck_failed:{type(exc).__name__}"
     try:
@@ -434,13 +454,13 @@ def _remove_empty_directories(held, root):
 def _remove_group(held, group, names, *, changed, sha256=None):
     """Recheck every name of a planned inode group through held descriptors, then unlink every name.
 
-    The group's planned device, and each of its names' devices now, must be the held
-    child's own; otherwise it is a ``cross_device`` skip, so nothing on a filesystem mounted
-    inside the replay is removed. Each name must still be the planned inode, those names all
-    of its links, its size and mtime unchanged and, with ``sha256``, its bytes that digest;
-    otherwise the group is a ``changed`` skip. One failed check keeps every name, and a
-    store name goes last, so a removal cut short leaves a group the next plan still
-    recognises.
+    The group's planned device, each of its names' devices now, and the file opened to hash
+    it must be the held child's own; otherwise it is a ``cross_device`` skip, so nothing on a
+    filesystem mounted inside the replay is removed. Each name must still be the planned
+    inode, those names all of its links, its size and mtime unchanged and, with ``sha256``,
+    its bytes that digest; otherwise the group is a ``changed`` skip. One failed check keeps
+    every name, and a store name goes last, so a removal cut short leaves a group the next
+    plan still recognises.
     """
     if group.get("dev") != held.device:
         return "cross_device"
@@ -469,6 +489,8 @@ def _remove_group(held, group, names, *, changed, sha256=None):
             for name, directory, info in entries
         ):
             return "path_changed"
+    except _CrossDevice:
+        return "cross_device"
     except OSError as exc:
         return f"recheck_failed:{type(exc).__name__}"
     for name, directory, _info in sorted(entries, key=lambda entry: scratch_store_copy(entry[0])):
