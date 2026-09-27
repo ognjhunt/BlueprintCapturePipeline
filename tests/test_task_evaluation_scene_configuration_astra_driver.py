@@ -785,6 +785,128 @@ def test_hinged_appliance_briefs_caption_each_frame_from_its_reference_row(retai
         driver.build_articulated_authoring_requests(retained.input, retained.source, references, retained.rights)
 
 
+def _cabinet_stage(retained, monkeypatch, estimates=None):
+    """A side-hinged storage cabinet with two fixed shelves, each seen in a different frame."""
+    from tests.test_articulated_part_evidence import cabinet_frames, storage_cabinet
+    from blueprint_pipeline import website_native_inputs
+
+    monkeypatch.setattr(website_native_inputs, "validate_website_authoring_disclosure", lambda **_: None)
+    from PIL import Image
+    references = []
+    for index, shade in enumerate((200, 120, 60)):
+        path = retained.root / f"cabinet_{index}.png"
+        Image.new("RGB", (64, 48), (shade, shade, shade)).save(path)
+        references.append(path)
+    frames = [{**row, "sha256": driver._sha256(path)} for row, path in zip(cabinet_frames(), references)]
+    config = storage_cabinet(frames=frames, estimates=estimates)
+    config.update(authoring_backend=driver.BACKEND,
+                  provider_disclosure={"derived_views_and_metric_envelope": True,
+                                       "provider_training": False, "public_redistribution": False})
+    retained.input["configuration"] = config
+    return config, references
+
+
+def test_each_part_brief_leads_with_the_frames_that_show_it(retained, monkeypatch):
+    """2026-09-27 website capture: every part was briefed with the same whole-object frames."""
+    _config, references = _cabinet_stage(retained, monkeypatch)
+    plan, requests = driver.build_articulated_authoring_requests(
+        retained.input, retained.source, references, retained.rights)
+    digests = [driver._sha256(path) for path in references]
+    for request in requests.values():  # The same bounded frame set for every part; only order and captions differ.
+        assert sorted(frame.sha256 for frame in request.source_frames) == sorted(digests)
+    upper = requests["upper_shelf"]
+    assert [frame.sha256 for frame in upper.source_frames] == [digests[1], digests[0], digests[2]]
+    assert upper.source_frames[0].description.startswith("Shows this part (Upper shelf): reproduce its observed")
+    assert all(frame.description.startswith("Whole-object context; this part is not visible here.")
+               for frame in upper.source_frames[1:])
+    lower = requests["lower_shelf"]
+    assert [frame.sha256 for frame in lower.source_frames] == [digests[2], digests[0], digests[1]]
+    # A part carried by a link is shown by any frame naming it: the door leads with both frames showing it.
+    assert [frame.sha256 for frame in requests["door"].source_frames] == [digests[0], digests[2], digests[1]]
+    constraints = json.loads(upper.construction_constraints)
+    evidence = constraints["part_evidence"]
+    assert evidence["frames_showing_this_part"] == ["f_upper"]
+    assert evidence["whole_object_context_frames"] == ["f_front", "f_lower"]
+    assert evidence["dimension_bases"]["upper_shelf"]["basis"] == "template_prior"
+    description = upper.physical_review_input.object_description
+    assert "Frames f_upper show this part. Reproduce this part's observed construction, pattern, spacing, " \
+           "colours and materials from those frames" in description
+    assert "template prior of the assembly family, not observed" in description
+    for axis in ("x_m", "y_m", "z_m"):
+        dimension = getattr(upper.physical_review_input.dimensions, axis)
+        assert dimension.rationale.startswith("template_prior:")
+        assert dimension.evidence_ids == ["retained_source_geometry"]
+    # The body and door keep their envelope rationale; neither is a template-placed part.
+    assert requests["body"].physical_review_input.dimensions.x_m.rationale.startswith("Part envelope derived")
+    for part_id, feature in (("body", "left_side"), ("door", "handle")):
+        assert json.loads(requests[part_id].construction_constraints)["part_evidence"]["dimension_bases"] == {
+            feature: _brief_basis(plan, feature)}
+
+
+def _brief_basis(plan, part_id):
+    """A plan basis as a brief carries it: link, feature and frames already travel on the part rows."""
+    return {key: value for key, value in plan["part_dimension_bases"][part_id].items()
+            if key not in {"link_id", "feature", "appearance_frame_ids"}}
+
+
+def test_part_frame_evidence_is_family_agnostic_and_leaves_frameless_configurations_alone():
+    from blueprint_pipeline.task_object_articulated_packaging import assembly_contract, plan_articulated_assembly
+    from tests.test_articulated_hinged_door_appliance import _frame
+
+    config = _articulated_configuration()
+    frames = [_frame("f_front", "sha256:" + "a" * 64, "closed", ["carcass", "middle_drawer"]),
+              _frame("f_top", "sha256:" + "b" * 64, "open", ["top_drawer"], view="top_down")]
+    config.update(assembly_family="stacked_drawer_cabinet", reference_frames=frames,
+                  source_observation_kind="website_capture_frames", required_parts=[
+                      {"part_id": "carcass", "label": "Cabinet body", "role": "body", "observed_frame_ids": ["f_front"]},
+                      {"part_id": "middle_drawer", "label": "Middle drawer", "role": "task_part",
+                       "observed_frame_ids": ["f_front"]},
+                      {"part_id": "top_drawer", "label": "Top drawer", "role": "fixed_interior",
+                       "observed_frame_ids": ["f_top"]}])
+    plan = plan_articulated_assembly(config)
+    contract = assembly_contract(config, "stacked_drawer_cabinet")
+    source = [{"path": f"/f/{row['frame_id']}.png", "sha256": row["sha256"], "role": "observed_source",
+               "description": row["frame_id"]} for row in frames]
+    carcass = [row for row in plan["required_parts"] if row["link_id"] == "carcass"]
+    ordered, evidence = driver.part_frame_evidence(source, contract, carcass, plan["part_dimension_bases"])
+    assert [row["description"].rsplit(" ", 1)[1] for row in ordered] == ["f_front", "f_top"]
+    assert evidence["frames_showing_this_part"] == ["f_front"] and "dimension_bases" not in evidence
+    # The shared drawer solid is instanced in every bay, so any frame naming a drawer shows it.
+    links = {row["link_id"] for row in plan["links"] if row["part_id"] == "drawer"}
+    drawer = [row for row in plan["required_parts"] if row["link_id"] in links]
+    ordered, evidence = driver.part_frame_evidence(source, contract, drawer, plan["part_dimension_bases"])
+    assert evidence["frames_showing_this_part"] == ["f_front", "f_top"]
+    assert evidence["dimension_bases"]["top_drawer"]["basis"] == "template_prior"
+    # Without contract frames (a legacy drawer), frames pass through untouched and no evidence is added.
+    legacy = assembly_contract(_articulated_configuration(), "stacked_drawer_cabinet")
+    assert driver.part_frame_evidence(source, legacy, drawer, {}) == (source, None)
+
+
+def test_observed_part_box_sizes_its_brief_with_its_own_basis_and_uncertainty(retained, monkeypatch):
+    from blueprint_pipeline.task_object_articulated_packaging import plan_articulated_assembly
+    from tests.test_articulated_part_evidence import _estimate, _link_box, storage_cabinet
+
+    lo, hi = _link_box(plan_articulated_assembly(storage_cabinet()), "lower_shelf")
+    box = ([lo[0], lo[1], lo[2] + 0.02], [hi[0] - 0.05, hi[1], lo[2] + 0.05])
+    _config, references = _cabinet_stage(retained, monkeypatch,
+                                         estimates=[_estimate("lower_shelf", ["f_lower"], *box, (0.02, 0.01, 0.015))])
+    plan, requests = driver.build_articulated_authoring_requests(
+        retained.input, retained.source, references, retained.rights)
+    lower = requests["lower_shelf"]
+    assert lower.dimensions_m == pytest.approx([b - a for a, b in zip(*box)], abs=1e-5)
+    assert list(lower.dimension_uncertainty_m) == [0.02, 0.01, 0.015]
+    dimension = lower.physical_review_input.dimensions.z_m
+    assert dimension.rationale.startswith("observed_estimate_from_frames: frames f_lower, clamped inside the tub")
+    assert dimension.evidence_ids == ["retained_source_geometry", "retained_source_view_2"]
+    assert dimension.interval.lower == pytest.approx(lower.dimensions_m[2] - 0.015)
+    basis = json.loads(lower.construction_constraints)["part_evidence"]["dimension_bases"]["lower_shelf"]
+    assert basis["basis"] == "observed_estimate_from_frames" and basis["frame_ids"] == ["f_lower"]
+    assert basis == _brief_basis(plan, "lower_shelf") and basis["uncertainty_m"] == [0.02, 0.01, 0.015]
+    assert "estimated from frames f_lower" in lower.physical_review_input.object_description
+    # The unestimated sibling stays an explicit prior.
+    assert requests["upper_shelf"].physical_review_input.dimensions.x_m.rationale.startswith("template_prior:")
+
+
 def test_hinged_appliance_frames_must_match_the_retained_frames(retained, monkeypatch):
     _config, references = _dishwasher_stage(retained, monkeypatch)
     with pytest.raises(driver.AstraStageError, match="reference_frames_disagree_with_retained_frames"):
