@@ -11,6 +11,11 @@ release a pin only with the owner's opt-in,
 ``BLUEPRINT_CONTROL_PLANE_GC_EXTENDED_PIN_PROOFS=1``; until then their
 candidates are listed with ``"enabled": false``:
 
+* ``sealed_registry_run``: an activation pin whose run carries a result
+  registry the artifact store accepts as sealed (delivered completed_unqualified,
+  blocked or cancelled, its closeout receipts intact), idle past the hot
+  window, with no whole-run pointer. Whole-run offload never archives a
+  registry run, so neither original proof could release one.
 * ``unconsumed_stale_pin``: a preparation or compilation pin that no live pin
   depends on, created more than a week and a day ago, whose paths are all
   ``cache``. Its content is reproducible and re-fetched by digest.
@@ -23,11 +28,12 @@ a candidate with its ``proof``, or in ``kept`` with a typed reason.
 from __future__ import annotations
 
 import json
+import os
 from collections import Counter
 from pathlib import Path
 
 from .control_plane_storage_pins import load_storage_pins, release_storage_pin, storage_pin_guard
-from .decision_evidence_contracts import canonical_digest
+from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 from .completed_replay_cache_retention import active_reference
 from .control_plane_evidence_offload import (
     DEFAULT_HOT_WINDOW_SECONDS, POINTER_SUFFIX, _has_result_registry, _terminal_receipt, _tree_snapshot,
@@ -67,6 +73,12 @@ def _pin_path_allowed(classifier, path, classes=_PIN_PATH_CLASSES):
     raise last
 
 
+def _evidence_names(owner):
+    """The run directories an activation owns: its id, and ``<id>-launch`` for a website auto activation."""
+
+    return (owner, owner + "-launch") if owner.endswith("-activation-auto") else (owner,)
+
+
 def _closed_proof(pin, evidence_roots, *, hot_window_seconds=DEFAULT_HOT_WINDOW_SECONDS, now=None):
     """Proof that the run this activation pin protects no longer needs the pin.
 
@@ -81,10 +93,9 @@ def _closed_proof(pin, evidence_roots, *, hot_window_seconds=DEFAULT_HOT_WINDOW_
     owner, kind = pin["owner_id"], pin["kind"]
     if kind != "activation":
         return None
-    evidence_names = (owner, owner + "-launch") if owner.endswith("-activation-auto") else (owner,)
     for root in evidence_roots:
         root = Path(root)
-        for evidence_name in evidence_names:
+        for evidence_name in _evidence_names(owner):
             directory = root / evidence_name
             if (now is not None and directory.is_dir() and not directory.is_symlink()
                     and not (root / (evidence_name + POINTER_SUFFIX)).exists()):
@@ -135,7 +146,77 @@ def _unconsumed_stale_pin(pin, live_pins, *, classifier, now, **_context):
     return {"kind": "unconsumed_stale_pin", "created_at_epoch": pin["created_at_epoch"]}, None
 
 
-_EXTENDED_PROOFS = {"preparation": _unconsumed_stale_pin, "compilation": _unconsumed_stale_pin}
+def _present(path):
+    """Whether anything is at ``path``, or None when that cannot be told: an unreadable root proves nothing."""
+
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return None
+    return True
+
+
+def _sealed_registry_run(directory, *, hot_window_seconds, now):
+    """A run whose result registry the artifact store accepts as sealed, the registry idle past the hot window."""
+
+    if directory.is_symlink() or not directory.is_dir():
+        return None, "run_path_unsafe"
+    if not _has_result_registry(directory):
+        # The sealed-cold-run proof already declined it: unsealed, or sealed and still hot.
+        return None, "run_not_sealed" if _terminal_receipt(directory) is None else "run_hot"
+    from .task_evaluation_result_artifact_store import _sealed_registry
+    try:
+        registry, registry_path, _raw = _sealed_registry(directory.resolve())
+        idle_since = registry_path.stat().st_mtime
+        # The delivery the registry seals, re-read only to name its status.
+        delivery = _read(registry_path.parent / "delivery.json")
+        sealed = registry["delivery_digest"] == cross_runtime_canonical_digest(delivery, digest_field="delivery_digest")
+    except Exception:  # noqa: BLE001 - whatever the store will not accept as sealed keeps the pin
+        return None, "registry_unsealed"
+    if not sealed:
+        return None, "registry_unsealed"
+    if now - idle_since < hot_window_seconds:
+        return None, "registry_hot"
+    return {"kind": "sealed_registry_run", "run_directory": directory.name, "registry_digest": registry["registry_digest"],
+            "delivery_status": delivery["result_status"], "registry_mtime_epoch": idle_since}, None
+
+
+def _activation_proof(pin, live_pins, *, evidence_roots, hot_window_seconds, classifier, now, **_context):
+    """An activation whose every run, under any evidence name in any evidence root, is a sealed registry run.
+
+    Any whole-run pointer keeps the pin: the archived-run proof already declined it.
+    """
+
+    roots = [Path(root) for root in evidence_roots]
+    if not roots or any(root.is_symlink() for root in roots):
+        return None, "evidence_root_unavailable"
+    runs = []
+    for root in roots:
+        for name in _evidence_names(pin["owner_id"]):
+            directory, pointer = _present(root / name), _present(root / (name + POINTER_SUFFIX))
+            if directory is None or pointer is None:
+                return None, "evidence_root_unavailable"
+            if pointer:
+                return None, "run_pointer_present"
+            if directory:
+                runs.append(root / name)
+    if not runs:
+        return None, "no_proof"
+    proof = None
+    for run in runs:
+        found, reason = _sealed_registry_run(run, hot_window_seconds=hot_window_seconds, now=now)
+        if found is None:
+            return None, reason
+        proof = proof or found
+    if not _paths_classify(classifier, pin["paths"], _PIN_PATH_CLASSES):
+        return None, "path_class_invalid"
+    return proof, None
+
+
+_EXTENDED_PROOFS = {"preparation": _unconsumed_stale_pin, "compilation": _unconsumed_stale_pin,
+                    "activation": _activation_proof}
 
 
 def _extended_proof(pin, live_pins, **context):
@@ -213,7 +294,8 @@ def reconcile_terminal_cache_pins(*, pins_root, queue_roots, evidence_roots, now
         classifier(str(root), expected="evidence_cold", code="terminal_cache_pin_evidence_root_invalid")
     pins = _live_pins(pins_root, now)
     queue_text = _queue_reference_text(queue_roots)
-    context = {"classifier": classifier, "now": now}
+    context = {"classifier": classifier, "now": now, "evidence_roots": evidence_roots,
+               "hot_window_seconds": hot_window_seconds}
     candidates, kept, released = [], [], []
     for identity, pin in pins.items():
         row = {"kind": pin["kind"], "owner_id": pin["owner_id"]}
