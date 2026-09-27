@@ -209,8 +209,8 @@ def _integer(value: Any) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
-def _reason_rows(source: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
-    """``{reason: {count, bytes}}`` for at most the ``_MAX_REASONS`` largest; ``bytes`` is null when unknown.
+def _reason_rows(source: Mapping[str, Any], *, max_rows: int | None = _MAX_REASONS) -> dict[str, dict[str, Any]]:
+    """``{reason: {count, bytes}}`` for the largest reasons; ``bytes`` is null when unknown.
 
     A phase that counts its reasons without sizing them (``retained_counts``)
     reports null bytes rather than zero. A reason counted zero times kept
@@ -230,7 +230,7 @@ def _reason_rows(source: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
         (item for item in rows.items() if item[1]["count"] > 0),
         key=lambda item: (-(item[1]["bytes"] or 0), -item[1]["count"], item[0]),
     )
-    return dict(ranked[:_MAX_REASONS])
+    return dict(ranked if max_rows is None else ranked[:max_rows])
 
 
 def _phase_summary(entry: Mapping[str, Any]) -> dict[str, Any]:
@@ -335,18 +335,26 @@ def build_storage_gc_summary(report: Mapping[str, Any]) -> dict[str, Any]:
     ``source_report_digest``, the ``opt_in`` flags (null when the report predates
     them), ``alerts``, ``phase_errors``, ``skipped_roots`` (configured roots that
     were absent: the only paths it names), per phase ``candidate_bytes``,
-    ``removed_or_offloaded_bytes`` and ``retained_by_reason``, and ``top_retained``,
-    the ten reasons across phases that keep the most known bytes. Every reason is
+    ``removed_or_offloaded_bytes`` and ``retained_by_reason``, ``top_retained``
+    phase rows, and ``top_retained_reasons`` aggregated before phase rows are
+    capped. Every reason is
     a typed string; anything else becomes ``unrecognized_reason``.
     """
 
     phases: dict[str, dict[str, Any]] = {}
+    reason_totals: dict[str, int] = {}
     for key in PHASES:
         entry = report.get(key)
         if key == "result_artifact_offload" and isinstance(entry, list):
             phases[key] = _result_artifact_summary(entry)
         elif isinstance(entry, Mapping):
             phases[key] = _phase_summary(entry)
+            by_reason = entry.get("retained_by_reason")
+            raw_reasons = by_reason if isinstance(by_reason, Mapping) else entry.get("retained_counts")
+            if isinstance(raw_reasons, Mapping):
+                for reason, row in _reason_rows(raw_reasons, max_rows=None).items():
+                    if row["bytes"] and row["bytes"] > 0:
+                        reason_totals[reason] = reason_totals.get(reason, 0) + row["bytes"]
     ranked = sorted(
         (
             {"phase": phase, "reason": reason, "count": row["count"], "bytes": row["bytes"]}
@@ -369,6 +377,10 @@ def build_storage_gc_summary(report: Mapping[str, Any]) -> dict[str, Any]:
         "skipped_roots": [str(root) for root in report.get("skipped_roots") or ()][:_MAX_LISTED],
         "phases": phases,
         "top_retained": ranked[:TOP_RETAINED],
+        "top_retained_reasons": [
+            {"reason": reason, "bytes": reason_totals[reason]}
+            for reason in sorted(reason_totals, key=lambda name: (-reason_totals[name], name))[:3]
+        ],
     }
     if len(json.dumps(summary, indent=2, sort_keys=True).encode()) > MAX_SUMMARY_BYTES:
         raise ValueError("storage_gc_summary_too_large")
