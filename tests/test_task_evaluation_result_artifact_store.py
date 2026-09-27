@@ -326,8 +326,8 @@ def test_existing_gc_tick_uses_per_artifact_offload(setup, monkeypatch, tmp_path
 
     f = setup
     monkeypatch.setattr(
-        "blueprint_pipeline.completed_replay_cache_retention.active_reference",
-        lambda _, **kw: False,
+        "blueprint_pipeline.completed_replay_cache_retention.process_reference",
+        lambda _, **kw: None,
     )
     report = run_storage_gc(
         content_store_roots=[],

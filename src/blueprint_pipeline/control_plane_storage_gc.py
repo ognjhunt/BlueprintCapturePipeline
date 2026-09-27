@@ -69,6 +69,7 @@ from .control_plane_evidence_offload import (
 from .control_plane_replay_cache_gc import (
     REPLAY_PARENT_ROOTS_ENV, _truthy_setting, reclaim_replay_caches, replay_cache_retention_setting,
 )
+from .control_plane_storage_gc_reasons import evidence_protection_reason
 from .control_plane_storage_pins import PINS_ROOT_ENV, live_pinned_paths
 from .control_plane_storage_roots import require_storage_class
 from .decision_evidence_contracts import canonical_digest
@@ -1391,26 +1392,14 @@ def run_storage_gc(
             }
             del observed_text
 
+            def protection_reason(directory: Path) -> str | None:
+                # Re-reads settlements and queues on every check; see evidence_protection_reason.
+                return evidence_protection_reason(
+                    directory, settlement_roots=settlement_roots, pins_root=pins_root,
+                    queue_roots=queue_roots, now=clock, ignored_process_ids=(os.getpid(),))
+
             def evidence_protected(directory: Path) -> bool:
-                # Re-read the records on every check, exactly as the queue text is.
-                # ``apply_evidence_offload`` re-checks protection immediately before it
-                # evicts each candidate; a settlement written after the manifest was
-                # built must protect its launch run at that final check too.
-                settlement_text, settlement_unreadable = _settlement_reference_text(
-                    settlement_roots
-                )
-                # Fail closed: an unreadable settlement root proves nothing is unreferenced.
-                if settlement_unreadable:
-                    return True
-                from .completed_replay_cache_retention import active_reference
-                if active_reference(directory, ignored_process_ids=(os.getpid(),)):
-                    return True
-                pinned = live_pinned_paths(pins_root, now=clock)
-                if any(Path(p) == directory or directory in Path(p).parents or Path(p) in directory.parents for p in pinned):
-                    return True
-                if settlement_reopens_beyond_retained_receipts(directory.name, settlement_text):
-                    return True
-                return directory.name in _queue_reference_text(queue_roots)
+                return protection_reason(directory) is not None
             # Keep authenticated downloads usable after cold evidence reclamation.
             from .task_evaluation_result_artifact_store import (
                 APPLY_ACK as RESULT_ARTIFACT_ACK, offload_result_artifacts,
@@ -1438,7 +1427,7 @@ def run_storage_gc(
                 abandoned_after_seconds=abandoned_after_seconds,
                 now=clock,
                 classifier=classifier,
-                protection_checker=evidence_protected,
+                protection_reason=protection_reason,
             )
             if apply and offload_enabled:
                 extra = {"publisher": publisher} if publisher is not None else {}
