@@ -68,8 +68,17 @@ def _fake_result(request: dict, output_dir: Path, *, blocked: bool = False) -> d
             "ranking_eligible": False, "physical_outcome_claimed": False,
         }
     else:
-        score = {"status": "scored", "outcome": "failure"}
-        score["score_digest"] = canonical_digest(score, digest_field="score_digest")
+        navigation = request["candidate_id"].endswith("_vision_navi")
+        digest_field = "score_digest" if navigation else "report_digest"
+        score = {
+            "schema_version": (
+                "native_g1_navigation_goal_score.v1"
+                if navigation else "adp_rigid_task_scoring.v2"
+            ),
+            "status": "scored",
+            "outcome": "failure",
+        }
+        score[digest_field] = canonical_digest(score, digest_field=digest_field)
         episode_dir = output_dir / "episode"
         episode_dir.mkdir()
         media_dir = episode_dir / "media" / request["candidate_id"]
@@ -171,6 +180,48 @@ def test_pair_runs_same_scene_in_catalog_order_and_preserves_two_scores(tmp_path
                for a in result["attempts"])
     assert result["ranking_eligible"] is False
     assert json.loads((tmp_path / "comparison" / (pair.SCHEMA + ".json")).read_text()) == result
+
+
+def test_pair_accepts_the_rigid_scorers_report_digest(tmp_path: Path) -> None:
+    from blueprint_pipeline.adp_task_scoring import score_task_episode_from_spec
+    from tests.test_adp_task_scoring import _rigid_v2_sample, _rigid_v2_spec
+
+    score = score_task_episode_from_spec(
+        task_spec=_rigid_v2_spec(),
+        samples=[_rigid_v2_sample(step, [1.0, 2.0, 0.8]) for step in range(4)],
+    )
+    assert score["status"] == "scored"
+    assert "score_digest" not in score
+    worker = {
+        "candidate_id": DP,
+        "scene_plan_digest": "sha256:" + "a" * 64,
+        "supervised_episode": {"episode_result_digest": None},
+    }
+    episode = {
+        "candidate_id": DP,
+        "scene_plan_digest": worker["scene_plan_digest"],
+        "status": "development_only_scored_episode",
+        "evaluation_task_kind": "rigid_pick_place",
+        "ranking_eligible": False,
+        "physical_outcome_claimed": False,
+        "score": score,
+    }
+    episode["result_digest"] = canonical_digest(episode, digest_field="result_digest")
+    worker["supervised_episode"]["episode_result_digest"] = episode["result_digest"]
+    path = tmp_path / "episode.json"
+    path.write_text(json.dumps(episode))
+
+    assert pair._score_from_episode(path, worker=worker, objective_id="task_success") == {
+        "episode_result_digest": episode["result_digest"],
+        "score_digest": score["report_digest"],
+        "outcome": score["outcome"],
+    }
+    episode["score"]["report_digest"] = "sha256:" + "0" * 64
+    episode["result_digest"] = canonical_digest(episode, digest_field="result_digest")
+    worker["supervised_episode"]["episode_result_digest"] = episode["result_digest"]
+    path.write_text(json.dumps(episode))
+    with pytest.raises(ValueError, match="g1_pair_episode_or_score_receipt_invalid"):
+        pair._score_from_episode(path, worker=worker, objective_id="task_success")
 
 
 def test_preflight_block_retains_terminal_receipt_and_skips_second_candidate(tmp_path: Path) -> None:

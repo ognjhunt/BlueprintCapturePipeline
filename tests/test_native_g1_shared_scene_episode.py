@@ -140,6 +140,12 @@ def test_candidates_use_same_scene_episode_and_retain_each_frame(
         checkpoint = json.loads((tmp_path / row["checkpoint_relative_path"]).read_text())
         assert checkpoint["checkpoint_digest"] == row["checkpoint_digest"]
         assert checkpoint["robot_state"] == row["robot_state"]
+        assert checkpoint["task_sample"] == row["task_sample"]
+    initial_checkpoint = json.loads((tmp_path / "initial_task_sample.v1.json").read_text())
+    assert initial_checkpoint["task_sample"] == trace["initial_task_sample"]
+    assert initial_checkpoint["checkpoint_digest"] == canonical_digest(
+        initial_checkpoint, digest_field="checkpoint_digest"
+    )
     frames = [row["policy_input_frame"] for row in trace["queries"]]
     frames += [frame for row in trace["steps"] for frame in row["review_frames"].values()]
     frames += list(trace["terminal_observation"]["views"].values())
@@ -419,17 +425,22 @@ def test_bound_team_endpoint_receives_real_scene_observation(tmp_path: Path) -> 
     assert trace["visual_evidence"]["status"] == "complete"
 
 
-def test_built_g1_scene_uses_same_task_samples_and_scorer(tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.parametrize("score_status", ["scored", "undetermined"])
+def test_built_g1_scene_uses_same_task_samples_and_scorer(
+    tmp_path: Path, monkeypatch, score_status: str
+) -> None:
     from blueprint_pipeline import adp_task_scoring
     from blueprint_pipeline import native_g1_joint_episode_environment as g1_environment
     from blueprint_pipeline import native_g1_run_preflight
     from blueprint_pipeline import native_task_arena_readback
+    from tests.test_native_rigid_episode_telemetry import _spec
+    from tests.test_native_task_episode_environment import _RigidNativeReadback
 
     scene, policy, bridge = _Scene(), _Policy(), _Bridge()
     scene.plan = {
         **scene.plan,
         "task_kind": "rigid_pick_place",
-        "task_spec": {"prompt": "pick the box", "task_kind": "rigid_pick_place"},
+        "task_spec": {**_spec(), "prompt": "pick the box", "task_kind": "rigid_pick_place"},
     }
     monkeypatch.setattr(
         native_g1_run_preflight,
@@ -446,9 +457,11 @@ def test_built_g1_scene_uses_same_task_samples_and_scorer(tmp_path: Path, monkey
     monkeypatch.setattr(
         native_task_arena_readback,
         "NativeRigidTaskArenaReadback",
-        lambda built: type(
-            "Readback", (), {"read_task_sample": lambda self: {"object_z_m": float(scene.step)}}
-        )(),
+        lambda built: _RigidNativeReadback(
+            finger_separation_m=0.08,
+            grasp_frame_position_world_m=[1.1, 2.1, 0.9],
+            destination_scene_forbidden_contact_peak_force_n=0.0,
+        ),
     )
     scene.read_state = lambda: {"step_index": scene.step}
     captured = {}
@@ -456,28 +469,81 @@ def test_built_g1_scene_uses_same_task_samples_and_scorer(tmp_path: Path, monkey
     def score(*, task_spec, samples):
         captured["task_spec"] = task_spec
         captured["samples"] = samples
-        return {"status": "scored", "outcome": "failure"}
+        return {
+            "status": score_status,
+            "outcome": "failure" if score_status == "scored" else "native_temporal_event_readback_missing",
+            "event_ledger": {"required_readback_gaps": [] if score_status == "scored" else ["retry_event_ledger"]},
+        }
 
     monkeypatch.setattr(adp_task_scoring, "score_task_episode_from_spec", score)
-    result = run_g1_built_scene_policy_episode(
-        built=type("Built", (), {"plan": scene.plan})(),
-        policy_client=policy,
-        sonic_bridge=bridge,
-        candidate_id="humanoidarena_dp_g1_dex3_sonic",
-        max_steps=1,
-        output_dir=tmp_path,
-        preflight_inputs={},
-        to_tensor=lambda value: value,
-        make_action_tensor=lambda value, **kwargs: value,
-    )
+    def invoke():
+        return run_g1_built_scene_policy_episode(
+            built=type("Built", (), {"plan": scene.plan})(),
+            policy_client=policy,
+            sonic_bridge=bridge,
+            candidate_id="humanoidarena_dp_g1_dex3_sonic",
+            max_steps=1,
+            output_dir=tmp_path,
+            preflight_inputs={},
+            to_tensor=lambda value: value,
+            make_action_tensor=lambda value, **kwargs: value,
+        )
+    if score_status == "undetermined":
+        with pytest.raises(ValueError, match="g1_built_scene_task_score_incomplete"):
+            invoke()
+        diagnostic = json.loads((tmp_path / "native_g1_score_attempt.v1.json").read_text())
+        assert diagnostic["status"] == "undetermined"
+        assert diagnostic["outcome"] == "native_temporal_event_readback_missing"
+        assert diagnostic["required_readback_gaps"] == ["retry_event_ledger"]
+        assert diagnostic["score_attempt_digest"] == canonical_digest(
+            diagnostic, digest_field="score_attempt_digest"
+        )
+        assert not (tmp_path / "native_g1_built_scene_policy_episode.v1.json").exists()
+        return
+    result = invoke()
     assert [sample["step_index"] for sample in captured["samples"]] == [0, 1]
-    assert [sample["object_z_m"] for sample in captured["samples"]] == [0.0, 1.0]
+    assert all(sample["gripper_width_m"] == 0.08 for sample in captured["samples"])
+    assert all(sample["contact_classes_active"] == [] for sample in captured["samples"])
+    assert all(sample["retry_count"] == 0 for sample in captured["samples"])
     assert captured["task_spec"] is scene.plan["task_spec"]
-    assert result["score"] == {"status": "scored", "outcome": "failure"}
+    assert result["score"]["status"] == "scored"
+    assert result["score"]["outcome"] == "failure"
     assert result["ranking_eligible"] is False
     assert result["policy_runtime_identity_verified"] is False
     assert (tmp_path / "native_g1_shared_scene_episode_trace.v1.json").is_file()
     assert (tmp_path / "native_g1_built_scene_policy_episode.v1.json").is_file()
+
+
+def test_g1_rigid_sampler_supplies_measured_scoring_and_event_evidence() -> None:
+    from blueprint_pipeline.native_g1_shared_scene_episode import NativeG1RigidTaskSampler
+    from tests.test_native_rigid_episode_telemetry import _spec
+    from tests.test_native_task_episode_environment import _RigidNativeReadback
+
+    spec = _spec()
+    state = type("State", (), {"step": 0, "read_state": lambda self: {"step_index": self.step}})()
+    readback = _RigidNativeReadback(
+        finger_separation_m=0.08,
+        grasp_frame_position_world_m=[1.1, 2.1, 0.9],
+        destination_scene_forbidden_contact_peak_force_n=0.0,
+    )
+    sampler = NativeG1RigidTaskSampler(
+        environment=state, task_readback=readback, task_spec=spec
+    )
+    sampler.begin_episode()
+    sample = sampler.read_task_sample()
+
+    assert sample["step_index"] == 0
+    assert sample["gripper_width_m"] == 0.08
+    assert sample["task_contact_active"] is False
+    assert sample["support_contact_active"] is True
+    assert sample["robot_collision_failure"] is False
+    assert sample["workspace_excursion"] is False
+    assert sample["contact_classes_active"] == []
+    assert sample["retry_count"] == 0
+    assert sample["regrasp_count"] == 0
+    assert sample["episode_event_measurement_source"] == (
+        "runner_resets_and_measured_release_reclose_acquisition_cycles"
+    )
 
 
 def test_navigation_candidate_uses_same_scene_and_measured_goal_score(
