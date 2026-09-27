@@ -359,8 +359,9 @@ scene only when everything in it can come back and nothing can still need it.
 4. nothing in the tree changed for 48 hours (`recently_active`);
 5. no live storage pin names it, lies inside it or contains it (`pinned`);
 6. no pending or processing queue message names the scene, across the reclaim
-   timer's queues plus `sam31-preparation-executions` and
-   `task-evaluation-scene-configuration-activation-intents` (`queue_referenced`);
+   timer's queues plus `sam31-preparation-executions`,
+   `task-evaluation-scene-configuration-activation-intents` and
+   `capture-reconstruction-queue` (`queue_referenced`);
 7. no live process holds it (`in_use`; an unreadable process table counts as in use);
 8. no scene intent that can still run resolves a website source registered inside
    it (`open_scene_intent:<intent>`). An intent is finished once its progression
@@ -395,16 +396,25 @@ scene only when everything in it can come back and nothing can still need it.
 
 **Retire** takes the listener's own per-capture ledger locks without waiting
 (`candidate_busy`), re-proves checks 1-8 and the planned file snapshot
-(`candidate_changed`), streams exactly the unverified files as `workspace.tar`
-(kind `website-scene-workspace`) to the private artifact store through the
-streaming offload with a full readback (`archive_readback_failed`), re-lists the
-Firebase Storage prefix (`cloud_changed`), writes
-`scenes/<scene_id>.retired.v1.json` (exclusive, `0640`, owned like `scenes/`,
-digest-bound: the cloud-verified objects with generation and hashes, the archive
-URI, digest and member hashes, and parsed copies of each capture's ledger, output
-commit or terminal receipt, ack receipt and staging manifest), and only then
-removes the workspace. Every skip deletes nothing; an existing receipt is never
-replaced (`already_retired`).
+(`candidate_changed`), and re-reads every file the cloud copy replaces (the plan
+may have used cached digests). It sizes the receipt first: one larger than its
+readers' 16 MiB bound would be unreadable once the workspace is gone
+(`receipt_too_large`); a receipt at or under 16 MiB reserves no disk, since it is a
+small write whose ENOSPC fails before anything is removed. It then streams exactly
+the unverified files as `workspace.tar` (kind `website-scene-workspace`) to the
+private artifact store through the streaming offload with a full readback
+(`archive_readback_failed`). Because the upload can take hours, it then proves
+every check again with a freshly read reference index
+(`candidate_changed_during_archive`), re-lists the Firebase Storage prefix
+(`cloud_changed`), and writes `scenes/<scene_id>.retired.v1.json` (exclusive,
+`0640`, owned like `scenes/`, digest-bound: the cloud-verified objects with
+generation and hashes, the archive URI, digest and member hashes, and parsed copies
+of each capture's ledger, output commit or terminal receipt, ack receipt and
+staging manifest). Only then, still under the locks, is the workspace renamed to a
+hidden `.retiring-<scene>-<token>` sibling, taking it out of the listener's path in
+one step, and removed; each applying tick first finishes any such copy a crash
+left behind whose scene has a valid receipt. Every skip deletes nothing; an
+existing receipt is never replaced (`already_retired`).
 
 **Restore** replays the receipt: `python -m blueprint_pipeline.website_scene_workspace_retention
 restore --receipt <receipt> --destination <dir>` downloads each verified object and
