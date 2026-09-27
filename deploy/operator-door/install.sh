@@ -34,7 +34,8 @@ config_dir="${DOOR_CONFIG_DIR:-/etc/blueprint-operator-door}"
 systemd_dir="${DOOR_SYSTEMD_DIR:-/etc/systemd/system}"
 caddyfile="${DOOR_CADDYFILE:-/etc/caddy/Caddyfile}"
 health_url="http://127.0.0.1:8767/api/live-pipeline/operator/v1/healthz"
-units=(blueprint-operator-door.service blueprint-operator-door-runner.service blueprint-operator-door-runner.path)
+units=(blueprint-operator-door.service blueprint-operator-door-runner.service blueprint-operator-door-runner.path \
+  blueprint-operator-door-hold-sweep.service blueprint-operator-door-hold-sweep.timer)
 units_backup="$install_root.previous-units"
 
 [ "$(id -u)" -eq 0 ] || { echo "install.sh must run as root" >&2; exit 1; }
@@ -72,7 +73,8 @@ rollback() {
   for unit in "${units[@]}"; do
     if [ -f "$units_backup/$unit" ]; then
       install -o root -g root -m 0644 "$units_backup/$unit" "$systemd_dir/$unit"
-    elif [ "$had_previous" -eq 0 ]; then
+    else
+      systemctl disable --now "$unit" 2>/dev/null || true
       rm -f "$systemd_dir/$unit"
     fi
   done
@@ -144,6 +146,8 @@ for unit in "${units[@]}"; do
   install -o root -g root -m 0644 "$units_dir/$unit" "$systemd_dir/$unit"
 done
 systemctl daemon-reload
+systemctl enable --now blueprint-operator-door-hold-sweep.service
+systemctl enable --now blueprint-operator-door-hold-sweep.timer
 systemctl enable --now blueprint-operator-door-runner.path
 systemctl enable blueprint-operator-door.service
 systemctl restart blueprint-operator-door.service

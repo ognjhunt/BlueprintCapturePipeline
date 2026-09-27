@@ -231,6 +231,20 @@ def test_production_systemd_units_run_nonroot_with_strict_resource_isolation() -
                             "ReadWritePaths=/var/lib/blueprint-operator-door/requests\n"):
                 assert control in text, (unit.name, control)
             continue
+        if unit.name == "blueprint-operator-door-hold-sweep.service":
+            # Boot reconciliation must ask PID 1 to keep root-owned holds stopped
+            # before timer/path targets start; it writes only the door spool.
+            text = unit.read_text(encoding="utf-8")
+            assert "User=root" in text
+            assert "DefaultDependencies=no" in text
+            assert "Before=timers.target paths.target" in text
+            assert "CapabilityBoundingSet=\n" in text and "AmbientCapabilities=\n" in text
+            for control in ("NoNewPrivileges=true", "ProtectSystem=strict", "ProtectHome=true",
+                            "PrivateNetwork=true", "RestrictAddressFamilies=AF_UNIX\n",
+                            "SystemCallFilter=@system-service", "TasksMax=32", "MemoryMax=256M",
+                            "ReadWritePaths=/var/lib/blueprint-operator-door/requests\n"):
+                assert control in text, (unit.name, control)
+            continue
         if unit.name == "blueprint-control-plane-storage-gc.service":
             text = unit.read_text(encoding="utf-8")
             assert "User=root" in text

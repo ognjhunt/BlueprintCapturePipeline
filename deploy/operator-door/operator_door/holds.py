@@ -81,6 +81,7 @@ def read(root: Path, unit: str) -> dict[str, Any] | None:
         or record.get("status") not in {"active", "released", "expired_released", "failed_released"}
         or not isinstance(record.get("owner"), str)
         or type(record.get("expires_at_epoch")) is not int
+        or ("enabled_before" in record and type(record["enabled_before"]) is not bool)
     ):
         raise HoldError("hold_record_invalid")
     try:
@@ -146,21 +147,59 @@ def expire(root: Path, unit: str, request_id: str, *, now: float | None = None) 
             return 0
         if record["expires_at_epoch"] > moment:
             return 0
+        if record.get("enabled_before", True):
+            enabled = subprocess.run(["systemctl", "enable", "--", unit], check=False)
+            if enabled.returncode != 0:
+                return enabled.returncode
         result = subprocess.run(["systemctl", "--no-block", "start", "--", unit], check=False)
         if result.returncode != 0:
+            if record.get("enabled_before", True):
+                subprocess.run(["systemctl", "disable", "--", unit], check=False)
             return result.returncode
         record.update(status="expired_released", released_at=timestamp(moment), released_by="expiry")
         write(root, unit, record)
     return 0
 
 
+def sweep(root: Path, *, now: float | None = None) -> int:
+    """Restore expiry after reboot and keep every unexpired hold off at boot."""
+
+    if not root.exists():
+        return 0
+    moment = time.time() if now is None else now
+    failed = False
+    for snapshot in active(root):
+        unit = snapshot["unit"]
+        if snapshot["expires_at_epoch"] <= moment:
+            if expire(root, unit, snapshot["request_id"], now=moment) != 0:
+                failed = True
+            continue
+        with locked(root):
+            record = read(root, unit)
+            if record is None or record["status"] != "active" or record["request_id"] != snapshot["request_id"]:
+                continue
+            if record["expires_at_epoch"] <= moment:
+                continue  # the next sweep or the existing expiry job releases it
+            disabled = subprocess.run(["systemctl", "disable", "--", unit], check=False)
+            stopped = subprocess.run(["systemctl", "--no-block", "stop", "--", unit], check=False)
+            failed |= disabled.returncode != 0 or stopped.returncode != 0
+    return 1 if failed else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--holds-dir", type=Path, required=True)
-    parser.add_argument("--unit", required=True)
-    parser.add_argument("--request-id", required=True)
+    parser.add_argument("--unit")
+    parser.add_argument("--request-id")
+    parser.add_argument("--sweep", action="store_true")
     args = parser.parse_args(argv)
     try:
+        if args.sweep:
+            if args.unit or args.request_id:
+                raise HoldError("hold_sweep_arguments_invalid")
+            return sweep(args.holds_dir)
+        if not args.unit or not args.request_id:
+            raise HoldError("hold_expiry_arguments_missing")
         return expire(args.holds_dir, args.unit, args.request_id)
     except (OSError, HoldError, RequestRefused):
         return 2

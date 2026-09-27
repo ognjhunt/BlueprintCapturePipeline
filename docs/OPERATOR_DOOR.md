@@ -112,8 +112,8 @@ Request kinds:
 |---|---|---|---|
 | `deploy` | deploy | `commit` on `origin/main`, `wait_for_idle` | refuses while any `blueprint-*deploy*` unit is active; otherwise `door-deploy.sh` |
 | `unit` | operate | `unit` (`blueprint-*`), `action` `start`\|`reset-failed`\|`stop`\|`restart` | `systemctl --no-block <action> -- <unit>`; bare `stop` of a `.timer`/`.path` refuses with `unit_stop_requires_hold`, and `restart` remains limited to safe triggers. The door's own and safety-critical triggers cannot be paused or restarted. |
-| `hold` | operate | `.timer`/`.path` `unit`, `owner`, printable `reason`, `expires_in_seconds` (60–86400) | stops the unit, writes a root-owned hold record, and schedules an expiry timer; a different owner cannot replace an active hold |
-| `release-hold` | operate | `.timer`/`.path` `unit` | starts the held unit and records who released it; refuses if no active hold exists |
+| `hold` | operate | `.timer`/`.path` `unit`, `owner`, printable `reason`, `expires_in_seconds` (60–86400) | stops and disables the unit, writes a root-owned hold record with its prior boot policy, and schedules an expiry timer; a different owner cannot replace an active hold |
+| `release-hold` | operate | `.timer`/`.path` `unit` | restores the prior boot policy, starts the held unit, and records who released it; refuses if no active hold exists |
 | `door-upgrade` | deploy | `commit` on `origin/main` | `door-upgrade.sh`: that commit's `install.sh --upgrade`, rolled back on a failed health check |
 | `retire-scene-workspace` | operate | `scene_id`, optional `bucket`, `apply` (default `false`) | `door-retire-scene-workspace.sh`: the active release's `website_scene_workspace_retention retire` for that scene; without `apply` it only plans. Outcome `planned`, `retained` (code = first reason), `retired` or `failed`; the module's full result is `results/<id>.retirement.json` |
 | `restore-scene-workspace` | operate | `scene_id`, required `bucket` | `door-restore-scene-workspace.sh`: replays the retired receipt to the canonical workspace path, checks every byte and moves the historical receipt aside. Outcome `restored` or `failed`; the module's full result is `results/<id>.restore.json` |
@@ -176,7 +176,11 @@ python3 scripts/operator_door.py release-hold blueprint-task-evaluation-scene-pr
 ```
 
 The root runner keeps `requests/holds/<unit>.json` at mode 0644. A renewed
-hold gets a new request id; an older expiry timer cannot release it. Status
+hold gets a new request id without shortening the deadline; an older expiry
+timer cannot release it. Holds disable the unit until release, then restore
+its earlier boot policy. The installed hold sweep runs before boot timer and
+path targets and every minute thereafter, so a reboot cannot restart a held
+unit or permanently lose its expiry. Status
 shows `remaining_seconds` and flags an overdue record, so a failed expiry is
 visible for an operator to release. Safety-critical teardown, spend-guard,
 capacity, storage-GC, replay-cache-GC and preflight triggers cannot be held.

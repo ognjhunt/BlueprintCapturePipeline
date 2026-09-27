@@ -427,7 +427,7 @@ def test_hold_expiry_script_releases_only_matching_active_expired_generation(tmp
     record = {"schema": "blueprint_operator_door_hold.v1", "unit": unit, "owner": "alice",
               "reason": "inspect", "requested_by": "cloud", "request_id": new_id,
               "created_at": "2026-09-26T12:00:01+00:00", "expires_at": "2026-09-26T12:01:01+00:00",
-              "expires_at_epoch": 1, "status": "active"}
+              "expires_at_epoch": 1, "enabled_before": True, "status": "active"}
     path = holds / f"{unit}.json"
     path.write_text(json.dumps(record), encoding="utf-8")
     stubs = tmp_path / "stubs"
@@ -451,7 +451,7 @@ def test_hold_expiry_script_releases_only_matching_active_expired_generation(tmp
     record["expires_at_epoch"] = 1
     path.write_text(json.dumps(record), encoding="utf-8")
     assert run(new_id) == 0
-    assert log.read_text().splitlines() == [f"--no-block start -- {unit}"]
+    assert log.read_text().splitlines() == [f"enable -- {unit}", f"--no-block start -- {unit}"]
     assert json.loads(path.read_text())["status"] == "expired_released"
     assert run(new_id) == 0
-    assert log.read_text().splitlines() == [f"--no-block start -- {unit}"], "expiry is idempotent"
+    assert log.read_text().splitlines() == [f"enable -- {unit}", f"--no-block start -- {unit}"], "expiry is idempotent"

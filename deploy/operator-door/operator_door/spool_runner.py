@@ -194,15 +194,28 @@ def _act_hold(
                         and current["expires_at_epoch"] > time.time())
         if prior_active and current["owner"] != request["owner"]:
             return {"status": "refused", "code": f"hold_active:{current['owner']}"}
+        if current is not None and current["status"] == "active" and isinstance(current.get("enabled_before"), bool):
+            enabled_before = current["enabled_before"]
+        else:
+            enabled = runner.run(["systemctl", "is-enabled", "--", unit], timeout=30)
+            state = enabled.stdout.strip()
+            if state not in {"enabled", "disabled"}:
+                return {"status": "refused", "code": "hold_unit_enabled_state_unknown"}
+            enabled_before = state == "enabled"
         stopped = runner.run(["systemctl", "--no-block", "stop", "--", unit], timeout=30)
         if stopped.returncode != 0:
             return {"status": "failed", "code": "hold_stop_failed", "returncode": stopped.returncode,
                     "stderr_tail": stopped.stderr[-2000:]}
         now = int(time.time())
+        expires_at_epoch = max(
+            now + request["expires_in_seconds"],
+            current["expires_at_epoch"] if prior_active else 0,
+        )
         record = {"schema": holds.SCHEMA, "unit": unit, "owner": request["owner"],
                   "reason": request["reason"], "requested_by": requested_by, "request_id": request_id,
-                  "created_at": holds.timestamp(now), "expires_at": holds.timestamp(now + request["expires_in_seconds"]),
-                  "expires_at_epoch": now + request["expires_in_seconds"], "status": "active"}
+                  "created_at": holds.timestamp(now), "expires_at": holds.timestamp(expires_at_epoch),
+                  "expires_at_epoch": expires_at_epoch, "enabled_before": enabled_before,
+                  "status": "active"}
 
         def rollback() -> int:
             if prior_active:
@@ -210,17 +223,28 @@ def _act_hold(
                 # starting here would silently undo the owner's prior hold.
                 holds.write(root, unit, current)
                 return 0
+            if enabled_before:
+                restored_boot = runner.run(["systemctl", "enable", "--", unit], timeout=30)
+                if restored_boot.returncode != 0:
+                    return restored_boot.returncode
             restored = runner.run(["systemctl", "--no-block", "start", "--", unit], timeout=30)
             if restored.returncode == 0:
                 record.update(status="failed_released", released_at=holds.timestamp(), released_by="runner")
                 holds.write(root, unit, record)
+            elif enabled_before:
+                runner.run(["systemctl", "disable", "--", unit], timeout=30)
             return restored.returncode
 
         try:
             holds.write(root, unit, record)
+            disabled = runner.run(["systemctl", "disable", "--", unit], timeout=30)
+            if disabled.returncode != 0:
+                rollback_returncode = rollback()
+                return {"status": "failed", "code": "hold_disable_failed", "returncode": disabled.returncode,
+                        "rollback_returncode": rollback_returncode, "stderr_tail": disabled.stderr[-2000:]}
             launch = runner.run([
                 "systemd-run", f"--unit=blueprint-operator-door-hold-expiry-{request_id[-8:]}",
-                f"--on-active={request['expires_in_seconds']}s", "--collect",
+                f"--on-active={expires_at_epoch - now}s", "--collect",
                 f"--setenv=DOOR_HOLD_UNIT={unit}", f"--setenv=DOOR_HOLD_REQUEST_ID={request_id}",
                 f"--setenv=DOOR_HOLDS_DIR={root}", "--", "/bin/bash",
                 f"{config.install_root}/door-hold-expire.sh",
@@ -244,8 +268,15 @@ def _act_release_hold(
         record = holds.read(root, unit)
         if record is None or record["status"] != "active":
             return {"status": "refused", "code": "hold_not_active"}
+        if record.get("enabled_before", True):
+            enabled = runner.run(["systemctl", "enable", "--", unit], timeout=30)
+            if enabled.returncode != 0:
+                return {"status": "failed", "code": "hold_release_enable_failed", "returncode": enabled.returncode,
+                        "stderr_tail": enabled.stderr[-2000:]}
         started = runner.run(["systemctl", "--no-block", "start", "--", unit], timeout=30)
         if started.returncode != 0:
+            if record.get("enabled_before", True):
+                runner.run(["systemctl", "disable", "--", unit], timeout=30)
             return {"status": "failed", "code": "hold_release_start_failed", "returncode": started.returncode,
                     "stderr_tail": started.stderr[-2000:]}
         record.update(status="released", released_at=holds.timestamp(), released_by=requested_by)
@@ -284,6 +315,8 @@ def _process_one(config: DoorConfig, runner: CommandRunner, claimed: Path, reque
         if document.get("id") != request_id:
             raise RequestRefused("spool_id_mismatch")
         request = validate_request(document.get("request"))
+        if request_id.split("-", 1)[1].rsplit("-", 1)[0] != request["kind"]:
+            raise RequestRefused("spool_kind_mismatch")
     except RequestRefused as refusal:
         os.replace(claimed, spool / "completed" / claimed.name)
         _write_result(results, request_id, {"status": "refused", "code": refusal.code})
