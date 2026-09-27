@@ -352,6 +352,70 @@ def test_a_failed_survey_keeps_the_last_one_and_never_stops_the_tick(tmp_path, m
     assert unsurveyed["level"] == "ok"
 
 
+def test_failed_survey_attempt_is_throttled_across_ticks(tmp_path, monkeypatch):
+    _no_project_spend(monkeypatch)
+    calls = []
+
+    def broken(**_kwargs):
+        calls.append(1)
+        raise RuntimeError("walk failed")
+
+    common = dict(mounts=[str(tmp_path)], report_root=tmp_path / "capacity",
+                  reservation_root=tmp_path / "ledger", webhook_url="", volume=None,
+                  ack="", token="", disk_usage=_usage(free_gib=100.0), survey=broken)
+    first = cap.run_controller(**common, now=1_000.0)
+    assert first["usage"]["error"] == "usage_survey_failed:RuntimeError"
+    marker = json.loads((tmp_path / "capacity" / cap.USAGE_ATTEMPT_FILENAME).read_text())
+    assert marker["attempted_at_epoch"] == 1_000.0 and marker["status"] == "failed"
+
+    second = cap.run_controller(**common, now=1_600.0)
+    assert calls == [1]
+    assert second["usage"]["error"] == first["usage"]["error"]
+    cap.run_controller(**common, now=4_700.0)
+    assert calls == [1, 1]
+
+
+def test_interrupted_survey_attempt_is_throttled_after_restart(tmp_path, monkeypatch):
+    _no_project_spend(monkeypatch)
+    report_root = tmp_path / "capacity"
+    report_root.mkdir()
+    (report_root / cap.USAGE_ATTEMPT_FILENAME).write_text(json.dumps({
+        "schema_version": cap.USAGE_ATTEMPT_SCHEMA_VERSION,
+        "attempted_at_epoch": 1_000.0,
+        "status": "running",
+    }))
+    calls = []
+
+    def survey(**_kwargs):
+        calls.append(1)
+        return _survey_result(observed_at_epoch=4_700.0)
+
+    common = dict(mounts=[str(tmp_path)], report_root=report_root,
+                  reservation_root=tmp_path / "ledger", webhook_url="", volume=None,
+                  ack="", token="", disk_usage=_usage(free_gib=100.0), survey=survey)
+    cap.run_controller(**common, now=1_600.0)
+    assert calls == []
+    cap.run_controller(**common, now=4_700.0)
+    assert calls == [1]
+
+
+def test_new_capacity_warning_pages_while_usage_warning_persists(tmp_path, monkeypatch):
+    _no_project_spend(monkeypatch)
+    posted = []
+    common = dict(mounts=[str(tmp_path)], report_root=tmp_path / "capacity",
+                  reservation_root=tmp_path / "ledger", webhook_url="https://alerts.example/hook",
+                  volume=None, ack="", token="", poster=lambda _url, report: posted.append(report),
+                  survey=lambda **_kwargs: _survey_result(unclassified_roots=[
+                      {"root": "/var/lib/blueprint/unknown", "allocated_bytes": 2 * GIB}]))
+    usage_only = cap.run_controller(**common, now=1_000.0, disk_usage=_usage(free_gib=80.0))
+    assert usage_only["level"] == "warning" and usage_only["alert_posted"] is True
+    capacity_warning = cap.run_controller(**common, now=1_600.0, disk_usage=_usage(free_gib=40.0))
+    assert capacity_warning["level"] == "warning"
+    assert {row["code"] for row in capacity_warning["alerts"]} >= {
+        "usage_unclassified_root", "utilization_warning"}
+    assert capacity_warning["alert_posted"] is True and len(posted) == 2
+
+
 def test_low_attribution_warns_but_never_masks_critical(tmp_path, monkeypatch):
     _no_project_spend(monkeypatch)
     survey = lambda **_k: _survey_result(mounts=[  # noqa: E731

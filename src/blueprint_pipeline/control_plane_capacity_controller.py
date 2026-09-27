@@ -48,6 +48,8 @@ from .decision_evidence_contracts import canonical_digest
 SCHEMA_VERSION = "control_plane_capacity_report.v1"
 SUMMARY_SCHEMA_VERSION = "control_plane_capacity_summary.v1"
 USAGE_FILENAME = "usage-latest.json"
+USAGE_ATTEMPT_FILENAME = "usage-attempt.json"
+USAGE_ATTEMPT_SCHEMA_VERSION = "control_plane_usage_survey_attempt.v1"
 SUMMARY_FILENAME = "summary.json"
 # The door's status reader refuses files over 256 KiB; the summary keeps half that.
 SUMMARY_MAX_BYTES = 128 * 1024
@@ -360,7 +362,7 @@ def _refresh_usage(
     force: bool,
     now: float,
 ) -> tuple[dict[str, Any] | None, str | None]:
-    """The latest usage survey, re-run when it is missing, stale or forced, and any error."""
+    """The latest usage survey, paced by attempted walks even when one fails."""
 
     path = report_root / USAGE_FILENAME
     latest = _read_json(path)
@@ -368,25 +370,72 @@ def _refresh_usage(
         latest = None
     if survey is None:
         return latest, None
+    marker_path = report_root / USAGE_ATTEMPT_FILENAME
+    marker = _read_json(marker_path)
+    if marker is not None and marker.get("schema_version") != USAGE_ATTEMPT_SCHEMA_VERSION:
+        marker = None
     observed_at = (latest or {}).get("observed_at_epoch")
+    attempted_at = (marker or {}).get("attempted_at_epoch")
+    if isinstance(attempted_at, (int, float)) and not isinstance(attempted_at, bool):
+        if not isinstance(observed_at, (int, float)) or isinstance(observed_at, bool) or attempted_at > observed_at:
+            observed_at = attempted_at
     fresh = (
         isinstance(observed_at, (int, float))
         and not isinstance(observed_at, bool)
         and 0 <= now - float(observed_at) < interval_seconds
     )
     if fresh and not force:
-        return latest, None
+        error = None
+        if marker is not None and marker.get("attempted_at_epoch") == observed_at:
+            error = marker.get("error") if isinstance(marker.get("error"), str) else None
+            if marker.get("status") == "running":
+                error = "usage_survey_interrupted"
+        return latest, error
+
+    def record_attempt(status: str, error: str | None = None) -> None:
+        document: dict[str, Any] = {
+            "schema_version": USAGE_ATTEMPT_SCHEMA_VERSION,
+            "attempted_at_epoch": now,
+            "status": status,
+        }
+        if error:
+            document["error"] = error
+        _write_public_json(marker_path, document)
+
+    try:
+        report_root.mkdir(parents=True, exist_ok=True, mode=0o750)
+        record_attempt("running")
+    except OSError as exc:
+        return latest, f"usage_survey_attempt_unwritten:{type(exc).__name__}"
     try:
         result = survey(mounts=survey_mounts(mounts))
     except Exception as exc:  # noqa: BLE001 - a failed survey must never stop the capacity tick
-        return latest, f"usage_survey_failed:{type(exc).__name__}"
+        error = f"usage_survey_failed:{type(exc).__name__}"
+        try:
+            record_attempt("failed", error)
+        except OSError:
+            pass  # the pre-walk marker still prevents an immediate retry
+        return latest, error
     if not isinstance(result, Mapping) or result.get("schema_version") != SURVEY_SCHEMA_VERSION:
-        return latest, "usage_survey_invalid"
+        error = "usage_survey_invalid"
+        try:
+            record_attempt("failed", error)
+        except OSError:
+            pass
+        return latest, error
     try:
-        report_root.mkdir(parents=True, exist_ok=True, mode=0o750)
         _write_public_json(path, result)
     except OSError as exc:
-        return dict(result), f"usage_survey_unwritten:{type(exc).__name__}"
+        error = f"usage_survey_unwritten:{type(exc).__name__}"
+        try:
+            record_attempt("failed", error)
+        except OSError:
+            pass
+        return dict(result), error
+    try:
+        record_attempt("complete")
+    except OSError:
+        pass  # the saved survey itself supplies the cadence
     return dict(result), None
 
 
@@ -526,6 +575,16 @@ def alert_due(previous: Mapping[str, Any] | None, report: Mapping[str, Any], *, 
     if level == "ok":
         return False
     if previous is None or previous.get("level") != level:
+        return True
+    def actionable_codes(value: Mapping[str, Any]) -> set[str]:
+        return {
+            code for row in value.get("alerts") or []
+            if isinstance(row, Mapping)
+            and isinstance((code := row.get("code")), str)
+            and not code.startswith("usage_")
+        }
+
+    if actionable_codes(report) - actionable_codes(previous):
         return True
     last = previous.get("last_alert_epoch")
     return level == "critical" and (not isinstance(last, (int, float)) or now - float(last) >= ALERT_REPEAT_SECONDS)
