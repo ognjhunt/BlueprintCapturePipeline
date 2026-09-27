@@ -13,6 +13,7 @@ import json
 import os
 import tempfile
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -27,6 +28,17 @@ RANGED_DOWNLOAD_MIN_BYTES = 512 * 1024 * 1024
 # Both large candidates are fetched concurrently under the allocator's
 # independent four-hour paid-run TTL and dollar cap.
 RANGED_DOWNLOAD_DEADLINE_SECONDS = 30 * 60
+_SAFE_TRANSFER_VALUE_ERRORS = frozenset({
+    "g1_checkpoint_insecure_redirect",
+    "g1_checkpoint_insecure_source",
+    "g1_checkpoint_range_content_range_invalid",
+    "g1_checkpoint_range_truncated",
+    "g1_checkpoint_range_short_write",
+    "g1_checkpoint_range_extra_bytes",
+    "g1_checkpoint_range_size_mismatch",
+    "g1_checkpoint_download_exceeds_pinned_size",
+    "g1_checkpoint_download_identity_mismatch",
+})
 DEFAULT_INVENTORY = (
     Path(__file__).resolve().parents[1]
     / "configs/g1_humanoidarena_checkpoint_inventory.v1.json"
@@ -77,10 +89,16 @@ def _download_pinned_ranges(
                 check_deadline()
                 with _open_https(url, headers={"Range": f"bytes={start}-{end}"}) as response:
                     check_deadline()
-                    if (response.status != 206
-                            or response.headers.get("Content-Range") != f"bytes {start}-{end}/{expected_size}"
-                            or urllib.parse.urlsplit(response.geturl()).scheme.lower() != "https"):
-                        raise ValueError("g1_checkpoint_range_response_invalid")
+                    if response.status != 206:
+                        status = response.status
+                        raise ValueError(
+                            "g1_checkpoint_range_http_status_"
+                            + (str(status) if type(status) is int and 100 <= status <= 599 else "unknown")
+                        )
+                    if response.headers.get("Content-Range") != f"bytes {start}-{end}/{expected_size}":
+                        raise ValueError("g1_checkpoint_range_content_range_invalid")
+                    if urllib.parse.urlsplit(response.geturl()).scheme.lower() != "https":
+                        raise ValueError("g1_checkpoint_insecure_redirect")
                     written = 0
                     while written <= end - start:
                         block = response.read(min(1024 * 1024, end - start + 1 - written))
@@ -120,6 +138,25 @@ def _sha256_and_size(path: Path) -> tuple[str, int]:
             size += len(block)
             digest.update(block)
     return digest.hexdigest(), size
+
+
+def _private_transfer_failure_code(exc: Exception) -> str:
+    """Retain a safe failure reason while never recording a signed cache URL."""
+
+    if isinstance(exc, urllib.error.HTTPError):
+        return (
+            f"http_error_{exc.code}"
+            if type(exc.code) is int and 100 <= exc.code <= 599 else "http_error_unknown"
+        )
+    if isinstance(exc, ValueError):
+        reason = str(exc)
+        if reason in _SAFE_TRANSFER_VALUE_ERRORS:
+            return reason
+        if reason.startswith("g1_checkpoint_range_http_status_"):
+            status = reason.removeprefix("g1_checkpoint_range_http_status_")
+            if status == "unknown" or len(status) == 3 and status.isdecimal():
+                return reason
+    return type(exc).__name__
 
 
 def _candidate(inventory: dict[str, Any], candidate_id: str) -> dict[str, Any]:
@@ -257,7 +294,8 @@ def materialize_candidate(
             except Exception as exc:
                 if private_cache is not None:
                     raise ValueError(
-                        "g1_checkpoint_private_cache_transfer_failed:" + type(exc).__name__
+                        "g1_checkpoint_private_cache_transfer_failed:"
+                        + relative.as_posix() + ":" + _private_transfer_failure_code(exc)
                     ) from None
                 raise
             finally:
