@@ -1,6 +1,11 @@
 """Reclaim disposable binary copies after an offline replay has completed.
 
 Reports, logs, source code, readonly files and shared inodes remain untouched.
+One kind of copy is recognised by its place and name instead of a suffix: a
+parent replay's copy of a content-store blob, at
+``prepared-references/content-addressed/sha256/<digest>``. It keeps the store's
+read-only mode and has no suffix, so it qualifies when its bytes match the
+digest it is named by; a shared inode still keeps it.
 This module is also a standalone maintenance entrypoint; it never allocates a
 provider or changes the scientific release used by a live run.
 """
@@ -11,12 +16,15 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import stat
 import time
 from pathlib import Path
 
 SCHEMA = "completed_offline_replay_cache_retention.v1"
 ACK = "reclaim-completed-offline-replay-caches"
+_SCRATCH_STORE = ("prepared-references", "content-addressed", "sha256")
+_DIGEST_NAME = re.compile(r"[0-9a-f]{64}")
 BINARY_SUFFIXES = {
     ".png",
     ".jpg",
@@ -50,6 +58,12 @@ def digest(value):
 def file_sha(path):
     with path.open("rb") as stream:
         return "sha256:" + hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def scratch_store_copy(relative):
+    """Whether ``relative`` (to a replay child) names a parent replay's copy of a store blob."""
+    parts = Path(relative).parts
+    return len(parts) == 4 and parts[:3] == _SCRATCH_STORE and bool(_DIGEST_NAME.fullmatch(parts[3]))
 
 
 def completed_report(root):
@@ -147,15 +161,22 @@ def plan_replay_cache_retention(
         files = []
         for path in child.rglob("*"):
             info = path.lstat()
+            copy = scratch_store_copy(path.relative_to(child))
             if (
                 not stat.S_ISREG(info.st_mode)
                 or info.st_nlink != 1
-                or not info.st_mode & 0o222
-                or info.st_size < 64 * 1024
                 or info.st_mtime_ns > report.stat().st_mtime_ns
-                or path.suffix.lower() not in BINARY_SUFFIXES
                 or any(p.is_symlink() for p in path.parents if p != child.parent)
+                # A store copy is read-only and has no suffix; its digest name stands in.
+                or (not copy and (
+                    not info.st_mode & 0o222
+                    or info.st_size < 64 * 1024
+                    or path.suffix.lower() not in BINARY_SUFFIXES
+                ))
             ):
+                continue
+            sha = file_sha(path)
+            if copy and sha != "sha256:" + path.name:
                 continue
             files.append(
                 {
@@ -163,7 +184,7 @@ def plan_replay_cache_retention(
                     "inode": info.st_ino,
                     "mtime_ns": info.st_mtime_ns,
                     "size_bytes": info.st_size,
-                    "sha256": file_sha(path),
+                    "sha256": sha,
                 }
             )
         if files:
@@ -217,13 +238,17 @@ def apply_replay_cache_retention(plan, *, ack, process_root=Path("/proc")):
                 raise ValueError("replay_cache_member_unsafe")
             path = root / relative
             info = path.lstat()
+            copy = scratch_store_copy(relative)
             if (
                 not stat.S_ISREG(info.st_mode)
-                or path.suffix.lower() not in BINARY_SUFFIXES
-                or info.st_size < 64 * 1024
+                or (not copy and (
+                    path.suffix.lower() not in BINARY_SUFFIXES
+                    or info.st_size < 64 * 1024
+                    or not info.st_mode & 0o222
+                ))
+                or (copy and item["sha256"] != "sha256:" + path.name)
                 or any(p.is_symlink() for p in path.parents if p != root.parent)
                 or info.st_nlink != 1
-                or not info.st_mode & 0o222
                 or info.st_ino != item["inode"]
                 or info.st_mtime_ns != item["mtime_ns"]
                 or info.st_size != item["size_bytes"]
