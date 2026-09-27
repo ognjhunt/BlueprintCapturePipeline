@@ -113,13 +113,12 @@ def write(root: Path, unit: str, record: dict[str, Any]) -> None:
         raise
 
 
-def active(root: Path, *, now: float | None = None) -> list[dict[str, Any]]:
-    """Active, unexpired records; malformed records fail the whole read closed."""
+def active(root: Path) -> list[dict[str, Any]]:
+    """Records still marked active, including an overdue failed expiry."""
 
     if not root.exists():
         return []
     _directory(root, create=False)
-    moment = time.time() if now is None else now
     records = []
     for path in sorted(root.glob("*.json")):
         unit = path.name.removesuffix(".json")
@@ -128,7 +127,7 @@ def active(root: Path, *, now: float | None = None) -> list[dict[str, Any]]:
         except RequestRefused as exc:
             raise HoldError("hold_record_invalid") from exc
         record = read(root, unit)
-        if record is not None and record["status"] == "active" and record["expires_at_epoch"] > moment:
+        if record is not None and record["status"] == "active":
             records.append(record)
     return records
 

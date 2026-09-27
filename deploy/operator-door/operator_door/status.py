@@ -85,10 +85,11 @@ def _door_requests(config: DoorConfig) -> dict[str, int]:
 
 def _holds(config: DoorConfig) -> list[dict[str, Any]]:
     now = time.time()
-    records = hold_records.active(Path(config.spool_root) / "holds", now=now)
+    records = hold_records.active(Path(config.spool_root) / "holds")
     keys = ("unit", "owner", "reason", "requested_by", "request_id", "created_at", "expires_at")
     return [{**{key: record[key] for key in keys},
-             "remaining_seconds": max(0, int(record["expires_at_epoch"] - now))} for record in records]
+             "remaining_seconds": max(0, int(record["expires_at_epoch"] - now)),
+             "expired": record["expires_at_epoch"] <= now} for record in records]
 
 
 def build_status(config: DoorConfig, host: HostInfo, *, caller: dict[str, Any]) -> dict[str, Any]:

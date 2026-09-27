@@ -179,7 +179,7 @@ def test_status_assembles_every_section(host_tree: dict[str, Path]) -> None:
     assert set(status["disk"]) and "loadavg" in status["load"]
 
 
-def test_status_shows_only_active_holds_with_remaining_seconds(host_tree: dict[str, Path]) -> None:
+def test_status_shows_active_and_overdue_holds_with_remaining_seconds(host_tree: dict[str, Path]) -> None:
     root = host_tree["base"] / "door" / "requests" / "holds"
     root.mkdir()
     now = int(time.time())
@@ -191,10 +191,12 @@ def test_status_shows_only_active_holds_with_remaining_seconds(host_tree: dict[s
             "created_at": "2026-09-26T12:00:00+00:00", "expires_at": "2026-09-26T13:00:00+00:00",
             "expires_at_epoch": expiry, "status": "active"}), encoding="utf-8")
     status = build_status(_config(host_tree), _host(host_tree, FakeRunner({})), caller={})
-    assert len(status["holds"]) == 1
-    hold = status["holds"][0]
+    assert len(status["holds"]) == 2
+    hold = next(row for row in status["holds"] if row["unit"] == "blueprint-scene-progression.timer")
     assert hold["unit"] == "blueprint-scene-progression.timer" and hold["owner"] == "alice"
     assert 0 < hold["remaining_seconds"] <= 120
+    overdue = next(row for row in status["holds"] if row["unit"] == "blueprint-pubsub-handoff-listener.timer")
+    assert overdue["remaining_seconds"] == 0 and overdue["expired"] is True
 
 
 def test_status_survives_a_failing_section(host_tree: dict[str, Path]) -> None:
