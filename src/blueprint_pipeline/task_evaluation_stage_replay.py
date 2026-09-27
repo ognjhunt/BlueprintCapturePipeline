@@ -30,6 +30,7 @@ import json
 import os
 import pwd
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -373,6 +374,35 @@ def _link_or_copy(source: Path, destination: Path) -> None:
         shutil.copy2(source, destination)
 
 
+def _release_scratch_store(path: Path) -> dict[str, Any]:
+    """Remove a parent replay's scratch content store and count the bytes that frees.
+
+    When the replay root and the store sit on different volumes every blob is copied,
+    not linked, and nothing removed the copies (2026-09-27: 107 activation lookaheads
+    held about 13 GiB). Only a single-link file counts: removing a name that another
+    link still holds frees nothing. This replay made the directory and its parent, so
+    a symlink at either is refused, and the walk never enters a linked directory.
+    """
+
+    released = {"files": 0, "bytes": 0}
+    if path.is_symlink() or path.parent.is_symlink():
+        return {**released, "refused": "replay_scratch_content_store_unsafe"}
+    if not path.is_dir():
+        return released
+    try:
+        for directory, _directories, names in os.walk(path):
+            for name in names:
+                info = os.lstat(os.path.join(directory, name))
+                if stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
+                    released["files"] += 1
+                    released["bytes"] += info.st_size
+        shutil.rmtree(path)
+    except OSError as exc:
+        # Claim nothing for a partial removal; the report names the failure, never a path.
+        return {"files": 0, "bytes": 0, "refused": f"replay_scratch_content_store_release_failed:{type(exc).__name__}"}
+    return released
+
+
 def _copy_children_of(parent_digest: str, child_queue_root: Path, scratch_child: Path) -> int:
     copied = 0
     for state in ("results", "completed", "failed", "waiting_external"):
@@ -411,6 +441,9 @@ def replay_parent(
     reservations, pins and downstream queues point at scratch.  Rendering and
     fetching raise ``ReplayBoundary``, so reaching the render step means the SAM
     chain was accepted as ``ready``.  Production queues are never written.
+    Across volumes the store's blobs are copied instead of linked; that scratch
+    store is released however the replay ends, and the report records what the
+    release freed.  The scratch queue, child copies and report are kept.
     """
 
     from . import task_evaluation_launch_preparation_worker as worker
@@ -434,88 +467,96 @@ def replay_parent(
             shutil.copytree(origin, scratch_queue / progress_dir / located.stem)
     children_copied = _copy_children_of(parent_digest, Path(child_queue_root), scratch_child)
     real_store = Path(input_root) / "content-addressed" / "sha256"
-    linked = 0
-    if real_store.is_dir():
-        for blob in real_store.iterdir():
-            if blob.is_file():
-                _link_or_copy(blob, scratch_inputs / "content-addressed" / "sha256" / blob.name)
-                linked += 1
-    scratch_inputs.mkdir(parents=True, exist_ok=True)
-    fetch_calls: list[str] = []
-    render_reached = False
-    def render_boundary(**kwargs: Any) -> dict[str, Any]:
-        nonlocal render_reached
-        render_reached = True
-        return _render_boundary(**kwargs)
-    account = service_account or pwd.getpwuid(os.geteuid()).pw_name
-    previous_child_env = os.environ.get(driver.CHILD_QUEUE_ENV)
-    os.environ[driver.CHILD_QUEUE_ENV] = str(scratch_child)
-    report: dict[str, Any] = {
-        "schema_version": PARENT_SCHEMA,
-        "preparation_id": request.get("preparation_id"),
-        "envelope_path": str(located.envelope_path),
-        "queue_state": located.state,
-        "request_digest": parent_digest,
-        "source_commit": request.get("expected_production_commit"),
-        "scratch_queue_root": str(scratch_queue),
-        "scratch_child_queue_root": str(scratch_child),
-        "children_copied": children_copied,
-        "content_blobs_linked": linked,
-        "server_profile": os.environ.get(PROFILE_ENV),
-        "code_root": str(Path(stages.__file__).resolve().parents[2]),
-        "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "paid_execution_requested": False,
-        "provider_mutation_performed": False,
-    }
+    scratch_store = scratch_inputs / "content-addressed"
     try:
-        outcome = worker.process_launch_preparation_queue(
-            queue_root=scratch_queue, input_root=scratch_inputs, allowed_uri_prefixes=list(allowed_uri_prefixes),
-            service_account=account, source_commit=str(request.get("expected_production_commit") or ""),
-            max_messages=1, fetcher=_refusing_fetcher(fetch_calls),
-            sam31_preparation_advancer=advancer, scene_render_input_materializer=render_boundary,
-            construction_queue_root=run_root / "scene-constructions",
-            episode_compilation_queue_root=run_root / "episode-compilations",
-            # No disk reservation: a replay reads production evidence and writes only scratch; the
-            # admission floor belongs to the production worker, not to a diagnosis on any host.
-            disk_reservation_root=None, storage_pins_root=run_root / "storage-pins",
+        linked = 0
+        if real_store.is_dir():
+            for blob in real_store.iterdir():
+                if blob.is_file():
+                    _link_or_copy(blob, scratch_store / "sha256" / blob.name)
+                    linked += 1
+        scratch_inputs.mkdir(parents=True, exist_ok=True)
+        fetch_calls: list[str] = []
+        render_reached = False
+        def render_boundary(**kwargs: Any) -> dict[str, Any]:
+            nonlocal render_reached
+            render_reached = True
+            return _render_boundary(**kwargs)
+        account = service_account or pwd.getpwuid(os.geteuid()).pw_name
+        previous_child_env = os.environ.get(driver.CHILD_QUEUE_ENV)
+        os.environ[driver.CHILD_QUEUE_ENV] = str(scratch_child)
+        report: dict[str, Any] = {
+            "schema_version": PARENT_SCHEMA,
+            "preparation_id": request.get("preparation_id"),
+            "envelope_path": str(located.envelope_path),
+            "queue_state": located.state,
+            "request_digest": parent_digest,
+            "source_commit": request.get("expected_production_commit"),
+            "scratch_queue_root": str(scratch_queue),
+            "scratch_child_queue_root": str(scratch_child),
+            "children_copied": children_copied,
+            "content_blobs_linked": linked,
+            "server_profile": os.environ.get(PROFILE_ENV),
+            "code_root": str(Path(stages.__file__).resolve().parents[2]),
+            "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "paid_execution_requested": False,
+            "provider_mutation_performed": False,
+        }
+        try:
+            outcome = worker.process_launch_preparation_queue(
+                queue_root=scratch_queue, input_root=scratch_inputs, allowed_uri_prefixes=list(allowed_uri_prefixes),
+                service_account=account, source_commit=str(request.get("expected_production_commit") or ""),
+                max_messages=1, fetcher=_refusing_fetcher(fetch_calls),
+                sam31_preparation_advancer=advancer, scene_render_input_materializer=render_boundary,
+                construction_queue_root=run_root / "scene-constructions",
+                episode_compilation_queue_root=run_root / "episode-compilations",
+                # No disk reservation: a replay reads production evidence and writes only scratch; the
+                # admission floor belongs to the production worker, not to a diagnosis on any host.
+                disk_reservation_root=None, storage_pins_root=run_root / "storage-pins",
+            )
+        except Exception as exc:  # noqa: BLE001 - the refusal is the finding
+            _explained(report, "worker_refused", exc)
+            report["scratch_content_store_released"] = _release_scratch_store(scratch_store)
+            report["report_path"] = _write_report(run_root, report)
+            return report
+        finally:
+            if previous_child_env is None:
+                os.environ.pop(driver.CHILD_QUEUE_ENV, None)
+            else:
+                os.environ[driver.CHILD_QUEUE_ENV] = previous_child_env
+        rows = outcome.get("results") or []
+        row = rows[0] if rows else {}
+        blockers = [str(item) for item in (row.get("blockers") or [])]
+        boundary = render_reached and not fetch_calls and any("ReplayBoundary" in item for item in blockers)
+        report.update(
+            status=str(row.get("status") or "no_row"),
+            row={key: row.get(key) for key in ("status", "blockers", "preparation_id", "observed_at_iso")},
+            advancement=row.get("advancement"),
+            fired_predicates=[item.split(":predicates=", 1)[1] for item in blockers if ":predicates=" in item],
+            nothing_fetched=not fetch_calls,
+            fetch_attempts=fetch_calls[:8],
+            reached_render_inputs_boundary=boundary,
+            sam31_ready=boundary,
         )
-    except Exception as exc:  # noqa: BLE001 - the refusal is the finding
-        _explained(report, "worker_refused", exc)
+        result_path = scratch_queue / "results" / located.envelope_path.name
+        # Only a queued parent is read by the next consumers; a blocked or boundary row would just
+        # report the missing materialized envelope.
+        queued = str(row.get("status")) == "queued_for_production_scene_configuration"
+        admission = (
+            replay_next_consumers(result_path=result_path, queue_root=scratch_queue)
+            if queued and result_path.is_file() else []
+        )
+        report.update(
+            next_consumer_admission=admission,
+            next_consumers_admitted=bool(admission) and all(row["status"] == "accepted" for row in admission),
+        )
+        report["scratch_content_store_released"] = _release_scratch_store(scratch_store)
         report["report_path"] = _write_report(run_root, report)
         return report
     finally:
-        if previous_child_env is None:
-            os.environ.pop(driver.CHILD_QUEUE_ENV, None)
-        else:
-            os.environ[driver.CHILD_QUEUE_ENV] = previous_child_env
-    rows = outcome.get("results") or []
-    row = rows[0] if rows else {}
-    blockers = [str(item) for item in (row.get("blockers") or [])]
-    boundary = render_reached and not fetch_calls and any("ReplayBoundary" in item for item in blockers)
-    report.update(
-        status=str(row.get("status") or "no_row"),
-        row={key: row.get(key) for key in ("status", "blockers", "preparation_id", "observed_at_iso")},
-        advancement=row.get("advancement"),
-        fired_predicates=[item.split(":predicates=", 1)[1] for item in blockers if ":predicates=" in item],
-        nothing_fetched=not fetch_calls,
-        fetch_attempts=fetch_calls[:8],
-        reached_render_inputs_boundary=boundary,
-        sam31_ready=boundary,
-    )
-    result_path = scratch_queue / "results" / located.envelope_path.name
-    # Only a queued parent is read by the next consumers; a blocked or boundary row would just
-    # report the missing materialized envelope.
-    queued = str(row.get("status")) == "queued_for_production_scene_configuration"
-    admission = (
-        replay_next_consumers(result_path=result_path, queue_root=scratch_queue)
-        if queued and result_path.is_file() else []
-    )
-    report.update(
-        next_consumer_admission=admission,
-        next_consumers_admitted=bool(admission) and all(row["status"] == "accepted" for row in admission),
-    )
-    report["report_path"] = _write_report(run_root, report)
-    return report
+        # Both returns release the store before writing their report. This covers an exception
+        # anywhere after the first copy: a copy that fills the disk, a consumer that raises.
+        _release_scratch_store(scratch_store)
 
 
 def replay_next_consumers(*, result_path: Path, queue_root: Path) -> list[dict[str, Any]]:
