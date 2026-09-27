@@ -1,3 +1,5 @@
+# Covers (for impacted-test selection):
+#   src/blueprint_pipeline/task_evaluation_policy_canary_disk.py
 from __future__ import annotations
 
 import functools
@@ -1982,11 +1984,12 @@ def test_canary_reservation_measures_its_own_dispatch_directory(
 ) -> None:
     from types import SimpleNamespace
 
+    from blueprint_pipeline import task_evaluation_policy_canary_disk as canary_disk
     from blueprint_pipeline import task_evaluation_policy_canary_dispatcher as dispatcher
 
     queue, setups = _pending_canary(tmp_path)
     calls: list[dict[str, object]] = []
-    real = dispatcher.reserve_control_plane_disk
+    real = canary_disk.reserve_control_plane_disk
 
     def roomy(_path):
         return SimpleNamespace(total=100 * 1024**3, used=0, free=90 * 1024**3)
@@ -2001,7 +2004,7 @@ def test_canary_reservation_measures_its_own_dispatch_directory(
         (output / "runtime.bin").write_bytes(b"r" * 50_000)
         return {"status": status, "allocator_invoked": False}
 
-    monkeypatch.setattr(dispatcher, "reserve_control_plane_disk", recording)
+    monkeypatch.setattr(canary_disk, "reserve_control_plane_disk", recording)
     monkeypatch.setattr(dispatcher, "dispatch_policy_canary_activation", writes_run_outputs)
     process_policy_canary_dispatch_queue(
         dispatch_queue_root=queue,
@@ -2034,6 +2037,7 @@ def test_resumed_canary_passes_never_move_the_measured_footprint(
     from types import SimpleNamespace
 
     from blueprint_pipeline import control_plane_disk_budget as disk_budget
+    from blueprint_pipeline import task_evaluation_policy_canary_disk as canary_disk
     from blueprint_pipeline import task_evaluation_policy_canary_dispatcher as dispatcher
 
     queue, setups = _pending_canary(tmp_path)
@@ -2046,9 +2050,10 @@ def test_resumed_canary_passes_never_move_the_measured_footprint(
     # The run already started on an earlier pass: its session authority is on disk.
     run = tmp_path / "dispatches" / "activation-1"
     run.mkdir(parents=True)
+    assert "policy_canary_session_authority.json" in canary_disk.RUN_START_MARKERS
     (run / "policy_canary_session_authority.json").write_text("{}")
-    real = dispatcher.reserve_control_plane_disk
-    monkeypatch.setattr(dispatcher, "reserve_control_plane_disk", lambda *args, **kwargs: real(
+    real = canary_disk.reserve_control_plane_disk
+    monkeypatch.setattr(canary_disk, "reserve_control_plane_disk", lambda *args, **kwargs: real(
         *args, **kwargs, disk_usage=lambda _path: SimpleNamespace(total=100 * 1024**3, used=0, free=90 * 1024**3)))
     monkeypatch.setattr(dispatcher, "dispatch_policy_canary_activation",
                         lambda **_kwargs: {"status": "awaiting_official_billing", "allocator_invoked": True})

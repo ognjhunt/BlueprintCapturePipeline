@@ -18,7 +18,6 @@ from .policy_canary_partial_recovery import (
 )
 
 import argparse
-import contextlib
 import hashlib
 import json
 import os
@@ -42,8 +41,8 @@ from .common import write_json
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 from .control_plane_disk_budget import (
     ControlPlaneDiskBudgetError,
-    reserve_control_plane_disk,
 )
+from .task_evaluation_policy_canary_disk import canary_disk_reservation
 from .control_plane_storage_pins import (
     ControlPlaneStoragePinError,
     pins_root_from_environment,
@@ -2466,26 +2465,9 @@ def process_policy_canary_dispatch_queue(
             processed.append(waiting)
             continue
         output = outputs / activation_id
-        # A pass that finds the run's session authority or allocator start on disk
-        # resumes a run an earlier pass started (awaiting billing, provider zero or
-        # interpretation): its growth is not the run's footprint.
-        resumes_run = any((output / name).exists() for name in (
-            "policy_canary_session_authority.json", "allocator_invocation_started.json"))
         try:
-            reservation = (
-                reserve_control_plane_disk(
-                    "policy_canary_dispatch",
-                    target_root=outputs,
-                    reservation_root=disk_reservation_root,
-                    # Admission reads the shared parent; the footprint sample
-                    # measures only this run's own tree.
-                    workspace=output,
-                    workload="policy_canary",
-                    fresh=False if resumes_run else None,
-                )
-                if disk_reservation_root is not None
-                else contextlib.nullcontext()
-            )
+            reservation = canary_disk_reservation(
+                output=output, outputs=outputs, reservation_root=disk_reservation_root)
             with reservation as held:
                 result = dispatch_policy_canary_activation(
                     activation_result_path=activation_path,
