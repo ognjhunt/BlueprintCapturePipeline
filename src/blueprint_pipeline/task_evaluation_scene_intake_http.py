@@ -17,6 +17,11 @@ from .native_g1_team_campaign_intake import (
     list_g1_team_campaign_setups,
     stage_g1_team_campaign,
 )
+from .native_g1_team_policy_run_intake import (
+    DEFAULT_QUEUE_ROOT as G1_POLICY_DEFAULT_QUEUE_ROOT,
+    QUEUE_ENV as G1_POLICY_QUEUE_ENV,
+    stage_g1_team_policy_run,
+)
 from .task_evaluation_scene_intake import (
     CLIENTS_ENV, ROOT_ENV, SceneIntakeError, stage_scene_intent, scene_intent_status, revoke_scene_intent,
 )
@@ -84,6 +89,42 @@ def register_scene_intake_routes(app: FastAPI, require_admission: Callable,
                          "provider_mutation_performed_inside_http_request": False})
         except (OSError, KeyError, TypeError, RuntimeError) as exc:
             raise HTTPException(status_code=503, detail="G1 team intake unavailable") from exc
+        return JSONResponse(status_code=202, content=receipt,
+                            headers={"Cache-Control": "no-store"})
+
+    @app.post("/api/live-pipeline/native-g1-team-policy-runs",
+              dependencies=[Depends(require_admission)])
+    async def intake_native_g1_team_policy_run(request: Request) -> JSONResponse:
+        if not request.headers.get("x-blueprint-pipeline-signature"):
+            raise HTTPException(status_code=401, detail="G1 team policy intake requires signed owner authority")
+        try:
+            payload = await request.json()
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail="invalid JSON body") from exc
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="expected JSON object")
+        registry = os.getenv(G1_REGISTRY_ENV, "").strip()
+        root = os.getenv(G1_POLICY_QUEUE_ENV, str(G1_POLICY_DEFAULT_QUEUE_ROOT)).strip()
+        if not registry or not root:
+            raise HTTPException(status_code=503, detail="G1 team policy intake not configured")
+        if "launch_preparation" in (deployment_identity().get("disk_headroom", {}).get("refused_roles") or []):
+            raise HTTPException(status_code=503, detail="G1 team policy intake disk admission refused")
+        trusted = {v.strip() for v in os.getenv(CLIENTS_ENV, "blueprint-webapp").split(",") if v.strip()}
+        try:
+            receipt = await run_in_threadpool(
+                stage_g1_team_policy_run, value=payload, registry_path=Path(registry),
+                queue_root=Path(root),
+                authenticated_client=str(getattr(request.state, "intake_client_id", "")),
+                trusted_clients=trusted,
+            )
+        except ValueError as exc:
+            code = str(exc)
+            return JSONResponse(status_code=(403 if code.endswith("issuer_not_authorized")
+                else 409 if code.endswith("idempotency_conflict") else 422),
+                content={"status": "rejected", "blockers": [code],
+                         "provider_mutation_performed_inside_http_request": False})
+        except (OSError, KeyError, TypeError, RuntimeError) as exc:
+            raise HTTPException(status_code=503, detail="G1 team policy intake unavailable") from exc
         return JSONResponse(status_code=202, content=receipt,
                             headers={"Cache-Control": "no-store"})
 

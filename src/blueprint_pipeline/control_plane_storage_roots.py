@@ -105,6 +105,7 @@ STORAGE_ROOTS: tuple[StorageRoot, ...] = (
     # --- queues and scratch
     StorageRoot(f"{_CONTROL_PLANE}/task-evaluation-launches", "work", "blueprint", "launch queue"),
     StorageRoot(f"{_CONTROL_PLANE}/native-g1-team-campaigns", "work", "blueprint", "owner-scoped G1 campaign intent queue"),
+    StorageRoot(f"{_CONTROL_PLANE}/native-g1-team-policy-runs", "work", "blueprint", "owner-scoped team policy run intent queue"),
     StorageRoot(f"{_CONTROL_PLANE}/native-g1-team-campaign-work", "work", "blueprint", "G1 campaign preparation and settlement work"),
     StorageRoot(f"{_CONTROL_PLANE}/task-evaluation-launch-preparations", "work", "blueprint", "preparation queue"),
     StorageRoot(f"{_CONTROL_PLANE}/sam31-preparation-executions", "work", "blueprint", "SAM preparation child queue"),
