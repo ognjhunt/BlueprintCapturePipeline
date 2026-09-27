@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -84,6 +85,77 @@ def test_duplicate_and_symlink_lane_parent_are_refused(tmp_path: Path) -> None:
     linked_root.symlink_to(root, target_is_directory=True)
     with pytest.raises(LaneScratchError):
         _create(linked_root, lane="agent-c", name="job-3")
+
+
+def test_symlink_root_ancestor_is_refused_before_any_mutation(tmp_path: Path) -> None:
+    from blueprint_pipeline.control_plane_lane_scratch import LaneScratchError
+
+    target = tmp_path / "target"
+    root = target / "lanes"
+    root.mkdir(parents=True)
+    ancestor = tmp_path / "linked-parent"
+    ancestor.symlink_to(target, target_is_directory=True)
+
+    with pytest.raises(LaneScratchError, match="root_unsafe"):
+        _create(ancestor / "lanes")
+
+    assert list(root.iterdir()) == []
+
+
+def test_lease_read_refuses_a_symlink_folder_ancestor(tmp_path: Path) -> None:
+    from blueprint_pipeline.control_plane_lane_scratch import LaneScratchError, read_lane_scratch_folder
+
+    target = tmp_path / "target"
+    root = target / "lanes"
+    root.mkdir(parents=True)
+    _create(root)
+    ancestor = tmp_path / "linked-parent"
+    ancestor.symlink_to(target, target_is_directory=True)
+
+    with pytest.raises(LaneScratchError, match="folder_unsafe"):
+        read_lane_scratch_folder(ancestor / "lanes" / "agent-a" / "job-1",
+                                 lane="agent-a", name="job-1")
+
+
+@pytest.mark.parametrize("failing_operation", ["acquire", "unlock"])
+def test_root_lock_errors_close_every_open_descriptor(tmp_path: Path, monkeypatch,
+                                                       failing_operation: str) -> None:
+    from blueprint_pipeline import control_plane_lane_scratch as scratch
+
+    root = tmp_path / "lanes"
+    root.mkdir()
+    opened: set[int] = set()
+    real_open = os.open
+    real_flock = scratch.fcntl.flock
+    fail_flag = (scratch.fcntl.LOCK_EX if failing_operation == "acquire"
+                 else scratch.fcntl.LOCK_UN)
+
+    def tracked_open(*args, **kwargs):
+        descriptor = real_open(*args, **kwargs)
+        opened.add(descriptor)
+        return descriptor
+
+    def failing_flock(descriptor: int, operation: int) -> None:
+        if operation == fail_flag:
+            raise OSError("injected lock failure")
+        real_flock(descriptor, operation)
+
+    monkeypatch.setattr(scratch.os, "open", tracked_open)
+    monkeypatch.setattr(scratch.fcntl, "flock", failing_flock)
+    with pytest.raises(OSError, match="injected lock failure"):
+        _create(root)
+    leaked = []
+    for descriptor in opened:
+        try:
+            os.fstat(descriptor)
+        except OSError:
+            continue
+        leaked.append(descriptor)
+    try:
+        assert leaked == []
+    finally:
+        for descriptor in leaked:
+            os.close(descriptor)
 
 
 def test_torn_publication_leaves_no_final_folder(tmp_path: Path, monkeypatch) -> None:

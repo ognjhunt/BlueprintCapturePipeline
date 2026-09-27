@@ -18,7 +18,7 @@ import stat
 import sys
 import time
 from collections.abc import Callable, Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -100,15 +100,29 @@ def _lease_fields_valid(lease: Mapping[str, Any]) -> bool:
 
 
 @contextmanager
+def _opened_directory_path(path: Path, *, unsafe_code: str) -> Iterator[int]:
+    """Retain a no-follow descriptor chain through every absolute component."""
+
+    if not path.is_absolute() or ".." in path.parts:
+        raise LaneScratchError(unsafe_code)
+    with ExitStack() as descriptors:
+        try:
+            directory_fd = os.open(path.anchor, _DIR_FLAGS)
+            descriptors.callback(os.close, directory_fd)
+            for component in path.parts[1:]:
+                directory_fd = os.open(component, _DIR_FLAGS, dir_fd=directory_fd)
+                descriptors.callback(os.close, directory_fd)
+        except OSError as exc:
+            raise LaneScratchError(unsafe_code) from exc
+        yield directory_fd
+
+
+@contextmanager
 def _locked_root(root: str | Path) -> Iterator[int]:
     path = Path(root)
     if not path.is_absolute():
         raise LaneScratchError("lane_scratch_root_not_absolute")
-    try:
-        root_fd = os.open(path, _DIR_FLAGS)
-    except OSError as exc:
-        raise LaneScratchError("lane_scratch_root_unsafe") from exc
-    try:
+    with _opened_directory_path(path, unsafe_code="lane_scratch_root_unsafe") as root_fd:
         try:
             lock_fd = os.open(".lane-scratch.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW,
                               0o600, dir_fd=root_fd)
@@ -118,10 +132,10 @@ def _locked_root(root: str | Path) -> Iterator[int]:
             fcntl.flock(lock_fd, fcntl.LOCK_EX)
             yield root_fd
         finally:
-            fcntl.flock(lock_fd, fcntl.LOCK_UN)
-            os.close(lock_fd)
-    finally:
-        os.close(root_fd)
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            finally:
+                os.close(lock_fd)
 
 
 @contextmanager
@@ -216,14 +230,8 @@ def read_lane_scratch_folder(path: str | Path, *, lane: str, name: str) -> dict[
     """Read an exact folder's sealed lease without creating a lock or following its symlink."""
 
     lane, name = _id(lane, "lane"), _id(name, "name")
-    try:
-        folder_fd = os.open(path, _DIR_FLAGS)
-    except OSError as exc:
-        raise LaneScratchError("lane_scratch_folder_unsafe") from exc
-    try:
+    with _opened_directory_path(Path(path), unsafe_code="lane_scratch_folder_unsafe") as folder_fd:
         lease = _read_lease(folder_fd)
-    finally:
-        os.close(folder_fd)
     if lease.get("lane") != lane or lease.get("name") != name:
         raise LaneScratchError("lane_scratch_lease_mismatch")
     return lease
