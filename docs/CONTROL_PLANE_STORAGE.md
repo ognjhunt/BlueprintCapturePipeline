@@ -146,9 +146,10 @@ links silently became a full copy. The runtime builder links
 (`scripts/build_task_evaluation_splat_render_runtime.py`). One bind for the
 whole tree keeps all of these links, whichever stores they join.
 
-The tree carries three small `evidence_hot` entries onto the volume:
+The inputs tree carries three small `evidence_hot` entries onto the volume:
 `sam31-profile-registry`, `task-evaluation-terminal-results` and
-`g1-team-campaign-registry.json`. This is deliberate. The volume is durable
+`g1-team-campaign-registry.json`. The handoff spool also carries
+`pubsub-handoffs/*/scenes/*.retired.v1.json` retirement receipts. This is deliberate. The volume is durable
 block storage, and splitting the tree would break the hardlinks that keep it
 small. `--plan` lists them under `evidence_hot on volume:`.
 
@@ -388,7 +389,7 @@ scene only when everything in it can come back and nothing can still need it.
    a raw file that does not verify keeps the scene
    (`raw_not_verified_in_cloud:<path>`). On the timer each file's digests are cached
    by (path, size, mtime, inode) in
-   `storage-gc/scene-workspace-inventory/<bucket>/<scene>.json` (root, `0600`), so an
+   `pubsub-handoffs/.scene-workspace-inventory/<bucket>/<scene>.json` (root, `0600`), so an
    hourly plan re-reads only what changed, and a tick hashes at most 20 GiB of
    uncached bytes; a scene it cannot finish waits for the next tick
    (`inventory_deferred`). Retirement never trusts the cache: it re-reads every file

@@ -1142,7 +1142,7 @@ def retire_scene_workspaces(
     for storage_root in storage_roots:
         context = context_factory(Path(storage_root))
         # First finish any removal a crash interrupted: its retirement is already committed.
-        swept = sweep_retiring_workspaces(context.storage_root, apply=apply)
+        swept = sweep_retiring_workspaces(context.storage_root, apply=applying)
         report["retiring_removed_count" if apply else "retiring_removable_count"] += len(
             swept["removed" if apply else "removable"])
         report["retiring_kept_without_receipt"].extend(swept["kept_without_receipt"])
@@ -1185,9 +1185,11 @@ def retire_scene_workspaces(
             else:
                 retained([outcome["reason"]])
                 rows.append({**row, "status": "skipped", "reason": outcome["reason"]})
-    if inventory_cache_root is not None:
-        # A cache is only worth keeping for a workspace that still exists.
-        for cache in sorted(Path(inventory_cache_root).glob("*/*.json")):
+    # A cache is only worth keeping for a workspace that still exists. The
+    # default cache follows each spool root onto the work volume.
+    for storage_root in storage_roots:
+        root = Path(inventory_cache_root) if inventory_cache_root is not None else Path(storage_root) / ".scene-workspace-inventory"
+        for cache in sorted(root.glob("*/*.json")):
             if (cache.parent.name, cache.stem) not in live_scenes:
                 cache.unlink(missing_ok=True)
     report["hashed_bytes"] = budget.hashed_bytes
@@ -1444,7 +1446,8 @@ def run_storage_gc(
                 # Without an intent root the reference index is unreadable, so nothing retires.
                 return RetentionContext(storage_root=storage_root, pins_root=Path(pins_root),
                                         queue_roots=scene_queues, intent_root=intent_root,
-                                        binding_root=binding_root, inventory_cache_root=cache_root)
+                                        binding_root=binding_root,
+                                        inventory_cache_root=cache_root or storage_root / ".scene-workspace-inventory")
 
             return retire_scene_workspaces(
                 storage_roots=scene_present, context_factory=context_factory, apply=apply,
@@ -1571,7 +1574,7 @@ def _run_main(argv: list[str]) -> int:
         scene_workspace_retirement_enabled=retirement_enabled,
         scene_workspace_retirement_alert=retirement_alert,
         # Per-file digests, so an hourly plan re-reads only what changed.
-        scene_inventory_cache_root=Path(report_root) / "scene-workspace-inventory" if report_root else None,
+        scene_inventory_cache_root=None,
         classifier=require_storage_class,
     )
     if args.report_out:

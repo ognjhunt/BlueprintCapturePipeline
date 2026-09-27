@@ -67,6 +67,7 @@ EVIDENCE_HOT_ON_VOLUME=(
   task-evaluation-inputs/sam31-profile-registry
   task-evaluation-inputs/task-evaluation-terminal-results
   task-evaluation-inputs/g1-team-campaign-registry.json
+  'pubsub-handoffs/*/scenes/*.retired.v1.json'
 )
 
 # Units whose sandbox can write under the moved roots, with the timers and path

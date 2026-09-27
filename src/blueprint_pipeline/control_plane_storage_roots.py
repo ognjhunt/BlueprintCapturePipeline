@@ -97,7 +97,7 @@ STORAGE_ROOTS: tuple[StorageRoot, ...] = (
     StorageRoot(f"{_CONTROL_PLANE}/completed-replay-cache-retention", "evidence_hot", "root", "completed replay cache retention plans and receipts"),
     StorageRoot(f"{_CONTROL_PLANE}/scene-project-spend", "evidence_hot", "blueprint", "scene project spend reconciliation evidence"),
     StorageRoot(f"{_CONTROL_PLANE}/storage-gc", "evidence_hot", "blueprint", "storage reclaim reports"),
-    StorageRoot(f"{_CONTROL_PLANE}/storage-gc/scene-workspace-inventory", "cache", "root",
+    StorageRoot(f"{_PUBSUB}/.scene-workspace-inventory", "cache", "root",
                 "per-file digests for scene workspace retirement plans; rebuilt by re-hashing"),
     StorageRoot(f"{_CONTROL_PLANE}/episode-interpretation-rights", "evidence_hot", "blueprint", "human-approved per-episode disclosure rights"),
     # Digest-bound SAM server profiles registered once per release and read by
