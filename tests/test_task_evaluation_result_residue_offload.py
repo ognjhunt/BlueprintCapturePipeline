@@ -132,8 +132,8 @@ def _sealed_run(evidence_root: Path, name: str = "run-1", *, residue_files=RESID
         (run / relative).parent.mkdir(parents=True, exist_ok=True)
         (run / relative).write_bytes(data)
     receipt = {"schema_version": "task_evaluation_policy_canary_dispatch.v1", "status": "completed",
-               "run_id": registry["run_id"], "terminal_result": {"path": str(run / TERMINAL_RESULT)},
-               "receipt_digest": ""}
+               "run_id": registry["run_id"], "run_kind": "internal_policy_canary",
+               "terminal_result": {"path": str(run / TERMINAL_RESULT)}, "receipt_digest": ""}
     receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
     (run / "dispatch_receipt.json").write_text(json.dumps(receipt), encoding="utf-8")
     _age(run)
@@ -1081,4 +1081,26 @@ def test_the_gc_reads_its_queues_for_rows_that_name_a_run(tmp_path) -> None:
 
     assert [row["retained_reason"] for row in report["result_residue_offload"]["runs"]] == [
         "dispatch_queue_unreadable"]
+    assert not f.pointer.exists() and set(RESIDUE) <= set(_local_files(f.run))
+
+
+@pytest.mark.parametrize("field,value", [
+    ("schema_version", "task_evaluation_policy_canary_dispatch.v0"),
+    ("run_kind", "operator_policy_canary"),
+    ("run_id", ""),
+])
+def test_a_dispatch_receipt_of_another_kind_keeps_the_run(tmp_path, field, value) -> None:
+    """Only the canary dispatcher's own sealed receipt admits a run, checked as the terminal
+    index checks it: schema, digest, run kind and run id."""
+
+    f = _sealed_run(tmp_path / "canaries")
+    path = f.run / "dispatch_receipt.json"
+    receipt = {**json.loads(path.read_text(encoding="utf-8")), field: value}
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    path.write_text(json.dumps(receipt), encoding="utf-8")
+    _age(f.run)
+
+    result = _offload(f)
+
+    assert (result["status"], result["retained_reason"]) == ("retained", "dispatch_receipt_invalid")
     assert not f.pointer.exists() and set(RESIDUE) <= set(_local_files(f.run))

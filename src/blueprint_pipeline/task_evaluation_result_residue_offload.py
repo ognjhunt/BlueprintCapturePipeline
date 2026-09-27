@@ -567,6 +567,9 @@ def _dispatch_receipt_reason(root: Path, registry: Mapping[str, Any]) -> str | N
     delivery and download route keep reopening its files, so it stays whole.
     """
 
+    # The terminal index's own constants; that module is heavy, so it loads only when a run gets here.
+    from .task_evaluation_scene_terminal_reconciler import DISPATCH_RECEIPT_SCHEMA, POLICY_CANARY_RUN_KIND
+
     path = root / DISPATCH_RECEIPT
     if path.is_symlink() or not path.is_file():
         return "dispatch_receipt_missing"
@@ -576,10 +579,15 @@ def _dispatch_receipt_reason(root: Path, registry: Mapping[str, Any]) -> str | N
         receipt = json.loads(path.read_bytes())
     except (OSError, ValueError):
         return "dispatch_receipt_invalid"
+    # As index_policy_canary_terminal checks it: schema, digest, run kind and a run id, here the registry's.
     if (
         not isinstance(receipt, dict)
+        or receipt.get("schema_version") != DISPATCH_RECEIPT_SCHEMA
         or receipt.get("receipt_digest") != canonical_digest(receipt, digest_field="receipt_digest")
-        or receipt.get("run_id") != registry.get("run_id")
+        or receipt.get("run_kind") != POLICY_CANARY_RUN_KIND
+        or not isinstance(receipt.get("run_id"), str)
+        or not receipt["run_id"]
+        or receipt["run_id"] != registry.get("run_id")
     ):
         return "dispatch_receipt_invalid"
     return None
