@@ -278,10 +278,32 @@ def test_full_scratch_volume_refuses_chain_but_admits_deploy_and_listener_state(
             "handoff_staging", target_root=scratch, reservation_root=ledger,
             expected_bytes=64 * MIB, disk_usage=usage, device_of=device_of,
         )
-    listener_ledger = system / "listener-state.json"
+    # The scratch disk is below its bulk floor, not literally at zero free.
+    # The protected bytes on that same volume still hold the listener's ledger.
+    listener_ledger = scratch / "pipeline_job_ledger.json"
     listener_ledger.write_text('{"status":"retryable_blocked"}\n', encoding="utf-8")
     assert listener_ledger.is_file()
     deploy.release()
+
+
+def test_whole_chain_admission_fails_closed_for_absent_targets(tmp_path) -> None:
+    system = tmp_path / "system"
+    system.mkdir()
+    missing = tmp_path / "unmounted-scratch"
+
+    def roomy(_path):
+        return Usage(100 * GIB, 70 * GIB, 30 * GIB)
+
+    for mount, role_targets in (
+        (missing, {}),
+        (system, {"launch_dispatch": missing}),
+    ):
+        result = cap.whole_chain_admission(
+            mount, reservation_root=tmp_path / "ledger", now=1000,
+            disk_usage=roomy, role_targets=role_targets,
+            device_of=lambda _path: 101,
+        )
+        assert result["status"] == "waiting_for_capacity"
 
 
 def test_absent_configured_mount_is_not_critical(tmp_path) -> None:

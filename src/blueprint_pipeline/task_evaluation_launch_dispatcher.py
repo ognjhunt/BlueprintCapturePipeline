@@ -17,7 +17,6 @@ import os
 import re
 import subprocess
 import sys
-import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
@@ -71,6 +70,10 @@ from .task_evaluation_policy_run_contract import (
     validate_policy_run_setup,
 )
 from .launch_profile_immutable_inputs import immutable_input_digest
+from .launch_immutable_input_writer import (
+    TaskEvaluationLaunchError,
+    write_exclusive_private_bytes as _write_exclusive_private_bytes,
+)
 from . import task_evaluation_policy_canary_setup as policy_canary_setup
 
 LAUNCH_REQUEST_SCHEMA_VERSION = "task_evaluation_launch_request.v1"
@@ -140,9 +143,6 @@ PUBLIC_PROFILE_DESCRIPTOR_OPTIONAL_FIELDS = (
     "policy_run_setup",
     "internal_policy_canary_setup",
 )
-
-class TaskEvaluationLaunchError(ValueError):
-    """Raised when a launch request or profile fails closed."""
 
 def standing_authorization_directory(state_root: str | Path) -> str:
     """Where this host keeps standing authorizations.
@@ -1077,37 +1077,6 @@ def verify_profile_immutable_inputs(profile: Mapping[str, Any]) -> list[str]:
     return sorted(set(blockers))
 
 
-def _write_exclusive_private_bytes(path: Path, payload: bytes) -> bool:
-    """Create one private file, allowing only byte-identical concurrent creation."""
-
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    path.parent.chmod(0o700)
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
-    )
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "wb") as stream:
-            os.fchmod(stream.fileno(), 0o600)
-            stream.write(payload)
-            stream.flush()
-            os.fsync(stream.fileno())
-        try:
-            os.link(temporary, path, follow_symlinks=False)
-        except FileExistsError:
-            if path.is_symlink() or not path.is_file() or path.read_bytes() != payload:
-                raise TaskEvaluationLaunchError(f"immutable_input_staging_conflict:{path.name}")
-            return False
-        directory_descriptor = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory_descriptor)
-        finally:
-            os.close(directory_descriptor)
-        return True
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
 def _stage_profile_immutable_inputs(
     *,
     profile: Mapping[str, Any],
@@ -1116,18 +1085,14 @@ def _stage_profile_immutable_inputs(
 ) -> tuple[dict[str, Any], list[str]]:
     """Reserve the copy footprint on the run volume before staging inputs."""
 
-    sources = {
-        Path(str(_mapping(item).get("path") or "")).expanduser().resolve()
-        for item in profile.get("immutable_inputs") or []
-    }
+    sources = {Path(str(_mapping(item).get("path") or "")).expanduser().resolve()
+               for item in profile.get("immutable_inputs") or []}
     expected_bytes = sum(source.stat().st_size for source in sources) + 64 * 1024 * 1024
     with reserve_control_plane_disk(
         "launch_dispatch",
         target_root=run_root.parent,
-        reservation_root=os.getenv(
-            "BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT",
-            str(DEFAULT_RESERVATION_ROOT),
-        ),
+        reservation_root=os.getenv("BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT",
+                                   str(DEFAULT_RESERVATION_ROOT)),
         expected_bytes=expected_bytes,
         workspace=run_root,
         workload="launch_immutable_inputs",

@@ -246,10 +246,13 @@ block storage, and splitting the tree would break the hardlinks that keep it
 small. `--plan` lists them under `evidence_hot on volume:`.
 
 **Per-volume floors.** Admission measures the filesystem that holds each role's
-target root, so after the move bulk roles reserve against the volume and state
-writers against the root disk. Per-volume admission gives each volume its own
-floor, plus a reserved band that keeps deploys and the listener's own state
-writable when the volume is full. See
+target root, so after the move bulk roles reserve against the volume. Per-volume
+admission gives each volume its own floor. "Full" here means below the bulk
+floor, with physical free space still reserved: the listener's job ledger lives
+inside its scratch-volume capture tree and can use that remaining space after a
+new capture download is refused. Deploys use the separate critical floor on
+their target device. At zero physical free bytes, no local state write can be
+guaranteed. See
 [Admission gate](#admission-gate-blueprint_pipelinecontrol_plane_disk_budget)
 (design: [phase 2](CONTROL_PLANE_DISK_REDESIGN_2026-09-26.md#phase-2-volume-split-a-week)).
 The capacity unit measures `/`, `/var/lib/blueprint` and `/mnt/blueprint-work`.

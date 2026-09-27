@@ -227,6 +227,8 @@ def whole_chain_admission(
     prevents starting a chain that already exceeds available headroom.
     """
     measured = measure_mount(mount, reservation_root=reservation_root, disk_usage=disk_usage, now=now)
+    if not Path(mount).is_dir():
+        measured = {"mount": str(mount), "status": "absent"}
     footprints = measured.get("footprints")
     if not isinstance(footprints, Mapping):
         try:
@@ -242,10 +244,14 @@ def whole_chain_admission(
             }
     required = sum(int(row["bytes"]) for row in footprints.values())
     devices: dict[int, dict[str, Any]] = {}
-    admission_error = False
+    admission_error = measured.get("status") != "measured"
     try:
         configured = (disk_budget.parse_role_targets(os.getenv("BLUEPRINT_CONTROL_PLANE_DISK_ROLE_TARGETS"))
                       if role_targets is None else {role: Path(path) for role, path in role_targets.items()})
+        if any(not path.is_dir() for path in configured.values()):
+            raise disk_budget.ControlPlaneDiskBudgetError(
+                "control_plane_disk_budget_role_target_unavailable"
+            )
         projected = disk_budget.disk_headroom(
             target_root=mount, role_targets=configured, reservation_root=reservation_root,
             disk_usage=disk_usage, now=lambda: time.time() if now is None else float(now),
