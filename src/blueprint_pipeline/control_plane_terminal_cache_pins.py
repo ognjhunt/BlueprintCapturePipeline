@@ -1,15 +1,32 @@
-"""Release obsolete cache pins from verified archived-run evidence.
+"""Release storage pins once evidence proves they protect nothing.
 
 The collector previously retained already-archived runs for the pin's full
 30-day TTL. This reconciliation changes only the cache ledger; the normal
 collector separately rechecks references and removes reproducible directories.
+
+Two proofs always apply to an activation pin: its run is archived behind a
+verified pointer (``archived_run``), or sealed cold without a result registry
+(``sealed_cold_run``). The extended proofs are evaluated on every tick but
+release a pin only with the owner's opt-in,
+``BLUEPRINT_CONTROL_PLANE_GC_EXTENDED_PIN_PROOFS=1``; until then their
+candidates are listed with ``"enabled": false``:
+
+* ``unconsumed_stale_pin``: a preparation or compilation pin that no live pin
+  depends on, created more than a week and a day ago, whose paths are all
+  ``cache``. Its content is reproducible and re-fetched by digest.
+
+Every proof keeps the six-hour minimum pin age, the dependency closure (a pin
+is released only when no queue row or process references any pin in it), and
+a re-derivation at the mutation edge. The report lists every live pin once: as
+a candidate with its ``proof``, or in ``kept`` with a typed reason.
 """
 from __future__ import annotations
 
 import json
+from collections import Counter
 from pathlib import Path
 
-from .control_plane_storage_pins import load_storage_pins, release_storage_pin
+from .control_plane_storage_pins import load_storage_pins, release_storage_pin, storage_pin_guard
 from .decision_evidence_contracts import canonical_digest
 from .completed_replay_cache_retention import active_reference
 from .control_plane_evidence_offload import (
@@ -21,6 +38,12 @@ from .control_plane_storage_roots import require_storage_class
 # retained run directory itself (evidence_cold). Releasing a pin removes no
 # bytes, so any of these is acceptable; hot evidence and state never are.
 _PIN_PATH_CLASSES = ("cache", "work", "evidence_cold")
+MINIMUM_PIN_AGE_SECONDS = 6 * 3600
+#: A shared mutation window is valid for at most a week and launch re-validates
+#: it, so a day past that nothing it released can still be consumed.
+MAXIMUM_MUTATION_WINDOW_SECONDS = 604_800
+LAPSE_SECONDS = MAXIMUM_MUTATION_WINDOW_SECONDS + 86_400
+
 
 def _read(path):
     if (not path.is_file() or any(p.is_symlink() for p in (path, *path.parents))
@@ -33,9 +56,9 @@ def _read(path):
     return value if isinstance(value, dict) else None
 
 
-def _pin_path_allowed(classifier, path):
+def _pin_path_allowed(classifier, path, classes=_PIN_PATH_CLASSES):
     last = None
-    for expected in _PIN_PATH_CLASSES:
+    for expected in classes:
         try:
             classifier(str(path), expected=expected, code="terminal_cache_pin_path_class_invalid")
             return
@@ -89,49 +112,167 @@ def _closed_proof(pin, evidence_roots, *, hot_window_seconds=DEFAULT_HOT_WINDOW_
     return None
 
 
+def _paths_classify(classifier, paths, classes):
+    try:
+        for path in paths:
+            _pin_path_allowed(classifier, path, classes)
+    except ValueError:
+        return False
+    return True
+
+
+def _unconsumed_stale_pin(pin, live_pins, *, classifier, now, **_context):
+    """A preparation or compilation that nothing consumes and that has outlived every mutation window."""
+
+    identity = (pin["kind"], pin["owner_id"])
+    if any((row.get("kind"), row.get("owner_id")) == identity
+           for other in live_pins.values() for row in other.get("depends_on") or []):
+        return None, "depended_on"
+    if now - pin["created_at_epoch"] < LAPSE_SECONDS:
+        return None, "pin_not_stale"
+    if not _paths_classify(classifier, pin["paths"], ("cache",)):
+        return None, "path_class_invalid"
+    return {"kind": "unconsumed_stale_pin", "created_at_epoch": pin["created_at_epoch"]}, None
+
+
+_EXTENDED_PROOFS = {"preparation": _unconsumed_stale_pin, "compilation": _unconsumed_stale_pin}
+
+
+def _extended_proof(pin, live_pins, **context):
+    """``(proof, None)`` when an extended proof holds for ``pin``, else ``(None, reason)``. It only reads.
+
+    The six-hour minimum pin age is checked first, as the original proofs check it.
+    """
+
+    created = pin.get("created_at_epoch")
+    if type(created) not in (int, float):
+        return None, "pin_invalid"
+    if context["now"] - created < MINIMUM_PIN_AGE_SECONDS:
+        return None, "pin_young"
+    proof = _EXTENDED_PROOFS.get(pin["kind"])
+    return (None, "no_proof") if proof is None else proof(pin, live_pins, **context)
+
+
+def _derive(pin, live_pins, context):
+    """``_extended_proof`` and the type of any error it raised: one unreadable pin never costs the tick."""
+
+    try:
+        return (*_extended_proof(pin, live_pins, **context), None)
+    except Exception as exc:  # noqa: BLE001 - the report keeps the type, never a message with a path
+        return None, "proof_error", type(exc).__name__
+
+
+def _live_pins(pins_root, now):
+    return {(p["kind"], p["owner_id"]): p for p in load_storage_pins(pins_root, now=lambda: now) if p["status"] == "live"}
+
+
+def _closure(identity, pins):
+    """The pin and every live pin it depends on, transitively: what releasing it can release."""
+
+    closure, pending = {}, [identity]
+    while pending:
+        key = pending.pop()
+        if key in closure or key not in pins:
+            continue
+        closure[key] = pins[key]
+        pending.extend((d["kind"], d["owner_id"]) for d in pins[key].get("depends_on", []))
+    return closure
+
+
+def _referenced(closure, queue_text, reference_checker):
+    return any(p["owner_id"] in queue_text or any(reference_checker(Path(path)) for path in p["paths"])
+               for p in closure.values())
+
+
+def _closure_reason(identity, closure, pins, queue_text, reference_checker):
+    """Why the closure keeps the pin: a queue row or process references it, or another pin depends on it."""
+
+    if _referenced(closure, queue_text, reference_checker):
+        return "active_reference"
+    if any(any((d["kind"], d["owner_id"]) == identity for d in other.get("depends_on", []))
+           for key, other in pins.items() if key not in closure):
+        return "depended_on"
+    return None
+
+
 def reconcile_terminal_cache_pins(*, pins_root, queue_roots, evidence_roots, now, apply=False,
                                   reference_checker=active_reference, classifier=require_storage_class,
-                                  hot_window_seconds=DEFAULT_HOT_WINDOW_SECONDS):
+                                  hot_window_seconds=DEFAULT_HOT_WINDOW_SECONDS, extended_proofs_enabled=False):
+    """Plan, and with ``apply`` release, every live pin a proof closes.
+
+    ``enabled`` is the extended proofs' opt-in; the original proofs always apply.
+    Each candidate carries its ``proof`` and whether it is ``enabled``, each kept
+    pin a typed ``reason`` (and ``error_type`` for ``proof_error``), and
+    ``released_count_by_kind`` counts every pin a release receipt lists, its
+    dependencies included. Nothing here removes a byte.
+    """
+
     from .control_plane_storage_gc import _queue_reference_text
     pins_root = Path(pins_root)
     for root in evidence_roots:
         classifier(str(root), expected="evidence_cold", code="terminal_cache_pin_evidence_root_invalid")
-    pins = {(p["kind"], p["owner_id"]): p for p in load_storage_pins(pins_root, now=lambda: now) if p["status"] == "live"}
+    pins = _live_pins(pins_root, now)
     queue_text = _queue_reference_text(queue_roots)
+    context = {"classifier": classifier, "now": now}
     candidates, kept, released = [], [], []
     for identity, pin in pins.items():
+        row = {"kind": pin["kind"], "owner_id": pin["owner_id"]}
         proof = _closed_proof(pin, evidence_roots, hot_window_seconds=hot_window_seconds, now=now)
-        if proof is None or now - pin["created_at_epoch"] < 6 * 3600:
-            continue
-        for path in pin["paths"]:
-            _pin_path_allowed(classifier, path)
-        # Check the entire dependency closure before releasing a parent pin.
-        closure, pending = {}, [identity]
-        while pending:
-            key = pending.pop()
-            if key in closure or key not in pins:
+        original = proof is not None
+        if original:
+            if now - pin["created_at_epoch"] < MINIMUM_PIN_AGE_SECONDS:
+                kept.append({**row, "reason": "pin_young"})
                 continue
-            closure[key] = pins[key]
-            pending.extend((d["kind"], d["owner_id"]) for d in pins[key].get("depends_on", []))
-        if any(p["owner_id"] in queue_text or any(reference_checker(Path(path)) for path in p["paths"])
-               for p in closure.values()):
-            kept.append({"kind": pin["kind"], "owner_id": pin["owner_id"], "reason": "active_reference"})
+            for path in pin["paths"]:
+                _pin_path_allowed(classifier, path)
+            # Check the entire dependency closure before releasing a parent pin.
+            closure = _closure(identity, pins)
+            reason = _closure_reason(identity, closure, pins, queue_text, reference_checker)
+        else:
+            proof, reason, error = _derive(pin, pins, context)
+            if proof is not None:
+                try:
+                    closure = _closure(identity, pins)
+                    reason = _closure_reason(identity, closure, pins, queue_text, reference_checker)
+                except Exception as exc:  # noqa: BLE001 - an extended candidate never costs the original proofs
+                    reason, error = "proof_error", type(exc).__name__
+            if error is not None:
+                kept.append({**row, "reason": reason, "error_type": error})
+                continue
+        if reason is not None:
+            kept.append({**row, "reason": reason})
             continue
-        if any(any((d["kind"], d["owner_id"]) == identity for d in other.get("depends_on", []))
-               for key, other in pins.items() if key not in closure):
-            continue
-        candidate = {"kind": pin["kind"], "owner_id": pin["owner_id"], "proof": proof}
+        candidate = {**row, "proof": proof, "enabled": original or bool(extended_proofs_enabled)}
         candidates.append(candidate)
-        if apply:
+        if not (apply and candidate["enabled"]):
+            continue
+        if original:
             # Re-read live queue references and the proof at the mutation edge.
             fresh = _queue_reference_text(queue_roots)
             if (proof != _closed_proof(pin, evidence_roots, hot_window_seconds=hot_window_seconds, now=now)
-                    or any(p["owner_id"] in fresh or any(reference_checker(Path(path)) for path in p["paths"])
-                           for p in closure.values())):
+                    or _referenced(closure, fresh, reference_checker)):
                 kept.append({**candidate, "reason": "reference_changed"})
                 continue
             released.append(release_storage_pin(pins_root=pins_root, kind=pin["kind"],
                                                  owner_id=pin["owner_id"], now=lambda: now))
+            continue
+        # An extended proof also rests on the ledger (no live pin depends on the pin),
+        # so it is re-derived under the lock producers hold to publish a pin: queue rows
+        # first, then the ledger, so a new consumer shows up in one or the other.
+        with storage_pin_guard(pins_root, exclusive=True):
+            fresh = _queue_reference_text(queue_roots)
+            if (proof != _derive(pin, _live_pins(pins_root, now), context)[0]
+                    or _referenced(closure, fresh, reference_checker)):
+                kept.append({**candidate, "reason": "reference_changed"})
+                continue
+            released.append(release_storage_pin(pins_root=pins_root, kind=pin["kind"],
+                                                 owner_id=pin["owner_id"], now=lambda: now))
+    by_kind = Counter(row["kind"] for receipt in released for row in receipt["released"])
     return {"schema_version": "control_plane_terminal_cache_pin_reconciliation.v1",
-        "status": "applied" if apply else "dry_run", "candidates": candidates, "released": released,
-        "kept": kept, "cache_or_evidence_bytes_removed": False}
+        "status": "applied" if apply else "dry_run", "enabled": bool(extended_proofs_enabled),
+        "candidates": candidates, "candidate_count": len(candidates),
+        "candidate_count_by_proof": dict(sorted(Counter(row["proof"]["kind"] for row in candidates).items())),
+        "released": released, "released_count": sum(by_kind.values()),
+        "released_count_by_kind": dict(sorted(by_kind.items())),
+        "kept": kept, "retained_counts": dict(sorted(Counter(row["reason"] for row in kept).items())),
+        "cache_or_evidence_bytes_removed": False}
