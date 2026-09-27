@@ -300,3 +300,57 @@ def test_create_capability_refuses_replaced_root_before_publication(tmp_path, mo
     assert list(root.iterdir()) == []
     assert not (moved / "arena/attempt").exists()
     assert list((moved / "arena").iterdir()) == []
+
+
+@pytest.mark.parametrize("replacement", ["root", "folder"])
+@pytest.mark.parametrize("identical_lease", [False, True])
+def test_create_capability_rejects_replacement_after_publication_and_closes_reopen(
+    tmp_path, monkeypatch, replacement, identical_lease,
+):
+    from blueprint_pipeline import control_plane_leased_scratch as capabilities
+
+    root = tmp_path / "lanes"
+    root.mkdir()
+    original_publish = capabilities._publish_scratch_folder
+    original_open, opened = os.open, []
+    retained_folder = []
+
+    def tracked_open(*args, **kwargs):
+        fd = original_open(*args, **kwargs)
+        opened.append(fd)
+        return fd
+
+    def replace_after_publish(root_fd, lease, **kwargs):
+        identity = original_publish(root_fd, lease, **kwargs)
+        folder = root / "arena/attempt"
+        original_bytes = (folder / leases.LEASE_FILE).read_bytes()
+        if replacement == "root":
+            moved = root.with_name("old-lanes")
+            root.rename(moved)
+            root.mkdir()
+            retained_folder.append(moved / "arena/attempt")
+        else:
+            moved = folder.with_name("old-attempt")
+            folder.rename(moved)
+            retained_folder.append(moved)
+        replacement_folder = root / "arena/attempt"
+        replacement_folder.mkdir(parents=True)
+        replacement_lease = leases._creation_lease(
+            "arena", "attempt", owner="owner-a", run_ref="run-a", ttl_seconds=100,
+            reason="replacement", class_intent="scratch", cleanup="delete", now=lambda: 1000)
+        (replacement_folder / leases.LEASE_FILE).write_bytes(
+            original_bytes if identical_lease else json.dumps(replacement_lease).encode())
+        return identity
+
+    monkeypatch.setattr(os, "open", tracked_open)
+    monkeypatch.setattr(capabilities, "_publish_scratch_folder", replace_after_publish)
+    with pytest.raises(leases.LaneScratchError, match="publication_changed"):
+        capabilities.create_leased_lane_scratch(
+            "arena", "attempt", root=root, owner="owner-a", run_ref="run-a",
+            ttl_seconds=100, reason="diagnostic", class_intent="evidence", cleanup="owner_review",
+            now=lambda: 1000,
+        )
+    assert json.loads((retained_folder[0] / leases.LEASE_FILE).read_text())["reason"] == "diagnostic"
+    for fd in opened:
+        with pytest.raises(OSError):
+            os.fstat(fd)

@@ -187,8 +187,19 @@ def create_leased_lane_scratch(
 
             with _locked_root_descriptor(root_fd):
                 verify_root()
-                _publish_scratch_folder(root_fd, lease, verify_location=verify_root)
-            return LeasedScratchDirectory.open(root=root, lane=lane, name=name, owner=owner,
-                                               run_ref=run_ref, scene_ref=scene_ref, now=now)
+                published = _publish_scratch_folder(root_fd, lease, verify_location=verify_root)
+            scratch = LeasedScratchDirectory.open(root=root, lane=lane, name=name, owner=owner,
+                                                  run_ref=run_ref, scene_ref=scene_ref, now=now)
+            try:
+                reopened = (os.fstat(scratch._root_fd), os.fstat(scratch._lane_fd),
+                            os.fstat(scratch._folder_fd))
+                if (any((a.st_dev, a.st_ino) != (b.st_dev, b.st_ino)
+                        for a, b in zip(published, reopened, strict=True))
+                        or scratch.lease_digest != lease["lease_digest"]):
+                    raise LaneScratchError("lane_scratch_capability_publication_changed")
+            except BaseException:
+                scratch.close()
+                raise
+            return scratch
         except OSError as exc:
             raise LaneScratchError("lane_scratch_capability_path_unsafe") from exc

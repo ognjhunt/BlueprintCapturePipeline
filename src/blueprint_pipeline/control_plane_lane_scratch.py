@@ -300,7 +300,7 @@ def _creation_lease(
 def _publish_scratch_folder(
     root_fd: int, lease: Mapping[str, Any], *,
     verify_location: Callable[[int], None] | None = None,
-) -> None:
+) -> tuple[os.stat_result, os.stat_result, os.stat_result]:
     """Publish an already validated lease beneath a coordinated root descriptor."""
 
     lane, name = lease["lane"], lease["name"]
@@ -317,12 +317,14 @@ def _publish_scratch_folder(
             stage_fd = os.open(staging, _DIR_FLAGS, dir_fd=lane_fd)
             try:
                 _write_lease(stage_fd, lease, replace=False)
+                identity = (os.fstat(root_fd), os.fstat(lane_fd), os.fstat(stage_fd))
             finally:
                 os.close(stage_fd)
             if verify_location is not None:
                 verify_location(lane_fd)
             _publish_no_replace(lane_fd, staging, name)
             os.fsync(lane_fd)
+            return identity
         except OSError as exc:
             raise LaneScratchError("lane_scratch_publish_failed") from exc
         finally:
