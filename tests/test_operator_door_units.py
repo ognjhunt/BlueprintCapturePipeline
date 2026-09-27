@@ -98,4 +98,7 @@ def test_every_holdable_trigger_waits_for_boot_hold_reconciliation() -> None:
         unit = _unit(path)["Unit"]
         assert "blueprint-operator-door-hold-sweep.service" in unit["After"].split(), path.name
         assert "blueprint-operator-door-hold-sweep.service" in unit["Wants"].split(), path.name
+        assert unit["ConditionPathExists"] == (
+            f"!/var/lib/blueprint-operator-door/requests/holds/{path.name}.json"
+        ), path.name
     assert holdable

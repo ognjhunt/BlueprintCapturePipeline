@@ -1,6 +1,7 @@
 [Unit]
 Wants=blueprint-operator-door-hold-sweep.service
 After=blueprint-operator-door-hold-sweep.service
+ConditionPathExists=!/var/lib/blueprint-operator-door/requests/holds/blueprint-task-evaluation-launch-activation.path.json
 Description=Watch the authority-gated Blueprint Task Evaluation activation queue
 
 [Path]

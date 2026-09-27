@@ -1,6 +1,7 @@
 [Unit]
 Wants=blueprint-operator-door-hold-sweep.service
 After=blueprint-operator-door-hold-sweep.service
+ConditionPathExists=!/var/lib/blueprint-operator-door/requests/holds/blueprint-native-g1-team-campaign-dispatcher.timer.json
 Description=Check accepted Blueprint G1 team campaign intents
 
 [Timer]

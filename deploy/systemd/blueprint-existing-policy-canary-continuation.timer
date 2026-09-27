@@ -1,6 +1,7 @@
 [Unit]
 Wants=blueprint-operator-door-hold-sweep.service
 After=blueprint-operator-door-hold-sweep.service
+ConditionPathExists=!/var/lib/blueprint-operator-door/requests/holds/blueprint-existing-policy-canary-continuation.timer.json
 Description=Resume pending existing-run collection, billing, and Website delivery
 
 [Timer]

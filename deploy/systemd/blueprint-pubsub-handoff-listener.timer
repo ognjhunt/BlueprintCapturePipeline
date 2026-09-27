@@ -1,6 +1,7 @@
 [Unit]
 Wants=blueprint-operator-door-hold-sweep.service
 After=blueprint-operator-door-hold-sweep.service
+ConditionPathExists=!/var/lib/blueprint-operator-door/requests/holds/blueprint-pubsub-handoff-listener.timer.json
 Description=Run Blueprint capture-bridge handoff listener repeatedly
 
 [Timer]
