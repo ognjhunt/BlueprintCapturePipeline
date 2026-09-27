@@ -27,6 +27,8 @@ from .gpu_render_providers import (
 
 VAST_SSH_IDENTITY_FILE_ENV = "BLUEPRINT_VAST_SSH_IDENTITY_FILE"
 DEFAULT_VAST_SSH_IDENTITY_FILE = "~/.ssh/id_ed25519"
+PROVIDER_SECRETS_DIR_ENV = "BLUEPRINT_GPU_PROVIDER_SECRETS_DIR"
+PROVIDER_VAST_SSH_IDENTITY_FILENAME = "vast_ssh_id_ed25519"
 MAX_RECOVERY_SECONDS = 900.0
 
 _REMOTE_ARCHIVE_BY_BUNDLE_KIND = {
@@ -52,9 +54,14 @@ def _sha256(path: Path) -> str:
 
 
 def _identity_file() -> Path | None:
-    path = Path(
-        os.getenv(VAST_SSH_IDENTITY_FILE_ENV, DEFAULT_VAST_SSH_IDENTITY_FILE)
-    ).expanduser()
+    configured = os.getenv(VAST_SSH_IDENTITY_FILE_ENV)
+    secrets_dir = os.getenv(PROVIDER_SECRETS_DIR_ENV)
+    if configured:
+        path = Path(configured).expanduser()
+    elif secrets_dir:
+        path = Path(secrets_dir).expanduser() / PROVIDER_VAST_SSH_IDENTITY_FILENAME
+    else:
+        path = Path(DEFAULT_VAST_SSH_IDENTITY_FILE).expanduser()
     try:
         mode = path.stat().st_mode & 0o777
         resolved = path.resolve(strict=True)

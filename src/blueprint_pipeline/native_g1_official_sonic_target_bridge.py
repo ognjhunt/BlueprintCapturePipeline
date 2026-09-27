@@ -41,6 +41,15 @@ OFFICIAL_HAND_ORDER = (
 )
 
 
+class G1SonicTargetLimitError(ValueError):
+    """A SONIC target or sealed joint limit cannot be projected safely."""
+
+    def __init__(self, violations: list[dict[str, float | str | None]]) -> None:
+        self.violations = violations
+        names = ",".join(str(row["joint_name"]) for row in violations)
+        super().__init__("g1_sonic_controller_target_out_of_limits:" + names)
+
+
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -246,17 +255,23 @@ class NativeG1OfficialSonicTargetBridge:
         provider._decoder = self.decoder
         provider._perf_encoder_ms = self.encoder_timings
         provider._perf_decoder_ms = self.decoder_timings
+        self.last_target_projection: list[dict[str, float | str | None]] = []
 
     def targets_for_action(self, action: list[float]) -> dict[str, float]:
+        self.last_target_projection = []
         parse_semantic_v3_action(action)
         before = (self.encoder.calls, self.decoder.calls)
         before_timings = (self.encoder_timings.appends, self.decoder_timings.appends)
         self.provider._apply_lerobot_semantic_action(np.asarray(action, dtype=np.float32))
-        if not (self.provider._smpl_data_valid and self.provider._latest_consumed_new_this_step):
+        # The pinned provider marks a newly consumed joint29 frame here, but
+        # determines whether its reference history is valid in _run_gear_sonic.
+        if not self.provider._latest_consumed_new_this_step:
             raise RuntimeError("g1_sonic_reference_not_consumed")
         self.provider._latest_decoder_target = np.full(29, np.nan, dtype=np.float32)
         self.provider._latest_decoder_raw_action = np.full(29, np.nan, dtype=np.float32)
         body = np.asarray(self.provider._run_gear_sonic(), dtype=np.float64)
+        if not self.provider._smpl_data_valid:
+            raise RuntimeError("g1_sonic_reference_not_consumed")
         measured_target = np.asarray(self.provider._latest_decoder_target, dtype=np.float64)
         measured_raw = np.asarray(self.provider._latest_decoder_raw_action, dtype=np.float64)
         if (
@@ -285,12 +300,43 @@ class NativeG1OfficialSonicTargetBridge:
             if set(names) != set(expected):
                 raise AssertionError("g1_sonic_hand_joint_order_drift")
             targets.update(zip(names, values.tolist(), strict=True))
+        violations: list[dict[str, float | str | None]] = []
+        projections: list[dict[str, float | str | None]] = []
+        body_indices = {name: index for index, name in enumerate(CANONICAL_BODY_JOINT_NAMES_29)}
         for name in PROTOCOL_V4_FULL_JOINT_ORDER:
             value = targets[name]
             lower, upper = self.limits[name]
+            index = body_indices.get(name)
+            raw = float(measured_raw[index]) if index is not None else None
             if (
                 not all(math.isfinite(float(item)) for item in (value, lower, upper))
-                or not lower <= value <= upper
+                or lower > upper
             ):
-                raise ValueError("g1_sonic_controller_target_out_of_limits")
+                violations.append(
+                    {
+                        "joint_name": name,
+                        "target_rad": float(value) if math.isfinite(float(value)) else None,
+                        "lower_rad": float(lower) if math.isfinite(float(lower)) else None,
+                        "upper_rad": float(upper) if math.isfinite(float(upper)) else None,
+                        "raw_decoder_action": raw if raw is None or math.isfinite(raw) else None,
+                    }
+                )
+                continue
+            if value < lower or value > upper:
+                applied = min(max(value, lower), upper)
+                projections.append(
+                    {
+                        "joint_name": name,
+                        "requested_target_rad": float(value),
+                        "applied_target_rad": float(applied),
+                        "lower_rad": float(lower),
+                        "upper_rad": float(upper),
+                        "excess_rad": float(abs(value - applied)),
+                        "raw_decoder_action": raw,
+                    }
+                )
+                targets[name] = float(applied)
+        if violations:
+            raise G1SonicTargetLimitError(violations)
+        self.last_target_projection = projections
         return targets

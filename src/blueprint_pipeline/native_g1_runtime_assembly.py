@@ -19,6 +19,7 @@ from urllib.parse import urlparse
 
 from .decision_evidence_contracts import canonical_digest
 from .native_g1_official_sonic_target_bridge import (
+    G1SonicTargetLimitError,
     NativeG1OfficialSonicTargetBridge,
     SonicWxyzEnvironmentView,
     _require_artifact,
@@ -261,6 +262,9 @@ def run_g1_supervised_built_scene_episode(
             "episode_result_digest": episode.get("result_digest") if episode is not None else None,
             "server_teardown": teardown,
             "blocker": type(failure).__name__ if failure is not None else None,
+            "controller_target_violations": (
+                failure.violations if isinstance(failure, G1SonicTargetLimitError) else []
+            ),
             "ranking_eligible": False,
             "physical_outcome_claimed": False,
         }

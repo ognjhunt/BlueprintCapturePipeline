@@ -1027,6 +1027,9 @@ def _deploy_note(
         ("other_action", "break_glass_note_action_missing"),
         ("edited", "break_glass_note_digest_mismatch"),
         ("absent", "break_glass_note_unreadable"),
+        ("outside", "break_glass_note_outside_notes_root"),
+        ("outside_link", "break_glass_note_outside_notes_root"),
+        ("inside_link", "break_glass_note_unsafe"),
     ],
 )
 def test_main_refuses_an_untrusted_source_without_a_note(
@@ -1046,6 +1049,7 @@ def test_main_refuses_an_untrusted_source_without_a_note(
     monkeypatch.setattr(deploy, "deploy_control_plane_commit", lambda **_kwargs: pytest.fail("deploy ran"))
     monkeypatch.setattr(deploy.subprocess, "run", lambda *_args, **_kwargs: pytest.fail("host action"))
     notes = tmp_path / "cleanup-receipts"
+    monkeypatch.setattr(deploy, "DEFAULT_BREAK_GLASS_NOTES_ROOT", notes)
     extra: list[str] = []
     if note == "stale":
         extra = ["--break-glass-note", str(_deploy_note(notes, age_seconds=24 * 3600 + 60))]
@@ -1059,14 +1063,29 @@ def test_main_refuses_an_untrusted_source_without_a_note(
         extra = ["--break-glass-note", str(path)]
     elif note == "absent":
         extra = ["--break-glass-note", str(notes / "20260926T120000Z-0123456789ab.json")]
+    elif note == "outside":
+        extra = ["--break-glass-note", str(_deploy_note(tmp_path / "other-notes"))]
+    elif note == "outside_link":
+        original = _deploy_note(tmp_path / "other-notes")
+        notes.mkdir()
+        linked = notes / original.name
+        linked.symlink_to(original)
+        extra = ["--break-glass-note", str(linked)]
+    elif note == "inside_link":
+        original = _deploy_note(notes)
+        linked = notes / "alias.json"
+        linked.symlink_to(original.name)
+        extra = ["--break-glass-note", str(linked)]
 
     assert deploy.main(_cli_args(tmp_path, source, *extra)) == 2
 
     blocked = json.loads(capsys.readouterr().out)
     assert blocked["status"] == "blocked"
     [blocker] = blocked["blockers"]
-    assert blocker.startswith(f"deploy_source_repo_untrusted:{code}:")
-    assert "GPU admission would refuse the resulting release" in blocker
+    assert blocker == f"deploy_source_repo_untrusted:{code}"
+    assert "GPU admission will still refuse" in blocked["remedy"]
+    assert "deploy_control_plane_canary.sh" in blocked["remedy"]
+    assert "deploy_control_plane_iteration.sh" in blocked["remedy"]
     assert "/" not in blocker, "a refusal names no host path"
     # The question asked is the one admission asks of the receipt's source path.
     assert asked == [source.resolve()]
@@ -1077,6 +1096,7 @@ def test_main_accepts_an_untrusted_source_with_a_fresh_deploy_note(tmp_path, mon
     source = tmp_path / "scratch"
     source.mkdir()
     note = _deploy_note(tmp_path / "cleanup-receipts")
+    monkeypatch.setattr(deploy, "DEFAULT_BREAK_GLASS_NOTES_ROOT", note.parent)
     calls = []
     monkeypatch.setattr(deploy, "trusted_deploy_source", lambda path: False)
     monkeypatch.setattr(
@@ -1096,10 +1116,12 @@ def test_main_accepts_an_untrusted_source_with_a_fresh_deploy_note(tmp_path, mon
         "actions": [break_glass.DEPLOY_FROM_UNTRUSTED_SOURCE],
     }
     assert json.loads((tmp_path / "receipt.json").read_text(encoding="utf-8"))["break_glass_note"] == expected
-    assert json.loads(capsys.readouterr().out)["break_glass_note"] == expected
+    output = json.loads(capsys.readouterr().out)
+    assert output["break_glass_note"] == expected
+    assert "break_glass_deploy_from_untrusted_source" in output["alerts"]
     assert calls[0]["source_repo"] == str(source)
     # Every CLI deploy reports the notes the last one did not, this one included.
-    assert calls[0]["break_glass_notes_root"] == break_glass.DEFAULT_NOTES_ROOT
+    assert calls[0]["break_glass_notes_root"] == note.parent
 
 
 def test_main_needs_no_note_for_a_trusted_source(tmp_path, monkeypatch, capsys):
@@ -1109,6 +1131,24 @@ def test_main_needs_no_note_for_a_trusted_source(tmp_path, monkeypatch, capsys):
     assert deploy.main(_cli_args(tmp_path, tmp_path)) == 0
 
     assert json.loads(capsys.readouterr().out)["break_glass_note"] is None
+
+
+def test_trusted_source_warns_when_a_break_glass_note_is_ignored(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(deploy, "trusted_deploy_source", lambda _path: True)
+    monkeypatch.setattr(deploy, "deploy_control_plane_commit", lambda **_kwargs: {"status": "deployed"})
+    note = _deploy_note(tmp_path / "cleanup-receipts")
+    assert deploy.main(_cli_args(tmp_path, tmp_path, "--break-glass-note", str(note))) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["break_glass_note"] is None
+    assert "break_glass_note_ignored_trusted_source" in output["alerts"]
+
+
+def test_untrusted_door_source_refusal_names_the_ownership_remedy(monkeypatch):
+    monkeypatch.setattr(deploy, "trusted_deploy_source", lambda _path: False)
+    source = Path("/opt/blueprint/control-plane-config-tools/operator-door-source")
+    with pytest.raises(deploy.UntrustedDeploySourceError) as error:
+        deploy._require_trusted_deploy_source(source, None)
+    assert "root:root 0755" in error.value.remedy
 
 
 def test_door_and_iteration_wrappers_use_trusted_sources() -> None:
@@ -1189,7 +1229,7 @@ def _stub_host_deploy(monkeypatch, tmp_path: Path, commit: str) -> dict[str, obj
 
 
 def test_deploy_reports_and_marks_break_glass_notes(tmp_path, monkeypatch) -> None:
-    """Every host change made outside the door appears in the next deploy's receipt, once."""
+    """The deploy function reports notes but never marks them before receipt output."""
 
     commit = "d" * 40
     notes = tmp_path / "cleanup-receipts"
@@ -1218,54 +1258,140 @@ def test_deploy_reports_and_marks_break_glass_notes(tmp_path, monkeypatch) -> No
     ledger = (notes / break_glass.REPORTED_LEDGER).read_text(encoding="utf-8").splitlines()
     assert [(row["name"], row["deploy_commit"]) for row in map(json.loads, ledger)] == [
         (earlier.name, "e" * 40),
-        (first.name, commit),
-        (second.name, commit),
     ]
 
-    # The next deploy has nothing left to report, and raises no alert.
+    # Without a saved CLI receipt, the same notes are still unreported.
     again = deploy.deploy_control_plane_commit(**arguments, break_glass_notes_root=notes)
-    assert again["break_glass_notes"] == []
-    assert "alerts" not in again
+    assert len(again["break_glass_notes"]) == 2
     # A direct caller that names no notes root reports nothing and reads nothing.
     assert "break_glass_notes" not in deploy.deploy_control_plane_commit(**arguments)
 
 
-@pytest.mark.parametrize("failure", ["unreadable", "unmarked"])
-def test_break_glass_note_errors_never_fail_a_finished_deploy(tmp_path, monkeypatch, failure) -> None:
+def test_unreadable_break_glass_notes_never_fail_a_finished_deploy(tmp_path, monkeypatch) -> None:
     notes = tmp_path / "cleanup-receipts"
-    note = _deploy_note(notes)
+    _deploy_note(notes)
     receipt: dict[str, object] = {"status": "deployed", "alerts": ["earlier_alert"]}
-    if failure == "unreadable":
-        notes_root = tmp_path / "not-a-directory"
-        notes_root.write_text("", encoding="utf-8")
-    else:
-        notes_root = notes
-
-        def disk_full(*_args, **_kwargs):
-            raise OSError(errno.ENOSPC, "No space left on device", str(notes))
-
-        monkeypatch.setattr(deploy, "mark_break_glass_notes_reported", disk_full)
+    notes_root = tmp_path / "not-a-directory"
+    notes_root.write_text("", encoding="utf-8")
 
     deploy._report_break_glass_notes(receipt, root=notes_root, deploy_commit="d" * 40)
 
-    if failure == "unreadable":
-        assert receipt["break_glass_notes"] is None
-        assert receipt["break_glass_notes_error"] == "break_glass_notes_root_unsafe"
-        assert receipt["alerts"] == [
-            "earlier_alert",
-            "break_glass_notes_unreadable:break_glass_notes_root_unsafe",
-        ]
-    else:
-        # Reported here, and reported again next time: an unmarked note is never lost.
-        assert [row["name"] for row in receipt["break_glass_notes"]] == [note.name]
-        assert receipt["break_glass_notes_error"] == "break_glass_io_error:ENOSPC"
-        assert receipt["alerts"] == [
-            "earlier_alert",
-            "break_glass_notes_reported:1",
-            "break_glass_notes_not_marked:break_glass_io_error:ENOSPC",
-        ]
-        assert [row["name"] for row in break_glass.unreported_notes(notes)] == [note.name]
+    assert receipt["break_glass_notes"] is None
+    assert receipt["break_glass_notes_error"] == "break_glass_notes_root_unsafe"
+    assert receipt["alerts"] == [
+        "earlier_alert",
+        "break_glass_notes_unreadable:break_glass_notes_root_unsafe",
+    ]
     assert str(tmp_path) not in json.dumps(receipt)
+
+
+def _stub_main_break_glass_notes(monkeypatch, tmp_path):
+    notes = tmp_path / "cleanup-receipts"
+    note = _deploy_note(notes)
+    monkeypatch.setattr(deploy, "DEFAULT_BREAK_GLASS_NOTES_ROOT", notes)
+    monkeypatch.setattr(deploy, "trusted_deploy_source", lambda _path: True)
+
+    def deployed(**_kwargs):
+        receipt = {"status": "deployed", "source_commit": "a" * 40}
+        deploy._report_break_glass_notes(receipt, root=notes, deploy_commit="a" * 40)
+        return receipt
+
+    monkeypatch.setattr(deploy, "deploy_control_plane_commit", deployed)
+    return notes, note
+
+
+def test_main_marks_break_glass_notes_only_after_atomic_receipt_write(tmp_path, monkeypatch, capsys):
+    notes, note = _stub_main_break_glass_notes(monkeypatch, tmp_path)
+    real_mark = deploy.mark_break_glass_notes_reported
+
+    def mark(root, rows, **kwargs):
+        written = json.loads((tmp_path / "receipt.json").read_text(encoding="utf-8"))
+        assert written["break_glass_notes"][0]["name"] == note.name
+        real_mark(root, rows, **kwargs)
+
+    monkeypatch.setattr(deploy, "mark_break_glass_notes_reported", mark)
+    assert deploy.main(_cli_args(tmp_path, tmp_path)) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "deployed"
+    assert break_glass.unreported_notes(notes) == []
+
+
+def test_receipt_replacement_keeps_prior_file_if_rename_fails(tmp_path, monkeypatch):
+    output = tmp_path / "receipt.json"
+    output.write_text('{"previous": true}\n', encoding="utf-8")
+
+    def fail_replace(_source, _target):
+        raise OSError(errno.EIO, "rename failed")
+
+    monkeypatch.setattr(deploy.os, "replace", fail_replace)
+    with pytest.raises(OSError, match="rename failed"):
+        deploy._write_receipt_and_return({"status": "deployed"}, str(output))
+    assert output.read_text(encoding="utf-8") == '{"previous": true}\n'
+    assert list(tmp_path.glob(".receipt.json.*.tmp")) == []
+
+
+def test_atomic_deploy_receipt_is_readable_by_the_operator_door(tmp_path):
+    output = tmp_path / "receipt.json"
+    deploy._write_receipt_and_return({"status": "deployed"}, str(output))
+    assert output.stat().st_mode & 0o777 == 0o644
+
+
+def test_receipt_rename_is_synced_before_notes_can_be_marked(tmp_path, monkeypatch):
+    output = tmp_path / "receipt.json"
+    events = []
+    real_fsync = os.fsync
+    real_replace = os.replace
+
+    def fsync(fd):
+        events.append("directory_fsync" if stat.S_ISDIR(os.fstat(fd).st_mode) else "file_fsync")
+        real_fsync(fd)
+
+    def replace(source, target):
+        events.append("replace")
+        real_replace(source, target)
+
+    monkeypatch.setattr(deploy.os, "fsync", fsync)
+    monkeypatch.setattr(deploy.os, "replace", replace)
+    deploy._write_receipt_and_return({"status": "deployed"}, str(output))
+    assert events == ["file_fsync", "replace", "directory_fsync"]
+
+
+def test_failed_receipt_write_prints_deployed_receipt_and_keeps_notes_unreported(tmp_path, monkeypatch, capsys):
+    notes, note = _stub_main_break_glass_notes(monkeypatch, tmp_path)
+
+    def fail_write(_receipt, _path):
+        raise OSError(errno.ENOSPC, "disk full")
+
+    monkeypatch.setattr(deploy, "_write_receipt_and_return", fail_write)
+    assert deploy.main(_cli_args(tmp_path, tmp_path)) == 2
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["status"] == "deployed"
+    assert printed["blockers"] == ["deploy_receipt_write_failed:ENOSPC"]
+    assert printed["break_glass_notes"][0]["name"] == note.name
+    assert [row["name"] for row in break_glass.unreported_notes(notes)] == [note.name]
+
+
+def test_failed_note_mark_rewrites_receipt_with_alert(tmp_path, monkeypatch, capsys):
+    notes, note = _stub_main_break_glass_notes(monkeypatch, tmp_path)
+
+    def fail_mark(*_args, **_kwargs):
+        raise OSError(errno.ENOSPC, "disk full")
+
+    monkeypatch.setattr(deploy, "mark_break_glass_notes_reported", fail_mark)
+    assert deploy.main(_cli_args(tmp_path, tmp_path)) == 0
+    printed = json.loads(capsys.readouterr().out)
+    assert "break_glass_notes_not_marked:break_glass_io_error:ENOSPC" in printed["alerts"]
+    assert json.loads((tmp_path / "receipt.json").read_text()) == printed
+    assert [row["name"] for row in break_glass.unreported_notes(notes)] == [note.name]
+
+
+def test_no_receipt_path_never_marks_break_glass_notes(tmp_path, monkeypatch, capsys):
+    notes, note = _stub_main_break_glass_notes(monkeypatch, tmp_path)
+    args = _cli_args(tmp_path, tmp_path)
+    args = args[:args.index("--receipt-out")]
+    assert deploy.main(args) == 0
+    printed = json.loads(capsys.readouterr().out)
+    assert "break_glass_notes_not_marked:no_receipt_out" in printed["alerts"]
+    assert [row["name"] for row in break_glass.unreported_notes(notes)] == [note.name]
 
 
 def test_authority_gated_paid_dispatch_watcher_is_armed_by_default(

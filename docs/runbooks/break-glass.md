@@ -34,11 +34,13 @@ not a reason to SSH.
 
 Run this with sudo right after the change (for a deploy from an untrusted
 source, right before it). Record one note per change, and name every action and
-every path you touched.
+every path you touched. Use a release or trusted source checkout that already
+contains `blueprint_pipeline.control_plane_break_glass`; an older deployed
+release cannot run a module it does not contain.
 
 ```bash
 cd /opt/blueprint/task-evaluation-control-plane
-sudo env PYTHONPATH=src /opt/blueprint/BlueprintCapturePipeline/.venv/bin/python \
+sudo env PYTHONPATH=src SSH_CONNECTION="$SSH_CONNECTION" /opt/blueprint/BlueprintCapturePipeline/.venv/bin/python \
   -m blueprint_pipeline.control_plane_break_glass record \
   --reason "door upgrade left the runner failing; restored the previous door code by hand" \
   --action door-rollback --action unit-restart \
@@ -83,10 +85,13 @@ source checkout is:
   what the iteration and canary wrappers pass; or
 - a root-owned clone that is not group- or world-writable, is not a symlink, and
   is a direct child of `/opt/blueprint/control-plane-config-tools`, like the
-  door's `operator-door-source` clone.
+  door's `operator-door-source` clone. The config-tools directory itself must
+  also be root-owned and not group- or world-writable.
 
-Any other source is refused with
-`deploy_source_repo_untrusted:<note code>: GPU admission would refuse the resulting release ...`.
+Any other source is refused with the bare blocker
+`deploy_source_repo_untrusted:<note code>` and a separate `remedy` field. If the
+door's own clone is refused after ownership or mode drift, repair it to
+`root:root 0755`.
 If you still have to deploy from it, record a note with
 `--action deploy-from-untrusted-source` and pass it to the deploy within 24
 hours:
@@ -108,12 +113,17 @@ operator, reason, created_at, actions). The note does not change what GPU
 admission trusts: sponsored GPU steps on that release keep refusing with
 `gpu_canary_deployed_release_receipt_unverified` until a deploy from a trusted
 source replaces it. Follow up with a door deploy as soon as the fix is on
-`origin/main`.
+`origin/main`. Every deploy that uses a note alerts with
+`break_glass_deploy_from_untrusted_source`; a note supplied for a trusted source
+is ignored with `break_glass_note_ignored_trusted_source`.
 
 | Note code | Meaning |
 |---|---|
 | `break_glass_note_missing` | No `--break-glass-note` was given. |
 | `break_glass_note_unreadable` | The note path does not name a readable regular file. |
+| `break_glass_note_unsafe` | The note is a symlink or is not a safe regular file. |
+| `break_glass_note_outside_notes_root` | The resolved note is outside `cleanup-receipts`. |
+| `break_glass_notes_root_unsafe` | The configured notes directory is unsafe. |
 | `break_glass_note_expired` | The note is more than 24 hours old. Record a new one. |
 | `break_glass_note_from_the_future` | The note is dated more than five minutes ahead of the host clock. |
 | `break_glass_note_action_missing` | The note's actions do not include `deploy-from-untrusted-source`. |
@@ -131,14 +141,20 @@ deploy reported:
   listed, with `digest: null` and its `error` code, so damage is reported
   rather than hidden;
 - the receipt's `alerts` gets `break_glass_notes_reported:<n>`;
-- each note is appended to `cleanup-receipts/reported.jsonl` with the deploy
-  commit, so it is reported once.
+- after the `--receipt-out` file is atomically written and synced, each note is
+  appended to `cleanup-receipts/reported.jsonl` with the deploy commit, so it is
+  reported once.
 
-Reporting never fails a deploy. If the notes directory cannot be read, the
+Reporting never undoes an applied deploy. Always pass `--receipt-out`: without
+it the notes stay unreported and stdout alerts with
+`break_glass_notes_not_marked:no_receipt_out`. If receipt writing fails, the CLI
+prints the deployed result with `deploy_receipt_write_failed:<ERRNO>`, exits 2,
+and leaves the notes unreported for the next deploy. If the notes directory
+cannot be read, the
 receipt has `break_glass_notes: null`, a `break_glass_notes_error` code and the
 alert `break_glass_notes_unreadable:<code>`. If the notes cannot be marked (on
 a full disk, say), the alert is `break_glass_notes_not_marked:<code>`, and the
-next deploy reports them again.
+receipt is rewritten best-effort; the next deploy reports them again.
 
 ## Never delete evidence by hand
 

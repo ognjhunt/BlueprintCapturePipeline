@@ -5,6 +5,7 @@ import pytest
 import torch
 
 from blueprint_pipeline.gear_sonic_joint_order_contract import PROTOCOL_V4_FULL_JOINT_ORDER
+from blueprint_pipeline.native_g1_humanoidarena_interface import CANONICAL_BODY_JOINT_NAMES_29
 from blueprint_pipeline import native_g1_official_sonic_target_bridge as bridge_module
 
 
@@ -65,12 +66,19 @@ class SonicActionProvider:
         self._perf_decoder_ms = []
         self.skip_decoder = False
         self.body_target = 0.0
+        self.consume_reference = True
+        self.reference_history_valid = True
 
     def _apply_lerobot_semantic_action(self, _action):
-        self._smpl_data_valid = True
-        self._latest_consumed_new_this_step = True
+        # The pinned joint29 provider sets validity in _run_gear_sonic after
+        # inspecting its history, rather than during action application.
+        self._latest_consumed_new_this_step = self.consume_reference
 
     def _run_gear_sonic(self):
+        if self.reference_history_valid:
+            self._smpl_data_valid = True
+        if not self._smpl_data_valid:
+            return [0.0] * 29
         self._encoder.run(None, {})
         if not self.skip_decoder:
             self._decoder.run(None, {})
@@ -200,6 +208,33 @@ def test_exact_semantic_action_runs_both_onnx_sessions_and_maps_names(tmp_path, 
     assert adapter.provider.env._native_environment.step_count == 0
 
 
+def test_new_joint29_reference_is_validated_by_sonic_during_inference(tmp_path, monkeypatch):
+    provider = _provider(tmp_path)
+    assert provider._smpl_data_valid is False
+    adapter = _adapter(tmp_path, monkeypatch, provider)
+    adapter.targets_for_action(_action())
+    assert provider._smpl_data_valid is True
+    assert (adapter.encoder.calls, adapter.decoder.calls) == (1, 1)
+
+
+def test_missing_new_reference_refuses_inference(tmp_path, monkeypatch):
+    provider = _provider(tmp_path)
+    provider.consume_reference = False
+    adapter = _adapter(tmp_path, monkeypatch, provider)
+    with pytest.raises(RuntimeError, match="reference_not_consumed"):
+        adapter.targets_for_action(_action())
+    assert (adapter.encoder.calls, adapter.decoder.calls) == (0, 0)
+
+
+def test_invalid_joint29_history_cannot_be_counted_as_inference(tmp_path, monkeypatch):
+    provider = _provider(tmp_path)
+    provider.reference_history_valid = False
+    adapter = _adapter(tmp_path, monkeypatch, provider)
+    with pytest.raises(RuntimeError, match="reference_not_consumed"):
+        adapter.targets_for_action(_action())
+    assert (adapter.encoder.calls, adapter.decoder.calls) == (0, 0)
+
+
 def test_upstream_default_pose_fallback_cannot_count_as_controller_inference(tmp_path, monkeypatch):
     provider = _provider(tmp_path)
     provider.skip_decoder = True
@@ -208,12 +243,43 @@ def test_upstream_default_pose_fallback_cannot_count_as_controller_inference(tmp
         adapter.targets_for_action(_action())
 
 
-def test_out_of_limit_target_is_rejected_not_clipped(tmp_path, monkeypatch):
+def test_finite_out_of_limit_target_is_projected_and_retained(tmp_path, monkeypatch):
     provider = _provider(tmp_path)
     provider.body_target = 2.0
     adapter = _adapter(tmp_path, monkeypatch, provider)
-    with pytest.raises(ValueError, match="target_out_of_limits"):
+    targets = adapter.targets_for_action(_action())
+    assert all(targets[name] == 1.0 for name in CANONICAL_BODY_JOINT_NAMES_29)
+    assert provider._latest_decoder_target == [2.0] * 29
+    assert adapter.last_target_projection[0] == {
+        "joint_name": CANONICAL_BODY_JOINT_NAMES_29[0],
+        "requested_target_rad": 2.0,
+        "applied_target_rad": 1.0,
+        "lower_rad": -1.0,
+        "upper_rad": 1.0,
+        "excess_rad": 1.0,
+        "raw_decoder_action": 2.0,
+    }
+    assert len(adapter.last_target_projection) == 29
+    provider.body_target = 0.0
+    adapter.targets_for_action(_action())
+    assert adapter.last_target_projection == []
+
+
+def test_nonfinite_target_still_fails_closed(tmp_path, monkeypatch):
+    provider = _provider(tmp_path)
+    provider._left_hand_target[0] = float("nan")
+    adapter = _adapter(tmp_path, monkeypatch, provider)
+    with pytest.raises(bridge_module.G1SonicTargetLimitError, match="target_out_of_limits"):
         adapter.targets_for_action(_action())
+    assert adapter.last_target_projection == []
+
+
+def test_inverted_sealed_limit_still_fails_closed(tmp_path, monkeypatch):
+    adapter = _adapter(tmp_path, monkeypatch, _provider(tmp_path))
+    adapter.limits[CANONICAL_BODY_JOINT_NAMES_29[0]] = [1.0, -1.0]
+    with pytest.raises(bridge_module.G1SonicTargetLimitError, match="target_out_of_limits"):
+        adapter.targets_for_action(_action())
+    assert adapter.last_target_projection == []
 
 
 def test_unpinned_source_is_rejected(tmp_path):

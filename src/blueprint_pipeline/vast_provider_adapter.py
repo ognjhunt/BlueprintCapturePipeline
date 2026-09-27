@@ -177,6 +177,7 @@ from .vast_scene_configuration_warm_readiness import (
 )
 from .vast_provider_transfer_upload import provider_output_upload_shell_fragment
 from .vast_provider_output_recovery import MAX_RECOVERY_SECONDS, recover_provider_output_before_teardown
+from .vast_policy_canary_remote_progress import probe_policy_canary_remote_progress
 from .vast_args_payload_transport import args_mode_command, onstart_mode_script
 from .vast_provider_bundle_digest_guard import provider_bundle_digest_guard
 
@@ -6291,6 +6292,7 @@ def _request_logs_and_fetch(
     no_progress_seconds: int | None = None,
     log_transport_failure_limit: int = 6,
     output_probe: Callable[[], bool] | None = None,
+    remote_progress_probe: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     deadline = time.monotonic() + max(0, max_wait_seconds)
     attempts: list[dict[str, Any]] = []
@@ -6336,6 +6338,8 @@ def _request_logs_and_fetch(
     output_probe_first_observed_attempt: int | None = None
     observed_blueprint_marker_lines: list[str] = []
     observed_blueprint_marker_line_set: set[str] = set()
+    previous_remote_milestones: list[str] = []
+    last_remote_probe_status = "not_configured" if remote_progress_probe is None else "not_checked"
     while True:
         attempt_index += 1
         attempt_started = time.monotonic()
@@ -6405,6 +6409,28 @@ def _request_logs_and_fetch(
             for line in semantic_text.splitlines()
             if line.startswith("BLUEPRINT_") and "_PROGRESS:" in line
         )
+        remote_progress_observed = False
+        if remote_progress_probe is not None and (
+            attempt_index == 1
+            or attempt_index % 4 == 0
+            or time.monotonic() - last_progress_monotonic
+            >= max(0, no_progress_limit_seconds - 2 * retry_interval_seconds)
+        ):
+            try:
+                remote_probe_result = remote_progress_probe(last_instance_liveness)
+            except Exception:  # noqa: BLE001 - diagnostic transport cannot end a paid run
+                remote_probe_result = {"status": "unavailable", "milestones": []}
+            last_remote_probe_status = str(remote_probe_result.get("status") or "unavailable")
+            remote_milestones = remote_probe_result.get("milestones")
+            if (
+                last_remote_probe_status == "observed"
+                and isinstance(remote_milestones, list)
+                and len(previous_remote_milestones) < len(remote_milestones) <= 100
+                and remote_milestones[:len(previous_remote_milestones)] == previous_remote_milestones
+                and all(isinstance(marker, str) for marker in remote_milestones)
+            ):
+                previous_remote_milestones = list(remote_milestones)
+                remote_progress_observed = True
         output_changed = previous_output_text is None or attempt_text != previous_output_text
         semantic_output_changed = (
             previous_semantic_text is None or semantic_text != previous_semantic_text
@@ -6429,15 +6455,16 @@ def _request_logs_and_fetch(
             or previous_runtime_phase_count
             or structured_progress
             or previous_structured_progress
+            or previous_remote_milestones
         )
         progress_observed = (
-            runtime_phase_progress or structured_progress_observed
+            runtime_phase_progress or structured_progress_observed or remote_progress_observed
             if structured_phase_tracking_active
             else (
                 bool(semantic_text.strip())
                 and semantic_output_changed
                 and not container_or_daemon_error_only
-            )
+            ) or remote_progress_observed
         )
         if progress_observed:
             last_progress_monotonic = time.monotonic()
@@ -6476,6 +6503,9 @@ def _request_logs_and_fetch(
                 "runtime_phase_marker_count": runtime_phase_count,
                 "runtime_phase_progress_observed": runtime_phase_progress,
                 "structured_progress_observed": structured_progress_observed,
+                "remote_progress_observed": remote_progress_observed,
+                "remote_progress_status": last_remote_probe_status,
+                "remote_milestone_count": len(previous_remote_milestones),
                 "structured_phase_tracking_active": structured_phase_tracking_active,
                 "progress_observed": progress_observed,
                 "no_progress_elapsed_seconds": round(no_progress_elapsed_seconds, 6),
@@ -6618,6 +6648,8 @@ def _request_logs_and_fetch(
             and attempt_index > output_probe_first_observed_attempt
         ),
         "observed_blueprint_marker_lines": observed_blueprint_marker_lines,
+        "remote_progress_milestones": previous_remote_milestones,
+        "remote_progress_status": last_remote_probe_status,
         # A no-progress verdict that was suppressed because the only channel
         # reporting no progress was the one that never worked.
         "no_log_progress_deferred_to_output_probe": bool(
@@ -8897,6 +8929,14 @@ def run_vast_provider_adapter(
             ),
             no_progress_seconds=resolved_heartbeat_no_progress_seconds,
             output_probe=_provider_output_probe(_string(provider_output_get_url)),
+            remote_progress_probe=(
+                lambda connection: probe_policy_canary_remote_progress(
+                    connection,
+                    attempt_dir=resolved_job_dir / "policy_remote_progress_ssh",
+                )
+                if provider_bundle_kind == "native_task_arena_policy_canary_session"
+                else None
+            ),
         )
         # Result and log transport are independent. Preserve an observed upload
         # before any startup classification can raise and trigger teardown.
