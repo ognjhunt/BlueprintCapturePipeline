@@ -174,6 +174,30 @@ def test_census_finds_waiting_queue_reference_by_folder_name(tmp_path: Path) -> 
     assert report["rows"][0]["references"] == ["queue"]
 
 
+def test_census_marks_unsafe_queue_state_and_file_incomplete(tmp_path: Path) -> None:
+    from blueprint_pipeline.control_plane_lane_scratch_census import build_census
+
+    work, inputs = tmp_path / "work", tmp_path / "inputs"
+    work.mkdir()
+    inputs.mkdir()
+    (work / "g1-unknown").mkdir()
+    queue_root = tmp_path / "queue"
+    queue_root.mkdir()
+    (queue_root / "pending").symlink_to(tmp_path / "outside", target_is_directory=True)
+    processing = queue_root / "processing"
+    processing.mkdir()
+    (processing / "bad.json").symlink_to(tmp_path / "outside")
+    (tmp_path / "proc").mkdir()
+    (tmp_path / "pins").mkdir()
+    (tmp_path / "release").mkdir()
+    report = build_census(work_root=work, inputs_root=inputs, process_root=tmp_path / "proc",
+                          pins_root=tmp_path / "pins", queue_roots=(queue_root,),
+                          release_link=tmp_path / "release", active_run_roots=())
+    assert report["status"] == "incomplete"
+    assert "queue_inventory_unavailable" in report["scan_errors"]
+    assert "queue_inventory_unreadable" in report["scan_errors"]
+
+
 def test_census_deadline_marks_partial_scan_incomplete(tmp_path: Path) -> None:
     from blueprint_pipeline.control_plane_lane_scratch_census import build_census
 

@@ -196,12 +196,12 @@ if [[ -L "${WORK_VOLUME_ROOT}" ]]; then
   echo "ERROR: work volume root is a symlink" >&2
   exit 1
 fi
-if [[ "${DRY_RUN}" == "true" ]] || mountpoint -q -- "${WORK_VOLUME_ROOT}"; then
-  run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
-    "${WORK_VOLUME_ROOT}/lanes"
-else
-  echo "Work volume is not mounted; lane scratch root will be provisioned after mounting." >&2
+if [[ "${DRY_RUN}" != "true" ]] && ! mountpoint -q -- "${WORK_VOLUME_ROOT}"; then
+  echo "ERROR: mount the work volume before installing the lane scratch root" >&2
+  exit 1
 fi
+run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
+  "${WORK_VOLUME_ROOT}/lanes"
 run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
   "${TASK_EVALUATION_INPUT_ROOT}/scene-object-discoveries" \
   "${TASK_EVALUATION_INPUT_ROOT}/scene-object-discovery-outputs"

@@ -256,6 +256,7 @@ def _queue_references(paths: Sequence[Path], queue_roots: Sequence[Path], errors
                       deadline: float) -> set[Path]:
     found: set[Path] = set()
     remaining = MAX_REFERENCE_BYTES
+    visited = 0
     for root in queue_roots:
         if _expired(deadline, errors):
             break
@@ -265,20 +266,51 @@ def _queue_references(paths: Sequence[Path], queue_roots: Sequence[Path], errors
         for state in ("pending", "processing", "waiting_external", "awaiting_source_preparation",
                       "awaiting_capacity", "prepared", "blocked"):
             directory = root / state
-            if not directory.is_dir() or directory.is_symlink():
+            if directory.is_symlink():
+                errors.append("queue_inventory_unavailable")
                 continue
-            for index, item in enumerate(directory.glob("*.json")):
+            if not directory.exists():
+                continue
+            try:
+                directory_fd = _open_directory(directory)
+                directory_info = os.fstat(directory_fd)
+                with os.scandir(directory_fd) as iterator:
+                    names = []
+                    for entry in iterator:
+                        visited += 1
+                        if _expired(deadline, errors) or visited > MAX_CANDIDATES:
+                            errors.append("queue_inventory_truncated")
+                            break
+                        if entry.name.endswith(".json"):
+                            names.append(entry.name)
+            except OSError:
+                errors.append("queue_inventory_unavailable")
+                continue
+            finally:
+                if "directory_fd" in locals():
+                    os.close(directory_fd)
+                    del directory_fd
+            for name in names:
                 if _expired(deadline, errors):
                     break
-                if index >= MAX_CANDIDATES:
-                    errors.append("queue_inventory_truncated")
-                    break
                 try:
-                    size = item.lstat().st_size
-                    if item.is_symlink() or size > 1024 * 1024 or size > remaining:
-                        errors.append("queue_inventory_truncated")
-                        continue
-                    with item.open("rb") as stream:
+                    directory_fd = _open_directory(directory)
+                    reopened = os.fstat(directory_fd)
+                    if ((reopened.st_dev, reopened.st_ino)
+                            != (directory_info.st_dev, directory_info.st_ino)):
+                        errors.append("queue_inventory_changed")
+                        break
+                    file_fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                                      dir_fd=directory_fd)
+                    with os.fdopen(file_fd, "rb") as stream:
+                        info = os.fstat(stream.fileno())
+                        if not stat.S_ISREG(info.st_mode):
+                            errors.append("queue_inventory_unreadable")
+                            continue
+                        size = info.st_size
+                        if size > 1024 * 1024 or size > remaining:
+                            errors.append("queue_inventory_truncated")
+                            continue
                         content = stream.read(size + 1)
                     if len(content) > size:
                         errors.append("queue_inventory_truncated")
@@ -286,6 +318,10 @@ def _queue_references(paths: Sequence[Path], queue_roots: Sequence[Path], errors
                 except OSError:
                     errors.append("queue_inventory_unreadable")
                     continue
+                finally:
+                    if "directory_fd" in locals():
+                        os.close(directory_fd)
+                        del directory_fd
                 remaining -= len(content)
                 for path in paths:
                     if _expired(deadline, errors):
