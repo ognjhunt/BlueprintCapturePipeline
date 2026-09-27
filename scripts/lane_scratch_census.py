@@ -44,11 +44,15 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _table(report: dict) -> str:
+    def cell(value: object) -> str:
+        return (str(value).replace("\\", "\\\\").replace("\t", "\\t")
+                .replace("\r", "\\r").replace("\n", "\\n"))
+
     columns = ("family", "owner guess", "allocated bytes", "newest mtime", "age seconds",
                "references", "owner decision", "approved expiry", "path")
     lines = ["\t".join(columns)]
     for row in report["rows"]:
-        lines.append("\t".join((
+        lines.append("\t".join(cell(value) for value in (
             str(row["family"]), str(row["owner_guess"]), str(row["allocated_bytes"]),
             str(row["newest_mtime_epoch"] or ""), str(row["age_seconds"] or ""),
             ",".join(row["references"]), "", "", str(row["path"]),

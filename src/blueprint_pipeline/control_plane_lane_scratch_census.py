@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import json
+import math
 import stat
 import time
 from collections.abc import Sequence
@@ -51,6 +52,22 @@ def _expired(deadline: float, errors: list[str]) -> bool:
     return True
 
 
+def _open_directory(path: Path) -> int:
+    if not path.is_absolute():
+        raise OSError("census_root_not_absolute")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    descriptor = os.open("/", flags)
+    try:
+        for component in path.parts[1:]:
+            next_descriptor = os.open(component, flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = next_descriptor
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
 def _children(root: Path, label: str, errors: list[str], deadline: float) -> list[Path]:
     if _expired(deadline, errors):
         return []
@@ -65,8 +82,14 @@ def _children(root: Path, label: str, errors: list[str], deadline: float) -> lis
     if not stat.S_ISDIR(info.st_mode):
         errors.append(f"{label}_root_unsafe")
         return []
+    root_fd = None
     try:
-        with os.scandir(root) as iterator:
+        root_fd = _open_directory(root)
+        opened = os.fstat(root_fd)
+        if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
+            errors.append(f"{label}_root_changed")
+            return []
+        with os.scandir(root_fd) as iterator:
             entries = []
             for entry in iterator:
                 if _expired(deadline, errors):
@@ -74,17 +97,20 @@ def _children(root: Path, label: str, errors: list[str], deadline: float) -> lis
                 if len(entries) >= MAX_CANDIDATES:
                     errors.append(f"{label}_children_truncated")
                     break
-                entries.append(entry)
+                entries.append((entry.name, entry.is_dir(follow_symlinks=False),
+                                entry.is_symlink()))
     except OSError:
         errors.append(f"{label}_root_unreadable")
         return []
+    finally:
+        if root_fd is not None:
+            os.close(root_fd)
     paths = []
-    for entry in sorted(entries, key=lambda item: item.name):
-        try:
-            if entry.is_dir(follow_symlinks=False):
-                paths.append(Path(entry.path))
-        except OSError:
-            errors.append(f"{label}_child_unreadable")
+    for name, is_dir, is_link in sorted(entries):
+        if is_dir:
+            paths.append(root / name)
+        elif is_link:
+            errors.append(f"{label}_child_unsafe")
     return paths
 
 
@@ -125,52 +151,87 @@ def _candidates(work_root: Path, inputs_root: Path, errors: list[str], deadline:
 def _scan_folder(path: Path, *, seen: set[tuple[int, int]], deadline: float,
                  budget: list[int], errors: list[str]) -> dict[str, Any]:
     try:
-        device = path.lstat().st_dev
+        root_fd = _open_directory(path)
     except OSError:
         errors.append("candidate_unreadable")
         return {"allocated_bytes": 0, "newest_mtime_epoch": None, "unreadable": 1, "shared_names": 0}
-    stack = [path]
+    device = os.fstat(root_fd).st_dev
     total = 0
     newest = 0.0
     unreadable = 0
     shared = 0
-    truncated = False
-    while stack:
+    stopped = False
+
+    def count(info: os.stat_result) -> bool:
+        nonlocal total, newest, shared, stopped
         if budget[0] >= MAX_ENTRIES or _expired(deadline, errors):
             errors.append("tree_scan_truncated")
-            break
-        current = stack.pop()
+            stopped = True
+            return False
         budget[0] += 1
-        try:
-            info = current.lstat()
-        except OSError:
-            unreadable += 1
-            continue
         if info.st_dev != device:
-            continue
+            errors.append("filesystem_boundary_skipped")
+            return False
         newest = max(newest, float(info.st_mtime))
         inode = (info.st_dev, info.st_ino)
         if inode not in seen:
             seen.add(inode)
             total += allocated_bytes(info)
+            return True
         else:
             shared += 1
-        if stat.S_ISDIR(info.st_mode):
+            return False
+
+    def walk(directory_fd: int, depth: int) -> None:
+        nonlocal unreadable, stopped
+        if not count(os.fstat(directory_fd)) or stopped:
+            return
+        if depth >= 64:
+            errors.append("tree_scan_truncated")
+            stopped = True
+            return
+        try:
+            with os.scandir(directory_fd) as iterator:
+                names = []
+                for entry in iterator:
+                    if _expired(deadline, errors) or len(names) + budget[0] >= MAX_ENTRIES:
+                        errors.append("tree_scan_truncated")
+                        stopped = True
+                        break
+                    names.append(entry.name)
+        except OSError:
+            unreadable += 1
+            return
+        for name in sorted(names):
+            if stopped:
+                break
             try:
-                with os.scandir(current) as iterator:
-                    children = []
-                    for entry in iterator:
-                        if len(children) + len(stack) + budget[0] >= MAX_ENTRIES:
-                            errors.append("tree_scan_truncated")
-                            truncated = True
-                            break
-                        children.append(Path(entry.path))
+                info = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
             except OSError:
                 unreadable += 1
                 continue
-            if truncated:
-                break
-            stack.extend(sorted(children, key=str, reverse=True))
+            if stat.S_ISDIR(info.st_mode):
+                try:
+                    child_fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                       dir_fd=directory_fd)
+                    opened = os.fstat(child_fd)
+                    if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
+                        errors.append("tree_changed")
+                    else:
+                        walk(child_fd, depth + 1)
+                except OSError:
+                    unreadable += 1
+                finally:
+                    if "child_fd" in locals():
+                        os.close(child_fd)
+                        del child_fd
+            else:
+                count(info)
+
+    try:
+        walk(root_fd, 0)
+    finally:
+        os.close(root_fd)
     if unreadable:
         errors.append("tree_unreadable")
     return {"allocated_bytes": total, "newest_mtime_epoch": newest or None,
@@ -179,6 +240,16 @@ def _scan_folder(path: Path, *, seen: set[tuple[int, int]], deadline: float,
 
 def _intersects(left: Path, right: Path) -> bool:
     return left == right or left in right.parents or right in left.parents
+
+
+def _referenced(path: Path, references: Sequence[Path] | set[Path],
+                deadline: float, errors: list[str]) -> bool:
+    for reference in references:
+        if _expired(deadline, errors):
+            return False
+        if _intersects(path, reference):
+            return True
+    return False
 
 
 def _queue_references(paths: Sequence[Path], queue_roots: Sequence[Path], errors: list[str],
@@ -191,7 +262,8 @@ def _queue_references(paths: Sequence[Path], queue_roots: Sequence[Path], errors
         if root.is_symlink() or not root.is_dir():
             errors.append("queue_inventory_unavailable")
             continue
-        for state in ("pending", "processing"):
+        for state in ("pending", "processing", "waiting_external", "awaiting_source_preparation",
+                      "awaiting_capacity", "prepared", "blocked"):
             directory = root / state
             if not directory.is_dir() or directory.is_symlink():
                 continue
@@ -215,7 +287,11 @@ def _queue_references(paths: Sequence[Path], queue_roots: Sequence[Path], errors
                     errors.append("queue_inventory_unreadable")
                     continue
                 remaining -= len(content)
-                found.update(path for path in paths if str(path).encode() in content)
+                for path in paths:
+                    if _expired(deadline, errors):
+                        break
+                    if str(path).encode() in content or path.name.encode() in content:
+                        found.add(path)
     return found
 
 
@@ -264,7 +340,11 @@ def _process_references(paths: Sequence[Path], process_root: Path, errors: list[
                 errors.append("process_inventory_unreadable")
                 continue
             remaining -= len(content)
-            found.update(path for path in paths if str(path).encode() in content)
+            for path in paths:
+                if _expired(deadline, errors):
+                    break
+                if str(path).encode() in content:
+                    found.add(path)
         try:
             descriptors = []
             for descriptor in (process / "fd").iterdir():
@@ -289,7 +369,11 @@ def _process_references(paths: Sequence[Path], process_root: Path, errors: list[
             except OSError:
                 errors.append("process_inventory_unreadable")
                 continue
-            found.update(path for path in paths if target == path or path in target.parents)
+            for path in paths:
+                if _expired(deadline, errors):
+                    break
+                if target == path or path in target.parents:
+                    found.add(path)
     return found
 
 
@@ -350,12 +434,24 @@ def _pin_references(pins_root: Path, observed: float, errors: list[str],
                 remaining -= len(payload)
                 pin = json.loads(payload)
                 if (not isinstance(pin, dict) or pin.get("schema_version") != PIN_SCHEMA_VERSION
-                        or pin.get("kind") != kind or not isinstance(pin.get("paths"), list)):
+                        or pin.get("kind") != kind or not isinstance(pin.get("paths"), list)
+                        or not isinstance(pin.get("owner_id"), str) or not pin["owner_id"]
+                        or not all(isinstance(value, str) and Path(value).is_absolute()
+                                   for value in pin["paths"])):
+                    errors.append("pin_inventory_unreadable")
+                    continue
+                created = float(pin["created_at_epoch"])
+                expires = float(pin["expires_at_epoch"])
+                released = pin.get("released_at_epoch")
+                if (not math.isfinite(created) or not math.isfinite(expires)
+                        or created < 0 or expires <= created
+                        or (released is not None and (not math.isfinite(float(released))
+                                                      or float(released) < created))):
                     errors.append("pin_inventory_unreadable")
                     continue
                 if pin_status(pin, now=observed) == "live":
                     paths.update(Path(value) for value in pin["paths"] if isinstance(value, str))
-            except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
+            except (OSError, UnicodeError, json.JSONDecodeError, ValueError, TypeError, KeyError):
                 errors.append("pin_inventory_unreadable")
     return paths
 
@@ -392,7 +488,7 @@ def build_census(
     active_paths = tuple(active_run_roots or ())
     rows = []
     for path in paths:
-        if "tree_scan_truncated" in errors:
+        if "tree_scan_truncated" in errors or _expired(deadline, errors):
             break
         measured = _scan_folder(path, seen=seen, deadline=deadline, budget=budget, errors=errors)
         family, guess, basis = _family(path.name)
@@ -401,11 +497,11 @@ def build_census(
             references.append("process")
         if path in queue_refs:
             references.append("queue")
-        if any(_intersects(path, pin) for pin in pin_paths):
+        if _referenced(path, pin_paths, deadline, errors):
             references.append("pin")
         if release_path is not None and _intersects(path, release_path):
             references.append("live_release")
-        if any(_intersects(path, active) for active in active_paths):
+        if _referenced(path, active_paths, deadline, errors):
             references.append("active_run")
         mtime = measured["newest_mtime_epoch"]
         rows.append({"path": str(path), "family": family, "owner_guess": guess,
