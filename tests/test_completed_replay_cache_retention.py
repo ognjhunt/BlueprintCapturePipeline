@@ -608,7 +608,7 @@ def test_without_the_opt_in_the_rules_are_the_ones_the_unit_always_had(tmp_path)
 
 
 def test_single_files_can_be_left_to_their_own_rules(tmp_path):
-    """The storage GC phase removes only digest-verified store copies: its plans carry no single
+    """The storage GC phase removes only store copies and scratch inputs: its plans carry no single
     files, and a plan that does is refused when applied without them."""
     root, child, data, proc = setup(tmp_path)
     copy = _store_copy(child, b"a store copy")
