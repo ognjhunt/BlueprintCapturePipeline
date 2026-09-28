@@ -1033,6 +1033,10 @@ def test_a_dispatch_receipt_of_another_kind_keeps_the_run(tmp_path, field, value
     assert not f.pointer.exists() and set(RESIDUE) <= set(_local_files(f.run))
 
 
+#: A tick time whose hour starts the cap's rotation at the first of three runs.
+FIRST_OF_THREE = (int(NOW // 3600) // 3) * 3 * 3600
+
+
 def _three_ready_runs(tmp_path, client=None) -> list[SimpleNamespace]:
     client = client or _ContentAddressedClient()
     return [_sealed_run(tmp_path / "canaries", f"run-{index}", client=client) for index in range(3)]
@@ -1048,7 +1052,7 @@ def test_a_tick_publishes_at_most_its_cap_and_defers_the_rest(tmp_path) -> None:
     residue_bytes = sum(len(data) for data in RESIDUE.values())
 
     first = _tick(runs[0], pins, queue, apply=True, ack=RUN_ACK, offload_enabled=True,
-                  result_residue_offload_enabled=True, result_residue_max_runs_per_tick=2)
+                  result_residue_offload_enabled=True, result_residue_max_runs_per_tick=2, now=lambda: FIRST_OF_THREE)
 
     phase = first["result_residue_offload"]
     assert (phase["max_runs_per_tick"], phase["attempted_count"]) == (2, 2)
@@ -1059,7 +1063,7 @@ def test_a_tick_publishes_at_most_its_cap_and_defers_the_rest(tmp_path) -> None:
     assert set(RESIDUE) <= set(_local_files(runs[2].run)) and not runs[2].pointer.exists()
 
     second = _tick(runs[0], pins, queue, apply=True, ack=RUN_ACK, offload_enabled=True,
-                   result_residue_offload_enabled=True, result_residue_max_runs_per_tick=2)
+                   result_residue_offload_enabled=True, result_residue_max_runs_per_tick=2, now=lambda: FIRST_OF_THREE)
     assert [(row["run"], row["retained_reason"]) for row in second["result_residue_offload"]["runs"]] == [
         ("run-0", "already_offloaded"), ("run-1", "already_offloaded"), ("run-2", None)]
     assert runs[2].pointer.is_file()
@@ -1079,7 +1083,8 @@ def test_a_failing_publisher_costs_at_most_the_cap_per_tick(tmp_path) -> None:
     pins, queue = tmp_path / "pins", tmp_path / "queue"
     (queue / "pending").mkdir(parents=True)
     report = _tick(runs[0], pins, queue, apply=True, ack=RUN_ACK, offload_enabled=True,
-                   result_residue_offload_enabled=True, result_residue_max_runs_per_tick=2, publisher=failing)
+                   result_residue_offload_enabled=True, result_residue_max_runs_per_tick=2, publisher=failing,
+                   now=lambda: FIRST_OF_THREE)
 
     phase = report["result_residue_offload"]
     assert len(calls) == 2 and phase["attempted_count"] == 2
@@ -1339,3 +1344,27 @@ def test_a_kept_document_that_cannot_be_read_keeps_the_whole_run(tmp_path) -> No
     assert (result["status"], result["retained_reason"]) == ("retained", "plan_failed")
     assert result["failure"] == {"error_type": "ResultResidueOffloadError", "errno": None, "stage": "plan"}
     assert not f.pointer.exists() and set(RESIDUE) <= set(_local_files(f.run))
+
+
+def test_the_capped_runs_rotate_from_tick_to_tick(tmp_path) -> None:
+    """Each hour's tick starts the cap at another run, so runs that keep failing cannot starve
+    the ones after them."""
+
+    runs = _three_ready_runs(tmp_path)
+    attempted: list[str] = []
+
+    def failing(**kwargs):
+        attempted.append(Path(kwargs["path"]).name.split(".")[1])
+        raise store.TaskEvaluationConfiguredSceneObjectStoreError("configured_scene_artifact_publication_failed")
+
+    pins, queue = tmp_path / "pins", tmp_path / "queue"
+    (queue / "pending").mkdir(parents=True)
+    for hour in range(3):
+        report = _tick(runs[0], pins, queue, apply=True, ack=RUN_ACK, offload_enabled=True,
+                       result_residue_offload_enabled=True, result_residue_max_runs_per_tick=1, publisher=failing,
+                       now=lambda hour=hour: FIRST_OF_THREE + hour * 3600)
+        # The rows keep the runs' order, whichever ran first.
+        assert [row["run"] for row in report["result_residue_offload"]["runs"]] == ["run-0", "run-1", "run-2"]
+
+    assert attempted == ["run-0", "run-1", "run-2"]
+

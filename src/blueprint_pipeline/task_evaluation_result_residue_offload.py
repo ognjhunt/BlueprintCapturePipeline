@@ -1049,11 +1049,15 @@ def residue_row(
 class ResidueTick:
     """One storage GC tick's residue phase: a row per registry run, and the phase entry.
 
-    While applying it attempts at most ``max_runs`` publications, counted whether
-    they succeed or not, so a failing publisher costs at most that many uploads a
-    tick and no run is retried within it. Every later run is only planned and
-    reported as ``deferred_tick_cap`` with its candidate bytes; its turn comes in
-    a later tick.
+    ``add`` records each registry run with its per-artifact offload result, and
+    ``phase`` plans or offloads them. While applying it attempts at most
+    ``max_runs`` publications, counted whether they succeed or not, so a failing
+    publisher costs at most that many uploads a tick and no run is retried within
+    it. Every later run is only planned and reported as ``deferred_tick_cap`` with
+    its candidate bytes; its turn comes in a later tick. The runs are taken in
+    turn from a start that moves with each hour of the tick's clock (the timer
+    starts a tick an hour after the last one ended), so runs that keep failing
+    cannot starve the ones after them. The rows keep the runs' order.
     """
 
     def __init__(self, *, applying: bool, enabled: bool, max_runs: int | None = None, **options):
@@ -1061,22 +1065,34 @@ class ResidueTick:
         if not isinstance(max_runs, int) or isinstance(max_runs, bool) or max_runs < 0:
             raise ResultResidueOffloadError("result_residue_max_runs_invalid")
         self.applying, self.enabled, self.max_runs, self.options = bool(applying), bool(enabled), max_runs, options
-        self.rows: list[dict[str, Any]] = []
+        self.runs: list[tuple[str | Path, Mapping[str, Any]]] = []
+        self.rows: list[dict[str, Any]] | None = None
         self.attempted = 0
 
-    def add(self, run_root: str | Path, bulk_result: Mapping[str, Any]) -> dict[str, Any]:
-        """Plan or offload one registry run's residue given its per-artifact offload result."""
+    def add(self, run_root: str | Path, bulk_result: Mapping[str, Any]) -> None:
+        """Record one registry run and its per-artifact offload result for ``phase``."""
 
-        applying = self.applying and self.attempted < self.max_runs
-        row = residue_row(run_root, bulk_result, apply=applying, **self.options)
-        if row.get("publication_attempted"):
-            self.attempted += 1
-        elif self.applying and not applying and row.get("status") == "dry_run" and row.get("candidate_count"):
-            row = _retained(row, "deferred_tick_cap")
-        self.rows.append(row)
-        return row
+        self.runs.append((run_root, bulk_result))
+
+    def _process(self) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = [{} for _run in self.runs]
+        start = int(float(self.options["now"]()) // 3600) % len(self.runs) if self.runs else 0
+        for index in [*range(start, len(self.runs)), *range(start)]:
+            run_root, bulk_result = self.runs[index]
+            applying = self.applying and self.attempted < self.max_runs
+            row = residue_row(run_root, bulk_result, apply=applying, **self.options)
+            if row.get("publication_attempted"):
+                self.attempted += 1
+            elif self.applying and not applying and row.get("status") == "dry_run" and row.get("candidate_count"):
+                row = _retained(row, "deferred_tick_cap")
+            rows[index] = row
+        return rows
 
     def phase(self, *, alert: str | None = None) -> dict[str, Any]:
+        """Plan or offload every recorded run, once, and return the phase entry."""
+
+        if self.rows is None:
+            self.rows = self._process()
         entry = residue_phase(self.rows, enabled=self.enabled, applying=self.applying, alert=alert)
         entry["max_runs_per_tick"], entry["attempted_count"] = self.max_runs, self.attempted
         return entry
