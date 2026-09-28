@@ -221,7 +221,10 @@ def test_unknown_partial_preparation_retries_same_original_token_without_overwri
     engine,policy,scope,consent,transport=fresh_action(tmp_path,monkeypatch)
     put,entered=interrupt_partial_archive(transport)
     first=engine.retire_scene(scope['plan_raw_ref']['path'],consent,transport=transport,now=lambda:200,monotonic=lambda:0)
-    assert first['status']!='retired' and len(entered)==1
+    assert first['status']=='incomplete' and len(entered)==1,first
+    assert first['preparation_budget_counts']['remote_bytes']>0
+    assert first['preparation_claim_raw_ref']['path'].endswith(scope['consent_id']+'.json')
+    assert first['last_preparation_escrow_raw_ref']['path'].endswith('.1.escrow.json')
     old_objects=dict(transport.objects)
     transport.put_archive=put
     second=engine.retire_scene(scope['plan_raw_ref']['path'],consent,transport=transport,now=lambda:201,monotonic=lambda:1)
