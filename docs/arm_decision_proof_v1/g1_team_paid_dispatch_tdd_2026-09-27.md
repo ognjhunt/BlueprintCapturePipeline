@@ -362,3 +362,104 @@ source bytes and was corrected without weakening the source validator. The
 lock-recheck test first demonstrated the missing recheck, then passed with it
 encoded. Ruff and whitespace checks passed. Queue execution, host preparation
 reservation, paid admission and settlement remain separate unfinished steps.
+
+## Durable selected queue implementation review
+
+ADP-050 Day 28, explicit owner G1 scope: connect the signed selected-intent queue
+to the existing selected preparer and canonical allocator. Reuse the existing
+allocator subprocess, fresh billing/spend-guard callback, immutable JSON writer
+and disk ledger. Approval files come from an operator root under exact intent
+IDs; credential registry and SONIC cache are operator configuration, never
+request paths. Reserve preparation before its writes. Use a nonblocking
+per-intent lock so another active intent does not prevent examination of a
+different queued choice. GPU admission still owns the three provider slots.
+
+Every invocation must replay a current dry admission, even if a previous dry
+record passed. Immediately before the paid command, refresh billing/spend,
+re-open current owner/registry/approval authority and seal one execution-start
+record. If the command is interrupted or its result is absent, preserve that
+start and require exact-attempt reconciliation. Never infer terminal state from
+an observation timeout or launch a replacement. Missing approvals are pending;
+expired authority receives a no-provider terminal record, preventing starvation.
+Completed controller reports remain pending official settlement and private
+delivery. Their query/media/teardown claims require independent settlement
+verification; queue acceptance does not promote them.
+
+Red-first fixtures cover correct selected probe and budget arguments, fresh dry
+replay, revoked approval after guard refresh, missing approval without prepare,
+single-use start and interrupted command, result absence, expired requests,
+changed preparation release and held-intent bypass. Preserve the existing
+campaign dispatcher entrypoint and its KillMode=process watcher survival when
+installing the queue bridge. Endpoint synthetic conformance before allocation
+and paired OCI/archive runtime admission remain explicit launch prerequisites;
+do not describe a static dry transport result as full launch readiness.
+
+Design review: examined actual intake ID/schema, current authority, selected
+preparation, allocator, legacy dispatcher and installed unit. Accepted as a thin
+queue bridge; no second HTTP intake or new compute service. Full settlement,
+three-mode live qualification and storage streaming remain required.
+
+## Pre-allocation endpoint check and installed queue review
+
+ADP-050 Day 28: the selected worker currently checks its endpoint only after
+GPU allocation. Reuse the existing synthetic HTTPS conformance runner before
+the selected allocator obtains a mutation grant or enters provider transport.
+Its input is an all-zero camera frame, zero state and explicitly synthetic task;
+no captured observation is disclosed. Read the protected token only through the
+existing bound credential object, checking file identity and current authority
+before and after that read and after the call. Record a digest-bound synthetic
+receipt tied to the exact selected-input receipt. Never persist the token,
+HTTP response, private file path or exception body. The check does not prove
+runtime identity, task performance, rights or publication. Static dry admission
+must explicitly report that this network check has not run. OCI/archive still
+require their separate provider runtime; no endpoint-only completion claim.
+
+Red-first checks cover zero input through the actual HTTPS client with a fake
+bounded fetcher, changed credentials before contact, approval revoked during
+the call, malformed actions and transport failure before grant/staging. Preserve
+the real provider import-closure and lifecycle rehearsals. Do not contact a live
+endpoint from tests.
+
+Wire selected queue arguments through the existing campaign dispatcher and
+installed oneshot, with nonblocking selection and operator-owned approval,
+credential and SONIC roots. If the selected queue is absent or only waiting,
+continue the existing built-in queue; if a selected attempt was invoked, process
+at most that one attempt. No new service or API and no modification to live
+environment files. Tests drive the actual entrypoint for selected-only,
+legacy-only, absent configuration, pending approval and incomplete selected
+configuration; retain KillMode=process and independent watchdog survival.
+
+Review: these changes close observed allocation/installed-caller gaps using
+existing contracts. Selected settlement, paired runtimes, live qualification,
+private results, streaming and exact deployments remain unfinished gates.
+
+Verification, 2026-09-28: twelve selected queue cases passed together. The
+installed entrypoint and actual service shell now route a selected-only queue,
+preserve pending-choice/built-in behavior and reject partial operator arguments.
+Three new allocator tests first failed at the unchecked grant, missing probe
+ordering and missing static-only disclosure; they pass with the pre-allocation
+check encoded. Five synthetic endpoint cases exercise the actual HTTPS client,
+zero image/state, bound protected token, malformed actions, revocation and
+redacted errors. No test contacted a live endpoint or provider.
+
+The combined queue/entrypoint/credential/preflight/allocator/reachability run
+finished with 127 passes and one reachability ledger failure. An awaiting-builder
+row was not an accepted inventory decision: this path uses the separately signed
+team queue rather than the generic website scene-profile builder, just as the
+built-in campaign does. The corrected explicit inventory distinction passed all
+45 reachability cases; the five synthetic cases passed again after ensuring
+the inner authority read also uses current time (50 total in that follow-up).
+All six provider import-closure and nineteen lifecycle rehearsal cases passed
+together. Changed-file Ruff and whitespace checks passed. Do not describe the
+original combined invocation or repository full suite as green.
+
+Exact previous-head CI 36368890200 at 6794cf47 has a green impacted/sentinel gate.
+Its terminal shard 0 reports two newly owned inventory failures now corrected
+and an unchanged immutable-input verdict-cache test failure. The exact cache
+case passed once in isolation locally; the Linux full-suite cause remains
+unproven and is owned by issue #2236. No broad rerun was started to diagnose it.
+These are hermetic boundaries, not deployed selected dispatch or GPU proof.
+Fresh host observation still shows 10,905,767,936 work-volume bytes available;
+the newest GC pass ended MainPID 0/exit 0 without increasing that capacity.
+Plan 11a is merged, but full Plan 11 remains unfinished; respect the owner's
+streaming prerequisite. No GPU allocation or hand data deletion this increment.

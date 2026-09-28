@@ -21,6 +21,7 @@ from .native_g1_team_policy_credentials import (
     G1TeamPolicyCredentialBinding,
     resolve_g1_team_policy_credential,
 )
+from .native_g1_team_policy_conformance import run_g1_team_endpoint_synthetic_conformance
 from .native_g1_team_provider_bundle import load_verified_g1_team_provider_bundle
 from .native_g1_team_provider_runtime import CREDENTIAL_FILE_ENV
 
@@ -48,6 +49,38 @@ class G1TeamDispatchInputs:
         if current.safe_receipt() != self.safe_receipt():
             raise ValueError("g1_team_dispatch_inputs_changed")
         return current.safe_receipt()
+
+    def probe_synthetic_endpoint(self, *, fetcher: Any = None) -> dict[str, Any]:
+        """Check the chosen wire before allocation without captured observations."""
+        try:
+            self.recheck()
+            authority = verify_g1_team_policy_authority(**{
+                **self._arguments["authority_arguments"], "now_epoch": time.time(),
+            })
+            profile = authority["intent"]["request"]["policy_profile"]
+            binding = authority["operator_approval"]["runtime_binding"]
+            conformance = run_g1_team_endpoint_synthetic_conformance(
+                profile=profile, trusted_setup=authority["trusted_setup"],
+                authenticated_owner=profile["owner"],
+                approved_origin=binding["approved_origin"],
+                resolved_secret_ref=binding["resolved_secret_ref"],
+                credential=self._credential.read_for_endpoint_probe(), fetcher=fetcher,
+            )
+            self.recheck()
+        except Exception:
+            # A remote endpoint or fetcher may include credentials or response
+            # bodies in its exception. Neither belongs in controller logs.
+            raise ValueError("g1_team_endpoint_synthetic_preflight_failed") from None
+        receipt = {
+            "schema_version": "native_g1_team_preallocation_synthetic_check.v1",
+            "status": "synthetic_wire_compatible_before_allocation",
+            "selected_input_receipt_digest": self._receipt["receipt_digest"],
+            "synthetic_conformance": conformance,
+            "gpu_provider_mutation_performed": False,
+            "claim_ceiling": "development_only", "public_redistribution_authorized": False,
+        }
+        receipt["receipt_digest"] = digest(receipt, digest_field="receipt_digest")
+        return receipt
 
 
 def verify_g1_team_dispatch_inputs(

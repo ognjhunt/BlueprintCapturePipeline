@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline import native_g1_team_dispatch_preflight as preflight
+from blueprint_pipeline.decision_evidence_contracts import cross_runtime_canonical_digest as digest
 from blueprint_pipeline.native_g1_team_provider_bundle import build_g1_team_provider_bundle
 from tests.test_native_g1_team_policy_credentials import TOKEN, _binding
 from tests.test_native_g1_team_provider_bundle import COMMIT, _inputs
@@ -95,3 +96,88 @@ def test_mutation_recheck_rejects_changed_bundle_or_credential(tmp_path, monkeyp
         stream.write(b"changed")
     with pytest.raises(ValueError, match="bundle_bytes_invalid"):
         plan.recheck()
+
+
+def _synthetic_fetcher(calls, *, after=None):
+    from blueprint_pipeline.core.security_controls import BoundedHttpResponse
+    from blueprint_pipeline.native_g1_team_policy_conformance import TASK
+    def fetcher(url, **options):
+        request = json.loads(options["data"])
+        assert options["headers"]["Authorization"] == "Bearer " + TOKEN
+        calls.append(request)
+        if request["kind"] == "infer":
+            import base64
+            assert request["observation"]["state"] == [0.0] * 64
+            assert base64.b64decode(request["observation"]["images"]["front"]["data_b64"]) == bytes(480 * 640 * 3)
+            assert request["task"] == TASK
+        action = [0.0] * 40
+        action[3:9] = [1, 0, 0, 1, 0, 0]
+        response = {key: request[key] for key in ("protocol", "profile_digest", "request_id")}
+        response.update({"ok": True} if request["kind"] == "reset" else {"action_chunk": [action]})
+        if after is not None:
+            after()
+        return BoundedHttpResponse(body=json.dumps(response).encode(), status=200,
+                                   content_type="application/json", final_url=url)
+    return fetcher
+
+
+def test_selected_synthetic_probe_uses_bound_private_token_and_sends_no_site_input(tmp_path, monkeypatch):
+    args, _, _, secret = _prepared(tmp_path, monkeypatch)
+    plan = preflight.verify_g1_team_dispatch_inputs(**args)
+    calls = []
+    result = plan.probe_synthetic_endpoint(fetcher=_synthetic_fetcher(calls))
+    assert [call["kind"] for call in calls] == ["reset", "infer"]
+    assert result["status"] == "synthetic_wire_compatible_before_allocation"
+    assert result["selected_input_receipt_digest"] == plan.safe_receipt()["receipt_digest"]
+    assert result["synthetic_conformance"]["site_policy_query_count"] == 0
+    assert result["synthetic_conformance"]["runtime_identity_verified"] is False
+    assert TOKEN not in str(result)
+    assert str(secret) not in str(result)
+    assert result["receipt_digest"] == digest(result, digest_field="receipt_digest")
+
+
+def test_selected_synthetic_probe_refuses_changed_secret_before_contact(tmp_path, monkeypatch):
+    args, _, _, secret = _prepared(tmp_path, monkeypatch)
+    plan = preflight.verify_g1_team_dispatch_inputs(**args)
+    secret.write_text("replacement-token")
+    with pytest.raises(ValueError, match="synthetic_preflight_failed"):
+        plan.probe_synthetic_endpoint(fetcher=lambda *args, **kwargs: pytest.fail("changed token sent"))
+
+
+def test_selected_synthetic_probe_reopens_authority_after_endpoint_call(tmp_path, monkeypatch):
+    args, _, _, _ = _prepared(tmp_path, monkeypatch)
+    plan = preflight.verify_g1_team_dispatch_inputs(**args)
+    approval = args["authority_arguments"]["approval_path"]
+    def revoke():
+        if approval.exists():
+            approval.unlink()
+    with pytest.raises(ValueError, match="synthetic_preflight_failed"):
+        plan.probe_synthetic_endpoint(fetcher=_synthetic_fetcher([], after=revoke))
+
+
+def test_selected_synthetic_probe_redacts_transport_exception_and_cause(tmp_path, monkeypatch):
+    args, _, _, _ = _prepared(tmp_path, monkeypatch)
+    plan = preflight.verify_g1_team_dispatch_inputs(**args)
+    def refuse(*args, **kwargs):
+        raise RuntimeError("untrusted HTTP response " + TOKEN)
+    with pytest.raises(ValueError, match="synthetic_preflight_failed") as error:
+        plan.probe_synthetic_endpoint(fetcher=refuse)
+    assert str(error.value) == "g1_team_endpoint_synthetic_preflight_failed"
+    assert error.value.__suppress_context__ is True
+
+
+def test_selected_synthetic_probe_refuses_invalid_actions(tmp_path, monkeypatch):
+    from blueprint_pipeline.core.security_controls import BoundedHttpResponse
+    args, _, _, _ = _prepared(tmp_path, monkeypatch)
+    plan = preflight.verify_g1_team_dispatch_inputs(**args)
+    valid = _synthetic_fetcher([])
+    def fetcher(url, **options):
+        response = valid(url, **options)
+        if json.loads(options["data"])["kind"] == "infer":
+            value = json.loads(response.body)
+            value["action_chunk"] = [[0.0] * 39]
+            return BoundedHttpResponse(body=json.dumps(value).encode(), status=200,
+                                       content_type="application/json", final_url=url)
+        return response
+    with pytest.raises(ValueError, match="synthetic_preflight_failed"):
+        plan.probe_synthetic_endpoint(fetcher=fetcher)

@@ -55,6 +55,8 @@ def _setup(tmp_path, monkeypatch):
     from contextlib import nullcontext
     monkeypatch.setattr(lane, "reserve_control_plane_disk", lambda *args, **kwargs: Reservation())
     monkeypatch.setattr(lane, "keep_reservation_live", lambda *args, **kwargs: nullcontext(Health()))
+    monkeypatch.setattr("blueprint_pipeline.native_g1_team_dispatch_preflight.G1TeamDispatchInputs.probe_synthetic_endpoint",
+                        lambda self: {"status": "synthetic_wire_compatible_before_allocation"})
     return args, bundle, {"orchestrator_source_commit": COMMIT}
 
 
@@ -291,3 +293,48 @@ def test_renewal_failure_during_closeout_preserves_returned_teardown(tmp_path, m
     assert result["continuing_spend_from_this_run"] is False
     assert "g1_team_paid_collection_reservation_lost" in result["blockers"]
     assert json.loads(Path(args.adapter_output).read_text()) == result
+
+
+def test_endpoint_conformance_refusal_never_obtains_grant_or_stages_bundle(tmp_path, monkeypatch):
+    args, _, identity = _setup(tmp_path, monkeypatch)
+    def refuse(self):
+        raise ValueError("g1_team_endpoint_synthetic_preflight_failed")
+    monkeypatch.setattr("blueprint_pipeline.native_g1_team_dispatch_preflight.G1TeamDispatchInputs.probe_synthetic_endpoint", refuse)
+    monkeypatch.setattr(lane, "require_paid_resource_admission", lambda *args, **kwargs: pytest.fail("unchecked endpoint grant"))
+    monkeypatch.setattr(lane, "run_arena_native_control_vast", lambda **kwargs: pytest.fail("unchecked endpoint staged"))
+    result = lane.dispatch_g1_team_paid_policy(args, control_identity=identity, control_blockers=[])
+    assert result["provider_mutations_performed"] == 0
+    assert result["blockers"] == ["g1_team_paid_endpoint_synthetic_preflight_failed"]
+    assert not (Path(args.adp_job_dir) / lane.CONSUMPTION_FILENAME).exists()
+
+
+def test_endpoint_probe_precedes_paid_grant_and_transport(tmp_path, monkeypatch):
+    args, _, identity = _setup(tmp_path, monkeypatch)
+    events = []
+    def probe(self):
+        events.append("synthetic")
+        return {"status": "synthetic_wire_compatible_before_allocation"}
+    monkeypatch.setattr("blueprint_pipeline.native_g1_team_dispatch_preflight.G1TeamDispatchInputs.probe_synthetic_endpoint", probe)
+    grant = lane.require_paid_resource_admission
+    def admit(*args, **kwargs):
+        events.append("grant")
+        return grant(*args, **kwargs)
+    monkeypatch.setattr(lane, "require_paid_resource_admission", admit)
+    def adapter(**kwargs):
+        events.append("transport")
+        return {"status": "blocked", "provider_mutations_performed": 0}
+    monkeypatch.setattr(lane, "run_arena_native_control_vast", adapter)
+    result = lane.dispatch_g1_team_paid_policy(args, control_identity=identity, control_blockers=[])
+    assert events == ["synthetic", "grant", "transport"]
+    assert result["endpoint_preallocation_conformance"]["status"] == "synthetic_wire_compatible_before_allocation"
+
+
+def test_static_dry_admission_does_not_claim_live_endpoint_check(tmp_path, monkeypatch):
+    args, _, identity = _setup(tmp_path, monkeypatch)
+    args.execute = False
+    monkeypatch.setattr("blueprint_pipeline.native_g1_team_dispatch_preflight.G1TeamDispatchInputs.probe_synthetic_endpoint",
+                        lambda self: pytest.fail("static dry contacts endpoint"))
+    result = lane.dispatch_g1_team_paid_policy(args, control_identity=identity, control_blockers=[])
+    assert result["status"] == "dry_run_ready"
+    assert result["endpoint_preallocation_conformance"]["status"] == "not_checked_static_dry"
+    assert result["launch_readiness"] == "static_transport_only"

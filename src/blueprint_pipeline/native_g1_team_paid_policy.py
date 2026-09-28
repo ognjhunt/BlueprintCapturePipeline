@@ -161,6 +161,7 @@ def _dispatch(args, *, job, commit, release, blockers, identity, control_recheck
 def _dispatch_selected(args, *, job, commit, release, blockers, identity, control_recheck, gate, stack):
     selected = None
     health = None
+    synthetic = {"status": "not_checked_static_dry" if not args.execute else "not_checked_blocked"}
     collection = {"status": "not_checked", "forecast_bytes": COLLECTION_FORECAST_BYTES,
                   "forecast_is_output_upper_bound": False}
     if not blockers:
@@ -198,12 +199,21 @@ def _dispatch_selected(args, *, job, commit, release, blockers, identity, contro
         except (OSError, KeyError, ControlPlaneDiskBudgetError):
             blockers.append("g1_team_paid_collection_admission_failed")
             collection["status"] = "blocked"
+    if args.execute and not blockers and selected is not None:
+        try:
+            if health is not None:
+                health.check()
+            synthetic = selected.probe_synthetic_endpoint()
+        except (OSError, ValueError, ControlPlaneDiskBudgetError):
+            blockers.append("g1_team_paid_endpoint_synthetic_preflight_failed")
+            synthetic = {"status": "blocked_before_allocation"}
     binding = {
         "program_id": "arm-decision-proof-v1", "probe_kind": PROBE_KIND,
         "provider": "vast", "orchestrator_source_commit": commit,
         "release_authority": release,
         "selected_inputs": selected.safe_receipt() if selected else None,
         "collection_capacity": collection,
+        "endpoint_preallocation_conformance": synthetic,
         "retry_cap": 0,
     }
     binding_digest = canonical_digest(binding)
@@ -294,6 +304,8 @@ def _dispatch_selected(args, *, job, commit, release, blockers, identity, contro
                            "g1_team_paid_transport_or_output_failed:" + type(exc).__name__]})
     result.update({"allocation_binding_digest": binding_digest, "claim_ceiling": "development_only",
                    "collection_capacity": collection,
+                   "endpoint_preallocation_conformance": synthetic,
+                   "launch_readiness": "static_transport_only" if not args.execute else "paid_admission_required",
                    "public_redistribution_authorized": False})
     if args.adapter_output:
         write_json(Path(args.adapter_output), result)

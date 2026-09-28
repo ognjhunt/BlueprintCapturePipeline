@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
+import subprocess
 
 import scripts.deploy_control_plane_commit as deploy
 
@@ -59,3 +61,47 @@ def test_g1_team_settlement_is_armed_for_posted_billing_and_private_review() -> 
     assert f"deploy/systemd/{SETTLEMENT_SERVICE}" in installer
     assert f"deploy/systemd/{SETTLEMENT_TIMER}" in installer
     assert f"systemctl enable --now {SETTLEMENT_TIMER}" in installer
+
+
+def test_installed_dispatch_command_reaches_selected_queue_without_builtin_queue(tmp_path):
+    """Execute the actual oneshot shell against inert commands, never a provider."""
+    service = _text(f"deploy/systemd/{SERVICE}")
+    line = next(line for line in service.splitlines() if line.startswith("ExecStart="))
+    shell = line.removeprefix("ExecStart=/bin/bash -lc '").removesuffix("'").replace("$$", "$")
+    commands = tmp_path / "bin"
+    commands.mkdir()
+    git = commands / "git"
+    git.write_text("#!/bin/bash\nprintf '%s\\n' '" + "a" * 40 + "'\n")
+    git.chmod(0o700)
+    python = commands / "python"
+    python.write_text('#!/bin/bash\nprintf "%s\\n" "$@" > "$CAPTURE_ARGUMENTS"\n')
+    python.chmod(0o700)
+    registry = tmp_path / "registry.json"
+    registry.write_text("{}")
+    selected = tmp_path / "selected-queue"
+    selected.mkdir()
+    capture = tmp_path / "args.txt"
+    environment = {
+        **os.environ, "PATH": str(commands) + os.pathsep + os.environ["PATH"],
+        "CAPTURE_ARGUMENTS": str(capture),
+        "BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO": str(tmp_path),
+        "BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON": str(python),
+        "BLUEPRINT_NATIVE_G1_TEAM_CAMPAIGN_REGISTRY_PATH": str(registry),
+        "BLUEPRINT_NATIVE_G1_TEAM_CAMPAIGN_QUEUE_ROOT": str(tmp_path / "absent-builtins"),
+        "BLUEPRINT_NATIVE_G1_TEAM_CAMPAIGN_WORK_ROOT": str(tmp_path / "builtin-work"),
+        "BLUEPRINT_NATIVE_G1_TEAM_CAMPAIGN_EXECUTE": "true",
+        "BLUEPRINT_NATIVE_G1_TEAM_POLICY_QUEUE_ROOT": str(selected),
+        "BLUEPRINT_NATIVE_G1_TEAM_POLICY_WORK_ROOT": str(tmp_path / "selected-work"),
+        "BLUEPRINT_NATIVE_G1_TEAM_POLICY_APPROVAL_ROOT": str(tmp_path / "operator-approvals"),
+        "BLUEPRINT_NATIVE_G1_TEAM_POLICY_CREDENTIAL_REGISTRY": str(tmp_path / "private/registry.json"),
+        "BLUEPRINT_NATIVE_G1_TEAM_POLICY_SONIC_ASSET_DIR": str(tmp_path / "sonic"),
+        "BLUEPRINT_NATIVE_G1_TEAM_POLICY_TRUSTED_CLIENT": "blueprint-webapp",
+    }
+    completed = subprocess.run(["bash", "-c", shell], env=environment, capture_output=True, timeout=10)
+    assert completed.returncode == 0
+    assert capture.is_file(), "selected-only queue was silently skipped by installed shell"
+    arguments = capture.read_text().splitlines()
+    assert arguments[arguments.index("--selected-queue-root") + 1] == str(selected)
+    assert arguments[arguments.index("--selected-approval-root") + 1] == environment["BLUEPRINT_NATIVE_G1_TEAM_POLICY_APPROVAL_ROOT"]
+    assert arguments[arguments.index("--selected-trusted-client") + 1] == "blueprint-webapp"
+    assert "--execute" in arguments

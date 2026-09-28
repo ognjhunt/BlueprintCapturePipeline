@@ -73,6 +73,13 @@ def _read_private(path: Path, *, maximum_bytes: int, allow_empty: bool = False) 
     return value, _snapshot(info)
 
 
+def _validated_token(raw: bytes) -> str:
+    token = raw.removesuffix(b"\n")
+    if not 1 <= len(token) <= 4096 or any(not 33 <= byte <= 126 for byte in token):
+        raise ValueError("g1_team_credential_value_invalid")
+    return token.decode("ascii")
+
+
 @dataclass(frozen=True, repr=False)
 class G1TeamPolicyCredentialBinding:
     """Private transport input; only safe_receipt may enter durable run records."""
@@ -99,6 +106,16 @@ class G1TeamPolicyCredentialBinding:
                 or current.safe_receipt() != self.safe_receipt()):
             raise ValueError("g1_team_credential_binding_changed")
         return current.safe_receipt()
+
+    def read_for_endpoint_probe(self) -> str:
+        """Private HTTPS input only; re-open authority and the bound file."""
+        self.recheck()
+        raw, snapshot = _read_private(self.credential_file, maximum_bytes=16384, allow_empty=True)
+        if snapshot != self._file_snapshot:
+            raise ValueError("g1_team_credential_binding_changed")
+        token = _validated_token(raw)
+        self.recheck()
+        return token
 
 
 def resolve_g1_team_policy_credential(
@@ -157,9 +174,7 @@ def resolve_g1_team_policy_credential(
     raw, snapshot = _read_private(secret_path, maximum_bytes=16384, allow_empty=True)
     # One final newline is permitted in a canonical token file. Never strip
     # arbitrary whitespace into a different credential than the operator wrote.
-    token = raw.removesuffix(b"\n")
-    if not 1 <= len(token) <= 4096 or any(not 33 <= byte <= 126 for byte in token):
-        raise ValueError("g1_team_credential_value_invalid")
+    _validated_token(raw)
     receipt = {
         "schema_version": "native_g1_team_policy_credential_binding.v1",
         "status": "resolved_not_staged", "owner": profile["owner"],
