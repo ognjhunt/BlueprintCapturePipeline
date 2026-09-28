@@ -199,9 +199,16 @@ def test_index_document_validates_and_forgery_is_refused():
         lambda d: d["members"][1].update(disposition="materialized"),
         lambda d: d.update(private_url_recorded=True),
         lambda d: d["directory"].update(offset=d["directory"]["offset"] + 1),
+        lambda d: d["archive"].update(etag=7),
+        lambda d: d["archive"].update(durable_reference="s3://bucket/key"),
     ):
         with pytest.raises(ProviderOutputMemberIndexError, match="^provider_output_member_index_invalid$"):
             validate_member_index(forged(change))
+    # A document that is not JSON is refused with a code, never a TypeError.
+    for unserializable in ({**index, "members": [object()]}, {**index, "limits": {1: 2, "a": 3}}):
+        with pytest.raises(ProviderOutputMemberIndexError, match="^provider_output_member_index_invalid$"):
+            validate_member_index(unserializable)
+
 
 def _entries(*names):
     return [Entry(name, name.encode() * 3) for name in names]

@@ -627,16 +627,30 @@ def _count(value, minimum=0):
     return type(value) is int and value >= minimum
 
 
+def _digest_or_none(document, field):
+    """The canonical digest, or None when the document is not canonical JSON."""
+    try:
+        return canonical_digest(document, digest_field=field)
+    except (TypeError, ValueError, RecursionError):
+        return None
+
+
 def validate_member_index(index) -> Mapping:
     """Check an index's digest and invariants before any consumer trusts its offsets."""
     if (not isinstance(index, Mapping) or index.get('schema_version') != SCHEMA
             or index.get('private_url_recorded') is not False):
         raise _refusal('provider_output_member_index_invalid')
-    if index.get('index_digest') != canonical_digest(index, digest_field='index_digest'):
+    expected = _digest_or_none(index, 'index_digest')
+    if expected is None:
+        raise _refusal('provider_output_member_index_invalid')
+    if index.get('index_digest') != expected:
         raise _refusal('provider_output_member_index_digest_mismatch')
     archive, directory, members = index.get('archive'), index.get('directory'), index.get('members')
     if (not isinstance(archive, Mapping) or not _SHA256.fullmatch(str(archive.get('sha256')))
-            or not _count(archive.get('size'), 1) or not isinstance(directory, Mapping)
+            or not _count(archive.get('size'), 1)
+            or any(not isinstance(archive.get(key), (str, type(None))) for key in ('etag', 'generation'))
+            or not isinstance(archive.get('durable_reference'), (Mapping, type(None)))
+            or not isinstance(directory, Mapping)
             or not _count(directory.get('offset')) or not _count(directory.get('size'))
             or directory['offset'] + directory['size'] >= archive['size']
             or not isinstance(members, list) or not members):
