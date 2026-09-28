@@ -60,8 +60,11 @@ def test_actual_4096_member_expiry_reaches_gc_without_widening_native_budget(
 
 
 @pytest.mark.slow
+@pytest.mark.parametrize(
+    "member_count", [pytest.param(32, id="small32"), pytest.param(4096, id="full4096")]
+)
 def test_actual_4096_evidence_offload_restores_under_same_store_and_fd_limits(
-    expired_completed_evidence, monkeypatch
+    expired_completed_evidence, monkeypatch, member_count
 ):
     from blueprint_pipeline import control_plane_lane_experiment_archive as archive
     from blueprint_pipeline import control_plane_lane_experiment_retirement as root
@@ -70,14 +73,17 @@ def test_actual_4096_evidence_offload_restores_under_same_store_and_fd_limits(
     from tests.test_registered_experiment_offload import Cloud
 
     setup, target, born, _, intent_id = expired_completed_evidence
-    control = {scratch.LEASE_FILE, '.registered-experiment.v1.json'}
-    count = sum(path.relative_to(target).parts[0] not in control for path in target.rglob('*'))
-    for number in range(4096 - count):
-        (target / f'extra-{number:04d}').write_bytes(b'')
-    before = {str(path.relative_to(target)): path.read_bytes()
-              for path in target.rglob('*') if path.is_file() and path.name not in control}
+    control = {scratch.LEASE_FILE, ".registered-experiment.v1.json"}
+    count = sum(path.relative_to(target).parts[0] not in control for path in target.rglob("*"))
+    for number in range(member_count - count):
+        (target / f"extra-{number:04d}").write_bytes(b"")
+    before = {
+        str(path.relative_to(target)): path.read_bytes()
+        for path in target.rglob("*")
+        if path.is_file() and path.name not in control
+    }
     cloud = Cloud()
-    monkeypatch.setattr(archive, '_client', lambda *args: (cloud, 'development-only'))
+    monkeypatch.setattr(archive, "_client", lambda *args: (cloud, "development-only"))
     peaks = []
     original = work._ActionFiles.slot
 
@@ -85,31 +91,79 @@ def test_actual_4096_evidence_offload_restores_under_same_store_and_fd_limits(
         peaks.append(len(self.owned) + len(self.probe_owned))
         return original(self)
 
-    monkeypatch.setattr(work._ActionFiles, 'slot', observed)
+    monkeypatch.setattr(work._ActionFiles, "slot", observed)
+    from functools import partial
+    from types import SimpleNamespace
+    from blueprint_pipeline import control_plane_disk_budget as disk
+    from blueprint_pipeline import control_plane_lane_experiment_restore as restoration
+
+    # The portable fixture cannot create /var/lib's production ledger, and this
+    # Mac has less free space than the unchanged protected production floor.
+    # Use actual native ledger/measurement/reservation/release with its explicit
+    # finite disk model. The separate real Linux acceptance uses actual capacity.
+    monkeypatch.setattr(
+        restoration,
+        "reserve_control_plane_disk",
+        partial(
+            disk.reserve_control_plane_disk,
+            reservation_root=setup[0].parent / "actual-restore-ledger",
+            disk_usage=lambda _: SimpleNamespace(
+                total=64 * 1024**3, used=32 * 1024**3, free=32 * 1024**3
+            ),
+        ),
+    )
     # The maximum member domain needs the authenticated one-hour policy grant,
     # not this tiny fixture's usual ten-minute grant; all native clocks remain.
-    action = root.issue_experiment_action_intent(intent_id, principal='operator', owner='owner',
-        action='offload', expires_at_epoch=6500, installed_config_path=setup[0], now=lambda: 2900)
-    outcome = _gc(setup)['registered_experiments']['outcomes'][0]
-    assert outcome['action_id'] == action['action_id']
-    assert outcome['decision'] == 'retired', outcome
-    selected = root.issue_experiment_restore_intent(intent_id, principal='operator', owner='owner',
-        lease_ttl_seconds=600, expires_at_epoch=6500, installed_config_path=setup[0], now=lambda: 2901)
+    action = root.issue_experiment_action_intent(
+        intent_id,
+        principal="operator",
+        owner="owner",
+        action="offload",
+        expires_at_epoch=6500,
+        installed_config_path=setup[0],
+        now=lambda: 2900,
+    )
+    outcome = _gc(setup)["registered_experiments"]["outcomes"][0]
+    assert outcome["action_id"] == action["action_id"]
+    assert outcome["decision"] == "retired", outcome
+    selected = root.issue_experiment_restore_intent(
+        intent_id,
+        principal="operator",
+        owner="owner",
+        lease_ttl_seconds=600,
+        expires_at_epoch=6500,
+        installed_config_path=setup[0],
+        now=lambda: 2901,
+    )
     try:
-        restored = root.restore_registered_experiment(selected['action_id'],
-            expected_restore_intent=selected['restore_intent'], installed_config_path=setup[0], now=lambda: 2901,
-            _pins_root=setup[0].parent / 'pins')
+        restored = root.restore_registered_experiment(
+            selected["action_id"],
+            expected_restore_intent=selected["restore_intent"],
+            installed_config_path=setup[0],
+            now=lambda: 2901,
+            _pins_root=setup[0].parent / "pins",
+        )
     except ValueError as error:
         native = error.__context__
         if isinstance(native, OSError):
             import traceback
-            print('LOCAL_FULL_DOMAIN_NATIVE_ERROR', native.errno, native.filename,
-                  [(Path(row.filename).name, row.lineno, row.name)
-                   for row in traceback.extract_tb(native.__traceback__)[-12:]])
+
+            print(
+                "LOCAL_FULL_DOMAIN_NATIVE_ERROR",
+                native.errno,
+                native.filename,
+                [
+                    (Path(row.filename).name, row.lineno, row.name)
+                    for row in traceback.extract_tb(native.__traceback__)[-12:]
+                ],
+            )
         raise
-    assert restored['decision'] == 'restored', restored
-    assert {str(path.relative_to(target)): path.read_bytes()
-            for path in target.rglob('*') if path.is_file() and path.name not in control} == before
-    assert _current_entry(setup, intent_id)['state'] == 'active'
-    assert _current_entry(setup, intent_id)['generation'] == born['generation']
+    assert restored["decision"] == "restored", restored
+    assert {
+        str(path.relative_to(target)): path.read_bytes()
+        for path in target.rglob("*")
+        if path.is_file() and path.name not in control
+    } == before
+    assert _current_entry(setup, intent_id)["state"] == "active"
+    assert _current_entry(setup, intent_id)["generation"] == born["generation"]
     assert peaks and max(peaks) < 128
