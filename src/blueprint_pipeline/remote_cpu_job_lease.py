@@ -31,6 +31,7 @@ from .remote_cpu_job_contract import (
     RemoteCpuContractError,
     execution_name_of,
     record_bytes,
+    safe_label,
     validate_descriptor,
     validate_heartbeat,
     worker_identity_for,
@@ -210,9 +211,9 @@ def claim_handoff(root: str | Path, *, descriptor: Mapping[str, Any], config: Ma
 
 
 def _apply_updates(lease: dict[str, Any], updates: Mapping[str, Any]) -> None:
-    unknown = sorted(set(updates) - UPDATES)
+    unknown = sorted(set(updates) - UPDATES, key=str)
     if unknown:
-        raise RemoteCpuLeaseError(f"remote_cpu_lease_update_invalid:{unknown[0]}")
+        raise RemoteCpuLeaseError(f"remote_cpu_lease_update_invalid:{safe_label(unknown[0])}")
     if "worker_identity" in updates:
         identity = updates["worker_identity"]
         if lease["worker_identity"] not in {None, identity}:

@@ -27,6 +27,7 @@ SOURCE_HEX = "5" * 64
 CAS = "s3://b2-bucket/blueprint/arm-decision-proof-v1/configured-scenes/artifacts"
 EXECUTION = "blueprint-remote-cpu-episode-compilation-x7k2p"
 CPU_CLASS = "sha256:" + "c" * 64
+URL_KEY = "https://s3.us-west-004.backblazeb2.com/b/k?X-Amz-Signature=SECRETSIG"
 
 
 def _seal(value: dict, field: str) -> dict:
@@ -364,6 +365,8 @@ def test_descriptor_refuses_paths_outside_allowed_roots_and_non_us_regions() -> 
         ("note", "gs://transport/object.json?generation=1"),
         ("note", "AKIAABCDEFGHIJKLMNOP"),
         ("note", "Bearer ya29.a0AfH6SM"),
+        (URL_KEY, "harmless"),
+        ("token=ghp_SECRETSIG", "harmless"),
     ],
 )
 def test_records_refuse_url_and_credential_shaped_keys_and_values(tmp_path: Path, key: str, value: str) -> None:
@@ -371,12 +374,17 @@ def test_records_refuse_url_and_credential_shaped_keys_and_values(tmp_path: Path
     descriptor = _descriptor(config)
 
     def expect_refused(call) -> None:
-        reasons = _reasons(call)
+        with pytest.raises(contract.RemoteCpuContractError) as caught:
+            call()
+        reasons, message = caught.value.reasons, str(caught.value)
         assert any(
             reason.startswith(("remote_cpu_record_credential_shaped_key:", "remote_cpu_record_url_or_credential_value:"))
             for reason in reasons
         ), reasons
-        assert value not in " ".join(reasons)
+        # A refusal names where the problem is, never the value, and never a credential- or URL-shaped key.
+        assert value not in message and "SECRETSIG" not in message
+        if key != "note":
+            assert key not in message and "<key#" in message
 
     inputs = _inputs()
     inputs[1][key] = value
@@ -470,6 +478,10 @@ def test_transport_schema_is_refused_by_every_record_writer(tmp_path: Path) -> N
     assert "remote_cpu_transport_never_persisted:$" in _reasons(
         lambda: lease.observe_heartbeat(root, job, transport, execution_running=True, now=now)
     )
+    with pytest.raises(contract.RemoteCpuContractError) as unknown_update:
+        lease.transition(root, job, attempt_id=attempt, to_state=None, now=now, updates={URL_KEY: 1})
+    assert "SECRETSIG" not in str(unknown_update.value)
+    assert unknown_update.value.reasons[0].startswith("remote_cpu_lease_update_invalid:<key#")
     for path in (item for item in tmp_path.rglob("*") if item.is_file()):
         assert b"remote_cpu_job_transport.v1" not in path.read_bytes(), path
         assert b"https://" not in path.read_bytes(), path

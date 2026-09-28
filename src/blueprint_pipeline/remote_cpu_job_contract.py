@@ -94,6 +94,18 @@ def _url_or_credential_text(text: str) -> bool:
     return bool(schemes) and any(character in text for character in "?#@")
 
 
+def _credential_shaped_key(text: str) -> bool:
+    return any(fragment in text.lower() for fragment in _FORBIDDEN_KEY_FRAGMENTS)
+
+
+def safe_label(value: Any) -> str:
+    """A key fit for a refusal message: a credential- or URL-shaped key becomes ``<key#sha256[:12]>``."""
+    text = str(value)
+    if _credential_shaped_key(text) or _url_or_credential_text(text):
+        return f"<key#{hashlib.sha256(text.encode('utf-8', 'surrogatepass')).hexdigest()[:12]}>"
+    return text
+
+
 def forbidden_record_content(value: Any, path: str = "") -> list[str]:
     """Name every credential-shaped key, URL-shaped value and embedded transport, never the value."""
     reasons: list[str] = []
@@ -101,8 +113,8 @@ def forbidden_record_content(value: Any, path: str = "") -> list[str]:
         if value.get("schema_version") == TRANSPORT_SCHEMA_VERSION:
             reasons.append(f"remote_cpu_transport_never_persisted:{path or '$'}")
         for key, item in value.items():
-            where = f"{path}.{key}" if path else str(key)
-            if any(fragment in str(key).lower() for fragment in _FORBIDDEN_KEY_FRAGMENTS):
+            where = f"{path}.{safe_label(key)}" if path else safe_label(key)
+            if _credential_shaped_key(str(key)):
                 reasons.append(f"remote_cpu_record_credential_shaped_key:{where}")
             elif _url_or_credential_text(str(key)):
                 reasons.append(f"remote_cpu_record_url_or_credential_value:{where}")
@@ -183,7 +195,8 @@ def _check(value: Any, spec: Any, where: str, reasons: list[str]) -> None:
         reasons.append(f"remote_cpu_field_invalid:{where or '$'}")
     elif isinstance(spec, dict):
         prefix = f"{where}." if where else ""
-        reasons.extend(f"remote_cpu_field_unexpected:{prefix}{key}" for key in sorted(set(value) - set(spec)))
+        reasons.extend(f"remote_cpu_field_unexpected:{prefix}{safe_label(key)}"
+                       for key in sorted(set(value) - set(spec), key=str))
         reasons.extend(f"remote_cpu_field_missing:{prefix}{key}" for key in spec if key not in value)
         for key in set(spec) & set(value):
             _check(value[key], spec[key], prefix + key, reasons)
@@ -323,8 +336,8 @@ def _descriptor_path_reasons(descriptor: Mapping[str, Any], reasons: list[str]) 
             reasons.append(f"remote_cpu_descriptor_scratch_overlaps_output_root:{index}")
     for variable, path in sorted(descriptor["environment"].items()):
         if variable not in ENVIRONMENT_VARIABLES:
-            reasons.append(f"remote_cpu_descriptor_environment_variable_not_allowed:{variable}")
-        reasons.extend(_path_reasons(path, f"environment.{variable}", roots, directory=True))
+            reasons.append(f"remote_cpu_descriptor_environment_variable_not_allowed:{safe_label(variable)}")
+        reasons.extend(_path_reasons(path, f"environment.{safe_label(variable)}", roots, directory=True))
     seen, cache_members = set(), []
     for index, item in enumerate(descriptor["inputs"]):
         where, target = f"inputs[{index}]", item["materialize_at"]

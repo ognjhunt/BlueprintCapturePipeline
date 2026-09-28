@@ -179,10 +179,10 @@ def test_host_known_blobs_are_indexed_by_origin_and_never_archived(tmp_path: Pat
         {_digest(scene): {"input": "sha256:" + "3" * 64}},
         {_digest(member): {"input_member": {"input": zip_digest, "member": "../escape.bin"}}},
         {_digest(member): {"input": _digest(member), "extra": True}},
+        {"https://b2.example.test/k?X-Amz-Signature=SECRETSIG": {"input": _digest(scene)}},
     ):
-        assert _reason(lambda: archive.index_tree(root, host_known=bad)).startswith(
-            "remote_cpu_archive_host_known_invalid"
-        )
+        refusal = _reason(lambda: archive.index_tree(root, host_known=bad))
+        assert refusal.startswith("remote_cpu_archive_host_known_invalid") and "SECRETSIG" not in refusal
 
 
 def test_stream_verifier_refuses_bad_framing_unindexed_blobs_and_digest_mismatch(tmp_path: Path) -> None:
