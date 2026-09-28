@@ -560,7 +560,24 @@ One tick runs nine phases in order:
    to the artifact store under kind `control-plane-evidence` with full readback,
    replaced by `<name>.offloaded.v1.json` (URI, digest, size, per-member digests),
    and only then removed. Bytes are migrated, never deleted; the spend guard and
-   every other `evidence_hot` root are outside the tool's reach.
+   every other `evidence_hot` root are outside the tool's reach. A run with a
+   result registry is never removed whole: its registered bulk artifacts go
+   first, one by one, and once none is left locally a canary run sealed by its
+   `dispatch_receipt.json` has its **residue** (every file the registry neither
+   records nor keeps: logs, intermediates, provider zips) packed, published with
+   the same readback and pointed to by `<name>.residue.v1.json` before any of it
+   is removed (`task_evaluation_result_residue_offload`). The registry, the
+   delivery, the receipts, every registered file, every path a live reader
+   reopens and anything a reader can reach from those (a link's target inside
+   the run, any file a kept text document names) stay. This step only
+   plans until `BLUEPRINT_CONTROL_PLANE_GC_RESULT_RESIDUE_OFFLOAD=1` is set as
+   well, and then attempts at most
+   `BLUEPRINT_CONTROL_PLANE_GC_RESULT_RESIDUE_MAX_RUNS_PER_TICK` (default 5)
+   publications a tick, failed ones included; later runs wait
+   (`deferred_tick_cap`). Each hour's tick starts at another run, so runs that
+   keep failing never starve the ones after them. A plan reads the queues once
+   a tick and takes a run's bulk state from the per-artifact offload the tick
+   just ran; an offload checks both again under the run lock.
 7. **Scratch directories** idle for three days
    (`BLUEPRINT_CONTROL_PLANE_GC_SCRATCH_MINIMUM_AGE_SECONDS=259200`) are reaped by
    age alone: nothing references them.
@@ -632,7 +649,16 @@ mutation edge. The extended proofs read queues strictly: they also count a row
 parked in a state that will still run (`LIVE_QUEUE_STATES`, such as a
 preparation awaiting its source preparation), and a row they cannot read keeps
 their candidates as `queue_unreadable`, while a row that merely moved between
-states mid-read is found where it went. Planning and the releases each read the
+states mid-read is found where it went. Every queue read
+(`control_plane_storage_references.queue_reference_text`) opens each row without
+following a link or waiting for a writer and requires the regular file its
+lstat saw; a row replaced between the two (the dispatcher claims a row by
+replacing it onto an empty placeholder in `processing/`) is read once more. The
+strict reader (`strict=True`, which the result residue offload reads its queues
+with too) fails on any row it cannot read, one swapped for a link, a FIFO or
+another file mid-read included; the original reader, which the
+other storage GC checks use, skips such a row, so a FIFO in a queue directory
+never hangs a tick. Planning and the releases each read the
 launch queue and the preparation queue's ended envelopes once (twice over,
 unioned), and the process table is swept once for planning and once per
 release.
@@ -652,7 +678,10 @@ so each manifest (and its receipt) also records `walked_file_count` and
   `unsealed_no_window`, `unsealed_recent`, `hot`, or the first protection that
   holds, checked in this order: `protected_unreadable_settlement`,
   `protected_process`, `protected_process_inventory_unreadable`,
-  `protected_pin`, `protected_settlement`, `protected_queue`. A `/proc` entry
+  `protected_pin`, `protected_settlement`, `protected_queue`. A settlement
+  record the tick cannot read (a link, a FIFO, an oversized or non-UTF-8 file)
+  protects every run (`protected_unreadable_settlement`), and is read as a queue
+  row is, so a FIFO never blocks the tick. A `/proc` entry
   the tick cannot read protects the run (`protected_process_inventory_unreadable`)
   instead of failing the check. `protected_pin` carries `by_kind`: the kinds of
   the live pins holding each run, with the number of distinct pins holding each
@@ -690,9 +719,67 @@ so each manifest (and its receipt) also records `walked_file_count` and
   `omitted_kept_count`; every count covers every pin.
 - Result-artifact offload: a retained run says why in `retained_reason` (`hot`
   or its protection reason). A run whose offload raised records `error_type`,
-  `errno` (for an `OSError`) and `stage` (`registry`, `protection`, `publish` or
-  `evict`), and so does a skipped artifact. Messages and file names are never
-  recorded.
+  `errno` (for an `OSError`) and `stage` (`registry`, `plan`, `protection`,
+  `publish` or `evict`), and so does a skipped artifact. Messages and file names
+  are never recorded.
+- Result residue offload (`result_residue_offload`: `enabled`,
+  `max_runs_per_tick`, `attempted_count`, its totals and a row per registry
+  run): a retained run says why in `retained_reason` (`hot` or a protection
+  reason, as its bulk offload kept it; `bulk_not_remote`,
+  `bulk_offload_failed` (its bulk offload failed past the registry, at `plan`
+  or later), `already_offloaded`, `registry_unsealed` (the residue or its bulk
+  offload refused the registry while reading and verifying it: a G1 review has
+  no delivery; either bulk reason keeps the failure's type, errno and stage),
+  `dispatch_receipt_missing` (an operator run, whose continuation and download
+  route keep reopening its files), `dispatch_receipt_invalid`,
+  `dispatch_row_pending` (a pending or processing queue row names the run, and
+  the dispatcher would re-enter it), `dispatch_queue_unreadable` (a queue row
+  the strict reader refuses keeps every run), `run_root_invalid`, `offload_locked`,
+  `plan_failed` (what stays cannot be searched for what a reader reaches from
+  it: a directory that cannot be listed or is on another filesystem, a kept
+  link that leaves the run, a kept file on another filesystem, or a file that
+  cannot be read), `deferred_tick_cap` (the tick's publications were used up),
+  `publication_failed` (including a member swapped while it was packed),
+  `run_changed_or_active`, `pointer_failed`, `nothing_evicted` (every member
+  stayed, so the pointer was withdrawn and the next tick tries again),
+  `pointer_invalid` (a pointer that does not verify leaves the run alone),
+  `already_offloaded`, `restoring` (an operator's restore is under way or was
+  cut short; rerun it to finish), `restored` (an operator restored the run, and
+  no tick offloads it again without a new decision) or `pointer_changed` (the
+  pointer a tick read before its lock is gone or another one once it holds the
+  lock)).
+  An applying tick reads the pointer again once it holds the run lock and goes
+  on only while it is unchanged (still absent, or the same `evicting` pointer
+  by digest); otherwise it keeps the run for the state the pointer is in now and
+  writes nothing, so a restore that lands between the two reads is never undone.
+  The pointer records its eviction
+  `state`: `evicting` from before the first unlink until eviction is over, then
+  `offloaded` (a pointer without a state reads as `offloaded`), `restoring` from
+  before a restore places its first member, and `restored` once a restore
+  finished. A pointed run reports the listed members still local
+  (`pointed_remaining_count`, `pointed_remaining_bytes`, totalled per phase); only
+  when a crash left an `evicting` pointer does an applying tick resume (`resume`).
+  It first checks with a HEAD request, reading no bytes, that the pointer's
+  archive is still there with its size and digest (`archive_unverified`
+  otherwise, and nothing moves), plans the run again, and evicts each listed
+  member the pointer does not keep that is still residue and whose bytes still
+  hash to the pointer's; a member a reader can now reach stays, recorded in the
+  pointer as kept (`no_longer_residue`). Then it settles the pointer `offloaded`.
+  Every file it left counts under
+  `member_skipped:<reason>` with its bytes: `reader_reopened` (the surveyed
+  reopened names, including scene-attempt recovery's `*.lease.json` and
+  `pending_teardowns/*.json` ownership records), `symlink_target` and
+  `receipt_referenced` (what the readers the module docstring surveys can
+  reach from any file that stays, whatever kept it), `symlink`, `special_file`, `cross_device`, `newer_than_registry`,
+  `linked_outside_residue` or `name_unsupported` (a name with a character the
+  reference search does not read as part of a path) when the run is listed, and
+  `member_changed`, `path_changed`, `cross_device`,
+  `recheck_failed` or `unlink_failed` for a packed member the pointer then
+  records as `kept` (the run row adds the exception type), or
+  `member_vanished` for one that went without the offload (restore brings it
+  back). The summary gives the phase's `enabled` flag too. Everything the phase
+  keeps lies inside evidence offload's `result_registry` bytes, so its reasons
+  never add to `top_retained` or `top_retained_reasons`.
 
 With `--report-out` the tick also writes `summary.json`
 (`control_plane_storage_gc_summary.v1`) beside `latest.json`, published the same
@@ -716,6 +803,28 @@ A missing summary means read `latest.json`.
 Restore an offloaded run with
 `python -c 'from blueprint_pipeline.control_plane_evidence_offload import restore_offloaded_evidence as r; r(pointer_path=..., destination=...)'`;
 every member digest is verified before the directory is exposed.
+
+Restore a run's offloaded residue with
+`python -c 'from blueprint_pipeline.task_evaluation_result_residue_restore import restore_result_residue as r; print(r(run_root=...))'`.
+It verifies the archive and every member's digest and size, never overwrites a
+different file (`existing_file_differs`), and records a member it cannot place
+(its directory became a file or a link) as `restore_failed:<type>` while the
+rest still come back. It leaves the members the pointer lists as `kept` alone,
+links the names of one inode (a pointer `group`) back together, but never a name
+the pointer gives other bytes than the file it would link to
+(`group_member_differs`), fsyncs every
+directory it adds an entry to, and needs no sealed registry: only the pointer's
+run name, and its run id where the registry still names one. It always writes
+`<name>.residue-restore.v1.json` beside the pointer, with a `failure` when the
+archive could not be fetched or verified. It holds the run's
+`artifacts/result_delivery/.offload.lock` for its whole pass, so no tick resumes
+an eviction while members come back, and refuses to start while a tick holds it
+(`result_residue_restore_locked`). Before it places the first member it
+rewrites the pointer `restoring`, so a pass cut short (an exception, a crash,
+Ctrl-C, a failed final rewrite) leaves a pointer no tick resumes or offloads;
+rerunning the restore continues it. The receipt names the pointer it started
+from (`pointer_digest`). A pass that finishes rewrites the pointer
+`restored`: the pointer stays, and no tick offloads the run again.
 
 The manual single-root form
 `python -m blueprint_pipeline.control_plane_storage_gc --content-store-root <root>/sha256 [--apply --ack reap-unreferenced-content]`
