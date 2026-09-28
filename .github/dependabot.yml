@@ -35,6 +35,7 @@ updates:
       - /deploy/docker/company_policy_proxy
       - /deploy/docker/company_policy_synthetic
       - /deploy/docker/deepprivacy2
+      - /deploy/docker/policy_model_cpu
       - /deploy/docker/policy_ranking_openpi
       - /deploy/docker/reconstruction_worker
       - /deploy/docker/robot_eval_worker/groot_oscar_closed_loop
