@@ -668,9 +668,15 @@ every member digest is verified before the directory is exposed.
 Restore a run's offloaded residue with
 `python -c 'from blueprint_pipeline.task_evaluation_result_residue_restore import restore_result_residue as r; print(r(run_root=...))'`.
 It verifies the archive and every member's digest and size, never overwrites a
-different file (a `conflict`), leaves the members the pointer lists as `kept`
-alone, and writes `<name>.residue-restore.v1.json` beside the pointer. The
-pointer stays, so the next tick does not offload the restored files again.
+different file (`existing_file_differs`), and records a member it cannot place
+(its directory became a file or a link) as `restore_failed:<type>` while the
+rest still come back. It leaves the members the pointer lists as `kept` alone,
+links the names of one inode (a pointer `group`) back together, fsyncs every
+directory it adds an entry to, and needs no sealed registry: only the pointer's
+run name, and its run id where the registry still names one. It always writes
+`<name>.residue-restore.v1.json` beside the pointer, with a `failure` when the
+archive could not be fetched or verified. The pointer stays, so the next tick
+does not offload the restored files again.
 
 The manual single-root form
 `python -m blueprint_pipeline.control_plane_storage_gc --content-store-root <root>/sha256 [--apply --ack reap-unreferenced-content]`

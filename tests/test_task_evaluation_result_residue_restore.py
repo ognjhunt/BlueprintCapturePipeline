@@ -97,3 +97,104 @@ def test_the_service_owner_is_given_each_file_last(tmp_path, monkeypatch) -> Non
         store.materialize_configured_scene_artifact, client=f.client, bucket=BUCKET))
     # One (utime, adopt) pair per restored file, then the receipt's own adopt.
     assert order == ["utime", "adopt"] * len(RESIDUE) + ["adopt"]
+
+
+def _materializer(f):
+    return functools.partial(store.materialize_configured_scene_artifact, client=f.client, bucket=BUCKET)
+
+
+def _receipt(f) -> dict:
+    return json.loads((f.evidence / f"{f.run.name}{residue.RESTORE_RECEIPT_SUFFIX}").read_text(encoding="utf-8"))
+
+
+def test_restore_restores_the_rest_past_a_member_it_cannot_place(tmp_path) -> None:
+    """A member whose directory became a file cannot come back; it is a typed conflict, the
+    others are restored, and the receipt is written."""
+
+    f = _sealed_run(tmp_path / "canaries")
+    _offload(f)
+    (f.run / "work" / "stage").rmdir()
+    (f.run / "work" / "stage").write_bytes(b"a file where a directory was")
+
+    restored = restore.restore_result_residue(run_root=f.run, materializer=_materializer(f), now=lambda: NOW)
+
+    assert restored["status"] == "restored_with_conflicts"
+    assert restored["conflicts"] == [
+        {"relative_path": "work/stage/state.npz", "reason": "restore_failed:NotADirectoryError"}]
+    assert restored["restored_count"] == len(RESIDUE) - 1
+    assert (f.run / "logs" / "worker.log").read_bytes() == RESIDUE["logs/worker.log"]
+    assert (f.run / "work" / "stage").read_bytes() == b"a file where a directory was"
+    assert _receipt(f) == restored
+
+
+def test_restore_needs_no_sealed_registry_only_the_same_run(tmp_path) -> None:
+    f = _sealed_run(tmp_path / "canaries")
+    _offload(f)
+    delivery = f.run / "artifacts/result_delivery/delivery.json"
+    value = json.loads(delivery.read_text(encoding="utf-8"))
+    delivery.write_text(json.dumps({**value, "result_status": "running"}), encoding="utf-8")
+
+    restored = restore.restore_result_residue(run_root=f.run, materializer=_materializer(f), now=lambda: NOW)
+
+    assert (restored["status"], restored["restored_count"]) == ("restored", len(RESIDUE))
+    registry_path = f.run / "artifacts/result_delivery/artifact_registry.json"
+    registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    registry_path.write_text(json.dumps({**registry, "run_id": "another-run"}), encoding="utf-8")
+    with pytest.raises(residue.ResultResidueOffloadError, match="run_mismatch"):
+        restore.restore_result_residue(run_root=f.run, materializer=_materializer(f), now=lambda: NOW)
+
+
+def test_restore_links_a_hard_link_group_again(tmp_path) -> None:
+    f = _sealed_run(tmp_path / "canaries")
+    os.link(f.run / "logs" / "worker.log", f.run / "logs" / "worker-copy.log")
+    os.link(f.run / "logs" / "worker.log", f.run / "work" / "worker-elsewhere.log")
+    _offload(f)
+    pointer = json.loads(f.pointer.read_text(encoding="utf-8"))
+    groups = {row["relative_path"]: row["group"] for row in pointer["members"]}
+    assert groups["logs/worker.log"] == groups["logs/worker-copy.log"] == groups["work/worker-elsewhere.log"]
+    assert groups["logs/worker.log"] != groups["provider/outputs.zip"]
+
+    restored = restore.restore_result_residue(run_root=f.run, materializer=_materializer(f), now=lambda: NOW)
+
+    assert restored["restored_count"] == len(RESIDUE) + 2
+    linked = [f.run / "logs" / "worker.log", f.run / "logs" / "worker-copy.log", f.run / "work" / "worker-elsewhere.log"]
+    identities = {(path.stat().st_dev, path.stat().st_ino) for path in linked}
+    assert len(identities) == 1 and linked[0].stat().st_nlink == 3
+    assert all(path.read_bytes() == RESIDUE["logs/worker.log"] for path in linked)
+
+
+def test_the_receipt_is_written_even_when_the_archive_cannot_be_fetched(tmp_path) -> None:
+    f = _sealed_run(tmp_path / "canaries")
+    _offload(f)
+
+    def unreachable(**_kwargs):
+        raise OSError(5, "Input/output error")
+
+    with pytest.raises(OSError):
+        restore.restore_result_residue(run_root=f.run, materializer=unreachable, now=lambda: NOW)
+
+    receipt = _receipt(f)
+    assert (receipt["status"], receipt["restored_count"]) == ("failed", 0)
+    assert receipt["failure"] == {"error_type": "OSError", "errno": 5, "stage": "restore"}
+    assert receipt["receipt_digest"] == canonical_digest(receipt, digest_field="receipt_digest")
+    assert not [path for path in f.evidence.iterdir() if path.name.startswith(".")]
+
+
+def test_restore_fsyncs_each_directory_it_places_a_member_in(tmp_path, monkeypatch) -> None:
+    f = _sealed_run(tmp_path / "canaries")
+    _offload(f)
+    (f.run / "provider").rmdir()
+    synced: set[tuple[int, int]] = set()
+    real_fsync = os.fsync
+
+    def recording(descriptor):
+        metadata = os.fstat(descriptor)
+        if stat.S_ISDIR(metadata.st_mode):
+            synced.add((metadata.st_dev, metadata.st_ino))
+        return real_fsync(descriptor)
+
+    monkeypatch.setattr(os, "fsync", recording)
+    restore.restore_result_residue(run_root=f.run, materializer=_materializer(f), now=lambda: NOW)
+
+    for directory in (f.run, f.run / "logs", f.run / "work" / "stage", f.run / "provider"):
+        assert (directory.stat().st_dev, directory.stat().st_ino) in synced, directory

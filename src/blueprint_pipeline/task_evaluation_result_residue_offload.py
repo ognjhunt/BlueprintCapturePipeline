@@ -833,6 +833,8 @@ def _apply(row, root, pointer, registry, registry_path, registry_bytes, members,
     identity = os.lstat(root)
     names = [name for group in members for name in group["relative_paths"]]
     modes = {name: group["mode"] for group in members for name in group["relative_paths"]}
+    # The names of one inode share a group, so restore links them again instead of copying.
+    groups = {name: index for index, group in enumerate(members) for name in group["relative_paths"]}
     try:
         packed, digest, size, reference, reservation = _publish(root, names, members, publisher, stream_publisher)
     except Exception as exc:  # noqa: BLE001 - nothing was evicted
@@ -858,7 +860,8 @@ def _apply(row, root, pointer, registry, registry_path, registry_bytes, members,
             "run_id": registry.get("run_id"),
             "registry_digest": registry["registry_digest"],
             "archive": {**row["archive"], "artifact_kind": evidence.ARTIFACT_KIND},
-            "members": [{**member, "mode": modes[member["relative_path"]]} for member in packed],
+            "members": [{**member, "mode": modes[member["relative_path"]], "group": groups[member["relative_path"]]}
+                        for member in packed],
             "kept": [],
             "offloaded_at_epoch": float(now()),
             "evidence_deleted": False,

@@ -512,10 +512,11 @@ def test_residue_offload_writes_pointer_before_evicting(tmp_path, monkeypatch) -
         f.run.name, f.registry["registry_digest"], [])
     stored = f.client.objects[(BUCKET, pointer["archive"]["uri"].split(f"s3://{BUCKET}/", 1)[1])]
     assert (_sha(stored), len(stored)) == (pointer["archive"]["sha256"], pointer["archive"]["size_bytes"])
+    # One inode group per name here, numbered in the plan's order.
     assert sorted(pointer["members"], key=lambda row: row["relative_path"]) == [
         {"relative_path": relative, "size_bytes": len(RESIDUE[relative]), "sha256": _sha(RESIDUE[relative]),
-         "mode": modes[relative]}
-        for relative in sorted(RESIDUE)
+         "mode": modes[relative], "group": index}
+        for index, relative in enumerate(sorted(RESIDUE))
     ]
     assert stat.S_IMODE(f.pointer.stat().st_mode) == 0o440
     assert not [path for path in f.evidence.iterdir() if path.name.startswith(".")]
