@@ -287,3 +287,15 @@ def test_public_plan_secret_shaped_projection_refuses_without_returning_identity
     report = run(context, intent_id)
     assert 'unsafe-secret' not in json.dumps(report)
     assert 'historical_lineage' not in report and report['action'] == 'KEEP'
+
+
+def test_released_nonprotecting_pin_paths_get_fixed_public_refusal(tmp_path):
+    from blueprint_pipeline.control_plane_storage_pins import write_storage_pin, release_storage_pin
+    context, intent_id = context_fixture(tmp_path)
+    write_storage_pin(pins_root=context['pins_root'], kind='preparation', owner_id='pin-owner',
+                      paths=['/retained/secrets.json'], now=lambda: 1000, ttl_seconds=1000)
+    release_storage_pin(pins_root=context['pins_root'], kind='preparation', owner_id='pin-owner', now=lambda: 1100)
+    report = run(context, intent_id)
+    assert '/retained/secrets.json' not in json.dumps(report)
+    assert 'historical_lineage' not in report
+    assert report['references_clear'] is False and report['action'] == 'KEEP'

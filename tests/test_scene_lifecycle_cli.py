@@ -133,4 +133,21 @@ def test_oversized_os_argv_refuses_before_copy(tmp_path, monkeypatch, capsys):
             return super().__getitem__(key)
     monkeypatch.setattr(cli.sys, 'argv', NoSlice(['program']+['--unrecognized']*100))
     assert cli.main(monotonic=lambda: 0) == 2
+
+
+def test_real_cli_released_pin_path_array_has_fixed_refusal(tmp_path, capsys):
+    from blueprint_pipeline.control_plane_storage_pins import write_storage_pin, release_storage_pin
+    from tests.test_scene_lifecycle_plan import context_fixture
+    from blueprint_pipeline import task_evaluation_scene_lifecycle_cli as cli
+    context, intent_id = context_fixture(tmp_path)
+    write_storage_pin(pins_root=context['pins_root'], kind='preparation', owner_id='pin-owner',
+                      paths=['/retained/secrets.json'], now=lambda: 1000, ttl_seconds=1000)
+    release_storage_pin(pins_root=context['pins_root'], kind='preparation', owner_id='pin-owner', now=lambda: 1100)
+    path = tmp_path/'context.json'
+    path.write_text(json.dumps(context))
+    assert cli.main(['--intent-id', intent_id, '--context-file', str(path), '--now', '900000'], monotonic=lambda: 0) == 2
+    observed = capsys.readouterr()
+    assert '/retained/secrets.json' not in observed.out and not observed.err
+    result = json.loads(observed.out)
+    assert 'historical_lineage' not in result and result['references_clear'] is False
     assert len(capsys.readouterr().out.encode()) < 4096

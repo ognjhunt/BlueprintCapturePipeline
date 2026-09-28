@@ -270,7 +270,9 @@ def _screen_output(value, budget):
             pending.append(iter(item.items()))
         elif isinstance(item, list):
             pending.append(iter((key, entry) for entry in item))
-        elif isinstance(item, str) and isinstance(key, str) and (key == 'path' or key == 'uri' or key.endswith('_path')):
+        elif isinstance(item, str) and isinstance(key, str) and (
+                key in {'path', 'paths', 'uri', 'uris', 'directory'}
+                or key.endswith(('_path', '_paths', '_root', '_roots', '_uri', '_uris'))):
             acquisition.require(len(item) <= 4096, 'output_identity_invalid')
             from .control_plane_disk_usage import _CREDENTIAL_SHAPED_NAME
             acquisition.require(_CREDENTIAL_SHAPED_NAME.search(item) is None, 'credential_shaped_output')
