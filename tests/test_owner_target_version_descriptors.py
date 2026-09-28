@@ -8,6 +8,8 @@ import hashlib
 import json
 import os
 import stat
+import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -27,8 +29,10 @@ def tuple_identity(path, *, file=False):
 
 
 @pytest.fixture
-def enrolled(tmp_path):
-    root = tmp_path / "lanes"
+def enrolled():
+    # Production roots are shallow; keep the same finite native-chain FD shape.
+    temporary = tempfile.TemporaryDirectory(prefix="12f-", dir="/private/tmp" if Path("/private/tmp").is_dir() else "/tmp")
+    root = Path(temporary.name) / "lanes"
     root.mkdir()
     path = scratch.create_lane_scratch("lane", "cache", root=root, owner="owner", run_ref="run1",
         ttl_seconds=100, cleanup="owner_review", reason="cache", class_intent="cache",
@@ -42,7 +46,10 @@ def enrolled(tmp_path):
         lease={key: lease[key] for key in ("owner", "reason", "class_intent", "cleanup",
             "consumer_lifetime_contract", "created_at_epoch", "expires_at_epoch", "released_at_epoch", "size_budget_bytes")}
               | dict(reference_kind="run_ref", reference_value="run1", renewed_at_epoch=1000))
-    return path, expected
+    try:
+        yield path, expected
+    finally:
+        temporary.cleanup()
 
 
 def files(expected=None, monotonic=lambda: 0):
