@@ -573,6 +573,15 @@ def build_parser(*, checked_mode: bool = False) -> argparse.ArgumentParser:
     restore.add_argument("scene_id")
     restore.add_argument("--bucket", required=True)
     _add_wait(restore, 2 * 3600 + 600)
+    for action in ("retire-scene", "restore-scene"):
+        lifecycle = commands.add_parser(action, help="use one protected consent for the complete scene lifecycle")
+        lifecycle.add_argument("intent_id")
+        lifecycle.add_argument("--consent-id", required=True)
+        lifecycle.add_argument("--expected-sha256", required=True)
+        lifecycle.add_argument("--expected-size-bytes", required=True, type=int)
+        if action == "retire-scene":
+            lifecycle.add_argument("--apply", action="store_true")
+        _add_wait(lifecycle, 2 * 3600 + 600)
     scratch = commands.add_parser("lane-scratch", help="inspect or end an owned lane scratch lease")
     scratch_actions = scratch.add_subparsers(dest="scratch_action", required=True)
     for action in ("ls", "renew", "release"):
@@ -649,6 +658,12 @@ def run(args: argparse.Namespace) -> int:
     elif command == "restore-scene-workspace":
         return _submit({"kind": "restore-scene-workspace", "scene_id": args.scene_id,
                         "bucket": args.bucket}, args)
+    elif command in ("retire-scene", "restore-scene"):
+        body = {"kind": command, "intent_id": args.intent_id, "consent_id": args.consent_id,
+                "expected_sha256": args.expected_sha256, "expected_size_bytes": args.expected_size_bytes}
+        if command == "retire-scene":
+            body["apply"] = args.apply
+        return _submit(body, args)
     elif command == "lane-scratch":
         body = {"kind": "lane-scratch", "action": args.scratch_action, "root": args.root, "lane": args.lane}
         if args.scratch_action == "ls":

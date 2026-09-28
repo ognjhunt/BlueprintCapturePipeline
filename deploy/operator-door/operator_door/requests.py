@@ -124,7 +124,7 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(body, dict):
         raise RequestRefused("request_not_object")
     kind = body.get("kind")
-    if kind in {"retire-scene", "restore-scene"}:
+    if kind in ("retire-scene", "restore-scene"):
         fields = {"kind", "intent_id", "consent_id", "expected_sha256", "expected_size_bytes"}
         if kind == "retire-scene":
             fields.add("apply")

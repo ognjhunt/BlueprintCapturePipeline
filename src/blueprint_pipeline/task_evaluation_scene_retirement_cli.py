@@ -245,6 +245,30 @@ def installed_transport():
         raise
 
 
+def load_installed_environment():
+    """Read only this action's literal settings from the protected host file."""
+    allowed=set(_ENV_FILES.values()) | {'BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE',
+        'BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_EXPECTED_BUCKET'}
+    with access._opened(ENVIRONMENT_FILE,protected=True) as (_,info):
+        _require(stat.S_IMODE(info.st_mode) in {0o600,0o640}, 'scene_retirement_authority_permissions')
+    raw=access._bytes(str(ENVIRONMENT_FILE),protected=True)
+    selected={}
+    for line in raw.decode().splitlines():
+        key,separator,value=line.partition('=')
+        if not separator or key not in allowed:
+            continue
+        _require(key not in selected,'scene_retirement_environment_duplicate_setting')
+        if len(value)>=2 and value[0] in "\"'" and value[-1]==value[0]:
+            value=value[1:-1]
+        _require(value and '\x00' not in value and '\r' not in value)
+        if key!='BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_EXPECTED_BUCKET':
+            access._canonical(value)
+        selected[key]=value
+    # Validate the entire selection before any process environment publication.
+    for key,value in selected.items():
+        os.environ[key]=value
+
+
 def run_gc_phase(*, apply, now=time.time):
     """One exact protected selection per tick; no store sweep or consent minting."""
     setting=os.environ.get(_SETTING,'0')
@@ -282,7 +306,12 @@ def main(argv=None):
     parser.add_argument('--apply',action='store_true')
     args=vars(parser.parse_args(argv))
     action=args.pop('action')
-    print(json.dumps(_summary(run_selected_action(action,**args)),sort_keys=True))
+    try:
+        load_installed_environment()
+        result=run_selected_action(action,**args)
+    except (OSError,ValueError,UnicodeError):
+        result=_kept('scene_retirement_installed_environment_unproven')
+    print(json.dumps(_summary(result),sort_keys=True))
     return 0
 
 
