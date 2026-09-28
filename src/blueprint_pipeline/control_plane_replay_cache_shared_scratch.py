@@ -31,6 +31,10 @@ unlinked were scratch and stay unlinked, the bytes live on in the names left, an
 plans the rest, whose names are again all of its links. The directories a replay's removals
 leave empty are pruned right after them, before the next replay, as the per-replay rule prunes
 them. No scratch file's bytes are read; only the holders' reports are hashed.
+
+It reuses the per-replay rule's private helpers (``_finished_report``, ``_HeldChild``,
+``_leaf``, ``_same_leaf``, ``_directory_on``, ``_remove_empty_directories``, ``_SCRATCH_INPUTS``)
+deliberately, so both rules check and remove exactly alike and that module stays unchanged.
 """
 
 from __future__ import annotations
@@ -47,7 +51,8 @@ from . import completed_replay_cache_retention as retention
 
 #: Per-row detail kept in a report, as the terminal pin phase keeps it; every counter covers every group.
 MAX_ROWS = 200
-_TYPE_WORD = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+#: Where a CamelCase exception name starts a new word, to type it in snake_case like the other reasons.
+_CAMEL_CASE_WORD_START = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 
 
 def _unsafe(root: Path) -> bool:
@@ -161,7 +166,7 @@ def plan_shared_scratch(
                 continue
             index = len(holders)
             holders.append({"path": child, "device": walked[0].st_dev, "inode": walked[0].st_ino, "gate": None,
-                            "report": None, "report_mtime_ns": None})
+                            "report": None, "report_mtime_ns": None, "report_sha256": None})
             for info, name in walked[1]:
                 inodes.setdefault((info.st_dev, info.st_ino), (info, []))[1].append((index, name))
     groups = [
@@ -174,7 +179,7 @@ def plan_shared_scratch(
     for index in involved:
         gate, report, mtime_ns = _gate(holders[index]["path"], clock=now,
                                        minimum_closed_seconds=minimum_closed_seconds)
-        holders[index].update(gate=gate, report=report, report_mtime_ns=mtime_ns, report_sha256=None)
+        holders[index].update(gate=gate, report=report, report_mtime_ns=mtime_ns)
         if check_readers and gate is None:
             # What apply compares, as the per-replay rule compares its report's digest; a tick that
             # only plans reads no byte.
@@ -230,7 +235,18 @@ def _failure(exc: OSError) -> str:
         return "vanished"
     if exc.errno in (errno.ELOOP, errno.ENOTDIR):
         return "path_changed"
-    return _TYPE_WORD.sub("_", type(exc).__name__).lower()
+    return _snake_case(type(exc).__name__)
+
+
+def _snake_case(name: str) -> str:
+    return _CAMEL_CASE_WORD_START.sub("_", name).lower()
+
+
+def _typed_prune_skip(row: dict[str, str]) -> dict[str, str]:
+    """A prune skip of the per-replay rule's, its error's type in snake_case like every kept reason."""
+
+    call, _, why = row["reason"].partition(":")
+    return {**row, "reason": f"{call}:{_snake_case(why)}" if why else call}
 
 
 def _changed(info: os.stat_result, group: dict[str, Any], links: int, device: int) -> str | None:
@@ -304,7 +320,8 @@ def _unlink_in(holder: dict[str, Any], pending: Sequence[tuple[int, list[Path]]]
             if why:
                 stopped[position] = why
         # Before the next replay is looked at, so an apply cut short strands no emptied directory here.
-        return stopped, held.item(retention._remove_empty_directories, child) if went else []
+        skipped = held.item(retention._remove_empty_directories, child) if went else []
+        return stopped, [_typed_prune_skip(row) for row in skipped]
     finally:
         held.close()
 
@@ -353,7 +370,9 @@ def apply_shared_scratch(plan: dict[str, Any], *, process_root: Path = Path("/pr
         referenced = retention.process_reference_index(process_root=process_root)
         for index in order:
             why = _holder_why(holders[index], plan, referenced)
-            for position, _names in names_in[index] if why else ():
+            if why is None:
+                continue
+            for position, _names in names_in[index]:
                 stopped.setdefault(position, why)
     links = [group["nlink"] for group in candidates]
     pruned: list[dict[str, str]] = []

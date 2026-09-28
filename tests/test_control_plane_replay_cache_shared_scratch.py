@@ -603,7 +603,8 @@ def test_shared_scratch_reports_each_directory_its_prune_kept(tmp_path, monkeypa
     block = _tick(tmp_path, parent_root, **BOTH)["replay_caches"]["shared_scratch"]
 
     stuck = [child / "prepared-references" / "content-addressed" / "sha256" for child in (first, second)]
-    assert block["prune_skipped"] == [{"path": str(path), "reason": "rmdir_failed:PermissionError"} for path in stuck]
+    # Typed like the kept reasons: the call that failed, then the error's type in snake_case.
+    assert block["prune_skipped"] == [{"path": str(path), "reason": "rmdir_failed:permission_error"} for path in stuck]
     assert (block["omitted_prune_skipped_count"], block["removed_groups"]) == (0, 1)
     assert all(path.is_dir() for path in stuck) and not (first / "prepared-references" / "prep-a").exists()
     assert not any(path.exists() for path in names)
