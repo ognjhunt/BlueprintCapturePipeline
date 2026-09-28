@@ -341,3 +341,24 @@ def test_cache_consent_cannot_select_free_or_foreign_cache_authority(tmp_path,mo
         from blueprint_pipeline.task_evaluation_scene_retirement_preservation import ActionAllowance
         cache.validate_cache_objects(authority['policy'],authority['consent'],
             ActionAllowance(expires_at=200,now=lambda:101,monotonic=lambda:0))
+
+
+def test_fresh_retirement_consent_preserves_expired_original_authority_as_history_only(tmp_path,monkeypatch):
+    from blueprint_pipeline import task_evaluation_scene_retirement_cache as cache
+    from blueprint_pipeline.task_evaluation_scene_retirement_authority import load_authority
+    from blueprint_pipeline.task_evaluation_scene_retirement_preservation import ActionAllowance
+    from blueprint_pipeline.task_evaluation_scene_owner_authority import reopen_scene_intent
+    path,consent=cache_action_consent(tmp_path,monkeypatch)
+    consent.update(created_at=2000,expires_at=3000)
+    _sealed_file(path,consent,'consent_digest',mode=0o600)
+    with pytest.raises(ValueError,match='authority_expired'):
+        reopen_scene_intent(consent['intent_raw_ref'],now=2001)
+    authority=load_authority(path,action='retire',now=lambda:2001)
+    selected=cache.validate_cache_objects(authority['policy'],consent,
+        ActionAllowance(expires_at=3000,now=lambda:2001,monotonic=lambda:0))
+    assert selected==consent['cache_objects']
+    source=json.loads(Path(selected[0]['source_raw_ref']['path']).read_bytes())
+    request=json.loads(Path(source['submission_request_raw_ref']['path']).read_bytes())
+    # Cleanup proof cannot reopen publication or a fresh producer invocation.
+    with pytest.raises(ValueError,match='authority_expired'):
+        cache._validate(source,request,now=2001)
