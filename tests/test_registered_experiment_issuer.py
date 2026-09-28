@@ -42,6 +42,10 @@ def installation(tmp_path, monkeypatch, root_metadata):  # noqa: F811
                     lane_scratch_inputs_root=str(tmp_path / "inputs/lanes"))
     config.write_bytes(encoded(settings))
     config.chmod(0o600)
+    from blueprint_pipeline import control_plane_lane_experiment_consumer as consumer
+    # Disposable fixture repins the compiled installed namespace, never a body
+    # root override; every positive issue and later reader uses these same roots.
+    monkeypatch.setattr(consumer, 'LANE_ROOTS', (Path(settings['lane_scratch_work_root']), Path(settings['lane_scratch_inputs_root'])))
     monkeypatch.setattr(owners, "INSTALLED_PACKAGE_ROOT", package.parent)
     monkeypatch.setattr(os, "geteuid", lambda: 0)
     return config, settings, store, policy

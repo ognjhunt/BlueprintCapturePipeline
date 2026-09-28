@@ -166,11 +166,12 @@ def test_current_head_substitution_preserves_foreign_bytes_before_cas(installati
 def test_legacy_directory_handle_cannot_read_registered_authority_by_lease_only(installation, monkeypatch):  # noqa: F811
     from blueprint_pipeline import control_plane_lane_experiment_birth as root
     from blueprint_pipeline.control_plane_leased_scratch import LeasedScratchDirectory
+    from blueprint_pipeline.control_plane_lane_scratch import LaneScratchError
     prepare(installation)
     grant = issue(installation)
     monkeypatch.setattr(root, '_blueprint_identity', lambda:(0,0))
     monkeypatch.setattr(os, 'fchown', lambda *a:None)
     born = birth(installation, grant)
-    with pytest.raises(ValueError, match='lane_scratch_registered_authority_required'):
+    with pytest.raises(LaneScratchError, match='lane_scratch_registered_authority_required'):
         LeasedScratchDirectory.open(lane='g1', name=Path(born['path']).name, owner='owner',
             run_ref='run1', root=installation[1]['lane_scratch_work_root'], now=lambda:1200)

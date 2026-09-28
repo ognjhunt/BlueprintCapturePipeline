@@ -65,6 +65,9 @@ def _configuration(files, path):
     finally:
         sys.modules.pop(name, None)
     files.verify_record(acquired)
+    from .control_plane_lane_experiment_consumer import LANE_ROOTS
+    _require((Path(config.lane_scratch_work_root), Path(config.lane_scratch_inputs_root)) == tuple(LANE_ROOTS),
+             'experiment_installed_namespace_changed')
     roots = owners._roots(config, files.budget)
     private, public = Path(config.experiment_record_store), Path(config.experiment_authority_root)
     _require(private != public and private not in public.parents and public not in private.parents
