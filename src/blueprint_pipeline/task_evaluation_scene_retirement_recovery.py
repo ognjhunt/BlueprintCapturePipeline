@@ -50,17 +50,17 @@ def reserve_phase(journal, preserved, *, readback=False, restoring=False, publis
     """
     allowance = journal.allowance
     if restoring:
-        allowance.charge('remote_bytes', 2 * preserved['archive']['size_bytes'])
+        allowance.charge('remote_bytes', 2 * (preserved['archive']['size_bytes']+1))
         allowance.charge('local_bytes', 2 * sum(row['size_bytes'] for row in preserved['files']))
     elif readback:
         rows=[] if published_objects is None else published_objects
         _require(type(rows) is list and len(rows)<=10000,'scene_retirement_resume_unproven')
-        remote=preserved['archive']['size_bytes']
+        remote=preserved['archive']['size_bytes']+1
         for row in rows:
             allowance.tick()
             _require(type(row) is dict and type(row.get('size_bytes')) is int and row['size_bytes']>0,
                      'scene_retirement_resume_unproven')
-            remote+=row['size_bytes']
+            remote+=row['size_bytes']+1
         allowance.charge('remote_bytes', remote)
     else:
         allowance.charge('local_bytes', 2 * sum(row['size_bytes'] for row in preserved['files']))
