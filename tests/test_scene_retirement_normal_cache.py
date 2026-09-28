@@ -362,3 +362,46 @@ def test_fresh_retirement_consent_preserves_expired_original_authority_as_histor
     # Cleanup proof cannot reopen publication or a fresh producer invocation.
     with pytest.raises(ValueError,match='authority_expired'):
         cache._validate(source,request,now=2001)
+
+
+def test_native_action_targets_exact_normal_cache_union_without_claiming_store_parent(tmp_path,monkeypatch):
+    from blueprint_pipeline import task_evaluation_scene_retirement_preservation as preservation
+    from blueprint_pipeline.task_evaluation_scene_retirement import _plan_members
+    path,consent=cache_action_consent(tmp_path,monkeypatch)
+    source=json.loads(Path(consent['cache_objects'][0]['source_raw_ref']['path']).read_bytes())
+    request=json.loads(Path(source['submission_request_raw_ref']['path']).read_bytes())
+    root=Path(consent['cache_objects'][0]['canonical_path']).parents[2]/request['preparation_id']
+    # Include every actual worker cache object in the requested projection union.
+    aliases=[]
+    for leaf in Path(consent['cache_objects'][0]['canonical_path']).parent.iterdir():
+        if len(leaf.name)==64:
+            aliases.append(dict(canonical_path=str(leaf),digest='sha256:'+leaf.name,size_bytes=leaf.stat().st_size))
+    allowance=preservation.ActionAllowance(expires_at=200,now=lambda:101,monotonic=lambda:0)
+    monkeypatch.setattr(preservation,'_payload',lambda *a:pytest.fail('target metadata opened payload'))
+    inventory=preservation._inventory_members([root],allowance,cache_aliases=aliases)
+    consent['members']=[{'canonical_path':str(root),'class':'host'}]
+    consent['cache_objects']=aliases
+    plan={'action':'KEEP','cleanup_authorized':False,'measured_members':[
+        {'path':str(root),'status':'observed_scoped_metadata','keeps':['external_hardlink_or_unobserved_alias']},
+        *[{'path':row['canonical_path'],'status':'observed_scoped_metadata','storage_class':'cache',
+            'keeps':['shared_content_object_not_exclusive','external_hardlink_or_unobserved_alias']} for row in aliases]]}
+    _plan_members(plan,consent,allowance,cache_inventory=inventory)
+    assert plan['action']=='KEEP' and plan['cleanup_authorized'] is False
+    assert str(root.parent/'content-addressed') not in [row['path'] for row in plan['measured_members']]
+    with pytest.raises(ValueError):
+        _plan_members(plan,consent,allowance)  # Consent alone cannot waive sharing.
+
+
+def test_native_cache_union_metadata_refuses_a_second_owner_alias_before_payload(tmp_path,monkeypatch):
+    import os
+    from blueprint_pipeline import task_evaluation_scene_retirement_preservation as preservation
+    member=tmp_path/'projection';member.mkdir()
+    (member/'file').write_bytes(b'object')
+    alias=tmp_path/hashlib.sha256(b'object').hexdigest()
+    os.link(member/'file',alias)
+    os.link(alias,tmp_path/'other-owner')
+    monkeypatch.setattr(preservation,'_payload',lambda *a:pytest.fail('unproven union opened payload'))
+    with pytest.raises(ValueError,match='scene_retirement_shared_inode'):
+        preservation._inventory_members([member],
+            preservation.ActionAllowance(expires_at=200,now=lambda:100,monotonic=lambda:0),
+            cache_aliases=[dict(canonical_path=str(alias),digest='sha256:'+alias.name,size_bytes=6)])
