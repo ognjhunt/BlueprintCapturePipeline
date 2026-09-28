@@ -177,3 +177,33 @@ Still required: exact selected provider bundle, current authority recheck after
 admission, canonical selected-profile allocator/queue/settlement, separate
 policy runtimes for OCI/artifact delivery, live delivery-mode qualification,
 private owner URL, coordinated merge/deploy and deployed workflow proof.
+
+## Implementation checkpoint: selected provider transport
+
+Sealed the exact selected execution packet, derived G1 scene lineage, pinned
+publisher checkout, reviewed external Isaac runtime and offline SONIC assets.
+The transport remains `sealed_not_admitted`: it neither allocates compute nor
+contains a policy credential. Git configuration is reduced to the public
+publisher origin; host credential helpers and extraheaders are not transported.
+The host loader reopens current registry/approval and checks every shipped byte,
+all launch fields against the selected packet, archive traversal/type rules and
+the external runtime layer's exact bytes. A self-consistently rehashed manifest
+cannot change the owner-approved intent, objective or image.
+
+Added the provider entrypoint and selected-worker adapter. Runtime provisioning
+runs in a separate interpreter before worker imports; media bootstrap failures
+retain a typed terminal receipt. HTTPS requires a protected credential file.
+OCI/archive delivery currently refuses a missing separate runtime and never
+tries nested Docker. This refusal is an unfinished capability, not completion
+of the container/noncontainer requirement; canonical admission must enforce it
+before spending until the paired runtime exists.
+
+Test-first checks exposed unbound manifest fields; the loader now binds them.
+Twenty-seven focused bundle/runtime/worker/supervisor cases passed; the final
+isolated sealed-bundle CLI import and shell syntax case passed separately.
+The isolated test uses installed numerical dependencies analogous to Isaac but
+asserts every imported Blueprint/RFC8785 module comes from the sealed bundle.
+Six shared provider closure cases and nineteen lifecycle rehearsal cases passed.
+Changed-file Ruff passes. These are hermetic transport/worker proofs, not an
+admitted selected-policy launch or live inference proof. Canonical allocator,
+single-attempt queue, separate runtimes and owner result delivery remain next.

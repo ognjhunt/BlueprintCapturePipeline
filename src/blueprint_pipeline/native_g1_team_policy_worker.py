@@ -29,7 +29,7 @@ from .native_g1_development_worker import (
 from .native_g1_official_sonic_target_bridge import _require_artifact, require_pinned_sonic_source
 from .native_g1_runtime_assembly import build_pinned_g1_team_sonic_bridge
 from .native_g1_team_policy_approval import validate_g1_team_policy_approval
-from .native_g1_team_policy_execution_packet import SCHEMA as PACKET_SCHEMA
+from .native_g1_team_policy_execution_packet import SCHEMA as PACKET_SCHEMA, FIELDS as PACKET_FIELDS
 from .native_g1_team_policy_run_request import validate_g1_team_policy_run_request
 from .native_g1_team_supervised_episode import run_g1_team_supervised_episode
 from .task_evaluation_packet_planning_setup import validate_packet_planning_setup
@@ -55,6 +55,7 @@ def _execution_packet(path: Path, expected_commit: str) -> dict[str, Any]:
     value = json.loads(path.read_text(encoding="utf-8"))
     if (
         not isinstance(value, dict)
+        or set(value) != PACKET_FIELDS
         or value.get("schema_version") != PACKET_SCHEMA
         or value.get("status") != "approved_input_not_executed"
         or value.get("implementation_commit") != expected_commit

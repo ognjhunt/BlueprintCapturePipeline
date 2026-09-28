@@ -22,6 +22,13 @@ from .task_evaluation_launch_preparation_queue import (
 
 SCHEMA = "native_g1_team_policy_execution_packet.v1"
 FILENAME = SCHEMA + ".json"
+FIELDS = frozenset({
+    "schema_version", "status", "implementation_commit", "intent_id", "intent_digest",
+    "request", "trusted_setup", "operator_approval", "policy_profile_digest",
+    "source_packet_receipt_digest", "objective_id", "delivery_mode",
+    "credential_value_included", "artifact_bytes_included", "provider_mutation_performed",
+    "claim_ceiling", "packet_digest",
+})
 _COMMIT = re.compile(r"[0-9a-f]{40}\Z")
 
 
