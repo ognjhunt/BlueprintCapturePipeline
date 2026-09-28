@@ -30,6 +30,19 @@ def build_controlled_native_environment(*, runtime_root: Path, configuration: Ma
     packet = runtime_root / "native_task_packet"
     plan = json.loads((packet / "native_task_arena_scene_plan.v1.json").read_text())
     contract = configuration["contract"]
+    from .native_task_runtime_source_packet import ISAACLAB_COMMIT, ARENA_COMMIT
+    robot_definition = {"robot": plan["robot"], "isaaclab_commit": ISAACLAB_COMMIT, "arena_commit": ARENA_COMMIT}
+    if contract["robot"]["definition_digest"] != canonical_digest(robot_definition):
+        raise ValueError("controlled_native_robot_definition_binding_mismatch")
+    declared_cameras = {row["name"]: row for row in contract["observation_schema"]["cameras"]}
+    plan_cameras = {row["role"]: row for row in plan["cameras"] if row.get("policy_input") is True}
+    for name, role in configuration["camera_roles"].items():
+        native_camera = plan_cameras[role]
+        declared_camera = declared_cameras[name]
+        if (declared_camera["calibration_digest"] != canonical_digest(native_camera)
+                or declared_camera["width"] != native_camera["intrinsics"]["width"]
+                or declared_camera["height"] != native_camera["intrinsics"]["height"]):
+            raise ValueError("controlled_native_camera_binding_mismatch")
     if (plan.get("plan_digest") != canonical_digest(plan, digest_field="plan_digest")
             or plan.get("plan_digest") != configuration["scene_plan_digest"]
             or plan.get("task_kind") != "rigid_pick_place"

@@ -14,6 +14,9 @@ def validate_native_configuration(value: Mapping[str, Any]) -> dict[str, Any]:
             or row.get("configuration_digest") != canonical_digest(row, digest_field="configuration_digest")
             or not row.get("scene_plan_digest") or not row.get("scenario_id") or not row.get("native_cell_id")
             or not isinstance(row.get("allowed_origins"), list)
+            or not isinstance(row.get("camera_roles"), dict)
+            or set(row["camera_roles"]) != {camera["name"] for camera in row["contract"]["observation_schema"]["cameras"]}
+            or set(row["camera_roles"].values()) != {"external", "wrist"}
             or type(row.get("max_queries")) is not int or not 1 <= row["max_queries"] <= 128
             or not 0 < row.get("deadline_seconds", 0) <= 3600
             or not 0 < row.get("max_joint_delta_rad", 0) <= 0.1
