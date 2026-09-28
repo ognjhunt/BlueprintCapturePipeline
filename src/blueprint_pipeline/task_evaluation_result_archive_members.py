@@ -37,6 +37,14 @@ REFERENCES_SCHEMA = "task_evaluation_result_archive_member_references.v1"
 REFERENCES_RELATIVE_PATH = "artifacts/result_delivery/archive_member_references.v1.json"
 _ENTRY_KEYS = ("archive_path", "sha256", "size_bytes", "crc32", "method", "data_offset", "compressed_size")
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
+# View refusals meaning the durable copy's bytes are not the indexed member's:
+# download mode's digest refusal, never a transient transport failure.
+CONTENT_MISMATCH_CODES = frozenset({
+    "provider_output_member_digest_mismatch",
+    "provider_output_archive_deflate_invalid",
+    "provider_output_archive_deflate_end_invalid",
+    "provider_output_archive_member_size_mismatch",
+})
 
 
 class ArchiveMemberReferenceError(ValueError):
@@ -182,6 +190,7 @@ def _digest_or_none(value: Mapping[str, Any]) -> str | None:
 
 
 __all__ = [
+    "CONTENT_MISMATCH_CODES",
     "REFERENCES_RELATIVE_PATH",
     "REFERENCES_SCHEMA",
     "ArchiveMemberReferenceError",

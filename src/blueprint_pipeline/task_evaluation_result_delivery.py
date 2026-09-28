@@ -143,7 +143,7 @@ def _write_immutable(path: Path, content: bytes) -> None:
             )
 
 
-def _write_zip_immutable(path: Path, files: list[tuple[str, bytes | Path]]) -> None:
+def _write_zip_immutable(path: Path, files: list[tuple[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
         dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
@@ -164,6 +164,11 @@ def _write_zip_immutable(path: Path, files: list[tuple[str, bytes | Path]]) -> N
                 info.external_attr = 0o100644 << 16
                 if isinstance(source, bytes):
                     archive.writestr(info, source)
+                elif callable(source):
+                    # A streamed archive member: the same bytes, written as they
+                    # arrive, so the deflated entry is the local file's.
+                    with archive.open(info, "w", force_zip64=True) as output_stream:
+                        source(output_stream.write)
                 else:
                     with (
                         source.open("rb") as input_stream,
@@ -1430,7 +1435,7 @@ def materialize_policy_canary_result_delivery(
         result=result, evidence_root=evidence, delivery_root=delivery_root,
         public_artifacts=public_artifacts, add_artifact=add_artifact,
         write_immutable=_write_immutable, write_zip=_write_zip_immutable,
-        error_factory=TaskEvaluationResultDeliveryError)
+        error_factory=TaskEvaluationResultDeliveryError, member_view=view)
     if control_omission_authority is not None:
         from .policy_canary_control_result_delivery import materialize_control_omission
         control_delivery = materialize_control_omission(
