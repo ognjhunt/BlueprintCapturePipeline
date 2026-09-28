@@ -9,7 +9,6 @@ from pathlib import Path
 
 import pytest
 
-from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from tests.test_scene_retirement_real_participants import access_fixture, authenticated_birth_refs
 from tests.test_scene_retirement_connected_acceptance import _raw, _sealed_file
 from tests.test_task_evaluation_launch_preparation_contract import test_configuration_request as configuration_request
@@ -89,7 +88,9 @@ def test_actual_normal_materializer_births_projection_and_exact_regular_cache_ge
 def test_owner_sidecar_cannot_borrow_resealed_foreign_or_changed_raw_authority(tmp_path,monkeypatch,field):
     from blueprint_pipeline import task_evaluation_scene_retirement_cache as cache
     _,_,value,_,queue,_,proofs=owner_submission(tmp_path,monkeypatch)
-    Path(proofs[field]['path']).write_text('{"foreign":"owner"}')
+    changed=Path(proofs[field]['path'])
+    changed.unlink()  # Substitute the immutable named entry; never weaken its mode.
+    changed.write_text('{"foreign":"owner"}')
     with pytest.raises(ValueError):
         cache.publish_preparation_storage_authority(queue_root=queue,request=value,now=101,**proofs)
     assert not (queue/'scene-authorities').exists()

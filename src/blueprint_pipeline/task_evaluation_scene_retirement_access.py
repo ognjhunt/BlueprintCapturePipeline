@@ -237,13 +237,19 @@ def _admit(policy, paths):
                 value = _read(generation_path)
             except FileNotFoundError:
                 continue  # Legacy reads remain protected; absent birth keeps retirement.
-            _require(value.get('schema_version') == 'scene_member_generation.v1'
+            content = value.get('schema_version') == 'scene_content_generation.v1'
+            _require(value.get('schema_version') in {'scene_member_generation.v1', 'scene_content_generation.v1'}
                      and value.get('canonical_path') == root
                      and value.get('state_digest') == canonical_digest(value, digest_field='state_digest'))
             _require(value.get('state') in _ADMISSIBLE, 'scene_retirement_generation_unavailable')
-            with _opened(root, directory=True) as (_, info):
+            with _opened(root, directory=not content) as (_, info):
                 _require((value.get('dev'), value.get('ino'), value.get('mode')) == _identity(info),
                          'scene_retirement_generation_unavailable')
+                if content:
+                    _require(type(value.get('size_bytes')) is int and value['size_bytes'] == info.st_size
+                             and type(value.get('digest')) is str and value['digest'] == 'sha256:' + path.name
+                             and (value.get('uid'), value.get('gid')) == (info.st_uid, info.st_gid),
+                             'scene_retirement_generation_unavailable')
 
 
 @contextmanager

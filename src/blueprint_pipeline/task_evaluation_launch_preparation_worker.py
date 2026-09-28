@@ -513,7 +513,9 @@ def _materialize_reference_records(
 ) -> tuple[list[dict[str, Any]], int]:
     """Fetch and hash typed references without assuming their parent contract."""
 
+    from . import task_evaluation_scene_retirement_cache as scene_cache
     root = Path(input_root).resolve(strict=True)
+    storage_authority = scene_cache.publication_authority(root)
     content_root = Path(content_store_root or root).resolve(strict=True)
     rows: list[dict[str, Any]] = []
     by_identity: dict[tuple[str, int], Path] = {}
@@ -566,10 +568,13 @@ def _materialize_reference_records(
                         os.fsync(descriptor)
                     finally:
                         os.close(descriptor)
-                    try:
-                        os.link(temporary, cached, follow_symlinks=False)
-                    except FileExistsError:
-                        pass
+                    published = scene_cache.publish_content_generation(cached, temporary,
+                        digest=digest, size_bytes=size, authority=storage_authority)
+                    if not published:
+                        try:
+                            os.link(temporary, cached, follow_symlinks=False)
+                        except FileExistsError:
+                            pass
                     directory = os.open(
                         content_root,
                         os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
@@ -598,11 +603,13 @@ def _materialize_reference_records(
                         "launch_preparation_materialized_target_unsafe"
                     )
                 projection_created = False
-                try:
-                    os.link(cached, destination, follow_symlinks=False)
-                    projection_created = True
-                except FileExistsError:
-                    pass
+                projected = scene_cache.project_content(cached, destination, authority=storage_authority)
+                if not projected:
+                    try:
+                        os.link(cached, destination, follow_symlinks=False)
+                        projection_created = True
+                    except FileExistsError:
+                        pass
                 if projection_created:
                     directory = os.open(
                         root,
