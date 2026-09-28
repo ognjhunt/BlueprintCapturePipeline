@@ -636,8 +636,10 @@ group count for each reason. The first that holds names a kept group:
 `omitted_prune_skipped_count`; every counter covers every group. Only shared
 scratch a tick removes joins the phase's `candidate_bytes` and `removed_bytes`,
 which the summary and the capacity controller read. A failure of the shared
-pass is one more entry in the phase's `errors` and never undoes the lookaheads'
-own passes.
+pass never undoes the lookaheads' own passes. It is recorded in the block
+(`status: error` with its type, `error_type` in the summary) and, only when the
+pass would have removed, as one more entry in the phase's `errors`: until then
+the retention switch's numbers are exactly what they are without the pass.
 
 ### Terminal cache pin proofs
 

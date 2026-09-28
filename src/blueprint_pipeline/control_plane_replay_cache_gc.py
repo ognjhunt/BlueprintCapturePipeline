@@ -117,7 +117,8 @@ def reclaim_replay_caches(
     reported and never followed. One lookahead's error is recorded by exception type
     and never stops the others. Each row list is capped, with a count of the rows left out.
     Then scratch the lookaheads share is planned across all of them, and removed only with
-    ``shared_scratch_enabled`` on a tick that applies; its failure is one more error.
+    ``shared_scratch_enabled`` on a tick that applies. A failure of a pass that removes is one
+    more error; one of a pass that only reports stays in its own block.
     """
 
     roots = [Path(root).expanduser() for root in parent_roots]
@@ -171,7 +172,10 @@ def reclaim_replay_caches(
             enabled=bool(enabled and shared_scratch_enabled), apply=shared_applies, check_readers=applying,
             process_root=process_root)
     except Exception as exc:  # noqa: BLE001 - the lookaheads' own passes stand
-        rows["errors"].append({"scope": "shared_scratch", "error": type(exc).__name__})
+        if shared_applies:
+            # Only a pass that would have removed makes the phase's totals incomplete; one that only
+            # reports keeps its failure in its own block, and the retention switch's numbers stand.
+            rows["errors"].append({"scope": "shared_scratch", "error": type(exc).__name__})
         shared = {"enabled": bool(enabled and shared_scratch_enabled), "status": "error",
                   "error": type(exc).__name__}
     else:

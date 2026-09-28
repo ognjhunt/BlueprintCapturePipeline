@@ -350,7 +350,7 @@ def _shared_scratch_summary(entry: Mapping[str, Any]) -> dict[str, Any]:
         rows = _reason_rows({reason: {"count": row.get("groups"), "bytes": row.get("bytes")}
                              for reason, row in kept.items() if isinstance(row, Mapping)})
         reasons = {reason: {"groups": row["count"], "bytes": row["bytes"]} for reason, row in rows.items()}
-    return {
+    summary = {
         "enabled": flag("enabled"),
         "status": _typed(entry.get("status"), "unrecognized_status"),
         "live_readers_checked": flag("live_readers_checked"),
@@ -360,6 +360,9 @@ def _shared_scratch_summary(entry: Mapping[str, Any]) -> dict[str, Any]:
         "holders_by_gate": {_typed(gate, "unrecognized_gate"): count for gate, count in gates.items()
                             if _integer(count) is not None} if isinstance(gates, Mapping) else None,
     }
+    if entry.get("status") == "error":
+        summary["error_type"] = _typed(entry.get("error"), "Exception", _TYPE_NAME)
+    return summary
 
 
 def _result_artifact_summary(rows: Sequence[Any]) -> dict[str, Any]:

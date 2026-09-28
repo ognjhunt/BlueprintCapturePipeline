@@ -778,3 +778,46 @@ def test_a_reader_that_appears_between_two_replays_removals_keeps_the_later_repl
     phase = _tick(tmp_path, parent_root, **BOTH)["replay_caches"]
     assert (phase["removed_bytes"], phase["shared_scratch"]["removed_bytes"]) == (size, 0)
     assert not names[-1].exists()
+
+
+def test_a_failed_shared_scan_leaves_the_retention_switchs_numbers_alone(tmp_path, monkeypatch) -> None:
+    """Until the shared removal applies, the shared pass only reports, so a failure of it is its own
+    block's and nothing else's: the phase has no error for it, and the phase and its summary say
+    exactly what they say without the pass (the estimate, the candidate and the removed bytes the
+    capacity controller reads). Only a tick that removes shared scratch counts its failure as one of
+    the phase's errors."""
+
+    from blueprint_pipeline import control_plane_replay_cache_shared_scratch as shared
+    from blueprint_pipeline import control_plane_storage_gc_reasons as reasons
+
+    def fixture(base: Path) -> Path:
+        parent_root, names, _size = _two_lookaheads(base)
+        alone = names[0].parents[3] / "prepared-references" / "prep-a" / "derived.json"
+        alone.write_bytes(b"{}" * 200)
+        os.utime(alone, (NOW - 9000, NOW - 9000))
+        return parent_root
+
+    failing, base = fixture(tmp_path / "failing"), fixture(tmp_path / "base")
+    real_plan = shared.plan_shared_scratch
+
+    def fail(*_args, **_kwargs):
+        raise PermissionError(13, "Permission denied")
+
+    def without_the_pass(tick: dict) -> tuple[dict, dict]:
+        phase = {key: value for key, value in tick["replay_caches"].items() if key != "shared_scratch"}
+        summary = dict(reasons.build_storage_gc_summary(tick)["phases"]["replay_caches"])
+        summary.pop("shared_scratch")
+        return phase, summary
+
+    for switches in ({}, {"apply": True, "ack": RUN_ACK, "replay_cache_retention_enabled": True}):
+        monkeypatch.setattr(shared, "plan_shared_scratch", fail)
+        tick = _tick(tmp_path, failing, **switches)
+        monkeypatch.setattr(shared, "plan_shared_scratch", real_plan)
+
+        assert tick["replay_caches"]["shared_scratch"] == {"enabled": False, "status": "error",
+                                                           "error": "PermissionError"}
+        summary = reasons.build_storage_gc_summary(tick)["phases"]["replay_caches"]["shared_scratch"]
+        assert (summary["status"], summary["error_type"]) == ("error", "PermissionError")
+        assert tick["replay_caches"]["errors"] == [] and "phase_errors" not in tick
+        assert without_the_pass(tick) == without_the_pass(_tick(tmp_path, base, **switches))
+    assert tick["replay_caches"]["candidate_bytes"] == tick["replay_caches"]["removed_bytes"] == len(b"{}" * 200)
