@@ -214,3 +214,64 @@ def test_cache_union_refuses_other_alias_before_upload(tmp_path):
             allowance=ActionAllowance(expires_at=200,now=lambda:100,monotonic=lambda:0),
             cache_aliases=[{'canonical_path':str(alias),'digest':'sha256:'+alias.name,'size_bytes':13}])
     assert not transport.objects and other.read_bytes()==b'normal-object'
+
+
+def test_real_cache_alias_removal_and_restore_keep_full_bytes_mode_and_inode_union(tmp_path,monkeypatch):
+    import os
+    from blueprint_pipeline import task_evaluation_scene_retirement_cache as cache
+    from blueprint_pipeline.task_evaluation_scene_retirement_preservation import preserve_members
+    from blueprint_pipeline.task_evaluation_scene_retirement_mutation import detach_and_remove
+    from blueprint_pipeline.task_evaluation_scene_retirement_restore import restore_preserved_members
+    from tests.test_scene_retirement_member_mutation import setup_operation
+    from tests.test_scene_retirement_preservation import MemoryTransport
+    access,member,_,journal=setup_operation(tmp_path,monkeypatch)
+    payload=member/'nested'/'evidence.bin'
+    digest='sha256:'+hashlib.sha256(payload.read_bytes()).hexdigest()
+    store=tmp_path/'store'
+    store.mkdir()
+    alias=store/digest[7:]
+    os.link(payload,alias)
+    transport=MemoryTransport([member])
+    preserved=preserve_members([member],transport=transport,allowance=journal.allowance,token='3'*32,
+        cache_aliases=[dict(canonical_path=str(alias),digest=digest,size_bytes=payload.stat().st_size)])
+    removed={}
+    with access.exclusive_scene_access():
+        detach_and_remove(preserved,member_index=0,generation_id='2'*32,journal=journal,removed_inodes=removed)
+        outcomes=cache.remove_preserved_cache_aliases(preserved,journal=journal,removed_inodes=removed)
+        assert outcomes[0]['outcome']=='removed' and not alias.exists()
+        transport.members=[]
+        restored=restore_preserved_members(preserved,transport=transport,journal=journal)
+    assert restored[0]['outcome']=='restored'
+    assert payload.read_bytes()==alias.read_bytes()==b'preserved-evidence'
+    assert payload.stat().st_ino==alias.stat().st_ino and payload.stat().st_nlink==2
+    assert (alias.stat().st_uid,alias.stat().st_gid,alias.stat().st_mode & 0o777)==(
+        preserved['cache_aliases'][0]['uid'],preserved['cache_aliases'][0]['gid'],preserved['cache_aliases'][0]['mode'])
+
+
+def test_restore_cache_alias_never_overwrites_even_same_bytes(tmp_path,monkeypatch):
+    import os
+    from blueprint_pipeline import task_evaluation_scene_retirement_cache as cache
+    from blueprint_pipeline.task_evaluation_scene_retirement_preservation import preserve_members
+    from blueprint_pipeline.task_evaluation_scene_retirement_mutation import detach_and_remove
+    from blueprint_pipeline.task_evaluation_scene_retirement_restore import restore_preserved_members
+    from tests.test_scene_retirement_member_mutation import setup_operation
+    from tests.test_scene_retirement_preservation import MemoryTransport
+    access,member,_,journal=setup_operation(tmp_path,monkeypatch)
+    payload=member/'nested'/'evidence.bin'
+    data=payload.read_bytes()
+    digest='sha256:'+hashlib.sha256(data).hexdigest()
+    alias=tmp_path/digest[7:]
+    os.link(payload,alias)
+    transport=MemoryTransport([member])
+    preserved=preserve_members([member],transport=transport,allowance=journal.allowance,token='3'*32,
+        cache_aliases=[dict(canonical_path=str(alias),digest=digest,size_bytes=len(data))])
+    removed={}
+    with access.exclusive_scene_access():
+        detach_and_remove(preserved,member_index=0,generation_id='2'*32,journal=journal,removed_inodes=removed)
+        cache.remove_preserved_cache_aliases(preserved,journal=journal,removed_inodes=removed)
+        alias.write_bytes(data)
+        original=alias.stat().st_ino
+        transport.members=[]
+        with pytest.raises(ValueError,match='scene_retirement_cache_restore_conflict'):
+            restore_preserved_members(preserved,transport=transport,journal=journal)
+    assert alias.read_bytes()==data and alias.stat().st_ino==original
