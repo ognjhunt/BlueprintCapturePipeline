@@ -14,7 +14,6 @@ import copy
 import ast
 import hashlib
 import json
-import os
 import stat
 import time
 from pathlib import Path
@@ -141,6 +140,7 @@ def _rebase_complete_graph(args, anchor, changes, *, requests=None, immutable_pa
             maps[canonical_digest(pre_handoff(value), digest_field='result_digest')] = canonical_digest(
                 pre_handoff(changed), digest_field='result_digest')
         maps[canonical_digest(value)] = canonical_digest(changed)
+        maps[cross_runtime_canonical_digest(value)] = cross_runtime_canonical_digest(changed)
         return changed
 
     previous = None
@@ -223,13 +223,92 @@ def _add_current_sam(args, owned_current_task):
             ref(previous_pair)['sha256']: ref(parent_pair)['sha256']}
 
 
+def _native_fixture_records(args):
+    """Complete genuine intake fields and tiny promised materialized bytes."""
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    maps = {}
+    args = copy.deepcopy(args)
+    for group in ('seed_records', 'downstream_records', 'source_records', 'bridge_records'):
+        for role, pairs in args.get(group, {}).items():
+            if role in ('intent', 'projection'):
+                continue
+            for index, (path, raw) in enumerate(pairs):
+                try:
+                    value = json.loads(raw)
+                except ValueError:
+                    continue
+                if value.get('schema_version') not in (
+                    'task_evaluation_launch_preparation_envelope.v1',
+                    'task_evaluation_launch_activation_envelope.v1'):
+                    continue
+                value.update(submitted_by='fixture-authenticated-intake',
+                    submitted_at_iso='1970-01-01T00:01:40+00:00',
+                    provider_mutation_performed_inside_intake=False,
+                    catalog_mutation_performed_inside_intake=False)
+                if value['schema_version'] == 'task_evaluation_launch_activation_envelope.v1':
+                    value.update(standing_authorization_published_inside_intake=False, paid_execution_requested=False)
+                old_seal = value['envelope_digest']
+                value['envelope_digest'] = canonical_digest(value, digest_field='envelope_digest')
+                rewritten = json.dumps(value, sort_keys=True).encode()
+                maps[old_seal] = value['envelope_digest']
+                maps['sha256:' + hashlib.sha256(raw).hexdigest()] = 'sha256:' + hashlib.sha256(rewritten).hexdigest()
+                pairs[index] = (path, rewritten)
+    payloads = {}
+    def collect(value):
+        if isinstance(value, dict):
+            if {'materialized_path', 'digest', 'size_bytes'} <= value.keys():
+                payloads[value['materialized_path']] = (value['digest'], b'x' if value['size_bytes']==1 else b'tiny-bundle')
+            for item in value.values():
+                collect(item)
+        elif isinstance(value, list):
+            for item in value:
+                collect(item)
+    for _, raw in list(_record_pairs(args)):
+        try:
+            collect(json.loads(raw))
+        except ValueError:
+            pass
+    # A real local derivative supplies the bytes named by the publication
+    # receipt. The later readback uses a distinct object copy, never source bytes.
+    for _, raw in args['source_records']['submission_publications']:
+        value=json.loads(raw)
+        manifest_path = next(path for path, _ in _record_pairs(args) if path.endswith('/materialized/submission/bundle_manifest.v1.json'))
+        for row in value['published_objects']:
+            if row['relative_path'] != 'bundle_manifest.v1.json':
+                payloads[str(Path(manifest_path).parent / row['relative_path'])] = (
+                    row['digest'], json.dumps({'fixture':True}, sort_keys=True).encode())
+    for path, (digest, raw) in payloads.items():
+        maps[digest] = 'sha256:' + hashlib.sha256(raw).hexdigest()
+        args['source_records']['opaque_evidence'].append((path, raw))
+    return _rebase_complete_graph(args, '/retained', maps)
+
+
+def _complete_installed_queue_layouts(context):
+    """Install the real producer's finite states and auxiliary directories."""
+    from blueprint_pipeline.task_evaluation_sam31_phase_queue import STATES as sam_states
+    from blueprint_pipeline.task_evaluation_launch_activation_queue import QUEUE_STATES as activation_states
+    from blueprint_pipeline.control_plane_queue_auxiliary_observation import _ROLES
+    from blueprint_pipeline.task_evaluation_scene_construction_queue import QUEUE_STATES as construction_states
+    Path(context['pins_root']).mkdir(exist_ok=True)
+    current = context['primary_queue_contracts'][0]
+    contracts = [current, {'root_path':context['roots']['sam_queue_root'], 'states':list(sam_states)},
+                 {'root_path':context['roots']['activation_queue_root'], 'states':list(activation_states)},
+                 {'root_path':context['roots']['compilation_queue_root'], 'states':list(construction_states)}]
+    context['primary_queue_contracts'] = contracts
+    for contract in contracts:
+        for state in contract['states']:
+            (Path(contract['root_path']) / state).mkdir(parents=True, exist_ok=True)
+    for contract in context['auxiliary_queue_contracts']:
+        for relative, *_ in _ROLES[contract['family']]:
+            (Path(contract['root_path']) / relative).mkdir(parents=True, exist_ok=True)
+
+
 def _authentic_connected_graph(base, monkeypatch):
     from tests.test_scene_lifecycle_connected_acquisition import full_connected_finished_scene, installed
-    from tests.scene_lifecycle_fixture_support import rebase_graph
     from tests.test_task_evaluation_scene_intake import request, stage, attempt
     from blueprint_pipeline.decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 
-    args = full_connected_finished_scene()
+    args = _native_fixture_records(full_connected_finished_scene())
     old_intent = json.loads(args['seed_records']['intent'][1])
     body = request()
     body['execution']['allowed_providers'] = ['vast', 'openai']
@@ -300,6 +379,7 @@ def _authentic_connected_graph(base, monkeypatch):
     args['seed_records']['intent'] = None
     args, context, _, _ = installed(base, args)
     args['seed_records']['intent'] = authentic_pair
+    _complete_installed_queue_layouts(context)
     assert actual_path.read_bytes() == authentic_pair[1]
     monkeypatch.setenv('BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT', str(intake))
     monkeypatch.setenv('BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_CLIENT_IDS', 'webapp')
@@ -400,8 +480,9 @@ def _consented_inventories(members):
 class MemoryArchiveTransport:
     """Actual streamed bytes, with source-presence checks during fresh readback."""
 
-    def __init__(self, members):
+    def __init__(self, members, published_objects):
         self.members = members
+        self.published_objects = published_objects
         self.objects = {}
         self.events = []
         self.retirement = True
@@ -419,6 +500,17 @@ class MemoryArchiveTransport:
         self.objects[uri] = data
         self.events.append(('upload', uri))
         return {'uri': uri, 'sha256': 'sha256:' + hashlib.sha256(data).hexdigest(), 'size_bytes': len(data)}
+
+    def read_published_object_charged(self, uri, allowance, *, expected_size_bytes):
+        data = self.published_objects[uri]
+        assert len(data) == expected_size_bytes
+        self.events.append(('published-readback', uri))
+        for start in range(0, len(data), 37):
+            allowance.tick()
+            chunk = data[start:start + 37]
+            allowance.charge('remote_bytes', len(chunk))
+            yield chunk
+            allowance.tick()
 
     def read_archive(self, uri):
         if self.retirement:
@@ -473,6 +565,7 @@ def test_terminal_scene_retires_every_folder_it_wrote(tmp_path, monkeypatch):
                         'remote_bytes': 4 * 1024 * 1024, 'elapsed_seconds': 60}
     policy_path = base / 'policy.json'
     _sealed_file(policy_path, policy, 'policy_digest', mode=0o644)
+    monkeypatch.setattr(access, '_INSTALLED_POLICY', policy_path)
     monkeypatch.setenv('BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE', str(policy_path))
     generations = {}
     original_paths = {Path(row['path']) for row in selected if 'sam_original_execution_dependency' in row['kinds']}
@@ -492,6 +585,7 @@ def test_terminal_scene_retires_every_folder_it_wrote(tmp_path, monkeypatch):
     original = _snapshot(members)
     inventories = _consented_inventories(members)
     plan = build_scene_lifecycle_plan(intent_id=args['intent_id'], context=context, observed_at_epoch=200)
+    assert 'finished_observation' in plan, plan
     assert plan['finished_observation']['status'] == 'completed'
     assert {row['family'] for row in plan['family_obligations'] if row['member_count']} == set(FAMILIES)
     assert plan['action'] == 'KEEP' and plan['cleanup_authorized'] is False
@@ -515,7 +609,16 @@ def test_terminal_scene_retires_every_folder_it_wrote(tmp_path, monkeypatch):
             'inventory_sha256': inventories[str(path)]}
             for path in members], 'private_archive_classes': ['host']}
     _sealed_file(consent_path, consent, 'consent_digest')
-    transport = MemoryArchiveTransport(members)
+    published = {}
+    for _, raw in args['source_records']['submission_publications']:
+        receipt = json.loads(raw)
+        for row in receipt['published_objects']:
+            assert not row['relative_path'].startswith('source/')
+            matches = [data for path, data in _record_pairs(args) if path.endswith('/' + row['relative_path'])
+                       and 'sha256:' + hashlib.sha256(data).hexdigest() == row['digest']]
+            assert matches and all(data == matches[0] for data in matches), row
+            published[row['uri']] = bytes(matches[0])
+    transport = MemoryArchiveTransport(members, published)
     from blueprint_pipeline.task_evaluation_scene_retirement import retire_scene, restore_scene
     retired = retire_scene(plan_path, consent_path, transport=transport, now=lambda: 200, monotonic=time.monotonic)
     assert retired['status'] == 'retired', retired
