@@ -229,3 +229,34 @@ def test_temporary_stream_failure_is_local_preserves_destination_and_closes_desc
                 os.close(descriptor)
             except OSError:
                 pass
+
+
+def test_successful_publication_ends_temp_ownership_and_preserves_recreated_name(tmp_path, monkeypatch):
+    from pathlib import Path
+    _requests(monkeypatch, b'ab')
+    destination = tmp_path / 'artifact.bin'
+    destination.write_bytes(b'old')
+    real_replace = client.os.replace
+    real_unlink = Path.unlink
+    former = []
+    unlink_attempts = []
+
+    def publish(source, target):
+        real_replace(source, target)
+        source = Path(source)
+        former.append(source)
+        source.write_bytes(b'new unrelated operation')
+
+    def unlink(path, *args, **kwargs):
+        if path in former:
+            unlink_attempts.append(path)
+            raise OSError('former temporary name is no longer owned')
+        return real_unlink(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(client.os, 'replace', publish)
+        patch.setattr(Path, 'unlink', unlink)
+        target, report = _pull(tmp_path, b'ab')
+    assert target.read_bytes() == b'ab' and report['verified_bytes'] == 2
+    assert unlink_attempts == []
+    assert former[0].read_bytes() == b'new unrelated operation'

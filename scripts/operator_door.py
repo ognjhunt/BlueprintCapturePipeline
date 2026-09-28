@@ -253,6 +253,7 @@ def _pull_checked_file(remote: str, local: Path, *, expected_sha256: Any, expect
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, local)
+        temporary = None
         return {"path": remote, "saved": str(local), "bytes": offset,
                 "verified_digest": expected_sha256, "verified_bytes": offset}
     except OSError as error:
