@@ -144,3 +144,12 @@ def test_previous_durable_intent_id_collision_keeps_old_grant(installation, monk
     assert path.read_bytes() == previous
     assert json.loads(previous)["generation"] == "b" * 32
     assert len(list(installation[2].glob("*.json"))) == 1
+
+
+def test_uninstalled_experiment_root_refuses_before_private_grant(installation):
+    config, settings, store, _ = installation
+    config.write_bytes(encoded(settings | {'lane_scratch_work_root': str(config.parent/'uninstalled/lanes')}))
+    before = {p.name:p.read_bytes() for p in store.iterdir()}
+    with pytest.raises(ValueError, match='experiment_installed_namespace_changed'):
+        issue(installation)
+    assert {p.name:p.read_bytes() for p in store.iterdir()} == before
