@@ -258,11 +258,45 @@ def _context(files, config_path, issued):
     return config, gid
 
 
+def _hash_manifest(files, target, target_fd, manifest, *, role):
+    """One declared full payload pass, retaining one original member at a time."""
+    _require(type(files) is _ActionFiles and len(manifest['members']) <= 4096,
+             'experiment_work_payload_invalid')
+    # Account the fixed retained digest slots before long IO closes native B.
+    files.budget.charge('values', sum(row[1] == 'file' for row in manifest['members']))
+    files.budget.available('output_bytes', len(manifest['members']) * 71)
+    files.payload(target, target_fd, expected_payload_bytes=files.payload_size if files.payload_size is not None else manifest['logical_bytes'])
+    for row in manifest['members']:
+        if row[1] != 'file':
+            continue
+        files.verify()
+        parent, name, fd, initial = _member(files, target, row, hash_payload=False)
+        try:
+            digest, amount = hashlib.sha256(), 0
+            while True:
+                files.verify()
+                block = files.payload_read(fd, 1024 * 1024, role=role)
+                if not block:
+                    break
+                amount += len(block)
+                _require(amount <= initial.st_size, 'experiment_member_changed')
+                digest.update(block)
+            files.location(parent)
+            files.proof(fd)
+            _require(amount == initial.st_size and owners._metadata(os.fstat(fd)) == owners._metadata(initial)
+                     == owners._metadata(os.stat(name, dir_fd=parent, follow_symlinks=False)),
+                     'experiment_member_changed')
+            row[4] = 'sha256:' + digest.hexdigest()
+        finally:
+            files.close(fd)
+            files.trim_payload()
+
+
 def issue_action(intent_id, *, principal, owner, action, expires_at_epoch, installed_config_path, now):
-    files = _BirthFiles(ReferenceCollectionBudget(values_limit=10000))
-    manifest_files = None
+    files = _ActionFiles(now=now)
     try:
         issued = now()
+        files.bind_deadline(expires_at_epoch)
         config, gid = _context(files, installed_config_path, issued)
         _require(config.experiment_retirement_enabled is True, "experiment_retirement_disabled")
         _require(owners._matches(intent_id, owners._CONSENT_ID) and action in ("delete", "offload", "owner_review")
@@ -292,15 +326,12 @@ def issue_action(intent_id, *, principal, owner, action, expires_at_epoch, insta
         owners._authorize(decision, policy, expires_at_epoch, issued)
         policy_selector = issuance._selector(policy_raw, files.budget)
         _require(current[1]["policy"] == policy_selector, "experiment_policy_changed")
-        manifest_files = _BirthFiles(ReferenceCollectionBudget(values_limit=100000))
-        _, manifest_target = _target(manifest_files, config, entry, lock=False)
-        _require(len(files.owned) + len(manifest_files.owned) < 104, "experiment_descriptor_limit")
-        manifest = _manifest(manifest_files, target, manifest_target, binding=entry)
-        manifest_files.budget.measure(manifest, cap=1048576 - 100)
+        files.phase('manifest')
+        manifest = _manifest(files, target, target_fd, binding=entry, hash_payload=False)
+        files.budget.measure(manifest, cap=1048576 - 100)
+        _hash_manifest(files, target, target_fd, manifest, role='issue_hash')
+        files.phase('finalize')
         manifest_raw = _encoded(manifest, "manifest_digest", 1048576)
-        manifest_files.finish()
-        manifest_files.budget.close()
-        manifest_files = None
         action_id = secrets.token_hex(16)
         _require(owners._matches(action_id, owners._CONSENT_ID) and action_id != intent_id,
                  "experiment_action_invalid")
@@ -325,9 +356,6 @@ def issue_action(intent_id, *, principal, owner, action, expires_at_epoch, insta
         return {"action_id": action_id, "action_intent": selected}
     finally:
         try:
-            if manifest_files is not None:
-                manifest_files.finish()
-                manifest_files.budget.close()
             files.finish()
         finally:
             files.budget.close()
