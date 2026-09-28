@@ -87,16 +87,17 @@ def begin(files, config, action, expected, entry, current, refreshed, public, st
         _require(entry['state'] == 'active', 'experiment_operation_missing')
         previous = code._event(files, operation, action, 'started', dict(action=expected,
             birth=entry['birth'], initial_authority=current[0]['record'], manifest=action['manifest'],
-            process_identity={'pid': os.getpid()}, controller_origin_epoch=issued,
-            deadline_epoch=min(issued + 4 * 3600, action['expires_at_epoch']), reference_authority=reference),
+            process_identity={'pid': os.getpid()}, controller_origin_epoch=files.controller_epoch,
+            deadline_epoch=files.deadline_epoch, reference_authority=reference, controller=files.controller()),
             0, None, issued)
     else:
         started, previous = selected
         body = started['body']
         _require(started['event_kind'] == 'started' and set(body) == {'action', 'birth', 'initial_authority',
-                 'manifest', 'process_identity', 'controller_origin_epoch', 'deadline_epoch', 'reference_authority'}
+                 'manifest', 'process_identity', 'controller_origin_epoch', 'deadline_epoch', 'reference_authority', 'controller'}
                  and body['action'] == expected and body['birth'] == entry['birth']
                  and body['manifest'] == action['manifest'], 'experiment_operation_invalid')
+        files.validate_controller(body['controller'])
         _require(body['reference_authority'] == reference, 'experiment_reference_authority_changed')
         _require(type(body['deadline_epoch']) in (int, float) and issued < body['deadline_epoch']
                  <= action['expires_at_epoch'], 'experiment_action_expired')
@@ -226,7 +227,7 @@ def retired(files, config, action, expected, target, rows, entry, marker, *, _re
     event, previous = started
     body = event['body']
     _require(event['event_kind'] == 'started' and set(body) == {'action', 'birth', 'initial_authority', 'manifest',
-             'process_identity', 'controller_origin_epoch', 'deadline_epoch', 'reference_authority'}
+             'process_identity', 'controller_origin_epoch', 'deadline_epoch', 'reference_authority', 'controller'}
              and body['action'] == expected and body['birth'] == entry['birth'] and body['manifest'] == action['manifest'],
              'experiment_operation_invalid')
     preservation = None

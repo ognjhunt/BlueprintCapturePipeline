@@ -17,7 +17,7 @@ from .control_plane_lane_experiment_publication import _BirthFiles
 from .control_plane_lane_owner_target_versions import OwnerTargetVersionError, _epoch, _require
 from .control_plane_reference_budget import ReferenceCollectionBudget
 
-_PHASES = {'restore_checkpoint_manifest': (1, 100000), 'restore_checkpoint_compare': (1, 100000), 'restore_checkpoint_record': (1, 10000), 'manifest': (1, 100000), 'ready': (1, 10000), 'removal_batch': (256, 10000), 'recovery_batch': (256, 10000), 'restore_recovery_batch': (257, 10000), 'restore_activation_manifest': (1, 100000),
+_PHASES = {'scan_completion': (5, 10000), 'restore_checkpoint_manifest': (1, 100000), 'restore_checkpoint_compare': (1, 100000), 'restore_checkpoint_record': (1, 10000), 'manifest': (1, 100000), 'ready': (1, 10000), 'removal_batch': (256, 10000), 'recovery_batch': (256, 10000), 'restore_recovery_batch': (257, 10000), 'restore_activation_manifest': (1, 100000),
            'restore_admission': (1, 10000), 'restore_prepare': (1, 100000), 'restore_stage': (1, 100000), 'restore_stage_verify': (1, 100000), 'restore_union_finalize': (1, 100000), 'restore_directories': (256, 10000), 'restore_cleanup': (256, 10000), 'restore_batch': (256, 10000), 'finalize': (1, 100000)}
 for _scan_role in ('issue', 'restore_stage', 'restore_final', 'restore_activation', 'restore_checkpoint_compare'):
     _PHASES['scan_admission_' + _scan_role] = (2, 10000)
@@ -31,15 +31,26 @@ _CONTROLLER_FIELDS = frozenset({'boot_id', 'origin_monotonic', 'deadline_monoton
 
 
 def _controller_boot_id(files):
-    raw, record = files.read(_BOOT_PATH, cap=40, protected=True)
-    files.verify_record(record)
-    _require(re.fullmatch(rb'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\n', raw) is not None,
-             'experiment_work_boot_unknown')
-    value = raw[:-1].decode('ascii')
-    files.records.remove(record)
-    files.close(record.fd)
-    _require(record.fd not in files.owned and not files.unresolved, 'experiment_work_boot_unknown')
-    return value
+    # procfs exposes a zero stat size for this one fixed kernel record. Use
+    # bounded original-FD IO, preserving all named/type/security proofs; do not
+    # relax ordinary metadata files' exact stat-size/read-size correspondence.
+    parent, name = files.parent(_BOOT_PATH, protected=True)
+    fd = files.open(name, os.O_RDONLY | os.O_NONBLOCK, parent=parent)
+    try:
+        initial = files.acquired[fd]
+        owners._protected(initial)
+        _require(stat.S_ISREG(initial.st_mode) and initial.st_nlink == 1
+                 and 0 <= initial.st_size <= 40, 'experiment_work_boot_unknown')
+        record = owners._Acquired(fd, parent, name, initial)
+        files.verify_record(record)
+        raw = files.read_bytes(fd, 40)
+        files.verify_record(record)
+        _require(re.fullmatch(rb'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\n', raw) is not None,
+                 'experiment_work_boot_unknown')
+        return raw[:-1].decode('ascii')
+    finally:
+        files.close(fd)
+        _require(fd not in files.owned and not files.unresolved, 'experiment_work_boot_unknown')
 
 
 class _ActionFiles(_BirthFiles):
@@ -119,6 +130,26 @@ class _ActionFiles(_BirthFiles):
         except ValueError:
             self.failure = self.failure or 'experiment_work_clock_invalid'
             raise OwnerTargetVersionError(self.failure) from None
+
+    def bind_aggregate(self, value):
+        self.check_long()
+        _require(type(value) is dict and set(value) == set(self.conserved)
+                 and all(type(amount) is int and 0 <= amount <= _AGGREGATE for amount in value.values()),
+                 'experiment_work_aggregate_limit')
+        for key in self.conserved:
+            self.conserved[key] = max(self.conserved[key], value[key])
+            _require(self.conserved[key] + self.budget.counts[key] <= _AGGREGATE,
+                     'experiment_work_aggregate_limit')
+
+    def validate_controller(self, value):
+        """Check a later protected phase snapshot without reinitializing B."""
+        current = self.controller()
+        _require(type(value) is dict and set(value) == _CONTROLLER_FIELDS
+                 and all(value[key] == current[key] for key in ('boot_id', 'origin_monotonic',
+                         'deadline_monotonic', 'origin_epoch', 'deadline_epoch'))
+                 and _epoch(value['last_monotonic']) and _epoch(value['last_epoch'])
+                 and value['last_monotonic'] <= current['last_monotonic']
+                 and value['last_epoch'] <= current['last_epoch'], 'experiment_work_clock_invalid')
 
     def bind_deadline(self, deadline):
         self.check_long()

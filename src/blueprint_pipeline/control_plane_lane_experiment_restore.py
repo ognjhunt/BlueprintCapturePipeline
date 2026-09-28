@@ -22,13 +22,14 @@ from .control_plane_disk_budget import reserve_control_plane_disk
 from .control_plane_lane_experiment_authority import _current
 from .control_plane_lane_experiment_actions import _publish
 from .control_plane_lane_experiment_work import _ActionFiles
+from . import control_plane_lane_experiment_acquisition as acquisition
 from .control_plane_lane_owner_target_versions import OwnerTargetVersionError, _epoch, _require
 from .decision_evidence_contracts import canonical_digest
 
 RESTORE_SCHEMA = 'control_plane_lane_experiment_restore_intent.v1'
 _RESTORE_FIELDS = frozenset({'schema_version', 'intent_id', 'action_id', 'issuer_uid', 'principal', 'owner',
     'generation', 'birth', 'target_identity', 'lease', 'preservation', 'action', 'issued_at_epoch',
-    'expires_at_epoch', 'policy', 'new_lease_ttl_seconds', 'new_lease_expires_at_epoch', 'action_digest'})
+    'expires_at_epoch', 'policy', 'controller', 'metadata_aggregate', 'new_lease_ttl_seconds', 'new_lease_expires_at_epoch', 'action_digest'})
 
 
 def _policy(files, config, principal, owner, issued, deadline, new_expiry):
@@ -55,6 +56,7 @@ def issue_restore(intent_id, *, principal, owner, lease_ttl_seconds, expires_at_
     files = _ActionFiles(now=now)
     try:
         issued = now()
+        files.bind_deadline(expires_at_epoch)
         config, gid = actions._context(files, installed_config_path, issued)
         _require(config.experiment_retirement_enabled is True and type(lease_ttl_seconds) is int
                  and 0 < lease_ttl_seconds <= 1209600 and _epoch(expires_at_epoch) and issued < expires_at_epoch,
@@ -100,7 +102,9 @@ def issue_restore(intent_id, *, principal, owner, lease_ttl_seconds, expires_at_
             principal=principal, owner=owner, generation=entry['generation'], birth=entry['birth'],
             target_identity=entry['target_identity'], lease=entry['lease'], preservation=preservation,
             action='restore', issued_at_epoch=issued, expires_at_epoch=expires_at_epoch, policy=policy,
-            new_lease_ttl_seconds=lease_ttl_seconds, new_lease_expires_at_epoch=new_expiry)
+            new_lease_ttl_seconds=lease_ttl_seconds, new_lease_expires_at_epoch=new_expiry, controller=files.controller(),
+            metadata_aggregate={key: files.conserved[key] + files.budget.counts[key] + (65536 if key == 'output_bytes' else 0)
+                                for key in files.conserved})
         payload = actions._encoded(value, 'action_digest', 32768)
         occupied = issuance._capacity(files, store, adding_registration=False)
         _require(occupied + 256 * 1024 <= issuance.MAX_EXPERIMENT_STORE_BYTES, 'experiment_store_full')
@@ -135,6 +139,8 @@ def _restore_intent(files, config, action_id, expected, issued):
     policy = _policy(files, config, value['principal'], value['owner'], value['issued_at_epoch'],
                      value['expires_at_epoch'], value['new_lease_expires_at_epoch'])
     _require(policy == value['policy'], 'experiment_policy_changed')
+    files.bind_controller(value['controller'])
+    files.bind_aggregate(value['metadata_aggregate'])
     return value
 
 
@@ -410,12 +416,15 @@ def _activated(files, config, gid, action, expected, public, current, entry, iss
                        cap=1048576, protected=True, mode=0o600)
     _require(issuance._selector(raw, files.budget) == manifest_selector, 'experiment_restore_record_changed')
     saved = actions._manifest_record(files, raw, entry)
+    acquisition.begin(files, config, store, action['action_id'], entry, role='restore_activation', operation=operation)
     measured = actions._manifest(files, target, files.parents[target], binding=entry, hash_payload=False)
     _require(len(saved['members']) == len(measured['members']) and all(
         before[:4] == current[:4] for before, current in zip(saved['members'], measured['members'])),
         'experiment_restore_payload_changed')
     actions._hash_manifest(files, target, files.parents[target], measured, role='restore_activation_validate')
     _require(raw == actions._encoded(measured, 'manifest_digest', 1048576), 'experiment_restore_payload_changed')
+    files.phase('scan_completion')
+    acquisition.completed(files, manifest_selector, len(measured['members']))
     files.phase('finalize')
     prepared, _ = _document(files, Path(config.experiment_record_store) / (action['action_id'] + '.restored-head.json'),
                             4096, selector=restored[0]['body']['prepared_authority'])
@@ -534,7 +543,7 @@ def restore(action_id, *, expected_restore_intent, installed_config_path, now, p
             started = actions._event(files, operation, action, 'restore_started', dict(restore_intent=expected_restore_intent,
                 preservation=action['preservation'], retired=selection['retired'], stage_name=stage_name,
                 new_lease_expiry=action['new_lease_expires_at_epoch'], reference_authority=reference,
-                controller_origin_epoch=issued, deadline_epoch=min(issued + 4*3600, action['expires_at_epoch'])), 0, None, issued)
+                controller_origin_epoch=files.controller_epoch, deadline_epoch=files.deadline_epoch, controller=files.controller()), 0, None, issued)
             prepared, old_head = actions._version(files, public, refreshed, entry | {'state': 'restoring'},
                                                   gid, action['policy'], issued)
             _publish(files, store, action_id + '.restore-head.json', prepared, kind='private')
@@ -547,7 +556,7 @@ def restore(action_id, *, expected_restore_intent, installed_config_path, now, p
             body = original_event['body']
             _require(original_event['event_kind'] == 'restore_started' and set(body) == {
                 'restore_intent', 'preservation', 'retired', 'stage_name', 'new_lease_expiry',
-                'reference_authority', 'controller_origin_epoch', 'deadline_epoch'}
+                'reference_authority', 'controller_origin_epoch', 'deadline_epoch', 'controller'}
                 and all(body[key] == expected for key, expected in dict(restore_intent=expected_restore_intent,
                     preservation=action['preservation'], retired=selection['retired'], stage_name=stage_name,
                     new_lease_expiry=action['new_lease_expires_at_epoch'], reference_authority=reference).items())
@@ -555,6 +564,7 @@ def restore(action_id, *, expected_restore_intent, installed_config_path, now, p
                 and body['controller_origin_epoch'] <= issued < body['deadline_epoch']
                 <= min(body['controller_origin_epoch'] + 4*3600, action['expires_at_epoch']),
                 'experiment_restore_operation_invalid')
+            files.validate_controller(body['controller'])
             files.bind_deadline(body['deadline_epoch'])
             prepared, _ = _document(files, store_path / (action_id + '.restore-head.json'), 4096)
             _require(prepared == (json.dumps(refreshed[0], sort_keys=True, separators=(',', ':'), ensure_ascii=False) + '\n').encode(),
@@ -583,7 +593,7 @@ def restore(action_id, *, expected_restore_intent, installed_config_path, now, p
                 minimum_bytes=need, workspace=target / stage_name, fresh=True, evictor=None)
             stage, stage_name, staged, directory_modes = _stage_archive(files, config, target, target_fd,
                 action, selection, manifest_raw, rows, guard)
-            files.phase('restore_stage')
+            acquisition.begin(files, config, store, action_id, entry, role='restore_stage', operation=operation)
             staged_manifest = actions._manifest(files, target / stage_name, stage, binding=entry, hash_payload=False)
             staged_by_path = {path: (info, digest) for path, info, digest in staged}
             for row in staged_manifest['members']:
@@ -595,6 +605,7 @@ def restore(action_id, *, expected_restore_intent, installed_config_path, now, p
                     row[4] = digest
             stage_selected = _publish(files, store, action_id + '.stage-manifest.json',
                 actions._encoded(staged_manifest, 'manifest_digest', 1048576), kind='manifest')
+            acquisition.completed(files, stage_selected, len(staged_manifest['members']))
             previous = actions._event(files, operation, action, 'restore_stage_ready', dict(restore_started=started,
                 stage_manifest=stage_selected, stage_identity=dict(dev=os.fstat(stage).st_dev, ino=os.fstat(stage).st_ino, type='directory'),
                 stage_metadata=[getattr(os.fstat(stage), key) for key in recovery._STAT],
@@ -688,14 +699,16 @@ def restore(action_id, *, expected_restore_intent, installed_config_path, now, p
         root = config.lane_scratch_work_root if entry['root'] == 'work' else config.lane_scratch_inputs_root
         birth._locked_lane(files, root)
         if checkpoint is None:
-            checkpoint_io.prepare(files, store, target, target_fd, action, expected_restore_intent, entry, lease_record, payload, started, previous, index)
+            checkpoint_io.prepare(files, store, target, target_fd, action, expected_restore_intent, entry, lease_record, payload, started, previous, index, config=config, operation=operation)
         new_selector = _lease_cas(files, target, target_fd, lease_record, payload)
         # Root measured publication bytes bind restored identities, not a new execution.
+        acquisition.begin(files, config, store, action_id, entry | {'lease': new_selector}, role='restore_final', operation=operation)
         restored_manifest = actions._manifest(files, target, target_fd, binding=entry | {'lease': new_selector}, hash_payload=False)
         actions._hash_manifest(files, target, target_fd, restored_manifest, role='restore_validate')
         files.phase('finalize')
         restored_raw = actions._encoded(restored_manifest, 'manifest_digest', 1048576)
         manifest_selector = _publish(files, store, action_id + '.manifest.json', restored_raw, kind='manifest')
+        acquisition.completed(files, manifest_selector, len(restored_manifest['members']))
         ready = actions._event(files, operation, action, 'restored_payload_ready', dict(restore_started=started,
             restored_manifest=manifest_selector, target_identity=entry['target_identity'], new_lease=new_selector),
             index, previous, issued)

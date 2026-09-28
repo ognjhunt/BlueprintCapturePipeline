@@ -11,6 +11,7 @@ import stat
 from pathlib import Path
 
 from . import control_plane_lane_experiment_actions as actions
+from . import control_plane_lane_experiment_acquisition as acquisition
 from . import control_plane_lane_experiment_recovery as recovery
 from . import control_plane_lane_experiment_retirement as issuance
 from . import control_plane_lane_owner_consents as owners
@@ -77,6 +78,7 @@ def published_union(files, config, action, entry, checkpoint, target, target_fd,
     _require(body['controller_origin_epoch'] <= files.now() < body['deadline_epoch']
              <= min(body['controller_origin_epoch'] + 4*3600, action['expires_at_epoch']),
              'experiment_restore_operation_invalid')
+    files.validate_controller(body['controller'])
     files.bind_deadline(body['deadline_epoch'])
     previous = initial[1]
     for index in range(1, value['sequence']):
@@ -93,7 +95,8 @@ def published_union(files, config, action, entry, checkpoint, target, target_fd,
                         cap=1048576, protected=True, mode=0o600)
     _require(issuance._selector(raw, files.budget) == value['payload_manifest'], 'experiment_restore_transition_invalid')
     saved = actions._manifest_record(files, raw, entry)
-    files.phase('restore_checkpoint_compare')
+    store = files.bindings[files.bindings[operation][0]][0]
+    acquisition.begin(files, config, store, action['action_id'], entry, role='restore_checkpoint_compare', operation=operation)
     current = actions._manifest(files, target, target_fd, binding=entry, hash_payload=False)
     _require(len(current['members']) == len(saved['members']) and all(
         current_row[:4] == saved_row[:4] for current_row, saved_row in zip(current['members'], saved['members'], strict=True))
@@ -107,17 +110,19 @@ def published_union(files, config, action, entry, checkpoint, target, target_fd,
         ids, data = identity.split(':'), tuple(map(int, token.split(':')))
         mapped[path] = (int(ids[0]), int(ids[1]), (stat.S_IFDIR if kind == 'directory' else stat.S_IFREG) | data[0], *data[1:])
     files.phase('restore_union_finalize')
+    acquisition.completed(files, value['payload_manifest'], len(current['members']))
     return dict(stage=None, staged=[], directory_modes={}, mapped=mapped, created={}, linked={},
                 previous=previous, index=value['sequence'], target_transition=value['target_metadata'])
 
 
-def prepare(files, store, target, target_fd, action, expected, entry, lease_record, payload, started, previous, index):
-    files.phase('restore_checkpoint_compare')
+def prepare(files, store, target, target_fd, action, expected, entry, lease_record, payload, started, previous, index, *, config, operation):
+    acquisition.begin(files, config, store, action['action_id'], entry, role='restore_checkpoint_compare', operation=operation)
     manifest = actions._manifest(files, target, target_fd, binding=entry, hash_payload=False)
     actions._hash_manifest(files, target, target_fd, manifest, role='restore_checkpoint_validate')
     files.phase('restore_checkpoint_manifest')
     selected = actions._publish(files, store, action['action_id'] + '.payload-manifest.json',
                                 actions._encoded(manifest, 'manifest_digest', 1048576), kind='manifest')
+    acquisition.completed(files, selected, len(manifest['members']))
     files.phase('restore_checkpoint_record')
     raw, original_record = files.read(target / scratch.LEASE_FILE, cap=scratch.MAX_LEASE_BYTES)
     _require(issuance._selector(raw, files.budget) == entry['lease']

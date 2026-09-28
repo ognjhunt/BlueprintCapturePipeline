@@ -27,7 +27,7 @@ ACTION_SCHEMA = "control_plane_lane_experiment_action_intent.v1"
 MANIFEST_SCHEMA = "control_plane_lane_experiment_manifest.v1"
 _ACTION_FIELDS = frozenset({"schema_version", "intent_id", "action_id", "issuer_uid", "principal", "owner",
     "generation", "birth", "target_identity", "lease", "completion", "manifest", "action",
-    "issued_at_epoch", "expires_at_epoch", "policy", "action_digest"})
+    "issued_at_epoch", "expires_at_epoch", "policy", "controller", "metadata_aggregate", "action_digest"})
 _METADATA = frozenset({scratch.LEASE_FILE, ".registered-experiment.v1.json"})
 _ISSUE_SELECTION_SCHEMA = 'control_plane_lane_experiment_issue_selection.v1'
 
@@ -399,7 +399,9 @@ def issue_action(intent_id, *, principal, owner, action, expires_at_epoch, insta
             principal=principal, owner=owner, generation=entry["generation"], birth=entry["birth"],
             target_identity=entry["target_identity"], lease=entry["lease"], completion=entry["completion"],
             manifest=manifest_selector, action=action, issued_at_epoch=issued,
-            expires_at_epoch=expires_at_epoch, policy=policy_selector)
+            expires_at_epoch=expires_at_epoch, policy=policy_selector, controller=files.controller(),
+            metadata_aggregate={key: files.conserved[key] + files.budget.counts[key] + (65536 if key == "output_bytes" else 0)
+                                for key in files.conserved})
         payload = _encoded(value, "action_digest", 32768)
         files.verify_record(policy_record)
         files.verify()
@@ -441,6 +443,8 @@ def _read_action(files, config, action_id, expected, issued):
                       "expires_at_epoch": action["expires_at_epoch"]}, policy, action["expires_at_epoch"], action["issued_at_epoch"])
     files.verify_record(record)
     files.verify_record(policy_record)
+    files.bind_controller(action["controller"])
+    files.bind_aggregate(action["metadata_aggregate"])
     return action
 
 

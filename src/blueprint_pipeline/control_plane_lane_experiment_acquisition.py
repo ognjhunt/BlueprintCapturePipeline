@@ -35,7 +35,7 @@ def _record(files, path):
     return value, selected
 
 
-def begin(files, config, store, operation_id, binding, *, role):
+def begin(files, config, store, operation_id, binding, *, role, operation=None):
     from . import control_plane_lane_experiment_actions as actions
     _require(type(files) is _ActionFiles and role in _ROLES
              and owners._matches(operation_id, owners._CONSENT_ID), 'experiment_scan_scope_invalid')
@@ -58,19 +58,26 @@ def begin(files, config, store, operation_id, binding, *, role):
         actual, record = files.read(Path(config.experiment_record_store) / name, cap=4096, protected=True, mode=0o600)
         _require(actual == raw, 'experiment_scan_record_invalid')
         files.verify_record(record)
-    files.location(store)
-    try:
-        os.stat('operations', dir_fd=store, follow_symlinks=False)
-    except FileNotFoundError:
-        operations = actions._directory(files, store, 'operations', create=True)
+    if operation is None:
+        files.location(store)
+        try:
+            os.stat('operations', dir_fd=store, follow_symlinks=False)
+        except FileNotFoundError:
+            operations = actions._directory(files, store, 'operations', create=True)
+        else:
+            operations = actions._directory(files, store, 'operations')
+        try:
+            os.stat(operation_id, dir_fd=operations, follow_symlinks=False)
+        except FileNotFoundError:
+            operation = actions._directory(files, operations, operation_id, create=True)
+        else:
+            operation = actions._directory(files, operations, operation_id)
     else:
-        operations = actions._directory(files, store, 'operations')
-    try:
-        os.stat(operation_id, dir_fd=operations, follow_symlinks=False)
-    except FileNotFoundError:
-        operation = actions._directory(files, operations, operation_id, create=True)
-    else:
-        operation = actions._directory(files, operations, operation_id)
+        files.proof(operation)
+        _require(files.bindings[operation][1] == operation_id
+                 and owners._metadata(os.fstat(operation)) == owners._metadata(os.stat(
+                     Path(config.experiment_record_store) / 'operations' / operation_id,
+                     follow_symlinks=False)), 'experiment_scan_scope_invalid')
     files.location(operation)
     files.proof(operation)
     fcntl.flock(operation, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -85,7 +92,7 @@ def begin(files, config, store, operation_id, binding, *, role):
         try:
             os.stat(name, dir_fd=operation, follow_symlinks=False)
         except FileNotFoundError:
-            reserved = expected | dict(pass_index=index, controller=files.controller(),
+            reserved = expected | dict(**{'pass': index}, controller=files.controller(),
                 controller_origin_epoch=files.controller_epoch, deadline_epoch=files.deadline_epoch,
                 aggregate_before=dict(files.conserved), previous_reservation=previous)
             selected = actions._publish(files, operation, name,
@@ -94,16 +101,13 @@ def begin(files, config, store, operation_id, binding, *, role):
                                      reservation=selected, member_operations=0, batches=0)
             return
         value, selected = _record(files, path / name)
-        _require(set(value) == set(expected) | {'pass_index', 'controller', 'controller_origin_epoch',
+        _require(set(value) == set(expected) | {'pass', 'controller', 'controller_origin_epoch',
             'deadline_epoch', 'aggregate_before', 'previous_reservation', 'work_digest'}
-            and all(value[key] == item for key, item in expected.items()) and value['pass_index'] == index
+            and all(value[key] == item for key, item in expected.items()) and value['pass'] == index
             and value['previous_reservation'] == previous, 'experiment_scan_record_invalid')
         # Original invocation controller was selected independently from the
         # current action/issue locator. Stored phase controller must agree.
-        current = files.controller()
-        _require(all(value['controller'][key] == current[key] for key in
-            ('boot_id', 'origin_monotonic', 'deadline_monotonic', 'origin_epoch', 'deadline_epoch')),
-            'experiment_scan_controller_changed')
+        files.validate_controller(value['controller'])
         counts = value['aggregate_before']
         _require(type(counts) is dict and set(counts) == {'raw_bytes', 'output_bytes'}
                  and all(type(amount) is int and 0 <= amount <= 20*1024*1024 for amount in counts.values()),
@@ -112,6 +116,23 @@ def begin(files, config, store, operation_id, binding, *, role):
         # killed before durable completion; it cannot replay those bytes free.
         for key in counts:
             files.conserved[key] = max(files.conserved[key], counts[key] + (1048576 if key == 'output_bytes' else 0))
+        files.location(operation)
+        completed_name = f'scan-{role}-{index}-completed.json'
+        try:
+            os.stat(completed_name, dir_fd=operation, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            completion, _ = _record(files, path / completed_name)
+            _require(set(completion) == {'schema_version', 'reservation', 'manifest', 'member_count',
+                'batches_used', 'aggregate_after', 'controller', 'completed_at_epoch', 'work_digest'}
+                and completion['schema_version'] == _COMPLETED and completion['reservation'] == selected
+                and type(completion['member_count']) is int and 0 <= completion['member_count'] <= 4096
+                and type(completion['batches_used']) is int
+                and completion['batches_used'] == (completion['member_count'] + 15) // 16,
+                'experiment_scan_record_invalid')
+            files.validate_controller(completion['controller'])
+            files.bind_aggregate(completion['aggregate_after'])
         files.check_long()
         previous = selected
     _require(False, 'experiment_scan_pass_exhausted')
