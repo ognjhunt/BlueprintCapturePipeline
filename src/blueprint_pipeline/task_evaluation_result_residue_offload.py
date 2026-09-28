@@ -123,7 +123,14 @@ changed, moved or became a link is skipped and recorded in the pointer as
 and a name that went without the offload (its directory moved away) is
 ``member_vanished``: neither offloaded nor kept, so restore brings it back.
 A pointer behind which nothing could be evicted is withdrawn (``nothing_evicted``)
-so the next tick tries again. ``restore_result_residue``
+so the next tick tries again. A crash after the pointer is written leaves members
+behind it: every later tick reports the listed members still local
+(``pointed_remaining_*``), and one that applies and passes every gate under the
+lock resumes (``resume``), evicting each listed member the pointer does not keep
+whose bytes still hash to the pointer's, keeping the rest and rewriting the
+pointer; it publishes nothing and never withdraws that pointer. A pointer that
+does not verify, or whose registry digest is not the run's, leaves the run alone
+(``pointer_invalid``). ``restore_result_residue``
 (``task_evaluation_result_residue_restore``) streams the archive back, verifies
 every member's digest and size, never overwrites a different file, and records a
 receipt beside the pointer. The reference search itself lives in
@@ -769,13 +776,24 @@ def offload_result_residue(
         return _retained(row, "run_root_invalid")
     root = unresolved.resolve()
     pointer = root.parent / f"{root.name}{POINTER_SUFFIX}"
+    pointed: dict[str, Any] | None = None
     if pointer.exists() or pointer.is_symlink():
-        return _retained(row, "already_offloaded")
+        try:
+            pointed = _read_pointer(root)
+        except Exception as exc:  # noqa: BLE001 - a pointer that does not verify is left alone
+            return _retained(row, "pointer_invalid", failure=offload_failure(exc, "pointer"))
+        resumable, row["pointed_remaining_count"], row["pointed_remaining_bytes"] = _pointed_state(root, pointed)
+        if not resumable:
+            return _retained(row, "already_offloaded")
+        # A crash after the pointer left members behind it: evict them, through every gate below.
+        row["resume"] = True
     try:
         registry, registry_path, registry_bytes = _sealed_registry(root)
     except Exception as exc:  # noqa: BLE001 - an unsealed or unreadable run keeps its residue
         return _retained(row, "registry_unsealed", failure=offload_failure(exc, "registry"))
     row["registry_digest"] = registry["registry_digest"]
+    if pointed is not None and pointed["registry_digest"] != registry["registry_digest"]:
+        return _retained(row, "pointer_invalid")
     receipt_reason = _dispatch_receipt_reason(root, registry) or _queue_row_reason(root.name, queue_roots)
     if receipt_reason:
         return _retained(row, receipt_reason)
@@ -791,6 +809,11 @@ def offload_result_residue(
         verdict = protection_checker(root) if protection_checker is not None else None
         if verdict:
             return _retained(row, verdict if isinstance(verdict, str) else "protected")
+        if pointed is not None:
+            resumable, _count, _size = _pointed_state(root, pointed)
+            row["candidate_count"] = sum(len(group["relative_paths"]) for group in resumable)
+            row["candidate_bytes"] = sum(group["size_bytes"] for group in resumable)
+            return _resume(row, root, pointer, pointed) if apply else _finished(row)
         try:
             members = _plan_members(root, row, _registered_paths(root, registry), registry_stat.st_mtime_ns)
         except Exception as exc:  # noqa: BLE001 - what a run's receipts name must be known
@@ -870,9 +893,11 @@ def _apply(row, root, pointer, registry, registry_path, registry_bytes, members,
 
 
 def _read_pointer(root: Path) -> dict[str, Any]:
+    """The run's residue pointer, digest-verified and bound to this run, or a refusal."""
+
     path = root.parent / f"{root.name}{POINTER_SUFFIX}"
     if path.is_symlink() or not path.is_file():
-        raise ResultResidueOffloadError("result_residue_restore_pointer_invalid")
+        raise ResultResidueOffloadError("result_residue_pointer_invalid")
     value = json.loads(path.read_text(encoding="utf-8"))
     if (
         not isinstance(value, dict)
@@ -883,7 +908,7 @@ def _read_pointer(root: Path) -> dict[str, Any]:
         or not isinstance(value.get("members"), list)
         or not isinstance(value.get("kept"), list)
     ):
-        raise ResultResidueOffloadError("result_residue_restore_pointer_invalid")
+        raise ResultResidueOffloadError("result_residue_pointer_invalid")
     for member in value["members"]:
         parts = PurePosixPath(str(member.get("relative_path"))).parts
         if (
@@ -891,9 +916,71 @@ def _read_pointer(root: Path) -> dict[str, Any]:
             or PurePosixPath(member["relative_path"]).is_absolute()
             or any(part in {"", ".", ".."} for part in parts)
             or not _name_supported(member["relative_path"])
+            or not isinstance(member.get("sha256"), str)
+            or not isinstance(member.get("size_bytes"), int)
         ):
-            raise ResultResidueOffloadError("result_residue_restore_pointer_invalid")
+            raise ResultResidueOffloadError("result_residue_pointer_invalid")
     return value
+
+
+def _pointed_state(root: Path, value: Mapping[str, Any]) -> tuple[list[dict[str, Any]], int, int]:
+    """What a pointer's members left local: the groups still to evict, and every listed member still here.
+
+    A member still listed through no link, as a regular file on the run's device,
+    is local; one the pointer does not keep is to be evicted again, grouped by
+    inode as the plan grouped them. The count and bytes cover every listed member
+    still local, kept or not.
+    """
+
+    kept = {str(row.get("relative_path")) for row in value["kept"] if isinstance(row, Mapping)}
+    device = os.lstat(root).st_dev
+    groups: dict[tuple[int, int], tuple[os.stat_result, list[str]]] = {}
+    count = size = 0
+    for member in value["members"]:
+        relative = member["relative_path"]
+        path = root
+        try:
+            for part in PurePosixPath(relative).parts:
+                path = path / part
+                info = os.lstat(path)
+                if stat.S_ISLNK(info.st_mode):
+                    break
+            else:
+                if stat.S_ISREG(info.st_mode):
+                    count, size = count + 1, size + info.st_size
+                    if relative not in kept and info.st_dev == device:
+                        groups.setdefault((info.st_dev, info.st_ino), (info, []))[1].append(relative)
+        except OSError:
+            continue  # gone, or no longer under a directory: not local
+    members = [
+        {"relative_paths": sorted(names), "dev": dev, "inode": inode, "nlink": info.st_nlink,
+         "size_bytes": info.st_size, "mtime_ns": info.st_mtime_ns}
+        for (dev, inode), (info, names) in groups.items()
+    ]
+    return sorted(members, key=lambda group: group["relative_paths"]), count, size
+
+
+def _resume(row: dict[str, Any], root: Path, pointer: Path, value: dict[str, Any]) -> dict[str, Any]:
+    """Finish an eviction a crash cut short, under the run lock and every gate.
+
+    Each listed member the pointer does not keep, still local, goes only when its
+    bytes still hash to the pointer's (the archive's); any other is kept, and the
+    pointer is rewritten to say so. Nothing is published again, and the pointer is
+    never withdrawn: members evicted before the crash live only in its archive.
+    """
+
+    members, _count, _size = _pointed_state(root, value)
+    kept = _evict(root, members, {member["relative_path"]: member["sha256"] for member in value["members"]}, row)
+    if kept:
+        known = {str(entry.get("relative_path")) for entry in value["kept"] if isinstance(entry, Mapping)}
+        value = {**value, "kept": [*value["kept"], *(entry for entry in kept if entry["relative_path"] not in known)]}
+        value["pointer_digest"] = canonical_digest(value, digest_field="pointer_digest")
+        try:
+            _write_json(pointer, value)
+        except Exception as exc:  # noqa: BLE001 - kept members are still local; restore finds them
+            row["failure"] = offload_failure(exc, "pointer")
+    _members, row["pointed_remaining_count"], row["pointed_remaining_bytes"] = _pointed_state(root, value)
+    return _finished(row)
 
 
 def restore_result_residue(**options: Any) -> dict[str, Any]:
@@ -1019,6 +1106,8 @@ def residue_phase(
         "candidate_bytes": sum(int(row.get("candidate_bytes") or 0) for row in rows),
         "offloaded_count": sum(int(row.get("offloaded_count") or 0) for row in rows),
         "offloaded_bytes": sum(int(row.get("offloaded_bytes") or 0) for row in rows),
+        # What pointed runs still hold locally: kept members, or ones a crash left to resume.
+        "pointed_remaining_bytes": sum(int(row.get("pointed_remaining_bytes") or 0) for row in rows),
         "retained_by_reason": retained,
         "runs": list(rows[:_MAX_LISTED]),
         "omitted_runs_count": max(0, len(rows) - _MAX_LISTED),

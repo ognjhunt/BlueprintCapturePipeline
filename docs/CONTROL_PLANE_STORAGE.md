@@ -620,9 +620,14 @@ so each manifest (and its receipt) also records `walked_file_count` and
   kept directory or file on another filesystem, or a file that cannot be
   read), `deferred_tick_cap` (the tick's publications were used up),
   `publication_failed` (including a member swapped while it was packed),
-  `run_changed_or_active`, `pointer_failed` or `nothing_evicted` (every member
-  stayed, so the pointer was withdrawn and the next tick tries again)). Every
-  file it left counts under
+  `run_changed_or_active`, `pointer_failed`, `nothing_evicted` (every member
+  stayed, so the pointer was withdrawn and the next tick tries again) or
+  `pointer_invalid` (a pointer that does not verify leaves the run alone)). A
+  pointed run reports the listed members still local
+  (`pointed_remaining_count`, `pointed_remaining_bytes`, totalled per phase); if
+  a crash left some behind that the pointer does not keep, an applying tick
+  resumes (`resume`) and evicts each one whose bytes still hash to the pointer's.
+  Every file it left counts under
   `member_skipped:<reason>` with its bytes: `reader_reopened` (the surveyed
   reopened names, including scene-attempt recovery's `*.lease.json` and
   `pending_teardowns/*.json` ownership records), `symlink_target` and

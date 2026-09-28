@@ -426,8 +426,9 @@ def test_residue_refuses_hot_or_protected_or_already_pointed_runs(tmp_path, case
         options["protection_checker"] = lambda _root: True
         expected = "protected"
     elif case == "pointed":
+        # A pointer that does not verify: the run is left alone, never resumed or re-offloaded.
         f.pointer.write_text("{}", encoding="utf-8")
-        expected = "already_offloaded"
+        expected = "pointer_invalid"
     elif case == "symlinked_root":
         run_root = tmp_path / "canaries" / "alias"
         run_root.symlink_to(f.run)
@@ -1187,3 +1188,83 @@ def test_a_run_whose_only_change_is_a_vanished_member_keeps_its_pointer(tmp_path
 
     assert (result["status"], result["offloaded_count"]) == ("applied", 0)
     assert f.pointer.is_file()
+
+
+def _crash_on_second_group(monkeypatch, f) -> None:
+    """Offload ``f`` with a crash while its second member group is being evicted."""
+
+    real_remove, calls = residue.held_files._remove_group, []
+
+    def crashing(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 2:
+            raise RuntimeError("killed mid-eviction")
+        return real_remove(*args, **kwargs)
+
+    with monkeypatch.context() as patched:
+        patched.setattr(residue.held_files, "_remove_group", crashing)
+        with pytest.raises(RuntimeError, match="killed mid-eviction"):
+            _offload(f)
+
+
+def test_an_eviction_a_crash_cut_short_resumes_on_the_next_tick(tmp_path, monkeypatch) -> None:
+    """A crash after the pointer is written leaves members behind it. Each later tick reports
+    the residue bytes still local, and one that applies and passes every gate under the lock
+    evicts the listed members that still match the pointer, then rewrites what it keeps."""
+
+    f = _sealed_run(tmp_path / "canaries")
+    _crash_on_second_group(monkeypatch, f)
+    left = sorted(relative for relative in RESIDUE if (f.run / relative).exists())
+    assert f.pointer.is_file() and len(left) == len(RESIDUE) - 1
+
+    plan = residue.offload_result_residue(run_root=f.run, hot_window_seconds=2 * DAY, now=lambda: NOW)
+    left_bytes = sum(len(RESIDUE[relative]) for relative in left)
+    assert (plan["status"], plan["resume"]) == ("dry_run", True)
+    assert (plan["candidate_count"], plan["candidate_bytes"]) == (len(left), left_bytes)
+    assert (plan["pointed_remaining_count"], plan["pointed_remaining_bytes"]) == (len(left), left_bytes)
+
+    resumed = _offload(f)
+
+    assert (resumed["status"], resumed["resume"], resumed["offloaded_count"]) == ("applied", True, len(left))
+    assert resumed["offloaded_bytes"] == left_bytes and resumed["pointed_remaining_bytes"] == 0
+    assert not set(RESIDUE) & set(_local_files(f.run))
+    pointer = json.loads(f.pointer.read_text(encoding="utf-8"))
+    assert pointer["kept"] == [] and pointer["pointer_digest"] == canonical_digest(pointer, digest_field="pointer_digest")
+    assert f.client.upload_count == 2  # the resume published nothing
+    again = _offload(f)
+    assert (again["status"], again["retained_reason"], again["pointed_remaining_bytes"]) == (
+        "retained", "already_offloaded", 0)
+
+
+def test_a_resumed_member_that_no_longer_matches_the_pointer_is_kept(tmp_path, monkeypatch) -> None:
+    f = _sealed_run(tmp_path / "canaries")
+    _crash_on_second_group(monkeypatch, f)
+    left = sorted(relative for relative in RESIDUE if (f.run / relative).exists())
+    changed = f.run / left[0]
+    changed.write_bytes(b"written after the crash")
+
+    resumed = _offload(f)
+
+    assert (resumed["status"], resumed["offloaded_count"]) == ("applied", len(left) - 1)
+    assert _changed(resumed["skipped"]) == [{"relative_path": left[0], "reason": "member_changed"}]
+    assert changed.read_bytes() == b"written after the crash"
+    pointer = json.loads(f.pointer.read_text(encoding="utf-8"))
+    assert pointer["kept"] == [{"relative_path": left[0], "reason": "member_changed"}]
+    again = _offload(f)
+    assert (again["retained_reason"], again["pointed_remaining_count"], again["pointed_remaining_bytes"]) == (
+        "already_offloaded", 1, len(b"written after the crash"))
+
+
+def test_a_pointer_that_does_not_verify_is_left_alone(tmp_path, monkeypatch) -> None:
+    f = _sealed_run(tmp_path / "canaries")
+    _crash_on_second_group(monkeypatch, f)
+    value = json.loads(f.pointer.read_text(encoding="utf-8"))
+    value["members"][0]["size_bytes"] += 1
+    f.pointer.chmod(0o640)
+    f.pointer.write_text(json.dumps(value), encoding="utf-8")
+    before = _local_files(f.run)
+
+    result = _offload(f)
+
+    assert (result["status"], result["retained_reason"]) == ("retained", "pointer_invalid")
+    assert _local_files(f.run) == before
