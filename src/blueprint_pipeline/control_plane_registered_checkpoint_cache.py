@@ -220,6 +220,8 @@ def issue_needed_checkpoint_cache_intent(*, principal, owner, name, reference_ki
     try:
         _require(os.geteuid() == 0, "needed_cache_root_required")
         config = installed._configuration(files, installed_config_path)
+        _require(Path(config.lane_scratch_work_root) == _REGISTERED_ROOTS[0],
+                 "needed_cache_namespace_invalid")
         _require(config.needed_checkpoint_cache_creation_enabled is True, "needed_cache_creation_disabled")
         issued = now()
         _require(owners._number(issued) and owners._matches(principal, owners._PRINCIPAL)
@@ -506,6 +508,8 @@ def _current_projection(files, root, gid, *, _lock_held=False):
 
 def _read_layout(files, config_path):
     config = installed._configuration(files, config_path)
+    _require(Path(config.lane_scratch_work_root) == _REGISTERED_ROOTS[0],
+             "needed_cache_namespace_invalid")
     return dict(root=Path(config.lane_scratch_work_root),
                 public=Path(config.needed_checkpoint_cache_registration_root),
                 authority=Path(config.needed_checkpoint_cache_authority_root),
