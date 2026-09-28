@@ -256,6 +256,7 @@ def scene_participant(*path_arguments):
             paths = [values[key] for key in path_arguments if values.get(key) is not None]
             with scene_access(*paths):
                 return function(*args, **kwargs)
+        admitted.__scene_retirement_lifetime__ = 'scene_retirement_lifetime.v1'
         return admitted
     return decorate
 

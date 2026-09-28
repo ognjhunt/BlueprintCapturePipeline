@@ -176,3 +176,6 @@ __all__ = [
     "TaskEvaluationResultDeliveryError",
     "resolve_live_pipeline_result_artifact",
 ]
+
+# These real manual lifetimes are retained through resolver cleanup and ASGI send.
+resolve_live_pipeline_result_artifact.__scene_retirement_lifetime__ = 'scene_retirement_lifetime.v1'

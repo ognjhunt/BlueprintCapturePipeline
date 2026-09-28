@@ -1,6 +1,8 @@
 """Reopen authenticated persistent owner consent for derived execution records."""
 from __future__ import annotations
 
+from .task_evaluation_scene_retirement_access import scene_participant
+
 import os
 import json
 import re
@@ -96,6 +98,7 @@ def descriptive_task_match(*, owner_task, seed, source_binding):
             "numeric_parameters_owner_measured": False, "physical_truth_claimed": False}
 
 
+@scene_participant()
 def reopen_scene_intent(reference, *, now=None):
     """Only server-retained intake records may supply owner identity or permission."""
     from .task_evaluation_scene_intake import _read, validate_request, effective_execution_expiry
@@ -124,6 +127,7 @@ def reopen_scene_intent(reference, *, now=None):
     return intent
 
 
+@scene_participant()
 def validate_task_scene_owner(task, *, provider_terms_path=None, now=None):
     binding = task.get("scene_intent_authority")
     require(isinstance(binding, dict) and set(binding) in ({"intent", "intent_digest"}, {"intent", "intent_digest", "attempt"}),
