@@ -129,3 +129,22 @@ def test_oversized_metadata_refuses_before_new_object(tmp_path, root_metadata):
     with pytest.raises(ValueError, match="owner_target_resource_exhausted"):
         published(tmp_path, b"x"*32769)
     assert list(tmp_path.iterdir()) == []
+
+
+def test_parent_security_is_checked_before_any_temp_creation(tmp_path, root_metadata, monkeypatch):
+    from blueprint_pipeline.control_plane_lane_owner_target_publication import _publish_owned_metadata
+    tmp_path.chmod(0o700)
+    owner = files()
+    parent = owner.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    tmp_path.chmod(0o777)
+    original = os.open
+    def opened(name, flags, *a, **kw):
+        assert not flags & os.O_CREAT, "unsafe metadata creation before parent security proof"
+        return original(name, flags, *a, **kw)
+    monkeypatch.setattr(os, "open", opened)
+    try:
+        with pytest.raises(ValueError, match="owner_target_publication_failed"):
+            _publish_owned_metadata(owner, parent, "a"*32 + ".json", b"{}", mode=0o600, artifact_kind="attestation")
+        assert list(tmp_path.iterdir()) == []
+    finally:
+        owner.finish()
