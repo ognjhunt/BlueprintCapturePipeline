@@ -19,6 +19,8 @@ ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,127}')
 CONSENT_KEYS = {'schema_version','consent_id','principal_id','intent_id','intent_raw_ref',
     'plan_raw_ref','retired_journal_raw_ref','policy_sha256','cohort_sha256','action',
     'created_at','expires_at','members','private_archive_classes','consent_digest'}
+CACHE_KEYS={'canonical_path','digest','size_bytes','generation_id','generation_raw_ref','source_raw_ref'}
+OPTIONAL_CONSENT_KEYS={'cache_objects','terminal_pin_refs'}
 MEMBER_KEYS = {'canonical_path','class','owner_intent_id','owner_raw_ref','generation_id',
                'dev','ino','mode','inventory_sha256'}
 
@@ -117,7 +119,8 @@ def load_authority(consent_path, *, action, now):
                  and row['lifetime_contract_version']=='scene_retirement_lifetime.v1')
         names.add(row['entrypoint'])
     consent,consent_ref=load_document(consent_path,maximum=512*1024,protected=True)
-    _require(set(consent)==CONSENT_KEYS and consent['schema_version']=='scene_retirement_consent.v1')
+    _require(CONSENT_KEYS<=set(consent)<=CONSENT_KEYS|OPTIONAL_CONSENT_KEYS
+             and consent['schema_version']=='scene_retirement_consent.v1')
     _require(type(consent['consent_id']) is str and TOKEN.fullmatch(consent['consent_id']))
     _require(consent['consent_digest']==canonical_digest(consent,digest_field='consent_digest'))
     _require(consent['action']==action,'scene_retirement_consent_action_invalid')
@@ -167,4 +170,24 @@ def load_authority(consent_path, *, action, now):
         _require(any(path.is_relative_to(Path(row['root'])) and member['dev']==row['device'] for row in policy['roots']))
         _require(not any(path==Path(policy[key]) or path.is_relative_to(Path(policy[key]))
                          or Path(policy[key]).is_relative_to(path) for key in ('coordinator_path','generation_store','journal_store')))
+    caches=consent.get('cache_objects',[])
+    pins=consent.get('terminal_pin_refs',[])
+    _require(type(caches) is list and len(caches)<=256 and type(pins) is list and len(pins)<=256)
+    for row in caches:
+        _require(type(row) is dict and set(row)==CACHE_KEYS)
+        path=_canonical(row['canonical_path'])
+        _require(str(path) not in paths and type(row['digest']) is str and SHA.fullmatch(row['digest'])
+                 and path.name==row['digest'][7:] and type(row['size_bytes']) is int and row['size_bytes']>=0
+                 and type(row['generation_id']) is str and TOKEN.fullmatch(row['generation_id'])
+                 and any(path.is_relative_to(Path(root['root'])) for root in policy['roots']))
+        paths.add(str(path))
+        raw_reference(row['generation_raw_ref'])
+        raw_reference(row['source_raw_ref'])
+        _require(row['generation_raw_ref']['path']==str(Path(policy['generation_store'])/(
+            hashlib.sha256(str(path).encode()).hexdigest()+'.json')))
+    pin_paths=set()
+    for row in pins:
+        raw_reference(row)
+        _require(row['path'] not in pin_paths)
+        pin_paths.add(row['path'])
     return dict(policy=policy,consent=consent,consent_raw_ref=consent_ref,scope=scope)

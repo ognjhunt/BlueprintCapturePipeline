@@ -369,3 +369,45 @@ def restore_preserved_cache_aliases(preserved,roots,file_identities,journal):
                 journal.append('cache_alias_restored',member_key=key,evidence=evidence)
             else:
                 _require(done['evidence']==evidence,'scene_retirement_cache_restore_conflict')
+
+
+def validate_cache_objects(policy,consent,allowance):
+    """Exact target/publication proof only; native current-reference closure is separate."""
+    from .task_evaluation_launch_preparation_worker import collect_preparation_references
+    objects=consent.get('cache_objects',[])
+    _require(type(objects) is list and len(objects)<=256,'scene_retirement_inventory_limit')
+    selected=[]
+    for row in objects:
+        allowance.tick()
+        for reference in (row['generation_raw_ref'],row['source_raw_ref']):
+            allowance.charge('local_bytes',reference['size_bytes'])
+        generation=selected_document(row['generation_raw_ref'],maximum=65536)
+        source=selected_document(row['source_raw_ref'],maximum=65536)
+        _require(set(generation)=={'schema_version','canonical_path','digest','size_bytes','generation_id',
+            'state','dev','ino','mode','uid','gid','source_publication_raw_ref','state_sequence',
+            'retirement_token','journal_sha256','state_digest'}
+            and generation['schema_version']=='scene_content_generation.v1'
+            and generation['state'] in {'active','restored-active'}
+            and generation['state_digest']==canonical_digest(generation,digest_field='state_digest')
+            and all(row[key]==generation[key] for key in ('canonical_path','digest','size_bytes','generation_id'))
+            and generation['source_publication_raw_ref']==row['source_raw_ref']
+            and source.get('intent_raw_ref')==consent['intent_raw_ref'],_ERROR)
+        _require(type(source) is dict and set(source)==_SIDE_FIELDS,_ERROR)
+        for reference in (source['intent_raw_ref'],source['attempt_raw_ref'],source['factory_raw_ref'],
+                          source['submission_request_raw_ref']):
+            allowance.tick()
+            _require(type(reference) is dict and type(reference.get('size_bytes')) is int
+                     and 0<reference['size_bytes']<=65536,_ERROR)
+            allowance.charge('local_bytes',reference['size_bytes'])
+        request=selected_document(source['submission_request_raw_ref'],maximum=65536)
+        _validate(source,request,now=allowance.now())
+        allowance.tick()
+        refs=collect_preparation_references(request)
+        _require(any(ref['digest']==row['digest'] and ref['size_bytes']==row['size_bytes'] for ref in refs),_ERROR)
+        path=_canonical(row['canonical_path'])
+        with _opened(path) as (_,info):
+            _require(_identity(info)==(generation['dev'],generation['ino'],generation['mode'])
+                     and info.st_size==row['size_bytes'] and info.st_uid==generation['uid']
+                     and info.st_gid==generation['gid'],_ERROR)
+        selected.append(dict(row))
+    return selected
