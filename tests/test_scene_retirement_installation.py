@@ -41,6 +41,7 @@ def test_actual_installer_provisions_distinct_private_and_readable_stores(tmp_pa
     commands = result.stdout
     for suffix, mode, owner in [('', '0755', 'root'), ('/coordinator', '0755', 'root'),
                                 ('/generations', '0700', 'blueprint'), ('/journals', '0700', 'root'),
+                                ('/journals/processes', '0700', 'root'),
                                 ('/journals/retired', '0700', 'root'), ('/journals.metadata', '0750', 'root'),
                                 ('/consents', '0700', 'root')]:
         assert f'<install> <-d> <-m> <{mode}> <-o> <{owner}> <-g> <blueprint> <{root}{suffix}>' in commands
@@ -48,7 +49,7 @@ def test_actual_installer_provisions_distinct_private_and_readable_stores(tmp_pa
     assert 'chmod -R' not in commands and 'chown -R' not in commands
 
 
-@pytest.mark.parametrize('link', ['root', 'journals', 'ancestor'])
+@pytest.mark.parametrize('link', ['root', 'journals', 'processes', 'ancestor'])
 def test_installer_refuses_linked_stores_before_any_mutation(tmp_path, link):
     foreign = tmp_path.resolve() / 'foreign'
     foreign.mkdir()
@@ -60,6 +61,9 @@ def test_installer_refuses_linked_stores_before_any_mutation(tmp_path, link):
         elif link == 'journals':
             root.mkdir()
             (root / 'journals').symlink_to(foreign)
+        elif link == 'processes':
+            (root / 'journals').mkdir(parents=True)
+            (root / 'journals' / 'processes').symlink_to(foreign)
         else:
             # Exercise the ancestry checks with the real root's parent linked.
             root.parent.rename(root.parent.with_name(root.parent.name + '-real'))
