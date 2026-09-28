@@ -9,6 +9,7 @@ from .task_evaluation_scene_retirement_access import scene_participant
 import argparse
 import math
 from copy import deepcopy
+import hashlib
 from pathlib import Path
 import time
 
@@ -43,6 +44,10 @@ DEFAULT_EXECUTION = Path("/var/lib/blueprint/task-evaluation-inputs/sam31-prepar
 
 def record(path):
     path = Path(path)
+    from .task_evaluation_scene_retirement_metadata import read_logical_metadata
+    retained=read_logical_metadata(path)
+    if retained is not None:
+        return {'path':str(path),'sha256':'sha256:'+hashlib.sha256(retained).hexdigest(),'size_bytes':len(retained)}
     require(path.is_absolute() and path.is_file() and not any(p.is_symlink() for p in (path, *path.parents)),
             "sam31_adoption_file_invalid")
     return {"path": str(path), "sha256": sha(path), "size_bytes": path.stat().st_size}

@@ -207,10 +207,12 @@ def read_logical_metadata(path, *, expected_sha256=None, expected_size_bytes=Non
         for row in rows:
             _require(type(row) is dict and set(row) in ({'logical_path','sha256','size_bytes','retained_raw_ref'}, {'logical_path','sha256','size_bytes','retained_raw_ref','audience'}),
                      'scene_retirement_metadata_unavailable')
-            if row['logical_path']==str(path) and (expected_sha256 is None or row['sha256']==expected_sha256):
+            if row['logical_path']==str(path):
                 found.append(row)
-        _require(len(found)==1,'scene_retirement_metadata_unavailable')
+        _require(found,'scene_retirement_restore_required')
+        _require(len(found)==1,'scene_retirement_metadata_ambiguous')
         row=found[0]
+        _require(expected_sha256 is None or row['sha256']==expected_sha256,'scene_retirement_metadata_changed')
         return _row_bytes(store,gid,row,expected_size_bytes)
 
 

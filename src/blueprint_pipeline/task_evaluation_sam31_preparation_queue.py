@@ -90,6 +90,13 @@ def verify_evidence_reference(row: Mapping[str, Any], roots: Sequence[Path]) -> 
     _require(isinstance(raw, str) and Path(raw).is_absolute() and ".." not in Path(raw).parts,
              "evidence_path_invalid")
     path = Path(raw)
+    _require(any(path.resolve().is_relative_to(root.resolve()) for root in roots),"evidence_path_invalid")
+    from .task_evaluation_scene_retirement_metadata import read_logical_metadata
+    retained=read_logical_metadata(path,expected_sha256=row.get("sha256",row.get("digest")),
+                                   expected_size_bytes=row.get("size_bytes"))
+    if retained is not None:
+        _require(type(row.get("size_bytes")) is int and row["size_bytes"]>0,"evidence_bytes_invalid")
+        return path
     _require(not any(p.is_symlink() for p in (path, *path.parents))
              and path.is_file()
              and any(path.resolve().is_relative_to(root.resolve()) for root in roots),
