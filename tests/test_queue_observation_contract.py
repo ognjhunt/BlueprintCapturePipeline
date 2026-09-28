@@ -97,11 +97,25 @@ def test_invalid_state_contract_refuses_before_filesystem(tmp_path, states, monk
         _observe(tmp_path, states)
 
 
-@pytest.mark.parametrize("root", ["relative", "/x/../y", "/x/./y", "/x//y", "//x", "/x/", "/x/<secret>", "/x/\n", "/" + "/".join(["x"] * 65), "/" + "x" * 4096])
+@pytest.mark.parametrize("root", ["relative", "/x/../y", "/x/./y", "/x//y", "//x", "/x/", "/x/<secret>", "/x/\n", "/" + "/".join(["x"] * 65), "/" + "x" * 4096, "/x/?", "/x/[y]", "/x/*", "/x/\ud800"], ids=lambda value: str(value)[:20])
 def test_invalid_root_contract_is_bounded_and_sanitized(root):
     module = _module()
     with pytest.raises(module.QueueObservationError, match="^queue_parameters_invalid$"):
         module.observe_queue_states([module.QueueRootContract(root, ("pending",))], observed_at_epoch=1)
+
+
+def test_oversized_root_refuses_before_slice_or_component_allocation(monkeypatch):
+    module = _module()
+    monkeypatch.setattr(module, "MAX_PATH_BYTES", 2)
+
+    class SliceSpy(str):
+        def __getitem__(self, key):
+            if isinstance(key, slice):
+                pytest.fail("oversized input sliced before refusal")
+            return super().__getitem__(key)
+
+    with pytest.raises(module.QueueObservationError, match="^queue_parameters_invalid$"):
+        module.observe_queue_states([module.QueueRootContract(SliceSpy("/x/y"), ("pending",))], observed_at_epoch=1)
 
 
 def test_duplicate_and_overlapping_root_contracts_refuse(tmp_path):

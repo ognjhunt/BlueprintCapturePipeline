@@ -101,11 +101,13 @@ def _path(value: Any) -> str:
     try:
         valid = (len(value) <= MAX_PATH_BYTES and len(value.encode("utf-8")) <= MAX_PATH_BYTES
                  and value.startswith("/") and not value.startswith("//")
-                 and not any(ord(c) < 32 or ord(c) == 127 or c in "\\<>*" for c in value))
+                 and not any(ord(c) < 32 or ord(c) == 127 or c in "\\<>*?[]" for c in value))
     except UnicodeError:
         valid = False
+    if not valid:
+        raise QueueObservationError("queue_parameters_invalid")
     parts = value[1:].split("/") if value != "/" else []
-    if not valid or len(parts) > MAX_PATH_COMPONENTS or any(p in {"", ".", ".."} for p in parts):
+    if len(parts) > MAX_PATH_COMPONENTS or any(p in {"", ".", ".."} for p in parts):
         raise QueueObservationError("queue_parameters_invalid")
     return value
 
@@ -452,11 +454,7 @@ class _Scan:
             result = QueueStateObservation(not self.blockers, self.observed, roots, rows, tuple(sorted(self.blockers)))
             document = asdict(result)
             self.tick()
-            size = 0
-            for chunk in json.JSONEncoder(ensure_ascii=False, allow_nan=False).iterencode(document):
-                self.tick()
-                size += len(chunk.encode("utf-8"))
-                _require(size <= MAX_OUTPUT_BYTES, "queue_output_limit")
+            self.output_size(document)
             self.tick()
             return result
         except _Blocked as error:
@@ -464,6 +462,73 @@ class _Scan:
         except (TypeError, ValueError, UnicodeError, OverflowError, RecursionError):
             self.block("queue_result_invalid")
         return QueueStateObservation(False, self.observed, (), (), tuple(sorted(self.blockers)))
+
+    def output_size(self, document: dict[str, Any]) -> None:
+        """Count default-spaced, ensure_ascii=False JSON without allocating it.
+
+        iterencode may allocate a whole escaped16MiB string before yielding;
+        private output has fixed shallow structure, so count its scalar bytes.
+        """
+        size = 0
+
+        def add(value: int) -> None:
+            nonlocal size
+            size += value
+            _require(size <= MAX_OUTPUT_BYTES, "queue_output_limit")
+
+        def string_size(value: str) -> None:
+            add(2)
+            for offset, char in enumerate(value):
+                if offset % PREFLIGHT_CHECK_CHARS == 0:
+                    self.tick()
+                ordinal = ord(char)
+                if char in '\\"\b\f\n\r\t':
+                    add(2)
+                elif ordinal < 32:
+                    add(6)
+                elif ordinal < 128:
+                    add(1)
+                elif ordinal < 2048:
+                    add(2)
+                elif 0xD800 <= ordinal <= 0xDFFF:
+                    raise _Blocked("queue_result_invalid")
+                elif ordinal < 65536:
+                    add(3)
+                else:
+                    add(4)
+            self.tick()
+
+        def visit(value: Any) -> None:
+            self.tick()
+            if isinstance(value, str):
+                string_size(value)
+            elif isinstance(value, dict):
+                add(2)
+                for index, (key, child) in enumerate(value.items()):
+                    self.tick()
+                    if index:
+                        add(2)
+                    string_size(key)
+                    add(2)
+                    visit(child)
+            elif isinstance(value, (tuple, list)):
+                add(2)
+                for index, child in enumerate(value):
+                    self.tick()
+                    if index:
+                        add(2)
+                    visit(child)
+            elif value is None:
+                add(4)
+            elif isinstance(value, bool):
+                add(4 if value else 5)
+            elif _finite(value):
+                add(len(str(value)))
+            else:
+                raise _Blocked("queue_result_invalid")
+
+        visit(document)
+        self.tick()
 
 
 def observe_queue_states(contracts: Sequence[QueueRootContract], *, observed_at_epoch: float,

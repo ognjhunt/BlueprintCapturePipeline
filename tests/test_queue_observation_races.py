@@ -189,6 +189,45 @@ def test_all_owned_descriptors_close_on_post_open_clock_failure(tmp_path, monkey
         assert error.value.errno == errno.EBADF
 
 
+@pytest.mark.parametrize("fault", ["none", "read", "row_fstat"])
+def test_normal_and_row_fault_paths_close_every_owned_descriptor(tmp_path, monkeypatch, fault):
+    module = _module()
+    _row(tmp_path)
+    opened = []
+    row_fds = set()
+    real_open, real_read, real_fstat = module.os.open, module.os.read, module.os.fstat
+    failed = False
+
+    def tracked(name, *args, **kwargs):
+        fd = real_open(name, *args, **kwargs)
+        opened.append(fd)
+        if name == "a.json":
+            row_fds.add(fd)
+        return fd
+
+    def fstat(fd):
+        nonlocal failed
+        if fault == "row_fstat" and fd in row_fds and not failed:
+            failed = True
+            raise OSError(errno.EIO, "private")
+        return real_fstat(fd)
+
+    def read(*args):
+        if fault == "read":
+            raise OSError(errno.EIO, "private")
+        return real_read(*args)
+
+    monkeypatch.setattr(module.os, "open", tracked)
+    monkeypatch.setattr(module.os, "fstat", fstat)
+    monkeypatch.setattr(module.os, "read", read)
+    result = _observe(module, [tmp_path])
+    assert result.complete == (fault == "none")
+    assert "private" not in str(result.blockers)
+    for fd in set(opened):
+        with pytest.raises(OSError):
+            real_fstat(fd)
+
+
 @pytest.mark.parametrize("fault", ["fstat", "clock"])
 def test_acquisition_fault_combined_with_one_shot_close_failure_closes_owned_fd(tmp_path, monkeypatch, fault):
     module = _module()
