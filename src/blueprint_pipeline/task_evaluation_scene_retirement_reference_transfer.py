@@ -168,6 +168,102 @@ def _current_sam_results(selected,fresh,allowance):
         occurrences+=1
         _require(occurrences<=10000,'scene_retirement_reference_limit')
         selected[identity]=[proofs[0]]
+    return jobs
+
+
+def _progress_value(identity,proof,fresh,allowance):
+    """Whole durable document identity differs from its nested final seal."""
+    allowance.tick()
+    roots=fresh.get('planner_context',{}).get('roots')
+    _require(type(roots) is dict and type(roots.get('preparation_queue_root')) is str,_REASON)
+    root=_canonical(roots['preparation_queue_root'])
+    path=Path(identity[0])
+    _require(path.is_relative_to(root) and len(path.relative_to(root).parts)==3
+        and path.parent.parent.name=='source-progress',_REASON)
+    try:
+        value=selected_document(dict(zip(('path','sha256','size_bytes'),identity)),maximum=4*1024*1024)
+    except (OSError,ValueError,TypeError,UnicodeError):
+        raise SceneRetirementAccessError('scene_retirement_reference_changed') from None
+    keys={'schema_version','preparation_id','request_digest','run_id','source_commit','status','sequence',
+          'previous_progress_digest','advancement','provider_mutation_performed','paid_execution_requested','progress_digest'}
+    _require(keys<=set(value)<=keys|{'resume_signal_digest'} and value.get('schema_version')=='task_evaluation_sam31_preparation_progress.v1'
+        and value.get('status')=='ready' and type(value.get('sequence')) is int and 1<=value['sequence']<=999999
+        and type(value.get('preparation_id')) is str and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,191}',value['preparation_id'])
+        and type(value.get('request_digest')) is str and re.fullmatch('sha256:[0-9a-f]{64}',value['request_digest'])
+        and value.get('progress_digest')==canonical_digest(value,digest_field='progress_digest')
+        and proof.get('role')=='source_progress' and proof.get('seal_field')=='progress_digest'
+        and proof.get('seal_digest')==value['progress_digest']
+        and value.get('provider_mutation_performed') is False and value.get('paid_execution_requested') is False,_REASON)
+    _require(path.parent.name==value['preparation_id']+'-'+value['request_digest'][7:]
+        and path.name==f"{value['sequence']:06d}-"+value['progress_digest'][7:]+'.json',_REASON)
+    advancement=value['advancement']
+    fields={'status','evidence_refs','sam31_exact_mask_inputs','sam31_preparation_result'}
+    _require(type(advancement) is dict and fields<=set(advancement)<=fields|{'human_review_required','candidate_policy_queried'}
+        and advancement['status']=='ready' and all(advancement.get(k,False) is False for k in ('human_review_required','candidate_policy_queried')),_REASON)
+    final=advancement['sam31_preparation_result']
+    fields={'schema_version','status','source_commit','plan_digest','evidence','stage_result_receipts','result_digest'}
+    _require(type(final) is dict and fields<=set(final)<=fields|{'completed_prefix_adoption','review_kind','human_review_required','candidate_policy_queried'}
+        and final.get('schema_version')=='task_evaluation_sam31_preparation_result.v1'
+        and final.get('status')=='exact_mask_inputs_ready' and final.get('source_commit')==value['source_commit']
+        and final.get('result_digest')==canonical_digest(final,digest_field='result_digest')
+        and all(final.get(k,False) is False for k in ('human_review_required','candidate_policy_queried'))
+        and final.get('review_kind','ai')=='ai',_REASON)
+    return value,final,root
+
+
+def _current_sam_progress(selected,fresh,jobs,allowance):
+    source=fresh.get('historical_lineage',{}).get('source_family_inventory',{})
+    observations=_rows(source.get('sam_observations',[]))
+    owners={(job['parent_request_digest'],job['plan_digest'],job['expected_source_commit']) for job in jobs.values()}
+    finals={}
+    for row in observations:
+        allowance.tick()
+        if row.get('role')!='sam_final' or row.get('parent_binding_verified') is not True:
+            continue
+        proofs=_rows(row.get('source_provenance'))
+        _require(len(proofs)==1,_REASON)
+        proof=proofs[0]
+        _require(proof.get('role')=='source_progress' and proof.get('json_pointer')=='/advancement/sam31_preparation_result',_REASON)
+        identity=_selector(proof)
+        _require(len(finals)<10000 or identity in finals,'scene_retirement_reference_limit')
+        finals.setdefault(identity,[]).append(proof)
+    bound={}
+    occurrences=sum(len(proofs) for proofs in selected.values())
+    for row in observations:
+        allowance.tick()
+        if row.get('role')!='sam_source_progress' or row.get('progress_status')!='ready':
+            continue
+        proofs=_rows(row.get('source_provenance'))
+        _require(len(proofs)==1,_REASON)
+        proof=proofs[0]
+        identity=_selector(proof)
+        nested=finals.get(identity,[])
+        if not nested:
+            continue
+        value,final,root=_progress_value(identity,proof,fresh,allowance)
+        if (value['request_digest'],final['plan_digest'],value['source_commit']) not in owners:
+            continue
+        _require(all(p.get('seal_field')=='result_digest' and p.get('seal_digest')==final['result_digest'] for p in nested),_REASON)
+        references=_rows(final['stage_result_receipts'])
+        _require(len(references)<=10,_REASON)
+        adoption=final.get('completed_prefix_adoption')
+        if adoption is not None:
+            _require(type(adoption) is dict,_REASON)
+            original=_rows(adoption.get('original_phase_result_receipts'))
+            _require(len(original)<=10,_REASON)
+            references=[*references,*original]
+        for reference in references:
+            allowance.tick()
+            key=_selector(reference)
+            _,role,_,_=_sam_value(key,selected.get(key,[]),fresh,allowance)
+            _require(role=='sam_results',_REASON)
+        if identity not in selected:
+            occurrences+=1
+            _require(occurrences<=10000,'scene_retirement_reference_limit')
+            selected[identity]=[proof]
+        _require(len(bound)<10000 or identity in bound,'scene_retirement_reference_limit')
+        bound[identity]=(value,final,root)
+    return bound
 
 
 def _bound_compilations(fresh,selected,allowance):
@@ -242,7 +338,7 @@ def _compilation_value(identity,proofs,fresh,bound,allowance):
     return value,role,root,field
 
 
-def _selected_sam(protection,selected,fresh,allowance,bound):
+def _selected_sam(protection,selected,fresh,allowance,bound,progress):
     """Transfer an exact prefix-selected terminal SAM record, never raw history."""
     allowance.tick()
     _require(set(protection)=={'kind','path','raw_sha256','raw_size_bytes','scope','action'}
@@ -250,14 +346,23 @@ def _selected_sam(protection,selected,fresh,allowance,bound):
              and protection['action']=='KEEP',_REASON)
     identity=_selector(protection,'path','raw_sha256','raw_size_bytes')
     proofs=selected.get(identity,[])
-    if proofs and proofs[0].get('role') in {'compilation_envelopes','compilation_results'}:
+    nested=None
+    if proofs and proofs[0].get('role')=='source_progress':
+        _require(identity in progress and protection['scope']=='preparation_sam_auxiliary_layouts_only',_REASON)
+        value,final,root=progress[identity]
+        role,field='source_progress','progress_digest'
+        nested=final['result_digest']
+    elif proofs and proofs[0].get('role') in {'compilation_envelopes','compilation_results'}:
         _require(protection['scope']=='selected_primary_queue_states_only',_REASON)
         value,role,root,field=_compilation_value(identity,proofs,fresh,bound,allowance)
     else:
         value,role,root,field=_sam_value(identity,proofs,fresh,allowance)
-    return dict(source={'row_path':identity[0],'raw_sha256':identity[1],'raw_size_bytes':identity[2],
+    result=dict(source={'row_path':identity[0],'raw_sha256':identity[1],'raw_size_bytes':identity[2],
                         'role':role,'queue_root':str(root)},canonical_digest=value[field],
                 disposition='exact_selected_closed_metadata_retained',action='KEEP')
+    if nested is not None:
+        result['nested_final_digest']=nested
+    return result
 
 
 def validate_current_reference_transfer(fresh,allowance):
@@ -268,7 +373,8 @@ def validate_current_reference_transfer(fresh,allowance):
              and all(type(row) is dict and row.get('complete') is True for row in scopes)
              and not observation.get('blockers'),'scene_retirement_reference_scope_unproven')
     selected=_sources(fresh,allowance)
-    _current_sam_results(selected,fresh,allowance)
+    jobs=_current_sam_results(selected,fresh,allowance)
+    progress=_current_sam_progress(selected,fresh,jobs,allowance)
     compilations=_bound_compilations(fresh,selected,allowance)
     records=[]
     emitted=0
@@ -285,7 +391,7 @@ def validate_current_reference_transfer(fresh,allowance):
         allowance.tick()
         _require(type(protection) is dict,_REASON)
         if protection.get('kind')=='unsupported_queue_observation':
-            current=_selected_sam(protection,selected,fresh,allowance,compilations)
+            current=_selected_sam(protection,selected,fresh,allowance,compilations,progress)
             emitted+=1024+len(current['source']['row_path'].encode('utf-8'))
             _require(emitted<=1024*1024,'scene_retirement_reference_limit')
             auxiliaries.append(current)
