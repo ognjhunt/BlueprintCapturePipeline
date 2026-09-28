@@ -1,0 +1,49 @@
+"""Restoration preserves exact bytes and never overwrites a replacement writer."""
+import os
+
+import pytest
+
+from tests.test_scene_retirement_member_mutation import setup_operation
+
+
+def test_full_preserved_member_restores_bytes_hardlinks_and_mode_without_overwrite(tmp_path,monkeypatch):
+    from blueprint_pipeline.task_evaluation_scene_retirement_restore import restore_preserved_members
+    from blueprint_pipeline.task_evaluation_scene_retirement_mutation import detach_and_remove
+    from blueprint_pipeline.task_evaluation_scene_retirement_preservation import preserve_members
+    from tests.test_scene_retirement_preservation import MemoryTransport
+    access,member,_,journal=setup_operation(tmp_path,monkeypatch)
+    os.link(member/'nested'/'evidence.bin',member/'linked.bin')
+    transport=MemoryTransport([member])
+    preserved=preserve_members([member],transport=transport,allowance=journal.allowance,token='3'*32)
+    with access.exclusive_scene_access():
+        detach_and_remove(preserved,member_index=0,generation_id='2'*32,journal=journal)
+        transport.members=[]  # Fake's upload/readback pre-removal assertion has finished.
+        result=restore_preserved_members(preserved,transport=transport,journal=journal)
+    assert result[0]['outcome']=='restored'
+    assert (member/'nested'/'evidence.bin').read_bytes()==b'preserved-evidence'
+    assert (member/'linked.bin').stat().st_ino==(member/'nested'/'evidence.bin').stat().st_ino
+    assert (member.stat().st_mode & 0o777)==preserved['members'][0]['mode']
+
+
+def test_restore_conflict_keeps_new_writer_and_corrupt_remote_creates_nothing(tmp_path,monkeypatch):
+    from blueprint_pipeline.task_evaluation_scene_retirement_restore import restore_preserved_members
+    from blueprint_pipeline.task_evaluation_scene_retirement_mutation import detach_and_remove
+    from blueprint_pipeline.task_evaluation_scene_retirement_preservation import preserve_members
+    from tests.test_scene_retirement_preservation import MemoryTransport
+    access,member,_,journal=setup_operation(tmp_path,monkeypatch)
+    transport=MemoryTransport([member])
+    preserved=preserve_members([member],transport=transport,allowance=journal.allowance,token='3'*32)
+    with access.exclusive_scene_access():
+        detach_and_remove(preserved,member_index=0,generation_id='2'*32,journal=journal)
+        transport.members=[]
+        transport.corrupt=True
+        with pytest.raises(ValueError,match='scene_retirement_readback_unproven'):
+            restore_preserved_members(preserved,transport=transport,journal=journal)
+        assert not member.exists()
+        transport.corrupt=False
+        member.mkdir()
+        (member/'new.bin').write_bytes(b'new-writer')
+        with pytest.raises(FileExistsError):
+            restore_preserved_members(preserved,transport=transport,journal=journal)
+    assert list(member.iterdir())==[member/'new.bin']
+    assert (member/'new.bin').read_bytes()==b'new-writer'
