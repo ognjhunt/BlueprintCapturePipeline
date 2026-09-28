@@ -1126,3 +1126,49 @@ and complete package preparation on host and guest, and records exact APT
 simulation output under the existing CPU-only observation. Actual APT replay
 is still unexecuted at this checkpoint; execute only after clean commit/push,
 fresh capacity and preparing all files against that immutable commit.
+
+Actual immutable0d63 CPU replay is terminal: guest observed/exit0/base unchanged,
+receipt digest e1c262da5f865454182969df08702bd87347c07e6be91470af3d043056082ab6.
+Its package probe retained ValueError only and did not reach APT. The exact
+retained ISO was then mounted read-only on Mac, its verifier SHA matched
+c02651966799d000fafce85972f1a3a012565c491d6bfe5aa7861eade632416a,
+and complete package verification succeeded with manifest ddeda2ea0f50f214ba751b12ddcb9e26eae0d8f5749530783a1d249f4f6c781d.
+Mount detached; no data deleted. This rules out changed ISO bytes under that
+reader, not a guest filesystem difference. APT closure remains unobserved.
+
+Reviewed focused repair: retain stage and allowlisted g1_vm_system_* error code,
+plus bounded seed inventory, to diagnose the actual guest refusal. Do not
+substitute an exception type for its cause. Reuse read-only cached public .deb
+bytes by verified same-filesystem hardlinks in package and seed preparation;
+never link writable files, change originals, follow symlinks, delete inputs or
+skip any hash. Retained manifests remain separate new files/source commit.
+All three terminal CPU boots used<=25,034,752B overlays and small logs. For
+read-only diagnostic/simulation only, reserve64MiB overlay and8MiB serial log;
+keep2GiB/twoCPU/15m/no-network/8GB floor and enforce the actual child bounds.
+This remains the full25-file resolver probe; it is not a shortened episode or
+an installation budget. It removes duplicate seed-directory/package bytes
+while retaining the entire ISO/evidence. Current local free8.487GB admits the
+389MB ISO plus these measured conservative diagnostic limits, with the same
+8GB floor. Reject cross-filesystem or writable asset linking before output.
+
+Tests first: original writable fixtures default to copy; optional immutable
+link rejects writable/symlink bytes and uses exact same verified inode without
+changing bytes or modes. Generated guest source retains typed cause and stage;
+actual replay must follow clean commit/push and fresh capacity. Accepted before
+building this focused failure-diagnostic/storage repair. No package install,
+rights approval, provider mutation, data deletion or dispatch enablement.
+
+Expose the preparation through this module's local-artifact CLI (exclusive
+download-only or prepare mode), rather than requiring a hand Python snippet.
+Prepare mode requires observation/assets/output/implementation commit and
+reopens clean exact checkout HEAD before calling the same verifier/materializer;
+explicit immutable linking is the only reuse option. Test that CLI delegates to
+the actual preparation with concrete paths and cannot confuse it with download.
+This is not a provider launcher or approval grant; accepted with this repair.
+
+Repair checkpoint: typed diagnostic, immutable-link and CLI cases were observed
+red before implementation. All36 focused CPU/package cases pass, Ruff/diff
+pass. Immutable linking leaves original bytes/modes intact, and the simulation
+still reopens every25-package hash on host and guest. No install/paid launch or
+original deletion. New diagnostic replay must use a fresh stage and manifest
+bound to the new pushed commit; do not overwrite the terminal0d63 evidence.

@@ -90,6 +90,7 @@ def test_optional_packages_only_replay_readonly_offline_apt_simulation():
     assert 'offline_apt_simulation_command' in source
     assert 'verify_system_packages' in source
     assert 'runtime_installation_performed' in source
+    assert "'blocker_code'" in source and "'stage'" in source
     assert 'apt-get install' not in source and 'docker pull' not in source
     compile(source, 'guest_cpu_probe.py', 'exec')
 

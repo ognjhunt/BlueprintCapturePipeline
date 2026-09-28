@@ -201,3 +201,76 @@ def test_pinned_closure_covers_observed_driver_dkms_toolkit_and_sandbox_gaps():
     assert not any(
         r["package"].startswith(("linux-image", "linux-headers", "docker")) for r in values
     )
+
+
+@pytest.mark.parametrize("mode", [0o444, 0o400, 0o600])
+def test_explicit_link_reuses_only_verified_readonly_public_bytes(tmp_path, monkeypatch, mode):
+    content = b"immutable cached Debian bytes"
+    row = {
+        "package": "fixture",
+        "version": "1",
+        "filename": "fixture.deb",
+        "size_bytes": len(content),
+        "sha256": "sha256:" + hashlib.sha256(content).hexdigest(),
+        "url": "https://official.invalid/fixture.deb",
+    }
+    monkeypatch.setattr(system, "SYSTEM_PACKAGES", {"fixture": row})
+    asset = tmp_path / "cached.deb"
+    asset.write_bytes(content)
+    asset.chmod(mode)
+    observed = tmp_path / "observed.json"
+    observed.write_text(json.dumps(observation()))
+    target = tmp_path / "prepared"
+    if mode & 0o222:
+        with pytest.raises(ValueError, match="g1_vm_system"):
+            system.prepare_system_packages(
+                observation_path=observed,
+                asset_paths={"fixture": asset},
+                output_root=target,
+                implementation_commit="b" * 40,
+                link_immutable_assets=True,
+            )
+        assert not target.exists()
+    else:
+        system.prepare_system_packages(
+            observation_path=observed,
+            asset_paths={"fixture": asset},
+            output_root=target,
+            implementation_commit="b" * 40,
+            link_immutable_assets=True,
+        )
+        assert asset.stat().st_ino == (target / "fixture.deb").stat().st_ino
+        assert asset.stat().st_mode & 0o777 == mode
+        assert asset.read_bytes() == content
+
+
+def test_cli_preparation_reaches_the_same_verifier_with_immutable_source(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        system.subprocess,
+        "check_output",
+        lambda argv, **kwargs: "b" * 40 + "\n" if argv[1] == "rev-parse" else "",
+    )
+    monkeypatch.setattr(
+        system,
+        "prepare_system_packages",
+        lambda **kwargs: calls.append(kwargs) or {"manifest_digest": "sha256:" + "c" * 64},
+    )
+    monkeypatch.setattr(
+        system, "fetch_fixed_package_bytes", lambda root: pytest.fail("not download mode")
+    )
+    system.main(
+        [
+            "--prepare-root",
+            str(tmp_path / "prepared"),
+            "--asset-root",
+            str(tmp_path / "assets"),
+            "--guest-observation",
+            str(tmp_path / "observed.json"),
+            "--implementation-commit",
+            "b" * 40,
+            "--link-immutable-assets",
+        ]
+    )
+    assert len(calls) == 1 and calls[0]["link_immutable_assets"] is True
+    assert set(calls[0]["asset_paths"]) == set(system.SYSTEM_PACKAGES)

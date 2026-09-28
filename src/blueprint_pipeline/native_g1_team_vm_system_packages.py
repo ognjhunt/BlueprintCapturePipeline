@@ -14,6 +14,7 @@ from pathlib import Path
 import re
 import shutil
 import stat
+import subprocess
 import time
 import urllib.request
 
@@ -373,7 +374,16 @@ def _manifest(commit, observed):
     return value
 
 
-def prepare_system_packages(*, observation_path, asset_paths, output_root, implementation_commit):
+def prepare_system_packages(
+    *,
+    observation_path,
+    asset_paths,
+    output_root,
+    implementation_commit,
+    link_immutable_assets=False,
+):
+    if type(link_immutable_assets) is not bool:
+        raise ValueError("g1_vm_system_asset_link_flag_invalid")
     if re.fullmatch(r"[0-9a-f]{40}", implementation_commit) is None or set(asset_paths) != set(
         SYSTEM_PACKAGES
     ):
@@ -381,14 +391,26 @@ def prepare_system_packages(*, observation_path, asset_paths, output_root, imple
     observed = verify_guest_observation(observation_path)
     for role, row in SYSTEM_PACKAGES.items():
         _verify_asset(asset_paths[role], row)
-    _fresh(output_root, sum(row["size_bytes"] for row in SYSTEM_PACKAGES.values()) + 131072)
+        if link_immutable_assets and (
+            asset_paths[role].stat().st_mode & 0o222
+            or asset_paths[role].stat().st_dev != output_root.parent.stat().st_dev
+        ):
+            raise ValueError("g1_vm_system_asset_link_unavailable")
+    asset_bytes = (
+        0 if link_immutable_assets else sum(row["size_bytes"] for row in SYSTEM_PACKAGES.values())
+    )
+    _fresh(output_root, asset_bytes + 131072)
     output_root.mkdir(mode=0o700)
     (output_root / EMPTY_LISTS).mkdir(mode=0o700)
     for role, row in SYSTEM_PACKAGES.items():
         target = output_root / row["filename"]
-        shutil.copyfile(asset_paths[role], target)
+        if link_immutable_assets:
+            os.link(asset_paths[role], target, follow_symlinks=False)
+        else:
+            shutil.copyfile(asset_paths[role], target)
         _verify_asset(target, row)
-        target.chmod(0o444)
+        if not link_immutable_assets:
+            target.chmod(0o444)
     shutil.copyfile(observation_path, output_root / OBSERVATION)
     if verify_guest_observation(output_root / OBSERVATION) != observed:
         raise ValueError("g1_vm_system_observation_changed")
@@ -476,11 +498,51 @@ def fetch_fixed_package_bytes(root):
         )
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--download-only-root", required=True, type=Path)
-    args = parser.parse_args()
-    fetch_fixed_package_bytes(args.download_only_root)
+    modes = parser.add_mutually_exclusive_group(required=True)
+    modes.add_argument("--download-only-root", type=Path)
+    modes.add_argument("--prepare-root", type=Path)
+    parser.add_argument("--asset-root", type=Path)
+    parser.add_argument("--guest-observation", type=Path)
+    parser.add_argument("--implementation-commit")
+    parser.add_argument("--link-immutable-assets", action="store_true")
+    args = parser.parse_args(argv)
+    if args.download_only_root is not None:
+        if any(
+            (
+                args.asset_root,
+                args.guest_observation,
+                args.implementation_commit,
+                args.link_immutable_assets,
+            )
+        ):
+            parser.error("preparation options require --prepare-root")
+        fetch_fixed_package_bytes(args.download_only_root)
+        return
+    if not all((args.asset_root, args.guest_observation, args.implementation_commit)):
+        parser.error("prepare mode requires assets, observation and implementation commit")
+    checkout = Path(__file__).resolve().parents[2]
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=checkout, text=True).strip()
+    dirty = subprocess.check_output(
+        ["git", "status", "--porcelain"], cwd=checkout, text=True
+    ).strip()
+    if head != args.implementation_commit or dirty:
+        raise ValueError("g1_vm_system_immutable_source_required")
+    value = prepare_system_packages(
+        observation_path=args.guest_observation,
+        asset_paths={
+            role: args.asset_root / row["filename"] for role, row in SYSTEM_PACKAGES.items()
+        },
+        output_root=args.prepare_root,
+        implementation_commit=head,
+        link_immutable_assets=args.link_immutable_assets,
+    )
+    print(
+        _canonical(
+            {"manifest_digest": value["manifest_digest"], "output_root": str(args.prepare_root)}
+        )
+    )
 
 
 if __name__ == "__main__":

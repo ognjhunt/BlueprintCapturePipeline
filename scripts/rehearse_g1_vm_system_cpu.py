@@ -28,8 +28,8 @@ IMAGE_SHA = "sha256:28dc36f977d4a078ee410caf08f595d91f95185a00e0d4e7970c2d11f735
 LAYER_SHA = "sha256:de25e09c332152ccf749d454abe78b777530344e99d25580d6d204d64bd00619"
 LAYER_BYTES = 2_633_977_898
 DISK_BYTES = 5_196_152_832
-OVERLAY_LIMIT = 512 * 1024**2
-LOG_LIMIT = 32 * 1024**2
+OVERLAY_LIMIT = 64 * 1024**2
+LOG_LIMIT = 8 * 1024**2
 FREE_FLOOR = 8_000_000_000
 TERMINAL = "BLUEPRINT_G1_VM_CPU_RESULT:"
 
@@ -166,31 +166,40 @@ subprocess.run(['systemctl','poweroff'],timeout=30,check=False)
             or any(re.fullmatch(r'sha256:[0-9a-f]{64}', system_packages[key]) is None
                    for key in ('source_sha256', 'manifest_digest'))):
         raise ValueError('g1_vm_cpu_system_package_binding_invalid')
-    diagnostic = '''import runpy
+    diagnostic = '''import runpy,re
 binding=__BINDING__
 result['system_packages']={**binding,'runtime_installation_performed':False,
  'gpu_runtime_qualified':False,'provider_mutation_performed':False}
 try:
+ stage='seed_mount'
  root=Path('/run/blueprint-cpu-seed');root.mkdir(mode=0o700)
  subprocess.run(['mount','-t','iso9660','-o','ro,nodev,nosuid,noexec','/dev/vdb',str(root)],
   capture_output=True,text=True,timeout=30,check=True)
+ stage='verifier_source_binding'
  verifier=root/'system-package-verifier.py'
  if 'sha256:'+hashlib.sha256(verifier.read_bytes()).hexdigest()!=binding['source_sha256']:
   raise ValueError('system_package_verifier_digest_invalid')
  helpers=runpy.run_path(str(verifier))
+ stage='package_verification'
  package_root=root/'system-packages'
+ result['system_packages']['observed_inventory']=sorted(p.name for p in package_root.iterdir())[:32]
  manifest=helpers['verify_system_packages'](package_root,
   expected_implementation_commit=binding['implementation_commit'])
  if manifest['manifest_digest']!=binding['manifest_digest']:
   raise ValueError('system_package_manifest_digest_invalid')
+ stage='offline_apt_command'
  argv=helpers['offline_apt_simulation_command'](package_root,
   expected_implementation_commit=binding['implementation_commit'])
+ stage='offline_apt_simulation'
  child=subprocess.run(argv,capture_output=True,text=True,timeout=120,
   env={'PATH':'/usr/sbin:/usr/bin:/sbin:/bin','LANG':'C'})
  result['probes']['offline_apt_simulation']={'exit_code':child.returncode,
   'stdout':child.stdout[:262144],'stderr':child.stderr[:4096]}
 except Exception as error:
- result['probes']['offline_apt_simulation']={'error_type':type(error).__name__}
+ code=str(error)
+ result['probes']['offline_apt_simulation']={'error_type':type(error).__name__,
+  'stage':stage,'blocker_code':code if re.fullmatch(r'(g1_vm_system|system_package)_[a-z_]+',code)
+  else 'g1_vm_cpu_system_package_probe_failed'}
 '''.replace('__BINDING__', repr(system_packages))
     return source.replace('value=json.dumps(result,', diagnostic + 'value=json.dumps(result,', 1)
 
@@ -258,7 +267,7 @@ def run(*, root, implementation_commit, retained_image_root=None, system_package
         system_binding = {'implementation_commit': implementation_commit,
                           'source_sha256': file_sha(module_path),
                           'manifest_digest': package_manifest['manifest_digest']}
-    require_capacity(root.parent, additional_bytes=required_assets + 2 * system_bytes + OVERLAY_LIMIT + LOG_LIMIT)
+    require_capacity(root.parent, additional_bytes=required_assets + system_bytes + OVERLAY_LIMIT + LOG_LIMIT)
     binaries = {name: shutil.which(name) for name in ("qemu-img", "qemu-system-x86_64", "hdiutil")}
     if not all(binaries.values()):
         raise ValueError("g1_vm_cpu_local_tools_missing")
@@ -296,7 +305,10 @@ def run(*, root, implementation_commit, retained_image_root=None, system_package
         seed_root = root / "seed"
         seed_root.mkdir(mode=0o700)
         if system_package_root is not None:
-            shutil.copytree(system_package_root, seed_root / 'system-packages')
+            for entry in system_package_root.iterdir():
+                if entry.is_file() and entry.stat().st_mode & 0o222:
+                    raise ValueError('g1_vm_cpu_system_package_source_writable')
+            shutil.copytree(system_package_root, seed_root / 'system-packages', copy_function=os.link)
             system_module.verify_system_packages(seed_root / 'system-packages',
                                                  expected_implementation_commit=implementation_commit)
             shutil.copyfile(module_path, seed_root / 'system-package-verifier.py')
