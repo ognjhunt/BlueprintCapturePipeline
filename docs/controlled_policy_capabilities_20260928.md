@@ -135,5 +135,17 @@ claimed. Do not publish those profiles solely because source hooks exist.
 Live registry lease upload exposed an undefined KMS wrapping-field serialization
 error in WebApp. The targeted repair merged in
 [WebApp PR #750](https://github.com/ognjhunt/Blueprint-WebApp/pull/750); production
-KMS/Firestore write/read/decrypt replay passed. Production route and sandbox
-qualification receipts follow after the repair deployment.
+KMS/Firestore write/read/decrypt replay and deployed route replay passed.
+The production Render worker delivered the durable outbox; Pipeline retained
+its exact admission. The canonical executor then claimed the production
+single-use lease, pulled and verified the private image, completed nine network
+denial probes and synthetic conformance, and removed containers, image bytes
+and credential ciphertext. A repeat credential claim returned 409.
+
+Use the separate Blueprint proxy Dockerfile under
+`deploy/docker/company_policy_proxy/`. Its worker bootstrap access is distinct
+from the customer image lease and is removed before that lease is claimed.
+The dedicated development proof VM and temporary HTTPS service were deleted.
+The sandbox was operator-invoked with an owner-authorized development boot key;
+a production native simulator, task authority and execution offer remain
+unconfigured. No real observation was sent by this qualification run.
