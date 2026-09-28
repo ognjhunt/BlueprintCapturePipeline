@@ -194,7 +194,7 @@ jobs:
     needs: impact
     if: needs.impact.outputs.native_scene_required == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 25
     env:
       PYTHONDONTWRITEBYTECODE: "1"
       BLUEPRINT_DISPOSABLE_LINUX_TEST: "1"
@@ -209,6 +209,26 @@ jobs:
         with:
           version: "0.10.7"
 
+      - name: Checkout exact locked native Contracts input
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: ognjhunt/BlueprintContracts
+          ref: 7708a4e4c5dedeeb39cc73d3f6869304de295b81
+          token: ${{ secrets.BLUEPRINT_CONTRACTS_CHECKOUT_TOKEN || github.token }}
+          path: BlueprintContractsNative
+          persist-credentials: false
+
+      - name: Bind exact nonsecret locked native inputs
+        env:
+          EXPECTED_SOURCE: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE"
+          test "$(git -C BlueprintContractsNative rev-parse HEAD)" = 7708a4e4c5dedeeb39cc73d3f6869304de295b81
+          printf '%s\n' "BLUEPRINT_NATIVE_SOURCE_ROOT=${GITHUB_WORKSPACE}" >> "${GITHUB_ENV}"
+          printf '%s\n' "BLUEPRINT_NATIVE_SOURCE_COMMIT=${EXPECTED_SOURCE}" >> "${GITHUB_ENV}"
+          printf '%s\n' "BLUEPRINT_NATIVE_CONTRACTS_ROOT=${GITHUB_WORKSPACE}/BlueprintContractsNative" >> "${GITHUB_ENV}"
+
       - name: Prepare the disposable systemd proof runner
         run: |
           set -euo pipefail
@@ -216,8 +236,9 @@ jobs:
           test "$(sudo -n readlink -f /proc/1/exe)" = /usr/lib/systemd/systemd
           test -f /sys/fs/cgroup/cgroup.controllers
           uv venv --python /usr/bin/python3 "${RUNNER_TEMP}/scene-proof-venv"
-          # The test imports stdlib and pytest only. No pipeline/provider SDK
-          # is installed or entered by this default-off startup proof.
+          # The proof runner imports stdlib/pytest only. The enabled case
+          # acquires the exact locked CPU service SDK separately under actual
+          # isolated system Python/root ownership; no user-venv SDK is copied.
           uv pip install --python "${RUNNER_TEMP}/scene-proof-venv/bin/python" pytest==9.1.1
 
       - name: Prove the actual installed bootstrap and credential drop
@@ -229,13 +250,15 @@ jobs:
           trap 'rm -rf -- "$test_temp"' EXIT
           "${RUNNER_TEMP}/scene-proof-venv/bin/python" -m pytest --noconftest \
             tests/test_scene_retirement_linux.py::test_actual_default_off_root_bootstrap_drops_blueprint_uid_and_all_caps \
+            tests/test_scene_retirement_linux.py::test_actual_locked_system_sdk_current_selection_and_enabled_service_imports \
             -m 'slow or not slow' --basetemp="$test_temp" \
             -o junit_logging=all -o junit_log_passing_tests=true \
             --junitxml="$evidence/native-junit.xml" -q
           "${RUNNER_TEMP}/scene-proof-venv/bin/python" - "$evidence/native-junit.xml" <<'PYTHON'
           import sys, xml.etree.ElementTree as ET
           cases = list(ET.parse(sys.argv[1]).getroot().iter("testcase"))
-          assert len(cases) == 1, "the exact native startup selector must execute"
+          assert len(cases) == 2, "both exact native startup selectors must execute"
+          assert {case.attrib["name"] for case in cases} == {"test_actual_default_off_root_bootstrap_drops_blueprint_uid_and_all_caps", "test_actual_locked_system_sdk_current_selection_and_enabled_service_imports"}
           assert not any(case.find(tag) is not None for case in cases for tag in ("skipped", "error", "failure")), "a skip/refusal is not native startup proof"
           PYTHON
 
