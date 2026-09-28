@@ -274,3 +274,57 @@ def test_unregistered_arena_new_writer_refuses_caller_owner_as_grant(retirement_
             now=lambda: 1000,
         )
     assert not (inputs / "lanes/arena/arena-launch-r33").exists()
+
+
+def test_fixed_arena_shell_parent_retains_target_until_direct_child_closed(
+    retirement_installation, monkeypatch
+):
+    import fcntl
+    import os
+    import subprocess
+    from blueprint_pipeline import control_plane_arena_scratch as arena
+    from blueprint_pipeline import control_plane_lane_experiment_consumer as consumer
+
+    setup = retirement_installation
+    born = birth(setup, _arena(setup))
+    monkeypatch.setattr(consumer, "AUTHORITY_ROOT", setup[2].parents[1] / "experiment-authority")
+    monkeypatch.setattr(consumer, "_blueprint_gid", lambda: 0)
+    # A fixed disposable script stands at the same compiled entrypoint; no paid command executes.
+    script = setup[0].parent / "installed-chain.sh"
+    script.write_bytes(b"#!/bin/bash\nexit 0\n")
+    script.chmod(0o644)
+    monkeypatch.setattr(arena, "REGISTERED_CHAIN_PATH", script)
+    seen = []
+
+    def child(argv, **kwargs):
+        assert argv == ["/bin/bash", str(script), "--registered-child"]
+        fd = int(kwargs["env"]["BLUEPRINT_REGISTERED_ARENA_FD"])
+        assert fd in kwargs["pass_fds"] and os.fstat(fd).st_ino == Path(born["path"]).stat().st_ino
+        foreign = os.open(born["path"], os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(foreign, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        finally:
+            os.close(foreign)
+        seen.append(argv)
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(subprocess, "run", child)
+    assert arena.run_registered_arena_chain("r33", previous_tag="r32", now=lambda: 1102) == 0
+    assert seen
+
+
+def test_fixed_root_recovery_cli_selects_original_tag_only(monkeypatch):
+    from blueprint_pipeline import control_plane_lane_experiment_retirement as root
+
+    called = []
+    monkeypatch.setattr(
+        root, "recover_arena_issue", lambda tag, **kw: called.append((tag, kw)) or {}
+    )
+    result = root._dispatch_fixed_command(
+        root._command_parser().parse_args(
+            ["recover-arena-issue", "r33", "--principal", "operator", "--owner", "owner"]
+        )
+    )
+    assert result == {} and called[0][0] == "r33"
+    assert called[0][1]["installed_config_path"] == root.INSTALLED_CONFIG_PATH
