@@ -152,3 +152,91 @@ current filesystem/reference state. It issues no lease, pointer, cleanup ACK or
 reclaimed-byte forecast. Applying decisions, registering old folders, enabling
 cleanup and preserving/restoring evidence remain separately reviewed execution
 gates after the merged reference/pin proofs; this command frees no bytes.
+
+
+### Record authenticated owner intent without changing folders
+
+The owner-consent workflow records root-admin intent against exact retained
+census and annotation bytes. It does not register, renew, offload or delete a
+folder. A successful report keeps `references_clear=false`,
+`consumer_fence_checked=false`, `execution_authorized=false`, mutations zero,
+and candidate bytes/ETA contributions null.
+
+Installation provisions an absent-only policy at
+`/etc/blueprint-operator-door/lane-owner-policy.json` (root:root,0600), a store
+at `/var/lib/blueprint-operator-door/requests/owner-consents` (root:root,0700),
+and its stable `.owner-consents.lock` (root:root,0600). Upgrades retain existing
+policy bytes, records and lock inode, and refuse unsafe existing paths. The
+initial policy is disabled with no principals. The installed config defaults
+`owner_census_decisions_enabled` to0. Installing this code enables no cleanup.
+
+Operational issuance requires the reviewed installed door package at
+`/opt/blueprint/operator-door`, a root-owned nonwritable door config, an enabled
+finite policy, and the explicit config switch set to1. The config may retain
+its installed root:blueprint0640 permissions and root:blueprint2750 parent;
+policy and private records require root:root0600. Configure each policy row
+with a literal `principal`, explicit `owners`, finite `allowed_actions`, and
+`max_consent_seconds` between1 and1209600. No wildcard or inferred owner is
+accepted. Only put the independently approved principals/owners/actions in
+that policy; changing its exact bytes invalidates older consent records.
+
+After checking the retained files' independent raw SHA256 and byte counts,
+a root administrator can issue bounded metadata using the active release:
+
+```bash
+sudo env PYTHONPATH=/opt/blueprint/task-evaluation-control-plane/src \
+  /opt/blueprint/BlueprintCapturePipeline/.venv/bin/python \
+  /opt/blueprint/task-evaluation-control-plane/scripts/lane_scratch_census.py \
+  --issue-owner-consent --census "$CENSUS" --annotations "$ANNOTATIONS" \
+  --expected-census-sha256 "$CENSUS_SHA256" --expected-census-size-bytes "$CENSUS_SIZE" \
+  --expected-annotations-sha256 "$ANNOTATIONS_SHA256" --expected-annotations-size-bytes "$ANNOTATIONS_SIZE" \
+  --principal "$APPROVED_PRINCIPAL" --selected-path "$EXACT_RETAINED_PATH" \
+  --consent-expires-at-epoch "$APPROVED_EXPIRY" \
+  --door-config /etc/blueprint-operator-door/door.json
+```
+
+Every census row is validated before selected rows are projected. Owner guesses
+remain guesses. The consent output supplies `consent_id`, `expected_sha256` and
+`expected_size_bytes` for the immutable protected record; an existing record is
+never overwritten. Expiry is bounded by policy and the selected keep/register
+expiry. At most100 selected rows are accepted. Store capacity and invocation
+limits can refuse issuance; nothing is removed to make space.
+
+Use the existing authenticated door POST `/requests` with only this JSON:
+
+```json
+{"kind":"owner-census-decision","consent_id":"<32 lowercase hex>","expected_sha256":"sha256:<64 lowercase hex>","expected_size_bytes":1234}
+```
+
+The request requires `operate` scope. Request fields cannot supply a principal,
+owner, policy, target path or apply flag. Copied spool `requested_by` is
+unverified caller context, not administrative consent. The root runner invokes
+one fixed active-release report wrapper with a read-only private store/policy
+and writes only public result metadata. Both the current config and exact policy
+are re-read; expired, revoked, changed or exhausted records refuse.
+
+Inspect the returned request ID with `python3 scripts/operator_door.py request
+<id>`. Its completed outcome identifies
+`<results>/<id>.owner-census.json` plus that report's independent raw SHA256 and
+byte count. Use the existing checked `pull` with those identities to retain the
+report:
+
+```bash
+python3 scripts/operator_door.py pull "$REPORT_PATH" "$LOCAL_REPORT" \
+  --expected-sha256 "$REPORT_SHA256" --expected-size "$REPORT_SIZE"
+```
+
+The existing client's `request --wait` success set does not include
+`owner_consent_observed`; it can return1 despite this successful report outcome.
+Use `request <id>` and inspect the bounded outcome's exit_code0/status instead;
+that outcome proves report observation only. Public report/outcome files are regular root0644 under root0755 results
+ancestry; protected consent remains0600 under0700 and is never made readable
+through the door. Public reports omit policy bytes, tokens and private documents.
+
+Leaf CLI refusal is bounded typed JSON; detailed fixed refusal is retained in
+the request log when safely available. Wrapper invocation failure has the fixed
+outcome `owner_consent_report_refused`, including resource exhaustion; it never
+copies arbitrary stderr into the outcome. No report claims a held consumer
+fence, a fresh complete reference inventory, restore proof or retirement
+admission. Actual target action still requires a separate reviewed execution
+contract and explicit operational approval.
