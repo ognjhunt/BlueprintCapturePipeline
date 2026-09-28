@@ -3,6 +3,7 @@
 """New worker startup is fenced before import; this is not old-process clearance."""
 import importlib
 import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -185,6 +186,16 @@ def test_installed_known_worker_uses_startup_fence(unit, worker):
             'blueprint_pipeline.' + worker + ' --') in exec_start
 
 
+def loaded_exec_start(source):
+    text = next(line.split('=', 1)[1] for line in source.read_text().splitlines()
+                if line.startswith('ExecStart='))
+    executable, flag, script = shlex.split(text)
+    # systemd's show representation, without executing a real installed unit.
+    return ('{ path=' + executable + ' ; argv[]=' + executable + ' ' + flag + ' '
+            + script.replace('$$', '$') + ' ; ignore_errors=no ; start_time= ; '
+            'stop_time= ; pid=0 ; code=(null) ; status=0/0 }')
+
+
 def loaded_unit_fixture(tmp_path, monkeypatch):
     from blueprint_pipeline import task_evaluation_scene_retirement_access as access
     monkeypatch.setattr(access, '_POLICY_UID', os.getuid())
@@ -202,8 +213,7 @@ def loaded_unit_fixture(tmp_path, monkeypatch):
         'Id': unit, 'LoadState': 'loaded', 'ActiveState': 'inactive',
         'SubState': 'dead', 'MainPID': '0', 'ControlPID': '0', 'Job': '',
         'NeedDaemonReload': 'no', 'FragmentPath': str(target), 'DropInPaths': '',
-        'ExecStart': next(line.split('=', 1)[1] for line in source.read_text().splitlines()
-                          if line.startswith('ExecStart=')),
+        'ExecStart': loaded_exec_start(source),
     }
     def query(allowance):
         return ('\n'.join(key + '=' + value for key, value in row.items()) + '\n').encode()
@@ -273,3 +283,63 @@ def test_native_gate_lost_original_deadline_stops_before_loaded_query(tmp_path, 
     with pytest.raises(access.SceneRetirementAccessError, match='scene_retirement_deadline'):
         module.require_inactive_known_workers(SimpleNamespace(tick=expired))
     assert calls == []
+
+
+@pytest.mark.parametrize('change', ['echo', 'extra-command'])
+def test_loaded_bootstrap_token_does_not_attest_different_argv(tmp_path, monkeypatch, change):
+    module, access, row, _ = loaded_unit_fixture(tmp_path, monkeypatch)
+    if change == 'echo':
+        row['ExecStart'] = row['ExecStart'].replace('exec env PYTHONPATH=src', 'echo env PYTHONPATH=src')
+    else:
+        row['ExecStart'] = row['ExecStart'].replace(' ; ignore_errors=no', ' && /bin/true ; ignore_errors=no')
+    with pytest.raises(access.SceneRetirementAccessError, match='worker_cohort_unproven'):
+        module.require_inactive_known_workers(SimpleNamespace(tick=lambda: None))
+
+
+def test_fragment_replacement_after_loaded_observation_stays_unproven(tmp_path, monkeypatch):
+    module, access, _, target = loaded_unit_fixture(tmp_path, monkeypatch)
+    original = module._query_systemd
+    calls = []
+    def changed(allowance):
+        calls.append(1)
+        if len(calls) == 2:
+            replacement = target.with_name('replacement')
+            replacement.write_bytes(target.read_bytes())
+            replacement.chmod(0o644)
+            replacement.replace(target)
+        return original(allowance)
+    monkeypatch.setattr(module, '_query_systemd', changed)
+    with pytest.raises(access.SceneRetirementAccessError, match='worker_cohort_unproven'):
+        module.require_inactive_known_workers(SimpleNamespace(tick=lambda: None))
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('failure', ['overflow', 'lost-deadline', 'nonzero'])
+def test_real_query_child_is_reaped_on_output_deadline_or_command_failure(monkeypatch, failure):
+    module = supervisor()
+    original = subprocess.Popen
+    children = []
+    observed = []
+    code = {'overflow': 'import os; os.write(1,b"x"*140000)',
+            'lost-deadline': 'import time; time.sleep(30)',
+            'nonzero': 'raise SystemExit(9)'}[failure]
+    def child(command, **kwargs):
+        observed.append((command, kwargs))
+        process = original([sys.executable, '-c', code], **kwargs)
+        children.append(process)
+        return process
+    monkeypatch.setattr(module.subprocess, 'Popen', child)
+    calls = []
+    def tick():
+        calls.append(1)
+        if failure == 'lost-deadline' and len(calls) > 1:
+            from blueprint_pipeline.task_evaluation_scene_retirement_access import SceneRetirementAccessError
+            raise SceneRetirementAccessError('scene_retirement_deadline')
+    from blueprint_pipeline.task_evaluation_scene_retirement_access import SceneRetirementAccessError
+    with pytest.raises(SceneRetirementAccessError):
+        module._query_systemd(SimpleNamespace(tick=tick))
+    assert len(children) == 1 and children[0].poll() is not None
+    assert children[0].stdout.closed
+    command, kwargs = observed[0]
+    assert command[0] == '/usr/bin/systemctl' and 'Environment' not in ' '.join(command)
+    assert kwargs['env'] == {'LC_ALL': 'C', 'PATH': '/usr/bin:/bin'}
