@@ -16,7 +16,7 @@ def raw_ref(path):
             'size_bytes': len(raw)}
 
 
-def operation(tmp_path, monkeypatch, *, member_count=1):
+def operation(tmp_path, monkeypatch, *, member_count=1, with_transport=False):
     from blueprint_pipeline.decision_evidence_contracts import canonical_digest
     from blueprint_pipeline.task_evaluation_scene_retirement_journal import SceneJournal
     from blueprint_pipeline.task_evaluation_scene_retirement_mutation import inventory_digest
@@ -44,7 +44,8 @@ def operation(tmp_path, monkeypatch, *, member_count=1):
     for index, path in enumerate(paths):
         (path / 'proof.bin').write_bytes(b'actual-preserved-proof' if index == 0 else b'second-member-proof')
     allowance = ActionAllowance(expires_at=999, now=lambda: 200, monotonic=lambda: 0)
-    preserved = preserve_members(paths, transport=MemoryTransport(paths),
+    transport = MemoryTransport(paths)
+    preserved = preserve_members(paths, transport=transport,
                                  allowance=allowance, token='1' * 32)
     plan = base / 'plan.json'
     plan.write_text('{"action":"KEEP"}')
@@ -62,7 +63,8 @@ def operation(tmp_path, monkeypatch, *, member_count=1):
         initial={'schema_version': 'scene_retirement_journal.v1', 'status': 'pending',
                  'intent_id': consent['intent_id'], 'intent_raw_ref': consent['intent_raw_ref'],
                  'plan_raw_ref': consent['plan_raw_ref'], 'members': members, 'preserved': preserved})
-    return policy, consent, journal, preserved, allowance, payload
+    result = (policy, consent, journal, preserved, allowance, payload)
+    return (*result, transport) if with_transport else result
 
 
 def test_pending_is_durable_in_actual_intent_before_any_source_mutation(tmp_path, monkeypatch):
@@ -302,3 +304,128 @@ def test_progress_recovers_after_immutable_history_before_projection_cas(tmp_pat
     assert json.loads(Path(current['path']).read_bytes())['status'] == 'incomplete'
     assert history[0].read_bytes() == original
     assert len(list(Path(pending['path']).parent.glob('scene-retired.*.incomplete.*.json'))) == 1
+
+
+def restore_operation(tmp_path, monkeypatch):
+    from blueprint_pipeline.task_evaluation_scene_retirement_intent_receipt import publish_pending_receipt, publish_terminal_receipt
+    from blueprint_pipeline.task_evaluation_scene_retirement_mutation import detach_and_remove
+    from blueprint_pipeline.task_evaluation_scene_retirement_journal import SceneJournal
+    policy, retire_consent, journal, preserved, allowance, _, transport = operation(
+        tmp_path, monkeypatch, member_count=2, with_transport=True)
+    pending = publish_pending_receipt(policy, retire_consent, journal, preserved, allowance)
+    outcomes = [detach_and_remove(preserved, member_index=index, generation_id=row['generation_id'], journal=journal)
+                for index, row in enumerate(retire_consent['members'])]
+    snapshot = journal.retired_snapshot({'schema_version': 'scene_retirement_journal.v1',
+        'intent_id': retire_consent['intent_id'], 'members': retire_consent['members'], 'outcomes': outcomes})
+    final = {'status': 'retired', 'intent_id': retire_consent['intent_id'], 'token': journal.token,
+             'members': outcomes, 'retired_journal_raw_ref': snapshot}
+    current = publish_terminal_receipt(policy, retire_consent, pending, final, allowance)
+    consent = dict(retire_consent, plan_raw_ref=None, retired_journal_raw_ref=snapshot, action='restore')
+    consent_path = tmp_path.resolve() / 'restore-consent.json'
+    consent_path.write_text(json.dumps(consent))
+    consent_path.chmod(0o600)
+    restore = SceneJournal.create(Path(policy['journal_store']), token='8' * 32, allowance=allowance,
+        initial={'schema_version': 'scene_restore_journal.v1', 'status': 'restoring',
+                 'intent_id': consent['intent_id'], 'intent_raw_ref': consent['intent_raw_ref'],
+                 'members': consent['members'], 'original_retirement_token': journal.token,
+                 'retired_journal_raw_ref': snapshot, 'consent_raw_ref': raw_ref(consent_path)})
+    progress = {'status': 'restoring', 'intent_id': consent['intent_id'], 'token': restore.token,
+                'original_retirement_token': journal.token, 'restore_journal_initial_raw_ref': restore.initial_ref,
+                'members': [], 'last_event_raw_ref': restore.prior_ref}
+    transport.members = []  # Preserve/readback is complete; the roots are now absent.
+    return policy, consent, restore, preserved, allowance, current, progress, transport
+
+
+def restore_members(policy, consent, journal, preserved, transport):
+    from blueprint_pipeline.task_evaluation_scene_retirement_restore import restore_preserved_members
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    outcomes = restore_preserved_members(preserved, transport=transport, journal=journal)
+    for selected, outcome in zip(consent['members'], outcomes):
+        # Hermetic enrollment metadata is bound to the actual restored inode;
+        # this test does not claim production cohort/role admission.
+        value = {'schema_version': 'scene_member_generation.v1', 'state': 'restored-active',
+                 'canonical_path': selected['canonical_path'], 'generation_id': selected['generation_id'],
+                 'owner_intent_id': selected['owner_intent_id'], 'owner_raw_ref': selected['owner_raw_ref'],
+                 'retirement_token': '1' * 32}
+        value.update(zip(('dev', 'ino', 'mode'), outcome['restore_identity']))
+        value['state_digest'] = canonical_digest(value, digest_field='state_digest')
+        key = hashlib.sha256(selected['canonical_path'].encode()).hexdigest() + '.json'
+        target = Path(policy['generation_store']) / key
+        target.write_text(json.dumps(value))
+        target.chmod(0o600)
+    return outcomes
+
+
+def test_restore_receipt_starts_before_payload_and_finishes_from_real_restore(tmp_path, monkeypatch):
+    from blueprint_pipeline.task_evaluation_scene_retirement_intent_receipt import publish_progress_receipt
+    policy, consent, journal, preserved, allowance, retired, progress, transport = restore_operation(tmp_path, monkeypatch)
+    current = publish_progress_receipt(policy, consent, retired, progress, allowance)
+    value = json.loads(Path(current['path']).read_bytes())
+    assert value['status'] == 'restoring' and value['restore_token'] == journal.token
+    assert value['retiring_token'] == progress['original_retirement_token']
+    assert value['restore_journal_initial_raw_ref'] == journal.initial_ref
+    assert all(not Path(row['canonical_path']).exists() for row in consent['members'])
+    assert 'consent_raw_ref' not in value
+    assert raw_ref(Path(value['prior_receipt_raw_ref']['path'])) == value['prior_receipt_raw_ref']
+    outcomes = restore_members(policy, consent, journal, preserved, transport)
+    complete = dict(progress, status='restored', members=outcomes, last_event_raw_ref=journal.prior_ref)
+    result = publish_progress_receipt(policy, consent, current, complete, allowance)
+    value = json.loads(Path(result['path']).read_bytes())
+    assert value['status'] == 'restored' and value['journal_sequence'] == journal.sequence
+    assert all(row['outcome'] == 'restored' and row['action'] == 'restored' for row in value['members'])
+    assert [row['restore_identity'] for row in value['members']] == [row['restore_identity'] for row in outcomes]
+    for row in value['members']:
+        assert raw_ref(Path(row['restore_event_raw_ref']['path'])) == row['restore_event_raw_ref']
+    assert (Path(consent['members'][0]['canonical_path']) / 'proof.bin').read_bytes() == b'actual-preserved-proof'
+    assert (Path(consent['members'][1]['canonical_path']) / 'proof.bin').read_bytes() == b'second-member-proof'
+    assert publish_progress_receipt(policy, consent, result, complete, allowance) == result
+
+
+@pytest.mark.parametrize('drift', ['token', 'snapshot', 'consent', 'outcome', 'generation'])
+def test_restore_projection_refuses_wrong_proof_or_unfinished_generation(tmp_path, monkeypatch, drift):
+    from blueprint_pipeline.task_evaluation_scene_retirement_intent_receipt import publish_progress_receipt
+    policy, consent, journal, preserved, allowance, retired, progress, transport = restore_operation(tmp_path, monkeypatch)
+    current = publish_progress_receipt(policy, consent, retired, progress, allowance)
+    original = Path(current['path']).read_bytes()
+    outcomes = restore_members(policy, consent, journal, preserved, transport)
+    claimed = dict(progress, status='restored', members=[dict(row) for row in outcomes], last_event_raw_ref=journal.prior_ref)
+    if drift == 'token':
+        claimed['token'] = '9' * 32
+    elif drift == 'snapshot':
+        consent = dict(consent, retired_journal_raw_ref=journal.initial_ref)
+    elif drift == 'consent':
+        (tmp_path.resolve() / 'restore-consent.json').write_text('{"action":"foreign"}')
+    elif drift == 'outcome':
+        claimed['members'][0]['restore_identity'][1] += 1
+    else:
+        from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+        key = hashlib.sha256(consent['members'][0]['canonical_path'].encode()).hexdigest() + '.json'
+        path = Path(policy['generation_store']) / key
+        state = json.loads(path.read_bytes())
+        state['state'] = 'restoring'
+        state['state_digest'] = canonical_digest(state, digest_field='state_digest')
+        path.write_text(json.dumps(state))
+    with pytest.raises((ValueError, OSError)):
+        publish_progress_receipt(policy, consent, current, claimed, allowance)
+    assert Path(current['path']).read_bytes() == original
+
+
+def test_restore_start_replays_history_after_crash_before_current_cas(tmp_path, monkeypatch):
+    from blueprint_pipeline import task_evaluation_scene_retirement_intent_receipt as module
+    policy, consent, _, _, allowance, current, progress, _ = restore_operation(tmp_path, monkeypatch)
+    original = Path(current['path']).read_bytes()
+    publish = module._publish
+
+    def interrupted(directory, name, raw, allowance, *, prior=None):
+        if name == module.NAME:
+            raise OSError('fixture interrupted restore admission projection')
+        return publish(directory, name, raw, allowance, prior=prior)
+
+    monkeypatch.setattr(module, '_publish', interrupted)
+    with pytest.raises(OSError):
+        module.publish_progress_receipt(policy, consent, current, progress, allowance)
+    assert Path(current['path']).read_bytes() == original
+    monkeypatch.setattr(module, '_publish', publish)
+    result = module.publish_progress_receipt(policy, consent, current, progress, allowance)
+    assert json.loads(Path(result['path']).read_bytes())['status'] == 'restoring'
+    assert all(not Path(row['canonical_path']).exists() for row in consent['members'])
