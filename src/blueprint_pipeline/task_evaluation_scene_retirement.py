@@ -23,7 +23,7 @@ from .task_evaluation_scene_retirement_generations import _write, _sealed
 from .task_evaluation_scene_retirement_journal import SceneJournal
 from .task_evaluation_scene_retirement_mutation import detach_and_remove, inventory_digest, removal_records
 from .task_evaluation_scene_retirement_preservation import ActionAllowance, preserve_members
-from .task_evaluation_scene_retirement_restore import restore_preserved_members
+from .task_evaluation_scene_retirement_restore import restore_preserved_members, restore_records
 from .task_evaluation_scene_retirement_metadata import retain_metadata_closure
 from .task_evaluation_scene_retirement_intent_receipt import publish_pending_receipt, publish_terminal_receipt, publish_progress_receipt
 from .task_evaluation_scene_lifecycle_plan import build_scene_lifecycle_plan
@@ -338,6 +338,13 @@ def restore_scene(retired_journal_path, consent_path, *, transport, now=time.tim
                 intent_raw_ref=consent['intent_raw_ref'],members=consent['members'],
                 original_retirement_token=retired['token'],
                 retired_journal_raw_ref=reference,consent_raw_ref=authority['consent_raw_ref']),allowance=allowance)
+            def complete_restore_records():
+                for index,generation in enumerate(generations):
+                    yield 'restoring',str(index),{'generation_id':generation['generation_id']}
+                    yield 'restored-active',str(index),dict(canonical_path=consent['members'][index]['canonical_path'],
+                        outcome='restored',restore_identity=[2**64-1]*3)
+                yield from restore_records(retired['preserved'],journal)
+            journal.preflight(complete_restore_records())
             receipt_path=Path(policy['reference_context']['roots']['intent_root'])/consent['intent_id']/'scene-retired.v1.json'
             allowance.tick()
             _,pending=load_document(receipt_path,maximum=16*1024*1024)

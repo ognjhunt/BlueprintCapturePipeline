@@ -151,9 +151,32 @@ def _verify_restored(preserved,roots,directory_identities,file_identities,allowa
              'scene_retirement_restore_inventory_changed')
 
 
+def restore_records(preserved,journal):
+    """Complete native restore framing, bounded before the first destination."""
+    _require(type(preserved.get('members')) is list and 0<len(preserved['members'])<=256
+             and type(preserved.get('files')) is list and type(preserved.get('directories')) is list
+             and len(preserved['files'])+len(preserved['directories'])<=10000,
+             'scene_retirement_inventory_limit')
+    identity=[2**64-1]*3
+    for index,member in enumerate(preserved['members']):
+        journal.allowance.tick()
+        yield 'restoring',str(index),{'canonical_path':member['path']}
+        yield 'restore_directory_created',str(index),dict(canonical_path=member['path'],relative_path='',restore_identity=identity)
+    for row in preserved['directories']:
+        journal.allowance.tick()
+        yield 'restore_directory_created',str(row['member_index']),dict(relative_path=row['relative_path'],restore_identity=identity)
+    for row in preserved['files']:
+        journal.allowance.tick()
+        yield 'restore_file_created',str(row['member_index']),dict(relative_path=row['relative_path'],restore_identity=identity,sha256=row['sha256'])
+    for index,member in enumerate(preserved['members']):
+        journal.allowance.tick()
+        yield 'member_restored',str(index),dict(canonical_path=member['path'],outcome='restored',restore_identity=identity)
+
+
 def restore_preserved_members(preserved,*,transport,journal):
     """Internal: verify full union FIRST, claim absent roots and publish no-replace."""
     allowance=journal.allowance
+    journal.preflight(restore_records(preserved,journal))
     _consume(preserved,transport,allowance)  # No local destination exists or is touched here.
     roots=[Path(row['path']) for row in preserved['members']]
     directories={}
