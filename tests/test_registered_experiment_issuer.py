@@ -130,3 +130,17 @@ def test_reused_random_id_is_not_reissued_or_overwritten(installation, monkeypat
     with pytest.raises(ValueError, match="experiment_creation_invalid"):
         issue(installation)
     assert list(installation[2].glob("*.json")) == []
+
+
+def test_previous_durable_intent_id_collision_keeps_old_grant(installation, monkeypatch):
+    from blueprint_pipeline import control_plane_lane_experiment_retirement as feature
+    ids = iter(["a" * 32, "b" * 32, "c" * 32, "a" * 32, "d" * 32])
+    monkeypatch.setattr(feature.secrets, "token_hex", lambda size: next(ids) if size == 16 else "e" * 16)
+    result = issue(installation)
+    path = installation[2] / (result["intent_id"] + ".json")
+    previous = path.read_bytes()
+    with pytest.raises(ValueError, match="owner_target_publication_destination_exists"):
+        issue(installation)
+    assert path.read_bytes() == previous
+    assert json.loads(previous)["generation"] == "b" * 32
+    assert len(list(installation[2].glob("*.json"))) == 1

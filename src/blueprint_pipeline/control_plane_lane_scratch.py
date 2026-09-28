@@ -343,6 +343,7 @@ def create_lane_scratch(
 ) -> Path:
     """Create a new scratch folder with a sealed lease in one publication."""
 
+    _refuse_registered_legacy_mutation(lane, name)
     lease = _creation_lease(lane, name, owner=owner, reason=reason, class_intent=class_intent,
                             cleanup=cleanup, ttl_seconds=ttl_seconds, run_ref=run_ref,
                             scene_ref=scene_ref, size_budget_bytes=size_budget_bytes, now=now,
@@ -352,10 +353,18 @@ def create_lane_scratch(
     return Path(root) / lane / name
 
 
+def _refuse_registered_legacy_mutation(lane, name):
+    # A missing birth/authority record cannot opt this reserved name into legacy
+    # creation, renewal or release. Fixed root issuance uses an unpublished stage.
+    if lane == "g1" and isinstance(name, str) and re.fullmatch(r"registered-[0-9a-f]{32}", name):
+        raise LaneScratchError("lane_scratch_registered_authority_required")
+
+
 def _change_lease(
     *, root: str | Path, lane: str, name: str, owner: str, expected_digest: str,
     now: Callable[[], float], ttl_seconds: int | None,
 ) -> dict[str, Any]:
+    _refuse_registered_legacy_mutation(lane, name)
     lane, name, owner = _id(lane, "lane"), _id(name, "name"), _id(owner, "owner")
     if not isinstance(expected_digest, str) or _DIGEST.fullmatch(expected_digest) is None:
         raise LaneScratchError("lane_scratch_digest_invalid")
