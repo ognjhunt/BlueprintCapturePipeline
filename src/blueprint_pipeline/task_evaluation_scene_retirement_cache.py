@@ -232,3 +232,140 @@ def project_content(path,destination,*,authority):
             _guard(parent,parent_identity)
             os.fsync(parent)
     return True
+
+
+def _cache_event(journal,event,key):
+    rows=[row for row in journal.events if row['event']==event and row['member_key']==key]
+    _require(len(rows)<=1,'scene_retirement_cache_journal_unproven')
+    return rows[0] if rows else None
+
+
+def _current_parent(path,fd,identity):
+    _guard(fd,identity)
+    with _opened(path,directory=True) as (_,named):
+        _require(_identity(named)==identity,'scene_retirement_cache_parent_changed')
+    _guard(fd,identity)
+
+
+def remove_preserved_cache_aliases(preserved,*,journal,removed_inodes):
+    """Internal EX action: remove only the separately inventoried LAST union aliases."""
+    from .task_evaluation_scene_retirement_preservation import _snapshot,_payload
+    aliases=preserved.get('cache_aliases',[])
+    _require(type(aliases) is list and len(aliases)<=256,'scene_retirement_inventory_limit')
+    outcomes=[]
+    for index,alias in enumerate(aliases):
+        journal.allowance.tick()
+        key='cache-'+str(index)
+        path=_canonical(alias['path'])
+        completed=_cache_event(journal,'cache_unlinked',key)
+        if completed is not None:
+            _require(completed['evidence']['canonical_path']==str(path) and not os.path.lexists(path),
+                     'scene_retirement_cache_journal_unproven')
+            outcomes.append(dict(completed['evidence'],event_raw_ref=completed['raw_ref']))
+            continue
+        planned=_cache_event(journal,'cache_unlink_planned',key)
+        with _opened(path.parent,directory=True) as (parent,parent_info):
+            parent_identity=_identity(parent_info)
+            _require(list(parent_identity)==alias['parent_identity'],'scene_retirement_cache_parent_changed')
+            if not os.path.lexists(path):
+                _require(planned is not None and planned['evidence']['canonical_path']==str(path)
+                         and planned['evidence']['original_identity']==alias['physical_identity'],
+                         'scene_retirement_cache_journal_unproven')
+                outcome=planned['evidence']['outcome']
+                _current_parent(path.parent,parent,parent_identity)
+                os.fsync(parent)
+            else:
+                with _opened(path) as (fd,info):
+                    original=alias['snapshot']
+                    observed=list(_snapshot(info))
+                    removed=removed_inodes.get(tuple(alias['physical_identity'][:2]),0)
+                    _require(observed[:-2]==original[:-2] and observed[-1]==original[-1]-removed==1,
+                             'scene_retirement_shared_inode')
+                    digest=hashlib.sha256()
+                    row=dict(alias,snapshot=observed)
+                    for chunk in _payload(path,row,journal.allowance):
+                        digest.update(chunk)
+                    _require('sha256:'+digest.hexdigest()==alias['digest'],'scene_retirement_cache_alias_changed')
+                    outcome=dict(outcome='removed',canonical_path=str(path),digest=alias['digest'],
+                        size_bytes=alias['size_bytes'],removed_allocated_bytes=info.st_blocks*512,
+                        allocation_method='observed_file_st_blocks_512_last_union_link_unlinked')
+                    evidence=dict(canonical_path=str(path),original_identity=alias['physical_identity'],
+                        parent_identity=list(parent_identity),snapshot=observed,outcome=outcome)
+                    if planned is None:
+                        journal.append('cache_unlink_planned',member_key=key,evidence=evidence)
+                    else:
+                        _require(planned['evidence']==evidence,'scene_retirement_cache_journal_unproven')
+                    journal.allowance.tick()
+                    _current_parent(path.parent,parent,parent_identity)
+                    _guard(fd,_identity(info))
+                    _require(_identity(os.stat(path.name,dir_fd=parent,follow_symlinks=False))==_identity(info),
+                             'scene_retirement_cache_alias_changed')
+                    os.unlink(path.name,dir_fd=parent)
+                    journal.allowance.tick()
+                    _current_parent(path.parent,parent,parent_identity)
+                    os.fsync(parent)
+                    inode=tuple(alias['physical_identity'][:2])
+                    removed_inodes[inode]=removed+1
+            reference=journal.append('cache_unlinked',member_key=key,evidence=outcome)
+            outcomes.append(dict(outcome,event_raw_ref=reference))
+    return outcomes
+
+
+def require_cache_restore_destinations(preserved,journal):
+    aliases=preserved.get('cache_aliases',[])
+    _require(type(aliases) is list and len(aliases)<=256,'scene_retirement_inventory_limit')
+    for index,alias in enumerate(aliases):
+        journal.allowance.tick()
+        path=_canonical(alias['path'])
+        if os.path.lexists(path):
+            event=_cache_event(journal,'cache_restore_planned','cache-'+str(index))
+            _require(event is not None and event['evidence']['canonical_path']==str(path),
+                     'scene_retirement_cache_restore_conflict')
+            with _opened(path) as (_,info):
+                _require(list(_identity(info))==event['evidence']['restore_identity'],
+                         'scene_retirement_cache_restore_conflict')
+
+
+def restore_preserved_cache_aliases(preserved,roots,file_identities,journal):
+    """Restore absent cache names as links to their verified restored projection bytes."""
+    for index,alias in enumerate(preserved.get('cache_aliases',[])):
+        journal.allowance.tick()
+        key='cache-'+str(index)
+        path=_canonical(alias['path'])
+        source=roots[alias['member_index']]/alias['relative_path']
+        identity=file_identities[(alias['member_index'],alias['relative_path'])]
+        with _opened(source) as (fd,info),_opened(source.parent,directory=True) as (source_parent,source_info), \
+                _opened(path.parent,directory=True) as (parent,parent_info):
+            parent_identity,source_parent_identity=_identity(parent_info),_identity(source_info)
+            _require(_identity(info)==identity and info.st_size==alias['size_bytes']
+                     and info.st_uid==alias['uid'] and info.st_gid==alias['gid']
+                     and stat.S_IMODE(info.st_mode)==alias['mode'],'scene_retirement_cache_restore_conflict')
+            evidence=dict(canonical_path=str(path),restore_identity=list(identity),
+                source_path=str(source),parent_identity=list(parent_identity),digest=alias['digest'],
+                size_bytes=alias['size_bytes'])
+            planned=_cache_event(journal,'cache_restore_planned',key)
+            if planned is None:
+                _require(not os.path.lexists(path),'scene_retirement_cache_restore_conflict')
+                journal.append('cache_restore_planned',member_key=key,evidence=evidence)
+            else:
+                _require(planned['evidence']==evidence,'scene_retirement_cache_restore_conflict')
+            _guard(fd,identity)
+            _current_parent(source.parent,source_parent,source_parent_identity)
+            _current_parent(path.parent,parent,parent_identity)
+            _require(_identity(os.stat(source.name,dir_fd=source_parent,follow_symlinks=False))==identity,
+                     'scene_retirement_cache_restore_conflict')
+            if not os.path.lexists(path):
+                journal.allowance.tick()
+                os.link(source.name,path.name,src_dir_fd=source_parent,dst_dir_fd=parent,follow_symlinks=False)
+            _guard(fd,identity)
+            _current_parent(path.parent,parent,parent_identity)
+            _require(_identity(os.stat(path.name,dir_fd=parent,follow_symlinks=False))==identity,
+                     'scene_retirement_cache_restore_conflict')
+            journal.allowance.tick()
+            _current_parent(path.parent,parent,parent_identity)
+            os.fsync(parent)
+            done=_cache_event(journal,'cache_alias_restored',key)
+            if done is None:
+                journal.append('cache_alias_restored',member_key=key,evidence=evidence)
+            else:
+                _require(done['evidence']==evidence,'scene_retirement_cache_restore_conflict')

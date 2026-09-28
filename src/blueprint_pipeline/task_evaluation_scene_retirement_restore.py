@@ -143,9 +143,19 @@ def _verify_restored(preserved,roots,directory_identities,file_identities,allowa
         for chunk in _payload(roots[key[0]]/key[1],row,allowance):
             digest.update(chunk)
         _require('sha256:'+digest.hexdigest()==expected['sha256'],'scene_retirement_restore_payload_changed')
+    alias_counts={}
+    for alias in preserved.get('cache_aliases',[]):
+        allowance.tick()
+        key=(alias['member_index'],alias['relative_path'])
+        expected_identity=file_identities[key]
+        with _opened(alias['path']) as (_,info):
+            _require(_identity(info)==expected_identity,'scene_retirement_restore_shared_inode')
+        inode=expected_identity[:2]
+        alias_counts[inode]=alias_counts.get(inode,0)+1
     for row in current_files.values():
         allowance.tick()
-        _require(row['snapshot'][-1]==inodes[tuple(row['physical_identity'][:2])][1],
+        inode=tuple(row['physical_identity'][:2])
+        _require(row['snapshot'][-1]==inodes[inode][1]+alias_counts.get(inode,0),
                  'scene_retirement_restore_shared_inode')
     for key,row in current_directories.items():
         allowance.tick()
@@ -267,6 +277,8 @@ def restore_preserved_members(preserved,*,transport,journal):
     journal.preflight(restore_records(preserved,journal))
     _consume(preserved,transport,allowance)  # No local destination exists or is touched here.
     roots=[Path(row['path']) for row in preserved['members']]
+    from .task_evaluation_scene_retirement_cache import require_cache_restore_destinations,restore_preserved_cache_aliases
+    require_cache_restore_destinations(preserved,journal)
     directories,file_identities=_created_destinations(preserved,roots,journal)
     for index,member in enumerate(preserved['members']):
         root=roots[index]
@@ -415,6 +427,7 @@ def restore_preserved_members(preserved,*,transport,journal):
             journal.append('restore_file_created',member_key=str(index),evidence={
                 'relative_path':str(relative),'restore_identity':list(created),'sha256':row['sha256']})
     _consume(preserved,transport,allowance,file_sink=file_sink)
+    restore_preserved_cache_aliases(preserved,roots,file_identities,journal)
     outcomes=[]
     metadata={(row['member_index'],row['relative_path']):row for row in preserved['directories']}
     metadata.update({(index,''):row for index,row in enumerate(preserved['members'])})

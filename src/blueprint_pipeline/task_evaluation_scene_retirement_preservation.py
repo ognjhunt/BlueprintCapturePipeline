@@ -336,7 +336,8 @@ def preserve_members(paths, *, transport, allowance, token, before_payload=None,
                 aliases.append(dict(path=str(path),digest=selected['digest'],size_bytes=selected['size_bytes'],
                     physical_identity=list(identity),snapshot=list(_snapshot(info)),
                     member_index=matches[0]['member_index'],relative_path=matches[0]['relative_path'],
-                    mode=stat.S_IMODE(info.st_mode),uid=info.st_uid,gid=info.st_gid))
+                    mode=stat.S_IMODE(info.st_mode),uid=info.st_uid,gid=info.st_gid,
+                    parent_identity=list(_identity(os.stat(path.parent,follow_symlinks=False)))))
                 alias_counts[key]=alias_counts.get(key,0)+1
     for key,rows in inodes.items():
         expected=len(rows)+alias_counts.get(key,0)
