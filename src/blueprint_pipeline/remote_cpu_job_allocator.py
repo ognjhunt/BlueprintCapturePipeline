@@ -142,7 +142,8 @@ def _write_file(path: Path, payload: bytes, *, mode: int, exclusive: bool) -> bo
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
     temporary = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
     try:
-        with open(temporary, "xb") as stream:
+        flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0)
+        with os.fdopen(os.open(temporary, flags, mode), "wb") as stream:
             os.fchmod(stream.fileno(), mode)
             stream.write(payload)
             stream.flush()
@@ -751,12 +752,12 @@ def _await_execution(action: _Action, descriptor: Mapping[str, Any]) -> dict[str
         execution, now = runtime.cloud_run.get_execution(name), float(runtime.clock())
         if execution.get("completionTime"):
             return execution
-        raw = read_remote_cpu_staging_object(staging_uri=descriptor["outputs"]["staging_prefix"] + "heartbeat.json",
-                                             maximum_size_bytes=MAX_HEARTBEAT_BYTES, client=store[0], bucket=store[1])
         try:
+            raw = read_remote_cpu_staging_object(staging_uri=descriptor["outputs"]["staging_prefix"] + "heartbeat.json",
+                                                 maximum_size_bytes=MAX_HEARTBEAT_BYTES, client=store[0], bucket=store[1])
             leases.observe_heartbeat(action.root, descriptor["job_id"], json.loads(raw or b"null"),
                                      execution_running=bool(execution.get("runningCount")), now=now)
-        except ValueError:  # no heartbeat yet, or a fenced or stale one: none of them renews the lease
+        except (ValueError, TaskEvaluationConfiguredSceneObjectStoreError):  # none of these renews the lease
             pass
         if now >= hard and not cancelled:
             runtime.cloud_run.cancel_execution(name)
@@ -888,16 +889,26 @@ def _reconcile(action: _Action, descriptor: Mapping[str, Any]) -> dict[str, Any]
         return {"status": "nothing_to_reconcile", "blockers": []}
     state, identity, deadlines = lease["state"], lease["worker_identity"], lease["deadlines"] or {}
     lost = identity is None and lease["dispatch_started"] and state in ("dispatching", "expired")
-    probe_collected = descriptor["stage"] == PROBE_STAGE and state == "collecting"
+    # A probe is its preflight's to close; reconcile takes over only once that preflight would have finished.
+    probe = (descriptor["stage"] == PROBE_STAGE and identity is not None and state in ("dispatched", "running",
+             "expired", "collecting") and action.now >= lease["write_urls_expire_at_epoch"] + RECONCILE_AFTER_SECONDS)
     # A dispatch in flight in another process is never second-guessed.
     in_flight = state == "dispatching" and action.now < deadlines.get("dispatch_started_at_epoch", 0) + RECONCILE_AFTER_SECONDS
-    if not (lost or probe_collected) or in_flight:
+    if not (lost or probe) or in_flight:
         return {"status": "nothing_to_reconcile", "blockers": [], "lease_state": state}
     if not action.execute:
         return {"status": "dry_run_ready", "blockers": [], "lease_state": state}
-    if probe_collected:
-        return _teardown(action, descriptor, outcome=lease["outcome"], wait=False,
-                         terminal="completed" if lease["outcome"] == "environment_recorded" else "blocked")
+    if probe:
+        name = execution_resource_name(run_target(descriptor)["job"], execution_name_of(identity))
+        if state != "collecting" and not action.runtime.cloud_run.get_execution(name).get("completionTime"):
+            action.runtime.cloud_run.cancel_execution(name)
+            return {"status": "teardown_pending", "blockers": ["remote_cpu_compute_zero_unproven"], "lease_state": state}
+        outcome = "probe_interrupted" if state in ("dispatched", "running") else lease["outcome"]
+        if state in ("dispatched", "running"):
+            leases.transition(action.root, descriptor["job_id"], attempt_id=descriptor["attempt_id"],
+                              to_state="collecting", now=action.now, updates={"outcome": outcome})
+        return _teardown(action, descriptor, outcome=outcome, wait=False, terminal="fallback_host" if state == "expired"
+                         else "completed" if outcome == "environment_recorded" else "blocked")
     found = reconcile_ambiguous_dispatch(action, descriptor)
     if found["status"] == "unresolved":
         return {"status": "ambiguous_dispatch_unresolved", "blockers": found["blockers"], "reconciled": found}
