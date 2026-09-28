@@ -14,7 +14,7 @@ from tests.test_registered_experiment_issuer import installation, issue  # noqa:
 from tests.test_owner_target_version_publication import root_metadata  # noqa: F401
 
 
-def prepare(installation):
+def prepare(installation):  # noqa: F811
     _, settings, store, _ = installation
     state = store.parents[1]
     public = state / "experiment-authority"
@@ -30,7 +30,7 @@ def prepare(installation):
     return public
 
 
-def birth(installation, result, **options):
+def birth(installation, result, **options):  # noqa: F811
     from blueprint_pipeline.control_plane_lane_experiment_birth import create_registered_experiment
     return create_registered_experiment(result["intent_id"], expected_intent=result["intent"],
         installed_config_path=installation[0], now=options.pop("now", lambda: 1100), **options)
@@ -65,7 +65,7 @@ def test_root_birth_uses_actual_native_constructor_and_current_authority(install
     assert entry["intent_id"] == grant["intent_id"] and entry["state"] == "active"
     assert entry["completion"] is entry["restoration"] is None
     assert entry["target_identity"]["ino"] == target.stat().st_ino
-    assert len(list(target.iterdir())) == 3  # lease, marker and target-lifetime lock
+    assert len(list(target.iterdir())) == 2  # The actual target inode carries the lifetime flock.
 
 
 def test_birth_reissue_refuses_prior_claim_before_native_constructor(installation, monkeypatch):  # noqa: F811
