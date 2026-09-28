@@ -212,3 +212,21 @@ def test_actual_issued_manifest_binds_exact_generation_and_compact_member_versio
         assert identity == f'{info.st_dev}:{info.st_ino}:' + ('r' if kind == 'file' else 'd')
         assert int(metadata.split(':')[0]) == info.st_mode & 0o7777
         assert digest is None if kind == 'directory' else digest.startswith('sha256:')
+
+
+@pytest.mark.slow
+def test_actual_gc_can_stream_slow_payload_without_resetting_metadata_budget(expired_completed_evidence, monkeypatch):
+    import time
+    from blueprint_pipeline import control_plane_lane_experiment_archive as archive
+    value, target, _, action, intent_id = expired_completed_evidence
+    class SlowCloud(Cloud):
+        def create_multipart_upload(self, **args):
+            time.sleep(6)  # Real external-call delay; fixture payload remains tiny.
+            return super().create_multipart_upload(**args)
+    cloud = SlowCloud()
+    monkeypatch.setattr(archive, '_client', lambda *a: (cloud, 'development-only'))
+    report = _gc(value)
+    outcome = report['registered_experiments']['outcomes'][0]
+    assert outcome['decision'] == 'retired', outcome
+    assert _current_entry(value, intent_id)['state'] == 'retired'
+    assert len(list(target.iterdir())) == 2 and all(body.closed for body in cloud.bodies)
