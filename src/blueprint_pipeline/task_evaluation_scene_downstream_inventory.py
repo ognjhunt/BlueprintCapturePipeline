@@ -8,6 +8,7 @@ from __future__ import annotations
 from . import task_evaluation_scene_inventory_seed as seed_module
 from . import task_evaluation_scene_downstream_contracts as contracts
 from . import task_evaluation_scene_downstream_execution as execution
+from . import task_evaluation_scene_downstream_terminal as terminal
 from .task_evaluation_scene_downstream_contracts import SceneDownstreamInventoryError
 
 MAX_RECORD_BYTES = MAX_TOTAL_BYTES = MAX_OUTPUT_BYTES = 16 * 1024 * 1024
@@ -54,10 +55,12 @@ def _join(intent_id, seed_records, downstream_records, roots):
                                                           roots={k: roots[k] for k in seed_module._ROOTS})
     activations, matched = execution.activation(context, seed)
     launches, bound = execution.launches(context, matched)
+    terminals = terminal.terminal(context, bound)
+    compilations = terminal.compilations(context)
     result = {'schema_version': 'task_evaluation_scene_downstream_inventory.v1', 'scope': 'supplied_retained_execution_records',
               'status': 'kept_unresolved', 'intent_id': intent_id, 'seed': seed,
-              'activation_observations': activations, 'launch_observations': launches, 'terminal_observations': [],
-              'compilation_observations': [], 'raw_versions': c.unique(context.raw),
+              'activation_observations': c.unique(activations), 'launch_observations': c.unique(launches), 'terminal_observations': c.unique(terminals),
+              'compilation_observations': c.unique(compilations), 'raw_versions': c.unique(context.raw),
               'raw_reference_obligations': c.unique(context.obligations), 'remote_reference_obligations': c.unique(context.remote),
               'structural_join_obligations': c.unique(context.structural), 'lexical_members': c.unique(context.members),
               'mutations': 0, **{flag: False for flag in FALSE_FLAGS}}
