@@ -853,27 +853,34 @@ def releases_output_on_exit(
     return run
 
 
-def recovery_withheld(result: Mapping[str, Any]) -> bool:
-    """A measured refusal that capacity recovery must not retry: it keeps its
-    typed blocker, but a retry would repeat paid external work.
+def recovery_withheld_reason(result: Mapping[str, Any]) -> str | None:
+    """Why capacity recovery must not retry this measured refusal, or None.
 
-    That covers API pretraining that already ran, as for a credit refusal, and
-    a CPU prefix unless the sealed record carries its proof of zero external
-    spend; an older or incomplete record counts as spent.
+    It keeps its typed blocker, but a retry would repeat paid external work:
+    API pretraining that already ran, as for a credit refusal, or a CPU prefix
+    unless the sealed record carries its proof of zero external spend. An
+    older or incomplete record counts as spent.
     """
 
     record = measured_admission_record(result)
     if record is None:
-        return False
+        return None
     if record.get("recovery_withheld"):
-        return True
+        return str(record["recovery_withheld"])
     if record.get("hold_phase") != DEFERRED_HOLD_PHASE:
-        return False
+        return None
+    if result.get("api_pretraining") is not None:
+        return API_PRETRAINING_CONSUMED
     proof = record.get("prefix_spend")
-    return result.get("api_pretraining") is not None or (
-        result.get("cpu_prestage") is not None
-        and not (isinstance(proof, Mapping) and proof.get("status") == PREFIX_SPEND_NONE)
-    )
+    if result.get("cpu_prestage") is not None and not (
+        isinstance(proof, Mapping) and proof.get("status") == PREFIX_SPEND_NONE
+    ):
+        return PREFIX_SPEND_UNPROVEN
+    return None
+
+
+def recovery_withheld(result: Mapping[str, Any]) -> bool:
+    return recovery_withheld_reason(result) is not None
 
 
 def recorded_preallocation_refusal(
@@ -1009,6 +1016,7 @@ __all__ = [
     "bundle_unpacked_bytes",
     "recorded_preallocation_refusal",
     "recovery_withheld",
+    "recovery_withheld_reason",
     "release_scene_configuration_output",
     "releases_output_on_exit",
 ]

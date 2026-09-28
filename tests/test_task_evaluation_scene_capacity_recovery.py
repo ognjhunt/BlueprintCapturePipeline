@@ -370,6 +370,58 @@ def test_a_changed_measured_refusal_cannot_authorize_recovery(tmp_path, monkeypa
         capacity.validate_source(refs, prior_attempt=first)
 
 
+@pytest.mark.parametrize(("sealed", "reason"), [
+    ({"recovery_withheld": "prefix_external_spend_recorded"}, "prefix_external_spend_recorded"),
+    ({"api_pretraining": {"status": "completed"}}, "api_pretraining_consumed"),
+    ({}, "prefix_spend_unproven"),
+])
+def test_a_withheld_measured_refusal_says_why_it_is_not_retried(tmp_path, monkeypatch, sealed, reason):
+    """A withheld refusal after the CPU prefix seals the same exact blocker as a
+    recoverable one, which the exact-list classifier depends on. The observation,
+    never the sealed result, names why no retry follows."""
+    first, refs, config, _hold, _free = _measured_refusal(tmp_path, monkeypatch)
+    path = Path(refs["result"]["path"])
+    value = json.loads(path.read_text())
+    value["cpu_prestage"] = {"status": "completed"}
+    value["provider_output_disk_capacity"].update(hold="refused", hold_phase="after_cpu_prefix")
+    if "recovery_withheld" in sealed:
+        value["provider_output_disk_capacity"]["recovery_withheld"] = sealed["recovery_withheld"]
+    value.update({key: row for key, row in sealed.items() if key != "recovery_withheld"})
+    write(path, value, "result_digest")
+    before = path.read_bytes()
+    observation = capacity.observe_failure(
+        attempt=first, link_path=Path(refs["link"]["path"]),
+        preparation_path=Path(refs["preparation"]["path"]),
+        factory_path=Path(refs["factory"]["path"]), config=config)
+    assert observation["recoverable"] is False
+    assert observation["recovery_withheld"] == reason
+    assert observation["blockers"] == [capacity.MEASURED_BLOCKER,
+                                       f"preallocation_capacity_recovery_withheld:{reason}"]
+    assert path.read_bytes() == before
+    assert json.loads(before)["blockers"] == [capacity.MEASURED_BLOCKER]
+
+
+def test_a_later_failure_after_a_deferred_hold_is_not_called_withheld(tmp_path, monkeypatch):
+    """A run admitted after its CPU prefix, which then failed for another reason,
+    was never refused, so its own blocker is surfaced alone."""
+    first, refs, config, _hold, _free = _measured_refusal(tmp_path, monkeypatch)
+    path = Path(refs["result"]["path"])
+    value = json.loads(path.read_text())
+    admitted = {**value["provider_output_disk_capacity"], "status": "ready", "blockers": [],
+                "hold": "held", "hold_phase": "after_cpu_prefix"}
+    value.update(blockers=["scene_configuration_scene_inputs_invalid"], cpu_prestage={"status": "completed"},
+                 provider_output_disk_capacity={"before_allocation_and_staging": admitted,
+                                                "before_extraction": {}})
+    write(path, value, "result_digest")
+    observation = capacity.observe_failure(
+        attempt=first, link_path=Path(refs["link"]["path"]),
+        preparation_path=Path(refs["preparation"]["path"]),
+        factory_path=Path(refs["factory"]["path"]), config=config)
+    assert observation["recoverable"] is False
+    assert observation["blockers"] == ["scene_configuration_scene_inputs_invalid"]
+    assert "recovery_withheld" not in observation
+
+
 def test_a_measured_dead_machine_is_rechecked_by_role_not_5u(tmp_path, monkeypatch):
     """Dead-machine auto-retry treats a measured run like its ceiling twin in every
     respect but the output re-check, which follows how the successor will be

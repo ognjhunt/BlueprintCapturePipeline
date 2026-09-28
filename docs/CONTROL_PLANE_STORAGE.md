@@ -62,7 +62,10 @@ spend. The admission record's `recovery_withheld` names why:
 OpenAI or Anthropic cap, and `prefix_spend_unproven` when the prefix's retained output
 (`cpu_prestage_output.zip`, with its `official_openai_cost/` receipts and inference
 reservations) is missing, incomplete or unreadable. `prefix_spend` records what that
-archive showed. After an extraction refusal the output stays durable, in B2 and as the local
+archive showed. The sealed blocker list stays exact, so capacity recovery's observation
+adds `preallocation_capacity_recovery_withheld:<reason>` beside it, which the scene's
+`scene_configuration_failed` state shows, and carries the reason as `recovery_withheld`.
+After an extraction refusal the output stays durable, in B2 and as the local
 zip, but nothing recovers it automatically yet. The website publication reconciler
 and the publication-recovery CLI both require `configuration_completed: true`, which
 stays false by design until readers can fetch archive members on demand (plan

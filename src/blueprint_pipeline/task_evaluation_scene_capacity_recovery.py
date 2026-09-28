@@ -253,8 +253,16 @@ def observe_failure(*, attempt, link_path, preparation_path, factory_path, confi
         elif dead_machine_launch_failure(result):
             kind = "provider_dead_machine"
         if kind is None:
-            return {"recoverable": False, "blockers": result.get("blockers") or ["configuration_launch_failed"],
-                    "result": record(result_path)}
+            blockers = result.get("blockers") or ["configuration_launch_failed"]
+            observation = {"recoverable": False, "blockers": blockers, "result": record(result_path)}
+            # A withheld measured refusal seals the recoverable blocker exactly;
+            # only this observation says why no retry follows.
+            from .task_evaluation_scene_configuration_output_admission import recovery_withheld_reason
+            withheld = recovery_withheld_reason(result) if MEASURED_BLOCKER in blockers else None
+            if withheld is not None:
+                observation.update(recovery_withheld=withheld, blockers=[
+                    *blockers, f"preallocation_capacity_recovery_withheld:{withheld}"])
+            return observation
         inputs = {row["name"]: row for row in profile["immutable_inputs"]}
         refs = {name: record(directory / filename) for name, filename in (
             ("profile", "launch_profile.json"), ("request", "launch_request.json"),
