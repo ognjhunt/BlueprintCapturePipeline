@@ -723,3 +723,24 @@ def test_a_holders_report_rewritten_after_the_plan_keeps_the_group_whole(tmp_pat
 
     assert block["kept_by_reason"] == {"recheck_failed:holder_ineligible": {"groups": 1, "bytes": size}}
     assert block["removed_groups"] == 0 and all(path.exists() for path in names)
+
+
+def test_a_holder_swapped_for_a_link_after_the_plan_keeps_the_group_whole(tmp_path, monkeypatch) -> None:
+    """A replay holding a candidate must still be the directory the plan walked, not a link to it:
+    one swapped for a link after the plan keeps every group it holds as path_changed, nothing of
+    them unlinked in any replay, though its report still reads the same through the link."""
+
+    parent_root, names, size = _two_lookaheads(tmp_path)
+    second = names[-1].parents[3]
+    moved = second.with_name(second.name + "-moved")
+
+    def swapped() -> None:
+        second.rename(moved)
+        second.symlink_to(moved, target_is_directory=True)
+
+    _after_plan(monkeypatch, swapped)
+    block = _tick(tmp_path, parent_root, **BOTH)["replay_caches"]["shared_scratch"]
+
+    assert block["kept_by_reason"] == {"recheck_failed:path_changed": {"groups": 1, "bytes": size}}
+    assert block["removed_groups"] == 0 and all(path.exists() for path in names)
+    assert (moved / "stage_replay_report.v1.json").is_file()

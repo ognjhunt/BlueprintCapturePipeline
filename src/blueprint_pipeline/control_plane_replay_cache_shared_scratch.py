@@ -51,8 +51,8 @@ def _unsafe(root: Path) -> bool:
     return not root.is_absolute() or any(p.is_symlink() for p in (root, *root.parents))
 
 
-def _walk(child: Path) -> tuple[int, list[tuple[os.stat_result, Path]]] | None:
-    """The child's st_dev and every regular file under its ``prepared-references``, by name
+def _walk(child: Path) -> tuple[os.stat_result, list[tuple[os.stat_result, Path]]] | None:
+    """The child's own lstat and every regular file under its ``prepared-references``, by name
     relative to the child, or None for a child that is gone.
 
     A link is never followed and a directory on another device than the child's is never
@@ -61,13 +61,14 @@ def _walk(child: Path) -> tuple[int, list[tuple[os.stat_result, Path]]] | None:
     """
 
     try:
-        device = os.lstat(child).st_dev
+        itself = os.lstat(child)
     except OSError:
         return None
+    device = itself.st_dev
     subtree = child / retention._SCRATCH_INPUTS
     found: list[tuple[os.stat_result, Path]] = []
     if not retention._directory_on(subtree, device):
-        return device, found
+        return itself, found
     for directory, directories, names in os.walk(subtree):
         here = Path(directory)
         directories[:] = [name for name in directories if retention._directory_on(here / name, device)]
@@ -80,7 +81,7 @@ def _walk(child: Path) -> tuple[int, list[tuple[os.stat_result, Path]]] | None:
                 continue
             if stat.S_ISREG(info.st_mode):
                 found.append((info, (here / name).relative_to(child)))
-    return device, found
+    return itself, found
 
 
 def _gate(child: Path, *, clock: float, minimum_closed_seconds: int) -> tuple[str | None, str | None, int | None]:
@@ -151,8 +152,8 @@ def plan_shared_scratch(
             if walked is None or not walked[1]:
                 continue
             index = len(holders)
-            holders.append({"path": child, "device": walked[0], "gate": None, "report": None,
-                            "report_mtime_ns": None})
+            holders.append({"path": child, "device": walked[0].st_dev, "inode": walked[0].st_ino, "gate": None,
+                            "report": None, "report_mtime_ns": None})
             for info, name in walked[1]:
                 inodes.setdefault((info.st_dev, info.st_ino), (info, []))[1].append((index, name))
     groups = [
@@ -305,6 +306,28 @@ def _prune(child: Path) -> list[dict[str, str]]:
         held.close()
 
 
+def _holder_why(holder: dict[str, Any], plan: dict[str, Any], referenced: Any) -> str | None:
+    """Why a replay holding candidate names may not lose them now, or None.
+
+    It must still be the directory the plan walked, not a link to it (``path_changed``), and
+    still pass every gate with the report the plan read, unchanged in path, mtime and digest,
+    and no live process in ``referenced`` (a sweep) may reference it (``holder_ineligible``).
+    """
+
+    child = holder["path"]
+    try:
+        info = os.lstat(child)
+    except OSError as exc:
+        return _failure(exc)
+    if not stat.S_ISDIR(info.st_mode) or (info.st_dev, info.st_ino) != (holder["device"], holder["inode"]):
+        return "path_changed"
+    gate, report, mtime_ns = _gate(child, clock=plan["clock"], minimum_closed_seconds=plan["minimum_closed_seconds"])
+    if (gate is not None or (report, mtime_ns) != (holder["report"], holder["report_mtime_ns"])
+            or _report_sha(report) != holder["report_sha256"] or referenced(child)):
+        return "holder_ineligible"
+    return None
+
+
 def apply_shared_scratch(plan: dict[str, Any], *, process_root: Path = Path("/proc")) -> dict[str, Any]:
     """Remove the plan's candidates: ``removed`` groups, ``kept`` ``(group, reason)`` for each apply
     stopped, and the prune's typed skips."""
@@ -316,21 +339,17 @@ def apply_shared_scratch(plan: dict[str, Any], *, process_root: Path = Path("/pr
     if not plan["candidates"]:
         return {"removed": removed, "kept": kept, "prune_skipped": []}
     referenced = retention.process_reference_index(process_root=process_root)
-    verdicts: dict[int, bool] = {}
+    whys: dict[int, str | None] = {}
 
-    def still_eligible(index: int) -> bool:
-        if index not in verdicts:
-            holder = holders[index]
-            gate, report, mtime_ns = _gate(holder["path"], clock=plan["clock"],
-                                           minimum_closed_seconds=plan["minimum_closed_seconds"])
-            verdicts[index] = (gate is None and (report, mtime_ns) == (holder["report"], holder["report_mtime_ns"])
-                               and _report_sha(report) == holder["report_sha256"]
-                               and not referenced(holder["path"]))
-        return verdicts[index]
+    def holder_why(index: int) -> str | None:
+        if index not in whys:
+            whys[index] = _holder_why(holders[index], plan, referenced)
+        return whys[index]
 
     for group in plan["candidates"]:
-        if not all(still_eligible(index) for index, _names in _by_holder(group)):
-            kept.append((group, "recheck_failed:holder_ineligible"))
+        why = next((why for why in (holder_why(index) for index, _names in _by_holder(group)) if why), None)
+        if why:
+            kept.append((group, f"recheck_failed:{why}"))
             continue
         why, unlinked_in = _unlink_group(group, holders)
         touched.update(unlinked_in)
