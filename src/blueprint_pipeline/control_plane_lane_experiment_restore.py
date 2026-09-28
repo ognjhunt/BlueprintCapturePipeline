@@ -189,16 +189,24 @@ def _lease_cas(files, target, parent, previous, payload):
         _require(expected == owners._metadata(os.fstat(fd))
                  == owners._metadata(os.stat(scratch.LEASE_FILE, dir_fd=parent, follow_symlinks=False)),
                  'experiment_restore_lease_changed')
+    def own_transition():
+        files.location(parent)
+        files.proof(fd)
+        opened = os.fstat(fd)
+        _require(owners._security(opened) == owners._security(original)
+                 and owners._metadata(opened) == owners._metadata(os.stat(scratch.LEASE_FILE, dir_fd=parent, follow_symlinks=False)),
+                 'experiment_restore_lease_changed')
+        return owners._metadata(opened)
     check()
     os.ftruncate(fd, 0)
-    expected = owners._metadata(os.fstat(fd))
+    expected = own_transition()
     count = 0
     while count < len(payload):
         check()
         written = os.write(fd, memoryview(payload)[count:])
         _require(type(written) is int and 0 < written <= len(payload) - count, 'experiment_restore_lease_changed')
         count += written
-        expected = owners._metadata(os.fstat(fd))
+        expected = own_transition()
     check()
     os.fsync(fd)
     check()
@@ -526,6 +534,8 @@ def restore(action_id, *, expected_restore_intent, installed_config_path, now, p
         new_lease = lease | {'renewed_at_epoch': issued, 'expires_at_epoch': action['new_lease_expires_at_epoch']}
         payload = actions._encoded(new_lease, 'lease_digest', scratch.MAX_LEASE_BYTES)
         _require(scratch._lease_fields_valid(json.loads(payload)), 'experiment_restore_lease_invalid')
+        root = config.lane_scratch_work_root if entry['root'] == 'work' else config.lane_scratch_inputs_root
+        birth._locked_lane(files, root)
         new_selector = _lease_cas(files, target, target_fd, lease_record, payload)
         # Root measured publication bytes bind restored identities, not a new execution.
         restored_manifest = actions._manifest(files, target, target_fd)
