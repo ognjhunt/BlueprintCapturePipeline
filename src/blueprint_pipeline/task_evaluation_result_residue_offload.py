@@ -134,9 +134,13 @@ publishes nothing, never withdraws that pointer, and evicts nothing until a HEAD
 request finds the pointer's archive with its size and digest
 (``archive_unverified``). Only an ``evicting`` pointer is resumed: an ``offloaded`` one (or one
 without a state) is ``already_offloaded``, and a run an operator restored is
-``restored`` and is never offloaded again without a new decision. A pointer that
-does not verify, or whose registry digest is not the run's, leaves the run alone
-(``pointer_invalid``). ``restore_result_residue``
+``restored`` and is never offloaded again without a new decision. The gates
+read the pointer before the run lock, so an applying tick reads it again once it
+holds the lock and goes on only while it is unchanged (still absent, or the same
+``evicting`` pointer by digest); otherwise it keeps the run for the pointer's
+state now (``pointer_changed`` when it is gone or another) and writes nothing. A
+pointer that does not verify, or whose registry digest is not the run's, leaves
+the run alone (``pointer_invalid``). ``restore_result_residue``
 (``task_evaluation_result_residue_restore``) streams the archive back, verifies
 every member's digest and size, never overwrites a different file, and records a
 receipt beside the pointer. The reference search itself lives in
@@ -185,6 +189,9 @@ POINTER_SCHEMA_VERSION = "control_plane_result_residue_pointer.v1"
 #: A pointer's eviction state: members are being evicted behind it, eviction is over, or an operator
 #: restored the run. A pointer without one is read as ``offloaded``, so nothing resumes behind it.
 POINTER_STATES = ("evicting", "offloaded", "restored")
+#: Why a run with a pointer in each state is kept; an ``evicting`` pointer is resumed only while it is
+#: the one the tick first read (else ``pointer_changed``).
+_POINTER_STATE_REASONS = {"evicting": "pointer_changed", "offloaded": "already_offloaded", "restored": "restored"}
 RESTORE_SCHEMA_VERSION = "control_plane_result_residue_restore_receipt.v1"
 POINTER_SUFFIX = evidence.RESIDUE_POINTER_SUFFIX
 RESTORE_RECEIPT_SUFFIX = evidence.RESIDUE_RESTORE_SUFFIX
@@ -807,7 +814,7 @@ def offload_result_residue(
         state = pointed.get("state", "offloaded")
         if state != "evicting":
             # Eviction is over, or an operator restored the run: only a new decision offloads it again.
-            return _retained(row, "restored" if state == "restored" else "already_offloaded")
+            return _retained(row, _POINTER_STATE_REASONS[state])
         # A crash during eviction left members behind the pointer: evict them, through every gate below.
         row["resume"] = True
     try:
@@ -826,6 +833,9 @@ def offload_result_residue(
     with ExitStack() as stack:
         if apply and not _hold_offload_lock(root, stack):
             return _retained(row, "offload_locked")
+        moved = _pointer_moved(root, pointer, pointed) if apply else None
+        if moved:
+            return _retained(row, moved)
         registry_stat = registry_path.stat()
         if float(now()) - registry_stat.st_mtime < hot_window_seconds:
             return _retained(row, "hot")
@@ -869,6 +879,29 @@ def offload_result_residue(
             return _finished(row)
         return _apply(row, root, pointer, registry, registry_path, registry_bytes, members,
                       protection_checker, publisher, stream_publisher, now, queue_roots)
+
+
+def _pointer_moved(root: Path, pointer: Path, seen: Mapping[str, Any] | None) -> str | None:
+    """Why the pointer, read again under the run lock, is not what the gates before the lock saw.
+
+    A restore or another tick may have written it since (a restore holds the
+    same lock, so not while this tick holds it). Acting on the stale copy would
+    evict what a restore put back. None while it is unchanged (still absent, or
+    the same ``evicting`` pointer by digest); otherwise the reason for the state
+    it is in now, ``pointer_changed`` when it is gone or another ``evicting``
+    pointer, or ``pointer_invalid``.
+    """
+
+    if not (pointer.exists() or pointer.is_symlink()):
+        return None if seen is None else "pointer_changed"
+    try:
+        current = _read_pointer(root)
+    except Exception:  # noqa: BLE001 - a pointer that does not verify is left alone
+        return "pointer_invalid"
+    state = current.get("state", "offloaded")
+    if seen is not None and state == "evicting" and current["pointer_digest"] == seen["pointer_digest"]:
+        return None
+    return _POINTER_STATE_REASONS[state]
 
 
 def _apply(row, root, pointer, registry, registry_path, registry_bytes, members, protection_checker,

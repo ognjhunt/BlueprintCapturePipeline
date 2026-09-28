@@ -743,8 +743,14 @@ so each manifest (and its receipt) also records `walked_file_count` and
   `run_changed_or_active`, `pointer_failed`, `nothing_evicted` (every member
   stayed, so the pointer was withdrawn and the next tick tries again),
   `pointer_invalid` (a pointer that does not verify leaves the run alone),
-  `already_offloaded` or `restored` (an operator restored the run, and no tick
-  offloads it again without a new decision)). The pointer records its eviction
+  `already_offloaded`, `restored` (an operator restored the run, and no tick
+  offloads it again without a new decision) or `pointer_changed` (the pointer a
+  tick read before its lock is gone or another one once it holds the lock)).
+  An applying tick reads the pointer again once it holds the run lock and goes
+  on only while it is unchanged (still absent, or the same `evicting` pointer
+  by digest); otherwise it keeps the run for the state the pointer is in now and
+  writes nothing, so a restore that lands between the two reads is never undone.
+  The pointer records its eviction
   `state`: `evicting` from before the first unlink until eviction is over, then
   `offloaded` (a pointer without a state reads as `offloaded`), and `restored`
   once a restore finished. A pointed run reports the listed members still local

@@ -1717,3 +1717,49 @@ def test_a_resume_keeps_a_member_a_reader_can_now_reach(tmp_path, monkeypatch) -
     pointer = json.loads(f.pointer.read_text(encoding="utf-8"))
     assert pointer["state"] == "offloaded"
     assert pointer["kept"] == [{"relative_path": named, "reason": "no_longer_residue"}]
+
+
+def test_a_restore_that_lands_before_the_tick_takes_the_lock_is_not_undone(tmp_path, monkeypatch) -> None:
+    """Code review of 10d: a tick read the pointer before it took the run lock. A restore that
+    finished in between left it acting on its stale ``evicting`` copy: it evicted every restored
+    member and rewrote the pointer ``offloaded``. Under the lock the tick reads the pointer again,
+    and goes on only while it is still the ``evicting`` pointer it saw."""
+
+    f = _sealed_run(tmp_path / "canaries")
+    _crash_on_second_group(monkeypatch, f)
+    real_snapshot, restored = residue.queue_snapshot, []
+
+    def restore_first(roots):
+        if not restored:
+            restored.append(_restore(f))  # lands inside the tick's gates, before its lock
+        return real_snapshot(roots)
+
+    monkeypatch.setattr(residue, "queue_snapshot", restore_first)
+    result = _offload(f)
+
+    assert [receipt["status"] for receipt in restored] == ["restored"]
+    assert (result["status"], result["retained_reason"], result["offloaded_count"]) == ("retained", "restored", 0)
+    assert {relative: (f.run / relative).read_bytes() for relative in RESIDUE} == RESIDUE
+    assert json.loads(f.pointer.read_text(encoding="utf-8"))["state"] == "restored"
+
+
+def test_a_pointer_written_before_the_tick_takes_the_lock_stops_a_new_offload(tmp_path, monkeypatch) -> None:
+    """The same holds for a run with no pointer at first: an offload that lands before the lock
+    leaves a pointer the tick then reads, and the tick publishes and writes nothing."""
+
+    f = _sealed_run(tmp_path / "canaries")
+    real_snapshot, landed = residue.queue_snapshot, []
+
+    def offload_first(roots):
+        if not landed:
+            landed.append(True)
+            landed.append(_offload(f))  # another tick's offload, before this one's lock
+        return real_snapshot(roots)
+
+    monkeypatch.setattr(residue, "queue_snapshot", offload_first)
+    result = _offload(f)
+
+    assert landed[1]["status"] == "applied"
+    assert (result["status"], result["retained_reason"], result["offloaded_count"]) == (
+        "retained", "already_offloaded", 0)
+    assert f.client.upload_count == 2  # the fixture's bulk artifact and the one residue archive
