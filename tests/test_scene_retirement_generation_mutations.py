@@ -1,5 +1,6 @@
 """Numeric descriptor substitution must refuse before actual producer mutations."""
 import os
+from contextlib import nullcontext
 
 import pytest
 
@@ -16,11 +17,13 @@ def test_generation_publisher_never_mutates_reused_foreign_descriptor(tmp_path, 
         foreign.mkdir()
     else:
         foreign.write_bytes(b'foreign-original-bytes')
-    real_open, real_write = os.open, os.write
+    real_open, real_write, real_fsync = os.open, os.write, os.fsync
     foreign_fd = real_open(foreign, os.O_RDONLY | os.O_DIRECTORY if foreign.is_dir() else os.O_RDWR)
     substituted = []
     try:
-        with access._opened(store, directory=True) as (parent, info):
+        cleanup_refusal = (pytest.raises(access.SceneRetirementAccessError, match='descriptor_cleanup_failed')
+                           if substitution == 'parent-before-create' else nullcontext())
+        with cleanup_refusal, access._opened(store, directory=True) as (parent, info):
             original_new = generations._new_file
             def new_file(fd, name, **kwargs):
                 if substitution == 'parent-before-create':
@@ -40,6 +43,10 @@ def test_generation_publisher_never_mutates_reused_foreign_descriptor(tmp_path, 
                     os.dup2(foreign_fd, fd)
                     substituted.append(fd)
                 return result
+            def fsync(fd):
+                assert access._identity(os.fstat(fd)) != access._identity(os.fstat(foreign_fd)), 'fsync used foreign descriptor'
+                return real_fsync(fd)
+            monkeypatch.setattr(os, 'fsync', fsync)
             monkeypatch.setattr(generations, '_new_file', new_file)
             monkeypatch.setattr(os, 'write', write)
             # New keyword is supplied only once production supports it; current

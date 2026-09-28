@@ -27,11 +27,25 @@ def _raw_reference(value):
     return _document(raw)
 
 
-def _new_file(parent, name):
+def _guard(fd, expected):
+    _require(_identity(os.fstat(fd)) == expected,
+             'scene_retirement_descriptor_ownership_lost')
+
+
+def _named(parent, parent_identity, name, fd, identity):
+    _guard(parent, parent_identity)
+    _guard(fd, identity)
+    _require(_identity(os.stat(name, dir_fd=parent, follow_symlinks=False)) == identity,
+             'scene_retirement_descriptor_ownership_lost')
+
+
+def _new_file(parent, name, *, parent_identity):
+    _guard(parent, parent_identity)
     fd = os.open(name, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
                  0o600, dir_fd=parent)
-    # Independent named expectation precedes the first successful descriptor
-    # observation even for our newly created entry. Unproven tokens stay untouched.
+    # Independent named expectation precedes first descriptor adoption. A lost
+    # parent or initial unknown token cannot authorize cleanup of that token.
+    _guard(parent, parent_identity)
     expected = os.stat(name, dir_fd=parent, follow_symlinks=False)
     observed = os.fstat(fd)
     _require(stat.S_ISREG(expected.st_mode) and expected.st_nlink == 1
@@ -40,19 +54,23 @@ def _new_file(parent, name):
 
 
 @contextmanager
-def _birth_gate(parent, key):
+def _birth_gate(parent, key, *, parent_identity):
     name = key + '.lock'
     try:
-        fd, identity = _new_file(parent, name)
+        fd, identity = _new_file(parent, name, parent_identity=parent_identity)
     except FileExistsError:
+        _guard(parent, parent_identity)
         fd, info = _open_owned(name, os.O_RDONLY, dir_fd=parent)
         identity = _identity(info)
     try:
+        _named(parent, parent_identity, name, fd, identity)
         os.fsync(parent)
+        _named(parent, parent_identity, name, fd, identity)
         info = os.fstat(fd)
-        _require(_identity(info) == identity and info.st_uid == os.geteuid()
-                 and stat.S_IMODE(info.st_mode) == 0o600 and info.st_nlink == 1)
+        _require(info.st_uid == os.geteuid() and stat.S_IMODE(info.st_mode) == 0o600
+                 and info.st_nlink == 1)
         try:
+            _named(parent, parent_identity, name, fd, identity)
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             raise SceneRetirementAccessError('scene_retirement_birth_active') from exc
@@ -66,39 +84,48 @@ def _birth_gate(parent, key):
             incoming.add_note('scene_retirement_descriptor_cleanup_failed')
 
 
-def _write(parent, name, value, *, replace=False):
+def _write(parent, name, value, *, parent_identity, replace=False):
     raw = json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()
     _require(len(raw) <= 65536)
     temporary = '.' + secrets.token_hex(16) + '.pending'
-    fd, identity = _new_file(parent, temporary)
+    fd, identity = _new_file(parent, temporary, parent_identity=parent_identity)
     placed = False
     try:
         view = memoryview(raw)
         while view:
+            _named(parent, parent_identity, temporary, fd, identity)
             written = os.write(fd, view)
             _require(written > 0)
             view = view[written:]
+        _named(parent, parent_identity, temporary, fd, identity)
         os.fsync(fd)
-        _require(_identity(os.stat(temporary, dir_fd=parent, follow_symlinks=False)) == identity
-                 and _identity(os.fstat(fd)) == identity)
+        _named(parent, parent_identity, temporary, fd, identity)
         if replace:
-            # Only protected producer metadata under the one exact birth gate;
-            # payload/restoration publication NEVER uses this replacement path.
+            # Only producer metadata under the exact birth gate; never payload
+            # restoration. Recheck the prior destination if present as well.
             os.replace(temporary, name, src_dir_fd=parent, dst_dir_fd=parent)
         else:
             os.link(temporary, name, src_dir_fd=parent, dst_dir_fd=parent, follow_symlinks=False)
+            _named(parent, parent_identity, temporary, fd, identity)
             os.unlink(temporary, dir_fd=parent)
         placed = True
+        _guard(parent, parent_identity)
+        _guard(fd, identity)
+        _require(_identity(os.stat(name, dir_fd=parent, follow_symlinks=False)) == identity)
+        _guard(parent, parent_identity)
         os.fsync(parent)
     finally:
         incoming = sys.exc_info()[1]
-        failure = _close_owned(fd, identity)
+        cleanup_failure = None
         if not placed:
             try:
-                if _identity(os.stat(temporary, dir_fd=parent, follow_symlinks=False)) == identity:
-                    os.unlink(temporary, dir_fd=parent)
+                _named(parent, parent_identity, temporary, fd, identity)
+                os.unlink(temporary, dir_fd=parent)
             except FileNotFoundError:
                 pass
+            except (OSError, SceneRetirementAccessError):
+                cleanup_failure = 'scene_retirement_descriptor_cleanup_failed'
+        failure = _close_owned(fd, identity) or cleanup_failure
         if failure and incoming is None:
             raise SceneRetirementAccessError('scene_retirement_descriptor_cleanup_failed')
         if failure and incoming is not None:
@@ -135,7 +162,7 @@ def birth_member(path, *, owner_intent_id, owner_raw_ref, birth_request_raw_ref,
         key = hashlib.sha256(str(path).encode()).hexdigest()
         with _opened(store, directory=True) as (parent, store_info):
             _require(store_info.st_uid == os.geteuid() and stat.S_IMODE(store_info.st_mode) == 0o700)
-            with _birth_gate(parent, key):
+            with _birth_gate(parent, key, parent_identity=_identity(store_info)):
                 try:
                     prior = _read(store / (key + '.json'))
                 except FileNotFoundError:
@@ -162,13 +189,15 @@ def birth_member(path, *, owner_intent_id, owner_raw_ref, birth_request_raw_ref,
                         birth_request_raw_ref=birth_request_raw_ref, state='birth', dev=None, ino=None, mode=None,
                         inventory_sha256=None, retirement_token=None, journal_sha256=None,
                         state_sequence=prior['state_sequence'] + 1 if prior else 0))
-                    _write(parent, key + '.' + value['generation_id'] + '.birth.json', value)
-                    _write(parent, key + '.json', value, replace=prior is not None)
+                    _write(parent, key + '.' + value['generation_id'] + '.birth.json', value, parent_identity=_identity(store_info))
+                    _write(parent, key + '.json', value, parent_identity=_identity(store_info), replace=prior is not None)
+                    _guard(target_parent, _identity(info))
                     os.mkdir(path.name, 0o750, dir_fd=target_parent)
+                    _guard(target_parent, _identity(info))
                     os.fsync(target_parent)
                     with _opened(path, directory=True) as (_, born):
                         value = _sealed(dict(value, state='active', dev=born.st_dev, ino=born.st_ino,
                                              mode=born.st_mode, state_sequence=value['state_sequence'] + 1))
-                    _write(parent, key + '.' + value['generation_id'] + '.active.json', value)
-                    _write(parent, key + '.json', value, replace=True)
+                    _write(parent, key + '.' + value['generation_id'] + '.active.json', value, parent_identity=_identity(store_info))
+                    _write(parent, key + '.json', value, parent_identity=_identity(store_info), replace=True)
                     return value
