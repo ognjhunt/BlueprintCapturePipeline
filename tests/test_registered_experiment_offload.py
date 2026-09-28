@@ -106,8 +106,9 @@ def test_actual_gc_preserves_verified_archive_before_removing_expired_evidence(
         assert len(cloud.objects) == 1
 
 
+@pytest.mark.parametrize('certificate_case', ['intact', 'missing', 'changed', 'held_changed'])
 def test_actual_root_restore_renews_lease_and_reopens_real_registered_reader(
-        expired_completed_evidence, monkeypatch):
+        expired_completed_evidence, monkeypatch, certificate_case):
     from blueprint_pipeline import control_plane_lane_experiment_archive as archive
     from blueprint_pipeline import control_plane_lane_experiment_retirement as root
     from blueprint_pipeline import control_plane_lane_experiment_restore as restore
@@ -140,7 +141,21 @@ def test_actual_root_restore_renews_lease_and_reopens_real_registered_reader(
     for relative, raw in before.items():
         if relative != '.lane-scratch.v1.json':
             assert (target / relative).read_bytes() == raw
+    certificate = consumer.AUTHORITY_ROOT / ('restoration-' + entry['restoration']['sha256'][7:] + '.json')
+    if certificate_case in ('missing', 'changed'):
+        if certificate_case == 'missing':
+            certificate.unlink()
+        else:
+            certificate.write_bytes(b'{}')
+        with pytest.raises(ValueError, match='experiment_'):
+            consumer.RegisteredExperimentUse.admit(target, now=lambda: 3000)
+        return
     with consumer.RegisteredExperimentUse.admit(target, now=lambda: 3000) as use:
+        if certificate_case == 'held_changed':
+            certificate.write_bytes(b'{}')
+            with pytest.raises(ValueError, match='experiment_'):
+                use.check()
+            return
         assert use.entry['restoration'] == entry['restoration']
         from blueprint_pipeline.native_g1_development_pair import _read_result
         from blueprint_pipeline import native_g1_development_pair as pair
