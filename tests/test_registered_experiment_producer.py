@@ -795,3 +795,50 @@ def test_missing_native_exec_never_repairs_loaded_or_ambiguous_unit(monkeypatch,
     monkeypatch.setattr(contained, '_native_control', lambda arguments: '\n'.join(lines)+'\n')
     with pytest.raises(ValueError, match='experiment_unit_observation_failed'):
         contained._show_unit('a'*32)
+
+
+def _successful_unit_transition():
+    from blueprint_pipeline import native_g1_registered_containment as contained
+    intent = 'a' * 32
+    target = Path('/mnt/blueprint-work/lanes/g1/registered-' + intent)
+    bootstrap = Path('/var/lib/blueprint/authority/' + intent + '.producer-bootstrap.json')
+    command = contained._unit_arguments(intent, target, bootstrap)
+    argv = command[command.index('--') + 1:]
+    started = dict(Id='blueprint-experiment-' + intent + '.service', LoadState='loaded',
+        ActiveState='active', SubState='running', InvocationID='b' * 32, MainPID='42',
+        Result='success', ExecMainStatus='0', ControlGroup='/system.slice/blueprint-experiment-' + intent + '.service',
+        ExecStart='{ path=' + argv[0] + ' ; argv[]=' + ' '.join(argv) + ' ; ignore_errors=no ; start_time=[now] ; stop_time=[n/a] ; pid=42 ; code=(null) ; status=0/0 }',
+        User='blueprint',Group='blueprint',UMask='0077',NoNewPrivileges='yes',CapabilityBoundingSet='',
+        AmbientCapabilities='',ProtectControlGroups='yes',KillMode='control-group',Delegate='no',TasksMax='64',
+        TimeoutStopUSec='30s',RemainAfterExit='yes',ProtectSystem='strict',ProtectHome='yes',PrivateTmp='yes',
+        PrivateNetwork='yes',RestrictNamespaces='yes',RestrictSUIDSGID='yes',ReadWritePaths=str(target),ReadOnlyPaths='/')
+    return intent, command, started
+
+
+def test_successful_same_invocation_terminal_empty_controlgroup_requires_original_start():
+    from blueprint_pipeline import native_g1_registered_containment as contained
+    intent, command, started = _successful_unit_transition()
+    contained._check_unit(started, command, intent)
+    terminal = started | {'ActiveState': 'active', 'SubState': 'exited', 'MainPID': '0', 'ControlGroup': ''}
+    contained._check_unit(terminal, command, intent, started=started)
+    with pytest.raises(ValueError, match='experiment_unit_identity_changed'):
+        contained._check_unit(terminal, command, intent)
+
+
+@pytest.mark.parametrize('change', ['running-empty', 'different-invocation', 'different-group', 'failed', 'live-pid'])
+def test_terminal_cgroup_transition_never_accepts_changed_or_live_unit(change):
+    from blueprint_pipeline import native_g1_registered_containment as contained
+    intent, command, started = _successful_unit_transition()
+    terminal = started | {'ActiveState': 'active', 'SubState': 'exited', 'MainPID': '0', 'ControlGroup': ''}
+    if change == 'running-empty':
+        terminal['SubState'] = 'running'
+    elif change == 'different-invocation':
+        terminal['InvocationID'] = 'c' * 32
+    elif change == 'different-group':
+        terminal['ControlGroup'] = '/system.slice/foreign.service'
+    elif change == 'failed':
+        terminal['Result'] = 'exit-code'
+    else:
+        terminal['MainPID'] = '43'
+    with pytest.raises(ValueError, match='experiment_unit_'):
+        contained._check_unit(terminal, command, intent, started=started)
