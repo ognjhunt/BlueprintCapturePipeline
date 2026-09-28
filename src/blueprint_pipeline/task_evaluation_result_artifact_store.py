@@ -23,6 +23,7 @@ archive order, so a whole run costs a few span reads.
 from __future__ import annotations
 
 import argparse
+import bisect
 import fcntl
 import hashlib
 import json
@@ -312,12 +313,33 @@ def _member_row(entry: dict) -> dict:
             "compressed_size": entry["compressed_size"]}
 
 
+_ARCHIVE_ORDER: OrderedDict[str, tuple[list[dict], list[int]]] = OrderedDict()
+_ARCHIVE_ORDER_LOCK = threading.Lock()
+
+
+def _archive_order(references: dict) -> tuple[list[dict], list[int]]:
+    """The references' distinct members in archive order and their offsets, kept for a few runs."""
+    key = str(references.get("references_digest"))
+    with _ARCHIVE_ORDER_LOCK:
+        order = _ARCHIVE_ORDER.get(key)
+        if order is not None:
+            _ARCHIVE_ORDER.move_to_end(key)
+            return order
+    rows = sorted({row["archive_path"]: row for row in references["members"].values()}.values(),
+                  key=lambda row: row["data_offset"])
+    order = (rows, [row["data_offset"] for row in rows])
+    with _ARCHIVE_ORDER_LOCK:
+        _ARCHIVE_ORDER[key] = order
+        while len(_ARCHIVE_ORDER) > 4:
+            _ARCHIVE_ORDER.popitem(last=False)
+    return order
+
+
 def _span(references: dict, entry: dict) -> list[dict]:
     """``entry`` and the registered members that follow it closely enough to share its range read."""
     start, end, span = entry["data_offset"], entry["data_offset"] + entry["compressed_size"], [entry]
-    followers = sorted({row["archive_path"]: row for row in references["members"].values()}.values(),
-                       key=lambda row: row["data_offset"])
-    for row in followers:
+    followers, offsets = _archive_order(references)
+    for row in followers[bisect.bisect_right(offsets, start):]:
         if row["data_offset"] < end:
             continue
         stop = row["data_offset"] + row["compressed_size"]
@@ -336,6 +358,7 @@ def _read_archive_member(references: dict, entry: dict, sink) -> None:
         open_durable_archive,
         stream_indexed_member,
     )
+    from .provider_output_range_transport import ProviderOutputTransportError
 
     archive = references["archive"]
     cached = _MEMBER_CACHE.take((archive["sha256"], entry["archive_path"]))
@@ -351,7 +374,10 @@ def _read_archive_member(references: dict, entry: dict, sink) -> None:
     start = entry["data_offset"]
     end = span[-1]["data_offset"] + span[-1]["compressed_size"]
     fetched = bytearray()
-    reader.stream_to(fetched.extend, start=start, end=end)
+    try:
+        reader.stream_to(fetched.extend, start=start, end=end)
+    except ProviderOutputTransportError as exc:
+        raise ProviderOutputMemberViewError(str(exc)) from None
     source = _SpanSource(bytes(fetched), start)
     stream_indexed_member(source, _member_row(entry), sink)
     for row in span[1:]:

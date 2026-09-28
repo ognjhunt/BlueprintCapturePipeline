@@ -894,3 +894,12 @@ def test_a_span_read_serves_followers_ahead_but_never_trusts_or_fails_on_a_bad_o
     assert download(first)  # its own bytes check out
     with pytest.raises(offload.TaskEvaluationResultDeliveryError, match="^result_artifact_archive_member_unreadable:"):
         download(second)  # not cached, so read again, and refused
+    # A span read cut short by the store is a typed refusal, with nothing left behind.
+    offload.clear_archive_member_cache()
+    truncated = RangeStore(f.streamed.archive)
+    truncated.truncate_when = lambda entry: entry["range"] not in (None, (0, 0))
+    serve_member_views(monkeypatch, truncated)
+    with pytest.raises(offload.TaskEvaluationResultDeliveryError,
+                       match="^result_artifact_archive_member_unreadable:provider_output_range_truncated$"):
+        download(first)
+    assert list(f.cache.iterdir()) == [] and not list(f.ledger.glob("*.json"))
