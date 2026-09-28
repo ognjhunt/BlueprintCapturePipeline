@@ -101,3 +101,74 @@ def test_missing_or_duplicate_observer_scope_cannot_be_treated_as_complete(tmp_p
     fresh['reference_observation']['child_scopes']=[{'child':'pins','complete':True}]*3
     with pytest.raises(ValueError,match='scene_retirement_reference_scope_unproven'):
         check(copy.deepcopy(fresh),allowance)
+
+
+def original_sam_transfer(tmp_path):
+    from tests.test_scene_source_family_adoption import fixture
+    from tests.test_scene_source_family_website import api
+    from tests.scene_lifecycle_fixture_support import rebase_graph
+    from blueprint_pipeline.control_plane_reference_budget import ReferenceCollectionBudget
+    from blueprint_pipeline.task_evaluation_scene_lineage_budget import RetainedEmissionBudget
+    from blueprint_pipeline.task_evaluation_scene_lifecycle_measurement import members
+    args=rebase_graph(fixture(through='source_selections'),tmp_path.resolve())
+    for group in ('seed_records','downstream_records','source_records'):
+        for role,rows in args[group].items():
+            rows=([rows] if rows else []) if role in {'intent','projection'} else rows
+            for name,raw in rows:
+                target=Path(name); target.parent.mkdir(parents=True,exist_ok=True); target.write_bytes(raw)
+    source=api().join_retained_scene_source_family_inventory(**args)
+    budget=ReferenceCollectionBudget(monotonic=lambda:0)
+    declared=members({'declared_lexical_members':[],'source_family_inventory':source},budget,
+        RetainedEmissionBudget(max_bytes=100000,max_rows=100,max_references=100),args['roots'])
+    proof=next(p for rows in declared.values() for row in rows for p in row['source_provenance']
+               if p['role']=='sam_results')
+    protection={'kind':'unsupported_queue_observation','path':proof['path'],'raw_sha256':proof['sha256'],
+        'raw_size_bytes':proof['size_bytes'],'scope':'selected_preparation_sam_auxiliaries_only','action':'KEEP'}
+    fresh={'planner_context':{'sam_queue_root':args['roots']['sam_queue_root']},
+        'historical_lineage':{'source_family_inventory':source},
+        'measured_members':[{'source_provenance':row['source_provenance']} for rows in declared.values() for row in rows],
+        'reference_observation':{'blockers':[],'child_scopes':[{'child':name,'complete':True}
+            for name in ('pins','primary_queues','auxiliary_queues')],
+            'record_dispositions':[],'protections':[protection]}}
+    return fresh,proof,ActionAllowance(expires_at=999,now=lambda:200,monotonic=lambda:0)
+
+
+def test_exact_original_sam_result_selected_by_verified_prefix_transfers_with_all_evidence_retained(tmp_path):
+    fresh,proof,allowance=original_sam_transfer(tmp_path)
+    before=copy.deepcopy(fresh)
+    result=check(fresh,allowance)
+    assert result['transferred_auxiliary_records'][0]['source']['row_path']==proof['path']
+    assert result['references_clear'] is False and fresh==before
+
+
+@pytest.mark.parametrize('change',['raw_drift','unselected_copy','failed','future_schema','active_job'])
+def test_sam_raw_versions_active_or_failed_records_cannot_borrow_prefix_membership(tmp_path,change):
+    import json
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    fresh,proof,allowance=original_sam_transfer(tmp_path)
+    record=fresh['reference_observation']['protections'][0]
+    if change=='unselected_copy':
+        target=Path(proof['path']).with_name('foreign.json'); target.write_bytes(Path(proof['path']).read_bytes())
+        record['path']=str(target)
+    elif change=='raw_drift':
+        Path(proof['path']).write_bytes(b'{}')
+    else:
+        if change=='active_job':
+            candidate=next(p for row in fresh['measured_members'] for p in row['source_provenance'] if p['role']=='sam_jobs')
+            target=Path(candidate['path']).parent.parent/'pending'/Path(candidate['path']).name
+            target.parent.mkdir(exist_ok=True); target.write_bytes(Path(candidate['path']).read_bytes())
+            candidate['path']=str(target)
+            record.update(path=str(target),raw_sha256=candidate['sha256'],raw_size_bytes=candidate['size_bytes'])
+        else:
+            path=Path(proof['path']); value=json.loads(path.read_bytes())
+            value['status']='failed' if change=='failed' else value['status']
+            if change=='future_schema': value['schema_version']='future_result.v2'
+            value['result_digest']=canonical_digest(value,digest_field='result_digest')
+            raw=json.dumps(value,sort_keys=True).encode(); path.write_bytes(raw)
+            digest='sha256:'+__import__('hashlib').sha256(raw).hexdigest()
+            for row in fresh['measured_members']:
+                for selected in row['source_provenance']:
+                    if selected['path']==str(path): selected.update(sha256=digest,size_bytes=len(raw),seal_digest=value['result_digest'])
+            record.update(raw_sha256=digest,raw_size_bytes=len(raw))
+    with pytest.raises(ValueError,match='scene_retirement_reference_'):
+        check(fresh,allowance)
