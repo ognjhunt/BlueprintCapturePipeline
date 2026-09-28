@@ -25,7 +25,7 @@ from .task_evaluation_scene_retirement_mutation import detach_and_remove, invent
 from .task_evaluation_scene_retirement_preservation import ActionAllowance, preserve_members
 from .task_evaluation_scene_retirement_restore import restore_preserved_members
 from .task_evaluation_scene_retirement_metadata import retain_metadata_closure
-from .task_evaluation_scene_retirement_intent_receipt import publish_pending_receipt, publish_terminal_receipt
+from .task_evaluation_scene_retirement_intent_receipt import publish_pending_receipt, publish_terminal_receipt, publish_progress_receipt
 from .task_evaluation_scene_lifecycle_plan import build_scene_lifecycle_plan
 
 
@@ -191,8 +191,29 @@ def _intent_receipt(policy, intent_id, receipt, allowance):
     return reference['path']
 
 
+def _partial_result(reason,journal,outcomes,policy,consent,pending,allowance):
+    result=_kept(reason,journal=journal,members=outcomes)
+    if journal is None or pending is None:
+        return result
+    # The action context has unwound. Reacquire actual EX before advancing a
+    # readable projection; a refused clock or a live reader leaves the already
+    # durable private chain and prior public version untouched.
+    try:
+        with access.exclusive_scene_access() as locked:
+            _require(locked==policy,'scene_retirement_policy_changed')
+            reference=publish_progress_receipt(policy,consent,pending,dict(status='incomplete',
+                token=journal.token,intent_id=consent['intent_id'],members=outcomes,
+                last_event_raw_ref=journal.prior_ref),allowance)
+        result['intent_receipt_raw_ref']=reference
+    except (ValueError,OSError,KeyError,TypeError,AttributeError):
+        result['receipt_finalization']='unavailable_existing_durable_evidence_retained'
+    return result
+
+
 def retire_scene(plan_path, consent_path, *, transport, now=time.time, monotonic=time.monotonic):
     journal=None
+    pending=None
+    policy=consent=allowance=None
     outcomes=[]
     try:
         authority=load_authority(consent_path,action='retire',now=now)
@@ -246,6 +267,8 @@ def retire_scene(plan_path, consent_path, *, transport, now=time.time, monotonic
                 outcomes.append(outcome)
                 generations[index]=_transition(policy,generation,state='retired',token=token,
                                                 journal_ref=outcome['event_raw_ref'])
+                pending=publish_progress_receipt(policy,consent,pending,dict(status='retiring',token=token,
+                    intent_id=consent['intent_id'],members=list(outcomes),last_event_raw_ref=journal.prior_ref),allowance)
             snapshot=journal.retired_snapshot(dict(initial,status='retired',members=consent['members'],
                                                    outcomes=outcomes,generations=generations))
             receipt=dict(schema_version='scene_retirement_receipt.v1',status='retired',intent_id=consent['intent_id'],
@@ -259,9 +282,9 @@ def retire_scene(plan_path, consent_path, *, transport, now=time.time, monotonic
             return receipt
     except access.SceneRetirementAccessError as error:
         code=str(error) if str(error).startswith('scene_retirement_') and len(str(error))<=128 else 'scene_retirement_action_unproven'
-        return _kept(code,journal=journal,members=outcomes)
+        return _partial_result(code,journal,outcomes,policy,consent,pending,allowance)
     except (ValueError,OSError,KeyError,TypeError,AttributeError,OverflowError,RecursionError):
-        return _kept('scene_retirement_action_unproven',journal=journal,members=outcomes)
+        return _partial_result('scene_retirement_action_unproven',journal,outcomes,policy,consent,pending,allowance)
 
 
 def restore_scene(retired_journal_path, consent_path, *, transport, now=time.time, monotonic=time.monotonic):
@@ -296,6 +319,8 @@ def restore_scene(retired_journal_path, consent_path, *, transport, now=time.tim
             token=secrets.token_hex(32)[:32]
             journal=SceneJournal.create(policy['journal_store'],token=token,initial=dict(
                 schema_version='scene_restore_journal.v1',status='restoring',intent_id=consent['intent_id'],
+                intent_raw_ref=consent['intent_raw_ref'],members=consent['members'],
+                original_retirement_token=retired['token'],
                 retired_journal_raw_ref=reference,consent_raw_ref=authority['consent_raw_ref']),allowance=allowance)
             for index,generation in enumerate(generations):
                 event=journal.append('restoring',member_key=str(index),evidence={'generation_id':generation['generation_id']})
