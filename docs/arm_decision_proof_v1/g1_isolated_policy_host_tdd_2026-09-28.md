@@ -1172,3 +1172,36 @@ pass. Immutable linking leaves original bytes/modes intact, and the simulation
 still reopens every25-package hash on host and guest. No install/paid launch or
 original deletion. New diagnostic replay must use a fresh stage and manifest
 bound to the new pushed commit; do not overwrite the terminal0d63 evidence.
+
+## Reviewed observed ISO primary-name transport repair
+
+Actual25bc CPU probe is terminal and names the native cause:
+g1_vm_system_package_inventory_invalid at package_verification. Its bounded
+inventory shows the guest ISO primary reader truncates long filenames and
+removes version dots (for example dkms_321-1ubuntu2_all.deb), including the
+long manifest name. Mac's extended-name reader saw the original names; that
+reader was insufficient to qualify the guest transport. No APT was run.
+
+Use v2 package preparation with short canonical transport names: packages.json,
+observed.json and 16-hex SHA prefix + .deb for each exact asset. Preserve full
+publisher filenames/URLs/SHA/size in the manifest and original download cache.
+Reject short-name collisions before any output. Every staged name must be
+ASCII, <=31chars and one suffix dot, invariant under the observed ISO primary
+reader. Keep full byte/hash/identity validation and no remote sources. The
+v1 prepared roots and their same-commit verifiers remain retained evidence;
+do not rewrite their schemas or retroactively call them compatible.
+
+Test first: complete fixed-name domain and collision rejection; retained
+verification and APT argv use the same canonical aliases; no weakened hashes,
+package list, driver floor or runtime/rights assertions. Update existing
+malformed/cached asset tests to target the canonical paths. Reuse the unchanged
+25 public assets, create a fresh pushed-v2 manifest/ISO and repeat the SAME
+bounded CPU simulation. No download, install, GPU, original deletion or grant.
+Accepted before implementation based on the actual guest inventory.
+
+v2 repair checkpoint: the fixed ISO naming case was observed red before build.
+All38 package/CPU cases pass; collision refusal is covered before output, and
+all existing malformed asset/observation, readonly-link/mode and immutable CLI
+checks remain covered. Publisher filenames and content pins are unchanged.
+Short transport names do not establish guest resolver or installation success;
+fresh same-guest APT simulation follows clean commit/push.

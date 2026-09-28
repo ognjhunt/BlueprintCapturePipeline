@@ -165,12 +165,12 @@ def test_all_package_bytes_verified_before_manifest_or_command(tmp_path, monkeyp
         assert "--simulate" in argv and "--no-download" in argv
         assert "Dir::Etc::sourcelist=-" in argv and "Dir::Etc::sourceparts=-" in argv
         assert "Dir::State::lists=" + str(target / system.EMPTY_LISTS) in argv
-        assert argv[-1] == str(target / assets["fixture"]["filename"])
+        assert argv[-1] == str(target / system.staged_filename(assets["fixture"]))
         assert not any(
             x in argv for x in ("update", "upgrade", "autoremove", "--allow-unauthenticated")
         )
-        (target / assets["fixture"]["filename"]).chmod(0o600)
-        (target / assets["fixture"]["filename"]).write_bytes(b"changed retained byte")
+        (target / system.staged_filename(assets["fixture"])).chmod(0o600)
+        (target / system.staged_filename(assets["fixture"])).write_bytes(b"changed retained byte")
         with pytest.raises(ValueError, match="g1_vm_system"):
             system.offline_apt_simulation_command(target, expected_implementation_commit="b" * 40)
 
@@ -239,7 +239,7 @@ def test_explicit_link_reuses_only_verified_readonly_public_bytes(tmp_path, monk
             implementation_commit="b" * 40,
             link_immutable_assets=True,
         )
-        assert asset.stat().st_ino == (target / "fixture.deb").stat().st_ino
+        assert asset.stat().st_ino == (target / system.staged_filename(row)).stat().st_ino
         assert asset.stat().st_mode & 0o777 == mode
         assert asset.read_bytes() == content
 
@@ -274,3 +274,36 @@ def test_cli_preparation_reaches_the_same_verifier_with_immutable_source(tmp_pat
     )
     assert len(calls) == 1 and calls[0]["link_immutable_assets"] is True
     assert set(calls[0]["asset_paths"]) == set(system.SYSTEM_PACKAGES)
+
+
+def test_staged_transport_names_survive_the_observed_iso_primary_reader():
+    names = [system.MANIFEST, system.OBSERVATION, system.EMPTY_LISTS]
+    names.extend(system.staged_filename(row) for row in system.SYSTEM_PACKAGES.values())
+    assert len(names) == len(set(names))
+    assert all(name.isascii() and len(name) <= 31 and name.count(".") <= 1 for name in names)
+    assert system.MANIFEST == "packages.json" and system.OBSERVATION == "observed.json"
+
+
+def test_alias_collision_is_refused_before_any_prepared_output(tmp_path, monkeypatch):
+    row = {
+        "package": "fixture",
+        "version": "1",
+        "filename": "fixture.deb",
+        "size_bytes": 1,
+        "sha256": "sha256:" + "a" * 64,
+        "url": "https://official.invalid/fixture.deb",
+    }
+    monkeypatch.setattr(
+        system, "SYSTEM_PACKAGES", {"first": row, "second": {**row, "package": "second"}}
+    )
+    observed = tmp_path / "observed.json"
+    observed.write_text(json.dumps(observation()))
+    target = tmp_path / "prepared"
+    with pytest.raises(ValueError, match="alias_collision"):
+        system.prepare_system_packages(
+            observation_path=observed,
+            asset_paths={"first": tmp_path / "first.deb", "second": tmp_path / "second.deb"},
+            output_root=target,
+            implementation_commit="b" * 40,
+        )
+    assert not target.exists()

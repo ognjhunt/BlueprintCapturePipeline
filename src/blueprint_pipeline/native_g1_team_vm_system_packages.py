@@ -232,9 +232,9 @@ SYSTEM_PACKAGES = {
         "url": "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/xserver-xorg-video-nvidia-580_580.65.06-0ubuntu1_amd64.deb",
     },
 }
-SCHEMA = "native_g1_team_vm_system_packages.v1"
-MANIFEST = SCHEMA + ".json"
-OBSERVATION = "guest-observation.json"
+SCHEMA = "native_g1_team_vm_system_packages.v2"
+MANIFEST = "packages.json"
+OBSERVATION = "observed.json"
 EMPTY_LISTS = "empty-apt-lists"
 FREE_FLOOR = 8_000_000_000
 
@@ -342,6 +342,19 @@ def _verify_asset(path, row):
         raise ValueError("g1_vm_system_package_hash_invalid")
 
 
+def staged_filename(row):
+    if re.fullmatch(r"sha256:[0-9a-f]{64}", row["sha256"]) is None:
+        raise ValueError("g1_vm_system_asset_digest_invalid")
+    return row["sha256"].split(":", 1)[1][:16] + ".deb"
+
+
+def _transport_names():
+    names = [staged_filename(row) for row in SYSTEM_PACKAGES.values()]
+    if len(names) != len(set(names)):
+        raise ValueError("g1_vm_system_transport_alias_collision")
+    return names
+
+
 def _fresh(root, additional_bytes):
     if (
         not root.is_absolute()
@@ -389,6 +402,7 @@ def prepare_system_packages(
     ):
         raise ValueError("g1_vm_system_package_inputs_invalid")
     observed = verify_guest_observation(observation_path)
+    _transport_names()
     for role, row in SYSTEM_PACKAGES.items():
         _verify_asset(asset_paths[role], row)
         if link_immutable_assets and (
@@ -403,7 +417,7 @@ def prepare_system_packages(
     output_root.mkdir(mode=0o700)
     (output_root / EMPTY_LISTS).mkdir(mode=0o700)
     for role, row in SYSTEM_PACKAGES.items():
-        target = output_root / row["filename"]
+        target = output_root / staged_filename(row)
         if link_immutable_assets:
             os.link(asset_paths[role], target, follow_symlinks=False)
         else:
@@ -434,7 +448,7 @@ def verify_system_packages(root, *, expected_implementation_commit):
         MANIFEST,
         OBSERVATION,
         EMPTY_LISTS,
-        *(row["filename"] for row in SYSTEM_PACKAGES.values()),
+        *_transport_names(),
     }
     if {path.name for path in root.iterdir()} != expected_names:
         raise ValueError("g1_vm_system_package_inventory_invalid")
@@ -446,7 +460,7 @@ def verify_system_packages(root, *, expected_implementation_commit):
     if value != _manifest(expected_implementation_commit, observed):
         raise ValueError("g1_vm_system_package_manifest_invalid")
     for row in SYSTEM_PACKAGES.values():
-        _verify_asset(root / row["filename"], row)
+        _verify_asset(root / staged_filename(row), row)
     return value
 
 
@@ -464,7 +478,7 @@ def offline_apt_simulation_command(root, *, expected_implementation_commit):
         "-o",
         "Dir::State::lists=" + str(root / EMPTY_LISTS),
         "install",
-        *(str(root / row["filename"]) for row in SYSTEM_PACKAGES.values()),
+        *(str(root / staged_filename(row)) for row in SYSTEM_PACKAGES.values()),
     ]
 
 
