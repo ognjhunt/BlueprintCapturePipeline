@@ -601,29 +601,48 @@ def _install_prestage(
     *,
     prefix_spend: str = "none",
     free_after: int | None = None,
+    residue_bytes: int | None = None,
+    elsewhere: bool = False,
 ) -> dict:
     """A CPU prefix that reserves its real need on the same ledger and volume.
 
-    It leaves ``cpu_prestage_output.zip`` as the real prestage does
-    (``prefix_spend``, see ``_write_prefix_output``); ``free_after`` is what
-    another writer left free by the time the prefix ended.
+    As the real prestage does, it leaves ``cpu_prestage_output.zip`` (see
+    ``_write_prefix_output``) and ``cpu_prestage_capsule.zip`` in the job
+    directory, the capsule sized so both total ``residue_bytes`` when given,
+    and the volume loses what it leaves. ``free_after`` is what another
+    writer left free by the time the prefix ended. ``elsewhere`` puts its
+    work, and so its own reservation, on another volume.
     """
 
     monkeypatch.setenv(cpu_prestage.WORK_DIR_ENV, str(work))
     observed: dict[str, object] = {}
     need = admission.cpu_prefix_peak_bytes(Path(lane.receipt["bundle_path"]))
 
+    def write_capsule(path: Path, padding: int) -> None:
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("cpu_prestage_transport.json", "{}")
+            archive.writestr("checkpoint.bin", bytes(padding))
+
     def prepare(*, bundle_receipt, job_dir, **_kwargs):  # type: ignore[no-untyped-def]
         observed["ledger_before"] = _ledger_rows(lane.ledger)
+        job = Path(job_dir)
         with disk_budget.reserve_control_plane_disk(
             "cpu_prestage", target_root=work, expected_bytes=need,
-            reservation_root=lane.ledger, disk_usage=lane.volume, workload="cpu_prestage",
+            reservation_root=work.parent / "work-volume-ledger" if elsewhere else lane.ledger,
+            disk_usage=_Volume(VOLUME_TOTAL) if elsewhere else lane.volume,
+            workload="cpu_prestage",
         ):
             observed["ledger_during"] = _ledger_rows(lane.ledger)
-            capsule = Path(job_dir) / "cpu_prestage_capsule.zip"
-            with zipfile.ZipFile(capsule, "w") as archive:
-                archive.writestr("cpu_prestage_transport.json", "{}")
-            _write_prefix_output(Path(job_dir), work, bundle_receipt, spend=prefix_spend)
+            _write_prefix_output(job, work, bundle_receipt, spend=prefix_spend)
+            output = job / "cpu_prestage_output.zip"
+            kept = output.stat().st_size if output.is_file() else 0
+            capsule = job / "cpu_prestage_capsule.zip"
+            write_capsule(capsule, 0)
+            if residue_bytes is not None:
+                # A stored member's overhead does not depend on its length.
+                write_capsule(capsule, residue_bytes - kept - capsule.stat().st_size)
+        observed["left_behind"] = kept + capsule.stat().st_size
+        lane.volume.free -= int(observed["left_behind"])
         if free_after is not None:
             lane.volume.free = free_after
         return {"capsule_path": str(capsule), "capsule_sha256": _sha256(capsule),
@@ -745,8 +764,9 @@ def test_prestage_and_output_hold_are_sequential_not_additive(
 ) -> None:
     """The CPU prefix reserves 3 x unpacked + 512 MiB on the same volume first.
 
-    Admission checks max(prefix, hold) up front; the hold is taken only after
-    the prefix released its own reservation, so the two never add up.
+    Admission checks max(prefix, hold + what the prefix leaves) up front; the
+    hold is taken only after the prefix released its own reservation, so the
+    two never add up.
     """
 
     lane = _harness(tmp_path, monkeypatch)
@@ -755,9 +775,10 @@ def test_prestage_and_output_hold_are_sequential_not_additive(
     observed = _install_prestage(lane, monkeypatch, work)
     hold = SMALL_UPLOAD + RESERVE
     need = int(observed["need"])
-    larger, smaller = max(hold, need), min(hold, need)
+    unpacked = admission.bundle_unpacked_bytes(Path(lane.receipt["bundle_path"]))
+    larger = max(need, hold + unpacked)
     if room == "larger_need":
-        lane.volume.free = FLOOR + larger + smaller // 2
+        lane.volume.free = FLOOR + larger + need // 2
         # Together they would not fit: a hold held across the prefix would
         # have refused the prefix's own reservation.
         assert lane.volume.free - FLOOR < hold + need
@@ -787,9 +808,10 @@ def test_prestage_and_output_hold_are_sequential_not_additive(
     assert record["required_available_bytes"] == larger
     assert record["hold"] == "held"
     assert record["hold_phase"] == "after_cpu_prefix"
-    assert record["sequential_phases"] == [
-        {"phase": "cpu_prestage", "peak_bytes": need, "shares_output_volume": True}
-    ]
+    assert record["sequential_phases"] == [{
+        "phase": "cpu_prestage", "peak_bytes": need, "residue_bytes": unpacked,
+        "shares_output_volume": True,
+    }]
     assert _ledger_rows(lane.ledger) == []
 
 
@@ -872,7 +894,8 @@ def _refused_after_prefix(tmp_path, monkeypatch, *, prefix_spend: str = "none"):
     observed = _install_prestage(
         lane, monkeypatch, work, prefix_spend=prefix_spend, free_after=FLOOR + hold - 1
     )
-    required = max(hold, int(observed["need"]))
+    unpacked = admission.bundle_unpacked_bytes(Path(lane.receipt["bundle_path"]))
+    required = max(int(observed["need"]), hold + unpacked)
     lane.volume.free = FLOOR + required
     return lane, lane.run(cpu_prestage_stage_limit="stage-2"), required
 
@@ -943,7 +966,8 @@ def test_deferred_hold_refusal_after_api_pretraining_is_typed_but_withheld(
     monkeypatch.setattr(pretraining, "LOGICAL_ROOT", semantic_root)
     hold = SMALL_UPLOAD + RESERVE
     need = admission.cpu_prefix_peak_bytes(Path(lane.receipt["bundle_path"]))
-    lane.volume.free = FLOOR + max(hold, need)
+    unpacked = admission.bundle_unpacked_bytes(Path(lane.receipt["bundle_path"]))
+    lane.volume.free = FLOOR + max(need, hold + unpacked)
     lane.behaviour["free_after_pretraining"] = FLOOR + hold - 1
 
     result = lane.run()
@@ -954,9 +978,10 @@ def test_deferred_hold_refusal_after_api_pretraining_is_typed_but_withheld(
     assert result["api_pretraining"]["capsule_path"].endswith("fixture_pretraining.zip")
     assert not [event for event in lane.events if event[0] == "adapter"]
     record = result["provider_output_disk_capacity"]
-    assert record["sequential_phases"] == [
-        {"phase": "semantic_pretraining", "peak_bytes": need, "shares_output_volume": True}
-    ]
+    assert record["sequential_phases"] == [{
+        "phase": "semantic_pretraining", "peak_bytes": need, "residue_bytes": unpacked,
+        "shares_output_volume": True,
+    }]
     assert record["hold"] == "refused" and record["hold_phase"] == "after_cpu_prefix"
     assert record["recovery_withheld"] == "api_pretraining_consumed"
     assert capacity.preallocation_capacity_failure(result) is False
@@ -984,6 +1009,54 @@ def test_hold_is_released_when_the_lane_raises_after_admission(tmp_path, monkeyp
     [sample] = _history(lane.ledger)
     assert sample["outcome"] == "failed"
     assert sample["reserved_bytes"] == SMALL_UPLOAD + RESERVE
+
+
+@pytest.mark.parametrize("shares", [True, False])
+@pytest.mark.parametrize("room", ["fits", "short"])
+def test_prefix_residue_is_admitted_up_front_or_refused_before_any_prefix(
+    tmp_path, monkeypatch, shares, room
+) -> None:
+    """What the prefix leaves in the job directory counts before any work starts.
+
+    The prefix leaves exactly its bound, one unpacked bundle, beside the output.
+    Either admission finds room for that up front and the run completes, or it
+    refuses before staging, before any prefix or paid work, never after them.
+    """
+
+    lane = _harness(tmp_path, monkeypatch)
+    work = tmp_path / "prestage-work"
+    work.mkdir()
+    unpacked = admission.bundle_unpacked_bytes(Path(lane.receipt["bundle_path"]))
+    if not shares:
+        real_device = admission.target_device
+        monkeypatch.setattr(
+            admission, "target_device", lambda path: -1 if Path(path) == work else real_device(path)
+        )
+    observed = _install_prestage(
+        lane, monkeypatch, work, residue_bytes=unpacked, elsewhere=not shares
+    )
+    hold = SMALL_UPLOAD + RESERVE
+    need = int(observed["need"])
+    required = max(need, hold + unpacked) if shares else hold + unpacked
+    lane.volume.free = FLOOR + required - (room == "short")
+    # The earlier check, max(prefix, hold), would have admitted both rooms.
+    assert lane.volume.free - FLOOR >= (max(need, hold) if shares else hold)
+
+    result = lane.run(cpu_prestage_stage_limit="stage-2")
+
+    if room == "short":
+        assert result["blockers"] == [admission.BUDGET_EXCEEDED_BLOCKER]
+        assert result["provider_mutations_performed"] == 0
+        assert result["provider_output_disk_capacity"]["required_available_bytes"] == required
+        assert lane.events == [] and "ledger_before" not in observed
+        return
+    assert observed["left_behind"] == unpacked
+    assert result["status"] == "completed", result["blockers"]
+    record = result["provider_output_disk_capacity"]["before_allocation_and_staging"]
+    assert record["required_available_bytes"] == required
+    # Beside a shared prefix the hold waits for its residue; otherwise it covers it.
+    assert record["hold_reservation"]["expected_bytes"] == (hold if shares else required)
+    assert _ledger_rows(lane.ledger) == []
 
 
 def test_up_front_prefix_need_is_what_the_prestage_reserves(tmp_path) -> None:

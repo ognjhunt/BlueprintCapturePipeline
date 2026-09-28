@@ -8,9 +8,12 @@ largest extraction that zip may declare. Under ``measured``:
 1. the output holds U + 512 MiB on the disk ledger (role
    ``scene_configuration_output``) from before the paid allocation until the
    result is sealed, bound to the job directory so its history learns real
-   footprints. A CPU prefix that runs on this host first and reserves on the
-   same volume is checked up front, as the larger of the two needs, and the
-   hold is taken only after that prefix released its own reservation. A hold
+   footprints. A CPU prefix that runs on this host first leaves archives in
+   the job directory, bounded by one unpacked bundle. When it also reserves on
+   the output's volume, admission checks the larger of its own need and the
+   hold plus those archives up front, and the hold is taken only after that
+   prefix released its own reservation; otherwise one reservation holds the
+   output and those archives from the start. A hold
    refused then is sealed like a refusal before staging: typed, zero provider
    mutations, and retried by capacity recovery only when the attempt recorded
    no paid external spend. API pretraining that ran, or a CPU prefix whose own
@@ -84,6 +87,13 @@ WORKLOAD = "website_scene_configuration"
 #: semantic preparation in ``task_evaluation_artifixer_pretraining``.
 CPU_PREFIX_EXPANSION = 3
 CPU_PREFIX_OVERHEAD_BYTES = 512 * 1024**2
+#: What a CPU phase leaves in the job directory once it released its own
+#: reservation is bounded by one unpacked bundle: the API pretraining capsule
+#: re-archives the extracted bundle with its prepared frames, and the prestage
+#: keeps its capsule and output archive, both archives of its stage outputs.
+#: Each phase's own 3 x unpacked estimate already budgets its outgoing archive
+#: at one unpacked share, so admission counts that share beside the output.
+CPU_PREFIX_RESIDUE_SHARES = 1
 PREALLOCATION_PHASE = "before_allocation_and_staging"
 #: Where a hold deferred behind a CPU prefix sharing the volume is taken.
 DEFERRED_HOLD_PHASE = "after_cpu_prefix"
@@ -121,12 +131,32 @@ def configured_output_admission_mode(environment: Mapping[str, str] | None = Non
     return raw if raw in (CEILING_MODE, MEASURED_MODE) else None
 
 
+def bundle_unpacked_bytes(bundle_path: Path) -> int:
+    with zipfile.ZipFile(bundle_path) as archive:
+        return sum(member.file_size for member in archive.infolist())
+
+
 def cpu_prefix_peak_bytes(bundle_path: Path) -> int:
     """What a CPU phase over this bundle reserves before the GPU is rented."""
 
-    with zipfile.ZipFile(bundle_path) as archive:
-        unpacked = sum(member.file_size for member in archive.infolist())
-    return CPU_PREFIX_EXPANSION * unpacked + CPU_PREFIX_OVERHEAD_BYTES
+    return CPU_PREFIX_EXPANSION * bundle_unpacked_bytes(bundle_path) + CPU_PREFIX_OVERHEAD_BYTES
+
+
+def output_volume_requirement(hold_bytes: int, phases: list[Mapping[str, Any]]) -> int:
+    """Bytes the output's volume must have available above its floor.
+
+    ``phases`` are the pre-GPU CPU phases in the order they run. Each leaves
+    archives in the job directory after releasing its own reservation, so a
+    phase that shares the volume needs its peak beside what earlier phases
+    left, and the output hold then needs to fit beside everything they left.
+    """
+
+    required, residue = hold_bytes, 0
+    for phase in phases:
+        if phase["shares_output_volume"]:
+            required = max(required, int(phase["peak_bytes"]) + residue)
+        residue += int(phase["residue_bytes"])
+    return max(required, hold_bytes + residue)
 
 
 def extraction_requirement(archive_path: Path, *, maximum_archive_bytes: int) -> dict[str, Any]:
@@ -359,11 +389,14 @@ class SceneConfigurationOutputAdmission:
         }
         record = self.record
         try:
-            shared = self._shared_cpu_prefix_needs()
-            if shared:
-                # The prefix reserves first and releases before the hold is
-                # taken, so the volume must fit the larger need, not both.
-                record["required_available_bytes"] = max(self.hold_bytes, *shared)
+            phases = self._cpu_prefix_phase_rows()
+            record["required_available_bytes"] = output_volume_requirement(
+                self.hold_bytes, phases
+            )
+            deferred = any(row["shares_output_volume"] for row in phases)
+            if deferred:
+                # A prefix reserves on this volume first and releases before the
+                # hold is taken, so the two are checked in sequence, not summed.
                 record.update(
                     _output_projection(
                         self.job, reservation_root=self._reservation_root,
@@ -376,8 +409,12 @@ class SceneConfigurationOutputAdmission:
         except _READ_ERRORS as exc:
             record.update(hold_phase=PREALLOCATION_PHASE, measurement_error_type=type(exc).__name__)
             return self._refuse(ADMISSION_UNAVAILABLE_BLOCKER)
-        if not shared:
-            blocker = self._take_hold(PREALLOCATION_PHASE)
+        if not deferred:
+            # One reservation now, covering the output and whatever a prefix
+            # running elsewhere will leave in this job directory.
+            blocker = self._take_hold(
+                PREALLOCATION_PHASE, expected_bytes=record["required_available_bytes"]
+            )
             return self._refuse(blocker) if blocker else record
         if record["available_bytes"] < record["required_available_bytes"]:
             record["hold_phase"] = PREALLOCATION_PHASE
@@ -402,7 +439,8 @@ class SceneConfigurationOutputAdmission:
 
         if not self.measured or self.record.get("hold") != _HOLD_DEFERRED:
             return None
-        blocker = self._take_hold(DEFERRED_HOLD_PHASE)
+        # What the prefix left behind is on the volume now; the ledger sees it.
+        blocker = self._take_hold(DEFERRED_HOLD_PHASE, expected_bytes=self.hold_bytes)
         if blocker:
             self._deferred_hold_refused = True
             self._refuse(blocker)
@@ -480,32 +518,31 @@ class SceneConfigurationOutputAdmission:
             "blockers": sorted(set(blockers)),
         }
 
-    def _shared_cpu_prefix_needs(self) -> list[int]:
-        """Each pre-GPU CPU phase's need that lands on the output's volume."""
+    def _cpu_prefix_phase_rows(self) -> list[dict[str, Any]]:
+        """The pre-GPU CPU phases in run order: their peak, residue and volume."""
 
         if not self._cpu_prefix_phases:
             return []
-        need = cpu_prefix_peak_bytes(Path(str(self.receipt["bundle_path"])))
+        unpacked = bundle_unpacked_bytes(Path(str(self.receipt["bundle_path"])))
         output_device = target_device(self.job)
-        shared = []
         for phase, target in self._cpu_prefix_phases:
-            shares = target_device(target) == output_device
-            self.record["sequential_phases"].append(
-                {"phase": phase, "peak_bytes": need, "shares_output_volume": shares}
-            )
-            if shares:
-                shared.append(need)
-        return shared
+            self.record["sequential_phases"].append({
+                "phase": phase,
+                "peak_bytes": CPU_PREFIX_EXPANSION * unpacked + CPU_PREFIX_OVERHEAD_BYTES,
+                "residue_bytes": CPU_PREFIX_RESIDUE_SHARES * unpacked,
+                "shares_output_volume": target_device(target) == output_device,
+            })
+        return self.record["sequential_phases"]
 
-    def _take_hold(self, hold_phase: str) -> str | None:
-        """Reserve U + 512 MiB for the job's output; return a typed blocker on refusal."""
+    def _take_hold(self, hold_phase: str, *, expected_bytes: int) -> str | None:
+        """Reserve the job's output hold; return a typed blocker on refusal."""
 
         record = self.record
         try:
             self.hold = reserve_control_plane_disk(
                 OUTPUT_ROLE,
                 target_root=self.job,
-                expected_bytes=self.hold_bytes,
+                expected_bytes=expected_bytes,
                 reservation_root=self._reservation_root,
                 disk_usage=self._disk_usage,
                 workspace=self.job,
@@ -560,8 +597,9 @@ class SceneConfigurationOutputAdmission:
         requirement = extraction_requirement(
             archive_path, maximum_archive_bytes=maximum_archive_bytes
         )
+        held = self.hold.expected_bytes if self.hold is not None else None
         used = self.hold.sample() if self.hold is not None else None
-        remaining = 0 if self.hold is None else max(0, self.hold_bytes - int(used or 0))
+        remaining = 0 if held is None else max(0, held - int(used or 0))
         growth = max(0, requirement["required_bytes"] - remaining)
         record: dict[str, Any] = {
             "schema_version": EXTRACTION_SCHEMA_VERSION,
@@ -571,7 +609,7 @@ class SceneConfigurationOutputAdmission:
             "role": OUTPUT_ROLE,
             "measurement_path": str(destination.parent),
             **requirement,
-            "hold_bytes": self.hold_bytes if self.hold is not None else None,
+            "hold_bytes": held,
             "hold_bytes_used": used,
             "hold_bytes_remaining": remaining,
             "growth_bytes": growth,
@@ -788,10 +826,11 @@ def recorded_preallocation_refusal(
     record = result.get("provider_output_disk_capacity")
     if not isinstance(record, Mapping):
         return None
-    hold = maximum_archive_bytes + PROVIDER_OUTPUT_OPERATIONAL_RESERVE_BYTES
-    required, available = record.get("required_available_bytes"), record.get("available_bytes")
+    required = recorded_output_requirement(record, maximum_archive_bytes=maximum_archive_bytes)
+    available = record.get("available_bytes")
     valid = bool(
-        result.get("blockers") == [BUDGET_EXCEEDED_BLOCKER]
+        required is not None
+        and result.get("blockers") == [BUDGET_EXCEEDED_BLOCKER]
         and result.get("expected_provider_upload_bytes") == maximum_archive_bytes
         and record.get("schema_version") == ADMISSION_SCHEMA_VERSION
         and record.get("mode") == MEASURED_MODE
@@ -803,13 +842,37 @@ def recorded_preallocation_refusal(
         and record.get("blockers") == [BUDGET_EXCEEDED_BLOCKER]
         and record.get("measurement_path") == str(job_dir)
         and record.get("maximum_archive_bytes") == maximum_archive_bytes
-        and record.get("hold_bytes") == hold
-        and type(required) is int
-        and required >= hold
         and type(available) is int
         and 0 <= available < required
     )
     return dict(record) if valid else None
+
+
+def recorded_output_requirement(
+    record: Mapping[str, Any], *, maximum_archive_bytes: int
+) -> int | None:
+    """The requirement a measured record states, when its own hold and phases give it.
+
+    Capacity recovery re-checks with the admission formula re-derived from the
+    record, never with a number it cannot re-derive.
+    """
+
+    hold = maximum_archive_bytes + PROVIDER_OUTPUT_OPERATIONAL_RESERVE_BYTES
+    phases = record.get("sequential_phases")
+    if (
+        record.get("hold_bytes") != hold
+        or not isinstance(phases, list)
+        or not all(
+            isinstance(row, Mapping)
+            and all(type(row.get(key)) is int and row[key] >= 0
+                    for key in ("peak_bytes", "residue_bytes"))
+            and type(row.get("shares_output_volume")) is bool
+            for row in phases
+        )
+    ):
+        return None
+    required = output_volume_requirement(hold, phases)
+    return required if record.get("required_available_bytes") == required else None
 
 
 def measured_admission_record(result: Mapping[str, Any]) -> Mapping[str, Any] | None:
@@ -879,6 +942,9 @@ __all__ = [
     "measured_admission_record",
     "open_scene_configuration_output_admission",
     "output_role_projection",
+    "output_volume_requirement",
+    "recorded_output_requirement",
+    "bundle_unpacked_bytes",
     "recorded_preallocation_refusal",
     "recovery_withheld",
     "release_scene_configuration_output",

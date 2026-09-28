@@ -330,17 +330,21 @@ def capacity_admission(observation, config, now):
 
 
 def _measured_output_requirement(bundle, result):
-    """Bytes a measured run needed above the floor on its volume; None for a ceiling run."""
-    from .task_evaluation_scene_configuration_output_admission import measured_admission_record
-    from .task_evaluation_scene_configuration_provider_artifacts import (
-        PROVIDER_OUTPUT_OPERATIONAL_RESERVE_BYTES, _provider_transfer_byte_budget,
+    """Bytes a measured run needed above the floor on its volume; None for a ceiling run.
+
+    Re-derived with admission's own formula from the recorded hold and CPU
+    prefix phases, residue included, so a successor is re-checked exactly as
+    it will be admitted."""
+    from .task_evaluation_scene_configuration_output_admission import (
+        measured_admission_record, recorded_output_requirement,
     )
+    from .task_evaluation_scene_configuration_provider_artifacts import _provider_transfer_byte_budget
     record = measured_admission_record(result)
     if record is None:
         return None
-    required = record.get("required_available_bytes")
-    hold = _provider_transfer_byte_budget(bundle)[1] + PROVIDER_OUTPUT_OPERATIONAL_RESERVE_BYTES
-    require(type(required) is int and required >= hold, "capacity_phase_or_requirement_invalid")
+    required = recorded_output_requirement(
+        record, maximum_archive_bytes=_provider_transfer_byte_budget(bundle)[1])
+    require(required is not None, "capacity_phase_or_requirement_invalid")
     return required
 
 

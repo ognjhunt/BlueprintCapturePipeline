@@ -345,7 +345,7 @@ def test_capacity_recovery_rechecks_by_role(tmp_path, monkeypatch):
     assert capacity.capacity_admission(observation, config, 103)["status"] == "admitted"
 
 
-@pytest.mark.parametrize("fault", ["hold", "phase", "scope", "room", "extra_blocker"])
+@pytest.mark.parametrize("fault", ["hold", "phase", "scope", "room", "requirement", "extra_blocker"])
 def test_a_changed_measured_refusal_cannot_authorize_recovery(tmp_path, monkeypatch, fault):
     first, refs, _config, _hold, _free = _measured_refusal(tmp_path, monkeypatch)
     path = Path(refs["result"]["path"])
@@ -359,6 +359,10 @@ def test_a_changed_measured_refusal_cannot_authorize_recovery(tmp_path, monkeypa
         record["measurement_path"] = str(tmp_path / "another-job")
     elif fault == "room":
         record["available_bytes"] = record["required_available_bytes"]
+    elif fault == "requirement":
+        # Not what admission's formula gives for this hold and these phases.
+        record["required_available_bytes"] += 1
+        record["available_bytes"] = record["required_available_bytes"] - 1
     else:
         value["blockers"].append("scientific_failure")
     refs["result"] = write(path, value, "result_digest")
