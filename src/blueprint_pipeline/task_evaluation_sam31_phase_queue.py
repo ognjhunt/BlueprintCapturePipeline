@@ -31,6 +31,12 @@ def _require(value: bool, reason: str) -> None:
 
 
 def _read(path: Path) -> dict:
+    from .task_evaluation_scene_retirement_metadata import read_logical_metadata
+    retained=read_logical_metadata(path)
+    if retained is not None:
+        value=json.loads(retained)
+        _require(isinstance(value,dict),"record_invalid")
+        return value
     _require(not any(p.is_symlink() for p in (path, *path.parents))
              and path.is_file() and path.stat().st_size <= 4 * 1024 * 1024, "record_path_invalid")
     value = json.loads(path.read_text())
