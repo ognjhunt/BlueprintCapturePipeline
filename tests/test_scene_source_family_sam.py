@@ -87,6 +87,24 @@ def test_parent_actual_192_bound_preserves_original_parent_identity(parent_id):
     assert any(r.get('preparation_id') == parent_id for r in result['sam_observations'])
 
 
+@pytest.mark.parametrize('identical', [False, True])
+def test_retained_parent_copy_counts_one_semantic_identity_without_losing_raw_paths(identical):
+    args = fixture()
+    path, raw = args['source_records']['sam_parent_envelopes'][0]
+    queue = args['roots']['preparation_queue_root']+'-copy'
+    args['parent_routes'].append({'queue_root':queue,'input_root':args['roots']['preparation_input_root']})
+    if not identical:
+        changed = json.loads(raw)
+        changed['retained_copy_note'] = 'distinct producer bytes'
+        raw = pair(path,seal(changed,'envelope_digest'))[1]
+    copy_path = queue+'/completed/'+path.rsplit('/',1)[1]
+    args['source_records']['sam_parent_envelopes'].append((copy_path,raw))
+    result = api().join_retained_scene_source_family_inventory(**args)
+    job = next(row for row in result['sam_observations'] if row['role']=='sam_job')
+    assert job['parent_binding_verified'] is identical
+    assert {row['path'] for row in result['raw_versions'] if row['role']=='sam_parent_envelopes'} == {path,copy_path}
+
+
 @pytest.mark.parametrize('role,seal_field,edits', [
     ('sam_jobs', 'job_digest', lambda v: v.update(inputs_digest='sha256:' + 'f'*64)),
     ('sam_jobs', 'job_digest', lambda v: v.update(plan_digest='sha256:' + 'f'*64)),
