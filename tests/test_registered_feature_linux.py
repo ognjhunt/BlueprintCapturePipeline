@@ -29,6 +29,16 @@ def encoded(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":")).encode() + b"\n"
 
 
+def test_shipped_gc_path_substitution_does_not_rewrite_inserted_fixture_root():
+    root = Path('/var/lib/blueprint-adp-contained-static-fixture')
+    replacements = {'/mnt/blueprint-work/lanes/g1': str(root / 'work/lanes/g1'),
+                    '/var/lib/blueprint': str(root / 'sandbox-blueprint')}
+    line = 'ReadWritePaths=-/mnt/blueprint-work/lanes/g1 /var/lib/blueprint/storage-gc'
+    assert _substitute_gc_paths(line, replacements) == (
+        'ReadWritePaths=-' + str(root / 'work/lanes/g1') + ' '
+        + str(root / 'sandbox-blueprint/storage-gc'))
+
+
 def install_protected_feature(root):
     """Exact real protected installation reusable by the experiment roundtrip."""
     from blueprint_pipeline import control_plane_lane_owner_consents as owners
