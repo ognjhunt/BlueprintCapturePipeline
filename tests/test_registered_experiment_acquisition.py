@@ -166,31 +166,40 @@ def test_interrupted_scan_permanently_consumes_two_passes_without_new_operation(
     assert len(calls) == 2
 
 
-def test_gc_cannot_reset_original_issue_controller_after_boot_change(retirement_installation, monkeypatch):
+def test_gc_cannot_reset_original_issue_controller_after_boot_change(
+    retirement_installation, monkeypatch
+):
     from blueprint_pipeline import control_plane_lane_experiment_work as work
     from tests.test_registered_experiment_retirement_flow import _gc
 
     setup = retirement_installation
     grant = issue(setup)
     born = birth(setup, grant)
-    payload = Path(born['path']) / 'payload'
-    payload.write_bytes(b'retain across unknown operation boot')
+    payload = Path(born["path"]) / "payload"
+    payload.write_bytes(b"retain across unknown operation boot")
     selected = _issue_action(setup, grant)
-    monkeypatch.setattr(work, '_controller_boot_id', lambda files: 'aaaaaaaa-1234-1234-1234-123456789abc')
+    monkeypatch.setattr(
+        work, "_controller_boot_id", lambda files: "aaaaaaaa-1234-1234-1234-123456789abc"
+    )
     report = _gc(setup)
-    outcome = next(value for value in report['registered_experiments']['outcomes']
-                   if value['action_id'] == selected['action_id'])
-    assert outcome['decision'] == 'kept', outcome
-    assert payload.read_bytes() == b'retain across unknown operation boot'
+    outcome = next(
+        value
+        for value in report["registered_experiments"]["outcomes"]
+        if value["action_id"] == selected["action_id"]
+    )
+    assert outcome["decision"] == "kept", outcome
+    assert payload.read_bytes() == b"retain across unknown operation boot"
 
 
-def test_fixed_kernel_boot_record_accepts_zero_stat_size_with_bounded_original_read(tmp_path, root_metadata, monkeypatch):
+def test_fixed_kernel_boot_record_accepts_zero_stat_size_with_bounded_original_read(
+    tmp_path, root_metadata, monkeypatch
+):
     import os
     from types import SimpleNamespace
     from blueprint_pipeline import control_plane_lane_experiment_work as work
 
-    path = tmp_path / 'kernel-boot-id'
-    path.write_bytes(b'12345678-1234-1234-1234-123456789abc\n')
+    path = tmp_path / "kernel-boot-id"
+    path.write_bytes(b"12345678-1234-1234-1234-123456789abc\n")
     path.chmod(0o444)
     identity = (path.stat().st_dev, path.stat().st_ino)
     original_stat, original_fstat = os.stat, os.fstat
@@ -198,36 +207,45 @@ def test_fixed_kernel_boot_record_accepts_zero_stat_size_with_bounded_original_r
     def proc_shape(info):
         if (info.st_dev, info.st_ino) != identity:
             return info
-        values = {name: getattr(info, name) for name in dir(info) if name.startswith('st_')}
-        values['st_size'] = 0  # Real procfs boot_id reports size zero, while read yields37bytes.
+        values = {name: getattr(info, name) for name in dir(info) if name.startswith("st_")}
+        values["st_size"] = 0  # Real procfs boot_id reports size zero, while read yields37bytes.
         return SimpleNamespace(**values)
 
-    monkeypatch.setattr(os, 'stat', lambda *args, **kwargs: proc_shape(original_stat(*args, **kwargs)))
-    monkeypatch.setattr(os, 'fstat', lambda *args, **kwargs: proc_shape(original_fstat(*args, **kwargs)))
-    monkeypatch.setattr(work, '_BOOT_PATH', path)
+    monkeypatch.setattr(
+        os, "stat", lambda *args, **kwargs: proc_shape(original_stat(*args, **kwargs))
+    )
+    monkeypatch.setattr(
+        os, "fstat", lambda *args, **kwargs: proc_shape(original_fstat(*args, **kwargs))
+    )
+    monkeypatch.setattr(work, "_BOOT_PATH", path)
     files = work._ActionFiles()
     try:
-        assert work._controller_boot_id(files) == '12345678-1234-1234-1234-123456789abc'
-        assert not any((value.st_dev, value.st_ino) == identity for fd, value in files.acquired.items()
-                       if fd in files.owned)
+        assert work._controller_boot_id(files) == "12345678-1234-1234-1234-123456789abc"
+        assert not any(
+            (value.st_dev, value.st_ino) == identity
+            for fd, value in files.acquired.items()
+            if fd in files.owned
+        )
     finally:
         files.finish()
         files.budget.close()
 
 
-@pytest.mark.parametrize('kind', ['member_removed', 'restore_directory', 'restore_member'])
-def test_all_row_event_kinds_refuse_oversized_payload_before_publication(tmp_path, root_metadata, kind):
+@pytest.mark.parametrize("kind", ["member_removed", "restore_directory", "restore_member"])
+def test_all_row_event_kinds_refuse_oversized_payload_before_publication(
+    tmp_path, root_metadata, kind
+):
     from blueprint_pipeline import control_plane_lane_experiment_actions as actions
     from blueprint_pipeline.control_plane_lane_experiment_work import _ActionFiles
 
-    operation = tmp_path / 'operation'
+    operation = tmp_path / "operation"
     operation.mkdir(mode=0o700)
-    action = dict(action_id='a'*32, intent_id='b'*32, generation='c'*32)
+    action = dict(action_id="a" * 32, intent_id="b" * 32, generation="c" * 32)
     files = _ActionFiles()
     try:
-        parent, _ = files.parent(operation / 'e-00000.json', protected=True)
-        with pytest.raises(ValueError, match='experiment_record_limit'):
-            actions._event(files, parent, action, kind, dict(path='\\'*2500), 0, None, 2000)
+        parent, _ = files.parent(operation / "e-00000.json", protected=True)
+        with pytest.raises(ValueError, match="experiment_record_limit"):
+            actions._event(files, parent, action, kind, dict(path="\\" * 2500), 0, None, 2000)
         assert not list(operation.iterdir())
     finally:
         files.finish()
@@ -240,17 +258,53 @@ def test_escaped_row_size_keeps_payload(retirement_installation):
     setup = retirement_installation
     grant = issue(setup)
     born = birth(setup, grant)
-    target = Path(born['path'])
+    target = Path(born["path"])
     directory = target
     for number in range(15):
-        directory = directory / ('\\'*50 + f'{number:02d}')
+        directory = directory / ("\\" * 50 + f"{number:02d}")
         directory.mkdir()
-    payload = directory / 'payload'
-    payload.write_bytes(b'known event envelope refusal must preserve this')
+    payload = directory / "payload"
+    payload.write_bytes(b"known event envelope refusal must preserve this")
     before = _payload_snapshot(target)
     action = _issue_action(setup, grant)
     report = _gc(setup)
-    outcome = next(value for value in report['registered_experiments']['outcomes']
-                   if value['action_id'] == action['action_id'])
-    assert outcome['decision'] == 'kept', outcome
+    outcome = next(
+        value
+        for value in report["registered_experiments"]["outcomes"]
+        if value["action_id"] == action["action_id"]
+    )
+    assert outcome["decision"] == "kept", outcome
     assert _payload_snapshot(target) == before
+
+
+@pytest.mark.parametrize("character", ["x", "\\"])
+def test_manifest_admits_bounded_rows_before_accumulating_whole_inventory(
+    retirement_installation, monkeypatch, character
+):
+    from blueprint_pipeline import control_plane_lane_experiment_actions as actions
+    from blueprint_pipeline import control_plane_lane_experiment_work as work
+
+    setup = retirement_installation
+    grant = issue(setup)
+    born = birth(setup, grant)
+    target = Path(born["path"])
+    names = {character * 100 + f"{number:02d}" for number in range(10)}
+    for name in names:
+        (target / name).write_bytes(b"tiny retained bytes")
+    # Shrink only this new local output cap; native B and all global limits stay
+    # unchanged. The real manifest cap is 1MiB, enforced before list growth.
+    monkeypatch.setattr(actions, "_MANIFEST_LIMIT", 1200, raising=False)
+    opened = []
+    original = work._ActionFiles.open
+
+    def observe(self, name, *args, **kwargs):
+        if name in names:
+            opened.append(name)
+        return original(self, name, *args, **kwargs)
+
+    monkeypatch.setattr(work._ActionFiles, "open", observe)
+    with pytest.raises(ValueError, match="experiment_manifest_limit"):
+        _issue_action(setup, grant)
+    assert len(opened) < len(names)
+    assert all((target / name).read_bytes() == b"tiny retained bytes" for name in names)
+    assert not list(setup[2].glob("*.manifest.json"))
