@@ -5,9 +5,8 @@ replay (``task_evaluation_stage_replay.replay_parent``) hard-linked the store's 
 its scratch inputs. The store then moved to a work volume and its root copies were deleted, so
 each such inode now lives only in names spread across many lookahead replays. The per-replay
 scratch rule (``completed_replay_cache_retention`` with ``reclaim_scratch_inputs``) plans an inode
-only when one replay holds all of its links, so it never plans these. On 2026-09-28, 89
-lookahead replays still held scratch, and 957 of their 964 blob digests (9.07 GB) sat in more
-than one of them.
+only when one replay holds all of its links, so it never plans these, and until this module
+nothing reported them.
 
 One plan per storage GC tick covers every lookahead the replay cache phase scans. A replay is
 eligible exactly when the per-replay rule would take its scratch inputs: its finished parent

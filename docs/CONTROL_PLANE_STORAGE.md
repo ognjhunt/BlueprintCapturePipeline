@@ -592,7 +592,8 @@ queues stay.
 volume on 2026-09-20 hard-linked the store's own inodes, and the store's root
 copies were deleted, so each such inode lives only in names spread across many
 replays. The rule above needs one replay to hold every link, so it never takes
-them (2026-09-28: 957 of 964 digests, 9.07 GB, across 89 replays). Once per tick,
+them (2026-09-28: 85 lookaheads from before the move held 964 blob digests,
+9.07 GB). Once per tick,
 after every lookahead's own pass, the phase walks every replay's
 `prepared-references` (following no link, entering no other device) and groups
 the regular files by inode. A group whose names are all in one replay stays with

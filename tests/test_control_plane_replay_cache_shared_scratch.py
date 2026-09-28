@@ -99,14 +99,14 @@ def _tick(tmp_path: Path, parent_root: Path, **kwargs) -> dict:
 
 def test_shared_lookahead_scratch_is_reclaimed_when_every_link_is_in_finished_lookaheads(
         tmp_path, monkeypatch) -> None:
-    """2026-09-28: 89 lookahead replays still held scratch after an applied tick, and 957 of their
-    964 blob digests (9.07 GB) sat in more than one of them. Replays made before the store moved
-    hard-linked its own inodes, and its root copies were deleted, so each inode now lives only in
-    names spread across lookaheads; the per-replay rule plans an inode only when one replay holds
-    all of its links, so it never took them. With both opt-ins an inode whose every link is in
-    finished lookaheads goes with all of its names and counts once, beside what one replay holds
-    alone; the directories left empty go, and every report and scratch queue stays. Nothing about
-    it rests on a digest, so no byte is read."""
+    """After an applied tick, lookahead replays still held scratch whose blobs sat in more than
+    one of them. Replays made before the store moved hard-linked its own inodes, and its root
+    copies were deleted, so each inode now lives only in names spread across lookaheads; the
+    per-replay rule plans an inode only when one replay holds all of its links, so it never took
+    them. With both opt-ins an inode whose every link is in finished lookaheads goes with all of
+    its names and counts once, beside what one replay holds alone; the directories left empty go,
+    and every report and scratch queue stays. Nothing about it rests on a scratch file's digest,
+    so none of their bytes is read."""
 
     parent_root = tmp_path / "scene-configuration-activations"
     first = _replay(parent_root, "scene-841007-preparation", "parent-a-20260915T000000Z-1")
