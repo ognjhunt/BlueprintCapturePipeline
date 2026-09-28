@@ -128,9 +128,11 @@ rewritten ``offloaded`` with what it kept. A crash during eviction leaves an
 ``evicting`` pointer with members behind it: every later tick reports the listed
 members still local (``pointed_remaining_*``), and one that applies and passes
 every gate under the lock resumes (``resume``), evicting each listed member the
-pointer does not keep whose bytes still hash to the pointer's, keeping the rest
-and settling the pointer ``offloaded``; it publishes nothing and never withdraws
-that pointer. Only an ``evicting`` pointer is resumed: an ``offloaded`` one (or one
+pointer does not keep, still residue by a fresh plan, whose bytes still hash to
+the pointer's, keeping the rest and settling the pointer ``offloaded``; it
+publishes nothing, never withdraws that pointer, and evicts nothing until a HEAD
+request finds the pointer's archive with its size and digest
+(``archive_unverified``). Only an ``evicting`` pointer is resumed: an ``offloaded`` one (or one
 without a state) is ``already_offloaded``, and a run an operator restored is
 ``restored`` and is never offloaded again without a new decision. A pointer that
 does not verify, or whose registry digest is not the run's, leaves the run alone
@@ -159,6 +161,7 @@ from typing import Any
 
 from . import completed_replay_cache_retention as held_files
 from . import control_plane_evidence_offload as evidence
+from . import task_evaluation_configured_scene_object_store as scene_store
 from . import control_plane_storage_references as references
 from .control_plane_replay_cache_gc import _truthy_setting
 from .control_plane_retained_receipt import RETAINED_RECEIPTS
@@ -763,6 +766,7 @@ def offload_result_residue(
     now: Callable[[], float] = time.time,
     bulk_result: Mapping[str, Any] | None = None,
     queue_rows: QueueRows | None = None,
+    archive_verifier: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
     """Plan, and with ``apply`` offload, one sealed result run's residue; see the module docstring.
 
@@ -775,7 +779,8 @@ def offload_result_residue(
     A plan may take the run's per-artifact offload result (``bulk_result``) and
     the tick's ``queue_rows`` instead of checking them again; apply always checks
     both again, the bulk artifacts under the run lock and the queues both before
-    and after publication.
+    and after publication. Before a resume evicts, ``archive_verifier`` (a HEAD
+    request by default) must find the pointer's archive.
     """
 
     if apply and ack != APPLY_ACK:
@@ -830,15 +835,30 @@ def offload_result_residue(
         verdict = protection_checker(root) if protection_checker is not None else None
         if verdict:
             return _retained(row, verdict if isinstance(verdict, str) else "protected")
-        if pointed is not None:
-            resumable, _count, _size = _pointed_state(root, pointed)
-            row["candidate_count"] = sum(len(group["relative_paths"]) for group in resumable)
-            row["candidate_bytes"] = sum(group["size_bytes"] for group in resumable)
-            return _resume(row, root, pointer, pointed) if apply else _finished(row)
         try:
             members = _plan_members(root, row, _registered_paths(root, registry), registry_stat.st_mtime_ns)
         except Exception as exc:  # noqa: BLE001 - what a run's receipts name must be known
             return _retained(row, "plan_failed", failure=offload_failure(exc, "plan"))
+        if pointed is not None:
+            # Only what is still residue goes: a kept document may name a member since the first plan.
+            residue_names = {name for group in members for name in group["relative_paths"]}
+            evictable: list[dict[str, Any]] = []
+            reached: list[str] = []
+            for group in _pointed_state(root, pointed)[0]:
+                if set(group["relative_paths"]) <= residue_names:
+                    evictable.append(group)
+                else:
+                    reached.extend(group["relative_paths"])
+            row["candidate_count"] = sum(len(group["relative_paths"]) for group in evictable)
+            row["candidate_bytes"] = sum(group["size_bytes"] for group in evictable)
+            if not apply:
+                return _finished(row)
+            try:
+                (archive_verifier or scene_store.verify_configured_scene_artifact)(
+                    reference=archive_reference(pointed["archive"]))
+            except Exception as exc:  # noqa: BLE001 - nothing is evicted behind an archive it cannot see
+                return _retained(row, "archive_unverified", failure=offload_failure(exc, "verify"))
+            return _resume(row, root, pointer, pointed, evictable, reached)
         row["candidate_count"] = sum(len(group["relative_paths"]) for group in members)
         row["candidate_bytes"] = sum(group["size_bytes"] for group in members)
         if not apply or not members:
@@ -981,6 +1001,23 @@ def _pointed_state(root: Path, value: Mapping[str, Any]) -> tuple[list[dict[str,
     return sorted(members, key=lambda group: group["relative_paths"]), count, size
 
 
+def archive_reference(archive: Mapping[str, Any]) -> dict[str, Any]:
+    """The artifact-store reference of a pointer's archive, for its restore and its HEAD check."""
+
+    return {
+        "schema_version": "task_evaluation_scene_artifact_reference.v1",
+        "status": "remote_verified",
+        "artifact_kind": archive.get("artifact_kind", evidence.ARTIFACT_KIND),
+        "uri": archive["uri"],
+        "digest": archive["sha256"],
+        "size_bytes": archive["size_bytes"],
+        # A pointer is written only after a full remote readback.
+        "remote_identity_verified": True,
+        "full_byte_service_account_readback_passed": True,
+        "raw_secret_values_recorded": False,
+    }
+
+
 def pointer_with_state(value: Mapping[str, Any], state: str, **fields: Any) -> dict[str, Any]:
     """``value`` in ``state`` (with ``fields``), digest-bound again."""
 
@@ -1004,18 +1041,21 @@ def _settle(row: dict[str, Any], pointer: Path, value: Mapping[str, Any], kept: 
         row["failure"] = offload_failure(exc, "pointer")
 
 
-def _resume(row: dict[str, Any], root: Path, pointer: Path, value: dict[str, Any]) -> dict[str, Any]:
+def _resume(row: dict[str, Any], root: Path, pointer: Path, value: dict[str, Any],
+            members: Sequence[Mapping[str, Any]], reached: Sequence[str]) -> dict[str, Any]:
     """Finish an eviction a crash cut short, under the run lock and every gate.
 
-    Only an ``evicting`` pointer gets here. Each listed member the pointer does
-    not keep, still local, goes only when its bytes still hash to the pointer's
-    (the archive's); any other is kept. The pointer is then rewritten
+    Only an ``evicting`` pointer whose archive a HEAD request still finds gets
+    here. Each listed member the pointer does not keep, still local and still
+    residue (``members``), goes only when its bytes still hash to the pointer's
+    (the archive's); any other is kept, and so is each member a reader can now
+    reach (``reached``: ``no_longer_residue``). The pointer is then rewritten
     ``offloaded``. Nothing is published again, and the pointer is never
     withdrawn: members evicted before the crash live only in its archive.
     """
 
-    members, _count, _size = _pointed_state(root, value)
-    kept = _evict(root, members, {member["relative_path"]: member["sha256"] for member in value["members"]}, row)
+    kept = [{"relative_path": name, "reason": "no_longer_residue"} for name in reached]
+    kept += _evict(root, members, {member["relative_path"]: member["sha256"] for member in value["members"]}, row)
     _settle(row, pointer, value, kept)
     _members, row["pointed_remaining_count"], row["pointed_remaining_bytes"] = _pointed_state(root, value)
     return _finished(row)
@@ -1040,6 +1080,7 @@ def residue_row(
     now: Callable[[], float],
     queue_roots: Sequence[str | Path] = (),
     queue_rows: QueueRows | None = None,
+    archive_verifier: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
     """The storage GC's residue row for one registry run, given its per-artifact offload result.
 
@@ -1057,7 +1098,7 @@ def residue_row(
         return offload_result_residue(
             run_root=run_root, apply=apply, ack=APPLY_ACK if apply else "", hot_window_seconds=hot_window_seconds,
             protection_checker=protection_checker, publisher=publisher, now=now, queue_roots=queue_roots,
-            bulk_result=bulk_result, queue_rows=queue_rows)
+            bulk_result=bulk_result, queue_rows=queue_rows, archive_verifier=archive_verifier)
     except Exception as exc:  # noqa: BLE001 - one run never costs the others
         return {"status": "error", "run": name, **offload_failure(exc, "residue")}
 
@@ -1194,6 +1235,7 @@ __all__ = [
     "RESTORE_RECEIPT_SUFFIX",
     "ResidueTick",
     "ResultResidueOffloadError",
+    "archive_reference",
     "offload_result_residue",
     "pointer_with_state",
     "queue_snapshot",

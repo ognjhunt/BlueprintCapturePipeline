@@ -743,9 +743,13 @@ so each manifest (and its receipt) also records `walked_file_count` and
   `offloaded` (a pointer without a state reads as `offloaded`), and `restored`
   once a restore finished. A pointed run reports the listed members still local
   (`pointed_remaining_count`, `pointed_remaining_bytes`, totalled per phase); only
-  when a crash left an `evicting` pointer does an applying tick resume (`resume`):
-  it evicts each listed member the pointer does not keep whose bytes still hash
-  to the pointer's, then settles the pointer `offloaded`.
+  when a crash left an `evicting` pointer does an applying tick resume (`resume`).
+  It first checks with a HEAD request, reading no bytes, that the pointer's
+  archive is still there with its size and digest (`archive_unverified`
+  otherwise, and nothing moves), plans the run again, and evicts each listed
+  member the pointer does not keep that is still residue and whose bytes still
+  hash to the pointer's; a member a reader can now reach stays, recorded in the
+  pointer as kept (`no_longer_residue`). Then it settles the pointer `offloaded`.
   Every file it left counts under
   `member_skipped:<reason>` with its bytes: `reader_reopened` (the surveyed
   reopened names, including scene-attempt recovery's `*.lease.json` and

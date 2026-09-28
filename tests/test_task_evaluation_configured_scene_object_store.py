@@ -422,6 +422,42 @@ def test_large_artifact_materialization_streams_and_verifies_before_exposure(
     assert not list(destination.parent.glob("*.partial"))
 
 
+def test_an_artifact_is_verified_by_its_head_without_reading_it(tmp_path: Path) -> None:
+    """A HEAD request proves the object a reference names is still there with the reference's size
+    and digest metadata; no byte of it is read."""
+
+    source = tmp_path / "residue.tar"
+    source.write_bytes(b"archived residue")
+    client = _ContentAddressedClient()
+    reference = store.publish_configured_scene_artifact(
+        path=source, artifact_kind="control-plane-evidence", client=client, bucket="blueprint-inputs")
+    key = ("blueprint-inputs", reference["uri"].split("blueprint-inputs/", 1)[1])
+
+    def unread(**_kwargs):
+        raise AssertionError("a verification reads no bytes")
+
+    client.get_object = unread
+    verified = store.verify_configured_scene_artifact(reference=reference, client=client, bucket="blueprint-inputs")
+    assert (verified["status"], verified["digest"], verified["size_bytes"]) == (
+        "remote_present", reference["digest"], reference["size_bytes"])
+
+    for damage, code in (("metadata", "existing_identity_mismatch"), ("size", "existing_identity_mismatch"),
+                         ("missing", "missing"), ("bucket", "reference_invalid")):
+        stored, metadata = client.objects[key], dict(client.metadata[key])
+        bucket = "blueprint-inputs"
+        if damage == "metadata":
+            client.metadata[key]["sha256"] = "0" * 64
+        elif damage == "size":
+            client.objects[key] = stored + b"x"
+        elif damage == "missing":
+            del client.objects[key]
+        else:
+            bucket = "another-bucket"
+        with pytest.raises(store.TaskEvaluationConfiguredSceneObjectStoreError, match=f"configured_scene_artifact_{code}"):
+            store.verify_configured_scene_artifact(reference=reference, client=client, bucket=bucket)
+        client.objects[key], client.metadata[key] = stored, metadata
+
+
 def test_large_artifact_materialization_removes_corrupt_partial(
     tmp_path: Path,
 ) -> None:

@@ -7,6 +7,7 @@
 #   src/blueprint_pipeline/control_plane_evidence_offload.py
 #   src/blueprint_pipeline/control_plane_storage_references.py
 #   src/blueprint_pipeline/completed_replay_cache_retention.py
+#   src/blueprint_pipeline/task_evaluation_configured_scene_object_store.py
 """A sealed result run's residue moves to the artifact store behind a verified pointer, and comes back.
 
 On 2026-09-27 evidence offload kept 27 result-registry runs (12.94 GB): whole-run
@@ -155,7 +156,9 @@ def _sealed_run(evidence_root: Path, name: str = "run-1", *, residue_files=RESID
 
 
 def _offload(f, **kwargs):
-    options = {"hot_window_seconds": 2 * DAY, "publisher": f.publisher, "now": lambda: NOW, **kwargs}
+    options = {"hot_window_seconds": 2 * DAY, "publisher": f.publisher, "now": lambda: NOW,
+               "archive_verifier": functools.partial(store.verify_configured_scene_artifact, client=f.client,
+                                                     bucket=BUCKET), **kwargs}
     return residue.offload_result_residue(run_root=f.run, apply=True, ack=residue.APPLY_ACK, **options)
 
 
@@ -1268,6 +1271,8 @@ def test_a_resumed_member_that_no_longer_matches_the_pointer_is_kept(tmp_path, m
     left = sorted(relative for relative in RESIDUE if (f.run / relative).exists())
     changed = f.run / left[0]
     changed.write_bytes(b"written after the crash")
+    # Its old mtime keeps it residue for the resume's fresh plan: only its bytes tell it changed.
+    os.utime(changed, (OLD, OLD))
 
     resumed = _offload(f)
 
@@ -1613,3 +1618,57 @@ def test_a_restore_and_a_resume_never_interleave(tmp_path, monkeypatch) -> None:
     assert restored["status"] == "restored"
     assert _offload(f)["retained_reason"] == "restored"
     assert {relative: (f.run / relative).read_bytes() for relative in RESIDUE} == RESIDUE
+
+
+@pytest.mark.parametrize("damage", ["missing", "digest_differs", "size_differs"])
+def test_a_resume_evicts_nothing_behind_an_archive_it_cannot_see(tmp_path, monkeypatch, damage) -> None:
+    """Before a resume evicts, a HEAD request (no bytes read) must find the pointer's archive with its
+    size and digest; otherwise every member stays (``archive_unverified``) and the pointer still says
+    ``evicting``, so a later tick tries again."""
+
+    f = _sealed_run(tmp_path / "canaries")
+    _crash_on_second_group(monkeypatch, f)
+    pointer = json.loads(f.pointer.read_text(encoding="utf-8"))
+    key = (BUCKET, pointer["archive"]["uri"].split(f"s3://{BUCKET}/", 1)[1])
+    stored, metadata = f.client.objects[key], dict(f.client.metadata[key])
+    if damage == "missing":
+        del f.client.objects[key]
+    elif damage == "digest_differs":
+        f.client.metadata[key]["sha256"] = "0" * 64
+    else:
+        f.client.objects[key] = stored + b"x"
+    before = _local_files(f.run)
+
+    kept = _offload(f)
+
+    assert (kept["status"], kept["retained_reason"], kept["resume"]) == ("retained", "archive_unverified", True)
+    assert kept["failure"] == {"error_type": "TaskEvaluationConfiguredSceneObjectStoreError", "errno": None,
+                               "stage": "verify"}
+    assert _local_files(f.run) == before
+    assert json.loads(f.pointer.read_text(encoding="utf-8"))["state"] == "evicting"
+    f.client.objects[key], f.client.metadata[key] = stored, metadata
+    resumed = _offload(f)
+    assert (resumed["status"], resumed["offloaded_count"]) == ("applied", len(RESIDUE) - 1)
+
+
+def test_a_resume_keeps_a_member_a_reader_can_now_reach(tmp_path, monkeypatch) -> None:
+    """A resume plans the run again and evicts only members that are still residue: a kept
+    document may have come to name one since the original plan."""
+
+    f = _sealed_run(tmp_path / "canaries")
+    _crash_on_second_group(monkeypatch, f)
+    left = sorted(relative for relative in RESIDUE if (f.run / relative).exists())
+    named, other = left[0], left[1]
+    (f.run / "launch_receipt.json").write_text(json.dumps({"log": named}), encoding="utf-8")
+
+    plan = residue.offload_result_residue(run_root=f.run, hot_window_seconds=2 * DAY, now=lambda: NOW)
+    resumed = _offload(f)
+
+    for row in (plan, resumed):
+        assert (row["candidate_count"], row["candidate_bytes"]) == (1, len(RESIDUE[other]))
+        assert {skip["relative_path"]: skip["reason"] for skip in row["skipped"]}[named] == "receipt_referenced"
+    assert (resumed["status"], resumed["offloaded_count"]) == ("applied", 1)
+    assert (f.run / named).read_bytes() == RESIDUE[named] and not (f.run / other).exists()
+    pointer = json.loads(f.pointer.read_text(encoding="utf-8"))
+    assert pointer["state"] == "offloaded"
+    assert pointer["kept"] == [{"relative_path": named, "reason": "no_longer_residue"}]

@@ -48,6 +48,7 @@ from .task_evaluation_result_residue_offload import (
     _hold_offload_lock,
     _read_pointer,
     _write_json,
+    archive_reference,
     pointer_with_state,
 )
 from .task_evaluation_result_residue_scan import ResultResidueOffloadError
@@ -258,18 +259,7 @@ def _restore_locked(root: Path, materializer: Callable[..., Any] | None, now: Ca
         staging = Path(tempfile.mkdtemp(prefix=f".{root.name}.residue-restore-", dir=root.parent))
         archive_path = staging / "residue.tar"
         (materializer or evidence.materialize_configured_scene_artifact)(
-            reference={
-                "schema_version": "task_evaluation_scene_artifact_reference.v1",
-                "status": "remote_verified",
-                "artifact_kind": archive_row.get("artifact_kind", evidence.ARTIFACT_KIND),
-                "uri": archive_row["uri"],
-                "digest": archive_row["sha256"],
-                "size_bytes": archive_row["size_bytes"],
-                # A pointer is written only after a full remote readback.
-                "remote_identity_verified": True,
-                "full_byte_service_account_readback_passed": True,
-                "raw_secret_values_recorded": False,
-            },
+            reference=archive_reference(archive_row),
             destination=archive_path,
             maximum_size_bytes=int(archive_row["size_bytes"]),
         )
