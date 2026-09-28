@@ -158,6 +158,7 @@ class _Scan:
         self.root_inodes: set[tuple[int, int]] = set()
         self.snapshots: list[tuple[Any, ...]] = []
         self.opened_roots: set[str] = set()
+        self._row_bytes_limit = MAX_ROW_BYTES
 
     def block(self, code: str) -> None:
         if code in self.blockers or len(self.blockers) < MAX_BLOCKERS:
@@ -358,7 +359,7 @@ class _Scan:
         try:
             before = self.call(os.fstat, fd)
             _require(stat.S_ISREG(before.st_mode), "queue_row_unsafe")
-            _require(0 <= before.st_size <= MAX_ROW_BYTES, "queue_row_bytes_limit")
+            _require(0 <= before.st_size <= self._row_bytes_limit, "queue_row_bytes_limit")
             _require(before.st_size <= MAX_TOTAL_BYTES - self.bytes, "queue_bytes_limit")
             raw = bytearray()
             while len(raw) <= before.st_size:
